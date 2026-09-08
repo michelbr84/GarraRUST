@@ -158,6 +158,17 @@ class GatewayConnection implements GarraConnection {
     ]).map(MemoryEntry.fromJson).toList();
   }
 
+  @override
+  Future<bool> deleteMemory(String id) async {
+    try {
+      await _dio.delete<void>('/api/memory/${Uri.encodeComponent(id)}');
+      return true;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return false;
+      rethrow;
+    }
+  }
+
   // ── Skills / commands ────────────────────────────────────────────────────
 
   @override

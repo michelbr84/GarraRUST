@@ -104,6 +104,67 @@ pub struct RecallQuery {
     pub limit: usize,
 }
 
+/// Por que o caminho KNN do recall voltou vazio depois do reescopo (#1037).
+///
+/// O vec0 devolve vizinhos por distancia; `fetch_entries_by_ids_scoped`
+/// reaplica tenant, sessao, continuidade, modelo e prazo. Quando nada
+/// sobrevive ha tres causas com acoes opostas, e o log tem de nomear a certa:
+/// o aviso antigo culpava "troca de modelo" em todas, e o operador reindexava
+/// horas de embeddings sem resolver nada — enquanto o caso real de troca de
+/// modelo virava ruido, porque disparava em toda sessao nova.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KnnDrop {
+    /// Nenhum candidato tem o modelo da query: o indice pertence a outro
+    /// modelo. E o caso de `garra memory reindex` (#954).
+    ModelMismatch {
+        wanted: String,
+        /// Modelos encontrados entre os candidatos, com contagem. `None` e
+        /// entrada legada sem modelo gravado.
+        found: Vec<(Option<String>, usize)>,
+    },
+    /// Candidatos com o modelo certo existem, mas ficaram fora do escopo
+    /// pedido (sessao, continuidade, tenant) ou venceram o prazo. A memoria
+    /// existe; nao e caso de reindexar.
+    ScopedOut { same_model: usize, total: usize },
+    /// O indice devolveu ids que nao existem em `memory_entries`: vetor
+    /// orfao. E o caso de `garra memory stats` e do reparo do indice (#960).
+    IndexOrphans { knn_candidates: usize },
+}
+
+impl KnnDrop {
+    /// Classifica a partir do que o indice devolveu e do que o banco tem.
+    ///
+    /// `found` e a contagem por `embedding_model` das linhas que existem
+    /// entre os ids do KNN, **sem** filtro de escopo; `wanted` e o modelo da
+    /// query (`None` em recall so-texto, onde "modelo trocado" nao tem
+    /// sentido e so o escopo pode ter derrubado).
+    pub(crate) fn classify(
+        wanted: Option<&str>,
+        found: Vec<(Option<String>, usize)>,
+        knn_candidates: usize,
+    ) -> Self {
+        let total: usize = found.iter().map(|(_, n)| n).sum();
+        if total == 0 {
+            return Self::IndexOrphans { knn_candidates };
+        }
+        let same_model = match wanted {
+            Some(w) => found
+                .iter()
+                .filter(|(m, _)| m.as_deref() == Some(w))
+                .map(|(_, n)| n)
+                .sum(),
+            None => total,
+        };
+        match wanted {
+            Some(w) if same_model == 0 => Self::ModelMismatch {
+                wanted: w.to_string(),
+                found,
+            },
+            _ => Self::ScopedOut { same_model, total },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionContext {
     pub session_id: String,
@@ -192,6 +253,12 @@ pub trait MemoryProvider: Send + Sync {
     ) -> Result<Vec<MemoryEntry>>;
     async fn compact(&self, before: DateTime<Utc>) -> Result<CompactionReport>;
     async fn delete_session_memory(&self, session_id: &str) -> Result<usize>;
+
+    /// Apaga **uma** entrada pelo id (vetor e mapeamento junto). `false` se o
+    /// id nao existia. Ate a v0.4.1 so a CLI (`garra memory`) chegava aqui; o
+    /// `/api/*` que o celular usa so tinha `DELETE /api/memory`, que apaga a
+    /// sessao inteira.
+    async fn delete_entry(&self, id: &str) -> Result<bool>;
 
     /// Contagens para os gauges (#957). Ver [`MemoryGauges`].
     async fn gauge_snapshot(&self) -> Result<MemoryGauges>;
@@ -1000,18 +1067,12 @@ impl MemoryStore {
                     return self.score_and_rank(candidates, &query, limit);
                 }
 
-                // O KNN achou vizinhos, mas nenhum sobreviveu ao escopo. Com
-                // filtro de modelo ativo isso é o sintoma clássico de troca de
-                // modelo sem reindexar (#954): o índice inteiro pertence ao
-                // modelo antigo. Avisar alto — o operador não tem outro sinal.
-                if let Some(model) = query.embedding_model.as_deref() {
-                    tracing::warn!(
-                        model,
-                        knn_candidates = knn_results.len(),
-                        "recall: nenhum vizinho KNN pertence ao modelo ativo/escopo — \
-                         provável troca de modelo de embeddings sem reindexação"
-                    );
-                }
+                // O KNN achou vizinhos, mas nenhum sobreviveu ao reescopo.
+                // Sao tres causas com acoes opostas — indice de outro modelo
+                // (#954: reindexar), memoria de outra sessao (#1037: nada a
+                // fazer) ou vetor orfao (#960: reparar o indice) — e o aviso
+                // antigo culpava a primeira em todas. Nomear a certa.
+                self.explain_knn_drop(&candidate_ids, &query, knn_results.len());
             }
             // Fall through to SQL-based retrieval if KNN returned nothing
         }
@@ -1099,6 +1160,93 @@ impl MemoryStore {
             .take(limit)
             .map(|(_, entry)| entry)
             .collect())
+    }
+
+    /// Conta, por `embedding_model`, as linhas de `memory_entries` entre `ids`
+    /// — **sem** filtro de escopo, de proposito: e a pergunta "o que o indice
+    /// apontou existe, e de que modelo e?", que o reescopo acabou de
+    /// responder com "nada" e que o diagnostico precisa refazer sem ele.
+    fn count_models_among(&self, ids: &[&str]) -> Result<Vec<(Option<String>, usize)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.connection()?;
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT embedding_model, COUNT(*) FROM memory_entries
+             WHERE id IN ({placeholders})
+             GROUP BY embedding_model"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| Error::Database(format!("failed to prepare model count: {e}")))?;
+        let values: Vec<rusqlite::types::Value> = ids
+            .iter()
+            .map(|id| rusqlite::types::Value::from(id.to_string()))
+            .collect();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(values), |row| {
+                let model: Option<String> = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((model, usize::try_from(count).unwrap_or(0)))
+            })
+            .map_err(|e| Error::Database(format!("failed to count models: {e}")))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Database(format!("failed to collect model counts: {e}")))
+    }
+
+    /// Diz no log **por que** o KNN achou vizinhos e o reescopo nao deixou
+    /// nenhum (#1037): a causa certa, no nivel certo, com os filtros que
+    /// derrubaram — para o operador ver o escopo sem abrir o codigo.
+    ///
+    /// Nivel por causa: troca de modelo e vetor orfao sao `warn` (exigem
+    /// acao); memoria de outra sessao e `info`, porque e o escopo por sessao
+    /// funcionando como projetado e acontece em toda sessao nova — como
+    /// `warn`, virava ruido que desmoralizava o caso real.
+    fn explain_knn_drop(&self, ids: &[&str], query: &RecallQuery, knn_candidates: usize) {
+        let found = match self.count_models_among(ids) {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::debug!(erro = %e, "recall: diagnostico do KNN vazio falhou");
+                return;
+            }
+        };
+        match KnnDrop::classify(query.embedding_model.as_deref(), found, knn_candidates) {
+            KnnDrop::ModelMismatch { wanted, found } => {
+                let found: Vec<String> = found
+                    .iter()
+                    .map(|(m, n)| format!("{}={n}", m.as_deref().unwrap_or("<sem modelo>")))
+                    .collect();
+                tracing::warn!(
+                    model = %wanted,
+                    knn_candidates,
+                    found = ?found,
+                    "recall: nenhum vizinho KNN pertence ao modelo ativo — provavel \
+                     troca de modelo de embeddings sem reindexacao; rode \
+                     `garra memory reindex`"
+                );
+            }
+            KnnDrop::ScopedOut { same_model, total } => {
+                tracing::info!(
+                    knn_candidates,
+                    total,
+                    same_model,
+                    tenant_id = query.tenant_id.as_deref().unwrap_or("<nenhum>"),
+                    session_id = query.session_id.as_deref().unwrap_or("<nenhum>"),
+                    continuity_key = query.continuity_key.as_deref().unwrap_or("<nenhum>"),
+                    "recall: vizinhos KNN existem com o modelo ativo, mas ficaram fora do \
+                     escopo pedido (sessao/continuidade/tenant) ou venceram o prazo — \
+                     memoria de outras sessoes; nao e caso de reindexar"
+                );
+            }
+            KnnDrop::IndexOrphans { knn_candidates } => {
+                tracing::warn!(
+                    knn_candidates,
+                    "recall: o indice vetorial devolveu ids sem linha em memory_entries — \
+                     vetores orfaos; confira `garra memory stats`"
+                );
+            }
+        }
     }
 
     /// Fetch memory entries by their IDs, reaplicando os filtros da query.
@@ -1264,6 +1412,10 @@ impl MemoryProvider for MemoryStore {
 
     async fn delete_session_memory(&self, session_id: &str) -> Result<usize> {
         self.delete_session_memory(session_id).await
+    }
+
+    async fn delete_entry(&self, id: &str) -> Result<bool> {
+        MemoryStore::delete_entry(self, id)
     }
 
     async fn gauge_snapshot(&self) -> Result<MemoryGauges> {
@@ -1505,7 +1657,7 @@ impl<T> Pipe for T {}
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryRole, MemoryStore, NewMemoryEntry, RecallQuery};
+    use super::{KnnDrop, MemoryRole, MemoryStore, NewMemoryEntry, RecallQuery};
     use chrono::{Duration, Utc};
 
     fn entry(
@@ -1594,6 +1746,119 @@ mod tests {
         assert_eq!(gauge.vector_index_rows, 0);
         assert_eq!(gauge.entries_with_embedding, 0);
         assert_eq!(gauge.entries_without_embedding, 0);
+    }
+
+    /// #1037: o aviso de KNN vazio culpava "troca de modelo" mesmo quando os
+    /// candidatos tinham o modelo certo e so o escopo os derrubou. A
+    /// classificacao e pura para ser afirmavel sem capturar log.
+    #[test]
+    fn knn_drop_distingue_modelo_escopo_e_orfaos() {
+        // Todos os 20 candidatos sao do modelo ativo: e escopo, nao modelo.
+        assert_eq!(
+            KnnDrop::classify(Some("m1"), vec![(Some("m1".into()), 20)], 20),
+            KnnDrop::ScopedOut {
+                same_model: 20,
+                total: 20
+            }
+        );
+        // Nenhum candidato tem o modelo ativo: troca de modelo sem reindexar.
+        assert_eq!(
+            KnnDrop::classify(Some("m2"), vec![(Some("m1".into()), 18), (None, 2)], 20),
+            KnnDrop::ModelMismatch {
+                wanted: "m2".into(),
+                found: vec![(Some("m1".into()), 18), (None, 2)],
+            }
+        );
+        // Mistura: ha candidatos do modelo ativo, entao o que derrubou foi o
+        // escopo — os de outro modelo sao so contexto.
+        assert_eq!(
+            KnnDrop::classify(
+                Some("m1"),
+                vec![(Some("m1".into()), 3), (Some("m0".into()), 17)],
+                20
+            ),
+            KnnDrop::ScopedOut {
+                same_model: 3,
+                total: 20
+            }
+        );
+        // Recall so-texto nao tem modelo para "trocar": so escopo.
+        assert_eq!(
+            KnnDrop::classify(None, vec![(Some("m1".into()), 5)], 5),
+            KnnDrop::ScopedOut {
+                same_model: 5,
+                total: 5
+            }
+        );
+        // O indice apontou para ids que nao existem: orfaos, independente
+        // do modelo pedido.
+        assert_eq!(
+            KnnDrop::classify(Some("m1"), vec![], 7),
+            KnnDrop::IndexOrphans { knn_candidates: 7 }
+        );
+    }
+
+    /// O cenario do #1037 de ponta a ponta: memoria gravada na sessao A com
+    /// o modelo ativo, recall na sessao B com o mesmo modelo. O KNN acha os
+    /// vizinhos, o escopo derruba todos, e a contagem por modelo — a base do
+    /// diagnostico — diz que eles sao do modelo certo. Reindexar nao mudaria
+    /// nada, e o log nao pode mais dizer que mudaria.
+    #[tokio::test]
+    async fn recall_em_sessao_nova_deixa_os_vizinhos_de_fora_por_escopo_nao_por_modelo() {
+        let store = MemoryStore::in_memory_with_vectors().expect("store com vetores");
+        assert!(store.knn_enabled());
+
+        let mut ids = Vec::new();
+        for texto in ["meu codinome e falcao", "moro na rua das flores"] {
+            ids.push(
+                store
+                    .remember(entry(
+                        "sessao-a",
+                        None,
+                        texto,
+                        MemoryRole::User,
+                        Some(vec![0.9, 0.1, 0.0, 0.0]),
+                    ))
+                    .await
+                    .expect("remember"),
+            );
+        }
+
+        let consulta = |sessao: &str| RecallQuery {
+            tenant_id: None,
+            query_text: Some("codinome".to_string()),
+            query_embedding: Some(vec![0.9, 0.1, 0.0, 0.0]),
+            embedding_model: Some("unit-test".to_string()),
+            session_id: Some(sessao.to_string()),
+            continuity_key: None,
+            limit: 5,
+        };
+
+        // Na propria sessao a memoria volta.
+        let na_a = store.recall(consulta("sessao-a")).await.expect("recall a");
+        assert_eq!(na_a.len(), 2);
+
+        // Na sessao nova, nada — e o escopo por sessao, nao o modelo.
+        let na_b = store.recall(consulta("sessao-b")).await.expect("recall b");
+        assert!(na_b.is_empty(), "escopo por sessao: {na_b:?}");
+
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let found = store
+            .count_models_among(&refs)
+            .expect("contagem por modelo");
+        assert_eq!(found, vec![(Some("unit-test".to_string()), 2)]);
+        assert_eq!(
+            KnnDrop::classify(Some("unit-test"), found.clone(), refs.len()),
+            KnnDrop::ScopedOut {
+                same_model: 2,
+                total: 2
+            }
+        );
+        // E com outro modelo na query o diagnostico vira o de troca de modelo.
+        assert!(matches!(
+            KnnDrop::classify(Some("outro-modelo"), found, refs.len()),
+            KnnDrop::ModelMismatch { .. }
+        ));
     }
 
     /// O `remember_sync` grava a linha e insere no indice em best-effort:

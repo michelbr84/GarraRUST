@@ -202,7 +202,7 @@ pub fn build_router(
         .route("/ws/parrot", get(parrot_ws::parrot_ws_handler))
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(openai_api::chat_completions))
-        .route("/v1/models", get(openai_api::list_models))
+        .route("/v1/models", get(crate::openai_models::list_models))
         // Anthropic-compatible endpoints (plan 0361 / ADR 0014). Deliberately
         // does NOT register `/v1/models`: it is already registered just above,
         // and Axum panics at startup on a duplicate method+path.
@@ -227,6 +227,10 @@ pub fn build_router(
         .route(
             "/api/memory",
             axum::routing::delete(crate::memory_handler::clear_memory),
+        )
+        .route(
+            "/api/memory/{id}",
+            axum::routing::delete(crate::memory_handler::delete_memory_entry),
         )
         .route(
             "/api/memory/recent",

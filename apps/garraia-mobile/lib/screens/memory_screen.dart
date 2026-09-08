@@ -6,6 +6,7 @@ import '../runtime/models.dart';
 import '../runtime/runtime_providers.dart';
 import '../theme/garra_theme.dart';
 import '../theme/garra_tokens.dart';
+import '../widgets/copy_to_clipboard.dart';
 import '../widgets/garra_page.dart';
 
 part 'memory_screen.g.dart';
@@ -109,6 +110,136 @@ class _MemoryRow extends StatelessWidget {
         if (entry.role.isNotEmpty) entry.role,
         if (entry.createdAt.isNotEmpty) entry.createdAt.split('T').first,
       ].join(' · '),
+      trailing: const Icon(
+        Icons.chevron_right_rounded,
+        color: GarraColors.textDim,
+      ),
+      // The row truncates; the sheet shows the whole memory, copies and
+      // deletes it.
+      onTap: () => showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (_) => MemorySheet(entry: entry),
+      ),
+    );
+  }
+}
+
+/// Full text of one memory, selectable, with copy and delete.
+///
+/// Delete asks first (it is irreversible and, on the runtime, ignores the
+/// pin), then calls `DELETE /api/memory/{id}` and refreshes both lists. A
+/// `404` means it was already gone: still a success for the user.
+class MemorySheet extends ConsumerWidget {
+  final MemoryEntry entry;
+  const MemorySheet({super.key, required this.entry});
+
+  Future<void> _delete(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Apagar esta memoria?'),
+        content: Text(
+          entry.pinned
+              ? 'Ela esta fixada, mas apagar nao pergunta duas vezes: some do runtime e nao da para desfazer.'
+              : 'Some do runtime e nao da para desfazer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            key: const ValueKey('confirm-delete-memory'),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Apagar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final conn = ref.read(garraConnectionProvider);
+    if (conn == null) return;
+    try {
+      final existed = await conn.deleteMemory(entry.id);
+      ref.invalidate(recentMemoryProvider);
+      ref.invalidate(memorySearchProvider);
+      if (!context.mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(
+          content: Text(existed ? 'Memoria apagada' : 'Ja nao existia'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+      Navigator.of(context).maybePop();
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text('Nao deu para apagar: $e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final meta = [
+      if (entry.role.isNotEmpty) entry.role,
+      if (entry.createdAt.isNotEmpty) entry.createdAt.replaceFirst('T', ' '),
+    ].join(' · ');
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (meta.isNotEmpty)
+                Text(
+                  meta,
+                  style: garraText(size: 12.5, color: GarraColors.textMuted),
+                ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    entry.content,
+                    style: garraText(size: 14.5, height: 1.45),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      key: const ValueKey('copy-memory'),
+                      onPressed: () => copyToClipboard(
+                        context,
+                        entry.content,
+                        toast: 'Memoria copiada',
+                      ),
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                      label: const Text('Copiar'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    key: const ValueKey('delete-memory'),
+                    onPressed: () => _delete(context, ref),
+                    icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                    label: const Text('Apagar'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

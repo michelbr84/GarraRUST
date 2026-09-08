@@ -118,7 +118,11 @@ fn is_retryable_error(err: &Error) -> bool {
 
 /// Resolve provider ID from model override.
 /// Models like "openrouter/auto", "openai/gpt-4o" have the provider as prefix.
-fn resolve_provider_from_model(model: &str) -> Option<String> {
+///
+/// Publica desde o #1029: e a regra que o `POST /v1/chat/completions` aplica
+/// ao campo `model`, e o `GET /v1/models` precisa dela para listar so o que
+/// aquele campo consegue rotear — a lista e a rota tem de concordar.
+pub fn resolve_provider_from_model(model: &str) -> Option<String> {
     let model = model.trim();
     if model.is_empty() {
         return None;
