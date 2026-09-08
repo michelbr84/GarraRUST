@@ -108,6 +108,12 @@ agent:
     - file_write
     - web_fetch
     - web_search
+  # Backend of `web_search` (#1034). Omit the section to keep the old rule:
+  # Brave when a key resolves, otherwise no search tool. `searxng` needs no
+  # key — point it at a self-hosted instance with `json` in search.formats.
+  web_search:
+    backend: searxng                 # brave | searxng
+    searxng_url: http://127.0.0.1:8081   # or GARRAIA_SEARXNG_URL
 
 # Multi-agent Configuration
 # Named agents are resolved via `agent_router` (explicit agent_id > channel

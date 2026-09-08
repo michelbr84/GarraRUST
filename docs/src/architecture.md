@@ -33,7 +33,7 @@ O runtime do agente inclui 6 ferramentas nativas que o modelo de linguagem (LLM)
 | `file_read`          | Lê o conteúdo de arquivos (máximo de 1 MB, com proteção contra acesso fora do diretório permitido)    |
 | `file_write`         | Escreve conteúdo em arquivos (máximo de 1 MB, com proteção contra acesso fora do diretório permitido) |
 | `web_fetch`          | Obtém páginas da web (timeout de 30 segundos, resposta máxima de 1 MB)                                |
-| `web_search`         | Realiza buscas usando a API Brave Search (requer `BRAVE_API_KEY`)                                     |
+| `web_search`         | Realiza buscas via Brave Search (`BRAVE_API_KEY`) ou SearXNG self-hosted (`agent.web_search.searxng_url`) |
 | `schedule_heartbeat` | Agenda a reativação futura do agente (máximo de 30 dias, limite de 5 agendamentos pendentes)          |
 
 Consulte [Ferramentas](./tools.md) para a referência completa.

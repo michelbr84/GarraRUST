@@ -565,14 +565,32 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
 
-    // Web search (Brave Search API) — only registered when an API key is available
+    // Web search (#1034): Brave (chave) ou SearXNG (URL, sem chave). Sem a
+    // secao `agent.web_search`, o comportamento e o de sempre — so com chave
+    // do Brave. `GARRAIA_SEARXNG_URL` e o equivalente da env para a URL.
     let brave_config_key = config.llm.get("brave").and_then(|c| c.api_key.clone());
-    if let Some(key) = resolve_api_key(
+    let brave_key = resolve_api_key(
         brave_config_key.as_deref(),
         "BRAVE_API_KEY",
         "BRAVE_API_KEY",
-    ) {
-        runtime.register_tool(Box::new(WebSearchTool::new(key)));
+    );
+    let searxng_url = config
+        .agent
+        .web_search
+        .searxng_url
+        .clone()
+        .or_else(|| std::env::var("GARRAIA_SEARXNG_URL").ok())
+        .filter(|u| !u.trim().is_empty());
+    match select_web_search_backend(config.agent.web_search.backend, brave_key, searxng_url) {
+        Some(backend) => {
+            info!(backend = backend.name(), "web_search registrada");
+            runtime.register_tool(Box::new(WebSearchTool::with_backend(backend)));
+        }
+        None if config.agent.web_search.backend.is_some() => warn!(
+            "agent.web_search.backend configurado sem a chave/URL que ele precisa; \
+             web_search fica de fora (veja `garra config check`)"
+        ),
+        None => {}
     }
 
     // --- Memory ---
@@ -1242,9 +1260,67 @@ pub fn build_embedding_provider(config: &AppConfig) -> Option<Arc<dyn EmbeddingP
     Some(Arc::new(resilient))
 }
 
+/// Qual backend de busca registrar (#1034).
+///
+/// Escolha explicita ganha e, se faltar o que ela precisa, ninguem e
+/// registrado: cair para o outro backend em silencio seria surpresa para quem
+/// configurou um de proposito. Sem escolha, Brave com chave (como sempre foi)
+/// e, so entao, SearXNG com URL.
+pub(crate) fn select_web_search_backend(
+    choice: Option<garraia_config::model::WebSearchBackend>,
+    brave_key: Option<String>,
+    searxng_url: Option<String>,
+) -> Option<garraia_agents::tools::web_search_tool::SearchBackend> {
+    use garraia_agents::tools::web_search_tool::SearchBackend;
+    use garraia_config::model::WebSearchBackend;
+
+    let brave = |api_key: String| SearchBackend::Brave { api_key };
+    let searxng = |base_url: String| SearchBackend::Searxng { base_url };
+    match choice {
+        Some(WebSearchBackend::Brave) => brave_key.map(brave),
+        Some(WebSearchBackend::Searxng) => searxng_url.map(searxng),
+        None => brave_key.map(brave).or_else(|| searxng_url.map(searxng)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1034: a regra de escolha do backend de busca, sem subir gateway.
+    #[test]
+    fn web_search_backend_selection() {
+        use garraia_agents::tools::web_search_tool::SearchBackend;
+        use garraia_config::model::WebSearchBackend;
+
+        let k = || Some("brave-key".to_string());
+        let u = || Some("http://127.0.0.1:8081".to_string());
+
+        // Sem secao: Brave com chave, como antes; sem chave, SearXNG com URL;
+        // sem nada, nada.
+        assert!(matches!(
+            select_web_search_backend(None, k(), u()),
+            Some(SearchBackend::Brave { .. })
+        ));
+        assert!(matches!(
+            select_web_search_backend(None, None, u()),
+            Some(SearchBackend::Searxng { ref base_url }) if base_url == "http://127.0.0.1:8081"
+        ));
+        assert!(select_web_search_backend(None, None, None).is_none());
+
+        // Explicito ganha mesmo com o outro disponivel...
+        assert!(matches!(
+            select_web_search_backend(Some(WebSearchBackend::Searxng), k(), u()),
+            Some(SearchBackend::Searxng { .. })
+        ));
+        assert!(matches!(
+            select_web_search_backend(Some(WebSearchBackend::Brave), k(), u()),
+            Some(SearchBackend::Brave { .. })
+        ));
+        // ...e sem o que precisa nao cai para o outro.
+        assert!(select_web_search_backend(Some(WebSearchBackend::Searxng), k(), None).is_none());
+        assert!(select_web_search_backend(Some(WebSearchBackend::Brave), None, u()).is_none());
+    }
 
     /// O literal "no-key" que existia aqui tratava LM Studio e a OpenAI
     /// oficial igual. Contra a oficial isso e 401 em toda chamada; contra o

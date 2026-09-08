@@ -527,6 +527,47 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         }
     }
 
+    // agent.web_search (#1034): um backend explicito que nao tem o que precisa
+    // deixa a tool de fora no boot — e melhor saber aqui do que descobrir pelo
+    // agente dizendo que nao tem busca. A URL do SearXNG so precisa parecer
+    // URL; o guard de SSRF decide o resto na hora da busca.
+    {
+        use crate::model::WebSearchBackend;
+        let ws = &config.agent.web_search;
+        let has_searxng_url = ws
+            .searxng_url
+            .as_deref()
+            .is_some_and(|u| !u.trim().is_empty())
+            || std::env::var("GARRAIA_SEARXNG_URL").is_ok_and(|u| !u.trim().is_empty());
+        if let Some(url) = ws.searxng_url.as_deref().map(str::trim)
+            && !url.is_empty()
+            && !url.starts_with("http://")
+            && !url.starts_with("https://")
+        {
+            push_warn(
+                &mut findings,
+                "agent.web_search.searxng_url",
+                format!(
+                    "agent.web_search.searxng_url should be an http:// or https:// URL (got `{}`)",
+                    sanitise_for_display(url)
+                ),
+            );
+        }
+        match ws.backend {
+            Some(WebSearchBackend::Searxng) if !has_searxng_url => push_err(
+                &mut findings,
+                "agent.web_search.backend",
+                "agent.web_search.backend=searxng but neither agent.web_search.searxng_url nor GARRAIA_SEARXNG_URL is set; web_search will not be registered".into(),
+            ),
+            Some(WebSearchBackend::Brave) if !config.llm.contains_key("brave") => push_warn(
+                &mut findings,
+                "agent.web_search.backend",
+                "agent.web_search.backend=brave but there is no `llm.brave` entry; the key must then come from the vault or BRAVE_API_KEY".into(),
+            ),
+            _ => {}
+        }
+    }
+
     // llm.*: a provider entry whose API key resolves nowhere is skipped at
     // startup, leaving the gateway up with zero usable providers — the failure
     // mode that made `garraia init` → `garraia start` unusable. It is an Error,
@@ -1577,6 +1618,57 @@ mod tests {
                 .iter()
                 .any(|f| f.severity == Severity::Error && f.field == "agent.default_provider"),
             "findings = {findings:?}"
+        );
+    }
+
+    /// #1034: `backend: searxng` sem URL deixaria a tool de fora no boot em
+    /// silencio; aqui vira erro. URL que nao parece URL e aviso. E a secao
+    /// ausente (o default) nao produz nada.
+    #[test]
+    fn agent_web_search_backend_needs_its_input() {
+        use crate::model::WebSearchBackend;
+
+        let quiet = validate(&AppConfig::default());
+        assert!(
+            !quiet
+                .iter()
+                .any(|f| f.field.starts_with("agent.web_search")),
+            "findings = {quiet:?}"
+        );
+
+        let mut cfg = AppConfig::default();
+        cfg.agent.web_search.backend = Some(WebSearchBackend::Searxng);
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "agent.web_search.backend"),
+            "findings = {findings:?}"
+        );
+
+        cfg.agent.web_search.searxng_url = Some("127.0.0.1:8081".into());
+        let findings = validate(&cfg);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "agent.web_search.backend"),
+            "com URL o erro some: {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Warning
+                    && f.field == "agent.web_search.searxng_url"),
+            "sem esquema e aviso: {findings:?}"
+        );
+
+        cfg.agent.web_search.searxng_url = Some("http://127.0.0.1:8081".into());
+        let findings = validate(&cfg);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.web_search")),
+            "configuracao completa e limpa: {findings:?}"
         );
     }
 
