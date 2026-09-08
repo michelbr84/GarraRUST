@@ -1,13 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:intl/intl.dart';
-
-import 'brand/wolf_mark.dart';
+import 'package:markdown/markdown.dart' as md;
 
 import '../runtime/models.dart';
+import 'brand/wolf_mark.dart';
+import 'copy_to_clipboard.dart';
 
 /// Modern chat bubble with markdown rendering for AI messages,
 /// timestamps, and avatar for assistant messages.
+///
+/// Copying: every bubble carries a small copy button next to its timestamp
+/// (`copy-message`), both texts are selectable for partial copies, and a
+/// fenced code block gets its own button (`copy-code`) that copies just the
+/// code. Field report from v0.4.0: long-press selection existed on the
+/// assistant side only and nothing hinted at it; the user's own messages
+/// could not be copied at all.
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
 
@@ -68,7 +76,7 @@ class ChatBubble extends StatelessWidget {
                       ),
                     ),
                     child: _isUser
-                        ? Text(
+                        ? SelectableText(
                             message.content,
                             style: TextStyle(color: cs.onPrimary, fontSize: 15),
                           )
@@ -77,15 +85,26 @@ class ChatBubble extends StatelessWidget {
                             textColor: cs.onSurface,
                           ),
                   ),
-                  const SizedBox(height: 2),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: Text(
-                      _formattedTime,
-                      style: TextStyle(
-                        color: cs.onSurface.withValues(alpha: 0.35),
-                        fontSize: 10,
-                      ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _formattedTime,
+                          style: TextStyle(
+                            color: cs.onSurface.withValues(alpha: 0.35),
+                            fontSize: 10,
+                          ),
+                        ),
+                        CopyIconButton(
+                          key: const ValueKey('copy-message'),
+                          text: message.content,
+                          tooltip: 'Copiar mensagem',
+                          toast: 'Mensagem copiada',
+                          color: cs.onSurface.withValues(alpha: 0.45),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -111,6 +130,7 @@ class _MarkdownBody extends StatelessWidget {
     return MarkdownBody(
       data: content,
       selectable: true,
+      builders: {'code': _CodeBlockBuilder(textColor: textColor)},
       styleSheet: MarkdownStyleSheet(
         p: TextStyle(color: textColor, fontSize: 15, height: 1.4),
         code: TextStyle(
@@ -158,6 +178,62 @@ class _MarkdownBody extends StatelessWidget {
           decoration: TextDecoration.underline,
         ),
       ),
+    );
+  }
+}
+
+/// Fenced code blocks with a copy button.
+///
+/// Registered on the `code` tag: inline code (no newline) returns `null` and
+/// keeps the default rendering; a block replaces the default scrollable text
+/// with the same text plus a button that copies **only the code**, which is
+/// what someone on a phone wants from a snippet the model produced. The
+/// `pre` frame (`codeblockDecoration`) still wraps it.
+class _CodeBlockBuilder extends MarkdownElementBuilder {
+  final Color textColor;
+
+  _CodeBlockBuilder({required this.textColor});
+
+  @override
+  Widget? visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    final raw = element.textContent;
+    if (!raw.contains('\n')) return null;
+    final code = raw.trimRight();
+    return Stack(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 40, 12),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SelectableText(
+              code,
+              style: TextStyle(
+                color: textColor,
+                fontFamily: 'JetBrainsMono',
+                fontSize: 13,
+                height: 1.45,
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          top: 2,
+          right: 2,
+          child: CopyIconButton(
+            key: const ValueKey('copy-code'),
+            text: code,
+            tooltip: 'Copiar codigo',
+            toast: 'Codigo copiado',
+            color: textColor.withValues(alpha: 0.6),
+            size: 16,
+          ),
+        ),
+      ],
     );
   }
 }
