@@ -124,16 +124,30 @@ para restringir acesso.
 
 ## web\_search
 
-Pesquisa na internet usando a API Brave Search.
+Pesquisa na internet por um de dois backends (#1034):
 
-Disponível apenas quando `BRAVE\\\_API\\\_KEY` está configurada.
+* **Brave Search API** — precisa de chave (`llm.brave.api_key`, cofre ou
+  `BRAVE_API_KEY`). Era o único até a v0.4.0.
+* **SearXNG** self-hosted — sem chave. Aponte `agent.web_search.searxng_url`
+  (ou `GARRAIA_SEARXNG_URL`) para a instância, ex.: `http://127.0.0.1:8081`.
+  A instância precisa de `json` em `search.formats` (`settings.yml`); sem
+  isso ela responde 403 e a tool diz exatamente isso.
+
+Sem `agent.web_search.backend`, o gateway usa Brave se houver chave, senão
+SearXNG se houver URL, senão a tool **não é registrada**. Com `backend`
+explícito, só aquele — e se faltar a chave/URL dele, a tool fica de fora e
+`garra config check` avisa.
+
+A URL do SearXNG passa pelo guard de SSRF com faixas privadas liberadas
+(loopback e LAN são o caso de uso); link-local, CGNAT e a metadata de nuvem
+continuam recusados, e a conexão é pinada nos endereços validados.
 
 |Propriedade|Valor|
 |-|-|
 |Timeout|15 segundos|
 |Resultados padrão|5|
 |Resultados máximos|10|
-|Requer|BRAVE\_API\_KEY|
+|Requer|`BRAVE_API_KEY` **ou** `agent.web_search.searxng_url`|
 
 **Entrada:**
 

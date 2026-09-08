@@ -8,6 +8,7 @@ import '../runtime/runtime_providers.dart';
 import '../theme/garra_theme.dart';
 import '../theme/garra_tokens.dart';
 import '../widgets/garra_bottom_nav.dart';
+import '../widgets/copy_to_clipboard.dart';
 import '../widgets/garra_page.dart';
 import 'memory_screen.dart' show SectionHeader;
 
@@ -99,26 +100,48 @@ class ActivityScreen extends ConsumerWidget {
                 style: garraText(size: 12, color: GarraColors.warn),
               ),
             ),
-            data: (lines) => Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: GarraColors.bgElevated,
-                borderRadius: BorderRadius.circular(GarraRadius.card),
-                border: Border.all(color: GarraColors.panelBorder),
-              ),
-              child: SelectableText(
-                lines.isEmpty
-                    ? '(empty)'
-                    : lines.reversed.take(80).toList().reversed.join('\n'),
-                style: garraText(
-                  size: 11,
-                  mono: true,
-                  color: GarraColors.textMuted,
-                  height: 1.4,
+            data: (lines) {
+              final text = lines.isEmpty
+                  ? '(empty)'
+                  : lines.reversed.take(80).toList().reversed.join('\n');
+              return Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                decoration: BoxDecoration(
+                  color: GarraColors.bgElevated,
+                  borderRadius: BorderRadius.circular(GarraRadius.card),
+                  border: Border.all(color: GarraColors.panelBorder),
                 ),
-              ),
-            ),
+                child: Stack(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(right: 28),
+                      child: SelectableText(
+                        text,
+                        style: garraText(
+                          size: 11,
+                          mono: true,
+                          color: GarraColors.textMuted,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      top: -6,
+                      right: -6,
+                      child: CopyIconButton(
+                        key: const ValueKey('copy-log'),
+                        text: text,
+                        tooltip: 'Copiar log',
+                        toast: 'Log copiado',
+                        color: GarraColors.textMuted,
+                        size: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         ],
       ),

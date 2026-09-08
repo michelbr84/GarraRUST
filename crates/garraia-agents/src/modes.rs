@@ -725,6 +725,7 @@ impl ModeProfile {
                     "repo_search".to_string(),
                     "list_dir".to_string(),
                     "bash".to_string(),
+                    "run_tests".to_string(),
                 ],
                 denied: vec!["file_write".to_string()],
                 required: vec![],
@@ -795,6 +796,7 @@ impl ModeProfile {
                     "git_diff".to_string(),
                     "repo_search".to_string(),
                     "list_dir".to_string(),
+                    "code_review".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
