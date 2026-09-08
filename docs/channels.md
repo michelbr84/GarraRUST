@@ -155,6 +155,54 @@ channels:
 - Message verification
 - Allowlist management
 
+## LINE
+
+Webhook-driven, like WhatsApp: the gateway exposes `POST /webhooks/line` and
+LINE calls it. There is no outbound connection to keep alive.
+
+### Setup
+
+1. Create a Messaging API channel in the [LINE Developers Console].
+2. Copy the **Channel access token** (long-lived) and the **Channel secret**.
+3. Point the channel's Webhook URL at `https://<your-gateway>/webhooks/line`
+   and enable "Use webhook".
+
+```yaml
+channels:
+  line:
+    type: line
+    enabled: true
+    channel_access_token: "YOUR_CHANNEL_ACCESS_TOKEN"
+    channel_secret: "YOUR_CHANNEL_SECRET"
+```
+
+Both values can come from the environment instead —
+`LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` — which is the usual
+choice, since they are secrets. `garra config check` reports either one
+missing.
+
+### Features
+
+- Webhook-based integration; replies use the event's reply token
+- HMAC-SHA256 signature verification on every request
+- Allowlist management and 6-digit pairing, same as the other channels
+
+### The channel secret is mandatory
+
+Without `channel_secret` the channel is **refused at boot**, not started in a
+degraded mode. The `X-Line-Signature` header is the only proof that a POST to
+`/webhooks/line` came from LINE and not from whoever found the URL, so a
+channel that cannot check it would accept forged messages as real ones.
+
+Every rejection answers the same `403` with the same body, on purpose: a
+different message per failure mode would tell whoever is probing how close
+they got. The reason goes to the log only.
+
+If more than one LINE channel is configured, the signature — not any field in
+the request body — decides which one a webhook belongs to.
+
+[LINE Developers Console]: https://developers.line.biz/console/
+
 ## iMessage (macOS only)
 
 ### Setup

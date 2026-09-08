@@ -668,6 +668,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
+    validate_line(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
 
@@ -693,6 +694,13 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
             "discord" => Some("DISCORD_BOT_TOKEN"),
             "slack" => Some("SLACK_BOT_TOKEN"),
             "whatsapp" => Some("WHATSAPP_ACCESS_TOKEN"),
+            // O LINE tem token, mas com nome proprio (`channel_access_token`)
+            // e um segundo segredo obrigatorio (`channel_secret`), que esta
+            // checagem generica nao conhece: ela procura so
+            // `bot_token`/`access_token`/`app_token` para decidir se ha
+            // credencial inline, e concluiria "sem token" para um canal LINE
+            // corretamente configurado. Os dois campos ficam em
+            // `validate_line`.
             _ => None,
         };
         if let Some(var) = env_var
@@ -1041,6 +1049,61 @@ fn validate_auth(
              GARRAIA_VAULT_PASSPHRASE (vault) and GARRAIA_JWT_SECRET (auth)"
                 .into(),
         );
+    }
+}
+
+/// Os dois segredos do canal LINE (#1050).
+///
+/// A checagem generica de token acima nao alcanca o LINE: ela procura
+/// `bot_token`/`access_token`/`app_token`, e os campos do LINE sao
+/// `channel_access_token` e `channel_secret`. Sem esta funcao, um canal LINE
+/// pela metade sairia do `config check` sem um unico achado.
+///
+/// Os dois campos nao sao equivalentes, e a mensagem diz qual e qual:
+///
+/// - sem `channel_access_token` o canal nao consegue **responder** (o token e
+///   o bearer da Messaging API);
+/// - sem `channel_secret` o canal nao e sequer construido — `LineChannel::new`
+///   o recusa (#1051), porque sem o segredo nao ha como distinguir um webhook
+///   do LINE de um POST forjado por quem descobriu a URL.
+fn validate_line(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "line" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env, consequencia) in [
+            (
+                "channel_access_token",
+                "LINE_CHANNEL_ACCESS_TOKEN",
+                "the channel will be skipped at boot and cannot reply",
+            ),
+            (
+                "channel_secret",
+                "LINE_CHANNEL_SECRET",
+                "the channel will be REFUSED at boot: without it a forged POST to /webhooks/line is indistinguishable from a real one",
+            ),
+        ] {
+            let configurado_inline = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            if configurado_inline || std::env::var_os(env).is_some() {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "line channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
     }
 }
 
@@ -2469,6 +2532,104 @@ mod tests {
         assert!(
             !findings.iter().any(|f| f.field == "gateway.host"),
             "api_key + TLS on 0.0.0.0 must not warn: {findings:?}"
+        );
+    }
+    // ─── #1050: os dois segredos do canal LINE ────────────────────────────
+
+    fn cfg_line(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "ln".into(),
+            crate::model::ChannelConfig {
+                channel_type: "line".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    fn mensagens_de_line(cfg: &AppConfig) -> Vec<String> {
+        achados_de(cfg, "channels.ln")
+            .into_iter()
+            .map(|f| f.message)
+            .collect()
+    }
+
+    /// A checagem generica procura `bot_token`/`access_token`/`app_token`; os
+    /// campos do LINE sao outros dois. Sem `validate_line`, um canal LINE sem
+    /// nenhuma credencial saia do `config check` limpo.
+    #[test]
+    fn line_sem_token_nem_segredo_avisa_dos_dois() {
+        let msgs = mensagens_de_line(&cfg_line(Some(true), serde_json::json!({})));
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_access_token")),
+            "esperava aviso de channel_access_token: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_secret")),
+            "esperava aviso de channel_secret: {msgs:?}"
+        );
+    }
+
+    /// O aviso do segredo diz a consequencia certa: o canal e **recusado**
+    /// (#1051), nao apenas pulado, e a razao e que sem ele um POST forjado e
+    /// indistinguivel de um real.
+    #[test]
+    fn o_aviso_do_channel_secret_diz_que_o_canal_e_recusado() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({"channel_access_token": "tok"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so o segredo deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("REFUSED") && msgs[0].contains("forged"),
+            "o aviso tem de explicar o que se perde: {}",
+            msgs[0]
+        );
+    }
+
+    #[test]
+    fn line_completo_nao_avisa() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({
+                "channel_access_token": "tok",
+                "channel_secret": "seg",
+            }),
+        ));
+        assert!(
+            msgs.is_empty(),
+            "canal completo nao deveria gerar achado: {msgs:?}"
+        );
+    }
+
+    /// Espaco em branco conta como ausente — a mesma regra que
+    /// `LineChannel::new` e `verify_signature` usam (#1059). Se o check
+    /// aceitasse `"   "`, ele diria "ok" para exatamente a config que o boot
+    /// recusa.
+    #[test]
+    fn line_com_segredo_em_branco_conta_como_ausente() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({"channel_access_token": "tok", "channel_secret": "   "}),
+        ));
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_secret")),
+            "segredo em branco deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn line_desabilitado_nao_avisa() {
+        let msgs = mensagens_de_line(&cfg_line(Some(false), serde_json::json!({})));
+        assert!(
+            msgs.is_empty(),
+            "canal desabilitado nao deveria gerar achado: {msgs:?}"
         );
     }
 }

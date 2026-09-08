@@ -43,7 +43,9 @@ default = []
 discord = ["dep:serenity", "dep:poise", "dep:native-tls"]
 google_chat = []
 irc = []
-line = ["dep:hmac", "dep:sha2", "dep:subtle", "dep:base64"]
+# `dep:axum` entra aqui pelo mesmo motivo do `whatsapp`: o LINE e um canal
+# push, e o handler do webhook (`line_channel::webhook`) e um handler Axum.
+line = ["dep:hmac", "dep:sha2", "dep:subtle", "dep:base64", "dep:axum"]
 matrix = []
 openclaw = ["dep:tokio-tungstenite", "dep:futures"]
 signal = []
@@ -53,3 +55,9 @@ telegram = ["dep:teloxide"]
 voice = []
 whatsapp = ["dep:axum"]
 imessage = ["dep:rusqlite", "dep:dirs"]
+
+[dev-dependencies]
+# `ServiceExt::oneshot` para exercitar o handler do webhook do LINE como
+# rota de verdade (status + corpo), sem subir servidor.
+tower = { workspace = true, features = ["util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
