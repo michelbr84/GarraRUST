@@ -6,9 +6,14 @@
   cru para o modelo. `POST /api/sessions/{id}/messages` despacha pelo registry
   quando o texto comeca com um nome registrado (desconhecido segue ao modelo,
   como antes; papel `User`, entao comandos de owner respondem "permission
-  denied"). `CommandContext` ganha `session_id`, e os comandos de sessao
-  (`/clear`, `/mode`, `/goal`) usam o id do HTTP quando existe. `GET
-  /api/slash-commands` passa a listar o registry em vez de uma tabela paralela
-  de dois itens — acabou a divergencia com `/api/capabilities`. No app,
+  denied"; `/start`, que reivindica o dono da allowlist do Telegram, nem e
+  aceito pelo HTTP). `CommandContext` ganha `session_id`, e os comandos de
+  sessao (`/clear`, `/mode`, `/goal`) usam o id do HTTP quando existe. `GET
+  /api/slash-commands` e o `commands` de `/api/capabilities` passam a listar o
+  registry no papel do HTTP, em vez de uma tabela paralela de dois itens e da
+  lista completa com comandos de owner. O dispatcher solta o lock do registry
+  antes de executar (o `/help` le o registry de novo; um read segurado sobre
+  outro read trava assim que um writer entra na fila) e `/model` valida o nome.
+  No app,
   `SlashSuggestions` mostra chips dos comandos que casam com o prefixo digitado
   e os chips da tela Skills abrem o chat com o comando pronto.

@@ -127,11 +127,14 @@ pub async fn capabilities_handler(State(state): State<SharedState>) -> Json<Capa
         .map(|s| s.to_string())
         .collect();
 
-    let commands: Vec<String> = state
-        .command_registry
-        .read()
-        .map(|r| r.list().into_iter().map(|(n, _d)| n.to_string()).collect())
-        .unwrap_or_default();
+    // The same list `POST /api/sessions/{id}/messages` dispatches and
+    // `GET /api/slash-commands` advertises — one role, one truth. Listing
+    // owner commands here that the HTTP caller cannot run was the old kind
+    // of lie in a third place (review of #1040).
+    let commands: Vec<String> = crate::api::registry_commands_for_http(&state)
+        .into_iter()
+        .map(|(n, _d)| n)
+        .collect();
 
     // Plan 0117 lists four canonical skins. The Settings Registry (PR-8)
     // can later persist user-defined skins server-side.

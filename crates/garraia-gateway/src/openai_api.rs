@@ -457,6 +457,13 @@ pub async fn chat_completions(
 
     // GAR-184: Resolve slash commands (MCP prompts + /help).
     // /mode is excluded here — it is already handled by the `final_mode` logic above.
+    //
+    // Only `/help`, `/mode` and MCP prompts are handled on this path. The
+    // registry commands (`/clear`, `/model`, `/goal`, …) are dispatched by
+    // `POST /api/sessions/{id}/messages` (`api::dispatch_slash_command`),
+    // not by the OpenAI-compatible endpoint: a client that speaks this
+    // protocol expects the model to answer, and a `/clear` here reaches the
+    // model as text. Said here so nobody debugs it as a bug (#1040 review).
     if new_user_text.starts_with('/')
         && let Some(resolved) = crate::slash_commands::resolve(
             &new_user_text,

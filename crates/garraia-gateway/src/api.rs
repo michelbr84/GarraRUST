@@ -28,9 +28,25 @@ pub fn registry_commands_for_http(state: &SharedState) -> Vec<(String, String)> 
     registry
         .list_for_role(garraia_channels::Role::User)
         .into_iter()
+        .filter(|(n, _)| !HTTP_HIDDEN.contains(n))
         .map(|(n, d)| (n.to_string(), d.to_string()))
         .collect()
 }
+
+/// Registry commands that mean nothing over HTTP and are neither listed nor
+/// dispatched there.
+///
+/// `/start` is Telegram onboarding: on a fresh install it **claims the
+/// bot's owner** for whoever sends it first. Over HTTP the caller's id is a
+/// synthetic `api:<session>` that no channel will ever present, so a LAN
+/// request could take the owner slot and lock the real owner out — the
+/// blocker the security audit of #1040 found. The closure itself refuses
+/// callers with a `session_id` too; this list is the outer wall.
+const HTTP_HIDDEN: &[&str] = &["start"];
+
+/// What `/start` gets over HTTP instead of the registry.
+const START_OVER_HTTP: &str =
+    "/start is Telegram onboarding. Here you are already talking to Garra — just send a message.";
 
 /// A slash command the registry handled instead of the agent.
 pub struct SlashReply {
@@ -69,10 +85,22 @@ pub fn dispatch_slash_command(
         return None;
     }
 
-    let Ok(registry) = state.command_registry.read() else {
-        return None;
+    if HTTP_HIDDEN.contains(&name) {
+        return Some(SlashReply {
+            command: name.to_string(),
+            content: START_OVER_HTTP.to_string(),
+        });
+    }
+
+    // Take a handle and release the lock before running: `/help` reads the
+    // registry again, and a read held across a read is a deadlock the moment
+    // a writer queues up (see `CommandRegistry::resolve`).
+    let cmd = {
+        let Ok(registry) = state.command_registry.read() else {
+            return None;
+        };
+        registry.resolve(text)?
     };
-    registry.get(name)?;
 
     let args: Vec<String> = text
         .split_whitespace()
@@ -90,7 +118,7 @@ pub fn dispatch_slash_command(
         session_id: Some(session_id.to_string()),
     };
 
-    let content = match registry.dispatch(&ctx) {
+    let content = match garraia_channels::CommandRegistry::run(cmd.as_ref(), &ctx) {
         Ok(reply) => reply,
         Err(err) => err.to_string(),
     };
@@ -1091,5 +1119,41 @@ mod slash_dispatch_tests {
         assert!(names.iter().any(|n| n == "mode"));
         assert!(!names.iter().any(|n| n == "pair"), "{names:?}");
         assert!(!names.iter().any(|n| n == "config"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "start"), "{names:?}");
+    }
+
+    /// Bloqueador da auditoria do #1040: `/start` pelo HTTP nao pode virar
+    /// dono da allowlist do Telegram. Nem chega ao registry, e a allowlist
+    /// continua sem dono.
+    #[test]
+    fn start_over_http_never_claims_the_owner() {
+        let st = state_with_commands();
+        assert!(
+            st.allowlist.lock().unwrap().needs_owner(),
+            "instalacao nova: sem dono"
+        );
+        let reply = dispatch_slash_command(&st, "s1", "/start").expect("capturado");
+        assert_eq!(reply.command, "start");
+        assert!(reply.content.contains("Telegram"), "{}", reply.content);
+        let list = st.allowlist.lock().unwrap();
+        assert!(list.needs_owner(), "a allowlist ganhou dono pelo HTTP");
+        assert!(!list.is_owner("api:s1"));
+    }
+
+    /// `/model` recusa lixo (auditoria do #1040, S-2) e aceita nomes reais.
+    #[test]
+    fn model_name_is_validated() {
+        let st = state_with_commands();
+        let bad = dispatch_slash_command(&st, "s1", "/model ../../etc/passwd").expect("capturado");
+        assert!(bad.content.contains("model name"), "{}", bad.content);
+        assert!(st.channel_models.get("s1").is_none());
+
+        let ok =
+            dispatch_slash_command(&st, "s1", "/model qwen2.5:7b-instruct").expect("capturado");
+        assert!(ok.content.contains("qwen2.5:7b-instruct"), "{}", ok.content);
+        assert_eq!(
+            st.channel_models.get("s1").map(|m| m.clone()),
+            Some("qwen2.5:7b-instruct".to_string())
+        );
     }
 }

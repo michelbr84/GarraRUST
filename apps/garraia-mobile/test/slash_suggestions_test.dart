@@ -61,7 +61,7 @@ void main() {
     expect(find.byType(ActionChip), findsNothing);
 
     ctrl.text = '/he';
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.text('/help'), findsOneWidget);
     expect(find.text('/health'), findsOneWidget);
     expect(find.text('/mode'), findsNothing);

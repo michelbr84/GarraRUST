@@ -58,6 +58,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   @override
+  void didUpdateWidget(ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // `/chat?draft=a` then `/chat?draft=b` reuses this State: without this,
+    // the second draft was dropped on the floor (review of #1040).
+    final draft = widget.initialDraft;
+    if (draft != null && draft.isNotEmpty && draft != oldWidget.initialDraft) {
+      _inputCtrl.value = TextEditingValue(
+        text: draft,
+        selection: TextSelection.collapsed(offset: draft.length),
+      );
+    }
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _inputCtrl.dispose();
