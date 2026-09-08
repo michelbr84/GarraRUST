@@ -27,6 +27,9 @@ tokio-tungstenite = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 jsonwebtoken = { workspace = true, optional = true }
+# Montagem de URL do Bot Framework: `Url::join` percent-encoda o segmento,
+# entao um `conversation_id` vindo do corpo nao sobe no caminho.
+url = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 dirs = { version = "6", optional = true }
 
@@ -55,7 +58,10 @@ matrix = []
 openclaw = ["dep:tokio-tungstenite", "dep:futures"]
 signal = []
 slack = ["dep:tokio-tungstenite", "dep:futures"]
-teams = ["webhook-jwt"]
+# `garraia-common/ssrf` porque o `serviceUrl` — o host para onde a resposta
+# vai, com o bearer do bot junto — vem do corpo da atividade. E exatamente o
+# caso da regra 14 do CLAUDE.md.
+teams = ["webhook-jwt", "garraia-common/ssrf", "dep:url"]
 telegram = ["dep:teloxide"]
 voice = []
 whatsapp = ["dep:axum"]

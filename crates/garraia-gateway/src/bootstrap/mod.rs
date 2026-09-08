@@ -18,6 +18,7 @@ mod google_chat;
 #[cfg(target_os = "macos")]
 mod imessage;
 mod slack;
+mod teams;
 mod telegram;
 mod whatsapp;
 
@@ -43,6 +44,11 @@ pub use whatsapp::build_whatsapp_channels;
 /// vira estado da rota `/webhooks/google-chat`, nao entrada do
 /// `ChannelRegistry`.
 pub use google_chat::build_google_chat_channels;
+
+/// #1050: o canal Microsoft Teams. Canal push, e o unico cujo destino de
+/// saida vem do corpo da requisicao — ver `bootstrap::teams` e
+/// `garraia_channels::teams::auth`.
+pub use teams::build_teams_channels;
 
 // Slice 10.f (GAR-480): iMessage wiring extracted to `bootstrap::imessage` (macOS-only).
 #[cfg(target_os = "macos")]
