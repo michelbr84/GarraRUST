@@ -3,7 +3,9 @@
 //! Provides a `GoogleChatChannel` struct that implements the `Channel` trait,
 //! communicating via Google Chat webhooks and REST API.
 
+pub mod auth;
 pub mod config;
+pub mod webhook;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -45,17 +47,51 @@ pub struct GoogleChatChannel {
     client: Client,
     status: ChannelStatus,
     on_message: GoogleChatOnMessageFn,
+    /// Chaves publicas do Google, buscadas sob demanda e renovadas sozinhas.
+    /// Uma por canal: sao baratas e evitam estado global.
+    jwks: crate::jwks::JwksCache,
 }
 
 impl GoogleChatChannel {
     /// Create a new `GoogleChatChannel` from config and callback.
-    pub fn new(config: GoogleChatConfig, on_message: GoogleChatOnMessageFn) -> Self {
-        Self {
+    ///
+    /// Recusa a construcao quando `audience` esta vazia (#1050). Sem ela nao
+    /// da para distinguir um webhook desta app de um webhook legitimo de
+    /// **outra** app do Google Chat: todos os tokens sao assinados pela mesma
+    /// chave, e o `aud` e a unica coisa que diz para quem o token foi
+    /// emitido. Um canal que nao consegue fazer essa distincao aceitaria um
+    /// token encaminhado por qualquer outra app — e nao deve existir nem por
+    /// engano.
+    ///
+    /// E aqui, e nao no bootstrap, pelo mesmo motivo do `LineChannel::new`:
+    /// assim nenhum wiring futuro consegue pular a checagem, porque o
+    /// compilador obriga a tratar o erro.
+    pub fn new(config: GoogleChatConfig, on_message: GoogleChatOnMessageFn) -> Result<Self> {
+        if config.audience.trim().is_empty() {
+            return Err(Error::Channel(
+                "google chat: audience e obrigatoria para verificar o token do webhook".into(),
+            ));
+        }
+        Ok(Self {
             config,
             client: Client::new(),
             status: ChannelStatus::Disconnected,
             on_message,
-        }
+            jwks: crate::jwks::JwksCache::new(auth::JWK_URL),
+        })
+    }
+
+    /// Nome da secao de config que originou este canal, para log.
+    pub fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    /// Verifica um token de webhook contra a `audience` deste canal.
+    ///
+    /// O motivo da recusa serve para log; a resposta HTTP e 401 em todos os
+    /// casos, sem distinguir qual deles ocorreu.
+    pub async fn verificar_token(&self, token: &str) -> std::result::Result<(), auth::AuthError> {
+        auth::verificar_token(&self.jwks, token, &self.config.audience).await
     }
 
     /// Access the current config.
@@ -203,8 +239,10 @@ mod tests {
             ),
             service_account_key_path: None,
             service_account_token: String::new(),
+            audience: "1234567890".into(),
+            name: "gchat-teste".into(),
         };
-        let channel = GoogleChatChannel::new(config, on_msg);
+        let channel = GoogleChatChannel::new(config, on_msg).expect("audience nao vazia");
         assert_eq!(channel.channel_type(), "google_chat");
         assert_eq!(channel.display_name(), "Google Chat");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
@@ -219,8 +257,10 @@ mod tests {
             webhook_url: Some("https://example.com/webhook".into()),
             service_account_key_path: None,
             service_account_token: String::new(),
+            audience: "1234567890".into(),
+            name: "gchat-teste".into(),
         };
-        let channel = GoogleChatChannel::new(config, on_msg);
+        let channel = GoogleChatChannel::new(config, on_msg).expect("audience nao vazia");
         let msg = Message::text(
             SessionId::from_string("s"),
             ChannelId::from_string("c"),
@@ -247,8 +287,10 @@ mod tests {
             webhook_url: None,
             service_account_key_path: None,
             service_account_token: String::new(),
+            audience: "1234567890".into(),
+            name: "gchat-teste".into(),
         };
-        let channel = GoogleChatChannel::new(config, on_msg);
+        let channel = GoogleChatChannel::new(config, on_msg).expect("audience nao vazia");
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(channel.send_via_webhook("test"));
         assert!(result.is_err());
@@ -263,8 +305,10 @@ mod tests {
             webhook_url: Some("https://example.com".into()),
             service_account_key_path: None,
             service_account_token: String::new(),
+            audience: "1234567890".into(),
+            name: "gchat-teste".into(),
         };
-        let channel = GoogleChatChannel::new(config, on_msg);
+        let channel = GoogleChatChannel::new(config, on_msg).expect("audience nao vazia");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
     }
 }
