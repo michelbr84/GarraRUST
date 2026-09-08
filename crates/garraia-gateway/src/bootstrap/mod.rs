@@ -16,6 +16,7 @@ mod config;
 mod discord;
 #[cfg(target_os = "macos")]
 mod imessage;
+mod signal;
 mod slack;
 mod telegram;
 mod whatsapp;
@@ -41,6 +42,9 @@ pub use whatsapp::build_whatsapp_channels;
 // Slice 10.f (GAR-480): iMessage wiring extracted to `bootstrap::imessage` (macOS-only).
 #[cfg(target_os = "macos")]
 pub use imessage::build_imessage_channels;
+
+/// #1050: o canal Signal, que tinha `impl Channel` e guard de URL e nenhum call-site.
+pub use signal::build_signal_channels;
 
 // Slice 10.g (GAR-691): Telegram wiring + voice handler extracted to `bootstrap::telegram`.
 pub use telegram::build_telegram_channels;

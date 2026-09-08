@@ -14,7 +14,7 @@ use crate::admin;
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
     build_agent_runtime, build_channels, build_discord_channels, build_mcp_tools,
-    build_slack_channels, build_telegram_channels, build_whatsapp_channels,
+    build_signal_channels, build_slack_channels, build_telegram_channels, build_whatsapp_channels,
     warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
@@ -797,6 +797,23 @@ impl GatewayServer {
                 Ok(()) => state.channels.write().await.register(channel),
                 Err(e) => {
                     warn!("telegram channel failed to connect: {e}; retrying in background");
+                    spawn_channel_connect_retry(Arc::clone(&state), channel);
+                }
+            }
+        }
+
+        // Start configured Signal channels (#1050).
+        //
+        // signal-cli e um daemon local que o operador sobe por fora, entao
+        // uma falha de conexao no boot e comum e nao deve ser terminal — vai
+        // pelo mesmo `spawn_channel_connect_retry` do Telegram (#928), com o
+        // backoff exponencial, em vez do `warn!` de uma linha do Discord.
+        let signal_channels = build_signal_channels(&state.config, &state);
+        for mut channel in signal_channels {
+            match channel.connect().await {
+                Ok(()) => state.channels.write().await.register(channel),
+                Err(e) => {
+                    warn!("signal channel failed to connect: {e}; retrying in background");
                     spawn_channel_connect_retry(Arc::clone(&state), channel);
                 }
             }

@@ -1192,6 +1192,7 @@ const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
     ("slack", "Slack", true),
     ("whatsapp", "WhatsApp", true),
     ("imessage", "iMessage", false),
+    ("signal", "Signal", false),
     ("openclaw", "OpenClaw", false),
     ("mcp", "MCP", false),
     ("cli", "CLI", false),
