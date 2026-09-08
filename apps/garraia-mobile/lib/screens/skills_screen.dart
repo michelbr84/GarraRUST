@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../runtime/models.dart';
@@ -14,10 +15,6 @@ part 'skills_screen.g.dart';
 @riverpod
 Future<List<SkillSummary>> learningSkills(Ref ref) =>
     requireConnection(ref).skills();
-
-@riverpod
-Future<List<String>> slashCommands(Ref ref) =>
-    requireConnection(ref).slashCommands();
 
 /// Extend what Garra can do — learned skills (`/api/learning/skills`) and
 /// the slash-command registry (`/api/slash-commands`).
@@ -68,11 +65,19 @@ class SkillsScreen extends ConsumerWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
+                  // Tapping a command opens the chat with it typed in,
+                  // caret after a trailing space, ready for arguments.
                   for (final c in list)
-                    Chip(
-                      label: Text(
-                        '/${c.replaceFirst('/', '')}',
-                        style: garraText(size: 12.5, mono: true),
+                    Tooltip(
+                      message: c.description,
+                      child: ActionChip(
+                        label: Text(
+                          '/${c.name}',
+                          style: garraText(size: 12.5, mono: true),
+                        ),
+                        onPressed: () => context.go(
+                          '/chat?draft=${Uri.encodeComponent('/${c.name} ')}',
+                        ),
                       ),
                     ),
                 ],

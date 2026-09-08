@@ -2,10 +2,6 @@
 
 <p align="right"><a href="README.md">🇺🇸 English</a> · <strong>🇧🇷 Português</strong></p>
 
-<p align="center">
-  <img src="assets/logo.png" alt="GarraIA" width="280" />
-</p>
-
 <h1 align="center">GarraIA</h1>
 
 <p align="center">
