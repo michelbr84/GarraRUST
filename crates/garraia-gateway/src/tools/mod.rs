@@ -7,5 +7,7 @@
 //! `garraia_agents::Tool` here instead and close over `Arc<AppState>`.
 
 pub mod channel_send_tool;
+pub mod garra_status_tool;
 
 pub use channel_send_tool::TelegramSendTool;
+pub use garra_status_tool::GarraStatusTool;

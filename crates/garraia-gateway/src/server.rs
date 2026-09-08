@@ -651,6 +651,15 @@ impl GatewayServer {
 
         let state = Arc::new(state);
 
+        // `garra_status` reads the live `AppState` (provider, model, tools,
+        // features, channels, session mode), so it can only exist once the
+        // state is shared. Unconditional: every runtime should be able to
+        // describe itself — the v0.4.0 field report was a Garra on a phone
+        // saying it "cannot inspect its own runtime", and nothing let it.
+        state
+            .agents
+            .register_tool(Box::new(crate::tools::GarraStatusTool::new(&state)));
+
         // Issue #921: the proactive-send tool needs `AppState.channels` and the
         // session store, so it can only be built once the state is shared —
         // which is exactly why it lives in this crate and not in
