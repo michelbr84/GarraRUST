@@ -43,6 +43,40 @@ pub const ISSUER: &str = "https://api.botframework.com";
 /// valor aparece, e esta constante e o que muda.
 pub const JWK_URL: &str = "https://login.botframework.com/v1/.well-known/keys";
 
+/// Uma `serviceUrl` que veio de uma **claim assinada** e ja foi conferida
+/// contra o corpo.
+///
+/// Existe para tornar a invariante impossivel de violar em vez de apenas
+/// documentada. So [`verificar_token`] constroi este tipo, e
+/// [`super::TeamsChannel::send_activity`] so aceita ele — entao nao ha como
+/// mandar a resposta (com o bearer do bot junto) para uma URL que veio do
+/// corpo sem passar pela verificacao. Com um `&str` no lugar, bastava alguem
+/// ler `serviceUrl` do payload e passar adiante; foi exatamente o que a
+/// implementacao de `Channel::send_message` fazia.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceUrlVerificada(String);
+
+impl ServiceUrlVerificada {
+    /// A URL. Deliberadamente sem `From<String>` e sem construtor publico:
+    /// o unico jeito de obter uma e verificando um token.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// So para teste. Fora de `cfg(test)` nao existe construtor nenhum
+    /// alem do interno de [`verificar_token`].
+    #[cfg(test)]
+    pub fn para_teste(url: impl Into<String>) -> Self {
+        Self(url.into())
+    }
+}
+
+impl std::fmt::Display for ServiceUrlVerificada {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Por que um token foi recusado.
 ///
 /// Para log do operador. **Nao** vai para a resposta HTTP: de fora, todos os
@@ -119,7 +153,7 @@ pub async fn verificar_token(
     jwks: &JwksCache,
     token: &str,
     app_id: &str,
-) -> Result<String, AuthError> {
+) -> Result<ServiceUrlVerificada, AuthError> {
     if app_id.trim().is_empty() {
         return Err(AuthError::SemAppId);
     }
@@ -168,7 +202,7 @@ fn verificar_com_chave(
     token: &str,
     chave: &DecodingKey,
     app_id: &str,
-) -> Result<String, AuthError> {
+) -> Result<ServiceUrlVerificada, AuthError> {
     let dados = decode::<Claims>(token, chave, &validacao_para(app_id))
         .map_err(|_| AuthError::TokenInvalido)?;
 
@@ -176,6 +210,7 @@ fn verificar_com_chave(
         .claims
         .serviceurl
         .filter(|s| !s.trim().is_empty())
+        .map(ServiceUrlVerificada)
         .ok_or(AuthError::SemServiceUrl)
 }
 

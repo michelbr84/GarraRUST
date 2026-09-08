@@ -19,7 +19,7 @@ use tracing::info;
 use crate::traits::{Channel, ChannelStatus};
 #[cfg(test)]
 use garraia_common::{ChannelId, MessageDirection, SessionId, UserId};
-use garraia_common::{Error, Message, MessageContent, Result};
+use garraia_common::{Error, Message, Result};
 
 pub use config::TeamsConfig;
 
@@ -57,7 +57,6 @@ pub struct TeamsChannel {
 
 impl TeamsChannel {
     /// Create a new `TeamsChannel` from config and callback.
-    /// Create a new `TeamsChannel` from config and callback.
     ///
     /// Recusa a construcao quando `app_id` esta vazio (#1050). O `app_id` e
     /// a audiencia esperada no token do webhook: sem ela nao da para
@@ -94,7 +93,7 @@ impl TeamsChannel {
     pub async fn verificar_token(
         &self,
         token: &str,
-    ) -> std::result::Result<String, auth::AuthError> {
+    ) -> std::result::Result<auth::ServiceUrlVerificada, auth::AuthError> {
         auth::verificar_token(&self.jwks, token, &self.config.app_id).await
     }
 
@@ -122,6 +121,16 @@ impl TeamsChannel {
     }
 
     /// Obtain an OAuth2 access token from Azure AD using client credentials.
+    ///
+    /// Sem `garraia_common::ssrf` de proposito: o host e constante
+    /// (`login.microsoftonline.com`) e so o `tenant_id`, que vem da config
+    /// estatica, entra no caminho — nenhum dos tres casos da regra 14
+    /// (request, config editavel por request, tool call de LLM).
+    ///
+    /// **Isso muda se o `PATCH /api/settings` passar a persistir config de
+    /// canal (plan 0121a).** Nesse dia o `tenant_id` vira "config editavel
+    /// por request" e este call site precisa de `vet_url` + `pinned_client`
+    /// com `host_allowlist: &["login.microsoftonline.com"]`.
     pub async fn authenticate(&mut self) -> Result<()> {
         let url = format!(
             "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
@@ -184,7 +193,7 @@ impl TeamsChannel {
     /// por isso o `Url::join`, que percent-encoda, em vez de `format!`.
     pub async fn send_activity(
         &self,
-        service_url: &str,
+        service_url: &auth::ServiceUrlVerificada,
         conversation_id: &str,
         text: &str,
     ) -> Result<()> {
@@ -192,7 +201,7 @@ impl TeamsChannel {
             Error::Channel("teams: not authenticated, call authenticate() first".into())
         })?;
 
-        let base = format!("{}/", service_url.trim_end_matches('/'));
+        let base = format!("{}/", service_url.as_str().trim_end_matches('/'));
         let base = url::Url::parse(&base)
             .map_err(|e| Error::Channel(format!("teams: serviceUrl invalida: {e}")))?;
         // `join` percent-encoda o segmento, entao um `conversation_id` com
@@ -291,30 +300,26 @@ impl Channel for TeamsChannel {
         Ok(())
     }
 
-    async fn send_message(&self, message: &Message) -> Result<()> {
-        let service_url = message
-            .metadata
-            .get("teams_service_url")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Channel("missing teams_service_url in metadata".into()))?;
-
-        let conversation_id = message
-            .metadata
-            .get("teams_conversation_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Channel("missing teams_conversation_id in metadata".into()))?;
-
-        let text = match &message.content {
-            MessageContent::Text(t) => t.clone(),
-            _ => {
-                return Err(Error::Channel(
-                    "only text messages are supported for teams send".into(),
-                ));
-            }
-        };
-
-        self.send_activity(service_url, conversation_id, &text)
-            .await
+    /// **Nao suportado, e de proposito.**
+    ///
+    /// Esta implementacao lia `teams_service_url` do `metadata` e o passava
+    /// para `send_activity` sem confronta-lo com a claim assinada do token —
+    /// ou seja, pulava a primeira das duas barreiras que protegem o bearer
+    /// do bot, deixando so o guard SSRF. O caminho era inalcancavel hoje (o
+    /// Teams e canal push e nao entra no `ChannelRegistry`), mas era um vetor
+    /// de regressao esperando qualquer wiring futuro.
+    ///
+    /// Agora o tipo impede: `send_activity` so aceita
+    /// [`auth::ServiceUrlVerificada`], que so `verificar_token` produz. Uma
+    /// resposta do Teams **tem** de nascer de um webhook verificado, entao o
+    /// caminho generico do `Channel` nao tem como ser correto aqui.
+    async fn send_message(&self, _message: &Message) -> Result<()> {
+        Err(Error::Channel(
+            "teams: send_message nao e suportado — a resposta so pode ir para a \
+             serviceUrl assinada do token que originou o turno; use o fluxo do \
+             webhook (`teams::webhook`), que chama `send_activity` com ela"
+                .into(),
+        ))
     }
 
     fn status(&self) -> ChannelStatus {
@@ -346,6 +351,36 @@ mod tests {
         ch
     }
 
+    /// **O achado da auditoria.** `send_message` lia a `serviceUrl` do
+    /// `metadata` e a passava adiante sem confronta-la com a claim assinada,
+    /// pulando a primeira das duas barreiras. Era inalcancavel hoje, mas
+    /// bastava alguem registrar o canal no `ChannelRegistry` para virar
+    /// exfiltracao do bearer do bot.
+    ///
+    /// A defesa real nao e este teste, e o tipo: `send_activity` so aceita
+    /// `ServiceUrlVerificada`, que so `verificar_token` produz. Este teste
+    /// afirma o que sobra — que o caminho generico recusa em vez de tentar
+    /// adivinhar.
+    #[tokio::test]
+    async fn send_message_recusa_porque_nao_ha_url_verificada() {
+        let ch = canal_autenticado();
+        let msg = Message::text(
+            SessionId::from_string("s"),
+            ChannelId::from_string("c"),
+            UserId::from_string("u"),
+            MessageDirection::Outgoing,
+            "oi",
+        );
+        let erro = ch
+            .send_message(&msg)
+            .await
+            .expect_err("o caminho generico nao pode responder pelo Teams");
+        assert!(
+            erro.to_string().contains("nao e suportado"),
+            "o erro tem de dizer por que, veio: {erro}"
+        );
+    }
+
     /// **O ponto do PR, do lado da saida.** O `serviceUrl` decide o host do
     /// POST e o POST leva o bearer do bot. Um valor apontando para a rede
     /// interna nao pode ser aceito nem quando chega ate aqui — a claim
@@ -363,7 +398,11 @@ mod tests {
             "http://[::1]",
         ] {
             let erro = ch
-                .send_activity(interna, "conv-1", "oi")
+                .send_activity(
+                    &auth::ServiceUrlVerificada::para_teste(interna),
+                    "conv-1",
+                    "oi",
+                )
                 .await
                 .expect_err("{interna} tinha de ser recusada");
             let msg = erro.to_string();
@@ -387,7 +426,13 @@ mod tests {
             "",
         ] {
             assert!(
-                ch.send_activity(torta, "conv-1", "oi").await.is_err(),
+                ch.send_activity(
+                    &auth::ServiceUrlVerificada::para_teste(torta),
+                    "conv-1",
+                    "oi"
+                )
+                .await
+                .is_err(),
                 "{torta:?} nao deveria passar"
             );
         }
@@ -408,25 +453,45 @@ mod tests {
     /// `..` sozinho sobrevive ao encoding (e um segmento valido), entao a
     /// prova de que ele nao escapa e o `Url::join`, nao o encoder: um id de
     /// `..` some no caminho em vez de subir para fora do `serviceUrl`.
+    /// O que o encoding sozinho **nao** cobre, e por que `Url::join` importa.
+    ///
+    /// `.` esta na lista de caracteres seguros da RFC 3986, entao `..` passa
+    /// pelo encoder intacto — `"../../../v3/other"` vira
+    /// `"..%2F..%2Fv3%2Fother"`, sem separador, mas um `conversation_id` de
+    /// literalmente `".."` continua sendo um segmento de travessia. Quem
+    /// barra esse caso e o `Url::join`, que resolve a travessia **dentro** da
+    /// origem: o caminho pode acabar num endpoint errado do mesmo servidor,
+    /// e o host nunca muda (RFC 3986 §5.2). Endpoint errado devolve erro do
+    /// Bot Framework; host errado seria exfiltracao do bearer. So o segundo
+    /// importa, e e o que este teste fixa.
     #[test]
     fn join_nao_deixa_o_caminho_escapar_do_service_url() {
         let base = url::Url::parse("https://smba.trafficmanager.net/amer/").expect("base");
-        let alvo = base
-            .join(&format!(
-                "v3/conversations/{}/activities",
-                utf8_percent_encode_segmento("../../../v3/other")
-            ))
-            .expect("join");
-        assert!(
-            alvo.as_str()
-                .starts_with("https://smba.trafficmanager.net/amer/"),
-            "o caminho escapou do serviceUrl: {alvo}"
-        );
-        assert_eq!(
-            alvo.host_str(),
-            Some("smba.trafficmanager.net"),
-            "o host nunca pode mudar"
-        );
+        for id in [
+            "../../../v3/other",
+            "..",
+            ".",
+            "../..",
+            "%2e%2e",
+            "/etc/passwd",
+        ] {
+            let alvo = base
+                .join(&format!(
+                    "v3/conversations/{}/activities",
+                    utf8_percent_encode_segmento(id)
+                ))
+                .expect("join");
+            assert_eq!(
+                alvo.host_str(),
+                Some("smba.trafficmanager.net"),
+                "o host nunca pode mudar, id={id:?} deu {alvo}"
+            );
+            assert_eq!(
+                alvo.scheme(),
+                "https",
+                "o esquema nunca pode mudar, id={id:?}"
+            );
+        }
     }
 
     #[test]

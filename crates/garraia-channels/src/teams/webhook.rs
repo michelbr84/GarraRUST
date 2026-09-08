@@ -75,7 +75,7 @@ pub async fn teams_webhook(
     // O corpo tem de concordar com o token. Divergencia aqui e 401, e nao
     // 400: nao e formato malformado, e um pedido para responder num lugar
     // que o token nao autoriza — com o bearer do bot junto.
-    if !mesma_service_url(service_url_do_corpo, &service_url_assinada) {
+    if !mesma_service_url(service_url_do_corpo, service_url_assinada.as_str()) {
         warn!(
             canal = channel.name(),
             "teams: serviceUrl do corpo diverge da claim assinada do token; recusado"
@@ -135,7 +135,7 @@ pub async fn teams_webhook(
 async fn canal_do_token<'a>(
     channels: &'a [Arc<TeamsChannel>],
     token: &str,
-) -> Option<(&'a Arc<TeamsChannel>, String)> {
+) -> Option<(&'a Arc<TeamsChannel>, super::auth::ServiceUrlVerificada)> {
     for canal in channels {
         if let Ok(service_url) = canal.verificar_token(token).await {
             return Some((canal, service_url));
