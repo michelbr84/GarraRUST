@@ -2812,12 +2812,18 @@ mod tests {
     /// streaming; (4) stream vazio de novo, agora com o redo gasto.
     struct TextoDepoisVazio {
         chamadas_stream: std::sync::atomic::AtomicUsize,
+        /// Quantas vezes o turno caiu no caminho batch. Como este provider
+        /// so vai para o batch por causa do redo, o contador **e** o numero
+        /// de redos — e a unica forma direta de afirmar o limite de um por
+        /// turno, em vez de depender de um efeito colateral.
+        chamadas_complete: std::sync::atomic::AtomicUsize,
     }
 
     impl TextoDepoisVazio {
         fn novo() -> Self {
             Self {
                 chamadas_stream: std::sync::atomic::AtomicUsize::new(0),
+                chamadas_complete: std::sync::atomic::AtomicUsize::new(0),
             }
         }
     }
@@ -2831,11 +2837,17 @@ mod tests {
         /// Chamado uma vez, na volta 3: devolve ferramenta para o loop
         /// continuar ate a volta 4, que e a que importa.
         async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+            let n = self
+                .chamadas_complete
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(LlmResponse {
+                // Input diferente a cada volta, de proposito: com input
+                // repetido o `detectar_loop_ferramenta` cortaria o giro por
+                // conta propria e mascararia a falta do limite de redo.
                 content: vec![ContentBlock::ToolUse {
-                    id: "t2".to_string(),
+                    id: format!("t{n}"),
                     name: "eco".to_string(),
-                    input: serde_json::json!({}),
+                    input: serde_json::json!({ "volta": n }),
                 }],
                 model: "m".to_string(),
                 stop_reason: None,
@@ -2885,7 +2897,8 @@ mod tests {
     #[tokio::test]
     async fn texto_ja_entregue_nao_vira_erro_quando_o_redo_acaba() {
         let runtime = AgentRuntime::new();
-        runtime.register_provider(std::sync::Arc::new(TextoDepoisVazio::novo()));
+        let provider = std::sync::Arc::new(TextoDepoisVazio::novo());
+        runtime.register_provider(provider.clone());
         runtime.register_tool(stub("eco"));
 
         let resposta = tokio::time::timeout(
@@ -2905,6 +2918,21 @@ mod tests {
             runtime.last_turn_stats("sessao-1048-c").is_some(),
             "o turno precisa ficar registrado no /stats"
         );
+
+        // O limite de um redo por turno, afirmado direto em vez de deduzido.
+        // Este provider so cai no batch por causa do redo, entao o contador
+        // de `complete` E o numero de redos. Sem a trava `redo_ja_usado` o
+        // turno alternaria streaming-vazio e batch-com-ferramenta ate estourar
+        // o orcamento de ferramentas, e este assert acusa na primeira volta a
+        // mais — sem depender do `detectar_loop_ferramenta`, que so cortaria
+        // o giro se o input da ferramenta se repetisse.
+        assert_eq!(
+            provider
+                .chamadas_complete
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "o turno so pode refazer em batch uma vez"
+        );
     }
 
     /// #1048: stream vazio refaz o turno em batch em vez de devolver "".
@@ -2921,10 +2949,13 @@ mod tests {
         assert_eq!(resposta, "resposta que o batch soube dar");
     }
 
-    /// #1048: vazio nos dois caminhos vira erro, e nao bolha em branco. O
-    /// `timeout` e a prova de que o redo acontece **uma** vez: sem o
-    /// contador, streaming vazio -> batch vazio -> streaming vazio giraria
-    /// sem parar, porque nenhuma guarda do loop conta turno vazio.
+    /// #1048: vazio nos dois caminhos vira erro, e nao bolha em branco.
+    ///
+    /// O `timeout` aqui e cinto de seguranca, **nao** prova do limite de um
+    /// redo por turno: neste cenario quem encerra e a guarda de vazio do
+    /// proprio ramo batch, entao o teste passaria igual sem a trava. Quem
+    /// afirma o limite e `texto_ja_entregue_nao_vira_erro_quando_o_redo_acaba`,
+    /// contando as idas ao batch.
     #[tokio::test]
     async fn vazio_no_streaming_e_no_batch_vira_erro() {
         let runtime = AgentRuntime::new();
