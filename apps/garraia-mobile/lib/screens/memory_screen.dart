@@ -6,6 +6,7 @@ import '../runtime/models.dart';
 import '../runtime/runtime_providers.dart';
 import '../theme/garra_theme.dart';
 import '../theme/garra_tokens.dart';
+import '../widgets/copy_to_clipboard.dart';
 import '../widgets/garra_page.dart';
 
 part 'memory_screen.g.dart';
@@ -109,6 +110,74 @@ class _MemoryRow extends StatelessWidget {
         if (entry.role.isNotEmpty) entry.role,
         if (entry.createdAt.isNotEmpty) entry.createdAt.split('T').first,
       ].join(' · '),
+      trailing: const Icon(
+        Icons.chevron_right_rounded,
+        color: GarraColors.textDim,
+      ),
+      // The row truncates; the sheet shows the whole memory and copies it.
+      // Deleting a memory needs `DELETE /api/memory/{id}` on the gateway and
+      // lands with it, in the same sheet.
+      onTap: () => showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (_) => MemorySheet(entry: entry),
+      ),
+    );
+  }
+}
+
+/// Full text of one memory, selectable, with a copy button.
+class MemorySheet extends StatelessWidget {
+  final MemoryEntry entry;
+  const MemorySheet({super.key, required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    final meta = [
+      if (entry.role.isNotEmpty) entry.role,
+      if (entry.createdAt.isNotEmpty) entry.createdAt.replaceFirst('T', ' '),
+    ].join(' · ');
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (meta.isNotEmpty)
+                Text(
+                  meta,
+                  style: garraText(size: 12.5, color: GarraColors.textMuted),
+                ),
+              const SizedBox(height: 10),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    entry.content,
+                    style: garraText(size: 14.5, height: 1.45),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                key: const ValueKey('copy-memory'),
+                onPressed: () => copyToClipboard(
+                  context,
+                  entry.content,
+                  toast: 'Memoria copiada',
+                ),
+                icon: const Icon(Icons.copy_rounded, size: 18),
+                label: const Text('Copiar'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
