@@ -1236,7 +1236,9 @@ impl MemoryStore {
                     continuity_key = query.continuity_key.as_deref().unwrap_or("<nenhum>"),
                     "recall: vizinhos KNN existem com o modelo ativo, mas ficaram fora do \
                      escopo pedido (sessao/continuidade/tenant) ou venceram o prazo — \
-                     memoria de outras sessoes; nao e caso de reindexar"
+                     memoria de outras sessoes; nao e caso de reindexar. Com \
+                     `shared_continuity` ligado o escopo pedido e a continuity_key, \
+                     nao a sessao (#1042)"
                 );
             }
             KnnDrop::IndexOrphans { knn_candidates } => {
