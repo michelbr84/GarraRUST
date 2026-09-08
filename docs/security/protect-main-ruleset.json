@@ -43,6 +43,9 @@
           },
           {
             "context": "Test (windows-latest)"
+          },
+          {
+            "context": "Security Gate (BOLA & Tenant Isolation)"
           }
         ]
       }
