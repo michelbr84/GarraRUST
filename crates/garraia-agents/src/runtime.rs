@@ -1754,6 +1754,22 @@ impl AgentRuntime {
             ..crate::turn_stats::TurnStats::default()
         };
 
+        // #1048: quando o stream termina sem texto e sem ferramenta, o canal
+        // publica uma bolha vazia. `stream_complete_with_fallback` nao ve
+        // isso: ele devolve o stream antes de qualquer evento existir, e
+        // `is_retryable_error` so olha texto de erro. A deteccao tem de ficar
+        // aqui, no consumidor.
+        //
+        // `refazer_em_batch` desvia a proxima volta do loop para o caminho
+        // batch, que tem retry/fallback de verdade. `redo_ja_usado` limita a
+        // um redo por turno: nenhuma guarda do loop conta turno vazio
+        // (`atingiu_limite_turno` se auto-reseta logo abaixo e
+        // `pode_chamar_ferramenta` so cresce dentro do loop de ferramentas),
+        // entao sem o contador um provider que devolve vazio sempre giraria
+        // sem parar.
+        let mut refazer_em_batch = false;
+        let mut redo_ja_usado = false;
+
         loop {
             // Auto-reset turn limit when reached (but task limit not reached)
             // This allows multi-turn agent loops without failing
@@ -1786,12 +1802,21 @@ impl AgentRuntime {
             );
 
             // Try streaming with fallback; fall back to non-streaming if unsupported
-            let stream_result = self
-                .stream_complete_with_fallback(&provider, &request)
-                .await;
+            //
+            // #1048: com `refazer_em_batch` o streaming e pulado de proposito.
+            // `None` cai no mesmo ramo de `Some(Err(_))` — o batch — em vez de
+            // duplicar as ~180 linhas de execucao de ferramentas daquele ramo.
+            let stream_result = if refazer_em_batch {
+                None
+            } else {
+                Some(
+                    self.stream_complete_with_fallback(&provider, &request)
+                        .await,
+                )
+            };
 
             match stream_result {
-                Ok(mut stream) => {
+                Some(Ok(mut stream)) => {
                     // Consume stream, collecting the full response and forwarding text deltas
                     let mut response_text = String::new();
                     let mut tool_uses: Vec<(String, String, String)> = Vec::new(); // (id, name, input_json)
@@ -1843,6 +1868,49 @@ impl AgentRuntime {
                     );
 
                     if tool_uses.is_empty() {
+                        // #1048: volta sem texto e sem ferramenta. Sem isto o
+                        // `return Ok` logo abaixo devolve string vazia e o
+                        // canal publica uma bolha em branco.
+                        //
+                        // `trim().is_empty()` e nao `is_empty()`: e a mesma
+                        // regra de `extract_text_opt`, usada pelo ramo batch
+                        // logo adiante. Com as duas medindo "vazio" de jeitos
+                        // diferentes, um modelo que cospe so espaco passaria
+                        // por um caminho e nao pelo outro.
+                        if response_text.trim().is_empty() {
+                            if !redo_ja_usado {
+                                warn!(
+                                    events = debug_event_count,
+                                    text_len = response_text.len(),
+                                    tool_uses = tool_uses.len(),
+                                    "turno de streaming vazio; refazendo em batch (#1048)"
+                                );
+                                redo_ja_usado = true;
+                                refazer_em_batch = true;
+                                continue;
+                            }
+                            // Redo ja gasto. So e erro quando NADA foi ao sink
+                            // no turno inteiro — a mesma regra que o ramo
+                            // batch aplica em `None if full_response
+                            // .is_empty()`. As duas guardas nasceram deste
+                            // mesmo commit e discordar seria pior que o bug
+                            // original: com `full_response` cheio, o texto ja
+                            // esta na tela do usuario, e um `Err` aqui o
+                            // apagaria — o Telegram edita a mensagem ja
+                            // publicada para "Sorry, an error occurred"
+                            // (`telegram.rs`), e `remember_turn` e
+                            // `record_turn_stats` seriam pulados, sumindo com
+                            // o turno do historico e das metricas depois de as
+                            // ferramentas ja terem rodado.
+                            if full_response.is_empty() {
+                                return Err(Error::Agent(
+                                    "o modelo devolveu um turno vazio no streaming e no batch"
+                                        .into(),
+                                ));
+                            }
+                            // Com texto entregue, cai no caminho normal abaixo
+                            // e encerra o turno com o que ha.
+                        }
                         full_response.push_str(&response_text);
 
                         if let Err(e) = self
@@ -2010,7 +2078,11 @@ impl AgentRuntime {
                         sink.text("\n\n".to_string()).await;
                     }
                 }
-                Err(_) => {
+                _ => {
+                    // Streaming not supported (`Some(Err(_))`) ou pulado de
+                    // proposito pelo #1048 (`None`): os dois caem aqui, no
+                    // nao-streaming, que tem retry/fallback de verdade.
+                    refazer_em_batch = false;
                     // Streaming not supported — fall back to non-streaming with retry/fallback
                     //
                     // #984/#940: aqui ha uma `LlmResponse` de verdade, entao o
@@ -2042,14 +2114,33 @@ impl AgentRuntime {
 
                     tracing::info!(
                         "Batch fallback finished. text_len={}, tool_uses={}",
-                        extract_text(&response.content).len(),
+                        // #1048: `extract_text` mediria o marcador de vazio
+                        // (43 chars) e o log diria que houve resposta.
+                        extract_text_opt(&response.content).map_or(0, |t| t.len()),
                         tool_calls_count
                     );
 
                     let has_tool_use = tool_calls_count > 0;
 
                     if !has_tool_use {
-                        let final_text = extract_text(&response.content);
+                        // #1048: o batch nao deixava bolha em branco — deixava
+                        // o marcador `[no textual response provided by the
+                        // model]`, em ingles, que o usuario le como resposta do
+                        // modelo. Quando nada mais foi dito no turno, um erro
+                        // explicito e melhor: o canal mostra a falha em vez de
+                        // publicar um marcador interno.
+                        let final_text = match extract_text_opt(&response.content) {
+                            Some(texto) => texto,
+                            None if full_response.is_empty() => {
+                                return Err(Error::Agent(
+                                    "o modelo devolveu um turno vazio (batch: sem texto e sem ferramenta)"
+                                        .into(),
+                                ));
+                            }
+                            // Ja houve texto nas voltas anteriores deste turno,
+                            // entao o canal nao fica sem resposta: nao e erro.
+                            None => String::new(),
+                        };
                         sink.text(final_text.clone()).await;
                         full_response.push_str(&final_text);
 
@@ -2605,6 +2696,282 @@ mod tests {
         async fn health_check(&self) -> Result<bool> {
             Ok(true)
         }
+    }
+
+    /// Provider cujo `stream_complete` **funciona** e mesmo assim nao emite
+    /// nada: o stream fecha sem `TextDelta` e sem ferramenta.
+    ///
+    /// E o #1048 visto de perto. `stream_complete_with_fallback` devolve
+    /// `Ok(stream)` antes de qualquer evento existir, entao nem o retry nem o
+    /// fallback de provider chegam a acontecer — o turno terminava em `Ok("")`
+    /// e o canal publicava uma bolha em branco.
+    struct StreamVazio {
+        /// O que o caminho batch responde. Vazio simula o provider que nao
+        /// responde por nenhum dos dois caminhos.
+        batch: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for StreamVazio {
+        fn provider_id(&self) -> &str {
+            "stream_vazio"
+        }
+
+        async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+            Ok(LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: self.batch.to_string(),
+                }],
+                model: "modelo-do-batch".to_string(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+
+        async fn stream_complete(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+            Ok(Box::pin(futures::stream::iter(vec![Ok(
+                StreamEvent::MessageStop,
+            )])))
+        }
+
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Roda um turno de streaming ate o fim, drenando o canal de eventos.
+    ///
+    /// O dreno nao e detalhe: o canal e limitado e o `sink.text` bloquearia
+    /// sem alguem lendo do outro lado.
+    async fn turno_de_streaming(runtime: &AgentRuntime, sessao: &str) -> Result<String> {
+        let (tx, mut rx) = mpsc::channel::<crate::turn_events::TurnEvent>(64);
+        let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let resultado = runtime
+            .process_message_streaming_with_events(
+                sessao,
+                "oi",
+                &[],
+                tx,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await;
+        dreno.await.expect("dreno");
+        resultado
+    }
+
+    /// #1048: a diferenca entre "nao disse nada" e "disse o marcador".
+    ///
+    /// `extract_text` precisa continuar devolvendo o marcador — ha caminhos
+    /// que exigem uma `String` sempre. Quem decide se o turno veio vazio usa
+    /// `extract_text_opt`, senao a decisao passa a depender de comparar texto
+    /// com uma frase em ingles.
+    #[test]
+    fn extract_text_opt_distingue_vazio_de_marcador() {
+        let vazios = [
+            vec![],
+            vec![ContentBlock::Text {
+                text: String::new(),
+            }],
+            vec![ContentBlock::Text {
+                text: "  \n\t ".to_string(),
+            }],
+        ];
+        for conteudo in vazios {
+            assert_eq!(extract_text_opt(&conteudo), None, "veio: {conteudo:?}");
+            assert_eq!(
+                extract_text(&conteudo),
+                "[no textual response provided by the model]",
+                "o marcador nao pode mudar sem quebrar quem depende dele"
+            );
+        }
+
+        let com_texto = vec![ContentBlock::Text {
+            text: "oi".to_string(),
+        }];
+        assert_eq!(extract_text_opt(&com_texto).as_deref(), Some("oi"));
+        assert_eq!(extract_text(&com_texto), "oi");
+    }
+
+    /// Provider que entrega texto na primeira volta e depois emudece.
+    ///
+    /// Reproduz a regressao que a primeira versao do fix do #1048 introduziu:
+    /// as duas guardas de turno vazio (streaming e batch) discordavam, e a de
+    /// streaming devolvia `Err` mesmo com texto ja entregue ao sink.
+    ///
+    /// Sequencia: (1) stream com texto + ferramenta; (2) stream vazio, que
+    /// gasta o unico redo; (3) batch com ferramenta, que devolve o loop ao
+    /// streaming; (4) stream vazio de novo, agora com o redo gasto.
+    struct TextoDepoisVazio {
+        chamadas_stream: std::sync::atomic::AtomicUsize,
+        /// Quantas vezes o turno caiu no caminho batch. Como este provider
+        /// so vai para o batch por causa do redo, o contador **e** o numero
+        /// de redos — e a unica forma direta de afirmar o limite de um por
+        /// turno, em vez de depender de um efeito colateral.
+        chamadas_complete: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TextoDepoisVazio {
+        fn novo() -> Self {
+            Self {
+                chamadas_stream: std::sync::atomic::AtomicUsize::new(0),
+                chamadas_complete: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for TextoDepoisVazio {
+        fn provider_id(&self) -> &str {
+            "texto_depois_vazio"
+        }
+
+        /// Chamado uma vez, na volta 3: devolve ferramenta para o loop
+        /// continuar ate a volta 4, que e a que importa.
+        async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+            let n = self
+                .chamadas_complete
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(LlmResponse {
+                // Input diferente a cada volta, de proposito: com input
+                // repetido o `detectar_loop_ferramenta` cortaria o giro por
+                // conta propria e mascararia a falta do limite de redo.
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("t{n}"),
+                    name: "eco".to_string(),
+                    input: serde_json::json!({ "volta": n }),
+                }],
+                model: "m".to_string(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+
+        async fn stream_complete(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+            let n = self
+                .chamadas_stream
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let eventos: Vec<Result<StreamEvent>> = if n == 0 {
+                vec![
+                    Ok(StreamEvent::TextDelta("PARTE-UM".to_string())),
+                    Ok(StreamEvent::ToolUseStart {
+                        index: 0,
+                        id: "t1".to_string(),
+                        name: "eco".to_string(),
+                    }),
+                    Ok(StreamEvent::InputJsonDelta("{}".to_string())),
+                    Ok(StreamEvent::ContentBlockStop { index: 0 }),
+                    Ok(StreamEvent::MessageStop),
+                ]
+            } else {
+                vec![Ok(StreamEvent::MessageStop)]
+            };
+            Ok(Box::pin(futures::stream::iter(eventos)))
+        }
+
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// #1048: texto ja entregue nunca vira erro.
+    ///
+    /// Este e o teste que faltava na primeira versao do fix. A guarda de
+    /// streaming errava com o redo gasto sem olhar `full_response`, enquanto a
+    /// do batch olhava — as duas nasceram do mesmo commit e discordavam. Com o
+    /// `Err`, o Telegram edita a mensagem ja publicada para "Sorry, an error
+    /// occurred", apagando da tela a resposta que o usuario estava lendo, e
+    /// `remember_turn`/`record_turn_stats` sao pulados depois de as
+    /// ferramentas ja terem rodado.
+    #[tokio::test]
+    async fn texto_ja_entregue_nao_vira_erro_quando_o_redo_acaba() {
+        let runtime = AgentRuntime::new();
+        let provider = std::sync::Arc::new(TextoDepoisVazio::novo());
+        runtime.register_provider(provider.clone());
+        runtime.register_tool(stub("eco"));
+
+        let resposta = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            turno_de_streaming(&runtime, "sessao-1048-c"),
+        )
+        .await
+        .expect("sem giro infinito")
+        .expect("o turno tem de encerrar com o texto que ja foi ao sink, nao em Err");
+        assert!(
+            resposta.contains("PARTE-UM"),
+            "a resposta ja entregue nao pode ser descartada; veio: {resposta:?}"
+        );
+
+        // E o turno tem de continuar anotado: o `Err` pulava isto.
+        assert!(
+            runtime.last_turn_stats("sessao-1048-c").is_some(),
+            "o turno precisa ficar registrado no /stats"
+        );
+
+        // O limite de um redo por turno, afirmado direto em vez de deduzido.
+        // Este provider so cai no batch por causa do redo, entao o contador
+        // de `complete` E o numero de redos. Sem a trava `redo_ja_usado` o
+        // turno alternaria streaming-vazio e batch-com-ferramenta ate estourar
+        // o orcamento de ferramentas, e este assert acusa na primeira volta a
+        // mais — sem depender do `detectar_loop_ferramenta`, que so cortaria
+        // o giro se o input da ferramenta se repetisse.
+        assert_eq!(
+            provider
+                .chamadas_complete
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "o turno so pode refazer em batch uma vez"
+        );
+    }
+
+    /// #1048: stream vazio refaz o turno em batch em vez de devolver "".
+    #[tokio::test]
+    async fn stream_vazio_refaz_o_turno_em_batch() {
+        let runtime = AgentRuntime::new();
+        runtime.register_provider(std::sync::Arc::new(StreamVazio {
+            batch: "resposta que o batch soube dar",
+        }));
+
+        let resposta = turno_de_streaming(&runtime, "sessao-1048-a")
+            .await
+            .expect("o redo em batch tem de completar o turno");
+        assert_eq!(resposta, "resposta que o batch soube dar");
+    }
+
+    /// #1048: vazio nos dois caminhos vira erro, e nao bolha em branco.
+    ///
+    /// O `timeout` aqui e cinto de seguranca, **nao** prova do limite de um
+    /// redo por turno: neste cenario quem encerra e a guarda de vazio do
+    /// proprio ramo batch, entao o teste passaria igual sem a trava. Quem
+    /// afirma o limite e `texto_ja_entregue_nao_vira_erro_quando_o_redo_acaba`,
+    /// contando as idas ao batch.
+    #[tokio::test]
+    async fn vazio_no_streaming_e_no_batch_vira_erro() {
+        let runtime = AgentRuntime::new();
+        runtime.register_provider(std::sync::Arc::new(StreamVazio { batch: "" }));
+
+        let erro = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            turno_de_streaming(&runtime, "sessao-1048-b"),
+        )
+        .await
+        .expect("sem giro infinito: um redo so")
+        .expect_err("turno vazio nos dois caminhos tem de virar erro");
+        assert!(
+            erro.to_string().contains("turno vazio"),
+            "o erro precisa nomear a causa; veio: {erro}"
+        );
     }
 
     /// O turno que caiu no fallback nao-streaming tambem e anotado.
@@ -3451,7 +3818,14 @@ fn trim_messages_to_budget(
     }
 }
 
-fn extract_text(content: &[ContentBlock]) -> String {
+/// Texto dos blocos, ou `None` quando o modelo nao produziu nenhum.
+///
+/// #1048: [`extract_text`] troca o vazio por um marcador em ingles, o que
+/// serve para os caminhos que precisam de uma `String` sempre — mas apaga
+/// justamente a informacao de que o turno veio vazio, e faz `text_len` no log
+/// medir o marcador em vez da resposta. Quem precisa **decidir** com base
+/// nisso usa esta versao.
+fn extract_text_opt(content: &[ContentBlock]) -> Option<String> {
     let text = content
         .iter()
         .filter_map(|block| match block {
@@ -3462,8 +3836,13 @@ fn extract_text(content: &[ContentBlock]) -> String {
         .join("\n");
 
     if text.trim().is_empty() {
-        return "[no textual response provided by the model]".to_string();
+        None
+    } else {
+        Some(text)
     }
+}
 
-    text
+fn extract_text(content: &[ContentBlock]) -> String {
+    extract_text_opt(content)
+        .unwrap_or_else(|| "[no textual response provided by the model]".to_string())
 }
