@@ -31,7 +31,7 @@ use crate::state::SharedState;
 pub fn build_openai_router(state: SharedState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/models", get(list_models))
+        .route("/v1/models", get(crate::openai_models::list_models))
         .with_state(state)
 }
 
@@ -979,46 +979,6 @@ fn resolve_user_id(headers: &HeaderMap, state: &SharedState) -> Option<String> {
         None => info!("nenhum dono reivindicado ainda; requisicao gravada sem user_id"),
     }
     owner
-}
-
-/// GET /v1/models - List available models
-pub async fn list_models() -> Response<Body> {
-    Json(serde_json::json!({
-        "object": "list",
-        "data": [
-            {
-                "id": "gpt-4",
-                "object": "model",
-                "created": 1687882411,
-                "owned_by": "openai"
-            },
-            {
-                "id": "gpt-4-turbo",
-                "object": "model",
-                "created": 1704067200,
-                "owned_by": "openai"
-            },
-            {
-                "id": "gpt-3.5-turbo",
-                "object": "model",
-                "created": 1677649963,
-                "owned_by": "openai"
-            },
-            {
-                "id": "claude-3-opus",
-                "object": "model",
-                "created": 1709596800,
-                "owned_by": "anthropic"
-            },
-            {
-                "id": "claude-3-sonnet",
-                "object": "model",
-                "created": 1709596800,
-                "owned_by": "anthropic"
-            }
-        ]
-    }))
-    .into_response()
 }
 
 #[cfg(test)]

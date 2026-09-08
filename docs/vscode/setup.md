@@ -64,11 +64,17 @@ Para confirmar que o gateway está respondendo:
 
 ```bash
 curl http://localhost:3888/v1/models
-# deve retornar JSON com a lista de modelos configurados
+# JSON com os modelos que o gateway de fato serve: o modelo configurado de
+# cada provider registrado, no formato OpenAI (`data[].id`); `owned_by` e o
+# id do provider no GarraIA (ex.: "openrouter", "ollama"). Desde o #1029 a
+# lista sai da config — antes era fixa e prometia modelos que davam 500.
 ```
+
+Use um `id` dessa lista no campo `model` (ou omita o campo, que cai no
+provider default):
 
 ```bash
 curl -X POST http://localhost:3888/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Olá!"}],"stream":false}'
+  -d '{"model":"openrouter/auto","messages":[{"role":"user","content":"Olá!"}],"stream":false}'
 ```
