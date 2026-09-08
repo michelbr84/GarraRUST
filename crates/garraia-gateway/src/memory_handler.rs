@@ -161,7 +161,13 @@ pub async fn delete_memory_entry(
     };
 
     match memory_provider.delete_entry(&id).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(true) => {
+            // Trilha minima para uma operacao irreversivel: o id, nunca o
+            // conteudo (auditoria do #1043). O admin loga em audit_events;
+            // aqui o log estruturado e o que existe.
+            tracing::info!(memory_id = %id, "memory entry deleted via /api/memory/{id}");
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "memory entry not found" })),
