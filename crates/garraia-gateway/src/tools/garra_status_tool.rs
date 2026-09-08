@@ -78,6 +78,10 @@ impl Tool for GarraStatusTool {
         tools.sort();
 
         let features = feature_flags(&feature_inputs(&state));
+        // The only writers of `channels` after boot are the connect-retry
+        // tasks in `server.rs`; a read here waits for one to finish, which is
+        // milliseconds, never a cycle — the retry task takes nothing this tool
+        // holds.
         let channels: Vec<String> = state
             .channels
             .read()
@@ -141,6 +145,9 @@ mod tests {
     #[tokio::test]
     async fn relata_versao_ferramentas_e_diretorio_da_sessao() {
         let st = state();
+        // Two instances on purpose: the registered one is what `tool_names()`
+        // must list; the local one is executed directly, without the runtime
+        // dispatch, so the test reads the report and nothing else.
         st.agents.register_tool(Box::new(GarraStatusTool::new(&st)));
         let tool = GarraStatusTool::new(&st);
 

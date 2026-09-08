@@ -1,5 +1,5 @@
 - **Ferramenta `garra_status`: o agente passa a conseguir descrever o proprio
-  runtime.** Perguntado o que era, o Garra no celular respondia que "nao consegue
+  runtime (#1035).** Perguntado o que era, o Garra no celular respondia que "nao consegue
   inspecionar o estado interno do runtime a partir desta conversa" — e estava
   certo, nada permitia: `/api/health` e `/api/capabilities` existem para o console,
   `web_fetch` recusa loopback por desenho (guard de SSRF) e `bash` teria de

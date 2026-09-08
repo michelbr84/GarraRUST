@@ -8,5 +8,11 @@
   `SessionState::working_dir` para o `ExecContext`: antes todo turno via
   `/api/sessions/{id}/messages` saia sem diretorio, e o `resolve_tool_path`
   recusava qualquer caminho relativo — o Garra no celular dizia que nao conseguia
-  olhar os proprios arquivos, e nao conseguia mesmo. O modo `debug` ganha
-  `run_tests` e o `review` ganha `code_review` na whitelist.
+  olhar os proprios arquivos, e nao conseguia mesmo. As tres passam pelo
+  mesmo `resolve_tool_path` do `file_read` (relativo ao diretorio da sessao,
+  `..` recusado, e sem sessao o erro diz que resolveu contra o CWD do
+  processo), `repo_search`
+  busca no diretorio da sessao e `run_tests` respeita
+  `agent.tool_confirmation_enabled` como o `bash` — roda `npm test`, que
+  executa o que o `package.json` mandar. O modo `debug` ganha `run_tests` e o
+  `review` ganha `code_review` na whitelist.

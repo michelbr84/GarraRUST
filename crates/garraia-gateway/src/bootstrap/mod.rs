@@ -572,7 +572,14 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // promessa na policy e nao recebia a ferramenta.
     runtime.register_tool(Box::new(ListDirTool::new(None)));
     runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
-    runtime.register_tool(Box::new(RunTestsTool::new(None)));
+    // `run_tests` executa o que o projeto mandar (`npm test` roda o script do
+    // package.json), entao respeita a mesma chave de confirmacao do bash.
+    let run_tests = if config.agent.tool_confirmation_enabled {
+        RunTestsTool::new_with_confirmation(None)
+    } else {
+        RunTestsTool::new(None)
+    };
+    runtime.register_tool(Box::new(run_tests));
 
     // `code_review` roda um segundo LLM por dentro, entao precisa de um
     // provider resolvido aqui, e nao de `None`. Usa o default do boot: se o
