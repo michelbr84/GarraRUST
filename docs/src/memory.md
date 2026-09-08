@@ -89,6 +89,8 @@ enabled = true
 # Nome de uma entrada da seção [embeddings]. Sem isto, a memória grava
 # e busca textualmente, sem semântica.
 embedding_provider = "local"
+# Rotula as entradas com a chave `bus:shared-global`. NAO amplia o recall do
+# agente para outras sessoes hoje — ver "Isolamento" e #1052.
 shared_continuity = false
 
 [memory.ingestion]
@@ -180,12 +182,37 @@ Detalhes e consultas PromQL em [telemetry.md](../telemetry.md).
 
 ## Isolamento
 
-Cada entrada carrega um `tenant_id`, e o recall filtra por ele. Uma sessão
-nunca vê a memória de outro tenant.
+O recall aplica **quatro** filtros a cada consulta, e devolve só a interseção
+deles:
 
-O recall também filtra pelo **modelo de embedding** que gerou o vetor: vetores
-de modelos diferentes não são comparáveis, e misturá-los produz similaridade
-sem sentido. Ao trocar de modelo, rode `garra memory reindex`.
+1. **`tenant_id`.** Cada entrada carrega um; o runtime usa sempre `default`.
+   Uma sessão nunca vê a memória de outro tenant.
+2. **`session_id`.** O recall do agente manda **sempre** o id da sessão atual
+   (`recall_context` em `garraia-agents`), e a busca só devolve entradas
+   gravadas nela. É o comportamento com a configuração padrão: um fato dito
+   no Telegram não aparece numa sessão nova do app ou do `garra chat`, e
+   vice-versa. Não é memória quebrada — é escopo por sessão, funcionando como
+   foi escrito. `GET /api/memory/search` e `garra memory search` **não**
+   mandam sessão, por isso acham o que o agente "não lembra".
+3. **`continuity_key`.** Com `memory.shared_continuity = true` o gateway grava
+   cada entrada com a chave `bus:shared-global` e a manda junto no recall — mas
+   **em conjunto** com o `session_id`, não no lugar dele. Hoje, portanto, a
+   flag **não** amplia o recall do agente para outras sessões: só rotula as
+   entradas. O caminho que lê por continuidade sem sessão
+   (`get_continuity_context`) existe no store e não é chamado pelo runtime.
+   Ver #1052.
+4. **`embedding_model`.** Vetores de modelos diferentes não são comparáveis, e
+   misturá-los produz similaridade sem sentido. Ao trocar de modelo, rode
+   `garra memory reindex`.
+
+Entrada com `ttl_expires_at` vencido também sai do recall na hora (#959).
+
+Quando o índice vetorial acha vizinhos e nenhum sobrevive aos filtros, o log
+diz **qual** filtro derrubou (#1037): `WARN … troca de modelo` só quando
+nenhum vizinho é do modelo ativo (e lista os modelos encontrados); `INFO …
+fora do escopo pedido` quando a memória existe com o modelo certo mas é de
+outra sessão — caso em que reindexar não muda nada; `WARN … vetores orfaos`
+quando o índice aponta para ids sem linha (`garra memory stats`).
 
 ## API HTTP
 
@@ -217,5 +244,8 @@ nunca achá-la.
 
 - **Não há `clear`, `export` nem `disable`.** Para apagar, use `delete` (uma
   entrada) ou `compact` (por idade); para levar embora, `backup`.
+- **Não há memória compartilhada entre sessões no recall do agente.**
+  `shared_continuity` rotula as entradas, mas o recall segue restrito à sessão
+  atual (#1052).
 - **O retriever do `garraia-learning` é um stub.** A busca semântica de
   *skills* (distinta da memória de conversa) espera a Fase 2.1 — ver ADR 0002.

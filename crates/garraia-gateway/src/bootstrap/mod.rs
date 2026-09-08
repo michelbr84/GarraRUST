@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use garraia_agents::tools::Tool;
 use garraia_agents::{
-    AgentRuntime, AnthropicProvider, BashTool, CohereEmbeddingProvider, EmbeddingProvider,
-    FileReadTool, FileWriteTool, LlamaCppProvider, McpManager, NoisePolicy,
-    OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
-    ResilientEmbeddingProvider, WebFetchTool, WebSearchTool,
+    AgentRuntime, AnthropicProvider, BashTool, CodeReviewTool, CohereEmbeddingProvider,
+    EmbeddingProvider, FileReadTool, FileWriteTool, ListDirTool, LlamaCppProvider, McpManager,
+    NoisePolicy, OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
+    RepoSearchTool, ResilientEmbeddingProvider, RunTestsTool, WebFetchTool, WebSearchTool,
 };
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
@@ -565,14 +565,68 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
 
-    // Web search (Brave Search API) — only registered when an API key is available
+    // #1033 / #1035: estas tres existiam, com schema e testes verdes, e nunca
+    // entraram no runtime — o unico `new()` delas no repo era dentro dos
+    // proprios modulos de teste. As whitelists dos modos (`search`, `debug`,
+    // `review`) ja anunciavam `list_dir` e `repo_search`; o modelo via a
+    // promessa na policy e nao recebia a ferramenta.
+    runtime.register_tool(Box::new(ListDirTool::new(None)));
+    runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
+    // `run_tests` executa o que o projeto mandar (`npm test` roda o script do
+    // package.json), entao respeita a mesma chave de confirmacao do bash.
+    let run_tests = if config.agent.tool_confirmation_enabled {
+        RunTestsTool::new_with_confirmation(None)
+    } else {
+        RunTestsTool::new(None)
+    };
+    runtime.register_tool(Box::new(run_tests));
+
+    // `code_review` roda um segundo LLM por dentro, entao precisa de um
+    // provider resolvido aqui, e nao de `None`. Usa o default do boot: se o
+    // operador trocar o default depois, a revisao continua no provider de
+    // quando o gateway subiu — aceitavel para uma ferramenta auxiliar, e
+    // dito aqui para ninguem procurar o porque.
+    match runtime.default_provider_id() {
+        Some(pid) => match runtime
+            .get_provider(&pid)
+            .and_then(|p| p.configured_model().map(str::to_string).map(|m| (p, m)))
+        {
+            Some((provider, model)) => {
+                runtime.register_tool(Box::new(CodeReviewTool::new(provider, model, None)));
+            }
+            None => info!(
+                "code_review not registered: default provider '{pid}' has no configured model"
+            ),
+        },
+        None => info!("code_review not registered: no default provider at boot"),
+    }
+
+    // Web search (#1034): Brave (chave) ou SearXNG (URL, sem chave). Sem a
+    // secao `agent.web_search`, o comportamento e o de sempre — so com chave
+    // do Brave. `GARRAIA_SEARXNG_URL` e o equivalente da env para a URL.
     let brave_config_key = config.llm.get("brave").and_then(|c| c.api_key.clone());
-    if let Some(key) = resolve_api_key(
+    let brave_key = resolve_api_key(
         brave_config_key.as_deref(),
         "BRAVE_API_KEY",
         "BRAVE_API_KEY",
-    ) {
-        runtime.register_tool(Box::new(WebSearchTool::new(key)));
+    );
+    let searxng_url = config
+        .agent
+        .web_search
+        .searxng_url
+        .clone()
+        .or_else(|| std::env::var("GARRAIA_SEARXNG_URL").ok())
+        .filter(|u| !u.trim().is_empty());
+    match select_web_search_backend(config.agent.web_search.backend, brave_key, searxng_url) {
+        Some(backend) => {
+            info!(backend = backend.name(), "web_search registrada");
+            runtime.register_tool(Box::new(WebSearchTool::with_backend(backend)));
+        }
+        None if config.agent.web_search.backend.is_some() => warn!(
+            "agent.web_search.backend configurado sem a chave/URL que ele precisa; \
+             web_search fica de fora (veja `garra config check`)"
+        ),
+        None => {}
     }
 
     // --- Memory ---
@@ -1242,9 +1296,95 @@ pub fn build_embedding_provider(config: &AppConfig) -> Option<Arc<dyn EmbeddingP
     Some(Arc::new(resilient))
 }
 
+/// Qual backend de busca registrar (#1034).
+///
+/// Escolha explicita ganha e, se faltar o que ela precisa, ninguem e
+/// registrado: cair para o outro backend em silencio seria surpresa para quem
+/// configurou um de proposito. Sem escolha, Brave com chave (como sempre foi)
+/// e, so entao, SearXNG com URL.
+pub(crate) fn select_web_search_backend(
+    choice: Option<garraia_config::model::WebSearchBackend>,
+    brave_key: Option<String>,
+    searxng_url: Option<String>,
+) -> Option<garraia_agents::tools::web_search_tool::SearchBackend> {
+    use garraia_agents::tools::web_search_tool::SearchBackend;
+    use garraia_config::model::WebSearchBackend;
+
+    let brave = |api_key: String| SearchBackend::Brave { api_key };
+    let searxng = |base_url: String| SearchBackend::Searxng { base_url };
+    match choice {
+        Some(WebSearchBackend::Brave) => brave_key.map(brave),
+        Some(WebSearchBackend::Searxng) => searxng_url.map(searxng),
+        None => brave_key.map(brave).or_else(|| searxng_url.map(searxng)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1034: a regra de escolha do backend de busca, sem subir gateway.
+    #[test]
+    fn web_search_backend_selection() {
+        use garraia_agents::tools::web_search_tool::SearchBackend;
+        use garraia_config::model::WebSearchBackend;
+
+        let k = || Some("brave-key".to_string());
+        let u = || Some("http://127.0.0.1:8081".to_string());
+
+        // Sem secao: Brave com chave, como antes; sem chave, SearXNG com URL;
+        // sem nada, nada.
+        assert!(matches!(
+            select_web_search_backend(None, k(), u()),
+            Some(SearchBackend::Brave { .. })
+        ));
+        assert!(matches!(
+            select_web_search_backend(None, None, u()),
+            Some(SearchBackend::Searxng { ref base_url }) if base_url == "http://127.0.0.1:8081"
+        ));
+        assert!(select_web_search_backend(None, None, None).is_none());
+
+        // Explicito ganha mesmo com o outro disponivel...
+        assert!(matches!(
+            select_web_search_backend(Some(WebSearchBackend::Searxng), k(), u()),
+            Some(SearchBackend::Searxng { .. })
+        ));
+        assert!(matches!(
+            select_web_search_backend(Some(WebSearchBackend::Brave), k(), u()),
+            Some(SearchBackend::Brave { .. })
+        ));
+        // ...e sem o que precisa nao cai para o outro.
+        assert!(select_web_search_backend(Some(WebSearchBackend::Searxng), k(), None).is_none());
+        assert!(select_web_search_backend(Some(WebSearchBackend::Brave), None, u()).is_none());
+    }
+
+    /// #1033 / #1035: as ferramentas de exploracao entram no runtime sem
+    /// depender de provider. `code_review` precisa de um LLM por dentro e,
+    /// com config vazia, fica de fora — sem derrubar o boot e sem aparecer
+    /// na lista que o modelo recebe.
+    #[test]
+    fn build_agent_runtime_registers_exploration_tools() {
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let names = runtime.tool_names();
+        for expected in [
+            "bash",
+            "file_read",
+            "file_write",
+            "web_fetch",
+            "list_dir",
+            "repo_search",
+            "run_tests",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} ausente em {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n == "code_review"),
+            "sem provider default, code_review nao pode ter sido registrada: {names:?}"
+        );
+    }
 
     /// O literal "no-key" que existia aqui tratava LM Studio e a OpenAI
     /// oficial igual. Contra a oficial isso e 401 em toda chamada; contra o
