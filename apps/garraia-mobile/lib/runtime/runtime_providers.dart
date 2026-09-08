@@ -124,3 +124,9 @@ class CurrentSession extends _$CurrentSession {
     state = AsyncData(id);
   }
 }
+
+/// `GET /api/slash-commands` — the registry commands this client may run.
+/// Shared by the chat input (autocomplete) and the Skills screen.
+@riverpod
+Future<List<SlashCommandInfo>> slashCommands(Ref ref) =>
+    requireConnection(ref).slashCommands();
