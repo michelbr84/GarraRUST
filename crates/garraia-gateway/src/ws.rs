@@ -35,28 +35,20 @@ pub async fn ws_handler(
     State(state): State<SharedState>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if let Some(configured_key) = &state.config.gateway.api_key {
+    let gate = crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway);
+    if gate.is_enabled() {
+        // A query e aceita **aqui** e so aqui: o handshake WebSocket de um
+        // navegador nao leva header. No REST (#1045) a chave vai so no
+        // header, porque `fetch` leva e chave em query acaba em log.
         let token_from_query = params.get("token").or_else(|| params.get("api_key"));
-
-        let token_from_header = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.strip_prefix("Bearer ").unwrap_or(v));
-
+        let token_from_header = crate::auth_common::extract_bearer(&headers);
         let token = token_from_query.map(|s| s.as_str()).or(token_from_header);
 
-        // Constant-time comparison
-        let valid = match token {
-            Some(t) if t.len() == configured_key.len() => {
-                t.bytes()
-                    .zip(configured_key.bytes())
-                    .fold(0, |acc, (a, b)| acc | (a ^ b))
-                    == 0
-            }
-            _ => false,
-        };
-
-        if !valid {
+        // #1045: a comparacao artesanal daqui saia cedo quando os
+        // comprimentos diferiam — um oraculo de tamanho por tempo de
+        // resposta, o mesmo M-1 que o `/metrics` corrigiu no plan 0024. O
+        // helper compartilhado passa os dois por SHA-256 antes do `ct_eq`.
+        if !gate.admits(token) {
             warn!("WebSocket connection rejected: invalid API key");
             return StatusCode::UNAUTHORIZED.into_response();
         }
