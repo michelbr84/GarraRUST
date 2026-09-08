@@ -220,6 +220,7 @@ mod tests {
                 .collect(),
             user_role: role,
             state: None,
+            session_id: None,
         }
     }
 

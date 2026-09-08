@@ -419,6 +419,7 @@ fn handle_command(
         args,
         user_role: role,
         state: Some(Arc::clone(state) as Arc<dyn std::any::Any + Send + Sync>),
+        session_id: None,
     };
 
     match state.command_registry.read().unwrap().dispatch(&ctx) {

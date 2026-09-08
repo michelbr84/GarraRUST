@@ -458,8 +458,12 @@ pub async fn chat_completions(
     // GAR-184: Resolve slash commands (MCP prompts + /help).
     // /mode is excluded here — it is already handled by the `final_mode` logic above.
     if new_user_text.starts_with('/')
-        && let Some(resolved) =
-            crate::slash_commands::resolve(&new_user_text, state.mcp_manager_arc.as_ref()).await
+        && let Some(resolved) = crate::slash_commands::resolve(
+            &new_user_text,
+            crate::api::registry_commands_for_http(&state),
+            state.mcp_manager_arc.as_ref(),
+        )
+        .await
     {
         match resolved {
             crate::slash_commands::ResolvedCommand::McpPrompt(prompt_msgs) => {
