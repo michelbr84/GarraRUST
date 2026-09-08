@@ -85,9 +85,11 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: SharedState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Declarado aqui, e nao junto do loop principal, porque desde o #1047 o
+    // Declarados aqui, e nao junto do loop principal, porque desde o #1047 o
     // socket e lido durante o turno — e a primeira mensagem ja e um turno.
     let mut last_pong = Instant::now();
+    // Per-WebSocket sliding window rate limiter
+    let mut msg_timestamps: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
 
     // Wait for the first message to decide: new session or resume.
     let session_id = match tokio::time::timeout(Duration::from_secs(10), receiver.next()).await {
@@ -244,6 +246,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                     &mut sender,
                     &mut receiver,
                     &mut last_pong,
+                    &mut msg_timestamps,
                 )
                 .await
                 .is_break()
@@ -276,9 +279,6 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
     // Don't send ping immediately
     heartbeat.tick().await;
 
-    // Per-WebSocket sliding window rate limiter
-    let mut msg_timestamps: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
-
     let mut log_rx = state.log_tx.subscribe();
 
     loop {
@@ -308,20 +308,11 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                         }
 
                         // Per-WebSocket sliding window rate limit
-                        let now = Instant::now();
-                        msg_timestamps.retain(|ts| now.duration_since(*ts) < WS_RATE_LIMIT_WINDOW);
-                        if msg_timestamps.len() >= WS_RATE_LIMIT_MAX as usize {
+                        if !rate_limit_admits(&mut msg_timestamps) {
                             warn!("rate limited: session={}, msgs_in_window={}", session_id, msg_timestamps.len());
-                            let err = serde_json::json!({
-                                "type": "error",
-                                "code": "rate_limited",
-                                "message": "too many messages, please slow down",
-                                "retry_after_secs": WS_RATE_LIMIT_WINDOW.as_secs(),
-                            });
-                            let _ = sender.send(Message::Text(err.to_string().into())).await;
+                            let _ = sender.send(Message::Text(rate_limited_frame().into())).await;
                             continue;
                         }
-                        msg_timestamps.push_back(now);
 
                         let text_len = text.len();
                         info!("received message: session={}, len={}", session_id, text_len);
@@ -330,13 +321,22 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                                 "dropping oversized ws text message: session={}, len={}, limit={}",
                                 session_id, text_len, MAX_WS_TEXT_BYTES
                             );
-                            let err = serde_json::json!({
-                                "type": "error",
-                                "code": "message_too_large",
-                                "max_bytes": MAX_WS_TEXT_BYTES,
-                            });
-                            let _ = sender.send(Message::Text(err.to_string().into())).await;
+                            let _ = sender.send(Message::Text(too_large_frame().into())).await;
                             break;
+                        }
+
+                        // Um `stop` pode escapar de `run_streaming_turn` — o
+                        // laco de la sai assim que o turno termina, mesmo com
+                        // uma mensagem ainda por ler no socket. Sem este
+                        // guarda ele cairia em `parse_user_message`, que na
+                        // falta de `content` usa o JSON inteiro como texto:
+                        // o modelo receberia `{"type":"stop"}` como pergunta.
+                        // Fora de turno, `stop` e no-op idempotente.
+                        if parse_stop(&text).is_some() {
+                            let _ = sender
+                                .send(Message::Text(stopped_frame(&session_id).into()))
+                                .await;
+                            continue;
                         }
 
                         if drain_turns(
@@ -346,6 +346,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                             &mut sender,
                             &mut receiver,
                             &mut last_pong,
+                            &mut msg_timestamps,
                         )
                         .await
                         .is_break()
@@ -381,6 +382,11 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
 /// Itera em vez de recursar: `process_text_message` so empurra em
 /// `deferred`, e quem esvazia a fila e este laco.
 ///
+/// `MAX_DEFERRED_MESSAGES` limita a fila **por turno**, nao por chamada: um
+/// cliente que enfileira o maximo a cada turno mantem o laco rodando. Quem
+/// segura isso e a janela do rate limit, que vale para os dois caminhos de
+/// entrada — e cada volta do laco custa um turno de LLM inteiro.
+///
 /// `Break` significa que o socket morreu — o chamador encerra a conexao.
 async fn drain_turns(
     first: String,
@@ -389,6 +395,7 @@ async fn drain_turns(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
     receiver: &mut futures::stream::SplitStream<WebSocket>,
     last_pong: &mut Instant,
+    msg_timestamps: &mut std::collections::VecDeque<Instant>,
 ) -> std::ops::ControlFlow<()> {
     let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     pending.push_back(first);
@@ -402,6 +409,7 @@ async fn drain_turns(
             receiver,
             last_pong,
             &mut pending,
+            msg_timestamps,
         )
         .await
         {
@@ -458,6 +466,7 @@ async fn process_text_message(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
     last_pong: &mut Instant,
     deferred: &mut std::collections::VecDeque<String>,
+    msg_timestamps: &mut std::collections::VecDeque<Instant>,
 ) -> TurnOutcome {
     let msg = parse_user_message(text);
 
@@ -510,7 +519,15 @@ async fn process_text_message(
     });
 
     let turn = run_streaming_turn(
-        sender, receiver, session_id, events_rx, task, msg.stream, last_pong, deferred,
+        sender,
+        receiver,
+        session_id,
+        events_rx,
+        task,
+        msg.stream,
+        last_pong,
+        deferred,
+        msg_timestamps,
     )
     .await;
 
@@ -571,6 +588,7 @@ async fn run_streaming_turn<S, R>(
     stream_frames: bool,
     last_pong: &mut Instant,
     deferred: &mut std::collections::VecDeque<String>,
+    msg_timestamps: &mut std::collections::VecDeque<Instant>,
 ) -> TurnEnd
 where
     S: futures::Sink<Message> + Unpin,
@@ -623,6 +641,30 @@ where
                             });
                             let _ = sender.send(Message::Text(err.to_string().into())).await;
                         }
+                        // Os mesmos dois guardas do loop principal, na mesma
+                        // ordem. Sem eles este braco seria um desvio: a
+                        // mensagem que entra durante o turno viraria um turno
+                        // igual aos outros, sem ter passado nem pelo teto de
+                        // tamanho nem pela janela do rate limit.
+                        None if text_message_too_large(raw.len()) => {
+                            warn!(
+                                "dropping oversized ws text message mid-turn: session={}, len={}, limit={}",
+                                session_id,
+                                raw.len(),
+                                MAX_WS_TEXT_BYTES
+                            );
+                            let _ = sender.send(Message::Text(too_large_frame().into())).await;
+                            client_gone = true;
+                            task.abort();
+                        }
+                        None if !rate_limit_admits(msg_timestamps) => {
+                            warn!(
+                                "rate limited mid-turn: session={}, msgs_in_window={}",
+                                session_id,
+                                msg_timestamps.len()
+                            );
+                            let _ = sender.send(Message::Text(rate_limited_frame().into())).await;
+                        }
                         None => {
                             if deferred.len() < MAX_DEFERRED_MESSAGES {
                                 deferred.push_back(raw.to_string());
@@ -658,6 +700,16 @@ where
     }
 
     if stopped {
+        // O `stop` pode chegar depois de a resposta ficar pronta. O cliente
+        // pediu para parar, entao ela e descartada — mas os tokens ja foram
+        // gastos e nada e persistido, o que sem log e invisivel em producao.
+        if let Some(Ok(Ok(ref pronta))) = finished {
+            warn!(
+                "turno cancelado com a resposta ja pronta: session={}, len={}",
+                session_id,
+                pronta.len()
+            );
+        }
         if sender
             .send(Message::Text(stopped_frame(session_id).into()))
             .await
@@ -668,19 +720,62 @@ where
         return TurnEnd::Stopped;
     }
 
+    // Os dois ultimos bracos sao, hoje, inalcancaveis, e estao aqui como rede:
+    // `task.abort()` so acontece com `stopped` ou `client_gone`, e os dois ja
+    // devolveram acima; e a condicao do `while` so solta com `finished`
+    // preenchido. Tratados como desfecho normal em vez de `unreachable!`
+    // porque um panic aqui derrubaria a conexao de um usuario — e porque um
+    // refactor futuro pode torna-los alcancaveis sem ninguem notar.
     match finished {
         Some(Ok(Ok(text))) => TurnEnd::Completed(text),
         Some(Ok(Err(e))) => TurnEnd::Failed(e.to_string()),
-        Some(Err(e)) if e.is_cancelled() => TurnEnd::Stopped,
         Some(Err(e)) => {
+            if e.is_cancelled() {
+                return TurnEnd::Stopped;
+            }
             warn!("agent task failed: session={}, error={}", session_id, e);
             TurnEnd::Failed("internal agent task failure".to_string())
         }
-        // Inalcancavel: a condicao do `while` so solta com `finished`
-        // preenchido. Tratado como falha em vez de `unreachable!` porque um
-        // panic aqui derrubaria a conexao de um usuario.
         None => TurnEnd::Failed("turn ended without a result".to_string()),
     }
+}
+
+/// A janela deslizante do rate limit, num lugar so.
+///
+/// Vive numa funcao porque desde o #1047 ha **dois** caminhos por onde uma
+/// mensagem do cliente entra: o loop principal e o braco do socket dentro de
+/// `run_streaming_turn`. Dois lugares contando de formas diferentes seriam
+/// dois limites diferentes, e o segundo caminho seria um desvio do primeiro.
+///
+/// Devolve `false` quando a mensagem passa do teto; nesse caso ela **nao** e
+/// contabilizada, para uma rajada nao empurrar a janela para frente.
+fn rate_limit_admits(timestamps: &mut std::collections::VecDeque<Instant>) -> bool {
+    let now = Instant::now();
+    timestamps.retain(|ts| now.duration_since(*ts) < WS_RATE_LIMIT_WINDOW);
+    if timestamps.len() >= WS_RATE_LIMIT_MAX as usize {
+        return false;
+    }
+    timestamps.push_back(now);
+    true
+}
+
+fn rate_limited_frame() -> String {
+    serde_json::json!({
+        "type": "error",
+        "code": "rate_limited",
+        "message": "too many messages, please slow down",
+        "retry_after_secs": WS_RATE_LIMIT_WINDOW.as_secs(),
+    })
+    .to_string()
+}
+
+fn too_large_frame() -> String {
+    serde_json::json!({
+        "type": "error",
+        "code": "message_too_large",
+        "max_bytes": MAX_WS_TEXT_BYTES,
+    })
+    .to_string()
 }
 
 /// Um evento do turno virando frame do protocolo `/ws`.
@@ -1046,9 +1141,10 @@ mod tests {
             tx.unbounded_send(Ok(Message::Text((*m).to_string().into())))
                 .expect("cliente falso aceita a mensagem");
         }
-        // O `tx` fica vivo: soltar aqui fecharia o stream e o laco leria
-        // `None`, que ele trata como "cliente foi embora".
-        std::mem::forget(tx);
+        // O `tx` fica vivo ate o fim do processo de teste: solta-lo aqui
+        // fecharia o stream, e o laco leria `None` — que ele trata como
+        // "cliente foi embora", nao como "cliente calado".
+        let _mantem_aberto = std::mem::ManuallyDrop::new(tx);
         rx
     }
 
@@ -1063,7 +1159,10 @@ mod tests {
     fn frames(rx: futures::channel::mpsc::UnboundedReceiver<Message>) -> Vec<serde_json::Value> {
         rx.collect::<Vec<_>>()
             .now_or_never()
-            .unwrap_or_default()
+            // Sem o `drop(sink)` antes daqui a coleta fica pendente e
+            // devolveria `None`; falhar com esta frase e mais util do que
+            // comparar contra uma lista vazia.
+            .expect("solte o sink antes de coletar os frames")
             .into_iter()
             .filter_map(|m| match m {
                 Message::Text(t) => serde_json::from_str(&t).ok(),
@@ -1090,6 +1189,7 @@ mod tests {
         let mut cliente = cliente(&[]);
         let mut fila = std::collections::VecDeque::new();
         let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
 
         let eventos = eventos_prontos(vec![
             TurnEvent::TextDelta("um ".into()),
@@ -1117,6 +1217,7 @@ mod tests {
             true,
             &mut pong,
             &mut fila,
+            &mut janela,
         )
         .await;
 
@@ -1140,6 +1241,7 @@ mod tests {
         let mut cliente = cliente(&[]);
         let mut fila = std::collections::VecDeque::new();
         let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
 
         let eventos = eventos_prontos(vec![
             TurnEvent::TextDelta("um ".into()),
@@ -1156,6 +1258,7 @@ mod tests {
             false,
             &mut pong,
             &mut fila,
+            &mut janela,
         )
         .await;
 
@@ -1176,6 +1279,7 @@ mod tests {
         let mut cliente = cliente(&[r#"{"type":"stop","session_id":"s1"}"#]);
         let mut fila = std::collections::VecDeque::new();
         let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
 
         let eventos = eventos_prontos(vec![TurnEvent::TextDelta("parcial".into())]);
         let task = tokio::spawn(async {
@@ -1194,6 +1298,7 @@ mod tests {
                 true,
                 &mut pong,
                 &mut fila,
+                &mut janela,
             ),
         )
         .await
@@ -1221,6 +1326,7 @@ mod tests {
         let mut cliente = cliente(&[r#"{"type":"stop","session_id":"outra"}"#]);
         let mut fila = std::collections::VecDeque::new();
         let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
 
         let eventos = eventos_prontos(vec![]);
         let task = tokio::spawn(async {
@@ -1239,6 +1345,7 @@ mod tests {
                 true,
                 &mut pong,
                 &mut fila,
+                &mut janela,
             ),
         )
         .await
@@ -1256,6 +1363,102 @@ mod tests {
         assert_eq!(codigos, ["session_mismatch"]);
     }
 
+    /// A auditoria do #1047 achou isto: mensagem lida **durante** o turno
+    /// entrava na fila sem passar pela janela do rate limit, entao um cliente
+    /// enfileirava turnos de graca. A janela e a mesma dos dois lados.
+    #[tokio::test]
+    async fn mensagem_durante_o_turno_conta_no_rate_limit() {
+        let (mut sink, sink_rx) = futures::channel::mpsc::unbounded::<Message>();
+        let mut cliente = cliente(&[r#"{"content":"mais uma"}"#, r#"{"type":"stop"}"#]);
+        let mut fila = std::collections::VecDeque::new();
+        let mut pong = Instant::now();
+        // Janela ja no teto, como se o cliente tivesse gasto a cota toda.
+        let mut janela: std::collections::VecDeque<Instant> = std::iter::repeat_with(Instant::now)
+            .take(super::WS_RATE_LIMIT_MAX as usize)
+            .collect();
+
+        let task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(String::new())
+        });
+
+        let fim = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::run_streaming_turn(
+                &mut sink,
+                &mut cliente,
+                "s1",
+                eventos_prontos(vec![]),
+                task,
+                true,
+                &mut pong,
+                &mut fila,
+                &mut janela,
+            ),
+        )
+        .await
+        .expect("o stop tem de soltar o turno");
+
+        assert!(matches!(fim, TurnEnd::Stopped), "{fim:?}");
+        assert!(
+            fila.is_empty(),
+            "mensagem passou do teto e mesmo assim entrou na fila: {fila:?}"
+        );
+        drop(sink);
+        let codigos: Vec<String> = frames(sink_rx)
+            .iter()
+            .filter_map(|f| f["code"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(codigos, ["rate_limited"]);
+    }
+
+    /// O outro guarda que faltava: o teto de tamanho do texto. Um cliente
+    /// enfileirava ate 8 mensagens acima de `MAX_WS_TEXT_BYTES` porque o
+    /// check so existia no loop principal.
+    #[tokio::test]
+    async fn mensagem_gigante_durante_o_turno_e_recusada() {
+        let gigante = format!(
+            r#"{{"content":"{}"}}"#,
+            "a".repeat(super::MAX_WS_TEXT_BYTES + 1)
+        );
+        let (mut sink, sink_rx) = futures::channel::mpsc::unbounded::<Message>();
+        let mut cliente = cliente(&[&gigante]);
+        let mut fila = std::collections::VecDeque::new();
+        let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
+
+        let task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(String::new())
+        });
+
+        let fim = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::run_streaming_turn(
+                &mut sink,
+                &mut cliente,
+                "s1",
+                eventos_prontos(vec![]),
+                task,
+                true,
+                &mut pong,
+                &mut fila,
+                &mut janela,
+            ),
+        )
+        .await
+        .expect("a recusa tem de soltar o turno");
+
+        assert!(matches!(fim, TurnEnd::ClientGone), "{fim:?}");
+        assert!(fila.is_empty(), "mensagem gigante entrou na fila: {fila:?}");
+        drop(sink);
+        let codigos: Vec<String> = frames(sink_rx)
+            .iter()
+            .filter_map(|f| f["code"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(codigos, ["message_too_large"]);
+    }
+
     /// Antes do #1047 o socket nao era lido durante o turno e a mensagem
     /// esperava no buffer do TCP. Agora que ele e lido, a mensagem tem de ir
     /// para a fila — descarta-la seria a regressao.
@@ -1265,6 +1468,7 @@ mod tests {
         let mut cliente = cliente(&[r#"{"content":"a proxima pergunta"}"#, r#"{"type":"stop"}"#]);
         let mut fila = std::collections::VecDeque::new();
         let mut pong = Instant::now();
+        let mut janela = std::collections::VecDeque::new();
 
         let eventos = eventos_prontos(vec![]);
         let task = tokio::spawn(async {
@@ -1283,6 +1487,7 @@ mod tests {
                 true,
                 &mut pong,
                 &mut fila,
+                &mut janela,
             ),
         )
         .await
