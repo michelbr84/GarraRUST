@@ -24,6 +24,15 @@ pub struct CreateSessionRequest {
     /// de a resposta sair (#1028). Antes o campo era descartado pelo serde:
     /// 201, sessao sem politica nenhuma, e o cliente achando que restringiu.
     pub mode: Option<String>,
+    /// Diretorio de trabalho da sessao: a base dos caminhos relativos que as
+    /// ferramentas de arquivo recebem (`resolve_tool_path`).
+    ///
+    /// Passa por `project_root::confine`, a mesma regra do `path` de projeto:
+    /// tem de ser um diretorio existente sob uma das raizes permitidas
+    /// (`GARRAIA_PROJECT_ROOTS`; padrao, o home). Era descartado pelo serde
+    /// como o `mode` — o `create_session_with_project` que o aceitava nunca
+    /// foi roteado (ver `docs/security/threat-model.md` §5.5).
+    pub working_dir: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -33,6 +42,9 @@ pub struct CreateSessionResponse {
     /// O modo gravado, na grafia canonica (`search`, `Auditor`); `null`
     /// quando nao foi pedido.
     pub mode: Option<String>,
+    /// O diretorio **confinado** (canonicalizado), que e o que a sessao usa —
+    /// nunca o cru do corpo; `null` quando nao foi pedido.
+    pub working_dir: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +108,37 @@ pub async fn create_session(
             }
         },
     };
+    // `working_dir` e a mesma superficie do `path` de projeto — string crua do
+    // corpo que vira diretorio de trabalho — e passa pelo mesmo confinamento.
+    // Um corpo de 400 so, para todas as variantes (nao existe, fora da raiz,
+    // symlink para fora), como no `POST /api/projects`: um erro por variante
+    // viraria oraculo de existencia de diretorio (threat-model §5.5).
+    let working_dir = match body
+        .working_dir
+        .as_deref()
+        .map(crate::project_root::confine)
+    {
+        Some(Ok(p)) => Some(p.to_string_lossy().into_owned()),
+        Some(Err(_)) => {
+            warn!(
+                working_dir = ?body.working_dir,
+                "recusado POST /api/sessions: working_dir fora das raizes permitidas"
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "working_dir is not an allowed directory",
+                    "hint": format!(
+                        "o caminho precisa ser um diretorio existente sob uma das raizes \
+                         permitidas (padrao: o home do usuario; configuravel em {})",
+                        crate::project_root::ROOTS_ENV
+                    ),
+                })),
+            )
+                .into_response();
+        }
+        None => None,
+    };
     let store_para_modo = match (&mode, &state.session_store) {
         (None, _) => None,
         (Some(_), Some(store)) => Some(std::sync::Arc::clone(store)),
@@ -113,10 +156,13 @@ pub async fn create_session(
     let session_id = state.create_session();
 
     // If an agent_id was requested, tag it on the session metadata
-    if let Some(ref agent_id) = body.agent_id
-        && let Some(mut session) = state.sessions.get_mut(&session_id)
-    {
-        session.channel_id = Some(format!("api:{agent_id}"));
+    if let Some(mut session) = state.sessions.get_mut(&session_id) {
+        if let Some(ref agent_id) = body.agent_id {
+            session.channel_id = Some(format!("api:{agent_id}"));
+        }
+        if let Some(ref wd) = working_dir {
+            session.working_dir = Some(wd.clone());
+        }
     }
 
     if let (Some(nome), Some(store)) = (&mode, &store_para_modo) {
@@ -190,6 +236,7 @@ pub async fn create_session(
             session_id,
             agent_id: body.agent_id,
             mode,
+            working_dir,
         }),
     )
         .into_response()
@@ -1127,8 +1174,13 @@ mod create_session_tests {
             post_sessions(&st, serde_json::json!({ "agent_id": "reachy_voice" })).await;
         assert_eq!(status, StatusCode::CREATED, "{corpo}");
         assert!(corpo["mode"].is_null());
+        assert!(corpo["working_dir"].is_null());
         assert_eq!(corpo["agent_id"], "reachy_voice");
         let id = corpo["session_id"].as_str().expect("session_id");
         assert_eq!(modo_escolhido(&st, id).await, None);
+        assert_eq!(
+            st.sessions.get(id).and_then(|s| s.working_dir.clone()),
+            None
+        );
     }
 }

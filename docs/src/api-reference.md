@@ -264,7 +264,8 @@ Cria uma nova sessão. O id é gerado pelo gateway (UUID); quando
 ```json
 {
   "agent_id": "reachy_voice",
-  "mode": "search"
+  "mode": "search",
+  "working_dir": "/home/joao/projetos/alpha"
 }
 ```
 
@@ -273,22 +274,32 @@ Cria uma nova sessão. O id é gerado pelo gateway (UUID); quando
   `architect`, `code`, `ask`, `debug`, `orchestrator`, `review`, `edit`) ou o
   nome de um modo customizado (`POST /api/modes/custom`). É validado como no
   `POST /api/mode/select` e gravado como modo **escolhido**, então a política
-  de ferramentas dele já vale na primeira mensagem (#1028). Outros campos do
-  corpo são ignorados.
+  de ferramentas dele já vale na primeira mensagem (#1028).
+- `working_dir` — diretório de trabalho da sessão: a base dos caminhos
+  relativos que as ferramentas de arquivo (`file_read`, `list_dir`,
+  `repo_search`, …) recebem. Tem de ser um diretório existente sob uma das
+  raízes permitidas (`GARRAIA_PROJECT_ROOTS`; padrão, o home do usuário) —
+  a mesma regra do `path` de `POST /api/projects`.
+
+Outros campos do corpo são ignorados.
 
 **Response 201:**
 ```json
 {
   "session_id": "0f3b7c1e-2d4a-4b8e-9c6f-1a2b3c4d5e6f",
   "agent_id": "reachy_voice",
-  "mode": "search"
+  "mode": "search",
+  "working_dir": "/home/joao/projetos/alpha"
 }
 ```
 
 `mode` volta na grafia gravada (`search`; um customizado vem como foi criado,
-ex.: `Auditor`) e é `null` quando não foi pedido.
+ex.: `Auditor`) e `working_dir` volta canonicalizado (symlinks resolvidos);
+ambos são `null` quando não foram pedidos.
 
-**Response 400:** `mode` desconhecido — nenhuma sessão é criada.
+**Response 400:** `mode` desconhecido, ou `working_dir` fora das raízes
+permitidas (um corpo só para todas as variantes, como no `POST /api/projects`,
+para não virar oráculo de existência de diretório) — nenhuma sessão é criada.
 
 **Response 503:** `mode` pedido sem `session_store` disponível (não há onde
 gravar a política, então o gateway não finge que aplicou).
