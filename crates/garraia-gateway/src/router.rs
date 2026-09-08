@@ -1415,7 +1415,13 @@ async fn mcp_health(
 async fn list_slash_commands(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
-    let commands = crate::slash_commands::list_commands(state.mcp_manager_arc.as_ref()).await;
+    // Mesma lista que `POST /api/sessions/{id}/messages` despacha: a do
+    // registry, no papel que o HTTP tem (`Role::User`). Antes vinha de uma
+    // tabela paralela de dois itens e o app mostrava `/help` e `/mode` como
+    // se fossem os unicos comandos da instalacao.
+    let built_ins = crate::api::registry_commands_for_http(&state);
+    let commands =
+        crate::slash_commands::list_commands(built_ins, state.mcp_manager_arc.as_ref()).await;
     axum::Json(serde_json::json!({ "commands": commands }))
 }
 
