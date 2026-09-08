@@ -25,9 +25,13 @@ abstract interface class GarraConnection {
   Future<List<MemoryEntry>> recentMemory({int limit = 50});
   Future<List<MemoryEntry>> searchMemory(String query, {int limit = 30});
 
+  /// `DELETE /api/memory/{id}`. `true` when it was there, `false` when the
+  /// runtime no longer had it (already gone) — not an error for the user.
+  Future<bool> deleteMemory(String id);
+
   // Skills / commands
   Future<List<SkillSummary>> skills();
-  Future<List<String>> slashCommands();
+  Future<List<SlashCommandInfo>> slashCommands();
 
   // Providers / agents / files
   Future<List<ProviderInfo>> providers();

@@ -18,6 +18,7 @@ mod team;
 mod tracing_setup;
 mod ui;
 mod update;
+mod update_scan;
 mod verify;
 mod wizard;
 
@@ -192,6 +193,9 @@ enum Commands {
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Only scan the PATH for other garraia/garra binaries (no download)
+        #[arg(long)]
+        check_binaries: bool,
     },
 
     /// Roll back to the previous version
@@ -1897,11 +1901,18 @@ async fn async_main(
                 }
             }
         }
-        Commands::Update { yes } => {
+        Commands::Update {
+            yes,
+            check_binaries,
+        } => {
             init_tracing(&effective_level);
-            match update::run_update(yes).await {
-                Ok(_) => {}
-                Err(e) => println!("update failed: {}", e),
+            let result = if check_binaries {
+                update::run_check_binaries().await
+            } else {
+                update::run_update(yes).await.map(|_| ())
+            };
+            if let Err(e) = result {
+                println!("update failed: {}", e);
             }
         }
         Commands::Rollback => {

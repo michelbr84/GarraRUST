@@ -144,12 +144,17 @@ class MemoryEntry {
   final String createdAt;
   final String? sessionId;
 
+  /// `pinned_at != null` on the runtime: compaction skips it, but a delete
+  /// does not — the UI warns before asking.
+  final bool pinned;
+
   const MemoryEntry({
     required this.id,
     required this.role,
     required this.content,
     required this.createdAt,
     this.sessionId,
+    this.pinned = false,
   });
 
   factory MemoryEntry.fromJson(Map<String, dynamic> json) => MemoryEntry(
@@ -158,6 +163,7 @@ class MemoryEntry {
     content: json['content'] as String? ?? '',
     createdAt: json['created_at']?.toString() ?? '',
     sessionId: json['session_id'] as String?,
+    pinned: json['pinned'] == true || json['pinned_at'] != null,
   );
 }
 
@@ -330,4 +336,26 @@ List<String> unwrapNames(Object? body, List<String> keys) {
       )
       .where((s) => s.isNotEmpty)
       .toList();
+}
+
+/// One entry of `GET /api/slash-commands` — `{name, description, source}` from
+/// the gateway's `CommandRegistry`. Older gateways returned bare strings; both
+/// shapes parse, and a leading `/` in the name is dropped either way.
+class SlashCommandInfo {
+  final String name;
+  final String description;
+
+  const SlashCommandInfo({required this.name, this.description = ''});
+
+  factory SlashCommandInfo.fromJson(Object? json) {
+    if (json is Map) {
+      return SlashCommandInfo(
+        name: _stripSlash((json['name'] ?? '').toString()),
+        description: (json['description'] ?? '').toString(),
+      );
+    }
+    return SlashCommandInfo(name: _stripSlash(json.toString()));
+  }
+
+  static String _stripSlash(String s) => s.startsWith('/') ? s.substring(1) : s;
 }

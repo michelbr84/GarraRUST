@@ -29,12 +29,21 @@ axum = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 dirs = { version = "6", optional = true }
 
+# Assinatura do webhook do LINE (#1051): HMAC-SHA256 + Base64, comparacao
+# em tempo constante. Mesma pilha RustCrypto ja usada em garraia-auth
+# (jwt.rs) e garraia-storage (integrity.rs) — nenhum requisito de FIPS
+# justifica trazer uma segunda implementacao de HMAC para a arvore.
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+subtle = { version = "2", optional = true }
+base64 = { workspace = true, optional = true }
+
 [features]
 default = []
 discord = ["dep:serenity", "dep:poise", "dep:native-tls"]
 google_chat = []
 irc = []
-line = []
+line = ["dep:hmac", "dep:sha2", "dep:subtle", "dep:base64"]
 matrix = []
 openclaw = ["dep:tokio-tungstenite", "dep:futures"]
 signal = []

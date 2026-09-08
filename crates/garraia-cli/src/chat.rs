@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use garraia_agents::{
-    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, FileReadTool, FileWriteTool,
-    LlamaCppProvider, LlmProvider, MessagePart, OllamaProvider, OpenAiProvider,
+    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, CodeReviewTool, FileReadTool,
+    FileWriteTool, ListDirTool, LlamaCppProvider, LlmProvider, MessagePart, OllamaProvider,
+    OpenAiProvider, RepoSearchTool, RunTestsTool, WebFetchTool, WebSearchTool,
     normalize_ollama_tag, tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
@@ -132,6 +133,70 @@ fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option
         return Some(k.clone());
     }
     None
+}
+
+/// Registers the CLI agent's tools: the gateway's set (#1036) plus
+/// `git_diff`, which only the CLI has.
+///
+/// `review` is the provider + model `code_review` runs its second LLM call
+/// on; `None` skips it, which is what the tests do because building a real
+/// provider needs a backend. `brave_key` gates `web_search` exactly like the
+/// gateway does. `schedule_heartbeat` / `schedule_recurring` need a
+/// `SessionStore` the chat does not open — they stay gateway-only, on
+/// purpose and said here rather than silently.
+fn register_cli_tools(
+    runtime: &AgentRuntime,
+    review: Option<(Arc<dyn LlmProvider>, String)>,
+    brave_key: Option<String>,
+) {
+    runtime.register_tool(Box::new(FileReadTool::new(None)));
+    runtime.register_tool(Box::new(FileWriteTool::new(None)));
+    runtime.register_tool(Box::new(BashTool::new_with_confirmation(Some(30))));
+    runtime.register_tool(Box::new(GitDiffTool::new(None, None)));
+    runtime.register_tool(Box::new(ListDirTool::new(None)));
+    runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
+    // Runs whatever the project's test script says; confirmed like `bash`.
+    runtime.register_tool(Box::new(RunTestsTool::new_with_confirmation(None)));
+    runtime.register_tool(Box::new(WebFetchTool::new(None)));
+    if let Some((provider, model)) = review {
+        runtime.register_tool(Box::new(CodeReviewTool::new(provider, model, None)));
+    }
+    if let Some(key) = brave_key {
+        runtime.register_tool(Box::new(WebSearchTool::new(key)));
+    }
+}
+
+/// One line of the system prompt per registered tool.
+///
+/// Built from `tool_names()` so the prompt can never list a tool the
+/// runtime lacks — the drift #1036 found was a hand-written list that
+/// mentioned four tools registered nowhere and never mentioned the ones
+/// that were.
+fn tool_docs(names: &[String]) -> String {
+    names
+        .iter()
+        .filter_map(|n| tool_help(n).map(|d| format!("- **{n}**: {d}\n")))
+        .collect()
+}
+
+fn tool_help(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "file_read" => "Le o conteudo de um arquivo. Use para ver codigo, configs, READMEs.",
+        "file_write" => "Escreve/cria arquivos. Use para editar codigo ou criar novos arquivos.",
+        "bash" => "Executa comandos no terminal (ls, dir, cargo, git, etc.).",
+        "git_diff" => "Executa comandos git seguros (diff, status, log, branch).",
+        "list_dir" => {
+            "Lista um diretorio em arvore, com tamanhos; pula .git, target, node_modules."
+        }
+        "repo_search" => "Busca texto ou regex nos arquivos do projeto (rg, ou grep).",
+        "run_tests" => {
+            "Roda a suite de testes do projeto (cargo, flutter, npm, pytest) e resume o resultado; pede confirmacao."
+        }
+        "web_fetch" => "Baixa o conteudo de uma URL publica (enderecos internos sao recusados).",
+        "web_search" => "Busca na web (Brave) e devolve titulos, links e trechos.",
+        "code_review" => "Revisa um diff ou arquivo e aponta problemas e melhorias.",
+        _ => return None,
+    })
 }
 
 /// GAR-576 — Resolve the model name for a given provider kind.
@@ -1013,26 +1078,27 @@ pub async fn run_chat(
     print!("{}", header.render(style, caps.width));
     println!();
 
-    // Build runtime with filesystem tools
+    // Build runtime with the same tool set the gateway wires (#1036), so
+    // `garra chat`, the phone and Telegram agree on what the agent can do.
+    let review = (Arc::clone(&provider), model_name.clone());
     let mut runtime = AgentRuntime::new();
     runtime.register_provider(provider);
-    runtime.register_tool(Box::new(FileReadTool::new(None)));
-    runtime.register_tool(Box::new(FileWriteTool::new(None)));
-    runtime.register_tool(Box::new(BashTool::new_with_confirmation(Some(30))));
-    runtime.register_tool(Box::new(GitDiffTool::new(None, None)));
+    register_cli_tools(
+        &runtime,
+        Some(review),
+        get_api_key(&config, "brave", "BRAVE_API_KEY"),
+    );
+    let tools_doc = tool_docs(&runtime.tool_names());
 
     let system_prompt = format!(
         "Voce e o GarraIA, um assistente pessoal de IA criado em Rust. \
          Seja prestativo, conciso e amigavel. Responda no idioma do usuario.\n\n\
          ## Ferramentas disponiveis\n\
          Voce tem acesso a estas ferramentas que pode usar quando necessario:\n\
-         - **file_read**: Le o conteudo de um arquivo. Use para ver codigo, configs, READMEs.\n\
-         - **file_write**: Escreve/cria arquivos. Use para editar codigo ou criar novos arquivos.\n\
-         - **bash**: Executa comandos no terminal (ls, dir, cargo, git, etc.).\n\
-         - **git_diff**: Executa comandos git seguros (diff, status, log, branch).\n\n\
+         {tools_doc}\n\
          IMPORTANTE: Quando o usuario perguntar sobre arquivos, SEMPRE use as ferramentas \
-         para ler/listar em vez de apenas descrever. Use 'bash' com 'ls' ou 'dir' para \
-         listar arquivos. Use 'file_read' para ler conteudo de arquivos.\n\n\
+         para ler/listar em vez de apenas descrever. Use 'list_dir' para listar, \
+         'repo_search' para procurar e 'file_read' para ler conteudo de arquivos.\n\n\
          ## Contexto do diretorio atual\n\
          O usuario esta trabalhando em: {cwd}\n\
          {}\
@@ -2649,5 +2715,64 @@ mod tests {
         .await;
         assert_eq!(outcome, TurnOutcome::Done(Err("provider exploded")));
         assert!(out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cli_tools_tests {
+    use super::*;
+
+    /// #1036: a CLI registra o conjunto do gateway mais `git_diff`; sem chave
+    /// do Brave nao ha `web_search`, sem provider nao ha `code_review`.
+    #[test]
+    fn registers_the_gateway_tool_set_plus_git_diff() {
+        let runtime = AgentRuntime::new();
+        register_cli_tools(&runtime, None, None);
+        let names = runtime.tool_names();
+        for expected in [
+            "file_read",
+            "file_write",
+            "bash",
+            "git_diff",
+            "list_dir",
+            "repo_search",
+            "run_tests",
+            "web_fetch",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "{expected} ausente em {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n == "web_search"),
+            "sem chave do Brave nao ha web_search: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "code_review"),
+            "sem provider nao ha code_review: {names:?}"
+        );
+    }
+
+    #[test]
+    fn brave_key_turns_web_search_on() {
+        let runtime = AgentRuntime::new();
+        register_cli_tools(&runtime, None, Some("k".into()));
+        assert!(runtime.tool_names().iter().any(|n| n == "web_search"));
+    }
+
+    /// O prompt descreve exatamente o que esta registrado — nem mais, nem
+    /// menos. E o que impede a lista escrita a mao de voltar a mentir.
+    #[test]
+    fn prompt_lists_every_registered_tool_and_nothing_else() {
+        let runtime = AgentRuntime::new();
+        register_cli_tools(&runtime, None, None);
+        let names = runtime.tool_names();
+        let doc = tool_docs(&names);
+        for n in &names {
+            assert!(doc.contains(&format!("**{n}**")), "{n} sem linha no prompt");
+        }
+        assert!(!doc.contains("web_search"));
+        assert_eq!(doc.matches("- **").count(), names.len());
     }
 }

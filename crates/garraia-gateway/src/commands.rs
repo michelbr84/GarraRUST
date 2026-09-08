@@ -1,8 +1,47 @@
 use crate::state::AppState;
 use garraia_agents::AgentMode;
 use garraia_channels::commands::{
-    ClosureCommand, CommandContext, CommandRegistry, CommandResult, Role,
+    ClosureCommand, CommandContext, CommandError, CommandRegistry, CommandResult, Role,
 };
+
+/// A model id as every provider spells it: `gpt-4o`, `qwen2.5:7b-instruct`,
+/// `openrouter/auto`, `claude-3.5`. Anything else is not a model name.
+fn valid_model_name(s: &str) -> bool {
+    // `/` is a namespace separator here (`openrouter/auto`), never a root,
+    // and `..` is not a segment any provider has — so nothing path-shaped.
+    !s.is_empty()
+        && s.len() <= 128
+        && !s.starts_with('/')
+        && !s.contains("..")
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+}
+/// A sessao sobre a qual um comando age.
+///
+/// Pelo HTTP (`POST /api/sessions/{id}/messages`) o chamador ja sabe a sessao
+/// e a poe em `CommandContext::session_id`; e essa que vale, porque a chave
+/// do Telegram nao existe la — `chat_id` e `0` e `user_id` e `api:<id>`.
+/// Pelos canais o campo vem `None` e a resolucao e a de sempre (GAR-202 +
+/// #982): a chave vem do MESMO resolvedor que a execucao usa, porque montar
+/// `telegram-{chat_id}` aqui gravava numa linha que o runtime nunca lia.
+///
+/// Divida conhecida, herdada do `/clear` original: o Discord usa `String`
+/// como chat id, entao `ctx.user_id.parse::<i64>()` da `None` la e a
+/// resolucao cai no caminho do Telegram. Um `session_id` preenchido pelo
+/// adapter do Discord e o jeito certo de fechar isso.
+fn session_id_for(ctx: &CommandContext, state: &AppState) -> String {
+    if let Some(id) = &ctx.session_id {
+        return id.clone();
+    }
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            state
+                .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
+                .await
+        })
+    })
+}
+
 pub fn register_commands(registry: &mut CommandRegistry) {
     // Overwrite the placeholders with actual logic that accesses AppState
 
@@ -14,6 +53,18 @@ pub fn register_commands(registry: &mut CommandRegistry) {
         Role::User,
         true,
         |ctx: &CommandContext| -> CommandResult {
+            // `claim_owner` below hands the bot to whoever sends the first
+            // `/start` on a fresh install. Only a channel identity may do
+            // that: a caller with a `session_id` came through HTTP with a
+            // synthetic `api:<session>` id, and letting it claim the owner
+            // would lock the real owner out (audit of #1040). `api.rs`
+            // hides `/start` from HTTP already; this is the inner wall.
+            if ctx.session_id.is_some() {
+                return Ok(
+                    "/start is Telegram onboarding. Here you are already talking to Garra."
+                        .to_string(),
+                );
+            }
             let state: &AppState = ctx.state.as_ref().unwrap().downcast_ref::<AppState>().unwrap();
             let mut list = state.allowlist.lock().unwrap();
             let is_allowed = list.is_allowed(&ctx.user_id);
@@ -77,13 +128,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             // GAR-202 + #982: a chave vem do MESMO resolvedor que a execucao
             // usa. Montar `telegram-{chat_id}` aqui gravava numa linha que o
             // runtime nunca lia — ver `AppState::telegram_session_id`.
-            let session_id = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    state
-                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
-                        .await
-                })
-            }); // Note: Discord uses strings, but chat_id is i64 here... we'll just use it for telegram for now
+            let session_id = session_id_for(ctx, state);
             if let Some(mut session) = state.sessions.get_mut(&session_id) {
                 session.history.clear();
             }
@@ -108,13 +153,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             // GAR-202 + #982: a chave vem do MESMO resolvedor que a execucao
             // usa. Montar `telegram-{chat_id}` aqui gravava numa linha que o
             // runtime nunca lia — ver `AppState::telegram_session_id`.
-            let session_id = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    state
-                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
-                        .await
-                })
-            });
+            let session_id = session_id_for(ctx, state);
             if ctx.args.is_empty() {
                 let current = state.channel_models.get(&session_id);
                 if let Some(m) = current {
@@ -129,6 +168,14 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 {
                     state.channel_models.remove(&session_id);
                     Ok("🤖 Model override cleared. Using default.".to_string())
+                } else if !valid_model_name(&new_model) {
+                    // The string goes to the provider as `model_override`
+                    // untouched; keep it shaped like a model id (audit of
+                    // #1040, S-2).
+                    Err(CommandError::InvalidArgs(
+                        "model name: letters, digits and . _ : / - only (max 128 chars)"
+                            .to_string(),
+                    ))
                 } else {
                     state.channel_models.insert(session_id, new_model.clone());
                     Ok(format!("🤖 Model set to: {}", new_model))
@@ -274,13 +321,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
                 return Ok("⚠️ Estado indisponivel para este comando.".to_string());
             };
 
-            let session_id = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    state
-                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
-                        .await
-                })
-            });
+            let session_id = session_id_for(ctx, state);
 
             let mut out = String::from("📊 **Estatisticas**\n");
 
@@ -441,13 +482,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             // A mesma chave que a execucao usa (GAR-202 + #982): montar
             // `telegram-{chat_id}` aqui gravaria numa linha que o runtime nunca
             // le.
-            let session_id = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    state
-                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
-                        .await
-                })
-            });
+            let session_id = session_id_for(ctx, state);
 
             let Some(store) = &state.session_store else {
                 return Ok("⚠️ Sem armazenamento de sessao: o objetivo nao persiste.".to_string());
@@ -528,13 +563,7 @@ pub fn register_commands(registry: &mut CommandRegistry) {
             // GAR-202 + #982: a chave vem do MESMO resolvedor que a execucao
             // usa. Montar `telegram-{chat_id}` aqui gravava numa linha que o
             // runtime nunca lia — ver `AppState::telegram_session_id`.
-            let session_id = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    state
-                        .telegram_session_id(ctx.chat_id, ctx.user_id.parse::<i64>().ok())
-                        .await
-                })
-            });
+            let session_id = session_id_for(ctx, state);
 
             if ctx.args.is_empty() {
                 // Show current mode

@@ -33,6 +33,9 @@ dependencies:
   # Markdown rendering (AI messages). Discontinued upstream but functional;
   # tracked as debt for 0.4.x — swap to a maintained fork once one stabilises.
   flutter_markdown: ^0.7.4+3
+  # Direct because chat_bubble.dart implements a MarkdownElementBuilder
+  # (typed on md.Element) for the copy button on fenced code blocks.
+  markdown: ^7.3.1
 
   # Biometric auth
   local_auth: ^2.3.0

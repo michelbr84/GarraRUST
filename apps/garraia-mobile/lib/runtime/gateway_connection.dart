@@ -158,6 +158,17 @@ class GatewayConnection implements GarraConnection {
     ]).map(MemoryEntry.fromJson).toList();
   }
 
+  @override
+  Future<bool> deleteMemory(String id) async {
+    try {
+      await _dio.delete<void>('/api/memory/${Uri.encodeComponent(id)}');
+      return true;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return false;
+      rethrow;
+    }
+  }
+
   // ── Skills / commands ────────────────────────────────────────────────────
 
   @override
@@ -169,9 +180,11 @@ class GatewayConnection implements GarraConnection {
   }
 
   @override
-  Future<List<String>> slashCommands() async {
+  Future<List<SlashCommandInfo>> slashCommands() async {
     final r = await _dio.get<Object>('/api/slash-commands');
-    return unwrapNames(r.data, const ['commands']);
+    return unwrapList(r.data, const [
+      'commands',
+    ]).map(SlashCommandInfo.fromJson).toList();
   }
 
   // ── Providers / agents / files ───────────────────────────────────────────

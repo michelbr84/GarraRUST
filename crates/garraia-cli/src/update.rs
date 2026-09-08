@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
+use crate::update_scan::{BINARY_NAMES, report_other_binaries};
+
 const GITHUB_REPO: &str = "michelbr84/GarraRUST";
 const RELEASES_API: &str = "https://api.github.com/repos/michelbr84/GarraRUST/releases/latest";
 const UPDATE_CHECK_FILE: &str = "update-check.json";
@@ -65,7 +67,7 @@ fn asset_name_for(os: &str, arch: &str) -> Result<&'static str> {
 }
 
 /// Strip leading 'v' from a version tag.
-fn strip_v(tag: &str) -> &str {
+pub(crate) fn strip_v(tag: &str) -> &str {
     tag.strip_prefix('v').unwrap_or(tag)
 }
 
@@ -255,7 +257,30 @@ pub async fn run_update(yes: bool) -> Result<bool> {
     println!("Updated to v{latest}.");
     println!("Restart the daemon to apply: garraia restart");
 
+    // #1030: o update so troca ESTE binario. Um `/usr/bin/garraia` de outra
+    // instalacao segue no PATH, intocado e sem aviso — e e ele que scripts,
+    // cron e terminais com PATH diferente passam a rodar.
+    if let Some(report) = report_other_binaries(&current_exe, latest).await {
+        println!();
+        println!("{report}");
+    }
+
     Ok(true)
+}
+
+/// Run `garraia update --check-binaries`: so a varredura do PATH, sem rede.
+pub async fn run_check_binaries() -> Result<()> {
+    let current_exe =
+        std::env::current_exe().context("cannot determine current executable path")?;
+    match report_other_binaries(&current_exe, current_version()).await {
+        Some(report) => println!("{report}"),
+        None => println!(
+            "Nenhum outro binario {} no PATH alem de {}.",
+            BINARY_NAMES.join("/"),
+            current_exe.display()
+        ),
+    }
+    Ok(())
 }
 
 /// Run `garraia rollback`.

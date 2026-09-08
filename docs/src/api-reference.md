@@ -255,28 +255,54 @@ Retorna o estado atual do runtime do agente.
 
 ### POST /api/sessions
 
-Cria uma nova sessão explicitamente.
+Cria uma nova sessão. O id é gerado pelo gateway (UUID); quando
+`gateway.session_tokens_required` está ligado, a resposta traz também o cookie
+`garraia_session` que as chamadas seguintes precisam repetir (ou mandar como
+`Authorization: Bearer`).
 
-**Body:**
+**Body** (todos os campos opcionais):
 ```json
 {
-  "session_id": "projeto-alpha",
-  "metadata": {
-    "user": "joao",
-    "channel": "api"
-  }
+  "agent_id": "reachy_voice",
+  "mode": "search",
+  "working_dir": "/home/joao/projetos/alpha"
 }
 ```
 
-**Response 200:**
+- `agent_id` — agente nomeado para a sessão.
+- `mode` — modo do agente já na criação: um nativo (`auto`, `search`,
+  `architect`, `code`, `ask`, `debug`, `orchestrator`, `review`, `edit`) ou o
+  nome de um modo customizado (`POST /api/modes/custom`). É validado como no
+  `POST /api/mode/select` e gravado como modo **escolhido**, então a política
+  de ferramentas dele já vale na primeira mensagem (#1028).
+- `working_dir` — diretório de trabalho da sessão: a base dos caminhos
+  relativos que as ferramentas de arquivo (`file_read`, `list_dir`,
+  `repo_search`, …) recebem. Tem de ser um diretório existente sob uma das
+  raízes permitidas (`GARRAIA_PROJECT_ROOTS`; padrão, o home do usuário) —
+  a mesma regra do `path` de `POST /api/projects`.
+
+Outros campos do corpo são ignorados.
+
+**Response 201:**
 ```json
 {
-  "session_id": "projeto-alpha",
-  "created_at": "2026-04-06T10:15:00Z"
+  "session_id": "0f3b7c1e-2d4a-4b8e-9c6f-1a2b3c4d5e6f",
+  "agent_id": "reachy_voice",
+  "mode": "search",
+  "working_dir": "/home/joao/projetos/alpha"
 }
 ```
 
-**Response 409:** Session ID já existe.
+`mode` volta na grafia gravada (`search`; um customizado vem como foi criado,
+ex.: `Auditor`) e `working_dir` volta canonicalizado (symlinks resolvidos);
+ambos são `null` quando não foram pedidos.
+
+**Response 400:** `mode` desconhecido, ou `working_dir` fora das raízes
+permitidas (um corpo só para todas as variantes, como no `POST /api/projects`,
+para não virar oráculo de existência de diretório) — nenhuma sessão é criada.
+
+**Response 503:** `mode` pedido sem `session_store` disponível (não há onde
+gravar a política, então o gateway não finge que aplicou).
 
 ---
 

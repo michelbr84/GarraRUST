@@ -57,7 +57,7 @@ depende (`GarraFeature` em `lib/runtime/models.dart`):
 | Tile | Feature | Endpoints |
 |---|---|---|
 | Chat | `chat` | `/api/sessions`, `/api/sessions/{id}/messages`, `/api/sessions/{id}/history` |
-| Memory | `memory` | `/api/memory/recent`, `/api/memory/search` |
+| Memory | `memory` | `/api/memory/recent`, `/api/memory/search`, `DELETE /api/memory/{id}` |
 | Skills | `learning-skills` | `/api/learning/skills`, `/api/slash-commands` |
 | Files | `projects` | `/api/projects`, `/api/projects/{id}/files` |
 | Agents | `modes` | `/api/modes`, `/api/mcp` |
