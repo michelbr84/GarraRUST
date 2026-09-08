@@ -60,6 +60,13 @@ impl ApiKeyGate {
     /// desligado. É a mesma normalização de `MetricsAuthConfig`, e é o que
     /// impede que um `api_key = "  "` num TOML vire um gate que ninguém
     /// consegue satisfazer.
+    ///
+    /// **A chave é lida uma vez, no `build_router`.** Trocar
+    /// `gateway.api_key` em disco não muda o gate de um processo em
+    /// execução: é preciso reiniciar. O hot-reload de hoje só alcança
+    /// `agent.system_prompt`, `max_tokens` e `log_level`, então não há
+    /// divergência atual — mas quem estender o hot-reload precisa mexer
+    /// aqui **e** em `auth_check`, que lê o mesmo campo.
     pub fn from_config(gateway: &garraia_config::GatewayConfig) -> Self {
         let key = gateway
             .api_key
@@ -75,9 +82,10 @@ impl ApiKeyGate {
         self.key.is_some()
     }
 
-    ///  quando o token apresentado serve. Publico porque o handshake
-    /// do  usa a mesma decisao — com a diferenca de que la o token pode
-    /// vir pela query.
+    /// `true` quando o token apresentado serve.
+    ///
+    /// Publico porque o handshake do `/ws` toma a mesma decisao — com a
+    /// diferenca de que la o token tambem pode vir pela query.
     pub fn admits(&self, apresentada: Option<&str>) -> bool {
         match (&self.key, apresentada) {
             (None, _) => true,

@@ -474,9 +474,14 @@ pub fn build_router(
         // #1045: o gate de `gateway.api_key` sobre `/api/*`. Vem **depois**
         // de todos os `merge`/`nest` para cobrir tambem o que
         // `build_skill_skin_routes` e `build_plugin_routes` montam sob
-        // `/api/`, e antes de CORS e rate limit para que o preflight seja
-        // respondido pelo `CorsLayer` e a sondagem sem credencial ainda
-        // conte no limitador. Com a chave ausente e um passa-direto.
+        // `/api/`. Com a chave ausente e um passa-direto.
+        //
+        // Cuidado ao mover: em tower, o ultimo `.layer()` e o mais externo,
+        // entao a ordem no codigo e o inverso da ordem de execucao. Escrito
+        // aqui, o gate roda DEPOIS do CORS e do rate limit — que e o que se
+        // quer: o preflight `OPTIONS` e respondido pelo `CorsLayer` sem
+        // chegar ao gate, e uma sondagem sem credencial ainda gasta cota do
+        // limitador em vez de ser barrada de graca.
         .layer(axum::middleware::from_fn_with_state(
             api_key_gate,
             crate::gateway_auth::api_key_layer,

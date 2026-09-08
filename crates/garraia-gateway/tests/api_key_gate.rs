@@ -90,10 +90,11 @@ async fn com_chave_as_rotas_de_api_exigem_o_header() {
 
 #[tokio::test]
 async fn com_chave_e_com_header_o_gate_sai_da_frente() {
-    // Não se afirma 200: cada rota tem a própria autorização depois do gate
-    // (o `/api/plugins`, por exemplo, ainda quer o cookie de admin quando o
-    // bind não é loopback). O que se afirma é que **não é mais 401 do gate**
-    // — e para as rotas simples, que a resposta chega de verdade.
+    // Estas duas não têm autorização própria depois do gate, então com a
+    // chave certa a resposta chega de verdade. As outras da lista têm (o
+    // `/api/plugins` ainda quer o cookie de admin fora de loopback), e por
+    // isso não entram neste teste — o que importa lá é o 401 sem chave, que
+    // os dois testes acima cobrem.
     assert_eq!(
         status(Some(CHAVE), "/api/status", Some(&format!("Bearer {CHAVE}"))).await,
         StatusCode::OK
