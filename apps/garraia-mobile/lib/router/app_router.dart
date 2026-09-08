@@ -76,7 +76,12 @@ GoRouter appRouter(Ref ref) {
       GoRoute(path: '/profile', builder: (_, __) => const ProfileScreen()),
 
       // Feature tiles
-      GoRoute(path: '/chat', builder: (_, __) => const ChatScreen()),
+      GoRoute(
+        path: '/chat',
+        // `?draft=` pre-fills the input (Skills → tap a command).
+        builder: (_, state) =>
+            ChatScreen(initialDraft: state.uri.queryParameters['draft']),
+      ),
       GoRoute(
         // Deep link: garraia://chat/:sessionId
         path: '/chat/:sessionId',

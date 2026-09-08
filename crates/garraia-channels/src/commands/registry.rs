@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tracing::info;
 
@@ -64,7 +65,9 @@ where
     }
 }
 pub struct CommandRegistry {
-    commands: HashMap<String, Box<dyn SlashCommand>>,
+    /// `Arc`, not `Box`, so [`Self::resolve`] can hand a caller a handle it
+    /// executes **after** releasing the registry lock. See `resolve`.
+    commands: HashMap<String, Arc<dyn SlashCommand>>,
 }
 
 impl CommandRegistry {
@@ -78,7 +81,50 @@ impl CommandRegistry {
     pub fn register(&mut self, cmd: Box<dyn SlashCommand>) {
         let name = cmd.name().to_string();
         info!("registered slash command: /{name}");
-        self.commands.insert(name, cmd);
+        self.commands.insert(name, Arc::from(cmd));
+    }
+
+    /// The command name in `full_text` (`"/model x"` → `"model"`), empty when
+    /// there is none.
+    pub fn command_name(full_text: &str) -> &str {
+        full_text
+            .strip_prefix('/')
+            .unwrap_or(full_text)
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+    }
+
+    /// The reply for a name nobody registered — one string, shared by every
+    /// dispatcher so the user reads the same thing on every channel.
+    pub fn unknown_command_reply(name: &str) -> String {
+        format!("❓ Unknown command: /{name}\nType /help to see available commands.")
+    }
+
+    /// A cloned handle to the command `full_text` names, or `None`.
+    ///
+    /// Exists so a caller can **drop the registry lock before executing**.
+    /// [`Self::dispatch`] keeps the read guard alive for the whole run; a
+    /// command that reads the registry again while running — `/help` lists
+    /// it — then blocks the moment a writer is waiting (writer-preferring
+    /// `RwLock`: the pending write blocks the inner read, the outer read
+    /// blocks the write). The Telegram adapter carried that latent deadlock
+    /// since GAR-184; exposing commands over HTTP is what made it worth
+    /// closing. Pair with [`Self::run`].
+    pub fn resolve(&self, full_text: &str) -> Option<Arc<dyn SlashCommand>> {
+        self.commands.get(Self::command_name(full_text)).cloned()
+    }
+
+    /// Permission check + execute: the second half of [`Self::dispatch`],
+    /// for a handle obtained through [`Self::resolve`] with the lock gone.
+    pub fn run(cmd: &dyn SlashCommand, ctx: &CommandContext) -> CommandResult {
+        if ctx.user_role < cmd.required_role() {
+            return Err(CommandError::Unauthorized(format!(
+                "Permission denied. Required role: {}",
+                cmd.required_role()
+            )));
+        }
+        cmd.execute(ctx)
     }
 
     /// Look up a command by name (without the `/` prefix).
@@ -126,29 +172,11 @@ impl CommandRegistry {
     ///
     /// Returns a user-facing response string or a `CommandError`.
     pub fn dispatch(&self, ctx: &CommandContext) -> CommandResult {
-        let cmd_name = ctx
-            .full_text
-            .strip_prefix('/')
-            .unwrap_or(&ctx.full_text)
-            .split_whitespace()
-            .next()
-            .unwrap_or("");
-
+        let cmd_name = Self::command_name(&ctx.full_text);
         let Some(cmd) = self.get(cmd_name) else {
-            return Ok(format!(
-                "❓ Unknown command: /{cmd_name}\nType /help to see available commands."
-            ));
+            return Ok(Self::unknown_command_reply(cmd_name));
         };
-
-        // Permission check
-        if ctx.user_role < cmd.required_role() {
-            return Err(CommandError::Unauthorized(format!(
-                "Permission denied. Required role: {}",
-                cmd.required_role()
-            )));
-        }
-
-        cmd.execute(ctx)
+        Self::run(cmd, ctx)
     }
 
     /// Number of registered commands.
@@ -220,6 +248,7 @@ mod tests {
                 .collect(),
             user_role: role,
             state: None,
+            session_id: None,
         }
     }
 

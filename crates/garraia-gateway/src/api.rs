@@ -14,6 +14,120 @@ use crate::agent_router;
 use crate::rate_limiter::{TRUSTED_PROXIES_ENV, parse_trusted_proxies, real_client_ip};
 use crate::state::SharedState;
 
+/// The registry's `(name, description)` list as the HTTP surface sees it.
+///
+/// HTTP callers dispatch as [`garraia_channels::Role::User`] (see
+/// [`dispatch_slash_command`]), so discovery lists what that role can run —
+/// advertising `/pair` or `/config` to a caller that gets "permission denied"
+/// would be the old kind of lie in a new place. A poisoned lock yields an
+/// empty list rather than a panic on a read path.
+pub fn registry_commands_for_http(state: &SharedState) -> Vec<(String, String)> {
+    let Ok(registry) = state.command_registry.read() else {
+        return Vec::new();
+    };
+    registry
+        .list_for_role(garraia_channels::Role::User)
+        .into_iter()
+        .filter(|(n, _)| !HTTP_HIDDEN.contains(n))
+        .map(|(n, d)| (n.to_string(), d.to_string()))
+        .collect()
+}
+
+/// Registry commands that mean nothing over HTTP and are neither listed nor
+/// dispatched there.
+///
+/// `/start` is Telegram onboarding: on a fresh install it **claims the
+/// bot's owner** for whoever sends it first. Over HTTP the caller's id is a
+/// synthetic `api:<session>` that no channel will ever present, so a LAN
+/// request could take the owner slot and lock the real owner out — the
+/// blocker the security audit of #1040 found. The closure itself refuses
+/// callers with a `session_id` too; this list is the outer wall.
+const HTTP_HIDDEN: &[&str] = &["start"];
+
+/// What `/start` gets over HTTP instead of the registry.
+const START_OVER_HTTP: &str =
+    "/start is Telegram onboarding. Here you are already talking to Garra — just send a message.";
+
+/// A slash command the registry handled instead of the agent.
+pub struct SlashReply {
+    /// Command name without the `/`.
+    pub command: String,
+    /// User-facing text (a `CommandError` is rendered through its `Display`,
+    /// which is what the Telegram path shows too).
+    pub content: String,
+}
+
+/// Route a message that starts with `/` through the `CommandRegistry`.
+///
+/// Returns `None` when the text is not a registered command — including an
+/// unknown `/something` — so it falls through to the model exactly as
+/// before. Only a name the registry knows is intercepted, which is the
+/// contract that keeps this from changing behaviour for any existing client.
+///
+/// Why this exists: the registry is populated at boot (`server.rs`) with the
+/// full command set, and the only thing that ever called `dispatch` was the
+/// Telegram adapter. `/help` from the phone reached the model as plain text,
+/// and the model answered that "no slash commands are registered" — a
+/// hallucination the user could not tell from the truth.
+///
+/// Role is `User`: `/api/*` carries no identity beyond the session, and the
+/// owner/admin commands (`/pair`, `/users`, `/config`, `/mcp`, `/health`,
+/// `/providers`, `/stats`) answer with "permission denied" here. Elevating an
+/// HTTP caller is a separate decision tied to `gateway.api_key`.
+pub fn dispatch_slash_command(
+    state: &SharedState,
+    session_id: &str,
+    content: &str,
+) -> Option<SlashReply> {
+    let text = content.trim();
+    let name = text.strip_prefix('/')?.split_whitespace().next()?;
+    if name.is_empty() {
+        return None;
+    }
+
+    if HTTP_HIDDEN.contains(&name) {
+        return Some(SlashReply {
+            command: name.to_string(),
+            content: START_OVER_HTTP.to_string(),
+        });
+    }
+
+    // Take a handle and release the lock before running: `/help` reads the
+    // registry again, and a read held across a read is a deadlock the moment
+    // a writer queues up (see `CommandRegistry::resolve`).
+    let cmd = {
+        let Ok(registry) = state.command_registry.read() else {
+            return None;
+        };
+        registry.resolve(text)?
+    };
+
+    let args: Vec<String> = text
+        .split_whitespace()
+        .skip(1)
+        .map(|s| s.to_string())
+        .collect();
+    let ctx = garraia_channels::CommandContext {
+        user_id: format!("api:{session_id}"),
+        user_name: "api".to_string(),
+        chat_id: 0,
+        full_text: text.to_string(),
+        args,
+        user_role: garraia_channels::Role::User,
+        state: Some(std::sync::Arc::clone(state) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
+        session_id: Some(session_id.to_string()),
+    };
+
+    let content = match garraia_channels::CommandRegistry::run(cmd.as_ref(), &ctx) {
+        Ok(reply) => reply,
+        Err(err) => err.to_string(),
+    };
+    Some(SlashReply {
+        command: name.to_string(),
+        content,
+    })
+}
+
 #[derive(Deserialize)]
 pub struct CreateSessionRequest {
     /// Optional named agent to use for this session.
@@ -164,6 +278,21 @@ pub async fn send_message(
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "session not found" })),
+        )
+            .into_response();
+    }
+
+    // Slash commands never reach the model. Not persisted into history either
+    // (same as Telegram): `/help` output is not conversation, and it would
+    // only pollute the context the next turn sends.
+    if let Some(reply) = dispatch_slash_command(&state, &session_id, &body.content) {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "session_id": session_id,
+                "content": reply.content,
+                "command": reply.command,
+            })),
         )
             .into_response();
     }
@@ -905,4 +1034,140 @@ pub async fn delete_custom_mode(
             message: "Session store not available".to_string(),
         })),
     )
+}
+
+#[cfg(test)]
+mod slash_dispatch_tests {
+    use super::*;
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+    use garraia_config::AppConfig;
+    use std::sync::Arc;
+
+    fn state_with_commands() -> SharedState {
+        let state = Arc::new(crate::state::AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+        crate::commands::register_commands(&mut state.command_registry.write().unwrap());
+        state
+    }
+
+    /// O que o telefone mandou: `/help` chega ao registry e volta a lista
+    /// real, nao uma negacao do modelo.
+    #[test]
+    fn help_is_answered_by_the_registry() {
+        let st = state_with_commands();
+        let reply = dispatch_slash_command(&st, "s1", "/help").expect("comando registrado");
+        assert_eq!(reply.command, "help");
+        for name in ["/help", "/mode", "/clear", "/model"] {
+            assert!(
+                reply.content.contains(name),
+                "{name} ausente em {}",
+                reply.content
+            );
+        }
+        assert!(
+            !reply.content.contains("/pair"),
+            "comando de owner nao aparece para Role::User: {}",
+            reply.content
+        );
+    }
+
+    /// Nome desconhecido e texto comum passam para o modelo.
+    #[test]
+    fn unknown_or_plain_text_falls_through() {
+        let st = state_with_commands();
+        assert!(dispatch_slash_command(&st, "s1", "/naoexiste").is_none());
+        assert!(dispatch_slash_command(&st, "s1", "hello /help").is_none());
+        assert!(dispatch_slash_command(&st, "s1", "/").is_none());
+        assert!(dispatch_slash_command(&st, "s1", "   ").is_none());
+    }
+
+    /// Comando de owner via HTTP: capturado (nao vai ao modelo) e negado com
+    /// a mensagem do registry.
+    #[test]
+    fn owner_commands_are_denied_not_forwarded() {
+        let st = state_with_commands();
+        let reply = dispatch_slash_command(&st, "s1", "/pair").expect("capturado");
+        assert_eq!(reply.command, "pair");
+        assert!(
+            reply.content.contains("Permission denied"),
+            "{}",
+            reply.content
+        );
+    }
+
+    /// Espaco em volta e argumentos: o nome sai limpo e os args chegam.
+    #[test]
+    fn trims_and_splits_arguments() {
+        let st = state_with_commands();
+        let reply = dispatch_slash_command(&st, "s1", "  /modes  ").expect("capturado");
+        assert_eq!(reply.command, "modes");
+    }
+
+    /// A lista de descoberta e a mesma que o dispatch aceita, no mesmo papel.
+    #[test]
+    fn discovery_matches_dispatch_role() {
+        let st = state_with_commands();
+        let names: Vec<String> = registry_commands_for_http(&st)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(names.iter().any(|n| n == "help"));
+        assert!(names.iter().any(|n| n == "mode"));
+        assert!(!names.iter().any(|n| n == "pair"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "config"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "start"), "{names:?}");
+    }
+
+    /// Bloqueador da auditoria do #1040: `/start` pelo HTTP nao pode virar
+    /// dono da allowlist do Telegram. Nem chega ao registry, e a allowlist
+    /// continua sem dono.
+    #[test]
+    fn start_over_http_never_claims_the_owner() {
+        let st = state_with_commands();
+        assert!(
+            st.allowlist.lock().unwrap().needs_owner(),
+            "instalacao nova: sem dono"
+        );
+        let reply = dispatch_slash_command(&st, "s1", "/start").expect("capturado");
+        assert_eq!(reply.command, "start");
+        assert!(reply.content.contains("Telegram"), "{}", reply.content);
+        let list = st.allowlist.lock().unwrap();
+        assert!(list.needs_owner(), "a allowlist ganhou dono pelo HTTP");
+        assert!(!list.is_owner("api:s1"));
+    }
+
+    /// `/model` recusa lixo (auditoria do #1040, S-2) e aceita nomes reais.
+    #[test]
+    fn model_name_is_validated() {
+        let st = state_with_commands();
+        let long = "x".repeat(129);
+        for junk in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "gpt-4o;id",
+            long.as_str(),
+        ] {
+            let bad =
+                dispatch_slash_command(&st, "s1", &format!("/model {junk}")).expect("capturado");
+            assert!(
+                bad.content.contains("model name"),
+                "{junk}: {}",
+                bad.content
+            );
+            assert!(st.channel_models.get("s1").is_none(), "{junk} foi aceito");
+        }
+        for good in ["openrouter/auto", "claude-3.5-sonnet", "llama3.1:8b"] {
+            let ok =
+                dispatch_slash_command(&st, "s1", &format!("/model {good}")).expect("capturado");
+            assert!(ok.content.contains(good), "{}", ok.content);
+            assert_eq!(
+                st.channel_models.get("s1").map(|m| m.clone()),
+                Some(good.to_string())
+            );
+        }
+    }
 }
