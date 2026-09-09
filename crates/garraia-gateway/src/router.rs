@@ -1253,6 +1253,7 @@ const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
     ("google_chat", "Google Chat", true),
     ("teams", "Microsoft Teams", true),
     ("line", "LINE", true),
+    ("irc", "IRC", false),
     ("openclaw", "OpenClaw", false),
     ("mcp", "MCP", false),
     ("cli", "CLI", false),

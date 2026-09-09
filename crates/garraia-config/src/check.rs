@@ -669,6 +669,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
     validate_google_chat(&config.channels, &mut findings, &push_warn);
+    validate_irc(&config.channels, &mut findings, &push_warn);
     validate_line(&config.channels, &mut findings, &push_warn);
     validate_teams(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
@@ -1230,6 +1231,77 @@ fn validate_line(
                 &format!("channels.{name}"),
                 format!(
                     "line channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
+    }
+}
+
+/// O IRC nao tem token — a identidade e o nick, que num servidor sem NickServ
+/// qualquer um pode tomar — entao a checagem generica de credencial nao o
+/// alcanca (#1050). O que ele precisa e um servidor e ao menos uma sala; sem
+/// qualquer um dos dois e pulado no boot com um `warn!` que so aparece no log.
+///
+/// E ha uma armadilha de porta: o default do `IrcConfig` e 6667, que e a
+/// porta em claro. Ligar `use_tls` sem dizer a porta apontaria TLS para 6667.
+/// O bootstrap corrige o default, mas uma porta escrita a mao em desacordo
+/// com o `use_tls` continua sendo do operador — e vale avisar.
+fn validate_irc(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "irc" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        let tem_server = ch
+            .settings
+            .get("server")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+
+        if !tem_server && std::env::var_os("IRC_SERVER").is_none() {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "irc channel '{name}' is enabled but has no server in config or the IRC_SERVER env var; the channel will be skipped at boot"
+                ),
+            );
+        }
+
+        let salas = ch
+            .settings
+            .get("channels")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter(|v| v.is_string()).count())
+            .unwrap_or(0);
+
+        if salas == 0 {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "irc channel '{name}' is enabled but joins no channels; set `channels = [\"#room\"]` under its settings or it will be skipped at boot"
+                ),
+            );
+        }
+
+        let use_tls = ch
+            .settings
+            .get("use_tls")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let port = ch.settings.get("port").and_then(serde_json::Value::as_u64);
+
+        if use_tls && port == Some(6667) {
+            push_warn(
+                findings,
+                &format!("channels.{name}.settings.port"),
+                format!(
+                    "irc channel '{name}' has use_tls = true with port 6667, the cleartext IRC port; TLS servers usually listen on 6697"
                 ),
             );
         }
@@ -2767,6 +2839,128 @@ mod tests {
     fn google_chat_desabilitado_nao_avisa() {
         let msgs = mensagens_de_gc(&cfg_google_chat(Some(false), serde_json::json!({})));
         assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
+
+    // ─── #1050: o IRC nao tem token, e tem armadilha de porta ─────────────
+
+    fn cfg_irc(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "irc1".into(),
+            crate::model::ChannelConfig {
+                channel_type: "irc".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// Sem servidor e sem sala o canal e pulado no boot. A checagem generica
+    /// procura token, que o IRC nao tem, entao sem esta validacao propria o
+    /// canal sairia do check sem um unico achado.
+    #[test]
+    fn irc_sem_servidor_ou_sala_avisa() {
+        let findings = validate(&cfg_irc(Some(true), serde_json::json!({})));
+        let msgs: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.field == "channels.irc1")
+            .map(|f| f.message.as_str())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("IRC_SERVER")),
+            "esperava aviso de server: {findings:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("joins no channels")),
+            "esperava aviso de sala: {findings:?}"
+        );
+    }
+
+    /// Lista de salas vazia conta como ausente — `channels = []` no TOML
+    /// passaria pelo check e o canal seria pulado no boot.
+    #[test]
+    fn irc_com_lista_de_salas_vazia_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({"server": "irc.libera.chat", "channels": []}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.irc1" && f.message.contains("joins no channels")),
+            "esperava aviso de sala vazia: {findings:?}"
+        );
+    }
+
+    /// A armadilha: o default do `IrcConfig` e 6667, a porta em claro. Uma
+    /// porta escrita a mao em desacordo com o `use_tls` e do operador, e vale
+    /// nomear antes que ele descubra por tcpdump.
+    #[test]
+    fn irc_com_tls_na_porta_em_claro_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({
+                "server": "irc.libera.chat",
+                "channels": ["#garraia"],
+                "use_tls": true,
+                "port": 6667,
+            }),
+        ));
+        assert!(
+            findings.iter().any(
+                |f| f.field == "channels.irc1.settings.port" && f.message.contains("cleartext")
+            ),
+            "esperava aviso de porta: {findings:?}"
+        );
+
+        // 6697 com TLS, e 6667 sem TLS, nao avisam.
+        for (tls, porta) in [(true, 6697), (false, 6667)] {
+            let findings = validate(&cfg_irc(
+                Some(true),
+                serde_json::json!({
+                    "server": "irc.libera.chat",
+                    "channels": ["#garraia"],
+                    "use_tls": tls,
+                    "port": porta,
+                }),
+            ));
+            assert!(
+                findings
+                    .iter()
+                    .all(|f| f.field != "channels.irc1.settings.port"),
+                "tls={tls} porta={porta} nao deveria avisar: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irc_completo_nao_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({"server": "irc.libera.chat", "channels": ["#garraia"]}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f.field.starts_with("channels.irc1")),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn irc_desligado_fica_calado() {
+        let findings = validate(&cfg_irc(Some(false), serde_json::json!({})));
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f.field.starts_with("channels.irc1")),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
     }
 
     fn cfg_line(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {

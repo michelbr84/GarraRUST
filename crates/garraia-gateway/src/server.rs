@@ -14,8 +14,9 @@ use crate::admin;
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
     build_agent_runtime, build_channels, build_discord_channels, build_google_chat_channels,
-    build_line_channels, build_mcp_tools, build_slack_channels, build_teams_channels,
-    build_telegram_channels, build_whatsapp_channels, warn_if_embeddings_unhealthy,
+    build_irc_channels, build_line_channels, build_mcp_tools, build_slack_channels,
+    build_teams_channels, build_telegram_channels, build_whatsapp_channels,
+    warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
 use crate::state::AppState;
@@ -797,6 +798,21 @@ impl GatewayServer {
                 Ok(()) => state.channels.write().await.register(channel),
                 Err(e) => {
                     warn!("telegram channel failed to connect: {e}; retrying in background");
+                    spawn_channel_connect_retry(Arc::clone(&state), channel);
+                }
+            }
+        }
+
+        // Start configured IRC channels (#1050).
+        //
+        // Servidor IRC cai e volta; falha no boot vai pelo retry com backoff
+        // do Telegram (#928) em vez do `warn!` de uma linha.
+        let irc_channels = build_irc_channels(&state.config, &state);
+        for mut channel in irc_channels {
+            match channel.connect().await {
+                Ok(()) => state.channels.write().await.register(channel),
+                Err(e) => {
+                    warn!("irc channel failed to connect: {e}; retrying in background");
                     spawn_channel_connect_retry(Arc::clone(&state), channel);
                 }
             }
