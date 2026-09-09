@@ -272,6 +272,36 @@ fn chaves_do_set(set: &JwkSet) -> HashMap<String, DecodingKey> {
     por_kid
 }
 
+/// Monta um JWT de teste a partir do JSON do cabecalho.
+///
+/// Os testes de confusao de algoritmo do `google_chat::auth` e do
+/// `teams::auth` precisam de tokens com `alg` escolhido a dedo (`none`,
+/// `HS256`, `RS256` sem `kid`). Escrever o base64 pronto no fonte custava
+/// duas coisas:
+///
+/// 1. O literal e longo e de entropia alta, e mora ao lado da palavra
+///    `token` — exatamente o formato que a regra `generic-api-key` do
+///    gitleaks procura. Rendeu 4 achados falsos no scan de segredos, e a
+///    saida do proprio gitleaks vem redigida, entao o achado nao diz o que
+///    encontrou: alguem tem de ir ao fonte para descobrir que nao era nada.
+/// 2. O que o base64 decodificava vivia num comentario ao lado. Comentario
+///    nao compila: editar o literal sem editar o comentario deixaria o teste
+///    exercitando um `alg` diferente do que ele diz exercitar.
+///
+/// Montando aqui, o JSON e o que se le **e** o que o parser enxerga, e nao
+/// sobra literal para nenhuma das duas coisas acontecerem.
+///
+/// Nenhum destes tokens chega a ser verificado: o corpo e sempre `{}` e a
+/// assinatura e lixo (ou vazia). Eles existem para serem recusados **antes**
+/// da chave, e e isso que os testes afirmam.
+#[cfg(test)]
+pub(crate) fn jwt_de_teste(cabecalho_json: &str, assinatura: &str) -> String {
+    use base64::Engine as _;
+    let cabecalho = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(cabecalho_json);
+    // `e30` e o base64url de `{}` — corpo vazio.
+    format!("{cabecalho}.e30.{assinatura}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

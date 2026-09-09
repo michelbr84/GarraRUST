@@ -273,9 +273,8 @@ mod tests {
     #[tokio::test]
     async fn alg_none_e_recusado_sem_buscar_chave() {
         let jwks = JwksCache::new("http://127.0.0.1:1/nunca-vai-ser-chamado");
-        // {"alg":"none","typ":"JWT","kid":"k"} em base64url, sem assinatura.
-        let token = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIiwia2lkIjoiayJ9.e30.";
-        let erro = verificar_token(&jwks, token, "1234").await.unwrap_err();
+        let token = crate::jwks::jwt_de_teste(r#"{"alg":"none","typ":"JWT","kid":"k"}"#, "");
+        let erro = verificar_token(&jwks, &token, "1234").await.unwrap_err();
         assert!(
             matches!(
                 erro,
@@ -290,10 +289,10 @@ mod tests {
     #[tokio::test]
     async fn hs256_e_recusado_mesmo_com_kid_valido() {
         let jwks = JwksCache::new("http://127.0.0.1:1/nunca-vai-ser-chamado");
-        // {"alg":"HS256","typ":"JWT","kid":"chave-1"}
-        let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImNoYXZlLTEifQ.e30.x";
+        let token =
+            crate::jwks::jwt_de_teste(r#"{"alg":"HS256","typ":"JWT","kid":"chave-1"}"#, "x");
         assert_eq!(
-            verificar_token(&jwks, token, "1234").await,
+            verificar_token(&jwks, &token, "1234").await,
             Err(AuthError::AlgoritmoErrado),
             "HS256 tem de cair no guard de algoritmo, nao na busca de chave"
         );
@@ -304,10 +303,9 @@ mod tests {
     #[tokio::test]
     async fn rs256_sem_kid_e_recusado() {
         let jwks = JwksCache::new("http://127.0.0.1:1/nunca-vai-ser-chamado");
-        // {"alg":"RS256","typ":"JWT"}
-        let token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.e30.x";
+        let token = crate::jwks::jwt_de_teste(r#"{"alg":"RS256","typ":"JWT"}"#, "x");
         assert_eq!(
-            verificar_token(&jwks, token, "1234").await,
+            verificar_token(&jwks, &token, "1234").await,
             Err(AuthError::HeaderMalformado)
         );
     }
