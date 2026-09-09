@@ -479,7 +479,7 @@ mod tests {
             session_id: session_id.to_string(),
             user_id: Some("u-1".to_string()),
             is_heartbeat: false,
-            is_confirmation_approved: false,
+            approval: crate::tools::approval::ToolApproval::None,
             working_dir: None,
             project_id: None,
         }
@@ -561,7 +561,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             user_id: Some("u-1".to_string()),
             is_heartbeat: true,
-            is_confirmation_approved: false,
+            approval: crate::tools::approval::ToolApproval::None,
             working_dir: None,
             project_id: None,
         };
@@ -647,7 +647,7 @@ mod tests {
                     session_id: "s2".to_string(),
                     user_id: Some("u2".to_string()),
                     is_heartbeat: false,
-                    is_confirmation_approved: false,
+                    approval: crate::tools::approval::ToolApproval::None,
                     working_dir: None,
                     project_id: None,
                 },

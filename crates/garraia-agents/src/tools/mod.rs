@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod bash_tool;
 pub mod code_review_tool;
 pub mod file_read_tool;
@@ -45,11 +46,16 @@ pub struct ToolContext {
     #[serde(default)]
     pub is_heartbeat: bool,
 
-    /// GAR-187: Quando verdadeiro, o usuário já aprovou uma confirmação pendente
-    /// para esta invocação. Ferramentas com `CONFIRM_LIST` podem pular o pedido de
-    /// confirmação neste caso e executar diretamente.
+    /// GAR-187 + #1078 item 2: a aprovacao humana pendente para esta
+    /// invocacao, **vinculada ao pedido que foi aprovado**.
+    ///
+    /// Era um `bool` que valia para o turno inteiro: o usuario dizia "ok" a
+    /// um `ls` e o modelo executava qualquer outra coisa no mesmo turno.
+    /// Agora carrega a impressao digital de `(ferramenta, assunto)`, e a
+    /// ferramenta so a honra quando ela bate com o que ela esta prestes a
+    /// fazer. Ver [`approval`].
     #[serde(default)]
-    pub is_confirmation_approved: bool,
+    pub approval: crate::tools::approval::ToolApproval,
 
     /// Phase 2.2: Working directory for this session (project root).
     /// Tools use this as CWD for command execution and path resolution.

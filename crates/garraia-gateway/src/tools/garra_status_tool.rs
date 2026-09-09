@@ -135,7 +135,7 @@ mod tests {
             session_id: "sessao-teste".to_string(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: false,
+            approval: garraia_agents::tools::approval::ToolApproval::None,
             working_dir: working_dir.map(str::to_string),
             project_id: None,
         }

@@ -22,6 +22,11 @@ futures = { workspace = true }
 bytes = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 chrono = { workspace = true, features = ["serde"] }
+# #1078 item 2: impressao digital do pedido de confirmacao. Nao e
+# criptografia — e identificador —, mas colisao entre dois comandos
+# diferentes seria um bug de seguranca, entao vale um digest de verdade.
+# Ja esta no Cargo.lock via garraia-channels; nao traz arvore nova.
+sha2 = "0.10"
 
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-io"], optional = true }
 
