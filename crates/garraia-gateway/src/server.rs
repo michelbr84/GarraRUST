@@ -14,8 +14,9 @@ use crate::admin;
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
     build_agent_runtime, build_channels, build_discord_channels, build_google_chat_channels,
-    build_irc_channels, build_mcp_tools, build_slack_channels, build_teams_channels,
-    build_telegram_channels, build_whatsapp_channels, warn_if_embeddings_unhealthy,
+    build_irc_channels, build_line_channels, build_mcp_tools, build_slack_channels,
+    build_teams_channels, build_telegram_channels, build_whatsapp_channels,
+    warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
 use crate::state::AppState;
@@ -881,6 +882,18 @@ impl GatewayServer {
         }
         let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(teams_channels);
 
+        // Build LINE channels (webhook-driven — no persistent connection).
+        //
+        // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
+        // rota `/webhooks/line`. Um canal com `channel_secret` invalido nao
+        // chega ate aqui — `build_line_channels` o descarta (#1051).
+        let line_channels = build_line_channels(&state.config, &state);
+        for channel in &line_channels {
+            info!("line channel ready (webhook mode, name={})", channel.name());
+        }
+        let line_state: garraia_channels::line_channel::webhook::LineState =
+            Arc::new(line_channels);
+
         // Initialize admin store for the web admin console
         let admin_db_path = data_dir.join("admin.db");
         let mut admin_store_owned = match admin::store::AdminStore::open(&admin_db_path) {
@@ -926,6 +939,7 @@ impl GatewayServer {
             whatsapp_state,
             google_chat_state,
             teams_state,
+            line_state,
             admin_store,
             admin_encryption_key,
         );
@@ -1070,6 +1084,7 @@ pub async fn build_router_for_test_with_storage(
     let google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState =
         Arc::new(Vec::new());
     let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(Vec::new());
+    let line_state: garraia_channels::line_channel::webhook::LineState = Arc::new(Vec::new());
     let mut admin_store_owned =
         admin::store::AdminStore::in_memory().expect("in-memory admin store should work");
     let admin_encryption_key = Arc::new(admin::handlers::resolve_admin_encryption_key(
@@ -1082,6 +1097,7 @@ pub async fn build_router_for_test_with_storage(
         whatsapp_state,
         google_chat_state,
         teams_state,
+        line_state,
         admin_store,
         admin_encryption_key,
     )
