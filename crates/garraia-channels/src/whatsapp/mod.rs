@@ -1,4 +1,5 @@
 pub mod api;
+pub mod signature;
 pub mod webhook;
 
 use std::future::Future;
@@ -34,27 +35,45 @@ pub struct WhatsAppChannel {
     access_token: String,
     phone_number_id: String,
     verify_token: String,
+    /// App secret da app da Meta, usado para verificar `X-Hub-Signature-256`
+    /// em cada POST do webhook (#1070). E **outro** valor que o
+    /// `verify_token`, que so serve ao handshake unico do `GET`.
+    app_secret: String,
     display: String,
     status: ChannelStatus,
     on_message: WhatsAppOnMessageFn,
 }
 
 impl WhatsAppChannel {
+    /// Constroi o canal, **recusando** quando falta o `app_secret`.
+    ///
+    /// Mesma decisao do [`crate::line_channel::LineChannel::new`] (#1051):
+    /// sem o segredo nao ha como verificar a assinatura do webhook, e um
+    /// canal que nao consegue fazer essa distincao nao deve existir nem por
+    /// engano. Estar no construtor — e nao no wiring — e o que impede
+    /// qualquer call-site futuro de montar o canal em modo degradado.
     pub fn new(
         access_token: String,
         phone_number_id: String,
         verify_token: String,
+        app_secret: String,
         on_message: WhatsAppOnMessageFn,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        if app_secret.trim().is_empty() {
+            return Err(garraia_common::Error::Channel(
+                "whatsapp: app_secret e obrigatorio para verificar a assinatura do webhook".into(),
+            ));
+        }
+        Ok(Self {
             client: Client::new(),
             access_token,
             phone_number_id,
             verify_token,
+            app_secret,
             display: "WhatsApp".to_string(),
             status: ChannelStatus::Disconnected,
             on_message,
-        }
+        })
     }
 
     /// Access token for the WhatsApp Cloud API.
@@ -70,6 +89,11 @@ impl WhatsAppChannel {
     /// Verify token used for webhook verification.
     pub fn verify_token(&self) -> &str {
         &self.verify_token
+    }
+
+    /// App secret usado para verificar `X-Hub-Signature-256` (#1070).
+    pub fn app_secret(&self) -> &str {
+        &self.app_secret
     }
 
     /// HTTP client shared across requests.
@@ -165,10 +189,31 @@ mod tests {
             "fake-token".to_string(),
             "123456".to_string(),
             "verify-me".to_string(),
+            "app-secret".to_string(),
             on_msg,
-        );
+        )
+        .expect("app_secret presente");
         assert_eq!(channel.channel_type(), "whatsapp");
         assert_eq!(channel.display_name(), "WhatsApp");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    /// #1070: sem `app_secret` o canal nao existe. Se este teste cair, o
+    /// wiring voltou a poder montar WhatsApp em modo degradado — que e
+    /// exatamente o estado que deixava `POST /webhooks/whatsapp` aberto.
+    #[test]
+    fn sem_app_secret_o_canal_e_recusado_no_construtor() {
+        for secret in ["", "   ", "\t"] {
+            let on_msg: WhatsAppOnMessageFn =
+                Arc::new(|_f, _u, _t, _d| Box::pin(async { Ok("test".to_string()) }));
+            let r = WhatsAppChannel::new(
+                "fake-token".to_string(),
+                "123456".to_string(),
+                "verify-me".to_string(),
+                secret.to_string(),
+                on_msg,
+            );
+            assert!(r.is_err(), "app_secret {secret:?} devia ser recusado");
+        }
     }
 }

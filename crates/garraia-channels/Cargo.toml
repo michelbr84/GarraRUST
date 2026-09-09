@@ -66,7 +66,10 @@ slack = ["dep:tokio-tungstenite", "dep:futures"]
 teams = ["webhook-jwt", "garraia-common/ssrf", "dep:url"]
 telegram = ["dep:teloxide"]
 voice = []
-whatsapp = ["dep:axum"]
+# `hmac`/`sha2`/`subtle` entram pela verificacao de `X-Hub-Signature-256`
+# (#1070), o mesmo trio do `line`. O hex e decodificado a mao em
+# `whatsapp/signature.rs` para nao acrescentar o crate `hex`.
+whatsapp = ["dep:axum", "dep:hmac", "dep:sha2", "dep:subtle"]
 imessage = ["dep:rusqlite", "dep:dirs"]
 
 [dev-dependencies]

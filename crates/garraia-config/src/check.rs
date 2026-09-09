@@ -674,6 +674,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     validate_signal(&config.channels, &mut findings, &push_warn);
     validate_irc(&config.channels, &mut findings, &push_warn);
     validate_line(&config.channels, &mut findings, &push_warn);
+    validate_whatsapp(&config.channels, &mut findings, &push_warn);
     validate_teams(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
@@ -1176,6 +1177,62 @@ fn validate_teams(
                 &format!("channels.{name}"),
                 format!(
                     "teams channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
+    }
+}
+
+/// O `app_secret` do canal WhatsApp (#1070).
+///
+/// O WhatsApp e o unico canal push que ja estava LIGADO quando a #1070 foi
+/// aberta — feature no gateway, call-site no `server.rs`, rota montada — e
+/// o unico sem verificacao de assinatura nenhuma. A checagem generica de
+/// credencial procura `access_token` e o encontra, entao um canal sem
+/// `app_secret` saia do check limpo e subia com o webhook aberto.
+///
+/// `app_secret` e o **app secret da app da Meta**, nao o `verify_token`: o
+/// segundo e o handshake unico do `GET` no registro da URL, o primeiro
+/// assina cada `POST` que chega depois. Um nao substitui o outro.
+fn validate_whatsapp(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "whatsapp" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env, consequencia) in [
+            (
+                "app_secret",
+                "WHATSAPP_APP_SECRET",
+                "the channel will be REFUSED at boot: without it a forged POST to /webhooks/whatsapp is indistinguishable from a real one",
+            ),
+            (
+                "phone_number_id",
+                "WHATSAPP_PHONE_NUMBER_ID",
+                "the channel will be skipped at boot and cannot reply",
+            ),
+        ] {
+            let configurado_inline = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            // Mesma regra do `validate_line`: `var(..).is_ok_and(nao vazio)`
+            // e nao `var_os(..).is_some()`, porque o boot filtra vazio via
+            // `resolve_api_key` e um check que aceita `""` afirma o contrario
+            // do que o boot faz.
+            if configurado_inline || std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "whatsapp channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
                 ),
             );
         }
@@ -3345,6 +3402,116 @@ mod tests {
                 .all(|f| !f.field.starts_with("channels.irc1")),
             "canal desligado nao deveria gerar achado: {findings:?}"
         );
+    }
+
+    fn cfg_whatsapp(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "wa".into(),
+            crate::model::ChannelConfig {
+                channel_type: "whatsapp".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    fn mensagens_de_whatsapp(cfg: &AppConfig) -> Vec<String> {
+        achados_de(cfg, "channels.wa")
+            .into_iter()
+            .map(|f| f.message)
+            .collect()
+    }
+
+    /// #1070: a checagem generica encontra `access_token` e da o canal por
+    /// bom. O `app_secret` — que e o que separa um webhook da Meta de um
+    /// POST forjado — nao era procurado por ninguem.
+    #[test]
+    fn whatsapp_com_access_token_mas_sem_app_secret_ainda_avisa() {
+        let msgs = mensagens_de_whatsapp(&cfg_whatsapp(
+            Some(true),
+            serde_json::json!({"access_token": "tok", "phone_number_id": "123"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so o app_secret deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("app_secret"),
+            "esperava aviso de app_secret: {msgs:?}"
+        );
+    }
+
+    /// O aviso diz a consequencia certa: o canal e **recusado** no boot
+    /// (#1070), nao apenas pulado — e por que.
+    #[test]
+    fn o_aviso_do_app_secret_diz_que_o_canal_e_recusado() {
+        let msgs = mensagens_de_whatsapp(&cfg_whatsapp(
+            Some(true),
+            serde_json::json!({"phone_number_id": "123"}),
+        ));
+        let aviso = msgs
+            .iter()
+            .find(|m| m.contains("app_secret"))
+            .expect("aviso de app_secret");
+        assert!(
+            aviso.contains("REFUSED") && aviso.contains("forged"),
+            "o aviso tem de explicar o que se perde: {aviso}"
+        );
+    }
+
+    #[test]
+    fn whatsapp_completo_nao_avisa() {
+        let msgs = mensagens_de_whatsapp(&cfg_whatsapp(
+            Some(true),
+            serde_json::json!({
+                "access_token": "tok",
+                "phone_number_id": "123",
+                "app_secret": "segredo",
+            }),
+        ));
+        assert!(
+            msgs.is_empty(),
+            "config completa nao deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn whatsapp_desabilitado_nao_avisa() {
+        let msgs = mensagens_de_whatsapp(&cfg_whatsapp(Some(false), serde_json::json!({})));
+        assert!(msgs.is_empty(), "canal desligado nao avisa: {msgs:?}");
+    }
+
+    /// `enabled` ausente e o caso mais comum: o operador escreve o canal no
+    /// TOML e nao escreve `enabled`. A condicao de pulo e
+    /// `enabled == Some(false)`, entao `None` e tratado como ligado — mas
+    /// sem teste esse invariante regride em silencio e o canal mais comum
+    /// deixa de ser checado.
+    #[test]
+    fn whatsapp_sem_enabled_e_tratado_como_ligado() {
+        let msgs = mensagens_de_whatsapp(&cfg_whatsapp(None, serde_json::json!({})));
+        assert!(
+            msgs.iter().any(|m| m.contains("app_secret")),
+            "canal sem `enabled` deve ser checado: {msgs:?}"
+        );
+    }
+
+    /// Nenhum achado do WhatsApp pode carregar o valor de um segredo — so a
+    /// presenca. Regra 6 do `CLAUDE.md`.
+    #[test]
+    fn achado_de_whatsapp_nunca_carrega_o_valor_do_segredo() {
+        let cfg = cfg_whatsapp(
+            Some(true),
+            serde_json::json!({"app_secret": "valor-ultrassecreto"}),
+        );
+        for m in mensagens_de_whatsapp(&cfg) {
+            assert!(
+                !m.contains("valor-ultrassecreto"),
+                "achado carregando o segredo: {m}"
+            );
+        }
     }
 
     fn cfg_line(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
