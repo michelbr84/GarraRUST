@@ -42,6 +42,12 @@ ela nao pode causar. Do lado do app, o `/ws` passou a emitir o turno enquanto
 ele acontece (`delta`, `tool_started`, `tool_finished`, `stopped`) e a aceitar
 cancelamento; a metade Flutter disso segue em aberto.
 
+Fechando o ciclo, o `sha` do rollback de skill deixou de ir cru para o `git`.
+Nenhum shell estava envolvido, mas o `git` le um valor comecando com `-` como
+opcao, e `--output=<caminho>` no caminho do diff e escrita de arquivo
+arbitraria — num modulo que e auth-free por politica. O mesmo valor derrubava
+a task quando um caractere multi-byte caia na fronteira que o codigo fatiava.
+
 ### Added
 - **`garraia update` avisa de binarios antigos no PATH (#1030).** O update
   trocava so o proprio binario; um `/usr/bin/garraia` de outra instalacao
@@ -319,6 +325,18 @@ cancelamento; a metade Flutter disso segue em aberto.
   como `offline`, que e a verdade. (#1079)
 
 ### Security
+- learning: o `sha` do corpo de `POST /api/learning/skills/{name}/rollback`
+  passa a ser validado (hexadecimal, 7 a 40 caracteres) antes de virar
+  argumento do `git`. Ate aqui o valor ia cru para `git revert` e para o
+  `git diff` do versioning, num modulo que e auth-free por politica: nenhum
+  shell esta envolvido, mas o `git` le um valor comecando com `-` como
+  **opcao**, e `--output=<caminho>` no caminho do diff e escrita de arquivo
+  arbitraria. O mesmo valor tambem derrubava a task com `end byte index 8 is
+  not a char boundary` quando um caractere multi-byte caia na fronteira que o
+  `short_sha` fatia. Recusa fail-closed: nenhum processo e criado com valor
+  invalido, e a resposta 400 nao ecoa o que foi recusado (#1086).
+- learning: `git revert` e `git add` passam a separar os operandos com `--`,
+  para que um sha ou um caminho nunca possam ser lidos como flag (#1086).
 - gateway: com `gateway.api_key` configurada, as rotas `/api/*` passam a
   exigir `Authorization: Bearer`. Antes a chave valia so no handshake do
   `/ws`, e todo o REST — sessoes, memoria, providers, logs, diagnosticos —
