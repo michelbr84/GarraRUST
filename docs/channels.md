@@ -376,3 +376,37 @@ Messages are automatically routed to the active agent session. Users on differen
 Use session management commands to bridge channels:
 - `/session` - View current session
 - `/session bridge <user_id>` - Bridge sessions
+
+## Pull channels vs push channels (and what the console shows)
+
+A channel receives messages in one of two ways, and the difference decides how
+the Web Console reports its status.
+
+| | Pull | Push |
+|---|---|---|
+| Channels | Telegram, Discord, Slack, IRC, Signal, Matrix, iMessage, OpenClaw | WhatsApp, Google Chat, Teams, LINE |
+| How it receives | opens a persistent connection at boot and polls or listens | the provider POSTs to `/webhooks/<channel>` |
+| Registered in `ChannelRegistry` | yes | **no** — the channel list becomes route state |
+| Status source in `GET /api/channels` | the registry | the channels that actually mounted on the route |
+
+Until #1079, `GET /api/channels` derived every status from the registry. Since
+push channels never enter it, all four reported `offline` forever, even while
+receiving webhooks and replying normally. If you are on a build older than
+v0.4.1 and the console shows WhatsApp, Google Chat, Teams or LINE as offline,
+check the webhook itself before assuming the channel is down.
+
+The status of a push channel comes from what **started**, not from what is
+written in the config file. Several push channels are refused at boot when
+misconfigured — LINE with an invalid `channel_secret`, Teams without `app_id`,
+Google Chat without `audience`, WhatsApp without `app_secret` — and in every
+one of those cases the config says "configured" while the route has zero
+channels. Reporting from config would show better than reality, which is the
+dangerous direction: it would tell an operator the webhook is protected when
+the channel does not exist. So a refused channel still reads `offline`.
+
+| Status | Meaning |
+|---|---|
+| `active` | pull channel registered and live, or push channel with at least one mounted |
+| `offline` | did not start, and the channel needs a secret |
+| `optional` | did not start, and needs no secret |
+| `unknown` | internal defect: the channel table and the push state disagree. Report it |
