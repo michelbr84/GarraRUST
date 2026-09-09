@@ -991,10 +991,12 @@ impl GatewayServer {
         let state_for_shutdown = Arc::clone(&state);
         let app = build_router(
             state,
-            whatsapp_state,
-            google_chat_state,
-            teams_state,
-            line_state,
+            crate::push_channels::PushChannelStates {
+                whatsapp: whatsapp_state,
+                google_chat: google_chat_state,
+                teams: teams_state,
+                line: line_state,
+            },
             admin_store,
             admin_encryption_key,
         );
@@ -1135,11 +1137,6 @@ pub async fn build_router_for_test_with_storage(
     let state: crate::state::SharedState = Arc::new(state);
 
     // Minimal collaborators expected by the production router.
-    let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState = Arc::new(Vec::new());
-    let google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState =
-        Arc::new(Vec::new());
-    let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(Vec::new());
-    let line_state: garraia_channels::line_channel::webhook::LineState = Arc::new(Vec::new());
     let mut admin_store_owned =
         admin::store::AdminStore::in_memory().expect("in-memory admin store should work");
     let admin_encryption_key = Arc::new(admin::handlers::resolve_admin_encryption_key(
@@ -1149,10 +1146,7 @@ pub async fn build_router_for_test_with_storage(
 
     build_router(
         state,
-        whatsapp_state,
-        google_chat_state,
-        teams_state,
-        line_state,
+        crate::push_channels::PushChannelStates::empty(),
         admin_store,
         admin_encryption_key,
     )

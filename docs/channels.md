@@ -137,7 +137,8 @@ channels:
 
 1. Set up Meta Cloud API
 2. Get phone number ID and access token
-3. Configure webhook verification
+3. Copy the **App Secret** from your Meta app (Settings → Basic)
+4. Configure webhook verification
 
 ```yaml
 channels:
@@ -146,13 +147,57 @@ channels:
     phone_number_id: "123456789"
     access_token: "YOUR_ACCESS_TOKEN"
     verify_token: "YOUR_VERIFY_TOKEN"
+    app_secret: "YOUR_APP_SECRET"
     webhook_verify: true
 ```
+
+All three secrets can come from the environment instead —
+`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET`.
+`garra config check` reports each one missing.
+
+### `app_secret` is required (#1070)
+
+`app_secret` and `verify_token` are **different things**, and one does not
+substitute for the other:
+
+| | what it is | when it is used |
+|---|---|---|
+| `verify_token` | a string you choose | once, in the `GET` handshake when you register the webhook URL with Meta |
+| `app_secret` | issued by Meta | signs **every** `POST` that arrives afterwards, as `X-Hub-Signature-256` |
+
+A channel configured without `app_secret` is **refused at boot** — not started
+in a degraded mode. Without it there is no way to tell a webhook from Meta
+apart from a POST forged by anyone who discovered the URL, and a route that
+accepts both is worse than no route at all.
+
+Every rejected request gets the same `403` with the same constant body; the
+reason goes only to the log. One message per reason would tell whoever is
+probing whether they got the prefix, the hex, the length or just the secret
+wrong.
+
+#### With more than one WhatsApp channel
+
+The channel that answers is the one whose `app_secret` **signed** the request,
+and the reply goes out with that channel's `access_token`. The
+`metadata.phone_number_id` inside the body does not choose the channel.
+
+That distinction is the difference between two channels and one. If routing
+followed the body, whoever held the `app_secret` of your least-trusted channel
+could sign a body naming another channel's number and have the reply sent with
+the other channel's token. The body being signed is no defence there: it is
+signed with the wrong key.
+
+A signed body whose `phone_number_id` belongs to a **different configured
+channel** is dropped, because legitimate traffic for that number would arrive
+signed with that channel's own secret. A `phone_number_id` that no configured
+channel claims is still served by the channel that signed: one WhatsApp
+Business Account can hold several numbers under the same Meta app, all signed
+by the same `app_secret`, and dropping those would leave the channel mute.
 
 ### Features
 
 - Webhook-based integration
-- Message verification
+- HMAC-SHA256 signature verification on every inbound POST
 - Allowlist management
 
 ## LINE
@@ -376,3 +421,37 @@ Messages are automatically routed to the active agent session. Users on differen
 Use session management commands to bridge channels:
 - `/session` - View current session
 - `/session bridge <user_id>` - Bridge sessions
+
+## Pull channels vs push channels (and what the console shows)
+
+A channel receives messages in one of two ways, and the difference decides how
+the Web Console reports its status.
+
+| | Pull | Push |
+|---|---|---|
+| Channels | Telegram, Discord, Slack, IRC, Signal, Matrix, iMessage, OpenClaw | WhatsApp, Google Chat, Teams, LINE |
+| How it receives | opens a persistent connection at boot and polls or listens | the provider POSTs to `/webhooks/<channel>` |
+| Registered in `ChannelRegistry` | yes | **no** — the channel list becomes route state |
+| Status source in `GET /api/channels` | the registry | the channels that actually mounted on the route |
+
+Until #1079, `GET /api/channels` derived every status from the registry. Since
+push channels never enter it, all four reported `offline` forever, even while
+receiving webhooks and replying normally. If you are on a build older than
+v0.4.1 and the console shows WhatsApp, Google Chat, Teams or LINE as offline,
+check the webhook itself before assuming the channel is down.
+
+The status of a push channel comes from what **started**, not from what is
+written in the config file. Several push channels are refused at boot when
+misconfigured — LINE with an invalid `channel_secret`, Teams without `app_id`,
+Google Chat without `audience`, WhatsApp without `app_secret` — and in every
+one of those cases the config says "configured" while the route has zero
+channels. Reporting from config would show better than reality, which is the
+dangerous direction: it would tell an operator the webhook is protected when
+the channel does not exist. So a refused channel still reads `offline`.
+
+| Status | Meaning |
+|---|---|
+| `active` | pull channel registered and live, or push channel with at least one mounted |
+| `offline` | did not start, and the channel needs a secret |
+| `optional` | did not start, and needs no secret |
+| `unknown` | internal defect: the channel table and the push state disagree. Report it |
