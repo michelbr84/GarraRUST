@@ -6,6 +6,452 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-09
+
+Release de canais e de seguranca. Sete canais que estavam escritos mas nunca
+chamados — Google Chat, Teams, LINE, IRC, Signal, Matrix e OpenClaw — passaram
+a subir de verdade, e o CI passou a compilar e testar as cinco features de
+canal que ninguem compilava. Com eles ligados, tres buracos que so o WhatsApp
+tinha exposto viraram trabalho proprio: o webhook do WhatsApp aceitava
+qualquer POST sem verificar assinatura, num canal que ja estava em producao; a
+aprovacao humana de um comando de risco valia para o turno inteiro em vez de
+para o comando aprovado; e o `GET /api/channels` reportava os quatro canais
+push como offline para sempre, porque canal push nao entra no registry por
+desenho.
+
+Os dois de seguranca sairam maiores do que a descricao do issue sugeria,
+porque a revisao achou em cada um um segundo buraco atras do primeiro. No
+WhatsApp, verificar a assinatura nao bastava: o roteamento ainda escolhia o
+canal pelo `phone_number_id` do corpo, entao quem tivesse o app secret de um
+canal fazia a resposta sair com o `access_token` de outro. Na aprovacao,
+recusar o marcador vindo do texto do modelo nao bastava: nem todo resultado de
+ferramenta vem deste processo — uma pagina buscada pelo `web_fetch` ou a
+resposta de um servidor MCP tambem viram resultado de ferramenta —, e com a
+impressao digital sendo um hash de entradas publicas o atacante pre-computava
+o marcador de um comando escolhido por ele. A impressao digital passou a ser
+um HMAC com chave aleatoria por processo.
+
+O gate de comandos fechou os fake-negativos que a auditoria do hardening
+anterior tinha deixado documentados como residuo — script-file, `xargs -a`,
+`awk` com `system()`, o `e` do GNU sed, `find -exec`, netcat e os verbos de
+exfiltracao das CLIs de nuvem —, mais dois que a revisao deste ciclo achou:
+`bash < script.sh` e a forma longa dos flags de wrapper que levam valor. Nada
+disso ampliou deny-list por substring: sao regras por programa, com o script
+tokenizado com aspas respeitadas, e cada uma tem teste do falso positivo que
+ela nao pode causar. Do lado do app, o `/ws` passou a emitir o turno enquanto
+ele acontece (`delta`, `tool_started`, `tool_finished`, `stopped`) e a aceitar
+cancelamento; a metade Flutter disso segue em aberto.
+
+### Added
+- **`garraia update` avisa de binarios antigos no PATH (#1030).** O update
+  trocava so o proprio binario; um `/usr/bin/garraia` de outra instalacao
+  seguia la, intocado e sem aviso — e era ele que scripts, cron e terminais
+  com PATH diferente passavam a rodar. Depois de atualizar, o comando varre
+  os diretorios do PATH e os de sistema (`/usr/local/bin`, `/usr/bin`) por
+  outros `garraia`/`garra`, pergunta a versao de cada um (com timeout) e
+  avisa os que diferem, com caminho, versao, se ele vem antes ou depois do
+  atualizado no PATH e o comando para remover. `garraia update
+  --check-binaries` roda so a varredura, sem baixar nada.
+- **`web_search` funciona sem chave, via SearXNG self-hosted (#1034).** A tool
+  era acoplada a API do Brave e so entrava no runtime com `BRAVE_API_KEY`;
+  sem a chave o agente nao tinha busca nenhuma. O backend virou plugavel
+  (`SearchBackend::{Brave, Searxng}`), com a nova secao `agent.web_search`
+  (`backend: brave|searxng`, `searxng_url`, ou `GARRAIA_SEARXNG_URL`). Sem a
+  secao a regra e a de sempre (Brave com chave); sem chave e com URL, SearXNG;
+  `backend` explicito ganha e, se faltar o que ele precisa, a tool fica de
+  fora e `garra config check` aponta. O SearXNG (`/search?format=json`)
+  devolve `title`/`url`/`content` mapeados para o mesmo schema do Brave; a URL
+  passa pelo guard de SSRF com loopback e LAN liberados e link-local/metadata
+  de nuvem bloqueados, com cliente pinado como o `web_fetch`.
+- **Ferramenta `garra_status`: o agente passa a conseguir descrever o proprio
+  runtime (#1035).** Perguntado o que era, o Garra no celular respondia que "nao consegue
+  inspecionar o estado interno do runtime a partir desta conversa" — e estava
+  certo, nada permitia: `/api/health` e `/api/capabilities` existem para o console,
+  `web_fetch` recusa loopback por desenho (guard de SSRF) e `bash` teria de
+  adivinhar host e porta. A tool le o mesmo `AppState` daqueles endpoints (versao,
+  uptime, provider e modelo ativos, ferramentas registradas, features, canais,
+  modo e diretorio da sessao) sem fazer requisicao nenhuma, entao a superficie de
+  SSRF fica onde estava. Sem segredo na saida: ids de provider e nomes de modelo,
+  nunca chaves. A persona menciona as ferramentas, para o modelo usa-las antes de
+  dizer que nao consegue.
+- **`garra chat` registra as mesmas ferramentas do gateway (#1036).** A CLI
+  registrava quatro tools (`file_read`, `file_write`, `bash`, `git_diff`) e o
+  prompt do sistema listava-as a mao; `list_dir`, `repo_search`, `run_tests`,
+  `web_fetch`, `web_search` e `code_review` ficavam de fora. Agora o conjunto e
+  o do gateway mais `git_diff` — `run_tests` com confirmacao como o `bash`,
+  `web_search` so com a chave do Brave, `code_review` com o provider e modelo
+  da sessao — e a secao de ferramentas do prompt e gerada de `tool_names()`,
+  para nunca mais anunciar o que nao existe. `schedule_*` seguem so no
+  gateway, porque o chat nao abre `SessionStore`.
+- **Copiar mensagem, codigo, memoria e log com um toque (#1041).** Relato de
+  campo da v0.4.0: nao havia como copiar uma mensagem inteira — o texto do
+  assistente era selecionavel por long-press sem nenhuma dica, e a bolha do
+  usuario era `Text` puro. Toda bolha ganha um botao de copiar ao lado do
+  horario e a do usuario vira selecionavel; bloco de codigo cercado ganha o
+  proprio botao, que copia so o codigo; tocar numa memoria abre o texto completo
+  com botao Copiar; o log da Activity tambem copia. Um so helper
+  (`copyToClipboard`) para o app inteiro, com testes que interceptam
+  `Clipboard.setData`.
+- **`DELETE /api/memory/{id}` e apagar memoria pelo app (#1043).** Da para buscar
+  na memoria, nao dava para apagar uma: `MemoryStore::delete_entry` existia e so
+  a CLI usava; o `/api/*` do celular so tinha `DELETE /api/memory`, que apaga a
+  sessao inteira. `MemoryProvider` ganha `delete_entry`, a rota devolve 204/404/
+  503, e a folha de memoria do app ganha Apagar com confirmacao (aviso extra
+  quando a entrada esta fixada, porque o store nao consulta o pin). Editar fica
+  de fora: sem update no store, seria apagar-e-recriar com re-embedding.
+- gateway: o `/ws` passa a emitir o turno enquanto ele acontece. Com
+  `"stream": true` na mensagem, o cliente recebe `delta` a cada pedaco de
+  texto e `tool_started`/`tool_finished` no ciclo de vida de cada ferramenta,
+  e pode cancelar o turno com `{"type":"stop"}` — que responde `stopped` e
+  nao persiste o parcial. Sem a flag, a sequencia de frames e a de sempre: so
+  o `message` final. Como efeito, o socket passa a ser lido durante o turno,
+  entao o heartbeat deixa de passar fome num turno longo. (#1047)
+- canais: o Google Chat passa a ter rota. `POST /webhooks/google-chat`
+  autentica cada requisicao pelo JWT RS256 que o Google manda no
+  `Authorization`, conferindo assinatura, emissor e **audiencia** contra o
+  JWK Set publico do `chat@system.gserviceaccount.com`. A audiencia e
+  obrigatoria e o canal e recusado no boot sem ela: todo webhook do Chat,
+  de toda app, e assinado pela mesma chave do Google, entao sem conferir o
+  `aud` um token legitimo emitido para a app de outra pessoa passaria. As
+  chaves publicas ficam num cache que se renova sozinho, com piso entre
+  buscas para o `kid` do token — que quem manda a requisicao controla — nao
+  virar gatilho de trafego de saida. `garra config check` ganha checagem
+  propria dos dois campos. (#1050)
+- canais: o IRC passa a ser registrado quando ha uma secao
+  `[channels.<nome>]` com `channel_type = "irc"` e ao menos uma sala. A porta
+  default passa a seguir o `use_tls` (6697 com, 6667 sem) em vez de 6667
+  fixo, que apontaria TLS para a porta em claro. `garra config check` ganha
+  avisos para servidor ausente, lista de salas vazia, e `use_tls` com a porta
+  6667 — nenhum deles alcancado pela checagem generica, que procura token, e
+  o IRC nao tem token. (#1050)
+- canais: o LINE passa a ter rota. `POST /webhooks/line` verifica a assinatura
+  `X-Line-Signature` sobre os **bytes crus** do corpo antes de qualquer parse,
+  e e a assinatura — nao um campo do corpo, que quem manda controla — que
+  decide de qual canal LINE configurado e o webhook. Todo modo de falha
+  responde o mesmo 403 com o mesmo corpo, para o erro nao virar um oraculo.
+  O `LineChannel` tinha `impl Channel` e a verificacao de assinatura (#1051)
+  desde antes, e nenhum call-site. `garra config check` ganha checagem propria
+  dos dois segredos: a generica procura `bot_token`/`access_token`/`app_token`
+  e nao alcancava `channel_access_token` nem `channel_secret`. (#1050)
+- canais: o Matrix passa a ser registrado quando ha uma secao
+  `[channels.<nome>]` com `channel_type = "matrix"`. O `MatrixChannel` tinha
+  `impl Channel` e sync loop desde antes, e nenhum call-site. `garra config
+  check` ganha a env var que faltava para o token (`MATRIX_ACCESS_TOKEN`, sem
+  a qual a falta dele saia em silencio) e um aviso para `homeserver_url`
+  ausente, que nao e credencial e por isso escapava da checagem generica.
+  (#1050)
+- canais: o bridge OpenClaw passa a ser construido de fato quando ha uma
+  secao `[channels.<nome>]` com `channel_type = "openclaw"` e `enabled = true`
+  dos dois lados. Ate agora `state.openclaw_client` era `None` constante e as
+  quatro rotas `/api/openclaw/*` caiam todas no ramo "nao configurado", com o
+  cliente completo — loop de reconexao, conversao nos dois sentidos, status —
+  sem ninguem para construi-lo. `garra config check` ganha um aviso para a
+  armadilha dos dois `enabled` independentes e para `ws_url` que nao e
+  WebSocket. (#1050)
+- canais: o Signal passa a ser registrado de verdade quando ha uma secao
+  `[channels.<nome>]` com `channel_type = "signal"`. O `SignalChannel` tinha
+  `impl Channel`, polling do daemon signal-cli e o guard `vet_signal_cli_url`
+  desde antes, e nenhum call-site. Como o daemon e local e sobe por fora,
+  falha de conexao no boot segue o retry com backoff do Telegram em vez de
+  ser terminal. `garra config check` ganha aviso proprio: o Signal nao tem
+  token, entao a checagem generica nao o alcancava e um canal pela metade
+  saia sem um unico achado. (#1050)
+- canais: o Microsoft Teams passa a ter rota. `POST /webhooks/teams` autentica
+  cada requisicao pelo JWT RS256 do Bot Framework, conferindo assinatura,
+  emissor e audiencia (o `app_id` do bot) contra o JWK Set publico. O `app_id`
+  e obrigatorio e o canal e recusado no boot sem ele: todos os tokens do Bot
+  Framework sao assinados pelas mesmas chaves, entao sem `aud` um token
+  emitido para o bot de outra pessoa passaria. (#1050)
+- **Nova tool MCP `garra_agent`: agente completo com ferramentas, opt-in do
+  operador.** O servidor MCP (`garra mcp-server`) continua expondo o
+  `garra_ask` LLM-only como antes; quando o operador inicia o processo com
+  `GARRAIA_MCP_ENABLE_TOOLS=1`, `tools/list` passa a anunciar tambem o
+  `garra_agent`, que roda um turno de agente completo em sessao nova por
+  chamada — bash (sem canal de confirmacao; com o hardening #1075 o tier
+  de risco e fail-closed: comandos sensiveis sao BLOQUEADOS, e o filho
+  herda so a allowlist de env — ver fragmento em `security/`), file_read,
+  file_write, web_fetch, git_diff e web_search (com chave Brave). Sem a env,
+  nem o anuncio nem o dispatch existem: o servidor rejeita `garra_agent` como
+  tool desconhecida e o comportamento fica identico ao de hoje.
+
+  A resposta vem no envelope `garra.agent.v1`, com o mesmo formato do
+  `garra.ask.v1` mais `session_id` e `tool_calls` (nome, duracao, sucesso,
+  resumo — ja redigidos na origem), tambem em falha e timeout, para o host MCP
+  ver o que o agente executou. `GARRAIA_MCP_MAX_TIMEOUT_SECS` passa a limitar
+  tambem a nova tool (teto proprio de 1800s; default 300s). O handler mora em
+  `mcp_agent.rs`, modulo novo que os testes de auditoria de `mcp_server.rs`
+  nao escaneiam por desenho — o arquivo de dispatch continua sem registrar
+  ferramenta, sem spawnar processo e sem escrever no stdout.
+
+  O system prompt default do agente obriga a relatar na resposta final
+  qualquer ferramenta que falhar ou for bloqueada — nunca reportar sucesso
+  sem saida real e nunca contornar silenciosamente um bloqueio de seguranca
+  (observado em repro real: `file_write` recusado e contornado via redirect
+  bash, com a falha omitida da prosa; ver issue #1075).
+
+### Changed
+- console web: as chamadas para `/api/*` passam a levar `Authorization:
+  Bearer` com a `gateway.api_key` guardada, a mesma que o console ja mandava
+  como `?token=` no WebSocket. Sem chave configurada nada muda. Prepara o
+  gate do REST, que entra em seguida. (#1045)
+- docs: `hardening-gateway.md`, `auth-config.md`, `mobile-qa-checklist.md` e o
+  README do app passam a descrever o gate do REST como ele ficou: com
+  `gateway.api_key` configurada, `/api/*` exige `Authorization: Bearer`, com
+  `/api/health`, `/api/capabilities` e `/api/auth-check` abertas para o
+  onboarding funcionar antes de haver chave. Sem chave configurada, nada
+  muda. (#1045)
+
+### Fixed
+- **`POST /api/sessions` aplica `mode` e `working_dir` em vez de engoli-los (#1028).**
+  O corpo aceitava qualquer campo e descartava o que nao conhecia: `{"mode":
+  "search"}` devolvia 201 e a sessao nascia sem politica nenhuma — a escrita de
+  arquivo que o modo devia bloquear passava — e `working_dir` nunca chegava as
+  ferramentas de arquivo (o handler que o aceitava nunca foi roteado). Agora
+  `mode` e validado pela mesma funcao do `POST /api/mode/select` (nativos e
+  customizados), gravado como modo escolhido antes da resposta e ecoado nela;
+  `working_dir` passa por `project_root::confine` como o `path` de projeto e a
+  resposta ecoa o canonicalizado. Nome de modo desconhecido ou diretorio fora
+  das raizes e 400 sem criar sessao; `mode` sem `session_store` e 503 em vez de
+  fingir que aplicou. Quem nao manda nenhum dos dois nao ve diferenca.
+- **`GET /v1/models` lista os modelos que o gateway de fato serve (#1029).** A
+  resposta era uma lista fixa (`gpt-4`, `gpt-3.5-turbo`, `claude-3-opus`, ...)
+  que nao lia a config: um cliente OpenAI-compatible (VS Code, Continue) listava,
+  escolhia um e recebia 500 do provider real. Agora a lista sai dos providers
+  registrados — o modelo configurado de cada um — filtrada pela mesma regra de
+  roteamento que `POST /v1/chat/completions` aplica ao campo `model`: entra o
+  modelo do provider default e qualquer modelo cujo prefixo (`openrouter/auto`,
+  `anthropic/...`) ja o leve ao provider certo; um nome sem prefixo num provider
+  que nao e o default fica de fora, porque nenhum id o alcancaria. `owned_by`
+  passa a ser o id do provider no GarraIA.
+- **Quatro ferramentas do agente existiam e nunca foram registradas; e o
+  diretorio da sessao nao chegava ao turno HTTP (#1033, #1035).** `list_dir`,
+  `repo_search`, `run_tests` e `code_review` tinham schema e testes verdes, mas o
+  unico `new()` delas no repo era dentro dos proprios testes — as whitelists dos
+  modos `search`, `debug` e `review` anunciavam `list_dir` e `repo_search` que o
+  modelo nunca recebia. Agora entram no bootstrap do gateway (`code_review` com o
+  provider e modelo default do boot). E `exec_context_for` passou a levar
+  `SessionState::working_dir` para o `ExecContext`: antes todo turno via
+  `/api/sessions/{id}/messages` saia sem diretorio, e o `resolve_tool_path`
+  recusava qualquer caminho relativo — o Garra no celular dizia que nao conseguia
+  olhar os proprios arquivos, e nao conseguia mesmo. As tres passam pelo
+  mesmo `resolve_tool_path` do `file_read` (relativo ao diretorio da sessao,
+  `..` recusado, e sem sessao o erro diz que resolveu contra o CWD do
+  processo), `repo_search`
+  busca no diretorio da sessao e `run_tests` respeita
+  `agent.tool_confirmation_enabled` como o `bash` — roda `npm test`, que
+  executa o que o `package.json` mandar. O modo `debug` ganha `run_tests` e o
+  `review` ganha `code_review` na whitelist.
+- **O aviso de recall vazio nomeia a causa certa (#1037).** Quando o indice
+  vetorial achava vizinhos e nenhum sobrevivia ao reescopo, o log culpava
+  "troca de modelo de embeddings sem reindexacao" em todos os casos — inclusive
+  no mais comum, sessao nova com memoria de outras sessoes, onde reindexar nao
+  muda nada. Agora o store conta os candidatos por modelo antes de avisar:
+  `WARN` de troca de modelo so quando nenhum candidato tem o modelo ativo
+  (com os modelos encontrados); `INFO` "fora do escopo pedido" quando a
+  memoria existe com o modelo certo mas e de outra sessao, com os filtros
+  aplicados (tenant, sessao, continuidade); e `WARN` de vetor orfao quando o
+  indice aponta para ids sem linha. A secao Isolamento de `docs/src/memory.md`
+  passa a documentar os quatro filtros do recall — inclusive o de `session_id`,
+  que era o omitido — e o que `memory.shared_continuity` faz de fato (#1038).
+- **Comandos com barra passam a funcionar pelo HTTP, e o app sugere ao
+  digitar `/` (#1040).** No celular, `/help` voltava "nao ha comandos com barra
+  registrados nesta instalacao" — alucinacao: o registry estava cheio (17
+  comandos populados no boot), mas o unico call site de
+  `CommandRegistry::dispatch` era o adapter do Telegram, e pelo HTTP o texto ia
+  cru para o modelo. `POST /api/sessions/{id}/messages` despacha pelo registry
+  quando o texto comeca com um nome registrado (desconhecido segue ao modelo,
+  como antes; papel `User`, entao comandos de owner respondem "permission
+  denied"; `/start`, que reivindica o dono da allowlist do Telegram, nem e
+  aceito pelo HTTP). `CommandContext` ganha `session_id`, e os comandos de
+  sessao (`/clear`, `/mode`, `/goal`) usam o id do HTTP quando existe. `GET
+  /api/slash-commands` e o `commands` de `/api/capabilities` passam a listar o
+  registry no papel do HTTP, em vez de uma tabela paralela de dois itens e da
+  lista completa com comandos de owner. O dispatcher solta o lock do registry
+  antes de executar (o `/help` le o registry de novo; um read segurado sobre
+  outro read trava assim que um writer entra na fila) e `/model` valida o nome.
+  No app,
+  `SlashSuggestions` mostra chips dos comandos que casam com o prefixo digitado
+  e os chips da tela Skills abrem o chat com o comando pronto.
+- memoria: com `shared_continuity` ligado, o recall do agente passa a usar a
+  chave de continuidade **no lugar** do escopo de sessao, e nao somada a ele.
+  O store faz AND entre os dois filtros, entao a flag nao compartilhava nada:
+  uma sessao nova so enxergava o que ela mesma tinha gravado sob a mesma
+  chave. Com a flag desligada nada muda — o escopo por sessao continua
+  valendo. (#1042)
+- **Turno de streaming vazio deixa de virar bolha em branco no canal (#1048).**
+  Quando o stream do provider terminava sem nenhum `TextDelta` e sem nenhuma
+  ferramenta, o turno devolvia string vazia e o Telegram — como qualquer outro
+  canal que passe pelo caminho de streaming — publicava uma mensagem em branco.
+  O retry e o fallback de provider nao pegavam o caso: `stream_complete_with_
+  fallback` devolve o stream **antes** de qualquer evento existir, e
+  `is_retryable_error` so olha texto de erro, e aqui nao ha erro nenhum a
+  olhar. A deteccao passou para o consumidor do stream: volta vazia refaz a
+  rodada pelo caminho nao-streaming, que tem retry e fallback de verdade. O
+  redo e limitado a um por turno, porque nenhuma guarda do loop conta volta
+  vazia e sem o limite um provider mudo giraria sem parar. Turno inteiramente
+  vazio, nos dois caminhos, termina em erro explicito, que o canal mostra, em
+  vez de fingir que respondeu — mas so quando **nada** foi entregue: se o
+  modelo ja mandou texto nas voltas anteriores, o turno encerra com o que ha,
+  porque descartar resposta ja publicada seria pior que o bug original.
+- **O ramo nao-streaming de dentro do turno de streaming parou de publicar um
+  marcador interno como se fosse resposta (#1048).** Ali o vazio nao dava bolha
+  em branco: dava `[no textual response provided by the model]`, em ingles, que
+  o usuario le como resposta do modelo. `extract_text` continua devolvendo o
+  marcador para quem precisa de uma `String` sempre, mas a decisao passou a
+  usar a irma `extract_text_opt`, que preserva o "veio vazio". O `text_len` do
+  log do batch tambem media o marcador, e passou a medir a resposta. O escopo
+  e esse: o caminho nao-streaming **autonomo** (`process_message_with_agent_
+  config`, que serve o app mobile, o `/ws`, o `/v1/chat/completions` nao-
+  streaming e o chat REST) continua publicando o marcador, e sai num trabalho
+  proprio.
+- canais: `google_chat` deixa de escrever um `Default` que o clippy pede
+  derivado, e `matrix` colapsa dois `if` aninhados. Os tres erros existiam
+  desde sempre e nao apareciam porque nenhum job do CI compilava essas
+  features — o step novo do `ci.yml` passa a compilar e testar as cinco que
+  faltavam (`google_chat`, `teams`, `matrix`, `irc`, `voice`). (#1050)
+- `GET /api/channels` parou de reportar os quatro canais push (WhatsApp,
+  Google Chat, Teams, LINE) como `offline` num gateway saudavel. Canal push
+  nao entra no `ChannelRegistry` por desenho — vira estado da rota
+  `/webhooks/*` —, entao derivar status do registry dava `offline` eterno.
+  O `KNOWN_CHANNELS` ganhou uma coluna `kind` (`Pull` | `Push`) e o status
+  dos push passa a vir das listas que de fato subiram, e nao do arquivo de
+  config: um canal configurado mas recusado no boot continua aparecendo
+  como `offline`, que e a verdade. (#1079)
+
+### Security
+- gateway: com `gateway.api_key` configurada, as rotas `/api/*` passam a
+  exigir `Authorization: Bearer`. Antes a chave valia so no handshake do
+  `/ws`, e todo o REST — sessoes, memoria, providers, logs, diagnosticos —
+  respondia a qualquer um que alcancasse a porta, o que num gateway em
+  `0.0.0.0` e a rede inteira. Ficam abertas `/api/health`,
+  `/api/capabilities` e `/api/auth-check`, que o onboarding do app e o
+  console consultam antes de haver chave. Sem chave configurada nada muda.
+  A comparacao de token do `/ws` deixa de sair cedo por comprimento, que
+  entregava um oraculo de tamanho por tempo de resposta. (#1045)
+- teams: o `serviceUrl` que decide para qual host a resposta vai — com o
+  bearer do bot junto — vinha do corpo da requisicao e era usado sem
+  verificacao. Agora ele so vale se casar com a claim `serviceurl` assinada
+  pela Microsoft no proprio token, e o POST de saida ainda passa pelo
+  `garraia_common::ssrf` (https-only, faixas publicas, IP pinado), que barra
+  169.254.169.254 e a rede interna mesmo para uma URL legitimamente assinada.
+  O `conversation_id`, que tambem vem do corpo, passou a ser percent-encodado
+  em vez de concatenado no caminho. O canal nao tinha rota ate agora, entao
+  nenhuma instalacao esteve exposta. (#1050)
+- **A assinatura do webhook do LINE passa a ser verificada de verdade (#1051).**
+  `validate_signature` era um stub com `TODO` que devolvia `true` para qualquer
+  entrada: quem descobrisse a URL do webhook podia forjar mensagem como se
+  viesse do LINE, porque essa assinatura e a unica prova de autenticidade que o
+  protocolo oferece. O modulo novo `line_channel::signature` implementa o
+  contrato real — `Base64(HMAC-SHA256(channel_secret, corpo_cru))` comparado com
+  o header `X-Line-Signature` em tempo constante (`subtle::ConstantTimeEq`),
+  sobre a mesma pilha RustCrypto ja usada em `garraia-auth` e `garraia-storage`.
+  Base64, nao hex: um digest de 32 bytes da 44 chars em Base64 e 64 em hex, e o
+  formato errado recusaria toda requisicao legitima. `LineChannel::new` passou a
+  devolver `Result` e recusa `channel_secret` vazio, entao o canal nao chega a
+  existir sem o segredo — a checagem fica no construtor, e nao no bootstrap,
+  para que nenhum wiring futuro consiga pular. O canal LINE continua sem chegar
+  ao gateway (#1050), entao o impacto hoje e nulo; isto e a precondicao que
+  faltava para liga-lo.
+- **A verificacao de assinatura do LINE deixa de aceitar segredo so com
+  espacos (#1051).** O construtor `LineChannel::new` recusa `channel_secret`
+  em branco desde o PR #1057, mas `line_signature::verify_signature` media
+  "vazio" com `is_empty()` em vez de `trim().is_empty()`. As duas discordavam,
+  e a mais fraca era justamente a exportada: `verify_signature` e API publica
+  reexportada, e `ChannelConfig.settings` e um mapa nao-tipado, entao um
+  `channel_secret = "   "` no TOML passava pela config e a funcao validava
+  contra essa chave — que qualquer um reproduz. O impacto hoje segue nulo (o
+  canal LINE nao chega ao gateway, #1050), mas quem escrever o handler do
+  webhook chamaria a funcao direto, e nesse dia o teatro seria real.
+- O webhook do WhatsApp passa a verificar a assinatura `X-Hub-Signature-256`
+  (HMAC-SHA256 do app secret sobre os bytes crus do corpo). Ate aqui
+  `POST /webhooks/whatsapp` aceitava qualquer requisicao, num canal que ja
+  estava ligado em producao: quem descobrisse a URL podia mandar mensagem como
+  qualquer numero, gastar token do provider a cada POST, forjar um `from` da
+  allowlist e, numa instalacao nova, reivindicar o papel de owner. Um canal sem
+  `app_secret` agora e recusado no boot em vez de subir em modo degradado
+  (#1070).
+- Com mais de um canal WhatsApp configurado, quem atende passa a ser o canal
+  que **assinou**, e nao o que o `metadata.phone_number_id` do corpo aponta.
+  O roteamento por corpo deixava quem conhecesse o app secret de um canal
+  assinar um corpo apontando para outro e receber a resposta enviada com o
+  `access_token` do outro — escalada entre canais a partir da credencial de
+  menor valor. Um corpo assinado que reivindica o numero de outro canal
+  configurado agora e descartado (#1070).
+- O `hub.verify_token` do handshake `GET` do WhatsApp passou a comparacao em
+  tempo constante sobre digests SHA-256 dos dois lados, o que tambem para de
+  vazar o comprimento do token configurado pelo tempo de resposta (#1070).
+- **Hardening do BashTool e do safety_gate: tier de risco fail-closed e
+  isolamento de ambiente (#1075).** O tier de risco do bash deixa de
+  auto-executar quando nao ha canal de confirmacao: com
+  `tool_confirmation_enabled: false` (MCP `garra_agent`, heartbeats), um
+  comando sensivel e BLOQUEADO; com confirmacao habilitada (gateway/
+  Telegram), continua pedindo aprovacao como antes. Em modo fail-closed o
+  flag `is_confirmation_approved` e ignorado: ele vem do historico da
+  conversa (marcador `[CONFIRM_REQUIRED]`) e pode ser contaminado pela
+  saida do modelo. `run_tests` segue a mesma regra — sem canal de
+  confirmacao, e bloqueado (npm/cargo scripts sao codigo arbitrario).
+  O `is_risky` ganha normalizacao de whitespace (mata o bypass
+  `rm  -rf` por substring), deteccao program-aware POR SEGMENTO de
+  metacaracteres com resolucao de wrappers (`sudo curl`, `env VAR=x cargo
+  test`, `timeout 10 curl`; subcomandos mutantes de git/systemctl/docker/
+  kubectl/helm/terraform/npm/cargo, `deploy`), programas exfiltraveis
+  (`curl`, `wget`, `ssh`, `env`, `printenv`, ...), interpolacao de env
+  (`$(env)`, backticks), pipe para shell sem espaco (`curl x|bash`),
+  leitura de procfs (`/proc/*/environ`), `rm` destrutivo token-aware
+  (`rm -fr /`, `-f -r`, `--recursive`), `find -delete`, `dd of=`,
+  desembrulho recursivo de `sh -c '...'` e gating de
+  `python3 -c`/`perl -e`; consequencia visivel: TODO `git push` e
+  `curl`/`wget` agora passam pelo tier de confirmacao. No unix, os filhos
+  de bash, git_diff, code_review e repo_search herdam apenas
+  `PATH/HOME/LANG/LC_ALL/TERM/USER` do processo pai (a politica vive em
+  `garraia-common::safety_gate::allowed_child_env`), o bash roda no
+  `working_dir` da sessao via `current_dir` e o `git diff` usa
+  `--no-ext-diff` contra `.git/config` plantado — o canal de heranca de
+  env para segredos do pai esta fechado; leitura direta de
+  `/proc/<pid>/environ` por mesmo UID passa pelo tier de risco (padrao
+  `environ`), mas so um sandbox real a fecha por completo (follow-up).
+  No Windows o scrub fica desligado (PowerShell precisa do proprio
+  ambiente).
+- A aprovacao humana de um comando de risco passou a valer para O COMANDO
+  aprovado, e nao para o turno inteiro. Antes o `ok` do usuario ligava um
+  booleano que qualquer tool call daquele turno consumia: o modelo pedia
+  confirmacao para um `ls -la`, recebia o `ok`, e executava outra coisa em
+  seguida. Cada pedido agora carrega a impressao digital de
+  `(ferramenta, assunto)` e a ferramenta so honra a aprovacao que bate com o
+  que ela esta prestes a fazer (#1078).
+- O marcador de pedido de confirmacao deixou de ser aceito quando vem do
+  TEXTO do modelo. Um modelo com saida nao sanitizada escrevia o marcador na
+  propria narracao, plantava um pedido que nunca existiu e colhia o `ok`
+  inocente do usuario na mensagem seguinte. So resultado de ferramenta cria
+  pedido, porque e a ferramenta que o emite (#1078).
+- A impressao digital do pedido de confirmacao passou a ser um HMAC com chave
+  aleatoria por processo, e nao um hash de entradas publicas. Restringir o
+  marcador a resultado de ferramenta fecha o texto do modelo, mas nao fecha o
+  resultado de uma ferramenta que devolve conteudo de terceiro: uma pagina
+  buscada pelo `web_fetch`, um arquivo lido pelo `file_read`, a resposta de um
+  servidor MCP. Com hash simples o atacante pre-computava o marcador de um
+  comando escolhido por ele, servia junto de uma injecao de prompt, e colhia o
+  "ok" do usuario. Sem a chave, conteudo de terceiro nao cunha marcador que
+  bata com comando nenhum (#1078).
+- O gate de comandos passou a cobrir os fake-negativos que o #1075 deixou
+  documentados como residuo. Script-file num shell ou interpretador
+  (`bash payload.sh`, `python3 script.py`, `python3 -m modulo`) e codigo que
+  o gate nao consegue ler e agora exige confirmacao, como o `-c` inline ja
+  exigia. `xargs -a arquivo curl` deixou de esconder o programa atras do
+  caminho do arquivo, e o mesmo defeito atingia `sudo -u root curl`. `awk`
+  com `system()` ou pipe para comando, e o `e`/`w` do GNU sed, entram pelo
+  script em vez de passarem por ferramenta de texto. `find` com
+  `-exec`/`-ok`/`-delete`, `nc`/`ncat` sem flag, e os verbos de exfiltracao
+  de `aws`/`az`/`gcloud`/`gsutil` tambem entraram. Nada disso e substring
+  novo no DENY_LIST: sao regras por programa, com o script tokenizado com
+  aspas respeitadas, e cada uma tem teste do falso positivo que ela nao pode
+  causar (#1078).
+- Duas portas laterais do mesmo buraco de script-file tambem fecharam:
+  `bash < payload.sh` (o `<` e metacaractere, o split partia ali e o segmento
+  que sobrava era um shell sem operando) e a forma longa dos flags de wrapper
+  que levam valor (`sudo --user root curl` resolvia o programa como `root`, e
+  o `curl` nunca era avaliado; so a forma curta `-u` estava coberta) (#1078).
+
 ## [0.4.0] - 2026-09-07
 
 Garra Mobile vira produto: a v0.4.0 e a primeira release em que o app

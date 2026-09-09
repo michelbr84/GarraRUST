@@ -5,10 +5,10 @@
 /// parses the pubspec and fails the build when the two drift. Before this
 /// file existed the app carried three different versions at once
 /// (`0.2.1+2` in pubspec, `v0.1.0 (Alpha)` in Settings, `0.1.0` in sync).
-const String kAppVersion = '0.4.0';
+const String kAppVersion = '0.4.1';
 
 /// Android `versionCode` — the `+N` suffix of the pubspec version.
-const int kAppBuildNumber = 4;
+const int kAppBuildNumber = 5;
 
-/// Human-facing label, e.g. `Garra Mobile v0.4.0`.
+/// Human-facing label, e.g. `Garra Mobile v0.4.1`.
 const String kAppVersionLabel = 'Garra Mobile v$kAppVersion';
