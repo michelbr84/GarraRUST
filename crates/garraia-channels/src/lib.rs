@@ -16,6 +16,10 @@ pub mod google_chat;
 pub mod imessage;
 #[cfg(feature = "irc")]
 pub mod irc;
+/// Cache de chaves publicas para os webhooks que autenticam por JWT
+/// (Google Chat e Teams). Ver `jwks.rs`.
+#[cfg(feature = "webhook-jwt")]
+pub mod jwks;
 #[cfg(feature = "line")]
 pub mod line_channel;
 #[cfg(feature = "matrix")]

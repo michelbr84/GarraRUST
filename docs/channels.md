@@ -155,6 +155,66 @@ channels:
 - Message verification
 - Allowlist management
 
+## Google Chat
+
+Webhook-driven: the gateway exposes `POST /webhooks/google-chat` and Google
+calls it.
+
+### Setup
+
+1. Create a Chat app in the [Google Cloud console] and set its **Connection
+   settings** to *HTTP endpoint URL*, pointing at
+   `https://<your-gateway>/webhooks/google-chat`.
+2. Note the **Audience** the console shows for the app — either your Cloud
+   project number or the app URL. This is not optional; see below.
+3. Obtain an OAuth2 bearer token for the service account that will post
+   replies.
+
+```yaml
+channels:
+  google_chat:
+    type: google_chat
+    enabled: true
+    audience: "1234567890"
+    service_account_token: "YOUR_OAUTH2_BEARER_TOKEN"
+```
+
+Both can come from the environment instead — `GOOGLE_CHAT_AUDIENCE` and
+`GOOGLE_CHAT_SERVICE_ACCOUNT_TOKEN`. `garra config check` reports either one
+missing, and says which failure you get.
+
+### Features
+
+- Webhook-based integration; replies go to the originating space
+- RS256 JWT verification on every request, against Google's published keys
+- Allowlist management and 6-digit pairing, same as the other channels
+- One session per *space*, not per user — a space is a room, and the
+  conversation in it is one conversation
+
+### The audience is mandatory
+
+Without `audience` the channel is **refused at boot**. This is the least
+obvious of the required fields and the most important one.
+
+Every Google Chat webhook, for every app in the world, is signed by the same
+Google service account. Verifying only the signature would therefore accept
+a perfectly valid token that Google issued for *somebody else's* app — and
+that somebody can simply forward their token to your endpoint. The `aud`
+claim is the only thing in the token that says "this one is for you".
+
+Every rejection answers the same `401` with the same body, on purpose: a
+different message per failure mode would tell whoever is probing how close
+they got. The reason goes to the log only.
+
+### Known limitation
+
+`service_account_key_path` exists in the config and is **not used**. Minting
+a bearer token from a service account key requires the OAuth2 JWT bearer
+flow, which is not implemented yet — supply `service_account_token`
+directly for now.
+
+[Google Cloud console]: https://console.cloud.google.com/apis/api/chat.googleapis.com
+
 ## iMessage (macOS only)
 
 ### Setup

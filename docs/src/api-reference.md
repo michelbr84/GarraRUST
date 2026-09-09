@@ -518,32 +518,63 @@ Retorna o histórico de chat do usuário mobile.
 
 ### WS /ws
 
-Conexão WebSocket para chat em tempo real com streaming de tokens.
+Conexão WebSocket para chat, opcionalmente com o texto chegando token a token.
 
-**URL de conexão:** `ws://127.0.0.1:3888/ws?token=SEU_TOKEN`
+**URL de conexão:** `ws://127.0.0.1:3888/ws?token=SUA_CHAVE`
 
-**Mensagem de entrada:**
+A chave é a `gateway.api_key`; ela também é aceita como `?api_key=` ou no
+header `Authorization: Bearer`. A query existe porque o handshake WebSocket
+de um navegador não leva header.
+
+#### Mensagens do cliente
+
+Assim que a conexão abre, o servidor manda um `connected` com o `session_id`.
+A primeira mensagem do cliente pode ser um `init` (sessão nova) ou um
+`resume`; qualquer outra coisa já é tratada como um turno de conversa.
+
 ```json
-{
-  "type": "chat",
-  "message": "Explique o que é Rust.",
-  "session_id": "ws-teste"
-}
+{"type": "init"}
+{"type": "resume", "session_id": "…", "session_token": "…"}
+{"content": "Explique o que é Rust.", "stream": true}
+{"type": "stop", "session_id": "…"}
 ```
 
-**Mensagens de saída (streaming):**
-```json
-{"type": "token", "content": "Rust"}
-{"type": "token", "content": " é uma linguagem"}
-{"type": "done", "session_id": "ws-teste", "total_tokens": 150}
-```
+| Campo do turno | Efeito |
+|---|---|
+| `content` | O texto do usuário. Uma mensagem que não seja JSON com `content` é tratada como o próprio texto. |
+| `stream` | `true` liga os frames intermediários abaixo. Ausente ou `false`, a resposta chega só no `message` final — o contrato de sempre. |
+| `provider` | Sobrescreve o provider para este turno. |
+| `model` | Sobrescreve o modelo para este turno. |
 
-| Tipo | Descrição |
-|------|-----------|
-| `token` | Fragmento de token da resposta em streaming |
-| `done` | Resposta completa; inclui `total_tokens` |
-| `error` | Erro durante a geração; inclui `message` |
-| `tool_call` | O agente está chamando uma ferramenta |
-| `tool_result` | Resultado da ferramenta chamada |
+O `stop` cancela o turno em andamento. Sem `session_id` vale para a sessão da
+própria conexão; com `session_id` diferente, o servidor responde
+`session_mismatch` e não cancela nada. Mensagens enviadas enquanto um turno
+roda entram numa fila e são processadas na sequência.
 
-**Response 401:** Token ausente ou inválido (a conexão é recusada antes do upgrade WebSocket).
+#### Mensagens do servidor
+
+| Tipo | Quando | Campos |
+|---|---|---|
+| `connected` | ao abrir a conexão | `session_id`, `session_token` |
+| `resumed` | após um `resume` aceito | `session_id`, `history_length`, `session_token` |
+| `delta` | só com `stream: true` | `session_id`, `content` — um pedaço do texto |
+| `tool_started` | só com `stream: true` | `session_id`, `name`, `detail` |
+| `tool_finished` | só com `stream: true` | `session_id`, `name`, `success`, `summary`, `duration_ms` |
+| `message` | sempre, ao fim do turno | `session_id`, `content` — a resposta inteira |
+| `stopped` | após um `stop` aceito | `session_id` |
+| `error` | falha | `session_id`, `code`, `message` |
+
+`tool_finished` **não** carrega a saída da ferramenta: ela pode ter dezenas de
+KiB, e o frame existe para dizer que a ferramenta terminou.
+
+O `message` final é sempre enviado, com o texto completo, mesmo quando os
+`delta` já entregaram o mesmo conteúdo — é ele o valor autoritativo, e é o que
+mantém um cliente que ignora os frames novos funcionando sem mudança.
+
+Um turno cancelado não é persistido: nem no histórico da sessão, nem na
+memória. O efeito de uma ferramenta que já rodou não é desfeito.
+
+Códigos de `error`: `prompt_injection_detected`, `agent_error`,
+`rate_limited`, `message_too_large`, `session_mismatch`, `turn_in_progress`.
+
+**Response 401:** Chave ausente ou inválida (a conexão é recusada antes do upgrade WebSocket).
