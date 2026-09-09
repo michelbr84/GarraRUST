@@ -1457,14 +1457,23 @@ async fn async_main(
             println!();
             println!("Gateway status:");
             let client = reqwest::Client::new();
-            match client
-                .get(format!(
-                    "http://{}:{}/api/status",
-                    config.gateway.host, config.gateway.port
-                ))
-                .send()
-                .await
+            // #1045: com `gateway.api_key` configurada, `/api/status` passou
+            // a exigir `Authorization: Bearer`. Sem isto o `garra status`
+            // responderia 401 contra o proprio gateway do usuario.
+            let mut pedido = client.get(format!(
+                "http://{}:{}/api/status",
+                config.gateway.host, config.gateway.port
+            ));
+            if let Some(chave) = config
+                .gateway
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
             {
+                pedido = pedido.bearer_auth(chave);
+            }
+            match pedido.send().await {
                 Ok(resp) => {
                     if managed_pid.is_none() {
                         match find_pid_on_port(config.gateway.port) {

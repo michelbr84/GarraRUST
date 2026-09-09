@@ -150,6 +150,8 @@ desinstale qualquer build anterior antes de instalar.
 - [ ] Primeira abertura cai em **Onboarding** (nome → runtime → pronto), sem tela de login.
 - [ ] "On this phone" mostra o comando de instalação do Termux e o **Test connection** contra `http://127.0.0.1:3888` responde com a versão do gateway (`garra start` rodando no Termux).
 - [ ] "Another Garra" aceita `192.168.x.x:3888` sem esquema (normaliza para `http://`) e, com `gateway.api_key` configurada no PC, exige a chave (401 sem ela).
+- [ ] Com `gateway.api_key` configurada, o **Test connection** funciona **antes** de digitar a chave: `/api/health` e `/api/capabilities` ficam abertas de propósito, para o app conseguir descobrir que há um Garra do outro lado (#1045).
+- [ ] Ainda com a chave configurada, deixar o campo em branco e avançar: as telas de Memory, Files, Providers e o chat mostram erro, não tela em branco. Preencher a chave e voltar faz tudo funcionar — é o 401 do gate do REST chegando ao app.
 - [ ] "Garra Cloud" leva para `/login` depois do onboarding.
 - [ ] Matar e reabrir o app preserva o runtime escolhido (home direto, sem onboarding).
 

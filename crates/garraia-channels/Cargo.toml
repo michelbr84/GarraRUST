@@ -26,6 +26,7 @@ teloxide = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 dirs = { version = "6", optional = true }
 
@@ -40,16 +41,33 @@ base64 = { workspace = true, optional = true }
 
 [features]
 default = []
+# Interna, nunca ligada sozinha: a verificacao de JWT de entrada que o
+# Google Chat e o Teams compartilham (`jwks.rs`). Os dois provedores
+# autenticam o webhook com um JWT RS256 assinado por eles, e nao com um
+# segredo compartilhado como o LINE — entao precisam de `jsonwebtoken` e
+# de um cache das chaves publicas.
+webhook-jwt = ["dep:jsonwebtoken", "dep:axum"]
 discord = ["dep:serenity", "dep:poise", "dep:native-tls"]
-google_chat = []
+google_chat = ["webhook-jwt"]
 irc = []
 line = ["dep:hmac", "dep:sha2", "dep:subtle", "dep:base64"]
 matrix = []
 openclaw = ["dep:tokio-tungstenite", "dep:futures"]
 signal = []
 slack = ["dep:tokio-tungstenite", "dep:futures"]
-teams = []
+teams = ["webhook-jwt"]
 telegram = ["dep:teloxide"]
 voice = []
 whatsapp = ["dep:axum"]
 imessage = ["dep:rusqlite", "dep:dirs"]
+
+[dev-dependencies]
+# `ServiceExt::oneshot` para exercitar os handlers de webhook como rota de
+# verdade (status + corpo), sem subir servidor.
+tower = { workspace = true, features = ["util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `jwks::jwt_de_teste` monta o cabecalho dos JWTs de teste a partir do JSON
+# em vez de fixar o base64 pronto no fonte. `base64` ja e dependencia
+# opcional (feature `line`); aqui e dev-dependency porque o helper e
+# `#[cfg(test)]` e vale para `google_chat` e `teams`, que nao ligam `line`.
+base64 = { workspace = true }
