@@ -50,3 +50,8 @@ f8374996ecd2fcb7b6acadace7be464bffe4d6d7:crates/garraia-security/src/redaction.r
 11ff7d8b8ab18262a6f52990a6e233a9f4512caf:crates/garraia-channels/src/google_chat/auth.rs:generic-api-key:242
 11ff7d8b8ab18262a6f52990a6e233a9f4512caf:crates/garraia-channels/src/google_chat/auth.rs:generic-api-key:259
 11ff7d8b8ab18262a6f52990a6e233a9f4512caf:crates/garraia-channels/src/google_chat/auth.rs:generic-api-key:273
+
+# Mesmo caso, mesmo commit-pai, em `crates/garraia-channels/src/teams/auth.rs`
+# (commit 1d71ff07, #1074): o cabecalho `{"alg":"RS256","typ":"JWT"}` do teste
+# `rs256_sem_kid_e_recusado`. Corrigido junto, pelo mesmo `jwks::jwt_de_teste`.
+1d71ff07c6bccbce79193b4ef14bb89552c64533:crates/garraia-channels/src/teams/auth.rs:generic-api-key:289

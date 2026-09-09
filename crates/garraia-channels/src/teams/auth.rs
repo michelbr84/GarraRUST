@@ -302,17 +302,16 @@ mod tests {
     #[tokio::test]
     async fn alg_errado_recusa_sem_buscar_chave() {
         let jwks = JwksCache::new("http://127.0.0.1:1/nunca-vai-ser-chamado");
-        // {"alg":"HS256","typ":"JWT","kid":"k"}
-        let hs256 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImsifQ.e30.x";
+        let hs256 = crate::jwks::jwt_de_teste(r#"{"alg":"HS256","typ":"JWT","kid":"k"}"#, "x");
         assert_eq!(
-            verificar_token(&jwks, hs256, "app-id").await,
+            verificar_token(&jwks, &hs256, "app-id").await,
             Err(AuthError::AlgoritmoErrado)
         );
-        // {"alg":"none","typ":"JWT","kid":"k"} — `none` nem existe como
-        // variante de `Algorithm`, entao cai antes, no decode do header.
-        let none = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIiwia2lkIjoiayJ9.e30.";
+        // `none` nem existe como variante de `Algorithm`, entao cai antes,
+        // no decode do header.
+        let none = crate::jwks::jwt_de_teste(r#"{"alg":"none","typ":"JWT","kid":"k"}"#, "");
         assert_eq!(
-            verificar_token(&jwks, none, "app-id").await,
+            verificar_token(&jwks, &none, "app-id").await,
             Err(AuthError::HeaderMalformado)
         );
     }
@@ -320,10 +319,9 @@ mod tests {
     #[tokio::test]
     async fn rs256_sem_kid_e_recusado() {
         let jwks = JwksCache::new("http://127.0.0.1:1/nunca-vai-ser-chamado");
-        // {"alg":"RS256","typ":"JWT"}
-        let token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.e30.x";
+        let token = crate::jwks::jwt_de_teste(r#"{"alg":"RS256","typ":"JWT"}"#, "x");
         assert_eq!(
-            verificar_token(&jwks, token, "app-id").await,
+            verificar_token(&jwks, &token, "app-id").await,
             Err(AuthError::HeaderMalformado)
         );
     }
