@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 
 import '../services/api_service.dart';
+import 'chat_event.dart';
 import 'gateway_connection.dart';
 import 'models.dart';
 import 'runtime_config.dart';
@@ -53,6 +54,25 @@ class CloudConnection extends GatewayConnection {
   @override
   Future<String> sendMessage(String text, {String? sessionId}) =>
       _api.sendMessage(text);
+
+  /// Cloud Alpha answers on `POST /chat` behind a JWT, and `/ws` speaks the
+  /// gateway's session protocol instead — resuming a session Cloud never
+  /// creates. So the whole reply arrives as one event.
+  ///
+  /// Overriding matters: without it this class would inherit the gateway's
+  /// implementation and open a socket against the cloud host with the
+  /// synthetic `'cloud'` session id.
+  @override
+  Stream<ChatEvent> sendMessageStreaming(
+    String text, {
+    String? sessionId,
+  }) async* {
+    yield ChatCompleted(await _api.sendMessage(text));
+  }
+
+  /// Nothing to cancel: the reply is already on its way over HTTP.
+  @override
+  Future<void> stopStreaming() async {}
 }
 
 class _JwtInterceptor extends Interceptor {
