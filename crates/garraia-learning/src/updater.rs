@@ -69,7 +69,27 @@ impl ShellRunner for ProcessShellRunner {
     }
 }
 
+/// Last-resort assertion on the argument vector handed to `git`/`gh`.
+///
+/// This is **not** where argument safety is established — there is no shell to
+/// escape, so the thing that matters is that a caller never lets an
+/// attacker-chosen value land where the tool expects a positional argument.
+/// That happens at the call sites: [`crate::versioning::validate_git_sha`] for
+/// object names, a `--` separator before every path, and branch names that are
+/// built from a fixed prefix. What this adds is a single place where a NUL byte
+/// — the one value `Command` cannot pass through, and which would otherwise
+/// surface as an opaque spawn failure — is named for what it is.
+fn validate_process_args(bin: &str, args: &[&str]) -> Result<()> {
+    if let Some(pos) = args.iter().position(|a| a.contains('\0')) {
+        return Err(Error::Other(format!(
+            "refusing to spawn {bin}: argument {pos} contains a NUL byte"
+        )));
+    }
+    Ok(())
+}
+
 fn run_process(bin: &str, args: &[&str], cwd: &Path) -> Result<String> {
+    validate_process_args(bin, args)?;
     let output = std::process::Command::new(bin)
         .args(args)
         .current_dir(cwd)
@@ -400,7 +420,8 @@ pub fn propose_update_with_runner(
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| source_path.display().to_string());
 
-    runner.run_git(&["add", &rel_path], &git_root)?;
+    // `--` ends option parsing: a path is a path, never a flag.
+    runner.run_git(&["add", "--", &rel_path], &git_root)?;
 
     let commit_msg = format!(
         "feat(learning): auto-update skill {} v{}→v{} — {}",
@@ -844,5 +865,58 @@ mod tests {
         let proposal = propose_update_with_runner(&skill, evidence, &runner).unwrap();
         // "doc" triggers PATCH → 2.0.0 → 2.0.1
         assert_eq!(proposal.branch, "learning/skill-s-v2.0.0-v2.0.1");
+    }
+
+    // ── Argument safety ──────────────────────────────────────────────────
+    //
+    // No shell is involved, so the failure mode is not metacharacters: it is a
+    // value the tool reads as an option instead of as an operand.
+
+    #[test]
+    fn test_git_add_separates_the_path_with_double_dash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_path = tmp.path().to_path_buf();
+        std::fs::create_dir(tmp_path.join(".git")).unwrap();
+
+        let skill_path = tmp_path.join("skill.md");
+        std::fs::write(
+            &skill_path,
+            "---\nname: my-skill\nversion: 1.0.0\n---\n\n## Old body",
+        )
+        .unwrap();
+
+        let skill = make_skill("my-skill", "1.0.0", false, Some(skill_path));
+        let evidence = make_evidence("restructure steps");
+        let runner = MockShellRunner::new(
+            vec![Ok("main".to_string())],
+            vec![
+                Ok(String::new()),
+                Ok("https://github.com/owner/repo/pull/1".to_string()),
+            ],
+        );
+
+        propose_update_with_runner(&skill, evidence, &runner).unwrap();
+
+        // 3rd git call = add. `--` must sit between the subcommand and the path,
+        // so a path can never be parsed as a flag.
+        let add_args = runner.git_call_args(2);
+        assert_eq!(add_args[0], "add");
+        assert_eq!(add_args[1], "--");
+        assert_eq!(
+            add_args.len(),
+            3,
+            "add takes exactly one path: {add_args:?}"
+        );
+    }
+
+    #[test]
+    fn test_run_process_refuses_nul_byte_argument() {
+        // `Command` cannot pass a NUL through; naming it beats an opaque spawn
+        // failure. This is the choke point, not the barrier — see the doc.
+        let err = validate_process_args("git", &["log", "bad\0arg"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("NUL"), "unexpected message: {err}");
+        assert!(validate_process_args("git", &["log", "--oneline"]).is_ok());
     }
 }

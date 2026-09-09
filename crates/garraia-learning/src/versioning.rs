@@ -48,6 +48,59 @@ pub struct ScoreEntry {
 }
 
 // ─────────────────────────────────────────────────────────
+// Argument validation
+// ─────────────────────────────────────────────────────────
+
+/// Smallest abbreviated SHA git will resolve without ambiguity in practice.
+const SHA_MIN_LEN: usize = 7;
+/// Length of a full SHA-1 object name.
+const SHA_MAX_LEN: usize = 40;
+
+/// Rejects anything that is not a git object name.
+///
+/// Every function in this module hands its SHA straight to `git` as a command
+/// line argument, and the callers include an HTTP handler
+/// (`POST /api/learning/skills/{name}/rollback`) that reads it from a request
+/// body. Two distinct things go wrong without this check, and neither needs a
+/// shell — `Command` never spawns one:
+///
+/// 1. **Option injection.** `git revert --no-edit <sha>` reads any value
+///    starting with `-` as an option instead of a commit, and `--output=<path>`
+///    truncates that path to zero bytes. Measured on git 2.43.0:
+///
+///    ```text
+///    $ git revert --no-edit -- "--output=/tmp/pwn"
+///    error: empty commit set passed
+///    $ ls /tmp/pwn   ->  created, 0 bytes
+///    ```
+///
+///    Note the `--` in that command: it does **not** help. `revert` hands the
+///    arguments it did not consume to `setup_revisions`, which parses
+///    `--output=` wherever it appears. This check is the **only** barrier on
+///    that call site — do not weaken it expecting a separator underneath.
+///    (For `git add` the separator does work: there the value becomes a
+///    pathspec.)
+/// 2. **A panic.** [`short_sha`] slices the first 8 *bytes*; a multi-byte
+///    character straddling that boundary panics inside the handler.
+///
+/// The error deliberately does not echo the rejected value: it travels back to
+/// an HTTP client, and reflecting attacker-chosen bytes into a response body is
+/// a separate problem.
+pub fn validate_git_sha(value: &str) -> Result<()> {
+    if value.len() < SHA_MIN_LEN || value.len() > SHA_MAX_LEN {
+        return Err(Error::Other(format!(
+            "invalid git sha: expected {SHA_MIN_LEN}..={SHA_MAX_LEN} hexadecimal characters"
+        )));
+    }
+    if !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::Other(
+            "invalid git sha: expected hexadecimal characters only".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────
 // Path helpers
 // ─────────────────────────────────────────────────────────
 
@@ -123,6 +176,8 @@ pub fn diff<R: ShellRunner>(
     opts: &VersioningOptions,
     runner: &R,
 ) -> Result<String> {
+    validate_git_sha(from_sha)?;
+    validate_git_sha(to_sha)?;
     let rel_path = relative_skill_path(name, opts)?;
     runner.run_git(
         &["diff", &format!("{from_sha}..{to_sha}"), "--", &rel_path],
@@ -171,7 +226,7 @@ pub fn append_score_entry(name: &str, entry: ScoreEntry, opts: &VersioningOption
 ///
 /// Steps:
 /// 1. **Idempotency guard**: if a revert of `to_sha` is already in the log, return `Ok(())`.
-/// 2. Run `git revert --no-edit <to_sha>`.
+/// 2. Run `git revert --no-edit -- <to_sha>`.
 /// 3. Look up the `ScoreEntry` for `to_sha` in the ledger and re-append it (score reset).
 /// 4. Append a rollback audit entry tagged `rollback-<sha>`.
 ///
@@ -184,6 +239,10 @@ pub fn rollback<R: ShellRunner>(
     opts: &VersioningOptions,
     runner: &R,
 ) -> Result<()> {
+    // 0. Reject anything that is not an object name, before it reaches `git`
+    //    or `short_sha`. Fail-closed: no process is spawned on a bad value.
+    validate_git_sha(to_sha)?;
+
     // 1. Idempotency: has this SHA already been reverted?
     let grep_pattern = format!("Revert.*{}", short_sha(to_sha));
     let existing = runner
@@ -197,7 +256,12 @@ pub fn rollback<R: ShellRunner>(
     }
 
     // 2. Perform the revert.
-    runner.run_git(&["revert", "--no-edit", to_sha], &opts.repo_root)?;
+    // O `--` aqui NAO e uma segunda camada: medido em git 2.43.0,
+    // `git revert --no-edit -- --output=/tmp/x` ainda cria o arquivo, porque o
+    // revert repassa o que nao consumiu para `setup_revisions`. Fica por
+    // higiene e consistencia; quem protege este call site e o
+    // `validate_git_sha` acima, sozinho.
+    runner.run_git(&["revert", "--no-edit", "--", to_sha], &opts.repo_root)?;
 
     // 3. Look up historical score for this SHA.
     let historical_score = score_history(name, opts)?
@@ -506,7 +570,7 @@ mod tests {
             Ok(String::new()),
         );
         // The actual revert
-        runner.expect_git(&format!("revert --no-edit {SHA1}"), Ok(String::new()));
+        runner.expect_git(&format!("revert --no-edit -- {SHA1}"), Ok(String::new()));
 
         rollback("foo", SHA1, "test rollback", &opts, &runner).unwrap();
 
@@ -548,7 +612,7 @@ mod tests {
             &format!("log --oneline --grep Revert.*{SHORT1}"),
             Ok(String::new()),
         );
-        runner.expect_git(&format!("revert --no-edit {SHA1}"), Ok(String::new()));
+        runner.expect_git(&format!("revert --no-edit -- {SHA1}"), Ok(String::new()));
 
         rollback("foo", SHA1, "unknown sha", &opts, &runner).unwrap();
 
@@ -584,5 +648,143 @@ mod tests {
         let opts = make_opts(&tmp);
         let rel = relative_skill_path("my-skill", &opts).unwrap();
         assert_eq!(rel, ".garra/skills/my-skill.md");
+    }
+
+    // ── validate_git_sha + option injection ───────────────
+    //
+    // `POST /api/learning/skills/{name}/rollback` reads `sha` from a request
+    // body and it ends up as a `git` argument. These tests pin the two ways
+    // that went wrong: an argument that git reads as an option, and a byte
+    // slice that panics.
+
+    /// Records every arg vector so a test can assert that nothing was spawned.
+    struct RecordingRunner {
+        git_calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl RecordingRunner {
+        fn new() -> Self {
+            Self {
+                git_calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.git_calls.lock().unwrap().clone()
+        }
+    }
+
+    impl ShellRunner for RecordingRunner {
+        fn run_git(&self, args: &[&str], _cwd: &Path) -> Result<String> {
+            self.git_calls
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|a| a.to_string()).collect());
+            Ok(String::new())
+        }
+        fn run_gh(&self, _args: &[&str], _cwd: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn validate_git_sha_accepts_real_object_names() {
+        assert!(validate_git_sha(SHA1).is_ok());
+        assert!(validate_git_sha("aaaaaaa").is_ok(), "7-char abbreviation");
+        assert!(validate_git_sha("0123456789abcdefABCDEF0123456789abcdef01").is_ok());
+    }
+
+    #[test]
+    fn validate_git_sha_rejects_option_lookalikes() {
+        // The payload that motivated the fix: `git diff --output=<path>` writes
+        // a file, and `git revert` reads it as an option too.
+        assert!(validate_git_sha("--output=/tmp/pwn").is_err());
+        assert!(validate_git_sha("-x").is_err());
+        assert!(validate_git_sha("--upload-pack=curl").is_err());
+    }
+
+    #[test]
+    fn validate_git_sha_rejects_wrong_shapes() {
+        assert!(validate_git_sha("").is_err(), "empty");
+        assert!(validate_git_sha("aaaaaa").is_err(), "6 chars is too short");
+        assert!(
+            validate_git_sha(&"a".repeat(41)).is_err(),
+            "41 chars is too long"
+        );
+        assert!(validate_git_sha("zzzzzzz").is_err(), "not hexadecimal");
+        assert!(validate_git_sha("aaaa aaa").is_err(), "space");
+        assert!(validate_git_sha("HEAD~1").is_err(), "revision expression");
+    }
+
+    #[test]
+    fn validate_git_sha_error_does_not_echo_the_input() {
+        // The message travels to an HTTP client; reflecting attacker bytes back
+        // is a separate problem, so it must not appear.
+        let err = validate_git_sha("--output=/tmp/pwn")
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("/tmp/pwn"), "error echoed the input: {err}");
+    }
+
+    #[test]
+    fn rollback_refuses_option_injection_before_spawning_git() {
+        let tmp = TempDir::new().unwrap();
+        let opts = make_opts(&tmp);
+        let runner = RecordingRunner::new();
+
+        let result = rollback("foo", "--output=/tmp/pwn", "why", &opts, &runner);
+
+        assert!(result.is_err(), "option-shaped sha must be refused");
+        assert!(
+            runner.calls().is_empty(),
+            "fail-closed: no git process may be spawned, got {:?}",
+            runner.calls()
+        );
+    }
+
+    #[test]
+    fn rollback_does_not_panic_on_multibyte_sha() {
+        // `short_sha` slices the first 8 *bytes*. Byte 8 of this value falls in
+        // the middle of the 'e-acute', which panics without the length+hex check.
+        let tmp = TempDir::new().unwrap();
+        let opts = make_opts(&tmp);
+        let runner = RecordingRunner::new();
+
+        let result = rollback("foo", "aaaaaaa\u{e9}", "why", &opts, &runner);
+
+        assert!(result.is_err());
+        assert!(runner.calls().is_empty());
+    }
+
+    /// Pino do vetor de argumentos, nao prova de protecao: o `--` nao defende
+    /// o `revert` (ver o doc de [`validate_git_sha`]). Serve para uma mudanca
+    /// acidental no vetor aparecer aqui.
+    #[test]
+    fn rollback_passes_the_sha_after_a_double_dash() {
+        let tmp = TempDir::new().unwrap();
+        let opts = make_opts(&tmp);
+        let runner = RecordingRunner::new();
+
+        rollback("foo", SHA1, "why", &opts, &runner).unwrap();
+
+        let revert = runner
+            .calls()
+            .into_iter()
+            .find(|c| c.first().map(|a| a == "revert").unwrap_or(false))
+            .expect("revert was not called");
+        assert_eq!(revert, vec!["revert", "--no-edit", "--", SHA1]);
+    }
+
+    #[test]
+    fn diff_refuses_option_injection_on_either_side() {
+        let tmp = TempDir::new().unwrap();
+        let opts = make_opts(&tmp);
+        let runner = RecordingRunner::new();
+
+        assert!(diff("foo", "--output=/tmp/pwn", SHA2, &opts, &runner).is_err());
+        assert!(diff("foo", SHA1, "--output=/tmp/pwn", &opts, &runner).is_err());
+        assert!(
+            runner.calls().is_empty(),
+            "fail-closed on both sides of the range"
+        );
     }
 }

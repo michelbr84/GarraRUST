@@ -42,6 +42,15 @@ ela nao pode causar. Do lado do app, o `/ws` passou a emitir o turno enquanto
 ele acontece (`delta`, `tool_started`, `tool_finished`, `stopped`) e a aceitar
 cancelamento; a metade Flutter disso segue em aberto.
 
+Fechando o ciclo, o `sha` do rollback de skill deixou de ir cru para o `git`.
+Nenhum shell estava envolvido, mas o `git` le um valor comecando com `-` como
+opcao: um `POST` com `{"sha": "--output=/caminho"}` fazia o `git revert`
+truncar aquele arquivo para zero byte, num modulo que e auth-free por
+politica. O mesmo valor derrubava a task quando um caractere multi-byte caia
+na fronteira que o codigo fatiava. A revisao mediu que o separador `--` nao
+defende o `revert` — ele repassa ao parser de revisoes o que nao consumiu —,
+entao quem fecha esse caminho e a validacao do formato, sozinha.
+
 ### Added
 - **`garraia update` avisa de binarios antigos no PATH (#1030).** O update
   trocava so o proprio binario; um `/usr/bin/garraia` de outra instalacao
@@ -319,6 +328,23 @@ cancelamento; a metade Flutter disso segue em aberto.
   como `offline`, que e a verdade. (#1079)
 
 ### Security
+- learning: o `sha` do corpo de `POST /api/learning/skills/{name}/rollback`
+  passa a ser validado (hexadecimal, 7 a 40 caracteres) antes de virar
+  argumento do `git`. Ate aqui o valor ia cru para o `git revert`, num modulo
+  que e auth-free por politica: nenhum shell esta envolvido, mas o `git` le um
+  valor comecando com `-` como **opcao**, e um `POST` com
+  `{"sha": "--output=/caminho"}` truncava aquele arquivo para zero byte. O
+  mesmo valor tambem derrubava a task com `end byte index 8 is not a char
+  boundary` quando um caractere multi-byte caia na fronteira que o `short_sha`
+  fatia. Recusa fail-closed: nenhum processo e criado com valor invalido, e a
+  resposta 400 nao ecoa o que foi recusado (#1086).
+- learning: `git add` passa a separar o caminho com `--`, para que um caminho
+  nunca possa ser lido como flag. Medido em git 2.43.0, o mesmo separador
+  **nao** defende o `git revert` — ele repassa ao parser de revisoes o que nao
+  consumiu, e `--output=` continua valendo depois do `--`. Ele fica ali por
+  consistencia, e a validacao de formato e a unica barreira daquele call site;
+  esta escrito assim no codigo, para ninguem relaxar a validacao confiando
+  numa camada que nao existe (#1086).
 - gateway: com `gateway.api_key` configurada, as rotas `/api/*` passam a
   exigir `Authorization: Bearer`. Antes a chave valia so no handshake do
   `/ws`, e todo o REST — sessoes, memoria, providers, logs, diagnosticos —
