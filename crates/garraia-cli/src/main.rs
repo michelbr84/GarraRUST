@@ -1076,6 +1076,21 @@ fn value_taking_flags() -> Vec<String> {
 }
 
 fn main() -> Result<()> {
+    // #1084 item 1: fecha o canal procfs ANTES de qualquer coisa — antes do
+    // `.env`, antes do clap, antes de qualquer filho poder existir. A partir
+    // daqui `/proc/<pid>/environ` deste processo e root-only, e um filho de
+    // tool de mesmo UID nao alcanca mais os segredos que este processo carrega
+    // no ambiente. Nao e fail-closed de proposito: num kernel que nao suporta
+    // o knob a alternativa seria nao subir o gateway, o que troca um vazamento
+    // estreito por uma indisponibilidade total. O resultado e logado assim que
+    // houver tracing (o `warn!` abaixo roda depois do init).
+    let hardening = garraia_common::process_hardening::harden_current_process();
+    if hardening == garraia_common::process_hardening::Hardening::Failed {
+        // Só na falha: o caminho feliz é silencioso, e um aviso por execução
+        // de `garra chat` seria ruído que ninguém lê.
+        eprintln!("Aviso de seguranca: {}", hardening.describe());
+    }
+
     // Attempt to load .env file from the current directory, ignoring errors if missing
     dotenvy::dotenv().ok();
 

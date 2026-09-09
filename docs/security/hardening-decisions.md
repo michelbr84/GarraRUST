@@ -35,14 +35,38 @@ tool herda `PATH`, `HOME`, `LANG`, `LC_ALL`, `TERM` e `USER`, e mais nada). O
 #1078 fechou os fake-negativos do gate de comandos e vinculou a aprovacao
 humana ao comando aprovado.
 
-O que **nao** esta fechado: um processo filho de mesmo UID pode ler
-`/proc/<ppid>/environ` e alcancar os segredos do processo pai. O gate cobre o
-padrao `environ` no `CONFIRM_LIST`, mas isso so vale para comandos que passam
-pelo gate — nao para codigo dentro de um script que o gate agora obriga a
-confirmar, mas nao le.
+### FECHADO em 2026-09-09 (#1084, ADR 0019)
 
-Fechar isso de verdade exige confinamento do processo, e nao mais uma regra de
-texto.
+O canal do procfs esta fechado. `harden_current_process()`
+(`garraia-common/src/process_hardening.rs`) roda `prctl(PR_SET_DUMPABLE, 0)`
+no inicio do `main` da CLI, e o kernel passa a tratar `/proc/<pid>/environ`
+deste processo como root-only. Um filho de tool de mesmo UID recebe `EACCES`.
+
+Medido, com controle:
+
+```text
+sem hardening   filho le: SEGREDO_DO_PAI=abracadabra
+com hardening   filho le: (negado)
+```
+
+**Nao foi Landlock**, e a ADR 0019 explica por que: Landlock nao tem regra de
+negacao, entao "negar /proc" vira "enumerar todo o resto" — exatamente a
+politica de caminhos que ninguem decidiu. E negar `/proc` inteiro quebraria
+`cargo` (`current_exe()` le `/proc/self/exe`). Inverter a pergunta — tornar o
+**pai** ilegivel em vez de restringir o filho — fecha o canal com uma syscall e
+sem politica nenhuma.
+
+O texto abaixo e a avaliacao original de 2026-04, mantida como registro do
+raciocinio que levou ate aqui.
+
+### O que continua aberto
+
+Confinar o que uma tool pode **tocar em disco**. Um filho segue lendo qualquer
+arquivo que o usuario possa ler, inclusive um `.env`. Isso e o objetivo
+original da Landlock, ainda precisa da politica de caminhos, e continua sendo
+decisao de produto.
+
+### Avaliacao original (2026-04, #1078)
 
 ### Avaliacao (feita no #1078, sem implementacao)
 
@@ -95,5 +119,37 @@ As alternativas, para quando o dono decidir:
 | Manter fail-closed | nada | `run_tests` inutil no caminho full-auto |
 | Sandbox (secao 5) | resolve de graca: o runner roda confinado | depende do sandbox existir |
 | Permitir com env scrubbed + rede negada | `run_tests` volta a funcionar | assume o risco de codigo do projeto rodar sem aprovacao |
+
+### RESOLVIDO em 2026-09-09 (#1084)
+
+Nenhuma das tres opcoes acima: a pergunta estava mal posta.
+
+O bloqueio incondicional nao protegia nada. No mesmo runtime sem canal,
+`bash("cargo test")` roda — `cargo test` nao e comando sensivel no gate. Era a
+mesma capacidade por outra porta, com o custo de deixar `run_tests` inutil no
+full-auto.
+
+A regra passou a ser **a mesma do `bash`**, aplicada a linha de comando que vai
+rodar de verdade (`RunTestsTool::command_line`, montada a partir do `Command`,
+para o gate nunca julgar algo menor do que executa). Consequencia medida:
+
+| Suite | Sem canal de confirmacao |
+| --- | --- |
+| `cargo test` | roda |
+| `npm test` | roda |
+| `pytest` | **bloqueada** — roda por interpretador Python, sensivel no gate |
+| filtro que toca `environ` | **bloqueada** |
+
+Nenhuma capacidade nova e concedida, e por isso a decisao nao precisou do
+apetite de risco do dono. Com canal de confirmacao nada mudou: toda suite
+continua pedindo aprovacao, vinculada ao diretorio.
+
+Junto veio um buraco que a leitura do arquivo revelou: `test_name` vinha do
+modelo e ia cru como argumento do runner, e `cargo test --config
+'target.<cfg>.runner=...'` e execucao arbitraria. Agora e validado
+(`validate_test_name`), com a forma documentada `-p <crate>` como unica
+excecao.
+
+### Avaliacao original (2026-04, #1078)
 
 Nao e decisao tecnica: e quanto risco o produto aceita. Fica com o dono.

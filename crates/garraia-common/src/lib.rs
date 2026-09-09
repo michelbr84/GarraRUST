@@ -2,6 +2,7 @@ pub mod error;
 pub mod handoff;
 pub mod message;
 pub mod metrics;
+pub mod process_hardening;
 pub mod safety_gate;
 #[cfg(feature = "ssrf")]
 pub mod ssrf;

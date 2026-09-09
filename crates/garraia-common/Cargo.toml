@@ -37,6 +37,13 @@ toml = { workspace = true }
 reqwest = { workspace = true, features = ["stream"], optional = true }
 futures = { workspace = true, optional = true }
 
+# `prctl(PR_SET_DUMPABLE)` em `src/process_hardening.rs`. Unix-only e sem
+# feature gate: sao dois simbolos de libc, nenhuma arvore nova, e o modulo
+# precisa estar sempre disponivel — hardening atras de feature e hardening
+# que alguem esquece de ligar.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [features]
 default = []
 # Enables `garraia_common::ssrf`. Turned on by the three crates that make
