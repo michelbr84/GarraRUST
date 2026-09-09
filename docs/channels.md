@@ -175,6 +175,25 @@ reason goes only to the log. One message per reason would tell whoever is
 probing whether they got the prefix, the hex, the length or just the secret
 wrong.
 
+#### With more than one WhatsApp channel
+
+The channel that answers is the one whose `app_secret` **signed** the request,
+and the reply goes out with that channel's `access_token`. The
+`metadata.phone_number_id` inside the body does not choose the channel.
+
+That distinction is the difference between two channels and one. If routing
+followed the body, whoever held the `app_secret` of your least-trusted channel
+could sign a body naming another channel's number and have the reply sent with
+the other channel's token. The body being signed is no defence there: it is
+signed with the wrong key.
+
+A signed body whose `phone_number_id` belongs to a **different configured
+channel** is dropped, because legitimate traffic for that number would arrive
+signed with that channel's own secret. A `phone_number_id` that no configured
+channel claims is still served by the channel that signed: one WhatsApp
+Business Account can hold several numbers under the same Meta app, all signed
+by the same `app_secret`, and dropping those would leave the channel mute.
+
 ### Features
 
 - Webhook-based integration

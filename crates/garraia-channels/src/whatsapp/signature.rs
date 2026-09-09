@@ -63,6 +63,10 @@ pub enum SignatureError {
     /// Assinatura bem formada que nao corresponde ao corpo. Este e o caso
     /// que importa: corpo adulterado, segredo errado, ou forja.
     Mismatch,
+    /// Nenhum canal WhatsApp configurado. Nunca sai de [`verify_signature`]
+    /// — e o estado inicial do handler, para o log nao culpar um
+    /// `app_secret` que nao chegou a ser consultado.
+    NoChannels,
 }
 
 impl SignatureError {
@@ -70,6 +74,7 @@ impl SignatureError {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MissingSecret => "app_secret nao configurado",
+            Self::NoChannels => "nenhum canal whatsapp configurado",
             Self::MissingHeader => "header X-Hub-Signature-256 ausente",
             Self::MissingPrefix => "X-Hub-Signature-256 sem o prefixo sha256=",
             Self::MalformedHeader => "X-Hub-Signature-256 nao e hex valido",
@@ -314,9 +319,31 @@ mod tests {
             SignatureError::MalformedHeader,
             SignatureError::WrongLength,
             SignatureError::Mismatch,
+            SignatureError::NoChannels,
         ] {
             assert!(!e.as_str().is_empty());
             assert_eq!(e.to_string(), e.as_str());
+        }
+    }
+
+    /// Nenhum motivo pode carregar o segredo, o corpo ou a assinatura: estes
+    /// textos vao para o log, e a regra 6 do `CLAUDE.md` nao abre excecao.
+    #[test]
+    fn nenhum_motivo_carrega_segredo() {
+        for e in [
+            SignatureError::MissingSecret,
+            SignatureError::MissingHeader,
+            SignatureError::MissingPrefix,
+            SignatureError::MalformedHeader,
+            SignatureError::WrongLength,
+            SignatureError::Mismatch,
+            SignatureError::NoChannels,
+        ] {
+            let txt = e.as_str();
+            assert!(
+                !txt.contains(SECRET),
+                "motivo de log carregando o segredo: {txt}"
+            );
         }
     }
 }

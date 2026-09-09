@@ -3484,6 +3484,36 @@ mod tests {
         assert!(msgs.is_empty(), "canal desligado nao avisa: {msgs:?}");
     }
 
+    /// `enabled` ausente e o caso mais comum: o operador escreve o canal no
+    /// TOML e nao escreve `enabled`. A condicao de pulo e
+    /// `enabled == Some(false)`, entao `None` e tratado como ligado — mas
+    /// sem teste esse invariante regride em silencio e o canal mais comum
+    /// deixa de ser checado.
+    #[test]
+    fn whatsapp_sem_enabled_e_tratado_como_ligado() {
+        let msgs = mensagens_de_whatsapp(&cfg_whatsapp(None, serde_json::json!({})));
+        assert!(
+            msgs.iter().any(|m| m.contains("app_secret")),
+            "canal sem `enabled` deve ser checado: {msgs:?}"
+        );
+    }
+
+    /// Nenhum achado do WhatsApp pode carregar o valor de um segredo — so a
+    /// presenca. Regra 6 do `CLAUDE.md`.
+    #[test]
+    fn achado_de_whatsapp_nunca_carrega_o_valor_do_segredo() {
+        let cfg = cfg_whatsapp(
+            Some(true),
+            serde_json::json!({"app_secret": "valor-ultrassecreto"}),
+        );
+        for m in mensagens_de_whatsapp(&cfg) {
+            assert!(
+                !m.contains("valor-ultrassecreto"),
+                "achado carregando o segredo: {m}"
+            );
+        }
+    }
+
     fn cfg_line(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
         let mut cfg = AppConfig::default();
         let settings: HashMap<String, serde_json::Value> = match settings {

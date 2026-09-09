@@ -5,6 +5,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
@@ -53,8 +54,17 @@ pub async fn whatsapp_verify(
     // o token byte a byte. `fold` em vez de `any` de proposito: `any` faria
     // short-circuit no primeiro canal que casa, reintroduzindo o vazamento
     // quando ha mais de um canal configurado.
+    //
+    // Compara os digests SHA-256 e nao os bytes crus: o `ct_eq` do `subtle`
+    // sai imediatamente quando os slices tem tamanhos diferentes, e isso
+    // vazava o **comprimento** do token configurado. Passando pelo digest,
+    // os dois lados tem sempre 32 bytes e o XOR roda inteiro. O digest nao
+    // precisa ser secreto — o atacante so ve igual/diferente, como antes;
+    // o que muda e que o tempo para de responder "errou o tamanho".
+    let token_digest = Sha256::digest(token.as_bytes());
     let valid = channels.iter().fold(false, |acc, ch| {
-        let hit: bool = ch.verify_token().as_bytes().ct_eq(token.as_bytes()).into();
+        let esperado = Sha256::digest(ch.verify_token().as_bytes());
+        let hit: bool = esperado.ct_eq(&token_digest).into();
         acc | hit
     });
 
@@ -85,9 +95,23 @@ pub async fn whatsapp_verify(
 /// # Qual canal
 ///
 /// Quando ha mais de um canal WhatsApp configurado, e a **assinatura** que
-/// escolhe qual deles recebeu a mensagem — nunca um campo do corpo. Por
-/// `phone_number_id` a escolha seria de quem manda o POST, que apontaria
-/// para o canal de segredo mais fraco.
+/// escolhe qual deles atende — nunca um campo do corpo. O canal escolhido e
+/// o que respondeu ao HMAC, e e com o `access_token` dele que a resposta
+/// sai.
+///
+/// Isso importa mais do que parece. Se o roteamento fosse por
+/// `metadata.phone_number_id` do corpo, quem conhecesse o `app_secret` do
+/// canal mais fraco assinaria um corpo apontando para outro canal e a
+/// resposta sairia com o **token do outro** — escalada entre canais com uma
+/// credencial de baixo valor. O corpo estar assinado nao ajuda: ele esta
+/// assinado pela chave errada.
+///
+/// Um `phone_number_id` que nao seja o do canal autenticado e aceito apenas
+/// quando **nenhum** canal configurado o reivindica: uma WABA pode ter varios
+/// numeros sob a mesma app, todos assinados pelo mesmo `app_secret`, e nesse
+/// caso o canal autenticado e mesmo o certo. Se o numero pertence a **outro**
+/// canal configurado, o evento e descartado: trafego legitimo daquele numero
+/// viria assinado pelo segredo dele.
 pub async fn whatsapp_webhook(
     State(channels): State<WhatsAppState>,
     headers: HeaderMap,
@@ -101,7 +125,10 @@ pub async fn whatsapp_webhook(
     // A assinatura escolhe o canal. `fold` e nao `find`: sem short-circuit,
     // o tempo nao diz quantos canais foram tentados antes do acerto.
     let mut matched: Option<&std::sync::Arc<WhatsAppChannel>> = None;
-    let mut last_err = SignatureError::MissingSecret;
+    // `NoChannels` e o estado inicial de proposito: com a lista vazia o loop
+    // nao roda e nenhum `Err` sobrescreve isto, entao o log diz "nenhum canal
+    // configurado" em vez de culpar um `app_secret` que nunca foi consultado.
+    let mut last_err = SignatureError::NoChannels;
     for ch in channels.iter() {
         match verify_signature(ch.app_secret(), &body, header) {
             Ok(()) => {
@@ -113,7 +140,7 @@ pub async fn whatsapp_webhook(
         }
     }
 
-    let Some(_channel) = matched else {
+    let Some(canal_autenticado) = matched else {
         warn!(
             reason = last_err.as_str(),
             "whatsapp: webhook rejeitado — assinatura invalida"
@@ -217,18 +244,27 @@ pub async fn whatsapp_webhook(
                     text.len()
                 );
 
-                // Find the matching channel by phone_number_id
-                let channel = channels
-                    .iter()
-                    .find(|ch| ch.phone_number_id() == metadata_phone_id)
-                    .or_else(|| channels.first());
+                // O canal e o que a assinatura escolheu. O
+                // `metadata.phone_number_id` do corpo NAO decide nada: ver
+                // "# Qual canal" na doc do handler.
+                let channel = canal_autenticado;
 
-                let Some(channel) = channel else {
+                // Unica pergunta que o corpo pode fazer: este numero e de
+                // OUTRO canal configurado? Se for, o evento nao devia estar
+                // assinado por este segredo, e responder com o token deste
+                // canal seria falar por um numero que nao e o dele.
+                if !metadata_phone_id.is_empty()
+                    && metadata_phone_id != channel.phone_number_id()
+                    && channels
+                        .iter()
+                        .any(|ch| ch.phone_number_id() == metadata_phone_id)
+                {
                     warn!(
-                        "whatsapp: no channel configured for phone_number_id {metadata_phone_id}"
+                        "whatsapp: corpo assinado por um canal reivindica o phone_number_id de \
+                         outro canal configurado; evento descartado"
                     );
                     continue;
-                };
+                }
 
                 // Mark as read
                 let client = channel.client();
@@ -320,9 +356,85 @@ mod tests {
         )
     }
 
+    /// Canal com `phone_number_id` proprio e um callback que grava quem
+    /// atendeu. Devolve `Err("__blocked__")`, que o handler trata como "user
+    /// nao autorizado" e descarta em silencio — assim o teste observa a
+    /// escolha do canal sem que nada saia para a rede.
+    fn canal_que_grava(
+        secret: &str,
+        phone_id: &str,
+        marca: &'static str,
+        diario: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    ) -> Arc<WhatsAppChannel> {
+        let on_msg: WhatsAppOnMessageFn = Arc::new(move |_f, _u, _t, _d| {
+            let diario = Arc::clone(&diario);
+            Box::pin(async move {
+                diario.lock().expect("mutex do teste").push(marca);
+                Err("__blocked__".to_string())
+            })
+        });
+        Arc::new(
+            WhatsAppChannel::new(
+                format!("token-de-{marca}"),
+                phone_id.into(),
+                "verify".into(),
+                secret.into(),
+                on_msg,
+            )
+            .expect("app_secret nao vazio"),
+        )
+    }
+
+    /// Corpo com uma mensagem de texto de verdade, endereçada a `phone_id`.
+    fn corpo_para(phone_id: &str) -> Vec<u8> {
+        serde_json::json!({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "metadata": { "phone_number_id": phone_id },
+                        "contacts": [{ "wa_id": "5511999", "profile": { "name": "Fulano" } }],
+                        "messages": [{
+                            "type": "text",
+                            "id": "wamid.1",
+                            "from": "5511999",
+                            "text": { "body": "oi" }
+                        }]
+                    }
+                }]
+            }]
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// As tasks do handler sao `tokio::spawn`; da tempo a elas de gravar.
+    async fn quem_atendeu(diario: &Arc<std::sync::Mutex<Vec<&'static str>>>) -> Vec<&'static str> {
+        for _ in 0..50 {
+            if !diario.lock().expect("mutex do teste").is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // Mais uma volta para pegar um segundo canal que tenha atendido
+        // errado — senao o teste passaria por chegar cedo demais.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        diario.lock().expect("mutex do teste").clone()
+    }
+
     fn app(canais: Vec<Arc<WhatsAppChannel>>) -> Router {
         Router::new()
             .route("/webhooks/whatsapp", post(whatsapp_webhook))
+            .with_state(Arc::new(canais) as WhatsAppState)
+    }
+
+    /// Como o `app`, mas com o `GET` do handshake tambem — a rota de
+    /// producao monta os dois no mesmo path (`router.rs`).
+    fn app_com_get(canais: Vec<Arc<WhatsAppChannel>>) -> Router {
+        Router::new()
+            .route(
+                "/webhooks/whatsapp",
+                axum::routing::get(whatsapp_verify).post(whatsapp_webhook),
+            )
             .with_state(Arc::new(canais) as WhatsAppState)
     }
 
@@ -406,11 +518,10 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
-    /// Com dois canais configurados, e a **assinatura** que escolhe qual
-    /// recebeu — nao um campo do corpo. Por `phone_number_id` a escolha
-    /// seria de quem manda o POST, que apontaria para o segredo mais fraco.
+    /// Com dois canais configurados, qualquer um dos dois segredos autentica
+    /// — e nenhum outro.
     #[tokio::test]
-    async fn a_assinatura_escolhe_o_canal_nao_o_corpo() {
+    async fn so_os_segredos_dos_canais_configurados_autenticam() {
         let canais = vec![canal(SEGREDO_A), canal(SEGREDO_B)];
         for segredo in [SEGREDO_A, SEGREDO_B] {
             let sig = compute_signature(segredo, CORPO);
@@ -421,6 +532,135 @@ mod tests {
         let sig = compute_signature("segredo-de-ninguem", CORPO);
         let (status, _) = resposta(canais, requisicao(CORPO, Some(&sig))).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// O canal que atende e o que **assinou**, e nao o que o corpo aponta.
+    ///
+    /// Este teste afirma a escolha, nao so o status: gravar 200 nao distingue
+    /// "canal A atendeu" de "canal B atendeu", que e exatamente a diferenca
+    /// que importa aqui.
+    #[tokio::test]
+    async fn quem_atende_e_o_canal_que_assinou() {
+        let diario = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let canais = vec![
+            canal_que_grava(SEGREDO_A, "111", "A", Arc::clone(&diario)),
+            canal_que_grava(SEGREDO_B, "222", "B", Arc::clone(&diario)),
+        ];
+        let corpo = corpo_para("111");
+        let sig = compute_signature(SEGREDO_A, &corpo);
+
+        let (status, _) = resposta(canais, requisicao(&corpo, Some(&sig))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(quem_atendeu(&diario).await, vec!["A"]);
+    }
+
+    /// A escalada entre canais que o roteamento por corpo permitia.
+    ///
+    /// Quem conhece o `app_secret` do canal A assina um corpo cujo
+    /// `metadata.phone_number_id` e o do canal B. Antes, o handler procurava
+    /// o canal por esse campo e respondia com o **`access_token` do B** —
+    /// uma credencial de baixo valor dirigindo a conta de outro canal. O
+    /// corpo estar assinado nao ajudava: estava assinado pela chave errada.
+    ///
+    /// Agora o evento e descartado, porque trafego legitimo do numero do B
+    /// viria assinado pelo segredo do B.
+    #[tokio::test]
+    async fn segredo_de_um_canal_nao_dirige_o_outro() {
+        let diario = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let canais = vec![
+            canal_que_grava(SEGREDO_A, "111", "A", Arc::clone(&diario)),
+            canal_que_grava(SEGREDO_B, "222", "B", Arc::clone(&diario)),
+        ];
+        // Assinado por A, apontando para o numero do B.
+        let corpo = corpo_para("222");
+        let sig = compute_signature(SEGREDO_A, &corpo);
+
+        let (status, _) = resposta(canais, requisicao(&corpo, Some(&sig))).await;
+        // 200: a assinatura e valida, so o roteamento e que nao. Devolver
+        // 403 aqui daria a quem tem o segredo do A um jeito de descobrir
+        // quais numeros estao configurados no gateway.
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            quem_atendeu(&diario).await.is_empty(),
+            "nenhum canal devia atender: nem o B (nao assinou) nem o A (nao e o numero dele)"
+        );
+    }
+
+    /// Numero que nenhum canal reivindica continua atendido pelo canal que
+    /// assinou. Uma WABA pode ter varios numeros sob a mesma app da Meta,
+    /// todos assinados pelo mesmo `app_secret`, e o operador so configurou
+    /// um deles — descartar aqui deixaria o canal mudo.
+    #[tokio::test]
+    async fn numero_de_ninguem_ainda_vai_para_quem_assinou() {
+        let diario = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let canais = vec![canal_que_grava(SEGREDO_A, "111", "A", Arc::clone(&diario))];
+        let corpo = corpo_para("999");
+        let sig = compute_signature(SEGREDO_A, &corpo);
+
+        let (status, _) = resposta(canais, requisicao(&corpo, Some(&sig))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(quem_atendeu(&diario).await, vec!["A"]);
+    }
+
+    /// O header em minusculas tambem casa. O hyper normaliza `HeaderName`
+    /// para lowercase, entao `headers.get("X-Hub-Signature-256")` acha o
+    /// header qualquer que seja a capitalizacao na rede. Documentado num
+    /// teste porque a alternativa e alguem "consertar" isso um dia por
+    /// medo de um proxy que mude o case.
+    #[tokio::test]
+    async fn header_em_minusculas_tambem_casa() {
+        let sig = compute_signature(SEGREDO_A, CORPO);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhooks/whatsapp")
+            .header("content-type", "application/json")
+            .header("x-hub-signature-256", &sig)
+            .body(Body::from(CORPO.to_vec()))
+            .expect("request valida");
+        let (status, _) = resposta(vec![canal(SEGREDO_A)], req).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// O `hub.verify_token` do GET nao pode vazar o **comprimento** do token
+    /// configurado. Comparar os digests SHA-256 iguala os tamanhos, entao um
+    /// palpite de qualquer comprimento e recusado do mesmo jeito.
+    #[tokio::test]
+    async fn verify_token_de_qualquer_tamanho_e_recusado_igual() {
+        let app = app_com_get(vec![canal(SEGREDO_A)]);
+        for palpite in ["", "v", "verif", "verifyyyyyyyyyyyyyyyyyyyyyyyyyyyy"] {
+            let req = Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token={palpite}&hub.challenge=abc"
+                ))
+                .body(Body::empty())
+                .expect("request valida");
+            let r = app.clone().oneshot(req).await.expect("resposta");
+            assert_eq!(
+                r.status(),
+                StatusCode::FORBIDDEN,
+                "palpite de {} chars devia ser recusado",
+                palpite.len()
+            );
+        }
+    }
+
+    /// E o token certo passa, devolvendo o `hub.challenge` — senao o teste
+    /// acima passaria tambem com a verificacao quebrada em "recusa tudo".
+    #[tokio::test]
+    async fn verify_token_correto_devolve_o_challenge() {
+        let app = app_com_get(vec![canal(SEGREDO_A)]);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=verify&hub.challenge=abc")
+            .body(Body::empty())
+            .expect("request valida");
+        let r = app.oneshot(req).await.expect("resposta");
+        assert_eq!(r.status(), StatusCode::OK);
+        let corpo = axum::body::to_bytes(r.into_body(), 4096)
+            .await
+            .expect("corpo");
+        assert_eq!(&corpo[..], b"abc");
     }
 
     /// Corpo assinado mas ilegivel e 400, nao 403: a autenticidade esta
