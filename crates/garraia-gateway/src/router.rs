@@ -17,6 +17,7 @@ use crate::mobile_chat;
 use crate::oauth;
 use crate::openai_api;
 use crate::parrot_ws;
+use crate::push_channels::ChannelKind;
 use crate::state::SharedState;
 use crate::stats_handler;
 use crate::totp;
@@ -137,13 +138,15 @@ fn build_skill_skin_routes(
 
 pub fn build_router(
     state: SharedState,
-    whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState,
-    google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState,
-    teams_state: garraia_channels::teams::webhook::TeamsState,
-    line_state: garraia_channels::line_channel::webhook::LineState,
+    push: crate::push_channels::PushChannelStates,
     admin_store: Arc<Mutex<admin::store::AdminStore>>,
     admin_encryption_key: Arc<Vec<u8>>,
 ) -> Router {
+    // Clonado antes de os campos irem para o `.with_state()` de cada rota de
+    // webhook: o `/api/channels` precisa das mesmas listas para saber quais
+    // canais push subiram (#1079). E `Arc<Vec<_>>` dos dois lados, entao o
+    // clone e um bump de refcount por canal, nao copia dos canais.
+    let push_para_o_status = push.clone();
     // Per-IP rate limit from config (default: 1 req/sec, burst 60).
     let rl = &state.config.gateway.rate_limit;
     let governor_conf = GovernorConfigBuilder::default()
@@ -194,7 +197,7 @@ pub fn build_router(
             get(garraia_channels::whatsapp::webhook::whatsapp_verify)
                 .post(garraia_channels::whatsapp::webhook::whatsapp_webhook),
         )
-        .with_state(whatsapp_state);
+        .with_state(push.whatsapp);
 
     // #1050: so POST. O `GET` do WhatsApp existe por causa do handshake
     // `hub.challenge` da Cloud API; o Google Chat valida pelo proprio POST,
@@ -204,7 +207,7 @@ pub fn build_router(
             "/webhooks/google-chat",
             post(garraia_channels::google_chat::webhook::google_chat_webhook),
         )
-        .with_state(google_chat_state);
+        .with_state(push.google_chat);
 
     // #1050: so POST, como o Google Chat.
     let teams_routes = Router::new()
@@ -212,7 +215,7 @@ pub fn build_router(
             "/webhooks/teams",
             post(garraia_channels::teams::webhook::teams_webhook),
         )
-        .with_state(teams_state);
+        .with_state(push.teams);
 
     // #1050: o LINE tambem so tem POST. O `GET` do WhatsApp existe porque a
     // Cloud API faz um handshake `hub.challenge` para validar a URL; o LINE
@@ -223,7 +226,7 @@ pub fn build_router(
             "/webhooks/line",
             post(garraia_channels::line_channel::webhook::line_webhook),
         )
-        .with_state(line_state);
+        .with_state(push.line);
 
     let router = Router::new()
         .route("/", get(web_chat))
@@ -521,6 +524,10 @@ pub fn build_router(
             api_key_gate,
             crate::gateway_auth::api_key_layer,
         ))
+        // #1079: as listas dos canais push, para o `/api/channels` derivar o
+        // status deles de quem subiu de fato. Nao e segredo — o handler so
+        // consulta `len()`, e o `Debug` do struct so mostra contagem.
+        .layer(axum::Extension(Arc::new(push_para_o_status)))
         .layer(governor_layer)
         .layer(cors_layer)
         .layer({
@@ -1239,34 +1246,82 @@ async fn test_provider(
 // ─── Channels (plan 0120 / PR-7) ───────────────────────────────────────────
 
 /// Known channels — display metadata mirrors `KNOWN_PROVIDERS`. The `id`
-/// column matches `ChannelRegistry` entries; `needs_secret` is purely
-/// informational (the Web Console renders an amber pill when true but the
-/// actual secret value never crosses the API boundary).
-const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
-    ("web", "Web Chat", false),
-    ("api", "REST API", false),
-    ("telegram", "Telegram", true),
-    ("discord", "Discord", true),
-    ("slack", "Slack", true),
-    ("whatsapp", "WhatsApp", true),
-    ("imessage", "iMessage", false),
-    ("google_chat", "Google Chat", true),
-    ("teams", "Microsoft Teams", true),
-    ("line", "LINE", true),
-    ("irc", "IRC", false),
-    ("signal", "Signal", false),
-    ("matrix", "Matrix", true),
-    ("openclaw", "OpenClaw", false),
-    ("mcp", "MCP", false),
-    ("cli", "CLI", false),
+/// column matches `ChannelRegistry` entries for pull channels; `needs_secret`
+/// is purely informational (the Web Console renders an amber pill when true
+/// but the actual secret value never crosses the API boundary).
+///
+/// A coluna `kind` entrou pela #1079 e e a **unica** fonte de "quem e push".
+/// Canal push nao entra no `ChannelRegistry` — o `Vec<Arc<_>>` dele vira
+/// estado da rota `/webhooks/*` —, entao derivar status do registry dava
+/// `"offline"` eterno para os quatro. O status deles vem do
+/// [`PushChannelStates`], e um teste confere que todo `Push` desta tabela e
+/// conhecido la, para as duas fontes nao divergirem em silencio.
+///
+/// [`PushChannelStates`]: crate::push_channels::PushChannelStates
+const KNOWN_CHANNELS: &[(&str, &str, bool, ChannelKind)] = &[
+    ("web", "Web Chat", false, ChannelKind::Pull),
+    ("api", "REST API", false, ChannelKind::Pull),
+    ("telegram", "Telegram", true, ChannelKind::Pull),
+    ("discord", "Discord", true, ChannelKind::Pull),
+    ("slack", "Slack", true, ChannelKind::Pull),
+    ("whatsapp", "WhatsApp", true, ChannelKind::Push),
+    ("imessage", "iMessage", false, ChannelKind::Pull),
+    ("google_chat", "Google Chat", true, ChannelKind::Push),
+    ("teams", "Microsoft Teams", true, ChannelKind::Push),
+    ("line", "LINE", true, ChannelKind::Push),
+    ("irc", "IRC", false, ChannelKind::Pull),
+    ("signal", "Signal", false, ChannelKind::Pull),
+    ("matrix", "Matrix", true, ChannelKind::Pull),
+    ("openclaw", "OpenClaw", false, ChannelKind::Pull),
+    ("mcp", "MCP", false, ChannelKind::Pull),
+    ("cli", "CLI", false, ChannelKind::Pull),
 ];
+
+/// Decide o `status` de uma linha do `/api/channels`.
+///
+/// Extraida do handler para poder ser exercitada sem montar router, pool nem
+/// runtime: e a regra que a #1079 errava, e um teste dela vale mais que um
+/// teste do JSON inteiro.
+///
+/// `mounted` e o que o [`PushChannelStates`] respondeu para este `id`:
+/// `None` para canal pull (a resposta vem de `live`), e para canal push
+/// significa que a tabela e o struct discordam — tratado como `"unknown"`
+/// em vez de virar `"offline"` numa linha que ninguem consegue explicar.
+///
+/// [`PushChannelStates`]: crate::push_channels::PushChannelStates
+fn channel_status(
+    kind: ChannelKind,
+    needs_secret: bool,
+    live: bool,
+    mounted: Option<usize>,
+) -> &'static str {
+    let up = match kind {
+        ChannelKind::Pull => live,
+        ChannelKind::Push => match mounted {
+            Some(n) => n > 0,
+            // A tabela diz push e o struct nao conhece o id. Defeito de
+            // codigo, nao estado de runtime — nao vale mentir "offline".
+            None => return "unknown",
+        },
+    };
+
+    if up {
+        "active"
+    } else if needs_secret {
+        "offline"
+    } else {
+        "optional"
+    }
+}
 
 #[derive(serde::Serialize)]
 struct ChannelInfo {
     id: &'static str,
     display_name: &'static str,
-    /// `"active"` (registered + live), `"configured"` (known but not registered),
-    /// `"offline"` (not registered, secret needed), `"optional"` (no secret needed).
+    /// `"active"` (canal pull registrado e vivo, ou canal push com pelo menos
+    /// um canal montado na rota), `"offline"` (nao subiu e precisa de
+    /// segredo), `"optional"` (nao subiu e nao precisa de segredo),
+    /// `"unknown"` (a tabela e o `PushChannelStates` discordam — defeito).
     status: &'static str,
     needs_secret: bool,
     /// Server-side timestamp of process boot — `last_activity` is not tracked
@@ -1278,6 +1333,7 @@ struct ChannelInfo {
 /// GET /api/channels — Web Console Channels page payload. Secret-free.
 async fn list_channels(
     axum::extract::State(state): axum::extract::State<SharedState>,
+    axum::Extension(push): axum::Extension<Arc<crate::push_channels::PushChannelStates>>,
 ) -> axum::Json<serde_json::Value> {
     let live: Vec<String> = state
         .channels
@@ -1289,15 +1345,22 @@ async fn list_channels(
         .collect();
 
     let mut channels: Vec<ChannelInfo> = Vec::with_capacity(KNOWN_CHANNELS.len());
-    for (id, display, needs_secret) in KNOWN_CHANNELS {
-        let active = live.iter().any(|name| name == *id);
-        let status = if active {
-            "active"
-        } else if *needs_secret {
-            "offline"
-        } else {
-            "optional"
+    for (id, display, needs_secret, kind) in KNOWN_CHANNELS {
+        // Canal push nunca aparece em `live` — nao entra no registry por
+        // desenho (#1079). Consultar `mounted` so quando `kind` diz push
+        // mantem o registry como fonte unica para os pull.
+        let mounted = match kind {
+            ChannelKind::Push => push.mounted(id),
+            ChannelKind::Pull => None,
         };
+        let live_aqui = live.iter().any(|name| name == *id);
+        let status = channel_status(*kind, *needs_secret, live_aqui, mounted);
+        if status == "unknown" {
+            tracing::warn!(
+                channel = id,
+                "KNOWN_CHANNELS marca este canal como push mas PushChannelStates nao o conhece"
+            );
+        }
         channels.push(ChannelInfo {
             id,
             display_name: display,
@@ -1567,5 +1630,138 @@ mod tests {
         // leaving the endpoints open.
         assert!(!super::bind_is_loopback(""));
         assert!(!super::bind_is_loopback("this is not a hostname"));
+    }
+
+    // ─── #1079: status dos canais push ────────────────────────────────────
+
+    use crate::push_channels::{ChannelKind, PushChannelStates};
+
+    /// O bug da #1079, escrito como teste: canal push que subiu nao pode
+    /// sair `"offline"`. Antes do fix, `live` era a unica fonte e os quatro
+    /// push nunca apareciam nela.
+    #[test]
+    fn canal_push_montado_fica_active_mesmo_fora_do_registry() {
+        let status = super::channel_status(
+            ChannelKind::Push,
+            true,  // needs_secret — era isto que empurrava para "offline"
+            false, // nunca aparece no ChannelRegistry: e desenho
+            Some(1),
+        );
+        assert_eq!(status, "active");
+    }
+
+    #[test]
+    fn canal_push_sem_nenhum_montado_e_offline() {
+        // Configurado errado, ou recusado no boot (LINE com channel_secret
+        // invalido, Teams sem app_id, WhatsApp sem app_secret desde a #1070).
+        assert_eq!(
+            super::channel_status(ChannelKind::Push, true, false, Some(0)),
+            "offline"
+        );
+    }
+
+    #[test]
+    fn canal_push_sem_segredo_e_opcional_e_nao_offline() {
+        assert_eq!(
+            super::channel_status(ChannelKind::Push, false, false, Some(0)),
+            "optional"
+        );
+    }
+
+    /// O `live` do registry nao pode promover um canal push. Se um dia um id
+    /// colidir com uma entrada do registry, o status ainda tem que sair do
+    /// que montou na rota.
+    #[test]
+    fn live_do_registry_nao_promove_canal_push() {
+        assert_eq!(
+            super::channel_status(ChannelKind::Push, true, true, Some(0)),
+            "offline"
+        );
+    }
+
+    #[test]
+    fn canal_pull_continua_vindo_do_registry() {
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, true, true, None),
+            "active"
+        );
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, true, false, None),
+            "offline"
+        );
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, false, false, None),
+            "optional"
+        );
+    }
+
+    /// `mounted` do canal pull e ignorado, nao consultado. Blinda contra um
+    /// refactor futuro que passe `Some(0)` para todo mundo e volte a
+    /// classificar Telegram vivo como offline.
+    #[test]
+    fn mounted_de_canal_pull_e_ignorado() {
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, true, true, Some(0)),
+            "active"
+        );
+    }
+
+    /// A tabela diz push e o struct nao conhece o id: defeito de codigo.
+    /// Sai `"unknown"` em vez de `"offline"` para nao virar uma linha
+    /// vermelha que ninguem consegue explicar.
+    #[test]
+    fn tabela_e_struct_em_desacordo_dao_unknown() {
+        assert_eq!(
+            super::channel_status(ChannelKind::Push, true, false, None),
+            "unknown"
+        );
+    }
+
+    /// O guard estrutural. A #1079 objetou que consultar as listas push
+    /// "espalha o conhecimento de quem e push por mais um lugar" — este
+    /// teste e a resposta: o `KNOWN_CHANNELS` continua sendo a fonte, e o
+    /// `PushChannelStates` e conferido contra ela. Canal push novo que
+    /// entre na tabela sem entrar no `mounted` derruba o CI.
+    #[test]
+    fn todo_canal_push_da_tabela_e_conhecido_pelo_struct() {
+        let vazio = PushChannelStates::empty();
+        for (id, _, _, kind) in super::KNOWN_CHANNELS {
+            match kind {
+                ChannelKind::Push => assert_eq!(
+                    vazio.mounted(id),
+                    Some(0),
+                    "{id} esta como Push no KNOWN_CHANNELS mas PushChannelStates::mounted \
+                     nao o conhece — adicione o braco no match"
+                ),
+                ChannelKind::Pull => assert_eq!(
+                    vazio.mounted(id),
+                    None,
+                    "{id} esta como Pull no KNOWN_CHANNELS mas PushChannelStates::mounted \
+                     responde por ele — uma das duas fontes esta errada"
+                ),
+            }
+        }
+    }
+
+    /// Os quatro push nomeados. Se um deles for reclassificado como Pull
+    /// por engano, este teste cai antes de o console voltar a mentir.
+    #[test]
+    fn os_quatro_canais_push_estao_marcados_na_tabela() {
+        let push: Vec<&str> = super::KNOWN_CHANNELS
+            .iter()
+            .filter(|(_, _, _, kind)| matches!(kind, ChannelKind::Push))
+            .map(|(id, _, _, _)| *id)
+            .collect();
+        assert_eq!(push, vec!["whatsapp", "google_chat", "teams", "line"]);
+    }
+
+    /// Nenhum id repetido na tabela: uma duplicata faria o console mostrar
+    /// duas linhas para o mesmo canal, possivelmente com status diferente.
+    #[test]
+    fn ids_da_tabela_sao_unicos() {
+        let mut vistos = std::collections::HashSet::new();
+        for (id, _, _, _) in super::KNOWN_CHANNELS {
+            assert!(vistos.insert(*id), "id duplicado no KNOWN_CHANNELS: {id}");
+        }
     }
 }

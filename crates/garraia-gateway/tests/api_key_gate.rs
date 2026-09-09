@@ -18,6 +18,7 @@ use garraia_agents::AgentRuntime;
 use garraia_channels::ChannelRegistry;
 use garraia_config::AppConfig;
 use garraia_gateway::admin::store::AdminStore;
+use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
 use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
@@ -38,16 +39,10 @@ fn router_com(chave: Option<&str>) -> Router {
     ));
     build_router(
         state,
-        // whatsapp
-        Arc::new(Vec::new()),
-        // google chat (#1050) — o gate nao toca em `/webhooks/*`, entao a
-        // lista vazia basta; o que este teste exercita e o layer sobre
-        // `/api/*`.
-        Arc::new(Vec::new()),
-        // teams (#1050), idem
-        Arc::new(Vec::new()),
-        // line (#1050), idem
-        Arc::new(Vec::new()),
+        // O gate nao toca em `/webhooks/*`; o que este teste exercita e o
+        // layer sobre `/api/*`. Antes da #1079 eram quatro
+        // `Arc::new(Vec::new())` posicionais distinguidos so por comentario.
+        PushChannelStates::empty(),
         admin_store,
         Arc::new(vec![0u8; 32]),
     )
