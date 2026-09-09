@@ -511,7 +511,7 @@ Apenas retorne o JSON, sem explicações."#,
             session_id: session_id.to_string(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: false,
+            approval: crate::tools::approval::ToolApproval::None,
             working_dir: None,
             project_id: None,
         };

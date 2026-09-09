@@ -9,6 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
 
+use super::approval::ApprovalFingerprint;
 use super::tool_context::{process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
@@ -247,9 +248,9 @@ impl Tool for RunTestsTool {
         // confirmacao, run_tests e fail-closed BLOCKED. `npm test`/`cargo
         // test` executam o que o projeto mandar (scripts de package.json,
         // build scripts = codigo arbitrario) e nao devem auto-rodar so
-        // porque ninguem pode aprovar — mesma regra do bash. O flag
-        // is_confirmation_approved e ignorado aqui: sem canal ele pode vir
-        // contaminado do historico [CONFIRM_REQUIRED]. Fluxo benigno segue
+        // porque ninguem pode aprovar — mesma regra do bash. A aprovacao e
+        // ignorada aqui: sem canal ela pode vir contaminada do historico
+        // [CONFIRM_REQUIRED]. Fluxo benigno segue
         // disponivel via `bash` (cargo test / npm test nao sao comandos
         // sensiveis no safety_gate).
         if !self.confirmation_enabled {
@@ -264,17 +265,21 @@ impl Tool for RunTestsTool {
                     .to_string(),
             ));
         }
-        if self.confirmation_enabled && !context.is_confirmation_approved {
+        // #1078 item 2: o assunto da aprovacao e o diretorio que a suite vai
+        // rodar. Um "ok" dado para rodar os testes de um projeto nao
+        // autoriza rodar os de outro, nem um `bash` qualquer.
+        let assunto = working_dir.display().to_string();
+        if self.confirmation_enabled && !context.approval.covers(self.name(), &assunto) {
             tracing::warn!(
                 dir = %working_dir.display(),
                 session = %context.session_id,
                 "run_tests: requires user confirmation"
             );
+            let marcador = ApprovalFingerprint::of(self.name(), &assunto).marker();
             return Ok(ToolOutput::confirmation_request(format!(
-                "[CONFIRM_REQUIRED] run_tests vai executar a suite de testes em:\n\
-                 ```\n{}\n```\n\
-                 Responda **sim** para executar ou **nao** para cancelar.",
-                working_dir.display()
+                "{marcador} run_tests vai executar a suite de testes em:\n\
+                 ```\n{assunto}\n```\n\
+                 Responda **sim** para executar ou **nao** para cancelar."
             )));
         }
 
@@ -393,12 +398,26 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(schema.get("properties").is_some());
     }
 
+    /// `approved` liga a aprovacao PARA O DIRETORIO que a tool vai resolver
+    /// — que e o `working_dir` quando ele existe, e o diretorio do processo
+    /// quando nao. Antes era um booleano solto, e era esse o defeito do
+    /// #1078 item 2.
     fn ctx(working_dir: Option<&str>, approved: bool) -> ToolContext {
+        // O assunto tem de ser o diretorio RESOLVIDO, que e o que a tool
+        // usa para montar a impressao digital — mesma chamada, para o teste
+        // nao adivinhar a resolucao e sair dessincronizado dela.
+        let assunto = resolve_tool_path(".", working_dir, process_home_dir().as_deref())
+            .map(|r| r.path.display().to_string())
+            .unwrap_or_default();
         ToolContext {
             session_id: "test".into(),
             user_id: None,
             is_heartbeat: false,
-            is_confirmation_approved: approved,
+            approval: if approved {
+                crate::tools::approval::ToolApproval::granted("run_tests", &assunto)
+            } else {
+                crate::tools::approval::ToolApproval::None
+            },
             working_dir: working_dir.map(str::to_string),
             project_id: None,
         }

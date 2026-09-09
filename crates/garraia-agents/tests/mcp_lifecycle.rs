@@ -46,7 +46,7 @@ fn ctx() -> ToolContext {
         session_id: "mcp-lifecycle-test".to_string(),
         user_id: None,
         is_heartbeat: false,
-        is_confirmation_approved: false,
+        approval: garraia_agents::tools::approval::ToolApproval::None,
         working_dir: None,
         project_id: None,
     }
