@@ -215,6 +215,68 @@ directly for now.
 
 [Google Cloud console]: https://console.cloud.google.com/apis/api/chat.googleapis.com
 
+## Microsoft Teams
+
+Webhook-driven: the gateway exposes `POST /webhooks/teams` and the Bot
+Framework calls it.
+
+### Setup
+
+1. Register a bot in Azure and note its **Microsoft App ID**, secret and
+   tenant.
+2. Set the bot's messaging endpoint to
+   `https://<your-gateway>/webhooks/teams`.
+
+```yaml
+channels:
+  teams:
+    type: teams
+    enabled: true
+    app_id: "YOUR_APP_ID"
+    app_secret: "YOUR_APP_SECRET"
+    tenant_id: "YOUR_TENANT_ID"
+```
+
+All three can come from the environment instead — `TEAMS_APP_ID`,
+`TEAMS_APP_SECRET`, `TEAMS_TENANT_ID`. `garra config check` reports any that
+are missing and says which failure each one causes.
+
+### Features
+
+- Webhook-based integration; replies go back to the originating conversation
+- RS256 JWT verification on every request, against the Bot Framework's
+  published keys
+- Allowlist management and 6-digit pairing, same as the other channels
+- One session per *conversation* — a Teams conversation is a room, and its
+  history is one history
+
+### The app ID is mandatory
+
+Without `app_id` the channel is **refused at boot**. It looks like a plain
+identifier and it is in fact what holds the authentication up: every Bot
+Framework token is signed by the same Microsoft keys, so the audience claim
+is the only thing distinguishing a token issued for *your* bot from one
+issued for anybody else's.
+
+### Where the reply goes is checked, not trusted
+
+Unlike the other channels, Teams tells the gateway where to send the reply:
+the `serviceUrl` field of the incoming activity. That URL receives the bot's
+bearer token, so an unchecked value would let whoever sends an activity
+choose which server gets that credential.
+
+Two independent barriers stop that:
+
+1. The Bot Framework puts `serviceurl` in the **signed token**. The gateway
+   requires the body's `serviceUrl` to match it, so forging the destination
+   would mean forging Microsoft's signature.
+2. The outgoing request still goes through the SSRF guard — https only,
+   publicly routable addresses only, resolved IPs pinned. Even a legitimately
+   signed URL cannot point at `169.254.169.254` or your LAN.
+
+Every rejection answers the same `401` with the same body; the reason goes to
+the log only.
+
 ## iMessage (macOS only)
 
 ### Setup
