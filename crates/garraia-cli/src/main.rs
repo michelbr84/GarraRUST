@@ -9,6 +9,7 @@ mod doctor;
 mod glob_cmd;
 mod logs_cmd;
 mod max_power;
+mod mcp_agent;
 mod mcp_server;
 mod memory_cmd;
 mod migrate;
