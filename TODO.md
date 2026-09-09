@@ -5,12 +5,58 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-07 (America/New_York)
+**Atualizado:** 2026-09-09 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Preparada 2026-09-09 — v0.4.1: canais e seguranca
+
+**A v0.4.1 esta preparada e nao tagueada.** O PR de release (#1085) traz o bump
+0.4.0 → 0.4.1 nos quatro lugares que sao versao de verdade e os 34 fragmentos de
+`changelog.d/` ja assemblados na secao `## [0.4.1]`. Falta o passo 2 do
+`docs/releasing.md`: a tag.
+
+### O que entrou
+
+| Issue | O quê | PR |
+| --- | --- | --- |
+| #1050 | os sete canais escritos mas nunca chamados passam a subir | varios |
+| #1045 | gate de `gateway.api_key` em `/api/*` | #1061 |
+| #1047 | `/ws` emite o turno enquanto acontece (metade servidor) | #1063 |
+| #1075 | re-landing do hardening R1-R3 do bash e do gate | #1077 |
+| #1070 | assinatura HMAC do webhook do WhatsApp | #1080 |
+| #1079 | status dos canais push vem do que subiu, nao do registry | #1082 |
+| #1078 | aprovacao vinculada ao comando + cobertura do gate | #1083 |
+
+Os dois issues de seguranca sairam maiores do que a descricao deles sugeria: a
+revisao achou em cada um um segundo buraco atras do primeiro. No WhatsApp, o
+roteamento por `phone_number_id` do corpo depois de autenticar. Na aprovacao, o
+marcador cunhavel por conteudo de terceiro (`web_fetch`, `file_read`, MCP), que
+so fechou trocando o hash por HMAC com chave por processo.
+
+### Acoes do dono
+
+| Item | Por que |
+| --- | --- |
+| Tag `v0.4.1` e workflow de release | passo 2 do runbook |
+| Instalacao limpa, `garra update` 0.4.0 → 0.4.1, checksum dos assets | o container das sessoes autonomas nao alcanca `garraia.org` nem `objects.githubusercontent.com` (proxy devolve `403 CONNECT tunnel failed`) — **nao foi testado** |
+| #1084: sandbox real (ADR + politica de caminhos) e `run_tests` fail-closed | decisao arquitetural e decisao de risco de produto |
+| Validar o APK em aparelho real (`docs/mobile-qa-checklist.md` §8) | pendente desde a v0.4.0 |
+| Secrets `ANDROID_KEYSTORE_*` para assinar o APK de release | pendente desde a v0.4.0 |
+
+### Aberto depois deste lote
+
+- **#1081** — metade Flutter do streaming (`sendMessageStreaming`, `ChatEvent`,
+  balao crescendo, botao Parar, fallback para POST). Precisa de toolchain Dart,
+  que o container autonomo nao tem.
+- **#1084** — sandbox e `run_tests`, acima.
+- Divida registrada: `check.rs` (3529 linhas) e `safety_gate.rs` (1776, cruzou o
+  limite de 1500 do Quality Ratchet no #1083) pedem quebra em modulos. Nao feito
+  dentro de um PR de seguranca de proposito — ampliaria o PR contra a regra do
+  fix minimo.
 
 ## Em andamento 2026-09-07 — v0.4.0: Garra Mobile local-first (ADR 0016 amendment)
 
