@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
+import '../providers/streaming_reply_provider.dart';
 import '../runtime/runtime_config.dart';
 import '../runtime/runtime_providers.dart';
 import '../services/offline_queue.dart';
@@ -12,6 +13,7 @@ import '../widgets/mascot_widget.dart';
 import '../widgets/queue_status_indicator.dart';
 import '../widgets/scroll_to_bottom_button.dart';
 import '../widgets/slash_suggestions.dart';
+import '../widgets/streaming_bubble.dart';
 import '../widgets/typing_indicator.dart';
 import '../widgets/voice_input_widget.dart';
 
@@ -97,6 +99,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
+  Future<void> _stop() async {
+    await ref.read(chatMessagesProvider.notifier).stop();
+  }
+
   Future<void> _send() async {
     final text = _inputCtrl.text.trim();
     if (text.isEmpty || _sending) return;
@@ -158,6 +164,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final messages = ref.watch(chatMessagesProvider);
     final mascotState = ref.watch(mascotStateProvider);
     final isThinking = mascotState == MascotState.thinking;
+    // Deliberately `select`ed down to the boolean: watching the whole
+    // streaming state here would rebuild the screen — and the message list
+    // with it — on every token.
+    final streaming = ref.watch(
+      streamingReplyStateProvider.select((s) => s.active),
+    );
     final isCloud =
         ref.watch(runtimeConfigStateProvider).value?.mode == RuntimeMode.cloud;
 
@@ -239,7 +251,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   ),
                 ),
               ),
-              data: (msgs) => msgs.isEmpty && !isThinking
+              data: (msgs) => msgs.isEmpty && !isThinking && !streaming
                   ? _EmptyChat(
                       onPrompt: (p) {
                         _inputCtrl.text = p;
@@ -254,10 +266,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                             horizontal: 12,
                             vertical: 8,
                           ),
-                          itemCount: msgs.length + (isThinking ? 1 : 0),
+                          // One trailing slot for the turn in flight: the
+                          // streaming bubble when the socket is carrying it,
+                          // the old typing dots when the reply comes over
+                          // POST (cloud, or the fallback).
+                          itemCount:
+                              msgs.length +
+                              (streaming || isThinking ? 1 : 0),
                           itemBuilder: (_, i) {
-                            if (i == msgs.length && isThinking) {
-                              return const TypingIndicator();
+                            if (i == msgs.length) {
+                              return streaming
+                                  ? const StreamingBubble()
+                                  : const TypingIndicator();
                             }
                             return ChatBubble(message: msgs[i]);
                           },
@@ -273,7 +293,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           _InputBar(
             controller: _inputCtrl,
             sending: _sending,
+            streaming: streaming,
             onSend: _send,
+            onStop: _stop,
             showVoiceInput: _showVoiceInput,
             onToggleVoice: () {
               setState(() => _showVoiceInput = !_showVoiceInput);
@@ -293,7 +315,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final bool sending;
+
+  /// A turn is in flight over the socket, so the send button becomes Stop.
+  final bool streaming;
   final VoidCallback onSend;
+  final VoidCallback onStop;
   final bool showVoiceInput;
   final VoidCallback onToggleVoice;
   final Future<String> Function(String) onAudioRecorded;
@@ -302,7 +328,9 @@ class _InputBar extends StatelessWidget {
   const _InputBar({
     required this.controller,
     required this.sending,
+    required this.streaming,
     required this.onSend,
+    required this.onStop,
     required this.showVoiceInput,
     required this.onToggleVoice,
     required this.onAudioRecorded,
@@ -350,7 +378,9 @@ class _InputBar extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                _SendButton(sending: sending, onSend: onSend),
+                streaming
+                    ? _StopButton(onStop: onStop)
+                    : _SendButton(sending: sending, onSend: onSend),
               ],
             ),
           ),
@@ -387,6 +417,32 @@ class _SendButton extends StatelessWidget {
                   ),
                 )
               : const Icon(Icons.send_rounded, color: Colors.white, size: 22),
+        ),
+      ),
+    );
+  }
+}
+
+/// Replaces the send button while a turn streams. Only reachable then, which
+/// is why it has no disabled state.
+class _StopButton extends StatelessWidget {
+  final VoidCallback onStop;
+
+  const _StopButton({required this.onStop});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.errorContainer,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        key: const ValueKey('stop-turn'),
+        onTap: onStop,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Icon(Icons.stop_rounded, color: cs.onErrorContainer, size: 22),
         ),
       ),
     );
