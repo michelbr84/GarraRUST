@@ -49,7 +49,9 @@ impl CodeReviewTool {
         commit_range: Option<&str>,
         file_path: Option<&str>,
     ) -> std::result::Result<String, String> {
-        let mut args = vec!["diff".to_string()];
+        // --no-ext-diff: .git/config plantado (diff.external) não transforma
+        // o code_review em execução arbitraria (#1075 — auditoria).
+        let mut args = vec!["diff".to_string(), "--no-ext-diff".to_string()];
 
         if let Some(range) = commit_range {
             args.push(range.to_string());
@@ -60,8 +62,18 @@ impl CodeReviewTool {
             args.push(path.to_string());
         }
 
-        let result =
-            tokio::time::timeout(self.timeout, Command::new("git").args(&args).output()).await;
+        let mut cmd = Command::new("git");
+        cmd.args(&args);
+        // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
+        // allowlist de env do pai.
+        #[cfg(unix)]
+        {
+            cmd.env_clear();
+            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
+                cmd.env(key, value);
+            }
+        }
+        let result = tokio::time::timeout(self.timeout, cmd.output()).await;
 
         match result {
             Ok(Ok(output)) => {

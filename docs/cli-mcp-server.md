@@ -186,7 +186,7 @@ Mirrors the gateway bootstrap exactly (`garraia-gateway/src/bootstrap/`):
 
 | Tool | Notes |
 |------|-------|
-| `bash` | Full-auto (Telegram parity): only the `safety_gate` DENY_LIST blocks; no per-command confirmation. Confirmation would deadlock a stateless MCP call anyway — it needs conversation history to be approved. |
+| `bash` | No confirmation channel (a stateless MCP call has no history to approve in). Two gates apply, both fail-closed: the `safety_gate` DENY_LIST hard-blocks destructive patterns, and the **risky tier BLOCKS** sensitive commands outright (#1075 R1) — exfiltration-capable programs (`curl`, `wget`, `ssh`, `env`, `printenv`, wrapper-resolved like `sudo curl`, ...), mutating subcommands (`git push`, `systemctl restart`, ...), env-dump interpolation (`$(env)`, backticks), pipe-to-shell (`\|bash` even without a space), procfs environ reads (`cat /proc/$PPID/environ`), destructive `rm` variants (`rm -fr /`), `find -delete`, `dd of=`, inline code (`bash -c '...'` is unwrapped and re-gated; `python3 -c` gated) and the legacy CONFIRM patterns. On unix the child shell inherits only `PATH/HOME/LANG/LC_ALL/TERM/USER` (#1075 R3) — the env-inheritance channel for parent secrets is closed; direct same-UID procfs reads are gated by the `environ` risk pattern, but only a real sandbox closes them fully. |
 | `file_read` / `file_write` | Relative paths resolve against `working_dir` (or the server CWD). `GARRAIA_MCP_ALLOWED_DIRS` narrows them. |
 | `web_fetch` | No blocked-domain list by default. |
 | `git_diff` | Read-only git inspection. |
@@ -201,7 +201,7 @@ Mirrors the gateway bootstrap exactly (`garraia-gateway/src/bootstrap/`):
 | `model`         | string  | no       | `openrouter/free`  | Pass `openrouter/auto` for complex tasks. |
 | `timeout_secs`  | integer | no       | `300`              | Range `[5, 1800]`. **Wall-clock cap for the ENTIRE agent loop** — every LLM round-trip plus every tool execution. |
 | `system_prompt` | string  | no       | generated          | Max 8 KiB. The default prompt names every registered tool and instructs the model to investigate instead of describing. |
-| `working_dir`   | string  | no       | —                  | Directory for file-tool relative paths. **`bash` ignores it** — it runs in the server's CWD; the default system prompt tells the model to prefix bash commands with `cd <dir> && `. Must exist and be a directory. |
+| `working_dir`   | string  | no       | —                  | Directory for file-tool relative paths. Since #1075 R3 the **bash child also runs in it** (`current_dir`). Validated for existence only — not against `GARRAIA_MCP_ALLOWED_DIRS` — and bash is unsandboxed: absolute paths reach anywhere. Must exist and be a directory. |
 
 ### Response shape (`garra.agent.v1`)
 
@@ -231,17 +231,33 @@ before dying.
 
 ### Security surface (read before enabling)
 
-- **The bash tool is full-auto** — the operator opt-in chooses Telegram
-  parity. The only hard gate is the `safety_gate` DENY_LIST
-  (substring blocklist, trivially bypassable by quoting/encoding).
-- **The child shell inherits the MCP server process environment with no
-  scrubbing.** Depending on how the server was started, that can include
-  `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `SSH_AUTH_SOCK`,
-  `XAUTHORITY`, and any secrets `dotenvy` auto-loaded from a `.env` in
-  the CWD. A prompt-injected model can exfiltrate them (e.g. `curl` with
-  `$OPENROUTER_API_KEY`). Do not enable this flag for MCP servers
-  exposed to third-party agents; prefer per-call `working_dir` scoping
-  plus a clean env wrapper if you must.
+- **The bash tool runs fail-closed (since #1075)** — there is no
+  confirmation channel in a stateless MCP call, so the two safety tiers
+  both BLOCK: the DENY_LIST hard-blocks destructive patterns, and the
+  risky tier blocks sensitive commands outright (exfiltration-capable
+  programs including wrapper-resolved ones like `sudo curl`, mutating
+  subcommands, env-dump interpolation, pipe-to-shell, procfs environ
+  reads, token-aware destructive `rm`, inline interpreters, legacy
+  CONFIRM patterns). The `is_confirmation_approved` flag is IGNORED in
+  this mode: it is derived from conversation history and a planted
+  `[CONFIRM_REQUIRED]` marker could flip it — fail-closed means block.
+  The program-aware detection is still a deny/confirm list, not an
+  allowlist: interpreter script files (`bash payload.sh`), exotic
+  quoting/encoding tricks and unlisted programs can slip past it —
+  treat it as a seatbelt, not a sandbox.
+- **The child shell inherits only `PATH/HOME/LANG/LC_ALL/TERM/USER` on
+  unix (#1075 R3)** — the env-inheritance channel from the parent's API
+  keys, JWT secrets and dotenv-loaded `.env` values to the bash child is
+  closed; the same allowlist is applied to the `git_diff`/`repo_search`
+  children (`run_tests` is fail-closed-blocked without a confirmation
+  channel — npm/cargo scripts are arbitrary code). This does NOT make
+  the parent's secrets unreachable: a same-UID process can read
+  `/proc/<pid>/environ` directly, so those reads are gated by the
+  `environ` risk pattern, but only a real sandbox (follow-up work)
+  closes the channel for good. Windows PowerShell keeps the full
+  environment (its startup depends on it). The allowlist can also
+  starve a child expecting an inherited variable (e.g. a cloud CLI
+  reading env credentials).
 - **`allowed_dirs` is UX, not a boundary** — unrestricted bash reaches
   the whole filesystem.
 - **No per-caller authentication or rate limiting** (same as

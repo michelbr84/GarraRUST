@@ -3,7 +3,9 @@
   `garra_ask` LLM-only como antes; quando o operador inicia o processo com
   `GARRAIA_MCP_ENABLE_TOOLS=1`, `tools/list` passa a anunciar tambem o
   `garra_agent`, que roda um turno de agente completo em sessao nova por
-  chamada — bash (full-auto, apenas o DENY_LIST do safety_gate), file_read,
+  chamada — bash (sem canal de confirmacao; com o hardening #1075 o tier
+  de risco e fail-closed: comandos sensiveis sao BLOQUEADOS, e o filho
+  herda so a allowlist de env — ver fragmento em `security/`), file_read,
   file_write, web_fetch, git_diff e web_search (com chave Brave). Sem a env,
   nem o anuncio nem o dispatch existem: o servidor rejeita `garra_agent` como
   tool desconhecida e o comportamento fica identico ao de hoje.

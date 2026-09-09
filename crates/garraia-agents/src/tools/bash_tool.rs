@@ -139,20 +139,42 @@ impl Tool for BashTool {
             ));
         }
 
-        // GAR-187: Risky tier — requires user confirmation before execution.
-        // Skipped if the user has already approved via ToolContext.is_confirmation_approved.
-        if self.confirmation_enabled && self.is_risky(comando) && !context.is_confirmation_approved
-        {
+        // GAR-187 + #1075 R1: risky tier. With a confirmation channel the
+        // command waits for user approval; WITHOUT one (confirmation
+        // disabled — e.g. the stateless MCP full-auto path) it is
+        // fail-closed BLOCKED: a risky command must never auto-run just
+        // because nobody can be asked.
+        //
+        // #1075 (auditoria do hardening): em modo fail-closed o flag
+        // `is_confirmation_approved` é IGNORADO. Ele é derivado do histórico
+        // da conversa (marcador `[CONFIRM_REQUIRED]` nas últimas 6 mensagens
+        // + palavra de aprovação), e um modelo com saída não sanitizada pode
+        // plantar esse marcador — sem canal de confirmação real, não existe
+        // aprovação legítima para honrar.
+        let aprovado = self.confirmation_enabled && context.is_confirmation_approved;
+        if self.is_risky(comando) && !aprovado {
+            if self.confirmation_enabled {
+                tracing::warn!(
+                    command = %comando,
+                    session = %context.session_id,
+                    "bash: risky command requires user confirmation"
+                );
+                return Ok(ToolOutput::confirmation_request(format!(
+                    "[CONFIRM_REQUIRED] O comando a seguir requer confirmação antes de ser executado:\n\
+                     ```\n{comando}\n```\n\
+                     Responda **sim** para executar ou **não** para cancelar."
+                )));
+            }
             tracing::warn!(
                 command = %comando,
                 session = %context.session_id,
-                "bash: risky command requires user confirmation"
+                "bash: risky command BLOCKED (fail-closed: confirmation disabled)"
             );
-            return Ok(ToolOutput::confirmation_request(format!(
-                "[CONFIRM_REQUIRED] O comando a seguir requer confirmação antes de ser executado:\n\
-                 ```\n{comando}\n```\n\
-                 Responda **sim** para executar ou **não** para cancelar."
-            )));
+            return Ok(ToolOutput::error(
+                "Comando bloqueado por segurança: comando sensível exige confirmação e este \
+                 runtime não possui canal de confirmação (fail-closed)."
+                    .to_string(),
+            ));
         }
 
         // GAR-236: Security check - read-only allow list
@@ -170,11 +192,25 @@ impl Tool for BashTool {
             ("bash", "-c")
         };
 
-        let resultado = tokio::time::timeout(
-            self.timeout,
-            Command::new(shell).arg(arg).arg(comando).output(),
-        )
-        .await;
+        let mut cmd = Command::new(shell);
+        cmd.arg(arg).arg(comando);
+        // #1075 R3: the child runs in the session working_dir when set, and
+        // (unix) inherits ONLY the allowlisted variables — the parent
+        // process (MCP server / gateway) carries secrets in its env that
+        // must never reach an LLM-driven shell. Windows PowerShell needs
+        // more of its environment to boot, so the scrub is unix-only.
+        if let Some(dir) = context.working_dir.as_deref() {
+            cmd.current_dir(dir);
+        }
+        #[cfg(unix)]
+        {
+            cmd.env_clear();
+            for (key, value) in safety_gate::allowed_child_env() {
+                cmd.env(key, value);
+            }
+        }
+
+        let resultado = tokio::time::timeout(self.timeout, cmd.output()).await;
 
         match resultado {
             Ok(Ok(output)) => {
@@ -232,6 +268,17 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ctx(approved: bool) -> ToolContext {
+        ToolContext {
+            session_id: "test".into(),
+            user_id: None,
+            is_heartbeat: false,
+            is_confirmation_approved: approved,
+            working_dir: None,
+            project_id: None,
+        }
+    }
 
     #[tokio::test]
     async fn executa_comando_simples() {
@@ -362,5 +409,156 @@ mod tests {
             .unwrap();
 
         assert!(output.content.contains("err"));
+    }
+
+    // ── R1 (#1075): risky tier fail-closed when confirmation is unavailable ──
+
+    #[tokio::test]
+    async fn r1_risky_bloqueado_sem_canal_de_confirmacao() {
+        // Fail-closed: with confirmation DISABLED there is no approval
+        // channel (e.g. the stateless MCP full-auto path) — a risky
+        // command is BLOCKED, never auto-run.
+        unsafe {
+            std::env::set_var("GARRAIA_R1_CANARY", "leak-canary");
+        }
+        let tool = BashTool::new(None); // confirmation_enabled = false
+        let output = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": "printenv GARRAIA_R1_CANARY"}),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.is_error, "{}", output.content);
+        assert!(output.content.contains("bloqueado"), "{}", output.content);
+        // The command must NOT have run: the canary value never shows up.
+        assert!(
+            !output.content.contains("leak-canary"),
+            "risky command auto-ran without confirmation: {}",
+            output.content
+        );
+    }
+
+    #[tokio::test]
+    async fn r1_pede_confirmacao_com_canal_ativo() {
+        let tool = BashTool::new_with_confirmation(None);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+
+        assert!(output.requires_confirmation, "{}", output.content);
+        assert!(
+            output.content.contains("CONFIRM_REQUIRED"),
+            "{}",
+            output.content
+        );
+        // confirmation_request carries is_error=true by design (GAR-187).
+        assert!(output.is_error);
+    }
+
+    #[tokio::test]
+    async fn r1_aprovado_executa() {
+        // Confirmation channel ON + already-approved context: the risky
+        // command runs (no prompt, no block) — fluxo GAR-187 legítimo.
+        let tool = BashTool::new_with_confirmation(None);
+        let output = tool
+            .execute(&ctx(true), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        assert!(
+            !output.content.contains("CONFIRM_REQUIRED"),
+            "{}",
+            output.content
+        );
+    }
+
+    #[tokio::test]
+    async fn r1_fail_closed_ignora_is_confirmation_approved() {
+        // #1075 (auditoria): com confirmação DESLIGADA o flag aprovado é
+        // ignorado — o flag vem do histórico e pode ser contaminado por um
+        // marcador [CONFIRM_REQUIRED] forjado; sem canal real não há
+        // aprovação legítima. Mesmo com approved=true, printenv é bloqueado
+        // e o canário não vaza.
+        unsafe {
+            std::env::set_var("GARRAIA_R1_CANARY", "leak-canary");
+        }
+        let tool = BashTool::new(None); // confirmation_enabled = false
+        let output = tool
+            .execute(
+                &ctx(true), // aprovado — deve ser IGNORADO
+                serde_json::json!({"command": "printenv GARRAIA_R1_CANARY"}),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.is_error, "{}", output.content);
+        assert!(output.content.contains("bloqueado"), "{}", output.content);
+        assert!(
+            !output.content.contains("leak-canary"),
+            "approval flag leaked through in fail-closed mode: {}",
+            output.content
+        );
+    }
+
+    // ── R3 (#1075): spawn env isolation + working_dir ──────────────────────
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r3_bash_tool_isola_ambiente() {
+        // The child shell must NOT see the parent's secrets, even when the
+        // parent (MCP server) carries API keys; PATH must survive so the
+        // shell can find programs.
+        unsafe {
+            std::env::set_var("GARRAIA_R3_JWT", "jwt-should-not-leak");
+            std::env::set_var("ANTHROPIC_API_KEY", "sk-should-not-leak");
+        }
+        let tool = BashTool::new(None);
+        let output = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({
+                    "command": "echo \"JWT=[$GARRAIA_R3_JWT] KEY=[$ANTHROPIC_API_KEY] PATH_OK=$([ -n \"$PATH\" ] && echo sim || echo nao)\""
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.is_error, "{}", output.content);
+        assert!(
+            output.content.contains("JWT=[]"),
+            "child must not see parent env: {}",
+            output.content
+        );
+        assert!(
+            output.content.contains("KEY=[]"),
+            "child must not see parent env: {}",
+            output.content
+        );
+        assert!(output.content.contains("PATH_OK=sim"), "{}", output.content);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r3_working_dir_aplica_ao_spawn() {
+        // Unique dir so the assertion can't pass by CWD coincidence.
+        let dir = std::env::temp_dir().join(format!("garraia-r3-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = ctx(false);
+        c.working_dir = Some(dir.to_string_lossy().to_string());
+        let tool = BashTool::new(None);
+        let output = tool
+            .execute(&c, serde_json::json!({"command": "pwd"}))
+            .await
+            .unwrap();
+        let pwd = output.content.trim();
+        assert_eq!(
+            pwd,
+            dir.to_string_lossy().as_ref(),
+            "bash must run in working_dir"
+        );
+        let _ = std::fs::remove_dir(&dir);
     }
 }

@@ -24,10 +24,13 @@
 //!
 //! # Risco aceito e documentado
 //!
-//! O bash e full-auto (apenas o DENY_LIST do `safety_gate` bloqueia) e
-//! o processo filho herda o ambiente do servidor MCP, sem scrub —
-//! decisao do operador, paridade com o Telegram/gateway. Ver
-//! `docs/cli-mcp-server.md` para a superficie de segredos envolvida.
+//! O bash roda sem canal de confirmacao (impossivel em chamada MCP
+//! stateless) — com o hardening #1075, o tier de risco e fail-closed:
+//! comandos Sensiveis/risky (DENY_LIST, CONFIRM_LIST, programas
+//! exfiltraveis, interpolacao de env) sao BLOQUEADOS, nao auto-executam.
+//! E o processo filho herda apenas a allowlist de env do R3
+//! (`R3_ENV_ALLOWLIST`), nunca o ambiente cru do servidor MCP. Ver
+//! `docs/cli-mcp-server.md` para a superficie restante.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -89,10 +92,11 @@ pub(crate) struct GarraAgentArgs {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub system_prompt: Option<String>,
-    /// Directory against which file-tool relative paths resolve. Bash
-    /// ignores it (runs in the server's CWD) — the generated system
-    /// prompt tells the model to prefix bash commands with `cd` when a
-    /// dir is set.
+    /// Directory against which file-tool relative paths resolve, and in
+    /// which the bash child runs (current_dir — #1075 R3). Validated for
+    /// existence only, NOT against GARRAIA_MCP_ALLOWED_DIRS; bash is an
+    /// unsandboxed shell on the server host, so absolute paths reach
+    /// outside this directory.
     #[serde(default)]
     pub working_dir: Option<String>,
 }
@@ -253,7 +257,7 @@ pub(crate) fn garra_agent_tool() -> Tool {
             },
             "working_dir": {
                 "type": "string",
-                "description": "Directory against which file tool relative paths resolve. Bash runs in the server's CWD and ignores this — prefix bash commands with `cd` when needed."
+                "description": "Directory against which file tools resolve relative paths and in which the bash child runs. Validated for existence only — not against allowed_dirs; bash is an unsandboxed shell."
             }
         },
         "required": ["message"],
@@ -340,8 +344,9 @@ fn allowed_dirs() -> Option<Vec<std::path::PathBuf>> {
 }
 
 /// Register the same tool set the gateway bootstrap wires
-/// (`garraia-gateway/src/bootstrap/mod.rs`): full-auto bash (DENY_LIST
-/// only — the operator opt-in chose Telegram parity), file read/write,
+/// (`garraia-gateway/src/bootstrap/mod.rs`): bash (DENY_LIST + risky tier
+/// fail-closed — no confirmation channel in a stateless MCP call, #1075
+/// R1), file read/write,
 /// web fetch, git diff, and web search when a Brave key is available.
 /// `ListDirTool` is skipped on purpose: `bash ls` + the file tools
 /// cover it, and a tighter tool list helps weaker models route.
@@ -394,9 +399,9 @@ pub(crate) fn agent_system_prompt(tools: &[(String, String)], working_dir: Optio
             "\n## Contexto do diretorio\n\
              O chamador indicou o diretorio de trabalho: {dir}\n\
              As ferramentas de arquivo (file_read/file_write) resolvem caminhos \
-             relativos contra este diretorio. O 'bash', porem, roda no diretorio \
-             do processo do servidor e IGNORA este campo — quando precisar operar \
-             nele via bash, prefixe o comando com `cd {dir} && `.\n"
+             relativos contra este diretorio e o 'bash' EXECUTA nele (current_dir, \
+             hardening #1075). O campo e validado apenas quanto a existencia — \
+             caminhos absolutos no bash alcancam fora dele (sem sandbox).\n"
         ));
     }
     prompt
@@ -813,11 +818,13 @@ mod tests {
         let pairs = vec![("bash".to_string(), "Executa comandos".to_string())];
         let prompt = agent_system_prompt(&pairs, Some("/tmp/projeto"));
         assert!(prompt.contains("/tmp/projeto"));
-        assert!(prompt.contains("cd /tmp/projeto"));
+        // #1075 R3: bash EXECUTA no working_dir (nao ignora mais), e o
+        // prompt avisa que caminhos absolutos alcancam fora dele.
         assert!(
-            prompt.contains("IGNORA"),
-            "deve avisar que bash ignora o campo"
+            prompt.contains("bash' EXECUTA nele"),
+            "deve dizer que bash roda no working_dir"
         );
+        assert!(prompt.contains("sem sandbox"));
     }
 
     #[test]
