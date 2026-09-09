@@ -140,6 +140,7 @@ pub fn build_router(
     whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState,
     google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState,
     teams_state: garraia_channels::teams::webhook::TeamsState,
+    line_state: garraia_channels::line_channel::webhook::LineState,
     admin_store: Arc<Mutex<admin::store::AdminStore>>,
     admin_encryption_key: Arc<Vec<u8>>,
 ) -> Router {
@@ -212,6 +213,17 @@ pub fn build_router(
             post(garraia_channels::teams::webhook::teams_webhook),
         )
         .with_state(teams_state);
+
+    // #1050: o LINE tambem so tem POST. O `GET` do WhatsApp existe porque a
+    // Cloud API faz um handshake `hub.challenge` para validar a URL; o LINE
+    // valida pelo proprio POST assinado, entao um GET aqui seria rota sem
+    // contrato.
+    let line_routes = Router::new()
+        .route(
+            "/webhooks/line",
+            post(garraia_channels::line_channel::webhook::line_webhook),
+        )
+        .with_state(line_state);
 
     let router = Router::new()
         .route("/", get(web_chat))
@@ -472,6 +484,7 @@ pub fn build_router(
         .merge(whatsapp_routes)
         .merge(google_chat_routes)
         .merge(teams_routes)
+        .merge(line_routes)
         // GAR-391c: /v1/auth/{login,refresh,logout,signup} mounted
         // unconditionally. Handlers fail-soft to 503 when AuthConfig env
         // vars are missing (state.auth_provider == None).
@@ -1239,6 +1252,7 @@ const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
     ("imessage", "iMessage", false),
     ("google_chat", "Google Chat", true),
     ("teams", "Microsoft Teams", true),
+    ("line", "LINE", true),
     ("openclaw", "OpenClaw", false),
     ("mcp", "MCP", false),
     ("cli", "CLI", false),

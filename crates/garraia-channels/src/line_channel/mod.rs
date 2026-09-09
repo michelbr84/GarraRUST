@@ -20,6 +20,8 @@ use garraia_common::{Error, Message, MessageContent, Result};
 
 pub use config::LineConfig;
 
+pub mod webhook;
+
 /// LINE Messaging API base URL.
 const LINE_API_BASE: &str = "https://api.line.me/v2/bot";
 
@@ -79,6 +81,15 @@ impl LineChannel {
     /// Get the channel secret for webhook signature verification.
     pub fn channel_secret(&self) -> &str {
         &self.config.channel_secret
+    }
+
+    /// Nome da secao de config que originou este canal.
+    ///
+    /// Diferente de [`Channel::display_name`], que e a constante `"LINE"`
+    /// para todos: com dois canais LINE configurados, o log do webhook
+    /// precisa dizer de qual deles se trata.
+    pub fn name(&self) -> &str {
+        &self.config.name
     }
 
     /// Process an incoming LINE webhook event.
@@ -263,6 +274,7 @@ mod tests {
         let config = LineConfig {
             channel_access_token: "test-token".into(),
             channel_secret: "test-secret".into(),
+            name: "line-teste".into(),
         };
         let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         assert_eq!(channel.channel_type(), "line");
@@ -278,6 +290,7 @@ mod tests {
         let config = LineConfig {
             channel_access_token: "test-token".into(),
             channel_secret: "test-secret".into(),
+            name: "line-teste".into(),
         };
         let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         let msg = Message::text(
@@ -299,6 +312,7 @@ mod tests {
         let config = LineConfig {
             channel_access_token: "token".into(),
             channel_secret: "secret".into(),
+            name: "line-teste".into(),
         };
         let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
@@ -315,6 +329,7 @@ mod tests {
             let config = LineConfig {
                 channel_access_token: "t".into(),
                 channel_secret: vazio.into(),
+                name: "line-teste".into(),
             };
             assert!(
                 LineChannel::new(config, on_msg.clone()).is_err(),
@@ -331,6 +346,7 @@ mod tests {
         let config = LineConfig {
             channel_access_token: "t".into(),
             channel_secret: "s".into(),
+            name: "line-teste".into(),
         };
         let channel = LineChannel::new(config, on_msg).expect("secret nao vazio");
         assert_eq!(channel.display_name(), "LINE");
