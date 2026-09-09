@@ -28,14 +28,13 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use ipnet::IpNet;
-use ring::digest::{SHA256, digest};
-use subtle::ConstantTimeEq;
 use tracing::warn;
 
+use crate::auth_common::{constant_time_token_eq, extract_bearer};
 use crate::rate_limiter::parse_trusted_proxies;
 
 /// Runtime configuration consumed by [`metrics_auth_layer`].
@@ -180,45 +179,13 @@ fn deny(status: StatusCode, body: &'static str) -> Response {
     (status, body).into_response()
 }
 
-/// RFC 7235 §4.1 requires `WWW-Authenticate` on 401 so clients (and
-/// Prometheus scrapers) know to retry with a Bearer token. The header
-/// value is a constant — no secret leaks into the response.
-fn deny_unauthorized(body: &'static str) -> Response {
-    let mut resp = (StatusCode::UNAUTHORIZED, body).into_response();
-    resp.headers_mut().insert(
-        header::WWW_AUTHENTICATE,
-        HeaderValue::from_static(r#"Bearer realm="metrics""#),
-    );
-    resp
-}
-
-/// Compare two byte slices for equality in a way that is constant-time
-/// with respect to **both** the content and the input lengths.
+/// O 401 do `/metrics`, com o `realm` deste guarda.
 ///
-/// `subtle::ConstantTimeEq::ct_eq` on raw `[u8]` returns `Choice::zero()`
-/// immediately when the slices have different lengths — that early-exit
-/// exposes a length oracle to callers who can measure response timing
-/// (security audit M-1, plan 0024 review). Hashing both inputs to a
-/// fixed-size SHA-256 digest and `ct_eq`'ing the digests removes the
-/// length dependency entirely; the cost (two SHA-256 of <64 bytes) is
-/// in the noise compared to the HTTP round trip.
-fn constant_time_token_eq(a: &[u8], b: &[u8]) -> bool {
-    let a_hash = digest(&SHA256, a);
-    let b_hash = digest(&SHA256, b);
-    a_hash.as_ref().ct_eq(b_hash.as_ref()).unwrap_u8() == 1
-}
-
-/// Extract a bearer token from an `Authorization` header. Case-sensitive
-/// match on the scheme — Prometheus scrapers always spell it `Bearer`.
-fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let rest = value.strip_prefix("Bearer ")?;
-    let trimmed = rest.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
+/// A montagem do header e a comparacao de token vivem em
+/// [`crate::auth_common`] desde o #1045: o gate de `gateway.api_key` precisa
+/// exatamente das mesmas propriedades, e duas copias divergiriam em silencio.
+fn deny_unauthorized(body: &'static str) -> Response {
+    crate::auth_common::deny_unauthorized("metrics", body)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -229,6 +196,7 @@ mod tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
+    use axum::http::{HeaderMap, header};
     use axum::middleware::from_fn_with_state;
     use axum::routing::get;
     use http_body_util::BodyExt;

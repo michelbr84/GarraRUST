@@ -3094,6 +3094,46 @@ const State = {
   currentTheme: localStorage.getItem('garraia.ui.theme') || 'dark',
 };
 
+// ─── Autenticacao das chamadas /api/ (#1045) ──────────────────────────
+//
+// Quando `gateway.api_key` esta configurada, o servidor passa a exigir
+// `Authorization: Bearer` em `/api/*`. Sao 41 chamadas `fetch('/api/…')`
+// neste arquivo, e editar as 41 significa que esquecer uma quebra uma tela
+// em silencio no dia em que a chave for ligada. O shim cobre por construcao,
+// inclusive o que for adicionado depois.
+//
+// So mexe em requisicao same-origin para `/api/`: nao vaza a chave para
+// terceiros, e nao pisa num `Authorization` que o chamador ja tenha posto.
+// Sem chave guardada, e um passa-direto — `fetch` se comporta como antes.
+(function instalarAuthDeApi() {
+  const fetchOriginal = window.fetch.bind(window);
+  window.fetch = function (entrada, init) {
+    const chave = State.gatewayKey;
+    if (!chave) return fetchOriginal(entrada, init);
+
+    let url;
+    try {
+      url = new URL(
+        typeof entrada === 'string' ? entrada : entrada.url,
+        window.location.href,
+      );
+    } catch {
+      return fetchOriginal(entrada, init);
+    }
+    if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/')) {
+      return fetchOriginal(entrada, init);
+    }
+
+    // `Headers` normaliza o nome, entao um `authorization` minusculo posto
+    // pelo chamador tambem e respeitado.
+    const headers = new Headers((init && init.headers) || (entrada.headers) || undefined);
+    if (!headers.has('Authorization')) {
+      headers.set('Authorization', 'Bearer ' + chave);
+    }
+    return fetchOriginal(entrada, Object.assign({}, init, { headers }));
+  };
+})();
+
 // ─── DOM Refs ────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 const chatMessages = $('chat-messages');

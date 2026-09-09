@@ -668,6 +668,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
+    validate_google_chat(&config.channels, &mut findings, &push_warn);
     validate_matrix(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
@@ -698,6 +699,13 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
             // do check em silencio — `has_inline_token` ja procura
             // `access_token`, mas a falta dele nao tinha env var para nomear.
             "matrix" => Some("MATRIX_ACCESS_TOKEN"),
+            // O Google Chat tem credenciais com nomes proprios
+            // (`audience` + `service_account_token`) que esta checagem
+            // generica nao conhece: ela procura so
+            // `bot_token`/`access_token`/`app_token` para decidir se ha
+            // credencial inline, e concluiria "sem token" para um canal
+            // corretamente configurado. Os dois campos ficam em
+            // `validate_google_chat`.
             _ => None,
         };
         if let Some(var) = env_var
@@ -1046,6 +1054,69 @@ fn validate_auth(
              GARRAIA_VAULT_PASSPHRASE (vault) and GARRAIA_JWT_SECRET (auth)"
                 .into(),
         );
+    }
+}
+
+/// As duas credenciais do canal Google Chat (#1050).
+///
+/// A checagem generica de token nao alcanca este canal: ela procura
+/// `bot_token`/`access_token`/`app_token`, e aqui os campos sao `audience` e
+/// `service_account_token`. Sem esta funcao, um canal Google Chat pela
+/// metade sairia do `config check` sem um unico achado.
+///
+/// Os dois campos falham de jeitos bem diferentes, e a mensagem diz qual e
+/// qual:
+///
+/// - sem `service_account_token` o canal **recebe e nao responde** — o
+///   usuario manda mensagem e o silencio parece bug do bot;
+/// - sem `audience` o canal e **recusado no boot**, porque todo webhook do
+///   Google Chat e assinado pela mesma chave do Google e o `aud` e a unica
+///   coisa que distingue esta app das outras. Um canal sem ela aceitaria um
+///   token legitimo emitido para a app de outra pessoa.
+fn validate_google_chat(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "google_chat" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env, consequencia) in [
+            (
+                "audience",
+                "GOOGLE_CHAT_AUDIENCE",
+                "the channel will be REFUSED at boot: without it a token issued for ANY other Google Chat app would be accepted, since every Chat webhook is signed by the same Google key",
+            ),
+            (
+                "service_account_token",
+                "GOOGLE_CHAT_SERVICE_ACCOUNT_TOKEN",
+                "the channel will be skipped at boot: it could receive messages but never answer",
+            ),
+        ] {
+            let configurado_inline = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            // `var(..).is_ok_and(nao vazio)`, e nao `var_os(..).is_some()`:
+            // `var_os` devolve `Some("")` para uma variavel definida como
+            // vazia, e o boot usa `resolve_api_key`, que filtra vazio. Com
+            // `var_os` o operador definiria `GOOGLE_CHAT_AUDIENCE=""`, veria
+            // o check dizer "ok", e o canal nao subiria — o check estaria
+            // afirmando o contrario do que o boot faz.
+            if configurado_inline || std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "google chat channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
     }
 }
 
@@ -2119,81 +2190,6 @@ mod tests {
         );
     }
 
-    // ─── #1050: o Matrix precisa de token E de homeserver ─────────────────
-
-    fn cfg_matrix(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
-        let mut cfg = AppConfig::default();
-        let settings: HashMap<String, serde_json::Value> = match settings {
-            serde_json::Value::Object(m) => m.into_iter().collect(),
-            _ => HashMap::new(),
-        };
-        cfg.channels.insert(
-            "mx".into(),
-            crate::model::ChannelConfig {
-                channel_type: "matrix".into(),
-                enabled,
-                settings,
-            },
-        );
-        cfg
-    }
-
-    /// Antes deste braco, a falta de `access_token` no Matrix nao tinha env
-    /// var para nomear e o canal saia do check em silencio.
-    #[test]
-    fn matrix_sem_token_avisa_nomeando_a_env() {
-        let findings = validate(&cfg_matrix(
-            Some(true),
-            serde_json::json!({"homeserver_url": "https://matrix.exemplo"}),
-        ));
-        assert!(
-            findings
-                .iter()
-                .any(|f| f.field == "channels.mx" && f.message.contains("MATRIX_ACCESS_TOKEN")),
-            "esperava aviso de token: {findings:?}"
-        );
-    }
-
-    /// O `homeserver_url` nao e credencial, entao a checagem generica nao o
-    /// alcanca — e sem ele o canal e pulado no boot.
-    #[test]
-    fn matrix_sem_homeserver_avisa() {
-        let findings = validate(&cfg_matrix(
-            Some(true),
-            serde_json::json!({"access_token": "syt_fake"}),
-        ));
-        assert!(
-            findings
-                .iter()
-                .any(|f| f.field == "channels.mx" && f.message.contains("homeserver_url")),
-            "esperava aviso de homeserver_url: {findings:?}"
-        );
-    }
-
-    #[test]
-    fn matrix_completo_nao_avisa() {
-        let findings = validate(&cfg_matrix(
-            Some(true),
-            serde_json::json!({
-                "homeserver_url": "https://matrix.exemplo",
-                "access_token": "syt_fake",
-            }),
-        ));
-        assert!(
-            findings.iter().all(|f| f.field != "channels.mx"),
-            "canal completo nao deveria gerar achado: {findings:?}"
-        );
-    }
-
-    #[test]
-    fn matrix_desligado_fica_calado() {
-        let findings = validate(&cfg_matrix(Some(false), serde_json::json!({})));
-        assert!(
-            findings.iter().all(|f| f.field != "channels.mx"),
-            "canal desligado nao deveria gerar achado: {findings:?}"
-        );
-    }
-
     #[test]
     fn disabled_channel_no_token_warning() {
         let mut cfg = AppConfig::default();
@@ -2580,6 +2576,186 @@ mod tests {
         assert!(
             !findings.iter().any(|f| f.field == "gateway.host"),
             "api_key + TLS on 0.0.0.0 must not warn: {findings:?}"
+        );
+    }
+    // ─── #1050: as duas credenciais do canal Google Chat ──────────────────
+
+    fn cfg_google_chat(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "gc".into(),
+            crate::model::ChannelConfig {
+                channel_type: "google_chat".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    fn mensagens_de_gc(cfg: &AppConfig) -> Vec<String> {
+        achados_de(cfg, "channels.gc")
+            .into_iter()
+            .map(|f| f.message)
+            .collect()
+    }
+
+    #[test]
+    fn google_chat_sem_credencial_nenhuma_avisa_das_duas() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(Some(true), serde_json::json!({})));
+        assert!(
+            msgs.iter().any(|m| m.contains("audience")),
+            "esperava aviso de audience: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("service_account_token")),
+            "esperava aviso de service_account_token: {msgs:?}"
+        );
+    }
+
+    /// O aviso da `audience` tem de dizer a consequencia real: o canal e
+    /// recusado, e o motivo e que sem ela o token de **outra app** passaria.
+    /// Um aviso generico de "falta credencial" nao explicaria por que este
+    /// campo, que parece burocratico, e o que sustenta a autenticacao.
+    #[test]
+    fn o_aviso_da_audience_explica_o_token_de_outra_app() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"service_account_token": "tok"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so a audience deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("REFUSED") && msgs[0].contains("other Google Chat app"),
+            "o aviso tem de explicar o que se perde: {}",
+            msgs[0]
+        );
+    }
+
+    /// Sem o token o canal recebe e nao responde — falha diferente da
+    /// `audience`, e a mensagem tem de distinguir.
+    #[test]
+    fn o_aviso_do_token_diz_que_o_canal_nao_responde() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"audience": "1234567890"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so o token deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("never answer"),
+            "o aviso tem de dizer que o canal fica mudo: {}",
+            msgs[0]
+        );
+    }
+
+    #[test]
+    fn google_chat_completo_nao_avisa() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"audience": "1234567890", "service_account_token": "tok"}),
+        ));
+        assert!(
+            msgs.is_empty(),
+            "canal completo nao deveria avisar: {msgs:?}"
+        );
+    }
+
+    /// Espaco em branco conta como ausente — a mesma regra que
+    /// `GoogleChatChannel::new` usa. Se o check aceitasse `"   "`, ele diria
+    /// "ok" para exatamente a config que o boot recusa.
+    #[test]
+    fn google_chat_com_audience_em_branco_conta_como_ausente() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"audience": "   ", "service_account_token": "tok"}),
+        ));
+        assert!(
+            msgs.iter().any(|m| m.contains("audience")),
+            "audience em branco deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn google_chat_desabilitado_nao_avisa() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(Some(false), serde_json::json!({})));
+        assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
+
+    // ─── #1050: o Matrix precisa de token E de homeserver ─────────────────
+
+    fn cfg_matrix(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "mx".into(),
+            crate::model::ChannelConfig {
+                channel_type: "matrix".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// Antes deste braco, a falta de `access_token` no Matrix nao tinha env
+    /// var para nomear e o canal saia do check em silencio.
+    #[test]
+    fn matrix_sem_token_avisa_nomeando_a_env() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({"homeserver_url": "https://matrix.exemplo"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.mx" && f.message.contains("MATRIX_ACCESS_TOKEN")),
+            "esperava aviso de token: {findings:?}"
+        );
+    }
+
+    /// O `homeserver_url` nao e credencial, entao a checagem generica nao o
+    /// alcanca — e sem ele o canal e pulado no boot.
+    #[test]
+    fn matrix_sem_homeserver_avisa() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({"access_token": "syt_fake"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.mx" && f.message.contains("homeserver_url")),
+            "esperava aviso de homeserver_url: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_completo_nao_avisa() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({
+                "homeserver_url": "https://matrix.exemplo",
+                "access_token": "syt_fake",
+            }),
+        ));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.mx"),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_desligado_fica_calado() {
+        let findings = validate(&cfg_matrix(Some(false), serde_json::json!({})));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.mx"),
+            "canal desligado nao deveria gerar achado: {findings:?}"
         );
     }
 }
