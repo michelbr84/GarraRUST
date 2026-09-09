@@ -12,12 +12,10 @@ curtos para a próxima sessão autônoma.
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
 
-## Preparada 2026-09-09 — v0.4.1: canais e seguranca
+## Lancada 2026-09-09 — v0.4.1: canais e seguranca
 
-**A v0.4.1 esta preparada e nao tagueada.** O PR de release (#1085) traz o bump
-0.4.0 → 0.4.1 nos quatro lugares que sao versao de verdade e os 34 fragmentos de
-`changelog.d/` ja assemblados na secao `## [0.4.1]`. Falta o passo 2 do
-`docs/releasing.md`: a tag.
+**A v0.4.1 esta tagueada** em `27659ae` (workflow Release disparado pelo push da
+tag, 11 jobs de build). O passo 2 do `docs/releasing.md` esta feito.
 
 ### O que entrou
 
@@ -30,33 +28,75 @@ curtos para a próxima sessão autônoma.
 | #1070 | assinatura HMAC do webhook do WhatsApp | #1080 |
 | #1079 | status dos canais push vem do que subiu, nao do registry | #1082 |
 | #1078 | aprovacao vinculada ao comando + cobertura do gate | #1083 |
+| #1086 | injecao de argumento no `sha` do rollback de skill | #1087, #1092 |
 
-Os dois issues de seguranca sairam maiores do que a descricao deles sugeria: a
-revisao achou em cada um um segundo buraco atras do primeiro. No WhatsApp, o
-roteamento por `phone_number_id` do corpo depois de autenticar. Na aprovacao, o
-marcador cunhavel por conteudo de terceiro (`web_fetch`, `file_read`, MCP), que
-so fechou trocando o hash por HMAC com chave por processo.
+### A licao do ciclo: afirmar so o que foi medido
+
+Os dois issues de seguranca do lote anterior sairam maiores do que a descricao
+deles sugeria, cada um com um segundo buraco atras do primeiro. Este ciclo
+acrescentou um terceiro padrao, mais incomodo: **uma protecao afirmada que nao
+existia**.
+
+O #1087 dizia que o separador `--` impedia o `git` de ler o sha como opcao. A
+revisao mediu, e eu confirmei em git 2.43.0:
+
+```
+git revert --no-edit -- "--output=/tmp/pwn"   ->  /tmp/pwn CRIADO
+git add    -- "--output=/tmp/pwn"             ->  pathspec, nada criado
+```
+
+O `revert` repassa ao parser de revisoes o que nao consumiu. No `add` o
+separador funciona; no `revert`, nao. A validacao estava certa e era a unica
+barreira — o texto e que mentia, e o risco era alguem relaxar a validacao
+confiando numa camada inexistente. Corrigido no #1092.
+
+O #1087 tambem atribuia a escrita arbitraria ao `git diff`, que **nao tem um
+unico caller no workspace**. Quem truncava arquivo era o proprio `git revert`.
+
+Como isso passou: nenhum teste dessa area executa git de verdade — os runners
+sao mocks. A regra que fica: **comentario que afirma comportamento de
+ferramenta externa precisa ter sido medido**, nao deduzido.
+
+### Entrou em main depois da tag (vai na proxima versao)
+
+A v0.4.1 foi tagueada em `27659ae`; estes tres mergearam depois, de proposito —
+os fragmentos deles nao descrevem a `[0.4.1]`, entao entrariam na release sem
+estar no changelog dela.
+
+| Issue | O quê | PR |
+| --- | --- | --- |
+| #1081 | metade Flutter do streaming: `/ws` no chat do app, botao Parar, fallback para POST | #1090 |
+| #1084 | canal procfs fechado (`PR_SET_DUMPABLE`) + `run_tests` com paridade de gate | #1091 |
+| #1086 | `GitSha` tipado — fecha o alerta CodeQL #166, que a primeira correcao nao fechou | #1095 |
+
+O #1095 merece nota: o #1087 corrigiu a vulnerabilidade de verdade, mas o
+alerta continuou aberto — e certo, pelo modelo do CodeQL. A validacao devolvia
+`()` e a string original seguia para `Command::args`, entao o fluxo de dados
+nao tinha mudado. So fechou quando o valor entregue ao `git` passou a ser um
+que o modulo **constroi** a partir do alfabeto aceito. Dispensar o alerta teria
+sido errado: nao era falso positivo.
+
+### Aberto depois deste lote
+
+- **#1093** (ALTO) — as rotas mutantes de `/api/learning/*` rodam `git` no repo
+  do dono **sem auth e com CORS `Any`**, entao qualquer pagina que o dono abra
+  dispara `git revert` no repositorio dele. O `rollback` ainda aceita qualquer
+  commit, nao so os da skill. O #1086 fechou o **formato** do argumento; a
+  **capacidade** ficou intacta. Conserto barato: o endpoint hoje e inalcancavel
+  pela propria UI (mismatch de path relativo/absoluto quebra o `history`), entao
+  exigir auth custa zero para o usuario.
+- **#1094** (BAIXO) — cinco itens de higiene no `garraia-learning`.
+- Divida registrada: `check.rs` (3529 linhas) e `safety_gate.rs` (1776) pedem
+  quebra em modulos.
 
 ### Acoes do dono
 
 | Item | Por que |
 | --- | --- |
-| Tag `v0.4.1` e workflow de release | passo 2 do runbook |
 | Instalacao limpa, `garra update` 0.4.0 → 0.4.1, checksum dos assets | o container das sessoes autonomas nao alcanca `garraia.org` nem `objects.githubusercontent.com` (proxy devolve `403 CONNECT tunnel failed`) — **nao foi testado** |
-| #1084: sandbox real (ADR + politica de caminhos) e `run_tests` fail-closed | decisao arquitetural e decisao de risco de produto |
 | Validar o APK em aparelho real (`docs/mobile-qa-checklist.md` §8) | pendente desde a v0.4.0 |
 | Secrets `ANDROID_KEYSTORE_*` para assinar o APK de release | pendente desde a v0.4.0 |
-
-### Aberto depois deste lote
-
-- **#1081** — metade Flutter do streaming (`sendMessageStreaming`, `ChatEvent`,
-  balao crescendo, botao Parar, fallback para POST). Precisa de toolchain Dart,
-  que o container autonomo nao tem.
-- **#1084** — sandbox e `run_tests`, acima.
-- Divida registrada: `check.rs` (3529 linhas) e `safety_gate.rs` (1776, cruzou o
-  limite de 1500 do Quality Ratchet no #1083) pedem quebra em modulos. Nao feito
-  dentro de um PR de seguranca de proposito — ampliaria o PR contra a regra do
-  fix minimo.
+| Decidir o #1093 | e postura de produto: quem pode chamar `/api/learning/*` |
 
 ## Em andamento 2026-09-07 — v0.4.0: Garra Mobile local-first (ADR 0016 amendment)
 
