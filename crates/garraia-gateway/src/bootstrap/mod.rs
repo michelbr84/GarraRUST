@@ -19,6 +19,7 @@ mod google_chat;
 mod imessage;
 mod irc;
 mod line;
+mod openclaw;
 mod signal;
 mod slack;
 mod teams;
@@ -64,6 +65,9 @@ pub use imessage::build_imessage_channels;
 
 /// #1050: o canal IRC, que tinha `impl Channel` e nenhum call-site.
 pub use irc::build_irc_channels;
+
+/// #1050: le a config do bridge OpenClaw, que ate agora ninguem lia.
+pub use openclaw::{build_openclaw_config, spawn_openclaw_router};
 
 /// #1050: o canal Signal, que tinha `impl Channel` e guard de URL e nenhum call-site.
 pub use signal::build_signal_channels;

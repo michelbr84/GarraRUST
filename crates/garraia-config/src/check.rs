@@ -669,6 +669,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
     validate_google_chat(&config.channels, &mut findings, &push_warn);
+    validate_openclaw(&config.channels, &mut findings, &push_warn);
     validate_signal(&config.channels, &mut findings, &push_warn);
     validate_irc(&config.channels, &mut findings, &push_warn);
     validate_line(&config.channels, &mut findings, &push_warn);
@@ -1340,6 +1341,61 @@ fn validate_signal(
                 &format!("channels.{name}"),
                 format!(
                     "signal channel '{name}' is enabled but has no {campo} in config or the {env} env var; the channel will be skipped at boot"
+                ),
+            );
+        }
+    }
+}
+
+/// O bridge OpenClaw tem **dois** `enabled` independentes, e essa e a
+/// armadilha (#1050): o do `ChannelConfig`, que vale para qualquer canal, e o
+/// de dentro de `settings`, que e campo do proprio `OpenClawConfig` e tem
+/// default `false`. Escrever a secao com `enabled = true` no nivel de fora e
+/// **nao** escrever o de dentro deixa o bridge desligado sem uma linha de
+/// explicacao — que e exatamente o tipo de silencio que este comando existe
+/// para quebrar.
+fn validate_openclaw(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "openclaw" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        let interno = ch
+            .settings
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        if !interno {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "openclaw bridge '{name}' will NOT start: the channel is enabled but `enabled` inside its settings is missing or false. The bridge has two independent switches; set `enabled = true` under [channels.{name}.settings] as well"
+                ),
+            );
+            continue;
+        }
+
+        // Com o bridge de fato ligado, o `ws_url` e a unica coisa que pode
+        // estar obviamente errada sem que o operador perceba: o cliente
+        // reconecta para sempre e so aparece como "disconnected".
+        let ws_url = ch
+            .settings
+            .get("ws_url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("ws://127.0.0.1:18789");
+
+        if !ws_url.starts_with("ws://") && !ws_url.starts_with("wss://") {
+            push_warn(
+                findings,
+                &format!("channels.{name}.settings.ws_url"),
+                format!(
+                    "openclaw bridge '{name}' has ws_url '{ws_url}', which is not a WebSocket URL. The client will retry forever and the bridge will read as disconnected"
                 ),
             );
         }
@@ -2877,6 +2933,103 @@ mod tests {
     fn google_chat_desabilitado_nao_avisa() {
         let msgs = mensagens_de_gc(&cfg_google_chat(Some(false), serde_json::json!({})));
         assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
+
+    // ─── #1050: os dois `enabled` do bridge OpenClaw ──────────────────────
+
+    fn cfg_openclaw(enabled_fora: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "oc".into(),
+            crate::model::ChannelConfig {
+                channel_type: "openclaw".into(),
+                enabled: enabled_fora,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// A armadilha: ligar o canal e esquecer o `enabled` de dentro deixa o
+    /// bridge desligado sem uma linha de explicacao. Antes deste aviso, o
+    /// unico sintoma era `/api/openclaw/status` respondendo "nao configurado"
+    /// numa secao que o operador escreveu e leu como ligada.
+    #[test]
+    fn openclaw_ligado_por_fora_e_desligado_por_dentro_avisa() {
+        let findings = validate(&cfg_openclaw(Some(true), serde_json::json!({})));
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Warning
+                && f.field == "channels.oc"
+                && f.message.contains("two independent switches")),
+            "esperava aviso sobre os dois enabled: {findings:?}"
+        );
+
+        let findings = validate(&cfg_openclaw(
+            Some(true),
+            serde_json::json!({"enabled": false}),
+        ));
+        assert!(
+            findings.iter().any(|f| f.field == "channels.oc"),
+            "esperava aviso com enabled=false por dentro: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn openclaw_ligado_dos_dois_lados_nao_avisa() {
+        let findings = validate(&cfg_openclaw(
+            Some(true),
+            serde_json::json!({"enabled": true}),
+        ));
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("channels.oc")),
+            "bridge bem configurado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    /// Desligado por fora e desligado: nao ha nada a avisar, como em qualquer
+    /// outro canal.
+    #[test]
+    fn openclaw_desligado_por_fora_fica_calado() {
+        let findings = validate(&cfg_openclaw(Some(false), serde_json::json!({})));
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("channels.oc")),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    /// O cliente reconecta para sempre e so aparece como "disconnected", entao
+    /// uma URL que nao e WebSocket e um erro silencioso — o tipo que este
+    /// comando existe para nomear.
+    #[test]
+    fn openclaw_com_ws_url_que_nao_e_websocket_avisa() {
+        let findings = validate(&cfg_openclaw(
+            Some(true),
+            serde_json::json!({"enabled": true, "ws_url": "http://127.0.0.1:18789"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.oc.settings.ws_url"
+                    && f.message.contains("not a WebSocket URL")),
+            "esperava aviso sobre ws_url: {findings:?}"
+        );
+
+        for boa in ["ws://127.0.0.1:18789", "wss://openclaw.exemplo:443"] {
+            let findings = validate(&cfg_openclaw(
+                Some(true),
+                serde_json::json!({"enabled": true, "ws_url": boa}),
+            ));
+            assert!(
+                findings
+                    .iter()
+                    .all(|f| f.field != "channels.oc.settings.ws_url"),
+                "{boa} nao deveria avisar: {findings:?}"
+            );
+        }
     }
 
     // ─── #1050: o Signal nao passa pela checagem de token ─────────────────
