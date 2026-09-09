@@ -119,6 +119,15 @@ impl Tool for RepoSearchTool {
         if let Some(wd) = context.working_dir.as_deref() {
             cmd.current_dir(wd);
         }
+        // #1075 R3 (parity — auditoria do hardening): o filho herda só a
+        // allowlist de env (RIPGREP_CONFIG_PATH do pai não alcança o rg).
+        #[cfg(unix)]
+        {
+            cmd.env_clear();
+            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
+                cmd.env(key, value);
+            }
+        }
         cmd.arg("--line-number")
             .arg("--no-heading")
             .arg("--color")
@@ -170,6 +179,14 @@ impl Tool for RepoSearchTool {
                 });
                 if let Some(wd) = context.working_dir.as_deref() {
                     grep_cmd.current_dir(wd);
+                }
+                // #1075 R3 (parity): mesma allowlist do rg acima.
+                #[cfg(unix)]
+                {
+                    grep_cmd.env_clear();
+                    for (key, value) in garraia_common::safety_gate::allowed_child_env() {
+                        grep_cmd.env(key, value);
+                    }
                 }
 
                 if cfg!(target_os = "windows") {

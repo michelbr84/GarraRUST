@@ -144,12 +144,15 @@ possible, bounded only by per-call timeouts.
 the operator starts `garra mcp-server` with `GARRAIA_MCP_ENABLE_TOOLS=1`
 (see [cli-mcp-server.md](cli-mcp-server.md#full-agent-tool-garra_agent--operator-opt-in)),
 the server also exposes `garra_agent`, a full-agent tool with shell,
-file, git and web access. Handing that to Hermes hands it a shell on
-the GarraIA host with the MCP process environment inherited by the
-bash child. **Recommendation: keep the flag OFF wherever the MCP
-caller is a third-party agent (Hermes included).** The safe pairing is
-the default one — Hermes talks to `garra_ask` only. If you must enable
-it, at minimum set `GARRAIA_MCP_MODEL_ALLOWLIST` +
+file, git and web access. Since the #1075 hardening the bash child runs
+fail-closed (DENY_LIST + risky-tier block, no confirmation channel in a
+stateless call) and inherits only a small env allowlist on unix — but it
+is still a shell on the GarraIA host (same-UID procfs reads of the
+parent's secrets are risk-tier gated, not impossible; only a real
+sandbox closes that). **Recommendation: keep the flag OFF wherever the
+MCP caller is a third-party agent (Hermes included).**
+The safe pairing is the default one — Hermes talks to `garra_ask` only.
+If you must enable it, at minimum set `GARRAIA_MCP_MODEL_ALLOWLIST` +
 `GARRAIA_MCP_MAX_TIMEOUT_SECS` and pass `working_dir` per call, and
 understand that `allowed_dirs` is UX, not a boundary (unrestricted
 `bash`).
@@ -163,6 +166,11 @@ Practical rules:
   GarraIA (or that answer from Hermes' own state).
 - Set explicit timeouts on both sides (`timeout` in the client config;
   `GARRAIA_MCP_MAX_TIMEOUT_SECS` on the server side).
+- Heartbeat note (#1075): unattended turns never see an approval — with
+  `tool_confirmation_enabled: true` risky bash commands (and `run_tests`)
+  now answer `CONFIRM_REQUIRED` into a turn nobody reads; with the flag
+  `false` they are cleanly blocked. Either way, do not build heartbeat
+  tasks around gated commands.
 
 ## Security policy checklist
 

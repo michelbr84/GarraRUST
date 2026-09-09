@@ -97,13 +97,19 @@ impl GitDiffTool {
 
     /// Executa um comando git com timeout
     async fn run_git_command(&self, args: &[String]) -> Result<String> {
-        let resultado = tokio::time::timeout(
-            self.timeout,
-            Command::new("git")
-                .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                .output(),
-        )
-        .await;
+        let mut cmd = Command::new("git");
+        cmd.args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
+        // allowlist de env — um .gitconfig plantado com diff.external é
+        // execução arbitraria, e não pode carregar segredos do pai junto.
+        #[cfg(unix)]
+        {
+            cmd.env_clear();
+            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
+                cmd.env(key, value);
+            }
+        }
+        let resultado = tokio::time::timeout(self.timeout, cmd.output()).await;
 
         match resultado {
             Ok(Ok(output)) => {
@@ -157,7 +163,9 @@ impl GitDiffTool {
         from_commit: Option<&str>,
         to_commit: Option<&str>,
     ) -> Result<String> {
-        let mut args: Vec<String> = vec!["diff".to_string()];
+        // --no-ext-diff: .git/config plantado (diff.external) não transforma
+        // o git_diff em execução arbitraria (#1075 — auditoria).
+        let mut args: Vec<String> = vec!["diff".to_string(), "--no-ext-diff".to_string()];
 
         // Adiciona linhas de contexto
         args.push("-U".to_string());
