@@ -137,7 +137,8 @@ channels:
 
 1. Set up Meta Cloud API
 2. Get phone number ID and access token
-3. Configure webhook verification
+3. Copy the **App Secret** from your Meta app (Settings → Basic)
+4. Configure webhook verification
 
 ```yaml
 channels:
@@ -146,13 +147,38 @@ channels:
     phone_number_id: "123456789"
     access_token: "YOUR_ACCESS_TOKEN"
     verify_token: "YOUR_VERIFY_TOKEN"
+    app_secret: "YOUR_APP_SECRET"
     webhook_verify: true
 ```
+
+All three secrets can come from the environment instead —
+`WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET`.
+`garra config check` reports each one missing.
+
+### `app_secret` is required (#1070)
+
+`app_secret` and `verify_token` are **different things**, and one does not
+substitute for the other:
+
+| | what it is | when it is used |
+|---|---|---|
+| `verify_token` | a string you choose | once, in the `GET` handshake when you register the webhook URL with Meta |
+| `app_secret` | issued by Meta | signs **every** `POST` that arrives afterwards, as `X-Hub-Signature-256` |
+
+A channel configured without `app_secret` is **refused at boot** — not started
+in a degraded mode. Without it there is no way to tell a webhook from Meta
+apart from a POST forged by anyone who discovered the URL, and a route that
+accepts both is worse than no route at all.
+
+Every rejected request gets the same `403` with the same constant body; the
+reason goes only to the log. One message per reason would tell whoever is
+probing whether they got the prefix, the hex, the length or just the secret
+wrong.
 
 ### Features
 
 - Webhook-based integration
-- Message verification
+- HMAC-SHA256 signature verification on every inbound POST
 - Allowlist management
 
 ## LINE

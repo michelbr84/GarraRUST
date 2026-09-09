@@ -60,6 +60,25 @@ pub fn build_whatsapp_channels(
             .or_else(|| std::env::var("WHATSAPP_VERIFY_TOKEN").ok())
             .unwrap_or_else(|| "garraia-verify".to_string());
 
+        // #1070: o app secret da app da Meta assina cada POST do webhook
+        // (`X-Hub-Signature-256`). E outro valor que o `verify_token`, que so
+        // serve ao handshake unico do `GET` no registro da URL.
+        let app_secret = channel_config
+            .settings
+            .get("app_secret")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| resolve_api_key(None, "WHATSAPP_APP_SECRET", "WHATSAPP_APP_SECRET"));
+
+        let Some(app_secret) = app_secret else {
+            warn!(
+                "whatsapp channel '{name}' has no app_secret, skipping \
+                 (set app_secret in config or WHATSAPP_APP_SECRET env var) — \
+                 sem ele nao ha como distinguir um webhook da Meta de um POST forjado"
+            );
+            continue;
+        };
+
         let allowlist = Arc::new(Mutex::new(Allowlist::load_or_create(
             &default_allowlist_path(),
         )));
@@ -199,14 +218,26 @@ pub fn build_whatsapp_channels(
             },
         );
 
-        let channel = Arc::new(WhatsAppChannel::new(
+        match WhatsAppChannel::new(
             access_token,
             phone_number_id,
             verify_token,
+            app_secret,
             on_message,
-        ));
-        channels.push(channel);
-        info!("configured whatsapp channel: {name}");
+        ) {
+            Ok(channel) => {
+                channels.push(Arc::new(channel));
+                info!("configured whatsapp channel: {name}");
+            }
+            // Hoje o unico erro possivel e o app_secret em branco, ja barrado
+            // acima quando ausente — mas `"   "` no TOML passa pelo `Option` e
+            // e recusado aqui. O `match` fica pelo que vier depois: um
+            // construtor que ganha validacao nova nao pode voltar a montar
+            // canal quebrado por descuido do wiring.
+            Err(e) => {
+                warn!("whatsapp channel '{name}' rejeitado, pulando: {e}");
+            }
+        }
     }
 
     channels
