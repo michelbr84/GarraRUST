@@ -33,6 +33,26 @@ Na primeira abertura o app pede seu nome e **onde o Garra roda**:
 
 Emulador Android → PC hospedeiro: use `10.0.2.2:3888` como "Another Garra".
 
+### A chave, quando ela existe
+
+Um gateway em `0.0.0.0` está exposto à rede inteira, então configurar
+`gateway.api_key` no PC é o passo que vale a pena. Desde #1045 ela é exigida
+em todo o REST `/api/*`, e não só no WebSocket como antes — sem a chave, o
+gateway responde **401**.
+
+O app manda a chave sozinho: ela vai em `Authorization: Bearer` em toda
+chamada, guardada no `flutter_secure_storage`. Não há nada a fazer além de
+digitá-la no onboarding.
+
+Três rotas continuam abertas mesmo com a chave configurada: `/api/health`,
+`/api/capabilities` e `/api/auth-check`. É o que permite ao **Test
+connection** dizer "achei um Garra aqui" antes de você ter digitado a chave.
+As três são secret-free.
+
+Se as telas carregarem vazias ou com erro num gateway que você sabe estar de
+pé, a primeira coisa a conferir é a chave: 401 em `/api/*` é exatamente esse
+sintoma.
+
 ## Verificar
 
 ```bash
