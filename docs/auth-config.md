@@ -197,7 +197,7 @@ whether it mattered. It usually does not.
 
 | Surface | Why it is unaffected |
 | --- | --- |
-| Web Console (`/`, `webchat.html`) | the `/api/*` console endpoints are auth-free by design |
+| Web Console (`/`, `webchat.html`) | the `/api/*` endpoints never use a JWT — see the note below on the gateway API key |
 | WebSocket chat (`/ws`) | authenticates with the gateway API key, not a JWT |
 | `POST /v1/chat/completions` | OpenAI-compatible surface, same API-key path |
 | `garra mcp-server` (stdio) | in-process, no HTTP auth in the path at all |
@@ -217,6 +217,29 @@ So the rule of thumb: **a single-user gateway on `127.0.0.1`, driven from the
 CLI, the web console, an MCP host or a chat channel, never touches the auth
 stack.** Leaving the warning standing is a legitimate steady state — it is
 fail-*closed*, not degraded.
+
+### `/api/*` and the gateway API key — a different axis
+
+None of the above is about `gateway.api_key`, which is a separate control and
+answers a different question. The JWT stack is *who are you*; the gateway key
+is *are you allowed on this port at all*.
+
+Since #1045, a configured `gateway.api_key` is required on the whole `/api/*`
+REST surface, not just on the `/ws` handshake as before. Three routes stay open
+so a client can find the gateway before it has the key: `/api/health`,
+`/api/capabilities` and `/api/auth-check`. All three are secret-free.
+
+**With no `gateway.api_key` set, nothing changes** — `/api/*` answers as it
+always did, which is the right default for a gateway bound to `127.0.0.1`. It
+is binding to `0.0.0.0` that makes the key worth setting, and that is the case
+the mobile app on the LAN puts you in. See `docs/hardening-gateway.md` §2.
+
+The key travels in the `Authorization: Bearer` header. Only `/ws` also accepts
+it in the query string, because a browser's WebSocket handshake cannot carry a
+header; on REST it would end up in access logs and in the request span.
+
+The key is read once at startup, so changing it on disk needs a gateway
+restart — the config hot-reload does not reach it.
 
 ### If you do want auth on
 

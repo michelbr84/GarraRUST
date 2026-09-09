@@ -138,6 +138,7 @@ fn build_skill_skin_routes(
 pub fn build_router(
     state: SharedState,
     whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState,
+    google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState,
     admin_store: Arc<Mutex<admin::store::AdminStore>>,
     admin_encryption_key: Arc<Vec<u8>>,
 ) -> Router {
@@ -192,6 +193,16 @@ pub fn build_router(
                 .post(garraia_channels::whatsapp::webhook::whatsapp_webhook),
         )
         .with_state(whatsapp_state);
+
+    // #1050: so POST. O `GET` do WhatsApp existe por causa do handshake
+    // `hub.challenge` da Cloud API; o Google Chat valida pelo proprio POST,
+    // que traz o JWT — um GET aqui seria rota sem contrato.
+    let google_chat_routes = Router::new()
+        .route(
+            "/webhooks/google-chat",
+            post(garraia_channels::google_chat::webhook::google_chat_webhook),
+        )
+        .with_state(google_chat_state);
 
     let router = Router::new()
         .route("/", get(web_chat))
@@ -450,6 +461,7 @@ pub fn build_router(
         .route("/admin", get(admin_page))
         .with_state(state.clone())
         .merge(whatsapp_routes)
+        .merge(google_chat_routes)
         // GAR-391c: /v1/auth/{login,refresh,logout,signup} mounted
         // unconditionally. Handlers fail-soft to 503 when AuthConfig env
         // vars are missing (state.auth_provider == None).
@@ -1215,6 +1227,7 @@ const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
     ("slack", "Slack", true),
     ("whatsapp", "WhatsApp", true),
     ("imessage", "iMessage", false),
+    ("google_chat", "Google Chat", true),
     ("irc", "IRC", false),
     ("openclaw", "OpenClaw", false),
     ("mcp", "MCP", false),
