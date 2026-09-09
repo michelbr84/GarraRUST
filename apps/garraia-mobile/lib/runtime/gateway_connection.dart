@@ -1,5 +1,10 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 
+import 'chat_event.dart';
+import 'chat_socket.dart';
 import 'garra_connection.dart';
 import 'models.dart';
 import 'runtime_config.dart';
@@ -25,13 +30,31 @@ class GatewayConnection implements GarraConnection {
   final Dio _dio;
   String? _sessionCookie;
 
+  /// Kept for the WebSocket URL: `WebSocketChannel.connect` cannot set headers
+  /// on the web target, so the gateway key rides in the query string.
+  final String? _apiKey;
+
+  /// How the streaming transport is built. Swapped in tests.
+  final ChatSocketFactory _socketFactory;
+
+  /// The socket carrying the current turn, if any. `stopStreaming` needs it,
+  /// and it is the only mutable handle the class keeps.
+  ChatSocket? _activeSocket;
+
+  /// Session the gateway acknowledged for the current turn — not necessarily
+  /// the one we asked for, since a failed resume rotates it.
+  String? _activeSessionId;
+
   GatewayConnection({
     required this.mode,
     required this.baseUrl,
     String? apiKey,
     Dio? dio,
     bool replaySessionCookie = true,
-  }) : _dio =
+    ChatSocketFactory socketFactory = connectWebSocket,
+  }) : _apiKey = apiKey,
+       _socketFactory = socketFactory,
+       _dio =
            dio ??
            Dio(
              BaseOptions(
@@ -131,6 +154,136 @@ class GatewayConnection implements GarraConnection {
       );
     }
     return content;
+  }
+
+  /// Opening budget for the socket. Short on purpose: when there is no `/ws`
+  /// to talk to, the POST fallback still has to feel immediate.
+  static const _openTimeout = Duration(seconds: 6);
+
+  /// Longest silence tolerated inside a turn. Every frame resets it, so it
+  /// only fires when the runtime stops talking altogether. Same order as the
+  /// Dio `receiveTimeout` the POST path already uses.
+  static const _silenceTimeout = Duration(seconds: 120);
+
+  @override
+  Stream<ChatEvent> sendMessageStreaming(
+    String text, {
+    String? sessionId,
+  }) async* {
+    if (sessionId == null || sessionId.isEmpty) {
+      throw ArgumentError('sessionId is required for gateway chat');
+    }
+
+    // The socket never opening is the ordinary case on an older gateway, a
+    // proxy that refuses the upgrade, or a LAN that dropped. Nothing was
+    // submitted yet, so the POST path can still run the turn and the user sees
+    // a reply rather than an error. This is the *only* safe place to fall
+    // back: once the content frame goes out, retrying over HTTP would send the
+    // same message twice.
+    final ChatSocket socket;
+    try {
+      socket = _socketFactory(chatSocketUri(baseUrl, apiKey: _apiKey));
+    } catch (_) {
+      yield* _sendOverPost(text, sessionId);
+      return;
+    }
+    try {
+      await socket.ready.timeout(_openTimeout);
+    } catch (_) {
+      unawaited(socket.close());
+      yield* _sendOverPost(text, sessionId);
+      return;
+    }
+
+    _activeSocket = socket;
+    _activeSessionId = sessionId;
+    var submitted = false;
+
+    try {
+      // Resume the session the app already has, so the turn lands in the same
+      // history the HTTP path reads. A resume the gateway cannot honour is not
+      // refused: it answers `connected` with a *different* session.
+      socket.send(jsonEncode({'type': 'resume', 'session_id': sessionId}));
+
+      await for (final raw in socket.incoming.timeout(_silenceTimeout)) {
+        if (!submitted) {
+          final acked = _handshakeSessionId(raw, requested: sessionId);
+          if (acked == null) {
+            // An error during the handshake means no turn ever started, so the
+            // POST fallback is still safe. Anything else: keep waiting.
+            if (ChatEvent.tryParse(raw) is ChatFailed) break;
+            continue;
+          }
+          if (acked != sessionId) {
+            _activeSessionId = acked;
+            yield ChatSessionChanged(acked);
+          }
+          socket.send(jsonEncode({'content': text}));
+          submitted = true;
+          continue;
+        }
+
+        final event = ChatEvent.tryParse(raw);
+        // An unknown frame is skipped, never fatal: the gateway may grow a
+        // frame type before the app learns it.
+        if (event == null) continue;
+        yield event;
+        if (event is ChatCompleted ||
+            event is ChatStopped ||
+            event is ChatFailed) {
+          return;
+        }
+      }
+
+      // The stream ended without a terminator.
+      if (!submitted) {
+        yield* _sendOverPost(text, sessionId);
+      } else {
+        yield const ChatFailed('a conexao caiu antes de a resposta terminar');
+      }
+    } catch (e) {
+      if (!submitted) {
+        yield* _sendOverPost(text, sessionId);
+      } else {
+        yield ChatFailed('$e');
+      }
+    } finally {
+      _activeSocket = null;
+      _activeSessionId = null;
+      unawaited(socket.close());
+    }
+  }
+
+  @override
+  Future<void> stopStreaming() async {
+    final socket = _activeSocket;
+    final sessionId = _activeSessionId;
+    if (socket == null || sessionId == null) return;
+    // Always addressed: an unaddressed stop cancels whatever turn the socket
+    // happens to be running, and the acknowledged id is the only one the
+    // gateway matches against (`ws.rs`).
+    socket.send(jsonEncode({'type': 'stop', 'session_id': sessionId}));
+  }
+
+  /// The session id a handshake frame acknowledges, or `null` when [raw] is
+  /// not a handshake frame.
+  static String? _handshakeSessionId(String raw, {required String requested}) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map<String, dynamic>) return null;
+    final type = decoded['type'];
+    if (type != 'connected' && type != 'resumed') return null;
+    final acked = decoded['session_id'];
+    return acked is String && acked.isNotEmpty ? acked : requested;
+  }
+
+  /// One turn over `POST /api/sessions/{id}/messages`, shaped like a stream.
+  Stream<ChatEvent> _sendOverPost(String text, String sessionId) async* {
+    yield ChatCompleted(await sendMessage(text, sessionId: sessionId));
   }
 
   // ── Memory ───────────────────────────────────────────────────────────────
