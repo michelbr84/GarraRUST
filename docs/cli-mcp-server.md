@@ -1,8 +1,13 @@
 # `garra mcp-server` — MCP server exposing `garra ask`
 
-> GAR-583 — stdio Model Context Protocol server. Exposes a single tool
-> (`garra_ask`) that runs the same code path as
-> [`garra ask`](cli-ask.md) in-process — no subprocess, no shell, LLM-only.
+> GAR-583 — stdio Model Context Protocol server. Exposes `garra_ask`,
+> an LLM-only tool that runs the same code path as
+> [`garra ask`](cli-ask.md) in-process — no subprocess, no shell.
+> Optionally (operator opt-in via `GARRAIA_MCP_ENABLE_TOOLS=1`) it also
+> exposes `garra_agent`, a **full-agent** sibling with shell, file,
+> git and web tools — see
+> ["Full agent tool (`garra_agent`)"](#full-agent-tool-garra_agent--operator-opt-in)
+> below.
 >
 > Designed for Claude Desktop, Claude Code, and any MCP host that
 > speaks stdio JSON-RPC.
@@ -51,6 +56,22 @@ If `garra` is not on `PATH`, use the absolute path:
     "garra": {
       "command": "G:/Projetos/GarraRUST/target/release/garra.exe",
       "args": ["mcp-server"]
+    }
+  }
+}
+```
+
+To also expose the full-agent tool (opt-in — read the
+[security surface](#security-surface-read-before-enabling) first), set
+the env in the server entry:
+
+```json
+{
+  "mcpServers": {
+    "garra": {
+      "command": "garra",
+      "args": ["mcp-server"],
+      "env": { "GARRAIA_MCP_ENABLE_TOOLS": "1" }
     }
   }
 }
@@ -141,13 +162,114 @@ at startup via env vars, read once when `garra mcp-server` boots:
 
 | Env var | Effect |
 |---------|--------|
-| `GARRAIA_MCP_MODEL_ALLOWLIST` | Comma-separated model names. When set, a call whose (explicit or defaulted) `model` is not in the list is rejected with `invalid_params`. The operator's way to keep `openrouter/auto` unreachable: `GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free`. |
-| `GARRAIA_MCP_MAX_TIMEOUT_SECS` | Cap on `timeout_secs` (clamped to the schema max 600). Calls above the cap are rejected; a call omitting `timeout_secs` gets `min(60, cap)`. |
+| `GARRAIA_MCP_MODEL_ALLOWLIST` | Comma-separated model names. When set, a call whose (explicit or defaulted) `model` is not in the list is rejected with `invalid_params`. The operator's way to keep `openrouter/auto` unreachable: `GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free`. Applies to BOTH tools. |
+| `GARRAIA_MCP_MAX_TIMEOUT_SECS` | Cap on `timeout_secs` (clamped to each tool's schema max: 600 for `garra_ask`, 1800 for `garra_agent`). Calls above the cap are rejected; a call omitting `timeout_secs` gets `min(schema_default, cap)` — 60 for `garra_ask`, 300 for `garra_agent`. |
+| `GARRAIA_MCP_ENABLE_TOOLS` | Opt-in for the full-agent tool. Truthy values: `1`, `true`, `yes` (case-insensitive). When unset, `garra_agent` is not advertised in `tools/list` and calls come back as `unknown tool` — the surface is byte-identical to the pre-agent server. |
+| `GARRAIA_MCP_ALLOWED_DIRS` | Optional comma-separated directory allowlist for `garra_agent`'s file tools (`file_read`/`file_write` relative paths). Falls back to the server's CWD. **UX belt only, not a boundary** — unrestricted `bash` can read anywhere the process can. |
 
 The `provider` enum advertised in the JSON schema
 (`ollama|anthropic|openai|openrouter`) is enforced at runtime — plus any
 provider alias configured under `llm:` in `config.yml`. The active
 policy is logged to stderr at startup.
+
+## Full agent tool (`garra_agent`) — operator opt-in
+
+`garra_agent` runs the GarraIA assistant as a **complete agent** — the
+same runtime the Telegram/gateway path uses — instead of the LLM-only
+`garra_ask`. One-shot per call: fresh session (`mcp-<uuid>`), empty
+history, one turn. The tool is only advertised and dispatched when the
+server process starts with `GARRAIA_MCP_ENABLE_TOOLS` set.
+
+### Registered tools
+
+Mirrors the gateway bootstrap exactly (`garraia-gateway/src/bootstrap/`):
+
+| Tool | Notes |
+|------|-------|
+| `bash` | No confirmation channel (a stateless MCP call has no history to approve in). Two gates apply, both fail-closed: the `safety_gate` DENY_LIST hard-blocks destructive patterns, and the **risky tier BLOCKS** sensitive commands outright (#1075 R1) — exfiltration-capable programs (`curl`, `wget`, `ssh`, `env`, `printenv`, wrapper-resolved like `sudo curl`, ...), mutating subcommands (`git push`, `systemctl restart`, ...), env-dump interpolation (`$(env)`, backticks), pipe-to-shell (`\|bash` even without a space), procfs environ reads (`cat /proc/$PPID/environ`), destructive `rm` variants (`rm -fr /`), `find -delete`, `dd of=`, inline code (`bash -c '...'` is unwrapped and re-gated; `python3 -c` gated) and the legacy CONFIRM patterns. On unix the child shell inherits only `PATH/HOME/LANG/LC_ALL/TERM/USER` (#1075 R3) — the env-inheritance channel for parent secrets is closed; direct same-UID procfs reads are gated by the `environ` risk pattern, but only a real sandbox closes them fully. |
+| `file_read` / `file_write` | Relative paths resolve against `working_dir` (or the server CWD). `GARRAIA_MCP_ALLOWED_DIRS` narrows them. |
+| `web_fetch` | No blocked-domain list by default. |
+| `git_diff` | Read-only git inspection. |
+| `web_search` | Only when a Brave key exists (`config.yml llm.brave.api_key` or `BRAVE_API_KEY` env). |
+
+### Tool schema (`garra_agent`)
+
+| Field           | Type    | Required | Default            | Notes |
+|-----------------|---------|----------|--------------------|-------|
+| `message`       | string  | yes      | —                  | Max 64 KiB. The task for the agent. |
+| `provider`      | string  | no       | `openrouter`       | Same enum as `garra_ask`. |
+| `model`         | string  | no       | `openrouter/free`  | Pass `openrouter/auto` for complex tasks. |
+| `timeout_secs`  | integer | no       | `300`              | Range `[5, 1800]`. **Wall-clock cap for the ENTIRE agent loop** — every LLM round-trip plus every tool execution. |
+| `system_prompt` | string  | no       | generated          | Max 8 KiB. The default prompt names every registered tool and instructs the model to investigate instead of describing. |
+| `working_dir`   | string  | no       | —                  | Directory for file-tool relative paths. Since #1075 R3 the **bash child also runs in it** (`current_dir`). Validated for existence only — not against `GARRAIA_MCP_ALLOWED_DIRS` — and bash is unsandboxed: absolute paths reach anywhere. Must exist and be a directory. |
+
+### Response shape (`garra.agent.v1`)
+
+Same shape as `garra.ask.v1` plus `session_id` and a `tool_calls`
+summary (each entry: `name`, `duration_ms`, `success`, `summary` —
+redacted and truncated at the source by the runtime):
+
+```json
+{
+  "schema": "garra.agent.v1",
+  "ok": true,
+  "answer": "...",
+  "provider": "openrouter",
+  "model": "z-ai/glm-5.3-flash",
+  "latency_ms": 15230,
+  "session_id": "mcp-0b6c…",
+  "tool_calls": [
+    {"name": "bash", "duration_ms": 120, "success": true, "summary": "3 files"}
+  ]
+}
+```
+
+On failure or timeout, `ok` is `false` and `error` carries
+`{kind, message}` (same stable labels as `garra.ask.v1`) — and
+`tool_calls` still travels, so the host sees what the agent executed
+before dying.
+
+### Security surface (read before enabling)
+
+- **The bash tool runs fail-closed (since #1075)** — there is no
+  confirmation channel in a stateless MCP call, so the two safety tiers
+  both BLOCK: the DENY_LIST hard-blocks destructive patterns, and the
+  risky tier blocks sensitive commands outright (exfiltration-capable
+  programs including wrapper-resolved ones like `sudo curl`, mutating
+  subcommands, env-dump interpolation, pipe-to-shell, procfs environ
+  reads, token-aware destructive `rm`, inline interpreters, legacy
+  CONFIRM patterns). The `is_confirmation_approved` flag is IGNORED in
+  this mode: it is derived from conversation history and a planted
+  `[CONFIRM_REQUIRED]` marker could flip it — fail-closed means block.
+  The program-aware detection is still a deny/confirm list, not an
+  allowlist: interpreter script files (`bash payload.sh`), exotic
+  quoting/encoding tricks and unlisted programs can slip past it —
+  treat it as a seatbelt, not a sandbox.
+- **The child shell inherits only `PATH/HOME/LANG/LC_ALL/TERM/USER` on
+  unix (#1075 R3)** — the env-inheritance channel from the parent's API
+  keys, JWT secrets and dotenv-loaded `.env` values to the bash child is
+  closed; the same allowlist is applied to the `git_diff`/`repo_search`
+  children (`run_tests` is fail-closed-blocked without a confirmation
+  channel — npm/cargo scripts are arbitrary code). This does NOT make
+  the parent's secrets unreachable: a same-UID process can read
+  `/proc/<pid>/environ` directly, so those reads are gated by the
+  `environ` risk pattern, but only a real sandbox (follow-up work)
+  closes the channel for good. Windows PowerShell keeps the full
+  environment (its startup depends on it). The allowlist can also
+  starve a child expecting an inherited variable (e.g. a cloud CLI
+  reading env credentials).
+- **`allowed_dirs` is UX, not a boundary** — unrestricted bash reaches
+  the whole filesystem.
+- **No per-caller authentication or rate limiting** (same as
+  `garra_ask`); concurrent calls from the host run concurrently.
+- **Config write access**: the file tools can edit `~/.garraia/config.yml`
+  and anything else writable by the process user.
+
+Implementation note: the agent handler lives in
+`crates/garraia-cli/src/mcp_agent.rs`, a module the audit tests in
+`mcp_server.rs` deliberately do NOT scan (they scan only their own
+file). `mcp_server.rs` remains a pure dispatcher — it names no runtime
+tool constructor and spawns no process.
 
 ## Stdio invariants
 
@@ -168,6 +290,16 @@ tests in `crates/garraia-cli/src/mcp_server.rs::tests`:
 
 A future PR that tries to slip a tool registration or a subprocess
 spawn into `mcp_server.rs` will fail the audit at `cargo test` time.
+
+Since the `garra_agent` opt-in, the agent machinery (tool
+constructors, shell execution) lives in
+`crates/garraia-cli/src/mcp_agent.rs`, which those audits
+deliberately do NOT scan — they `include_str!` only `mcp_server.rs`
+itself. The dispatcher file stays free of runtime tool names and
+process spawning; the escape hatch is documented in the module
+docblock of `mcp_agent.rs`. `ask.rs` has its own third audit
+(`ask_module_never_registers_a_tool`, GAR-579) that also scans
+`mcp_server.rs` for spinner references — untouched.
 
 ## Troubleshooting
 
@@ -311,9 +443,11 @@ working under a fully filtered environment:
   directly. There is no subprocess spawn, no shell invocation, no
   PATH lookup. Path hijacking and shell injection are not in the
   threat model.
-- **LLM-only runtime**. No `bash`/`file_read`/`file_write`/`git_diff`
-  tools are registered on the agent runtime — the audit test prevents
-  regression.
+- **LLM-only runtime by default**. No `bash`/`file_read`/`file_write`/`git_diff`
+  tools are registered on the agent runtime unless the operator sets
+  `GARRAIA_MCP_ENABLE_TOOLS` — and even then the registration happens
+  in `mcp_agent.rs`, never in this dispatcher. The audit test prevents
+  regression in `mcp_server.rs`.
 - **Prompt size bounded**. Messages ≤ 64 KiB, system prompts ≤ 8 KiB.
 - **Output bounded**. `max_tokens: 4096` in the runtime caps the
   response.
@@ -322,22 +456,32 @@ working under a fully filtered environment:
 - **Provider errors sanitized** before reaching the response or
   stderr (regex-based redaction of `sk-…`/`sk-or-v1-…` fingerprints).
 - **Operator limits** — see "Operator limits" above for the
-  `GARRAIA_MCP_MODEL_ALLOWLIST` / `GARRAIA_MCP_MAX_TIMEOUT_SECS` knobs.
+  `GARRAIA_MCP_MODEL_ALLOWLIST` / `GARRAIA_MCP_MAX_TIMEOUT_SECS` /
+  `GARRAIA_MCP_ENABLE_TOOLS` knobs.
   There is still no per-caller authentication or rate limiting: the
   trust boundary is process-level (whoever can spawn the binary can
-  call `garra_ask` within the configured policy).
+  call the tools within the configured policy).
+- **`garra_agent` extends the threat model when enabled** — env
+  inheritance by the bash child, full filesystem via unrestricted
+  bash, config write access. Read
+  ["Security surface (read before enabling)"](#security-surface-read-before-enabling)
+  before turning the flag on.
 
 ## Out of scope (separate follow-ups)
 
 - Streamable HTTP transport (this PR is stdio-only).
-- Additional tools beyond `garra_ask` (e.g. `garra_chat`,
-  `garra_files`).
-- `--enable-tools` opt-in for `garra ask` (and MCP propagation).
+- Additional conversational tools beyond `garra_ask`/`garra_agent`
+  (e.g. `garra_chat`, `garra_files`).
+- `--enable-tools` opt-in for `garra ask` (the MCP-side opt-in
+  `GARRAIA_MCP_ENABLE_TOOLS` shipped 2026-09; the CLI `ask`
+  flag remains open).
 - Streaming partial responses via MCP.
 - `RedactingWriter` extension for provider error payloads.
 - Automatic `openrouter/free → openrouter/auto` fallback.
 - Per-user authentication / permissions.
 - MCP server telemetry / Prometheus counters.
+- Bash env allowlist for `garra_agent` (`GARRAIA_MCP_BASH_ENV_ALLOWLIST`)
+  to stop child-process env inheritance.
 
 ## See also
 

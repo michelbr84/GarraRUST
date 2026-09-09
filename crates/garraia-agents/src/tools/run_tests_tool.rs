@@ -243,6 +243,27 @@ impl Tool for RunTestsTool {
             )));
         }
 
+        // GAR-187 + #1075 R1 (auditoria do hardening): SEM canal de
+        // confirmacao, run_tests e fail-closed BLOCKED. `npm test`/`cargo
+        // test` executam o que o projeto mandar (scripts de package.json,
+        // build scripts = codigo arbitrario) e nao devem auto-rodar so
+        // porque ninguem pode aprovar — mesma regra do bash. O flag
+        // is_confirmation_approved e ignorado aqui: sem canal ele pode vir
+        // contaminado do historico [CONFIRM_REQUIRED]. Fluxo benigno segue
+        // disponivel via `bash` (cargo test / npm test nao sao comandos
+        // sensiveis no safety_gate).
+        if !self.confirmation_enabled {
+            tracing::warn!(
+                dir = %working_dir.display(),
+                session = %context.session_id,
+                "run_tests: BLOCKED (fail-closed: confirmation disabled)"
+            );
+            return Ok(ToolOutput::error(
+                "run_tests bloqueado por seguranca: rodar a suite executa codigo do projeto \
+                 e este runtime nao possui canal de confirmacao (fail-closed)."
+                    .to_string(),
+            ));
+        }
         if self.confirmation_enabled && !context.is_confirmation_approved {
             tracing::warn!(
                 dir = %working_dir.display(),
@@ -268,6 +289,17 @@ impl Tool for RunTestsTool {
         };
 
         let (mut cmd, framework_name) = Self::build_command(framework, test_name, &working_dir);
+
+        // #1075 R3 (parity — auditoria do hardening): o filho de run_tests
+        // executa o que o projeto mandar e, como o bash, herda SOMENTE a
+        // allowlist de env do pai — nunca segredos do processo gateway/MCP.
+        #[cfg(unix)]
+        {
+            cmd.env_clear();
+            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
+                cmd.env(key, value);
+            }
+        }
 
         // Execute with timeout
         let result = tokio::time::timeout(self.timeout, cmd.output()).await;
@@ -430,5 +462,63 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
             .expect("executa");
         assert!(out.is_error);
         assert!(out.content.contains("nao_existe_xyz"), "{}", out.content);
+    }
+
+    /// #1075 R1 (auditoria do hardening): sem canal de confirmacao, run_tests
+    /// e fail-closed BLOCKED mesmo com is_confirmation_approved=true — o
+    /// flag vem do historico e pode estar contaminado.
+    #[tokio::test]
+    async fn fail_closed_blocks_run_tests_without_confirmation_channel() {
+        let tool = RunTestsTool::new(Some(1));
+        let out = tool
+            .execute(
+                &ctx(Some(env!("CARGO_MANIFEST_DIR")), true),
+                serde_json::json!({}),
+            )
+            .await
+            .expect("executa");
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("bloqueado"), "{}", out.content);
+        assert!(!out.requires_confirmation);
+    }
+
+    /// #1075 R3 (auditoria do hardening): o filho de run_tests NAO herda o
+    /// env do pai — projeto cargo com teste canario que falha se a variavel
+    /// existir no ambiente do filho.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r3_run_tests_child_env_is_scrubbed() {
+        unsafe {
+            std::env::set_var("GARRAIA_R3_RUNTESTS_CANARY", "leak-canary");
+        }
+        let dir = std::env::temp_dir().join(format!("garraia-r3-runtests-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"canario-r3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src").join("lib.rs"),
+            "#[test]\nfn canario_r3() {\n    let v = std::env::var(\"GARRAIA_R3_RUNTESTS_CANARY\");\n    assert!(v.is_err(), \"canary leaked: {:?}\", v);\n}\n",
+        )
+        .unwrap();
+
+        let tool = RunTestsTool::new_with_confirmation(Some(300));
+        let out = tool
+            .execute(
+                &ctx(Some(dir.to_string_lossy().as_ref()), true),
+                serde_json::json!({}),
+            )
+            .await
+            .expect("executa");
+
+        assert!(
+            !out.is_error,
+            "teste canario falhou (env vazou?): {}",
+            out.content
+        );
+        assert!(!out.content.contains("leak-canary"), "{}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

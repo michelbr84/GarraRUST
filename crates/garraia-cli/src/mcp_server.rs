@@ -1,20 +1,27 @@
 //! GAR-583 — MCP server exposing `garra ask` as a stdio tool.
 //!
 //! Implements the `Model Context Protocol` (MCP) `ServerHandler` trait
-//! from `rmcp 2.2` and exposes a single tool — `garra_ask` — that calls
+//! from `rmcp 2.2` and exposes `garra_ask` — LLM-only — which calls
 //! [`crate::ask::ask_oneshot`] **in-process** (no subprocess spawn, no
 //! shell). Designed for Claude Desktop, Claude Code, and any MCP host
 //! that speaks stdio JSON-RPC.
 //!
 //! Scope (locked-in MVP, user-approved 2026-05-11):
 //!   - Stdio transport only. No HTTP / Streamable HTTP in this PR.
-//!   - One tool: `garra_ask`.
+//!   - Tool: `garra_ask` (LLM-only). Optionally `garra_agent` — the
+//!     full-agent sibling from [`crate::mcp_agent`] — advertised and
+//!     dispatched ONLY when the operator starts the process with
+//!     `GARRAIA_MCP_ENABLE_TOOLS` (see `ServerPolicy`). This file stays
+//!     a pure dispatcher: it never registers runtime tools, never
+//!     spawns subprocesses and never writes to stdout outside of
+//!     `rmcp`'s JSON-RPC channel; the agent machinery (tool
+//!     constructors, shell execution) lives entirely in
+//!     `mcp_agent.rs`, which the audit tests below do NOT scan.
 //!   - Default `openrouter/free`; `openrouter/auto` only opt-in.
-//!   - Response = full `garra.ask.v1` envelope as MCP text content.
-//!   - LLM-only — `mcp_server` MUST NOT register tools, MUST NOT spawn
-//!     subprocesses, MUST NOT write to stdout outside of `rmcp`'s
-//!     JSON-RPC channel. Two audit tests enforce these invariants at
-//!     compile time by scanning the production code of this very file.
+//!   - Response = full `garra.ask.v1` / `garra.agent.v1` envelope as
+//!     MCP text content.
+//!   - Two audit tests enforce the invariants at compile time by
+//!     scanning the production code of this very file.
 
 use std::sync::Arc;
 
@@ -57,14 +64,15 @@ const MODEL_DEFAULT: &str = "openrouter/free";
 /// `garra_ask` JSON schema — which MCP hosts treat as advisory, so it must
 /// be enforced here. Provider aliases defined in the user's `config.yml`
 /// `llm:` section are additionally accepted (see `validate_policy`).
-const PROVIDER_ENUM: [&str; 4] = ["ollama", "anthropic", "openai", "openrouter"];
+pub(crate) const PROVIDER_ENUM: [&str; 4] = ["ollama", "anthropic", "openai", "openrouter"];
 
-/// Runtime limits for `garra_ask`, resolved once at server startup.
+/// Runtime limits for the MCP tools, resolved once at server startup.
 ///
-/// Both knobs are opt-in via env vars; when absent, behavior is unchanged
-/// (any model accepted, caller timeout honored up to the schema max).
-/// This is the operator-side "policy" hook for pairing GarraIA with other
-/// agents (e.g. Hermes) without handing them an unbounded spend button.
+/// All knobs are opt-in via env vars; when absent, behavior is unchanged
+/// (any model accepted, caller timeout honored up to the schema max,
+/// `garra_agent` not advertised). This is the operator-side "policy"
+/// hook for pairing GarraIA with other agents (e.g. Hermes) without
+/// handing them an unbounded spend button.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ServerPolicy {
     /// From `GARRAIA_MCP_MODEL_ALLOWLIST` (comma-separated). Empty = any
@@ -73,14 +81,40 @@ pub(crate) struct ServerPolicy {
     /// e.g. `openrouter/auto` unreachable from MCP callers.
     model_allowlist: Vec<String>,
     /// From `GARRAIA_MCP_MAX_TIMEOUT_SECS`, clamped to the schema max.
-    /// `None` = schema max (600) applies.
+    /// `None` = schema max (600 for `garra_ask`, 1800 for `garra_agent`)
+    /// applies.
     max_timeout_secs: Option<u64>,
+    /// Same raw env value, clamped to the AGENT schema range [5, 1800]
+    /// (wall clock covers the whole tool loop, so it needs headroom over
+    /// the ask cap). Stored separately because the ask clamp above would
+    /// truncate values like 9999 to 600 before the agent could clamp to
+    /// its own max.
+    agent_max_timeout_secs: Option<u64>,
+    /// From `GARRAIA_MCP_ENABLE_TOOLS` (truthy: 1/true/yes, case-
+    /// insensitive). `false` (the default) = the surface is byte-identical
+    /// to the pre-`garra_agent` server: only `garra_ask` is advertised and
+    /// any `garra_agent` call comes back as "unknown tool".
+    tools_enabled: bool,
+}
+
+/// Truthy set for `GARRAIA_MCP_ENABLE_TOOLS` — anything outside it (and
+/// outside the falsy set) keeps the flag off; the operator opts in
+/// explicitly.
+fn parse_enable_tools(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
 }
 
 impl ServerPolicy {
     /// Pure constructor so tests never mutate process env (module
     /// invariant: zero env-mutation in these tests).
-    pub(crate) fn from_values(allowlist: Option<&str>, max_timeout: Option<&str>) -> Self {
+    pub(crate) fn from_values(
+        allowlist: Option<&str>,
+        max_timeout: Option<&str>,
+        enable_tools: Option<&str>,
+    ) -> Self {
         let model_allowlist = allowlist
             .map(|raw| {
                 raw.split(',')
@@ -90,12 +124,23 @@ impl ServerPolicy {
                     .collect()
             })
             .unwrap_or_default();
-        let max_timeout_secs = max_timeout
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .map(|v| v.clamp(ARG_TIMEOUT_SECS_MIN, ARG_TIMEOUT_SECS_MAX));
+        let raw_timeout = max_timeout.and_then(|raw| raw.trim().parse::<u64>().ok());
+        let max_timeout_secs =
+            raw_timeout.map(|v| v.clamp(ARG_TIMEOUT_SECS_MIN, ARG_TIMEOUT_SECS_MAX));
+        // The same raw value caps the agent tool, clamped to the agent
+        // schema range [5, 1800].
+        let agent_max_timeout_secs = raw_timeout.map(|v| {
+            v.clamp(
+                crate::mcp_agent::AGENT_TIMEOUT_SECS_MIN,
+                crate::mcp_agent::AGENT_TIMEOUT_SECS_MAX,
+            )
+        });
+        let tools_enabled = enable_tools.is_some_and(parse_enable_tools);
         Self {
             model_allowlist,
             max_timeout_secs,
+            agent_max_timeout_secs,
+            tools_enabled,
         }
     }
 
@@ -105,7 +150,15 @@ impl ServerPolicy {
             std::env::var("GARRAIA_MCP_MAX_TIMEOUT_SECS")
                 .ok()
                 .as_deref(),
+            std::env::var("GARRAIA_MCP_ENABLE_TOOLS").ok().as_deref(),
         )
+    }
+
+    /// Whether `garra_agent` is part of the advertised surface. Off by
+    /// default — the full-agent tool exists only behind the operator
+    /// opt-in env.
+    pub(crate) fn tools_enabled(&self) -> bool {
+        self.tools_enabled
     }
 
     /// Effective timeout when the caller omits `timeout_secs`: the schema
@@ -115,6 +168,21 @@ impl ServerPolicy {
             .map_or(ARG_TIMEOUT_SECS_DEFAULT, |cap| {
                 cap.min(ARG_TIMEOUT_SECS_DEFAULT)
             })
+    }
+
+    /// Same contract for `garra_agent`: schema default (300) floored by
+    /// the operator cap when one is set.
+    pub(crate) fn agent_default_timeout_secs(&self) -> u64 {
+        self.agent_max_timeout_secs()
+            .map_or(crate::mcp_agent::AGENT_TIMEOUT_SECS_DEFAULT, |cap| {
+                cap.min(crate::mcp_agent::AGENT_TIMEOUT_SECS_DEFAULT)
+            })
+    }
+
+    /// The operator cap as it applies to `garra_agent` (schema max 1800);
+    /// `None` = no env cap, agent schema max applies.
+    fn agent_max_timeout_secs(&self) -> Option<u64> {
+        self.agent_max_timeout_secs
     }
 }
 
@@ -127,6 +195,47 @@ pub(crate) fn validate_policy(
     provider: &str,
     model: &str,
     timeout_secs: u64,
+) -> Result<(), String> {
+    validate_policy_with_cap(
+        config,
+        policy,
+        provider,
+        model,
+        timeout_secs,
+        policy.max_timeout_secs,
+    )
+}
+
+/// Same contract for `garra_agent`: identical checks, but the operator
+/// cap clamps to the agent schema range [5, 1800] instead of the ask
+/// range [1, 600]. The model allowlist applies unchanged — one env var,
+/// both tools.
+pub(crate) fn validate_agent_policy(
+    config: &AppConfig,
+    policy: &ServerPolicy,
+    provider: &str,
+    model: &str,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    validate_policy_with_cap(
+        config,
+        policy,
+        provider,
+        model,
+        timeout_secs,
+        policy.agent_max_timeout_secs(),
+    )
+}
+
+/// Shared body of [`validate_policy`]/[`validate_agent_policy`]; the
+/// only difference is which timeout cap the caller passes.
+fn validate_policy_with_cap(
+    config: &AppConfig,
+    policy: &ServerPolicy,
+    provider: &str,
+    model: &str,
+    timeout_secs: u64,
+    cap: Option<u64>,
 ) -> Result<(), String> {
     // Dev/CI only: mirrors the feature-gated "echo" entry the schema enum
     // gains under `dev-echo-provider` (PR #859) — never in default builds.
@@ -146,7 +255,7 @@ pub(crate) fn validate_policy(
             "model '{model}' blocked by GARRAIA_MCP_MODEL_ALLOWLIST"
         ));
     }
-    if let Some(cap) = policy.max_timeout_secs
+    if let Some(cap) = cap
         && timeout_secs > cap
     {
         return Err(format!(
@@ -290,6 +399,18 @@ pub(crate) fn garra_ask_tool() -> Tool {
     )
 }
 
+/// The advertised tool surface, resolved from the policy: always
+/// `garra_ask`; `garra_agent` joins it only behind the operator opt-in
+/// (`GARRAIA_MCP_ENABLE_TOOLS`). Pure — mirrors what `tools/list`
+/// returns so tests can pin the surface without spinning the server.
+pub(crate) fn advertised_tools(policy: &ServerPolicy) -> Vec<Tool> {
+    let mut tools = vec![garra_ask_tool()];
+    if policy.tools_enabled() {
+        tools.push(crate::mcp_agent::garra_agent_tool());
+    }
+    tools
+}
+
 /// GAR-583 — handler held by the running MCP server. Wraps the shared
 /// `AppConfig` so each `garra_ask` invocation can resolve the provider
 /// + model through the same pipeline used by the CLI.
@@ -302,6 +423,39 @@ pub(crate) struct GarraToolHandler {
 impl GarraToolHandler {
     pub(crate) fn with_policy(config: Arc<AppConfig>, policy: ServerPolicy) -> Self {
         Self { config, policy }
+    }
+
+    /// `tools/call garra_agent` (flag on) — delegate to
+    /// [`crate::mcp_agent::handle_agent_call`] and pack the
+    /// `garra.agent.v1` envelope exactly like the `garra_ask` arm packs
+    /// `garra.ask.v1` (full envelope as text content, `is_ok` picking
+    /// success vs error result).
+    async fn call_agent_tool(
+        &self,
+        request: CallToolRequestParams,
+    ) -> Result<CallToolResult, McpError> {
+        let raw = request.arguments.unwrap_or_default();
+        let args: crate::mcp_agent::GarraAgentArgs = serde_json::from_value(JsonValue::Object(raw))
+            .map_err(|e| McpError::invalid_params(format!("invalid arguments: {e}"), None))?;
+        if let Err(e) = crate::mcp_agent::validate_agent_args(&args) {
+            return Err(McpError::invalid_params(e, None));
+        }
+        match crate::mcp_agent::handle_agent_call(&self.config, &self.policy, args).await {
+            Ok((envelope, is_ok)) => {
+                let text = serde_json::to_string(&envelope).unwrap_or_else(|_| {
+                    String::from(
+                        "{\"schema\":\"garra.agent.v1\",\"ok\":false,\"error\":{\"kind\":\"io\",\"message\":\"json serialization failed\"}}",
+                    )
+                });
+                let content = vec![ContentBlock::text(text)];
+                if is_ok {
+                    Ok(CallToolResult::success(content))
+                } else {
+                    Ok(CallToolResult::error(content))
+                }
+            }
+            Err(e) => Err(McpError::invalid_params(e, None)),
+        }
     }
 }
 
@@ -328,7 +482,7 @@ impl ServerHandler for GarraToolHandler {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         Ok(ListToolsResult {
-            tools: vec![garra_ask_tool()],
+            tools: advertised_tools(&self.policy),
             next_cursor: None,
             meta: None,
         })
@@ -339,6 +493,12 @@ impl ServerHandler for GarraToolHandler {
         request: CallToolRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        // `garra_agent` dispatches only behind the operator opt-in; with
+        // the flag off it falls through to the unknown-tool branch so the
+        // rejection surface is byte-identical to the pre-agent server.
+        if request.name == "garra_agent" && self.policy.tools_enabled() {
+            return self.call_agent_tool(request).await;
+        }
         if request.name != "garra_ask" {
             return Err(McpError::invalid_params(
                 format!("unknown tool: '{}'", request.name),
@@ -425,6 +585,12 @@ pub async fn run_mcp_server(config: AppConfig) -> Result<()> {
             model_allowlist = ?policy.model_allowlist,
             max_timeout_secs = ?policy.max_timeout_secs,
             "garra_ask policy: operator limits active"
+        );
+    }
+    if policy.tools_enabled() {
+        tracing::info!(
+            "garra_agent tool ENABLED (opt-in GARRAIA_MCP_ENABLE_TOOLS): full-agent surface \
+             with shell/file/git/web tools; bash is full-auto with only the safety_gate denylist"
         );
     }
     let handler = GarraToolHandler::with_policy(Arc::new(config), policy);
@@ -817,7 +983,7 @@ mod tests {
 
     #[test]
     fn policy_default_is_unrestricted_and_preserves_historic_behavior() {
-        let policy = ServerPolicy::from_values(None, None);
+        let policy = ServerPolicy::from_values(None, None, None);
         let cfg = AppConfig::default();
         // Any model — including openrouter/auto — passes without an allowlist.
         assert!(validate_policy(&cfg, &policy, "openrouter", "openrouter/auto", 600).is_ok());
@@ -826,7 +992,7 @@ mod tests {
 
     #[test]
     fn policy_parses_allowlist_trimming_and_skipping_empties() {
-        let policy = ServerPolicy::from_values(Some(" openrouter/free, ,gpt-5-mini "), None);
+        let policy = ServerPolicy::from_values(Some(" openrouter/free, ,gpt-5-mini "), None, None);
         let cfg = AppConfig::default();
         assert!(validate_policy(&cfg, &policy, "openrouter", "openrouter/free", 60).is_ok());
         assert!(validate_policy(&cfg, &policy, "openai", "gpt-5-mini", 60).is_ok());
@@ -837,7 +1003,7 @@ mod tests {
 
     #[test]
     fn policy_timeout_cap_rejects_above_and_lowers_default() {
-        let policy = ServerPolicy::from_values(None, Some("30"));
+        let policy = ServerPolicy::from_values(None, Some("30"), None);
         let cfg = AppConfig::default();
         assert!(validate_policy(&cfg, &policy, "openrouter", "openrouter/free", 30).is_ok());
         let err = validate_policy(&cfg, &policy, "openrouter", "openrouter/free", 31)
@@ -849,9 +1015,9 @@ mod tests {
 
     #[test]
     fn policy_timeout_cap_is_clamped_to_schema_range() {
-        let policy = ServerPolicy::from_values(None, Some("9999"));
+        let policy = ServerPolicy::from_values(None, Some("9999"), None);
         assert_eq!(policy.max_timeout_secs, Some(600));
-        let unparsable = ServerPolicy::from_values(None, Some("banana"));
+        let unparsable = ServerPolicy::from_values(None, Some("banana"), None);
         assert_eq!(unparsable.max_timeout_secs, None);
     }
 
@@ -878,5 +1044,91 @@ mod tests {
         let err = validate_policy(&cfg, &policy, "evil-provider", "any-model", 60)
             .expect_err("unknown provider must be rejected");
         assert!(err.contains("not accepted"), "{err}");
+    }
+
+    // ─── garra_agent opt-in (ServerPolicy.tools_enabled + agent cap) ──
+
+    #[test]
+    fn policy_tools_flag_defaults_off() {
+        let policy = ServerPolicy::from_values(None, None, None);
+        assert!(!policy.tools_enabled(), "flag off by default");
+        let advertised = advertised_tools(&policy);
+        assert_eq!(advertised.len(), 1);
+        assert_eq!(advertised[0].name.as_ref(), "garra_ask");
+    }
+
+    #[test]
+    fn policy_tools_flag_truthy_values_case_insensitive() {
+        for on in ["1", "true", "TRUE", "True", "yes", "Yes", " yes "] {
+            let policy = ServerPolicy::from_values(None, None, Some(on));
+            assert!(policy.tools_enabled(), "{on} must enable tools");
+        }
+        for off in ["0", "false", "no", "banana", "", "  ", "enabled"] {
+            let policy = ServerPolicy::from_values(None, None, Some(off));
+            assert!(!policy.tools_enabled(), "{off:?} must NOT enable tools");
+        }
+    }
+
+    #[test]
+    fn advertised_tools_includes_agent_only_with_flag() {
+        let on = ServerPolicy::from_values(None, None, Some("1"));
+        let advertised = advertised_tools(&on);
+        let names: Vec<&str> = advertised.iter().map(|t| t.name.as_ref()).collect();
+        assert_eq!(names, ["garra_ask", "garra_agent"]);
+    }
+
+    #[test]
+    fn policy_agent_timeout_cap_clamps_to_agent_range() {
+        // Raw 9999: ask cap clamps DOWN to 600 (existing test), agent cap
+        // clamps to its own schema max 1800.
+        let policy = ServerPolicy::from_values(None, Some("9999"), None);
+        let cfg = AppConfig::default();
+        assert!(
+            validate_agent_policy(&cfg, &policy, "openrouter", "openrouter/free", 1800).is_ok()
+        );
+        let err = validate_agent_policy(&cfg, &policy, "openrouter", "openrouter/free", 1801)
+            .expect_err("above agent cap must be rejected");
+        assert!(err.contains("GARRAIA_MCP_MAX_TIMEOUT_SECS=1800"), "{err}");
+        // Default stays the agent schema default 300 even with headroom.
+        assert_eq!(policy.agent_default_timeout_secs(), 300);
+
+        // Raw 30: both caps apply; agent default floors to 30.
+        let tight = ServerPolicy::from_values(None, Some("30"), None);
+        assert_eq!(tight.agent_default_timeout_secs(), 30);
+        let err = validate_agent_policy(&cfg, &tight, "openrouter", "openrouter/free", 31)
+            .expect_err("above tight cap must be rejected");
+        assert!(err.contains("GARRAIA_MCP_MAX_TIMEOUT_SECS=30"), "{err}");
+
+        // Raw below the agent minimum clamps UP to 5 (agent range [5, 1800]).
+        let tiny = ServerPolicy::from_values(None, Some("3"), None);
+        assert_eq!(tiny.agent_default_timeout_secs(), 5);
+    }
+
+    #[test]
+    fn validate_agent_policy_shares_model_allowlist_with_ask() {
+        let policy = ServerPolicy::from_values(Some("openrouter/free"), None, Some("1"));
+        let cfg = AppConfig::default();
+        assert!(validate_agent_policy(&cfg, &policy, "openrouter", "openrouter/free", 300).is_ok());
+        let err = validate_agent_policy(&cfg, &policy, "openrouter", "openrouter/auto", 300)
+            .expect_err("allowlist must bind the agent tool too");
+        assert!(err.contains("GARRAIA_MCP_MODEL_ALLOWLIST"), "{err}");
+    }
+
+    /// Audit companion: the agent dispatch lives in `mcp_agent.rs` — this
+    /// file must keep referring to it only through its facade functions
+    /// (descriptor/validate/handle), never by naming runtime tool
+    /// constructors or spawning processes (the two audit tests above pin
+    /// that with string matching).
+    #[test]
+    fn mcp_agent_descriptor_advertises_agent_bounds() {
+        let t = crate::mcp_agent::garra_agent_tool();
+        assert_eq!(t.name.as_ref(), "garra_agent");
+        let schema = (*t.input_schema).clone();
+        let ts = serde_json::Value::Object(schema)
+            .pointer("/properties/timeout_secs")
+            .cloned()
+            .expect("timeout_secs property");
+        assert_eq!(ts.get("minimum").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(ts.get("maximum").and_then(|v| v.as_u64()), Some(1800));
     }
 }
