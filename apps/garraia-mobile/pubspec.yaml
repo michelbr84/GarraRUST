@@ -1,7 +1,7 @@
 name: garraia_mobile
 description: Garra Mobile — local-first AI assistant for Android (Termux runtime, LAN or cloud LLM)
 # versionName+versionCode — kept in sync with lib/app_version.dart (test enforced).
-version: 0.4.0+4
+version: 0.4.1+5
 publish_to: none
 
 environment:
