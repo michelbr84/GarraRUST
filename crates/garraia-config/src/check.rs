@@ -669,6 +669,7 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
     validate_google_chat(&config.channels, &mut findings, &push_warn);
+    validate_signal(&config.channels, &mut findings, &push_warn);
     validate_irc(&config.channels, &mut findings, &push_warn);
     validate_line(&config.channels, &mut findings, &push_warn);
     validate_teams(&config.channels, &mut findings, &push_warn);
@@ -1302,6 +1303,43 @@ fn validate_irc(
                 &format!("channels.{name}.settings.port"),
                 format!(
                     "irc channel '{name}' has use_tls = true with port 6667, the cleartext IRC port; TLS servers usually listen on 6697"
+                ),
+            );
+        }
+    }
+}
+
+/// O Signal nao usa token — a credencial e o numero ja registrado no daemon
+/// signal-cli — entao a checagem generica de token nao o alcanca (#1050). O
+/// que ele precisa sao dois campos, e sem qualquer um deles o canal e pulado
+/// no boot com um `warn!` que so aparece no log.
+fn validate_signal(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "signal" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env) in [
+            ("signal_cli_url", "SIGNAL_CLI_URL"),
+            ("phone_number", "SIGNAL_PHONE_NUMBER"),
+        ] {
+            let no_config = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            if no_config || std::env::var_os(env).is_some() {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "signal channel '{name}' is enabled but has no {campo} in config or the {env} env var; the channel will be skipped at boot"
                 ),
             );
         }
@@ -2839,6 +2877,88 @@ mod tests {
     fn google_chat_desabilitado_nao_avisa() {
         let msgs = mensagens_de_gc(&cfg_google_chat(Some(false), serde_json::json!({})));
         assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
+
+    // ─── #1050: o Signal nao passa pela checagem de token ─────────────────
+
+    fn cfg_signal(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "sig".into(),
+            crate::model::ChannelConfig {
+                channel_type: "signal".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// A checagem generica procura `bot_token`/`access_token`/`app_token`, que
+    /// o Signal nao tem — a credencial dele e o numero ja registrado no
+    /// daemon. Sem esta validacao propria, um canal Signal pela metade sairia
+    /// do `config check` sem um unico achado e seria pulado no boot com um
+    /// `warn!` que so aparece no log.
+    #[test]
+    fn signal_sem_url_ou_numero_avisa() {
+        let findings = validate(&cfg_signal(Some(true), serde_json::json!({})));
+        let msgs: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.field == "channels.sig")
+            .map(|f| f.message.as_str())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("signal_cli_url")),
+            "esperava aviso de signal_cli_url: {findings:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("phone_number")),
+            "esperava aviso de phone_number: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn signal_completo_nao_avisa() {
+        let findings = validate(&cfg_signal(
+            Some(true),
+            serde_json::json!({
+                "signal_cli_url": "http://127.0.0.1:8080",
+                "phone_number": "+15550100",
+            }),
+        ));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.sig"),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    /// String vazia e o mesmo que ausente — senao `signal_cli_url = ""` no
+    /// TOML passaria pelo check e falharia so no boot.
+    #[test]
+    fn signal_com_campo_em_branco_conta_como_ausente() {
+        let findings = validate(&cfg_signal(
+            Some(true),
+            serde_json::json!({"signal_cli_url": "   ", "phone_number": "+15550100"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.sig" && f.message.contains("signal_cli_url")),
+            "esperava aviso com url em branco: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn signal_desligado_fica_calado() {
+        let findings = validate(&cfg_signal(Some(false), serde_json::json!({})));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.sig"),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
     }
 
     // ─── #1050: o IRC nao tem token, e tem armadilha de porta ─────────────

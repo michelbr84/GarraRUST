@@ -1254,6 +1254,7 @@ const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
     ("teams", "Microsoft Teams", true),
     ("line", "LINE", true),
     ("irc", "IRC", false),
+    ("signal", "Signal", false),
     ("openclaw", "OpenClaw", false),
     ("mcp", "MCP", false),
     ("cli", "CLI", false),
