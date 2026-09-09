@@ -154,15 +154,31 @@ Arquivo completo comentado, validado com `garra config check`:
 1. `gateway.api_key` só aceita valor literal no arquivo — não há
    interpolação de env no config (a linha `GARRAIA_API_KEY` do
    `.env.example` é aspiracional; suportá-la de verdade é follow-up).
-2. Auth do gateway local: **só o WebSocket `/ws` tem gate hoje**, e só
-   quando `gateway.api_key` está definido. As rotas REST (`/api/*`,
-   `/v1/chat/completions`, `/v1/messages`, `/a2a/*`) não têm autenticação
-   por api_key — proteja-as por topologia (loopback, firewall, reverse
-   proxy). `session_tokens_required` **não está implementado**: o
-   middleware nunca foi ligado ao router, e desde a investigação da
-   issue #930 o gateway recusa subir com o flag em `true` em vez de
-   afirmar uma proteção inexistente. Endurecer esses defaults está no
-   roadmap.
+2. Auth do gateway local: com `gateway.api_key` definido, o gate cobre o
+   WebSocket `/ws` **e** o REST `/api/*` (#1045). Sem a chave definida,
+   nada é exigido — é o comportamento de sempre, e é o adequado para um
+   gateway em loopback.
+
+   Três rotas de `/api/` continuam abertas mesmo com a chave, por
+   necessidade: `/api/health` e `/api/capabilities`, que o onboarding do
+   app consulta antes de o usuário ter digitado a chave, e
+   `/api/auth-check`, que é como o console web descobre que precisa
+   pedi-la. As três são secret-free.
+
+   **Ainda sem gate por api_key:** `/v1/chat/completions`, `/v1/messages`
+   e `/a2a/*` — proteja-as por topologia (loopback, firewall, reverse
+   proxy). As rotas `/v1/*` do workspace têm autenticação JWT própria, e
+   `/admin/*` tem cookie de sessão.
+
+   A chave vai **só** no header `Authorization: Bearer` no REST. Na query
+   string ela é aceita apenas pelo `/ws`, porque o handshake WebSocket de
+   um navegador não permite header; no REST, chave em query acabaria em
+   log de acesso e no span de tracing.
+
+   `session_tokens_required` **não está implementado**: o middleware nunca
+   foi ligado ao router, e desde a investigação da issue #930 o gateway
+   recusa subir com o flag em `true` em vez de afirmar uma proteção
+   inexistente.
 3. "Controle de aplicativos" (GUI/automação de apps) não existe como
    tool — ver a nota em mcp-capacidades.md.
 4. TLS embutido exige build com `--features garraia-gateway/tls`; binários release

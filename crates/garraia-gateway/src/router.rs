@@ -176,6 +176,10 @@ pub fn build_router(
     };
 
     // EU AI Act compliance: inject X-AI-Model and X-AI-Provider headers.
+    // Construido antes da cadeia: o `.nest("/admin", …)` la embaixo consome
+    // `state`, e o gate so precisa da chave.
+    let api_key_gate = crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway);
+
     let default_provider = state.agents.default_provider_id().unwrap_or_default();
     let default_model = state
         .agents
@@ -489,6 +493,21 @@ pub fn build_router(
             "/admin",
             admin::routes::build_admin_router(state, admin_store, admin_encryption_key),
         )
+        // #1045: o gate de `gateway.api_key` sobre `/api/*`. Vem **depois**
+        // de todos os `merge`/`nest` para cobrir tambem o que
+        // `build_skill_skin_routes` e `build_plugin_routes` montam sob
+        // `/api/`. Com a chave ausente e um passa-direto.
+        //
+        // Cuidado ao mover: em tower, o ultimo `.layer()` e o mais externo,
+        // entao a ordem no codigo e o inverso da ordem de execucao. Escrito
+        // aqui, o gate roda DEPOIS do CORS e do rate limit — que e o que se
+        // quer: o preflight `OPTIONS` e respondido pelo `CorsLayer` sem
+        // chegar ao gate, e uma sondagem sem credencial ainda gasta cota do
+        // limitador em vez de ser barrada de graca.
+        .layer(axum::middleware::from_fn_with_state(
+            api_key_gate,
+            crate::gateway_auth::api_key_layer,
+        ))
         .layer(governor_layer)
         .layer(cors_layer)
         .layer({
@@ -597,7 +616,11 @@ async fn auth_check(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
-        "auth_required": state.config.gateway.api_key.is_some(),
+        // O **mesmo** predicado do gate (#1045). Com `is_some()` cru, uma
+        // chave so com espaco faria o console pedir a chave enquanto o gate
+        // estaria desligado — console e servidor discordando sobre o mundo.
+        "auth_required": crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway)
+            .is_enabled(),
     }))
 }
 
