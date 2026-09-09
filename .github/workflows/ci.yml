@@ -316,6 +316,28 @@ jobs:
           cargo clippy -p garraia-channels --features line --all-targets -- -D warnings
           cargo test -p garraia-channels --features line --lib
 
+      - name: Run clippy + tests (google_chat, teams, matrix, irc, voice)
+        # Fecha o mesmo buraco dos dois steps acima para as cinco features
+        # restantes de `garraia-channels`. Todas sao OFF por default, entao
+        # ate aqui nenhum job do CI compilava uma linha delas — o
+        # `--workspace` do primeiro step e o `cargo test --workspace` do job
+        # `test` passavam por cima em silencio.
+        #
+        # Nao era teoria: no commit que adicionou este step, `google_chat`
+        # tinha um `impl Default` que o clippy pede derivado e `matrix` dois
+        # `if` aninhados que ele pede colapsados. Tres erros que ninguem via
+        # porque ninguem compilava. Os fixes vao no mesmo PR.
+        #
+        # Pre-requisito de #1050: ligar qualquer um desses canais no gateway
+        # significa mexer em codigo que hoje nao tem rede de protecao nenhuma.
+        run: |
+          for feature in google_chat teams matrix irc voice; do
+            echo "::group::garraia-channels --features $feature"
+            cargo clippy -p garraia-channels --features "$feature" --all-targets -- -D warnings
+            cargo test -p garraia-channels --features "$feature" --lib
+            echo "::endgroup::"
+          done
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,
