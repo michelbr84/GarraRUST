@@ -3259,6 +3259,8 @@ dependencies = [
  "garraia-common",
  "garraia-db",
  "garraia-security",
+ "getrandom 0.4.3",
+ "hmac 0.12.1",
  "libc",
  "metrics",
  "metrics-util",

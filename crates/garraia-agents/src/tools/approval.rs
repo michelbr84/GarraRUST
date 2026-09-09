@@ -29,15 +29,47 @@
 //! Incluir o nome da ferramenta no hash importa: sem ele, um "ok" dado a um
 //! `run_tests` autorizaria um `bash` com o mesmo texto de assunto.
 //!
-//! Nao e criptografia — e um identificador. O SHA-256 esta aqui porque e o
-//! que ja existe no workspace e porque colisao acidental entre dois comandos
-//! diferentes seria um bug de seguranca; nao ha segredo envolvido, e o valor
-//! aparece no historico da conversa de proposito, para o proximo turno poder
-//! compara-lo.
+//! # Por que HMAC e nao um hash simples
+//!
+//! A auditoria de seguranca deste PR achou um terceiro buraco, que a
+//! restricao a `ToolResult` sozinha nao fecha: **nem todo `ToolResult` vem de
+//! uma ferramenta deste processo**. O `web_fetch` devolve uma pagina, o
+//! `file_read` devolve um arquivo que o modelo pode ter escrito, um servidor
+//! MCP devolve o que quiser. Tudo isso vira `ToolResult` no historico.
+//!
+//! Com um hash simples de entradas publicas, o atacante pre-computava
+//! `SHA-256("bash\0<comando que ele quer>")`, servia uma pagina com o
+//! marcador pronto mais uma injecao de prompt pedindo aquele comando, e
+//! colhia o "ok" do usuario — que achava estar aprovando o que tinha lido.
+//!
+//! O HMAC com chave aleatoria por processo tira a pre-computacao do jogo:
+//! so quem esta dentro do processo consegue cunhar um marcador que bate com
+//! algum comando. Conteudo de terceiro pode conter qualquer coisa parecida
+//! com um marcador e nao aprova nada.
+//!
+//! A chave vive so na memoria do processo e nunca e escrita em lugar nenhum.
+//! Reiniciar o gateway invalida as aprovacoes pendentes — o usuario e
+//! perguntado de novo, que e o lado certo para errar.
 //!
 //! [`ToolContext`]: super::ToolContext
 
-use sha2::{Digest, Sha256};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Chave do HMAC, aleatoria e viva so enquanto o processo vive.
+///
+/// Nao e persistida de proposito: um marcador so vale dentro da execucao que
+/// o cunhou. Reiniciar invalida as aprovacoes pendentes, e isso e fail-closed.
+fn marker_key() -> &'static [u8; 32] {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut k = [0u8; 32];
+        getrandom::fill(&mut k).expect("CSPRNG do sistema para a chave de marcador");
+        k
+    })
+}
 
 /// Prefixo do marcador que as ferramentas emitem e o runtime procura.
 pub const MARKER_PREFIX: &str = "[CONFIRM_REQUIRED:";
@@ -64,13 +96,14 @@ impl ApprovalFingerprint {
     /// por espaco em branco vira um segundo prompt e ensina o usuario a
     /// aprovar sem ler.
     pub fn of(tool: &str, subject: &str) -> Self {
-        let mut h = Sha256::new();
+        let mut h = HmacSha256::new_from_slice(marker_key())
+            .expect("HMAC-SHA256 aceita chave de qualquer tamanho");
         h.update(tool.as_bytes());
         // Separador que nao pode aparecer no nome da ferramenta, para
         // `("ba", "shX")` e `("bash", "X")` nao terem o mesmo digest.
-        h.update([0u8]);
+        h.update(&[0u8]);
         h.update(subject.trim().as_bytes());
-        let digest = h.finalize();
+        let digest = h.finalize().into_bytes();
         let mut hex = String::with_capacity(FINGERPRINT_LEN);
         for b in digest.iter().take(FINGERPRINT_LEN / 2) {
             hex.push_str(&format!("{b:02x}"));

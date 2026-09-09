@@ -27,6 +27,13 @@ chrono = { workspace = true, features = ["serde"] }
 # diferentes seria um bug de seguranca, entao vale um digest de verdade.
 # Ja esta no Cargo.lock via garraia-channels; nao traz arvore nova.
 sha2 = "0.10"
+# #1078 item 2 (achado ALTO da auditoria): a impressao digital do pedido e um
+# HMAC com chave aleatoria por processo, e nao um hash de entradas publicas.
+# Sem a chave, conteudo de terceiro devolvido por `web_fetch`/`file_read`/MCP
+# nao consegue cunhar um marcador que bata com comando nenhum. Mesmas versoes
+# ja usadas pelo `garraia-auth`.
+hmac = "0.12"
+getrandom = "0.4"
 
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-io"], optional = true }
 

