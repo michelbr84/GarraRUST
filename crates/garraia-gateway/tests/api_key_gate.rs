@@ -44,6 +44,8 @@ fn router_com(chave: Option<&str>) -> Router {
         // lista vazia basta; o que este teste exercita e o layer sobre
         // `/api/*`.
         Arc::new(Vec::new()),
+        // teams (#1050), idem
+        Arc::new(Vec::new()),
         admin_store,
         Arc::new(vec![0u8; 32]),
     )
