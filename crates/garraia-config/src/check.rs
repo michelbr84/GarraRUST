@@ -669,6 +669,11 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
     validate_google_chat(&config.channels, &mut findings, &push_warn);
+    validate_matrix(&config.channels, &mut findings, &push_warn);
+    validate_openclaw(&config.channels, &mut findings, &push_warn);
+    validate_signal(&config.channels, &mut findings, &push_warn);
+    validate_irc(&config.channels, &mut findings, &push_warn);
+    validate_line(&config.channels, &mut findings, &push_warn);
     validate_teams(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
@@ -695,6 +700,10 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
             "discord" => Some("DISCORD_BOT_TOKEN"),
             "slack" => Some("SLACK_BOT_TOKEN"),
             "whatsapp" => Some("WHATSAPP_ACCESS_TOKEN"),
+            // #1050: sem este braco, um canal Matrix sem `access_token` saia
+            // do check em silencio — `has_inline_token` ja procura
+            // `access_token`, mas a falta dele nao tinha env var para nomear.
+            "matrix" => Some("MATRIX_ACCESS_TOKEN"),
             // O Google Chat tem credenciais com nomes proprios
             // (`audience` + `service_account_token`) que esta checagem
             // generica nao conhece: ela procura so
@@ -1167,6 +1176,262 @@ fn validate_teams(
                 &format!("channels.{name}"),
                 format!(
                     "teams channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
+    }
+}
+
+/// Os dois segredos do canal LINE (#1050).
+///
+/// A checagem generica de token acima nao alcanca o LINE: ela procura
+/// `bot_token`/`access_token`/`app_token`, e os campos do LINE sao
+/// `channel_access_token` e `channel_secret`. Sem esta funcao, um canal LINE
+/// pela metade sairia do `config check` sem um unico achado.
+///
+/// Os dois campos nao sao equivalentes, e a mensagem diz qual e qual:
+///
+/// - sem `channel_access_token` o canal nao consegue **responder** (o token e
+///   o bearer da Messaging API);
+/// - sem `channel_secret` o canal nao e sequer construido — `LineChannel::new`
+///   o recusa (#1051), porque sem o segredo nao ha como distinguir um webhook
+///   do LINE de um POST forjado por quem descobriu a URL.
+fn validate_line(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "line" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env, consequencia) in [
+            (
+                "channel_access_token",
+                "LINE_CHANNEL_ACCESS_TOKEN",
+                "the channel will be skipped at boot and cannot reply",
+            ),
+            (
+                "channel_secret",
+                "LINE_CHANNEL_SECRET",
+                "the channel will be REFUSED at boot: without it a forged POST to /webhooks/line is indistinguishable from a real one",
+            ),
+        ] {
+            let configurado_inline = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            // `var(..).is_ok_and(nao vazio)`, e nao `var_os(..).is_some()`:
+            // `var_os` devolve `Some("")` para uma variavel definida como
+            // vazia, e o boot usa `resolve_api_key`, que filtra vazio
+            // (`provider_keys.rs:155`). Com `var_os` o operador definiria
+            // `LINE_CHANNEL_SECRET=""`, veria o check dizer "ok", e o canal
+            // nao subiria — o check estaria afirmando o contrario do que o
+            // boot faz.
+            if configurado_inline || std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "line channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
+    }
+}
+
+/// O IRC nao tem token — a identidade e o nick, que num servidor sem NickServ
+/// qualquer um pode tomar — entao a checagem generica de credencial nao o
+/// alcanca (#1050). O que ele precisa e um servidor e ao menos uma sala; sem
+/// qualquer um dos dois e pulado no boot com um `warn!` que so aparece no log.
+///
+/// E ha uma armadilha de porta: o default do `IrcConfig` e 6667, que e a
+/// porta em claro. Ligar `use_tls` sem dizer a porta apontaria TLS para 6667.
+/// O bootstrap corrige o default, mas uma porta escrita a mao em desacordo
+/// com o `use_tls` continua sendo do operador — e vale avisar.
+fn validate_irc(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "irc" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        let tem_server = ch
+            .settings
+            .get("server")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+
+        if !tem_server && std::env::var_os("IRC_SERVER").is_none() {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "irc channel '{name}' is enabled but has no server in config or the IRC_SERVER env var; the channel will be skipped at boot"
+                ),
+            );
+        }
+
+        let salas = ch
+            .settings
+            .get("channels")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter(|v| v.is_string()).count())
+            .unwrap_or(0);
+
+        if salas == 0 {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "irc channel '{name}' is enabled but joins no channels; set `channels = [\"#room\"]` under its settings or it will be skipped at boot"
+                ),
+            );
+        }
+
+        let use_tls = ch
+            .settings
+            .get("use_tls")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let port = ch.settings.get("port").and_then(serde_json::Value::as_u64);
+
+        if use_tls && port == Some(6667) {
+            push_warn(
+                findings,
+                &format!("channels.{name}.settings.port"),
+                format!(
+                    "irc channel '{name}' has use_tls = true with port 6667, the cleartext IRC port; TLS servers usually listen on 6697"
+                ),
+            );
+        }
+    }
+}
+
+/// O Signal nao usa token — a credencial e o numero ja registrado no daemon
+/// signal-cli — entao a checagem generica de token nao o alcanca (#1050). O
+/// que ele precisa sao dois campos, e sem qualquer um deles o canal e pulado
+/// no boot com um `warn!` que so aparece no log.
+fn validate_signal(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "signal" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env) in [
+            ("signal_cli_url", "SIGNAL_CLI_URL"),
+            ("phone_number", "SIGNAL_PHONE_NUMBER"),
+        ] {
+            let no_config = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            if no_config || std::env::var_os(env).is_some() {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "signal channel '{name}' is enabled but has no {campo} in config or the {env} env var; the channel will be skipped at boot"
+                ),
+            );
+        }
+    }
+}
+
+/// O bridge OpenClaw tem **dois** `enabled` independentes, e essa e a
+/// armadilha (#1050): o do `ChannelConfig`, que vale para qualquer canal, e o
+/// de dentro de `settings`, que e campo do proprio `OpenClawConfig` e tem
+/// default `false`. Escrever a secao com `enabled = true` no nivel de fora e
+/// **nao** escrever o de dentro deixa o bridge desligado sem uma linha de
+/// explicacao — que e exatamente o tipo de silencio que este comando existe
+/// para quebrar.
+fn validate_openclaw(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "openclaw" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        let interno = ch
+            .settings
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        if !interno {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "openclaw bridge '{name}' will NOT start: the channel is enabled but `enabled` inside its settings is missing or false. The bridge has two independent switches; set `enabled = true` under [channels.{name}.settings] as well"
+                ),
+            );
+            continue;
+        }
+
+        // Com o bridge de fato ligado, o `ws_url` e a unica coisa que pode
+        // estar obviamente errada sem que o operador perceba: o cliente
+        // reconecta para sempre e so aparece como "disconnected".
+        let ws_url = ch
+            .settings
+            .get("ws_url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("ws://127.0.0.1:18789");
+
+        if !ws_url.starts_with("ws://") && !ws_url.starts_with("wss://") {
+            push_warn(
+                findings,
+                &format!("channels.{name}.settings.ws_url"),
+                format!(
+                    "openclaw bridge '{name}' has ws_url '{ws_url}', which is not a WebSocket URL. The client will retry forever and the bridge will read as disconnected"
+                ),
+            );
+        }
+    }
+}
+
+/// O `homeserver_url` do Matrix nao e credencial, entao a checagem generica
+/// de token nao o alcanca (#1050) — e sem ele o canal e pulado no boot com um
+/// `warn!` que so aparece no log.
+fn validate_matrix(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "matrix" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        let tem_url = ch
+            .settings
+            .get("homeserver_url")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+
+        if !tem_url && std::env::var_os("MATRIX_HOMESERVER_URL").is_none() {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "matrix channel '{name}' is enabled but has no homeserver_url in config or the MATRIX_HOMESERVER_URL env var; the channel will be skipped at boot"
                 ),
             );
         }
@@ -2704,6 +2969,479 @@ mod tests {
     fn google_chat_desabilitado_nao_avisa() {
         let msgs = mensagens_de_gc(&cfg_google_chat(Some(false), serde_json::json!({})));
         assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
+
+    // ─── #1050: o Matrix precisa de token E de homeserver ─────────────────
+
+    fn cfg_matrix(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "mx".into(),
+            crate::model::ChannelConfig {
+                channel_type: "matrix".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// Antes deste braco, a falta de `access_token` no Matrix nao tinha env
+    /// var para nomear e o canal saia do check em silencio.
+    #[test]
+    fn matrix_sem_token_avisa_nomeando_a_env() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({"homeserver_url": "https://matrix.exemplo"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.mx" && f.message.contains("MATRIX_ACCESS_TOKEN")),
+            "esperava aviso de token: {findings:?}"
+        );
+    }
+
+    /// O `homeserver_url` nao e credencial, entao a checagem generica nao o
+    /// alcanca — e sem ele o canal e pulado no boot.
+    #[test]
+    fn matrix_sem_homeserver_avisa() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({"access_token": "syt_fake"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.mx" && f.message.contains("homeserver_url")),
+            "esperava aviso de homeserver_url: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_completo_nao_avisa() {
+        let findings = validate(&cfg_matrix(
+            Some(true),
+            serde_json::json!({
+                "homeserver_url": "https://matrix.exemplo",
+                "access_token": "syt_fake",
+            }),
+        ));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.mx"),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_desligado_fica_calado() {
+        let findings = validate(&cfg_matrix(Some(false), serde_json::json!({})));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.mx"),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    // ─── #1050: os dois `enabled` do bridge OpenClaw ──────────────────────
+
+    fn cfg_openclaw(enabled_fora: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "oc".into(),
+            crate::model::ChannelConfig {
+                channel_type: "openclaw".into(),
+                enabled: enabled_fora,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// A armadilha: ligar o canal e esquecer o `enabled` de dentro deixa o
+    /// bridge desligado sem uma linha de explicacao. Antes deste aviso, o
+    /// unico sintoma era `/api/openclaw/status` respondendo "nao configurado"
+    /// numa secao que o operador escreveu e leu como ligada.
+    #[test]
+    fn openclaw_ligado_por_fora_e_desligado_por_dentro_avisa() {
+        let findings = validate(&cfg_openclaw(Some(true), serde_json::json!({})));
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Warning
+                && f.field == "channels.oc"
+                && f.message.contains("two independent switches")),
+            "esperava aviso sobre os dois enabled: {findings:?}"
+        );
+
+        let findings = validate(&cfg_openclaw(
+            Some(true),
+            serde_json::json!({"enabled": false}),
+        ));
+        assert!(
+            findings.iter().any(|f| f.field == "channels.oc"),
+            "esperava aviso com enabled=false por dentro: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn openclaw_ligado_dos_dois_lados_nao_avisa() {
+        let findings = validate(&cfg_openclaw(
+            Some(true),
+            serde_json::json!({"enabled": true}),
+        ));
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("channels.oc")),
+            "bridge bem configurado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    /// Desligado por fora e desligado: nao ha nada a avisar, como em qualquer
+    /// outro canal.
+    #[test]
+    fn openclaw_desligado_por_fora_fica_calado() {
+        let findings = validate(&cfg_openclaw(Some(false), serde_json::json!({})));
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("channels.oc")),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    /// O cliente reconecta para sempre e so aparece como "disconnected", entao
+    /// uma URL que nao e WebSocket e um erro silencioso — o tipo que este
+    /// comando existe para nomear.
+    #[test]
+    fn openclaw_com_ws_url_que_nao_e_websocket_avisa() {
+        let findings = validate(&cfg_openclaw(
+            Some(true),
+            serde_json::json!({"enabled": true, "ws_url": "http://127.0.0.1:18789"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.oc.settings.ws_url"
+                    && f.message.contains("not a WebSocket URL")),
+            "esperava aviso sobre ws_url: {findings:?}"
+        );
+
+        for boa in ["ws://127.0.0.1:18789", "wss://openclaw.exemplo:443"] {
+            let findings = validate(&cfg_openclaw(
+                Some(true),
+                serde_json::json!({"enabled": true, "ws_url": boa}),
+            ));
+            assert!(
+                findings
+                    .iter()
+                    .all(|f| f.field != "channels.oc.settings.ws_url"),
+                "{boa} nao deveria avisar: {findings:?}"
+            );
+        }
+    }
+
+    // ─── #1050: o Signal nao passa pela checagem de token ─────────────────
+
+    fn cfg_signal(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "sig".into(),
+            crate::model::ChannelConfig {
+                channel_type: "signal".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// A checagem generica procura `bot_token`/`access_token`/`app_token`, que
+    /// o Signal nao tem — a credencial dele e o numero ja registrado no
+    /// daemon. Sem esta validacao propria, um canal Signal pela metade sairia
+    /// do `config check` sem um unico achado e seria pulado no boot com um
+    /// `warn!` que so aparece no log.
+    #[test]
+    fn signal_sem_url_ou_numero_avisa() {
+        let findings = validate(&cfg_signal(Some(true), serde_json::json!({})));
+        let msgs: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.field == "channels.sig")
+            .map(|f| f.message.as_str())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("signal_cli_url")),
+            "esperava aviso de signal_cli_url: {findings:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("phone_number")),
+            "esperava aviso de phone_number: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn signal_completo_nao_avisa() {
+        let findings = validate(&cfg_signal(
+            Some(true),
+            serde_json::json!({
+                "signal_cli_url": "http://127.0.0.1:8080",
+                "phone_number": "+15550100",
+            }),
+        ));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.sig"),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    /// String vazia e o mesmo que ausente — senao `signal_cli_url = ""` no
+    /// TOML passaria pelo check e falharia so no boot.
+    #[test]
+    fn signal_com_campo_em_branco_conta_como_ausente() {
+        let findings = validate(&cfg_signal(
+            Some(true),
+            serde_json::json!({"signal_cli_url": "   ", "phone_number": "+15550100"}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.sig" && f.message.contains("signal_cli_url")),
+            "esperava aviso com url em branco: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn signal_desligado_fica_calado() {
+        let findings = validate(&cfg_signal(Some(false), serde_json::json!({})));
+        assert!(
+            findings.iter().all(|f| f.field != "channels.sig"),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    // ─── #1050: o IRC nao tem token, e tem armadilha de porta ─────────────
+
+    fn cfg_irc(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "irc1".into(),
+            crate::model::ChannelConfig {
+                channel_type: "irc".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// Sem servidor e sem sala o canal e pulado no boot. A checagem generica
+    /// procura token, que o IRC nao tem, entao sem esta validacao propria o
+    /// canal sairia do check sem um unico achado.
+    #[test]
+    fn irc_sem_servidor_ou_sala_avisa() {
+        let findings = validate(&cfg_irc(Some(true), serde_json::json!({})));
+        let msgs: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.field == "channels.irc1")
+            .map(|f| f.message.as_str())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("IRC_SERVER")),
+            "esperava aviso de server: {findings:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("joins no channels")),
+            "esperava aviso de sala: {findings:?}"
+        );
+    }
+
+    /// Lista de salas vazia conta como ausente — `channels = []` no TOML
+    /// passaria pelo check e o canal seria pulado no boot.
+    #[test]
+    fn irc_com_lista_de_salas_vazia_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({"server": "irc.libera.chat", "channels": []}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.irc1" && f.message.contains("joins no channels")),
+            "esperava aviso de sala vazia: {findings:?}"
+        );
+    }
+
+    /// A armadilha: o default do `IrcConfig` e 6667, a porta em claro. Uma
+    /// porta escrita a mao em desacordo com o `use_tls` e do operador, e vale
+    /// nomear antes que ele descubra por tcpdump.
+    #[test]
+    fn irc_com_tls_na_porta_em_claro_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({
+                "server": "irc.libera.chat",
+                "channels": ["#garraia"],
+                "use_tls": true,
+                "port": 6667,
+            }),
+        ));
+        assert!(
+            findings.iter().any(
+                |f| f.field == "channels.irc1.settings.port" && f.message.contains("cleartext")
+            ),
+            "esperava aviso de porta: {findings:?}"
+        );
+
+        // 6697 com TLS, e 6667 sem TLS, nao avisam.
+        for (tls, porta) in [(true, 6697), (false, 6667)] {
+            let findings = validate(&cfg_irc(
+                Some(true),
+                serde_json::json!({
+                    "server": "irc.libera.chat",
+                    "channels": ["#garraia"],
+                    "use_tls": tls,
+                    "port": porta,
+                }),
+            ));
+            assert!(
+                findings
+                    .iter()
+                    .all(|f| f.field != "channels.irc1.settings.port"),
+                "tls={tls} porta={porta} nao deveria avisar: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irc_completo_nao_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({"server": "irc.libera.chat", "channels": ["#garraia"]}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f.field.starts_with("channels.irc1")),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn irc_desligado_fica_calado() {
+        let findings = validate(&cfg_irc(Some(false), serde_json::json!({})));
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f.field.starts_with("channels.irc1")),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    fn cfg_line(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "ln".into(),
+            crate::model::ChannelConfig {
+                channel_type: "line".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    fn mensagens_de_line(cfg: &AppConfig) -> Vec<String> {
+        achados_de(cfg, "channels.ln")
+            .into_iter()
+            .map(|f| f.message)
+            .collect()
+    }
+
+    /// A checagem generica procura `bot_token`/`access_token`/`app_token`; os
+    /// campos do LINE sao outros dois. Sem `validate_line`, um canal LINE sem
+    /// nenhuma credencial saia do `config check` limpo.
+    #[test]
+    fn line_sem_token_nem_segredo_avisa_dos_dois() {
+        let msgs = mensagens_de_line(&cfg_line(Some(true), serde_json::json!({})));
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_access_token")),
+            "esperava aviso de channel_access_token: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_secret")),
+            "esperava aviso de channel_secret: {msgs:?}"
+        );
+    }
+
+    /// O aviso do segredo diz a consequencia certa: o canal e **recusado**
+    /// (#1051), nao apenas pulado, e a razao e que sem ele um POST forjado e
+    /// indistinguivel de um real.
+    #[test]
+    fn o_aviso_do_channel_secret_diz_que_o_canal_e_recusado() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({"channel_access_token": "tok"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so o segredo deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("REFUSED") && msgs[0].contains("forged"),
+            "o aviso tem de explicar o que se perde: {}",
+            msgs[0]
+        );
+    }
+
+    #[test]
+    fn line_completo_nao_avisa() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({
+                "channel_access_token": "tok",
+                "channel_secret": "seg",
+            }),
+        ));
+        assert!(
+            msgs.is_empty(),
+            "canal completo nao deveria gerar achado: {msgs:?}"
+        );
+    }
+
+    /// Espaco em branco conta como ausente — a mesma regra que
+    /// `LineChannel::new` e `verify_signature` usam (#1059). Se o check
+    /// aceitasse `"   "`, ele diria "ok" para exatamente a config que o boot
+    /// recusa.
+    #[test]
+    fn line_com_segredo_em_branco_conta_como_ausente() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({"channel_access_token": "tok", "channel_secret": "   "}),
+        ));
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_secret")),
+            "segredo em branco deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn line_desabilitado_nao_avisa() {
+        let msgs = mensagens_de_line(&cfg_line(Some(false), serde_json::json!({})));
+        assert!(
+            msgs.is_empty(),
+            "canal desabilitado nao deveria gerar achado: {msgs:?}"
+        );
     }
     // ─── #1050: as tres credenciais do canal Microsoft Teams ──────────────
 

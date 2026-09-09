@@ -14,8 +14,10 @@ use crate::admin;
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
     build_agent_runtime, build_channels, build_discord_channels, build_google_chat_channels,
-    build_mcp_tools, build_slack_channels, build_teams_channels, build_telegram_channels,
-    build_whatsapp_channels, warn_if_embeddings_unhealthy,
+    build_irc_channels, build_line_channels, build_matrix_channels, build_mcp_tools,
+    build_openclaw_config, build_signal_channels, build_slack_channels, build_teams_channels,
+    build_telegram_channels, build_whatsapp_channels, spawn_openclaw_router,
+    warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
 use crate::state::AppState;
@@ -649,7 +651,27 @@ impl GatewayServer {
         let health_cache = crate::health::new_health_cache();
         state.health_cache = Some(health_cache.clone());
 
+        // #1050: o bridge OpenClaw. `OpenClawClient::new` ja dispara o loop de
+        // conexao, entao construi-lo aqui e o que liga o canal; o `Receiver`
+        // fica para depois do `Arc`, porque o roteador precisa do estado
+        // compartilhado. Ate agora `state.openclaw_client` era `None`
+        // constante e as quatro rotas de `/api/openclaw/*` caiam todas no
+        // ramo "nao configurado".
+        let openclaw_rx = match build_openclaw_config(&state.config) {
+            Some(cfg) => {
+                let (client, rx) = garraia_channels::OpenClawClient::new(cfg.clone());
+                state.openclaw_client = Some(Arc::clone(&client));
+                state.openclaw_config = Some(cfg);
+                Some((client, rx))
+            }
+            None => None,
+        };
+
         let state = Arc::new(state);
+
+        if let Some((client, rx)) = openclaw_rx {
+            spawn_openclaw_router(Arc::clone(&state), client, rx);
+        }
 
         // `garra_status` reads the live `AppState` (provider, model, tools,
         // features, channels, session mode), so it can only exist once the
@@ -802,6 +824,55 @@ impl GatewayServer {
             }
         }
 
+        // Start configured IRC channels (#1050).
+        //
+        // Servidor IRC cai e volta; falha no boot vai pelo retry com backoff
+        // do Telegram (#928) em vez do `warn!` de uma linha.
+        let irc_channels = build_irc_channels(&state.config, &state);
+        for mut channel in irc_channels {
+            match channel.connect().await {
+                Ok(()) => state.channels.write().await.register(channel),
+                Err(e) => {
+                    warn!("irc channel failed to connect: {e}; retrying in background");
+                    spawn_channel_connect_retry(Arc::clone(&state), channel);
+                }
+            }
+        }
+
+        // Start configured Signal channels (#1050).
+        //
+        // signal-cli e um daemon local que o operador sobe por fora, entao
+        // uma falha de conexao no boot e comum e nao deve ser terminal — vai
+        // pelo mesmo `spawn_channel_connect_retry` do Telegram (#928), com o
+        // backoff exponencial, em vez do `warn!` de uma linha do Discord.
+        let signal_channels = build_signal_channels(&state.config, &state);
+        for mut channel in signal_channels {
+            match channel.connect().await {
+                Ok(()) => state.channels.write().await.register(channel),
+                Err(e) => {
+                    warn!("signal channel failed to connect: {e}; retrying in background");
+                    spawn_channel_connect_retry(Arc::clone(&state), channel);
+                }
+            }
+        }
+
+        // Start configured Matrix channels (#1050).
+        //
+        // O homeserver pode estar fora do ar no boot sem que isso seja
+        // permanente, entao vai pelo retry com backoff do Telegram (#928) em
+        // vez do `warn!` de uma linha que deixaria o canal mudo ate um
+        // restart manual.
+        let matrix_channels = build_matrix_channels(&state.config, &state);
+        for mut channel in matrix_channels {
+            match channel.connect().await {
+                Ok(()) => state.channels.write().await.register(channel),
+                Err(e) => {
+                    warn!("matrix channel failed to connect: {e}; retrying in background");
+                    spawn_channel_connect_retry(Arc::clone(&state), channel);
+                }
+            }
+        }
+
         // Start configured Slack channels
         let slack_channels = build_slack_channels(&state.config, &state);
         for mut channel in slack_channels {
@@ -866,6 +937,18 @@ impl GatewayServer {
         }
         let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(teams_channels);
 
+        // Build LINE channels (webhook-driven — no persistent connection).
+        //
+        // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
+        // rota `/webhooks/line`. Um canal com `channel_secret` invalido nao
+        // chega ate aqui — `build_line_channels` o descarta (#1051).
+        let line_channels = build_line_channels(&state.config, &state);
+        for channel in &line_channels {
+            info!("line channel ready (webhook mode, name={})", channel.name());
+        }
+        let line_state: garraia_channels::line_channel::webhook::LineState =
+            Arc::new(line_channels);
+
         // Initialize admin store for the web admin console
         let admin_db_path = data_dir.join("admin.db");
         let mut admin_store_owned = match admin::store::AdminStore::open(&admin_db_path) {
@@ -911,6 +994,7 @@ impl GatewayServer {
             whatsapp_state,
             google_chat_state,
             teams_state,
+            line_state,
             admin_store,
             admin_encryption_key,
         );
@@ -1055,6 +1139,7 @@ pub async fn build_router_for_test_with_storage(
     let google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState =
         Arc::new(Vec::new());
     let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(Vec::new());
+    let line_state: garraia_channels::line_channel::webhook::LineState = Arc::new(Vec::new());
     let mut admin_store_owned =
         admin::store::AdminStore::in_memory().expect("in-memory admin store should work");
     let admin_encryption_key = Arc::new(admin::handlers::resolve_admin_encryption_key(
@@ -1067,6 +1152,7 @@ pub async fn build_router_for_test_with_storage(
         whatsapp_state,
         google_chat_state,
         teams_state,
+        line_state,
         admin_store,
         admin_encryption_key,
     )
