@@ -574,18 +574,32 @@ mod tests {
         );
     }
 
+    /// Com um sha valido este teste passaria mesmo se as duas checagens
+    /// trocassem de ordem — o nome falharia de qualquer jeito e o 400 sairia
+    /// igual. Os dois campos vem invalidos de proposito, e o corpo diz qual
+    /// das duas falou primeiro.
     #[tokio::test]
     async fn rollback_rejects_bad_name_before_looking_at_the_sha() {
         let resp = rollback_skill(
             Path("../evil".to_string()),
             Json(RollbackRequest {
-                sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                sha: "--output=/tmp/pwn".to_string(),
                 reason: None,
             }),
         )
         .await
         .into_response();
 
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            !body.contains("invalid git sha"),
+            "o nome tinha de ser recusado primeiro, e o corpo acusa o sha: {body}"
+        );
     }
 }

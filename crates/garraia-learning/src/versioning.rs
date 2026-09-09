@@ -65,11 +65,21 @@ const SHA_MAX_LEN: usize = 40;
 /// shell — `Command` never spawns one:
 ///
 /// 1. **Option injection.** `git revert --no-edit <sha>` reads any value
-///    starting with `-` as an option instead of a commit. `--output=<path>` on
-///    the `git diff` path is an arbitrary file write; other options change what
-///    the command does in ways the caller never asked for. Passing the value
-///    after a `--` separator stops the parse, and this check makes the value
-///    unable to look like an option in the first place.
+///    starting with `-` as an option instead of a commit, and `--output=<path>`
+///    truncates that path to zero bytes. Measured on git 2.43.0:
+///
+///    ```text
+///    $ git revert --no-edit -- "--output=/tmp/pwn"
+///    error: empty commit set passed
+///    $ ls /tmp/pwn   ->  created, 0 bytes
+///    ```
+///
+///    Note the `--` in that command: it does **not** help. `revert` hands the
+///    arguments it did not consume to `setup_revisions`, which parses
+///    `--output=` wherever it appears. This check is the **only** barrier on
+///    that call site — do not weaken it expecting a separator underneath.
+///    (For `git add` the separator does work: there the value becomes a
+///    pathspec.)
 /// 2. **A panic.** [`short_sha`] slices the first 8 *bytes*; a multi-byte
 ///    character straddling that boundary panics inside the handler.
 ///
@@ -246,7 +256,11 @@ pub fn rollback<R: ShellRunner>(
     }
 
     // 2. Perform the revert.
-    // `--` ends option parsing: belt and braces over `validate_git_sha`.
+    // O `--` aqui NAO e uma segunda camada: medido em git 2.43.0,
+    // `git revert --no-edit -- --output=/tmp/x` ainda cria o arquivo, porque o
+    // revert repassa o que nao consumiu para `setup_revisions`. Fica por
+    // higiene e consistencia; quem protege este call site e o
+    // `validate_git_sha` acima, sozinho.
     runner.run_git(&["revert", "--no-edit", "--", to_sha], &opts.repo_root)?;
 
     // 3. Look up historical score for this SHA.
@@ -741,8 +755,11 @@ mod tests {
         assert!(runner.calls().is_empty());
     }
 
+    /// Pino do vetor de argumentos, nao prova de protecao: o `--` nao defende
+    /// o `revert` (ver o doc de [`validate_git_sha`]). Serve para uma mudanca
+    /// acidental no vetor aparecer aqui.
     #[test]
-    fn rollback_separates_the_sha_with_double_dash() {
+    fn rollback_passes_the_sha_after_a_double_dash() {
         let tmp = TempDir::new().unwrap();
         let opts = make_opts(&tmp);
         let runner = RecordingRunner::new();
