@@ -41,6 +41,21 @@ fn bad_name(name: &str, err: NameError) -> (StatusCode, Json<serde_json::Value>)
     )
 }
 
+/// Rejects a `sha` that is not a git object name, before it reaches `git`.
+///
+/// These handlers are auth-free by policy (see the module header), so the body
+/// of `POST /api/learning/skills/{name}/rollback` is attacker-controlled on any
+/// gateway that has no `gateway.api_key` configured. The value lands in
+/// `git revert` as an argument; `garraia_learning` validates it too, and this
+/// is the boundary copy that turns the refusal into a 400 instead of a 500.
+fn bad_sha(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    warn!("rejected learning rollback sha");
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": err.to_string() })),
+    )
+}
+
 fn internal_err(msg: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -266,6 +281,9 @@ pub async fn rollback_skill(
     if let Err(e) = validate_skill_name(&name) {
         return bad_name(&name, e).into_response();
     }
+    if let Err(e) = versioning::validate_git_sha(&req.sha) {
+        return bad_sha(e).into_response();
+    }
     let opts = default_registry_opts();
     let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let vopts = VersioningOptions::new(opts.project_dir.clone(), repo_root);
@@ -486,6 +504,88 @@ mod tests {
         let resp = get_learning_skill(Path("../traversal".to_string()))
             .await
             .into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── rollback sha ─────────────────────────────────────────────────────────
+    //
+    // These handlers are auth-free by policy, so `sha` is attacker-controlled
+    // on a gateway with no gateway key configured. It reaches `git revert` as
+    // an argument. Only the rejection path is exercised here on purpose: an
+    // accepted sha would run git against the real repository.
+
+    /// Runs the handler and returns `(status, body)`.
+    async fn rollback_with_sha(sha: &str) -> (StatusCode, String) {
+        let resp = rollback_skill(
+            Path("my-skill".to_string()),
+            Json(RollbackRequest {
+                sha: sha.to_string(),
+                reason: None,
+            }),
+        )
+        .await
+        .into_response();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Asserts the endpoint *contract*, not which layer enforced it.
+    ///
+    /// The refusal is layered on purpose — this handler checks, and
+    /// `versioning::rollback` checks again — so removing either one alone keeps
+    /// these tests green. What proves the fix is the crate-level reversion:
+    /// drop `validate_git_sha` from `versioning.rs` and
+    /// `rollback_refuses_option_injection_before_spawning_git` fails, along
+    /// with the panic guard. Asserting the body rather than only the status
+    /// still matters: a bare 400 would also be produced by spawning git and
+    /// letting it fail, which is the behaviour this replaced.
+    #[tokio::test]
+    async fn rollback_refuses_option_shaped_sha() {
+        let (status, body) = rollback_with_sha("--output=/tmp/pwn").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("invalid git sha"),
+            "must be refused as a malformed sha, not by git failing: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_refuses_revision_expression() {
+        let (status, body) = rollback_with_sha("HEAD~1").await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.contains("invalid git sha"),
+            "must be refused as a malformed sha, not by git failing: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_error_does_not_echo_the_rejected_sha() {
+        let (_, body) = rollback_with_sha("--output=/tmp/pwn").await;
+
+        assert!(
+            !body.contains("/tmp/pwn"),
+            "response echoed the input: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_rejects_bad_name_before_looking_at_the_sha() {
+        let resp = rollback_skill(
+            Path("../evil".to_string()),
+            Json(RollbackRequest {
+                sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                reason: None,
+            }),
+        )
+        .await
+        .into_response();
+
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
