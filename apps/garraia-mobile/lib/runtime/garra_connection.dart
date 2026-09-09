@@ -1,3 +1,4 @@
+import 'chat_event.dart';
 import 'models.dart';
 import 'runtime_config.dart';
 
@@ -19,7 +20,24 @@ abstract interface class GarraConnection {
   Future<List<ChatMessage>> history(String? sessionId);
 
   /// Returns the assistant reply. [sessionId] is null only in cloud mode.
+  ///
+  /// Still the fallback path: [sendMessageStreaming] drops to it whenever the
+  /// stream cannot be opened.
   Future<String> sendMessage(String text, {String? sessionId});
+
+  /// Runs one turn and reports it as it happens.
+  ///
+  /// The stream always terminates with exactly one of [ChatCompleted],
+  /// [ChatStopped] or [ChatFailed]. A runtime with no streaming endpoint is
+  /// not an error: the implementation falls back to [sendMessage] and emits
+  /// the whole reply as a single [ChatCompleted], so a caller never has to ask
+  /// which mode it is talking to.
+  Stream<ChatEvent> sendMessageStreaming(String text, {String? sessionId});
+
+  /// Cancels the turn in flight, if there is one and the transport can carry
+  /// the request. A no-op otherwise — a reply already on its way over HTTP
+  /// cannot be recalled.
+  Future<void> stopStreaming();
 
   // Memory
   Future<List<MemoryEntry>> recentMemory({int limit = 50});
