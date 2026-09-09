@@ -72,3 +72,8 @@ imessage = ["dep:rusqlite", "dep:dirs"]
 # verdade (status + corpo), sem subir servidor.
 tower = { workspace = true, features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `jwks::jwt_de_teste` monta o cabecalho dos JWTs de teste a partir do JSON
+# em vez de fixar o base64 pronto no fonte. `base64` ja e dependencia
+# opcional (feature `line`); aqui e dev-dependency porque o helper e
+# `#[cfg(test)]` e vale para `google_chat` e `teams`, que nao ligam `line`.
+base64 = { workspace = true }

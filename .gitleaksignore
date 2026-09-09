@@ -30,3 +30,23 @@ da29936565b324d73d6a87f32e77ef73021f6a6c:mark_done_roadmap.ps1:linear-api-key:4
 # fingerprints close that gap explicitly without weakening the regex.
 f8374996ecd2fcb7b6acadace7be464bffe4d6d7:crates/garraia-security/src/redaction.rs:generic-api-key:71
 f8374996ecd2fcb7b6acadace7be464bffe4d6d7:crates/garraia-security/src/redaction.rs:generic-api-key:77
+
+# -----------------------------------------------------------------------
+# False positives — cabecalhos de JWT nos testes de confusao de algoritmo
+# de `crates/garraia-channels/src/google_chat/auth.rs` (commit 11ff7d8b,
+# #1073). Tres literais base64 ao lado da palavra `token`: entropia alta,
+# string longa, keyword ao lado — o formato exato que o `generic-api-key`
+# procura. Nao sao segredos: sao cabecalhos com `alg` escolhido a dedo
+# (`none`, `HS256`, `RS256` sem `kid`), corpo `{}` e assinatura de lixo,
+# que existem para serem recusados ANTES de qualquer chave.
+#
+# O codigo ja foi corrigido no mesmo PR: `jwks::jwt_de_teste` monta o token
+# a partir do JSON do cabecalho, e nao ha mais literal nenhum na arvore.
+# Estas tres entradas cobrem so o commit que ainda esta no historico do PR
+# — o scan do gitleaks le o diff de cada commit, entao apagar a linha depois
+# nao a tira do alcance dele. Como o fingerprint prende o sha, elas nao
+# escondem ocorrencia nova: qualquer literal futuro cai num commit diferente
+# e volta a falhar o gate.
+11ff7d8b8ab18262a6f52990a6e233a9f4512caf:crates/garraia-channels/src/google_chat/auth.rs:generic-api-key:242
+11ff7d8b8ab18262a6f52990a6e233a9f4512caf:crates/garraia-channels/src/google_chat/auth.rs:generic-api-key:259
+11ff7d8b8ab18262a6f52990a6e233a9f4512caf:crates/garraia-channels/src/google_chat/auth.rs:generic-api-key:273
