@@ -57,6 +57,59 @@ impl RunTestsTool {
         }
     }
 
+    /// Rejects a `test_name` that the runner would read as an **option**
+    /// instead of as a filter.
+    ///
+    /// The value comes from the model and lands as an argument: no shell is
+    /// involved, so this is not about metacharacters. It is about `cargo test
+    /// --config 'target.<cfg>.runner="/bin/sh -c ..."'`, which is arbitrary
+    /// execution, and about the equivalent option surface of `pytest` and
+    /// `npm`. The one documented exception is the `-p <crate>` form the schema
+    /// advertises, which [`Self::build_command`] splits itself.
+    fn validate_test_name(name: &str) -> std::result::Result<(), String> {
+        const MAX: usize = 200;
+        if name.is_empty() {
+            return Err("test_name vazio".to_string());
+        }
+        if name.len() > MAX {
+            return Err(format!("test_name maior que {MAX} caracteres"));
+        }
+        if name.chars().any(|c| c.is_control()) {
+            return Err("test_name contem caractere de controle".to_string());
+        }
+        if let Some(crate_name) = name.strip_prefix("-p ") {
+            let ok = !crate_name.is_empty()
+                && crate_name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            return if ok {
+                Ok(())
+            } else {
+                Err("nome de crate invalido depois de `-p`".to_string())
+            };
+        }
+        if name.starts_with('-') {
+            return Err(
+                "test_name nao pode comecar com `-`: seria lido como opcao do runner".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The command line as it will actually run, for the gate to judge.
+    ///
+    /// Rebuilt from the `Command` rather than from the framework label, so the
+    /// gate can never be shown something shorter than what executes.
+    fn command_line(cmd: &Command) -> String {
+        let std_cmd = cmd.as_std();
+        let mut line = std_cmd.get_program().to_string_lossy().into_owned();
+        for arg in std_cmd.get_args() {
+            line.push(' ');
+            line.push_str(&arg.to_string_lossy());
+        }
+        line
+    }
+
     /// Detect the test framework in the given directory
     fn detect_framework(working_dir: &Path) -> TestFramework {
         if working_dir.join("Cargo.toml").exists() {
@@ -220,6 +273,15 @@ impl Tool for RunTestsTool {
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
         let test_name = input.get("test_name").and_then(|v| v.as_str());
+        // #1084: o filtro vem do modelo e vira argumento do runner. Um valor
+        // comecando com `-` e lido como opcao — e `cargo test --config` chega
+        // a execucao arbitraria pelo `runner` do target.
+        if let Some(name) = test_name
+            && let Err(e) = Self::validate_test_name(name)
+        {
+            tracing::warn!(session = %context.session_id, "run_tests: test_name recusado");
+            return Ok(ToolOutput::error(format!("test_name invalido: {e}")));
+        }
         // Sem `working_dir`, o diretorio da sessao; com, o mesmo resolvedor
         // do `file_read` (relativo a sessao, `..` recusado). Auditoria do
         // #1039: o valor vinha cru do modelo e ia direto para `current_dir`.
@@ -244,27 +306,6 @@ impl Tool for RunTestsTool {
             )));
         }
 
-        // GAR-187 + #1075 R1 (auditoria do hardening): SEM canal de
-        // confirmacao, run_tests e fail-closed BLOCKED. `npm test`/`cargo
-        // test` executam o que o projeto mandar (scripts de package.json,
-        // build scripts = codigo arbitrario) e nao devem auto-rodar so
-        // porque ninguem pode aprovar — mesma regra do bash. A aprovacao e
-        // ignorada aqui: sem canal ela pode vir contaminada do historico
-        // [CONFIRM_REQUIRED]. Fluxo benigno segue
-        // disponivel via `bash` (cargo test / npm test nao sao comandos
-        // sensiveis no safety_gate).
-        if !self.confirmation_enabled {
-            tracing::warn!(
-                dir = %working_dir.display(),
-                session = %context.session_id,
-                "run_tests: BLOCKED (fail-closed: confirmation disabled)"
-            );
-            return Ok(ToolOutput::error(
-                "run_tests bloqueado por seguranca: rodar a suite executa codigo do projeto \
-                 e este runtime nao possui canal de confirmacao (fail-closed)."
-                    .to_string(),
-            ));
-        }
         // #1078 item 2: o assunto da aprovacao e o diretorio que a suite vai
         // rodar. Um "ok" dado para rodar os testes de um projeto nao
         // autoriza rodar os de outro, nem um `bash` qualquer.
@@ -294,6 +335,35 @@ impl Tool for RunTestsTool {
         };
 
         let (mut cmd, framework_name) = Self::build_command(framework, test_name, &working_dir);
+
+        // #1084 item 4: sem canal de confirmacao, a regra passa a ser a MESMA
+        // do `bash`, aplicada ao comando que vai rodar de verdade.
+        //
+        // O bloqueio anterior era incondicional, e nao protegia nada: no mesmo
+        // runtime sem canal, `bash("cargo test")` roda — `cargo test` nao e
+        // comando sensivel no gate. Era a mesma capacidade por outra porta,
+        // com o custo de deixar `run_tests` inutil no caminho full-auto. Agora
+        // quem decide e o gate: uma suite cujo comando o gate considera
+        // sensivel continua bloqueada, e uma que ele deixaria passar pelo
+        // `bash` passa aqui tambem. Nenhuma capacidade nova e concedida.
+        //
+        // Com canal de confirmacao nada disso se aplica: a aprovacao humana
+        // abaixo continua sendo pedida para toda suite, sensivel ou nao.
+        if !self.confirmation_enabled {
+            let linha = Self::command_line(&cmd);
+            if garraia_common::safety_gate::is_risky(&linha).is_err() {
+                tracing::warn!(
+                    dir = %working_dir.display(),
+                    session = %context.session_id,
+                    "run_tests: BLOCKED (fail-closed: sensitive command, no confirmation channel)"
+                );
+                return Ok(ToolOutput::error(
+                    "run_tests bloqueado por seguranca: o comando desta suite e sensivel e \
+                     este runtime nao possui canal de confirmacao (fail-closed)."
+                        .to_string(),
+                ));
+            }
+        }
 
         // #1075 R3 (parity — auditoria do hardening): o filho de run_tests
         // executa o que o projeto mandar e, como o bash, herda SOMENTE a
@@ -483,22 +553,103 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(out.content.contains("nao_existe_xyz"), "{}", out.content);
     }
 
-    /// #1075 R1 (auditoria do hardening): sem canal de confirmacao, run_tests
-    /// e fail-closed BLOCKED mesmo com is_confirmation_approved=true — o
-    /// flag vem do historico e pode estar contaminado.
+    /// #1084 item 4: sem canal de confirmacao, o que decide e o gate — o mesmo
+    /// do `bash`, aplicado ao comando que vai rodar de verdade.
+    ///
+    /// Aqui o filtro toca o canal de procfs (`environ`, no CONFIRM_LIST), a
+    /// linha montada e sensivel, e a suite e bloqueada antes de qualquer
+    /// processo nascer. A aprovacao vem ligada de proposito: sem canal ela
+    /// pode ter sido plantada no historico, e nao deve valer nada.
     #[tokio::test]
-    async fn fail_closed_blocks_run_tests_without_confirmation_channel() {
+    async fn sensitive_suite_is_blocked_without_confirmation_channel() {
         let tool = RunTestsTool::new(Some(1));
         let out = tool
             .execute(
                 &ctx(Some(env!("CARGO_MANIFEST_DIR")), true),
-                serde_json::json!({}),
+                serde_json::json!({ "framework": "cargo", "test_name": "environ" }),
             )
             .await
             .expect("executa");
         assert!(out.is_error, "{}", out.content);
         assert!(out.content.contains("bloqueado"), "{}", out.content);
         assert!(!out.requires_confirmation);
+    }
+
+    /// A parte da paridade que nao da para provar executando: rodar a suite de
+    /// verdade dentro do `cargo test` seria recursivo.
+    ///
+    /// O que esta afirmado aqui e a premissa da mudanca — uma suite comum ja
+    /// era permitida pelo mesmo gate atraves do `bash`, entao liberar
+    /// `run_tests` no full-auto nao concede capacidade nova.
+    #[test]
+    fn a_plain_suite_is_what_bash_would_already_allow() {
+        use garraia_common::safety_gate::is_risky;
+
+        // Permitidas — e ja eram, via `bash("cargo test")` no mesmo runtime.
+        assert!(is_risky("cargo test -- --color=never").is_ok());
+        assert!(is_risky("npm test").is_ok());
+
+        // Sensiveis, e continuam sensiveis. `pytest` roda por um interpretador
+        // Python, que o gate trata como codigo arbitrario: no full-auto a
+        // suite de pytest segue bloqueada, exatamente como
+        // `bash("python -m pytest")` estaria. Isto e a paridade funcionando,
+        // nao uma excecao a ela.
+        assert!(is_risky("python -m pytest -v").is_err());
+
+        // E um filtro que toca procfs torna sensivel ate a linha do cargo.
+        assert!(is_risky("cargo test environ -- --color=never").is_err());
+    }
+
+    // ── test_name como argumento do runner (#1084) ────────────────────────
+
+    #[test]
+    fn test_name_rejects_option_lookalikes() {
+        // O payload que motivou a checagem: `--config` do cargo aponta um
+        // `runner` de target, que e execucao arbitraria.
+        let payload = "--config=target.x.runner='/bin/sh -c curl|sh'";
+        assert!(RunTestsTool::validate_test_name(payload).is_err());
+        assert!(RunTestsTool::validate_test_name("--offline").is_err());
+        assert!(RunTestsTool::validate_test_name("-Zunstable-options").is_err());
+        assert!(RunTestsTool::validate_test_name("").is_err());
+        assert!(RunTestsTool::validate_test_name("a\nb").is_err());
+        assert!(RunTestsTool::validate_test_name(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn test_name_accepts_filters_and_the_documented_p_form() {
+        assert!(RunTestsTool::validate_test_name("meu_teste").is_ok());
+        assert!(RunTestsTool::validate_test_name("tests::modulo::caso").is_ok());
+        assert!(RunTestsTool::validate_test_name("-p garraia-agents").is_ok());
+        // `-p` so vale com um nome de crate de verdade depois dele.
+        assert!(RunTestsTool::validate_test_name("-p ").is_err());
+        assert!(RunTestsTool::validate_test_name("-p a b").is_err());
+    }
+
+    #[tokio::test]
+    async fn option_shaped_test_name_never_reaches_the_runner() {
+        let tool = RunTestsTool::new(Some(1));
+        let out = tool
+            .execute(
+                &ctx(Some(env!("CARGO_MANIFEST_DIR")), true),
+                serde_json::json!({ "test_name": "--config=target.x.runner='/bin/sh'" }),
+            )
+            .await
+            .expect("executa");
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("test_name invalido"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[test]
+    fn command_line_shows_what_actually_runs() {
+        let dir = std::path::Path::new(".");
+        let (cmd, _) = RunTestsTool::build_command(TestFramework::Cargo, Some("meu_teste"), dir);
+        let linha = RunTestsTool::command_line(&cmd);
+        assert!(linha.starts_with("cargo test"), "{linha}");
+        assert!(linha.contains("meu_teste"), "{linha}");
     }
 
     /// #1075 R3 (auditoria do hardening): o filho de run_tests NAO herda o

@@ -3349,6 +3349,7 @@ dependencies = [
  "chrono",
  "futures",
  "garraia-common",
+ "libc",
  "metrics",
  "reqwest 0.12.28",
  "serde",
