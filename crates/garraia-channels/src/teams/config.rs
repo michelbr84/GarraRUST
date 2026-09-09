@@ -13,4 +13,14 @@ pub struct TeamsConfig {
 
     /// Azure AD tenant ID.
     pub tenant_id: String,
+
+    /// Nome da secao `[channels.<nome>]` que originou este canal. So para
+    /// log — `Channel::display_name` e a constante `"Microsoft Teams"` para
+    /// todos.
+    #[serde(default = "nome_padrao")]
+    pub name: String,
+}
+
+fn nome_padrao() -> String {
+    "teams".to_string()
 }
