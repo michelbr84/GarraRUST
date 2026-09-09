@@ -80,24 +80,72 @@ const SHA_MAX_LEN: usize = 40;
 ///    that call site — do not weaken it expecting a separator underneath.
 ///    (For `git add` the separator does work: there the value becomes a
 ///    pathspec.)
-/// 2. **A panic.** [`short_sha`] slices the first 8 *bytes*; a multi-byte
-///    character straddling that boundary panics inside the handler.
+/// 2. **A panic.** The revert-message grep slices the first 8 *bytes* of the
+///    value; a multi-byte character straddling that boundary panicked inside
+///    the handler. [`GitSha::short`] cannot: its content is ASCII by
+///    construction.
 ///
 /// The error deliberately does not echo the rejected value: it travels back to
 /// an HTTP client, and reflecting attacker-chosen bytes into a response body is
 /// a separate problem.
 pub fn validate_git_sha(value: &str) -> Result<()> {
-    if value.len() < SHA_MIN_LEN || value.len() > SHA_MAX_LEN {
-        return Err(Error::Other(format!(
-            "invalid git sha: expected {SHA_MIN_LEN}..={SHA_MAX_LEN} hexadecimal characters"
-        )));
+    GitSha::parse(value).map(|_| ())
+}
+
+/// A git object name that has been through [`GitSha::parse`].
+///
+/// The type exists so the value handed to `git` is one this module *built*,
+/// not one it merely inspected. Two things follow from that:
+///
+/// - A future reader cannot pass an unchecked string where a sha belongs
+///   without going through the constructor.
+/// - Static analysis stops flagging the call site. CodeQL's
+///   `rust/command-line-injection` kept alert #166 open after the first fix,
+///   and correctly so by its own model: `validate_git_sha` returned `()` and
+///   the *original* string went on to `Command::args`, so nothing in the data
+///   flow had changed. Rebuilding the value from the accepted alphabet is what
+///   actually breaks that path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSha(String);
+
+impl GitSha {
+    /// Parses a git object name, rejecting anything that is not one.
+    pub fn parse(value: &str) -> Result<Self> {
+        if value.len() < SHA_MIN_LEN || value.len() > SHA_MAX_LEN {
+            return Err(Error::Other(format!(
+                "invalid git sha: expected {SHA_MIN_LEN}..={SHA_MAX_LEN} hexadecimal characters"
+            )));
+        }
+        if !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Other(
+                "invalid git sha: expected hexadecimal characters only".to_string(),
+            ));
+        }
+        // On an accepted input this filter is the identity — every byte already
+        // passed `is_ascii_hexdigit`. It is here so the string that reaches the
+        // command line is *constructed from the allowed alphabet* rather than
+        // forwarded, which is the difference between "we looked at it" and "we
+        // built it". The check above is still what rejects; this never repairs
+        // a bad value into a good one.
+        Ok(Self(
+            value.chars().filter(char::is_ascii_hexdigit).collect(),
+        ))
     }
-    if !value.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(Error::Other(
-            "invalid git sha: expected hexadecimal characters only".to_string(),
-        ));
+
+    /// The validated object name.
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
-    Ok(())
+
+    /// First 8 characters, for the revert-message grep.
+    ///
+    /// Safe by construction: the content is ASCII, so a byte index is a char
+    /// boundary. That is the same panic the parse exists to prevent, now
+    /// impossible rather than merely guarded against.
+    fn short(&self) -> &str {
+        let end = self.0.len().min(8);
+        &self.0[..end]
+    }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -176,11 +224,16 @@ pub fn diff<R: ShellRunner>(
     opts: &VersioningOptions,
     runner: &R,
 ) -> Result<String> {
-    validate_git_sha(from_sha)?;
-    validate_git_sha(to_sha)?;
+    let from = GitSha::parse(from_sha)?;
+    let to = GitSha::parse(to_sha)?;
     let rel_path = relative_skill_path(name, opts)?;
     runner.run_git(
-        &["diff", &format!("{from_sha}..{to_sha}"), "--", &rel_path],
+        &[
+            "diff",
+            &format!("{}..{}", from.as_str(), to.as_str()),
+            "--",
+            &rel_path,
+        ],
         &opts.repo_root,
     )
 }
@@ -239,12 +292,12 @@ pub fn rollback<R: ShellRunner>(
     opts: &VersioningOptions,
     runner: &R,
 ) -> Result<()> {
-    // 0. Reject anything that is not an object name, before it reaches `git`
-    //    or `short_sha`. Fail-closed: no process is spawned on a bad value.
-    validate_git_sha(to_sha)?;
+    // 0. Parse before anything else. Fail-closed: no process is spawned on a
+    //    bad value, and from here on `sha` is the value this module built.
+    let sha = GitSha::parse(to_sha)?;
 
     // 1. Idempotency: has this SHA already been reverted?
-    let grep_pattern = format!("Revert.*{}", short_sha(to_sha));
+    let grep_pattern = format!("Revert.*{}", sha.short());
     let existing = runner
         .run_git(
             &["log", "--oneline", "--grep", &grep_pattern],
@@ -261,7 +314,10 @@ pub fn rollback<R: ShellRunner>(
     // revert repassa o que nao consumiu para `setup_revisions`. Fica por
     // higiene e consistencia; quem protege este call site e o
     // `validate_git_sha` acima, sozinho.
-    runner.run_git(&["revert", "--no-edit", "--", to_sha], &opts.repo_root)?;
+    runner.run_git(
+        &["revert", "--no-edit", "--", sha.as_str()],
+        &opts.repo_root,
+    )?;
 
     // 3. Look up historical score for this SHA.
     let historical_score = score_history(name, opts)?
@@ -280,11 +336,6 @@ pub fn rollback<R: ShellRunner>(
     append_score_entry(name, audit, opts)?;
 
     Ok(())
-}
-
-fn short_sha(sha: &str) -> &str {
-    let end = sha.len().min(8);
-    &sha[..end]
 }
 
 // ─────────────────────────────────────────────────────────
@@ -684,6 +735,25 @@ mod tests {
         fn run_gh(&self, _args: &[&str], _cwd: &Path) -> Result<String> {
             Ok(String::new())
         }
+    }
+
+    #[test]
+    fn git_sha_is_rebuilt_not_forwarded() {
+        // On accepted input the filter is the identity — the point is that the
+        // string handed to `git` is one this module built from the allowed
+        // alphabet, which is what breaks the taint path CodeQL follows.
+        let parsed = GitSha::parse(SHA1).unwrap();
+        assert_eq!(parsed.as_str(), SHA1);
+    }
+
+    #[test]
+    fn git_sha_short_cannot_panic() {
+        // The panic that motivated the original fix: byte 8 inside a multi-byte
+        // character. Unreachable now — `short` only exists on a parsed value,
+        // whose content is ASCII.
+        assert_eq!(GitSha::parse(SHA1).unwrap().short(), "aaaaaaaa");
+        assert_eq!(GitSha::parse("abcdef1").unwrap().short(), "abcdef1");
+        assert!(GitSha::parse("aaaaaaa\u{e9}").is_err());
     }
 
     #[test]
