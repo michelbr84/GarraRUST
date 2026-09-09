@@ -17,7 +17,11 @@ mod discord;
 mod google_chat;
 #[cfg(target_os = "macos")]
 mod imessage;
+mod irc;
+mod line;
 mod matrix;
+mod openclaw;
+mod signal;
 mod slack;
 mod teams;
 mod telegram;
@@ -46,6 +50,11 @@ pub use whatsapp::build_whatsapp_channels;
 /// `ChannelRegistry`.
 pub use google_chat::build_google_chat_channels;
 
+/// #1050: o canal LINE, que tinha `impl Channel`, verificacao de assinatura
+/// (#1051) e nenhuma rota. Canal push, como o WhatsApp: o `Vec<Arc<_>>` vira
+/// estado da rota `/webhooks/line`, nao entrada do `ChannelRegistry`.
+pub use line::build_line_channels;
+
 /// #1050: o canal Microsoft Teams. Canal push, e o unico cujo destino de
 /// saida vem do corpo da requisicao — ver `bootstrap::teams` e
 /// `garraia_channels::teams::auth`.
@@ -55,8 +64,17 @@ pub use teams::build_teams_channels;
 #[cfg(target_os = "macos")]
 pub use imessage::build_imessage_channels;
 
+/// #1050: o canal IRC, que tinha `impl Channel` e nenhum call-site.
+pub use irc::build_irc_channels;
+
 /// #1050: o canal Matrix, que tinha `impl Channel` e sync loop e nenhum call-site.
 pub use matrix::build_matrix_channels;
+
+/// #1050: le a config do bridge OpenClaw, que ate agora ninguem lia.
+pub use openclaw::{build_openclaw_config, spawn_openclaw_router};
+
+/// #1050: o canal Signal, que tinha `impl Channel` e guard de URL e nenhum call-site.
+pub use signal::build_signal_channels;
 
 // Slice 10.g (GAR-691): Telegram wiring + voice handler extracted to `bootstrap::telegram`.
 pub use telegram::build_telegram_channels;
