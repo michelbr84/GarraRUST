@@ -17,6 +17,8 @@ mod discord;
 mod google_chat;
 #[cfg(target_os = "macos")]
 mod imessage;
+mod irc;
+mod line;
 mod signal;
 mod slack;
 mod teams;
@@ -46,6 +48,11 @@ pub use whatsapp::build_whatsapp_channels;
 /// `ChannelRegistry`.
 pub use google_chat::build_google_chat_channels;
 
+/// #1050: o canal LINE, que tinha `impl Channel`, verificacao de assinatura
+/// (#1051) e nenhuma rota. Canal push, como o WhatsApp: o `Vec<Arc<_>>` vira
+/// estado da rota `/webhooks/line`, nao entrada do `ChannelRegistry`.
+pub use line::build_line_channels;
+
 /// #1050: o canal Microsoft Teams. Canal push, e o unico cujo destino de
 /// saida vem do corpo da requisicao — ver `bootstrap::teams` e
 /// `garraia_channels::teams::auth`.
@@ -54,6 +61,9 @@ pub use teams::build_teams_channels;
 // Slice 10.f (GAR-480): iMessage wiring extracted to `bootstrap::imessage` (macOS-only).
 #[cfg(target_os = "macos")]
 pub use imessage::build_imessage_channels;
+
+/// #1050: o canal IRC, que tinha `impl Channel` e nenhum call-site.
+pub use irc::build_irc_channels;
 
 /// #1050: o canal Signal, que tinha `impl Channel` e guard de URL e nenhum call-site.
 pub use signal::build_signal_channels;

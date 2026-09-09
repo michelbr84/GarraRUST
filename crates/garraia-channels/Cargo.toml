@@ -53,7 +53,9 @@ webhook-jwt = ["dep:jsonwebtoken", "dep:axum"]
 discord = ["dep:serenity", "dep:poise", "dep:native-tls"]
 google_chat = ["webhook-jwt"]
 irc = []
-line = ["dep:hmac", "dep:sha2", "dep:subtle", "dep:base64"]
+# `dep:axum` entra aqui pelo mesmo motivo do `whatsapp`: o LINE e um canal
+# push, e o handler do webhook (`line_channel::webhook`) e um handler Axum.
+line = ["dep:hmac", "dep:sha2", "dep:subtle", "dep:base64", "dep:axum"]
 matrix = []
 openclaw = ["dep:tokio-tungstenite", "dep:futures"]
 signal = []

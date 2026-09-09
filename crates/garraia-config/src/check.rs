@@ -670,6 +670,8 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
     validate_google_chat(&config.channels, &mut findings, &push_warn);
     validate_signal(&config.channels, &mut findings, &push_warn);
+    validate_irc(&config.channels, &mut findings, &push_warn);
+    validate_line(&config.channels, &mut findings, &push_warn);
     validate_teams(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
@@ -1168,6 +1170,139 @@ fn validate_teams(
                 &format!("channels.{name}"),
                 format!(
                     "teams channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
+    }
+}
+
+/// Os dois segredos do canal LINE (#1050).
+///
+/// A checagem generica de token acima nao alcanca o LINE: ela procura
+/// `bot_token`/`access_token`/`app_token`, e os campos do LINE sao
+/// `channel_access_token` e `channel_secret`. Sem esta funcao, um canal LINE
+/// pela metade sairia do `config check` sem um unico achado.
+///
+/// Os dois campos nao sao equivalentes, e a mensagem diz qual e qual:
+///
+/// - sem `channel_access_token` o canal nao consegue **responder** (o token e
+///   o bearer da Messaging API);
+/// - sem `channel_secret` o canal nao e sequer construido — `LineChannel::new`
+///   o recusa (#1051), porque sem o segredo nao ha como distinguir um webhook
+///   do LINE de um POST forjado por quem descobriu a URL.
+fn validate_line(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "line" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env, consequencia) in [
+            (
+                "channel_access_token",
+                "LINE_CHANNEL_ACCESS_TOKEN",
+                "the channel will be skipped at boot and cannot reply",
+            ),
+            (
+                "channel_secret",
+                "LINE_CHANNEL_SECRET",
+                "the channel will be REFUSED at boot: without it a forged POST to /webhooks/line is indistinguishable from a real one",
+            ),
+        ] {
+            let configurado_inline = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            // `var(..).is_ok_and(nao vazio)`, e nao `var_os(..).is_some()`:
+            // `var_os` devolve `Some("")` para uma variavel definida como
+            // vazia, e o boot usa `resolve_api_key`, que filtra vazio
+            // (`provider_keys.rs:155`). Com `var_os` o operador definiria
+            // `LINE_CHANNEL_SECRET=""`, veria o check dizer "ok", e o canal
+            // nao subiria — o check estaria afirmando o contrario do que o
+            // boot faz.
+            if configurado_inline || std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "line channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
+    }
+}
+
+/// O IRC nao tem token — a identidade e o nick, que num servidor sem NickServ
+/// qualquer um pode tomar — entao a checagem generica de credencial nao o
+/// alcanca (#1050). O que ele precisa e um servidor e ao menos uma sala; sem
+/// qualquer um dos dois e pulado no boot com um `warn!` que so aparece no log.
+///
+/// E ha uma armadilha de porta: o default do `IrcConfig` e 6667, que e a
+/// porta em claro. Ligar `use_tls` sem dizer a porta apontaria TLS para 6667.
+/// O bootstrap corrige o default, mas uma porta escrita a mao em desacordo
+/// com o `use_tls` continua sendo do operador — e vale avisar.
+fn validate_irc(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "irc" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        let tem_server = ch
+            .settings
+            .get("server")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+
+        if !tem_server && std::env::var_os("IRC_SERVER").is_none() {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "irc channel '{name}' is enabled but has no server in config or the IRC_SERVER env var; the channel will be skipped at boot"
+                ),
+            );
+        }
+
+        let salas = ch
+            .settings
+            .get("channels")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter(|v| v.is_string()).count())
+            .unwrap_or(0);
+
+        if salas == 0 {
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "irc channel '{name}' is enabled but joins no channels; set `channels = [\"#room\"]` under its settings or it will be skipped at boot"
+                ),
+            );
+        }
+
+        let use_tls = ch
+            .settings
+            .get("use_tls")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let port = ch.settings.get("port").and_then(serde_json::Value::as_u64);
+
+        if use_tls && port == Some(6667) {
+            push_warn(
+                findings,
+                &format!("channels.{name}.settings.port"),
+                format!(
+                    "irc channel '{name}' has use_tls = true with port 6667, the cleartext IRC port; TLS servers usually listen on 6697"
                 ),
             );
         }
@@ -2823,6 +2958,225 @@ mod tests {
         assert!(
             findings.iter().all(|f| f.field != "channels.sig"),
             "canal desligado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    // ─── #1050: o IRC nao tem token, e tem armadilha de porta ─────────────
+
+    fn cfg_irc(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "irc1".into(),
+            crate::model::ChannelConfig {
+                channel_type: "irc".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    /// Sem servidor e sem sala o canal e pulado no boot. A checagem generica
+    /// procura token, que o IRC nao tem, entao sem esta validacao propria o
+    /// canal sairia do check sem um unico achado.
+    #[test]
+    fn irc_sem_servidor_ou_sala_avisa() {
+        let findings = validate(&cfg_irc(Some(true), serde_json::json!({})));
+        let msgs: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.field == "channels.irc1")
+            .map(|f| f.message.as_str())
+            .collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("IRC_SERVER")),
+            "esperava aviso de server: {findings:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("joins no channels")),
+            "esperava aviso de sala: {findings:?}"
+        );
+    }
+
+    /// Lista de salas vazia conta como ausente — `channels = []` no TOML
+    /// passaria pelo check e o canal seria pulado no boot.
+    #[test]
+    fn irc_com_lista_de_salas_vazia_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({"server": "irc.libera.chat", "channels": []}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "channels.irc1" && f.message.contains("joins no channels")),
+            "esperava aviso de sala vazia: {findings:?}"
+        );
+    }
+
+    /// A armadilha: o default do `IrcConfig` e 6667, a porta em claro. Uma
+    /// porta escrita a mao em desacordo com o `use_tls` e do operador, e vale
+    /// nomear antes que ele descubra por tcpdump.
+    #[test]
+    fn irc_com_tls_na_porta_em_claro_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({
+                "server": "irc.libera.chat",
+                "channels": ["#garraia"],
+                "use_tls": true,
+                "port": 6667,
+            }),
+        ));
+        assert!(
+            findings.iter().any(
+                |f| f.field == "channels.irc1.settings.port" && f.message.contains("cleartext")
+            ),
+            "esperava aviso de porta: {findings:?}"
+        );
+
+        // 6697 com TLS, e 6667 sem TLS, nao avisam.
+        for (tls, porta) in [(true, 6697), (false, 6667)] {
+            let findings = validate(&cfg_irc(
+                Some(true),
+                serde_json::json!({
+                    "server": "irc.libera.chat",
+                    "channels": ["#garraia"],
+                    "use_tls": tls,
+                    "port": porta,
+                }),
+            ));
+            assert!(
+                findings
+                    .iter()
+                    .all(|f| f.field != "channels.irc1.settings.port"),
+                "tls={tls} porta={porta} nao deveria avisar: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irc_completo_nao_avisa() {
+        let findings = validate(&cfg_irc(
+            Some(true),
+            serde_json::json!({"server": "irc.libera.chat", "channels": ["#garraia"]}),
+        ));
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f.field.starts_with("channels.irc1")),
+            "canal completo nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn irc_desligado_fica_calado() {
+        let findings = validate(&cfg_irc(Some(false), serde_json::json!({})));
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f.field.starts_with("channels.irc1")),
+            "canal desligado nao deveria gerar achado: {findings:?}"
+        );
+    }
+
+    fn cfg_line(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "ln".into(),
+            crate::model::ChannelConfig {
+                channel_type: "line".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    fn mensagens_de_line(cfg: &AppConfig) -> Vec<String> {
+        achados_de(cfg, "channels.ln")
+            .into_iter()
+            .map(|f| f.message)
+            .collect()
+    }
+
+    /// A checagem generica procura `bot_token`/`access_token`/`app_token`; os
+    /// campos do LINE sao outros dois. Sem `validate_line`, um canal LINE sem
+    /// nenhuma credencial saia do `config check` limpo.
+    #[test]
+    fn line_sem_token_nem_segredo_avisa_dos_dois() {
+        let msgs = mensagens_de_line(&cfg_line(Some(true), serde_json::json!({})));
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_access_token")),
+            "esperava aviso de channel_access_token: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_secret")),
+            "esperava aviso de channel_secret: {msgs:?}"
+        );
+    }
+
+    /// O aviso do segredo diz a consequencia certa: o canal e **recusado**
+    /// (#1051), nao apenas pulado, e a razao e que sem ele um POST forjado e
+    /// indistinguivel de um real.
+    #[test]
+    fn o_aviso_do_channel_secret_diz_que_o_canal_e_recusado() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({"channel_access_token": "tok"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so o segredo deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("REFUSED") && msgs[0].contains("forged"),
+            "o aviso tem de explicar o que se perde: {}",
+            msgs[0]
+        );
+    }
+
+    #[test]
+    fn line_completo_nao_avisa() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({
+                "channel_access_token": "tok",
+                "channel_secret": "seg",
+            }),
+        ));
+        assert!(
+            msgs.is_empty(),
+            "canal completo nao deveria gerar achado: {msgs:?}"
+        );
+    }
+
+    /// Espaco em branco conta como ausente — a mesma regra que
+    /// `LineChannel::new` e `verify_signature` usam (#1059). Se o check
+    /// aceitasse `"   "`, ele diria "ok" para exatamente a config que o boot
+    /// recusa.
+    #[test]
+    fn line_com_segredo_em_branco_conta_como_ausente() {
+        let msgs = mensagens_de_line(&cfg_line(
+            Some(true),
+            serde_json::json!({"channel_access_token": "tok", "channel_secret": "   "}),
+        ));
+        assert!(
+            msgs.iter().any(|m| m.contains("channel_secret")),
+            "segredo em branco deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn line_desabilitado_nao_avisa() {
+        let msgs = mensagens_de_line(&cfg_line(Some(false), serde_json::json!({})));
+        assert!(
+            msgs.is_empty(),
+            "canal desabilitado nao deveria gerar achado: {msgs:?}"
         );
     }
     // ─── #1050: as tres credenciais do canal Microsoft Teams ──────────────
