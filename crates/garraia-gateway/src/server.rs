@@ -13,9 +13,9 @@ use crate::admin;
 #[cfg(target_os = "macos")]
 use crate::bootstrap::build_imessage_channels;
 use crate::bootstrap::{
-    build_agent_runtime, build_channels, build_discord_channels, build_line_channels,
-    build_mcp_tools, build_slack_channels, build_telegram_channels, build_whatsapp_channels,
-    warn_if_embeddings_unhealthy,
+    build_agent_runtime, build_channels, build_discord_channels, build_google_chat_channels,
+    build_line_channels, build_mcp_tools, build_slack_channels, build_teams_channels,
+    build_telegram_channels, build_whatsapp_channels, warn_if_embeddings_unhealthy,
 };
 use crate::router::build_router;
 use crate::state::AppState;
@@ -836,6 +836,36 @@ impl GatewayServer {
         let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState =
             Arc::new(whatsapp_channels);
 
+        // Build Google Chat channels (webhook-driven — no persistent connection).
+        //
+        // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
+        // rota `/webhooks/google-chat`. Um canal sem `audience` nao chega ate
+        // aqui — `build_google_chat_channels` o descarta, porque sem ela o
+        // webhook aceitaria o token de qualquer outra app do Google Chat.
+        let google_chat_channels = build_google_chat_channels(&state.config, &state);
+        for channel in &google_chat_channels {
+            info!(
+                "google chat channel ready (webhook mode, name={})",
+                channel.name()
+            );
+        }
+        let google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState =
+            Arc::new(google_chat_channels);
+
+        // Build Teams channels (webhook-driven — no persistent connection).
+        //
+        // Um canal sem `app_id` nao chega ate aqui — `build_teams_channels` o
+        // descarta, porque sem ele o webhook aceitaria o token de qualquer
+        // outro bot do Bot Framework.
+        let teams_channels = build_teams_channels(&state.config, &state);
+        for channel in &teams_channels {
+            info!(
+                "teams channel ready (webhook mode, name={})",
+                channel.name()
+            );
+        }
+        let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(teams_channels);
+
         // Build LINE channels (webhook-driven — no persistent connection).
         //
         // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
@@ -891,6 +921,8 @@ impl GatewayServer {
         let app = build_router(
             state,
             whatsapp_state,
+            google_chat_state,
+            teams_state,
             line_state,
             admin_store,
             admin_encryption_key,
@@ -1033,6 +1065,9 @@ pub async fn build_router_for_test_with_storage(
 
     // Minimal collaborators expected by the production router.
     let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState = Arc::new(Vec::new());
+    let google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState =
+        Arc::new(Vec::new());
+    let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(Vec::new());
     let line_state: garraia_channels::line_channel::webhook::LineState = Arc::new(Vec::new());
     let mut admin_store_owned =
         admin::store::AdminStore::in_memory().expect("in-memory admin store should work");
@@ -1044,6 +1079,8 @@ pub async fn build_router_for_test_with_storage(
     build_router(
         state,
         whatsapp_state,
+        google_chat_state,
+        teams_state,
         line_state,
         admin_store,
         admin_encryption_key,

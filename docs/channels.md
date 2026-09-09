@@ -202,6 +202,127 @@ If more than one LINE channel is configured, the signature — not any field in
 the request body — decides which one a webhook belongs to.
 
 [LINE Developers Console]: https://developers.line.biz/console/
+## Google Chat
+
+Webhook-driven: the gateway exposes `POST /webhooks/google-chat` and Google
+calls it.
+
+### Setup
+
+1. Create a Chat app in the [Google Cloud console] and set its **Connection
+   settings** to *HTTP endpoint URL*, pointing at
+   `https://<your-gateway>/webhooks/google-chat`.
+2. Note the **Audience** the console shows for the app — either your Cloud
+   project number or the app URL. This is not optional; see below.
+3. Obtain an OAuth2 bearer token for the service account that will post
+   replies.
+
+```yaml
+channels:
+  google_chat:
+    type: google_chat
+    enabled: true
+    audience: "1234567890"
+    service_account_token: "YOUR_OAUTH2_BEARER_TOKEN"
+```
+
+Both can come from the environment instead — `GOOGLE_CHAT_AUDIENCE` and
+`GOOGLE_CHAT_SERVICE_ACCOUNT_TOKEN`. `garra config check` reports either one
+missing, and says which failure you get.
+
+### Features
+
+- Webhook-based integration; replies go to the originating space
+- RS256 JWT verification on every request, against Google's published keys
+- Allowlist management and 6-digit pairing, same as the other channels
+- One session per *space*, not per user — a space is a room, and the
+  conversation in it is one conversation
+
+### The audience is mandatory
+
+Without `audience` the channel is **refused at boot**. This is the least
+obvious of the required fields and the most important one.
+
+Every Google Chat webhook, for every app in the world, is signed by the same
+Google service account. Verifying only the signature would therefore accept
+a perfectly valid token that Google issued for *somebody else's* app — and
+that somebody can simply forward their token to your endpoint. The `aud`
+claim is the only thing in the token that says "this one is for you".
+
+Every rejection answers the same `401` with the same body, on purpose: a
+different message per failure mode would tell whoever is probing how close
+they got. The reason goes to the log only.
+
+### Known limitation
+
+`service_account_key_path` exists in the config and is **not used**. Minting
+a bearer token from a service account key requires the OAuth2 JWT bearer
+flow, which is not implemented yet — supply `service_account_token`
+directly for now.
+
+[Google Cloud console]: https://console.cloud.google.com/apis/api/chat.googleapis.com
+
+## Microsoft Teams
+
+Webhook-driven: the gateway exposes `POST /webhooks/teams` and the Bot
+Framework calls it.
+
+### Setup
+
+1. Register a bot in Azure and note its **Microsoft App ID**, secret and
+   tenant.
+2. Set the bot's messaging endpoint to
+   `https://<your-gateway>/webhooks/teams`.
+
+```yaml
+channels:
+  teams:
+    type: teams
+    enabled: true
+    app_id: "YOUR_APP_ID"
+    app_secret: "YOUR_APP_SECRET"
+    tenant_id: "YOUR_TENANT_ID"
+```
+
+All three can come from the environment instead — `TEAMS_APP_ID`,
+`TEAMS_APP_SECRET`, `TEAMS_TENANT_ID`. `garra config check` reports any that
+are missing and says which failure each one causes.
+
+### Features
+
+- Webhook-based integration; replies go back to the originating conversation
+- RS256 JWT verification on every request, against the Bot Framework's
+  published keys
+- Allowlist management and 6-digit pairing, same as the other channels
+- One session per *conversation* — a Teams conversation is a room, and its
+  history is one history
+
+### The app ID is mandatory
+
+Without `app_id` the channel is **refused at boot**. It looks like a plain
+identifier and it is in fact what holds the authentication up: every Bot
+Framework token is signed by the same Microsoft keys, so the audience claim
+is the only thing distinguishing a token issued for *your* bot from one
+issued for anybody else's.
+
+### Where the reply goes is checked, not trusted
+
+Unlike the other channels, Teams tells the gateway where to send the reply:
+the `serviceUrl` field of the incoming activity. That URL receives the bot's
+bearer token, so an unchecked value would let whoever sends an activity
+choose which server gets that credential.
+
+Two independent barriers stop that:
+
+1. The Bot Framework puts `serviceurl` in the **signed token**. The gateway
+   requires the body's `serviceUrl` to match it, so forging the destination
+   would mean forging Microsoft's signature.
+2. The outgoing request still goes through the SSRF guard — https only,
+   publicly routable addresses only, resolved IPs pinned. Even a legitimately
+   signed URL cannot point at `169.254.169.254` or your LAN.
+
+Every rejection answers the same `401` with the same body; the reason goes to
+the log only.
 
 ## iMessage (macOS only)
 

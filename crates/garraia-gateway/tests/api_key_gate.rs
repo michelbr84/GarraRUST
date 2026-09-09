@@ -40,8 +40,13 @@ fn router_com(chave: Option<&str>) -> Router {
         state,
         // whatsapp
         Arc::new(Vec::new()),
-        // line (#1050) — o gate nao toca em `/webhooks/*`, entao a lista
-        // vazia basta; o que este teste exercita e o layer sobre `/api/*`.
+        // google chat (#1050) — o gate nao toca em `/webhooks/*`, entao a
+        // lista vazia basta; o que este teste exercita e o layer sobre
+        // `/api/*`.
+        Arc::new(Vec::new()),
+        // teams (#1050), idem
+        Arc::new(Vec::new()),
+        // line (#1050), idem
         Arc::new(Vec::new()),
         admin_store,
         Arc::new(vec![0u8; 32]),

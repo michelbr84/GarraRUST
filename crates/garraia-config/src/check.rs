@@ -668,7 +668,9 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
+    validate_google_chat(&config.channels, &mut findings, &push_warn);
     validate_line(&config.channels, &mut findings, &push_warn);
+    validate_teams(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
 
@@ -694,13 +696,13 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
             "discord" => Some("DISCORD_BOT_TOKEN"),
             "slack" => Some("SLACK_BOT_TOKEN"),
             "whatsapp" => Some("WHATSAPP_ACCESS_TOKEN"),
-            // O LINE tem token, mas com nome proprio (`channel_access_token`)
-            // e um segundo segredo obrigatorio (`channel_secret`), que esta
-            // checagem generica nao conhece: ela procura so
+            // O Google Chat tem credenciais com nomes proprios
+            // (`audience` + `service_account_token`) que esta checagem
+            // generica nao conhece: ela procura so
             // `bot_token`/`access_token`/`app_token` para decidir se ha
-            // credencial inline, e concluiria "sem token" para um canal LINE
+            // credencial inline, e concluiria "sem token" para um canal
             // corretamente configurado. Os dois campos ficam em
-            // `validate_line`.
+            // `validate_google_chat`.
             _ => None,
         };
         if let Some(var) = env_var
@@ -1049,6 +1051,126 @@ fn validate_auth(
              GARRAIA_VAULT_PASSPHRASE (vault) and GARRAIA_JWT_SECRET (auth)"
                 .into(),
         );
+    }
+}
+
+/// As duas credenciais do canal Google Chat (#1050).
+///
+/// A checagem generica de token nao alcanca este canal: ela procura
+/// `bot_token`/`access_token`/`app_token`, e aqui os campos sao `audience` e
+/// `service_account_token`. Sem esta funcao, um canal Google Chat pela
+/// metade sairia do `config check` sem um unico achado.
+///
+/// Os dois campos falham de jeitos bem diferentes, e a mensagem diz qual e
+/// qual:
+///
+/// - sem `service_account_token` o canal **recebe e nao responde** — o
+///   usuario manda mensagem e o silencio parece bug do bot;
+/// - sem `audience` o canal e **recusado no boot**, porque todo webhook do
+///   Google Chat e assinado pela mesma chave do Google e o `aud` e a unica
+///   coisa que distingue esta app das outras. Um canal sem ela aceitaria um
+///   token legitimo emitido para a app de outra pessoa.
+fn validate_google_chat(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "google_chat" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env, consequencia) in [
+            (
+                "audience",
+                "GOOGLE_CHAT_AUDIENCE",
+                "the channel will be REFUSED at boot: without it a token issued for ANY other Google Chat app would be accepted, since every Chat webhook is signed by the same Google key",
+            ),
+            (
+                "service_account_token",
+                "GOOGLE_CHAT_SERVICE_ACCOUNT_TOKEN",
+                "the channel will be skipped at boot: it could receive messages but never answer",
+            ),
+        ] {
+            let configurado_inline = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            // `var(..).is_ok_and(nao vazio)`, e nao `var_os(..).is_some()`:
+            // `var_os` devolve `Some("")` para uma variavel definida como
+            // vazia, e o boot usa `resolve_api_key`, que filtra vazio. Com
+            // `var_os` o operador definiria `GOOGLE_CHAT_AUDIENCE=""`, veria
+            // o check dizer "ok", e o canal nao subiria — o check estaria
+            // afirmando o contrario do que o boot faz.
+            if configurado_inline || std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "google chat channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
+    }
+}
+
+/// As tres credenciais do canal Microsoft Teams (#1050).
+///
+/// Como o Google Chat, os campos tem nomes proprios que a checagem generica
+/// de token nao conhece.
+///
+/// O `app_id` e o que mais importa e o que menos parece: ele e a **audiencia**
+/// esperada no token do webhook. Todos os tokens do Bot Framework sao
+/// assinados pelas mesmas chaves da Microsoft, entao sem conferir o `aud` um
+/// token legitimo emitido para o bot de outra pessoa passaria.
+fn validate_teams(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    for (name, ch) in channels {
+        if ch.channel_type != "teams" || ch.enabled == Some(false) {
+            continue;
+        }
+
+        for (campo, env, consequencia) in [
+            (
+                "app_id",
+                "TEAMS_APP_ID",
+                "the channel will be REFUSED at boot: it is the audience the webhook token must declare, and without it a token issued for ANY other Bot Framework bot would be accepted",
+            ),
+            (
+                "app_secret",
+                "TEAMS_APP_SECRET",
+                "the channel will be skipped at boot: it could receive messages but never answer",
+            ),
+            (
+                "tenant_id",
+                "TEAMS_TENANT_ID",
+                "the channel will be skipped at boot: the Azure AD token request needs it",
+            ),
+        ] {
+            let configurado_inline = ch
+                .settings
+                .get(campo)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| !v.trim().is_empty());
+            // Mesma regra do `validate_google_chat`: `var_os` devolve
+            // `Some("")` para variavel vazia, e o boot filtra vazio.
+            if configurado_inline || std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}"),
+                format!(
+                    "teams channel '{name}' is enabled but has no {campo} in config or the {env} env var; {consequencia}"
+                ),
+            );
+        }
     }
 }
 
@@ -2541,7 +2663,111 @@ mod tests {
             "api_key + TLS on 0.0.0.0 must not warn: {findings:?}"
         );
     }
-    // ─── #1050: os dois segredos do canal LINE ────────────────────────────
+    // ─── #1050: as duas credenciais do canal Google Chat ──────────────────
+
+    fn cfg_google_chat(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "gc".into(),
+            crate::model::ChannelConfig {
+                channel_type: "google_chat".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    fn mensagens_de_gc(cfg: &AppConfig) -> Vec<String> {
+        achados_de(cfg, "channels.gc")
+            .into_iter()
+            .map(|f| f.message)
+            .collect()
+    }
+
+    #[test]
+    fn google_chat_sem_credencial_nenhuma_avisa_das_duas() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(Some(true), serde_json::json!({})));
+        assert!(
+            msgs.iter().any(|m| m.contains("audience")),
+            "esperava aviso de audience: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("service_account_token")),
+            "esperava aviso de service_account_token: {msgs:?}"
+        );
+    }
+
+    /// O aviso da `audience` tem de dizer a consequencia real: o canal e
+    /// recusado, e o motivo e que sem ela o token de **outra app** passaria.
+    /// Um aviso generico de "falta credencial" nao explicaria por que este
+    /// campo, que parece burocratico, e o que sustenta a autenticacao.
+    #[test]
+    fn o_aviso_da_audience_explica_o_token_de_outra_app() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"service_account_token": "tok"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so a audience deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("REFUSED") && msgs[0].contains("other Google Chat app"),
+            "o aviso tem de explicar o que se perde: {}",
+            msgs[0]
+        );
+    }
+
+    /// Sem o token o canal recebe e nao responde — falha diferente da
+    /// `audience`, e a mensagem tem de distinguir.
+    #[test]
+    fn o_aviso_do_token_diz_que_o_canal_nao_responde() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"audience": "1234567890"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so o token deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("never answer"),
+            "o aviso tem de dizer que o canal fica mudo: {}",
+            msgs[0]
+        );
+    }
+
+    #[test]
+    fn google_chat_completo_nao_avisa() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"audience": "1234567890", "service_account_token": "tok"}),
+        ));
+        assert!(
+            msgs.is_empty(),
+            "canal completo nao deveria avisar: {msgs:?}"
+        );
+    }
+
+    /// Espaco em branco conta como ausente — a mesma regra que
+    /// `GoogleChatChannel::new` usa. Se o check aceitasse `"   "`, ele diria
+    /// "ok" para exatamente a config que o boot recusa.
+    #[test]
+    fn google_chat_com_audience_em_branco_conta_como_ausente() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(
+            Some(true),
+            serde_json::json!({"audience": "   ", "service_account_token": "tok"}),
+        ));
+        assert!(
+            msgs.iter().any(|m| m.contains("audience")),
+            "audience em branco deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn google_chat_desabilitado_nao_avisa() {
+        let msgs = mensagens_de_gc(&cfg_google_chat(Some(false), serde_json::json!({})));
+        assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
 
     fn cfg_line(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
         let mut cfg = AppConfig::default();
@@ -2638,5 +2864,88 @@ mod tests {
             msgs.is_empty(),
             "canal desabilitado nao deveria gerar achado: {msgs:?}"
         );
+    }
+    // ─── #1050: as tres credenciais do canal Microsoft Teams ──────────────
+
+    fn cfg_teams(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        let settings: HashMap<String, serde_json::Value> = match settings {
+            serde_json::Value::Object(m) => m.into_iter().collect(),
+            _ => HashMap::new(),
+        };
+        cfg.channels.insert(
+            "tm".into(),
+            crate::model::ChannelConfig {
+                channel_type: "teams".into(),
+                enabled,
+                settings,
+            },
+        );
+        cfg
+    }
+
+    fn mensagens_de_teams(cfg: &AppConfig) -> Vec<String> {
+        achados_de(cfg, "channels.tm")
+            .into_iter()
+            .map(|f| f.message)
+            .collect()
+    }
+
+    #[test]
+    fn teams_sem_credencial_nenhuma_avisa_das_tres() {
+        let msgs = mensagens_de_teams(&cfg_teams(Some(true), serde_json::json!({})));
+        for campo in ["app_id", "app_secret", "tenant_id"] {
+            assert!(
+                msgs.iter().any(|m| m.contains(campo)),
+                "esperava aviso de {campo}: {msgs:?}"
+            );
+        }
+    }
+
+    /// O `app_id` parece burocratico e e o que sustenta a autenticacao: sem
+    /// ele o token de qualquer outro bot do Bot Framework passaria. O aviso
+    /// tem de dizer isso, senao o operador o trata como um id qualquer.
+    #[test]
+    fn o_aviso_do_app_id_explica_o_token_de_outro_bot() {
+        let msgs = mensagens_de_teams(&cfg_teams(
+            Some(true),
+            serde_json::json!({"app_secret": "s", "tenant_id": "t"}),
+        ));
+        assert_eq!(msgs.len(), 1, "so o app_id deveria faltar: {msgs:?}");
+        assert!(
+            msgs[0].contains("REFUSED") && msgs[0].contains("other Bot Framework bot"),
+            "o aviso tem de explicar o que se perde: {}",
+            msgs[0]
+        );
+    }
+
+    #[test]
+    fn teams_completo_nao_avisa() {
+        let msgs = mensagens_de_teams(&cfg_teams(
+            Some(true),
+            serde_json::json!({"app_id": "a", "app_secret": "s", "tenant_id": "t"}),
+        ));
+        assert!(
+            msgs.is_empty(),
+            "canal completo nao deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn teams_com_app_id_em_branco_conta_como_ausente() {
+        let msgs = mensagens_de_teams(&cfg_teams(
+            Some(true),
+            serde_json::json!({"app_id": "   ", "app_secret": "s", "tenant_id": "t"}),
+        ));
+        assert!(
+            msgs.iter().any(|m| m.contains("app_id")),
+            "app_id em branco deveria avisar: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn teams_desabilitado_nao_avisa() {
+        let msgs = mensagens_de_teams(&cfg_teams(Some(false), serde_json::json!({})));
+        assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
     }
 }

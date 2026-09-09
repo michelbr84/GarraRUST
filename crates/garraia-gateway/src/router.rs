@@ -138,6 +138,8 @@ fn build_skill_skin_routes(
 pub fn build_router(
     state: SharedState,
     whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState,
+    google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState,
+    teams_state: garraia_channels::teams::webhook::TeamsState,
     line_state: garraia_channels::line_channel::webhook::LineState,
     admin_store: Arc<Mutex<admin::store::AdminStore>>,
     admin_encryption_key: Arc<Vec<u8>>,
@@ -194,9 +196,28 @@ pub fn build_router(
         )
         .with_state(whatsapp_state);
 
-    // #1050: o LINE so tem POST. O `GET` do WhatsApp existe porque a Cloud API
-    // faz um handshake `hub.challenge` para validar a URL; o LINE valida pelo
-    // proprio POST assinado, entao um GET aqui seria rota sem contrato.
+    // #1050: so POST. O `GET` do WhatsApp existe por causa do handshake
+    // `hub.challenge` da Cloud API; o Google Chat valida pelo proprio POST,
+    // que traz o JWT — um GET aqui seria rota sem contrato.
+    let google_chat_routes = Router::new()
+        .route(
+            "/webhooks/google-chat",
+            post(garraia_channels::google_chat::webhook::google_chat_webhook),
+        )
+        .with_state(google_chat_state);
+
+    // #1050: so POST, como o Google Chat.
+    let teams_routes = Router::new()
+        .route(
+            "/webhooks/teams",
+            post(garraia_channels::teams::webhook::teams_webhook),
+        )
+        .with_state(teams_state);
+
+    // #1050: o LINE tambem so tem POST. O `GET` do WhatsApp existe porque a
+    // Cloud API faz um handshake `hub.challenge` para validar a URL; o LINE
+    // valida pelo proprio POST assinado, entao um GET aqui seria rota sem
+    // contrato.
     let line_routes = Router::new()
         .route(
             "/webhooks/line",
@@ -461,6 +482,8 @@ pub fn build_router(
         .route("/admin", get(admin_page))
         .with_state(state.clone())
         .merge(whatsapp_routes)
+        .merge(google_chat_routes)
+        .merge(teams_routes)
         .merge(line_routes)
         // GAR-391c: /v1/auth/{login,refresh,logout,signup} mounted
         // unconditionally. Handlers fail-soft to 503 when AuthConfig env
@@ -1227,6 +1250,8 @@ const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
     ("slack", "Slack", true),
     ("whatsapp", "WhatsApp", true),
     ("imessage", "iMessage", false),
+    ("google_chat", "Google Chat", true),
+    ("teams", "Microsoft Teams", true),
     ("line", "LINE", true),
     ("openclaw", "OpenClaw", false),
     ("mcp", "MCP", false),
