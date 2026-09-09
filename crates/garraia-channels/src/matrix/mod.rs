@@ -186,13 +186,12 @@ impl Channel for MatrixChannel {
                 .bearer_auth(&config.access_token)
                 .send()
                 .await
+                && let Ok(body) = resp.json::<serde_json::Value>().await
             {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    since = body
-                        .get("next_batch")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                }
+                since = body
+                    .get("next_batch")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
             }
 
             loop {
@@ -276,64 +275,64 @@ impl Channel for MatrixChannel {
                                 let body_text =
                                     content.and_then(|c| c.get("body")).and_then(|b| b.as_str());
 
-                                if msgtype == Some("m.text") {
-                                    if let Some(text) = body_text {
-                                        // Skip our own messages
-                                        if sender.is_empty() || text.trim().is_empty() {
-                                            continue;
-                                        }
+                                if msgtype == Some("m.text")
+                                    && let Some(text) = body_text
+                                {
+                                    // Skip our own messages
+                                    if sender.is_empty() || text.trim().is_empty() {
+                                        continue;
+                                    }
 
-                                        let room = room_id.clone();
-                                        let user = sender.to_string();
-                                        let msg_text = text.to_string();
-                                        let cb = Arc::clone(&on_message);
-                                        let reply_client = client.clone();
-                                        let reply_config = config.clone();
+                                    let room = room_id.clone();
+                                    let user = sender.to_string();
+                                    let msg_text = text.to_string();
+                                    let cb = Arc::clone(&on_message);
+                                    let reply_client = client.clone();
+                                    let reply_config = config.clone();
 
-                                        tokio::spawn(async move {
-                                            match cb(
-                                                room.clone(),
-                                                user.clone(),
-                                                user.clone(),
-                                                msg_text,
-                                                None,
-                                            )
-                                            .await
-                                            {
-                                                Ok(reply) => {
-                                                    let txn_id = format!(
-                                                        "garraia-{}",
-                                                        chrono::Utc::now().timestamp_millis()
-                                                    );
-                                                    let url = format!(
-                                                        "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
-                                                        reply_config
-                                                            .homeserver_url
-                                                            .trim_end_matches('/'),
-                                                        room,
-                                                        txn_id
-                                                    );
-                                                    let body = serde_json::json!({
-                                                        "msgtype": "m.text",
-                                                        "body": reply,
-                                                    });
-                                                    if let Err(e) = reply_client
-                                                        .put(&url)
-                                                        .bearer_auth(&reply_config.access_token)
-                                                        .json(&body)
-                                                        .send()
-                                                        .await
-                                                    {
-                                                        error!("matrix: failed to send reply: {e}");
-                                                    }
-                                                }
-                                                Err(e) if e == "__blocked__" => {}
-                                                Err(e) => {
-                                                    error!("matrix: callback error: {e}");
+                                    tokio::spawn(async move {
+                                        match cb(
+                                            room.clone(),
+                                            user.clone(),
+                                            user.clone(),
+                                            msg_text,
+                                            None,
+                                        )
+                                        .await
+                                        {
+                                            Ok(reply) => {
+                                                let txn_id = format!(
+                                                    "garraia-{}",
+                                                    chrono::Utc::now().timestamp_millis()
+                                                );
+                                                let url = format!(
+                                                    "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+                                                    reply_config
+                                                        .homeserver_url
+                                                        .trim_end_matches('/'),
+                                                    room,
+                                                    txn_id
+                                                );
+                                                let body = serde_json::json!({
+                                                    "msgtype": "m.text",
+                                                    "body": reply,
+                                                });
+                                                if let Err(e) = reply_client
+                                                    .put(&url)
+                                                    .bearer_auth(&reply_config.access_token)
+                                                    .json(&body)
+                                                    .send()
+                                                    .await
+                                                {
+                                                    error!("matrix: failed to send reply: {e}");
                                                 }
                                             }
-                                        });
-                                    }
+                                            Err(e) if e == "__blocked__" => {}
+                                            Err(e) => {
+                                                error!("matrix: callback error: {e}");
+                                            }
+                                        }
+                                    });
                                 }
                             }
                         }

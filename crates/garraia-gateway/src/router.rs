@@ -1255,6 +1255,7 @@ const KNOWN_CHANNELS: &[(&str, &str, bool)] = &[
     ("line", "LINE", true),
     ("irc", "IRC", false),
     ("signal", "Signal", false),
+    ("matrix", "Matrix", true),
     ("openclaw", "OpenClaw", false),
     ("mcp", "MCP", false),
     ("cli", "CLI", false),

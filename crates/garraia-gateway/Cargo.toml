@@ -9,7 +9,7 @@ description = "WebSocket gateway and control plane for GarraIA"
 garraia-common = { workspace = true, features = ["ssrf"] }
 garraia-config = { workspace = true }
 garraia-glob = { workspace = true }
-garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "imessage", "openclaw", "google_chat", "teams", "line", "irc", "signal"] }
+garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "imessage", "openclaw", "google_chat", "teams", "line", "irc", "signal", "matrix"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
 garraia-runtime = { workspace = true }
 garraia-db = { workspace = true }
