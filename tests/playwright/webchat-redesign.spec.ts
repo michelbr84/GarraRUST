@@ -110,6 +110,99 @@ test.describe('Garra Glass — webchat redesign', () => {
     // We just assert the hamburger button is reachable — it's the door back.
     await expect(page.locator('#hamburger-btn')).toBeVisible();
   });
+
+  // #1123 — the hamburger is rendered at every width, but the old handler
+  // unconditionally opened the *mobile* drawer. On desktop that only produced
+  // the dimming overlay: the sidebar was already on screen, so nothing moved.
+  test('desktop viewport: hamburger collapses the sidebar without the mobile overlay', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 633 });
+    await openWebchat(page);
+
+    const hamburger = page.locator('#hamburger-btn');
+    const sidebarEl = page.locator('#sidebar');
+    const overlay = page.locator('#sidebar-overlay');
+
+    await expect(hamburger).toBeVisible();
+    await expect(sidebarEl).not.toHaveClass(/collapsed/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+
+    await hamburger.click();
+
+    await expect(sidebarEl).toHaveClass(/collapsed/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+    // The regression itself: no dimming overlay may be left behind on desktop.
+    await expect(overlay).not.toHaveClass(/show/);
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+
+    await hamburger.click();
+
+    await expect(sidebarEl).not.toHaveClass(/collapsed/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+    await expect(overlay).not.toHaveClass(/show/);
+  });
+
+  test('mobile viewport: hamburger still opens the sidebar drawer with its overlay', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openWebchat(page);
+
+    const hamburger = page.locator('#hamburger-btn');
+    const sidebarEl = page.locator('#sidebar');
+    const overlay = page.locator('#sidebar-overlay');
+
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+
+    await hamburger.click();
+
+    await expect(sidebarEl).toHaveClass(/mobile-open/);
+    await expect(overlay).toHaveClass(/show/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+
+    await hamburger.click();
+
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+    await expect(overlay).not.toHaveClass(/show/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  // #1132 CR follow-up: the drawer has pre-existing close paths that never
+  // touch the hamburger (page-router buttons, session items, settings). The
+  // sync lives inside closeSidebarMobile(), so aria-expanded must follow even
+  // when the button itself is not the trigger.
+  test('mobile viewport: closing the drawer via a sidebar page button syncs aria-expanded', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openWebchat(page);
+
+    const hamburger = page.locator('#hamburger-btn');
+    const sidebarEl = page.locator('#sidebar');
+    const overlay = page.locator('#sidebar-overlay');
+
+    await hamburger.click();
+    await expect(sidebarEl).toHaveClass(/mobile-open/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+
+    // A pre-existing close path: a nav button inside the drawer.
+    await page.locator('.sidebar-page-btn[data-page="dashboard"]').click();
+
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+    await expect(overlay).not.toHaveClass(/show/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('resizing from mobile to desktop clears a stale mobile-open sidebar', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openWebchat(page);
+
+    await page.locator('#hamburger-btn').click();
+    await expect(page.locator('#sidebar')).toHaveClass(/mobile-open/);
+    await expect(page.locator('#sidebar-overlay')).toHaveClass(/show/);
+
+    await page.setViewportSize({ width: 1280, height: 633 });
+
+    await expect(page.locator('#sidebar')).not.toHaveClass(/mobile-open/);
+    await expect(page.locator('#sidebar-overlay')).not.toHaveClass(/show/);
+    await expect(page.locator('#sidebar')).not.toHaveClass(/collapsed/);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
