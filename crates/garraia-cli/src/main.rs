@@ -230,6 +230,20 @@ enum Commands {
         /// Pull a missing Ollama model without asking first.
         #[arg(long, short = 'y')]
         yes: bool,
+
+        /// Keep the conversation on disk. Every turn goes to
+        /// `<data_dir>/sessions.db` and the session id is printed on start,
+        /// so `--resume` can pick the conversation up later. Off by
+        /// default: without it nothing is written, and no database is even
+        /// opened (#1088).
+        #[arg(long)]
+        persist: bool,
+
+        /// Reopen a persisted session, loading its history before the first
+        /// turn. Implies persistence for the turns that follow, so the
+        /// resumed conversation keeps growing in the same session (#1088).
+        #[arg(long, value_name = "SESSION_ID")]
+        resume: Option<String>,
     },
 
     /// Non-interactive AI query — single message in, single answer out
@@ -1987,13 +2001,25 @@ async fn async_main(
             url,
             timeout_secs,
             yes,
+            persist,
+            resume,
         } => {
             // Without a tracing subscriber, --debug/RUST_LOG silently produce
             // nothing in chat mode. Since #933 the file gets everything while
             // stderr stays WARN+ unless --verbose/--debug asks for more — the
             // interactive console no longer competes with INFO records.
             init_tracing(&effective_level);
-            chat::run_chat(config, provider, model, url, timeout_secs, yes).await?;
+            chat::run_chat(
+                config,
+                provider,
+                model,
+                url,
+                timeout_secs,
+                yes,
+                persist,
+                resume,
+            )
+            .await?;
         }
         Commands::Ask {
             message,
@@ -2372,6 +2398,8 @@ mod tests {
                 "--log-level",
                 "--model",
                 "--provider",
+                // #1088: `--resume <SESSION_ID>` tambem come o proximo argv.
+                "--resume",
                 "--timeout-secs",
                 "--url",
                 "-m",

@@ -353,7 +353,7 @@ fn allowed_dirs() -> Option<Vec<std::path::PathBuf>> {
 fn build_tools(config: &AppConfig) -> Vec<Box<dyn garraia_agents::Tool>> {
     let dirs = allowed_dirs();
     let mut tools: Vec<Box<dyn garraia_agents::Tool>> = vec![
-        Box::new(BashTool::new(None)),
+        Box::new(BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone())),
         Box::new(FileReadTool::new(dirs.clone())),
         Box::new(FileWriteTool::new(dirs)),
         Box::new(WebFetchTool::new(None)),
