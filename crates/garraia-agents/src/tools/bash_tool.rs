@@ -86,16 +86,24 @@ impl BashTool {
     /// padrão auditável a olho nu é o ponto. Padrões com `*` fora do fim são
     /// recusados com warning em vez de interpretados: adivinhar a intenção de
     /// um coringa no meio é como se abre um `rm -rf *` por acidente.
+    ///
+    /// Um padrão de prefixo **nunca** cobre um comando composto (`;`,
+    /// `&&`, `$(...)`, pipe, redireção): ver [`Self::matches_allowlist`].
     #[must_use = "devolve um BashTool novo; o receptor nao e alterado"]
     pub fn with_allowlist(mut self, patterns: Vec<String>) -> Self {
         self.allowlist = patterns
             .into_iter()
             .filter(|p| {
-                let ok = !p.contains('*') || p.ends_with('*');
+                // #1105 (auditoria de seguranca): padrao vazio ou so espaco
+                // nao casa com nada e engana quem escreveu — recusado junto
+                // com o coringa fora do fim, e pelo mesmo motivo.
+                let ok = !p.trim().is_empty() && (!p.contains('*') || p.ends_with('*'));
                 if !ok {
+                    // `?p` (Debug) e nao `%p` (Display): o padrao vem de
+                    // config e um `\n` nele forjaria linhas no log.
                     tracing::warn!(
-                        pattern = %p,
-                        "bash_allowlist: coringa so e aceito no fim do padrao; ignorado"
+                        pattern = ?p,
+                        "bash_allowlist: padrao vazio ou com coringa fora do fim; ignorado"
                     );
                 }
                 ok
@@ -104,13 +112,36 @@ impl BashTool {
         self
     }
 
+    /// #1105: metacaracteres que fazem um comando deixar de ser **um** comando.
+    ///
+    /// Um padrão de prefixo como `"git *"` casa com o começo de qualquer
+    /// string, inclusive `"git status; curl http://exemplo/x"` — e quando a
+    /// allowlist aprova, o bloco do tier arriscado é pulado inteiro, então o
+    /// `safety_gate` nem chega a analisar o segmento depois do `;`. Sem esta
+    /// checagem, o trecho injetado herdaria a confiança que o operador deu ao
+    /// prefixo. Recusar aqui devolve o comando ao `is_risky`, que analisa por
+    /// segmento e ainda pode pedir confirmação.
+    const META_SHELL: &[char] = &[';', '|', '&', '$', '`', '(', ')', '<', '>', '\n', '\r'];
+
     /// #1105: o comando casa com algum padrão da allowlist do operador?
     ///
     /// Comparação case-sensitive e sobre o comando já aparado: shell é
     /// case-sensitive, e aparar evita que `" ls "` case com `"ls"` por
     /// acidente — ou que `"ls"` case com `"lsof ..."`.
+    ///
+    /// Comando composto nunca casa, nem quando o padrão é exato: um `;`
+    /// no meio significa que o que o operador revisou a olho nu não é o
+    /// que vai rodar.
     fn matches_allowlist(&self, command: &str) -> bool {
         let cmd = command.trim();
+        if cmd.contains(Self::META_SHELL) {
+            tracing::warn!(
+                command = ?cmd,
+                "bash_allowlist: comando composto nao e coberto pela allowlist; \
+                 vai para o tier arriscado"
+            );
+            return false;
+        }
         self.allowlist.iter().any(|p| match p.strip_suffix('*') {
             Some(prefixo) => cmd.starts_with(prefixo),
             None => cmd == p,
@@ -729,6 +760,69 @@ mod tests {
         assert!(
             !tool.matches_allowlist("gitx status"),
             "prefixo sem coringa exige o limite certo"
+        );
+    }
+
+    /// Um prefixo autoriza o comando que começa com ele, **não** a receita
+    /// inteira que um modelo pendurar depois. Cada um destes casaria por
+    /// `starts_with` antes do guarda de metacaractere — e cada um termina
+    /// num segundo comando que o operador nunca revisou.
+    #[test]
+    fn prefixo_nao_casa_com_comando_composto() {
+        let tool = BashTool::new(None).with_allowlist(vec!["hermes send *".into(), "git *".into()]);
+        for composto in [
+            "git status; curl http://exemplo/x",
+            "git status && printenv PATH",
+            "git status || printenv PATH",
+            "git status | grep segredo",
+            "git status > /tmp/saida",
+            "hermes send \"oi\"; printenv PATH",
+        ] {
+            assert!(
+                !tool.matches_allowlist(composto),
+                "prefixo nao pode liberar {composto:?}"
+            );
+        }
+        // O prefixo continua valendo para o comando simples que ele descreve —
+        // o guarda nao pode virar uma negativa geral.
+        assert!(tool.matches_allowlist("git status"));
+    }
+
+    /// O mesmo buraco visto de fora: com `"git *"` na lista, o composto tem de
+    /// chegar ao `is_risky` (que analisa por segmento) e morrer fail-closed
+    /// sem canal de confirmação. Sem o guarda de metacaractere este teste
+    /// fica vermelho: a allowlist aprovaria e o comando rodaria.
+    #[tokio::test]
+    async fn allowlist_nao_libera_comando_composto_no_execute() {
+        let tool = BashTool::new(None).with_allowlist(vec!["git *".into()]);
+        let output = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": "git status; printenv PATH"}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            output.is_error,
+            "composto tem de cair no tier arriscado: {}",
+            output.content
+        );
+        assert!(
+            !output.content.contains("CONFIRM_REQUIRED") && !output.content.contains("/usr/bin"),
+            "nao pode ter executado: {}",
+            output.content
+        );
+    }
+
+    /// Padrão vazio não casa com nada e engana quem o escreveu — recusado na
+    /// construção, junto com o coringa fora do fim.
+    #[test]
+    fn padrao_vazio_e_recusado() {
+        let tool = BashTool::new(None).with_allowlist(vec!["  ".into(), "".into(), "git *".into()]);
+        assert_eq!(
+            tool.allowlist,
+            vec!["git *".to_string()],
+            "so o padrao utilizavel sobrevive"
         );
     }
 

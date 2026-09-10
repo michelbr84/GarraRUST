@@ -51,6 +51,12 @@ agent:
   # Sintaxe: "prefixo*" (coringa só no fim) ou o comando exato. Padrões com
   # coringa fora do fim são recusados com warning. Isto NÃO desbloqueia o
   # tier perigoso — `rm -rf /` continua barrado mesmo que alguém o liste.
+  # Dois limites que valem ler antes de escrever um prefixo largo:
+  #   1. Um prefixo NUNCA cobre comando composto (`;`, `&&`, `||`, pipe,
+  #      `$(...)`, redireção) — o composto cai de volta no tier arriscado.
+  #   2. No caminho MCP (`garraia mcp-agent`) não existe confirmação humana
+  #      de qualquer forma, então o que entra aqui auto-executa sem prompt.
+  #      Prefira comandos exatos a prefixos, e a lista mínima necessária.
   bash_allowlist:
     - "hermes send *"
     - "git status"

@@ -627,6 +627,10 @@ pub struct AgentConfig {
     /// Syntax is deliberately poor on purpose: `prefix*` (wildcard at the end
     /// only) or an exact command. Patterns with a wildcard anywhere else are
     /// refused with a warning rather than guessed at.
+    ///
+    /// A prefix never covers a compound command (`;`, `&&`, `||`, pipe,
+    /// `$(...)`, redirection): those fall back to the risky tier, which
+    /// analyses each segment. Empty or blank patterns are refused too.
     #[serde(default)]
     pub bash_allowlist: Vec<String>,
     /// GAR-227: When true, a short LLM call classifies the user's intent into an agent mode
