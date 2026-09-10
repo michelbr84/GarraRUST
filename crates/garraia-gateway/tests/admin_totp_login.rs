@@ -367,3 +367,96 @@ async fn estado_de_2fa_ilegivel_recusa_o_login_sem_abrir_sessao() {
         "sessao criada com o gate ilegivel e o fail-open de volta"
     );
 }
+
+/// #1121 (pass-3): erro de leitura do SEGREDO e recusa 500 — nao pode virar
+/// "codigo invalido" (login), "2FA nao configurado" (verify) nem
+/// "2FA nao ligado" (disable). O `totp_enabled` continua de pe; so a coluna
+/// do segredo some, isolando exatamente a consulta que o veredito apontou.
+#[tokio::test]
+async fn segredo_ilegivel_recusa_sem_mentir_sobre_o_estado() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, store, path) = cenario_arquivo(&dir);
+    let secret = ligar_2fa(&store).await;
+
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    conn.execute("ALTER TABLE admin_users DROP COLUMN totp_secret", [])
+        .expect("derrubar a coluna do segredo");
+    drop(conn);
+
+    // Login: senha certa E codigo certo, mas o segredo nao pode ser lido —
+    // sem sessao, sem "codigo invalido".
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+    let (status, json, sessao) = login(
+        &router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": code}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "erro de leitura do segredo no login tem que virar 500: {json}"
+    );
+    assert!(sessao.is_none(), "sem segredo legivel, sem sessao");
+}
+
+/// Idem, pelos endpoints de enrollment: com sessao de admin na mao e um
+/// segredo pendente guardado, a coluna do segredo some antes do pedido. O
+/// `verify` e o `disable` recebem 500 (nao os 400 de "nao configurado"), e
+/// o `status` — que le outra coluna — segue respondendo.
+#[tokio::test]
+async fn segredo_ilegivel_nos_endpoints_de_enrollment_e_500_nao_400() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, _store, path) = cenario_arquivo(&dir);
+    let (cookie, csrf) = entrar(&router).await;
+
+    // Segredo pendente guardado com a coluna ainda de pe.
+    let (_, json, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/setup",
+        Some(json!({})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert!(
+        json["secret"].as_str().is_some(),
+        "setup deveria guardar o segredo pendente: {json}"
+    );
+
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    conn.execute("ALTER TABLE admin_users DROP COLUMN totp_secret", [])
+        .expect("derrubar a coluna do segredo");
+    drop(conn);
+
+    for uri in ["/admin/api/2fa/verify", "/admin/api/2fa/disable"] {
+        let (status, json, _) = chama(
+            &router,
+            "POST",
+            uri,
+            Some(json!({"code": "000000"})),
+            Some(&cookie),
+            Some(&csrf),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{uri}: erro de leitura do segredo e 500, nao '2FA nao configurado': {json}"
+        );
+    }
+
+    // O status le `totp_enabled`, que continua de pe: 200 e a resposta de
+    // sempre (nao ligado — o segredo estava so pendente).
+    let (status, json, _) = chama(
+        &router,
+        "GET",
+        "/admin/api/2fa/status",
+        None,
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "status le outra coluna: {json}");
+    assert_eq!(json["enabled"], false);
+}

@@ -463,15 +463,21 @@ impl AdminStore {
     /// do segundo fator. O segredo em claro adiciona comprometimento duravel
     /// do 2FA (sobrevive a expiracao da sessao e a troca de senha), nao uma
     /// porta nova.
-    pub fn get_totp_secret(&self, user_id: &str) -> Option<String> {
-        self.conn
-            .query_row(
-                "SELECT totp_secret FROM admin_users WHERE id = ?1",
-                params![user_id],
-                |row| row.get(0),
-            )
-            .ok()
-            .flatten()
+    pub fn get_totp_secret(&self, user_id: &str) -> Result<Option<String>, String> {
+        match self.conn.query_row(
+            "SELECT totp_secret FROM admin_users WHERE id = ?1",
+            params![user_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(v) => Ok(v),
+            // Sem linha de usuario nao e erro de leitura: e ausencia legitima
+            // de segredo (pendente nunca confirmado, ou desligado). Erro real
+            // de SQLite (I/O, lock, schema) e outro estado e tem que chegar
+            // como `Err` no caller — quem decide o que recusar e o handler,
+            // engolir aqui esconderia indisponibilidade (#1121, pass-3).
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("failed to read totp_secret for user: {e}")),
+        }
     }
 
     /// Guarda o segredo como **pendente**: `totp_enabled` so vira 1 em
@@ -1443,7 +1449,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store.get_totp_secret(&id).as_deref(),
+            store
+                .get_totp_secret(&id)
+                .expect("segredo legivel")
+                .as_deref(),
             Some("JBSWY3DPEHPK3PXP")
         );
         assert!(
@@ -1467,7 +1476,7 @@ mod tests {
 
         assert!(!store.is_totp_enabled(&id).expect("estado 2fa legivel"));
         assert_eq!(
-            store.get_totp_secret(&id),
+            store.get_totp_secret(&id).expect("segredo legivel"),
             None,
             "segredo sobrevivente seria uma reativacao sem novo enrollment"
         );
@@ -1514,7 +1523,32 @@ mod tests {
                 .is_totp_enabled(&id)
                 .expect("usuario novo tem estado legivel")
         );
-        assert_eq!(store.get_totp_secret(&id), None);
+        assert_eq!(store.get_totp_secret(&id).expect("segredo legivel"), None);
+    }
+
+    /// #1121 (pass-3): erro de leitura do segredo nao e "segredo ausente" —
+    /// sao estados diferentes, e quem chama precisa distinguir para recusar
+    /// com 500 em vez de responder "2FA nao configurado".
+    #[test]
+    fn leitura_do_segredo_ilegivel_e_erro_nao_ausencia() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        assert_eq!(
+            store.get_totp_secret(&id).expect("usuario novo e legivel"),
+            None,
+            "sem segredo guardado e um estado legitimo, nao erro"
+        );
+
+        store
+            .conn
+            .execute("ALTER TABLE admin_users DROP COLUMN totp_secret", [])
+            .expect("derrubar a coluna do segredo");
+
+        assert!(
+            store.get_totp_secret(&id).is_err(),
+            "coluna sumida e erro de leitura e tem que chegar como Err"
+        );
     }
 
     #[test]
@@ -1597,7 +1631,10 @@ mod tests {
             .set_pending_totp_secret("u1", "JBSWY3DPEHPK3PXP")
             .expect("escrever segredo");
         assert_eq!(
-            store.get_totp_secret("u1").as_deref(),
+            store
+                .get_totp_secret("u1")
+                .expect("segredo legivel")
+                .as_deref(),
             Some("JBSWY3DPEHPK3PXP")
         );
 

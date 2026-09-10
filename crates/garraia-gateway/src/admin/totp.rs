@@ -16,6 +16,14 @@
 //! porque e la que a sessao e criada. Um segredo pendente nao vale nada —
 //! so passa a ser exigido depois que `enable_totp` roda.
 //!
+//! Politica de auditoria do 2FA: o `audit_log` registra operacoes que mudam
+//! estado (setup pendente, enable, disable — sempre na mesma transacao, via
+//! metodos `*_audited` da store) e recusas de autenticacao (login, verify,
+//! disable e as saidas antecipadas de setup, best-effort via
+//! `audit::log_auth_failure`). Consulta de estado e leitura, nao decisao:
+//! `GET /2fa/status` nao gera evento, como qualquer outra rota de leitura
+//! do painel.
+//!
 //! O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Nao e
 //! paridade com o fluxo mobile, que cifra (`totp_secret_enc`); a justificativa
 //! real e o proprio `admin.db` ja guardar token de sessao em texto puro. Ver
@@ -27,6 +35,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
+use super::audit::log_auth_failure;
 use super::handlers::AdminState;
 use super::middleware::{AuthenticatedAdmin, extract_ip};
 
@@ -80,18 +89,29 @@ pub async fn totp_setup(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let ip = extract_ip(&headers, None);
+    let guard = state.store.lock().await;
+
+    // A geracao vem depois do lock para que a recusa tambem deixe trilha:
+    // tentativa de setup e operacao de admin mesmo quando o RNG falha (#1121).
     let secret = match crate::totp::generate_totp_secret() {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("admin 2fa setup: failed to generate secret: {e}");
+            log_auth_failure(
+                &guard,
+                Some(&admin.user_id),
+                Some(&admin.username),
+                "2fa.setup",
+                "secret generation failed",
+                ip.as_deref(),
+            );
+            drop(guard);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal error"})),
             );
         }
     };
-
-    let guard = state.store.lock().await;
 
     // Girar o segredo exige desligar antes, com o codigo atual. So substituir
     // o segredo por baixo do 2FA ligado deixaria o dono travado fora do
@@ -102,8 +122,16 @@ pub async fn totp_setup(
         Err(e) => {
             // Recusar e o caminho fechado: com o estado ilegivel, atender
             // seria decidir autenticacao no escuro (#1121).
-            drop(guard);
             tracing::warn!("admin 2fa setup: state unreadable: {e}");
+            log_auth_failure(
+                &guard,
+                Some(&admin.user_id),
+                Some(&admin.username),
+                "2fa.setup",
+                "totp state unreadable",
+                ip.as_deref(),
+            );
+            drop(guard);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal error"})),
@@ -114,18 +142,14 @@ pub async fn totp_setup(
         // Pedido legitimo de quem esqueceu que ja tem 2FA, mas tambem o jeito
         // barato de um invasor com a sessao trocar o app do dono: vai para o
         // audit como falha, como qualquer outra recusa daqui.
-        if let Err(audit_err) = guard.append_audit(
+        log_auth_failure(
+            &guard,
             Some(&admin.user_id),
             Some(&admin.username),
             "2fa.setup",
-            "auth",
-            None,
-            Some("already enabled"),
+            "already enabled",
             ip.as_deref(),
-            "failure",
-        ) {
-            tracing::warn!("admin 2fa setup: failed to write audit log: {audit_err}");
-        }
+        );
         drop(guard);
         return (
             StatusCode::CONFLICT,
@@ -180,43 +204,54 @@ pub async fn totp_verify(
     let mut guard = state.store.lock().await;
 
     let secret = match guard.get_totp_secret(&admin.user_id) {
-        Some(s) => s,
-        None => {
+        Ok(Some(s)) => s,
+        Ok(None) => {
             // Recusa tambem e evento de auditoria — operacao fora de ordem
             // sem trilha e abuso invisivel (#1121).
-            if let Err(audit_err) = guard.append_audit(
+            log_auth_failure(
+                &guard,
                 Some(&admin.user_id),
                 Some(&admin.username),
                 "2fa.verify",
-                "auth",
-                None,
-                Some("no pending secret"),
+                "no pending secret",
                 ip.as_deref(),
-                "failure",
-            ) {
-                tracing::warn!("admin 2fa verify: failed to write audit log: {audit_err}");
-            }
+            );
             drop(guard);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "2fa not set up"})),
             );
         }
+        Err(e) => {
+            // Erro de leitura nao e "2FA nao configurado": e estado que nao
+            // pode ser lido — responder "nao configurado" esconderia
+            // indisponibilidade e gravaria trilha errada (#1121, pass-3).
+            tracing::warn!("admin 2fa verify: secret unreadable: {e}");
+            log_auth_failure(
+                &guard,
+                Some(&admin.user_id),
+                Some(&admin.username),
+                "2fa.verify",
+                "totp secret unreadable",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            );
+        }
     };
 
     if guard.totp_attempts_exhausted(&admin.user_id) {
-        if let Err(audit_err) = guard.append_audit(
+        log_auth_failure(
+            &guard,
             Some(&admin.user_id),
             Some(&admin.username),
             "2fa.verify",
-            "auth",
-            None,
-            Some("too many attempts"),
+            "too many attempts",
             ip.as_deref(),
-            "failure",
-        ) {
-            tracing::warn!("admin 2fa verify: failed to write audit log: {audit_err}");
-        }
+        );
         drop(guard);
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -228,18 +263,14 @@ pub async fn totp_verify(
     guard.record_totp_attempt(&admin.user_id, ok);
 
     if !ok {
-        if let Err(audit_err) = guard.append_audit(
+        log_auth_failure(
+            &guard,
             Some(&admin.user_id),
             Some(&admin.username),
             "2fa.verify",
-            "auth",
-            None,
-            Some("invalid code"),
+            "invalid code",
             ip.as_deref(),
-            "failure",
-        ) {
-            tracing::warn!("admin 2fa verify: failed to write audit log: {audit_err}");
-        }
+        );
         drop(guard);
         return unauthorized("invalid code");
     }
@@ -278,43 +309,53 @@ pub async fn totp_disable(
     let mut guard = state.store.lock().await;
 
     let secret = match guard.get_totp_secret(&admin.user_id) {
-        Some(s) => s,
-        None => {
+        Ok(Some(s)) => s,
+        Ok(None) => {
             // Recusa tambem e evento de auditoria — mesma regra do verify
             // (#1121).
-            if let Err(audit_err) = guard.append_audit(
+            log_auth_failure(
+                &guard,
                 Some(&admin.user_id),
                 Some(&admin.username),
                 "2fa.disable",
-                "auth",
-                None,
-                Some("not enabled"),
+                "not enabled",
                 ip.as_deref(),
-                "failure",
-            ) {
-                tracing::warn!("admin 2fa disable: failed to write audit log: {audit_err}");
-            }
+            );
             drop(guard);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "2fa not enabled"})),
             );
         }
+        Err(e) => {
+            // Mesma regra do verify: erro de leitura e 500, nao
+            // "2FA nao ligado" (#1121, pass-3).
+            tracing::warn!("admin 2fa disable: secret unreadable: {e}");
+            log_auth_failure(
+                &guard,
+                Some(&admin.user_id),
+                Some(&admin.username),
+                "2fa.disable",
+                "totp secret unreadable",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            );
+        }
     };
 
     if guard.totp_attempts_exhausted(&admin.user_id) {
-        if let Err(audit_err) = guard.append_audit(
+        log_auth_failure(
+            &guard,
             Some(&admin.user_id),
             Some(&admin.username),
             "2fa.disable",
-            "auth",
-            None,
-            Some("too many attempts"),
+            "too many attempts",
             ip.as_deref(),
-            "failure",
-        ) {
-            tracing::warn!("admin 2fa disable: failed to write audit log: {audit_err}");
-        }
+        );
         drop(guard);
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -326,18 +367,14 @@ pub async fn totp_disable(
     guard.record_totp_attempt(&admin.user_id, ok);
 
     if !ok {
-        if let Err(audit_err) = guard.append_audit(
+        log_auth_failure(
+            &guard,
             Some(&admin.user_id),
             Some(&admin.username),
             "2fa.disable",
-            "auth",
-            None,
-            Some("invalid code"),
+            "invalid code",
             ip.as_deref(),
-            "failure",
-        ) {
-            tracing::warn!("admin 2fa disable: failed to write audit log: {audit_err}");
-        }
+        );
         drop(guard);
         return unauthorized("invalid code");
     }

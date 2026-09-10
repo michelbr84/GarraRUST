@@ -37,11 +37,17 @@
 - Correcoes dos vereditos de seguranca: leitura do estado de 2FA e fail-closed
   — `is_totp_enabled` devolve erro e o login recusa com `500` **sem abrir
   sessao** quando o estado nao pode ser lido, em vez de tratar ilegivel como
-  "desligado" e aceitar so a senha; ligar, desligar e guardar o segredo
-  pendente so confirmam com o evento de auditoria gravado **na mesma
-  transacao** (sem trilha, a operacao inteira falha), enquanto as recusas
-  seguem best-effort mas com a falha de trilha registrada em log; e o relogio
-  ilegivel tambem recusa o codigo TOTP. Duas regressoes travam isso: login com
-  a coluna `totp_enabled` derrubada nao abre sessao, e desligar o 2FA sem
-  `audit_log` nao confirma. Residuais rastreados: contador de tentativas em
-  memoria (#1140) e segredo em claro no `admin.db` (#1141) (#1121).
+  "desligado" e aceitar so a senha; o mesmo vale para a leitura do segredo:
+  erro de banco vira `500` (login sem sessao, verify e disable sem responder
+  "2FA nao configurado"), nunca ausencia de segredo; ligar, desligar e
+  guardar o segredo pendente so confirmam com o evento de auditoria gravado
+  **na mesma transacao** (sem trilha, a operacao inteira falha), enquanto as
+  recusas seguem best-effort mas com a falha de trilha registrada em log; e
+  o relogio ilegivel tambem recusa o codigo TOTP. Regressoes travam isso:
+  login com a coluna `totp_enabled` ou `totp_secret` derrubada nao abre
+  sessao nem mente o motivo, verify e disable com o segredo ilegivel dao
+  `500` (nao `400`), e desligar o 2FA sem `audit_log` nao confirma. O
+  `audit_log` registra mudanca de estado e recusa de autenticacao; leitura
+  de estado (como `GET /admin/api/2fa/status`) nao gera evento. Residuais
+  rastreados: contador de tentativas em memoria (#1140) e segredo em claro
+  no `admin.db` (#1141) (#1121).

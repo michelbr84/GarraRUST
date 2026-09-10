@@ -3,6 +3,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
+use super::audit::log_auth_failure;
 use super::middleware::{AuthenticatedAdmin, build_clear_cookie, build_session_cookie, extract_ip};
 use super::rbac::{Action, Resource, Role, check_permission};
 use super::secrets::redact_config_secrets;
@@ -71,18 +72,14 @@ pub async fn login(
     let user = match guard.verify_password(&body.username, &body.password) {
         Some(u) => u,
         None => {
-            if let Err(audit_err) = guard.append_audit(
+            log_auth_failure(
+                &guard,
                 None,
                 Some(&body.username),
                 "login",
-                "auth",
-                None,
-                Some("invalid credentials"),
+                "invalid credentials",
                 ip.as_deref(),
-                "failure",
-            ) {
-                tracing::warn!("admin login: failed to write audit log: {audit_err}");
-            }
+            );
             drop(guard);
             return (
                 StatusCode::UNAUTHORIZED,
@@ -105,18 +102,14 @@ pub async fn login(
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("admin login: 2FA state unreadable: {e}");
-            if let Err(audit_err) = guard.append_audit(
+            log_auth_failure(
+                &guard,
                 Some(&user.id),
                 Some(&user.username),
                 "login",
-                "auth",
-                None,
-                Some("totp state unreadable"),
+                "totp state unreadable",
                 ip.as_deref(),
-                "failure",
-            ) {
-                tracing::warn!("admin login: failed to write audit log: {audit_err}");
-            }
+            );
             drop(guard);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -130,18 +123,14 @@ pub async fn login(
         let code = match body.totp_code.as_deref() {
             Some(c) => c,
             None => {
-                if let Err(audit_err) = guard.append_audit(
+                log_auth_failure(
+                    &guard,
                     Some(&user.id),
                     Some(&user.username),
                     "login",
-                    "auth",
-                    None,
-                    Some("totp code required"),
+                    "totp code required",
                     ip.as_deref(),
-                    "failure",
-                ) {
-                    tracing::warn!("admin login: failed to write audit log: {audit_err}");
-                }
+                );
                 drop(guard);
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -155,18 +144,14 @@ pub async fn login(
         };
 
         if guard.totp_attempts_exhausted(&user.id) {
-            if let Err(audit_err) = guard.append_audit(
+            log_auth_failure(
+                &guard,
                 Some(&user.id),
                 Some(&user.username),
                 "login",
-                "auth",
-                None,
-                Some("too many totp attempts"),
+                "too many totp attempts",
                 ip.as_deref(),
-                "failure",
-            ) {
-                tracing::warn!("admin login: failed to write audit log: {audit_err}");
-            }
+            );
             drop(guard);
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -178,26 +163,61 @@ pub async fn login(
             );
         }
 
-        // Segredo vazio com 2FA ligado nao deve acontecer (`disable_totp`
-        // limpa os dois juntos), mas se acontecer e uma falha fechada: sem
-        // segredo nao ha como validar, e inventar que validou seria pior.
-        let secret = guard.get_totp_secret(&user.id).unwrap_or_default();
-        let ok = !secret.is_empty() && crate::totp::verify_totp(&secret, code);
+        // Segredo ausente, vazio ou ilegivel com 2FA ligado: `disable_totp`
+        // limpa os dois juntos, entao nenhuma dessas situacoes deveria
+        // acontecer — e nenhuma delas permite validar com seguranca. A
+        // resposta honesta e a mesma do gate de estado acima: recusa sem
+        // abrir sessao. Erro de leitura nao pode virar "codigo invalido"
+        // (#1121, pass-3).
+        let secret = match guard.get_totp_secret(&user.id) {
+            Ok(Some(s)) if !s.is_empty() => s,
+            Ok(_) => {
+                tracing::warn!("admin login: 2FA enabled but secret missing");
+                log_auth_failure(
+                    &guard,
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "totp secret missing",
+                    ip.as_deref(),
+                );
+                drop(guard);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({"error": "internal error"})),
+                );
+            }
+            Err(e) => {
+                tracing::warn!("admin login: 2FA secret unreadable: {e}");
+                log_auth_failure(
+                    &guard,
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "totp secret unreadable",
+                    ip.as_deref(),
+                );
+                drop(guard);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({"error": "internal error"})),
+                );
+            }
+        };
+        let ok = crate::totp::verify_totp(&secret, code);
         guard.record_totp_attempt(&user.id, ok);
 
         if !ok {
-            if let Err(audit_err) = guard.append_audit(
+            log_auth_failure(
+                &guard,
                 Some(&user.id),
                 Some(&user.username),
                 "login",
-                "auth",
-                None,
-                Some("invalid totp code"),
+                "invalid totp code",
                 ip.as_deref(),
-                "failure",
-            ) {
-                tracing::warn!("admin login: failed to write audit log: {audit_err}");
-            }
+            );
             drop(guard);
             return (
                 StatusCode::UNAUTHORIZED,
