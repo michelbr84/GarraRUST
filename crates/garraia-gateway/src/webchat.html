@@ -924,7 +924,7 @@ aside.right-panel#right-panel .right-panel-close {
 aside.right-panel#right-panel .right-panel-close:hover { background: rgba(255, 255, 255, 0.1); }
 
 /* Toolbar tabs (Status / CLI / Schema). Only Status active for now;
- * CLI/Schema show "em breve" — covered by plan 0117a follow-up. */
+ * CLI/Schema are not implemented — see issue #1116. */
 .toolbar-tabs {
   display: flex; gap: 6px;
   padding: 8px 14px;
@@ -2496,7 +2496,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
       <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 11.5A.5.5 0 0 1 5 11h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm-2-1A.5.5 0 0 1 3 10h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-7A.5.5 0 0 1 3 3h10a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5v-5zM3 4v4h10V4H3z"/></svg>
       <span id="gateway-url-text">http://127.0.0.1:3888</span>
     </span>
-    <button class="header-icon-btn" type="button" id="header-bell-btn" title="Notifications (em breve)" aria-disabled="true">
+    <button class="header-icon-btn" type="button" id="header-bell-btn" title="Notificações — não implementado (issue #1116)" aria-disabled="true">
       <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 16a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2zM8 1.918l-.797.161A4.002 4.002 0 0 0 4 6c0 .628-.134 2.197-.459 3.742-.16.767-.376 1.566-.663 2.258h10.244c-.287-.692-.502-1.49-.663-2.258C12.134 8.197 12 6.628 12 6a4.002 4.002 0 0 0-3.203-3.92L8 1.917zM14.22 12c.223.447.481.801.78 1H1c.299-.199.557-.553.78-1C2.68 10.2 3 6.88 3 6c0-2.42 1.72-4.44 4.005-4.901a1 1 0 1 1 1.99 0A5.002 5.002 0 0 1 13 6c0 .88.32 4.2 1.22 6z"/></svg>
     </button>
     <button class="header-icon-btn" type="button" id="header-theme-toggle" title="Toggle theme (light/dark)">
@@ -2535,27 +2535,27 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
       </button>
       <button class="sidebar-page-btn" type="button" data-page="providers">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4a2 2 0 1 1 .195 1.41L1.5 8.5l1.695 3.09a2 2 0 1 1-.71.412L.71 8.5 2.485 4.58A2 2 0 0 1 3 4zm10 0a2 2 0 1 0-.195 1.41l1.695 3.09-1.695 3.09a2 2 0 1 0 .71.412l1.775-3.502L13.515 4.58A2 2 0 0 0 13 4z"/></svg>
-        Providers <span class="page-tag">Em breve</span>
+        Providers
       </button>
       <button class="sidebar-page-btn" type="button" data-page="channels">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 9.511c.076.954.83 1.697 2.182 1.785V12h.6v-.709c1.4-.098 2.218-.846 2.218-1.932 0-.987-.626-1.496-1.745-1.76l-.473-.112V5.57c.6.068.982.396 1.074.85h1.052c-.076-.93-.848-1.642-2.126-1.726V4h-.6v.719c-1.195.117-2.01.836-2.01 1.853 0 .9.606 1.472 1.613 1.707l.397.098v2.034c-.615-.093-1.022-.43-1.114-.9H5.5zm2.177-2.166c-.59-.137-.91-.416-.91-.836 0-.47.345-.822.915-.925v1.76h-.005zm.692 1.193c.717.166 1.048.435 1.048.91 0 .542-.412.914-1.135.982V8.518l.087.02z"/></svg>
-        Channels <span class="page-tag">Em breve</span>
+        Channels
       </button>
       <button class="sidebar-page-btn" type="button" data-page="sessions">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 3h-13a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5zm-13-1A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13z"/><path d="M3.5 5a.5.5 0 0 1 0-1h9a.5.5 0 0 1 0 1h-9zm0 2.5a.5.5 0 0 1 0-1h9a.5.5 0 0 1 0 1h-9zm0 2.5a.5.5 0 0 1 0-1h9a.5.5 0 0 1 0 1h-9z"/></svg>
-        Sessions <span class="page-tag">Em breve</span>
+        Sessions
       </button>
       <button class="sidebar-page-btn" type="button" data-page="settings">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/></svg>
-        Settings <span class="page-tag">Em breve</span>
+        Settings
       </button>
       <button class="sidebar-page-btn" type="button" data-page="diagnostics">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 1 0-6 0v4a5 5 0 1 0 6 0z"/></svg>
-        Diagnostics <span class="page-tag">Em breve</span>
+        Diagnostics
       </button>
       <button class="sidebar-page-btn" type="button" data-page="logs">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5v2zM4.5 12.5A.5.5 0 0 1 5 12h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm0-2A.5.5 0 0 1 5 10h6a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm.5-2.5a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1H5z"/></svg>
-        Logs <span class="page-tag">Em breve</span>
+        Logs
       </button>
       <button class="sidebar-page-btn" type="button" data-page="skins">
         <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M15.825.12a.5.5 0 0 1 .132.584c-1.53 3.43-4.743 8.17-7.095 10.64a6.067 6.067 0 0 1-2.373 1.534c-.018.227-.06.538-.16.868-.201.659-.667 1.479-1.708 1.74a8.118 8.118 0 0 1-3.078.132 3.659 3.659 0 0 1-.562-.135 1.382 1.382 0 0 1-.466-.247.714.714 0 0 1-.204-.288.622.622 0 0 1 .004-.443c.095-.245.316-.38.461-.452.394-.197.625-.453.867-.826.095-.144.184-.297.287-.472l.117-.198c.151-.255.326-.54.546-.848.528-.739 1.201-.925 1.746-.896.126.007.243.025.348.048.062-.172.142-.38.238-.608.261-.619.658-1.419 1.187-2.069 2.176-2.67 6.18-6.206 9.117-8.104a.5.5 0 0 1 .596.04z"/></svg>
@@ -2947,8 +2947,8 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     </div>
     <div class="toolbar-tabs" role="tablist" aria-label="Context view">
       <button class="tab-btn active" type="button" role="tab" aria-selected="true">Status</button>
-      <button class="tab-btn" type="button" role="tab" aria-disabled="true" title="Em breve (plan 0117a)">CLI</button>
-      <button class="tab-btn" type="button" role="tab" aria-disabled="true" title="Em breve (plan 0117a)">Schema</button>
+      <button class="tab-btn" type="button" role="tab" aria-disabled="true" title="Não implementado (issue #1116)">CLI</button>
+      <button class="tab-btn" type="button" role="tab" aria-disabled="true" title="Não implementado (issue #1116)">Schema</button>
     </div>
     <div class="context-panel-body">
     <div class="right-section">
@@ -3319,6 +3319,34 @@ function initSkinCards() {
   });
 }
 
+// ─── Erro de fetch compartilhado (#1116) ─────────────────────────────
+//
+// Cada loader escrevia o seu proprio "Falha ao carregar X." — sem codigo de
+// status e sem nenhuma saida. O 401 e o caso que mais aparece na pratica:
+// `gateway.api_key` ligada (#1045) e nenhuma chave salva neste navegador.
+// Ai a resposta util nao e "recarregue", e "informe a chave", entao o 401
+// aponta para o form que ja existe no painel direito e o revela.
+//
+// `colspan` > 0 faz a caixa nascer dentro de uma linha — a pagina de sessions
+// monta num <tbody>, onde um <div> solto seria HTML invalido.
+function renderFetchError(el, status, label, colspan) {
+  const code = Number.isInteger(status) ? status : 0;
+  const hint = code === 401
+    ? ' A chave do gateway não foi aceita. Informe-a em <strong>Gateway Authentication</strong>, no painel direito, e clique em Connect.'
+    : ' Recarregue a página; se o erro persistir, veja os detalhes em Diagnostics.';
+  if (code === 401 && authSection) {
+    authSection.style.display = 'block';
+    // O router esconde o painel direito nas páginas não-chat (setPage) para
+    // cortar ruído visual — mas o 401 é exatamente o caso em que ele precisa
+    // voltar: o form de gateway key que resolve o erro vive dentro dele.
+    const rp = document.getElementById('right-panel');
+    if (rp) rp.style.display = '';
+  }
+  const box = '<div class="warning-box">Falha ao carregar ' + escapeHtml(label) +
+    ' (HTTP ' + code + ').' + hint + '</div>';
+  el.innerHTML = colspan > 0 ? '<tr><td colspan="' + colspan + '">' + box + '</td></tr>' : box;
+}
+
 // ─── Providers & Models page (plan 0119) ─────────────────────────────
 async function loadProvidersPage() {
   const grid = document.getElementById('providers-grid');
@@ -3327,7 +3355,7 @@ async function loadProvidersPage() {
   try {
     const r = await fetch('/api/providers');
     if (!r.ok) {
-      grid.innerHTML = '<div class="warning-box">Falha ao carregar providers (HTTP ' + r.status + ').</div>';
+      renderFetchError(grid, r.status, 'providers');
       return;
     }
     const j = await r.json();
@@ -3422,7 +3450,7 @@ async function loadDiagnosticsPage() {
   checks.innerHTML = '';
   try {
     const r = await fetch('/api/diagnostics');
-    if (!r.ok) { summary.innerHTML = '<div class="warning-box">Falha ao carregar diagnostics.</div>'; return; }
+    if (!r.ok) { renderFetchError(summary, r.status, 'diagnostics'); return; }
     const j = await r.json();
     _diagnosticsLastReport = j;
     const overall = j.status;
@@ -3482,6 +3510,7 @@ async function loadLogsPage() {
   pre.textContent = 'Carregando logs…';
   try {
     const r = await fetch('/api/logs');
+    if (!r.ok) { renderFetchError(pre, r.status, 'logs'); return; }
     const j = await r.json();
     _logsLastRaw = String(j.logs || '');
     renderLogs();
@@ -3548,7 +3577,8 @@ async function loadSettingsPage() {
       fetch('/api/settings/effective'),
     ]);
     if (!schemaRes.ok || !effectiveRes.ok) {
-      root.innerHTML = '<div class="warning-box">Falha ao carregar settings.</div>';
+      const failed = schemaRes.ok ? effectiveRes : schemaRes;
+      renderFetchError(root, failed.status, 'settings');
       return;
     }
     const schema = (await schemaRes.json()).settings || [];
@@ -3670,7 +3700,7 @@ async function loadChannelsPage() {
   grid.innerHTML = '<div style="color:var(--garra-muted);font-size:13px;">Carregando channels…</div>';
   try {
     const r = await fetch('/api/channels');
-    if (!r.ok) { grid.innerHTML = '<div class="warning-box">Falha ao carregar channels.</div>'; return; }
+    if (!r.ok) { renderFetchError(grid, r.status, 'channels'); return; }
     const j = await r.json();
     const items = Array.isArray(j.channels) ? j.channels : [];
     grid.innerHTML = items.map((c, i) => renderChannelCard(c, i)).join('');
@@ -3699,7 +3729,7 @@ async function loadSessionsPage() {
   body.innerHTML = '<tr><td colspan="5" style="color:var(--garra-muted);text-align:center;padding:20px;">Carregando sessions…</td></tr>';
   try {
     const r = await fetch('/api/sessions');
-    if (!r.ok) { body.innerHTML = '<tr><td colspan="5" class="warning-box">Falha ao carregar.</td></tr>'; return; }
+    if (!r.ok) { renderFetchError(body, r.status, 'sessions', 5); return; }
     const j = await r.json();
     const items = Array.isArray(j) ? j : (Array.isArray(j.sessions) ? j.sessions : []);
     if (!items.length) {
@@ -5086,7 +5116,10 @@ async function boot() {
   } catch { State.authRequired = false; }
 
   if (State.authRequired) {
-    if (authSection) authSection.style.display = '';
+    // Issue #1100: the CSS hides .gateway-key-form with `display: none`, so
+    // clearing the inline style ('') never reveals the auth form. The user
+    // was told to enter a key that no visible field could accept.
+    if (authSection) authSection.style.display = 'block';
     if (State.gatewayKey) { connect(); }
     else { appendSystemMsg('Gateway API Key required.'); }
   } else {

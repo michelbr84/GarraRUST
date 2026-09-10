@@ -283,3 +283,129 @@ test.describe('Garra Glass — multi-page router matrix', () => {
     }
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// #1116 — six pages still wore an "Em breve" tag in the sidebar even though the
+// router already dispatches them to real loaders. The two placeholders that
+// genuinely are not implemented (notification bell, right-panel CLI/Schema
+// tabs) keep their marker, now citing the issue instead of a dead plan.
+// ────────────────────────────────────────────────────────────────────────────
+
+const IMPLEMENTED_PAGES = [
+  'providers',
+  'channels',
+  'sessions',
+  'settings',
+  'diagnostics',
+  'logs',
+] as const;
+
+test.describe('Garra Glass — "Em breve" tags (#1116)', () => {
+  for (const page_name of IMPLEMENTED_PAGES) {
+    test(`sidebar nav for "${page_name}" no longer shows "Em breve"`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await openWebchat(page);
+
+      const btn = page.locator(`.sidebar-page-btn[data-page="${page_name}"]`);
+      await expect(btn).toBeVisible();
+      await expect(btn.locator('.page-tag')).toHaveCount(0);
+      await expect(btn).not.toContainText('Em breve');
+    });
+  }
+
+  test('the pages that are still not implemented keep the marker, citing #1116', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openWebchat(page);
+
+    const bell = page.locator('#header-bell-btn');
+    await expect(bell).toHaveAttribute('aria-disabled', 'true');
+    await expect(bell).toHaveAttribute('title', /#1116/);
+
+    const cliTab = page.locator('.toolbar-tabs .tab-btn', { hasText: 'CLI' });
+    const schemaTab = page.locator('.toolbar-tabs .tab-btn', { hasText: 'Schema' });
+    await expect(cliTab).toHaveAttribute('aria-disabled', 'true');
+    await expect(cliTab).toHaveAttribute('title', /#1116/);
+    await expect(schemaTab).toHaveAttribute('aria-disabled', 'true');
+    await expect(schemaTab).toHaveAttribute('title', /#1116/);
+  });
+
+  test('each of the six pages renders real data, not a placeholder', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+
+    for (const page_name of IMPLEMENTED_PAGES) {
+      await page.goto(`/#/${page_name}`);
+      await page.locator('body').waitFor({ state: 'visible', timeout: 10_000 });
+
+      const view = page.locator(`.page-view[data-page="${page_name}"]`);
+      await expect(view).toHaveClass(/active/);
+      // The loader must move past its "Carregando…" placeholder and must not
+      // fall into the fetch-error box.
+      await expect(view).not.toContainText('Carregando', { timeout: 15_000 });
+      await expect(view).not.toContainText('Falha ao carregar', { timeout: 15_000 });
+    }
+
+    // Positive signal: the loaders actually mounted something. A gateway with
+    // no provider configured is still a success — it renders the empty state.
+    await page.goto('/#/providers');
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const el = document.getElementById('providers-grid');
+            if (!el) return 0;
+            return (
+              el.querySelectorAll('.provider-card').length +
+              (el.textContent.includes('Nenhum provider registrado') ? 1 : 0)
+            );
+          }),
+        { timeout: 15_000 },
+      )
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/channels');
+    await expect
+      .poll(async () => await page.evaluate(() => document.querySelectorAll('#channels-grid .provider-card').length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/diagnostics');
+    await expect
+      .poll(async () => await page.evaluate(() => (document.getElementById('diagnostics-checks') || document.body).children.length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/settings');
+    await expect
+      .poll(async () => await page.evaluate(() => document.querySelectorAll('#settings-form input, #settings-form select').length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/sessions');
+    await expect
+      .poll(async () => await page.evaluate(() => document.querySelectorAll('#sessions-table-body tr').length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+  });
+
+  // The old messages were a bare "Falha ao carregar X." — no status code, no
+  // way forward. A 401 is the common case (gateway.api_key set, no key stored
+  // in this browser), so it now names the form that solves it and reveals it.
+  test('a 401 tells the user to fill in the gateway key and reveals the form', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // A 401 implies the gateway requires a key, so keep `/api/auth-check`
+    // consistent with it — otherwise init would hide the form again right
+    // after the loader revealed it.
+    await page.route('**/api/auth-check*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{"auth_required":true}' }),
+    );
+    await page.route('**/api/providers*', (route) =>
+      route.fulfill({ status: 401, contentType: 'application/json', body: '{}' }),
+    );
+
+    await page.goto('/#/providers');
+    await page.locator('body').waitFor({ state: 'visible', timeout: 10_000 });
+
+    const grid = page.locator('#providers-grid');
+    await expect(grid).toContainText('HTTP 401', { timeout: 15_000 });
+    await expect(grid).toContainText('Gateway Authentication');
+    await expect(grid).toContainText('Connect');
+    // The form lives in the right panel and is hidden by CSS until needed.
+    await expect(page.locator('#auth-section')).toBeVisible();
+  });
+});
