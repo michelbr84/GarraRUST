@@ -400,7 +400,10 @@ pub struct ChangePasswordRequest {
 /// Write one audit row for a change-password attempt.
 ///
 /// `details` describes the terminal for the trail and never carries a
-/// password — neither the current nor the new one.
+/// password — neither the current nor the new one. An audit write that
+/// itself fails must not vanish: it lands in the log, so a silent hole in
+/// the trail is at least observable. The terminal still answers as usual —
+/// same fail-open behaviour as every other admin route.
 fn audit_change_password(
     store: &AdminStore,
     admin: &AuthenticatedAdmin,
@@ -408,7 +411,7 @@ fn audit_change_password(
     ip: Option<&str>,
     outcome: &str,
 ) {
-    let _ = store.append_audit(
+    if let Err(e) = store.append_audit(
         Some(&admin.user_id),
         Some(&admin.username),
         CHANGE_PASSWORD_ACTION,
@@ -417,7 +420,9 @@ fn audit_change_password(
         Some(details),
         ip,
         outcome,
-    );
+    ) {
+        tracing::warn!("change-password: failed to write audit event: {e}");
+    }
 }
 
 /// POST /admin/api/change-password — rotate the caller's own password.
