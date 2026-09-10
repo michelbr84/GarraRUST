@@ -165,6 +165,30 @@ test.describe('Garra Glass — webchat redesign', () => {
     await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
   });
 
+  // #1132 CR follow-up: the drawer has pre-existing close paths that never
+  // touch the hamburger (page-router buttons, session items, settings). The
+  // sync lives inside closeSidebarMobile(), so aria-expanded must follow even
+  // when the button itself is not the trigger.
+  test('mobile viewport: closing the drawer via a sidebar page button syncs aria-expanded', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openWebchat(page);
+
+    const hamburger = page.locator('#hamburger-btn');
+    const sidebarEl = page.locator('#sidebar');
+    const overlay = page.locator('#sidebar-overlay');
+
+    await hamburger.click();
+    await expect(sidebarEl).toHaveClass(/mobile-open/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+
+    // A pre-existing close path: a nav button inside the drawer.
+    await page.locator('.sidebar-page-btn[data-page="dashboard"]').click();
+
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+    await expect(overlay).not.toHaveClass(/show/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+  });
+
   test('resizing from mobile to desktop clears a stale mobile-open sidebar', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 667 });
     await openWebchat(page);
