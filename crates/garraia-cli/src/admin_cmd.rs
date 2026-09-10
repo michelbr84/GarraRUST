@@ -61,7 +61,7 @@ pub async fn run_recovery_start(config: &AppConfig, username: &str) -> anyhow::R
             println!();
             println!("Codigo: {code}");
             println!();
-            println!("Depois: garra admin recovery complete --username {username} --code {code}");
+            println!("Depois: garra admin recovery complete --username <usuario> --code <codigo>");
             Ok(0)
         }
         None => {
@@ -118,7 +118,7 @@ pub async fn run_recovery_complete(
 
     match resp.status() {
         reqwest::StatusCode::OK => {
-            println!("Senha redefinida. As sessoes antigas de {username} foram revogadas.");
+            println!("Senha redefinida. Todas as sessoes antigas foram revogadas.");
             Ok(0)
         }
         reqwest::StatusCode::UNAUTHORIZED => {
