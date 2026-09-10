@@ -561,3 +561,52 @@ async fn segredo_vazio_no_verify_e_estado_inconsistente() {
         "segredo vazio no verify e 500, nao 'nao configurado' nem 'codigo invalido': {json}"
     );
 }
+
+/// #1121 (sugestao do code-reviewer): o evento de auditoria do setup
+/// registra QUEM guardou um segredo pendente, nao O segredo — a trilha e um
+/// registro de decisao, nao um cofre (nem um vazamento) do material de
+/// enrollment (regra 6 do CLAUDE.md: segredo nao vai para log).
+#[tokio::test]
+async fn setup_deixa_trilha_sem_vazar_o_segredo_na_auditoria() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, _store, path) = cenario_arquivo(&dir);
+    let (cookie, csrf) = entrar(&router).await;
+
+    let (_, json, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/setup",
+        Some(json!({})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    let secret = json["secret"]
+        .as_str()
+        .expect("setup deveria devolver o segredo")
+        .to_string();
+
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    let detalhe: Option<String> = conn
+        .query_row(
+            "SELECT details FROM audit_log WHERE action = '2fa.setup'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("setup deve deixar trilha atomica");
+    assert!(
+        detalhe.as_deref().map_or(true, |d| !d.contains(&secret)),
+        "a trilha do setup carrega o segredo: {detalhe:?}"
+    );
+
+    // E nenhuma outra linha da trilha pode conter o material, de nenhuma
+    // acao — o enrollment e a unica entrega do segredo, na resposta.
+    let vazou: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE details LIKE '%' || ?1 || '%'",
+            [&secret],
+            |row| row.get(0),
+        )
+        .expect("varredura da trilha");
+    assert_eq!(vazou, 0, "o segredo apareceu em {vazou} linha(s) da trilha");
+}

@@ -38,6 +38,7 @@ use serde::Deserialize;
 use super::audit::log_auth_failure;
 use super::handlers::AdminState;
 use super::middleware::{AuthenticatedAdmin, extract_ip};
+use super::store::AdminStore;
 
 #[derive(Debug, Deserialize)]
 pub struct TotpCodeRequest {
@@ -50,6 +51,105 @@ fn unauthorized(error: &str) -> (StatusCode, Json<serde_json::Value>) {
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({"error": error})),
     )
+}
+
+/// Carrega o segredo do usuario e valida o codigo contra ele — o trecho que
+/// `totp_verify` e `totp_disable` compartilham ponto a ponto, extraido para
+/// que as quatro vias de leitura (presente, ausente, vazio, ilegivel), o
+/// lockout e a trilha de recusa nao possam divergir entre os dois endpoints.
+/// `acao` e a etiqueta de auditoria ("2fa.verify"/"2fa.disable") e
+/// `ausencia` e a mensagem do 400 quando nao ha segredo — os unicos pontos
+/// em que os caminhos divergem antes da mutacao final, que fica no handler.
+/// Toda recusa devolve a resposta HTTP pronta com a trilha best-effort ja
+/// gravada (#1121).
+fn exigir_codigo_valido(
+    guard: &mut AdminStore,
+    user_id: &str,
+    username: &str,
+    acao: &str,
+    ausencia: &str,
+    code: &str,
+    ip: Option<&str>,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let secret = match guard.get_totp_secret(user_id) {
+        Ok(Some(s)) if !s.is_empty() => s,
+        Ok(None) => {
+            // Recusa tambem e evento de auditoria — operacao fora de ordem
+            // sem trilha e abuso invisivel (#1121).
+            log_auth_failure(guard, Some(user_id), Some(username), acao, ausencia, ip);
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": ausencia})),
+            ));
+        }
+        Ok(_) => {
+            // Segredo vazio e estado inconsistente, nao "codigo invalido":
+            // avaliar o codigo contra um segredo que nao existe polui o
+            // lockout e mente o motivo da recusa (#1121).
+            tracing::warn!("admin {acao}: secret empty");
+            log_auth_failure(
+                guard,
+                Some(user_id),
+                Some(username),
+                acao,
+                "totp secret empty",
+                ip,
+            );
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            ));
+        }
+        Err(e) => {
+            // Erro de leitura nao e "nao configurado": e estado que nao
+            // pode ser lido — responder outra coisa esconderia
+            // indisponibilidade e gravaria trilha errada (#1121).
+            tracing::warn!("admin {acao}: secret unreadable: {e}");
+            log_auth_failure(
+                guard,
+                Some(user_id),
+                Some(username),
+                acao,
+                "totp secret unreadable",
+                ip,
+            );
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            ));
+        }
+    };
+
+    if guard.totp_attempts_exhausted(user_id) {
+        log_auth_failure(
+            guard,
+            Some(user_id),
+            Some(username),
+            acao,
+            "too many attempts",
+            ip,
+        );
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": "too many attempts"})),
+        ));
+    }
+
+    let ok = crate::totp::verify_totp(&secret, code);
+    guard.record_totp_attempt(user_id, ok);
+
+    if !ok {
+        log_auth_failure(
+            guard,
+            Some(user_id),
+            Some(username),
+            acao,
+            "invalid code",
+            ip,
+        );
+        return Err(unauthorized("invalid code"));
+    }
+    Ok(())
 }
 
 /// GET /admin/api/2fa/status
@@ -203,95 +303,17 @@ pub async fn totp_verify(
     let ip = extract_ip(&headers, None);
     let mut guard = state.store.lock().await;
 
-    let secret = match guard.get_totp_secret(&admin.user_id) {
-        Ok(Some(s)) if !s.is_empty() => s,
-        Ok(None) => {
-            // Recusa tambem e evento de auditoria — operacao fora de ordem
-            // sem trilha e abuso invisivel (#1121).
-            log_auth_failure(
-                &guard,
-                Some(&admin.user_id),
-                Some(&admin.username),
-                "2fa.verify",
-                "no pending secret",
-                ip.as_deref(),
-            );
-            drop(guard);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "2fa not set up"})),
-            );
-        }
-        Ok(_) => {
-            // Segredo vazio e estado inconsistente, nao "codigo invalido":
-            // avaliar o codigo contra um segredo que nao existe polui o
-            // lockout e mente o motivo da recusa (#1121, pass-4).
-            tracing::warn!("admin 2fa verify: secret empty");
-            log_auth_failure(
-                &guard,
-                Some(&admin.user_id),
-                Some(&admin.username),
-                "2fa.verify",
-                "totp secret empty",
-                ip.as_deref(),
-            );
-            drop(guard);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            );
-        }
-        Err(e) => {
-            // Erro de leitura nao e "2FA nao configurado": e estado que nao
-            // pode ser lido — responder "nao configurado" esconderia
-            // indisponibilidade e gravaria trilha errada (#1121, pass-3).
-            tracing::warn!("admin 2fa verify: secret unreadable: {e}");
-            log_auth_failure(
-                &guard,
-                Some(&admin.user_id),
-                Some(&admin.username),
-                "2fa.verify",
-                "totp secret unreadable",
-                ip.as_deref(),
-            );
-            drop(guard);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            );
-        }
-    };
-
-    if guard.totp_attempts_exhausted(&admin.user_id) {
-        log_auth_failure(
-            &guard,
-            Some(&admin.user_id),
-            Some(&admin.username),
-            "2fa.verify",
-            "too many attempts",
-            ip.as_deref(),
-        );
+    if let Err(resp) = exigir_codigo_valido(
+        &mut guard,
+        &admin.user_id,
+        &admin.username,
+        "2fa.verify",
+        "2fa not set up",
+        &req.code,
+        ip.as_deref(),
+    ) {
         drop(guard);
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({"error": "too many attempts"})),
-        );
-    }
-
-    let ok = crate::totp::verify_totp(&secret, &req.code);
-    guard.record_totp_attempt(&admin.user_id, ok);
-
-    if !ok {
-        log_auth_failure(
-            &guard,
-            Some(&admin.user_id),
-            Some(&admin.username),
-            "2fa.verify",
-            "invalid code",
-            ip.as_deref(),
-        );
-        drop(guard);
-        return unauthorized("invalid code");
+        return resp;
     }
 
     // Ligar o 2FA + gravar o evento na mesma transacao: o commit so roda
@@ -327,95 +349,17 @@ pub async fn totp_disable(
     let ip = extract_ip(&headers, None);
     let mut guard = state.store.lock().await;
 
-    let secret = match guard.get_totp_secret(&admin.user_id) {
-        Ok(Some(s)) if !s.is_empty() => s,
-        Ok(None) => {
-            // Recusa tambem e evento de auditoria — mesma regra do verify
-            // (#1121).
-            log_auth_failure(
-                &guard,
-                Some(&admin.user_id),
-                Some(&admin.username),
-                "2fa.disable",
-                "not enabled",
-                ip.as_deref(),
-            );
-            drop(guard);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "2fa not enabled"})),
-            );
-        }
-        Ok(_) => {
-            // Mesma regra do verify: segredo vazio e estado inconsistente.
-            // Chamar verify_totp com o segredo vazio deixaria o 2FA ligado
-            // irrecuperavel pelo endpoint, respondendo "codigo invalido"
-            // (#1121, pass-4).
-            tracing::warn!("admin 2fa disable: secret empty");
-            log_auth_failure(
-                &guard,
-                Some(&admin.user_id),
-                Some(&admin.username),
-                "2fa.disable",
-                "totp secret empty",
-                ip.as_deref(),
-            );
-            drop(guard);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            );
-        }
-        Err(e) => {
-            // Mesma regra do verify: erro de leitura e 500, nao
-            // "2FA nao ligado" (#1121, pass-3).
-            tracing::warn!("admin 2fa disable: secret unreadable: {e}");
-            log_auth_failure(
-                &guard,
-                Some(&admin.user_id),
-                Some(&admin.username),
-                "2fa.disable",
-                "totp secret unreadable",
-                ip.as_deref(),
-            );
-            drop(guard);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            );
-        }
-    };
-
-    if guard.totp_attempts_exhausted(&admin.user_id) {
-        log_auth_failure(
-            &guard,
-            Some(&admin.user_id),
-            Some(&admin.username),
-            "2fa.disable",
-            "too many attempts",
-            ip.as_deref(),
-        );
+    if let Err(resp) = exigir_codigo_valido(
+        &mut guard,
+        &admin.user_id,
+        &admin.username,
+        "2fa.disable",
+        "2fa not enabled",
+        &req.code,
+        ip.as_deref(),
+    ) {
         drop(guard);
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({"error": "too many attempts"})),
-        );
-    }
-
-    let ok = crate::totp::verify_totp(&secret, &req.code);
-    guard.record_totp_attempt(&admin.user_id, ok);
-
-    if !ok {
-        log_auth_failure(
-            &guard,
-            Some(&admin.user_id),
-            Some(&admin.username),
-            "2fa.disable",
-            "invalid code",
-            ip.as_deref(),
-        );
-        drop(guard);
-        return unauthorized("invalid code");
+        return resp;
     }
 
     // Desligar + gravar o evento na mesma transacao — desligar o 2FA e
