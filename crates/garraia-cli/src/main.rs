@@ -1,3 +1,4 @@
+mod admin_cmd;
 mod agents;
 mod ask;
 mod banner;
@@ -177,6 +178,12 @@ enum Commands {
         action: SkillCommands,
     },
 
+    /// Admin panel helpers that need shell access on the host (#1122)
+    Admin {
+        #[command(subcommand)]
+        action: AdminCommands,
+    },
+
     /// Manage MCP servers
     Mcp {
         #[command(subcommand)]
@@ -345,6 +352,43 @@ enum Commands {
         /// Defaults to the current working directory.
         #[arg(long, value_name = "DIR")]
         workspace: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCommands {
+    /// Recupera a senha do painel admin com um codico de uso unico gerado
+    /// no host (#1122). Nada de e-mail: o codigo sai num arquivo 0600 que
+    /// so quem tem shell na maquina le.
+    Recovery {
+        #[command(subcommand)]
+        action: RecoveryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecoveryCommands {
+    /// Gera o codigo e mostra ele (quando o gateway roda neste host)
+    Start {
+        /// Usuario do painel admin
+        #[arg(long)]
+        username: String,
+    },
+
+    /// Troca a senha consumindo o codigo — uma unica vez
+    Complete {
+        /// Usuario do painel admin
+        #[arg(long)]
+        username: String,
+
+        /// Codigo de uso unico gerado por `start`
+        #[arg(long)]
+        code: String,
+
+        /// Nova senha (>=8 caracteres). Se ausente, pergunta sem eco.
+        /// Atenção: passar na linha de comando expõe a senha em `ps`.
+        #[arg(long)]
+        new_password: Option<String>,
     },
 }
 
@@ -2073,6 +2117,29 @@ async fn async_main(
                     older_than_days,
                     yes,
                 } => memory_cmd::run_compact(&config, older_than_days, yes).await?,
+            };
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Admin { action } => {
+            if cli.verbose || cli.debug {
+                init_tracing(&effective_level);
+            }
+            let code = match action {
+                AdminCommands::Recovery { action } => match action {
+                    RecoveryCommands::Start { username } => {
+                        admin_cmd::run_recovery_start(&config, &username).await?
+                    }
+                    RecoveryCommands::Complete {
+                        username,
+                        code,
+                        new_password,
+                    } => {
+                        admin_cmd::run_recovery_complete(&config, &username, &code, new_password)
+                            .await?
+                    }
+                },
             };
             if code != 0 {
                 std::process::exit(code);
