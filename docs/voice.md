@@ -185,7 +185,9 @@ probed with a 1.5 s budget:
 | --- | --- | --- |
 | `voice.tts` / `voice.stt` | `skipped` | Voice mode is off in this process. Nothing is wrong; start with `--with-voice`. |
 | | `ok` | The configured endpoint answered. |
-| | `error` | Configured but unreachable, or not a URL this gateway may call. The row carries the exact start command as `next_step`. |
+| | `error` (unreachable) | Configured but did not answer — connection refused or timeout. The row carries the exact start command as `next_step`. |
+| | `error` (unhealthy) | Answered with HTTP 5xx: the server is up but the service is broken. `next_step` says the server's own logs are the next stop. |
+| | `error` (invalid URL) | The configured endpoint is not a URL this gateway may call. `next_step` is a generic instruction to fix the endpoint in the config — there is no start command for a URL that is not valid. |
 
 This is the answer to "voice fails silently" (#1098): an unreachable
 server used to be a log line nobody read, and `POST /api/tts` answered

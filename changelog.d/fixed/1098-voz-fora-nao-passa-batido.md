@@ -9,3 +9,10 @@
   `garraia_common::ssrf` com `IpScope::AllowPrivate`, como o Ollama: voz e
   servico local, mas link-local e CGNAT continuam barrados. Falhar alto na
   propria requisicao continua disponivel em `/api/tts?fallback=false`.
+  O contrato do fallback de texto do `POST /api/tts` agora e pinnado por teste
+  de integracao com TTS que falha por injecao — 200 com `fallback:true` por
+  padrao, 500 com `?fallback=false`. A sonda agora distingue tres erros:
+  endpoint fora do ar (carrega o comando de subida no `next_step`), HTTP 5xx
+  (servico de pe quebrado, aponta para os logs do servidor) e URL invalida
+  (instrucao generica de config) — e nenhuma dessas respostas vaza credencial:
+  o `detail` carrega so `scheme://host[:port]`, nunca `userinfo`.
