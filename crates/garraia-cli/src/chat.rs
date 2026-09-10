@@ -16,6 +16,7 @@ use garraia_agents::{
     normalize_ollama_tag, tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
+use garraia_db::SessionStore;
 use tokio::sync::mpsc;
 
 use crate::ui::error_card::ErrorCard;
@@ -144,6 +145,13 @@ fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option
 /// gateway does. `schedule_heartbeat` / `schedule_recurring` need a
 /// `SessionStore` the chat does not open — they stay gateway-only, on
 /// purpose and said here rather than silently.
+///
+/// #1088 mudou **metade** dessa frase: com `--persist`/`--resume` o chat
+/// passa a abrir um `SessionStore`, entao "o chat nao abre store" deixou de
+/// ser verdade no modo persistente. O registro das duas tools continua
+/// gateway-only mesmo assim — a loja existe so quando a pessoa pediu, e
+/// registrar a tool condicionalmente daria ao agente um conjunto de
+/// ferramentas que depende de uma flag. Fica para um slice proprio.
 fn register_cli_tools(
     runtime: &AgentRuntime,
     review: Option<(Arc<dyn LlmProvider>, String)>,
@@ -164,6 +172,97 @@ fn register_cli_tools(
     if let Some(key) = brave_key {
         runtime.register_tool(Box::new(WebSearchTool::new(key)));
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Persistencia do `garra chat` (#1088)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Quantas mensagens o `--resume` traz de volta.
+///
+/// E o mesmo numero da hidratacao do gateway (`state.rs`), e pela mesma
+/// razao: acima disso o historico inteiro da sessao iria para o prompt de
+/// cada turno, e um prompt gigante custa mais caro do que as mensagens
+/// antigas valem.
+const RESUME_LIMIT: usize = 100;
+
+/// Nome do arquivo do `SessionStore` dentro do diretorio de dados.
+///
+/// O mesmo `sessions.db` que o gateway abre (`server.rs`): quem retoma no
+/// chat uma conversa que comecou num canal encontra as mensagens no lugar
+/// onde elas ja estavam.
+const SESSIONS_DB: &str = "sessions.db";
+
+/// Abre o `SessionStore` **apenas** quando a sessao vai usa-lo.
+///
+/// `None` — o padrao, sem `--persist` nem `--resume` — significa nenhum
+/// arquivo criado e nada gravado em disco, que e exatamente o que o chat
+/// sempre fez. A decisao de nao gravar era implicita num comentario; agora
+/// ela e uma flag, e este `None` e a prova de que o caminho antigo continua
+/// intacto (ha teste).
+fn open_chat_store(
+    config: &AppConfig,
+    persist: bool,
+    resume: Option<&str>,
+) -> Result<Option<SessionStore>> {
+    if !persist && resume.is_none() {
+        return Ok(None);
+    }
+    let data_dir = config.resolved_data_dir();
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("nao foi possivel criar {}", data_dir.display()))?;
+    let path = data_dir.join(SESSIONS_DB);
+    let store = SessionStore::open(&path)
+        .with_context(|| format!("nao foi possivel abrir {}", path.display()))?;
+    Ok(Some(store))
+}
+
+/// Grava um turno (pergunta + resposta) no store.
+///
+/// `direction` segue o vocabulario que o gateway ja usa em `persist_turn` —
+/// `"user"` e `"assistant"` —, porque e o que `load_history` e a hidratacao
+/// do gateway leem de volta. Nada de schema novo: sao as duas mesmas
+/// chamadas, so que feitas pelo CLI.
+fn append_turn(
+    store: &SessionStore,
+    session_id: &str,
+    user_text: &str,
+    assistant_text: &str,
+) -> Result<()> {
+    store.upsert_session(
+        session_id,
+        "cli",
+        "local",
+        &serde_json::json!({ "origem": "garra chat" }),
+    )?;
+    let meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
+    let agora = chrono::Utc::now();
+    store.append_message(session_id, "user", user_text, agora, &meta)?;
+    store.append_message(session_id, "assistant", assistant_text, agora, &meta)?;
+    Ok(())
+}
+
+/// Le o historico gravado de uma sessao, em ordem cronologica.
+///
+/// Direcoes que nao sao `"user"` nem `"assistant"` (resumo de sistema, lixo
+/// de uma versao antiga) sao descartadas em vez de virarem mensagem com
+/// papel inventado.
+fn load_history(store: &SessionStore, session_id: &str, limit: usize) -> Result<Vec<ChatMessage>> {
+    let gravadas = store.load_recent_messages(session_id, limit)?;
+    Ok(gravadas
+        .into_iter()
+        .filter_map(|m| {
+            let role = match m.direction.as_str() {
+                "user" => ChatRole::User,
+                "assistant" => ChatRole::Assistant,
+                _ => return None,
+            };
+            Some(ChatMessage {
+                role,
+                content: MessagePart::Text(m.content),
+            })
+        })
+        .collect())
 }
 
 /// One line of the system prompt per registered tool.
@@ -1009,6 +1108,8 @@ pub async fn run_chat(
     url_override: Option<String>,
     timeout_secs: u64,
     assume_yes: bool,
+    persist: bool,
+    resume: Option<String>,
 ) -> Result<()> {
     // An explicit `--provider` short-circuits detection entirely; otherwise
     // `detect_provider` owns both the provider *and* the model, so the two can
@@ -1114,7 +1215,20 @@ pub async fn run_chat(
     runtime.set_system_prompt(system_prompt);
     runtime.set_max_tokens(4096);
 
-    let session_id = format!("cli-{}", uuid::Uuid::new_v4());
+    // #1088: o store so existe quando a pessoa pediu. Sem `--persist` nem
+    // `--resume` fica `None` — nenhum banco aberto, nenhum arquivo criado —
+    // e o chat segue vivendo apenas na memoria, como sempre viveu.
+    let store = open_chat_store(&config, persist, resume.as_deref())?;
+    // Retomar e adotar o id que veio da linha de comando; comecar do zero e
+    // sortear um. Nos dois casos o id aparece na tela (abaixo) justamente
+    // para poder ser digitado de volta no `--resume`.
+    let session_id = match resume.as_deref() {
+        Some(id) => id.to_string(),
+        None => format!("cli-{}", uuid::Uuid::new_v4()),
+    };
+    // Ja vem cheio quando ha `--resume`; a carga acontece abaixo, depois do
+    // renderer existir, para a contagem sair pela mesma moldura das outras
+    // mensagens da sessao.
     let mut history: Vec<ChatMessage> = Vec::new();
     // A saida completa das ferramentas do turno, para o `/tool` (#938).
     // Limitada em entradas e em bytes — ver `ui::tool_log`.
@@ -1126,6 +1240,58 @@ pub async fn run_chat(
     // daquele turno (#942). O rotulo `Garra` e a ordem de escrita passam a ser
     // responsabilidade dele — ver ADR 0017.
     let mut renderer = TerminalRenderer::new(caps, None);
+
+    // Aviso e carga da persistencia (#1088). Fica aqui, e nao junto da
+    // abertura do store, porque a contagem de turnos recuperados sai pela
+    // mesma moldura das outras mensagens da sessao — e nao por `println!`,
+    // que ignoraria `NO_COLOR` e pipe.
+    if let Some(ref store) = store {
+        let db = config.resolved_data_dir().join(SESSIONS_DB);
+        if resume.is_some() {
+            let carregadas = load_history(store, &session_id, RESUME_LIMIT)?;
+            // Duas mensagens por turno: a pergunta e a resposta.
+            let turnos = carregadas.len() / 2;
+            // A janela nao e a sessao inteira. Dizer quantas mensagens
+            // ficaram de fora e a diferenca entre "retomei a conversa" e
+            // "retomei metade achando que era tudo" — que e justamente a
+            // queixa que abriu esta issue.
+            let antigas = (store.get_message_count(&session_id).unwrap_or(0) as usize)
+                .saturating_sub(carregadas.len());
+            let sufixo = if antigas > 0 {
+                format!("; {antigas} mensagens mais antigas ficaram fora da janela")
+            } else {
+                String::new()
+            };
+            history = carregadas;
+            // O `/status` conta turnos daqui, e nao do zero: retomar na
+            // quinta pergunta e continuar na quinta, nao na primeira.
+            turn_index = turnos;
+            if turnos == 0 {
+                renderer.handle(
+                    UiEvent::Warning(&format!(
+                        "A sessao {session_id} nao tem historico em {}. Comece uma conversa nova.",
+                        db.display()
+                    )),
+                    &mut io::stdout(),
+                );
+            } else {
+                renderer.handle(
+                    UiEvent::Hint(&format!(
+                        "Retomando {session_id}: {turnos} turno(s) recuperado(s){sufixo}."
+                    )),
+                    &mut io::stdout(),
+                );
+            }
+        } else {
+            renderer.handle(
+                UiEvent::Hint(&format!(
+                    "Sessao {session_id} — gravando em {}. Retome com: garraia chat --resume {session_id}",
+                    db.display()
+                )),
+                &mut io::stdout(),
+            );
+        }
+    }
 
     // Dono único do SIGINT.
     //
@@ -1200,6 +1366,10 @@ pub async fn run_chat(
                 break;
             }
             "/clear" | "/limpar" => {
+                // So a memoria. O que ja foi gravado com `--persist` continua
+                // no banco e voltaria num `--resume` — apagar o historico do
+                // disco junto e outro slice, e precisa de confirmacao porque
+                // e a unica copia (#1088).
                 history.clear();
                 renderer.handle(UiEvent::Hint("Historico limpo."), &mut io::stdout());
                 continue;
@@ -1672,6 +1842,19 @@ pub async fn run_chat(
             TurnOutcome::Done(Ok(full_response)) => {
                 // Deltas were already printed live during streaming
                 println!();
+
+                // #1088: gravar e opcional e nao pode derrubar a conversa —
+                // disco cheio ou banco travado avisa e segue. Tambem nao e
+                // o caso de `save_session_summary`: sem um resumidor no CLI
+                // (ele mora no gateway) nao ha resumo honesto para gravar.
+                if let Some(ref store) = store
+                    && let Err(e) = append_turn(store, &session_id, &input, &full_response)
+                {
+                    renderer.handle(
+                        UiEvent::Warning(&format!("Turno nao gravado: {e}")),
+                        &mut stdout,
+                    );
+                }
 
                 history.push(ChatMessage {
                     role: ChatRole::User,
@@ -2774,5 +2957,105 @@ mod cli_tools_tests {
         }
         assert!(!doc.contains("web_search"));
         assert_eq!(doc.matches("- **").count(), names.len());
+    }
+}
+
+#[cfg(test)]
+mod persist_tests {
+    //! #1088 — o `garra chat` so toca o disco quando `--persist`/`--resume`
+    //! pede. Nenhum teste aqui fala com LLM: o store e `in_memory()`, ou um
+    //! diretorio temporario quando o que esta em jogo e o arquivo em si.
+
+    use super::*;
+
+    fn config_no_dir(dir: &std::path::Path) -> AppConfig {
+        AppConfig {
+            data_dir: Some(dir.to_path_buf()),
+            ..AppConfig::default()
+        }
+    }
+
+    fn papel(m: &ChatMessage) -> &'static str {
+        match m.role {
+            ChatRole::User => "user",
+            ChatRole::Assistant => "assistant",
+            _ => "outro",
+        }
+    }
+
+    fn textos(h: &[ChatMessage]) -> Vec<&str> {
+        h.iter()
+            .filter_map(|m| match &m.content {
+                MessagePart::Text(t) => Some(t.as_str()),
+                MessagePart::Parts(_) => None,
+            })
+            .collect()
+    }
+
+    /// O padrao, preso por teste: nenhum store e nenhum arquivo. E o que o
+    /// chat sempre fez, e o motivo de a persistencia ser opt-in em vez de
+    /// ligada para todo mundo.
+    #[test]
+    fn sem_flag_nao_abre_store_nem_cria_arquivo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = open_chat_store(&config_no_dir(dir.path()), false, None).expect("sem erro");
+        assert!(store.is_none(), "sem flag nao ha store");
+        assert!(
+            !dir.path().join(SESSIONS_DB).exists(),
+            "nenhum banco deveria ter sido criado"
+        );
+        assert!(
+            dir.path().read_dir().expect("le o dir").next().is_none(),
+            "o diretorio de dados nao deveria ganhar nada"
+        );
+    }
+
+    /// Cada flag basta sozinha: `--persist` e `--resume` abrem o store, e o
+    /// `--persist` cria o banco no diretorio de dados do config.
+    #[test]
+    fn persist_ou_resume_abrem_o_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(
+            open_chat_store(&config_no_dir(dir.path()), true, None)
+                .expect("sem erro")
+                .is_some(),
+            "--persist abre o store"
+        );
+        assert!(
+            dir.path().join(SESSIONS_DB).exists(),
+            "--persist cria o banco"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(
+            open_chat_store(&config_no_dir(dir.path()), false, Some("cli-x"))
+                .expect("sem erro")
+                .is_some(),
+            "--resume abre o store mesmo sem --persist"
+        );
+    }
+
+    /// Ida e volta: dois turnos gravados voltam em ordem cronologica, cada
+    /// mensagem com o papel com que foi gravada.
+    #[test]
+    fn dois_turnos_voltam_em_ordem() {
+        let store = SessionStore::in_memory().expect("store em memoria");
+        append_turn(&store, "cli-teste", "oi", "ola").expect("turno 1");
+        append_turn(&store, "cli-teste", "tudo bem?", "tudo").expect("turno 2");
+
+        let historico = load_history(&store, "cli-teste", RESUME_LIMIT).expect("carrega");
+        assert_eq!(historico.len(), 4, "dois turnos sao quatro mensagens");
+        let papeis: Vec<&str> = historico.iter().map(papel).collect();
+        assert_eq!(papeis, vec!["user", "assistant", "user", "assistant"]);
+        assert_eq!(textos(&historico), vec!["oi", "ola", "tudo bem?", "tudo"]);
+    }
+
+    /// Um id que nao existe devolve historico vazio em vez de erro: e o que
+    /// um `--resume` digitado errado encontra, e a sessao comeca do zero.
+    #[test]
+    fn retomar_id_inexistente_devolve_vazio() {
+        let store = SessionStore::in_memory().expect("store em memoria");
+        let historico = load_history(&store, "cli-nao-existe", RESUME_LIMIT).expect("sem erro");
+        assert!(historico.is_empty());
     }
 }
