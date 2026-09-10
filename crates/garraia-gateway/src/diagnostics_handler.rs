@@ -7,11 +7,18 @@
 //!
 //! Secret-free: when reporting on a secret (e.g. JWT_SECRET) we only
 //! emit `configured: true|false`, never the value.
+//!
+//! The two voice checks (#1098) are the only ones that touch the network, and
+//! only when voice mode is on: with TTS/STT down the gateway used to log a
+//! warning nobody read, so `GET /api/tts` answered with a silent text fallback
+//! and the operator never learned the server was gone. Surfacing the same
+//! fact as an `error` row here is what makes it visible in the console.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use axum::Json;
 use axum::extract::State;
+use garraia_common::ssrf::{self, IpScope, UrlPolicy};
 use serde::Serialize;
 
 use crate::state::SharedState;
@@ -89,6 +96,115 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let year = (y + if m <= 2 { 1 } else { 0 }) as i32;
     (year, m, d)
+}
+
+/// Next step offered when the TTS server is unreachable. Mirrors the command
+/// in `docs/voice.md` so the console points at the same thing the doc does.
+const TTS_NEXT_STEP: &str =
+    "Start the TTS server: `chatterbox-tts serve --host 127.0.0.1 --port 7860` (docs/voice.md).";
+
+/// Same, for the STT server.
+const STT_NEXT_STEP: &str =
+    "Start the STT server: `fwsh serve --host 127.0.0.1 --port 9090` (docs/voice.md).";
+
+/// Budget for one voice probe. Two of them run per report, and only when
+/// voice mode is on — the Diagnostics page must not hang on a dead port.
+const VOICE_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Voice servers are local by design (`docs/voice.md`), so this call site
+/// opts into [`IpScope::AllowPrivate`] — the same reason `Ollama` does. The
+/// URL comes from config, but it still goes through `vet_url`: scheme,
+/// host and blocked ranges (link-local metadata, CGNAT) are checked, and
+/// `pinned_client` pins the resolved address so it cannot be swapped
+/// between the check and the connect.
+fn voice_policy() -> UrlPolicy {
+    UrlPolicy::http_public(VOICE_PROBE_TIMEOUT, "garraia-gateway/diagnostics")
+        .with_ip_scope(IpScope::AllowPrivate)
+}
+
+/// Outcome of reaching (or not) one configured voice endpoint. Kept as an
+/// enum rather than a `Result` so [`voice_check`] stays a pure function —
+/// that is what lets the mapping be tested without a network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VoiceProbe {
+    /// Voice mode is off in this process: nothing to reach, nothing wrong.
+    Disabled,
+    /// Something answered; any HTTP status counts as up.
+    Reachable,
+    /// Vetted and dialled, but no answer. Carries a short, stable reason.
+    Unreachable(&'static str),
+    /// Not a URL this gateway may call: bad scheme, no host, blocked range.
+    Invalid(String),
+}
+
+async fn probe_voice_endpoint(endpoint: &str) -> VoiceProbe {
+    let policy = voice_policy();
+    let vetted = match ssrf::vet_url(endpoint, &policy) {
+        Ok(v) => v,
+        Err(e) => return VoiceProbe::Invalid(e.to_string()),
+    };
+    let client = match ssrf::pinned_client(&vetted, &policy) {
+        Ok(c) => c,
+        Err(e) => return VoiceProbe::Invalid(e.to_string()),
+    };
+    match client.get(vetted.url.clone()).send().await {
+        Ok(_) => VoiceProbe::Reachable,
+        Err(e) => VoiceProbe::Unreachable(if e.is_connect() {
+            "nothing listening (connection refused)"
+        } else if e.is_timeout() {
+            "no answer within 1.5s"
+        } else {
+            "request failed"
+        }),
+    }
+}
+
+/// Build the diagnostic row for one voice endpoint.
+///
+/// `Error` (not `Warning`) when a configured server is down: a warning is
+/// exactly what #1098 reports as too easy to miss.
+fn voice_check(
+    id: &'static str,
+    label: &'static str,
+    endpoint: &str,
+    next_step: &'static str,
+    probe: VoiceProbe,
+) -> DiagnosticCheck {
+    let (status, detail, next_step) = match probe {
+        VoiceProbe::Disabled => (
+            CheckStatus::Skipped,
+            "voice mode not enabled (start the gateway with --with-voice)".to_string(),
+            None,
+        ),
+        VoiceProbe::Reachable => (CheckStatus::Ok, format!("reachable at {endpoint}"), None),
+        VoiceProbe::Unreachable(reason) => (
+            CheckStatus::Error,
+            format!("{endpoint} unreachable: {reason}"),
+            Some(next_step),
+        ),
+        VoiceProbe::Invalid(reason) => (
+            CheckStatus::Error,
+            format!("{endpoint}: {reason}"),
+            Some("Set the voice endpoint to an http(s) URL on a host this gateway may reach."),
+        ),
+    };
+    DiagnosticCheck {
+        id,
+        label,
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// Which TTS endpoint is actually in play — `hibiki_endpoint` only when the
+/// configured provider is `hibiki`, otherwise the shared default.
+fn active_tts_endpoint(config: &garraia_config::VoiceConfig) -> &str {
+    if config.tts_provider.eq_ignore_ascii_case("hibiki") {
+        &config.hibiki_endpoint
+    } else {
+        &config.tts_endpoint
+    }
 }
 
 /// GET /api/diagnostics — full diagnostic report.
@@ -333,6 +449,38 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: None,
     });
 
+    // 13. TTS server reachable (#1098). Skipped when voice mode is off —
+    //     there is nothing to reach, and nothing wrong, in that case.
+    let voice_on = state.config.voice.enabled;
+    let tts_endpoint = active_tts_endpoint(&state.config.voice).to_string();
+    let tts_probe = if voice_on {
+        probe_voice_endpoint(&tts_endpoint).await
+    } else {
+        VoiceProbe::Disabled
+    };
+    checks.push(voice_check(
+        "voice.tts",
+        "TTS server",
+        &tts_endpoint,
+        TTS_NEXT_STEP,
+        tts_probe,
+    ));
+
+    // 14. STT server reachable (#1098).
+    let stt_endpoint = state.config.voice.stt_endpoint.clone();
+    let stt_probe = if voice_on {
+        probe_voice_endpoint(&stt_endpoint).await
+    } else {
+        VoiceProbe::Disabled
+    };
+    checks.push(voice_check(
+        "voice.stt",
+        "STT server",
+        &stt_endpoint,
+        STT_NEXT_STEP,
+        stt_probe,
+    ));
+
     // Aggregate status: error > warning > ok (skipped is neutral).
     let status = if checks
         .iter()
@@ -355,4 +503,115 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         generated_at: now_iso8601(),
         checks,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ENDPOINT: &str = "http://127.0.0.1:7860";
+
+    /// #1098: com o modo voz desligado nao ha servidor para alcancar, e isso
+    /// nao e defeito — a linha e `skipped`, nao `error`.
+    #[test]
+    fn voz_desligada_e_skipped_e_nao_erro() {
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            ENDPOINT,
+            TTS_NEXT_STEP,
+            VoiceProbe::Disabled,
+        );
+        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert!(
+            c.next_step.is_none(),
+            "skipped nao sugere proximo passo: nao ha nada a consertar"
+        );
+    }
+
+    #[test]
+    fn servidor_alcancavel_e_ok_sem_proximo_passo() {
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            ENDPOINT,
+            TTS_NEXT_STEP,
+            VoiceProbe::Reachable,
+        );
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert_eq!(c.detail, format!("reachable at {ENDPOINT}"));
+        assert!(c.next_step.is_none());
+    }
+
+    /// O ponto da issue: servidor fora tem de ser `error` com o comando que
+    /// levanta o servico — um `warning` era exatamente o que passava batido.
+    #[test]
+    fn servidor_fora_e_error_com_o_comando_de_subida() {
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            ENDPOINT,
+            TTS_NEXT_STEP,
+            VoiceProbe::Unreachable("nothing listening (connection refused)"),
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(c.detail.contains(ENDPOINT));
+        assert!(c.detail.contains("nothing listening"));
+        assert_eq!(c.next_step, Some(TTS_NEXT_STEP));
+        assert!(
+            TTS_NEXT_STEP.contains("chatterbox-tts serve"),
+            "o proximo passo tem de citar o comando real da docs"
+        );
+        assert!(STT_NEXT_STEP.contains("9090"), "e o STT a porta certa");
+    }
+
+    /// Endpoint que nao e URL chamavel tambem e `error` — falha fechada, nunca
+    /// se finge que esta tudo bem.
+    #[test]
+    fn endpoint_invalido_e_error() {
+        let c = voice_check(
+            "voice.stt",
+            "STT server",
+            "file:///etc/passwd",
+            STT_NEXT_STEP,
+            VoiceProbe::Invalid("scheme not allowed".to_string()),
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(c.next_step.is_some());
+        assert!(
+            c.detail.contains("file:///etc/passwd"),
+            "detalhe nomeia o endpoint rejeitado: {}",
+            c.detail
+        );
+    }
+
+    /// `hibiki` tem endpoint proprio; o default e o do chatterbox.
+    #[test]
+    fn provider_escolhe_o_endpoint() {
+        let mut cfg = garraia_config::VoiceConfig::default();
+        assert_eq!(active_tts_endpoint(&cfg), "http://127.0.0.1:7860");
+        cfg.hibiki_endpoint = "http://127.0.0.1:8912".to_string();
+        assert_eq!(
+            active_tts_endpoint(&cfg),
+            "http://127.0.0.1:7860",
+            "sem trocar o provider, o endpoint do hibiki nao vale"
+        );
+        cfg.tts_provider = "hibiki".to_string();
+        assert_eq!(active_tts_endpoint(&cfg), "http://127.0.0.1:8912");
+    }
+
+    /// O escopo privado e o que faz os servicos locais de voz alcancaveis; sem
+    /// ele o proprio 127.0.0.1 do default seria barrado pelo guarda.
+    #[test]
+    fn a_policy_de_voz_permite_loopback() {
+        assert_eq!(voice_policy().ip_scope, IpScope::AllowPrivate);
+        assert!(
+            ssrf::vet_url(ENDPOINT, &voice_policy()).is_ok(),
+            "o endpoint default de voz tem de passar pelo vet_url"
+        );
+        assert!(
+            ssrf::vet_url("http://169.254.169.254/", &voice_policy()).is_err(),
+            "metadata de cloud continua barrado mesmo no escopo privado"
+        );
+    }
 }

@@ -60,6 +60,19 @@ voice:
   language: "pt"  # pt, en, es, fr, de, it, hi
 ```
 
+## Voice is a local service
+
+Both servers run **on the machine that runs the gateway** — there is no
+hosted GarraIA voice endpoint, and no `chatterbox.garraia.org` or
+`whisper.garraia.org` to point at (#1099). Every default in
+`garraia-config` is a loopback URL (`http://127.0.0.1:7860` / `:9090`)
+precisely for that reason. If a config of yours names a public hostname,
+it came from somewhere other than this repository.
+
+Because the servers are separate processes, "voice mode is on" and "the
+voice servers are up" are different facts — see
+[Diagnostics](#diagnostics) for how to tell them apart.
+
 ## TTS Providers
 
 ### Chatterbox (Recommended)
@@ -161,6 +174,30 @@ garraia health
 ```
 
 Output includes TTS and STT status.
+
+## Diagnostics
+
+`GET /api/diagnostics` (and the Diagnostics page of the Web Console)
+reports one row per voice server — `voice.tts` and `voice.stt` — each
+probed with a 1.5 s budget:
+
+| Row | Status | Meaning |
+| --- | --- | --- |
+| `voice.tts` / `voice.stt` | `skipped` | Voice mode is off in this process. Nothing is wrong; start with `--with-voice`. |
+| | `ok` | The configured endpoint answered. |
+| | `error` | Configured but unreachable, or not a URL this gateway may call. The row carries the exact start command as `next_step`. |
+
+This is the answer to "voice fails silently" (#1098): an unreachable
+server used to be a log line nobody read, and `POST /api/tts` answered
+200 with a text fallback. It is now an `error` row in the console. To get
+the failure as an HTTP error instead of the fallback, ask for it
+explicitly:
+
+```bash
+curl -X POST 'http://127.0.0.1:3888/api/tts?fallback=false' \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Hello"}'
+```
 
 ## Troubleshooting
 
