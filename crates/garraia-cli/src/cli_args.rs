@@ -99,6 +99,8 @@ mod tests {
         "--log-level",
         "--model",
         "--provider",
+        // #1088: `--resume` leva o id da sessao, entao tambem come o proximo.
+        "--resume",
         "--timeout-secs",
         "--url",
         "-m",
