@@ -630,7 +630,9 @@ pub struct AgentConfig {
     ///
     /// A prefix never covers a compound command (`;`, `&&`, `||`, pipe,
     /// `$(...)`, redirection): those fall back to the risky tier, which
-    /// analyses each segment. Empty or blank patterns are refused too.
+    /// analyses each segment. Empty or blank patterns are refused too, and so
+    /// is a bare `"*"`: a wildcard without a prefix matches every simple
+    /// command, which is the risky tier switched off — not a pattern.
     #[serde(default)]
     pub bash_allowlist: Vec<String>,
     /// GAR-227: When true, a short LLM call classifies the user's intent into an agent mode

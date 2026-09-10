@@ -7,7 +7,9 @@
   escapa da confirmacao) mas nao perdoa comando perigoso, que continua barrado
   mesmo que alguem o liste. Sintaxe pobre de proposito, para ser auditavel a
   olho nu: `prefixo*` com coringa so no fim, ou o comando exato. Padroes com
-  coringa fora do fim sao recusados com warning em vez de interpretados, e um
-  prefixo nunca cobre comando composto (`;`, `&&`, pipe, `$(...)`,
+  coringa fora do fim sao recusados com warning em vez de interpretados; um
+  `*` puro tambem e recusado — coringa sem prefixo casa com todo comando
+  simples, e o tier arriscado desligado por um caractere nao e um padrao. E
+  um prefixo nunca cobre comando composto (`;`, `&&`, pipe, `$(...)`,
   redirecao) — esse volta para o tier arriscado, que analisa cada segmento.
   Vale no gateway, no `garra chat` e no caminho MCP.

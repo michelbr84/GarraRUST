@@ -57,6 +57,9 @@ agent:
   #   2. No caminho MCP (`garraia mcp-agent`) não existe confirmação humana
   #      de qualquer forma, então o que entra aqui auto-executa sem prompt.
   #      Prefira comandos exatos a prefixos, e a lista mínima necessária.
+  #   3. Um `"*"` puro não é "tudo" — é recusado. Coringa sem prefixo casa
+  #      com todo comando simples, que é o tier arriscado desligado por um
+  #      caractere. Se quer desligar a proteção, não configure a lista.
   bash_allowlist:
     - "hermes send *"
     - "git status"

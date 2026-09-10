@@ -87,6 +87,12 @@ impl BashTool {
     /// recusados com warning em vez de interpretados: adivinhar a intenção de
     /// um coringa no meio é como se abre um `rm -rf *` por acidente.
     ///
+    /// `"*"` puro (e `" *"` etc.) também é recusado: o coringa sozinho vira
+    /// prefixo vazio, que casa com **todo** comando não composto — um bypass
+    /// blanket do tier arriscado travestido de padrão. Desligar a proteção é
+    /// uma decisão que o operador toma ao não configurar a allowlist, não
+    /// uma que um caractere toma por ele.
+    ///
     /// Um padrão de prefixo **nunca** cobre um comando composto (`;`,
     /// `&&`, `$(...)`, pipe, redireção): ver [`Self::matches_allowlist`].
     #[must_use = "devolve um BashTool novo; o receptor nao e alterado"]
@@ -97,13 +103,23 @@ impl BashTool {
                 // #1105 (auditoria de seguranca): padrao vazio ou so espaco
                 // nao casa com nada e engana quem escreveu — recusado junto
                 // com o coringa fora do fim, e pelo mesmo motivo.
-                let ok = !p.trim().is_empty() && (!p.contains('*') || p.ends_with('*'));
+                // #1117 (re-auditoria): "*" puro vira prefixo vazio e casa
+                // com tudo; prefixo inexistente e o mesmo buraco.
+                let ok = !p.trim().is_empty()
+                    && match p.strip_suffix('*') {
+                        // Sem coringa: comando exato.
+                        None if !p.contains('*') => true,
+                        // Coringa no fim: o prefixo tem de existir de verdade.
+                        Some(prefixo) => !prefixo.trim().is_empty(),
+                        // Coringa fora do fim: recusado, sem adivinhar intencao.
+                        None => false,
+                    };
                 if !ok {
                     // `?p` (Debug) e nao `%p` (Display): o padrao vem de
                     // config e um `\n` nele forjaria linhas no log.
                     tracing::warn!(
                         pattern = ?p,
-                        "bash_allowlist: padrao vazio ou com coringa fora do fim; ignorado"
+                        "bash_allowlist: padrao vazio, coringa fora do fim ou coringa sozinho; ignorado"
                     );
                 }
                 ok
@@ -835,6 +851,33 @@ mod tests {
             tool.allowlist,
             vec!["ok*".to_string()],
             "so o padrao com coringa no fim sobrevive"
+        );
+    }
+
+    /// `"*"` puro não é um padrão — é o tier arriscado desligado. Vira prefixo
+    /// vazio (`starts_with("")` casa com tudo), então um caractere autorizaria
+    /// execução automática de todo comando não perigoso — no caminho MCP, sem
+    /// humano no circuito. Recusado na construção, e o pior caso visto de fora:
+    /// um comando arriscado listado assim continua barrado fail-closed.
+    /// (Achado convergente da re-auditoria de código e de segurança, #1117.)
+    #[tokio::test]
+    async fn estrela_solta_nao_vira_bypass_blanket() {
+        let tool = BashTool::new(None).with_allowlist(vec!["*".into(), " *".into()]);
+        assert!(
+            tool.allowlist.is_empty(),
+            "coringa sozinho tem de ser recusado; sobrou: {:?}",
+            tool.allowlist
+        );
+        // E sem a lista, o comando arriscado morre como sempre morreu:
+        // fail-closed sem canal de confirmação.
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(
+            output.is_error,
+            "printenv PATH tem de seguir barrado: {}",
+            output.content
         );
     }
 
