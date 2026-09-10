@@ -2476,7 +2476,7 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
 <body>
 <!-- APP HEADER (plan 0116 T3) -->
 <header class="app-header" data-testid="garra-app-header" role="banner">
-  <button class="hamburger-btn" id="hamburger-btn" title="Toggle sidebar" aria-label="Toggle sidebar">
+  <button class="hamburger-btn" id="hamburger-btn" title="Toggle sidebar" aria-label="Toggle sidebar" aria-expanded="true">
     <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/></svg>
   </button>
   <span class="header-brand">
@@ -4471,6 +4471,35 @@ document.addEventListener('click', () => {
 function openSidebarMobile() { sidebar.classList.add('mobile-open'); sidebarOverlay.classList.add('show'); }
 function closeSidebarMobile() { sidebar.classList.remove('mobile-open'); sidebarOverlay.classList.remove('show'); }
 
+// ─── Sidebar toggle (mobile drawer vs desktop collapse) ───────────────
+// Below the 768px breakpoint the hamburger opens the overlay drawer; above it
+// the sidebar is already on screen, so the same button collapses it instead
+// (`.sidebar.collapsed` is pre-existing CSS, previously unused by JS).
+const MOBILE_QUERY = '(max-width: 768px)';
+const isMobileViewport = () => window.matchMedia(MOBILE_QUERY).matches;
+
+function syncHamburgerState() {
+  const expanded = isMobileViewport()
+    ? sidebar.classList.contains('mobile-open')
+    : !sidebar.classList.contains('collapsed');
+  $('hamburger-btn').setAttribute('aria-expanded', String(expanded));
+}
+
+function resetSidebarState() {
+  closeSidebarMobile();
+  sidebar.classList.remove('collapsed');
+  syncHamburgerState();
+}
+
+let wasMobileViewport = isMobileViewport();
+window.addEventListener('resize', () => {
+  const nowMobile = isMobileViewport();
+  if (nowMobile === wasMobileViewport) return;
+  wasMobileViewport = nowMobile;
+  resetSidebarState();
+});
+syncHamburgerState();
+
 // ─── Modals ──────────────────────────────────────────────────────────
 function openModal(id) { $(id).classList.add('show'); }
 function closeModal(id) { $(id).classList.remove('show'); }
@@ -4502,8 +4531,15 @@ $('new-chat-btn').addEventListener('click', () => {
   closeSidebarMobile();
 });
 
-$('hamburger-btn').addEventListener('click', openSidebarMobile);
-sidebarOverlay.addEventListener('click', closeSidebarMobile);
+$('hamburger-btn').addEventListener('click', () => {
+  if (isMobileViewport()) {
+    if (sidebar.classList.contains('mobile-open')) { closeSidebarMobile(); } else { openSidebarMobile(); }
+  } else {
+    sidebar.classList.toggle('collapsed');
+  }
+  syncHamburgerState();
+});
+sidebarOverlay.addEventListener('click', () => { closeSidebarMobile(); syncHamburgerState(); });
 
 $('right-panel-toggle').addEventListener('click', () => { rightPanel.classList.toggle('collapsed'); rightPanel.classList.toggle('expanded'); });
 $('right-panel-close').addEventListener('click', () => { rightPanel.classList.add('collapsed'); rightPanel.classList.remove('expanded'); });
