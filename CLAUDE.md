@@ -493,7 +493,8 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 | `/fix-issue` | Corrige issue GitHub via TDD |
 | `/pre-commit` | Validação pré-commit (segredos, debug, lint) |
 | `/refactor-module` | Refactoring seguro com testes |
-| `/assemble-team` | Monta equipe de agentes coordenados |
+| `/assemble-team` | Monta equipe de agentes coordenados, selecionada por risco R0-R5 |
+| `/repo-autopilot` | Varredura autonoma: triagem de issues/PRs, correcoes e relatorio de saude |
 | `/generate-docs` | Gera documentação automática |
 | `/code-review` | Revisão de código inline |
 | `/git-assist` | Ajuda com git workflow |
@@ -501,12 +502,19 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 
 ## Agents disponíveis
 
-| Agent | Papel |
-| ------- | ------- |
-| `code-reviewer` | Revisor sênior Rust/Flutter |
-| `security-auditor` | Auditor OWASP, JWT, crypto |
-| `doc-writer` | Escritor técnico PT-BR/EN |
-| `team-coordinator` | Orquestrador de equipes de agentes |
+| Agent | Modelo | Papel |
+| ------- | ------ | ------- |
+| `team-coordinator` | tencent/hy4-preview | Orquestração, delegação e decisão de merge. Nao implementa |
+| `repo-analyst` | deepseek/deepseek-v4-flash-0731 | Diagnostico de issues/PRs, causa raiz, duplicadas. Nao escreve codigo |
+| `implementer` | z-ai/glm-5.3-flash | Implementacao Rust/Flutter em worktree isolada |
+| `test-engineer` | deepseek/deepseek-v4-flash-0731 | fmt/check/clippy/test e teste de regressao |
+| `code-reviewer` | openai/gpt-5.6-luna | Revisao independente e gate MERGE_READY |
+| `security-auditor` | openai/gpt-5.6-luna | auth, JWT, crypto, RLS, SSRF, secrets. Convocado em R4 |
+| `doc-writer` | deepseek/deepseek-v4-flash-0731 | README/SETUP/CHANGELOG, docstrings e higiene do repo |
+
+Modelos diferentes de proposito para Implementer e Reviewer: quem escreve nao julga.
+Selecao por risco (R0-R5) em `skills/assemble-team.md`; varredura autonoma em
+`skills/repo-autopilot.md`. R5 (release, secrets, destrutivo) sempre escala ao humano.
 
 ## Ferramentas preferenciais
 
