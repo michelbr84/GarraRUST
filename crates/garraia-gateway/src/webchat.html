@@ -3334,7 +3334,14 @@ function renderFetchError(el, status, label, colspan) {
   const hint = code === 401
     ? ' A chave do gateway não foi aceita. Informe-a em <strong>Gateway Authentication</strong>, no painel direito, e clique em Connect.'
     : ' Recarregue a página; se o erro persistir, veja os detalhes em Diagnostics.';
-  if (code === 401 && authSection) authSection.style.display = 'block';
+  if (code === 401 && authSection) {
+    authSection.style.display = 'block';
+    // O router esconde o painel direito nas páginas não-chat (setPage) para
+    // cortar ruído visual — mas o 401 é exatamente o caso em que ele precisa
+    // voltar: o form de gateway key que resolve o erro vive dentro dele.
+    const rp = document.getElementById('right-panel');
+    if (rp) rp.style.display = '';
+  }
   const box = '<div class="warning-box">Falha ao carregar ' + escapeHtml(label) +
     ' (HTTP ' + code + ').' + hint + '</div>';
   el.innerHTML = colspan > 0 ? '<tr><td colspan="' + colspan + '">' + box + '</td></tr>' : box;
