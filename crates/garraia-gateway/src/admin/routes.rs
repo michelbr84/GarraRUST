@@ -48,6 +48,8 @@ pub fn build_admin_router(
         .route("/api/users/{id}/role", put(handlers::update_user_role))
         .route("/api/users/{id}", delete(handlers::delete_user))
         .route("/api/danger-zone", post(handlers::danger_zone))
+        // ── #1120: self-service password rotation ──
+        .route("/api/change-password", post(handlers::change_password))
         .route("/api/audit-log", get(handlers::get_audit_log))
         // Phase 7.1: additional audit endpoint alias (canonical path)
         .route("/api/audit", get(handlers::get_audit_log))

@@ -542,6 +542,10 @@ tr:hover { background: var(--bg-hover); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           <span class="nav-label">About</span>
         </div>
+        <div class="nav-item" data-page="account">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          <span class="nav-label">Account</span>
+        </div>
       </div>
     </nav>
     <div id="main-area">
@@ -714,7 +718,7 @@ var pages = {
   config: pageConfig, memory: pageMemory, tools: pageTools, channels: pageChannels,
   sessions: pageSessions, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
   templates: pageTemplates, audit: pageAudit, security: pageSecurity, users: pageUsers,
-  about: pageAbout
+  about: pageAbout, account: pageAccount
 };
 
 function navigate(page) {
@@ -736,7 +740,8 @@ function pageTitle(page) {
     dashboard:'Dashboard', mcp:'MCP Servers', providers:'Providers', secrets:'Secrets',
     config:'Configuration', memory:'Memory', tools:'Tools', channels:'Channels',
     sessions:'Sessions', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
-    templates:'Templates', audit:'Audit Log', security:'Security', users:'Users', about:'About'
+    templates:'Templates', audit:'Audit Log', security:'Security', users:'Users',
+    about:'About', account:'Account'
   };
   return titles[page] || page;
 }
@@ -1704,6 +1709,72 @@ async function pageAbout() {
     frag.appendChild(card);
     renderContent(frag);
   } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
+}
+
+// ─── Account (self-service password change, #1120) ───────────────────
+// Antes desta pagina a unica forma de trocar a senha do admin era SQL
+// manual no admin.db. O POST exige a senha atual, entao um cookie de
+// sessao roubado nao basta para trocar a senha e trancar o dono fora.
+var MIN_PASSWORD_LEN = 8;
+
+function accountField(id, placeholder, autocomplete) {
+  return el('input', {
+    type: 'password', id: id, placeholder: placeholder, autocomplete: autocomplete,
+    'data-testid': id
+  });
+}
+
+function pageAccount() {
+  var card = el('div', { className: 'card', style: 'max-width:520px' });
+  card.appendChild(el('h3', { textContent: 'Change password', style: 'margin-bottom:4px' }));
+  card.appendChild(el('p', {
+    style: 'color:var(--text-muted);font-size:12px;margin-bottom:16px',
+    textContent: currentUser
+      ? 'Rotates the password of "' + currentUser.username + '". Every other session of this user is signed out; this one stays.'
+      : 'Rotates the password of the signed-in user.'
+  }));
+
+  var currentInput = accountField('current-password', 'Current password', 'current-password');
+  var newInput = accountField('new-password', 'New password (8+ characters)', 'new-password');
+  var confirmInput = accountField('confirm-password', 'Confirm new password', 'new-password');
+  // Sem a classe `hidden`: ela e `display:none !important`, e aqui a
+  // mensagem e religada por `style.display`.
+  var errorEl = el('div', {
+    className: 'badge badge-error', 'data-testid': 'account-error',
+    style: 'display:none;margin-top:12px'
+  });
+
+  [['Current password', currentInput], ['New password', newInput], ['Confirm new password', confirmInput]]
+    .forEach(function (pair) {
+      card.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: pair[0] }), pair[1]]));
+    });
+
+  function fail(msg) { errorEl.textContent = msg; errorEl.style.display = 'block'; }
+
+  var submit = el('button', {
+    className: 'btn-primary btn-sm', textContent: 'Change password',
+    'data-testid': 'change-password-submit',
+    onClick: async function () {
+      errorEl.style.display = 'none';
+      if (!currentInput.value || !newInput.value || !confirmInput.value) { fail('All three fields are required.'); return; }
+      if (newInput.value.length < MIN_PASSWORD_LEN) { fail('New password must be at least ' + MIN_PASSWORD_LEN + ' characters.'); return; }
+      if (newInput.value !== confirmInput.value) { fail('New passwords do not match.'); return; }
+      submit.disabled = true;
+      try {
+        await apiPost('/change-password', { current_password: currentInput.value, new_password: newInput.value });
+        currentInput.value = ''; newInput.value = ''; confirmInput.value = '';
+        toast('Password changed', 'success');
+      } catch (e) {
+        fail(e.message);
+      } finally {
+        submit.disabled = false;
+      }
+    }
+  });
+
+  card.appendChild(el('div', { style: 'display:flex;gap:8px' }, [submit]));
+  card.appendChild(errorEl);
+  renderContent(card);
 }
 
 // ─── Auth Handlers ──────────────────────────────────────────────────

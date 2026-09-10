@@ -328,8 +328,9 @@ pub async fn me(
 // Slice 9.g (GAR-474): setup, user-management, and danger-zone handlers extracted to
 // `admin::users`. Re-exported so `routes.rs` paths (`handlers::setup`, etc.) keep resolving.
 pub use super::users::{
-    CreateUserRequest, DangerZoneRequest, SetupRequest, UpdateUserRoleRequest, create_user,
-    danger_zone, delete_user, list_users, setup, setup_status, update_user_role,
+    CHANGE_PASSWORD_ACTION, ChangePasswordRequest, CreateUserRequest, DangerZoneRequest,
+    SetupRequest, UpdateUserRoleRequest, change_password, create_user, danger_zone, delete_user,
+    list_users, setup, setup_status, update_user_role,
 };
 
 // Slice 9.f (GAR-475): secrets CRUD + rotation + migration + AES-256-GCM helpers extracted to
