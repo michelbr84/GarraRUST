@@ -184,6 +184,55 @@ pub fn build_router(
     // `state`, e o gate so precisa da chave.
     let api_key_gate = crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway);
 
+    // #1093: as rotas de learning ficam num sub-router proprio, com um guarda
+    // dedicado sobre os metodos mutantes — elas executam `git` (revert) e
+    // escrevem skills no disco, e o gate global de `/api/*` e passa-direto
+    // com `api_key` ausente (default). O layer de rota roda por dentro do
+    // gate global, que ja exigiu o bearer quando a chave existe.
+    let learning_routes = Router::new()
+        .route("/learning", get(crate::learning_handler::learning_ui))
+        .route(
+            "/api/learning/skills",
+            get(crate::learning_handler::list_learning_skills),
+        )
+        .route(
+            "/api/learning/skills/{name}",
+            get(crate::learning_handler::get_learning_skill)
+                .delete(crate::learning_handler::delete_learning_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/approve",
+            post(crate::learning_handler::approve_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/reject",
+            post(crate::learning_handler::reject_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/lock",
+            post(crate::learning_handler::lock_skill),
+        )
+        .route(
+            "/api/learning/skills/{name}/rollback",
+            post(crate::learning_handler::rollback_skill),
+        )
+        .route(
+            "/api/learning/logs/sessions",
+            get(crate::learning_handler::get_log_sessions),
+        )
+        .route(
+            "/api/learning/logs/candidates",
+            get(crate::learning_handler::get_log_candidates),
+        )
+        .route(
+            "/api/learning/logs/scores",
+            get(crate::learning_handler::get_log_scores),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            api_key_gate.clone(),
+            crate::learning_auth::learning_mutations_guard,
+        ));
+
     let default_provider = state.agents.default_provider_id().unwrap_or_default();
     let default_model = state
         .agents
@@ -280,45 +329,9 @@ pub fn build_router(
             get(crate::memory_handler::search_memory),
         )
         .route("/api/logs", get(crate::logs_handler::get_logs))
-        // Plan 0156 (GAR-651): Learning Agent Web UI
-        .route("/learning", get(crate::learning_handler::learning_ui))
-        .route(
-            "/api/learning/skills",
-            get(crate::learning_handler::list_learning_skills),
-        )
-        .route(
-            "/api/learning/skills/{name}",
-            get(crate::learning_handler::get_learning_skill)
-                .delete(crate::learning_handler::delete_learning_skill),
-        )
-        .route(
-            "/api/learning/skills/{name}/approve",
-            post(crate::learning_handler::approve_skill),
-        )
-        .route(
-            "/api/learning/skills/{name}/reject",
-            post(crate::learning_handler::reject_skill),
-        )
-        .route(
-            "/api/learning/skills/{name}/lock",
-            post(crate::learning_handler::lock_skill),
-        )
-        .route(
-            "/api/learning/skills/{name}/rollback",
-            post(crate::learning_handler::rollback_skill),
-        )
-        .route(
-            "/api/learning/logs/sessions",
-            get(crate::learning_handler::get_log_sessions),
-        )
-        .route(
-            "/api/learning/logs/candidates",
-            get(crate::learning_handler::get_log_candidates),
-        )
-        .route(
-            "/api/learning/logs/scores",
-            get(crate::learning_handler::get_log_scores),
-        )
+        // Plan 0156 (GAR-651): Learning Agent Web UI — montado acima, num
+        // sub-router com o guarda de mutantes (#1093); aqui so o merge.
+        .merge(learning_routes)
         .route("/api/tts", post(crate::voice_handler::synthesize))
         .route("/api/stt", post(crate::voice_handler::transcribe))
         .route("/api/providers", get(list_providers).post(add_provider))

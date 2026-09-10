@@ -17,6 +17,7 @@ pub mod diagnostics_handler;
 pub mod externalization;
 pub mod gateway_auth;
 pub mod health;
+pub mod learning_auth;
 pub mod learning_handler;
 pub mod logs_handler;
 pub mod mcp;
