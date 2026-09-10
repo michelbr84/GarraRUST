@@ -2,8 +2,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::pbkdf2;
 use rusqlite::{Connection, params};
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tracing::info;
 
 use super::rbac::Role;
@@ -13,6 +15,20 @@ const SALT_LEN: usize = 32;
 const SESSION_TOKEN_LEN: usize = 32;
 const CSRF_TOKEN_LEN: usize = 32;
 const SESSION_DURATION_SECS: i64 = 86400; // 24 hours
+
+/// Tentativas erradas de TOTP que um usuario acumula dentro de
+/// `TOTP_ATTEMPT_WINDOW` antes de o segundo fator travar (#1121).
+///
+/// Sem isso, o segundo fator e decorativo: um codigo de 6 digitos com a deriva
+/// de +-1 janela aceita 3 de cada 1e6 chutes, e `verify_totp` custa
+/// microssegundos — ao contrario da senha, que passa por 600k iteracoes de
+/// PBKDF2 e portanto ja e cara de forcar.
+const TOTP_MAX_ATTEMPTS: usize = 5;
+/// Janela da contagem acima. Reiniciar o gateway limpa a contagem junto com o
+/// travamento: e estado de processo, nao de banco, de proposito — persisti-lo
+/// deixaria um atacante capaz de travar o dono por mais tempo do que o restart
+/// resolve.
+const TOTP_ATTEMPT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AdminUser {
@@ -61,6 +77,8 @@ pub type SecretVersionCiphertext = (i64, Vec<u8>, Vec<u8>);
 
 pub struct AdminStore {
     conn: Connection,
+    /// Tentativas erradas de TOTP por usuario — ver `TOTP_MAX_ATTEMPTS`.
+    totp_attempts: HashMap<String, Vec<Instant>>,
 }
 
 impl AdminStore {
@@ -71,7 +89,10 @@ impl AdminStore {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("failed to set pragmas: {e}"))?;
 
-        let store = Self { conn };
+        let store = Self {
+            conn,
+            totp_attempts: HashMap::new(),
+        };
         store.run_migrations()?;
         Ok(store)
     }
@@ -83,7 +104,10 @@ impl AdminStore {
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("failed to set pragmas: {e}"))?;
 
-        let store = Self { conn };
+        let store = Self {
+            conn,
+            totp_attempts: HashMap::new(),
+        };
         store.run_migrations()?;
         Ok(store)
     }
@@ -182,6 +206,42 @@ impl AdminStore {
             )
             .map_err(|e| format!("admin db migration failed: {e}"))?;
 
+        self.ensure_totp_columns()?;
+
+        Ok(())
+    }
+
+    /// Colunas do segundo fator (#1121), adicionadas a um banco que ja existe.
+    ///
+    /// O SQLite nao tem `ADD COLUMN IF NOT EXISTS`, entao a unica forma
+    /// idempotente de evoluir `admin_users` e perguntar ao schema antes — o
+    /// `CREATE TABLE IF NOT EXISTS` do bloco acima nao toca em tabela que ja
+    /// nasceu sem essas colunas. Os identificadores abaixo sao literais:
+    /// nenhum deles vem de fora do codigo.
+    fn ensure_totp_columns(&self) -> Result<(), String> {
+        let mut stmt = self
+            .conn
+            .prepare("PRAGMA table_info(admin_users)")
+            .map_err(|e| format!("failed to read admin_users schema: {e}"))?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("failed to read admin_users schema: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if !columns.iter().any(|c| c == "totp_secret") {
+            self.conn
+                .execute("ALTER TABLE admin_users ADD COLUMN totp_secret TEXT", [])
+                .map_err(|e| format!("failed to add admin_users.totp_secret: {e}"))?;
+        }
+        if !columns.iter().any(|c| c == "totp_enabled") {
+            self.conn
+                .execute(
+                    "ALTER TABLE admin_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .map_err(|e| format!("failed to add admin_users.totp_enabled: {e}"))?;
+        }
         Ok(())
     }
 
@@ -349,6 +409,112 @@ impl AdminStore {
         } else {
             None
         }
+    }
+
+    // ── TOTP: segundo fator do painel (#1121) ─────────────────────────
+
+    /// Segredo TOTP do usuario — tanto o pendente de confirmacao quanto o
+    /// ativo. `None` tambem significa "coluna existe, valor e NULL".
+    ///
+    /// Igual ao fluxo mobile (`totp.rs`), o que fica no banco e o proprio
+    /// base32, em claro. Quem le o `admin.db` le o segredo e reconstroi o
+    /// segundo fator offline; o mesmo ja valia para o `sessions.db` e esta
+    /// registrado no modulo `totp`.
+    pub fn get_totp_secret(&self, user_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT totp_secret FROM admin_users WHERE id = ?1",
+                params![user_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Guarda o segredo como **pendente**: `totp_enabled` so vira 1 em
+    /// `enable_totp`, depois de um codigo validar. Quem chama setup e nao
+    /// confirma fica com um segredo inerte, nao com 2FA pela metade.
+    pub fn set_pending_totp_secret(&self, user_id: &str, secret: &str) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE admin_users SET totp_secret = ?1, updated_at = datetime('now')
+                 WHERE id = ?2",
+                params![secret, user_id],
+            )
+            .map_err(|e| format!("failed to store totp secret: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        Ok(())
+    }
+
+    /// Confirma o enrollment. So deve ser chamado com um codigo ja validado.
+    pub fn enable_totp(&self, user_id: &str) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE admin_users SET totp_enabled = 1, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![user_id],
+            )
+            .map_err(|e| format!("failed to enable totp: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        Ok(())
+    }
+
+    /// Desliga o segundo fator e apaga o segredo junto — um segredo guardado
+    /// depois de desligado seria uma reativacao sem novo enrollment.
+    pub fn disable_totp(&self, user_id: &str) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE admin_users SET totp_secret = NULL, totp_enabled = 0,
+                 updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![user_id],
+            )
+            .map_err(|e| format!("failed to disable totp: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn is_totp_enabled(&self, user_id: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT totp_enabled FROM admin_users WHERE id = ?1",
+                params![user_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .is_some_and(|v| v != 0)
+    }
+
+    /// `true` quando o usuario ja errou `TOTP_MAX_ATTEMPTS` codigos dentro da
+    /// janela. Efeito colateral: descarta as tentativas que ja expiraram, para
+    /// a contagem nao crescer sem limite.
+    pub fn totp_attempts_exhausted(&mut self, user_id: &str) -> bool {
+        let attempts = self.totp_attempts.entry(user_id.to_string()).or_default();
+        let now = Instant::now();
+        attempts.retain(|t| now.duration_since(*t) < TOTP_ATTEMPT_WINDOW);
+        attempts.len() >= TOTP_MAX_ATTEMPTS
+    }
+
+    /// Conta uma tentativa. Sucesso zera a contagem — travar o dono que acabou
+    /// de acertar o codigo seria pior que nao travar.
+    pub fn record_totp_attempt(&mut self, user_id: &str, success: bool) {
+        if success {
+            self.totp_attempts.remove(user_id);
+            return;
+        }
+        self.totp_attempts
+            .entry(user_id.to_string())
+            .or_default()
+            .push(Instant::now());
     }
 
     // ── Session management ───────────────────────────────────────────
@@ -1084,5 +1250,98 @@ mod tests {
 
         let yaml = store.get_config_version(1).unwrap();
         assert_eq!(yaml, "key: value1");
+    }
+
+    // ── TOTP (#1121) ──────────────────────────────────────────────────
+
+    fn usuario_totp(store: &AdminStore) -> String {
+        store.create_user("cofre", "senha", Role::Admin).unwrap().id
+    }
+
+    #[test]
+    fn segredo_pendente_nao_liga_o_segundo_fator() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .unwrap();
+
+        assert_eq!(
+            store.get_totp_secret(&id).as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+        assert!(
+            !store.is_totp_enabled(&id),
+            "guardar o segredo nao pode exigir o codigo; so `enable_totp` liga"
+        );
+    }
+
+    #[test]
+    fn desligar_apaga_o_segredo_junto() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .unwrap();
+        store.enable_totp(&id).unwrap();
+        assert!(store.is_totp_enabled(&id));
+
+        store.disable_totp(&id).unwrap();
+
+        assert!(!store.is_totp_enabled(&id));
+        assert_eq!(
+            store.get_totp_secret(&id),
+            None,
+            "segredo sobrevivente seria uma reativacao sem novo enrollment"
+        );
+    }
+
+    #[test]
+    fn usuario_novo_nasce_sem_segundo_fator() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        assert!(!store.is_totp_enabled(&id));
+        assert_eq!(store.get_totp_secret(&id), None);
+    }
+
+    #[test]
+    fn errar_muito_trava_e_um_aceto_zera_a_contagem() {
+        let mut store = test_store();
+        let id = usuario_totp(&store);
+
+        for _ in 0..TOTP_MAX_ATTEMPTS - 1 {
+            store.record_totp_attempt(&id, false);
+        }
+        assert!(
+            !store.totp_attempts_exhausted(&id),
+            "travar antes da ultima tentativa valida"
+        );
+
+        store.record_totp_attempt(&id, false);
+        assert!(store.totp_attempts_exhausted(&id));
+
+        // Acertar nao pode deixar o dono travado.
+        store.record_totp_attempt(&id, true);
+        assert!(!store.totp_attempts_exhausted(&id));
+    }
+
+    #[test]
+    fn a_contagem_e_por_usuario() {
+        let mut store = test_store();
+        let a = usuario_totp(&store);
+        let b = store.create_user("outro", "senha", Role::Admin).unwrap().id;
+
+        for _ in 0..TOTP_MAX_ATTEMPTS {
+            store.record_totp_attempt(&a, false);
+        }
+
+        assert!(store.totp_attempts_exhausted(&a));
+        assert!(
+            !store.totp_attempts_exhausted(&b),
+            "um usuario errando nao pode travar os outros"
+        );
     }
 }

@@ -1,0 +1,302 @@
+//! #1121: o segundo fator no login do painel, montado no `build_router` de
+//! verdade.
+//!
+//! Os testes de unidade da store provam o estado (segredo pendente, ligado,
+//! contador de tentativas). So este arquivo prova que o gate esta **no caminho
+//! do login**: que com 2FA ligado a senha nao basta, que o codigo errado nao
+//! abre sessao, que o codigo certo abre, e que a sexta tentativa errada
+//! trava. Um gate implementado no handler errado — ou num router que nao e o
+//! que sobe — passaria nos outros e falharia aqui.
+//!
+//! Nenhum teste usa rede nem relogio falso: o codigo vem de
+//! `totp::current_code`, que le a mesma hora que o handler vai ler.
+
+use std::sync::Arc;
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use garraia_agents::AgentRuntime;
+use garraia_channels::ChannelRegistry;
+use garraia_config::AppConfig;
+use garraia_gateway::admin::middleware::{CSRF_HEADER, SESSION_COOKIE_NAME};
+use garraia_gateway::admin::rbac::Role;
+use garraia_gateway::admin::store::AdminStore;
+use garraia_gateway::push_channels::PushChannelStates;
+use garraia_gateway::router::build_router;
+use garraia_gateway::state::AppState;
+use serde_json::{Value, json};
+use tokio::sync::Mutex;
+use tower::ServiceExt;
+
+const USUARIO: &str = "dono";
+const SENHA: &str = "senha-do-painel-de-teste";
+
+/// `(status, corpo, valor do cookie de sessao, se vier)`
+type Resposta = (StatusCode, Value, Option<String>);
+
+/// Usuario criado + router montado sobre a **mesma** store, para que os testes
+/// possam ligar o 2FA por dentro e ver o gate por fora.
+fn cenario() -> (Router, Arc<Mutex<AdminStore>>) {
+    let store = AdminStore::in_memory().expect("store em memoria");
+    store
+        .create_user(USUARIO, SENHA, Role::Admin)
+        .expect("usuario de teste");
+
+    let config = AppConfig::default();
+    let state = Arc::new(AppState::new(
+        config,
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    ));
+    let admin_store = Arc::new(Mutex::new(store));
+    let router = build_router(
+        state,
+        PushChannelStates::empty(),
+        Arc::clone(&admin_store),
+        Arc::new(vec![0u8; 32]),
+    );
+    (router, admin_store)
+}
+
+async fn chama(
+    router: &Router,
+    metodo: &str,
+    uri: &str,
+    corpo: Option<Value>,
+    cookie: Option<&str>,
+    csrf: Option<&str>,
+) -> Resposta {
+    let mut req = Request::builder().method(metodo).uri(uri);
+    req = req.header(header::CONTENT_TYPE, "application/json");
+    if let Some(c) = cookie {
+        req = req.header(header::COOKIE, format!("{SESSION_COOKIE_NAME}={c}"));
+    }
+    if let Some(t) = csrf {
+        req = req.header(CSRF_HEADER, t);
+    }
+    let body = corpo
+        .map(|v| Body::from(serde_json::to_vec(&v).expect("json")))
+        .unwrap_or_else(Body::empty);
+    let mut req = req.body(body).expect("request");
+
+    // O rate limiter le o IP do par em `ConnectInfo`, que em producao vem do
+    // `into_make_service_with_connect_info`. Sem ele todo pedido morre em 500
+    // no governor.
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40414,
+        ))));
+
+    let resp = router.clone().oneshot(req).await.expect("resposta");
+    let status = resp.status();
+    let sessao = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .and_then(|v| v.strip_prefix(&format!("{SESSION_COOKIE_NAME}=")))
+        .map(str::to_string);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("corpo");
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json, sessao)
+}
+
+async fn login(router: &Router, corpo: Value) -> Resposta {
+    chama(router, "POST", "/admin/api/login", Some(corpo), None, None).await
+}
+
+/// Login basico (sem 2FA) — devolve `(cookie, csrf)`.
+async fn entrar(router: &Router) -> (String, String) {
+    let (status, json, cookie) =
+        login(router, json!({"username": USUARIO, "password": SENHA})).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "login sem 2FA deveria entrar: {json}"
+    );
+    let cookie = cookie.expect("sessao deveria vir no Set-Cookie");
+    let csrf = json["csrf_token"]
+        .as_str()
+        .expect("csrf na resposta")
+        .to_string();
+    (cookie, csrf)
+}
+
+/// Liga o 2FA pela store (o enrollment por HTTP tem teste proprio) e devolve o
+/// segredo, para o teste poder gerar codigo valido.
+async fn ligar_2fa(store: &Arc<Mutex<AdminStore>>) -> String {
+    let guard = store.lock().await;
+    let user = guard
+        .get_user_by_username(USUARIO)
+        .expect("usuario de teste existe");
+    let secret = garraia_gateway::totp::generate_totp_secret().expect("segredo");
+    guard
+        .set_pending_totp_secret(&user.id, &secret)
+        .expect("segredo pendente");
+    guard.enable_totp(&user.id).expect("2fa ligado");
+    drop(guard);
+    secret
+}
+
+#[tokio::test]
+async fn sem_2fa_a_senha_abre_a_sessao() {
+    let (router, _) = cenario();
+    let (status, json, _) = login(&router, json!({"username": USUARIO, "password": SENHA})).await;
+    assert_eq!(status, StatusCode::OK, "senha so nao abriu: {json}");
+}
+
+#[tokio::test]
+async fn com_2fa_a_senha_so_nao_basta_e_a_resposta_diz_por_que() {
+    let (router, store) = cenario();
+    ligar_2fa(&store).await;
+
+    let (status, json, _) = login(&router, json!({"username": USUARIO, "password": SENHA})).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        json["totp_required"], true,
+        "o cliente precisa saber que e falta de codigo, nao senha errada: {json}"
+    );
+}
+
+#[tokio::test]
+async fn codigo_errado_nao_abre_a_sessao() {
+    let (router, store) = cenario();
+    ligar_2fa(&store).await;
+
+    let (status, json, _) = login(
+        &router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": "000000"}),
+    )
+    .await;
+
+    assert_ne!(status, StatusCode::OK, "codigo errado abriu sessao: {json}");
+    assert_eq!(json["totp_required"], true);
+}
+
+#[tokio::test]
+async fn codigo_certo_abre_a_sessao() {
+    let (router, store) = cenario();
+    let secret = ligar_2fa(&store).await;
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+
+    let (status, json, cookie) = login(
+        &router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": code}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "codigo certo nao abriu: {json}");
+    assert!(cookie.is_some(), "sessao sem cookie: {json}");
+}
+
+#[tokio::test]
+async fn tantas_tentativas_erradas_travam_o_segundo_fator() {
+    let (router, store) = cenario();
+    ligar_2fa(&store).await;
+
+    let mut ultimo = StatusCode::OK;
+    for _ in 0..6 {
+        let (status, _, _) = login(
+            &router,
+            json!({"username": USUARIO, "password": SENHA, "totp_code": "000000"}),
+        )
+        .await;
+        ultimo = status;
+    }
+
+    assert_eq!(
+        ultimo,
+        StatusCode::TOO_MANY_REQUESTS,
+        "sem travamento, o segundo fator e forcavel por forca bruta"
+    );
+}
+
+/// O enrollment por HTTP: setup devolve um segredo pendente, e ele so passa a
+/// valer depois que um codigo confirma.
+#[tokio::test]
+async fn enrollment_por_http_precisa_de_um_codigo_valido() {
+    let (router, _store) = cenario();
+    let (cookie, csrf) = entrar(&router).await;
+
+    let (status, json, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/setup",
+        Some(json!({})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "setup deveria gerar segredo: {json}"
+    );
+    let secret = json["secret"]
+        .as_str()
+        .expect("segredo na resposta")
+        .to_string();
+    assert!(
+        json["qr_uri"]
+            .as_str()
+            .is_some_and(|u| u.starts_with("otpauth://totp/")),
+        "sem URI de QR: {json}"
+    );
+
+    // Pendente: o login ainda nao exige nada.
+    let (status, json, _) = login(&router, json!({"username": USUARIO, "password": SENHA})).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "segredo pendente nao pode exigir codigo: {json}"
+    );
+
+    // Codigo errado nao confirma.
+    let (status, _, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/verify",
+        Some(json!({"code": "000000"})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Codigo certo confirma, e dai a senha so nao basta mais.
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+    let (status, json, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/verify",
+        Some(json!({"code": code})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "codigo certo nao confirmou: {json}");
+
+    let (status, _, _) = login(&router, json!({"username": USUARIO, "password": SENHA})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Refazer setup com 2FA ligado e recusado: exige desligar com codigo.
+    let (status, _, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/setup",
+        Some(json!({})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "girar o segredo por baixo do dono o deixaria fora do painel"
+    );
+}

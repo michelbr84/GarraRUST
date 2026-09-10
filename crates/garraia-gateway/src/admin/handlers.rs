@@ -43,12 +43,20 @@ pub use super::observability::{
     list_templates, list_themes,
 };
 
+// Enrollment do segundo fator do painel (#1121) em `admin::totp`. O consumo
+// dele no login fica neste arquivo, junto da criacao da sessao.
+pub use super::totp::{TotpCodeRequest, totp_disable, totp_setup, totp_status, totp_verify};
+
 // ── Auth endpoints ──────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    /// Codigo TOTP. Ignorado quando o usuario nao tem 2FA; obrigatorio quando
+    /// tem (#1121). Ausente na primeira chamada, que e como o cliente descobre
+    /// que precisa dele: a resposta vem com `totp_required: true`.
+    pub totp_code: Option<String>,
 }
 
 /// POST /admin/api/login
@@ -58,7 +66,7 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let ip = extract_ip(&headers, None);
-    let guard = state.store.lock().await;
+    let mut guard = state.store.lock().await;
 
     let user = match guard.verify_password(&body.username, &body.password) {
         Some(u) => u,
@@ -81,6 +89,89 @@ pub async fn login(
             );
         }
     };
+
+    // ── Segundo fator (#1121) ────────────────────────────────────────
+    //
+    // So se chega aqui com a senha ja verificada, entao responder "este
+    // usuario tem 2FA" nao e enumeracao: quem recebe a resposta provou que
+    // sabe a senha.
+    if guard.is_totp_enabled(&user.id) {
+        let code = match body.totp_code.as_deref() {
+            Some(c) => c,
+            None => {
+                let _ = guard.append_audit(
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "auth",
+                    None,
+                    Some("totp code required"),
+                    ip.as_deref(),
+                    "failure",
+                );
+                drop(guard);
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({
+                        "error": "totp code required",
+                        "totp_required": true,
+                    })),
+                );
+            }
+        };
+
+        if guard.totp_attempts_exhausted(&user.id) {
+            let _ = guard.append_audit(
+                Some(&user.id),
+                Some(&user.username),
+                "login",
+                "auth",
+                None,
+                Some("too many totp attempts"),
+                ip.as_deref(),
+                "failure",
+            );
+            drop(guard);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                HeaderMap::new(),
+                Json(serde_json::json!({
+                    "error": "too many totp attempts",
+                    "totp_required": true,
+                })),
+            );
+        }
+
+        // Segredo vazio com 2FA ligado nao deve acontecer (`disable_totp`
+        // limpa os dois juntos), mas se acontecer e uma falha fechada: sem
+        // segredo nao ha como validar, e inventar que validou seria pior.
+        let secret = guard.get_totp_secret(&user.id).unwrap_or_default();
+        let ok = !secret.is_empty() && crate::totp::verify_totp(&secret, code);
+        guard.record_totp_attempt(&user.id, ok);
+
+        if !ok {
+            let _ = guard.append_audit(
+                Some(&user.id),
+                Some(&user.username),
+                "login",
+                "auth",
+                None,
+                Some("invalid totp code"),
+                ip.as_deref(),
+                "failure",
+            );
+            drop(guard);
+            return (
+                StatusCode::UNAUTHORIZED,
+                HeaderMap::new(),
+                Json(serde_json::json!({
+                    "error": "invalid totp code",
+                    "totp_required": true,
+                })),
+            );
+        }
+    }
 
     let session = match guard.create_session(&user.id, ip.as_deref(), None) {
         Ok(s) => s,
