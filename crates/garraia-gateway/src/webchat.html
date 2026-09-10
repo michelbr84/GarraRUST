@@ -5073,7 +5073,10 @@ async function boot() {
   } catch { State.authRequired = false; }
 
   if (State.authRequired) {
-    if (authSection) authSection.style.display = '';
+    // Issue #1100: the CSS hides .gateway-key-form with `display: none`, so
+    // clearing the inline style ('') never reveals the auth form. The user
+    // was told to enter a key that no visible field could accept.
+    if (authSection) authSection.style.display = 'block';
     if (State.gatewayKey) { connect(); }
     else { appendSystemMsg('Gateway API Key required.'); }
   } else {

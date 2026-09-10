@@ -64,6 +64,34 @@ pub async fn log_action(
     }
 }
 
+/// [`log_action`] para quem **ja** segura o guard da store.
+///
+/// Os handlers de login/2FA decidem com o lock na mao do inicio ao fim — para
+/// eles o `log_action` acima travaria no segundo `lock()`. Mesma politica de
+/// best-effort: falha de trilha vira warning e a recusa prevalece. Evento de
+/// falha de autenticacao: `resource_type` "auth", `outcome` "failure".
+pub fn log_auth_failure(
+    guard: &AdminStore,
+    user_id: Option<&str>,
+    username: Option<&str>,
+    action: &str,
+    details: &str,
+    ip: Option<&str>,
+) {
+    if let Err(e) = guard.append_audit(
+        user_id,
+        username,
+        action,
+        "auth",
+        None,
+        Some(details),
+        ip,
+        "failure",
+    ) {
+        warn!("failed to write audit log: {e}");
+    }
+}
+
 /// Query the audit log with optional filters.
 ///
 /// Returns at most `filter.limit` entries (default 100, capped at 1000),
