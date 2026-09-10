@@ -39,7 +39,9 @@
   sessao** quando o estado nao pode ser lido, em vez de tratar ilegivel como
   "desligado" e aceitar so a senha; o mesmo vale para a leitura do segredo:
   erro de banco vira `500` (login sem sessao, verify e disable sem responder
-  "2FA nao configurado"), nunca ausencia de segredo; ligar, desligar e
+  "2FA nao configurado"), nunca ausencia de segredo; segredo vazio e estado
+  inconsistente e tambem `500` nos quatro caminhos — avalia-lo seria
+  responder "codigo invalido" contra um segredo que nao existe; ligar, desligar e
   guardar o segredo pendente so confirmam com o evento de auditoria gravado
   **na mesma transacao** (sem trilha, a operacao inteira falha), enquanto as
   recusas seguem best-effort mas com a falha de trilha registrada em log; e

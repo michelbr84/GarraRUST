@@ -460,3 +460,104 @@ async fn segredo_ilegivel_nos_endpoints_de_enrollment_e_500_nao_400() {
     assert_eq!(status, StatusCode::OK, "status le outra coluna: {json}");
     assert_eq!(json["enabled"], false);
 }
+
+/// #1121 (pass-4): segredo VAZIO com 2FA ligado e estado inconsistente —
+/// corrupcao manual, migration defeituosa. Nenhum dos dois caminhos pode
+/// mentir o motivo: o login nao pode virar "codigo invalido" com sessao
+/// destravada na contagem de lockout, e o disable nao pode deixar o 2FA
+/// ligado irrecuperavel respondendo 401 para sempre. Os dois recusam 500.
+#[tokio::test]
+async fn segredo_vazio_recusa_login_e_disable_com_estado_inconsistente() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, store, path) = cenario_arquivo(&dir);
+    // Sessao primeiro: depois que o 2FA liga, o login exigiria codigo.
+    let (cookie, csrf) = entrar(&router).await;
+    let secret = ligar_2fa(&store).await;
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    conn.execute(
+        "UPDATE admin_users SET totp_secret = '' WHERE username = ?1",
+        [USUARIO],
+    )
+    .expect("esvaziar o segredo");
+
+    // Login: senha certa E codigo certo — mas o segredo guardado e vazio,
+    // e avaliar o codigo contra ele seria decidir no escuro.
+    let (status, json, sessao) = login(
+        &router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": code}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "segredo vazio no login tem que virar 500: {json}"
+    );
+    assert!(sessao.is_none(), "estado inconsistente nao abre sessao");
+
+    // Disable com sessao de admin: sem segredo legivel, o 2FA ligado nao
+    // pode ser desligado avaliando o codigo contra nada — 500, nao 401.
+    let (status, json, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/disable",
+        Some(json!({"code": code})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "segredo vazio no disable tem que virar 500, nao 'codigo invalido': {json}"
+    );
+}
+
+/// #1121 (pass-4): o mesmo estado inconsistente no `verify`, onde o segredo
+/// e PENDENTE (2FA ainda nao ligado): a recusa e 500, nao o 400 de "2FA nao
+/// configurado" nem o 401 de codigo errado — o codigo certo estava la, o que
+/// falta e o segredo contra o qual avalia-lo.
+#[tokio::test]
+async fn segredo_vazio_no_verify_e_estado_inconsistente() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, _store, path) = cenario_arquivo(&dir);
+    let (cookie, csrf) = entrar(&router).await;
+
+    let (_, json, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/setup",
+        Some(json!({})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    let secret = json["secret"]
+        .as_str()
+        .expect("setup deveria devolver o segredo pendente")
+        .to_string();
+
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    conn.execute(
+        "UPDATE admin_users SET totp_secret = '' WHERE username = ?1",
+        [USUARIO],
+    )
+    .expect("esvaziar o segredo");
+
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+    let (status, json, _) = chama(
+        &router,
+        "POST",
+        "/admin/api/2fa/verify",
+        Some(json!({"code": code})),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "segredo vazio no verify e 500, nao 'nao configurado' nem 'codigo invalido': {json}"
+    );
+}

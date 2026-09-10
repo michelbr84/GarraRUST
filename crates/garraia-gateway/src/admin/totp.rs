@@ -204,7 +204,7 @@ pub async fn totp_verify(
     let mut guard = state.store.lock().await;
 
     let secret = match guard.get_totp_secret(&admin.user_id) {
-        Ok(Some(s)) => s,
+        Ok(Some(s)) if !s.is_empty() => s,
         Ok(None) => {
             // Recusa tambem e evento de auditoria — operacao fora de ordem
             // sem trilha e abuso invisivel (#1121).
@@ -220,6 +220,25 @@ pub async fn totp_verify(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "2fa not set up"})),
+            );
+        }
+        Ok(_) => {
+            // Segredo vazio e estado inconsistente, nao "codigo invalido":
+            // avaliar o codigo contra um segredo que nao existe polui o
+            // lockout e mente o motivo da recusa (#1121, pass-4).
+            tracing::warn!("admin 2fa verify: secret empty");
+            log_auth_failure(
+                &guard,
+                Some(&admin.user_id),
+                Some(&admin.username),
+                "2fa.verify",
+                "totp secret empty",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
             );
         }
         Err(e) => {
@@ -309,7 +328,7 @@ pub async fn totp_disable(
     let mut guard = state.store.lock().await;
 
     let secret = match guard.get_totp_secret(&admin.user_id) {
-        Ok(Some(s)) => s,
+        Ok(Some(s)) if !s.is_empty() => s,
         Ok(None) => {
             // Recusa tambem e evento de auditoria — mesma regra do verify
             // (#1121).
@@ -325,6 +344,26 @@ pub async fn totp_disable(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "2fa not enabled"})),
+            );
+        }
+        Ok(_) => {
+            // Mesma regra do verify: segredo vazio e estado inconsistente.
+            // Chamar verify_totp com o segredo vazio deixaria o 2FA ligado
+            // irrecuperavel pelo endpoint, respondendo "codigo invalido"
+            // (#1121, pass-4).
+            tracing::warn!("admin 2fa disable: secret empty");
+            log_auth_failure(
+                &guard,
+                Some(&admin.user_id),
+                Some(&admin.username),
+                "2fa.disable",
+                "totp secret empty",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
             );
         }
         Err(e) => {
