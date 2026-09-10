@@ -156,10 +156,13 @@ fn register_cli_tools(
     runtime: &AgentRuntime,
     review: Option<(Arc<dyn LlmProvider>, String)>,
     brave_key: Option<String>,
+    bash_allowlist: Vec<String>,
 ) {
     runtime.register_tool(Box::new(FileReadTool::new(None)));
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
-    runtime.register_tool(Box::new(BashTool::new_with_confirmation(Some(30))));
+    runtime.register_tool(Box::new(
+        BashTool::new_with_confirmation(Some(30)).with_allowlist(bash_allowlist),
+    ));
     runtime.register_tool(Box::new(GitDiffTool::new(None, None)));
     runtime.register_tool(Box::new(ListDirTool::new(None)));
     runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
@@ -1188,6 +1191,7 @@ pub async fn run_chat(
         &runtime,
         Some(review),
         get_api_key(&config, "brave", "BRAVE_API_KEY"),
+        config.agent.bash_allowlist.clone(),
     );
     let tools_doc = tool_docs(&runtime.tool_names());
 
@@ -2930,7 +2934,7 @@ mod cli_tools_tests {
     #[test]
     fn registers_the_gateway_tool_set_plus_git_diff() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, None, None);
+        register_cli_tools(&runtime, None, None, vec![]);
         let names = runtime.tool_names();
         for expected in [
             "file_read",
@@ -2960,7 +2964,7 @@ mod cli_tools_tests {
     #[test]
     fn brave_key_turns_web_search_on() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, None, Some("k".into()));
+        register_cli_tools(&runtime, None, Some("k".into()), vec![]);
         assert!(runtime.tool_names().iter().any(|n| n == "web_search"));
     }
 
@@ -2969,7 +2973,7 @@ mod cli_tools_tests {
     #[test]
     fn prompt_lists_every_registered_tool_and_nothing_else() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, None, None);
+        register_cli_tools(&runtime, None, None, vec![]);
         let names = runtime.tool_names();
         let doc = tool_docs(&names);
         for n in &names {
