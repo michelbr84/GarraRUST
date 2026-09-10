@@ -28,6 +28,24 @@ use garraia_gateway::state::AppState;
 use serde_json::json;
 use tower::ServiceExt; // `oneshot`
 
+/// Serializa os testes deste binário.
+///
+/// O harness padrão roda os testes de um mesmo binário em paralelo, e
+/// `std::env::set_var` (unsafe no Edition 2024) exige que nenhuma outra
+/// thread leia ou escreva o ambiente enquanto ele é chamado. Sem este
+/// lock, um teste escreveria `GARRAIA_CONFIG_DIR` enquanto o outro o
+/// lia dentro do `AppState::new` — corrida de memória, não só de
+/// lógica.
+///
+/// O guard é mantido até o fim do corpo de cada teste, e o runtime
+/// `#[tokio::test]` (que desova as tasks do `AppState`) cai quando o
+/// corpo termina — antes do guard. Quando o próximo teste adquire o
+/// lock, nenhuma thread do anterior sobreviveu para ler o ambiente.
+/// `tokio::sync::Mutex`, não `std`: o guard atravessa `.await` (o
+/// `clippy::await_holding_lock` proíbe o guard de `std` nessa posição), e
+/// o `#[tokio::test` runtime cai dentro do corpo, antes do guard.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Aponta o config dir do processo para um temporário vazio.
 ///
 /// Sem isto o boot lê `~/.config/garraia` de quem roda a suíte — allowlist de
@@ -35,10 +53,12 @@ use tower::ServiceExt; // `oneshot`
 /// mas o diretório precisa continuar existindo enquanto `AppState::new` o lê:
 /// por isso o `TempDir` volta para o teste, que o mantém vivo.
 ///
-/// SAFETY (chamador): `set_var` é `unsafe` no Edition 2024. Os dois testes
-/// deste binário escrevem o mesmo par de variáveis, cada um com o seu
-/// temporário, e nenhum afirma nada sobre o conteúdo do diretório — a corrida
-/// possível é inofensiva.
+/// SAFETY (chamador): o chamador segura `ENV_LOCK` durante TODO o corpo do
+/// teste (das duas funções `#[tokio::test]` abaixo, antes de qualquer outra
+/// linha). Isso exclui a única fonte de threads concorrentes deste binário —
+/// o outro teste — da janela de escrita; as tasks do runtime do próprio
+/// teste são criadas depois e não sobrevivem ao guard (o runtime cai dentro
+/// do corpo, o guard cai depois).
 fn config_dir_de_teste() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temp config dir");
     unsafe {
@@ -115,6 +135,8 @@ fn metadado(store: &SessionStore, session_id: &str) -> serde_json::Value {
 /// O modo deduzido chega ao banco marcado como `auto`, e não autoriza nada.
 #[tokio::test]
 async fn modo_deduzido_e_gravado_como_auto_e_nao_liga_politica() {
+    // Segura o ENV_LOCK antes de tocar o ambiente (ver doc do static).
+    let _serializa = ENV_LOCK.lock().await;
     let _dir = config_dir_de_teste();
     let (state, store) = estado_e_store();
 
@@ -168,6 +190,8 @@ async fn modo_deduzido_e_gravado_como_auto_e_nao_liga_politica() {
 /// mesmo o que registrar.
 #[tokio::test]
 async fn sem_deducao_nao_ha_registro() {
+    // Mesmo contrato do teste de cima: ambiente só sob ENV_LOCK.
+    let _serializa = ENV_LOCK.lock().await;
     let _dir = config_dir_de_teste();
     let (state, store) = estado_e_store();
 
