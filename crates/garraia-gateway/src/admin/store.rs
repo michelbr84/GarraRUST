@@ -2,8 +2,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::pbkdf2;
 use rusqlite::{Connection, params};
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tracing::info;
 
 use super::rbac::Role;
@@ -13,6 +15,20 @@ const SALT_LEN: usize = 32;
 const SESSION_TOKEN_LEN: usize = 32;
 const CSRF_TOKEN_LEN: usize = 32;
 const SESSION_DURATION_SECS: i64 = 86400; // 24 hours
+
+/// Tentativas erradas de TOTP que um usuario acumula dentro de
+/// `TOTP_ATTEMPT_WINDOW` antes de o segundo fator travar (#1121).
+///
+/// Sem isso, o segundo fator e decorativo: um codigo de 6 digitos com a deriva
+/// de +-1 janela aceita 3 de cada 1e6 chutes, e `verify_totp` custa
+/// microssegundos — ao contrario da senha, que passa por 600k iteracoes de
+/// PBKDF2 e portanto ja e cara de forcar.
+const TOTP_MAX_ATTEMPTS: usize = 5;
+/// Janela da contagem acima. Reiniciar o gateway limpa a contagem junto com o
+/// travamento: e estado de processo, nao de banco, de proposito — persisti-lo
+/// deixaria um atacante capaz de travar o dono por mais tempo do que o restart
+/// resolve.
+const TOTP_ATTEMPT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AdminUser {
@@ -61,6 +77,8 @@ pub type SecretVersionCiphertext = (i64, Vec<u8>, Vec<u8>);
 
 pub struct AdminStore {
     conn: Connection,
+    /// Tentativas erradas de TOTP por usuario — ver `TOTP_MAX_ATTEMPTS`.
+    totp_attempts: HashMap<String, Vec<Instant>>,
 }
 
 impl AdminStore {
@@ -68,10 +86,19 @@ impl AdminStore {
         let conn =
             Connection::open(db_path).map_err(|e| format!("failed to open admin db: {e}"))?;
 
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| format!("failed to set pragmas: {e}"))?;
+        // O `busy_timeout` nao e enfeite: `run_migrations` escreve no schema
+        // (ALTER TABLE das colunas de 2FA) e sem ele um segundo processo com o
+        // arquivo aberto devolve SQLITE_BUSY na hora, em vez de esperar. A
+        // consequencia la na frente e grave — ver `ensure_totp_columns`.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        )
+        .map_err(|e| format!("failed to set pragmas: {e}"))?;
 
-        let store = Self { conn };
+        let store = Self {
+            conn,
+            totp_attempts: HashMap::new(),
+        };
         store.run_migrations()?;
         Ok(store)
     }
@@ -83,7 +110,10 @@ impl AdminStore {
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("failed to set pragmas: {e}"))?;
 
-        let store = Self { conn };
+        let store = Self {
+            conn,
+            totp_attempts: HashMap::new(),
+        };
         store.run_migrations()?;
         Ok(store)
     }
@@ -182,7 +212,70 @@ impl AdminStore {
             )
             .map_err(|e| format!("admin db migration failed: {e}"))?;
 
+        self.ensure_totp_columns()?;
+
         Ok(())
+    }
+
+    /// Colunas do segundo fator (#1121), adicionadas a um banco que ja existe.
+    ///
+    /// O SQLite nao tem `ADD COLUMN IF NOT EXISTS`, entao a unica forma
+    /// idempotente de evoluir `admin_users` e perguntar ao schema antes — o
+    /// `CREATE TABLE IF NOT EXISTS` do bloco acima nao toca em tabela que ja
+    /// nasceu sem essas colunas. Os identificadores abaixo sao literais:
+    /// nenhum deles vem de fora do codigo.
+    ///
+    /// Ler o schema e depois escrever nao e atomico, e por isso o perdedor da
+    /// corrida (dois processos subindo juntos leem o `PRAGMA` antes de
+    /// qualquer `ALTER`) nao pode receber `Err`: `AdminStore::open` cairia
+    /// para `in_memory()`, que deixa o `/admin/api/setup` reivindicavel por
+    /// anonimo. A prova de que a corrida foi vencida por alguem e reler o
+    /// schema apos o erro — a mensagem `duplicate column name` do SQLite nao
+    /// e contrato estavel entre versoes. Erro de leitura do schema, esse sim,
+    /// e propagado: migrar com metade das linhas lidas seria pior que nao
+    /// migrar.
+    fn ensure_totp_columns(&self) -> Result<(), String> {
+        for (column, ddl) in [
+            (
+                "totp_secret",
+                "ALTER TABLE admin_users ADD COLUMN totp_secret TEXT",
+            ),
+            (
+                "totp_enabled",
+                "ALTER TABLE admin_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if self.has_admin_user_column(column)? {
+                continue;
+            }
+            if let Err(e) = self.conn.execute(ddl, []) {
+                if self.has_admin_user_column(column)? {
+                    continue;
+                }
+                return Err(format!("failed to add admin_users.{column}: {e}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `true` quando a coluna ja existe em `admin_users`. Erro de leitura do
+    /// schema e erro mesmo — sem `filter_map(|r| r.ok())` engolindo metade
+    /// das linhas e migrando no achismo.
+    fn has_admin_user_column(&self, column: &str) -> Result<bool, String> {
+        let mut stmt = self
+            .conn
+            .prepare("PRAGMA table_info(admin_users)")
+            .map_err(|e| format!("failed to read admin_users schema: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("failed to read admin_users schema: {e}"))?;
+        for row in rows {
+            let name = row.map_err(|e| format!("failed to read admin_users schema: {e}"))?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     // ── User management ──────────────────────────────────────────────
@@ -351,6 +444,237 @@ impl AdminStore {
         }
     }
 
+    // ── TOTP: segundo fator do painel (#1121) ─────────────────────────
+
+    /// Segredo TOTP do usuario — tanto o pendente de confirmacao quanto o
+    /// ativo. `None` tambem significa "coluna existe, valor e NULL".
+    ///
+    /// O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Isso
+    /// nao e paridade com o fluxo mobile — la o segredo e cifrado
+    /// (`totp_secret_enc`, AES-256-GCM com a chave do cofre). Aqui a chave
+    /// existe e esta na mao do handler (`AdminState::encryption_key`), e o
+    /// `admin/secrets.rs` ja cifra as chaves de provider no mesmo arquivo:
+    /// cifrar custa uma chamada e nenhuma decisao nova, e e a issue de
+    /// seguimento deste PR.
+    ///
+    /// O que torna o risco aceitavel por enquanto nao e essa comparacao: e o
+    /// proprio `admin.db` ja guardar `admin_sessions.token` em texto puro, ou
+    /// seja, quem le o arquivo ja leva uma sessao de admin viva sem precisar
+    /// do segundo fator. O segredo em claro adiciona comprometimento duravel
+    /// do 2FA (sobrevive a expiracao da sessao e a troca de senha), nao uma
+    /// porta nova.
+    pub fn get_totp_secret(&self, user_id: &str) -> Result<Option<String>, String> {
+        match self.conn.query_row(
+            "SELECT totp_secret FROM admin_users WHERE id = ?1",
+            params![user_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(v) => Ok(v),
+            // Sem linha de usuario nao e erro de leitura: e ausencia legitima
+            // de segredo (pendente nunca confirmado, ou desligado). Erro real
+            // de SQLite (I/O, lock, schema) e outro estado e tem que chegar
+            // como `Err` no caller — quem decide o que recusar e o handler,
+            // engolir aqui esconderia indisponibilidade (#1121, pass-3).
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("failed to read totp_secret for user: {e}")),
+        }
+    }
+
+    /// Guarda o segredo como **pendente**: `totp_enabled` so vira 1 em
+    /// `enable_totp`, depois de um codigo validar. Quem chama setup e nao
+    /// confirma fica com um segredo inerte, nao com 2FA pela metade.
+    pub fn set_pending_totp_secret(&self, user_id: &str, secret: &str) -> Result<(), String> {
+        Self::set_pending_totp_secret_on(&self.conn, user_id, secret)
+    }
+
+    fn set_pending_totp_secret_on(
+        conn: &rusqlite::Connection,
+        user_id: &str,
+        secret: &str,
+    ) -> Result<(), String> {
+        let affected = conn
+            .execute(
+                "UPDATE admin_users SET totp_secret = ?1, updated_at = datetime('now')
+                 WHERE id = ?2",
+                params![secret, user_id],
+            )
+            .map_err(|e| format!("failed to store totp secret: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        Ok(())
+    }
+
+    /// Guarda o segredo pendente **e grava o evento de auditoria na mesma
+    /// transacao**: sem o evento registrado, a mudanca nao acontece — o
+    /// `commit` so roda com os dois, e quem chamou recebe `Err`. Nenhuma
+    /// operacao de 2FA confirma sem a trilha dela (#1121).
+    pub fn set_pending_totp_secret_audited(
+        &self,
+        user_id: &str,
+        secret: &str,
+        username: &str,
+        ip: Option<&str>,
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        Self::set_pending_totp_secret_on(&tx, user_id, secret)?;
+        Self::append_audit_on(
+            &tx,
+            Some(user_id),
+            Some(username),
+            "2fa.setup",
+            "auth",
+            None,
+            None,
+            ip,
+            "success",
+        )?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit 2fa setup: {e}"))
+    }
+
+    /// Confirma o enrollment. So deve ser chamado com um codigo ja validado.
+    pub fn enable_totp(&self, user_id: &str) -> Result<(), String> {
+        Self::enable_totp_on(&self.conn, user_id)
+    }
+
+    fn enable_totp_on(conn: &rusqlite::Connection, user_id: &str) -> Result<(), String> {
+        let affected = conn
+            .execute(
+                "UPDATE admin_users SET totp_enabled = 1, updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![user_id],
+            )
+            .map_err(|e| format!("failed to enable totp: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        Ok(())
+    }
+
+    /// Liga o segundo fator + grava o evento na mesma transacao — mesma
+    /// regra de `set_pending_totp_secret_audited` (#1121).
+    pub fn enable_totp_audited(
+        &self,
+        user_id: &str,
+        username: &str,
+        ip: Option<&str>,
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        Self::enable_totp_on(&tx, user_id)?;
+        Self::append_audit_on(
+            &tx,
+            Some(user_id),
+            Some(username),
+            "2fa.verify",
+            "auth",
+            None,
+            None,
+            ip,
+            "success",
+        )?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit 2fa enable: {e}"))
+    }
+
+    /// Desliga o segundo fator e apaga o segredo junto — um segredo guardado
+    /// depois de desligado seria uma reativacao sem novo enrollment.
+    pub fn disable_totp(&self, user_id: &str) -> Result<(), String> {
+        Self::disable_totp_on(&self.conn, user_id)
+    }
+
+    fn disable_totp_on(conn: &rusqlite::Connection, user_id: &str) -> Result<(), String> {
+        let affected = conn
+            .execute(
+                "UPDATE admin_users SET totp_secret = NULL, totp_enabled = 0,
+                 updated_at = datetime('now')
+                 WHERE id = ?1",
+                params![user_id],
+            )
+            .map_err(|e| format!("failed to disable totp: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        Ok(())
+    }
+
+    /// Desliga o segundo fator + grava o evento na mesma transacao — mesma
+    /// regra de `set_pending_totp_secret_audited`. Desligar o 2FA e
+    /// exatamente o que um invasor com a senha tentaria; sem trilha
+    /// gravada, a operacao nao confirma (#1121).
+    pub fn disable_totp_audited(
+        &self,
+        user_id: &str,
+        username: &str,
+        ip: Option<&str>,
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        Self::disable_totp_on(&tx, user_id)?;
+        Self::append_audit_on(
+            &tx,
+            Some(user_id),
+            Some(username),
+            "2fa.disable",
+            "auth",
+            None,
+            None,
+            ip,
+            "success",
+        )?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit 2fa disable: {e}"))
+    }
+
+    /// Estado do segundo fator — **ou o erro que impediu de sabe-lo**.
+    ///
+    /// A assinatura e `Result` de proposito (#1121): quem decide
+    /// autenticacao nao pode tratar "nao consegui ler" como "2FA
+    /// desligado" — esse era exatamente o fail-open que o PR veio fechar.
+    /// Todo chamador ou usa o valor, ou recusa fechado (login responde
+    /// 500 sem criar sessao).
+    pub fn is_totp_enabled(&self, user_id: &str) -> Result<bool, String> {
+        self.conn
+            .query_row(
+                "SELECT totp_enabled FROM admin_users WHERE id = ?1",
+                params![user_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|v| v != 0)
+            .map_err(|e| format!("failed to read totp_enabled for user: {e}"))
+    }
+
+    /// `true` quando o usuario ja errou `TOTP_MAX_ATTEMPTS` codigos dentro da
+    /// janela. Efeito colateral: descarta as tentativas que ja expiraram, para
+    /// a contagem nao crescer sem limite.
+    pub fn totp_attempts_exhausted(&mut self, user_id: &str) -> bool {
+        let attempts = self.totp_attempts.entry(user_id.to_string()).or_default();
+        let now = Instant::now();
+        attempts.retain(|t| now.duration_since(*t) < TOTP_ATTEMPT_WINDOW);
+        attempts.len() >= TOTP_MAX_ATTEMPTS
+    }
+
+    /// Conta uma tentativa. Sucesso zera a contagem — travar o dono que acabou
+    /// de acertar o codigo seria pior que nao travar.
+    pub fn record_totp_attempt(&mut self, user_id: &str, success: bool) {
+        if success {
+            self.totp_attempts.remove(user_id);
+            return;
+        }
+        self.totp_attempts
+            .entry(user_id.to_string())
+            .or_default()
+            .push(Instant::now());
+    }
+
     // ── Session management ───────────────────────────────────────────
 
     pub fn create_session(
@@ -420,6 +744,50 @@ impl AdminStore {
         Ok(())
     }
 
+    /// Rotate the password and revoke the user's other sessions, atomically.
+    ///
+    /// #1120: used by the self-service password change. One SQLite
+    /// transaction wraps the new hash AND the `DELETE` of the other
+    /// sessions — a failure in either one rolls the whole rotation back, so
+    /// the route can never answer success with a committed password and a
+    /// stale — possibly stolen — session still validating. The caller keeps
+    /// the session it is authenticating with, so the console survives the
+    /// rotation, while every other session for that user stops validating
+    /// on the next request.
+    ///
+    /// Returns the number of sessions revoked alongside the rotation.
+    pub fn rotate_password_and_revoke_sessions(
+        &self,
+        user_id: &str,
+        new_password: &str,
+        keep_token: &str,
+    ) -> Result<usize, String> {
+        let (hash, salt) = hash_password(new_password)?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        let affected = tx
+            .execute(
+                "UPDATE admin_users SET password_hash = ?1, password_salt = ?2, updated_at = datetime('now')
+                 WHERE id = ?3",
+                params![hash, salt, user_id],
+            )
+            .map_err(|e| format!("failed to update password: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        let revoked = tx
+            .execute(
+                "DELETE FROM admin_sessions WHERE user_id = ?1 AND token <> ?2",
+                params![user_id, keep_token],
+            )
+            .map_err(|e| format!("failed to revoke other sessions: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit password rotation: {e}"))?;
+        Ok(revoked)
+    }
+
     pub fn cleanup_expired_sessions(&self) -> usize {
         self.conn
             .execute(
@@ -430,6 +798,26 @@ impl AdminStore {
     }
 
     // ── Audit log ────────────────────────────────────────────────────
+
+    fn append_audit_on(
+        conn: &rusqlite::Connection,
+        user_id: Option<&str>,
+        username: Option<&str>,
+        action: &str,
+        resource_type: &str,
+        resource_id: Option<&str>,
+        details: Option<&str>,
+        ip_address: Option<&str>,
+        outcome: &str,
+    ) -> Result<(), String> {
+        conn.execute(
+            "INSERT INTO audit_log (user_id, username, action, resource_type, resource_id, details, ip_address, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![user_id, username, action, resource_type, resource_id, details, ip_address, outcome],
+        )
+        .map_err(|e| format!("failed to append audit log: {e}"))?;
+        Ok(())
+    }
 
     pub fn append_audit(
         &self,
@@ -442,14 +830,17 @@ impl AdminStore {
         ip_address: Option<&str>,
         outcome: &str,
     ) -> Result<i64, String> {
-        self.conn
-            .execute(
-                "INSERT INTO audit_log (user_id, username, action, resource_type, resource_id, details, ip_address, outcome)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![user_id, username, action, resource_type, resource_id, details, ip_address, outcome],
-            )
-            .map_err(|e| format!("failed to append audit log: {e}"))?;
-
+        Self::append_audit_on(
+            &self.conn,
+            user_id,
+            username,
+            action,
+            resource_type,
+            resource_id,
+            details,
+            ip_address,
+            outcome,
+        )?;
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -1084,5 +1475,224 @@ mod tests {
 
         let yaml = store.get_config_version(1).unwrap();
         assert_eq!(yaml, "key: value1");
+    }
+
+    // ── TOTP (#1121) ──────────────────────────────────────────────────
+
+    fn usuario_totp(store: &AdminStore) -> String {
+        store.create_user("cofre", "senha", Role::Admin).unwrap().id
+    }
+
+    #[test]
+    fn segredo_pendente_nao_liga_o_segundo_fator() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .unwrap();
+
+        assert_eq!(
+            store
+                .get_totp_secret(&id)
+                .expect("segredo legivel")
+                .as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+        assert!(
+            !store.is_totp_enabled(&id).expect("estado 2fa legivel"),
+            "guardar o segredo nao pode exigir o codigo; so `enable_totp` liga"
+        );
+    }
+
+    #[test]
+    fn desligar_apaga_o_segredo_junto() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .unwrap();
+        store.enable_totp(&id).unwrap();
+        assert!(store.is_totp_enabled(&id).expect("estado 2fa legivel"));
+
+        store.disable_totp(&id).unwrap();
+
+        assert!(!store.is_totp_enabled(&id).expect("estado 2fa legivel"));
+        assert_eq!(
+            store.get_totp_secret(&id).expect("segredo legivel"),
+            None,
+            "segredo sobrevivente seria uma reativacao sem novo enrollment"
+        );
+    }
+
+    /// #1121 (regressao dos vereditos de seguranca): a mudanca de estado e o
+    /// evento de auditoria confirmam na mesma transacao. Se a trilha nao pode
+    /// ser gravada (tabela apagada, disco cheio, arquivo corrompido), a
+    /// operacao inteira falha — desligar o segundo fator sem deixar rastro e
+    /// exatamente o que um invasor com a sessao tentaria.
+    #[test]
+    fn desligar_sem_trilha_de_auditoria_nao_confirma() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .unwrap();
+        store.enable_totp(&id).unwrap();
+
+        store
+            .conn
+            .execute("DROP TABLE audit_log", [])
+            .expect("derrubar audit_log");
+
+        assert!(
+            store
+                .disable_totp_audited(&id, "cofre", Some("127.0.0.1"))
+                .is_err(),
+            "sem trilha gravada a operacao nao pode confirmar"
+        );
+        assert!(
+            store.is_totp_enabled(&id).expect("estado 2fa legivel"),
+            "a recusa nao pode deixar o 2FA desligado por baixo da transacao"
+        );
+    }
+
+    #[test]
+    fn usuario_novo_nasce_sem_segundo_fator() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        assert!(
+            !store
+                .is_totp_enabled(&id)
+                .expect("usuario novo tem estado legivel")
+        );
+        assert_eq!(store.get_totp_secret(&id).expect("segredo legivel"), None);
+    }
+
+    /// #1121 (pass-3): erro de leitura do segredo nao e "segredo ausente" —
+    /// sao estados diferentes, e quem chama precisa distinguir para recusar
+    /// com 500 em vez de responder "2FA nao configurado".
+    #[test]
+    fn leitura_do_segredo_ilegivel_e_erro_nao_ausencia() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        assert_eq!(
+            store.get_totp_secret(&id).expect("usuario novo e legivel"),
+            None,
+            "sem segredo guardado e um estado legitimo, nao erro"
+        );
+
+        store
+            .conn
+            .execute("ALTER TABLE admin_users DROP COLUMN totp_secret", [])
+            .expect("derrubar a coluna do segredo");
+
+        assert!(
+            store.get_totp_secret(&id).is_err(),
+            "coluna sumida e erro de leitura e tem que chegar como Err"
+        );
+    }
+
+    #[test]
+    fn errar_muito_trava_e_um_acerto_zera_a_contagem() {
+        let mut store = test_store();
+        let id = usuario_totp(&store);
+
+        for _ in 0..TOTP_MAX_ATTEMPTS - 1 {
+            store.record_totp_attempt(&id, false);
+        }
+        assert!(
+            !store.totp_attempts_exhausted(&id),
+            "travar antes da ultima tentativa valida"
+        );
+
+        store.record_totp_attempt(&id, false);
+        assert!(store.totp_attempts_exhausted(&id));
+
+        // Acertar nao pode deixar o dono travado.
+        store.record_totp_attempt(&id, true);
+        assert!(!store.totp_attempts_exhausted(&id));
+    }
+
+    #[test]
+    fn a_contagem_e_por_usuario() {
+        let mut store = test_store();
+        let a = usuario_totp(&store);
+        let b = store.create_user("outro", "senha", Role::Admin).unwrap().id;
+
+        for _ in 0..TOTP_MAX_ATTEMPTS {
+            store.record_totp_attempt(&a, false);
+        }
+
+        assert!(store.totp_attempts_exhausted(&a));
+        assert!(
+            !store.totp_attempts_exhausted(&b),
+            "um usuario errando nao pode travar os outros"
+        );
+    }
+
+    /// `admin_users` criada **antes** do #1121, sem as colunas de 2FA. E o
+    /// banco de toda instalacao existente: `CREATE TABLE IF NOT EXISTS` nao
+    /// toca nela, entao so o `ALTER TABLE` condicional salva o boot.
+    fn banco_antigo_sem_2fa(path: &std::path::Path) {
+        let conn = Connection::open(path).expect("db temporario");
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE admin_users (
+                 id TEXT PRIMARY KEY,
+                 username TEXT UNIQUE NOT NULL,
+                 password_hash TEXT NOT NULL,
+                 password_salt TEXT NOT NULL,
+                 role TEXT NOT NULL DEFAULT 'viewer',
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 last_login TEXT
+             );",
+        )
+        .expect("schema antigo");
+        conn.execute(
+            "INSERT INTO admin_users (id, username, password_hash, password_salt, role)
+             VALUES ('u1', 'dono', 'hash', 'salt', 'admin')",
+            [],
+        )
+        .expect("usuario antigo");
+    }
+
+    #[test]
+    fn instalacao_antiga_ganha_as_colunas_de_2fa_no_boot() {
+        let path = std::env::temp_dir().join(format!("garra-2fa-migr-{}.db", uuid::Uuid::new_v4()));
+        banco_antigo_sem_2fa(&path);
+
+        let store = AdminStore::open(&path).expect("abrir banco antigo nao pode falhar");
+
+        assert!(
+            !store.is_totp_enabled("u1").expect("estado 2fa legivel"),
+            "usuario antigo nasce com 2FA desligado"
+        );
+        store
+            .set_pending_totp_secret("u1", "JBSWY3DPEHPK3PXP")
+            .expect("escrever segredo");
+        assert_eq!(
+            store
+                .get_totp_secret("u1")
+                .expect("segredo legivel")
+                .as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// O `PRAGMA table_info` e o `ALTER TABLE` nao sao atomicos: dois processos
+    /// podem ler o schema antes de qualquer um escrever. O perdedor tem que
+    /// receber sucesso, nao um `Err` que derruba o `open` para store em
+    /// memoria — e dai o `/admin/api/setup` fica reivindicavel por anonimo.
+    #[test]
+    fn rodar_a_migracao_duas_vezes_e_sucesso() {
+        let store = test_store();
+        store.ensure_totp_columns().expect("segunda passada");
+        store.ensure_totp_columns().expect("terceira passada");
     }
 }
