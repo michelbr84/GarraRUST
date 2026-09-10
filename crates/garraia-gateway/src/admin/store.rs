@@ -420,6 +420,27 @@ impl AdminStore {
         Ok(())
     }
 
+    /// Revoke every session of `user_id` **except** `keep_token`.
+    ///
+    /// #1120: used by the self-service password change. The caller keeps the
+    /// session it is authenticating with, so the console survives the
+    /// rotation, while every other session for that user — a stolen cookie
+    /// included — stops validating on the next request.
+    ///
+    /// Returns the number of rows deleted.
+    pub fn delete_other_user_sessions(
+        &self,
+        user_id: &str,
+        keep_token: &str,
+    ) -> Result<usize, String> {
+        self.conn
+            .execute(
+                "DELETE FROM admin_sessions WHERE user_id = ?1 AND token <> ?2",
+                params![user_id, keep_token],
+            )
+            .map_err(|e| format!("failed to revoke other sessions: {e}"))
+    }
+
     pub fn cleanup_expired_sessions(&self) -> usize {
         self.conn
             .execute(

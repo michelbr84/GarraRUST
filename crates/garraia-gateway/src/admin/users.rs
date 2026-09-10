@@ -9,6 +9,14 @@ use axum::response::IntoResponse;
 use super::middleware::{AuthenticatedAdmin, build_session_cookie, extract_ip};
 use super::rbac::{Action, Resource, Role, check_permission};
 use super::shared::AdminState;
+use super::store::AdminStore;
+
+/// Minimum length for a new password. Same bound the `setup` and
+/// `create_user` handlers already enforce.
+const MIN_PASSWORD_LEN: usize = 8;
+
+/// Audit `action` written by [`change_password`].
+pub const CHANGE_PASSWORD_ACTION: &str = "change_password";
 
 // ── Setup endpoint (first-run bootstrap) ─────────────────────────────
 
@@ -34,7 +42,7 @@ pub async fn setup(
         );
     }
 
-    if body.username.len() < 3 || body.password.len() < 8 {
+    if body.username.len() < 3 || body.password.len() < MIN_PASSWORD_LEN {
         return (
             StatusCode::BAD_REQUEST,
             HeaderMap::new(),
@@ -135,7 +143,7 @@ pub async fn create_user(
         }
     };
 
-    if body.username.len() < 3 || body.password.len() < 8 {
+    if body.username.len() < 3 || body.password.len() < MIN_PASSWORD_LEN {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "username >=3 chars, password >=8 chars"})),
@@ -379,4 +387,129 @@ pub async fn danger_zone(
             )
         }
     }
+}
+
+// ── Self-service password change (#1120) ─────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Write one audit row for a change-password attempt.
+///
+/// `details` describes the terminal for the trail and never carries a
+/// password — neither the current nor the new one.
+fn audit_change_password(
+    store: &AdminStore,
+    admin: &AuthenticatedAdmin,
+    details: &str,
+    ip: Option<&str>,
+    outcome: &str,
+) {
+    let _ = store.append_audit(
+        Some(&admin.user_id),
+        Some(&admin.username),
+        CHANGE_PASSWORD_ACTION,
+        "user",
+        Some(&admin.user_id),
+        Some(details),
+        ip,
+        outcome,
+    );
+}
+
+/// POST /admin/api/change-password — rotate the caller's own password.
+///
+/// #1120: before this route the only way to change an admin password was to
+/// run SQL against `admin.db` by hand.
+///
+/// The current password is re-verified with the same `verify_password` the
+/// danger zone uses, so a stolen session cookie alone cannot lock the real
+/// owner out; session auth and CSRF come from the router this handler is
+/// mounted in. Hashing stays the local PBKDF2-HMAC-SHA256 of `store.rs` —
+/// `garraia_auth` (Argon2id) belongs to the Postgres workspace identity
+/// provider and pulling it here would change the scheme for existing rows.
+///
+/// Every terminal writes an audit event. Responses reuse the
+/// `{"error": ...}` / `{"ok": true}` shapes of the rest of the admin API; no
+/// password is ever echoed back or logged.
+pub async fn change_password(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    Json(body): Json<ChangePasswordRequest>,
+) -> impl IntoResponse {
+    let ip = extract_ip(&headers, None);
+
+    // Cheapest rejection first: no KDF work, no DB write.
+    if body.new_password.len() < MIN_PASSWORD_LEN {
+        let guard = state.store.lock().await;
+        audit_change_password(
+            &guard,
+            &admin,
+            "rejected: new password shorter than the minimum",
+            ip.as_deref(),
+            "failure",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "new password must be >=8 chars"})),
+        );
+    }
+
+    let guard = state.store.lock().await;
+
+    let verified = guard.verify_password(&admin.username, &body.current_password);
+    if verified.is_none() {
+        audit_change_password(
+            &guard,
+            &admin,
+            "rejected: current password did not verify",
+            ip.as_deref(),
+            "failure",
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "password verification failed"})),
+        );
+    }
+
+    if let Err(e) = guard.update_user_password(&admin.user_id, &body.new_password) {
+        // Log the cause, answer with a fixed string: the SQLite message is an
+        // internal detail and the admin API has been echoing it elsewhere.
+        tracing::error!("change-password: failed to persist new hash: {e}");
+        audit_change_password(
+            &guard,
+            &admin,
+            "rejected: could not persist the new hash",
+            ip.as_deref(),
+            "failure",
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "failed to update password"})),
+        );
+    }
+
+    // The hash is already committed; revocation is best effort. The session
+    // the caller authenticated with is kept so the console stays usable.
+    let revoked = match guard.delete_other_user_sessions(&admin.user_id, &admin.session_token) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("change-password: password changed but sessions not revoked: {e}");
+            0
+        }
+    };
+
+    audit_change_password(
+        &guard,
+        &admin,
+        &format!("self-service password change, {revoked} other session(s) revoked"),
+        ip.as_deref(),
+        "success",
+    );
+
+    (StatusCode::OK, Json(serde_json::json!({"ok": true})))
 }
