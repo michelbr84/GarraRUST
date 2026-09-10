@@ -86,8 +86,14 @@ impl AdminStore {
         let conn =
             Connection::open(db_path).map_err(|e| format!("failed to open admin db: {e}"))?;
 
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| format!("failed to set pragmas: {e}"))?;
+        // O `busy_timeout` nao e enfeite: `run_migrations` escreve no schema
+        // (ALTER TABLE das colunas de 2FA) e sem ele um segundo processo com o
+        // arquivo aberto devolve SQLITE_BUSY na hora, em vez de esperar. A
+        // consequencia la na frente e grave — ver `ensure_totp_columns`.
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
+        )
+        .map_err(|e| format!("failed to set pragmas: {e}"))?;
 
         let store = Self {
             conn,
@@ -218,6 +224,13 @@ impl AdminStore {
     /// `CREATE TABLE IF NOT EXISTS` do bloco acima nao toca em tabela que ja
     /// nasceu sem essas colunas. Os identificadores abaixo sao literais:
     /// nenhum deles vem de fora do codigo.
+    ///
+    /// Ler o schema e depois escrever nao e atomico, e por isso o
+    /// `duplicate column name` e tratado como sucesso em vez de erro: dois
+    /// processos subindo juntos leem o `PRAGMA` antes de qualquer `ALTER` e o
+    /// segundo perde a corrida. Devolver `Err` ali nao e um boot que falha e
+    /// alguem repara — e `AdminStore::open` caindo para `in_memory()`, que
+    /// deixa o `/admin/api/setup` reivindicavel por anonimo.
     fn ensure_totp_columns(&self) -> Result<(), String> {
         let mut stmt = self
             .conn
@@ -229,18 +242,25 @@ impl AdminStore {
             .filter_map(|r| r.ok())
             .collect();
 
-        if !columns.iter().any(|c| c == "totp_secret") {
-            self.conn
-                .execute("ALTER TABLE admin_users ADD COLUMN totp_secret TEXT", [])
-                .map_err(|e| format!("failed to add admin_users.totp_secret: {e}"))?;
-        }
-        if !columns.iter().any(|c| c == "totp_enabled") {
-            self.conn
-                .execute(
-                    "ALTER TABLE admin_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )
-                .map_err(|e| format!("failed to add admin_users.totp_enabled: {e}"))?;
+        for (column, ddl) in [
+            (
+                "totp_secret",
+                "ALTER TABLE admin_users ADD COLUMN totp_secret TEXT",
+            ),
+            (
+                "totp_enabled",
+                "ALTER TABLE admin_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if columns.iter().any(|c| c == column) {
+                continue;
+            }
+            if let Err(e) = self.conn.execute(ddl, []) {
+                if is_duplicate_column(&e) {
+                    continue;
+                }
+                return Err(format!("failed to add admin_users.{column}: {e}"));
+            }
         }
         Ok(())
     }
@@ -416,10 +436,20 @@ impl AdminStore {
     /// Segredo TOTP do usuario — tanto o pendente de confirmacao quanto o
     /// ativo. `None` tambem significa "coluna existe, valor e NULL".
     ///
-    /// Igual ao fluxo mobile (`totp.rs`), o que fica no banco e o proprio
-    /// base32, em claro. Quem le o `admin.db` le o segredo e reconstroi o
-    /// segundo fator offline; o mesmo ja valia para o `sessions.db` e esta
-    /// registrado no modulo `totp`.
+    /// O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Isso
+    /// nao e paridade com o fluxo mobile — la o segredo e cifrado
+    /// (`totp_secret_enc`, AES-256-GCM com a chave do cofre). Aqui a chave
+    /// existe e esta na mao do handler (`AdminState::encryption_key`), e o
+    /// `admin/secrets.rs` ja cifra as chaves de provider no mesmo arquivo:
+    /// cifrar custa uma chamada e nenhuma decisao nova, e e a issue de
+    /// seguimento deste PR.
+    ///
+    /// O que torna o risco aceitavel por enquanto nao e essa comparacao: e o
+    /// proprio `admin.db` ja guardar `admin_sessions.token` em texto puro, ou
+    /// seja, quem le o arquivo ja leva uma sessao de admin viva sem precisar
+    /// do segundo fator. O segredo em claro adiciona comprometimento duravel
+    /// do 2FA (sobrevive a expiracao da sessao e a troca de senha), nao uma
+    /// porta nova.
     pub fn get_totp_secret(&self, user_id: &str) -> Option<String> {
         self.conn
             .query_row(
@@ -1064,6 +1094,16 @@ impl AdminStore {
     }
 }
 
+/// A coluna que tentamos criar ja existe.
+///
+/// So para o `ALTER TABLE` de `ensure_totp_columns`: dois processos abrindo o
+/// mesmo `admin.db` leem o `PRAGMA table_info` antes de qualquer um escrever,
+/// e o que chega por ultimo leva `duplicate column name`. A coluna estar la e
+/// exatamente o que queriamos, entao isso e sucesso.
+fn is_duplicate_column(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(_, Some(msg)) if msg.contains("duplicate column name"))
+}
+
 #[derive(Debug, Clone)]
 pub struct SecretMeta {
     pub id: String,
@@ -1308,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn errar_muito_trava_e_um_aceto_zera_a_contagem() {
+    fn errar_muito_trava_e_um_acerto_zera_a_contagem() {
         let mut store = test_store();
         let id = usuario_totp(&store);
 
@@ -1343,5 +1383,65 @@ mod tests {
             !store.totp_attempts_exhausted(&b),
             "um usuario errando nao pode travar os outros"
         );
+    }
+
+    /// `admin_users` criada **antes** do #1121, sem as colunas de 2FA. E o
+    /// banco de toda instalacao existente: `CREATE TABLE IF NOT EXISTS` nao
+    /// toca nela, entao so o `ALTER TABLE` condicional salva o boot.
+    fn banco_antigo_sem_2fa(path: &std::path::Path) {
+        let conn = Connection::open(path).expect("db temporario");
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE admin_users (
+                 id TEXT PRIMARY KEY,
+                 username TEXT UNIQUE NOT NULL,
+                 password_hash TEXT NOT NULL,
+                 password_salt TEXT NOT NULL,
+                 role TEXT NOT NULL DEFAULT 'viewer',
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 last_login TEXT
+             );",
+        )
+        .expect("schema antigo");
+        conn.execute(
+            "INSERT INTO admin_users (id, username, password_hash, password_salt, role)
+             VALUES ('u1', 'dono', 'hash', 'salt', 'admin')",
+            [],
+        )
+        .expect("usuario antigo");
+    }
+
+    #[test]
+    fn instalacao_antiga_ganha_as_colunas_de_2fa_no_boot() {
+        let path = std::env::temp_dir().join(format!("garra-2fa-migr-{}.db", uuid::Uuid::new_v4()));
+        banco_antigo_sem_2fa(&path);
+
+        let store = AdminStore::open(&path).expect("abrir banco antigo nao pode falhar");
+
+        assert!(
+            !store.is_totp_enabled("u1"),
+            "usuario antigo nasce com 2FA desligado"
+        );
+        store
+            .set_pending_totp_secret("u1", "JBSWY3DPEHPK3PXP")
+            .expect("escrever segredo");
+        assert_eq!(
+            store.get_totp_secret("u1").as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// O `PRAGMA table_info` e o `ALTER TABLE` nao sao atomicos: dois processos
+    /// podem ler o schema antes de qualquer um escrever. O perdedor tem que
+    /// receber sucesso, nao um `Err` que derruba o `open` para store em
+    /// memoria — e dai o `/admin/api/setup` fica reivindicavel por anonimo.
+    #[test]
+    fn rodar_a_migracao_duas_vezes_e_sucesso() {
+        let store = test_store();
+        store.ensure_totp_columns().expect("segunda passada");
+        store.ensure_totp_columns().expect("terceira passada");
     }
 }

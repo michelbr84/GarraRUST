@@ -1,6 +1,6 @@
 //! TOTP (2FA) do painel admin — #1121.
 //!
-//! O `crate::totp` ja implementava RFC 6238, mas so era alcançavel pelo fluxo
+//! O `crate::totp` ja implementava RFC 6238, mas so era alcancavel pelo fluxo
 //! mobile (`/auth/2fa/*`): o login do painel (`POST /admin/api/login`) parava
 //! na senha e nunca perguntava o segundo fator. Estes handlers trazem o mesmo
 //! segredo e a mesma verificacao para a porta admin.
@@ -16,8 +16,10 @@
 //! porque e la que a sessao e criada. Um segredo pendente nao vale nada —
 //! so passa a ser exigido depois que `enable_totp` roda.
 //!
-//! Como no fluxo mobile, o segredo fica em claro no `admin.db` (base32). Ver
-//! o aviso em `store::AdminStore::get_totp_secret` e no modulo `crate::totp`.
+//! O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Nao e
+//! paridade com o fluxo mobile, que cifra (`totp_secret_enc`); a justificativa
+//! real e o proprio `admin.db` ja guardar token de sessao em texto puro. Ver
+//! o aviso completo em `store::AdminStore::get_totp_secret`.
 
 use axum::Json;
 use axum::extract::State;
@@ -81,6 +83,19 @@ pub async fn totp_setup(
     // proprio painel (o app dele aponta para o segredo antigo) sem que nada
     // pedisse confirmacao.
     if guard.is_totp_enabled(&admin.user_id) {
+        // Pedido legitimo de quem esqueceu que ja tem 2FA, mas tambem o jeito
+        // barato de um invasor com a sessao trocar o app do dono: vai para o
+        // audit como falha, como qualquer outra recusa daqui.
+        let _ = guard.append_audit(
+            Some(&admin.user_id),
+            Some(&admin.username),
+            "2fa.setup",
+            "auth",
+            None,
+            Some("already enabled"),
+            ip.as_deref(),
+            "failure",
+        );
         drop(guard);
         return (
             StatusCode::CONFLICT,
@@ -238,6 +253,16 @@ pub async fn totp_disable(
     };
 
     if guard.totp_attempts_exhausted(&admin.user_id) {
+        let _ = guard.append_audit(
+            Some(&admin.user_id),
+            Some(&admin.username),
+            "2fa.disable",
+            "auth",
+            None,
+            Some("too many attempts"),
+            ip.as_deref(),
+            "failure",
+        );
         drop(guard);
         return (
             StatusCode::TOO_MANY_REQUESTS,

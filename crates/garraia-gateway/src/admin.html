@@ -1727,11 +1727,19 @@ document.getElementById('login-btn').addEventListener('click', async () => {
     totpGroup.classList.add('hidden'); totpEl.value = '';
     showApp();
   } catch(e) {
-    if (e.status === 401 && e.data && e.data.totp_required) {
+    var needs2fa = e.data && e.data.totp_required &&
+                   (e.status === 401 || e.status === 429);
+    if (needs2fa) {
       totpGroup.classList.remove('hidden');
       totpEl.value = '';
-      totpEl.focus();
-      errEl.textContent = 'Enter the 6-digit code from your authenticator app.';
+      // 429: travado. Mostrar o campo nao adianta — repetir na hora nao
+      // destrava — entao o foco fica na mensagem.
+      if (e.status !== 429) totpEl.focus();
+      errEl.textContent = (e.data.error === 'invalid totp code')
+        ? 'That code was not accepted. Try the next one.'
+        : (e.status === 429
+            ? 'Too many wrong codes. Wait a few minutes and try again.'
+            : 'Enter the 6-digit code from your authenticator app.');
     } else {
       errEl.textContent = e.message;
     }

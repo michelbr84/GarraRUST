@@ -13,11 +13,12 @@
   tentaria, entao nao pode ser so uma confirmacao de sessao). Um segredo
   pendente nao vale nada: so passa a ser cobrado depois que o `verify` roda,
   o que evita travar o dono fora do painel por um setup abandonado (#1121).
-- Seis codigos errados em 15 minutos travam o segundo fator por usuario, com
-  `429`; um acerto zera a contagem. Sem isso o TOTP de 6 digitos seria
-  forcavel por forca bruta a partir da propria resposta de erro. Cada
-  terminal — setup, verify, disable, e cada recusa no login — escreve no
-  `audit_log` com o IP (#1121).
+- Cinco codigos errados em 15 minutos travam o segundo fator por usuario: a
+  sexta tentativa e recusada com `429` sem ser avaliada, e um acerto zera a
+  contagem. Sem isso o TOTP de 6 digitos seria forcavel por forca bruta a
+  partir da propria resposta de erro. Cada terminal — setup, verify, disable,
+  e cada recusa no login, inclusive o `409` de quem tenta girar o segredo com
+  2FA ligado — escreve no `audit_log` com o IP (#1121).
 - Girar o segredo com o 2FA ligado e recusado com `409`: substituir o segredo
   por baixo do dono deixaria o app dele apontando para o antigo, sem que nada
   tivesse pedido confirmacao. O caminho e desligar com um codigo valido e
@@ -25,3 +26,9 @@
 - A pagina **Security** do console ganha o enrollment: mostra o segredo base32
   e a URI `otpauth://` como texto copiavel. Nenhum QR e gerado por biblioteca
   ou servico de imagem — isso mandaria o segredo para um terceiro (#1121).
+- As colunas de 2FA entram por `ALTER TABLE` condicional, e o boot passa a
+  esperar 5s por lock do SQLite (`busy_timeout`) e a tratar `duplicate column
+  name` como sucesso. Sem isso, dois processos abrindo o `admin.db` juntos
+  fariam o `open` falhar — e o gateway cai para store em memoria, o que deixa
+  o `/admin/api/setup` reivindicavel por anonimo. O resgate manual de quem
+  perdeu o autenticador ficou documentado em `docs/security.md` (#1121).

@@ -48,6 +48,34 @@ channels:
       - 987654321
 ```
 
+#### Two-factor authentication (admin console)
+
+The admin console supports TOTP as a second factor at login. Enrollment and
+removal live under **Security** in the console; the second factor is only
+required for accounts that turned it on.
+
+There are no recovery codes yet. **If you lose the authenticator device and you
+are the only administrator, the documented way back in is to clear the second
+factor directly in the database** — it is the only step that does not need a
+valid code:
+
+```bash
+# Stop the gateway first: the store holds the session map in memory.
+# Default path below; if `data_dir` is set in the config, use that instead.
+sqlite3 "$HOME/.garraia/data/admin.db" \
+  "UPDATE admin_users SET totp_enabled = 0, totp_secret = NULL WHERE username = 'YOUR_USERNAME';"
+```
+
+Then start the gateway again and sign in with your password.
+
+Two things worth knowing before you turn it on:
+
+- Turning 2FA **off** from inside the console requires a valid code. That is
+  deliberate: it is exactly what someone holding only your password would try.
+- Rotating the secret while 2FA is on is refused (`409`). Disable it with a
+  valid code first — replacing the secret underneath you would leave your
+  authenticator app pointing at the old one.
+
 ### Input Validation
 
 #### Prompt Injection Detection
