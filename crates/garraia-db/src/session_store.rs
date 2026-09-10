@@ -419,19 +419,40 @@ impl SessionStore {
         user_id: &str,
         metadata: &serde_json::Value,
     ) -> Result<()> {
+        // #1102: um patch que NAO e objeto e ignorado, nao aplicado.
+        //
+        // `json_patch(T, P)` devolve `P` quando `P` nao e um objeto — passar
+        // `Value::Null` (cuja `to_string()` e `"null"`) apagava o metadado
+        // inteiro em vez de ser no-op. E exatamente o que
+        // `ChatSessionManager::create_token` faz em `chat_sync.rs`: ele chama
+        // `upsert_session(..., Value::Null)` so para garantir que a linha
+        // exista antes do FK do token. Como `POST /api/sessions` grava o modo
+        // e so depois emite o token, o `null` passava por cima do
+        // `agent_mode` recem-escrito — o 201 ecoava "search" e a linha nascia
+        // com metadata `null`. Era o #1102, e o mesmo `upsert` explica por que
+        // `/api/mode/select` funciona: aquele caminho nao emite token.
+        //
+        // `null` explicito **dentro** de um objeto segue apagando a chave — e
+        // o `CASE` so olha o tipo do patch inteiro, entao `clear_agent_mode`
+        // continua funcionando.
         self.conn
             .execute(
                 "INSERT INTO sessions (id, tenant_id, channel_id, user_id, metadata)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 VALUES (?1, ?2, ?3, ?4,
+                         CASE WHEN json_type(?5) = 'object' THEN ?5 ELSE '{}' END)
                  ON CONFLICT(id) DO UPDATE SET
                    tenant_id = excluded.tenant_id,
                    channel_id = excluded.channel_id,
                    user_id = excluded.user_id,
-                   metadata = json_patch(
-                       CASE WHEN json_valid(sessions.metadata)
-                            THEN sessions.metadata
-                            ELSE '{}' END,
-                       excluded.metadata),
+                   metadata = CASE
+                       WHEN json_type(excluded.metadata) = 'object'
+                       THEN json_patch(
+                           CASE WHEN json_valid(sessions.metadata)
+                                THEN sessions.metadata
+                                ELSE '{}' END,
+                           excluded.metadata)
+                       ELSE sessions.metadata
+                   END,
                    updated_at = datetime('now')",
                 params![
                     session_id,
@@ -2171,6 +2192,94 @@ mod tests {
             .get_agent_mode(session_id)
             .expect("get mode should succeed");
         assert_eq!(mode, Some("debug".to_string()), "Mode should be 'debug'");
+    }
+
+    /// #1102: `ChatSessionManager::create_token` chama
+    /// `upsert_session(..., Value::Null)` so para garantir a linha antes do FK
+    /// do token. `json_patch(T, P)` devolve `P` quando `P` nao e objeto, entao
+    /// esse "no-op" apagava o metadado inteiro — inclusive o `agent_mode` que
+    /// `POST /api/sessions` acabara de gravar. Um patch nao-objeto tem de ser
+    /// ignorado, nunca aplicado.
+    #[test]
+    fn upsert_com_patch_nao_objeto_preserva_o_metadado() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "mode-token-race";
+
+        store
+            .upsert_session(session_id, "api", "anonymous", &serde_json::json!({}))
+            .expect("upsert inicial");
+        store
+            .set_agent_mode(session_id, "search")
+            .expect("gravar modo");
+
+        // Exatamente o que `create_token` faz (chat_sync.rs).
+        store
+            .upsert_session(session_id, "api", session_id, &serde_json::Value::Null)
+            .expect("upsert com patch nao-objeto nao deve falhar");
+
+        assert_eq!(
+            store.get_agent_mode(session_id).expect("ler modo"),
+            Some("search".to_string()),
+            "um patch nao-objeto nao pode apagar o metadado existente"
+        );
+        assert_eq!(
+            store
+                .get_chosen_agent_mode(session_id)
+                .expect("ler modo escolhido"),
+            Some("search".to_string()),
+            "o modo escolhido tem de continuar valendo para a ToolPolicy"
+        );
+    }
+
+    /// `null` explicito **dentro** de um objeto continua apagando a chave — o
+    /// `CASE` olha o tipo do patch inteiro, nao das chaves.
+    #[test]
+    fn upsert_com_chave_nula_apaga_a_chave() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "mode-null-key";
+
+        store
+            .upsert_session(session_id, "api", "anonymous", &serde_json::json!({}))
+            .expect("upsert inicial");
+        store
+            .set_agent_mode(session_id, "search")
+            .expect("gravar modo");
+
+        store
+            .upsert_session(
+                session_id,
+                "api",
+                "anonymous",
+                &serde_json::json!({ "agent_mode": null }),
+            )
+            .expect("upsert com chave nula");
+
+        assert_eq!(
+            store.get_agent_mode(session_id).expect("ler modo"),
+            None,
+            "null dentro de um objeto objeto ainda apaga a chave"
+        );
+    }
+
+    /// Uma linha nova criada com patch nao-objeto nasce com `{}`, nao `null`.
+    #[test]
+    fn upsert_com_patch_nao_objeto_em_linha_nova_cria_objeto_vazio() {
+        let store = SessionStore::in_memory().expect("in-memory store should open");
+        let session_id = "sessao-nova-com-null";
+
+        store
+            .upsert_session(session_id, "api", session_id, &serde_json::Value::Null)
+            .expect("upsert inicial com null");
+
+        // Se tivesse nascido `null`, gravar o modo falharia com "sessao nao
+        // existe" so na leitura; aqui o ponto e que o metadado e um objeto.
+        store
+            .set_agent_mode(session_id, "code")
+            .expect("gravar modo em linha criada com null");
+        assert_eq!(
+            store.get_agent_mode(session_id).expect("ler modo"),
+            Some("code".to_string())
+        );
     }
 
     #[test]

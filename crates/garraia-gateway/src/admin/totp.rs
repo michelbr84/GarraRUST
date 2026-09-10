@@ -24,10 +24,12 @@
 //! `GET /2fa/status` nao gera evento, como qualquer outra rota de leitura
 //! do painel.
 //!
-//! O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Nao e
-//! paridade com o fluxo mobile, que cifra (`totp_secret_enc`); a justificativa
-//! real e o proprio `admin.db` ja guardar token de sessao em texto puro. Ver
-//! o aviso completo em `store::AdminStore::get_totp_secret`.
+//! O segredo fica **em claro** no `admin.db` (base32, sem cifrar) — paridade
+//! com o fluxo mobile, que tambem armazena em claro
+//! (`mobile_users.totp_secret`, base32 sem cifrar; ver totp.rs, "Estado real
+//! do segredo"). A justificativa real e o proprio `admin.db` ja guardar token
+//! de sessao em texto puro; cifrar o lado admin e a issue #1141. Ver o aviso
+//! completo em `store::AdminStore::get_totp_secret`.
 
 use axum::Json;
 use axum::extract::State;

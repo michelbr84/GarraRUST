@@ -449,13 +449,14 @@ impl AdminStore {
     /// Segredo TOTP do usuario — tanto o pendente de confirmacao quanto o
     /// ativo. `None` tambem significa "coluna existe, valor e NULL".
     ///
-    /// O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Isso
-    /// nao e paridade com o fluxo mobile — la o segredo e cifrado
-    /// (`totp_secret_enc`, AES-256-GCM com a chave do cofre). Aqui a chave
-    /// existe e esta na mao do handler (`AdminState::encryption_key`), e o
+    /// O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Isso e
+    /// paridade com o fluxo mobile: la o segredo tambem fica em claro
+    /// (`mobile_users.totp_secret`, TEXT, base32 sem cifrar — ver o
+    /// comentario "Estado real do segredo" em
+    /// crates/garraia-gateway/src/totp.rs). O que diferencia este lado e
+    /// que a chave existe em runtime (`AdminState::encryption_key`) e o
     /// `admin/secrets.rs` ja cifra as chaves de provider no mesmo arquivo:
-    /// cifrar custa uma chamada e nenhuma decisao nova, e e a issue de
-    /// seguimento deste PR.
+    /// cifrar custa uma chamada e nenhuma decisao nova, e e a issue #1141.
     ///
     /// O que torna o risco aceitavel por enquanto nao e essa comparacao: e o
     /// proprio `admin.db` ja guardar `admin_sessions.token` em texto puro, ou
