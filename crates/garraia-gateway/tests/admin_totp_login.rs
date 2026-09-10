@@ -595,7 +595,7 @@ async fn setup_deixa_trilha_sem_vazar_o_segredo_na_auditoria() {
         )
         .expect("setup deve deixar trilha atomica");
     assert!(
-        detalhe.as_deref().map_or(true, |d| !d.contains(&secret)),
+        detalhe.as_deref().is_none_or(|d| !d.contains(&secret)),
         "a trilha do setup carrega o segredo: {detalhe:?}"
     );
 
