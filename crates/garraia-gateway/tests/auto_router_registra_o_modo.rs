@@ -15,7 +15,7 @@
 //! da chamada ao modelo, que é justamente a propriedade de observabilidade que
 //! a issue quer (o rastro sobrevive a um turno que falha).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::Request;
@@ -28,23 +28,28 @@ use garraia_gateway::state::AppState;
 use serde_json::json;
 use tower::ServiceExt; // `oneshot`
 
-/// Serializa os testes deste binário.
+/// Serializa os testes deste binário — o ambiente só é tocado sob este lock.
 ///
 /// O harness padrão roda os testes de um mesmo binário em paralelo, e
 /// `std::env::set_var` (unsafe no Edition 2024) exige que nenhuma outra
-/// thread leia ou escreva o ambiente enquanto ele é chamado. Sem este
-/// lock, um teste escreveria `GARRAIA_CONFIG_DIR` enquanto o outro o
-/// lia dentro do `AppState::new` — corrida de memória, não só de
-/// lógica.
+/// thread leia ou escreva o ambiente enquanto ele é chamado — corrida de
+/// memória, não só de lógica. Sem este lock, um teste escreveria
+/// `GARRAIA_CONFIG_DIR` enquanto o outro o lia dentro do `AppState::new`.
 ///
-/// O guard é mantido até o fim do corpo de cada teste, e o runtime
-/// `#[tokio::test]` (que desova as tasks do `AppState`) cai quando o
-/// corpo termina — antes do guard. Quando o próximo teste adquire o
-/// lock, nenhuma thread do anterior sobreviveu para ler o ambiente.
-/// `tokio::sync::Mutex`, não `std`: o guard atravessa `.await` (o
-/// `clippy::await_holding_lock` proíbe o guard de `std` nessa posição), e
-/// o `#[tokio::test` runtime cai dentro do corpo, antes do guard.
-static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// O contrato de ordem, do mais externo para o mais interno: o teste
+/// adquire o guard **antes** de construir o runtime tokio; o runtime (e
+/// com ele toda task desovada — as do `AppState` incluídas) cai no fim do
+/// `block_on`, dentro da janela do guard; só então o guard é liberado. O
+/// teste paralelo, que até então estava bloqueado no `lock()` sem tocar
+/// nada, só escreve o ambiente quando já não existe thread sobrevivente
+/// do anterior.
+///
+/// É `std::sync::Mutex`, não `tokio::sync`: o guard precisa existir
+/// **antes** do primeiro runtime e cair **depois** do último — `#[tokio::test]`
+/// não dá essa janela (o runtime dele nasce antes do corpo e cai depois do
+/// guard do corpo), e guard de `tokio::sync` não se adquire fora de um
+/// contexto async. Em código sync, guard `std` nunca atravessa `.await`.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Aponta o config dir do processo para um temporário vazio.
 ///
@@ -53,12 +58,12 @@ static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// mas o diretório precisa continuar existindo enquanto `AppState::new` o lê:
 /// por isso o `TempDir` volta para o teste, que o mantém vivo.
 ///
-/// SAFETY (chamador): o chamador segura `ENV_LOCK` durante TODO o corpo do
-/// teste (das duas funções `#[tokio::test]` abaixo, antes de qualquer outra
-/// linha). Isso exclui a única fonte de threads concorrentes deste binário —
-/// o outro teste — da janela de escrita; as tasks do runtime do próprio
-/// teste são criadas depois e não sobrevivem ao guard (o runtime cai dentro
-/// do corpo, o guard cai depois).
+/// SAFETY (chamador): o chamador segura `ENV_LOCK` durante todo o teste —
+/// o guard é a primeira linha do `#[test]` e só cai depois do runtime tokio
+/// (construído dentro da janela do guard) ter caído. As duas fontes de
+/// threads concorrentes deste binário estão excluídas da janela de escrita:
+/// o outro teste está bloqueado no `lock()` sem tocar nada, e as tasks do
+/// próprio runtime já não existem.
 fn config_dir_de_teste() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temp config dir");
     unsafe {
@@ -133,52 +138,62 @@ fn metadado(store: &SessionStore, session_id: &str) -> serde_json::Value {
 }
 
 /// O modo deduzido chega ao banco marcado como `auto`, e não autoriza nada.
-#[tokio::test]
-async fn modo_deduzido_e_gravado_como_auto_e_nao_liga_politica() {
-    // Segura o ENV_LOCK antes de tocar o ambiente (ver doc do static).
-    let _serializa = ENV_LOCK.lock().await;
-    let _dir = config_dir_de_teste();
-    let (state, store) = estado_e_store();
+#[test]
+fn modo_deduzido_e_gravado_como_auto_e_nao_liga_politica() {
+    // Ordem deliberada: guard ANTES do runtime, runtime ANTES da escrita do
+    // ambiente. `into_inner` para um pânico no outro teste não cancelar
+    // este (Mutex de std envenena; o teste que falhou já reportou).
+    let _serializa = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|envenenado| envenenado.into_inner());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    runtime.block_on(async {
+        let _dir = config_dir_de_teste();
+        let (state, store) = estado_e_store();
 
-    // Frase que a heurística classifica sem ambiguidade — a mesma coberta em
-    // `garraia-agents/src/auto_router.rs`: os três sinais de `debug` abrem a
-    // margem mínima sobre a segunda colocada.
-    let _ = post_chat(
-        Arc::clone(&state),
-        "sessao-1103",
-        "why does this crash? the server is not working",
-    )
-    .await;
+        // Frase que a heurística classifica sem ambiguidade — a mesma coberta em
+        // `garraia-agents/src/auto_router.rs`: os três sinais de `debug` abrem a
+        // margem mínima sobre a segunda colocada.
+        let _ = post_chat(
+            Arc::clone(&state),
+            "sessao-1103",
+            "why does this crash? the server is not working",
+        )
+        .await;
 
-    let store = store.lock().await;
-    let metadata = metadado(&store, "sessao-1103");
+        let store = store.lock().await;
+        let metadata = metadado(&store, "sessao-1103");
 
-    assert_eq!(
-        metadata.get("agent_mode").and_then(|v| v.as_str()),
-        Some("debug"),
-        "o modo deduzido tem de ficar gravado; foi ele que o roteador escolheu"
-    );
-    assert_eq!(
-        metadata.get("agent_mode_source").and_then(|v| v.as_str()),
-        Some("auto"),
-        "a origem e o que permite auditar que foi deduzido, e nao escolhido"
-    );
+        assert_eq!(
+            metadata.get("agent_mode").and_then(|v| v.as_str()),
+            Some("debug"),
+            "o modo deduzido tem de ficar gravado; foi ele que o roteador escolheu"
+        );
+        assert_eq!(
+            metadata.get("agent_mode_source").and_then(|v| v.as_str()),
+            Some("auto"),
+            "a origem e o que permite auditar que foi deduzido, e nao escolhido"
+        );
 
-    // A outra metade do contrato: aparece, mas nao autoriza.
-    assert_eq!(
-        store
-            .get_agent_mode("sessao-1103")
-            .expect("leitura do modo"),
-        Some("debug".to_string()),
-        "o /mode e o GET /api/mode/current mostram o modo deduzido"
-    );
-    assert_eq!(
-        store
-            .get_chosen_agent_mode("sessao-1103")
-            .expect("leitura do modo escolhido"),
-        None,
-        "deduzir nao e consentir: nenhuma ToolPolicy liga por isso"
-    );
+        // A outra metade do contrato: aparece, mas nao autoriza.
+        assert_eq!(
+            store
+                .get_agent_mode("sessao-1103")
+                .expect("leitura do modo"),
+            Some("debug".to_string()),
+            "o /mode e o GET /api/mode/current mostram o modo deduzido"
+        );
+        assert_eq!(
+            store
+                .get_chosen_agent_mode("sessao-1103")
+                .expect("leitura do modo escolhido"),
+            None,
+            "deduzir nao e consentir: nenhuma ToolPolicy liga por isso"
+        );
+    });
 }
 
 /// Heurística em dúvida não inventa modo.
@@ -188,27 +203,36 @@ async fn modo_deduzido_e_gravado_como_auto_e_nao_liga_politica() {
 /// explicação provável do `{}` reportado na issue — uma frase como
 /// "Traceback … linha 42" marca um sinal só, abaixo do mínimo, e aí não há
 /// mesmo o que registrar.
-#[tokio::test]
-async fn sem_deducao_nao_ha_registro() {
-    // Mesmo contrato do teste de cima: ambiente só sob ENV_LOCK.
-    let _serializa = ENV_LOCK.lock().await;
-    let _dir = config_dir_de_teste();
-    let (state, store) = estado_e_store();
+#[test]
+fn sem_deducao_nao_ha_registro() {
+    // Mesmo contrato do teste de cima: ambiente só sob ENV_LOCK, e o
+    // runtime nasce e morre dentro da janela do guard.
+    let _serializa = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|envenenado| envenenado.into_inner());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime de teste");
+    runtime.block_on(async {
+        let _dir = config_dir_de_teste();
+        let (state, store) = estado_e_store();
 
-    let _ = post_chat(Arc::clone(&state), "sessao-1103-vazia", "hello").await;
+        let _ = post_chat(Arc::clone(&state), "sessao-1103-vazia", "hello").await;
 
-    let store = store.lock().await;
-    let metadata = metadado(&store, "sessao-1103-vazia");
+        let store = store.lock().await;
+        let metadata = metadado(&store, "sessao-1103-vazia");
 
-    assert_eq!(
-        metadata.get("agent_mode"),
-        None,
-        "nenhum modo foi deduzido, entao nenhum modo e registrado"
-    );
-    assert_eq!(
-        store
-            .get_chosen_agent_mode("sessao-1103-vazia")
-            .expect("leitura do modo escolhido"),
-        None
-    );
+        assert_eq!(
+            metadata.get("agent_mode"),
+            None,
+            "nenhum modo foi deduzido, entao nenhum modo e registrado"
+        );
+        assert_eq!(
+            store
+                .get_chosen_agent_mode("sessao-1103-vazia")
+                .expect("leitura do modo escolhido"),
+            None
+        );
+    });
 }
