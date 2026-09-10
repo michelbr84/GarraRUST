@@ -744,25 +744,48 @@ impl AdminStore {
         Ok(())
     }
 
-    /// Revoke every session of `user_id` **except** `keep_token`.
+    /// Rotate the password and revoke the user's other sessions, atomically.
     ///
-    /// #1120: used by the self-service password change. The caller keeps the
-    /// session it is authenticating with, so the console survives the
-    /// rotation, while every other session for that user — a stolen cookie
-    /// included — stops validating on the next request.
+    /// #1120: used by the self-service password change. One SQLite
+    /// transaction wraps the new hash AND the `DELETE` of the other
+    /// sessions — a failure in either one rolls the whole rotation back, so
+    /// the route can never answer success with a committed password and a
+    /// stale — possibly stolen — session still validating. The caller keeps
+    /// the session it is authenticating with, so the console survives the
+    /// rotation, while every other session for that user stops validating
+    /// on the next request.
     ///
-    /// Returns the number of rows deleted.
-    pub fn delete_other_user_sessions(
+    /// Returns the number of sessions revoked alongside the rotation.
+    pub fn rotate_password_and_revoke_sessions(
         &self,
         user_id: &str,
+        new_password: &str,
         keep_token: &str,
     ) -> Result<usize, String> {
-        self.conn
+        let (hash, salt) = hash_password(new_password)?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        let affected = tx
+            .execute(
+                "UPDATE admin_users SET password_hash = ?1, password_salt = ?2, updated_at = datetime('now')
+                 WHERE id = ?3",
+                params![hash, salt, user_id],
+            )
+            .map_err(|e| format!("failed to update password: {e}"))?;
+        if affected == 0 {
+            return Err("user not found".to_string());
+        }
+        let revoked = tx
             .execute(
                 "DELETE FROM admin_sessions WHERE user_id = ?1 AND token <> ?2",
                 params![user_id, keep_token],
             )
-            .map_err(|e| format!("failed to revoke other sessions: {e}"))
+            .map_err(|e| format!("failed to revoke other sessions: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit password rotation: {e}"))?;
+        Ok(revoked)
     }
 
     pub fn cleanup_expired_sessions(&self) -> usize {

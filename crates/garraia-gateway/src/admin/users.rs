@@ -428,7 +428,9 @@ fn audit_change_password(
 /// The current password is re-verified with the same `verify_password` the
 /// danger zone uses, so a stolen session cookie alone cannot lock the real
 /// owner out; session auth and CSRF come from the router this handler is
-/// mounted in. Hashing stays the local PBKDF2-HMAC-SHA256 of `store.rs` —
+/// mounted in. The new hash and the revocation of the user's other sessions
+/// commit in one SQLite transaction — either both land or neither does.
+/// Hashing stays the local PBKDF2-HMAC-SHA256 of `store.rs` —
 /// `garraia_auth` (Argon2id) belongs to the Postgres workspace identity
 /// provider and pulling it here would change the scheme for existing rows.
 ///
@@ -476,30 +478,32 @@ pub async fn change_password(
         );
     }
 
-    if let Err(e) = guard.update_user_password(&admin.user_id, &body.new_password) {
-        // Log the cause, answer with a fixed string: the SQLite message is an
-        // internal detail and the admin API has been echoing it elsewhere.
-        tracing::error!("change-password: failed to persist new hash: {e}");
-        audit_change_password(
-            &guard,
-            &admin,
-            "rejected: could not persist the new hash",
-            ip.as_deref(),
-            "failure",
-        );
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "failed to update password"})),
-        );
-    }
-
-    // The hash is already committed; revocation is best effort. The session
-    // the caller authenticated with is kept so the console stays usable.
-    let revoked = match guard.delete_other_user_sessions(&admin.user_id, &admin.session_token) {
+    // The new hash and the revocation of the other sessions commit in ONE
+    // SQLite transaction: a failure in either one rolls the whole rotation
+    // back, so success is never announced with a stolen cookie still
+    // validating. The session the caller authenticated with is kept, so the
+    // console survives the rotation.
+    let revoked = match guard.rotate_password_and_revoke_sessions(
+        &admin.user_id,
+        &body.new_password,
+        &admin.session_token,
+    ) {
         Ok(n) => n,
         Err(e) => {
-            tracing::warn!("change-password: password changed but sessions not revoked: {e}");
-            0
+            // Log the cause, answer with a fixed string: the SQLite message is an
+            // internal detail and the admin API has been echoing it elsewhere.
+            tracing::error!("change-password: rotation failed, nothing was persisted: {e}");
+            audit_change_password(
+                &guard,
+                &admin,
+                "rejected: could not persist the rotation",
+                ip.as_deref(),
+                "failure",
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "failed to update password"})),
+            );
         }
     };
 
