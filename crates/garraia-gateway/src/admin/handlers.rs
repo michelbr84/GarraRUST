@@ -71,7 +71,7 @@ pub async fn login(
     let user = match guard.verify_password(&body.username, &body.password) {
         Some(u) => u,
         None => {
-            let _ = guard.append_audit(
+            if let Err(audit_err) = guard.append_audit(
                 None,
                 Some(&body.username),
                 "login",
@@ -80,7 +80,9 @@ pub async fn login(
                 Some("invalid credentials"),
                 ip.as_deref(),
                 "failure",
-            );
+            ) {
+                tracing::warn!("admin login: failed to write audit log: {audit_err}");
+            }
             drop(guard);
             return (
                 StatusCode::UNAUTHORIZED,
@@ -95,11 +97,40 @@ pub async fn login(
     // So se chega aqui com a senha ja verificada, entao responder "este
     // usuario tem 2FA" nao e enumeracao: quem recebe a resposta provou que
     // sabe a senha.
-    if guard.is_totp_enabled(&user.id) {
+    //
+    // Estado ilegivel e recusa: o caminho contrario — tratar erro de
+    // leitura como "2FA desligado" e deixar a senha so entrar — e
+    // exatamente o fail-open que este PR veio fechar (#1121).
+    let totp_enabled = match guard.is_totp_enabled(&user.id) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("admin login: 2FA state unreadable: {e}");
+            if let Err(audit_err) = guard.append_audit(
+                Some(&user.id),
+                Some(&user.username),
+                "login",
+                "auth",
+                None,
+                Some("totp state unreadable"),
+                ip.as_deref(),
+                "failure",
+            ) {
+                tracing::warn!("admin login: failed to write audit log: {audit_err}");
+            }
+            drop(guard);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                HeaderMap::new(),
+                Json(serde_json::json!({"error": "internal error"})),
+            );
+        }
+    };
+
+    if totp_enabled {
         let code = match body.totp_code.as_deref() {
             Some(c) => c,
             None => {
-                let _ = guard.append_audit(
+                if let Err(audit_err) = guard.append_audit(
                     Some(&user.id),
                     Some(&user.username),
                     "login",
@@ -108,7 +139,9 @@ pub async fn login(
                     Some("totp code required"),
                     ip.as_deref(),
                     "failure",
-                );
+                ) {
+                    tracing::warn!("admin login: failed to write audit log: {audit_err}");
+                }
                 drop(guard);
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -122,7 +155,7 @@ pub async fn login(
         };
 
         if guard.totp_attempts_exhausted(&user.id) {
-            let _ = guard.append_audit(
+            if let Err(audit_err) = guard.append_audit(
                 Some(&user.id),
                 Some(&user.username),
                 "login",
@@ -131,7 +164,9 @@ pub async fn login(
                 Some("too many totp attempts"),
                 ip.as_deref(),
                 "failure",
-            );
+            ) {
+                tracing::warn!("admin login: failed to write audit log: {audit_err}");
+            }
             drop(guard);
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -151,7 +186,7 @@ pub async fn login(
         guard.record_totp_attempt(&user.id, ok);
 
         if !ok {
-            let _ = guard.append_audit(
+            if let Err(audit_err) = guard.append_audit(
                 Some(&user.id),
                 Some(&user.username),
                 "login",
@@ -160,7 +195,9 @@ pub async fn login(
                 Some("invalid totp code"),
                 ip.as_deref(),
                 "failure",
-            );
+            ) {
+                tracing::warn!("admin login: failed to write audit log: {audit_err}");
+            }
             drop(guard);
             return (
                 StatusCode::UNAUTHORIZED,
@@ -185,7 +222,7 @@ pub async fn login(
         }
     };
 
-    let _ = guard.append_audit(
+    if let Err(audit_err) = guard.append_audit(
         Some(&user.id),
         Some(&user.username),
         "login",
@@ -194,7 +231,11 @@ pub async fn login(
         None,
         ip.as_deref(),
         "success",
-    );
+    ) {
+        // Sessao criada: a recusa aqui nao desfaz nada, mas a falha de
+        // trilha nao pode ser silenciosa (#1121).
+        tracing::warn!("admin login: failed to write audit log: {audit_err}");
+    }
     drop(guard);
 
     let cookie = build_session_cookie(&session.token, 86400);

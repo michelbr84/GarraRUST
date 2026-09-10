@@ -225,23 +225,16 @@ impl AdminStore {
     /// nasceu sem essas colunas. Os identificadores abaixo sao literais:
     /// nenhum deles vem de fora do codigo.
     ///
-    /// Ler o schema e depois escrever nao e atomico, e por isso o
-    /// `duplicate column name` e tratado como sucesso em vez de erro: dois
-    /// processos subindo juntos leem o `PRAGMA` antes de qualquer `ALTER` e o
-    /// segundo perde a corrida. Devolver `Err` ali nao e um boot que falha e
-    /// alguem repara — e `AdminStore::open` caindo para `in_memory()`, que
-    /// deixa o `/admin/api/setup` reivindicavel por anonimo.
+    /// Ler o schema e depois escrever nao e atomico, e por isso o perdedor da
+    /// corrida (dois processos subindo juntos leem o `PRAGMA` antes de
+    /// qualquer `ALTER`) nao pode receber `Err`: `AdminStore::open` cairia
+    /// para `in_memory()`, que deixa o `/admin/api/setup` reivindicavel por
+    /// anonimo. A prova de que a corrida foi vencida por alguem e reler o
+    /// schema apos o erro — a mensagem `duplicate column name` do SQLite nao
+    /// e contrato estavel entre versoes. Erro de leitura do schema, esse sim,
+    /// e propagado: migrar com metade das linhas lidas seria pior que nao
+    /// migrar.
     fn ensure_totp_columns(&self) -> Result<(), String> {
-        let mut stmt = self
-            .conn
-            .prepare("PRAGMA table_info(admin_users)")
-            .map_err(|e| format!("failed to read admin_users schema: {e}"))?;
-        let columns: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| format!("failed to read admin_users schema: {e}"))?
-            .filter_map(|r| r.ok())
-            .collect();
-
         for (column, ddl) in [
             (
                 "totp_secret",
@@ -252,17 +245,37 @@ impl AdminStore {
                 "ALTER TABLE admin_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
             ),
         ] {
-            if columns.iter().any(|c| c == column) {
+            if self.has_admin_user_column(column)? {
                 continue;
             }
             if let Err(e) = self.conn.execute(ddl, []) {
-                if is_duplicate_column(&e) {
+                if self.has_admin_user_column(column)? {
                     continue;
                 }
                 return Err(format!("failed to add admin_users.{column}: {e}"));
             }
         }
         Ok(())
+    }
+
+    /// `true` quando a coluna ja existe em `admin_users`. Erro de leitura do
+    /// schema e erro mesmo — sem `filter_map(|r| r.ok())` engolindo metade
+    /// das linhas e migrando no achismo.
+    fn has_admin_user_column(&self, column: &str) -> Result<bool, String> {
+        let mut stmt = self
+            .conn
+            .prepare("PRAGMA table_info(admin_users)")
+            .map_err(|e| format!("failed to read admin_users schema: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("failed to read admin_users schema: {e}"))?;
+        for row in rows {
+            let name = row.map_err(|e| format!("failed to read admin_users schema: {e}"))?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     // ── User management ──────────────────────────────────────────────
@@ -465,8 +478,15 @@ impl AdminStore {
     /// `enable_totp`, depois de um codigo validar. Quem chama setup e nao
     /// confirma fica com um segredo inerte, nao com 2FA pela metade.
     pub fn set_pending_totp_secret(&self, user_id: &str, secret: &str) -> Result<(), String> {
-        let affected = self
-            .conn
+        Self::set_pending_totp_secret_on(&self.conn, user_id, secret)
+    }
+
+    fn set_pending_totp_secret_on(
+        conn: &rusqlite::Connection,
+        user_id: &str,
+        secret: &str,
+    ) -> Result<(), String> {
+        let affected = conn
             .execute(
                 "UPDATE admin_users SET totp_secret = ?1, updated_at = datetime('now')
                  WHERE id = ?2",
@@ -479,10 +499,44 @@ impl AdminStore {
         Ok(())
     }
 
+    /// Guarda o segredo pendente **e grava o evento de auditoria na mesma
+    /// transacao**: sem o evento registrado, a mudanca nao acontece — o
+    /// `commit` so roda com os dois, e quem chamou recebe `Err`. Nenhuma
+    /// operacao de 2FA confirma sem a trilha dela (#1121).
+    pub fn set_pending_totp_secret_audited(
+        &self,
+        user_id: &str,
+        secret: &str,
+        username: &str,
+        ip: Option<&str>,
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        Self::set_pending_totp_secret_on(&tx, user_id, secret)?;
+        Self::append_audit_on(
+            &tx,
+            Some(user_id),
+            Some(username),
+            "2fa.setup",
+            "auth",
+            None,
+            None,
+            ip,
+            "success",
+        )?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit 2fa setup: {e}"))
+    }
+
     /// Confirma o enrollment. So deve ser chamado com um codigo ja validado.
     pub fn enable_totp(&self, user_id: &str) -> Result<(), String> {
-        let affected = self
-            .conn
+        Self::enable_totp_on(&self.conn, user_id)
+    }
+
+    fn enable_totp_on(conn: &rusqlite::Connection, user_id: &str) -> Result<(), String> {
+        let affected = conn
             .execute(
                 "UPDATE admin_users SET totp_enabled = 1, updated_at = datetime('now')
                  WHERE id = ?1",
@@ -495,11 +549,42 @@ impl AdminStore {
         Ok(())
     }
 
+    /// Liga o segundo fator + grava o evento na mesma transacao — mesma
+    /// regra de `set_pending_totp_secret_audited` (#1121).
+    pub fn enable_totp_audited(
+        &self,
+        user_id: &str,
+        username: &str,
+        ip: Option<&str>,
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        Self::enable_totp_on(&tx, user_id)?;
+        Self::append_audit_on(
+            &tx,
+            Some(user_id),
+            Some(username),
+            "2fa.verify",
+            "auth",
+            None,
+            None,
+            ip,
+            "success",
+        )?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit 2fa enable: {e}"))
+    }
+
     /// Desliga o segundo fator e apaga o segredo junto — um segredo guardado
     /// depois de desligado seria uma reativacao sem novo enrollment.
     pub fn disable_totp(&self, user_id: &str) -> Result<(), String> {
-        let affected = self
-            .conn
+        Self::disable_totp_on(&self.conn, user_id)
+    }
+
+    fn disable_totp_on(conn: &rusqlite::Connection, user_id: &str) -> Result<(), String> {
+        let affected = conn
             .execute(
                 "UPDATE admin_users SET totp_secret = NULL, totp_enabled = 0,
                  updated_at = datetime('now')
@@ -513,15 +598,52 @@ impl AdminStore {
         Ok(())
     }
 
-    pub fn is_totp_enabled(&self, user_id: &str) -> bool {
+    /// Desliga o segundo fator + grava o evento na mesma transacao — mesma
+    /// regra de `set_pending_totp_secret_audited`. Desligar o 2FA e
+    /// exatamente o que um invasor com a senha tentaria; sem trilha
+    /// gravada, a operacao nao confirma (#1121).
+    pub fn disable_totp_audited(
+        &self,
+        user_id: &str,
+        username: &str,
+        ip: Option<&str>,
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        Self::disable_totp_on(&tx, user_id)?;
+        Self::append_audit_on(
+            &tx,
+            Some(user_id),
+            Some(username),
+            "2fa.disable",
+            "auth",
+            None,
+            None,
+            ip,
+            "success",
+        )?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit 2fa disable: {e}"))
+    }
+
+    /// Estado do segundo fator — **ou o erro que impediu de sabe-lo**.
+    ///
+    /// A assinatura e `Result` de proposito (#1121): quem decide
+    /// autenticacao nao pode tratar "nao consegui ler" como "2FA
+    /// desligado" — esse era exatamente o fail-open que o PR veio fechar.
+    /// Todo chamador ou usa o valor, ou recusa fechado (login responde
+    /// 500 sem criar sessao).
+    pub fn is_totp_enabled(&self, user_id: &str) -> Result<bool, String> {
         self.conn
             .query_row(
                 "SELECT totp_enabled FROM admin_users WHERE id = ?1",
                 params![user_id],
                 |row| row.get::<_, i64>(0),
             )
-            .ok()
-            .is_some_and(|v| v != 0)
+            .map(|v| v != 0)
+            .map_err(|e| format!("failed to read totp_enabled for user: {e}"))
     }
 
     /// `true` quando o usuario ja errou `TOTP_MAX_ATTEMPTS` codigos dentro da
@@ -627,6 +749,26 @@ impl AdminStore {
 
     // ── Audit log ────────────────────────────────────────────────────
 
+    fn append_audit_on(
+        conn: &rusqlite::Connection,
+        user_id: Option<&str>,
+        username: Option<&str>,
+        action: &str,
+        resource_type: &str,
+        resource_id: Option<&str>,
+        details: Option<&str>,
+        ip_address: Option<&str>,
+        outcome: &str,
+    ) -> Result<(), String> {
+        conn.execute(
+            "INSERT INTO audit_log (user_id, username, action, resource_type, resource_id, details, ip_address, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![user_id, username, action, resource_type, resource_id, details, ip_address, outcome],
+        )
+        .map_err(|e| format!("failed to append audit log: {e}"))?;
+        Ok(())
+    }
+
     pub fn append_audit(
         &self,
         user_id: Option<&str>,
@@ -638,14 +780,17 @@ impl AdminStore {
         ip_address: Option<&str>,
         outcome: &str,
     ) -> Result<i64, String> {
-        self.conn
-            .execute(
-                "INSERT INTO audit_log (user_id, username, action, resource_type, resource_id, details, ip_address, outcome)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![user_id, username, action, resource_type, resource_id, details, ip_address, outcome],
-            )
-            .map_err(|e| format!("failed to append audit log: {e}"))?;
-
+        Self::append_audit_on(
+            &self.conn,
+            user_id,
+            username,
+            action,
+            resource_type,
+            resource_id,
+            details,
+            ip_address,
+            outcome,
+        )?;
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -1094,16 +1239,6 @@ impl AdminStore {
     }
 }
 
-/// A coluna que tentamos criar ja existe.
-///
-/// So para o `ALTER TABLE` de `ensure_totp_columns`: dois processos abrindo o
-/// mesmo `admin.db` leem o `PRAGMA table_info` antes de qualquer um escrever,
-/// e o que chega por ultimo leva `duplicate column name`. A coluna estar la e
-/// exatamente o que queriamos, entao isso e sucesso.
-fn is_duplicate_column(e: &rusqlite::Error) -> bool {
-    matches!(e, rusqlite::Error::SqliteFailure(_, Some(msg)) if msg.contains("duplicate column name"))
-}
-
 #[derive(Debug, Clone)]
 pub struct SecretMeta {
     pub id: String,
@@ -1312,7 +1447,7 @@ mod tests {
             Some("JBSWY3DPEHPK3PXP")
         );
         assert!(
-            !store.is_totp_enabled(&id),
+            !store.is_totp_enabled(&id).expect("estado 2fa legivel"),
             "guardar o segredo nao pode exigir o codigo; so `enable_totp` liga"
         );
     }
@@ -1326,15 +1461,46 @@ mod tests {
             .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
             .unwrap();
         store.enable_totp(&id).unwrap();
-        assert!(store.is_totp_enabled(&id));
+        assert!(store.is_totp_enabled(&id).expect("estado 2fa legivel"));
 
         store.disable_totp(&id).unwrap();
 
-        assert!(!store.is_totp_enabled(&id));
+        assert!(!store.is_totp_enabled(&id).expect("estado 2fa legivel"));
         assert_eq!(
             store.get_totp_secret(&id),
             None,
             "segredo sobrevivente seria uma reativacao sem novo enrollment"
+        );
+    }
+
+    /// #1121 (regressao dos vereditos de seguranca): a mudanca de estado e o
+    /// evento de auditoria confirmam na mesma transacao. Se a trilha nao pode
+    /// ser gravada (tabela apagada, disco cheio, arquivo corrompido), a
+    /// operacao inteira falha — desligar o segundo fator sem deixar rastro e
+    /// exatamente o que um invasor com a sessao tentaria.
+    #[test]
+    fn desligar_sem_trilha_de_auditoria_nao_confirma() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .unwrap();
+        store.enable_totp(&id).unwrap();
+
+        store
+            .conn
+            .execute("DROP TABLE audit_log", [])
+            .expect("derrubar audit_log");
+
+        assert!(
+            store
+                .disable_totp_audited(&id, "cofre", Some("127.0.0.1"))
+                .is_err(),
+            "sem trilha gravada a operacao nao pode confirmar"
+        );
+        assert!(
+            store.is_totp_enabled(&id).expect("estado 2fa legivel"),
+            "a recusa nao pode deixar o 2FA desligado por baixo da transacao"
         );
     }
 
@@ -1343,7 +1509,11 @@ mod tests {
         let store = test_store();
         let id = usuario_totp(&store);
 
-        assert!(!store.is_totp_enabled(&id));
+        assert!(
+            !store
+                .is_totp_enabled(&id)
+                .expect("usuario novo tem estado legivel")
+        );
         assert_eq!(store.get_totp_secret(&id), None);
     }
 
@@ -1420,7 +1590,7 @@ mod tests {
         let store = AdminStore::open(&path).expect("abrir banco antigo nao pode falhar");
 
         assert!(
-            !store.is_totp_enabled("u1"),
+            !store.is_totp_enabled("u1").expect("estado 2fa legivel"),
             "usuario antigo nasce com 2FA desligado"
         );
         store

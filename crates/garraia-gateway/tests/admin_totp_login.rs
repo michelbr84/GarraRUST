@@ -300,3 +300,70 @@ async fn enrollment_por_http_precisa_de_um_codigo_valido() {
         "girar o segredo por baixo do dono o deixaria fora do painel"
     );
 }
+
+/// Mesma montagem do `cenario()`, mas sobre um banco **em arquivo**: so assim
+/// o teste pode mutilar o schema por uma segunda conexao, fora da store, e
+/// provar o que o login faz quando o estado de 2FA nao pode ser lido.
+fn cenario_arquivo(
+    dir: &tempfile::TempDir,
+) -> (Router, Arc<Mutex<AdminStore>>, std::path::PathBuf) {
+    let path = dir.path().join("admin.db");
+    let store = AdminStore::open(&path).expect("store em arquivo");
+    store
+        .create_user(USUARIO, SENHA, Role::Admin)
+        .expect("usuario de teste");
+
+    let config = AppConfig::default();
+    let state = Arc::new(AppState::new(
+        config,
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    ));
+    let admin_store = Arc::new(Mutex::new(store));
+    let router = build_router(
+        state,
+        PushChannelStates::empty(),
+        Arc::clone(&admin_store),
+        Arc::new(vec![0u8; 32]),
+    );
+    (router, admin_store, path)
+}
+
+/// #1121 (regressao dos vereditos de seguranca): estado de 2FA ilegivel
+/// recusa o login, sem sessao. O caminho contrario — engolir o erro de
+/// leitura como "2FA desligado" e abrir sessao so com a senha — e exatamente
+/// o fail-open que este PR veio fechar. `verify_password` faz SELECT
+/// explicito de apenas `id, password_hash, password_salt, role`, entao
+/// derrubar somente a coluna `totp_enabled` isola o gate: antes da correcao
+/// este login virava 200 com cookie de sessao.
+#[tokio::test]
+async fn estado_de_2fa_ilegivel_recusa_o_login_sem_abrir_sessao() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, store, path) = cenario_arquivo(&dir);
+    let secret = ligar_2fa(&store).await;
+
+    // Mutila o schema de fora da store: a coluna que o gate le deixa de
+    // existir enquanto senha, sessao e audit_log continuam de pe.
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    conn.execute("ALTER TABLE admin_users DROP COLUMN totp_enabled", [])
+        .expect("derrubar a coluna do gate");
+
+    // Senha certa **e** codigo certo: com o estado ilegivel nenhum dos dois
+    // pode decidir nada — autenticacao nao se faz no escuro.
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+    let (status, json, sessao) = login(
+        &router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": code}),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "estado ilegivel tem que virar recusa 500, nao sessao: {json}"
+    );
+    assert!(
+        sessao.is_none(),
+        "sessao criada com o gate ilegivel e o fail-open de volta"
+    );
+}

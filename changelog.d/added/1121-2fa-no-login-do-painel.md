@@ -27,8 +27,21 @@
   e a URI `otpauth://` como texto copiavel. Nenhum QR e gerado por biblioteca
   ou servico de imagem — isso mandaria o segredo para um terceiro (#1121).
 - As colunas de 2FA entram por `ALTER TABLE` condicional, e o boot passa a
-  esperar 5s por lock do SQLite (`busy_timeout`) e a tratar `duplicate column
-  name` como sucesso. Sem isso, dois processos abrindo o `admin.db` juntos
-  fariam o `open` falhar — e o gateway cai para store em memoria, o que deixa
-  o `/admin/api/setup` reivindicavel por anonimo. O resgate manual de quem
+  esperar 5s por lock do SQLite (`busy_timeout`). A corrida de dois processos
+  abrindo o `admin.db` juntos e resolvida re-lendo o schema apos cada `ALTER`
+  falhar: coluna presente quer dizer que o outro processo ganhou a corrida e a
+  migration e sucesso — nenhum erro e engolido as cegas. Sem isso o `open`
+  falharia e o gateway cairia para store em memoria, o que deixa o
+  `/admin/api/setup` reivindicavel por anonimo. O resgate manual de quem
   perdeu o autenticador ficou documentado em `docs/security.md` (#1121).
+- Correcoes dos vereditos de seguranca: leitura do estado de 2FA e fail-closed
+  — `is_totp_enabled` devolve erro e o login recusa com `500` **sem abrir
+  sessao** quando o estado nao pode ser lido, em vez de tratar ilegivel como
+  "desligado" e aceitar so a senha; ligar, desligar e guardar o segredo
+  pendente so confirmam com o evento de auditoria gravado **na mesma
+  transacao** (sem trilha, a operacao inteira falha), enquanto as recusas
+  seguem best-effort mas com a falha de trilha registrada em log; e o relogio
+  ilegivel tambem recusa o codigo TOTP. Duas regressoes travam isso: login com
+  a coluna `totp_enabled` derrubada nao abre sessao, e desligar o 2FA sem
+  `audit_log` nao confirma. Residuais rastreados: contador de tentativas em
+  memoria (#1140) e segredo em claro no `admin.db` (#1141) (#1121).

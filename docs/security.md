@@ -76,6 +76,18 @@ Two things worth knowing before you turn it on:
   valid code first — replacing the secret underneath you would leave your
   authenticator app pointing at the old one.
 
+Known limits of this first version, both tracked:
+
+- The wrong-code lockout (5 codes in 15 minutes) lives **in memory**: it is
+  per-process and a gateway restart clears it. A durable counter in
+  `admin.db` — which would also give the console a global login rate limit —
+  is tracked in #1140.
+- The TOTP secret is stored **in cleartext** (base32, unencrypted) in
+  `admin.db`, unlike the mobile flow, which encrypts it (`totp_secret_enc`).
+  The mitigation is the one every other secret in `admin.db` already relies
+  on: protect the database file. Encrypting it with the admin master key is
+  tracked in #1141.
+
 ### Input Validation
 
 #### Prompt Injection Detection
