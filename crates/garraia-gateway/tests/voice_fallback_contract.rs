@@ -65,9 +65,11 @@ fn request_base(uri: &str) -> Request<Body> {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(r#"{"text": "ola garra", "language": "pt"}"#))
         .expect("request valida");
-    req.extensions_mut().insert(axum::extract::ConnectInfo(
-        std::net::SocketAddr::from(([127, 0, 0, 1], 40404])),
-    ));
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            40404,
+        ))));
     req
 }
 
