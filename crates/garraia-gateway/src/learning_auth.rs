@@ -15,11 +15,13 @@
 //! Aplicado **só** às rotas de learning (sub-router em `build_router`), para
 //! métodos `POST`/`DELETE`/`PATCH`/`PUT`, nesta ordem:
 //!
-//! 1. **Anti-CSRF de navegador.** `Origin` presente com authority diferente
-//!    do header `Host`, `Origin: null`, `Sec-Fetch-Site: cross-site` sem
-//!    `Origin`, ou qualquer valor malformado — todos viram `403` de corpo
-//!    fixo. `Origin` igual ao `Host` (o console web servido pelo próprio
-//!    gateway) passa.
+//! 1. **Anti-CSRF de navegador.** `Origin` de esquema diferente do do
+//!    transporte (`https` contra um gateway http, ou um esquema exótico),
+//!    `Origin` com authority diferente do header `Host`, `Origin: null`,
+//!    `Sec-Fetch-Site: cross-site` sem `Origin`, ou qualquer valor
+//!    malformado — todos viram `403` de corpo fixo. `Origin` do mesmo
+//!    esquema e mesma authority do `Host` (o console web servido pelo
+//!    próprio gateway, porta default normalizada) passa.
 //! 2. **Fail-closed sem credencial.** Com o gate de `gateway.api_key`
 //!    **desligado**, só peer loopback passa; peer de LAN/internet recebe
 //!    `503 learning: auth not configured` — o mesmo precedente do
@@ -40,8 +42,9 @@
 //!
 //! ## O que este guarda **não** é
 //!
-//! O passo 1 compara o authority do `Origin` com o header `Host`. `Host` é
-//! controlado por quem faz o pedido, então um cliente que já alcança a porta e
+//! O passo 1 compara o `Origin` contra o esquema do transporte e a authority
+//! do header `Host` (com porta default normalizada). `Host` é controlado por
+//! quem faz o pedido, então um cliente que já alcança a porta e
 //! não é um navegador (`curl -H "Origin: http://x" -H "Host: x"`) consegue
 //! fazer os dois casarem. Isso não é o cenário que este módulo fecha — o
 //! ataque é a página visitada pelo dono, onde o navegador fixa `Origin` e
@@ -75,13 +78,15 @@ const CORPO_SEM_PEER: &str = "learning: peer address unavailable";
 /// é a do próprio gateway.
 ///
 /// Um POST legítimo do console web (servido em `/learning`) traz `Origin`
-/// igual ao header `Host` — mesmo esquema, authority e porta. Um POST do app
-/// (Dio) ou do `curl` não traz `Origin` nenhum. O que **não** é legítimo:
-/// `Origin` de outro host, `Origin: null` (sandbox/redirect), ou
-/// `Sec-Fetch-Site: cross-site` sem `Origin`. Origem malformada ou `Host`
-/// ausente são tratados como cross-origin — fail-closed, e nunca se ecoa o
-/// valor rejeitado.
-fn cross_origin(headers: &HeaderMap) -> bool {
+/// com o mesmo esquema do transporte e a mesma authority do header `Host`
+/// — porta default (`:80` em http, `:443` em https) normalizada dos dois
+/// lados. Um POST do app (Dio) ou do `curl` não traz `Origin` nenhum. O que
+/// **não** é legítimo: `Origin` de outro esquema (`https` contra um gateway
+/// http, ou um esquema exótico), `Origin` de outra authority, `Origin: null`
+/// (sandbox/redirect), ou `Sec-Fetch-Site: cross-site` sem `Origin`. Origem
+/// malformada ou `Host` ausente são tratados como cross-origin — fail-closed,
+/// e nunca se ecoa o valor rejeitado.
+fn cross_origin(headers: &HeaderMap, scheme: &str) -> bool {
     match headers.get(header::ORIGIN) {
         Some(origem) => {
             let Ok(origem) = origem.to_str() else {
@@ -90,9 +95,14 @@ fn cross_origin(headers: &HeaderMap) -> bool {
             if origem.eq_ignore_ascii_case("null") {
                 return true;
             }
-            let Some((_, resto)) = origem.split_once("://") else {
+            let Some((esquema, resto)) = origem.split_once("://") else {
                 return true; // sem esquema, o valor não é uma origem válida
             };
+            // O esquema do Origin tem de ser o do transporte: `https` contra
+            // um gateway http não é a origem do console que passa aqui.
+            if !esquema.eq_ignore_ascii_case(scheme) {
+                return true;
+            }
             let authority = resto.split('/').next().unwrap_or("");
             if authority.is_empty() {
                 return true;
@@ -100,7 +110,7 @@ fn cross_origin(headers: &HeaderMap) -> bool {
             match headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
                 // Sem Host não há como confirmar mesma origem — fail-closed.
                 None => true,
-                Some(host) => !authority.eq_ignore_ascii_case(host),
+                Some(host) => !mesma_authority(authority, host, scheme),
             }
         }
         None => headers
@@ -110,11 +120,46 @@ fn cross_origin(headers: &HeaderMap) -> bool {
     }
 }
 
+/// Compara a authority do `Origin` com a do header `Host`, normalizando a
+/// porta default dos dois lados: `:80` em http e `:443` em https não mudam
+/// a origem. A porta é o sufixo após o **último** `:` e só conta como porta
+/// se for toda dígito — IPv6 serializa com colchetes (`[::1]:3888`) e os
+/// `:` internos não são porta.
+fn mesma_authority(origin: &str, host: &str, scheme: &str) -> bool {
+    let porta_default: &str = if scheme.eq_ignore_ascii_case("https") {
+        ":443"
+    } else {
+        ":80"
+    };
+    let normaliza = |authority: &str| {
+        if let Some((antes, porta)) = authority.rsplit_once(':')
+            && !porta.is_empty()
+            && porta.bytes().all(|b| b.is_ascii_digit())
+            && authority.ends_with(porta_default)
+        {
+            return antes.to_string();
+        }
+        authority.to_string()
+    };
+    normaliza(origin).eq_ignore_ascii_case(&normaliza(host))
+}
+
+/// Estado da guarda: o gate global (para saber se a porta é autenticada) e o
+/// esquema efetivo do transporte — `https` só quando o TLS nativo está
+/// configurado, o mesmo critério de `session_cookie_secure`/`use_tls`.
+/// Montado no `build_router`.
+#[derive(Clone)]
+pub struct LearningGuardState {
+    pub gate: ApiKeyGate,
+    /// Esquema efetivo do transporte (`"http"` | `"https"`).
+    pub scheme: &'static str,
+}
+
 /// O middleware. Montado como layer do sub-router das rotas de learning em
 /// `build_router` — por dentro do gate global de `/api/*` e por dentro do
 /// CORS, que responde o preflight `OPTIONS` antes de qualquer guarda.
 pub async fn learning_mutations_guard(
-    State(gate): State<ApiKeyGate>,
+    State(estado): State<LearningGuardState>,
     req: Request,
     next: Next,
 ) -> Response {
@@ -126,7 +171,7 @@ pub async fn learning_mutations_guard(
     }
 
     // 1. Anti-CSRF: um POST/DELETE só entra da origem do próprio gateway.
-    if cross_origin(req.headers()) {
+    if cross_origin(req.headers(), estado.scheme) {
         warn!(
             path = %req.uri().path(),
             method = %method,
@@ -139,7 +184,7 @@ pub async fn learning_mutations_guard(
     //    layers do router pai rodam antes deste, que é layer de rota. Não
     //    revalida: reimplementar a comparação seria uma segunda cópia para
     //    divergir.
-    if gate.is_enabled() {
+    if estado.gate.is_enabled() {
         return next.run(req).await;
     }
 
@@ -197,7 +242,7 @@ mod tests {
         "ok-leitura"
     }
 
-    fn router(gate: ApiKeyGate) -> Router {
+    fn router(estado: LearningGuardState) -> Router {
         Router::new()
             .route("/api/learning/skills", get(leitura))
             // PATCH e PUT entram aqui para o guarda ser coberto nos quatro
@@ -208,7 +253,7 @@ mod tests {
                 delete(mutante).patch(mutante).put(mutante),
             )
             .route("/api/learning/skills/x/rollback", post(mutante))
-            .layer(from_fn_with_state(gate, learning_mutations_guard))
+            .layer(from_fn_with_state(estado, learning_mutations_guard))
     }
 
     fn gate_com(chave: Option<&str>) -> ApiKeyGate {
@@ -216,6 +261,15 @@ mod tests {
             api_key: chave.map(str::to_string),
             ..Default::default()
         })
+    }
+
+    /// Estado padrão dos testes: gateway http sem TLS nativo (o default da
+    /// instalação) e a chave opcional.
+    fn estado_com(chave: Option<&str>) -> LearningGuardState {
+        LearningGuardState {
+            gate: gate_com(chave),
+            scheme: "http",
+        }
     }
 
     /// Request sintético com peer, headers e corpo opcionais.
@@ -267,7 +321,7 @@ mod tests {
 
     #[tokio::test]
     async fn mutante_loopback_sem_origin_passa() {
-        let router = router(gate_com(None));
+        let router = router(estado_com(None));
         for (metodo, uri) in MUTANTES {
             for peer in [LOOPBACK, LOOPBACK6] {
                 let req = request(metodo.clone(), uri, Some(peer), &[]);
@@ -288,7 +342,7 @@ mod tests {
             Some(LAN),
             &[],
         );
-        let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(corpo, "learning: auth not configured");
     }
@@ -306,7 +360,7 @@ mod tests {
                 (header::ORIGIN.as_str(), "http://evil.example"),
             ],
         );
-        let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(corpo, CORPO_CSRF);
     }
@@ -325,7 +379,7 @@ mod tests {
                     (header::ORIGIN.as_str(), "http://evil.example"),
                 ],
             );
-            let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+            let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{metodo} cross-origin");
             assert_eq!(corpo, CORPO_CSRF);
         }
@@ -335,7 +389,7 @@ mod tests {
     async fn nao_loopback_da_503_nos_quatro_metodos_mutantes() {
         for (metodo, uri) in MUTANTES {
             let req = request(metodo.clone(), uri, Some(LAN), &[]);
-            let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+            let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
             assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{metodo} de LAN");
             assert_eq!(corpo, CORPO_SEM_AUTH);
         }
@@ -354,7 +408,7 @@ mod tests {
                 (header::ORIGIN.as_str(), "null"),
             ],
         );
-        let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(corpo, CORPO_CSRF);
     }
@@ -372,7 +426,7 @@ mod tests {
                 ("sec-fetch-site", "cross-site"),
             ],
         );
-        let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(corpo, CORPO_CSRF);
     }
@@ -382,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn get_passa_com_peer_nao_loopback_e_sem_chave() {
         let req = request(Method::GET, "/api/learning/skills", Some(LAN), &[]);
-        let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::OK, "leitura não é deste guarda");
         assert_eq!(corpo, "ok-leitura");
     }
@@ -392,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn sem_connect_info_da_503() {
         let req = request(Method::POST, "/api/learning/skills/x/rollback", None, &[]);
-        let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(corpo, CORPO_SEM_PEER);
     }
@@ -404,7 +458,7 @@ mod tests {
         // O gate global de /api/* já exigiu o bearer por fora deste layer
         // (testado em `gateway_auth`); aqui basta confirmar que o guarda
         // não recusa o request autenticado — inclusive sem peer avaliado.
-        let router = router(gate_com(Some("k1")));
+        let router = router(estado_com(Some("k1")));
         for peer in [Some(LAN), None] {
             let req = request(
                 Method::POST,
@@ -431,7 +485,7 @@ mod tests {
                 (header::ORIGIN.as_str(), "http://127.0.0.1:3888"),
             ],
         );
-        let (status, _) = status_corpo(router(gate_com(None)), req).await;
+        let (status, _) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::OK, "console web local tem de passar");
     }
 
@@ -446,7 +500,7 @@ mod tests {
                 ("sec-fetch-site", "same-origin"),
             ],
         );
-        let (status, _) = status_corpo(router(gate_com(None)), req).await;
+        let (status, _) = status_corpo(router(estado_com(None)), req).await;
         assert_eq!(status, StatusCode::OK);
     }
 
@@ -467,7 +521,7 @@ mod tests {
                 Some(LOOPBACK),
                 &headers,
             );
-            let (status, _) = status_corpo(router(gate_com(None)), req).await;
+            let (status, _) = status_corpo(router(estado_com(None)), req).await;
             assert_eq!(
                 status,
                 StatusCode::FORBIDDEN,
@@ -488,7 +542,116 @@ mod tests {
                 (header::ORIGIN.as_str(), "HTTP://127.0.0.1:3888"),
             ],
         );
-        let (status, _) = status_corpo(router(gate_com(None)), req).await;
+        let (status, _) = status_corpo(router(estado_com(None)), req).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // ── 9. Esquema e porta: a comparação é da origem COMPLETA (revisão
+    //    do #1093: antes só a authority era comparada, e o doc do módulo
+    //    mentia dizendo que o esquema entrava) ────────────────────────────
+
+    #[tokio::test]
+    async fn origin_https_contra_gateway_http_da_403() {
+        // O cenário do achado da revisão: `https://127.0.0.1` contra
+        // `Host: 127.0.0.1` casava a authority e passava — origens
+        // diferentes, esquemas diferentes.
+        let req = request(
+            Method::POST,
+            "/api/learning/skills/x/rollback",
+            Some(LOOPBACK),
+            &[
+                (header::HOST.as_str(), "127.0.0.1"),
+                (header::ORIGIN.as_str(), "https://127.0.0.1"),
+            ],
+        );
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(corpo, CORPO_CSRF);
+    }
+
+    #[tokio::test]
+    async fn porta_default_80_normalizada_dos_dois_lados() {
+        // `:80` em http não muda a origem, venha no Origin ou no Host.
+        for (origin, host) in [
+            ("http://example.com", "example.com:80"),
+            ("http://example.com:80", "example.com"),
+            ("http://example.com:80", "example.com:80"),
+            ("http://example.com", "example.com"),
+        ] {
+            let req = request(
+                Method::POST,
+                "/api/learning/skills/x/rollback",
+                Some(LOOPBACK),
+                &[
+                    (header::HOST.as_str(), host),
+                    (header::ORIGIN.as_str(), origin),
+                ],
+            );
+            let (status, _) = status_corpo(router(estado_com(None)), req).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{origin} vs {host} é a mesma origem"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_authority_casa_e_diferente() {
+        // IPv6 serializa com colchetes; os `:` internos não são porta —
+        // o sufixo após o ÚLTIMO `:` é que conta, e só se for dígito.
+        for (origin, host, esperado) in [
+            ("http://[::1]:3888", "[::1]:3888", StatusCode::OK),
+            ("http://[::1]", "[::1]", StatusCode::OK),
+            ("http://[::1]:3888", "outro-host", StatusCode::FORBIDDEN),
+        ] {
+            let req = request(
+                Method::POST,
+                "/api/learning/skills/x/rollback",
+                Some(LOOPBACK),
+                &[
+                    (header::HOST.as_str(), host),
+                    (header::ORIGIN.as_str(), origin),
+                ],
+            );
+            let (status, _) = status_corpo(router(estado_com(None)), req).await;
+            assert_eq!(status, esperado, "{origin} vs {host}");
+        }
+    }
+
+    #[tokio::test]
+    async fn esquema_exotico_da_403() {
+        // `ftp://` não é a origem do console, mesmo com a mesma authority.
+        let req = request(
+            Method::POST,
+            "/api/learning/skills/x/rollback",
+            Some(LOOPBACK),
+            &[
+                (header::HOST.as_str(), "127.0.0.1"),
+                (header::ORIGIN.as_str(), "ftp://127.0.0.1"),
+            ],
+        );
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(corpo, CORPO_CSRF);
+    }
+
+    #[tokio::test]
+    async fn tls_configurado_aceita_origin_https() {
+        // O esquema não é hardcoded: com TLS nativo o console legítimo é
+        // https, e o Origin https da mesma authority tem de passar.
+        let mut estado = estado_com(None);
+        estado.scheme = "https";
+        let req = request(
+            Method::POST,
+            "/api/learning/skills/x/rollback",
+            Some(LOOPBACK),
+            &[
+                (header::HOST.as_str(), "127.0.0.1:3888"),
+                (header::ORIGIN.as_str(), "https://127.0.0.1:3888"),
+            ],
+        );
+        let (status, _) = status_corpo(router(estado), req).await;
         assert_eq!(status, StatusCode::OK);
     }
 }

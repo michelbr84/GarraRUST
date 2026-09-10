@@ -189,6 +189,17 @@ pub fn build_router(
     // escrevem skills no disco, e o gate global de `/api/*` e passa-direto
     // com `api_key` ausente (default). O layer de rota roda por dentro do
     // gate global, que ja exigiu o bearer quando a chave existe.
+    //
+    // O guarda compara o `Origin` contra o esquema do transporte, entao ele
+    // precisa saber se este gateway serve TLS nativo. Mesmo criterio do
+    // `use_tls` no server.rs e do `session_cookie_secure` no session_auth:
+    // cert E chave configurados → https; qualquer combinacao falta → http.
+    let use_tls =
+        state.config.gateway.tls_cert_path.is_some() && state.config.gateway.tls_key_path.is_some();
+    let learning_guard_state = crate::learning_auth::LearningGuardState {
+        gate: api_key_gate.clone(),
+        scheme: if use_tls { "https" } else { "http" },
+    };
     let learning_routes = Router::new()
         .route("/learning", get(crate::learning_handler::learning_ui))
         .route(
@@ -229,7 +240,7 @@ pub fn build_router(
             get(crate::learning_handler::get_log_scores),
         )
         .layer(axum::middleware::from_fn_with_state(
-            api_key_gate.clone(),
+            learning_guard_state,
             crate::learning_auth::learning_mutations_guard,
         ));
 
