@@ -54,6 +54,11 @@ pub fn build_admin_router(
         // Phase 7.1: additional audit endpoint alias (canonical path)
         .route("/api/audit", get(handlers::get_audit_log))
         .route("/api/permissions", get(handlers::get_permissions_matrix))
+        // ── 2FA do painel (#1121) ──
+        .route("/api/2fa/status", get(handlers::totp_status))
+        .route("/api/2fa/setup", post(handlers::totp_setup))
+        .route("/api/2fa/verify", post(handlers::totp_verify))
+        .route("/api/2fa/disable", post(handlers::totp_disable))
         // ── Phase 2: Secrets ──
         .route(
             "/api/secrets",
