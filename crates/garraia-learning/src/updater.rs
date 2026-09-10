@@ -69,7 +69,7 @@ impl ShellRunner for ProcessShellRunner {
     }
 }
 
-/// Last-resort assertion on the argument vector handed to `git`/`gh`.
+/// Rejects a NUL byte in the argument vector handed to `git`/`gh`.
 ///
 /// This is **not** where argument safety is established — there is no shell to
 /// escape, so the thing that matters is that a caller never lets an
@@ -79,7 +79,7 @@ impl ShellRunner for ProcessShellRunner {
 /// built from a fixed prefix. What this adds is a single place where a NUL byte
 /// — the one value `Command` cannot pass through, and which would otherwise
 /// surface as an opaque spawn failure — is named for what it is.
-fn validate_process_args(bin: &str, args: &[&str]) -> Result<()> {
+fn reject_nul_argument(bin: &str, args: &[&str]) -> Result<()> {
     if let Some(pos) = args.iter().position(|a| a.contains('\0')) {
         return Err(Error::Other(format!(
             "refusing to spawn {bin}: argument {pos} contains a NUL byte"
@@ -89,7 +89,7 @@ fn validate_process_args(bin: &str, args: &[&str]) -> Result<()> {
 }
 
 fn run_process(bin: &str, args: &[&str], cwd: &Path) -> Result<String> {
-    validate_process_args(bin, args)?;
+    reject_nul_argument(bin, args)?;
     let output = std::process::Command::new(bin)
         .args(args)
         .current_dir(cwd)
@@ -405,6 +405,13 @@ pub fn propose_update_with_runner(
     };
 
     // ── Create branch ──────────────────────────────────────────────────────
+    // `--` is deliberately absent: measured on git 2.43.0,
+    // `git checkout -b <br> -- <base>` fails with "fatal: '<base>' is not a
+    // commit and a branch '<br>' cannot be created from it" — after `--`, git
+    // does not parse the start point as a ref. Safe without it: `base` comes
+    // from `git rev-parse --abbrev-ref HEAD` above (or the literal "main"),
+    // and `branch` is built by [`branch_name`] from the fixed
+    // `learning/skill-` prefix, so neither can be an option-shaped value.
     runner.run_git(&["checkout", "-b", &branch, &base], &git_root)?;
 
     // ── Write updated skill file ───────────────────────────────────────────
@@ -441,6 +448,11 @@ pub fn propose_update_with_runner(
     )?;
 
     // Return to original branch (best-effort — not fatal on failure).
+    // `--` is deliberately absent here too: measured on git 2.43.0,
+    // `git checkout -- <ref>` fails ("pathspec '<ref>' did not match"), since
+    // everything after `--` is a pathspec and a ref is not one. Safe without
+    // it: `base` is the same rev-parse output (or the literal "main") used
+    // above, not request-controlled data.
     let _ = runner.run_git(&["checkout", &base], &git_root);
 
     Ok(PullRequestProposal {
@@ -913,10 +925,10 @@ mod tests {
     fn test_run_process_refuses_nul_byte_argument() {
         // `Command` cannot pass a NUL through; naming it beats an opaque spawn
         // failure. This is the choke point, not the barrier — see the doc.
-        let err = validate_process_args("git", &["log", "bad\0arg"])
+        let err = reject_nul_argument("git", &["log", "bad\0arg"])
             .unwrap_err()
             .to_string();
         assert!(err.contains("NUL"), "unexpected message: {err}");
-        assert!(validate_process_args("git", &["log", "--oneline"]).is_ok());
+        assert!(reject_nul_argument("git", &["log", "--oneline"]).is_ok());
     }
 }

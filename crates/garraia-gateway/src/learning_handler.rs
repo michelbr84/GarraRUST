@@ -48,8 +48,13 @@ fn bad_name(name: &str, err: NameError) -> (StatusCode, Json<serde_json::Value>)
 /// gateway that has no `gateway.api_key` configured. The value lands in
 /// `git revert` as an argument; `garraia_learning` validates it too, and this
 /// is the boundary copy that turns the refusal into a 400 instead of a 500.
-fn bad_sha(err: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
-    warn!("rejected learning rollback sha");
+fn bad_sha(
+    sha_len: usize,
+    err: impl std::fmt::Display + std::fmt::Debug,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // The sha value itself never goes to the log — it is request input; the
+    // error message does not echo it either (pinned by a test in versioning).
+    warn!(reason = ?err, sha_len = sha_len, "rejected learning rollback sha");
     (
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({ "error": err.to_string() })),
@@ -282,7 +287,7 @@ pub async fn rollback_skill(
         return bad_name(&name, e).into_response();
     }
     if let Err(e) = versioning::validate_git_sha(&req.sha) {
-        return bad_sha(e).into_response();
+        return bad_sha(req.sha.len(), e).into_response();
     }
     let opts = default_registry_opts();
     let repo_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
