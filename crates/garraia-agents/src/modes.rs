@@ -765,7 +765,11 @@ impl ModeProfile {
                 ],
                 denied: vec![],
                 required: vec![],
-                whitelist_mode: false,
+                // #1110: a allowlist acima so vale com `whitelist_mode: true`.
+                // Como estava (`false`), `ToolGate::permite` liberava qualquer
+                // ferramenta e a lista nunca era lida — contrariando o proprio
+                // prompt do modo, que anuncia exatamente essas seis.
+                whitelist_mode: true,
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.5,
@@ -1195,6 +1199,25 @@ mod tests {
         let g = ToolGate::for_mode_name("ask");
         assert!(!g.permite("file_write"), "ask deveria negar file_write");
         assert!(g.permite("file_read"));
+    }
+
+    /// #1110: a allowlist do `orchestrator` vale — fora dela, nada passa.
+    #[test]
+    fn orchestrator_allowlist_is_actually_enforced() {
+        let g = ToolGate::for_mode_name("orchestrator");
+        for t in [
+            "bash",
+            "file_read",
+            "file_write",
+            "repo_search",
+            "web_search",
+            "web_fetch",
+        ] {
+            assert!(g.permite(t), "{t} esta na allowlist declarada");
+        }
+        for t in ["git_diff", "code_review", "run_tests"] {
+            assert!(!g.permite(t), "{t} nao esta na allowlist do orchestrator");
+        }
     }
 
     /// Modo somente-leitura barra escrita e bash.
