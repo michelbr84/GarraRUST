@@ -1,51 +1,94 @@
 ---
 name: assemble-team
-description: Monta e coordena uma equipe de agentes especializados para tarefas complexas. Dois modos - novo projeto (scaffold) ou projeto existente (análise + execução).
+description: Monta e coordena a equipe de agentes do GarraRUST para uma tarefa complexa. Seleciona o time por risco (R0-R5) em vez de convocar todos, e roda o pipeline análise → implementação → teste → revisão → segurança → documentação.
 ---
 
 # Assemble Team
 
-Monte uma equipe coordenada de agentes para executar uma tarefa complexa no GarraRUST.
+Monte uma equipe coordenada de agentes para uma tarefa no GarraRUST.
 
-## Modos de operação
+**Primeiro classifique o risco. O risco escolhe o time.** Convocar os 7 agentes sempre é o modo mais caro e não é o melhor.
 
-### Modo 1: Novo módulo / feature grande
-Equipe padrão: Architect → Implementer(s) → Tester → Reviewer → DocWriter
+## Roster
 
-1. **Architect** analisa a tarefa e produz design doc (crates afetados, interfaces, tipos)
-2. **Implementer(s)** executam em paralelo por crate (worktree isolation)
-3. **Tester** escreve e roda testes após implementação
-4. **Reviewer** revisa todo o diff (usa agent code-reviewer)
-5. **DocWriter** atualiza documentação se API pública mudou
+| Papel | Agent | Modelo | Função |
+|-------|-------|--------|--------|
+| Coordinator | `team-coordinator` | tencent/hy4-preview | planeja, delega, arbitra, decide |
+| Analyst | `repo-analyst` | deepseek/deepseek-v4-flash-0731 | diagnóstico e plano |
+| Implementer | `implementer` | z-ai/glm-5.3-flash | escreve o código |
+| Tester | `test-engineer` | deepseek/deepseek-v4-flash-0731 | prova que funciona |
+| Reviewer | `code-reviewer` | openai/gpt-5.6-luna | julgamento independente |
+| Security | `security-auditor` | openai/gpt-5.6-luna | superfície sensível |
+| DocWriter | `doc-writer` | deepseek/deepseek-v4-flash-0731 | docs e higiene |
 
-### Modo 2: Projeto existente / análise + correção
-Equipe padrão: Analyst → Implementer(s) + Reviewer
+O Implementer e o Reviewer usam modelos diferentes de propósito: quem escreve não julga.
 
-1. **Analyst** examina o codebase, identifica issues, prioriza
-2. **Implementer(s)** corrigem em paralelo (worktree isolation)
-3. **Reviewer** valida todas as correções
+## Seleção por risco
+
+| Risco | Exemplos | Time |
+|-------|----------|------|
+| R0 | typo, link quebrado, changelog | DocWriter |
+| R1 | bug localizado, warning de clippy | Analyst + Implementer + Tester |
+| R2 | lógica interna, refactor, teste novo | + Reviewer |
+| R3 | API pública, schema, migration, dependência, CI | + revisão reforçada |
+| R4 | auth, JWT, crypto, RLS, secrets, SSRF, upload | + **Security obrigatório** |
+| R5 | release, secrets de CI, destrutivo, `install.sh`/`install.ps1` | **pare e escale ao humano** |
+
+## Pipeline
+
+```text
+Analyst  →  diagnóstico + plano + risco
+Implementer  →  worktree isolada + diff
+Tester  →  fmt/check/clippy/test + teste de regressão
+Reviewer  →  lê o diff real, não o relatório do Implementer
+Security  →  somente R4
+DocWriter  →  somente se API/setup/CHANGELOG mudou
+Coordinator  →  sintetiza e decide
+```
+
+Ordem de dependência: **schema → handlers → testes → docs**.
 
 ## Regras de execução
 
-- Máximo **7 teammates** por equipe
-- **Reviewer é obrigatório** em qualquer equipe que edite código
-- Agentes que editam arquivos devem usar **worktree isolation**
-- Dependências respeitadas: schema → handlers → testes → docs
-- Se um agente falhar, parar e reportar antes de continuar
+- Máximo **7 teammates**. Prefira 3-5
+- Todo agente que edita arquivos usa **worktree isolada** (`fix/<slug>`, `feat/<slug>`)
+- Implementers em paralelo só em worktrees diferentes e sem arquivo em comum
+- Qualquer `FAIL` de Tester, Reviewer ou Security bloqueia o avanço
+- Divergência Tester vs Reviewer: Reviewer prevalece em qualidade de código, Tester em comportamento observável — mas FAIL de um bloqueia
+- Se um agente falhar, pare e reporte antes de continuar
 
-## Comunicação entre agentes
+## Contrato de status
 
-- Task list compartilhada via TodoWrite
-- SendMessage para comunicação direta entre agentes
-- Arquivos compartilhados em `.claude/team-output/` (temporário)
+Todo agente devolve:
+
+```yaml
+status: PASS | FAIL | BLOCKED | NEEDS_CHANGES | NEEDS_HUMAN
+summary: uma frase
+findings: []
+risk: R0..R5
+recommendation: MERGE_READY | NEEDS_CHANGES | NEEDS_HUMAN
+```
+
+## Gate MERGE_READY
+
+Exige todos: issue compreendida · causa raiz encontrada · mudança mínima · teste de regressão · `cargo fmt` · `cargo check` · `cargo clippy` · `cargo test` · Reviewer aprovado · Security aprovado se R4 · docs atualizadas se necessário · CI verde · nenhuma discussão pendente · nenhuma alteração não relacionada · nenhum TODO/debug/código morto.
+
+**CI verde sozinho não é PR pronta.**
+
+## Nunca
+
+- force push em `main`; merge em `main` sem autorização explícita (o padrão é abrir PR e parar)
+- deletar branch não confirmada como merged; fechar issue sem evidência
+- editar `CHANGELOG.md` direto; remover `continue-on-error` de CI para ficar verde
+- renomear assets de release; editar `install.sh` sem `install.ps1`
 
 ## Output esperado
 
-Relatório final com:
-1. Composição da equipe (quem fez o quê)
+1. Risco e composição do time (quem, com qual modelo, fez o quê)
 2. Arquivos criados/modificados
 3. Testes adicionados e status
-4. Veredicto do Reviewer
-5. Recomendações pendentes
+4. Veredito do Reviewer e do Security (se R4)
+5. Veredito final: MERGE_READY | NEEDS_CHANGES | NEEDS_HUMAN
+6. Pendências
 
-Usage: /assemble-team <descrição da tarefa> [--mode new|existing]
+Usage: /assemble-team <descrição da tarefa>
