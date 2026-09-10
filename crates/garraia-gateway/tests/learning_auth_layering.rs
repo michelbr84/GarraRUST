@@ -6,8 +6,11 @@
 //! que o gate global de `gateway.api_key` roda **antes** da guarda (layer do
 //! router pai por fora, layer de rota por dentro), que o anti-CSRF vale para
 //! pedido **autenticado** (o bearer não dispensa a origem certa — sem isso,
-//! um POST cross-site do navegador de um dono autenticado passa), e que um
-//! pedido legítimo atravessa as duas camadas e chega ao handler.
+//! um POST cross-site do navegador de um dono autenticado passa), que um
+//! pedido legítimo atravessa as duas camadas e chega ao handler, e que o
+//! DNS rebinding contra a instalação default (sem api_key) morre na âncora
+//! do `Host` de loopback — com o console local de verdade continuando
+//! passando.
 
 use std::sync::Arc;
 
@@ -27,14 +30,16 @@ const CHAVE: &str = "chave-de-teste-do-gateway";
 /// Pares com `CHAVE`: o valor do header que o gate global aceita.
 const BEARER: &str = "Bearer chave-de-teste-do-gateway";
 
-/// POST mutante em learning com os headers que cada teste quiser.
+/// POST mutante em learning com os headers que cada teste quiser, no gate
+/// global configurado conforme `chave` (`None` = default de instalação,
+/// passa-direto).
 ///
 /// O `ConnectInfo` é inserido porque o rate limiter (fora do gate, de
 /// propósito) lê o IP do par: sem ele o pedido morre em 500 no governor
 /// antes de qualquer camada de auth — o mesmo comentário do `api_key_gate.rs`.
-async fn post(uri: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
+async fn post(chave: Option<&str>, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
     let mut config = AppConfig::default();
-    config.gateway.api_key = Some(CHAVE.to_string());
+    config.gateway.api_key = chave.map(str::to_string);
     let state = Arc::new(AppState::new(
         config,
         Arc::new(AgentRuntime::new()),
@@ -75,6 +80,7 @@ async fn post(uri: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
 #[tokio::test]
 async fn o_gate_global_roda_antes_da_guarda() {
     let (status, corpo) = post(
+        Some(CHAVE),
         "/api/learning/skills/nao-existe/approve",
         &[("origin", "http://evil.com"), ("host", "127.0.0.1:3888")],
     )
@@ -90,6 +96,7 @@ async fn o_gate_global_roda_antes_da_guarda() {
 #[tokio::test]
 async fn o_anti_csrf_vale_para_pedido_autenticado() {
     let (status, corpo) = post(
+        Some(CHAVE),
         "/api/learning/skills/nao-existe/approve",
         &[
             ("authorization", BEARER),
@@ -112,6 +119,7 @@ async fn o_anti_csrf_vale_para_pedido_autenticado() {
 #[tokio::test]
 async fn pedido_legitimo_atravessa_as_duas_camadas() {
     let (status, corpo) = post(
+        Some(CHAVE),
         "/api/learning/skills/nao-existe/approve",
         &[("authorization", BEARER)],
     )
@@ -122,5 +130,46 @@ async fn pedido_legitimo_atravessa_as_duas_camadas() {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE
         ),
         "pedido legítimo bloqueado por camada de auth (status {status}, corpo {corpo})"
+    );
+}
+
+/// DNS rebinding no `build_router` de verdade, na config default (sem
+/// `gateway.api_key`): o domínio do atacante re-resolvido para 127.0.0.1
+/// faz o navegador mandar `Origin` e `Host` iguais ao alias — casam entre
+/// si e o passo 1 passava, o peer é loopback e o passo 3 liberava. A
+/// âncora é o `Host` de loopback: nome de DNS público nenhum entra.
+/// Com gate ligado o bearer já fecha o cenário; este é o buraco da
+/// instalação default que a #1093 fecha.
+#[tokio::test]
+async fn rebinding_de_dominio_externo_da_403_sem_chave() {
+    let (status, corpo) = post(
+        None,
+        "/api/learning/skills/nao-existe/approve",
+        &[
+            ("origin", "http://evil.example:3888"),
+            ("host", "evil.example:3888"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "corpo: {corpo}");
+    assert_eq!(corpo, "learning: cross-origin mutating request refused");
+
+    // Controle negativo da âncora: o console local em `localhost` continua
+    // entrando — o 404/500 que vier é do handler, nenhuma camada segurou.
+    let (status, corpo) = post(
+        None,
+        "/api/learning/skills/nao-existe/approve",
+        &[
+            ("origin", "http://localhost:3888"),
+            ("host", "localhost:3888"),
+        ],
+    )
+    .await;
+    assert!(
+        !matches!(
+            status,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE
+        ),
+        "console local bloqueado pela âncora (status {status}, corpo {corpo})"
     );
 }

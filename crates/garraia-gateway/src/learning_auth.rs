@@ -18,14 +18,22 @@
 //! 1. **Anti-CSRF de navegador.** `Origin` de esquema diferente do do
 //!    transporte (`https` contra um gateway http, ou um esquema exótico),
 //!    `Origin` com authority diferente do header `Host`, `Origin: null`,
-//!    `Sec-Fetch-Site: cross-site` sem `Origin`, ou qualquer valor
-//!    malformado — todos viram `403` de corpo fixo. `Origin` do mesmo
-//!    esquema e mesma authority do `Host` (o console web servido pelo
-//!    próprio gateway, porta default normalizada) passa.
+//!    `Origin` fora da gramática do header (path, query, fragmento,
+//!    userinfo — RFC 6454 não tem nada disso), `Sec-Fetch-Site: cross-site`
+//!    sem `Origin`, ou qualquer valor malformado — todos viram `403` de
+//!    corpo fixo. `Origin` do mesmo esquema e mesma authority do `Host` (o
+//!    console web servido pelo próprio gateway, porta default normalizada)
+//!    passa.
 //! 2. **Fail-closed sem credencial.** Com o gate de `gateway.api_key`
 //!    **desligado**, só peer loopback passa; peer de LAN/internet recebe
 //!    `503 learning: auth not configured` — o mesmo precedente do
-//!    `/metrics` (`crate::metrics_auth`). Com a chave configurada, o gate
+//!    `/metrics` (`crate::metrics_auth`). No caso loopback, pedido de
+//!    navegador (com `Origin`) só entra com `Host` de **nome de loopback**
+//!    (`127.0.0.1`/`localhost`/`[::1]`) — a âncora anti-DNS-rebinding:
+//!    um domínio do atacante re-resolvido para `127.0.0.1` faz o
+//!    navegador mandar `Origin` e `Host` iguais ao alias, e só o nome de
+//!    loopback, que DNS público nenhum aponta para fora da máquina,
+//!    distingue o console do alias. Com a chave configurada, o gate
 //!    global de `/api/*` já exigiu o bearer **por fora** deste layer (layers
 //!    do router pai rodam antes dos de rota), então aqui não se revalida
 //!    token — duplicar a comparação seria duas implementações para divergir
@@ -43,15 +51,16 @@
 //! ## O que este guarda **não** é
 //!
 //! O passo 1 compara o `Origin` contra o esquema do transporte e a authority
-//! do header `Host` (com porta default normalizada). `Host` é controlado por
-//! quem faz o pedido, então um cliente que já alcança a porta e
-//! não é um navegador (`curl -H "Origin: http://x" -H "Host: x"`) consegue
-//! fazer os dois casarem. Isso não é o cenário que este módulo fecha — o
-//! ataque é a página visitada pelo dono, onde o navegador fixa `Origin` e
-//! `Host` e nenhum dos dois é do atacante. **Contra um cliente que já executa
-//! código na máquina, a única proteção é `gateway.api_key`**, que continua
-//! sendo o gate de verdade para todo `/api/*`. Este guarda é a camada que
-//! falta quando essa chave não existe.
+//! do header `Host` (com porta default normalizada), e o passo 3 ancora o
+//! caso sem credencial num `Host` de nome de loopback. O que sobra como
+//! residual é o cliente **não-navegador**: código que já alcança a porta e
+//! fabrica os dois headers (`curl -H "Origin: http://x" -H "Host: x"` —
+//! sem `Origin` ele nem precisa fabricar) ou já roda na própria máquina.
+//! **Contra um cliente que já executa código local, a única proteção é
+//! `gateway.api_key`**, que continua sendo o gate de verdade para todo
+//! `/api/*`. Este guarda fecha o que o navegador pode ser forçado a fazer —
+//! a página visitada pelo dono e o DNS rebinding —, e é a camada que falta
+//! quando essa chave não existe.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -103,7 +112,14 @@ fn cross_origin(headers: &HeaderMap, scheme: &str) -> bool {
             if !esquema.eq_ignore_ascii_case(scheme) {
                 return true;
             }
-            let authority = resto.split('/').next().unwrap_or("");
+            // Gramática do header `Origin` (RFC 6454): `scheme "://" host
+            // [":" port]` — sem path, query, fragmento ou userinfo. Nenhum
+            // navegador manda sobra depois da authority; quem manda é
+            // cliente de mentira: fail-closed.
+            if resto.contains(['/', '?', '#', '@']) {
+                return true;
+            }
+            let authority = resto;
             if authority.is_empty() {
                 return true;
             }
@@ -142,6 +158,40 @@ fn mesma_authority(origin: &str, host: &str, scheme: &str) -> bool {
         authority.to_string()
     };
     normaliza(origin).eq_ignore_ascii_case(&normaliza(host))
+}
+
+/// `true` quando a authority do header `Host` é um **nome de loopback**:
+/// `127.0.0.1` (ou qualquer IP de loopback), `localhost` ou `[::1]`.
+///
+/// É a âncora anti-DNS-rebinding do passo 3: nomes de loopback não existem
+/// no DNS público, então um `Host` que não é loopback não pode ser o
+/// endereço pelo qual um gateway ligado em loopback foi alcançado — é o
+/// alias de um domínio do atacante que o navegador da vítima resolveu para
+/// `127.0.0.1`. Fail-closed em tudo que não parseia.
+fn host_de_loopback(headers: &HeaderMap) -> bool {
+    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
+        return false;
+    };
+    let sem_porta = if let Some(resto) = host.strip_prefix('[') {
+        // IPv6 serializa com colchetes: "[::1]" ou "[::1]:porta".
+        match resto.split_once(']') {
+            Some((dentro, _)) => dentro,
+            None => resto,
+        }
+    } else if let Some((antes, porta)) = host.rsplit_once(':') {
+        if !porta.is_empty() && porta.bytes().all(|b| b.is_ascii_digit()) {
+            antes
+        } else {
+            host
+        }
+    } else {
+        host
+    };
+    sem_porta.eq_ignore_ascii_case("localhost")
+        || sem_porta
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 /// Estado da guarda: o gate global (para saber se a porta é autenticada) e o
@@ -204,7 +254,23 @@ pub async fn learning_mutations_guard(
             );
             deny(StatusCode::SERVICE_UNAVAILABLE, CORPO_SEM_PEER)
         }
-        Some(ip) if ip.is_loopback() => next.run(req).await,
+        Some(ip) if ip.is_loopback() => {
+            // Anti-DNS-rebinding (#1093): o navegador da vítima pode
+            // conectar ao domínio do atacante re-resolvido para 127.0.0.1 —
+            // aí `Origin` e `Host` são ambos o alias do atacante e casam
+            // entre si no passo 1. A âncora é o `Host`: pedido de navegador
+            // (com `Origin`) só entra com `Host` de loopback, o endereço
+            // pelo qual um gateway ligado em loopback de fato é alcançado.
+            if req.headers().contains_key(header::ORIGIN) && !host_de_loopback(req.headers()) {
+                warn!(
+                    path = %req.uri().path(),
+                    method = %method,
+                    "learning: loopback peer behind a non-loopback Host (DNS rebinding?)"
+                );
+                return deny(StatusCode::FORBIDDEN, CORPO_CSRF);
+            }
+            next.run(req).await
+        }
         Some(_) => {
             warn!(
                 path = %req.uri().path(),
@@ -571,12 +637,16 @@ mod tests {
 
     #[tokio::test]
     async fn porta_default_80_normalizada_dos_dois_lados() {
-        // `:80` em http não muda a origem, venha no Origin ou no Host.
+        // `:80` em http não muda a origem, venha no Origin ou no Host. Os
+        // combos usam nome de loopback porque, com o gate desligado, a
+        // âncora anti-DNS-rebinding do passo 3 nega `Host` que não é
+        // loopback por design — normalização e âncora no mesmo caminho que
+        // o console real percorre.
         for (origin, host) in [
-            ("http://example.com", "example.com:80"),
-            ("http://example.com:80", "example.com"),
-            ("http://example.com:80", "example.com:80"),
-            ("http://example.com", "example.com"),
+            ("http://localhost", "localhost:80"),
+            ("http://localhost:80", "localhost"),
+            ("http://localhost:80", "localhost:80"),
+            ("http://localhost", "localhost"),
         ] {
             let req = request(
                 Method::POST,
@@ -653,5 +723,113 @@ mod tests {
         );
         let (status, _) = status_corpo(router(estado), req).await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    // ── rodada 3 (code review): gramática do Origin ────────────────────────
+
+    #[tokio::test]
+    async fn origin_fora_da_gramatica_da_403() {
+        // RFC 6454: Origin é `scheme "://" host [":" port]` — sem path,
+        // query, fragmento ou userinfo. O valor abaixo casava a authority e
+        // passava; agora a sobra é rejeitada, valendo também autenticado
+        // (o passo 1 roda antes do gate).
+        for origin_malformado in [
+            "http://127.0.0.1:3888/qualquer-caminho",
+            "http://127.0.0.1:3888?q=1",
+            "http://127.0.0.1:3888#frag",
+            "http://usuario@127.0.0.1:3888",
+        ] {
+            let req = request(
+                Method::POST,
+                "/api/learning/skills/x/rollback",
+                Some(LOOPBACK),
+                &[
+                    (header::HOST.as_str(), "127.0.0.1:3888"),
+                    (header::ORIGIN.as_str(), origin_malformado),
+                ],
+            );
+            let (status, corpo) = status_corpo(router(estado_com(Some("chave"))), req).await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "Origin malformado aceito: {origin_malformado}"
+            );
+            assert_eq!(corpo, CORPO_CSRF);
+        }
+
+        // Vetor que isola o cheque de gramática: o `Host` carregando a
+        // MESMA sobra. Nos quatro vetores acima a sobra já denuncia o
+        // Origin na comparação com um `Host` limpo; aqui as duas
+        // authorities casam entre si (`mesma_authority` não trunca nada)
+        // e o passo 1 passaria — só a gramática da RFC 6454 separa
+        // "authority com sobra" de "authority". É a prova de
+        // não-vacuidade do cheque: desligá-lo deve tornar exatamente
+        // este vetor verde.
+        let req = request(
+            Method::POST,
+            "/api/learning/skills/x/rollback",
+            Some(LOOPBACK),
+            &[
+                (header::HOST.as_str(), "127.0.0.1:3888/qualquer-caminho"),
+                (
+                    header::ORIGIN.as_str(),
+                    "http://127.0.0.1:3888/qualquer-caminho",
+                ),
+            ],
+        );
+        let (status, corpo) = status_corpo(router(estado_com(Some("chave"))), req).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "sobra espelhada no Host aceita como mesma origem"
+        );
+        assert_eq!(corpo, CORPO_CSRF);
+    }
+
+    // ── rodada 3 (security audit): DNS rebinding ────────────────────────────
+
+    #[tokio::test]
+    async fn rebinding_de_dominio_externo_da_403() {
+        // O cenário do achado HIGH da auditoria: domínio do atacante
+        // re-resolvido para 127.0.0.1. O navegador da vítima manda `Origin`
+        // e `Host` iguais ao alias — casam entre si e o passo 1 passava.
+        // A âncora é o Host de loopback: alias de DNS público não entra.
+        let req = request(
+            Method::POST,
+            "/api/learning/skills/x/rollback",
+            Some(LOOPBACK),
+            &[
+                (header::HOST.as_str(), "evil.example:3888"),
+                (header::ORIGIN.as_str(), "http://evil.example:3888"),
+            ],
+        );
+        let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(corpo, CORPO_CSRF);
+    }
+
+    #[tokio::test]
+    async fn console_de_loopback_continua_passando_com_origin() {
+        // Controle negativo da âncora: o console legítimo serve em nomes de
+        // loopback (com ou sem porta default, IPv6 incluso) e continua
+        // entrando com o Origin do navegador.
+        for (host, origin) in [
+            ("127.0.0.1:3888", "http://127.0.0.1:3888"),
+            ("localhost:3888", "http://localhost:3888"),
+            ("[::1]:3888", "http://[::1]:3888"),
+        ] {
+            let req = request(
+                Method::POST,
+                "/api/learning/skills/x/rollback",
+                Some(LOOPBACK),
+                &[
+                    (header::HOST.as_str(), host),
+                    (header::ORIGIN.as_str(), origin),
+                ],
+            );
+            let (status, corpo) = status_corpo(router(estado_com(None)), req).await;
+            assert_eq!(status, StatusCode::OK, "console em {host} deveria passar");
+            assert_eq!(corpo, "ok-mutante");
+        }
     }
 }
