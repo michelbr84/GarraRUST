@@ -9,4 +9,6 @@
   pelos loaders. No caso 401 - o frequente, quando `gateway.api_key` esta
   ligada e o navegador nao tem chave salva - a mensagem aponta para o form
   "Gateway Authentication" do painel direito e o revela, em vez de mandar
-  recarregar a pagina.
+  recarregar a pagina. Como o roteador esconde o painel direito nas paginas
+  nao-chat, o reveal do 401 traz o painel de volta junto - exibir so o form
+  nao valia nada com o ancestral escondido.
