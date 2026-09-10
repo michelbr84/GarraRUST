@@ -37,6 +37,18 @@
 //! de `/api/*` como antes. Corpos de resposta são `&'static str` fixos — nada
 //! do pedido (token, Origin, sha) é ecoado; o log leva no máximo caminho e
 //! método.
+//!
+//! ## O que este guarda **não** é
+//!
+//! O passo 1 compara o authority do `Origin` com o header `Host`. `Host` é
+//! controlado por quem faz o pedido, então um cliente que já alcança a porta e
+//! não é um navegador (`curl -H "Origin: http://x" -H "Host: x"`) consegue
+//! fazer os dois casarem. Isso não é o cenário que este módulo fecha — o
+//! ataque é a página visitada pelo dono, onde o navegador fixa `Origin` e
+//! `Host` e nenhum dos dois é do atacante. **Contra um cliente que já executa
+//! código na máquina, a única proteção é `gateway.api_key`**, que continua
+//! sendo o gate de verdade para todo `/api/*`. Este guarda é a camada que
+//! falta quando essa chave não existe.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -174,7 +186,7 @@ mod tests {
     use axum::middleware::from_fn_with_state;
     use axum::routing::{delete, get, post};
     use http_body_util::BodyExt;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use tower::ServiceExt;
 
     async fn mutante() -> &'static str {
@@ -188,8 +200,14 @@ mod tests {
     fn router(gate: ApiKeyGate) -> Router {
         Router::new()
             .route("/api/learning/skills", get(leitura))
+            // PATCH e PUT entram aqui para o guarda ser coberto nos quatro
+            // metodos que ele trava, nao so nos dois que existem hoje: uma
+            // rota mutante nova em qualquer um deles ja nasce protegida.
+            .route(
+                "/api/learning/skills/x",
+                delete(mutante).patch(mutante).put(mutante),
+            )
             .route("/api/learning/skills/x/rollback", post(mutante))
-            .route("/api/learning/skills/x", delete(mutante))
             .layer(from_fn_with_state(gate, learning_mutations_guard))
     }
 
@@ -232,22 +250,31 @@ mod tests {
     }
 
     const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    /// O `is_loopback()` do std cobre `::1`; o teste explicita isso para um
+    /// futuro refactor para `== Ipv4Addr::LOCALHOST` nao passar batido.
+    const LOOPBACK6: IpAddr = IpAddr::V6(Ipv6Addr::LOCALHOST);
     const LAN: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+    /// Os quatro metodos que o guarda trava, com a URI que os serve.
+    const MUTANTES: [(Method, &str); 4] = [
+        (Method::POST, "/api/learning/skills/x/rollback"),
+        (Method::DELETE, "/api/learning/skills/x"),
+        (Method::PATCH, "/api/learning/skills/x"),
+        (Method::PUT, "/api/learning/skills/x"),
+    ];
 
     // ── 1. mutante loopback, sem Origin, sem chave → passa ────────────────
 
     #[tokio::test]
     async fn mutante_loopback_sem_origin_passa() {
         let router = router(gate_com(None));
-        for metodo in [Method::POST, Method::DELETE] {
-            let uri = match metodo {
-                Method::DELETE => "/api/learning/skills/x",
-                _ => "/api/learning/skills/x/rollback",
-            };
-            let req = request(metodo.clone(), uri, Some(LOOPBACK), &[]);
-            let (status, corpo) = status_corpo(router.clone(), req).await;
-            assert_eq!(status, StatusCode::OK, "{metodo} loopback deveria passar");
-            assert_eq!(corpo, "ok-mutante");
+        for (metodo, uri) in MUTANTES {
+            for peer in [LOOPBACK, LOOPBACK6] {
+                let req = request(metodo.clone(), uri, Some(peer), &[]);
+                let (status, corpo) = status_corpo(router.clone(), req).await;
+                assert_eq!(status, StatusCode::OK, "{metodo} de {peer} deveria passar");
+                assert_eq!(corpo, "ok-mutante");
+            }
         }
     }
 
@@ -282,6 +309,36 @@ mod tests {
         let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(corpo, CORPO_CSRF);
+    }
+
+    // ── 3b. os quatro metodos mutantes, nao so os dois de hoje ─────────────
+
+    #[tokio::test]
+    async fn cross_origin_da_403_nos_quatro_metodos_mutantes() {
+        for (metodo, uri) in MUTANTES {
+            let req = request(
+                metodo.clone(),
+                uri,
+                Some(LOOPBACK),
+                &[
+                    (header::HOST.as_str(), "127.0.0.1:3888"),
+                    (header::ORIGIN.as_str(), "http://evil.example"),
+                ],
+            );
+            let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{metodo} cross-origin");
+            assert_eq!(corpo, CORPO_CSRF);
+        }
+    }
+
+    #[tokio::test]
+    async fn nao_loopback_da_503_nos_quatro_metodos_mutantes() {
+        for (metodo, uri) in MUTANTES {
+            let req = request(metodo.clone(), uri, Some(LAN), &[]);
+            let (status, corpo) = status_corpo(router(gate_com(None)), req).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{metodo} de LAN");
+            assert_eq!(corpo, CORPO_SEM_AUTH);
+        }
     }
 
     // ── 4. Origin: null → 403 ─────────────────────────────────────────────
