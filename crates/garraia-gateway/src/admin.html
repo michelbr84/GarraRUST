@@ -425,6 +425,10 @@ tr:hover { background: var(--bg-hover); }
       <label for="login-password">Password</label>
       <input type="password" id="login-password" autocomplete="current-password" placeholder="Password">
     </div>
+    <div class="form-group hidden" id="login-totp-group">
+      <label for="login-totp">Authenticator code</label>
+      <input type="text" id="login-totp" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000">
+    </div>
     <button class="btn-primary" id="login-btn">Sign In</button>
   </div>
 </div>
@@ -526,6 +530,10 @@ tr:hover { background: var(--bg-hover); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           <span class="nav-label">Audit Log</span>
         </div>
+        <div class="nav-item" data-page="security">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 019.9-1"/></svg>
+          <span class="nav-label">Security</span>
+        </div>
         <div class="nav-item" data-page="users" data-require-role="admin">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           <span class="nav-label">Users</span>
@@ -533,6 +541,10 @@ tr:hover { background: var(--bg-hover); }
         <div class="nav-item" data-page="about">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           <span class="nav-label">About</span>
+        </div>
+        <div class="nav-item" data-page="account">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          <span class="nav-label">Account</span>
         </div>
       </div>
     </nav>
@@ -583,7 +595,14 @@ async function api(method, path, body) {
   const resp = await fetch(API_BASE + path, opts);
   const data = await resp.json().catch(() => ({}));
   if (resp.status === 401 && currentUser) { currentUser = null; csrfToken = ''; showLogin(); throw new Error('Session expired'); }
-  if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+  if (!resp.ok) {
+    // O corpo segue junto: o login precisa distinguir "senha errada" de
+    // "falta o segundo fator", e a diferenca so vem em `totp_required`.
+    const err = new Error(data.error || ('HTTP ' + resp.status));
+    err.status = resp.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -698,7 +717,8 @@ var pages = {
   dashboard: pageDashboard, mcp: pageMcp, providers: pageProviders, secrets: pageSecrets,
   config: pageConfig, memory: pageMemory, tools: pageTools, channels: pageChannels,
   sessions: pageSessions, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
-  templates: pageTemplates, audit: pageAudit, users: pageUsers, about: pageAbout
+  templates: pageTemplates, audit: pageAudit, security: pageSecurity, users: pageUsers,
+  about: pageAbout, account: pageAccount
 };
 
 function navigate(page) {
@@ -720,7 +740,8 @@ function pageTitle(page) {
     dashboard:'Dashboard', mcp:'MCP Servers', providers:'Providers', secrets:'Secrets',
     config:'Configuration', memory:'Memory', tools:'Tools', channels:'Channels',
     sessions:'Sessions', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
-    templates:'Templates', audit:'Audit Log', users:'Users', about:'About'
+    templates:'Templates', audit:'Audit Log', security:'Security', users:'Users',
+    about:'About', account:'Account'
   };
   return titles[page] || page;
 }
@@ -1584,6 +1605,79 @@ function showAddUserForm() {
 async function updateUserRole(uid, role) { try { await apiPut('/users/' + encodeURIComponent(uid) + '/role', { role }); toast('Role updated', 'success'); pageUsers(); } catch(e) { toast(e.message, 'error'); } }
 async function deleteUser(uid, name) { if (!confirm('Delete "' + name + '"?')) return; try { await apiDelete('/users/' + encodeURIComponent(uid)); toast('Deleted', 'success'); pageUsers(); } catch(e) { toast(e.message, 'error'); } }
 
+// ─── Security / 2FA (#1121) ──────────────────────────────────────────
+// O enrollment mora aqui; o *consumo* do segundo fator mora no login.
+//
+// Nenhum QR e desenhado por biblioteca externa nem por servico de imagem:
+// o segredo sairia do navegador para um terceiro. Mostramos o base32 e a
+// URI `otpauth://` como texto copiavel, que e o que o app aceita colar.
+async function pageSecurity() {
+  try {
+    var status = await apiGet('/2fa/status');
+    var card = el('div', { className: 'card' });
+    renderTwoFactor(card, status.enabled === true, null);
+    renderContent(card);
+  } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
+}
+
+// Cada passo do enrollment troca o que a pagina inteira mostra (desligado ->
+// segredo na tela -> ligado). Manter tres blocos escondidos um do outro
+// guardaria mais estado do que o fluxo tem.
+function renderTwoFactor(card, enabled, pending) {
+  clearEl(card);
+  var muted = 'color:var(--text-muted);font-size:13px;margin:8px 0 12px;';
+  card.appendChild(el('h3', { textContent: 'Two-factor authentication', style: 'margin-bottom:8px' }));
+  card.appendChild(el('div', { style: 'margin-bottom:4px' }, [badgeFor(enabled, 'Enabled', 'Disabled')]));
+  if (enabled) {
+    card.appendChild(el('p', { style: muted, textContent: 'Signing in to this account requires the 6-digit code from your authenticator app.' }));
+    card.appendChild(disableTwoFactorForm(card));
+  } else if (pending) {
+    card.appendChild(pendingTwoFactorForm(card, pending));
+  } else {
+    card.appendChild(el('p', { style: muted, textContent: 'Add a second factor so that a leaked password alone cannot open this console.' }));
+    card.appendChild(el('button', { className: 'btn-primary btn-sm', textContent: 'Set up authenticator', onClick: () => startTwoFactorSetup(card) }));
+  }
+}
+
+async function startTwoFactorSetup(card) {
+  try {
+    var setup = await apiPost('/2fa/setup', {});
+    renderTwoFactor(card, false, setup);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function pendingTwoFactorForm(card, setup) {
+  var muted = 'color:var(--text-muted);font-size:13px;margin:8px 0 12px;';
+  var wrap = el('div');
+  wrap.appendChild(el('p', { style: muted, textContent: 'Add the secret below to your authenticator app and confirm with a code. Nothing changes until you confirm.' }));
+  wrap.appendChild(el('div', { style: 'font-family:monospace;font-size:18px;letter-spacing:2px;padding:12px;border-radius:6px;word-break:break-all;margin-bottom:8px;', textContent: setup.secret }));
+  wrap.appendChild(el('div', { style: 'font-family:monospace;font-size:11px;color:var(--text-muted);word-break:break-all;margin-bottom:12px;', textContent: setup.qr_uri || '' }));
+  var code = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', placeholder: '000000' });
+  wrap.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: 'Confirmation code' }), code]));
+  wrap.appendChild(el('div', { style: 'display:flex;gap:8px' }, [
+    el('button', { className: 'btn-primary btn-sm', textContent: 'Confirm and enable', onClick: async () => {
+      try { await apiPost('/2fa/verify', { code: code.value.trim() }); toast('Two-factor authentication enabled', 'success'); renderTwoFactor(card, true, null); }
+      catch(e) { toast(e.message, 'error'); }
+    } }),
+    el('button', { className: 'btn-secondary btn-sm', textContent: 'Cancel', onClick: () => renderTwoFactor(card, false, null) })
+  ]));
+  return wrap;
+}
+
+function disableTwoFactorForm(card) {
+  var muted = 'color:var(--text-muted);font-size:13px;margin:8px 0 12px;';
+  var code = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: '6', placeholder: '000000' });
+  return el('div', { style: 'margin-top:16px' }, [
+    el('p', { style: muted, textContent: 'Turning the second factor off requires a valid code: it is exactly what someone holding only your password would try to do.' }),
+    el('div', { className: 'form-group' }, [el('label', { textContent: 'Current code' }), code]),
+    el('button', { className: 'btn-danger btn-sm', textContent: 'Disable two-factor', onClick: async () => {
+      if (!confirm('Disable two-factor authentication for your account?')) return;
+      try { await apiPost('/2fa/disable', { code: code.value.trim() }); toast('Two-factor authentication disabled', 'success'); renderTwoFactor(card, false, null); }
+      catch(e) { toast(e.message, 'error'); }
+    } })
+  ]);
+}
+
 // ─── About ───────────────────────────────────────────────────────────
 async function pageAbout() {
   try {
@@ -1617,22 +1711,115 @@ async function pageAbout() {
   } catch(e) { renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message })); }
 }
 
+// ─── Account (self-service password change, #1120) ───────────────────
+// Antes desta pagina a unica forma de trocar a senha do admin era SQL
+// manual no admin.db. O POST exige a senha atual, entao um cookie de
+// sessao roubado nao basta para trocar a senha e trancar o dono fora.
+var MIN_PASSWORD_LEN = 8;
+
+function accountField(id, placeholder, autocomplete) {
+  return el('input', {
+    type: 'password', id: id, placeholder: placeholder, autocomplete: autocomplete,
+    'data-testid': id
+  });
+}
+
+function pageAccount() {
+  var card = el('div', { className: 'card', style: 'max-width:520px' });
+  card.appendChild(el('h3', { textContent: 'Change password', style: 'margin-bottom:4px' }));
+  card.appendChild(el('p', {
+    style: 'color:var(--text-muted);font-size:12px;margin-bottom:16px',
+    textContent: currentUser
+      ? 'Rotates the password of "' + currentUser.username + '". Every other session of this user is signed out; this one stays.'
+      : 'Rotates the password of the signed-in user.'
+  }));
+
+  var currentInput = accountField('current-password', 'Current password', 'current-password');
+  var newInput = accountField('new-password', 'New password (8+ characters)', 'new-password');
+  var confirmInput = accountField('confirm-password', 'Confirm new password', 'new-password');
+  // Sem a classe `hidden`: ela e `display:none !important`, e aqui a
+  // mensagem e religada por `style.display`.
+  var errorEl = el('div', {
+    className: 'badge badge-error', 'data-testid': 'account-error',
+    style: 'display:none;margin-top:12px'
+  });
+
+  [['Current password', currentInput], ['New password', newInput], ['Confirm new password', confirmInput]]
+    .forEach(function (pair) {
+      card.appendChild(el('div', { className: 'form-group' }, [el('label', { textContent: pair[0] }), pair[1]]));
+    });
+
+  function fail(msg) { errorEl.textContent = msg; errorEl.style.display = 'block'; }
+
+  var submit = el('button', {
+    className: 'btn-primary btn-sm', textContent: 'Change password',
+    'data-testid': 'change-password-submit',
+    onClick: async function () {
+      errorEl.style.display = 'none';
+      if (!currentInput.value || !newInput.value || !confirmInput.value) { fail('All three fields are required.'); return; }
+      if (newInput.value.length < MIN_PASSWORD_LEN) { fail('New password must be at least ' + MIN_PASSWORD_LEN + ' characters.'); return; }
+      if (newInput.value !== confirmInput.value) { fail('New passwords do not match.'); return; }
+      submit.disabled = true;
+      try {
+        await apiPost('/change-password', { current_password: currentInput.value, new_password: newInput.value });
+        currentInput.value = ''; newInput.value = ''; confirmInput.value = '';
+        toast('Password changed', 'success');
+      } catch (e) {
+        fail(e.message);
+      } finally {
+        submit.disabled = false;
+      }
+    }
+  });
+
+  card.appendChild(el('div', { style: 'display:flex;gap:8px' }, [submit]));
+  card.appendChild(errorEl);
+  renderContent(card);
+}
+
 // ─── Auth Handlers ──────────────────────────────────────────────────
 document.getElementById('login-btn').addEventListener('click', async () => {
   var username = document.getElementById('login-username').value.trim();
   var password = document.getElementById('login-password').value;
+  var totpEl = document.getElementById('login-totp');
+  var totpGroup = document.getElementById('login-totp-group');
   var errEl = document.getElementById('login-error');
   errEl.classList.add('hidden');
   if (!username || !password) { errEl.textContent = 'Username and password are required.'; errEl.classList.remove('hidden'); return; }
+  // So manda o codigo quando o campo esta visivel: foi o proprio 401 do
+  // servidor que o revelou, entao visivel == a conta tem 2FA.
+  var body = { username, password };
+  if (!totpGroup.classList.contains('hidden')) body.totp_code = totpEl.value.trim();
   try {
-    var data = await apiPost('/login', { username, password });
+    var data = await apiPost('/login', body);
     csrfToken = data.csrf_token;
     currentUser = data.user;
     await loadPermissions();
+    totpGroup.classList.add('hidden'); totpEl.value = '';
     showApp();
-  } catch(e) { errEl.textContent = e.message; errEl.classList.remove('hidden'); }
+  } catch(e) {
+    var needs2fa = e.data && e.data.totp_required &&
+                   (e.status === 401 || e.status === 429);
+    if (needs2fa) {
+      totpGroup.classList.remove('hidden');
+      totpEl.value = '';
+      // 429: travado. Mostrar o campo nao adianta — repetir na hora nao
+      // destrava — entao o foco fica na mensagem.
+      if (e.status !== 429) totpEl.focus();
+      errEl.textContent = (e.data.error === 'invalid totp code')
+        ? 'That code was not accepted. Try the next one.'
+        : (e.status === 429
+            ? 'Too many wrong codes. Wait a few minutes and try again.'
+            : 'Enter the 6-digit code from your authenticator app.');
+    } else {
+      errEl.textContent = e.message;
+    }
+    errEl.classList.remove('hidden');
+  }
 });
 document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-btn').click(); });
+document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-btn').click(); });
+document.getElementById('login-totp').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-btn').click(); });
 
 document.getElementById('setup-btn').addEventListener('click', async () => {
   var username = document.getElementById('setup-username').value.trim();

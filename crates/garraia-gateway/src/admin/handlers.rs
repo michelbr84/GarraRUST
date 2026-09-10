@@ -3,6 +3,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
+use super::audit::log_auth_failure;
 use super::middleware::{AuthenticatedAdmin, build_clear_cookie, build_session_cookie, extract_ip};
 use super::rbac::{Action, Resource, Role, check_permission};
 use super::secrets::redact_config_secrets;
@@ -43,12 +44,20 @@ pub use super::observability::{
     list_templates, list_themes,
 };
 
+// Enrollment do segundo fator do painel (#1121) em `admin::totp`. O consumo
+// dele no login fica neste arquivo, junto da criacao da sessao.
+pub use super::totp::{TotpCodeRequest, totp_disable, totp_setup, totp_status, totp_verify};
+
 // ── Auth endpoints ──────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    /// Codigo TOTP. Ignorado quando o usuario nao tem 2FA; obrigatorio quando
+    /// tem (#1121). Ausente na primeira chamada, que e como o cliente descobre
+    /// que precisa dele: a resposta vem com `totp_required: true`.
+    pub totp_code: Option<String>,
 }
 
 /// POST /admin/api/login
@@ -58,20 +67,18 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let ip = extract_ip(&headers, None);
-    let guard = state.store.lock().await;
+    let mut guard = state.store.lock().await;
 
     let user = match guard.verify_password(&body.username, &body.password) {
         Some(u) => u,
         None => {
-            let _ = guard.append_audit(
+            log_auth_failure(
+                &guard,
                 None,
                 Some(&body.username),
                 "login",
-                "auth",
-                None,
-                Some("invalid credentials"),
+                "invalid credentials",
                 ip.as_deref(),
-                "failure",
             );
             drop(guard);
             return (
@@ -81,6 +88,147 @@ pub async fn login(
             );
         }
     };
+
+    // ── Segundo fator (#1121) ────────────────────────────────────────
+    //
+    // So se chega aqui com a senha ja verificada, entao responder "este
+    // usuario tem 2FA" nao e enumeracao: quem recebe a resposta provou que
+    // sabe a senha.
+    //
+    // Estado ilegivel e recusa: o caminho contrario — tratar erro de
+    // leitura como "2FA desligado" e deixar a senha so entrar — e
+    // exatamente o fail-open que este PR veio fechar (#1121).
+    let totp_enabled = match guard.is_totp_enabled(&user.id) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("admin login: 2FA state unreadable: {e}");
+            log_auth_failure(
+                &guard,
+                Some(&user.id),
+                Some(&user.username),
+                "login",
+                "totp state unreadable",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                HeaderMap::new(),
+                Json(serde_json::json!({"error": "internal error"})),
+            );
+        }
+    };
+
+    if totp_enabled {
+        let code = match body.totp_code.as_deref() {
+            Some(c) => c,
+            None => {
+                log_auth_failure(
+                    &guard,
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "totp code required",
+                    ip.as_deref(),
+                );
+                drop(guard);
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({
+                        "error": "totp code required",
+                        "totp_required": true,
+                    })),
+                );
+            }
+        };
+
+        if guard.totp_attempts_exhausted(&user.id) {
+            log_auth_failure(
+                &guard,
+                Some(&user.id),
+                Some(&user.username),
+                "login",
+                "too many totp attempts",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                HeaderMap::new(),
+                Json(serde_json::json!({
+                    "error": "too many totp attempts",
+                    "totp_required": true,
+                })),
+            );
+        }
+
+        // Segredo ausente, vazio ou ilegivel com 2FA ligado: `disable_totp`
+        // limpa os dois juntos, entao nenhuma dessas situacoes deveria
+        // acontecer — e nenhuma delas permite validar com seguranca. A
+        // resposta honesta e a mesma do gate de estado acima: recusa sem
+        // abrir sessao. Erro de leitura nao pode virar "codigo invalido"
+        // (#1121, pass-3).
+        let secret = match guard.get_totp_secret(&user.id) {
+            Ok(Some(s)) if !s.is_empty() => s,
+            Ok(_) => {
+                tracing::warn!("admin login: 2FA enabled but secret missing");
+                log_auth_failure(
+                    &guard,
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "totp secret missing",
+                    ip.as_deref(),
+                );
+                drop(guard);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({"error": "internal error"})),
+                );
+            }
+            Err(e) => {
+                tracing::warn!("admin login: 2FA secret unreadable: {e}");
+                log_auth_failure(
+                    &guard,
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "totp secret unreadable",
+                    ip.as_deref(),
+                );
+                drop(guard);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({"error": "internal error"})),
+                );
+            }
+        };
+        let ok = crate::totp::verify_totp(&secret, code);
+        guard.record_totp_attempt(&user.id, ok);
+
+        if !ok {
+            log_auth_failure(
+                &guard,
+                Some(&user.id),
+                Some(&user.username),
+                "login",
+                "invalid totp code",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::UNAUTHORIZED,
+                HeaderMap::new(),
+                Json(serde_json::json!({
+                    "error": "invalid totp code",
+                    "totp_required": true,
+                })),
+            );
+        }
+    }
 
     let session = match guard.create_session(&user.id, ip.as_deref(), None) {
         Ok(s) => s,
@@ -94,7 +242,7 @@ pub async fn login(
         }
     };
 
-    let _ = guard.append_audit(
+    if let Err(audit_err) = guard.append_audit(
         Some(&user.id),
         Some(&user.username),
         "login",
@@ -103,7 +251,11 @@ pub async fn login(
         None,
         ip.as_deref(),
         "success",
-    );
+    ) {
+        // Sessao criada: a recusa aqui nao desfaz nada, mas a falha de
+        // trilha nao pode ser silenciosa (#1121).
+        tracing::warn!("admin login: failed to write audit log: {audit_err}");
+    }
     drop(guard);
 
     let cookie = build_session_cookie(&session.token, 86400);
@@ -176,8 +328,9 @@ pub async fn me(
 // Slice 9.g (GAR-474): setup, user-management, and danger-zone handlers extracted to
 // `admin::users`. Re-exported so `routes.rs` paths (`handlers::setup`, etc.) keep resolving.
 pub use super::users::{
-    CreateUserRequest, DangerZoneRequest, SetupRequest, UpdateUserRoleRequest, create_user,
-    danger_zone, delete_user, list_users, setup, setup_status, update_user_role,
+    CHANGE_PASSWORD_ACTION, ChangePasswordRequest, CreateUserRequest, DangerZoneRequest,
+    SetupRequest, UpdateUserRoleRequest, change_password, create_user, danger_zone, delete_user,
+    list_users, setup, setup_status, update_user_role,
 };
 
 // Slice 9.f (GAR-475): secrets CRUD + rotation + migration + AES-256-GCM helpers extracted to
