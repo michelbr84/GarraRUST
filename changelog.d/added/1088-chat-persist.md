@@ -10,4 +10,8 @@
   retoma-la. Com `--resume`, o historico gravado e carregado antes do primeiro
   turno, a tela diz quantos turnos voltaram e a sessao continua gravando dali
   em diante — as duas flags sao independentes, mas qualquer uma basta para
-  abrir o store. Falha de gravacao avisa e a conversa segue.
+  abrir o store. Falha de gravacao avisa e a conversa segue; e se a contagem
+  de mensagens fora da janela falha, o aviso tambem acontece em vez de
+  anunciar zero no silencio. Turnos voltados sao contados pelas perguntas
+  (`user`), nao por divisao da lista — turno incompleto deixado pela
+  hidratacao do gateway nao mente no placar.

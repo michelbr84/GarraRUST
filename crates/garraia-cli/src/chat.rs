@@ -1249,14 +1249,34 @@ pub async fn run_chat(
         let db = config.resolved_data_dir().join(SESSIONS_DB);
         if resume.is_some() {
             let carregadas = load_history(store, &session_id, RESUME_LIMIT)?;
-            // Duas mensagens por turno: a pergunta e a resposta.
-            let turnos = carregadas.len() / 2;
+            // Cada turno comeca com uma pergunta. Contar `user` e mais
+            // honesto que `len / 2` quando a hidratacao do gateway deixou
+            // um turno pela metade na mesma sessao.
+            let turnos = carregadas
+                .iter()
+                .filter(|m| matches!(m.role, ChatRole::User))
+                .count();
             // A janela nao e a sessao inteira. Dizer quantas mensagens
             // ficaram de fora e a diferenca entre "retomei a conversa" e
             // "retomei metade achando que era tudo" — que e justamente a
             // queixa que abriu esta issue.
-            let antigas = (store.get_message_count(&session_id).unwrap_or(0) as usize)
-                .saturating_sub(carregadas.len());
+            let antigas = match store.get_message_count(&session_id) {
+                Ok(total) => (total as usize).saturating_sub(carregadas.len()),
+                Err(e) => {
+                    // A conversa nao cai por causa de uma contagem — mas
+                    // engolir o erro anunciaria "nada ficou fora da
+                    // janela" sem ninguem saber. Avisa e segue: o mesmo
+                    // fail-open da gravacao de turno.
+                    renderer.handle(
+                        UiEvent::Warning(&format!(
+                            "Nao consegui contar o historico de {session_id} ({e}); \
+                             mensagens mais antigas podem ter ficado fora da janela."
+                        )),
+                        &mut io::stdout(),
+                    );
+                    0
+                }
+            };
             let sufixo = if antigas > 0 {
                 format!("; {antigas} mensagens mais antigas ficaram fora da janela")
             } else {
@@ -3057,5 +3077,41 @@ mod persist_tests {
         let store = SessionStore::in_memory().expect("store em memoria");
         let historico = load_history(&store, "cli-nao-existe", RESUME_LIMIT).expect("sem erro");
         assert!(historico.is_empty());
+    }
+
+    /// `append_turn` grava pergunta e resposta com o MESMO `Utc::now()`.
+    /// A ordem entre elas nao pode depender do timestamp: `load_recent_messages`
+    /// ordena por `rowid` (ordem de insercao), e e isso que mantem o turno
+    /// deterministico. Aqui o teste força o pior caso — todas as mensagens
+    /// da sessao com timestamp identico — e prende a ordem de insercao.
+    #[test]
+    fn timestamps_iguais_mantem_ordem_de_insercao() {
+        let store = SessionStore::in_memory().expect("store em memoria");
+        // A FK de messages exige a sessao antes do primeiro append — o
+        // mesmo passo que o `append_turn` da vida real da.
+        store
+            .upsert_session("cli-iguais", "cli", "local", &serde_json::json!({}))
+            .expect("upsert da sessao");
+        let t = chrono::Utc::now();
+        let meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
+        store
+            .append_message("cli-iguais", "user", "primeiro", t, &meta)
+            .expect("append 1");
+        store
+            .append_message("cli-iguais", "assistant", "segundo", t, &meta)
+            .expect("append 2");
+        store
+            .append_message("cli-iguais", "user", "terceiro", t, &meta)
+            .expect("append 3");
+
+        let msgs = store
+            .load_recent_messages("cli-iguais", 10)
+            .expect("carrega");
+        let conteudos: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            conteudos,
+            vec!["primeiro", "segundo", "terceiro"],
+            "timestamp identico nao pode reordenar a sessao"
+        );
     }
 }
