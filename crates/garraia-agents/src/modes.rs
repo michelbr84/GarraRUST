@@ -692,7 +692,12 @@ impl ModeProfile {
             ),
             tool_policy: ToolPolicy {
                 allowed: vec![],
-                denied: vec!["file_write".to_string()],
+                // #1104: `bash` e execucao arbitraria — com ele fora da lista,
+                // a negacao de `file_write` era decorativa: o modelo escrevia
+                // o arquivo pelo shell (`printf ... > arquivo`) e furava a
+                // promessa deste modo, que o proprio prompt declara ("Prefer
+                // providing text explanations over executing code").
+                denied: vec!["file_write".to_string(), "bash".to_string()],
                 required: vec![],
                 whitelist_mode: false,
             },
@@ -1218,6 +1223,22 @@ mod tests {
         for t in ["git_diff", "code_review", "run_tests"] {
             assert!(!g.permite(t), "{t} nao esta na allowlist do orchestrator");
         }
+    }
+
+    /// Negar `bash` no `ask` e o que faz a negacao de `file_write` valer (#1104).
+    ///
+    /// `bash` e execucao arbitraria: fora da lista, o modelo escrevia o
+    /// arquivo pelo shell e a promessa "apenas perguntas" era contornavel.
+    /// Leitura segue livre — o modo existe para responder, nao para isolar.
+    #[test]
+    fn ask_mode_denies_bash_so_the_file_write_denial_is_not_bypassable() {
+        let g = ToolGate::for_mode_name("ask");
+        assert!(!g.permite("bash"), "ask deveria negar bash (#1104)");
+        assert!(!g.permite("file_write"));
+        assert!(g.permite("file_read"));
+        assert!(g.permite("list_dir"));
+        assert!(g.permite("repo_search"));
+        assert!(g.permite("web_search"));
     }
 
     /// Modo somente-leitura barra escrita e bash.
