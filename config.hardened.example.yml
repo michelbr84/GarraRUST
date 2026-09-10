@@ -46,6 +46,14 @@ agent:
   # Tier "arriscado" do safety_gate passa a exigir confirmação humana
   # (o tier "perigoso" é bloqueado SEMPRE, com ou sem esta flag):
   tool_confirmation_enabled: true
+  # #1105: padrões que o operador declara confiáveis e que por isso pulam a
+  # confirmação do tier arriscado. Lista POSITIVA: só o que está aqui escapa.
+  # Sintaxe: "prefixo*" (coringa só no fim) ou o comando exato. Padrões com
+  # coringa fora do fim são recusados com warning. Isto NÃO desbloqueia o
+  # tier perigoso — `rm -rf /` continua barrado mesmo que alguém o liste.
+  bash_allowlist:
+    - "hermes send *"
+    - "git status"
   max_tool_calls: 50
 
 # Servidores MCP com política (escopo mínimo + limites + allowlist).

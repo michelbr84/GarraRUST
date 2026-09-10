@@ -619,6 +619,16 @@ pub struct AgentConfig {
     /// Default: false (opt-in).
     #[serde(default)]
     pub tool_confirmation_enabled: bool,
+    /// #1105: command patterns the operator declares trustworthy, so they skip
+    /// the risky-tier confirmation. Positive list — only what is here is
+    /// exempt — and it is read *after* the hard denylist, so it can never
+    /// un-block a dangerous command.
+    ///
+    /// Syntax is deliberately poor on purpose: `prefix*` (wildcard at the end
+    /// only) or an exact command. Patterns with a wildcard anywhere else are
+    /// refused with a warning rather than guessed at.
+    #[serde(default)]
+    pub bash_allowlist: Vec<String>,
     /// GAR-227: When true, a short LLM call classifies the user's intent into an agent mode
     /// (code/debug/review/search/architect/ask) when the keyword heuristic is ambiguous.
     /// Requires a working LLM provider. Default: false (opt-in).
