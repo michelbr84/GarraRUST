@@ -25,9 +25,12 @@
 //! - **Sem anti-replay:** `verify_totp` aceita qualquer janela dentro da
 //!   deriva, quantas vezes aparecer. Um codigo valido continua valido ate a
 //!   janela passar, e nada guarda qual janela ja foi usada.
-//! - **Nao e exigido em login:** estas tres rotas sao setup/verify/disable.
-//!   Nenhum fluxo de autenticacao chama `verify_totp`, entao "2FA ativado"
-//!   nao muda o que acontece num login.
+//! - **Nao e exigido no login mobile:** estas tres rotas sao setup/verify/
+//!   disable, e o `/auth/login` mobile nunca chama `verify_totp` — no fluxo
+//!   mobile, "2FA ativado" nao muda o que acontece num login. JA o login do
+//!   console ADMIN exige TOTP quando ativado: `admin/handlers.rs` chama
+//!   `verify_totp` dentro do fluxo de login, e `admin/totp.rs` aplica
+//!   rate-limit por tentativa (429 quando as tentativas se esgotam).
 //!
 //! RFC 6238 TOTP implementation: HMAC-SHA1, 30-second window, 6 digits.
 

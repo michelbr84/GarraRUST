@@ -83,10 +83,11 @@ Known limits of this first version, both tracked:
   `admin.db` — which would also give the console a global login rate limit —
   is tracked in #1140.
 - The TOTP secret is stored **in cleartext** (base32, unencrypted) in
-  `admin.db`, unlike the mobile flow, which encrypts it (`totp_secret_enc`).
-  The mitigation is the one every other secret in `admin.db` already relies
-  on: protect the database file. Encrypting it with the admin master key is
-  tracked in #1141.
+  `admin.db`; the mobile flow does the same (`mobile_users.totp_secret`,
+  base32 without encryption). The mitigation is the one every other secret
+  in `admin.db` already relies on: protect the database file — and it applies
+  to both flows. Encrypting the admin-side secret with the admin master key
+  is tracked in #1141.
 
 ### Input Validation
 
