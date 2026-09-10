@@ -109,8 +109,11 @@ impl BashTool {
                     && match p.strip_suffix('*') {
                         // Sem coringa: comando exato.
                         None if !p.contains('*') => true,
-                        // Coringa no fim: o prefixo tem de existir de verdade.
-                        Some(prefixo) => !prefixo.trim().is_empty(),
+                        // Coringa no fim: o prefixo tem de existir de verdade
+                        // e tem de ser prefixo — "git **" e "*git*" deixam um
+                        // `*` no prefixo depois do strip, e coringa no meio é
+                        // exatamente o que a sintaxe recusa.
+                        Some(prefixo) => !prefixo.trim().is_empty() && !prefixo.contains('*'),
                         // Coringa fora do fim: recusado, sem adivinhar intencao.
                         None => false,
                     };
@@ -846,11 +849,19 @@ mod tests {
     /// Adivinhar a intenção de um coringa no meio é como se abre um buraco.
     #[test]
     fn coringa_fora_do_fim_e_recusado() {
-        let tool = BashTool::new(None).with_allowlist(vec!["git *status".into(), "ok*".into()]);
+        let tool = BashTool::new(None).with_allowlist(vec![
+            "git *status".into(),
+            "ok*".into(),
+            // "git **" e "*git*" passam pelo strip do ULTIMO coringa e
+            // deixam um `*` no prefixo — coringa no meio de novo, recusado
+            // pela mesma regra (achado da re-revisão do #1117).
+            "git **".into(),
+            "*git*".into(),
+        ]);
         assert_eq!(
             tool.allowlist,
             vec!["ok*".to_string()],
-            "so o padrao com coringa no fim sobrevive"
+            "so o padrao com um unico coringa no fim sobrevive"
         );
     }
 
