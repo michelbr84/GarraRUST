@@ -5,8 +5,29 @@
 //!   POST /auth/2fa/verify   — verify code and enable 2FA
 //!   POST /auth/2fa/disable  — disable 2FA (requires current code)
 //!
-//! The TOTP secret is stored encrypted in the `mobile_users` table via
-//! `totp_secret_enc` column (AES-256-GCM using the vault key).
+//! ## Estado real do segredo (lido em 2026-09-10, nao promessa)
+//!
+//! Este comentario dizia que o segredo ficava cifrado em `totp_secret_enc`
+//! com AES-256-GCM. **Nao fica.** A coluna e `mobile_users.totp_secret`
+//! (`TEXT`, `crates/garraia-db/src/session_store.rs:234`) e o que vai nela e
+//! o proprio base32, em claro — o `set_mobile_user_totp_secret` da store diz
+//! isso na cara ("here we store the base32-encoded value"). Quem tiver o
+//! arquivo do SQLite tem o segredo, e com o segredo o segundo fator e
+//! reconstruivel offline.
+//!
+//! Cifrar de verdade exige uma chave que hoje nem sempre existe em runtime
+//! (o cofre depende de passphrase configurada), entao a correcao honesta e
+//! esta: parar de prometer. Enquanto nao houver chave obrigatoria, trate o
+//! segredo como dado sensivel em claro.
+//!
+//! Duas outras lacunas, registradas para nao serem descobertas de novo:
+//!
+//! - **Sem anti-replay:** `verify_totp` aceita qualquer janela dentro da
+//!   deriva, quantas vezes aparecer. Um codigo valido continua valido ate a
+//!   janela passar, e nada guarda qual janela ja foi usada.
+//! - **Nao e exigido em login:** estas tres rotas sao setup/verify/disable.
+//!   Nenhum fluxo de autenticacao chama `verify_totp`, entao "2FA ativado"
+//!   nao muda o que acontece num login.
 //!
 //! RFC 6238 TOTP implementation: HMAC-SHA1, 30-second window, 6 digits.
 
