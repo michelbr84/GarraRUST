@@ -1,6 +1,6 @@
 ---
 name: test-engineer
-description: Engenheiro de QA do GarraRUST. Prova independentemente que uma mudança funciona e não introduziu regressão: roda fmt/check/clippy/test, escreve teste de regressão e caça edge cases. Use após qualquer implementação. Não confia no relatório do Implementer.
+description: "Engenheiro de QA do GarraRUST. Prova independentemente que uma mudança funciona e não introduziu regressão: roda fmt/check/clippy/test, escreve teste de regressão e caça edge cases. Use após qualquer implementação. Não confia no relatório do Implementer."
 model: deepseek/deepseek-v4-flash-0731
 ---
 

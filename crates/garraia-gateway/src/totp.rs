@@ -118,10 +118,13 @@ pub fn verify_totp(secret: &str, code: &str) -> bool {
         Err(_) => return false,
     };
 
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    // Relogio ilegivel nao tem janela para validar: recusar e o unico
+    // caminho fail-closed (o contrario seria computar o codigo da janela
+    // zero e aceita-lo de quem tem o segredo).
+    let now_secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => return false,
+    };
 
     let current_counter = (now_secs / TOTP_STEP_SECS) as i64;
 
@@ -134,6 +137,23 @@ pub fn verify_totp(secret: &str, code: &str) -> bool {
     }
 
     false
+}
+
+/// Codigo valido para o segredo neste instante — o par de [`verify_totp`].
+///
+/// Publico porque sem ele nao ha como exercitar o fluxo de 2FA de fora do
+/// modulo: um teste de integracao do login do painel (#1121) precisa produzir
+/// um codigo que o handler va aceitar, e a alternativa era reimplementar
+/// RFC 4226 no arquivo de teste. Nao e atalho de verificacao — e o mesmo
+/// `hotp` de sempre, so alcancavel.
+///
+/// `None` tambem quando o relogio do sistema nao pode ser lido: um codigo
+/// computado na janela zero do epoch seria um valor atemporal — valido em
+/// qualquer dia, e atemporal e exatamente o que TOTP existe para nao ser.
+pub fn current_code(secret: &str) -> Option<String> {
+    let key_bytes = base32_decode(secret).ok()?;
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    Some(hotp(&key_bytes, now_secs / TOTP_STEP_SECS))
 }
 
 /// Compute HOTP(key, counter) and return as zero-padded 6-digit string.

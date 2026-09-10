@@ -110,6 +110,99 @@ test.describe('Garra Glass — webchat redesign', () => {
     // We just assert the hamburger button is reachable — it's the door back.
     await expect(page.locator('#hamburger-btn')).toBeVisible();
   });
+
+  // #1123 — the hamburger is rendered at every width, but the old handler
+  // unconditionally opened the *mobile* drawer. On desktop that only produced
+  // the dimming overlay: the sidebar was already on screen, so nothing moved.
+  test('desktop viewport: hamburger collapses the sidebar without the mobile overlay', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 633 });
+    await openWebchat(page);
+
+    const hamburger = page.locator('#hamburger-btn');
+    const sidebarEl = page.locator('#sidebar');
+    const overlay = page.locator('#sidebar-overlay');
+
+    await expect(hamburger).toBeVisible();
+    await expect(sidebarEl).not.toHaveClass(/collapsed/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+
+    await hamburger.click();
+
+    await expect(sidebarEl).toHaveClass(/collapsed/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+    // The regression itself: no dimming overlay may be left behind on desktop.
+    await expect(overlay).not.toHaveClass(/show/);
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+
+    await hamburger.click();
+
+    await expect(sidebarEl).not.toHaveClass(/collapsed/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+    await expect(overlay).not.toHaveClass(/show/);
+  });
+
+  test('mobile viewport: hamburger still opens the sidebar drawer with its overlay', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openWebchat(page);
+
+    const hamburger = page.locator('#hamburger-btn');
+    const sidebarEl = page.locator('#sidebar');
+    const overlay = page.locator('#sidebar-overlay');
+
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+
+    await hamburger.click();
+
+    await expect(sidebarEl).toHaveClass(/mobile-open/);
+    await expect(overlay).toHaveClass(/show/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+
+    await hamburger.click();
+
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+    await expect(overlay).not.toHaveClass(/show/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  // #1132 CR follow-up: the drawer has pre-existing close paths that never
+  // touch the hamburger (page-router buttons, session items, settings). The
+  // sync lives inside closeSidebarMobile(), so aria-expanded must follow even
+  // when the button itself is not the trigger.
+  test('mobile viewport: closing the drawer via a sidebar page button syncs aria-expanded', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openWebchat(page);
+
+    const hamburger = page.locator('#hamburger-btn');
+    const sidebarEl = page.locator('#sidebar');
+    const overlay = page.locator('#sidebar-overlay');
+
+    await hamburger.click();
+    await expect(sidebarEl).toHaveClass(/mobile-open/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'true');
+
+    // A pre-existing close path: a nav button inside the drawer.
+    await page.locator('.sidebar-page-btn[data-page="dashboard"]').click();
+
+    await expect(sidebarEl).not.toHaveClass(/mobile-open/);
+    await expect(overlay).not.toHaveClass(/show/);
+    await expect(hamburger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('resizing from mobile to desktop clears a stale mobile-open sidebar', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openWebchat(page);
+
+    await page.locator('#hamburger-btn').click();
+    await expect(page.locator('#sidebar')).toHaveClass(/mobile-open/);
+    await expect(page.locator('#sidebar-overlay')).toHaveClass(/show/);
+
+    await page.setViewportSize({ width: 1280, height: 633 });
+
+    await expect(page.locator('#sidebar')).not.toHaveClass(/mobile-open/);
+    await expect(page.locator('#sidebar-overlay')).not.toHaveClass(/show/);
+    await expect(page.locator('#sidebar')).not.toHaveClass(/collapsed/);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -212,5 +305,131 @@ test.describe('Garra Glass — multi-page router matrix', () => {
       expect(typeof c.label).toBe('string');
       expect(['ok', 'warning', 'error', 'skipped']).toContain(c.status);
     }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// #1116 — six pages still wore an "Em breve" tag in the sidebar even though the
+// router already dispatches them to real loaders. The two placeholders that
+// genuinely are not implemented (notification bell, right-panel CLI/Schema
+// tabs) keep their marker, now citing the issue instead of a dead plan.
+// ────────────────────────────────────────────────────────────────────────────
+
+const IMPLEMENTED_PAGES = [
+  'providers',
+  'channels',
+  'sessions',
+  'settings',
+  'diagnostics',
+  'logs',
+] as const;
+
+test.describe('Garra Glass — "Em breve" tags (#1116)', () => {
+  for (const page_name of IMPLEMENTED_PAGES) {
+    test(`sidebar nav for "${page_name}" no longer shows "Em breve"`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await openWebchat(page);
+
+      const btn = page.locator(`.sidebar-page-btn[data-page="${page_name}"]`);
+      await expect(btn).toBeVisible();
+      await expect(btn.locator('.page-tag')).toHaveCount(0);
+      await expect(btn).not.toContainText('Em breve');
+    });
+  }
+
+  test('the pages that are still not implemented keep the marker, citing #1116', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openWebchat(page);
+
+    const bell = page.locator('#header-bell-btn');
+    await expect(bell).toHaveAttribute('aria-disabled', 'true');
+    await expect(bell).toHaveAttribute('title', /#1116/);
+
+    const cliTab = page.locator('.toolbar-tabs .tab-btn', { hasText: 'CLI' });
+    const schemaTab = page.locator('.toolbar-tabs .tab-btn', { hasText: 'Schema' });
+    await expect(cliTab).toHaveAttribute('aria-disabled', 'true');
+    await expect(cliTab).toHaveAttribute('title', /#1116/);
+    await expect(schemaTab).toHaveAttribute('aria-disabled', 'true');
+    await expect(schemaTab).toHaveAttribute('title', /#1116/);
+  });
+
+  test('each of the six pages renders real data, not a placeholder', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+
+    for (const page_name of IMPLEMENTED_PAGES) {
+      await page.goto(`/#/${page_name}`);
+      await page.locator('body').waitFor({ state: 'visible', timeout: 10_000 });
+
+      const view = page.locator(`.page-view[data-page="${page_name}"]`);
+      await expect(view).toHaveClass(/active/);
+      // The loader must move past its "Carregando…" placeholder and must not
+      // fall into the fetch-error box.
+      await expect(view).not.toContainText('Carregando', { timeout: 15_000 });
+      await expect(view).not.toContainText('Falha ao carregar', { timeout: 15_000 });
+    }
+
+    // Positive signal: the loaders actually mounted something. A gateway with
+    // no provider configured is still a success — it renders the empty state.
+    await page.goto('/#/providers');
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const el = document.getElementById('providers-grid');
+            if (!el) return 0;
+            return (
+              el.querySelectorAll('.provider-card').length +
+              (el.textContent.includes('Nenhum provider registrado') ? 1 : 0)
+            );
+          }),
+        { timeout: 15_000 },
+      )
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/channels');
+    await expect
+      .poll(async () => await page.evaluate(() => document.querySelectorAll('#channels-grid .provider-card').length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/diagnostics');
+    await expect
+      .poll(async () => await page.evaluate(() => (document.getElementById('diagnostics-checks') || document.body).children.length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/settings');
+    await expect
+      .poll(async () => await page.evaluate(() => document.querySelectorAll('#settings-form input, #settings-form select').length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    await page.goto('/#/sessions');
+    await expect
+      .poll(async () => await page.evaluate(() => document.querySelectorAll('#sessions-table-body tr').length), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+  });
+
+  // The old messages were a bare "Falha ao carregar X." — no status code, no
+  // way forward. A 401 is the common case (gateway.api_key set, no key stored
+  // in this browser), so it now names the form that solves it and reveals it.
+  test('a 401 tells the user to fill in the gateway key and reveals the form', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // A 401 implies the gateway requires a key, so keep `/api/auth-check`
+    // consistent with it — otherwise init would hide the form again right
+    // after the loader revealed it.
+    await page.route('**/api/auth-check*', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{"auth_required":true}' }),
+    );
+    await page.route('**/api/providers*', (route) =>
+      route.fulfill({ status: 401, contentType: 'application/json', body: '{}' }),
+    );
+
+    await page.goto('/#/providers');
+    await page.locator('body').waitFor({ state: 'visible', timeout: 10_000 });
+
+    const grid = page.locator('#providers-grid');
+    await expect(grid).toContainText('HTTP 401', { timeout: 15_000 });
+    await expect(grid).toContainText('Gateway Authentication');
+    await expect(grid).toContainText('Connect');
+    // The form lives in the right panel and is hidden by CSS until needed.
+    await expect(page.locator('#auth-section')).toBeVisible();
   });
 });

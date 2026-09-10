@@ -589,11 +589,15 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
     // --- Tools ---
     // GAR-187: use confirmation-enabled BashTool when config.agent.tool_confirmation_enabled
+    // #1105: a allowlist do operador vale nos dois caminhos — com ou sem canal
+    // de confirmacao. E ela que destrava o caso reportado (um CLI de outro
+    // agente instalado pelo proprio dono) sem abrir o tier risky inteiro.
     let bash_tool = if config.agent.tool_confirmation_enabled {
         BashTool::new_with_confirmation(None)
     } else {
         BashTool::new(None)
-    };
+    }
+    .with_allowlist(config.agent.bash_allowlist.clone());
     runtime.register_tool(Box::new(bash_tool));
     runtime.register_tool(Box::new(FileReadTool::new(None)));
     runtime.register_tool(Box::new(FileWriteTool::new(None)));
