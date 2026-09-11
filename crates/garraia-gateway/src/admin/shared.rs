@@ -256,6 +256,27 @@ fn master_key_file_keys() -> AdminKeys {
         };
     }
 
+    // Chegar aqui com o arquivo EXISTINDO significa que ele esta ilegivel ou
+    // com tamanho errado, e a chave nova logo abaixo vai substitui-lo. Antes
+    // do #1141 isso custava as chaves de provider; agora custa tambem o
+    // segredo do 2FA de todo admin que tem 2FA ligado — o login passa a
+    // responder 500 e o dono so volta pelo break-glass de `docs/security.md`.
+    // Guardar o arquivo antigo em vez de sobrescrever nao recupera a chave
+    // (32 bytes truncados nao voltam), mas tira o "silenciosamente": o
+    // operador ve o aviso e encontra o arquivo preservado ao lado.
+    if key_path.exists() {
+        let preservado = key_path.with_extension("key.unreadable");
+        let movido = std::fs::rename(&key_path, &preservado).is_ok();
+        warn!(
+            preserved = movido,
+            "admin master.key exists but is unreadable or has the wrong length; \
+             generating a new one. Every secret encrypted under the old key — \
+             provider keys AND admin 2FA secrets — becomes unreadable. Admins \
+             with 2FA will get HTTP 500 on login until the second factor is \
+             cleared; see docs/security.md"
+        );
+    }
+
     // The `.expect` predates this change: the function returns `AdminKeys`,
     // not `Result`, so propagating would mean changing the signature and its
     // callers. Without entropy there is no key to hand back either way.
@@ -327,6 +348,11 @@ pub fn resolve_admin_encryption_key(store: &mut AdminStore) -> Vec<u8> {
 /// Re-encrypt every stored admin secret under `keys.current`, then persist the
 /// new KDF parameters.
 ///
+/// "Every stored secret" includes the panel's TOTP secrets
+/// (`admin_users.totp_secret_enc`) since #1141 — they are under the same
+/// master key, and a row left behind by a re-key is an owner locked out of
+/// the console, not just an unreadable credential.
+///
 /// Forward-only and fail-closed:
 ///
 /// * every ciphertext is decrypted with the legacy key and re-encrypted with
@@ -347,6 +373,7 @@ fn migrate_admin_secrets_kdf(store: &mut AdminStore, keys: &AdminKeys) -> Result
 
     let secrets = store.secret_ciphertexts()?;
     let versions = store.secret_version_ciphertexts()?;
+    let totp_secrets = store.totp_secret_ciphertexts()?;
 
     let mut new_secrets = Vec::with_capacity(secrets.len());
     for (id, encrypted, nonce) in &secrets {
@@ -367,6 +394,21 @@ fn migrate_admin_secrets_kdf(store: &mut AdminStore, keys: &AdminKeys) -> Result
         new_versions.push((*id, re_encrypted, new_nonce));
     }
 
+    // The panel's 2FA secret is encrypted under this same master key since
+    // #1141, so it re-keys with everything else. Leaving it behind would not
+    // lose a provider credential — it would lock the owner out of the console:
+    // `get_totp_secret` would return `Err` under the new key and the login
+    // would answer 500 forever, with no recovery code to fall back on.
+    let mut new_totp = Vec::with_capacity(totp_secrets.len());
+    for (user_id, encrypted, nonce) in &totp_secrets {
+        let plaintext = super::secrets::decrypt_value(encrypted, nonce, legacy).map_err(|e| {
+            format!("totp secret for user {user_id} does not decrypt with the legacy key: {e}")
+        })?;
+        let (re_encrypted, new_nonce) = super::secrets::encrypt_value(&plaintext, &keys.current)
+            .map_err(|e| format!("failed to re-encrypt totp secret for user {user_id}: {e}"))?;
+        new_totp.push((user_id.clone(), re_encrypted, new_nonce));
+    }
+
     // Ciphertexts and the parameters that describe them land together or not at
     // all. An earlier revision committed the SQL and then wrote a `kdf.json`;
     // a crash or a failed write in between left the data under a key nothing
@@ -374,6 +416,7 @@ fn migrate_admin_secrets_kdf(store: &mut AdminStore, keys: &AdminKeys) -> Result
     let rekeyed = store.apply_secret_rekey(
         &new_secrets,
         &new_versions,
+        &new_totp,
         &(params.version, params.salt.clone(), params.iterations.get()),
     )?;
 
@@ -497,6 +540,83 @@ mod tests {
         let next_boot = derive_with_passphrase(Some(recorded), PASS);
         assert_eq!(next_boot.current, keys.current);
         assert!(!next_boot.migration_pending());
+    }
+
+    // ── #1141: o segredo do 2FA entra no re-key da chave mestra ──────────
+
+    /// O buraco que a revisao deste PR pegou: cifrar o segredo do 2FA criou
+    /// uma dependencia da chave mestra que a rotacao de KDF nao conhecia. Se
+    /// o re-key re-cifrasse so `secrets`/`secret_versions`, o segredo do
+    /// segundo fator ficaria sob a chave antiga enquanto o processo passa a
+    /// usar a nova — `get_totp_secret` viraria `Err` e o login do dono
+    /// responderia 500 para sempre, sem recovery code para sair.
+    #[test]
+    fn migration_reencrypts_the_admin_totp_secret_too() {
+        let mut store = AdminStore::in_memory().expect("in-memory store");
+        let keys = pending_keys(PASS);
+        let legacy = keys.legacy.clone().expect("legacy key");
+        let user = store
+            .create_user("dono", "senha", super::super::rbac::Role::Admin)
+            .expect("usuario");
+
+        // Estado de uma instalacao legada: o segredo do 2FA cifrado sob a
+        // chave derivada do salt compartilhado.
+        store
+            .set_pending_totp_secret(&user.id, "JBSWY3DPEHPK3PXP", &legacy)
+            .expect("segredo sob a chave legada");
+        store.enable_totp(&user.id).expect("2fa ligado");
+
+        migrate_admin_secrets_kdf(&mut store, &keys).expect("migration");
+
+        // Depois do re-key o segredo tem que abrir com a chave NOVA — que e a
+        // que o processo passa a usar a partir daqui.
+        assert_eq!(
+            store
+                .get_totp_secret(&user.id, &keys.current)
+                .expect("segredo legivel sob a chave nova")
+                .as_deref(),
+            Some("JBSWY3DPEHPK3PXP"),
+            "o re-key tem que levar o segredo do 2FA junto, senao o dono fica \
+             trancado fora do painel"
+        );
+        assert!(
+            store.get_totp_secret(&user.id, &legacy).is_err(),
+            "a chave legada nao pode mais abrir o segredo"
+        );
+    }
+
+    /// Fail-closed tambem no lado do 2FA: um segredo TOTP que nao abre com a
+    /// chave legada aborta o re-key inteiro, sem gravar `kdf_params`. Gravar
+    /// parametros de uma chave que nao abre esse segredo transformaria uma
+    /// inconsistencia recuperavel (ainda da para rodar na legada) em perda
+    /// definitiva.
+    #[test]
+    fn a_totp_secret_that_does_not_decrypt_aborts_the_rekey() {
+        let mut store = AdminStore::in_memory().expect("in-memory store");
+        let keys = pending_keys(PASS);
+        let user = store
+            .create_user("dono", "senha", super::super::rbac::Role::Admin)
+            .expect("usuario");
+
+        let unrelated = vec![5u8; MASTER_KEY_LEN];
+        store
+            .set_pending_totp_secret(&user.id, "JBSWY3DPEHPK3PXP", &unrelated)
+            .expect("segredo sob uma chave alheia");
+
+        let err = migrate_admin_secrets_kdf(&mut store, &keys).expect_err("must refuse");
+        assert!(err.contains("totp secret"), "{err}");
+        assert!(
+            store.kdf_params().is_none(),
+            "params nao podem ser gravados quando o re-key falhou"
+        );
+        assert_eq!(
+            store
+                .get_totp_secret(&user.id, &unrelated)
+                .expect("segredo intacto")
+                .as_deref(),
+            Some("JBSWY3DPEHPK3PXP"),
+            "o ciphertext tem que ficar byte-identico"
+        );
     }
 
     #[test]

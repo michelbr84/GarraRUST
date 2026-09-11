@@ -83,6 +83,11 @@ pub type SecretCiphertext = (String, Vec<u8>, Vec<u8>);
 /// autoincrement integer rather than a uuid, hence the separate alias.
 pub type SecretVersionCiphertext = (i64, Vec<u8>, Vec<u8>);
 
+/// One encrypted admin TOTP secret for the master-key re-key:
+/// `(admin_users.id, totp_secret_enc, totp_secret_nonce)` (#1141). Shaped like
+/// `SecretCiphertext` but keyed by user, so the aliases stay separate.
+pub type TotpSecretCiphertext = (String, Vec<u8>, Vec<u8>);
+
 pub struct AdminStore {
     conn: Connection,
 }
@@ -235,7 +240,8 @@ impl AdminStore {
                 -- o codigo errado de hoje e vizinho do certo de amanha.
                 CREATE TABLE IF NOT EXISTS totp_attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL
+                        REFERENCES admin_users(id) ON DELETE CASCADE,
                     attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
 
@@ -1226,6 +1232,35 @@ impl AdminStore {
             .map_err(|e| format!("failed to read secrets row: {e}"))
     }
 
+    /// Segredos TOTP cifrados, como `(admin_users.id, enc, nonce)` — a
+    /// entrada do 2FA do painel no re-key da chave mestra (#1141).
+    ///
+    /// Sem isto o re-key deixaria o segredo do segundo fator sob a chave
+    /// antiga enquanto o processo passa a usar a nova, e `get_totp_secret`
+    /// devolveria `Err` para sempre: login em 500 permanente, o dono trancado
+    /// fora do proprio painel. So linhas com as duas colunas preenchidas
+    /// entram — `NULL` e ausencia legitima de segredo, nao ciphertext.
+    pub fn totp_secret_ciphertexts(&self) -> Result<Vec<TotpSecretCiphertext>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, totp_secret_enc, totp_secret_nonce FROM admin_users
+                 WHERE totp_secret_enc IS NOT NULL AND totp_secret_nonce IS NOT NULL",
+            )
+            .map_err(|e| format!("failed to prepare totp secrets scan: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|e| format!("failed to scan totp secrets: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("failed to read totp secret row: {e}"))
+    }
+
     /// Archived ciphertexts, as `(secret_versions.id, encrypted_value, nonce)`.
     pub fn secret_version_ciphertexts(&self) -> Result<Vec<SecretVersionCiphertext>, String> {
         let mut stmt = self
@@ -1288,6 +1323,7 @@ impl AdminStore {
         &mut self,
         secrets: &[SecretCiphertext],
         versions: &[SecretVersionCiphertext],
+        totp_secrets: &[TotpSecretCiphertext],
         kdf: &StoredKdfParams,
     ) -> Result<usize, String> {
         let (version, salt, iterations) = kdf;
@@ -1312,6 +1348,20 @@ impl AdminStore {
                     params![encrypted, nonce, id],
                 )
                 .map_err(|e| format!("failed to rekey secret version {id}: {e}"))?;
+        }
+
+        // O segredo do 2FA do painel entra na MESMA transacao (#1141): se ele
+        // ficasse sob a chave antiga enquanto `kdf_params` anuncia a nova, o
+        // login do dono viraria 500 permanente na proxima vez que ele abrisse
+        // o painel.
+        for (user_id, encrypted, nonce) in totp_secrets {
+            changed += tx
+                .execute(
+                    "UPDATE admin_users SET totp_secret_enc = ?1, totp_secret_nonce = ?2
+                     WHERE id = ?3",
+                    params![encrypted, nonce, user_id],
+                )
+                .map_err(|e| format!("failed to rekey totp secret for user {user_id}: {e}"))?;
         }
 
         tx.execute(

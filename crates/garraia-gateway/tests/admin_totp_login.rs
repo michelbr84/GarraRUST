@@ -278,6 +278,38 @@ async fn o_travamento_sobrevive_ao_restart_do_gateway() {
     assert!(sessao.is_none(), "travado nao abre sessao");
 }
 
+/// #1140: a contagem que nao pode ser lida recusa o login, sem sessao.
+///
+/// O valor de seguranca da mudanca esta exatamente aqui: o caminho antigo
+/// (`HashMap`) nunca falhava, entao "nao consegui contar" e um estado novo.
+/// Tratado como "ainda pode tentar", ele devolveria o brute force do segundo
+/// fator a quem conseguisse derrubar a tabela. A recusa e 500 mesmo com a
+/// senha certa E o codigo certo.
+#[tokio::test]
+async fn contagem_de_tentativas_ilegivel_recusa_o_login_sem_abrir_sessao() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, store, path) = cenario_arquivo(&dir);
+    let secret = ligar_2fa(&store).await;
+
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    conn.execute("DROP TABLE totp_attempts", [])
+        .expect("derrubar a tabela de tentativas");
+    drop(conn);
+
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+    let (status, json, sessao) = login(
+        &router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": code}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "contagem ilegivel tem que virar 500, nao login liberado: {json}"
+    );
+    assert!(sessao.is_none(), "sem contagem legivel, sem sessao");
+}
+
 /// O enrollment por HTTP: setup devolve um segredo pendente, e ele so passa a
 /// valer depois que um codigo confirma.
 #[tokio::test]

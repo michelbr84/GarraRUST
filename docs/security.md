@@ -93,6 +93,24 @@ Both limits of the first version are now closed:
   value until the next read, which encrypts it and clears the old column;
   the upgrade is forward-only and needs no operator step.
 
+Encrypting the secret also creates a dependency that did not exist before, so
+two operational notes come with it:
+
+- **The secret now lives and dies with the admin master key.** A master-key
+  rotation carries it along automatically — the re-key re-encrypts
+  `admin_users.totp_secret_enc` in the same transaction as everything else — but
+  *losing* the key is different. If `<config_dir>/admin/master.key` is deleted,
+  truncated, or the vault passphrase changes, the secret stops decrypting and
+  the console answers **HTTP 500 on login**, not "2FA disabled". That is
+  deliberate (an unreadable second factor must never degrade into no second
+  factor), and the way out is the same break-glass `UPDATE` documented above:
+  clear the second factor in the database and enroll again. A `master.key` that
+  exists but cannot be used is preserved as `master.key.unreadable` and logged
+  loudly rather than silently replaced.
+- **Locked out by the 15-minute window and do not want to disable 2FA?** Clear
+  just the counter, with the gateway stopped:
+  `sqlite3 "$HOME/.garraia/data/admin.db" "DELETE FROM totp_attempts;"`
+
 Two things this does **not** change, worth being explicit about:
 
 - `admin_sessions.token` is still stored in cleartext, so whoever reads
@@ -104,6 +122,13 @@ Two things this does **not** change, worth being explicit about:
 - The **mobile** flow still stores its secret in cleartext
   (`mobile_users.totp_secret`, base32, unencrypted). Only the console side
   is encrypted today.
+- There is still **no global rate limit on `POST /admin/api/login`**. The
+  durable counter above bounds guesses at the *second* factor, per user, after
+  a valid password; it does nothing about guessing the password itself, which
+  remains unbounded (each attempt costs 600k PBKDF2 iterations, so it is also a
+  cheap way to burn CPU). `/admin/api/recovery/*` already sits behind a rate
+  limiter; the login route does not. This is the one piece of #1140 that the
+  durable counter did **not** deliver.
 
 ### Input Validation
 

@@ -9,3 +9,13 @@
   Decifrar falhando e indisponibilidade, nao "2FA desligado": trocar a chave
   mestra sem re-cifrar recusa o login em vez de abrir o painel so com a
   senha.
+- **O re-key da chave mestra do painel passa a levar o segredo do 2FA junto
+  (#1141).** Cifrar o segredo criou uma dependencia da chave mestra que a
+  rotacao de parametros KDF nao conhecia: ela re-cifrava `secrets` e
+  `secret_versions` e deixava `admin_users.totp_secret_enc` sob a chave
+  antiga, o que virava HTTP 500 permanente no login de todo admin com 2FA
+  ligado. As colunas do 2FA entram na mesma transacao do re-key, e um
+  segredo que nao decifra com a chave legada aborta o re-key inteiro em vez
+  de gravar parametros que nao abrem nada. Um `master.key` ilegivel tambem
+  deixou de ser substituido em silencio: ele e preservado como
+  `master.key.unreadable` com aviso no log.
