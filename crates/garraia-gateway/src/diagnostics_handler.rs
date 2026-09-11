@@ -114,6 +114,16 @@ const TTS_NEXT_STEP: &str =
 const STT_NEXT_STEP: &str =
     "Start the STT server: `fwsh serve --host 127.0.0.1 --port 9090` (docs/voice.md).";
 
+/// Next step for a 5xx: the process is up, so restarting it is not the
+/// instruction — reading its logs is. The start command above is for
+/// `Unreachable` only; docs/voice.md and the changelog promise this split.
+const TTS_LOGS_STEP: &str =
+    "The TTS process answered 5xx — it is up but broken; inspect its logs (docs/voice.md).";
+
+/// Same, for the STT server.
+const STT_LOGS_STEP: &str =
+    "The STT process answered 5xx — it is up but broken; inspect its logs (docs/voice.md).";
+
 /// Budget for one voice probe. Two of them run per report, and only when
 /// voice mode is on — the Diagnostics page must not hang on a dead port.
 const VOICE_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -147,15 +157,41 @@ enum VoiceProbe {
     Invalid(String),
 }
 
+/// Motivo legível para um veto do guard SSRF, montado campo a campo.
+///
+/// `/api/diagnostics` é auth-free sem a chave do gateway: o `detail` de um
+/// endpoint inválido não pode depender do `Display` de `SsrfRejection`
+/// acontecer de não ecoar a URL crua — uma variante nova amanhã embutindo a
+/// URL abriria o vazamento sem testar ninguém. Aqui só entram campos que
+/// estruturalmente não carregam userinfo: scheme, host e IP vêm dos
+/// componentes homônimos da URL parseada, e o texto interno de
+/// `InvalidUrl`/`ResolveFailed`/`ClientBuild`/`Transport` não é repassado
+/// (não é nosso, e o `url` pode embutir trechos da entrada).
+fn motivo_do_veto(e: &ssrf::SsrfRejection) -> String {
+    use ssrf::SsrfRejection as R;
+    match e {
+        R::InvalidUrl(_) => "URL invalida".to_string(),
+        R::SchemeNotAllowed { scheme, .. } => format!("esquema '{scheme}' nao permitido"),
+        R::MissingHost => "URL sem host".to_string(),
+        R::HostNotAllowed(host) => format!("host '{host}' fora da allowlist"),
+        R::ResolveFailed(_) => "falha ao resolver o host".to_string(),
+        R::BlockedAddress { host, ip } => {
+            format!("host '{host}' resolve para endereco bloqueado ({ip})")
+        }
+        R::ClientBuild(_) => "nao foi possivel construir o cliente HTTP".to_string(),
+        R::BodyTooLarge { .. } | R::Transport(_) => "requisicao falhou".to_string(),
+    }
+}
+
 async fn probe_voice_endpoint(endpoint: &str) -> VoiceProbe {
     let policy = voice_policy();
     let vetted = match ssrf::vet_url(endpoint, &policy) {
         Ok(v) => v,
-        Err(e) => return VoiceProbe::Invalid(e.to_string()),
+        Err(e) => return VoiceProbe::Invalid(motivo_do_veto(&e)),
     };
     let client = match ssrf::pinned_client(&vetted, &policy) {
         Ok(c) => c,
-        Err(e) => return VoiceProbe::Invalid(e.to_string()),
+        Err(e) => return VoiceProbe::Invalid(motivo_do_veto(&e)),
     };
     match client.get(vetted.url.clone()).send().await {
         Ok(resp) => {
@@ -207,11 +243,16 @@ fn endpoint_publico(endpoint: &str) -> String {
 /// exactly what #1098 reports as too easy to miss. The endpoint is echoed
 /// only through [`endpoint_publico`] — never verbatim — because this report
 /// is auth-free without the gateway key.
+///
+/// `next_step` (the start command) is for `Unreachable` only; `unhealthy_step`
+/// is what a 5xx shows — the process is up, so the instruction is to read
+/// its logs, not to start it again. docs/voice.md documents both.
 fn voice_check(
     id: &'static str,
     label: &'static str,
     endpoint: &str,
     next_step: &'static str,
+    unhealthy_step: &'static str,
     probe: VoiceProbe,
 ) -> DiagnosticCheck {
     let ep = endpoint_publico(endpoint);
@@ -225,7 +266,7 @@ fn voice_check(
         VoiceProbe::Unhealthy(code) => (
             CheckStatus::Error,
             format!("{ep} respondeu HTTP {code} — servidor de pe, servico quebrado"),
-            Some(next_step),
+            Some(unhealthy_step),
         ),
         VoiceProbe::Unreachable(reason) => (
             CheckStatus::Error,
@@ -283,24 +324,27 @@ static VOICE_PROBE_CACHE: LazyLock<tokio::sync::Mutex<Option<VoiceProbes>>> =
 async fn sondas_de_voz(cfg: &garraia_config::VoiceConfig) -> (VoiceProbe, VoiceProbe) {
     let tts_endpoint = active_tts_endpoint(cfg).to_string();
     let stt_endpoint = cfg.stt_endpoint.clone();
+    // O lock fica preso atravessando a sonda inteira (tokio Mutex e feito
+    // para isso): quem chega junto serializa e encontra o cache ja fresco.
+    // Sem isso, a janela entre o check e o preenchimento deixava N chamadas
+    // concorrentes dispararem N pares de dials — exatamente o amplificador
+    // que o TTL existe para impedir, so que pela porta dos fundos.
+    let mut guard = VOICE_PROBE_CACHE.lock().await;
+    if let Some(c) = guard.as_ref()
+        && c.gravado_em.elapsed() < VOICE_PROBE_CACHE_TTL
+        && c.tts_endpoint == tts_endpoint
+        && c.stt_endpoint == stt_endpoint
     {
-        let guard = VOICE_PROBE_CACHE.lock().await;
-        if let Some(c) = guard.as_ref()
-            && c.gravado_em.elapsed() < VOICE_PROBE_CACHE_TTL
-            && c.tts_endpoint == tts_endpoint
-            && c.stt_endpoint == stt_endpoint
-        {
-            return (c.tts.clone(), c.stt.clone());
-        }
+        return (c.tts.clone(), c.stt.clone());
     }
     let (tts, stt) = tokio::join!(
         probe_voice_endpoint(&tts_endpoint),
         probe_voice_endpoint(&stt_endpoint),
     );
-    *VOICE_PROBE_CACHE.lock().await = Some(VoiceProbes {
+    *guard = Some(VoiceProbes {
         gravado_em: Instant::now(),
-        tts_endpoint: tts_endpoint.clone(),
-        stt_endpoint: stt_endpoint.clone(),
+        tts_endpoint,
+        stt_endpoint,
         tts: tts.clone(),
         stt: stt.clone(),
     });
@@ -563,6 +607,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         "TTS server",
         tts_endpoint,
         TTS_NEXT_STEP,
+        TTS_LOGS_STEP,
         tts_probe,
     ));
 
@@ -573,6 +618,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         "STT server",
         &stt_endpoint,
         STT_NEXT_STEP,
+        STT_LOGS_STEP,
         stt_probe,
     ));
 
@@ -615,6 +661,7 @@ mod tests {
             "TTS server",
             ENDPOINT,
             TTS_NEXT_STEP,
+            TTS_LOGS_STEP,
             VoiceProbe::Disabled,
         );
         assert!(matches!(c.status, CheckStatus::Skipped));
@@ -631,6 +678,7 @@ mod tests {
             "TTS server",
             ENDPOINT,
             TTS_NEXT_STEP,
+            TTS_LOGS_STEP,
             VoiceProbe::Reachable,
         );
         assert!(matches!(c.status, CheckStatus::Ok));
@@ -647,6 +695,7 @@ mod tests {
             "TTS server",
             ENDPOINT,
             TTS_NEXT_STEP,
+            TTS_LOGS_STEP,
             VoiceProbe::Unreachable("nothing listening (connection refused)"),
         );
         assert!(matches!(c.status, CheckStatus::Error));
@@ -669,6 +718,7 @@ mod tests {
             "STT server",
             "file:///etc/passwd",
             STT_NEXT_STEP,
+            STT_LOGS_STEP,
             VoiceProbe::Invalid("scheme not allowed".to_string()),
         );
         assert!(matches!(c.status, CheckStatus::Error));
@@ -719,6 +769,7 @@ mod tests {
             "TTS server",
             "http://user:senha@127.0.0.1:7860",
             TTS_NEXT_STEP,
+            TTS_LOGS_STEP,
             VoiceProbe::Reachable,
         );
         assert!(c.detail.contains("http://127.0.0.1:7860"), "{}", c.detail);
@@ -766,6 +817,35 @@ mod tests {
         let _ = s.shutdown(std::net::Shutdown::Both);
     }
 
+    /// Listener HTTP de mentira que conta quantas conexoes chegaram — nos
+    /// testes de cache a prova e a CONTAGEM, nao a resposta.
+    async fn contador_na_porta() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c2 = count.clone();
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                c2.fetch_add(1, Ordering::SeqCst);
+                drena_request_e_responde(
+                    sock.unwrap(),
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        (format!("http://{addr}"), count)
+    }
+
+    /// `VOICE_PROBE_CACHE` e um global de processo, e tests do mesmo binario
+    /// rodam em paralelo por padrao: os dois testes que exercitam o cache se
+    /// serializam por aqui, para um nao sobrescrever a entrada do outro na
+    /// janela entre sonda e assert.
+    static CACHE_TEST_GUARD: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
+
     /// FIX B: 5xx significa "de pe, quebrado" — error, nao ok.
     #[tokio::test]
     async fn http_500_e_unhealthy() {
@@ -786,10 +866,18 @@ mod tests {
             "TTS server",
             &format!("http://{addr}"),
             TTS_NEXT_STEP,
+            TTS_LOGS_STEP,
             probe,
         );
         assert!(matches!(c.status, CheckStatus::Error));
         assert!(c.detail.contains("HTTP 500"), "{}", c.detail);
+        // #1144: um 5xx aponta para os logs, nao para o comando de subida —
+        // o processo esta de pe; restart seria a instrucao errada.
+        assert_eq!(c.next_step, Some(TTS_LOGS_STEP));
+        assert!(
+            !TTS_LOGS_STEP.contains("chatterbox-tts serve"),
+            "o passo do 5xx nao e o comando de subida"
+        );
     }
 
     /// 4xx e servidor de pe e saudavel o bastante: GET / pode nao existir.
@@ -834,25 +922,9 @@ mod tests {
     /// servidor — cada um dos dois listeners ve EXATAMENTE uma conexao.
     #[tokio::test]
     async fn sonda_repetida_dentro_do_ttl_nao_reproba() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::Ordering;
 
-        async fn contador_na_porta() -> (String, Arc<AtomicUsize>) {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            let count = Arc::new(AtomicUsize::new(0));
-            let c2 = count.clone();
-            std::thread::spawn(move || {
-                for sock in listener.incoming() {
-                    c2.fetch_add(1, Ordering::SeqCst);
-                    drena_request_e_responde(
-                        sock.unwrap(),
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    );
-                }
-            });
-            (format!("http://{addr}"), count)
-        }
+        let _guard = CACHE_TEST_GUARD.lock().await;
 
         let (tts_endpoint, tts_count) = contador_na_porta().await;
         let (stt_endpoint, stt_count) = contador_na_porta().await;
@@ -876,6 +948,99 @@ mod tests {
             stt_count.load(Ordering::SeqCst),
             1,
             "STT tem de ser sondado uma unica vez dentro do TTL"
+        );
+
+        *VOICE_PROBE_CACHE.lock().await = None;
+    }
+
+    /// #1144 (CR r2, achado 1): o motivo de um veto sai de `motivo_do_veto`,
+    /// montado campo a campo — jamais a URL crua, e muito menos a userinfo
+    /// que ela carrega. O link-local e barrado mesmo no escopo privado e o
+    /// veto carrega host+ip: se um dia um caminho descuidado ecoar a entrada,
+    /// este teste e o que pega.
+    #[tokio::test]
+    async fn veto_com_userinfo_nao_vaza_no_reason() {
+        let probe = probe_voice_endpoint("http://fulano:senha@169.254.169.254:80").await;
+        let VoiceProbe::Invalid(reason) = &probe else {
+            panic!("link-local e barrado mesmo no escopo privado: {probe:?}");
+        };
+        assert!(
+            !reason.contains("fulano") && !reason.contains("senha"),
+            "o motivo do veto nao pode ecoar a userinfo: {reason}"
+        );
+
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            "http://fulano:senha@169.254.169.254:80",
+            TTS_NEXT_STEP,
+            TTS_LOGS_STEP,
+            probe,
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(
+            c.detail.contains("http://169.254.169.254"),
+            "o detail mostra o endpoint publico (porta default e omitida pelo url): {}",
+            c.detail
+        );
+        assert!(!c.detail.contains("fulano"), "{}", c.detail);
+        assert!(!c.detail.contains("senha"), "{}", c.detail);
+
+        // Userinfo num host permitido e porta morta: passa do veto e morre no
+        // dial — e o motivo que sobe e a string estatica, nao o erro do reqwest.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let probe = probe_voice_endpoint(&format!("http://fulano:senha@{addr}")).await;
+        assert_eq!(
+            probe,
+            VoiceProbe::Unreachable("nothing listening (connection refused)"),
+            "loopback com userinfo passa do veto e morre no dial, com motivo estatico"
+        );
+    }
+
+    /// #1144 (CR r2, achado 3): a sonda e single-flight. Sem o lock preso
+    /// atravessando a sonda, N requests simultaneos numa janela de cache
+    /// frio disparavam N pares de dials — exatamente o amplificador que o
+    /// TTL existe para impedir. Cada listener ve EXATAMENTE uma conexao.
+    #[tokio::test]
+    async fn sonda_concorrente_nao_amplifica_dials() {
+        use std::sync::atomic::Ordering;
+
+        let _guard = CACHE_TEST_GUARD.lock().await;
+
+        let (tts_endpoint, tts_count) = contador_na_porta().await;
+        let (stt_endpoint, stt_count) = contador_na_porta().await;
+
+        *VOICE_PROBE_CACHE.lock().await = None;
+        let cfg = std::sync::Arc::new(garraia_config::VoiceConfig {
+            tts_endpoint: tts_endpoint.clone(),
+            stt_endpoint: stt_endpoint.clone(),
+            ..garraia_config::VoiceConfig::default()
+        });
+
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let cfg = std::sync::Arc::clone(&cfg);
+            set.spawn(async move {
+                let (tts, stt) = sondas_de_voz(&cfg).await;
+                assert_eq!(tts, VoiceProbe::Reachable);
+                assert_eq!(stt, VoiceProbe::Reachable);
+            });
+        }
+        while let Some(j) = set.join_next().await {
+            j.unwrap();
+        }
+
+        assert_eq!(
+            tts_count.load(Ordering::SeqCst),
+            1,
+            "8 chamadas concorrentes = 1 dial no TTS: single-flight"
+        );
+        assert_eq!(
+            stt_count.load(Ordering::SeqCst),
+            1,
+            "8 chamadas concorrentes = 1 dial no STT: single-flight"
         );
 
         *VOICE_PROBE_CACHE.lock().await = None;
