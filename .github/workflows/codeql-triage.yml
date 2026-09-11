@@ -22,12 +22,12 @@ on:
         default: 'critical'
         type: string
       state:
-        description: 'Estado do alerta (open|closed|dismissed|fixed). Vazio = todos.'
+        description: 'Estado do alerta (open|closed|dismissed|fixed). Use `all` para todos.'
         required: false
         default: 'open'
         type: string
       tool:
-        description: 'Nome da ferramenta (ex.: CodeQL). Vazio = todas.'
+        description: 'Nome da ferramenta (ex.: CodeQL). Use `all` para todas.'
         required: false
         default: 'CodeQL'
         type: string
@@ -65,19 +65,28 @@ jobs:
           IN_TOOL: ${{ inputs.tool }}
         run: |
           set -euo pipefail
-          # O script trata `--severity ""` como "todas" (`if severity:` em
-          # fetch_alerts), mas o input nao consegue entregar vazio: o Actions
-          # substitui string vazia pelo `default: critical` declarado acima, e
-          # a descricao prometia um "vazio = todas" inalcancavel via API.
-          # `all` e o sentinela que fecha essa lacuna sem mudar o significado
-          # de nenhum valor existente.
+          # `fetch_alerts` omite da query todo filtro vazio, entao string vazia
+          # significa "todas" para severity, state e tool igualmente. Mas o
+          # input nao consegue entregar vazio: o Actions substitui string vazia
+          # pelo `default:` declarado acima, e as descricoes prometiam um
+          # "vazio = todas" inalcancavel via API. `all` e o sentinela que fecha
+          # essa lacuna sem mudar o significado de nenhum valor existente.
+          #
+          # severity ganhou o sentinela no PR #890; state e tool ficaram para
+          # tras com a mesma promessa falsa. Custou uma varredura da issue #1142
+          # rodar o workflow DUAS vezes (state=open, depois state=fixed) para
+          # responder "o alerta existe em algum estado?" — que e uma pergunta so.
           severity="$IN_SEVERITY"
           if [ "$severity" = "all" ]; then severity=""; fi
+          state="$IN_STATE"
+          if [ "$state" = "all" ]; then state=""; fi
+          tool="$IN_TOOL"
+          if [ "$tool" = "all" ]; then tool=""; fi
           python3 scripts/security/codeql-alert-report.py \
             --repo "$GITHUB_REPOSITORY" \
             --severity "$severity" \
-            --state "$IN_STATE" \
-            --tool "$IN_TOOL" \
+            --state "$state" \
+            --tool "$tool" \
             --json-out codeql-alerts.json \
             --md-out codeql-alerts.md
           cat codeql-alerts.md >> "$GITHUB_STEP_SUMMARY"
