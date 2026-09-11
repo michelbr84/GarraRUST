@@ -55,7 +55,7 @@ pub async fn run_recovery_start(config: &AppConfig, username: &str) -> anyhow::R
         return Ok(1);
     }
 
-    println!("Pedido registrado. O codico vale 10 minutos e serve uma unica vez.");
+    println!("Pedido registrado. O codigo vale 10 minutos e serve uma unica vez.");
     match ler_codigo(&handoff_path(config)) {
         Some(code) => {
             println!();

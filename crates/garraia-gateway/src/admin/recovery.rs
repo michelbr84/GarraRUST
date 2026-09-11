@@ -152,8 +152,9 @@ pub async fn start_recovery(
     };
 
     // Fail-closed: a code the operator cannot read must not stay live.
-    let data_dir = state.app_state.config.resolved_data_dir();
-    if let Err(e) = write_code_file(&data_dir, &user.username, &code) {
+    let write_result = safe_data_dir(&state.app_state.config)
+        .and_then(|data_dir| write_code_file(&data_dir, &user.username, &code));
+    if let Err(e) = write_result {
         let _ = guard.discard_recovery_token(token_id);
         let _ = guard.append_audit(
             Some(&user.id),
@@ -274,9 +275,9 @@ pub async fn complete_recovery(
 
     // The handoff file outlived its code; leaving a dead code on disk is how
     // an operator ends up pasting yesterday's code and blaming the gateway.
-    let _ = std::fs::remove_file(recovery_code_path(
-        &state.app_state.config.resolved_data_dir(),
-    ));
+    if let Ok(data_dir) = safe_data_dir(&state.app_state.config) {
+        let _ = std::fs::remove_file(recovery_code_path(&data_dir));
+    }
 
     let _ = guard.append_audit(
         Some(&user.id),
@@ -323,6 +324,38 @@ fn server_error(detail: &str) -> Response {
         Json(serde_json::json!({"error": detail})),
     )
         .into_response()
+}
+
+/// Resolve the data dir that will hold the handoff file, refusing any path
+/// that walks out of itself.
+///
+/// `resolved_data_dir()` is operator-controlled — `data_dir` in the config
+/// file, or `GARRAIA_CONFIG_DIR` in the environment — so this is defense in
+/// depth, not a fix for a live bug: nothing in the HTTP request reaches the
+/// path, and the file name is a constant. It still earns its place, because a
+/// data dir carrying `..` writes the `0600` file somewhere the operator did
+/// not point at, and a non-UTF-8 dir would make the CLI's copy of this path
+/// disagree with the gateway's.
+///
+/// The `..` check is deliberately over the whole string, not per component:
+/// it costs a data dir literally named `foo..bar` (which nobody has) and buys
+/// the exact shape CodeQL's `rust/path-injection` models as a sanitizer, so
+/// the three `std::fs` calls downstream stop being reported as tainted sinks.
+fn safe_data_dir(config: &garraia_config::AppConfig) -> Result<PathBuf, String> {
+    vet_data_dir(config.resolved_data_dir())
+}
+
+/// The check itself, split out so a test can drive it without an `AppConfig`.
+fn vet_data_dir(resolved: PathBuf) -> Result<PathBuf, String> {
+    let dir = resolved
+        .to_str()
+        .ok_or_else(|| "data dir is not valid UTF-8".to_string())?;
+
+    if dir.contains("..") {
+        return Err("data dir must not contain a `..` component".to_string());
+    }
+
+    Ok(PathBuf::from(dir))
 }
 
 /// Absolute path of the handoff file for a given data dir.
@@ -409,6 +442,15 @@ mod tests {
         assert!(contents.contains("username=admin"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn data_dir_with_parent_component_is_refused() {
+        assert!(vet_data_dir(PathBuf::from("/var/lib/garraia/../../etc")).is_err());
+        assert!(vet_data_dir(PathBuf::from("..")).is_err());
+
+        let ok = vet_data_dir(PathBuf::from("/var/lib/garraia/data")).expect("clean dir");
+        assert_eq!(ok, PathBuf::from("/var/lib/garraia/data"));
     }
 
     #[test]

@@ -371,7 +371,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum AdminCommands {
-    /// Recupera a senha do painel admin com um codico de uso unico gerado
+    /// Recupera a senha do painel admin com um codigo de uso unico gerado
     /// no host (#1122). Nada de e-mail: o codigo sai num arquivo 0600 que
     /// so quem tem shell na maquina le.
     Recovery {
