@@ -95,8 +95,10 @@ crates/
                         `/api/settings/schema` + `/api/settings/effective` (com secret
                         masking via `configured: bool` em vez de `value`),
                         `PATCH /api/settings` (validate + audit + dry-run; persistência
-                        TOML em plan 0121a), `/api/diagnostics` (12 checks com
-                        `next_step` quando não-OK).
+                        TOML em plan 0121a), `/api/diagnostics` (14 checks com
+                        `next_step` quando não-OK — `voice.tts`/`voice.stt`
+                        sondam os servidores locais quando o modo voz está
+                        ligado, #1098).
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
   garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
                         Tipos: IdentityProvider trait + InternalProvider + LoginPool/SignupPool

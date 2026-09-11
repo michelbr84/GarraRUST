@@ -40,7 +40,10 @@ async function boot() {
   }
 
   if (GarraState.authRequired) {
-    if (dom.authSection) dom.authSection.style.display = "";
+    // Issue #1100: the CSS hides .gateway-key-form with `display: none`, so
+    // clearing the inline style ("") never reveals the auth form. Use an
+    // explicit display so the "Gateway API Key required" state is actionable.
+    if (dom.authSection) dom.authSection.style.display = "block";
     if (GarraState.gatewayKey) {
       connect();
     } else {

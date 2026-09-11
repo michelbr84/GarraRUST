@@ -46,6 +46,23 @@ agent:
   # Tier "arriscado" do safety_gate passa a exigir confirmação humana
   # (o tier "perigoso" é bloqueado SEMPRE, com ou sem esta flag):
   tool_confirmation_enabled: true
+  # #1105: padrões que o operador declara confiáveis e que por isso pulam a
+  # confirmação do tier arriscado. Lista POSITIVA: só o que está aqui escapa.
+  # Sintaxe: "prefixo*" (coringa só no fim) ou o comando exato. Padrões com
+  # coringa fora do fim são recusados com warning. Isto NÃO desbloqueia o
+  # tier perigoso — `rm -rf /` continua barrado mesmo que alguém o liste.
+  # Dois limites que valem ler antes de escrever um prefixo largo:
+  #   1. Um prefixo NUNCA cobre comando composto (`;`, `&&`, `||`, pipe,
+  #      `$(...)`, redireção) — o composto cai de volta no tier arriscado.
+  #   2. No caminho MCP (`garraia mcp-agent`) não existe confirmação humana
+  #      de qualquer forma, então o que entra aqui auto-executa sem prompt.
+  #      Prefira comandos exatos a prefixos, e a lista mínima necessária.
+  #   3. Um `"*"` puro não é "tudo" — é recusado. Coringa sem prefixo casa
+  #      com todo comando simples, que é o tier arriscado desligado por um
+  #      caractere. Se quer desligar a proteção, não configure a lista.
+  bash_allowlist:
+    - "hermes send *"
+    - "git status"
   max_tool_calls: 50
 
 # Servidores MCP com política (escopo mínimo + limites + allowlist).

@@ -9,6 +9,14 @@ use axum::response::IntoResponse;
 use super::middleware::{AuthenticatedAdmin, build_session_cookie, extract_ip};
 use super::rbac::{Action, Resource, Role, check_permission};
 use super::shared::AdminState;
+use super::store::AdminStore;
+
+/// Minimum length for a new password. Same bound the `setup` and
+/// `create_user` handlers already enforce.
+const MIN_PASSWORD_LEN: usize = 8;
+
+/// Audit `action` written by [`change_password`].
+pub const CHANGE_PASSWORD_ACTION: &str = "change_password";
 
 // ── Setup endpoint (first-run bootstrap) ─────────────────────────────
 
@@ -34,7 +42,7 @@ pub async fn setup(
         );
     }
 
-    if body.username.len() < 3 || body.password.len() < 8 {
+    if body.username.len() < 3 || body.password.len() < MIN_PASSWORD_LEN {
         return (
             StatusCode::BAD_REQUEST,
             HeaderMap::new(),
@@ -135,7 +143,7 @@ pub async fn create_user(
         }
     };
 
-    if body.username.len() < 3 || body.password.len() < 8 {
+    if body.username.len() < 3 || body.password.len() < MIN_PASSWORD_LEN {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "username >=3 chars, password >=8 chars"})),
@@ -379,4 +387,138 @@ pub async fn danger_zone(
             )
         }
     }
+}
+
+// ── Self-service password change (#1120) ─────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Write one audit row for a change-password attempt.
+///
+/// `details` describes the terminal for the trail and never carries a
+/// password — neither the current nor the new one. An audit write that
+/// itself fails must not vanish: it lands in the log, so a silent hole in
+/// the trail is at least observable. The terminal still answers as usual —
+/// same fail-open behaviour as every other admin route.
+fn audit_change_password(
+    store: &AdminStore,
+    admin: &AuthenticatedAdmin,
+    details: &str,
+    ip: Option<&str>,
+    outcome: &str,
+) {
+    if let Err(e) = store.append_audit(
+        Some(&admin.user_id),
+        Some(&admin.username),
+        CHANGE_PASSWORD_ACTION,
+        "user",
+        Some(&admin.user_id),
+        Some(details),
+        ip,
+        outcome,
+    ) {
+        tracing::warn!("change-password: failed to write audit event: {e}");
+    }
+}
+
+/// POST /admin/api/change-password — rotate the caller's own password.
+///
+/// #1120: before this route the only way to change an admin password was to
+/// run SQL against `admin.db` by hand.
+///
+/// The current password is re-verified with the same `verify_password` the
+/// danger zone uses, so a stolen session cookie alone cannot lock the real
+/// owner out; session auth and CSRF come from the router this handler is
+/// mounted in. The new hash and the revocation of the user's other sessions
+/// commit in one SQLite transaction — either both land or neither does.
+/// Hashing stays the local PBKDF2-HMAC-SHA256 of `store.rs` —
+/// `garraia_auth` (Argon2id) belongs to the Postgres workspace identity
+/// provider and pulling it here would change the scheme for existing rows.
+///
+/// Every terminal writes an audit event. Responses reuse the
+/// `{"error": ...}` / `{"ok": true}` shapes of the rest of the admin API; no
+/// password is ever echoed back or logged.
+pub async fn change_password(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    Json(body): Json<ChangePasswordRequest>,
+) -> impl IntoResponse {
+    let ip = extract_ip(&headers, None);
+
+    // Cheapest rejection first: no KDF work, no DB write.
+    if body.new_password.len() < MIN_PASSWORD_LEN {
+        let guard = state.store.lock().await;
+        audit_change_password(
+            &guard,
+            &admin,
+            "rejected: new password shorter than the minimum",
+            ip.as_deref(),
+            "failure",
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "new password must be >=8 chars"})),
+        );
+    }
+
+    let guard = state.store.lock().await;
+
+    let verified = guard.verify_password(&admin.username, &body.current_password);
+    if verified.is_none() {
+        audit_change_password(
+            &guard,
+            &admin,
+            "rejected: current password did not verify",
+            ip.as_deref(),
+            "failure",
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "password verification failed"})),
+        );
+    }
+
+    // The new hash and the revocation of the other sessions commit in ONE
+    // SQLite transaction: a failure in either one rolls the whole rotation
+    // back, so success is never announced with a stolen cookie still
+    // validating. The session the caller authenticated with is kept, so the
+    // console survives the rotation.
+    let revoked = match guard.rotate_password_and_revoke_sessions(
+        &admin.user_id,
+        &body.new_password,
+        &admin.session_token,
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            // Log the cause, answer with a fixed string: the SQLite message is an
+            // internal detail and the admin API has been echoing it elsewhere.
+            tracing::error!("change-password: rotation failed, nothing was persisted: {e}");
+            audit_change_password(
+                &guard,
+                &admin,
+                "rejected: could not persist the rotation",
+                ip.as_deref(),
+                "failure",
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "failed to update password"})),
+            );
+        }
+    };
+
+    audit_change_password(
+        &guard,
+        &admin,
+        &format!("self-service password change, {revoked} other session(s) revoked"),
+        ip.as_deref(),
+        "success",
+    );
+
+    (StatusCode::OK, Json(serde_json::json!({"ok": true})))
 }

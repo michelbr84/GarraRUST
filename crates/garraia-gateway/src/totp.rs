@@ -5,8 +5,32 @@
 //!   POST /auth/2fa/verify   — verify code and enable 2FA
 //!   POST /auth/2fa/disable  — disable 2FA (requires current code)
 //!
-//! The TOTP secret is stored encrypted in the `mobile_users` table via
-//! `totp_secret_enc` column (AES-256-GCM using the vault key).
+//! ## Estado real do segredo (lido em 2026-09-10, nao promessa)
+//!
+//! Este comentario dizia que o segredo ficava cifrado em `totp_secret_enc`
+//! com AES-256-GCM. **Nao fica.** A coluna e `mobile_users.totp_secret`
+//! (`TEXT`, `crates/garraia-db/src/session_store.rs:234`) e o que vai nela e
+//! o proprio base32, em claro — o `set_mobile_user_totp_secret` da store diz
+//! isso na cara ("here we store the base32-encoded value"). Quem tiver o
+//! arquivo do SQLite tem o segredo, e com o segredo o segundo fator e
+//! reconstruivel offline.
+//!
+//! Cifrar de verdade exige uma chave que hoje nem sempre existe em runtime
+//! (o cofre depende de passphrase configurada), entao a correcao honesta e
+//! esta: parar de prometer. Enquanto nao houver chave obrigatoria, trate o
+//! segredo como dado sensivel em claro.
+//!
+//! Duas outras lacunas, registradas para nao serem descobertas de novo:
+//!
+//! - **Sem anti-replay:** `verify_totp` aceita qualquer janela dentro da
+//!   deriva, quantas vezes aparecer. Um codigo valido continua valido ate a
+//!   janela passar, e nada guarda qual janela ja foi usada.
+//! - **Nao e exigido no login mobile:** estas tres rotas sao setup/verify/
+//!   disable, e o `/auth/login` mobile nunca chama `verify_totp` — no fluxo
+//!   mobile, "2FA ativado" nao muda o que acontece num login. JA o login do
+//!   console ADMIN exige TOTP quando ativado: `admin/handlers.rs` chama
+//!   `verify_totp` dentro do fluxo de login, e `admin/totp.rs` aplica
+//!   rate-limit por tentativa (429 quando as tentativas se esgotam).
 //!
 //! RFC 6238 TOTP implementation: HMAC-SHA1, 30-second window, 6 digits.
 
@@ -97,10 +121,13 @@ pub fn verify_totp(secret: &str, code: &str) -> bool {
         Err(_) => return false,
     };
 
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    // Relogio ilegivel nao tem janela para validar: recusar e o unico
+    // caminho fail-closed (o contrario seria computar o codigo da janela
+    // zero e aceita-lo de quem tem o segredo).
+    let now_secs = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => return false,
+    };
 
     let current_counter = (now_secs / TOTP_STEP_SECS) as i64;
 
@@ -113,6 +140,23 @@ pub fn verify_totp(secret: &str, code: &str) -> bool {
     }
 
     false
+}
+
+/// Codigo valido para o segredo neste instante — o par de [`verify_totp`].
+///
+/// Publico porque sem ele nao ha como exercitar o fluxo de 2FA de fora do
+/// modulo: um teste de integracao do login do painel (#1121) precisa produzir
+/// um codigo que o handler va aceitar, e a alternativa era reimplementar
+/// RFC 4226 no arquivo de teste. Nao e atalho de verificacao — e o mesmo
+/// `hotp` de sempre, so alcancavel.
+///
+/// `None` tambem quando o relogio do sistema nao pode ser lido: um codigo
+/// computado na janela zero do epoch seria um valor atemporal — valido em
+/// qualquer dia, e atemporal e exatamente o que TOTP existe para nao ser.
+pub fn current_code(secret: &str) -> Option<String> {
+    let key_bytes = base32_decode(secret).ok()?;
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    Some(hotp(&key_bytes, now_secs / TOTP_STEP_SECS))
 }
 
 /// Compute HOTP(key, counter) and return as zero-padded 6-digit string.

@@ -11,4 +11,5 @@ pub mod routes;
 pub mod secrets;
 pub mod shared;
 pub mod store;
+pub mod totp;
 pub mod users;
