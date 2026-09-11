@@ -70,6 +70,24 @@ jobs:
       - name: Verify no ignored/misplaced keys in garraia.service
         run: bash tests/systemd/verify_garraia_service.sh
 
+  # Guarda de regressao do #1107/#1139: uma `description` sem aspas em
+  # `.claude/agents/*.md` pode conter ": " e quebrar o YAML do frontmatter
+  # em silencio (so descoberto quando alguem/algo tenta parsear). So o
+  # frontmatter (entre os dois primeiros `---`) e validado -- o corpo do
+  # agente e prosa, nao YAML. `PyYAML` ja vem pre-instalado no runner
+  # ubuntu-latest, nao precisa de `pip install`.
+  agent-frontmatter-lint:
+    name: Agent frontmatter YAML lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Validate .claude/agents/*.md frontmatter
+        run: python3 scripts/ci/validate_agent_frontmatter.py
+
   # Guarda de integridade do ledger de supressoes do CodeQL.
   #
   # O ledger em docs/security/codeql-suppressions.json e chaveado por
