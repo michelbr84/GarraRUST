@@ -18,334 +18,154 @@
 
 ## Estrutura de crates
 
-Atualizado após plan 0145 / PR #396 (2026-05-18). **22 crates ativos** no workspace, mais o harness de benchmark `benches/agent-framework-comparison/` (fora do workspace, não é crate). Contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`.
+**22 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
+mais o harness `benches/agent-framework-comparison/` (fora do workspace, não é crate).
+O histórico de entrega (plans, PRs, datas, IDs `GAR-xxx`) vive em `plans/`, `docs/adr/`
+e `CHANGELOG.md` — aqui fica só o estado atual e os invariantes que um agente precisa
+respeitar.
 
 ```text
 crates/
-  garraia-cli/        — binário "garraia" (clap), wizard, chat interativo, migrate,
-                        `spinner.rs` (2026-08-30): indicador de atividade do
-                        `garra chat`. Estado puro e sem relógio
-                        (`SpinnerState::tick`), renderizado como um braço a mais
-                        do `tokio::select!` em `stream_turn` — nunca uma task
-                        própria, para não quebrar a drenagem concorrente do
-                        canal limitado documentada em `chat.rs`. Escreve no
-                        mesmo sink `io::Write` dos deltas, o que torna cada
-                        quadro afirmável contra um `Vec<u8>`. `detect()`
-                        devolve `None` (animação desligada) fora de TTY, sob
-                        `NO_COLOR`, `TERM=dumb` ou `GARRAIA_NO_SPINNER`. O
-                        cursor **nunca** é escondido — `\x1b[?25l` não é
-                        emitido em lugar nenhum —, então nenhum caminho de
-                        saída deixa o terminal sem cursor. Fallback ASCII
-                        cobre quadro **e** texto (numa code page legada do
-                        Windows o `ç`/`…` também vira mojibake). Proibido em
-                        `ask.rs` e `mcp_server.rs`, com teste que varre o
-                        fonte. `Ctrl+C` passou a cancelar o turno em vez de
-                        matar o processo.
-                        `config check` (GAR-379 slice 1) com validation + precedence
-                        report + exit codes sysexits (0/2/65). Plan 0039 (GAR-413
-                        Stage 1): novo subcomando `garraia migrate workspace
-                        --from-sqlite … --to-postgres …` implementando users +
-                        user_identities + PHC reassembly PBKDF2-SHA256 → PHC
-                        format aceito por `garraia_auth::hashing::verify_pbkdf2`
-                        + audit atômico in-tx. Plan 0040 (GAR-413 Stage 3) adiciona
-                        groups + group_members: auto-cria (ou reusa) bucket
-                        `--target-group-name` / `--target-group-type` (defaults
-                        `'Legacy Personal Workspace'` / `'personal'`), primeiro user
-                        migrado (`created_at ASC`) vira `owner`, demais `member`,
-                        audit `groups.imported_from_sqlite` + N×
-                        `group_members.imported_from_sqlite` atômico no mesmo tx
-                        dos stages 1+2. Plan 0045 (GAR-413 Stage 5, sessão autônoma
-                        Lote A-2 2026-04-22) adiciona chats + chat_members: amendment
-                        normativo ao plan 0034 §7.5 (tabela legacy real é `sessions`,
-                        não `conversations` — evidência em
-                        `garraia-db/src/session_store.rs:105`), mapping
-                        `sessions → chats` (type `'channel'`) + `chat_members`
-                        (role `'owner'` para o `sessions.user_id` migrado), audit
-                        `chats.imported_from_sqlite` + `chat_members.imported_from_sqlite`
-                        atômico na mesma tx dos stages 1+2+3, `ChatMapping
-                        { legacy_session_id → new_chat_id }` exposto em memória para
-                        o stage 6 (messages) consumir em slice futuro. Stages 6+
-                        (messages, memory, sessions, api_keys) em slices futuros.
+  garraia-cli/        — binário "garraia" (clap): wizard, chat interativo, `config check`
+                        (plan 0035; exit codes sysexits 0/2/65), `migrate workspace
+                        --from-sqlite --to-postgres` (plans 0039/0040/0045: users +
+                        identities + groups + chats, audit atômico in-tx; stages 6+
+                        pendentes). `spinner.rs`: estado puro sem relógio, renderizado
+                        como braço do `tokio::select!` em `stream_turn` — nunca task
+                        própria; `detect()` devolve `None` fora de TTY / `NO_COLOR` /
+                        `TERM=dumb` / `GARRAIA_NO_SPINNER`; nunca esconde o cursor;
+                        fallback ASCII; proibido em `ask.rs` e `mcp_server.rs` (teste
+                        varre o fonte). `Ctrl+C` cancela o turno, não o processo.
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router.
-                        `webchat.html` (servido em `GET /` via `web_chat()` em
-                        `crates/garraia-gateway/src/router.rs:382-387`) segue o design
-                        system **Garra Glass** documentado em ADR 0009 (plan 0116):
-                        tokens `--garra-*` canônicos, gold (`#ffd400`) para CTAs +
-                        cyan (`#16d9ff`) para info/foco, glassmorphism (`backdrop-filter`)
-                        em `app-header`/`chat-console`/`context-panel`, Inter 400-900 +
-                        JetBrains Mono. Roll-out em 10 PRs sequenciais entregues
-                        2026-05-14: #330 (foundation), #331 (app-header + chat),
-                        #332 (right panel + Playwright), #333 (multi-page router +
-                        Dashboard + Skins), #335 (`/api/health` + `/api/capabilities`),
-                        #337 (Providers + `/api/providers/{test,default}`),
-                        #338 (Channels + Sessions + `/api/channels`),
-                        #339 (Settings Registry + `/api/settings/{schema,effective}` +
-                        `PATCH /api/settings` dry-run),
-                        #340 (Diagnostics + Logs + `/api/diagnostics`),
-                        #341 (E2E + ROADMAP/README/CLAUDE). **Nunca** importar Bootstrap/AdminLTE/
-                        Animate.css de CDN — ports inline (ADR 0009 §3). Endpoints
-                        novos do Web Console (todos auth-free em `/api/*`, secret-free):
-                        `/api/health` (Dashboard schema com `version`, `gateway_url`,
-                        `uptime_secs`, `active_sessions`, `provider`, `model`,
-                        `channels`, `warnings`, back-compat `checks`),
-                        `/api/capabilities` (features/providers/models/channels/
-                        commands/skins/experimental_flags), `/api/channels`
-                        (10 known channels com status active/offline/optional),
-                        `POST /api/providers/test`, `PATCH /api/providers/default`,
-                        `/api/settings/schema` + `/api/settings/effective` (com secret
-                        masking via `configured: bool` em vez de `value`),
-                        `PATCH /api/settings` (validate + audit + dry-run; persistência
-                        TOML em plan 0121a), `/api/diagnostics` (14 checks com
-                        `next_step` quando não-OK — `voice.tts`/`voice.stt`
-                        sondam os servidores locais quando o modo voz está
-                        ligado, #1098).
+                        `webchat.html` (`GET /`) segue o design system Garra Glass
+                        (ADR 0009): tokens `--garra-*`, gold `#ffd400` para CTAs, cyan
+                        `#16d9ff` para info/foco, Inter + JetBrains Mono. **Nunca**
+                        importar Bootstrap/AdminLTE/Animate.css de CDN — ports inline.
+                        Web Console em `/api/*` (auth-free, secret-free): `/api/health`,
+                        `/api/capabilities`, `/api/channels`, `POST /api/providers/test`,
+                        `PATCH /api/providers/default`, `/api/settings/{schema,effective}`
+                        (secrets como `configured: bool`, nunca valor), `PATCH /api/settings`
+                        (validate + audit + dry-run), `/api/diagnostics` (checks com
+                        `next_step`; `voice.tts`/`voice.stt` sondam servidores locais
+                        com modo voz ligado).
+                        Auth: sem fallback de JWT secret hardcoded — `AppState::
+                        jwt_signing_secret() -> Result<SecretString, AuthConfigMissing>`
+                        e handlers respondem **503 fail-closed** sem secret (plan 0046).
+                        `std::env::var("GARRAIA_JWT_SECRET")` / `("GarraIA_VAULT_PASSPHRASE")`
+                        só em `crates/garraia-config/src/auth.rs`; matriz de precedência
+                        em `docs/auth-config.md`. Passphrase do cofre: as duas grafias
+                        são aceitas via `garraia_security::vault_passphrase_from_env()`
+                        (all-caps canônica > mixed-case deprecated com warning); em
+                        `AuthConfig::from_env` a ordem é `GARRAIA_JWT_SECRET` >
+                        `GarraIA_VAULT_PASSPHRASE` > `GARRAIA_VAULT_PASSPHRASE` (#824).
+                        Uploads tus 1.0 em `rest_v1::uploads` (`POST/HEAD/PATCH/DELETE
+                        /v1/uploads[/{id}]` + `OPTIONS`, precondition `Tus-Resumable:
+                        1.0.0`), ledger `tus_uploads` (migration 014, FORCE RLS),
+                        `ObjectStore` em `AppState` via `StorageConfig`, commit two-phase
+                        blob-first (plan 0044 §5.3.1), cap `storage.max_patch_bytes`
+                        default 100 MiB, worker de expiração em `uploads_worker.rs`.
+                        CI (`.github/workflows/ci.yml`): o binário é `garraia`
+                        (`cargo build --bin garraia --release`; `garraia-gateway` é lib);
+                        zero `continue-on-error` ativo (higiene #1094). Specs Playwright
+                        do admin DEVEM usar `data-testid` estáveis (contrato de teste),
+                        não `placeholder*=` nem `getByRole(button,{name})` (plan 0052).
   garraia-agents/     — LLM providers (OpenAI/OpenRouter/Anthropic/Ollama), AgentRuntime, tools
-  garraia-auth/       — ✅ verify path real + extractor + endpoints (GAR-391a/b/c).
-                        Tipos: IdentityProvider trait + InternalProvider + LoginPool/SignupPool
-                        newtypes (private inner PgPool, validated via SELECT current_user, !Clone
-                        enforced via static_assertions) + Role/Action enums + fn can() central
-                        com 5×22=110-case table-driven test + Principal extractor (Axum
-                        FromRequestParts) + RequirePermission struct method (NOT FromRequestParts
-                        devido a const-generic limitation do Axum). Crypto: Argon2id (RFC 9106
-                        m=64MiB,t=3,p=4) + PBKDF2 dual-verify + lazy upgrade transacional sob
-                        FOR NO KEY UPDATE OF ui + constant-time anti-enumeration via DUMMY_HASH
-                        em build.rs. JWT: HS256 access token (15min) + algorithm-confusion guards
-                        + refresh token opaco com HMAC-SHA256 separado. PII: Credential.password
-                        em SecretString + RedactedStorageError wrapper. Endpoints (default-on,
-                        feature `auth-v1` REMOVIDA em 391c): POST /v1/auth/{login,refresh,logout,
-                        signup} retornando 401 byte-identical em todos os modos de falha + 409
-                        em duplicate signup. Audit em todos os terminals do login flow. Gateway
-                        wiring via AuthConfig em garraia-config (4 env vars, fail-soft). Métricas
-                        Prometheus baseline com bounded outcome enum. GAR-392 (pure RLS
-                        matrix, 81 cenários, plan 0013 path C) ✅ entregue 2026-04-14 —
-                        matriz table-driven contra pgvector/pg16 real exercitando
-                        garraia_app (10 FORCE RLS tables × 4 TenantCtx + WITH CHECK
-                        writes) + garraia_login e garraia_signup (grant layer allow/
-                        denied). Oracle SQLSTATE distingue InsufficientPrivilege
-                        (42501 grant) / PermissionDenied (42501 WITH CHECK) /
-                        RlsFilteredZero (USING) / RowsVisible (any positive). GAR-391d
-                        (app-layer cross-group via HTTP) entregue via plan 0014 em
-                        `crates/garraia-gateway/tests/authz_http_matrix.rs` (50 cenários
-                        sobre /v1/me, /v1/groups, /v1/groups/{id}). Epic GAR-391 fechado
-                        em 2026-04-15.
-                        Decisão: docs/adr/0005-identity-provider.md (com Amendment 2026-04-13).
+  garraia-auth/       — IdentityProvider trait + InternalProvider; `LoginPool`/`SignupPool`
+                        newtypes (inner PgPool privado, validado via SELECT current_user,
+                        !Clone via static_assertions); Role/Action enums + `can()` central
+                        (teste table-driven 5×22); `Principal` extractor (FromRequestParts)
+                        + `RequirePermission` como método de struct (limitação
+                        const-generic do Axum). Crypto: Argon2id (RFC 9106 m=64MiB,t=3,
+                        p=4) + PBKDF2 dual-verify + lazy upgrade transacional sob
+                        `FOR NO KEY UPDATE OF ui` + anti-enumeração constant-time via
+                        `DUMMY_HASH` (build.rs). JWT HS256 (15 min) com guards de
+                        algorithm-confusion + refresh opaco HMAC-SHA256. PII:
+                        `Credential.password` em `SecretString`. Endpoints default-on:
+                        `POST /v1/auth/{login,refresh,logout,signup}` — 401 byte-identical
+                        em toda falha, 409 em signup duplicado, audit em todos os
+                        terminais. Matriz RLS (81 cenários, pgvector/pg16 real) e matriz
+                        HTTP cross-group (`tests/authz_http_matrix.rs`, 50 cenários) são
+                        o gate. Decisão: `docs/adr/0005-identity-provider.md`.
   garraia-channels/   — Telegram, Discord, Slack, WhatsApp, iMessage
   garraia-db/         — SQLite (rusqlite), SessionStore, CRUD (dev/CLI single-user).
-                        Plan 0036 (GAR-382): `update_mobile_user_hash` para lazy upgrade
-                        de PBKDF2 → Argon2id sem mexer no schema.
+                        `update_mobile_user_hash` faz lazy upgrade PBKDF2 → Argon2id
+                        sem mexer no schema.
   garraia-security/   — CredentialVault (AES-256-GCM), PBKDF2, RedactingWriter
-  garraia-config/     — schema unificado de config (serde + validator + notify).
-                        Plan 0035 (GAR-379 slice 1): novo módulo `check` com `run_check`
-                        + `ConfigCheck`/`Finding`/`Severity`/`SourceReport` alimentando o
-                        subcomando CLI `garraia config check [--json] [--strict]`.
-                        Plan 0044 (GAR-395 slice 2) adiciona `StorageConfig` +
-                        `StorageBackend` enum (`local` | `s3`) + `LocalFsConfig` +
-                        `S3Config` com validações (staging_dir writable,
-                        `max_patch_bytes` na faixa, S3 endpoint bem-formado, MIME
-                        allow-list override via `allow_unsafe_mime_in_local_fs`),
-                        4 unit tests na matriz em `check.rs`. Plan 0046 (GAR-379
-                        slice 3, sessão autônoma Lote A-3 2026-04-22) adiciona
-                        `AuthSection { jwt_algorithm, access_token_ttl_secs,
-                        refresh_token_ttl_secs, metrics_token_ttl_hint_secs }` em
-                        `AppConfig` — APENAS knobs não-secret (secrets seguem
-                        env-only via `AuthConfig::from_env`, §5.1). `AuthConfig`
-                        ganha fallback `GarraIA_VAULT_PASSPHRASE` (zero breaking
-                        para deploys legacy). `config check` ganha 4 validações
-                        (algoritmo aceito, TTL ranges, access ≤ refresh,
-                        env-override Info). Redaction invariant: output (humano
-                        + JSON) só reporta presença de secrets (`api_key_set:
-                        true`), nunca valores.
-  garraia-telemetry/  — ✅ OpenTelemetry + Prometheus baseline (GAR-384) — feature-gated
-  garraia-workspace/  — ✅ Postgres 16 + pgvector multi-tenant — Fase 3 schema COMPLETO
-                        (GAR-407 + GAR-386 + GAR-388 + GAR-389 + GAR-408 + GAR-390 + 391a/b/c
-                        + GAR-387 + GAR-395). 37 tabelas em 33 migrations (a lista abaixo cobre as 14
-                        iniciais), 32 sob FORCE RLS e 5 fora dela (users, roles,
-                        permissions, role_permissions, group_invites):
-                        • 001 users/groups/identities/sessions/api_keys/invites (tenant roots)
-                        • 002 RBAC roles/permissions/63 role_permissions + audit_events + single-owner idx
-                        • 003 folders/files/file_versions (GAR-387) — compound FK + object_key UNIQUE
-                              + HMAC integrity + FORCE RLS com WITH CHECK explícito
-                        • 004 chats/chat_members/messages (FTS) /message_threads com compound FK
-                        • 005 memory_items/memory_embeddings (pgvector HNSW cosine)
-                        • 006 tasks Tier 1 Notion-like (8 tabelas com RLS embedded + subtasks)
-                        • 007 RLS FORCE wrap-up em 10 tabelas com NULLIF fail-closed
-                        • 008 garraia_login NOLOGIN BYPASSRLS dedicated role (GAR-391a)
-                        • 009 user_identities.hash_upgraded_at (GAR-391b prereq, plan 0011.5)
-                        • 010 garraia_signup NOLOGIN BYPASSRLS + GRANT SELECT ON sessions/group_members
-                              TO garraia_login (GAR-391c, Gaps A+B+C closed)
-                        • 011 group_invites pending UNIQUE, 012 single-owner idx active-only,
-                          013 audit_events WITH CHECK explícito (padrão seguido por 003).
-                        • 014 tus_uploads (GAR-395 plan 0041) — ledger de upload tus 1.0 com
-                              FORCE RLS + `tus_uploads_group_isolation` + CHECK `upload_length ≤ 5 GiB`
-                              + `object_key` UNIQUE + índice parcial `expires_in_progress_idx`.
-                        Handle PII-safe via skip(config) + custom Debug redaction.
-                        Decisão: docs/adr/0003-database-for-workspace.md + 0004-object-storage.md.
+  garraia-config/     — schema unificado de config (serde + validator + notify). Módulo
+                        `check` (`run_check` + `ConfigCheck`/`Finding`/`Severity`/
+                        `SourceReport`) alimenta `garraia config check [--json] [--strict]`.
+                        `StorageConfig` + `StorageBackend` (`local` | `s3`) + `LocalFsConfig`
+                        + `S3Config` com validações (staging_dir gravável, faixa de
+                        `max_patch_bytes`, endpoint S3, MIME allow-list override via
+                        `allow_unsafe_mime_in_local_fs`). `AuthSection` em `AppConfig` só
+                        com knobs não-secret (algoritmo, TTLs, hint de métricas) —
+                        secrets seguem env-only via `AuthConfig::from_env`. Invariante
+                        de redaction: `config check` (humano + JSON) só reporta presença
+                        (`api_key_set: true`), nunca valores.
+  garraia-telemetry/  — OpenTelemetry + Prometheus baseline — feature-gated
+  garraia-workspace/  — Postgres 16 + pgvector multi-tenant (Fase 3 schema completo).
+                        37 tabelas em 33 migrations; 32 sob FORCE RLS e 5 fora (users,
+                        roles, permissions, role_permissions, group_invites). Marcos:
+                        001 tenant roots (users/groups/identities/sessions/api_keys/
+                        invites) · 002 RBAC + audit_events · 003 folders/files/
+                        file_versions (compound FK, object_key UNIQUE, HMAC integrity)
+                        · 004 chats/chat_members/messages (FTS)/threads · 005 memory +
+                        pgvector HNSW cosine · 006 tasks Notion-like · 007 FORCE RLS
+                        wrap-up com NULLIF fail-closed · 008 role `garraia_login`
+                        NOLOGIN BYPASSRLS · 010 role `garraia_signup` · 013 audit WITH
+                        CHECK explícito · 014 `tus_uploads` (CHECK ≤ 5 GiB, índice
+                        parcial `expires_in_progress_idx`). Handle PII-safe via
+                        skip(config) + Debug redigido. ADRs 0003 e 0004.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
   garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
   garraia-media/      — processamento de PDF, imagens, mídia
   garraia-skills/     — registry de skills para o agente
-  garraia-learning/   — Fase 1.4 (GAR-641, ADR 0010 Accepted 2026-05-17 via PR #393 +
-                        plan 0144) — Garra Learning Agent / Self-Improving Operations
-                        Manual. Estado atual em main (após PR #393): 10 módulos
-                        (`miner.rs`, `generator.rs`, `registry.rs`, `retriever.rs`,
-                        `evaluator.rs`, `updater.rs`, `safety.rs` com gate hard-wall
-                        funcional + 17 unit tests, `versioning.rs`, `skill_override.rs`,
-                        `lib.rs`) + tipos `Skill`/`SkillScope`/`SkillSource` + frontmatter
-                        `LearningSkillFrontmatter` com `score`/`locked`/`critical_paths_touched`/
-                        `fail_count`. Sub-componentes GAR-643..GAR-651 entregues em
-                        2026-05-18..20 (9/10: miner, generator, registry, evaluator,
-                        auto-updater, safety gates, versioning git-backed, Web UI);
-                        GAR-646 Retriever segue stub até a Fase 2.1 (garraia-embeddings)
-                        e o CLI de override (`skill_override.rs`) também. Separação rígida: memória
+  garraia-learning/   — Garra Learning Agent / Self-Improving Operations Manual (ADR
+                        0010). 10 módulos: miner, generator, registry, retriever (stub
+                        até garraia-embeddings real), evaluator, updater, safety (gate
+                        hard-wall), versioning (git-backed), skill_override (CLI stub),
+                        lib. Frontmatter `LearningSkillFrontmatter` com `score`/`locked`/
+                        `critical_paths_touched`/`fail_count`. Separação rígida: memória
                         (`workspace.memory_items`) ≠ skill (`learning.skills`) ≠ log
-                        (`telemetry.traces`) ≠ manual distribuível (`garraia-skills` crate).
-                        Nunca copiar código do Hermes Agent — Hermes é referência conceitual
-                        de produto, arquitetura é própria.
+                        (`telemetry.traces`) ≠ manual distribuível (crate `garraia-skills`).
+                        Nunca copiar código do Hermes Agent — referência só conceitual.
   garraia-tools/      — tools compartilhadas (file ops, search, web)
   garraia-runtime/    — runtime helpers
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app: bandeja + overlay do papagaio + Chat Bar
-                        (Ctrl+Space); MSI/NSIS no Windows e .deb/AppImage no Linux
-                        (v0.3.5), CLI como sidecar `binaries/garraia`
-  garraia-gateway/    — Plan 0046 (GAR-379 slice 3, 2026-04-22) remove hardcoded
-                        fallback inseguro `garraia-insecure-default-jwt-secret-change-me`
-                        de `mobile_auth.rs` e introduz sentinel `AuthConfigMissing`
-                        + getter `AppState::jwt_signing_secret() -> Result<SecretString,
-                        AuthConfigMissing>`. `issue_jwt` / `issue_jwt_pub` propagam
-                        `?` até handler, que converte em **503 fail-closed** (alinha
-                        `/auth/*` com `/v1/auth/*` quando nenhum secret configurado).
-                        Grep invariant: `std::env::var("GARRAIA_JWT_SECRET")` e
-                        `std::env::var("GarraIA_VAULT_PASSPHRASE")` agora aparecem
-                        SÓ em `crates/garraia-config/src/auth.rs` (oauth.rs e totp.rs
-                        refactorados). `metrics_token` lido via `garraia-telemetry::config`
-                        dedicado. Ver `docs/auth-config.md` para matriz de precedência.
-                        Issue #824 (2026-08-17): as duas grafias da passphrase são
-                        aceitas em TODOS os consumidores — cofre lê via
-                        `garraia_security::vault_passphrase_from_env()` (all-caps
-                        canônica > mixed-case deprecated com warning) e
-                        `AuthConfig::from_env` ganha `GARRAIA_VAULT_PASSPHRASE`
-                        como último fallback (`GARRAIA_JWT_SECRET` >
-                        `GarraIA_VAULT_PASSPHRASE` > `GARRAIA_VAULT_PASSPHRASE`).
-                        Leituras da mixed-case fora de auth.rs: presence-only em
-                        check.rs/diagnostics_handler.rs + fallback do cofre em
-                        garraia-security/credentials.rs (fonte única).
-                        Fase 3.5 (GAR-395 slice 1 plan 0041 + slice 2 plan 0044 +
-                        slice 3 plan 0047) adiciona `rest_v1::uploads` com `POST
-                        /v1/uploads` (tus 1.0 Creation) + `HEAD /v1/uploads/{id}`
-                        (Resume probe) + `PATCH /v1/uploads/{id}` (Core byte append)
-                        + `DELETE /v1/uploads/{id}` (Termination) + `OPTIONS
-                        /v1/uploads` (tus discovery) atrás de `Tus-Resumable:
-                        1.0.0` precondition. Stored em `tus_uploads` (migration
-                        014, FORCE RLS). Slice 2 wire `ObjectStore` em `AppState`
-                        via novo `StorageConfig` (`garraia-config::model::StorageConfig`,
-                        backend `local` ou `s3` feature-gated), staging FS local
-                        append-only, commit two-phase ordering (blob-first via
-                        `ObjectStore::put` + `files`/`file_versions` atomic + audit
-                        `upload.completed` + `tus_uploads.status='completed'` →
-                        `COMMIT` Postgres em seguida — plan 0044 §5.3.1). Cap
-                        operacional `storage.max_patch_bytes` default 100 MiB.
-                        Plan 0047 (GAR-395 slice 3, 2026-04-23 merged em `96f5c03`
-                        via PR #62) fecha o epic GAR-395 adicionando: `DELETE
-                        /v1/uploads/{id}` (Termination idempotente 204/404),
-                        expiration worker dedicado em `uploads_worker.rs` (332 LOC)
-                        + `uploads_worker_util.rs` purgando uploads `status='in_progress'`
-                        expirados via `expires_in_progress_idx` com budget + jitter
-                        configuráveis, e `ObjectStore::put_stream` em `LocalFs` para
-                        patches grandes sem buffer integral em RAM. 752 LOC de
-                        integration tests novos em `rest_v1_uploads_delete_worker.rs`.
-                        GAR-395 movido para Done em 2026-04-23 17:38Z.
-                        Plan 0050 Lote 2 (GAR-438, 2026-04-24 merged em `1828625`
-                        via PR #64) corrige o pipeline CI `.github/workflows/ci.yml`:
-                        `e2e` + `playwright` antes chamavam `./target/release/garraia-gateway`
-                        (binário inexistente — `garraia-gateway` é biblioteca) e o
-                        mascaramento via `continue-on-error: true` escondia o
-                        `No such file or directory`. Fix cirúrgico: `cargo build
-                        --bin garraia --release` + `./target/release/garraia start
-                        --host 0.0.0.0 --port 3888` + `services: postgres:16.8-alpine`
-                        + envs mínimas (`GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`,
-                        `GARRAIA_LOGIN_DATABASE_URL`, `GARRAIA_SIGNUP_DATABASE_URL`
-                        com `::add-mask::`). 4 de 7 `continue-on-error` removidos
-                        permanentemente; 3 remanescentes rastreáveis por issue
-                        (L286→GAR-444 mock LLM, L402→GAR-443 UI drift, L443→Lote 4
-                        RUSTSEC).
-                        Plan 0052 (GAR-443 Lote 4, 2026-04-24) migra
-                        `tests/playwright/mcp-manager.spec.ts` para `getByTestId(...)`
-                        ancorados em `data-testid` adicionados a `admin.html`
-                        (`showMcpForm` + `renderMcpPage`). **Convenção**: specs
-                        Playwright do admin DEVEM preferir `data-testid` estáveis
-                        em vez de `placeholder*=` ou `getByRole(button,{name})` —
-                        copy/placeholder são propriedade da UX e podem mudar; os
-                        testids são contrato de teste. Remove `continue-on-error: true`
-                        do step `Run Playwright tests` (`ci.yml:425`); CoE count
-                        cai 2→1 (só RUSTSEC remanescente).
-  garraia-embeddings/ — Fase 2.1 (GAR-372, ADR 0002 Accepted 2026-04-21, plan
-                        0145 scaffold branch `feat/garraia-embeddings-scaffold`).
-                        Public surface only: traits `EmbeddingProvider` (async,
-                        `embed`/`embed_batch`/`model_id`) + `VectorStore`
-                        (async, `insert`/`search`/`delete`, scoped by `Scope` +
-                        `Option<Uuid> group_id`); strong types
-                        `Scope`/`EmbeddingVector(768)`/`Document`/`Chunk`/
-                        `SearchHit`; `HybridQuery` typed builder (rejects
-                        cross-tenant via build-time scope ↔ group_id check);
-                        `DeterministicProvider` (sha2-backed, default-on via
-                        feature `testing-provider`) para unit tests downstream.
-                        Sem `PgVectorStore` real, sem `MxbaiProvider`, sem
-                        wiring em learning/agents — esses são slices futuros.
-                        23 unit tests verdes.
-  garraia-storage/    — Fase 3.5 (GAR-394 slice 1 plan 0037 + slice 2 plan 0038) —
-                        trait ObjectStore + LocalFs baseline + path_sanitize. Slice 2
-                        adiciona `S3Compatible` (aws-sdk-s3) atrás da feature
-                        `storage-s3` com SSE-S3 obrigatório, MIME allow-list
-                        compartilhada com LocalFs (ADR 0004 §Security 3), HMAC-SHA256
-                        integrity sobre `{key}:{version_id}:{sha256_hex}` via
-                        `PutOptions::hmac_secret` (ADR 0004 §Security 4), presigned
-                        URLs reais com TTL range [30s, 900s]. MinIO coberto via
-                        endpoint override. Integration tests: MinIO testcontainer
-                        gated pela feature. Wiring no `garraia-gateway` +
-                        `garraia-config::StorageConfig` fica para slice 3.
+                        (Ctrl+Space); MSI/NSIS no Windows e .deb/AppImage no Linux,
+                        CLI como sidecar `binaries/garraia`
+  garraia-embeddings/ — Fase 2.1 (ADR 0002; ADR 0018 Proposed). Só superfície pública:
+                        traits `EmbeddingProvider` + `VectorStore` (scoped por `Scope` +
+                        `Option<Uuid> group_id`), tipos `Scope`/`EmbeddingVector(768)`/
+                        `Document`/`Chunk`/`SearchHit`, `HybridQuery` builder (rejeita
+                        cross-tenant em build-time), `DeterministicProvider` (feature
+                        `testing-provider`). `PgVectorStore` real e `MxbaiProvider`
+                        ainda não existem; sem wiring em learning/agents.
+  garraia-storage/    — trait `ObjectStore` (`#[async_trait]`, usado como `dyn`) +
+                        `LocalFs` + `path_sanitize`; `S3Compatible` (aws-sdk-s3) atrás
+                        da feature `storage-s3` com SSE-S3 obrigatório, MIME allow-list
+                        compartilhada, HMAC-SHA256 sobre `{key}:{version_id}:{sha256_hex}`
+                        via `PutOptions::hmac_secret`, presigned URLs com TTL [30s, 900s].
+                        MinIO via endpoint override; testcontainer gated pela feature.
 apps/
   garraia-mobile/     — Garra Mobile (Flutter, Riverpod 3, go_router, Dio). v0.4.0
-                        (ADR 0016 amendment 2026-09-07): home "Garra Neon" +
-                        `lib/runtime/` (`GarraConnection`: local Termux em
-                        127.0.0.1:3888 / outro Garra na LAN / Garra Cloud) +
-                        negociação de capabilities via `/api/capabilities`.
-                        Codegen: `dart run build_runner build` (todo `*.g.dart`
-                        é gitignored). APK sai do CI (`mobile.yml` em PR,
-                        `build-android-apk` na release) — este container não
-                        alcança o Android SDK (`dl.google.com` bloqueado).
-```
-
-### Crates planejados (ROADMAP AAA Fases 2-3)
-
-```text
-(nenhum no momento — garraia-embeddings foi promovido em 2026-05-18 via plan 0145)
-```
-
-> `garraia-embeddings/` promovido de "planejado" para "ativo" em 2026-05-18 (scaffold per
-> ADR 0002 + plan 0145; `PgVectorStore` real + `MxbaiProvider` ainda Backlog em
-> GAR-372 sub-issues a criar).
->
-> `garraia-learning/` promovido para "Crates ativos" em 2026-05-17 (ADR 0010 → Accepted,
-> via PR #393 + plan 0144). Sub-componentes restantes (GAR-643..GAR-651) materializam
-> miner / generator / registry full / retriever / evaluator / auto-updater / versioning /
-> web UI uma issue por vez.
-
-### Benchmarks fora do workspace
-
-```text
+                        (ADR 0016): home "Garra Neon" + `lib/runtime/` (`GarraConnection`:
+                        Termux local em 127.0.0.1:3888 / outro Garra na LAN / Garra Cloud)
+                        + negociação de capabilities via `/api/capabilities`. Codegen:
+                        `dart run build_runner build` (`*.g.dart` gitignored). APK sai do
+                        CI (`mobile.yml` em PR, `build-android-apk` na release) — este
+                        container não alcança o Android SDK.
 benches/
-  agent-framework-comparison/  — harness reprodutível (shell) que valida os claims
-                     comparativos do README contra CLIs concorrentes. NÃO é crate
-                     nem workspace member: são `run.sh` + `README.md` + `results/`.
-                     Mede tamanho de binário, pico de RSS e cold start; constrói o
-                     GarraIA do checkout atual e fixa os concorrentes por ref via
-                     env var. Resultados entram versionados em `results/<data>-<host>/`.
+  agent-framework-comparison/ — harness shell (`run.sh` + `README.md` + `results/`),
+                        NÃO é crate nem workspace member. Mede binário, pico de RSS e
+                        cold start contra CLIs concorrentes fixados por ref via env var;
+                        resultados versionados em `results/<data>-<host>/`.
 ```
 
-> `benches/database-poc/` (GAR-373, Postgres vs SQLite) foi removido em 2026-08-16
-> conforme o mandato original ("deletar depois que garraia-workspace estabilizar").
-> Os números que ele produziu seguem citados em ADR 0003 e nas migrations 005/007.
+> Sem crates planejados no momento. `benches/database-poc/` foi removido em 2026-08-16;
+> seus números seguem citados em ADR 0003 e nas migrations 005/007.
 
 ## Convenções de código
 
