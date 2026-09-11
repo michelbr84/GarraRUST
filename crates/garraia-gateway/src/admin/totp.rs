@@ -24,12 +24,16 @@
 //! `GET /2fa/status` nao gera evento, como qualquer outra rota de leitura
 //! do painel.
 //!
-//! O segredo fica **em claro** no `admin.db` (base32, sem cifrar) — paridade
-//! com o fluxo mobile, que tambem armazena em claro
+//! O segredo fica **cifrado** no `admin.db` (AES-256-GCM sob a chave mestra
+//! do painel, #1141) — o fluxo mobile ainda armazena em claro
 //! (`mobile_users.totp_secret`, base32 sem cifrar; ver totp.rs, "Estado real
-//! do segredo"). A justificativa real e o proprio `admin.db` ja guardar token
-//! de sessao em texto puro; cifrar o lado admin e a issue #1141. Ver o aviso
-//! completo em `store::AdminStore::get_totp_secret`.
+//! do segredo"). O que a cifra tira e o comprometimento duravel do 2FA, nao a
+//! leitura do arquivo em si: `admin_sessions.token` continua em texto puro.
+//! Ver o aviso completo em `store::AdminStore::get_totp_secret`.
+//!
+//! O lockout de codigo errado (5 em 15 minutos) vive no banco, nao no
+//! processo (#1140): reiniciar o gateway ou atingir outra instancia nao zera
+//! mais a contagem.
 
 use axum::Json;
 use axum::extract::State;
@@ -64,16 +68,18 @@ fn unauthorized(error: &str) -> (StatusCode, Json<serde_json::Value>) {
 /// em que os caminhos divergem antes da mutacao final, que fica no handler.
 /// Toda recusa devolve a resposta HTTP pronta com a trilha best-effort ja
 /// gravada (#1121).
+#[allow(clippy::too_many_arguments)]
 fn exigir_codigo_valido(
-    guard: &mut AdminStore,
+    guard: &AdminStore,
     user_id: &str,
     username: &str,
     acao: &str,
     ausencia: &str,
     code: &str,
+    key: &[u8],
     ip: Option<&str>,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let secret = match guard.get_totp_secret(user_id) {
+    let secret = match guard.get_totp_secret(user_id, key) {
         Ok(Some(s)) if !s.is_empty() => s,
         Ok(None) => {
             // Recusa tambem e evento de auditoria — operacao fora de ordem
@@ -122,23 +128,59 @@ fn exigir_codigo_valido(
         }
     };
 
-    if guard.totp_attempts_exhausted(user_id) {
+    // Contagem ilegivel nao vira "ainda pode tentar": seria devolver o brute
+    // force de graca a quem consegue derrubar a leitura (#1140).
+    match guard.totp_attempts_exhausted(user_id) {
+        Ok(false) => {}
+        Ok(true) => {
+            log_auth_failure(
+                guard,
+                Some(user_id),
+                Some(username),
+                acao,
+                "too many attempts",
+                ip,
+            );
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({"error": "too many attempts"})),
+            ));
+        }
+        Err(e) => {
+            tracing::warn!("admin {acao}: attempt counter unreadable: {e}");
+            log_auth_failure(
+                guard,
+                Some(user_id),
+                Some(username),
+                acao,
+                "totp attempt counter unreadable",
+                ip,
+            );
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "internal error"})),
+            ));
+        }
+    }
+
+    let ok = crate::totp::verify_totp(&secret, code);
+    // Registrar antes de responder, e recusar se nao der: um codigo avaliado
+    // que nao entra na contagem e uma tentativa de graca (#1140).
+    if let Err(e) = guard.record_totp_attempt(user_id, ok) {
+        tracing::warn!("admin {acao}: failed to record attempt: {e}");
         log_auth_failure(
             guard,
             Some(user_id),
             Some(username),
             acao,
-            "too many attempts",
+            "totp attempt not recorded",
             ip,
         );
         return Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({"error": "too many attempts"})),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
         ));
     }
-
-    let ok = crate::totp::verify_totp(&secret, code);
-    guard.record_totp_attempt(user_id, ok);
 
     if !ok {
         log_auth_failure(
@@ -267,6 +309,7 @@ pub async fn totp_setup(
     if let Err(e) = guard.set_pending_totp_secret_audited(
         &admin.user_id,
         &secret,
+        &state.encryption_key,
         &admin.username,
         ip.as_deref(),
     ) {
@@ -303,15 +346,16 @@ pub async fn totp_verify(
     Json(req): Json<TotpCodeRequest>,
 ) -> impl IntoResponse {
     let ip = extract_ip(&headers, None);
-    let mut guard = state.store.lock().await;
+    let guard = state.store.lock().await;
 
     if let Err(resp) = exigir_codigo_valido(
-        &mut guard,
+        &guard,
         &admin.user_id,
         &admin.username,
         "2fa.verify",
         "2fa not set up",
         &req.code,
+        &state.encryption_key,
         ip.as_deref(),
     ) {
         drop(guard);
@@ -349,15 +393,16 @@ pub async fn totp_disable(
     Json(req): Json<TotpCodeRequest>,
 ) -> impl IntoResponse {
     let ip = extract_ip(&headers, None);
-    let mut guard = state.store.lock().await;
+    let guard = state.store.lock().await;
 
     if let Err(resp) = exigir_codigo_valido(
-        &mut guard,
+        &guard,
         &admin.user_id,
         &admin.username,
         "2fa.disable",
         "2fa not enabled",
         &req.code,
+        &state.encryption_key,
         ip.as_deref(),
     ) {
         drop(guard);

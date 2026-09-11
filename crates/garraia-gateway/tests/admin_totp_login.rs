@@ -30,6 +30,10 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 const USUARIO: &str = "dono";
+/// A mesma chave mestra que `cenario`/`cenario_arquivo` passam ao router: o
+/// segredo do 2FA e cifrado com ela desde o #1141, entao ligar o 2FA "por
+/// dentro" tem que usar a chave que os handlers vao usar para ler.
+const CHAVE: [u8; 32] = [0u8; 32];
 const SENHA: &str = "senha-do-painel-de-teste";
 
 /// `(status, corpo, valor do cookie de sessao, se vier)`
@@ -135,7 +139,7 @@ async fn ligar_2fa(store: &Arc<Mutex<AdminStore>>) -> String {
         .expect("usuario de teste existe");
     let secret = garraia_gateway::totp::generate_totp_secret().expect("segredo");
     guard
-        .set_pending_totp_secret(&user.id, &secret)
+        .set_pending_totp_secret(&user.id, &secret, &CHAVE)
         .expect("segredo pendente");
     guard.enable_totp(&user.id).expect("2fa ligado");
     drop(guard);
@@ -214,6 +218,96 @@ async fn tantas_tentativas_erradas_travam_o_segundo_fator() {
         StatusCode::TOO_MANY_REQUESTS,
         "sem travamento, o segundo fator e forcavel por forca bruta"
     );
+}
+
+/// #1140: o travamento sobrevive ao restart do gateway.
+///
+/// Este e o teste que o lockout em `HashMap` de processo nao passava: quem
+/// tinha a senha derrubava o gateway, subia de novo e voltava a ter as cinco
+/// tentativas de um codigo de 6 digitos. Aqui o "restart" e montar um router
+/// novo sobre uma `AdminStore` nova aberta no MESMO arquivo — a contagem
+/// continua sendo a mesma porque mora no `admin.db`.
+///
+/// O mesmo caminho cobre a outra metade do finding: duas instancias sobre o
+/// mesmo banco compartilham a contagem, entao distribuir as tentativas entre
+/// elas nao multiplica o orcamento de chutes.
+#[tokio::test]
+async fn o_travamento_sobrevive_ao_restart_do_gateway() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, store, path) = cenario_arquivo(&dir);
+    let secret = ligar_2fa(&store).await;
+
+    for _ in 0..6 {
+        let (_, _, _) = login(
+            &router,
+            json!({"username": USUARIO, "password": SENHA, "totp_code": "000000"}),
+        )
+        .await;
+    }
+    drop(router);
+    drop(store);
+
+    // O restart: processo novo, store nova, mesmo arquivo.
+    let reaberta = AdminStore::open(&path).expect("reabrir o admin.db");
+    let config = AppConfig::default();
+    let state = Arc::new(AppState::new(
+        config,
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    ));
+    let novo_router = build_router(
+        state,
+        PushChannelStates::empty(),
+        Arc::new(Mutex::new(reaberta)),
+        Arc::new(CHAVE.to_vec()),
+    );
+
+    // Codigo CERTO depois do restart: se o travamento tivesse zerado, isto
+    // abriria sessao — e era assim que o brute force voltava a ser barato.
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+    let (status, json, sessao) = login(
+        &novo_router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": code}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "restart nao pode zerar o lockout do segundo fator (#1140): {json}"
+    );
+    assert!(sessao.is_none(), "travado nao abre sessao");
+}
+
+/// #1140: a contagem que nao pode ser lida recusa o login, sem sessao.
+///
+/// O valor de seguranca da mudanca esta exatamente aqui: o caminho antigo
+/// (`HashMap`) nunca falhava, entao "nao consegui contar" e um estado novo.
+/// Tratado como "ainda pode tentar", ele devolveria o brute force do segundo
+/// fator a quem conseguisse derrubar a tabela. A recusa e 500 mesmo com a
+/// senha certa E o codigo certo.
+#[tokio::test]
+async fn contagem_de_tentativas_ilegivel_recusa_o_login_sem_abrir_sessao() {
+    let dir = tempfile::tempdir().expect("diretorio temporario");
+    let (router, store, path) = cenario_arquivo(&dir);
+    let secret = ligar_2fa(&store).await;
+
+    let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    conn.execute("DROP TABLE totp_attempts", [])
+        .expect("derrubar a tabela de tentativas");
+    drop(conn);
+
+    let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
+    let (status, json, sessao) = login(
+        &router,
+        json!({"username": USUARIO, "password": SENHA, "totp_code": code}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "contagem ilegivel tem que virar 500, nao login liberado: {json}"
+    );
+    assert!(sessao.is_none(), "sem contagem legivel, sem sessao");
 }
 
 /// O enrollment por HTTP: setup devolve um segredo pendente, e ele so passa a
@@ -379,7 +473,7 @@ async fn segredo_ilegivel_recusa_sem_mentir_sobre_o_estado() {
     let secret = ligar_2fa(&store).await;
 
     let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
-    conn.execute("ALTER TABLE admin_users DROP COLUMN totp_secret", [])
+    conn.execute("ALTER TABLE admin_users DROP COLUMN totp_secret_enc", [])
         .expect("derrubar a coluna do segredo");
     drop(conn);
 
@@ -425,7 +519,7 @@ async fn segredo_ilegivel_nos_endpoints_de_enrollment_e_500_nao_400() {
     );
 
     let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
-    conn.execute("ALTER TABLE admin_users DROP COLUMN totp_secret", [])
+    conn.execute("ALTER TABLE admin_users DROP COLUMN totp_secret_enc", [])
         .expect("derrubar a coluna do segredo");
     drop(conn);
 
@@ -461,13 +555,16 @@ async fn segredo_ilegivel_nos_endpoints_de_enrollment_e_500_nao_400() {
     assert_eq!(json["enabled"], false);
 }
 
-/// #1121 (pass-4): segredo VAZIO com 2FA ligado e estado inconsistente —
-/// corrupcao manual, migration defeituosa. Nenhum dos dois caminhos pode
-/// mentir o motivo: o login nao pode virar "codigo invalido" com sessao
-/// destravada na contagem de lockout, e o disable nao pode deixar o 2FA
-/// ligado irrecuperavel respondendo 401 para sempre. Os dois recusam 500.
+/// #1121 (pass-4), atualizado pelo #1141: segredo ILEGIVEL com 2FA ligado e
+/// estado inconsistente — corrupcao manual, migration defeituosa, chave
+/// mestra trocada sem re-cifrar. Depois do #1141 o jeito de chegar nesse
+/// estado e o ciphertext nao decifrar, nao mais a coluna em claro vazia.
+/// Nenhum dos dois caminhos pode mentir o motivo: o login nao pode virar
+/// "codigo invalido" com sessao destravada na contagem de lockout, e o
+/// disable nao pode deixar o 2FA ligado irrecuperavel respondendo 401 para
+/// sempre. Os dois recusam 500.
 #[tokio::test]
-async fn segredo_vazio_recusa_login_e_disable_com_estado_inconsistente() {
+async fn segredo_ilegivel_recusa_login_e_disable_com_estado_inconsistente() {
     let dir = tempfile::tempdir().expect("diretorio temporario");
     let (router, store, path) = cenario_arquivo(&dir);
     // Sessao primeiro: depois que o 2FA liga, o login exigiria codigo.
@@ -476,13 +573,16 @@ async fn segredo_vazio_recusa_login_e_disable_com_estado_inconsistente() {
     let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
 
     let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    // Ciphertext que nao decifra sob a chave mestra (nonce valido, corpo
+    // lixo): o estado inconsistente possivel depois do #1141.
     conn.execute(
-        "UPDATE admin_users SET totp_secret = '' WHERE username = ?1",
+        "UPDATE admin_users SET totp_secret_enc = X'00000000000000000000000000000000',
+         totp_secret_nonce = X'000000000000000000000000' WHERE username = ?1",
         [USUARIO],
     )
-    .expect("esvaziar o segredo");
+    .expect("corromper o segredo cifrado");
 
-    // Login: senha certa E codigo certo — mas o segredo guardado e vazio,
+    // Login: senha certa E codigo certo — mas o segredo guardado nao le,
     // e avaliar o codigo contra ele seria decidir no escuro.
     let (status, json, sessao) = login(
         &router,
@@ -492,7 +592,7 @@ async fn segredo_vazio_recusa_login_e_disable_com_estado_inconsistente() {
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
-        "segredo vazio no login tem que virar 500: {json}"
+        "segredo ilegivel no login tem que virar 500: {json}"
     );
     assert!(sessao.is_none(), "estado inconsistente nao abre sessao");
 
@@ -510,16 +610,16 @@ async fn segredo_vazio_recusa_login_e_disable_com_estado_inconsistente() {
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
-        "segredo vazio no disable tem que virar 500, nao 'codigo invalido': {json}"
+        "segredo ilegivel no disable tem que virar 500, nao 'codigo invalido': {json}"
     );
 }
 
-/// #1121 (pass-4): o mesmo estado inconsistente no `verify`, onde o segredo
-/// e PENDENTE (2FA ainda nao ligado): a recusa e 500, nao o 400 de "2FA nao
-/// configurado" nem o 401 de codigo errado — o codigo certo estava la, o que
-/// falta e o segredo contra o qual avalia-lo.
+/// #1121 (pass-4), atualizado pelo #1141: o mesmo estado inconsistente no
+/// `verify`, onde o segredo e PENDENTE (2FA ainda nao ligado): a recusa e
+/// 500, nao o 400 de "2FA nao configurado" nem o 401 de codigo errado — o
+/// codigo certo estava la, o que falta e o segredo contra o qual avalia-lo.
 #[tokio::test]
-async fn segredo_vazio_no_verify_e_estado_inconsistente() {
+async fn segredo_ilegivel_no_verify_e_estado_inconsistente() {
     let dir = tempfile::tempdir().expect("diretorio temporario");
     let (router, _store, path) = cenario_arquivo(&dir);
     let (cookie, csrf) = entrar(&router).await;
@@ -539,11 +639,14 @@ async fn segredo_vazio_no_verify_e_estado_inconsistente() {
         .to_string();
 
     let conn = rusqlite::Connection::open(&path).expect("segunda conexao");
+    // Ciphertext que nao decifra sob a chave mestra (nonce valido, corpo
+    // lixo): o estado inconsistente possivel depois do #1141.
     conn.execute(
-        "UPDATE admin_users SET totp_secret = '' WHERE username = ?1",
+        "UPDATE admin_users SET totp_secret_enc = X'00000000000000000000000000000000',
+         totp_secret_nonce = X'000000000000000000000000' WHERE username = ?1",
         [USUARIO],
     )
-    .expect("esvaziar o segredo");
+    .expect("corromper o segredo cifrado");
 
     let code = garraia_gateway::totp::current_code(&secret).expect("codigo atual");
     let (status, json, _) = chama(
@@ -558,7 +661,7 @@ async fn segredo_vazio_no_verify_e_estado_inconsistente() {
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
-        "segredo vazio no verify e 500, nao 'nao configurado' nem 'codigo invalido': {json}"
+        "segredo ilegivel no verify e 500, nao 'nao configurado' nem 'codigo invalido': {json}"
     );
 }
 
