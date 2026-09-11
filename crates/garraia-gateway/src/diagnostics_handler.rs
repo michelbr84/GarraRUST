@@ -7,11 +7,25 @@
 //!
 //! Secret-free: when reporting on a secret (e.g. JWT_SECRET) we only
 //! emit `configured: true|false`, never the value.
+//!
+//! The two voice checks (#1098) are the only ones that touch the network, and
+//! only when voice mode is on: with TTS/STT down the gateway used to log a
+//! warning nobody read, so `POST /api/tts` answered with a silent text
+//! fallback and the operator never learned the server was gone. Surfacing the
+//! same fact as an `error` row here is what makes it visible in the console.
+//!
+//! Probe semantics: any HTTP response proves the endpoint is alive and
+//! answering, so 4xx counts as `Reachable` (a `GET` against a health route
+//! may simply not exist). Only 5xx means "server is up but the service is
+//! broken" → `Unhealthy(status)`. Details never echo the configured URL
+//! verbatim — see [`endpoint_publico`].
 
-use std::time::SystemTime;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::Json;
 use axum::extract::State;
+use garraia_common::ssrf::{self, IpScope, UrlPolicy};
 use serde::Serialize;
 
 use crate::state::SharedState;
@@ -89,6 +103,208 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let year = (y + if m <= 2 { 1 } else { 0 }) as i32;
     (year, m, d)
+}
+
+/// Next step offered when the TTS server is unreachable. Mirrors the command
+/// in `docs/voice.md` so the console points at the same thing the doc does.
+const TTS_NEXT_STEP: &str =
+    "Start the TTS server: `chatterbox-tts serve --host 127.0.0.1 --port 7860` (docs/voice.md).";
+
+/// Same, for the STT server.
+const STT_NEXT_STEP: &str =
+    "Start the STT server: `fwsh serve --host 127.0.0.1 --port 9090` (docs/voice.md).";
+
+/// Budget for one voice probe. Two of them run per report, and only when
+/// voice mode is on — the Diagnostics page must not hang on a dead port.
+const VOICE_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Voice servers are local by design (`docs/voice.md`), so this call site
+/// opts into [`IpScope::AllowPrivate`] — the same reason `Ollama` does. The
+/// URL comes from config, but it still goes through `vet_url`: scheme,
+/// host and blocked ranges (link-local metadata, CGNAT) are checked, and
+/// `pinned_client` pins the resolved address so it cannot be swapped
+/// between the check and the connect.
+fn voice_policy() -> UrlPolicy {
+    UrlPolicy::http_public(VOICE_PROBE_TIMEOUT, "garraia-gateway/diagnostics")
+        .with_ip_scope(IpScope::AllowPrivate)
+}
+
+/// Outcome of reaching (or not) one configured voice endpoint. Kept as an
+/// enum rather than a `Result` so [`voice_check`] stays a pure function —
+/// that is what lets the mapping be tested without a network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VoiceProbe {
+    /// Voice mode is off in this process: nothing to reach, nothing wrong.
+    Disabled,
+    /// Something answered with a non-5xx status (4xx included: a `GET` on a
+    /// health route may not exist — the server being up is what counts).
+    Reachable,
+    /// The server answered with a 5xx: up, but the service is broken.
+    Unhealthy(u16),
+    /// Vetted and dialled, but no answer. Carries a short, stable reason.
+    Unreachable(&'static str),
+    /// Not a URL this gateway may call: bad scheme, no host, blocked range.
+    Invalid(String),
+}
+
+async fn probe_voice_endpoint(endpoint: &str) -> VoiceProbe {
+    let policy = voice_policy();
+    let vetted = match ssrf::vet_url(endpoint, &policy) {
+        Ok(v) => v,
+        Err(e) => return VoiceProbe::Invalid(e.to_string()),
+    };
+    let client = match ssrf::pinned_client(&vetted, &policy) {
+        Ok(c) => c,
+        Err(e) => return VoiceProbe::Invalid(e.to_string()),
+    };
+    match client.get(vetted.url.clone()).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_server_error() {
+                VoiceProbe::Unhealthy(status.as_u16())
+            } else {
+                VoiceProbe::Reachable
+            }
+        }
+        Err(e) => VoiceProbe::Unreachable(if e.is_connect() {
+            "nothing listening (connection refused)"
+        } else if e.is_timeout() {
+            "no answer within 1.5s"
+        } else {
+            "request failed"
+        }),
+    }
+}
+
+/// Strips an endpoint down to `scheme://host[:port]` for display.
+///
+/// `/api/diagnostics` is auth-free when the gateway key is absent, so echoing
+/// the raw configured URL would leak anything embedded in it — userinfo
+/// (`http://user:pass@host/`), paths, query strings, fragments — into the
+/// response body. `url::Url::parse` happily accepts userinfo and
+/// `host_str()` ignores it, so the redaction has to happen here, before any
+/// `format!` that lands in the report. The module promises "Secret-free";
+/// this keeps that promise for the owner's own config.
+fn endpoint_publico(endpoint: &str) -> String {
+    let Ok(u) = url::Url::parse(endpoint) else {
+        return "<endpoint invalido>".to_string();
+    };
+    let Some(host) = u.host_str() else {
+        return "<endpoint invalido>".to_string();
+    };
+    if host.is_empty() || !matches!(u.scheme(), "http" | "https") {
+        return "<endpoint invalido>".to_string();
+    }
+    match u.port() {
+        Some(p) => format!("{}://{}:{}", u.scheme(), host, p),
+        None => format!("{}://{}", u.scheme(), host),
+    }
+}
+
+/// Build the diagnostic row for one voice endpoint.
+///
+/// `Error` (not `Warning`) when a configured server is down: a warning is
+/// exactly what #1098 reports as too easy to miss. The endpoint is echoed
+/// only through [`endpoint_publico`] — never verbatim — because this report
+/// is auth-free without the gateway key.
+fn voice_check(
+    id: &'static str,
+    label: &'static str,
+    endpoint: &str,
+    next_step: &'static str,
+    probe: VoiceProbe,
+) -> DiagnosticCheck {
+    let ep = endpoint_publico(endpoint);
+    let (status, detail, next_step) = match probe {
+        VoiceProbe::Disabled => (
+            CheckStatus::Skipped,
+            "voice mode not enabled (start the gateway with --with-voice)".to_string(),
+            None,
+        ),
+        VoiceProbe::Reachable => (CheckStatus::Ok, format!("reachable at {ep}"), None),
+        VoiceProbe::Unhealthy(code) => (
+            CheckStatus::Error,
+            format!("{ep} respondeu HTTP {code} — servidor de pe, servico quebrado"),
+            Some(next_step),
+        ),
+        VoiceProbe::Unreachable(reason) => (
+            CheckStatus::Error,
+            format!("{ep} unreachable: {reason}"),
+            Some(next_step),
+        ),
+        VoiceProbe::Invalid(reason) => (
+            CheckStatus::Error,
+            format!("{ep}: {reason}"),
+            Some("Set the voice endpoint to an http(s) URL on a host this gateway may reach."),
+        ),
+    };
+    DiagnosticCheck {
+        id,
+        label,
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// Which TTS endpoint is actually in play — `hibiki_endpoint` only when the
+/// configured provider is `hibiki`, otherwise the shared default.
+fn active_tts_endpoint(config: &garraia_config::VoiceConfig) -> &str {
+    if config.tts_provider.eq_ignore_ascii_case("hibiki") {
+        &config.hibiki_endpoint
+    } else {
+        &config.tts_endpoint
+    }
+}
+
+/// How long a pair of probe results is reused for the same endpoints.
+/// The Diagnostics page may be polled repeatedly; without this every poll
+/// dials both voice servers, which a hostile client can turn into a probe
+/// amplifier against local addresses.
+const VOICE_PROBE_CACHE_TTL: Duration = Duration::from_secs(5);
+
+struct VoiceProbes {
+    gravado_em: Instant,
+    tts_endpoint: String,
+    stt_endpoint: String,
+    tts: VoiceProbe,
+    stt: VoiceProbe,
+}
+
+// `tokio::sync::Mutex::new` não é `const` neste toolchain, então o cache
+// nasce preguiçoso: `LazyLock` resolve na primeira sonda.
+static VOICE_PROBE_CACHE: LazyLock<tokio::sync::Mutex<Option<VoiceProbes>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+/// Probe both voice servers, in parallel, with a short cache keyed by the
+/// endpoints actually configured. Both probes share the 1.5 s budget each
+/// (they dial different ports concurrently), and a repeated report within
+/// the TTL reuses the previous result instead of re-dialling.
+async fn sondas_de_voz(cfg: &garraia_config::VoiceConfig) -> (VoiceProbe, VoiceProbe) {
+    let tts_endpoint = active_tts_endpoint(cfg).to_string();
+    let stt_endpoint = cfg.stt_endpoint.clone();
+    {
+        let guard = VOICE_PROBE_CACHE.lock().await;
+        if let Some(c) = guard.as_ref()
+            && c.gravado_em.elapsed() < VOICE_PROBE_CACHE_TTL
+            && c.tts_endpoint == tts_endpoint
+            && c.stt_endpoint == stt_endpoint
+        {
+            return (c.tts.clone(), c.stt.clone());
+        }
+    }
+    let (tts, stt) = tokio::join!(
+        probe_voice_endpoint(&tts_endpoint),
+        probe_voice_endpoint(&stt_endpoint),
+    );
+    *VOICE_PROBE_CACHE.lock().await = Some(VoiceProbes {
+        gravado_em: Instant::now(),
+        tts_endpoint: tts_endpoint.clone(),
+        stt_endpoint: stt_endpoint.clone(),
+        tts: tts.clone(),
+        stt: stt.clone(),
+    });
+    (tts, stt)
 }
 
 /// GET /api/diagnostics — full diagnostic report.
@@ -333,6 +549,33 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: None,
     });
 
+    // 13. TTS server reachable (#1098). Skipped when voice mode is off —
+    //     there is nothing to reach, and nothing wrong, in that case.
+    let voice_on = state.config.voice.enabled;
+    let (tts_probe, stt_probe) = if voice_on {
+        sondas_de_voz(&state.config.voice).await
+    } else {
+        (VoiceProbe::Disabled, VoiceProbe::Disabled)
+    };
+    let tts_endpoint = active_tts_endpoint(&state.config.voice);
+    checks.push(voice_check(
+        "voice.tts",
+        "TTS server",
+        tts_endpoint,
+        TTS_NEXT_STEP,
+        tts_probe,
+    ));
+
+    // 14. STT server reachable (#1098).
+    let stt_endpoint = state.config.voice.stt_endpoint.clone();
+    checks.push(voice_check(
+        "voice.stt",
+        "STT server",
+        &stt_endpoint,
+        STT_NEXT_STEP,
+        stt_probe,
+    ));
+
     // Aggregate status: error > warning > ok (skipped is neutral).
     let status = if checks
         .iter()
@@ -355,4 +598,286 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         generated_at: now_iso8601(),
         checks,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ENDPOINT: &str = "http://127.0.0.1:7860";
+
+    /// #1098: com o modo voz desligado nao ha servidor para alcancar, e isso
+    /// nao e defeito — a linha e `skipped`, nao `error`.
+    #[test]
+    fn voz_desligada_e_skipped_e_nao_erro() {
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            ENDPOINT,
+            TTS_NEXT_STEP,
+            VoiceProbe::Disabled,
+        );
+        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert!(
+            c.next_step.is_none(),
+            "skipped nao sugere proximo passo: nao ha nada a consertar"
+        );
+    }
+
+    #[test]
+    fn servidor_alcancavel_e_ok_sem_proximo_passo() {
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            ENDPOINT,
+            TTS_NEXT_STEP,
+            VoiceProbe::Reachable,
+        );
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert_eq!(c.detail, format!("reachable at {ENDPOINT}"));
+        assert!(c.next_step.is_none());
+    }
+
+    /// O ponto da issue: servidor fora tem de ser `error` com o comando que
+    /// levanta o servico — um `warning` era exatamente o que passava batido.
+    #[test]
+    fn servidor_fora_e_error_com_o_comando_de_subida() {
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            ENDPOINT,
+            TTS_NEXT_STEP,
+            VoiceProbe::Unreachable("nothing listening (connection refused)"),
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(c.detail.contains(ENDPOINT));
+        assert!(c.detail.contains("nothing listening"));
+        assert_eq!(c.next_step, Some(TTS_NEXT_STEP));
+        assert!(
+            TTS_NEXT_STEP.contains("chatterbox-tts serve"),
+            "o proximo passo tem de citar o comando real da docs"
+        );
+        assert!(STT_NEXT_STEP.contains("9090"), "e o STT a porta certa");
+    }
+
+    /// Endpoint que nao e URL chamavel tambem e `error` — falha fechada, nunca
+    /// se finge que esta tudo bem.
+    #[test]
+    fn endpoint_invalido_e_error() {
+        let c = voice_check(
+            "voice.stt",
+            "STT server",
+            "file:///etc/passwd",
+            STT_NEXT_STEP,
+            VoiceProbe::Invalid("scheme not allowed".to_string()),
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(c.next_step.is_some());
+        assert!(
+            c.detail.contains("<endpoint invalido>"),
+            "detalhe nunca ecoa a URL rejeitada verbatim: {}",
+            c.detail
+        );
+    }
+
+    /// `hibiki` tem endpoint proprio; o default e o do chatterbox.
+    #[test]
+    fn provider_escolhe_o_endpoint() {
+        let mut cfg = garraia_config::VoiceConfig::default();
+        assert_eq!(active_tts_endpoint(&cfg), "http://127.0.0.1:7860");
+        cfg.hibiki_endpoint = "http://127.0.0.1:8912".to_string();
+        assert_eq!(
+            active_tts_endpoint(&cfg),
+            "http://127.0.0.1:7860",
+            "sem trocar o provider, o endpoint do hibiki nao vale"
+        );
+        cfg.tts_provider = "hibiki".to_string();
+        assert_eq!(active_tts_endpoint(&cfg), "http://127.0.0.1:8912");
+    }
+
+    /// O escopo privado e o que faz os servicos locais de voz alcancaveis; sem
+    /// ele o proprio 127.0.0.1 do default seria barrado pelo guarda.
+    #[test]
+    fn a_policy_de_voz_permite_loopback() {
+        assert_eq!(voice_policy().ip_scope, IpScope::AllowPrivate);
+        assert!(
+            ssrf::vet_url(ENDPOINT, &voice_policy()).is_ok(),
+            "o endpoint default de voz tem de passar pelo vet_url"
+        );
+        assert!(
+            ssrf::vet_url("http://169.254.169.254/", &voice_policy()).is_err(),
+            "metadata de cloud continua barrado mesmo no escopo privado"
+        );
+    }
+
+    /// FIX A (#SA-HIGH): userinfo embutida na config do dono jamais chega ao
+    /// corpo do /api/diagnostics, que e auth-free sem a chave do gateway.
+    #[test]
+    fn credencial_na_url_nao_vaza_no_detail() {
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            "http://user:senha@127.0.0.1:7860",
+            TTS_NEXT_STEP,
+            VoiceProbe::Reachable,
+        );
+        assert!(c.detail.contains("http://127.0.0.1:7860"), "{}", c.detail);
+        assert!(!c.detail.contains("user"), "{}", c.detail);
+        assert!(!c.detail.contains("senha"), "{}", c.detail);
+    }
+
+    /// Um dial a uma porta morta no loopback e recusado, nao timeout.
+    #[tokio::test]
+    async fn conexao_recusada_mapeia_para_unreachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener); // porta livre de novo: nada escutando nela.
+        let probe = probe_voice_endpoint(&format!("http://{addr}")).await;
+        assert_eq!(
+            probe,
+            VoiceProbe::Unreachable("nothing listening (connection refused)"),
+        );
+    }
+
+    /// Servidor HTTP de mentira num socket cru. LÊ o request antes de
+    /// escrever a resposta: fechar o socket com o request ainda nao lido
+    /// faz o kernel mandar RST, que destrói a resposta antes de o hyper
+    /// conseguir le-la — o teste falharia com "request failed" sem ter
+    /// provado nada sobre a semantica que se quer testar.
+    fn drena_request_e_responde(sock: std::net::TcpStream, resposta: &'static [u8]) {
+        use std::io::{Read, Write};
+        let mut s = sock;
+        let mut buf = [0u8; 2048];
+        let mut got = 0usize;
+        // Consome os cabeçalhos do request (GET não tem corpo).
+        while got < buf.len() {
+            let n = s.read(&mut buf[got..]).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got += n;
+            if buf[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let _ = s.write_all(resposta);
+        let _ = s.flush();
+        // FIN limpo: nada ficou nao-lido no buffer de recepção.
+        let _ = s.shutdown(std::net::Shutdown::Both);
+    }
+
+    /// FIX B: 5xx significa "de pe, quebrado" — error, nao ok.
+    #[tokio::test]
+    async fn http_500_e_unhealthy() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            drena_request_e_responde(
+                sock,
+                b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let probe = probe_voice_endpoint(&format!("http://{addr}")).await;
+        t.join().unwrap();
+        assert_eq!(probe, VoiceProbe::Unhealthy(500));
+        let c = voice_check(
+            "voice.tts",
+            "TTS server",
+            &format!("http://{addr}"),
+            TTS_NEXT_STEP,
+            probe,
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(c.detail.contains("HTTP 500"), "{}", c.detail);
+    }
+
+    /// 4xx e servidor de pe e saudavel o bastante: GET / pode nao existir.
+    #[tokio::test]
+    async fn http_404_continua_reachable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            drena_request_e_responde(
+                sock,
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        });
+        let probe = probe_voice_endpoint(&format!("http://{addr}")).await;
+        t.join().unwrap();
+        assert_eq!(probe, VoiceProbe::Reachable);
+    }
+
+    /// Servidor aceita a conexao e nunca responde: estoura o budget de 1.5s.
+    #[tokio::test]
+    async fn sem_resposta_em_1_5s_e_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let t = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            // Consome o request e fica calado: soltar o socket na hora
+            // mandaria RST (request nao lido) e o timeout viraria
+            // "request failed". Segura o socket alem do budget de 1.5s.
+            let mut s = sock;
+            let mut buf = [0u8; 2048];
+            use std::io::Read;
+            let _ = s.read(&mut buf);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        });
+        let probe = probe_voice_endpoint(&format!("http://{addr}")).await;
+        t.join().unwrap();
+        assert_eq!(probe, VoiceProbe::Unreachable("no answer within 1.5s"));
+    }
+
+    /// FIX C, parte 2: dentro do TTL a segunda chamada nao reproba nenhum
+    /// servidor — cada um dos dois listeners ve EXATAMENTE uma conexao.
+    #[tokio::test]
+    async fn sonda_repetida_dentro_do_ttl_nao_reproba() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        async fn contador_na_porta() -> (String, Arc<AtomicUsize>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let count = Arc::new(AtomicUsize::new(0));
+            let c2 = count.clone();
+            std::thread::spawn(move || {
+                for sock in listener.incoming() {
+                    c2.fetch_add(1, Ordering::SeqCst);
+                    drena_request_e_responde(
+                        sock.unwrap(),
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            });
+            (format!("http://{addr}"), count)
+        }
+
+        let (tts_endpoint, tts_count) = contador_na_porta().await;
+        let (stt_endpoint, stt_count) = contador_na_porta().await;
+
+        *VOICE_PROBE_CACHE.lock().await = None;
+        let cfg = garraia_config::VoiceConfig {
+            tts_endpoint: tts_endpoint.clone(),
+            stt_endpoint: stt_endpoint.clone(),
+            ..garraia_config::VoiceConfig::default()
+        };
+
+        let _ = sondas_de_voz(&cfg).await;
+        let _ = sondas_de_voz(&cfg).await;
+
+        assert_eq!(
+            tts_count.load(Ordering::SeqCst),
+            1,
+            "TTS tem de ser sondado uma unica vez dentro do TTL"
+        );
+        assert_eq!(
+            stt_count.load(Ordering::SeqCst),
+            1,
+            "STT tem de ser sondado uma unica vez dentro do TTL"
+        );
+
+        *VOICE_PROBE_CACHE.lock().await = None;
+    }
 }

@@ -282,6 +282,21 @@ jobs:
         # `garraia` é o nome do pacote em `crates/garraia-cli/`.
         run: cargo clippy -p garraia --features mcp-http --all-targets -- -D warnings
 
+      - name: Run clippy + tests (mcp)
+        # Buraco vizinho do `mcp-http` acima: `crates/garraia-agents` declara
+        # `default = []` e `mcp = ["dep:rmcp"]`, e o unico alvo de teste que
+        # exercita o ciclo de vida real do MCP
+        # (`crates/garraia-agents/tests/mcp_lifecycle.rs`) comeca com
+        # `#![cfg(feature = "mcp")]`. Como nenhum job passava `--features mcp`
+        # — e `--all-features` nao e usado em lugar nenhum —, os tres testes
+        # (`tool_survives_reconnect`, `detects_dead_child_and_reconnects`,
+        # `disconnect_all_is_bounded_with_stubborn_child`) nunca rodavam no CI.
+        # Issue #1089. O clippy vem junto pelo mesmo motivo dos outros steps:
+        # sem ele o codigo sob a feature apodrece sem aviso.
+        run: |
+          cargo clippy -p garraia-agents --features mcp --all-targets -- -D warnings
+          cargo test -p garraia-agents --features mcp --test mcp_lifecycle
+
       - name: Run clippy + tests (signal)
         # Mesmo buraco do `mcp-http` acima, e do `auth-integration` mais
         # abaixo: `pub mod signal` e `#[cfg(feature = "signal")]` e a feature
