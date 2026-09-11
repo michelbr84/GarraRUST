@@ -2,7 +2,7 @@
 //!
 //! GPU-gated install + start helpers for Ollama (`curl … | sh`) and the
 //! Qwen3-14B GGUF model pull, plus install-hint printers for Chatterbox
-//! TTS and faster-whisper STT.
+//! TTS and whisper.cpp STT.
 //!
 //! The wizard only invokes these helpers after an explicit `Confirm`
 //! prompt. Auto-install of the Python TTS/STT stacks is intentionally
@@ -252,20 +252,30 @@ impl HintSink for StdoutHints {
 /// Print copy-paste install instructions for Chatterbox Multilingual TTS.
 /// Aligns with `voice.tts_endpoint = http://127.0.0.1:7860` (plan 0126).
 pub fn print_tts_install_hints<S: HintSink>(sink: &mut S) {
-    sink.writeln("  TTS — Chatterbox Multilingual (listens on :7860):");
-    sink.writeln("    pip install chatterbox-tts");
-    sink.writeln("    chatterbox-tts serve --host 127.0.0.1 --port 7860");
+    sink.writeln("  TTS — Chatterbox Multilingual Gradio app (listens on :7860):");
+    sink.writeln("    git clone https://github.com/resemble-ai/chatterbox && cd chatterbox");
+    sink.writeln("    pip install -e .");
+    sink.writeln(
+        "    GRADIO_SERVER_NAME=127.0.0.1 GRADIO_SERVER_PORT=7860 python multilingual_app.py",
+    );
+    sink.writeln("  The chatterbox-tts wheel is a library only — the server is this Gradio app.");
     sink.writeln(
         "  Garra will reach it at http://127.0.0.1:7860 (configured in voice.tts_endpoint).",
     );
 }
 
-/// Print copy-paste install instructions for faster-whisper STT.
+/// Print copy-paste install instructions for whisper.cpp STT.
 /// Aligns with `voice.stt_endpoint = http://127.0.0.1:9090` (plan 0126).
 pub fn print_stt_install_hints<S: HintSink>(sink: &mut S) {
-    sink.writeln("  STT — faster-whisper-server (listens on :9090):");
-    sink.writeln("    pip install faster-whisper-server");
-    sink.writeln("    fwsh serve --host 127.0.0.1 --port 9090");
+    sink.writeln("  STT — whisper.cpp server (listens on :9090):");
+    sink.writeln("    git clone https://github.com/ggml-org/whisper.cpp && cd whisper.cpp");
+    sink.writeln("    cmake -B build && cmake --build build -j --config Release");
+    sink.writeln("    ./models/download-ggml-model.sh base");
+    sink.writeln(
+        "    ./build/bin/whisper-server --host 127.0.0.1 --port 9090 -m models/ggml-base.bin",
+    );
+    sink.writeln("  Older checkouts name the binary ./server. Any OpenAI-compatible server");
+    sink.writeln("  exposing POST /v1/audio/transcriptions works as well.");
     sink.writeln(
         "  Garra will reach it at http://127.0.0.1:9090 (configured in voice.stt_endpoint).",
     );
@@ -278,7 +288,7 @@ pub fn voice_endpoints_summary() -> String {
     let mut s = String::new();
     let _ = write!(
         s,
-        "voice.tts_endpoint=http://127.0.0.1:7860 (chatterbox) | voice.stt_endpoint=http://127.0.0.1:9090 (faster-whisper)"
+        "voice.tts_endpoint=http://127.0.0.1:7860 (chatterbox) | voice.stt_endpoint=http://127.0.0.1:9090 (whisper.cpp)"
     );
     s
 }
@@ -306,22 +316,44 @@ mod tests {
     }
 
     #[test]
-    fn stt_hints_mention_faster_whisper_and_port_9090() {
+    fn stt_hints_mention_whisper_cpp_and_port_9090() {
         let mut sink = CapturedHints::default();
         print_stt_install_hints(&mut sink);
         let combined = sink.lines.join("\n");
         assert!(
-            combined.contains("faster-whisper"),
-            "missing faster-whisper label:\n{combined}"
+            combined.contains("whisper.cpp"),
+            "missing whisper.cpp label:\n{combined}"
         );
         assert!(combined.contains(":9090"), "missing port hint:\n{combined}");
+    }
+
+    /// Regressao #1146: os hints ja recomendaram `chatterbox-tts serve` e
+    /// `fwsh serve`, dois comandos que nao existem em pacote nenhum. Nenhum
+    /// dos dois pode voltar.
+    #[test]
+    fn hints_nao_citam_comandos_inexistentes() {
+        let mut tts = CapturedHints::default();
+        print_tts_install_hints(&mut tts);
+        let mut stt = CapturedHints::default();
+        print_stt_install_hints(&mut stt);
+        let combined = format!("{}\n{}", tts.lines.join("\n"), stt.lines.join("\n"));
+        for fake in [
+            "chatterbox-tts serve",
+            "fwsh ",
+            "faster-whisper-server serve",
+        ] {
+            assert!(
+                !combined.contains(fake),
+                "hints citam comando inexistente {fake}:\n{combined}"
+            );
+        }
     }
 
     #[test]
     fn voice_endpoints_summary_includes_both_providers() {
         let s = voice_endpoints_summary();
         assert!(s.contains("chatterbox"));
-        assert!(s.contains("faster-whisper"));
+        assert!(s.contains("whisper.cpp"));
         assert!(s.contains(":7860"));
         assert!(s.contains(":9090"));
     }
