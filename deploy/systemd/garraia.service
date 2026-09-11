@@ -10,6 +10,13 @@ Description=GarraIA Gateway — AI orchestration server
 Documentation=https://github.com/michelbr84/GarraRUST
 After=network-online.target
 Wants=network-online.target
+# Circuit breaker for the Restart= policy below: these two keys only take
+# effect in [Unit] (systemd.unit(5)) — systemd silently ignores them in
+# [Service] ("Unknown key name ... ignoring"), which means without this the
+# gateway restarts forever on a crash-loop instead of landing in `failed`
+# with `start-limit-hit` after 5 failures inside 60s (#1147).
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=exec
@@ -40,10 +47,9 @@ ConfigurationDirectory=garraia
 LogsDirectory=garraia
 
 # Restart policy
+# StartLimitIntervalSec/StartLimitBurst moved to [Unit] — see comment there.
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Security hardening
 NoNewPrivileges=yes
