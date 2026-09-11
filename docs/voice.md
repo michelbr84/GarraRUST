@@ -36,14 +36,27 @@ Run those commands yourself once, then start the gateway with
 already `true` in `config.yml`):
 
 ```bash
-# TTS — Chatterbox Multilingual on :7860
-pip install chatterbox-tts
-chatterbox-tts serve --host 127.0.0.1 --port 7860
+# TTS — Chatterbox Multilingual (Gradio app) on :7860
+# The `chatterbox-tts` wheel is a *library* and ships no CLI — the server
+# is the Gradio app that lives in the upstream repository.
+git clone https://github.com/resemble-ai/chatterbox
+cd chatterbox
+pip install -e .
+GRADIO_SERVER_NAME=127.0.0.1 GRADIO_SERVER_PORT=7860 python multilingual_app.py
 
-# STT — faster-whisper-server on :9090
-pip install faster-whisper-server
-fwsh serve --host 127.0.0.1 --port 9090
+# STT — whisper.cpp server on :9090
+git clone https://github.com/ggml-org/whisper.cpp
+cd whisper.cpp
+cmake -B build && cmake --build build -j --config Release
+./models/download-ggml-model.sh base
+./build/bin/whisper-server --host 127.0.0.1 --port 9090 -m models/ggml-base.bin
 ```
+
+On older whisper.cpp checkouts the server binary is called `./server`
+instead of `./build/bin/whisper-server`. Any other server that exposes
+the OpenAI-compatible `POST /v1/audio/transcriptions` route works too:
+the client tries whisper.cpp's `POST /inference` first and falls back to
+the OpenAI shape.
 
 The wizard writes `voice.tts_endpoint=http://127.0.0.1:7860`,
 `voice.stt_endpoint=http://127.0.0.1:9090`,
@@ -77,11 +90,20 @@ voice servers are up" are different facts — see
 
 ### Chatterbox (Recommended)
 
-Docker-based GPU TTS:
+Local GPU TTS served by the upstream Gradio app — GarraIA publishes no
+container image for it, so run it from the source checkout:
 
 ```bash
-docker run -d --gpus all -p 7860:7860 ghcr.io/garraia/chatterbox:latest
+git clone https://github.com/resemble-ai/chatterbox
+cd chatterbox
+pip install -e .
+GRADIO_SERVER_NAME=127.0.0.1 GRADIO_SERVER_PORT=7860 python multilingual_app.py
 ```
+
+GarraIA talks to it over the Gradio API
+(`POST /gradio_api/call/generate_tts_audio`), which is what
+`multilingual_app.py` exposes. The `chatterbox-tts` PyPI wheel is a
+library only and has no `serve` subcommand.
 
 Features:
 - Multilingual (pt, en, es, fr, de, it, hi)
@@ -90,11 +112,9 @@ Features:
 
 ### Hibiki
 
-Alternative GPU TTS:
-
-```bash
-docker run -d --gpus all -p 7861:7860 ghcr.io/garraia/hibiki:latest
-```
+Alternative GPU TTS. There is no published GarraIA image for it either —
+follow the upstream project's own instructions and point
+`voice.tts_endpoint` at whatever host and port you start it on.
 
 ### OpenAI TTS
 

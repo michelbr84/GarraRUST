@@ -107,12 +107,14 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 
 /// Next step offered when the TTS server is unreachable. Mirrors the command
 /// in `docs/voice.md` so the console points at the same thing the doc does.
-const TTS_NEXT_STEP: &str =
-    "Start the TTS server: `chatterbox-tts serve --host 127.0.0.1 --port 7860` (docs/voice.md).";
+const TTS_NEXT_STEP: &str = "Start the TTS server: from a chatterbox checkout, run \
+     `GRADIO_SERVER_NAME=127.0.0.1 GRADIO_SERVER_PORT=7860 python multilingual_app.py` \
+     (docs/voice.md).";
 
 /// Same, for the STT server.
-const STT_NEXT_STEP: &str =
-    "Start the STT server: `fwsh serve --host 127.0.0.1 --port 9090` (docs/voice.md).";
+const STT_NEXT_STEP: &str = "Start the STT server: from a whisper.cpp checkout, run \
+     `./build/bin/whisper-server --host 127.0.0.1 --port 9090 -m models/ggml-base.bin` \
+     (docs/voice.md).";
 
 /// Next step for a 5xx: the process is up, so restarting it is not the
 /// instruction — reading its logs is. The start command above is for
@@ -703,10 +705,25 @@ mod tests {
         assert!(c.detail.contains("nothing listening"));
         assert_eq!(c.next_step, Some(TTS_NEXT_STEP));
         assert!(
-            TTS_NEXT_STEP.contains("chatterbox-tts serve"),
-            "o proximo passo tem de citar o comando real da docs"
+            TTS_NEXT_STEP.contains("7860"),
+            "o proximo passo do TTS tem de citar a porta certa"
         );
         assert!(STT_NEXT_STEP.contains("9090"), "e o STT a porta certa");
+    }
+
+    /// Regressao #1146: os dois next_step ja mandavam rodar `chatterbox-tts
+    /// serve` e `fwsh serve`, comandos que nao existem em pacote nenhum. O
+    /// console nao pode voltar a mandar o usuario para um beco sem saida.
+    #[test]
+    fn next_steps_nao_citam_comandos_inexistentes() {
+        for fake in [
+            "chatterbox-tts serve",
+            "fwsh ",
+            "faster-whisper-server serve",
+        ] {
+            assert!(!TTS_NEXT_STEP.contains(fake), "TTS cita {fake}");
+            assert!(!STT_NEXT_STEP.contains(fake), "STT cita {fake}");
+        }
     }
 
     /// Endpoint que nao e URL chamavel tambem e `error` — falha fechada, nunca
