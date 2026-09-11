@@ -67,7 +67,7 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
     let ip = extract_ip(&headers, None);
-    let mut guard = state.store.lock().await;
+    let guard = state.store.lock().await;
 
     let user = match guard.verify_password(&body.username, &body.password) {
         Some(u) => u,
@@ -143,24 +143,47 @@ pub async fn login(
             }
         };
 
-        if guard.totp_attempts_exhausted(&user.id) {
-            log_auth_failure(
-                &guard,
-                Some(&user.id),
-                Some(&user.username),
-                "login",
-                "too many totp attempts",
-                ip.as_deref(),
-            );
-            drop(guard);
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                HeaderMap::new(),
-                Json(serde_json::json!({
-                    "error": "too many totp attempts",
-                    "totp_required": true,
-                })),
-            );
+        // Contagem ilegivel recusa fechado, como o gate de estado acima:
+        // tratar "nao consegui contar" como "ainda pode tentar" devolveria o
+        // brute force do segundo fator a quem derruba a leitura (#1140).
+        match guard.totp_attempts_exhausted(&user.id) {
+            Ok(false) => {}
+            Ok(true) => {
+                log_auth_failure(
+                    &guard,
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "too many totp attempts",
+                    ip.as_deref(),
+                );
+                drop(guard);
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({
+                        "error": "too many totp attempts",
+                        "totp_required": true,
+                    })),
+                );
+            }
+            Err(e) => {
+                tracing::warn!("admin login: totp attempt counter unreadable: {e}");
+                log_auth_failure(
+                    &guard,
+                    Some(&user.id),
+                    Some(&user.username),
+                    "login",
+                    "totp attempt counter unreadable",
+                    ip.as_deref(),
+                );
+                drop(guard);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    HeaderMap::new(),
+                    Json(serde_json::json!({"error": "internal error"})),
+                );
+            }
         }
 
         // Segredo ausente, vazio ou ilegivel com 2FA ligado: `disable_totp`
@@ -169,7 +192,7 @@ pub async fn login(
         // resposta honesta e a mesma do gate de estado acima: recusa sem
         // abrir sessao. Erro de leitura nao pode virar "codigo invalido"
         // (#1121, pass-3).
-        let secret = match guard.get_totp_secret(&user.id) {
+        let secret = match guard.get_totp_secret(&user.id, &state.encryption_key) {
             Ok(Some(s)) if !s.is_empty() => s,
             Ok(_) => {
                 tracing::warn!("admin login: 2FA enabled but secret missing");
@@ -207,7 +230,26 @@ pub async fn login(
             }
         };
         let ok = crate::totp::verify_totp(&secret, code);
-        guard.record_totp_attempt(&user.id, ok);
+        // Registrar antes de responder, e recusar se nao der: um codigo
+        // avaliado que nao entra na contagem e uma tentativa de graca — nem
+        // a certa, que abriria sessao sem zerar o contador (#1140).
+        if let Err(e) = guard.record_totp_attempt(&user.id, ok) {
+            tracing::warn!("admin login: failed to record totp attempt: {e}");
+            log_auth_failure(
+                &guard,
+                Some(&user.id),
+                Some(&user.username),
+                "login",
+                "totp attempt not recorded",
+                ip.as_deref(),
+            );
+            drop(guard);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                HeaderMap::new(),
+                Json(serde_json::json!({"error": "internal error"})),
+            );
+        }
 
         if !ok {
             log_auth_failure(

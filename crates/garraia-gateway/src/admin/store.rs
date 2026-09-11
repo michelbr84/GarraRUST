@@ -2,10 +2,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::pbkdf2;
 use rusqlite::{Connection, params};
-use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::Path;
-use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tracing::info;
 
@@ -26,12 +24,19 @@ const RECOVERY_CODE_LEN: usize = 32;
 /// de +-1 janela aceita 3 de cada 1e6 chutes, e `verify_totp` custa
 /// microssegundos — ao contrario da senha, que passa por 600k iteracoes de
 /// PBKDF2 e portanto ja e cara de forcar.
-const TOTP_MAX_ATTEMPTS: usize = 5;
-/// Janela da contagem acima. Reiniciar o gateway limpa a contagem junto com o
-/// travamento: e estado de processo, nao de banco, de proposito — persisti-lo
-/// deixaria um atacante capaz de travar o dono por mais tempo do que o restart
-/// resolve.
-const TOTP_ATTEMPT_WINDOW: Duration = Duration::from_secs(15 * 60);
+const TOTP_MAX_ATTEMPTS: i64 = 5;
+/// Janela da contagem acima, em segundos.
+///
+/// A contagem vive no `admin.db` (tabela `totp_attempts`), nao em memoria de
+/// processo (#1140). O comentario anterior defendia o `HashMap`: persistir
+/// deixaria um atacante travar o dono por mais tempo do que um restart
+/// resolve. A auditoria do #1137 classificou a troca como ALTO na direcao
+/// oposta e ela vale: quem restarta o gateway ja e quem opera a maquina, e
+/// **atingir outra instancia** nao exige nem isso — com a senha na mao, o
+/// segundo fator de 6 digitos voltava a ser forcavel a cada restart, o que
+/// anula o lockout inteiro. O custo aceito e o inverso: o dono espera a
+/// janela de 15 minutos, sem atalho por restart.
+const TOTP_ATTEMPT_WINDOW_SECS: i64 = 15 * 60;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AdminUser {
@@ -80,8 +85,6 @@ pub type SecretVersionCiphertext = (i64, Vec<u8>, Vec<u8>);
 
 pub struct AdminStore {
     conn: Connection,
-    /// Tentativas erradas de TOTP por usuario — ver `TOTP_MAX_ATTEMPTS`.
-    totp_attempts: HashMap<String, Vec<Instant>>,
 }
 
 impl AdminStore {
@@ -98,10 +101,7 @@ impl AdminStore {
         )
         .map_err(|e| format!("failed to set pragmas: {e}"))?;
 
-        let store = Self {
-            conn,
-            totp_attempts: HashMap::new(),
-        };
+        let store = Self { conn };
         store.run_migrations()?;
         Ok(store)
     }
@@ -113,10 +113,7 @@ impl AdminStore {
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("failed to set pragmas: {e}"))?;
 
-        let store = Self {
-            conn,
-            totp_attempts: HashMap::new(),
-        };
+        let store = Self { conn };
         store.run_migrations()?;
         Ok(store)
     }
@@ -228,7 +225,22 @@ impl AdminStore {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_admin_recovery_tokens_user
-                    ON admin_recovery_tokens(user_id);",
+                    ON admin_recovery_tokens(user_id);
+
+                -- #1140: lockout de TOTP duravel. Uma linha por codigo
+                -- errado; `record_totp_attempt` apaga as do usuario no
+                -- acerto e `totp_attempts_exhausted` apaga as expiradas na
+                -- mesma transacao em que conta, entao a tabela nao cresce
+                -- sem limite. Nao guarda o codigo tentado: contar basta, e
+                -- o codigo errado de hoje e vizinho do certo de amanha.
+                CREATE TABLE IF NOT EXISTS totp_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_totp_attempts_user
+                    ON totp_attempts(user_id, attempted_at);",
             )
             .map_err(|e| format!("admin db migration failed: {e}"))?;
 
@@ -263,6 +275,18 @@ impl AdminStore {
             (
                 "totp_enabled",
                 "ALTER TABLE admin_users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+            ),
+            // #1141: o segredo cifrado (AES-256-GCM sob a chave mestra do
+            // painel) e o nonce dele. A coluna `totp_secret` em claro
+            // continua existindo so para o lazy upgrade em
+            // `get_totp_secret`: ela e zerada assim que o valor migra.
+            (
+                "totp_secret_enc",
+                "ALTER TABLE admin_users ADD COLUMN totp_secret_enc BLOB",
+            ),
+            (
+                "totp_secret_nonce",
+                "ALTER TABLE admin_users ADD COLUMN totp_secret_nonce BLOB",
             ),
         ] {
             if self.has_admin_user_column(column)? {
@@ -593,55 +617,124 @@ impl AdminStore {
     /// Segredo TOTP do usuario — tanto o pendente de confirmacao quanto o
     /// ativo. `None` tambem significa "coluna existe, valor e NULL".
     ///
-    /// O segredo fica **em claro** no `admin.db` (base32, sem cifrar). Isso e
-    /// paridade com o fluxo mobile: la o segredo tambem fica em claro
-    /// (`mobile_users.totp_secret`, TEXT, base32 sem cifrar — ver o
-    /// comentario "Estado real do segredo" em
-    /// crates/garraia-gateway/src/totp.rs). O que diferencia este lado e
-    /// que a chave existe em runtime (`AdminState::encryption_key`) e o
-    /// `admin/secrets.rs` ja cifra as chaves de provider no mesmo arquivo:
-    /// cifrar custa uma chamada e nenhuma decisao nova, e e a issue #1141.
+    /// O segredo fica **cifrado** no `admin.db` (AES-256-GCM sob a chave
+    /// mestra do painel, a mesma que `admin/secrets.rs` usa para as chaves de
+    /// provider no mesmo arquivo) — #1141. Ate o #1137 ele ficava em claro, em
+    /// paridade com o fluxo mobile (`mobile_users.totp_secret`, base32 sem
+    /// cifrar, ainda em claro hoje).
     ///
-    /// O que torna o risco aceitavel por enquanto nao e essa comparacao: e o
-    /// proprio `admin.db` ja guardar `admin_sessions.token` em texto puro, ou
-    /// seja, quem le o arquivo ja leva uma sessao de admin viva sem precisar
-    /// do segundo fator. O segredo em claro adiciona comprometimento duravel
-    /// do 2FA (sobrevive a expiracao da sessao e a troca de senha), nao uma
-    /// porta nova.
-    pub fn get_totp_secret(&self, user_id: &str) -> Result<Option<String>, String> {
-        match self.conn.query_row(
-            "SELECT totp_secret FROM admin_users WHERE id = ?1",
+    /// Isso nao troca o modelo de ameaca de lugar: quem le o arquivo continua
+    /// levando `admin_sessions.token` em texto puro, ou seja, uma sessao de
+    /// admin viva sem passar pelo segundo fator. O que a cifra tira e o
+    /// comprometimento **duravel** do 2FA — o segredo em claro sobrevivia a
+    /// expiracao da sessao e a troca de senha. Vale enquanto a chave mestra
+    /// nao estiver no mesmo lugar que o banco; ver `docs/security.md`.
+    ///
+    /// **Lazy upgrade forward-only:** um banco que vem do #1137 tem o segredo
+    /// em claro em `totp_secret`. A primeira leitura cifra o valor nas colunas
+    /// novas e zera a antiga, na mesma transacao. Falha ao migrar nao derruba
+    /// a leitura: o segredo em claro ja esta na mao e recusar o login por
+    /// causa da migracao seria trocar um risco de confidencialidade por uma
+    /// indisponibilidade — a proxima leitura tenta de novo.
+    pub fn get_totp_secret(&self, user_id: &str, key: &[u8]) -> Result<Option<String>, String> {
+        let row = match self.conn.query_row(
+            "SELECT totp_secret, totp_secret_enc, totp_secret_nonce
+             FROM admin_users WHERE id = ?1",
             params![user_id],
-            |row| row.get::<_, Option<String>>(0),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            },
         ) {
-            Ok(v) => Ok(v),
+            Ok(v) => v,
             // Sem linha de usuario nao e erro de leitura: e ausencia legitima
             // de segredo (pendente nunca confirmado, ou desligado). Erro real
             // de SQLite (I/O, lock, schema) e outro estado e tem que chegar
             // como `Err` no caller — quem decide o que recusar e o handler,
             // engolir aqui esconderia indisponibilidade (#1121, pass-3).
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(format!("failed to read totp_secret for user: {e}")),
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(format!("failed to read totp_secret for user: {e}")),
+        };
+
+        match row {
+            // Caminho normal: segredo cifrado. Decifrar falhando e erro, nao
+            // "sem segredo" — trocar a chave mestra sem re-cifrar tem que
+            // aparecer como indisponibilidade, nao como 2FA desligado.
+            (_, Some(enc), Some(nonce)) => {
+                let plain = super::secrets::decrypt_value(&enc, &nonce, key)
+                    .map_err(|e| format!("failed to decrypt totp_secret: {e}"))?;
+                let secret = String::from_utf8(plain)
+                    .map_err(|_| "totp_secret is not valid utf-8".to_string())?;
+                Ok(Some(secret))
+            }
+            // Banco anterior ao #1141: valor em claro, migra agora.
+            (Some(plaintext), _, _) if !plaintext.is_empty() => {
+                if let Err(e) = self.migrate_totp_secret_to_encrypted(user_id, &plaintext, key) {
+                    tracing::warn!("admin 2fa: lazy upgrade of totp_secret failed: {e}");
+                }
+                Ok(Some(plaintext))
+            }
+            // Cifra pela metade (`enc` sem `nonce` ou vice-versa) e estado
+            // que nenhuma escrita daqui produz — as duas colunas sempre vao
+            // juntas na mesma transacao. Devolver `None` faria o handler
+            // dizer "2FA nao configurado" para um usuario com 2FA ligado.
+            (_, Some(_), None) | (_, None, Some(_)) => {
+                Err("totp_secret ciphertext is missing its nonce".to_string())
+            }
+            _ => Ok(None),
         }
+    }
+
+    /// Cifra um segredo herdado em claro e zera a coluna antiga — as duas
+    /// coisas na mesma transacao, para nunca existir um instante com o
+    /// segredo apagado e sem substituto.
+    fn migrate_totp_secret_to_encrypted(
+        &self,
+        user_id: &str,
+        plaintext: &str,
+        key: &[u8],
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        Self::write_totp_secret_on(&tx, user_id, plaintext, key)?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit totp_secret upgrade: {e}"))
     }
 
     /// Guarda o segredo como **pendente**: `totp_enabled` so vira 1 em
     /// `enable_totp`, depois de um codigo validar. Quem chama setup e nao
     /// confirma fica com um segredo inerte, nao com 2FA pela metade.
-    pub fn set_pending_totp_secret(&self, user_id: &str, secret: &str) -> Result<(), String> {
-        Self::set_pending_totp_secret_on(&self.conn, user_id, secret)
+    pub fn set_pending_totp_secret(
+        &self,
+        user_id: &str,
+        secret: &str,
+        key: &[u8],
+    ) -> Result<(), String> {
+        Self::write_totp_secret_on(&self.conn, user_id, secret, key)
     }
 
-    fn set_pending_totp_secret_on(
+    /// Escrita unica do segredo: cifra, grava `totp_secret_enc` +
+    /// `totp_secret_nonce` e **zera `totp_secret`** no mesmo UPDATE. Nenhum
+    /// caminho de escrita deixa o valor em claro para tras.
+    fn write_totp_secret_on(
         conn: &rusqlite::Connection,
         user_id: &str,
         secret: &str,
+        key: &[u8],
     ) -> Result<(), String> {
+        let (encrypted, nonce) = super::secrets::encrypt_value(secret.as_bytes(), key)
+            .map_err(|e| format!("failed to encrypt totp secret: {e}"))?;
         let affected = conn
             .execute(
-                "UPDATE admin_users SET totp_secret = ?1, updated_at = datetime('now')
-                 WHERE id = ?2",
-                params![secret, user_id],
+                "UPDATE admin_users SET totp_secret = NULL, totp_secret_enc = ?1,
+                 totp_secret_nonce = ?2, updated_at = datetime('now')
+                 WHERE id = ?3",
+                params![encrypted, nonce, user_id],
             )
             .map_err(|e| format!("failed to store totp secret: {e}"))?;
         if affected == 0 {
@@ -658,6 +751,7 @@ impl AdminStore {
         &self,
         user_id: &str,
         secret: &str,
+        key: &[u8],
         username: &str,
         ip: Option<&str>,
     ) -> Result<(), String> {
@@ -665,7 +759,7 @@ impl AdminStore {
             .conn
             .unchecked_transaction()
             .map_err(|e| format!("failed to begin transaction: {e}"))?;
-        Self::set_pending_totp_secret_on(&tx, user_id, secret)?;
+        Self::write_totp_secret_on(&tx, user_id, secret, key)?;
         Self::append_audit_on(
             &tx,
             Some(user_id),
@@ -737,7 +831,8 @@ impl AdminStore {
     fn disable_totp_on(conn: &rusqlite::Connection, user_id: &str) -> Result<(), String> {
         let affected = conn
             .execute(
-                "UPDATE admin_users SET totp_secret = NULL, totp_enabled = 0,
+                "UPDATE admin_users SET totp_secret = NULL, totp_secret_enc = NULL,
+                 totp_secret_nonce = NULL, totp_enabled = 0,
                  updated_at = datetime('now')
                  WHERE id = ?1",
                 params![user_id],
@@ -798,26 +893,61 @@ impl AdminStore {
     }
 
     /// `true` quando o usuario ja errou `TOTP_MAX_ATTEMPTS` codigos dentro da
-    /// janela. Efeito colateral: descarta as tentativas que ja expiraram, para
-    /// a contagem nao crescer sem limite.
-    pub fn totp_attempts_exhausted(&mut self, user_id: &str) -> bool {
-        let attempts = self.totp_attempts.entry(user_id.to_string()).or_default();
-        let now = Instant::now();
-        attempts.retain(|t| now.duration_since(*t) < TOTP_ATTEMPT_WINDOW);
-        attempts.len() >= TOTP_MAX_ATTEMPTS
+    /// janela. Efeito colateral: apaga as tentativas que ja expiraram, para a
+    /// tabela nao crescer sem limite.
+    ///
+    /// A assinatura e `Result` pelo mesmo motivo de `is_totp_enabled`: quem
+    /// decide autenticacao nao pode tratar "nao consegui contar" como "nao
+    /// esgotou". Todo chamador recusa fechado quando a contagem nao le.
+    ///
+    /// A limpeza e a contagem rodam na mesma transacao, entao duas instancias
+    /// contando ao mesmo tempo nao veem uma janela pela metade (#1140).
+    pub fn totp_attempts_exhausted(&self, user_id: &str) -> Result<bool, String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("failed to begin transaction: {e}"))?;
+        tx.execute(
+            "DELETE FROM totp_attempts
+             WHERE attempted_at <= datetime('now', ?1)",
+            params![format!("-{TOTP_ATTEMPT_WINDOW_SECS} seconds")],
+        )
+        .map_err(|e| format!("failed to prune totp attempts: {e}"))?;
+        let count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM totp_attempts WHERE user_id = ?1",
+                params![user_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("failed to count totp attempts: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("failed to commit totp attempt count: {e}"))?;
+        Ok(count >= TOTP_MAX_ATTEMPTS)
     }
 
     /// Conta uma tentativa. Sucesso zera a contagem — travar o dono que acabou
     /// de acertar o codigo seria pior que nao travar.
-    pub fn record_totp_attempt(&mut self, user_id: &str, success: bool) {
+    ///
+    /// `Result` tambem aqui: uma escrita que falha em silencio devolve o
+    /// brute force de graca (erra, o INSERT falha, a contagem nao anda). Os
+    /// chamadores recusam fechado quando nao conseguem registrar.
+    pub fn record_totp_attempt(&self, user_id: &str, success: bool) -> Result<(), String> {
         if success {
-            self.totp_attempts.remove(user_id);
-            return;
+            self.conn
+                .execute(
+                    "DELETE FROM totp_attempts WHERE user_id = ?1",
+                    params![user_id],
+                )
+                .map_err(|e| format!("failed to clear totp attempts: {e}"))?;
+            return Ok(());
         }
-        self.totp_attempts
-            .entry(user_id.to_string())
-            .or_default()
-            .push(Instant::now());
+        self.conn
+            .execute(
+                "INSERT INTO totp_attempts (user_id) VALUES (?1)",
+                params![user_id],
+            )
+            .map_err(|e| format!("failed to record totp attempt: {e}"))?;
+        Ok(())
     }
 
     // ── Session management ───────────────────────────────────────────
@@ -1701,18 +1831,24 @@ mod tests {
         store.create_user("cofre", "senha", Role::Admin).unwrap().id
     }
 
+    /// Chave AES-256 dos testes. Nao e credencial: um padrao fixo basta para
+    /// exercitar cifra e decifra — mesma escolha de `secrets.rs`.
+    fn chave_de_teste() -> [u8; 32] {
+        [7u8; 32]
+    }
+
     #[test]
     fn segredo_pendente_nao_liga_o_segundo_fator() {
         let store = test_store();
         let id = usuario_totp(&store);
 
         store
-            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP", &chave_de_teste())
             .unwrap();
 
         assert_eq!(
             store
-                .get_totp_secret(&id)
+                .get_totp_secret(&id, &chave_de_teste())
                 .expect("segredo legivel")
                 .as_deref(),
             Some("JBSWY3DPEHPK3PXP")
@@ -1729,7 +1865,7 @@ mod tests {
         let id = usuario_totp(&store);
 
         store
-            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP", &chave_de_teste())
             .unwrap();
         store.enable_totp(&id).unwrap();
         assert!(store.is_totp_enabled(&id).expect("estado 2fa legivel"));
@@ -1738,7 +1874,9 @@ mod tests {
 
         assert!(!store.is_totp_enabled(&id).expect("estado 2fa legivel"));
         assert_eq!(
-            store.get_totp_secret(&id).expect("segredo legivel"),
+            store
+                .get_totp_secret(&id, &chave_de_teste())
+                .expect("segredo legivel"),
             None,
             "segredo sobrevivente seria uma reativacao sem novo enrollment"
         );
@@ -1754,7 +1892,7 @@ mod tests {
         let store = test_store();
         let id = usuario_totp(&store);
         store
-            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP")
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP", &chave_de_teste())
             .unwrap();
         store.enable_totp(&id).unwrap();
 
@@ -1785,7 +1923,12 @@ mod tests {
                 .is_totp_enabled(&id)
                 .expect("usuario novo tem estado legivel")
         );
-        assert_eq!(store.get_totp_secret(&id).expect("segredo legivel"), None);
+        assert_eq!(
+            store
+                .get_totp_secret(&id, &chave_de_teste())
+                .expect("segredo legivel"),
+            None
+        );
     }
 
     /// #1121 (pass-3): erro de leitura do segredo nao e "segredo ausente" —
@@ -1797,58 +1940,305 @@ mod tests {
         let id = usuario_totp(&store);
 
         assert_eq!(
-            store.get_totp_secret(&id).expect("usuario novo e legivel"),
+            store
+                .get_totp_secret(&id, &chave_de_teste())
+                .expect("usuario novo e legivel"),
             None,
             "sem segredo guardado e um estado legitimo, nao erro"
         );
 
         store
             .conn
-            .execute("ALTER TABLE admin_users DROP COLUMN totp_secret", [])
+            .execute("ALTER TABLE admin_users DROP COLUMN totp_secret_enc", [])
             .expect("derrubar a coluna do segredo");
 
         assert!(
-            store.get_totp_secret(&id).is_err(),
+            store.get_totp_secret(&id, &chave_de_teste()).is_err(),
             "coluna sumida e erro de leitura e tem que chegar como Err"
         );
     }
 
     #[test]
     fn errar_muito_trava_e_um_acerto_zera_a_contagem() {
-        let mut store = test_store();
+        let store = test_store();
         let id = usuario_totp(&store);
 
         for _ in 0..TOTP_MAX_ATTEMPTS - 1 {
-            store.record_totp_attempt(&id, false);
+            store.record_totp_attempt(&id, false).unwrap();
         }
         assert!(
-            !store.totp_attempts_exhausted(&id),
+            !store
+                .totp_attempts_exhausted(&id)
+                .expect("contagem legivel"),
             "travar antes da ultima tentativa valida"
         );
 
-        store.record_totp_attempt(&id, false);
-        assert!(store.totp_attempts_exhausted(&id));
+        store.record_totp_attempt(&id, false).unwrap();
+        assert!(
+            store
+                .totp_attempts_exhausted(&id)
+                .expect("contagem legivel")
+        );
 
         // Acertar nao pode deixar o dono travado.
-        store.record_totp_attempt(&id, true);
-        assert!(!store.totp_attempts_exhausted(&id));
+        store.record_totp_attempt(&id, true).unwrap();
+        assert!(
+            !store
+                .totp_attempts_exhausted(&id)
+                .expect("contagem legivel")
+        );
     }
 
     #[test]
     fn a_contagem_e_por_usuario() {
-        let mut store = test_store();
+        let store = test_store();
         let a = usuario_totp(&store);
         let b = store.create_user("outro", "senha", Role::Admin).unwrap().id;
 
         for _ in 0..TOTP_MAX_ATTEMPTS {
-            store.record_totp_attempt(&a, false);
+            store.record_totp_attempt(&a, false).unwrap();
         }
 
-        assert!(store.totp_attempts_exhausted(&a));
+        assert!(store.totp_attempts_exhausted(&a).expect("contagem legivel"));
         assert!(
-            !store.totp_attempts_exhausted(&b),
+            !store.totp_attempts_exhausted(&b).expect("contagem legivel"),
             "um usuario errando nao pode travar os outros"
         );
+    }
+
+    // ── #1140: o lockout sobrevive ao processo ───────────────────────
+
+    /// O motivo da issue: com a contagem em `HashMap` de processo, quem tinha
+    /// a senha reiniciava o gateway e voltava a forcar o codigo de 6 digitos.
+    /// Reabrir o mesmo arquivo e o que um restart faz.
+    #[test]
+    fn o_lockout_sobrevive_a_reabertura_do_banco() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("admin.db");
+
+        let id = {
+            let store = AdminStore::open(&path).expect("abrir banco");
+            let id = usuario_totp(&store);
+            for _ in 0..TOTP_MAX_ATTEMPTS {
+                store.record_totp_attempt(&id, false).unwrap();
+            }
+            assert!(
+                store
+                    .totp_attempts_exhausted(&id)
+                    .expect("contagem legivel")
+            );
+            id
+        };
+
+        let reaberto = AdminStore::open(&path).expect("reabrir banco");
+        assert!(
+            reaberto
+                .totp_attempts_exhausted(&id)
+                .expect("contagem legivel"),
+            "restart nao pode zerar o lockout do segundo fator (#1140)"
+        );
+    }
+
+    /// Duas conexoes sobre o mesmo arquivo sao a aproximacao de duas
+    /// instancias do gateway: a contagem e compartilhada, entao distribuir as
+    /// tentativas entre instancias nao multiplica o orcamento de chutes.
+    #[test]
+    fn duas_instancias_compartilham_a_contagem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("admin.db");
+
+        let uma = AdminStore::open(&path).expect("abrir banco");
+        let outra = AdminStore::open(&path).expect("abrir o mesmo banco");
+        let id = usuario_totp(&uma);
+
+        for _ in 0..TOTP_MAX_ATTEMPTS - 1 {
+            uma.record_totp_attempt(&id, false).unwrap();
+        }
+        outra.record_totp_attempt(&id, false).unwrap();
+
+        assert!(
+            uma.totp_attempts_exhausted(&id).expect("contagem legivel"),
+            "tentativa feita na outra instancia tem que contar aqui (#1140)"
+        );
+    }
+
+    /// A tabela nao pode crescer sem limite: tentativa fora da janela sai na
+    /// mesma transacao que conta.
+    #[test]
+    fn tentativa_expirada_e_apagada_e_nao_conta() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        for _ in 0..TOTP_MAX_ATTEMPTS {
+            store.record_totp_attempt(&id, false).unwrap();
+        }
+        assert!(
+            store
+                .totp_attempts_exhausted(&id)
+                .expect("contagem legivel")
+        );
+
+        // Envelhece as tentativas para fora da janela de 15 minutos.
+        store
+            .conn
+            .execute(
+                "UPDATE totp_attempts SET attempted_at = datetime('now', '-1 hour')",
+                [],
+            )
+            .expect("envelhecer as tentativas");
+
+        assert!(
+            !store
+                .totp_attempts_exhausted(&id)
+                .expect("contagem legivel"),
+            "tentativa fora da janela nao pode travar"
+        );
+        let restantes: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM totp_attempts", [], |r| r.get(0))
+            .expect("contar linhas");
+        assert_eq!(restantes, 0, "a contagem tambem faz a limpeza");
+    }
+
+    /// Contagem ilegivel tem que chegar como `Err` — o chamador recusa
+    /// fechado. Tratar como "nao esgotou" devolveria o brute force de graca.
+    #[test]
+    fn contagem_ilegivel_e_erro_nao_zero() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        store
+            .conn
+            .execute("DROP TABLE totp_attempts", [])
+            .expect("derrubar a tabela de tentativas");
+
+        assert!(store.totp_attempts_exhausted(&id).is_err());
+        assert!(store.record_totp_attempt(&id, false).is_err());
+    }
+
+    // ── #1141: o segredo nao fica em claro no arquivo ────────────────
+
+    /// O nucleo da issue: quem le o `admin.db` nao pode achar o base32 do
+    /// segundo fator la dentro.
+    #[test]
+    fn o_segredo_nao_fica_em_claro_na_coluna() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP", &chave_de_teste())
+            .unwrap();
+
+        let (claro, cifrado, nonce): (Option<String>, Option<Vec<u8>>, Option<Vec<u8>>) = store
+            .conn
+            .query_row(
+                "SELECT totp_secret, totp_secret_enc, totp_secret_nonce
+                 FROM admin_users WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("ler as colunas cruas");
+
+        assert_eq!(claro, None, "a coluna em claro tem que ficar vazia (#1141)");
+        let cifrado = cifrado.expect("segredo cifrado presente");
+        assert!(nonce.is_some(), "nonce gravado junto com o ciphertext");
+        assert!(
+            !cifrado.windows(16).any(|w| w == b"JBSWY3DPEHPK3PXP"),
+            "o base32 nao pode aparecer dentro do ciphertext"
+        );
+
+        // E ainda assim o segredo volta legivel para quem tem a chave.
+        assert_eq!(
+            store
+                .get_totp_secret(&id, &chave_de_teste())
+                .expect("segredo legivel")
+                .as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+    }
+
+    /// Chave errada e indisponibilidade, nao "2FA desligado": decifrar
+    /// falhando tem que chegar como `Err`, senao trocar a chave mestra sem
+    /// re-cifrar abriria o painel so com a senha.
+    #[test]
+    fn chave_errada_nao_vira_segredo_ausente() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP", &chave_de_teste())
+            .unwrap();
+
+        assert!(store.get_totp_secret(&id, &[9u8; 32]).is_err());
+    }
+
+    /// Lazy upgrade forward-only: banco vindo do #1137 tem o segredo em claro.
+    /// A primeira leitura devolve o valor **e** migra para as colunas
+    /// cifradas, zerando a antiga.
+    #[test]
+    fn segredo_herdado_em_claro_migra_na_primeira_leitura() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+
+        // Estado de um banco anterior ao #1141, escrito na mao.
+        store
+            .conn
+            .execute(
+                "UPDATE admin_users SET totp_secret = ?1 WHERE id = ?2",
+                params!["JBSWY3DPEHPK3PXP", id],
+            )
+            .expect("plantar o segredo em claro");
+
+        assert_eq!(
+            store
+                .get_totp_secret(&id, &chave_de_teste())
+                .expect("segredo legivel")
+                .as_deref(),
+            Some("JBSWY3DPEHPK3PXP"),
+            "a migracao nao pode quebrar o login de quem ja tinha 2FA"
+        );
+
+        let claro: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT totp_secret FROM admin_users WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .expect("ler a coluna em claro");
+        assert_eq!(claro, None, "a leitura tem que zerar a coluna em claro");
+
+        // E segue legivel depois da migracao, agora pelo caminho cifrado.
+        assert_eq!(
+            store
+                .get_totp_secret(&id, &chave_de_teste())
+                .expect("segredo legivel")
+                .as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+    }
+
+    /// Desligar apaga o ciphertext e o nonce junto — um dos dois sobrevivendo
+    /// seria segredo reaproveitavel depois do desligamento.
+    #[test]
+    fn desligar_apaga_ciphertext_e_nonce() {
+        let store = test_store();
+        let id = usuario_totp(&store);
+        store
+            .set_pending_totp_secret(&id, "JBSWY3DPEHPK3PXP", &chave_de_teste())
+            .unwrap();
+        store.enable_totp(&id).unwrap();
+
+        store.disable_totp(&id).unwrap();
+
+        let (enc, nonce): (Option<Vec<u8>>, Option<Vec<u8>>) = store
+            .conn
+            .query_row(
+                "SELECT totp_secret_enc, totp_secret_nonce FROM admin_users WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("ler as colunas cruas");
+        assert_eq!(enc, None);
+        assert_eq!(nonce, None);
     }
 
     /// `admin_users` criada **antes** do #1121, sem as colunas de 2FA. E o
@@ -1890,11 +2280,11 @@ mod tests {
             "usuario antigo nasce com 2FA desligado"
         );
         store
-            .set_pending_totp_secret("u1", "JBSWY3DPEHPK3PXP")
+            .set_pending_totp_secret("u1", "JBSWY3DPEHPK3PXP", &chave_de_teste())
             .expect("escrever segredo");
         assert_eq!(
             store
-                .get_totp_secret("u1")
+                .get_totp_secret("u1", &chave_de_teste())
                 .expect("segredo legivel")
                 .as_deref(),
             Some("JBSWY3DPEHPK3PXP")

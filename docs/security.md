@@ -63,7 +63,9 @@ valid code:
 # Stop the gateway first: the store holds the session map in memory.
 # Default path below; if `data_dir` is set in the config, use that instead.
 sqlite3 "$HOME/.garraia/data/admin.db" \
-  "UPDATE admin_users SET totp_enabled = 0, totp_secret = NULL WHERE username = 'YOUR_USERNAME';"
+  "UPDATE admin_users SET totp_enabled = 0, totp_secret = NULL,
+     totp_secret_enc = NULL, totp_secret_nonce = NULL
+   WHERE username = 'YOUR_USERNAME';"
 ```
 
 Then start the gateway again and sign in with your password.
@@ -76,18 +78,32 @@ Two things worth knowing before you turn it on:
   valid code first — replacing the secret underneath you would leave your
   authenticator app pointing at the old one.
 
-Known limits of this first version, both tracked:
+Both limits of the first version are now closed:
 
-- The wrong-code lockout (5 codes in 15 minutes) lives **in memory**: it is
-  per-process and a gateway restart clears it. A durable counter in
-  `admin.db` — which would also give the console a global login rate limit —
-  is tracked in #1140.
-- The TOTP secret is stored **in cleartext** (base32, unencrypted) in
-  `admin.db`; the mobile flow does the same (`mobile_users.totp_secret`,
-  base32 without encryption). The mitigation is the one every other secret
-  in `admin.db` already relies on: protect the database file — and it applies
-  to both flows. Encrypting the admin-side secret with the admin master key
-  is tracked in #1141.
+- The wrong-code lockout (5 codes in 15 minutes) is **durable**: it lives in
+  the `totp_attempts` table of `admin.db`, not in process memory, so a
+  gateway restart no longer clears it and two instances over the same
+  database share one count (#1140). The trade is deliberate and it is the
+  cheaper half: after five wrong codes you wait out the 15-minute window —
+  restarting the gateway is no longer a shortcut, for you or for someone who
+  has your password.
+- The TOTP secret is stored **encrypted** (AES-256-GCM under the admin master
+  key, the same key `admin/secrets.rs` uses for provider keys in the same
+  file) — #1141. A database written before this change keeps the cleartext
+  value until the next read, which encrypts it and clears the old column;
+  the upgrade is forward-only and needs no operator step.
+
+Two things this does **not** change, worth being explicit about:
+
+- `admin_sessions.token` is still stored in cleartext, so whoever reads
+  `admin.db` still walks away with a live admin session without passing the
+  second factor. What encryption removes is the *durable* compromise: the
+  cleartext secret used to outlive session expiry and a password change.
+  Protecting the database file is still the mitigation that matters — and
+  the master key must not sit next to it.
+- The **mobile** flow still stores its secret in cleartext
+  (`mobile_users.totp_secret`, base32, unencrypted). Only the console side
+  is encrypted today.
 
 ### Input Validation
 
