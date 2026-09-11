@@ -164,7 +164,8 @@ benches/
                         resultados versionados em `results/<data>-<host>/`.
 ```
 
-> Sem crates planejados no momento. `benches/database-poc/` foi removido em 2026-08-16;
+> `garraia-hardware` está proposta (ADR 0020, epic #1124) mas ainda não
+> nasceu — a decisão é do dono. `benches/database-poc/` foi removido em 2026-08-16;
 > seus números seguem citados em ADR 0003 e nas migrations 005/007.
 
 ## Convenções de código
@@ -385,5 +386,5 @@ python3 -m pytest scripts/quality/tests/
 - @imports `TODO.md` (backlog operacional) e `.garra-estado.md` (handoff local, gitignored) para estado da sessão anterior
 - @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
 - @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
-- @imports `docs/adr/` — decisões arquiteturais: 19 ADRs (0001-0019). As 0001-0017 e a **0019** (confinamento das tools, #1084) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção. Ver `docs/adr/README.md` para o índice.
+- @imports `docs/adr/` — decisões arquiteturais: 20 ADRs (0001-0020). As 0001-0017 e a **0019** (confinamento das tools, #1084) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção; a **0020** (crate `garraia-hardware`, epic #1124) também está **Proposed** — aceitá-la é o gatilho para iniciar #1125. Ver `docs/adr/README.md` para o índice.
 - Tracking: tracker interno (o Linear foi descontinuado em 2026-08-18 — não criar/consultar issues lá; IDs `GAR-xxx` permanecem como registro histórico de entregas)
