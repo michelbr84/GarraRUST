@@ -45,6 +45,11 @@ pub struct ScoreEntry {
     pub timestamp_utc: String,
     /// EMA score at this point, in `0.0..=1.0`.
     pub score: f32,
+    /// Why this entry exists — the caller-supplied rollback reason, set only
+    /// on the `rollback-<sha>` audit entry. Defaulted (`None`) so ledgers
+    /// written before the field existed still deserialize.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────
@@ -139,12 +144,14 @@ impl GitSha {
 
     /// First 8 characters, for the revert-message grep.
     ///
-    /// Safe by construction: the content is ASCII, so a byte index is a char
-    /// boundary. That is the same panic the parse exists to prevent, now
-    /// impossible rather than merely guarded against.
+    /// The content is ASCII by construction, so `end` is always a char
+    /// boundary and `get` always returns `Some`; the `unwrap_or` is
+    /// unreachable belt-and-braces (issue #1094) that keeps the truncation
+    /// char-boundary safe even if the parse invariant ever widens to
+    /// non-ASCII — there it degrades to the whole value instead of panicking.
     fn short(&self) -> &str {
         let end = self.0.len().min(8);
-        &self.0[..end]
+        self.0.get(..end).unwrap_or(&self.0)
     }
 }
 
@@ -281,10 +288,13 @@ pub fn append_score_entry(name: &str, entry: ScoreEntry, opts: &VersioningOption
 /// 1. **Idempotency guard**: if a revert of `to_sha` is already in the log, return `Ok(())`.
 /// 2. Run `git revert --no-edit -- <to_sha>`.
 /// 3. Look up the `ScoreEntry` for `to_sha` in the ledger and re-append it (score reset).
-/// 4. Append a rollback audit entry tagged `rollback-<sha>`.
+/// 4. Append a rollback audit entry tagged `rollback-<sha>`, carrying `reason`.
 ///
-/// The `reason` string is included in the audit entry message (not logged as PII — only
-/// `name.len()` and sha are carried).
+/// The `reason` string is persisted in the ledger's audit entry
+/// ([`ScoreEntry::reason`]) — that is the only place it goes. `git revert`
+/// writes its own `Revert "<subject>"` message, so `reason` never reaches the
+/// git history, and it is never logged (no PII: only `name.len()` and the sha
+/// are carried anywhere else).
 pub fn rollback<R: ShellRunner>(
     name: &str,
     to_sha: &str,
@@ -326,12 +336,14 @@ pub fn rollback<R: ShellRunner>(
         .map(|e| e.score)
         .unwrap_or(0.0);
 
-    // 4. Append rollback audit entry (carries name_len, not name — no PII).
-    let _ = reason; // reason captured in the git commit message via `git revert`; not stored in ledger
+    // 4. Append rollback audit entry. The caller's reason is persisted here
+    //    and nowhere else (see the doc above); the skill name never enters
+    //    the entry.
     let audit = ScoreEntry {
         sha: format!("rollback-{to_sha}"),
         timestamp_utc: now_utc_iso8601(),
         score: historical_score,
+        reason: Some(reason.to_string()),
     };
     append_score_entry(name, audit, opts)?;
 
@@ -529,6 +541,7 @@ mod tests {
             sha: SHA1.to_string(),
             timestamp_utc: "2026-05-19T00:00:00Z".to_string(),
             score: 0.8,
+            reason: None,
         };
         append_score_entry("foo", entry1.clone(), &opts).unwrap();
 
@@ -546,6 +559,7 @@ mod tests {
             sha: SHA1.to_string(),
             timestamp_utc: "2026-05-19T00:00:00Z".to_string(),
             score: 0.8,
+            reason: None,
         };
         append_score_entry("foo", entry1.clone(), &opts).unwrap();
 
@@ -553,6 +567,7 @@ mod tests {
             sha: SHA2.to_string(),
             timestamp_utc: "2026-05-19T01:00:00Z".to_string(),
             score: 0.6,
+            reason: None,
         };
         append_score_entry("foo", entry2, &opts).unwrap();
 
@@ -572,6 +587,7 @@ mod tests {
             sha: SHA1.to_string(),
             timestamp_utc: "2026-05-19T00:00:00Z".to_string(),
             score: 0.9,
+            reason: None,
         };
         append_score_entry("foo", entry.clone(), &opts).unwrap();
 
@@ -609,6 +625,7 @@ mod tests {
                 sha: SHA1.to_string(),
                 timestamp_utc: "2026-05-19T00:00:00Z".to_string(),
                 score: 0.75,
+                reason: None,
             },
             &opts,
         )
@@ -670,6 +687,48 @@ mod tests {
         let entries = score_history("foo", &opts).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].score, 0.0, "unknown sha → score defaults to 0.0");
+    }
+
+    #[test]
+    fn rollback_audit_entry_persists_the_reason() {
+        let tmp = TempDir::new().unwrap();
+        let opts = make_opts(&tmp);
+
+        let runner = MockShellRunner::new();
+        runner.expect_git(
+            &format!("log --oneline --grep Revert.*{SHORT1}"),
+            Ok(String::new()),
+        );
+        runner.expect_git(&format!("revert --no-edit -- {SHA1}"), Ok(String::new()));
+
+        rollback("foo", SHA1, "regressed step 3", &opts, &runner).unwrap();
+
+        let entries = score_history("foo", &opts).unwrap();
+        assert_eq!(
+            entries[0].reason.as_deref(),
+            Some("regressed step 3"),
+            "the reason must land in the ledger, or the doc lies again"
+        );
+    }
+
+    #[test]
+    fn score_history_parses_legacy_ledger_without_reason() {
+        // A ledger written before `ScoreEntry::reason` existed must still
+        // deserialize — the field is `#[serde(default)]`.
+        let tmp = TempDir::new().unwrap();
+        let opts = make_opts(&tmp);
+        std::fs::create_dir_all(history_dir(&opts)).unwrap();
+        let path = score_ledger_path("foo", &opts);
+        std::fs::write(
+            &path,
+            r#"[{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","timestamp_utc":"2026-05-19T00:00:00Z","score":0.8}]"#,
+        )
+        .unwrap();
+
+        let entries = score_history("foo", &opts).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].score, 0.8);
+        assert_eq!(entries[0].reason, None, "legacy entry defaults to None");
     }
 
     // ── epoch_secs_to_iso8601() ───────────────────────────
@@ -754,6 +813,14 @@ mod tests {
         assert_eq!(GitSha::parse(SHA1).unwrap().short(), "aaaaaaaa");
         assert_eq!(GitSha::parse("abcdef1").unwrap().short(), "abcdef1");
         assert!(GitSha::parse("aaaaaaa\u{e9}").is_err());
+
+        // Belt-and-braces pin (issue #1094): if the parse invariant ever
+        // widened to non-ASCII, `short` must degrade to the whole value
+        // instead of panicking on the byte boundary. Byte 8 of this value is
+        // the second byte of the 'e-acute'. `parse` refuses it today, so the
+        // value is built directly — the tuple field is module-private.
+        let multibyte = GitSha("aaaaaaa\u{e9}aaaa".to_string());
+        assert_eq!(multibyte.short(), "aaaaaaa\u{e9}aaaa");
     }
 
     #[test]
