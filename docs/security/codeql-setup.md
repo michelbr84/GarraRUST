@@ -252,11 +252,36 @@ A classificação produção-vs-teste é heurística — caminho de teste, ou li
 alerta dentro de um `#[cfg(test)]` — e serve para dimensionar uma onda, não para
 dispensar triagem individual.
 
-Localmente, com um token que tenha o escopo:
+### O sentinela `all`
+
+Os três inputs (`severity`, `state`, `tool`) aceitam **`all`** para dizer "todos".
+Use-o em vez de tentar passar string vazia: o Actions substitui string vazia pelo
+`default:` declarado no input (`critical` / `open` / `CodeQL`), então o valor
+"vazio = todos" é inalcançável via API — uma triagem antiga chegou a reportar
+"0 alertas" que valia só para Critical por causa disso.
+
+Para varrer o repositório inteiro sem nenhum filtro, o que responde "este alerta
+existe em *algum* estado?" numa execução só:
+
+| input | valor |
+|---|---|
+| `severity` | `all` |
+| `state` | `all` |
+| `tool` | `all` |
+
+O script por baixo omite da query todo filtro vazio, então o sentinela só
+traduz `all` → `""` antes de chamá-lo.
+
+Localmente, com um token que tenha o escopo (aqui o vazio funciona direto, porque
+não há `default:` do Actions no caminho):
 
 ```bash
 GITHUB_TOKEN=... python3 scripts/security/codeql-alert-report.py \
     --repo michelbr84/GarraRUST --severity critical --state open
+
+# todos os alertas, todos os estados, todas as ferramentas
+GITHUB_TOKEN=... python3 scripts/security/codeql-alert-report.py \
+    --repo michelbr84/GarraRUST --severity "" --state "" --tool ""
 ```
 
 ## See also
