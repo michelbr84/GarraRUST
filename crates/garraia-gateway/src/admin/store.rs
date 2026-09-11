@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 use tracing::info;
 
 use super::rbac::Role;
@@ -15,6 +16,8 @@ const SALT_LEN: usize = 32;
 const SESSION_TOKEN_LEN: usize = 32;
 const CSRF_TOKEN_LEN: usize = 32;
 const SESSION_DURATION_SECS: i64 = 86400; // 24 hours
+/// Bytes of entropy in a recovery code (256 bits). #1122.
+const RECOVERY_CODE_LEN: usize = 32;
 
 /// Tentativas erradas de TOTP que um usuario acumula dentro de
 /// `TOTP_ATTEMPT_WINDOW` antes de o segundo fator travar (#1121).
@@ -208,7 +211,24 @@ impl AdminStore {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_config_versions_version
-                    ON config_versions(version);",
+                    ON config_versions(version);
+
+                -- #1122: one-time recovery codes. Only the PBKDF2 hash of the
+                -- code is stored; the plaintext is handed to the operator
+                -- out-of-band (file on the host, read by `garra admin
+                -- recovery`) and never persisted here.
+                CREATE TABLE IF NOT EXISTS admin_recovery_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL REFERENCES admin_users(id) ON DELETE CASCADE,
+                    code_hash TEXT NOT NULL,
+                    code_salt TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_admin_recovery_tokens_user
+                    ON admin_recovery_tokens(user_id);",
             )
             .map_err(|e| format!("admin db migration failed: {e}"))?;
 
@@ -416,6 +436,130 @@ impl AdminStore {
     pub fn user_count(&self) -> usize {
         self.conn
             .query_row("SELECT COUNT(*) FROM admin_users", [], |row| row.get(0))
+            .unwrap_or(0)
+    }
+
+    // ── Password recovery (#1122) ────────────────────────────────────
+
+    /// Mint a one-time recovery code for `user_id` and return `(id, code)`.
+    ///
+    /// The plaintext code is returned exactly once and stored **nowhere** —
+    /// the caller owns the out-of-band handoff. Any code the user still had
+    /// pending is dropped first, so at most one live code exists per user and
+    /// the handoff file cannot disagree with the table.
+    pub fn create_recovery_token(
+        &mut self,
+        user_id: &str,
+        ttl_secs: i64,
+    ) -> Result<(i64, String), String> {
+        let code = generate_random_token::<RECOVERY_CODE_LEN>()?;
+        let (hash, salt) = hash_password(&code)?;
+        let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| format!("failed to open recovery token transaction: {e}"))?;
+
+        tx.execute(
+            "DELETE FROM admin_recovery_tokens WHERE user_id = ?1 AND used_at IS NULL",
+            params![user_id],
+        )
+        .map_err(|e| format!("failed to supersede recovery token: {e}"))?;
+
+        tx.execute(
+            "INSERT INTO admin_recovery_tokens (user_id, code_hash, code_salt, expires_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![user_id, hash, salt, expires_at],
+        )
+        .map_err(|e| format!("failed to insert recovery token: {e}"))?;
+
+        let id = tx.last_insert_rowid();
+        tx.commit()
+            .map_err(|e| format!("failed to commit recovery token: {e}"))?;
+
+        Ok((id, code))
+    }
+
+    /// Drop a minted token. Used when the out-of-band handoff failed, so no
+    /// code is ever live that the operator has no way to read.
+    pub fn discard_recovery_token(&self, id: i64) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM admin_recovery_tokens WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| format!("failed to discard recovery token: {e}"))?;
+        Ok(())
+    }
+
+    /// Every still-usable token of `user_id`, as `(id, code_hash, code_salt)`.
+    pub fn live_recovery_secrets(&self, user_id: &str) -> Vec<(i64, String, String)> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT id, code_hash, code_salt FROM admin_recovery_tokens
+             WHERE user_id = ?1 AND used_at IS NULL AND expires_at > datetime('now')",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map(params![user_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Spend one PBKDF2 derivation without persisting anything.
+    ///
+    /// Called by the "user not found" branch of `/recovery/start` so that
+    /// branch costs the same as the real one — otherwise response time would
+    /// tell an unauthenticated caller which usernames exist (#1122).
+    pub fn burn_recovery_work(&self) -> Result<(), String> {
+        let code = generate_random_token::<RECOVERY_CODE_LEN>()?;
+        let _ = hash_password(&code)?;
+        Ok(())
+    }
+
+    /// Constant-time check of a submitted code against one stored row.
+    ///
+    /// `subtle` on the derived bytes (same precedent as the CSRF check in
+    /// `admin/middleware.rs`); the code itself is 256 bits of CSPRNG output,
+    /// so the PBKDF2 pass is there to keep one derivation scheme in the admin
+    /// surface, not to stretch a low-entropy secret.
+    pub fn recovery_code_matches(code: &str, expected_hash: &str, salt: &str) -> bool {
+        let (Ok(salt), Ok(expected)) = (BASE64.decode(salt), BASE64.decode(expected_hash)) else {
+            return false;
+        };
+        let derived = derive_hash(code, &salt);
+        derived.ct_eq(&expected).unwrap_u8() == 1
+    }
+
+    /// Atomically claim token `id`. Exactly one caller gets `true` when two
+    /// `/recovery/complete` requests race on the same code — the loser is
+    /// indistinguishable from a wrong code.
+    pub fn claim_recovery_token(&self, id: i64) -> Result<bool, String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE admin_recovery_tokens SET used_at = datetime('now')
+                 WHERE id = ?1 AND used_at IS NULL",
+                params![id],
+            )
+            .map_err(|e| format!("failed to claim recovery token: {e}"))?;
+        Ok(affected == 1)
+    }
+
+    /// Best-effort purge of tokens that expired or were consumed.
+    pub fn purge_recovery_tokens(&self) -> usize {
+        self.conn
+            .execute(
+                "DELETE FROM admin_recovery_tokens
+                 WHERE used_at IS NOT NULL OR expires_at <= datetime('now')",
+                [],
+            )
             .unwrap_or(0)
     }
 
@@ -1328,17 +1472,23 @@ fn hash_password(password: &str) -> Result<(String, String), String> {
     let salt = garraia_security::random_bytes::<SALT_LEN>()
         .map_err(|_| "failed to generate salt".to_string())?;
 
+    let hash = derive_hash(password, &salt);
+    Ok((BASE64.encode(&hash), BASE64.encode(salt)))
+}
+
+/// Single PBKDF2-HMAC-SHA256 derivation. Shared by password hashing (#1122
+/// keeps one scheme in the admin surface) and by recovery-code verification.
+fn derive_hash(secret: &str, salt: &[u8]) -> Vec<u8> {
     let iterations = NonZeroU32::new(PBKDF2_ITERATIONS).expect("iterations > 0");
     let mut hash = vec![0u8; 32];
     pbkdf2::derive(
         pbkdf2::PBKDF2_HMAC_SHA256,
         iterations,
-        &salt,
-        password.as_bytes(),
+        salt,
+        secret.as_bytes(),
         &mut hash,
     );
-
-    Ok((BASE64.encode(&hash), BASE64.encode(salt)))
+    hash
 }
 
 fn verify_password_hash(password: &str, stored_hash: &str, stored_salt: &str) -> bool {
@@ -1455,6 +1605,73 @@ mod tests {
 
         store.delete_user(&user.id).unwrap();
         assert!(store.validate_session(&session.token).is_none());
+    }
+
+    // ── #1122: recovery tokens ───────────────────────────────────────
+
+    #[test]
+    fn recovery_token_is_single_use() {
+        let mut store = test_store();
+        let user = store.create_user("admin", "pass", Role::Admin).unwrap();
+
+        let (id, code) = store.create_recovery_token(&user.id, 600).unwrap();
+        assert!(!code.is_empty());
+
+        let live = store.live_recovery_secrets(&user.id);
+        assert_eq!(live.len(), 1);
+        assert!(AdminStore::recovery_code_matches(
+            &code, &live[0].1, &live[0].2
+        ));
+        assert!(!AdminStore::recovery_code_matches(
+            "wrong", &live[0].1, &live[0].2
+        ));
+
+        // Exactly one winner: the second claim is indistinguishable from a
+        // bad code, so concurrent /complete calls cannot both reset.
+        assert!(store.claim_recovery_token(id).unwrap());
+        assert!(!store.claim_recovery_token(id).unwrap());
+        assert!(store.live_recovery_secrets(&user.id).is_empty());
+    }
+
+    #[test]
+    fn recovery_token_expires() {
+        let mut store = test_store();
+        let user = store.create_user("admin", "pass", Role::Admin).unwrap();
+
+        let (_id, _code) = store.create_recovery_token(&user.id, -1).unwrap();
+        assert!(store.live_recovery_secrets(&user.id).is_empty());
+    }
+
+    #[test]
+    fn recovery_token_reissue_supersedes_the_previous_one() {
+        let mut store = test_store();
+        let user = store.create_user("admin", "pass", Role::Admin).unwrap();
+
+        let (_old_id, old_code) = store.create_recovery_token(&user.id, 600).unwrap();
+        let (_new_id, new_code) = store.create_recovery_token(&user.id, 600).unwrap();
+        assert_ne!(old_code, new_code);
+
+        let live = store.live_recovery_secrets(&user.id);
+        assert_eq!(live.len(), 1);
+        assert!(AdminStore::recovery_code_matches(
+            &new_code, &live[0].1, &live[0].2
+        ));
+        assert!(!AdminStore::recovery_code_matches(
+            &old_code, &live[0].1, &live[0].2
+        ));
+    }
+
+    #[test]
+    fn recovery_token_discard_and_purge() {
+        let mut store = test_store();
+        let user = store.create_user("admin", "pass", Role::Admin).unwrap();
+
+        let (id, _code) = store.create_recovery_token(&user.id, 600).unwrap();
+        store.discard_recovery_token(id).unwrap();
+        assert!(store.live_recovery_secrets(&user.id).is_empty());
+
+        store.create_recovery_token(&user.id, -1).unwrap();
+        assert_eq!(store.purge_recovery_tokens(), 1);
     }
 
     #[test]

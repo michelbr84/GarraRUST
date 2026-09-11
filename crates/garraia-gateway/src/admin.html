@@ -367,6 +367,22 @@ tr:hover { background: var(--bg-hover); }
   border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 16px;
   color: var(--error); font-size: 13px;
 }
+/* #1122: "esqueci minha senha" — instrucoes do fluxo assistido pelo CLI. */
+.auth-recovery-toggle { text-align: center; margin-top: 14px; margin-bottom: 0; font-size: 12px; }
+.auth-recovery-toggle a { color: var(--text-muted); text-decoration: underline; }
+.auth-recovery {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-secondary); text-align: left;
+}
+.auth-recovery p { text-align: left; color: var(--text-secondary); margin: 0 0 8px; font-size: 12px; }
+.auth-recovery strong { color: var(--text-primary); }
+.auth-recovery-cmd {
+  font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap;
+  word-break: break-all; background: #080a12; color: #a8b2c1;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 10px; margin: 0 0 10px;
+}
+.auth-recovery code { font-family: var(--mono); font-size: 11px; color: var(--text-primary); }
 
 /* YAML editor */
 .yaml-editor {
@@ -430,6 +446,21 @@ tr:hover { background: var(--bg-hover); }
       <input type="text" id="login-totp" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="000000">
     </div>
     <button class="btn-primary" id="login-btn">Sign In</button>
+    <!-- #1122: recuperacao assistida pelo CLI. Nao ha envio por e-mail: o
+         codigo e gerado no host e lido por quem tem shell na maquina. -->
+    <p class="auth-recovery-toggle"><a href="#" id="forgot-link">Esqueci minha senha</a></p>
+    <div id="login-recovery" class="auth-recovery hidden">
+      <p><strong>Sem e-mail.</strong> O codigo de recuperacao e gerado no
+      servidor e entregue para quem tem acesso ao terminal da maquina — e
+      ninguem mais.</p>
+      <p>Rode no host onde o GarraIA esta instalado:</p>
+      <pre class="auth-recovery-cmd">garra admin recovery start --username SEU_USUARIO</pre>
+      <p>O comando mostra o codigo (que vale 10 minutos e serve uma unica vez).
+      Depois:</p>
+      <pre class="auth-recovery-cmd">garra admin recovery complete --username SEU_USUARIO --code CODIGO</pre>
+      <p>Se o terminal nao for na mesma maquina do gateway, o codigo fica em
+      <code>admin-recovery.code</code>, dentro do diretorio de dados.</p>
+    </div>
   </div>
 </div>
 
@@ -1820,6 +1851,13 @@ document.getElementById('login-btn').addEventListener('click', async () => {
 document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-btn').click(); });
 document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-btn').click(); });
 document.getElementById('login-totp').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-btn').click(); });
+
+// #1122: nothing is sent from here — the panel only explains how to get the
+// code out of the host. Kept a pure toggle so there is no new request path.
+document.getElementById('forgot-link').addEventListener('click', e => {
+  e.preventDefault();
+  document.getElementById('login-recovery').classList.toggle('hidden');
+});
 
 document.getElementById('setup-btn').addEventListener('click', async () => {
   var username = document.getElementById('setup-username').value.trim();

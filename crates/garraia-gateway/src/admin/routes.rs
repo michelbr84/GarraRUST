@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 use super::handlers::{self, AdminState};
 use super::middleware::{require_admin_auth, require_csrf, security_headers};
+use super::recovery::recovery_router;
 use super::store::AdminStore;
 use crate::state::SharedState;
 
@@ -36,6 +37,10 @@ pub fn build_admin_router(
         .route("/api/themes", get(handlers::list_themes))
         .route("/api/layout", get(handlers::get_layout_preferences))
         .with_state(admin_state.clone());
+
+    // #1122: "esqueci minha senha". Unauthenticated, rate limited, and the
+    // code never leaves the host through HTTP — see admin/recovery.rs.
+    let recovery_routes = recovery_router(admin_state.clone());
 
     let auth_routes = Router::new()
         .route("/api/logout", post(handlers::logout))
@@ -171,6 +176,7 @@ pub fn build_admin_router(
 
     Router::new()
         .merge(public_routes)
+        .merge(recovery_routes)
         .merge(auth_routes)
         .layer(axum_mw::from_fn(security_headers))
 }

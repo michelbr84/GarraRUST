@@ -6,6 +6,7 @@ pub mod middleware;
 pub mod observability;
 pub mod providers;
 pub mod rbac;
+pub mod recovery;
 pub mod routes;
 pub mod secrets;
 pub mod shared;
