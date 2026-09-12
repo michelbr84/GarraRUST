@@ -93,6 +93,24 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// [`KEEPALIVE`] numa casa quieta é barata — re-descoberta + re-subscribe.
 const KEEPALIVE: Duration = Duration::from_secs(600);
 
+/// Prefixo do id de **registro** (não do `entity_id` nativo) de todo
+/// dispositivo Home Assistant — `ha:<entity_id>` (#1168, paridade com o
+/// namespace do adapter serial e do MQTT).
+///
+/// O `entity_id` do HA (`domain.object_id`, `valida_objeto` restringe a
+/// `[a-z0-9_]+`) não pode colidir com o namespace `mqtt:`/`serial:` de
+/// outro adapter — `:` nunca é um `entity_id` válido. O prefixo aqui é
+/// principalmente defesa em profundidade e paridade de convenção: o
+/// [`crate::DeviceRegistry`] compartilhado nunca deveria depender de "esse
+/// formato de id não colide hoje" como única garantia entre adapters.
+pub const PREFIXO_ID_HOME_ASSISTANT: &str = "ha:";
+
+/// O id de registro (chave no [`crate::DeviceRegistry`] e valor de
+/// [`crate::Device::id`]) a partir do `entity_id` nativo do HA.
+fn id_registro(entity_id: &str) -> String {
+    format!("{PREFIXO_ID_HOME_ASSISTANT}{entity_id}")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Config do adapter — vetting + cliente pinado na fronteira.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -362,10 +380,16 @@ fn valida_objeto(objeto: &str) -> bool {
 // HaDevice — o Device que fala REST com o hub.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Um dispositivo exposto pelo Home Assistant. O id é o `entity_id`
-/// (`"light.sala"`) — estável, único por hub, e é o que o agente vê na
-/// `device_list`.
+/// Um dispositivo exposto pelo Home Assistant.
 pub struct HaDevice {
+    /// Id de registro namespaceado (`ha:<entity_id>`,
+    /// [`PREFIXO_ID_HOME_ASSISTANT`]) — o que [`Device::id`] devolve e o
+    /// que o [`crate::DeviceRegistry`] usa como chave, e o que o agente vê
+    /// na `device_list` (#1168).
+    id: String,
+    /// `entity_id` nativo do HA (`"light.sala"`) — o valor real que viaja
+    /// nas chamadas REST e nos payloads de serviço. **Nunca** o valor de
+    /// [`Device::id`].
     entity_id: String,
     dominio: String,
     caps: Vec<Capability>,
@@ -375,7 +399,7 @@ pub struct HaDevice {
 #[async_trait]
 impl Device for HaDevice {
     fn id(&self) -> &str {
-        &self.entity_id
+        &self.id
     }
 
     fn capabilities(&self) -> Vec<Capability> {
@@ -388,7 +412,7 @@ impl Device for HaDevice {
     async fn read(&self, capability: &str) -> Result<Value> {
         if capability != "state" {
             return Err(HardwareError::CapabilityDesconhecida {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 capability: capability.to_string(),
             });
         }
@@ -398,7 +422,7 @@ impl Device for HaDevice {
             .base
             .join(&path)
             .map_err(|e| HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("url '{path}' malformada: {e}"),
             })?;
         let resp = self
@@ -409,24 +433,24 @@ impl Device for HaDevice {
             .send()
             .await
             .map_err(|e| HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("GET {path}: {e}"),
             })?;
         let status = resp.status();
         let bytes = read_capped(resp, BODY_CAP)
             .await
             .map_err(|e| HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("GET {path}: {e}"),
             })?;
         if !status.is_success() {
             return Err(HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("GET {path}: HTTP {status}{}", corpo_no_erro(&bytes)),
             });
         }
         serde_json::from_slice(&bytes).map_err(|e| HardwareError::Adapter {
-            dispositivo: self.entity_id.clone(),
+            dispositivo: self.id.clone(),
             fonte: format!("GET {path}: corpo não é JSON: {e}"),
         })
     }
@@ -440,7 +464,7 @@ impl Device for HaDevice {
     async fn execute(&self, capability: &str, args: Value) -> Result<Value> {
         let cap = self.caps.iter().find(|c| c.name == capability).ok_or(
             HardwareError::CapabilityDesconhecida {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 capability: capability.to_string(),
             },
         )?;
@@ -450,7 +474,7 @@ impl Device for HaDevice {
             servico_de(&self.dominio, capability, &args, &self.entity_id)
         else {
             return Err(HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("capability '{capability}' não mapeia para um serviço do HA"),
             });
         };
@@ -461,7 +485,7 @@ impl Device for HaDevice {
             .base
             .join(&path)
             .map_err(|e| HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("url '{path}' malformada: {e}"),
             })?;
         let resp = self
@@ -473,19 +497,19 @@ impl Device for HaDevice {
             .send()
             .await
             .map_err(|e| HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("POST {path}: {e}"),
             })?;
         let status = resp.status();
         let bytes = read_capped(resp, BODY_CAP)
             .await
             .map_err(|e| HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("POST {path}: {e}"),
             })?;
         if !status.is_success() {
             return Err(HardwareError::Adapter {
-                dispositivo: self.entity_id.clone(),
+                dispositivo: self.id.clone(),
                 fonte: format!("POST {path}: HTTP {status}{}", corpo_no_erro(&bytes)),
             });
         }
@@ -556,12 +580,17 @@ async fn rodar(
         match descobrir(&config).await {
             Ok(entidades) => {
                 for e in entidades {
+                    // Mesmo namespace do `Device::id()`/registry (#1168) —
+                    // presença tem que falar do mesmo dispositivo que
+                    // `device_list` mostra.
+                    let id_pub = id_registro(&e.entity_id);
                     if let Some(store) = &state
-                        && let Err(err) = store.marcar(&e.entity_id, e.online).await
+                        && let Err(err) = store.marcar(&id_pub, e.online).await
                     {
-                        tracing::warn!(entity = %e.entity_id, "presença inicial: {err}");
+                        tracing::warn!(entity = %id_pub, "presença inicial: {err}");
                     }
                     registry.register(Arc::new(HaDevice {
+                        id: id_pub,
                         entity_id: e.entity_id.clone(),
                         dominio: e.dominio,
                         caps: e.caps,
@@ -774,10 +803,12 @@ async fn consumir_eventos(
             msg = rx.next() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     if let Some(evento) = evento_de_ha(t.as_str()) {
+                        // Mesmo namespace do `Device::id()` (#1168).
+                        let id_pub = id_registro(&evento.entity_id);
                         if let Some(store) = state
-                            && let Err(err) = store.marcar(&evento.entity_id, evento.online).await
+                            && let Err(err) = store.marcar(&id_pub, evento.online).await
                         {
-                            tracing::warn!(entity = %evento.entity_id, "presença: {err}");
+                            tracing::warn!(entity = %id_pub, "presença: {err}");
                         }
                         // #1128: o estado inteiro vai para o barramento — o
                         // motor de automações assina e casa as regras. Publicar
@@ -785,7 +816,7 @@ async fn consumir_eventos(
                         // recebe Lagged, o hub segue.
                         if let Some(bus) = bus {
                             bus.publicar(HardwareEvent::StateChanged(StateChanged {
-                                device_id: evento.entity_id.clone(),
+                                device_id: id_pub,
                                 novo: evento.novo,
                                 velho: evento.velho,
                                 em_milis: crate::events::milis_agora(),
@@ -912,6 +943,15 @@ mod tests {
         assert!(capabilities_de("vacuum").is_none());
         assert!(capabilities_de("media_player").is_none());
         assert!(capabilities_de("").is_none());
+    }
+
+    /// O id de registro é sempre `ha:<entity_id>` — o `entity_id` nativo
+    /// nunca vira sozinho a chave do registry (#1168, paridade com o
+    /// namespace do MQTT/serial).
+    #[test]
+    fn id_registro_namespaceia_com_prefixo_ha() {
+        assert_eq!(id_registro("light.sala"), "ha:light.sala");
+        assert_eq!(id_registro("lock.porta"), "ha:lock.porta");
     }
 
     /// O vetting da config: link-local (metadata de cloud) é bloqueado
