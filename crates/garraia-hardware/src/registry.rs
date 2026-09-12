@@ -29,19 +29,32 @@ impl DeviceRegistry {
     ///
     /// Re-registrar o mesmo id **substitui** — é como um adapter que perdeu
     /// a conexão e reconecta atualiza o device sem que o registry guarde a
-    /// versão velha em silêncio. A substituição é logada em `warn`: um id
-    /// trocando de dono no meio da vida do processo é ou uma reconexão ou uma
-    /// colisão, e as duas merecem aparecer no log.
+    /// versão velha em silêncio. A substituição é logada em `debug`, e não em
+    /// `warn`, **de propósito**: os adapters MQTT e Home Assistant
+    /// re-registram o catálogo inteiro a cada reconexão/reentrega do broker,
+    /// que é o caminho normal deles, então `warn` aqui viraria dezenas de
+    /// linhas por reconexão numa casa com dezenas de entidades — ruído que
+    /// destrói o sinal do nível `warn` justamente para quem lê o log atrás de
+    /// anomalia.
+    ///
+    /// Quem precisa gritar na colisão não é este método: é o chamador que
+    /// sabe que uma substituição ali é anômala. O transporte serial é esse
+    /// caso e não passa por aqui — ver o parágrafo seguinte.
     ///
     /// Transporte em que o **dispositivo** escolhe o próprio id (serial/USB,
     /// o módulo `adapter_serial`) não deve usar este método: uma placa hostil
     /// se anunciando com o id de um device legítimo sequestraria as leituras
-    /// endereçadas a ele. Para esses, [`Self::register_if_absent`].
+    /// endereçadas a ele. Para esses, [`Self::register_if_absent`] — que
+    /// recusa a substituição, e o `adotar_stream` loga a recusa em `warn`
+    /// porque lá a colisão nunca é rotina.
     pub fn register(&self, device: Arc<dyn Device>) {
         let id = device.id().to_string();
         let anterior = self.devices.write().unwrap().insert(id.clone(), device);
         if anterior.is_some() {
-            tracing::warn!(dispositivo = %id, "registry: id re-registrado — versão anterior substituída");
+            tracing::debug!(
+                dispositivo = %id,
+                "registry: id re-registrado — versão anterior substituída"
+            );
         }
     }
 

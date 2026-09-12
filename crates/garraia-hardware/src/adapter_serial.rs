@@ -187,19 +187,30 @@ pub const VALOR_DA_PLACA_MAX: usize = 4 * 1024;
 ///
 /// - caracteres perigosos viram espaço. Controle (`Cc`) cobre o `\n` que
 ///   forjaria o fim de uma mensagem e o `\x1b` que abriria sequência ANSI no
-///   terminal de quem lê o log; a faixa bidi/invisível
-///   (`U+200B`–`U+200F`, `U+202A`–`U+202E`) e os separadores `U+2028`/`U+2029`
-///   cobrem o resto — um `RIGHT-TO-LEFT OVERRIDE` reordena visualmente o que
-///   um humano lê na tela de aprovação, e `U+2028` é quebra de linha para
-///   quase todo parser de JS/log sem ser `Cc`;
+///   terminal de quem lê o log; o que falta é o complemento `Cf` ("Format"),
+///   que é exatamente a superfície do Trojan Source (CVE-2021-42574) —
+///   caracteres que não desenham nada mas mudam o que um humano lê na tela
+///   de aprovação. Sem uma tabela de categoria Unicode no workspace (não há
+///   `unicode-general-category` no `Cargo.lock`, e o achado não justifica
+///   dependência nova), `Cf` entra como lista explícita de faixas:
+///   `U+061C` (ALM), `U+200B`–`U+200F` (zero-width + LRM/RLM),
+///   `U+202A`–`U+202E` (embeddings/overrides bidi depreciados),
+///   `U+2060`–`U+2064` (word joiner e invisíveis matemáticos),
+///   `U+2066`–`U+2069` (**isolates** LRI/RLI/FSI/PDI — os que substituíram
+///   os overrides na prática, e que a versão anterior deste filtro deixava
+///   passar) e `U+FEFF` (BOM/zero-width no-break space). Fora de `Cf`, os
+///   separadores `U+2028`/`U+2029`: quebra de linha para quase todo parser
+///   de JS/log sem serem `Cc`;
 /// - o comprimento é cortado em [`ERRO_DA_PLACA_MAX`], para uma placa
 ///   verborrágica não gastar o contexto do turno.
 fn sanear_texto_da_placa(bruto: &str) -> String {
     let perigoso = |c: char| {
         c.is_control()
-            || matches!(c, '\u{2028}' | '\u{2029}')
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{061c}' | '\u{feff}')
             || ('\u{200b}'..='\u{200f}').contains(&c)
             || ('\u{202a}'..='\u{202e}').contains(&c)
+            || ('\u{2060}'..='\u{2064}').contains(&c)
+            || ('\u{2066}'..='\u{2069}').contains(&c)
     };
     let mut saneado: String = bruto
         .chars()
@@ -1308,10 +1319,17 @@ mod tests {
     /// um humano lê na tela de aprovação — nenhum dos dois é `is_control`.
     #[test]
     fn invisiveis_e_bidi_tambem_sao_filtrados() {
-        let sujo = "ok\u{2028}\u{2029}\u{200b}\u{200e}\u{202e}oãn\u{202c}";
+        // A lista é a da *ameaça* (Trojan Source, CVE-2021-42574), não a da
+        // implementação: além dos overrides bidi depreciados, os isolates
+        // U+2066–U+2069 que os substituíram na prática, o ALM, o BOM e o
+        // word joiner — invisíveis que reordenam ou escondem o que o humano
+        // lê na tela de aprovação.
+        let sujo = "ok\u{2028}\u{2029}\u{200b}\u{200e}\u{202e}oãn\u{202c}\
+                    \u{2066}\u{2069}\u{061c}\u{feff}\u{2060}";
         let limpo = sanear_texto_da_placa(sujo);
         for perigoso in [
-            '\u{2028}', '\u{2029}', '\u{200b}', '\u{200e}', '\u{202e}', '\u{202c}',
+            '\u{2028}', '\u{2029}', '\u{200b}', '\u{200e}', '\u{202e}', '\u{202c}', '\u{2066}',
+            '\u{2069}', '\u{061c}', '\u{feff}', '\u{2060}',
         ] {
             assert!(
                 !limpo.contains(perigoso),

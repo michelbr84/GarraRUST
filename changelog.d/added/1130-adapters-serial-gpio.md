@@ -39,9 +39,11 @@
   id ecoado em recusa de handshake, nome de capability, `value` de leitura e
   `state` espontaneo passam por higienizacao antes de virar log, mensagem de
   erro ou resultado de tool — caracteres de controle, `U+2028`/`U+2029` e a
-  faixa bidi (`U+200B`-`U+200F`, `U+202A`-`U+202E`) viram espaco, cada string
-  e cortada em 300 caracteres e o JSON de uma leitura tem teto de 4 KiB (acima
-  disso a leitura falha, em vez de entregar meio JSON).
+  superficie invisivel do Trojan Source (CVE-2021-42574) viram espaco:
+  `U+061C`, `U+200B`-`U+200F`, `U+202A`-`U+202E`, `U+2060`-`U+2064`, os
+  isolates `U+2066`-`U+2069` e o BOM `U+FEFF`. Cada string e cortada em 300
+  caracteres e o JSON de uma leitura tem teto de 4 KiB (acima disso a leitura
+  falha, em vez de entregar meio JSON).
 - Pendente para um PR seguinte: **o wiring de config nao existe**. Os adapters
   vivem no crate (`SerialAdapterConfig`/`SerialAdapterManager`,
   `GpioAdapterConfig`), mas `garraia-config` ainda nao tem
