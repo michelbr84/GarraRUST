@@ -111,6 +111,34 @@ pub struct HardwareConfig {
     /// registry não ganha as entidades do hub (fail-closed).
     #[serde(default)]
     pub home_assistant: Option<HaConfig>,
+    /// Motor de automações (#1128). `None` = sem automações — o motor não
+    /// sobe e nenhum arquivo de regra é lido (fail-closed).
+    #[serde(default)]
+    pub automations: Option<AutomationsConfig>,
+}
+
+/// ADR 0020 / #1128 — configuração do motor de automações.
+///
+/// As regras são arquivos declarativos TOML/JSON versionáveis no `dir`; o
+/// teto de risco (`risk_ceiling`) é a policy do que uma automação pode
+/// pedir — o análogo dos modos do runtime para quem não está no chat. R3 e
+/// acima **não é configurável**: automação roda desacompanhada, não há quem
+/// confirme (approval que ninguém pode dar não é approval).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationsConfig {
+    /// Diretório com os arquivos de regras (`*.toml`/`*.json`). Caminho
+    /// relativo resolve contra o data dir efetivo (ver
+    /// [`AppConfig::automations_dir`]).
+    pub dir: String,
+    /// Teto de risco das execuções: `"r0"`, `"r1"` ou `"r2"`. Default
+    /// `"r1"` — power/brightness/temperature sem confirmação; covers só
+    /// com o teto explicitamente em `"r2"`.
+    #[serde(default = "default_risk_ceiling")]
+    pub risk_ceiling: String,
+}
+
+fn default_risk_ceiling() -> String {
+    "r1".to_string()
 }
 
 /// Conexão com o broker MQTT (#1126). Credencial de senha é **write-only**:
@@ -509,6 +537,37 @@ impl AppConfig {
     /// reconectado do adapter reescreveria so a sua copia.
     pub fn hardware_db_path(&self) -> std::path::PathBuf {
         self.resolved_data_dir().join("hardware.db")
+    }
+
+    /// Caminho do banco de automações (#1128) — retrato das regras no ar e
+    /// auditoria de execuções. Mesmo contrato do `hardware_db_path`: fonte
+    /// única, a CLI e o gateway abrem o mesmo arquivo.
+    pub fn automations_db_path(&self) -> std::path::PathBuf {
+        self.resolved_data_dir().join("automations.db")
+    }
+
+    /// O diretório das regras de automação (#1128), já resolvido: caminho
+    /// absoluto vence; relativo resolve contra o data dir efetivo. `None`
+    /// quando a seção `hardware.automations` não existe — sem seção, o
+    /// motor não sobe.
+    pub fn automations_dir(&self) -> Option<std::path::PathBuf> {
+        self.hardware.automations.as_ref().map(|a| {
+            let caminho = std::path::Path::new(&a.dir);
+            if caminho.is_absolute() {
+                caminho.to_path_buf()
+            } else {
+                self.resolved_data_dir().join(caminho)
+            }
+        })
+    }
+
+    /// O teto de risco declarado, já validado pela forma canônica. `None`
+    /// quando a seção não existe.
+    pub fn automations_risk_ceiling(&self) -> Option<&str> {
+        self.hardware
+            .automations
+            .as_ref()
+            .map(|a| a.risk_ceiling.as_str())
     }
 }
 
@@ -1127,6 +1186,25 @@ mod tests {
         );
     }
 
+    /// #1128: o banco de automações segue o mesmo contrato — `automations.db`
+    /// sob o data_dir resolvido, fonte única para gateway e CLI.
+    #[test]
+    fn automations_db_path_lives_under_the_resolved_data_dir() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.automations_db_path(),
+            config.resolved_data_dir().join("automations.db")
+        );
+        let custom = AppConfig {
+            data_dir: Some(std::path::PathBuf::from("/tmp/garra-data")),
+            ..AppConfig::default()
+        };
+        assert_eq!(
+            custom.automations_db_path(),
+            std::path::PathBuf::from("/tmp/garra-data/automations.db")
+        );
+    }
+
     #[test]
     fn agent_persona_defaults_to_friendly() {
         // Plan 0250 (GAR-771): the warm persona is the default; persona_lang
@@ -1205,6 +1283,66 @@ hardware:
         assert_eq!(mqtt.username.as_deref(), Some("garra"));
         assert_eq!(mqtt.password_env.as_deref(), Some("GARRA_MQTT_PASS"));
         assert_eq!(mqtt.client_id_prefix, "garra");
+    }
+
+    // ── ADR 0020 / #1128: seção `hardware.automations:` (motor de regras) ──
+
+    #[test]
+    fn hardware_automations_parses_dir_e_risk_ceiling() {
+        let raw = r#"
+hardware:
+  automations:
+    dir: "rules/automations"
+    risk_ceiling: "r2"
+"#;
+        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let automacoes = config
+            .hardware
+            .automations
+            .as_ref()
+            .expect("automations should be Some");
+        assert_eq!(automacoes.dir, "rules/automations");
+        assert_eq!(automacoes.risk_ceiling, "r2");
+        // E os helpers de resolucao.
+        assert_eq!(
+            config.automations_dir(),
+            Some(config.resolved_data_dir().join("rules/automations"))
+        );
+        assert_eq!(config.automations_risk_ceiling(), Some("r2"));
+    }
+
+    #[test]
+    fn hardware_automations_risk_ceiling_default_e_r1() {
+        let raw = r#"
+hardware:
+  automations:
+    dir: "rules"
+"#;
+        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let automacoes = config.hardware.automations.expect("automations");
+        assert_eq!(automacoes.risk_ceiling, "r1", "teto default é r1");
+    }
+
+    #[test]
+    fn hardware_sem_automations_e_none_e_dir_none() {
+        let config = AppConfig::default();
+        assert!(config.hardware.automations.is_none());
+        assert!(config.automations_dir().is_none());
+        assert!(config.automations_risk_ceiling().is_none());
+    }
+
+    #[test]
+    fn hardware_automations_dir_absoluto_vence() {
+        let raw = r#"
+hardware:
+  automations:
+    dir: "/etc/garraia/regras"
+"#;
+        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        assert_eq!(
+            config.automations_dir(),
+            Some(std::path::PathBuf::from("/etc/garraia/regras"))
+        );
     }
 
     #[test]

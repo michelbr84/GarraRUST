@@ -48,6 +48,10 @@ pub enum HardwareError {
     #[error("erro do Home Assistant: {0}")]
     HomeAssistant(String),
 
+    /// Erro do motor de automações (#1128) — spec, store ou execução.
+    #[error("erro de automações: {0}")]
+    Automations(String),
+
     /// Erro do SQLite (o store de presença).
     #[error("erro de SQLite no estado de hardware: {0}")]
     Sqlite(#[from] rusqlite::Error),

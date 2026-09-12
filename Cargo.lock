@@ -3708,6 +3708,8 @@ version = "0.4.1"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
+ "chrono",
+ "croner",
  "futures",
  "garraia-common",
  "reqwest 0.12.28",
@@ -3719,6 +3721,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite 0.29.0",
+ "toml 1.1.5+spec-1.1.0",
  "tracing",
  "url",
 ]

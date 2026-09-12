@@ -246,7 +246,7 @@ async fn descoberta_registra_por_dominio_com_risco() {
     let registry = Arc::new(DeviceRegistry::new());
     let store = Arc::new(DeviceStateStore::em_memoria().expect("store"));
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config vetada");
-    let manager = HaAdapterManager::spawn(config, registry.clone(), Some(store.clone()));
+    let manager = HaAdapterManager::spawn(config, registry.clone(), Some(store.clone()), None);
 
     let registrado = espera(PRAZO, || async { (registry.len() == 7).then_some(()) }).await;
     assert_eq!(registrado, Some(()), "7 entidades viram dispositivos");
@@ -331,7 +331,7 @@ async fn read_busca_estado_no_hub() {
 
     let registry = Arc::new(DeviceRegistry::new());
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config");
-    let manager = HaAdapterManager::spawn(config, registry.clone(), None);
+    let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
     let sensor = espera(PRAZO, || async { registry.get("sensor.temp") })
         .await
@@ -371,7 +371,7 @@ async fn execute_mapeia_servico_e_payload() {
 
     let registry = Arc::new(DeviceRegistry::new());
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config");
-    let manager = HaAdapterManager::spawn(config, registry.clone(), None);
+    let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
     let light = espera(PRAZO, || async { registry.get("light.sala") })
         .await
@@ -459,7 +459,7 @@ async fn execute_recusa_args_invalidos_antes_do_hub() {
 
     let registry = Arc::new(DeviceRegistry::new());
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config");
-    let manager = HaAdapterManager::spawn(config, registry.clone(), None);
+    let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
     let light = espera(PRAZO, || async { registry.get("light.sala") })
         .await
@@ -496,7 +496,7 @@ async fn ws_marca_presenca_por_evento() {
     let registry = Arc::new(DeviceRegistry::new());
     let store = Arc::new(DeviceStateStore::em_memoria().expect("store"));
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config");
-    let manager = HaAdapterManager::spawn(config, registry.clone(), Some(store.clone()));
+    let manager = HaAdapterManager::spawn(config, registry.clone(), Some(store.clone()), None);
 
     // Presença inicial da descoberta (cover.janela nasce offline).
     espera(PRAZO, || async {
@@ -579,7 +579,7 @@ async fn ws_token_errado_nao_assina() {
 
     let registry = Arc::new(DeviceRegistry::new());
     let config = HaAdapterConfig::new(&hub.url, "token-errado".to_string()).expect("config");
-    let manager = HaAdapterManager::spawn(config, registry.clone(), None);
+    let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
     // A tentativa de auth chega…
     espera(PRAZO, || async {
@@ -613,7 +613,7 @@ async fn hub_inacessivel_registry_fica_vazio() {
     let registry = Arc::new(DeviceRegistry::new());
     let config = HaAdapterConfig::new(&format!("http://127.0.0.1:{porta}"), "t".to_string())
         .expect("config vetada (loopback)");
-    let manager = HaAdapterManager::spawn(config, registry.clone(), None);
+    let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(

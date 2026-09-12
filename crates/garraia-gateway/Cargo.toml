@@ -14,11 +14,13 @@ garraia-agents = { workspace = true, features = ["mcp"] }
 # ADR 0020 (epic #1124): o registry de dispositivos que alimenta as tools
 # device_list/read/execute. Sem adapter registrado, fica vazio (#1128 liga
 # o boot de adapters via config). As features de transporte (`mqtt`,
-# `home-assistant`) ficam ligadas aqui incondicionalmente: o gateway e o
-# host de hardware, o boot decide pelo config se cada transporte sobe
-# (`hardware.mqtt` / `hardware.home_assistant`) — rumqttc e cliente Rust
-# puro, sem runtime C; o HA vai por REST + WebSocket atrás do guard SSRF.
-garraia-hardware = { workspace = true, features = ["mqtt", "home-assistant"] }
+# `home-assistant`) e o motor de automacoes (`automations`) ficam ligadas
+# aqui incondicionalmente: o gateway e o host de hardware, o boot decide
+# pelo config se cada transporte sobe (`hardware.mqtt` /
+# `hardware.home_assistant`) e se o motor arma (`hardware.automations`) —
+# rumqttc e cliente Rust puro, sem runtime C; o HA vai por REST + WebSocket
+# atrás do guard SSRF.
+garraia-hardware = { workspace = true, features = ["mqtt", "home-assistant", "automations"] }
 garraia-runtime = { workspace = true }
 garraia-db = { workspace = true }
 garraia-security = { workspace = true }

@@ -19,6 +19,10 @@ mqtt = ["dep:rumqttc"]
 # padrão. `garraia-common/ssrf` traz o guard de URL (a chamada REST vai por
 # cliente pinado — o token do HA é credencial de admin do hub).
 home-assistant = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures", "dep:url", "dep:garraia-common"]
+# Motor de automações (#1128): specs TOML/JSON + avaliador de expressões +
+# engine sobre o barramento de eventos. OFF por default — quem não usa
+# automação não paga croner/chrono/toml.
+automations = ["dep:croner", "dep:chrono", "dep:toml"]
 default = ["mock-device"]
 
 [dependencies]
@@ -53,6 +57,12 @@ futures = { workspace = true, optional = true }
 # A URL base vetada (`VettedUrl.url` do ssrf) é `url::Url` — manter o tipo
 # em vez de remontar paths na mão (`Url::join` evita `//api/states`).
 url = { workspace = true, optional = true }
+# Feature `automations` (#1128): croner para os gatilhos cron (mesmo parser
+# do `garraia-db`/recorrência), chrono para o fuso local do host e toml para
+# as specs declarativas versionáveis do usuário.
+croner = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Broker MQTT embutido para os testes de integração da feature `mqtt`

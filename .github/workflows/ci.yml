@@ -408,6 +408,19 @@ jobs:
           cargo test -p garraia-hardware --features home-assistant
           echo "::endgroup::"
 
+          # Mesmo buraco para a feature `automations` (#1128): o motor de
+          # regras declarativas (TOML/JSON → eventos → gate → acao). SEM
+          # `--lib`, porque a feature traz o teste de integracao em tests/
+          # que roda o pipeline completo (carga de spec, condicao, teto de
+          # risco, rate limit, debounce) contra o MockDevice — o fluxo que
+          # decide se um dispositivo fisico liga sozinho. A combinacao com
+          # os adapters e a que o gateway usa; o `--workspace` de cima mais
+          # o gate do gateway cobre o resto.
+          echo "::group::garraia-hardware --features automations"
+          cargo clippy -p garraia-hardware --features automations --all-targets -- -D warnings
+          cargo test -p garraia-hardware --features automations
+          echo "::endgroup::"
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,

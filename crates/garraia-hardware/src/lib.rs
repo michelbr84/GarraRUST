@@ -31,17 +31,31 @@
 //! quem não usa transporte de rede não paga a árvore de deps. Cada adapter
 //! traz o próprio risco avaliado no PR correspondente.
 //!
+//! # O motor de automações (#1128)
+//!
+//! O barramento [`HardwareEventBus`] recebe as mudanças de estado que os
+//! adapters veem; o [`automations::AutomationEngine`] assina, casa com as
+//! regras declarativas do usuário (TOML/JSON, feature `automations`) e
+//! executa pela **mesma policy do runtime** — o gate sem canal de confirmação
+//! (automação roda desacompanhada) com teto de risco declarado no config.
+//! Nada de bypass: o que o usuário não pediria ao agente diretamente, a
+//! automação também não faz.
+//!
 //! O estado online/offline dos dispositivos ([`DeviceStateStore`]) segue o
 //! padrão do repo: SQLite via rusqlite bundled, acesso sync sob mutex.
 
 pub mod capability;
 pub mod device;
 pub mod error;
+pub mod events;
 pub mod gate;
 pub mod registry;
 pub mod risk;
 pub mod schema;
 pub mod state;
+
+#[cfg(feature = "automations")]
+pub mod automations;
 
 #[cfg(feature = "mock-device")]
 pub mod mock;
@@ -55,10 +69,16 @@ pub mod adapter_homeassistant;
 pub use capability::Capability;
 pub use device::{Device, DeviceSummary};
 pub use error::HardwareError;
+pub use events::{EstadoObservado, HardwareEvent, HardwareEventBus, StateChanged};
 pub use gate::HardwareGate;
 pub use registry::DeviceRegistry;
 pub use risk::{ExecutionDecision, RiskClass};
 pub use state::DeviceStateStore;
+
+#[cfg(feature = "automations")]
+pub use automations::{
+    AutomationEngine, AutomationSpec, AutomationStore, carregar_dir as carregar_automacoes,
+};
 
 #[cfg(feature = "mock-device")]
 pub use mock::MockDevice;

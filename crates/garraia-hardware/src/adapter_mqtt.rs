@@ -40,6 +40,7 @@ use crate::Result;
 use crate::capability::Capability;
 use crate::device::Device;
 use crate::error::HardwareError;
+use crate::events::{EstadoObservado, HardwareEvent, HardwareEventBus, StateChanged};
 use crate::registry::DeviceRegistry;
 use crate::state::DeviceStateStore;
 use async_trait::async_trait;
@@ -406,6 +407,7 @@ impl MqttAdapterManager {
         config: MqttAdapterConfig,
         registry: Arc<DeviceRegistry>,
         state: Option<Arc<DeviceStateStore>>,
+        bus: Option<Arc<HardwareEventBus>>,
     ) -> Result<Self> {
         let mut opts = MqttOptions::new(
             config.client_id.clone(),
@@ -425,6 +427,7 @@ impl MqttAdapterManager {
             client.clone(),
             registry,
             state,
+            bus,
             pendentes,
         ));
         Ok(Self { client, tarefa })
@@ -449,6 +452,7 @@ async fn rodar(
     client: AsyncClient,
     registry: Arc<DeviceRegistry>,
     state: Option<Arc<DeviceStateStore>>,
+    bus: Option<Arc<HardwareEventBus>>,
     pendentes: Arc<Pendentes>,
 ) {
     let prefixo = config.topic_prefix.clone();
@@ -469,6 +473,7 @@ async fn rodar(
                     &client,
                     &registry,
                     state.as_ref(),
+                    bus.as_ref(),
                     &pendentes,
                     config.timeout,
                 )
@@ -491,6 +496,7 @@ async fn processa_publish(
     client: &AsyncClient,
     registry: &DeviceRegistry,
     state: Option<&Arc<DeviceStateStore>>,
+    bus: Option<&Arc<HardwareEventBus>>,
     pendentes: &Arc<Pendentes>,
     timeout: Duration,
 ) {
@@ -517,8 +523,8 @@ async fn processa_publish(
             .await;
         }
         [id, "status"] => {
-            if let Some(store) = state {
-                aplicar_status(id, &p.payload, store).await;
+            if state.is_some() || bus.is_some() {
+                aplicar_status(id, &p.payload, state, bus).await;
             }
         }
         [id, "state", cap] => {
@@ -575,7 +581,12 @@ async fn registrar_dispositivo(
     tracing::info!(dispositivo = %id_topico, "mqtt: dispositivo descoberto e registrado");
 }
 
-async fn aplicar_status(id: &str, payload: &[u8], store: &Arc<DeviceStateStore>) {
+async fn aplicar_status(
+    id: &str,
+    payload: &[u8],
+    state: Option<&Arc<DeviceStateStore>>,
+    bus: Option<&Arc<HardwareEventBus>>,
+) {
     let texto = String::from_utf8_lossy(payload).trim().to_ascii_lowercase();
     let online = match texto.as_str() {
         "online" => true,
@@ -585,8 +596,26 @@ async fn aplicar_status(id: &str, payload: &[u8], store: &Arc<DeviceStateStore>)
             return;
         }
     };
-    if let Err(e) = store.marcar(id, online).await {
+    if let Some(store) = state
+        && let Err(e) = store.marcar(id, online).await
+    {
         tracing::warn!(dispositivo = %id, error = %e, "mqtt: falha ao marcar presença");
+    }
+    // #1128: o status é o state_changed do mundo MQTT (a convenção da
+    // #1126 correlaciona leitura/escrita por request_id, sem report não
+    // solicitado) — presença publicada como estado, para o motor de
+    // automações casar `to.state == "offline"`.
+    if let Some(bus) = bus {
+        bus.publicar(HardwareEvent::StateChanged(StateChanged {
+            device_id: id.to_string(),
+            novo: EstadoObservado::com(
+                Some(if online { "online" } else { "offline" }.into()),
+                serde_json::Value::Null,
+                online,
+            ),
+            velho: None,
+            em_milis: crate::events::milis_agora(),
+        }));
     }
 }
 
@@ -1061,9 +1090,13 @@ mod tests {
 
         let registry = Arc::new(DeviceRegistry::new());
         let state = Arc::new(DeviceStateStore::em_memoria().expect("store"));
-        let manager =
-            MqttAdapterManager::spawn(config_manager(porta), registry.clone(), Some(state.clone()))
-                .expect("manager sobe");
+        let manager = MqttAdapterManager::spawn(
+            config_manager(porta),
+            registry.clone(),
+            Some(state.clone()),
+            None,
+        )
+        .expect("manager sobe");
 
         // 1. Descoberta: o manifesto retained chega na assinatura.
         esperar(
@@ -1206,9 +1239,13 @@ mod tests {
 
         let registry = Arc::new(DeviceRegistry::new());
         let state = Arc::new(DeviceStateStore::em_memoria().expect("store"));
-        let manager =
-            MqttAdapterManager::spawn(config_manager(porta), registry.clone(), Some(state.clone()))
-                .expect("manager sobe");
+        let manager = MqttAdapterManager::spawn(
+            config_manager(porta),
+            registry.clone(),
+            Some(state.clone()),
+            None,
+        )
+        .expect("manager sobe");
         esperar(
             || registry.get("sensor-2").is_some(),
             "dispositivo registrado",
