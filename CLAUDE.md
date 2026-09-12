@@ -18,7 +18,7 @@
 
 ## Estrutura de crates
 
-**22 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
+**23 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
 mais o harness `benches/agent-framework-comparison/` (fora do workspace, não é crate).
 O histórico de entrega (plans, PRs, datas, IDs `GAR-xxx`) vive em `plans/`, `docs/adr/`
 e `CHANGELOG.md` — aqui fica só o estado atual e os invariantes que um agente precisa
@@ -149,6 +149,24 @@ crates/
                         compartilhada, HMAC-SHA256 sobre `{key}:{version_id}:{sha256_hex}`
                         via `PutOptions::hmac_secret`, presigned URLs com TTL [30s, 900s].
                         MinIO via endpoint override; testcontainer gated pela feature.
+garraia-hardware/   — ADR 0020 (epic #1124; #1125+#1129): abstração de dispositivos
+                        físicos. `trait Device` (async, `dyn`) + `Capability { name,
+                        risk R0-R5, read_only, args_schema }` com invariante
+                        leitura↔R0 (`leitura()`/`acao()`/`validar()`), `RiskClass`
+                        com tabela fail-closed `decisao()` (R0/R1 auto · R2 policy ·
+                        R3 confirmação humana · R4 aprovação explícita · R5 deny
+                        salvo allowlist), `HardwareGate` (`decide()` consulta a
+                        tabela; R5 via allowlist do operador), `DeviceRegistry`
+                        (`Arc<dyn Device>` por id), `DeviceStateStore` (presença
+                        online/last_seen em SQLite, best-effort) e `MockDevice`
+                        (fixture de teste, default-on). Integração com o runtime:
+                        tools `device_list`/`device_read`/`device_execute` em
+                        `garraia-agents` (duas camadas: `ToolGate` dos modos nega
+                        `device_execute` nos read-only; dentro da tool, `HardwareGate`
+                        usa o fluxo GAR-187 `ToolApproval::Granted(fingerprint)` para
+                        R3/R4 e fail-closed sem canal de confirmação). Registry começa
+                        vazio em produção — adapters (#1126/#1127/#1130) registram
+                        dispositivos e é cada um que traz o teto R2.
 apps/
   garraia-mobile/     — Garra Mobile (Flutter, Riverpod 3, go_router, Dio). v0.4.0
                         (ADR 0016): home "Garra Neon" + `lib/runtime/` (`GarraConnection`:
@@ -164,8 +182,7 @@ benches/
                         resultados versionados em `results/<data>-<host>/`.
 ```
 
-> `garraia-hardware` está proposta (ADR 0020, epic #1124) mas ainda não
-> nasceu — a decisão é do dono. `benches/database-poc/` foi removido em 2026-08-16;
+> `benches/database-poc/` foi removido em 2026-08-16;
 > seus números seguem citados em ADR 0003 e nas migrations 005/007.
 
 ## Convenções de código
@@ -387,5 +404,5 @@ python3 -m pytest scripts/quality/tests/
 - @imports `TODO.md` (backlog operacional) e `.garra-estado.md` (handoff local, gitignored) para estado da sessão anterior
 - @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
 - @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
-- @imports `docs/adr/` — decisões arquiteturais: 20 ADRs (0001-0020). As 0001-0017 e a **0019** (confinamento das tools, #1084) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção; a **0020** (crate `garraia-hardware`, epic #1124) também está **Proposed** — aceitá-la é o gatilho para iniciar #1125. Ver `docs/adr/README.md` para o índice.
+- @imports `docs/adr/` — decisões arquiteturais: 20 ADRs (0001-0020). As 0001-0017, a **0019** (confinamento das tools, #1084) e a **0020** (crate `garraia-hardware`, epic #1124 — aceita 2026-09-12, opção A) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção. Ver `docs/adr/README.md` para o índice.
 - Tracking: tracker interno (o Linear foi descontinuado em 2026-08-18 — não criar/consultar issues lá; IDs `GAR-xxx` permanecem como registro histórico de entregas)

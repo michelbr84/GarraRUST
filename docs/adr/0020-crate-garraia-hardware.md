@@ -1,6 +1,6 @@
 # 20. Crate `garraia-hardware` — abstração de dispositivos físicos
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-12, decisão do dono — opção A, ver nota abaixo)
 - **Deciders:** @michelbr84 (decisão final) + Claude (levantamento, sessão
   autônoma 2026-09-11)
 - **Date:** 2026-09-11
@@ -141,13 +141,11 @@ modelo de segurança desenhado para reusar (não duplicar) o gate de risco que
 o repo já tem para bash/tools. O que faltava para essa primeira issue
 (#1125) poder começar sob a regra 8 era este documento.
 
-> **Status `Proposed` de propósito**, no mesmo padrão do ADR 0018: a regra
-> absoluta 8 pede o ADR antes da decisão, e a decisão final é do dono. Nada
-> foi implementado por este ADR — ele existe para que #1125 possa começar com
-> a evidência e as alternativas na mesa, em vez de a crate nascer sem
-> registro arquitetural. Aceitar este ADR é o gatilho para iniciar #1125;
-> recusá-lo (ou pedir a opção B/C) mantém o epic no estado atual — 8 issues
-> abertas, zero código.
+> **Aceito em 2026-09-12 (opção A)** — decisão do dono na sessão de
+> implementação: "Sim — aceita e implementa". A implementação começou na
+> mesma sessão: #1125 (crate `garraia-hardware`) + #1129 (risco R0–R5
+> embutido na `Capability` e no `HardwareGate`) entregues juntos, conforme
+> a sequência cravada pelo epic #1124.
 
 ## Consequences
 

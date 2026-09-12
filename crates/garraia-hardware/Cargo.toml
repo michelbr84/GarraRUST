@@ -1,0 +1,26 @@
+[package]
+name = "garraia-hardware"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hardware — trait Device, Capability com risco R0-R5, registry e gate. ADR 0020."
+
+[features]
+# MockDevice in-memory para testes e fixtures, mesmo padrão do
+# `testing-provider` do garraia-embeddings: default-on porque os testes do
+# crate dependem dele e o CI roda `cargo test --workspace` sem
+# `--all-features`. Builds de produção que usarem `default-features = false`
+# continuam com toda a superfície do trait — só perdem o mock.
+mock-device = []
+default = ["mock-device"]
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rusqlite = { workspace = true }
+# `tokio::sync::Mutex` no DeviceStateStore (padrão SessionStore); os testes
+# usam o mesmo rt para `#[tokio::test]`.
+tokio = { workspace = true }
