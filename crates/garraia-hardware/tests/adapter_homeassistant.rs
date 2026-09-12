@@ -255,26 +255,26 @@ async fn descoberta_registra_por_dominio_com_risco() {
     assert_eq!(
         ids,
         [
-            "binary_sensor.porta",
-            "climate.ac",
-            "cover.janela",
-            "light.sala",
-            "lock.porta",
-            "sensor.temp",
-            "switch.tomada"
+            "ha:binary_sensor.porta",
+            "ha:climate.ac",
+            "ha:cover.janela",
+            "ha:light.sala",
+            "ha:lock.porta",
+            "ha:sensor.temp",
+            "ha:switch.tomada"
         ],
-        "vacuum/sem_ponto/'Casa limpa' ficam fora"
+        "vacuum/sem_ponto/'Casa limpa' ficam fora; ids namespaceados por ha: (#1168)"
     );
 
     // Risco por domínio, na capability certa.
-    let light = registry.get("light.sala").expect("light registrado");
+    let light = registry.get("ha:light.sala").expect("light registrado");
     let caps = light.capabilities();
     let power = caps.iter().find(|c| c.name == "power").expect("power");
     assert_eq!(power.risk, RiskClass::R1);
     assert!(!power.read_only);
     assert!(caps.iter().all(|c| c.risk <= RiskClass::R1));
 
-    let lock = registry.get("lock.porta").expect("lock registrado");
+    let lock = registry.get("ha:lock.porta").expect("lock registrado");
     assert!(
         lock.capabilities()
             .iter()
@@ -282,7 +282,7 @@ async fn descoberta_registra_por_dominio_com_risco() {
             .all(|c| c.risk == RiskClass::R3)
     );
 
-    let cover = registry.get("cover.janela").expect("cover registrado");
+    let cover = registry.get("ha:cover.janela").expect("cover registrado");
     assert!(
         cover
             .capabilities()
@@ -297,7 +297,7 @@ async fn descoberta_registra_por_dominio_com_risco() {
             .all(|c| c.read_only || c.risk >= RiskClass::R2)
     );
 
-    let sensor = registry.get("sensor.temp").expect("sensor registrado");
+    let sensor = registry.get("ha:sensor.temp").expect("sensor registrado");
     assert!(
         sensor
             .capabilities()
@@ -307,13 +307,13 @@ async fn descoberta_registra_por_dominio_com_risco() {
 
     // Presença inicial: o estado real da descoberta.
     let online = store
-        .estado("light.sala")
+        .estado("ha:light.sala")
         .await
         .expect("lê")
         .expect("marcado");
     assert!(online.online);
     let offline = store
-        .estado("cover.janela")
+        .estado("ha:cover.janela")
         .await
         .expect("lê")
         .expect("marcado");
@@ -333,7 +333,7 @@ async fn read_busca_estado_no_hub() {
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config");
     let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
-    let sensor = espera(PRAZO, || async { registry.get("sensor.temp") })
+    let sensor = espera(PRAZO, || async { registry.get("ha:sensor.temp") })
         .await
         .expect("sensor registrado");
 
@@ -373,7 +373,7 @@ async fn execute_mapeia_servico_e_payload() {
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config");
     let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
-    let light = espera(PRAZO, || async { registry.get("light.sala") })
+    let light = espera(PRAZO, || async { registry.get("ha:light.sala") })
         .await
         .expect("light registrado");
 
@@ -396,7 +396,7 @@ async fn execute_mapeia_servico_e_payload() {
         .expect("brilho");
     assert_eq!(r["servico"], json!("light/turn_on"));
 
-    let cover = espera(PRAZO, || async { registry.get("cover.janela") })
+    let cover = espera(PRAZO, || async { registry.get("ha:cover.janela") })
         .await
         .expect("cover registrado");
     cover.execute("open", json!({})).await.expect("abre");
@@ -406,13 +406,13 @@ async fn execute_mapeia_servico_e_payload() {
         .expect("posição");
     assert_eq!(r["servico"], json!("cover/set_cover_position"));
 
-    let lock = espera(PRAZO, || async { registry.get("lock.porta") })
+    let lock = espera(PRAZO, || async { registry.get("ha:lock.porta") })
         .await
         .expect("lock registrado");
     let r = lock.execute("unlock", json!({})).await.expect("destranca");
     assert_eq!(r["servico"], json!("lock/unlock"));
 
-    let clima = espera(PRAZO, || async { registry.get("climate.ac") })
+    let clima = espera(PRAZO, || async { registry.get("ha:climate.ac") })
         .await
         .expect("climate registrado");
     clima
@@ -461,7 +461,7 @@ async fn execute_recusa_args_invalidos_antes_do_hub() {
     let config = HaAdapterConfig::new(&hub.url, "token-do-ha".to_string()).expect("config");
     let manager = HaAdapterManager::spawn(config, registry.clone(), None, None);
 
-    let light = espera(PRAZO, || async { registry.get("light.sala") })
+    let light = espera(PRAZO, || async { registry.get("ha:light.sala") })
         .await
         .expect("light registrado");
 
@@ -501,7 +501,7 @@ async fn ws_marca_presenca_por_evento() {
     // Presença inicial da descoberta (cover.janela nasce offline).
     espera(PRAZO, || async {
         store
-            .estado("cover.janela")
+            .estado("ha:cover.janela")
             .await
             .ok()
             .flatten()
@@ -535,7 +535,7 @@ async fn ws_marca_presenca_por_evento() {
     hub.state.sinal.notify_one();
     espera(PRAZO, || async {
         store
-            .estado("cover.janela")
+            .estado("ha:cover.janela")
             .await
             .ok()
             .flatten()
@@ -555,7 +555,7 @@ async fn ws_marca_presenca_por_evento() {
     hub.state.sinal.notify_one();
     espera(PRAZO, || async {
         store
-            .estado("cover.janela")
+            .estado("ha:cover.janela")
             .await
             .ok()
             .flatten()

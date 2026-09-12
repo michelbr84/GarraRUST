@@ -25,7 +25,8 @@ impl DeviceRegistry {
         Self::default()
     }
 
-    /// Registra (ou substitui) um dispositivo.
+    /// Registra (ou substitui) um dispositivo — a variante explícita de
+    /// "sim, isto deve sobrescrever".
     ///
     /// Re-registrar o mesmo id **substitui** — é como um adapter que perdeu
     /// a conexão e reconecta atualiza o device sem que o registry guarde a
@@ -47,6 +48,13 @@ impl DeviceRegistry {
     /// endereçadas a ele. Para esses, [`Self::register_if_absent`] — que
     /// recusa a substituição, e o `adotar_stream` loga a recusa em `warn`
     /// porque lá a colisão nunca é rotina.
+    ///
+    /// O que torna a substituição *rotineira* segura é o id já chegar aqui
+    /// namespaceado por transporte — `mqtt:<id>`, `ha:<entity_id>`,
+    /// `serial:<id>`, `gpio:<id>` (#1168). Com o namespace, "o mesmo id"
+    /// só pode significar "o mesmo adapter, de novo": um dispositivo que
+    /// anuncie um id no formato de outro transporte é registrado debaixo do
+    /// prefixo do **seu** adapter e nunca alcança a chave alheia.
     pub fn register(&self, device: Arc<dyn Device>) {
         let id = device.id().to_string();
         let anterior = self.devices.write().unwrap().insert(id.clone(), device);

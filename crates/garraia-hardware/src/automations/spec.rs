@@ -6,15 +6,29 @@
 //! name = "ventilador-garagem-quente"
 //! [[automation.trigger]]
 //! type = "state_changed"
-//! entity = "sensor.garagem_temperatura"
+//! entity = "ha:sensor.garagem_temperatura"
 //! [[automation.condition]]
 //! expr = "to.state > 32"
 //! [[automation.action]]
 //! type = "device_execute"
-//! device = "fan.garagem"
+//! device = "ha:fan.garagem"
 //! capability = "power"
 //! args = { on = true }
 //! ```
+//!
+//! **Os ids são namespaceados por transporte** (#1168): `entity` e `device`
+//! referenciam a chave do `DeviceRegistry`, que é
+//! `<transporte>:<id nativo>` — `mqtt:`, `ha:`, `gpio:` ou `serial:`,
+//! conforme o adapter que trouxe o dispositivo (`ha:light.sala`,
+//! `mqtt:sensor-1`, `gpio:pi-bancada`, `serial:arduino-1`). É o mesmo id
+//! que a tool `device_list` mostra — copie de lá quando estiver em dúvida.
+//! O casamento é por string exata e não há fallback: um id sem o prefixo
+//! (a forma antiga, pré-#1168) nunca casa, e a regra fica muda. O motor
+//! avisa em `WARN` na carga quando um `entity`/`device` vem sem prefixo.
+//!
+//! O prefixo é do id, não do domínio: nas condições, `domain` segue sendo
+//! o domínio nativo (`"sensor"`, `"light"`), sem o `ha:` — ver
+//! [`crate::automations::expr`].
 //!
 //! Validação no carregamento, fail-closed: nome único e com formato fixo,
 //! pelo menos um gatilho e uma ação, toda expressão de condição parses
@@ -34,7 +48,11 @@ use super::expr::Expr;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TriggerSpec {
     StateChanged {
-        /// O id do dispositivo no registry (para o HA, a `entity_id`).
+        /// O id do dispositivo no registry, namespaceado por transporte:
+        /// `<transporte>:<id nativo>`, com o prefixo do adapter que trouxe
+        /// o dispositivo (`mqtt:`, `ha:`, `gpio:`, `serial:`). Para o Home
+        /// Assistant, é a `entity_id` prefixada — `ha:sensor.garagem`.
+        /// Comparação por string exata: id sem prefixo nunca casa.
         entity: String,
     },
     Cron {
@@ -63,7 +81,9 @@ pub struct RateLimitSpec {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActionSpec {
     DeviceExecute {
-        /// O id do dispositivo no registry.
+        /// O id do dispositivo no registry, namespaceado por transporte —
+        /// a mesma forma de [`TriggerSpec::StateChanged::entity`]
+        /// (`ha:fan.garagem`, `gpio:pi-bancada`).
         device: String,
         /// O nome da `Capability` a executar.
         capability: String,

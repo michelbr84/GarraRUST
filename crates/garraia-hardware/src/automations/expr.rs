@@ -16,10 +16,18 @@
 //! {
 //!   "to":   { "state": "33.5", "attributes": { ... } },
 //!   "from": { "state": "31.0", "attributes": { ... } },
-//!   "entity_id": "sensor.garagem_temperatura",
+//!   "entity_id": "ha:sensor.garagem_temperatura",
 //!   "domain": "sensor"
 //! }
 //! ```
+//!
+//! `entity_id` é o id de registro, namespaceado por transporte (#1168:
+//! `mqtt:`, `ha:`, `gpio:`, `serial:`) — o mesmo id que `trigger.entity` e
+//! `device_list` usam. `domain` **não** carrega o prefixo: é derivado do id
+//! nativo, então `ha:light.sala` dá `"light"`, e uma condição
+//! `domain == "light"` continua valendo para qualquer transporte. Para
+//! discriminar por transporte, compare o `entity_id` (por exemplo
+//! `entity_id == "ha:light.sala"`).
 //!
 //! Valores de estado do hub chegam como string (`"33.5"`); comparar com um
 //! número coerciona quando a string parses (`to.state > 32`). Strings não

@@ -105,10 +105,15 @@ pub use automations::{
 pub use mock::MockDevice;
 
 #[cfg(feature = "mqtt")]
-pub use adapter_mqtt::{DeviceManifest, MqttAdapterConfig, MqttAdapterManager, MqttDevice};
+pub use adapter_mqtt::{
+    DeviceManifest, MqttAdapterConfig, MqttAdapterManager, MqttDevice,
+    PREFIXO_ID as PREFIXO_ID_MQTT,
+};
 
 #[cfg(feature = "home-assistant")]
-pub use adapter_homeassistant::{HaAdapterConfig, HaAdapterManager, HaDevice};
+pub use adapter_homeassistant::{
+    HaAdapterConfig, HaAdapterManager, HaDevice, PREFIXO_ID as PREFIXO_ID_HOME_ASSISTANT,
+};
 
 #[cfg(feature = "hardware-serial")]
 pub use adapter_serial::{
@@ -117,7 +122,7 @@ pub use adapter_serial::{
 };
 
 #[cfg(feature = "hardware-gpio")]
-pub use adapter_gpio::{GpioAdapterConfig, GpioDevice, PlanoPinos};
+pub use adapter_gpio::{GpioAdapterConfig, GpioDevice, PREFIXO_ID as PREFIXO_ID_GPIO, PlanoPinos};
 
 /// Resultado das operações de hardware.
 pub type Result<T> = std::result::Result<T, HardwareError>;

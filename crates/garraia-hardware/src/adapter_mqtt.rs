@@ -57,6 +57,28 @@ use tokio::sync::{Mutex, oneshot};
 /// Prefixo de tópico padrão — a convenção `garra/devices/...` da issue.
 pub const TOPIC_PREFIX_DEFAULT: &str = "garra";
 
+/// Prefixo do id de **registro** (não de tópico) de todo dispositivo MQTT —
+/// `mqtt:<id-do-manifesto>` (#1168).
+///
+/// `valida_segmento_topico` só recusa `/`, `+`, `#` e vazio: um id de
+/// dispositivo publicado por um cliente MQTT pode legitimamente conter `:`
+/// ou `.`, os mesmos separadores que outros adapters usam nas suas próprias
+/// convenções de id (`serial:<id>`, `<domínio>.<objeto>` do Home Assistant).
+/// Sem namespace, um dispositivo MQTT malicioso ou mal configurado que
+/// publique um manifesto com `id` igual ao de um dispositivo já adotado por
+/// outro transporte assumiria a identidade dele no [`crate::DeviceRegistry`]
+/// compartilhado — `register` (ao contrário do `register_if_absent` que o
+/// serial usa) substitui em silêncio. O prefixo garante que o espaço de ids
+/// do adapter MQTT nunca colide com o de nenhum outro transporte,
+/// independente do que o dispositivo anuncie como `id`.
+pub const PREFIXO_ID: &str = "mqtt:";
+
+/// O id de registro (chave no [`crate::DeviceRegistry`] e valor de
+/// [`crate::Device::id`]) a partir do id bruto do manifesto/tópico MQTT.
+fn id_de_registro(id_bruto: &str) -> String {
+    format!("{PREFIXO_ID}{id_bruto}")
+}
+
 /// Timeout padrão de leitura (correlação `get` → `state`).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -271,6 +293,13 @@ fn valida_segmento_topico(segmento: &str) -> Result<()> {
 /// interno) e publica `get`/`set`; a resposta do `get` chega pelo event loop
 /// do manager, que roteia pelo `request_id`.
 pub struct MqttDevice {
+    /// Id bruto do manifesto/tópico — o que viaja no wire MQTT
+    /// (`{prefixo}/devices/{id_bruto}/...`). **Nunca** o valor de
+    /// [`Device::id`].
+    id_bruto: String,
+    /// Id de registro namespaceado (`mqtt:<id_bruto>`, [`PREFIXO_ID`])
+    /// — o que [`Device::id`] devolve e o que o [`crate::DeviceRegistry`]
+    /// usa como chave (#1168).
     id: String,
     caps: Vec<Capability>,
     client: AsyncClient,
@@ -281,14 +310,16 @@ pub struct MqttDevice {
 
 impl MqttDevice {
     fn new(
-        id: String,
+        id_bruto: String,
         caps: Vec<Capability>,
         client: AsyncClient,
         prefixo: String,
         pendentes: Arc<Pendentes>,
         timeout: Duration,
     ) -> Self {
+        let id = id_de_registro(&id_bruto);
         Self {
+            id_bruto,
             id,
             caps,
             client,
@@ -331,7 +362,7 @@ impl Device for MqttDevice {
         let (tx, rx) = oneshot::channel();
         self.pendentes.lock().await.insert(rid.clone(), tx);
 
-        let topico = topico_get(&self.prefixo, &self.id, capability);
+        let topico = topico_get(&self.prefixo, &self.id_bruto, capability);
         let publicar = self
             .client
             .publish(
@@ -365,7 +396,7 @@ impl Device for MqttDevice {
         let cap = self.capability(capability)?;
         crate::schema::validar_args(&args, cap.args_schema.as_ref(), &self.id, capability)?;
         let rid = novo_request_id();
-        let topico = topico_set(&self.prefixo, &self.id, capability);
+        let topico = topico_set(&self.prefixo, &self.id_bruto, capability);
         self.client
             .publish(
                 &topico,
@@ -572,13 +603,17 @@ async fn registrar_dispositivo(
         pendentes,
         timeout,
     );
+    // O id de presença/log segue o mesmo namespace do `Device::id()`
+    // (`registry.register` já usa o valor namespaceado internamente) — quem
+    // olha o store ou o log vê o mesmo id que `device_list` mostra.
+    let id_pub = id_de_registro(id_topico);
     registry.register(Arc::new(device));
     if let Some(store) = state
-        && let Err(e) = store.marcar(id_topico, true).await
+        && let Err(e) = store.marcar(&id_pub, true).await
     {
-        tracing::warn!(dispositivo = %id_topico, error = %e, "mqtt: falha ao marcar presença");
+        tracing::warn!(dispositivo = %id_pub, error = %e, "mqtt: falha ao marcar presença");
     }
-    tracing::info!(dispositivo = %id_topico, "mqtt: dispositivo descoberto e registrado");
+    tracing::info!(dispositivo = %id_pub, "mqtt: dispositivo descoberto e registrado");
 }
 
 async fn aplicar_status(
@@ -596,10 +631,13 @@ async fn aplicar_status(
             return;
         }
     };
+    // Mesmo namespace do `Device::id()`/registry (#1168) — presença e
+    // barramento têm que falar do mesmo dispositivo que `device_list` vê.
+    let id_pub = id_de_registro(id);
     if let Some(store) = state
-        && let Err(e) = store.marcar(id, online).await
+        && let Err(e) = store.marcar(&id_pub, online).await
     {
-        tracing::warn!(dispositivo = %id, error = %e, "mqtt: falha ao marcar presença");
+        tracing::warn!(dispositivo = %id_pub, error = %e, "mqtt: falha ao marcar presença");
     }
     // #1128: o status é o state_changed do mundo MQTT (a convenção da
     // #1126 correlaciona leitura/escrita por request_id, sem report não
@@ -607,7 +645,7 @@ async fn aplicar_status(
     // automações casar `to.state == "offline"`.
     if let Some(bus) = bus {
         bus.publicar(HardwareEvent::StateChanged(StateChanged {
-            device_id: id.to_string(),
+            device_id: id_pub,
             novo: EstadoObservado::com(
                 Some(if online { "online" } else { "offline" }.into()),
                 serde_json::Value::Null,
@@ -801,6 +839,39 @@ mod tests {
             "capabilities": [{ "name": "x", "risk": "r1", "read_only": false }]
         });
         assert!(parse_manifesto(json.to_string().as_bytes()).is_err());
+    }
+
+    // ─── Namespace de id de registro (#1168) ───────────────────────────────
+
+    /// `valida_segmento_topico` aceita `:` e `.` em id de dispositivo — são
+    /// separadores válidos em tópico MQTT, mas são também a convenção de id
+    /// de outros adapters (`serial:<id>`, `<domínio>.<objeto>` do Home
+    /// Assistant). O manifesto sozinho não devia ser capaz de reivindicar
+    /// esses formatos — é o namespace do id de *registro* que fecha isso.
+    #[test]
+    fn manifesto_aceita_id_com_dois_pontos_e_ponto() {
+        for id in ["serial:arduino-1", "ha:light.sala", "light.sala"] {
+            let json = json!({
+                "id": id,
+                "capabilities": [{ "name": "x", "risk": "r1", "read_only": false }]
+            });
+            assert!(
+                parse_manifesto(json.to_string().as_bytes()).is_ok(),
+                "id '{id}' é um segmento de tópico válido"
+            );
+        }
+    }
+
+    /// O id de registro é sempre `mqtt:<id-do-manifesto>` — o próprio id
+    /// bruto nunca vira chave de registro sozinho.
+    #[test]
+    fn id_registro_namespaceia_com_prefixo_mqtt() {
+        assert_eq!(id_de_registro("sensor-1"), "mqtt:sensor-1");
+        // Mesmo um manifesto que tente imitar a convenção de outro adapter
+        // (`serial:`, `ha:`) sai namespaceado por baixo do `mqtt:` — nunca
+        // colide com a chave real daquele outro transporte (#1168).
+        assert_eq!(id_de_registro("serial:arduino-1"), "mqtt:serial:arduino-1");
+        assert_eq!(id_de_registro("ha:light.sala"), "mqtt:ha:light.sala");
     }
 
     // ─── Mini-validador ────────────────────────────────────────────────────
@@ -1100,11 +1171,11 @@ mod tests {
 
         // 1. Descoberta: o manifesto retained chega na assinatura.
         esperar(
-            || registry.get("sensor-1").is_some(),
+            || registry.get("mqtt:sensor-1").is_some(),
             "dispositivo registrado",
         )
         .await;
-        let dev = registry.get("sensor-1").expect("registrado");
+        let dev = registry.get("mqtt:sensor-1").expect("registrado");
         let caps = dev.capabilities();
         let nomes: Vec<&str> = caps.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
@@ -1114,7 +1185,13 @@ mod tests {
         );
 
         // Presença marcada online pela descoberta.
-        esperar_presenca(&state, "sensor-1", true, "presença online pela descoberta").await;
+        esperar_presenca(
+            &state,
+            "mqtt:sensor-1",
+            true,
+            "presença online pela descoberta",
+        )
+        .await;
 
         // 2. Leitura com correlação request_id.
         let valor = dev.read("temperature").await.expect("lê temperature");
@@ -1140,7 +1217,7 @@ mod tests {
             .await
             .expect("executa");
         assert_eq!(resultado["published"], json!(true));
-        assert_eq!(resultado["device"], json!("sensor-1"));
+        assert_eq!(resultado["device"], json!("mqtt:sensor-1"));
         esperar(
             || {
                 recebidos
@@ -1185,7 +1262,7 @@ mod tests {
             .expect("publica manifesto divergente");
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert!(
-            registry.get("ghost").is_none(),
+            registry.get("mqtt:ghost").is_none(),
             "id divergente não registra (fail-closed)"
         );
 
@@ -1199,7 +1276,13 @@ mod tests {
             )
             .await
             .expect("publica offline");
-        esperar_presenca(&state, "sensor-1", false, "presença offline pelo status").await;
+        esperar_presenca(
+            &state,
+            "mqtt:sensor-1",
+            false,
+            "presença offline pelo status",
+        )
+        .await;
 
         manager.encerrar().await;
     }
@@ -1247,18 +1330,97 @@ mod tests {
         )
         .expect("manager sobe");
         esperar(
-            || registry.get("sensor-2").is_some(),
+            || registry.get("mqtt:sensor-2").is_some(),
             "dispositivo registrado",
         )
         .await;
-        esperar_presenca(&state, "sensor-2", true, "presença online pela descoberta").await;
+        esperar_presenca(
+            &state,
+            "mqtt:sensor-2",
+            true,
+            "presença online pela descoberta",
+        )
+        .await;
 
         // Mata o dispositivo: a task do event loop é abortada, o socket fecha e
         // o broker publica a will.
         task_device.abort();
         let _ = task_device.await;
-        esperar_presenca(&state, "sensor-2", false, "presença offline após LWT").await;
+        esperar_presenca(&state, "mqtt:sensor-2", false, "presença offline após LWT").await;
 
         manager.encerrar().await;
+    }
+
+    /// #1168: um dispositivo MQTT que anuncia um id no formato usado por
+    /// outro adapter (`serial:<id>`, a mesma convenção que a #1167 deu ao
+    /// adapter serial) nunca herda a identidade de registro daquele
+    /// adapter — o registro do MQTT sai sempre debaixo do namespace
+    /// `mqtt:`, e quem já ocupava `serial:arduino-1` continua intacto.
+    #[tokio::test]
+    async fn manifesto_nao_sequestra_id_de_outro_adapter() {
+        use crate::mock::MockDevice;
+
+        let porta = porta_livre();
+        subir_broker(porta);
+        esperar_broker(porta).await;
+
+        let registry = Arc::new(DeviceRegistry::new());
+        // Simula um dispositivo já adotado por outro transporte (ex.: o
+        // adapter serial namespaceando `arduino-1` como `serial:arduino-1`).
+        let legitimo = Arc::new(MockDevice::new(
+            "serial:arduino-1",
+            vec![Capability::leitura("uptime", None)],
+        ));
+        assert!(
+            registry.register_if_absent(legitimo),
+            "id livre no boot do teste"
+        );
+
+        // O "impostor": um cliente MQTT publica um manifesto retained com o
+        // mesmo id textual do dispositivo serial já adotado.
+        let (device_client, mut device_ev) = client_device(porta, "impostor");
+        let manutencao = tokio::spawn(async move { while device_ev.poll().await.is_ok() {} });
+        device_client
+            .publish(
+                topico_manifesto(P, "serial:arduino-1"),
+                QoS::AtLeastOnce,
+                true,
+                json!({
+                    "id": "serial:arduino-1",
+                    "capabilities": [{ "name": "digital_write", "risk": "r1", "read_only": false }]
+                })
+                .to_string(),
+            )
+            .await
+            .expect("publica manifesto impostor");
+
+        let manager =
+            MqttAdapterManager::spawn(config_manager(porta), registry.clone(), None, None)
+                .expect("manager sobe");
+
+        // O adapter MQTT registra o impostor sob o próprio namespace...
+        esperar(
+            || registry.get("mqtt:serial:arduino-1").is_some(),
+            "impostor MQTT registrado sob mqtt:",
+        )
+        .await;
+
+        // ...e a identidade original nunca foi tocada: `register` do MQTT
+        // nunca escreve na chave crua `serial:arduino-1` — só na
+        // namespaceada. Mesma capability de antes prova que não foi
+        // substituído.
+        let ainda_legitimo = registry
+            .get("serial:arduino-1")
+            .expect("dispositivo serial original continua registrado");
+        let caps = ainda_legitimo.capabilities();
+        let nomes: Vec<&str> = caps.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            nomes,
+            vec!["uptime"],
+            "o impostor MQTT não deveria ter sobrescrito o dispositivo serial"
+        );
+
+        manager.encerrar().await;
+        manutencao.abort();
     }
 }

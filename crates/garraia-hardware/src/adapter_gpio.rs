@@ -25,6 +25,16 @@
 //! (I²C do relógio, SPI de um display, a fonte de um relé). A lista é o
 //! contrato; [`PlanoPinos`] é quem o cobra, e é puro — testável sem hardware.
 //!
+//! # O id de registro é namespaceado
+//!
+//! A chave no [`crate::DeviceRegistry`] é `gpio:<id da config>`
+//! ([`PREFIXO_ID`]), nunca o id cru — a mesma disciplina do `serial:` da
+//! #1130 e do `mqtt:`/`ha:` da #1168. O registry é compartilhado pelos
+//! quatro transportes, e sem prefixo um id GPIO (que aceita `.`) podia
+//! coincidir com o `entity_id` de um dispositivo do Home Assistant e
+//! substituí-lo em silêncio. [`GpioAdapterConfig::nova`] proíbe `:` no id
+//! declarado, o que impede escapar do prefixo por dentro.
+//!
 //! # Testes: o que dá e o que não dá para automatizar
 //!
 //! Este módulo **não tem teste de integração com GPIO real**, e isso é
@@ -81,6 +91,26 @@ pub const PWM_FREQ_MIN: f64 = 1.0;
 /// Teto do PWM por software do rppal — acima disso o jitter de escalonamento
 /// do Linux domina e o sinal deixa de ser o que foi pedido.
 pub const PWM_FREQ_MAX: f64 = 8000.0;
+
+/// Prefixo do namespace deste transporte no registry (#1168).
+///
+/// A chave de registro é `gpio:<id da config>`. O `:` é o que fecha o
+/// namespace: [`GpioAdapterConfig::nova`] não aceita `:` no id, então nem um
+/// operador distraído nem um arquivo de config gerado consegue escrever
+/// `mqtt:`/`ha:`/`serial:` dentro do próprio id para escapar dele — o id
+/// declarado sai sempre debaixo de `gpio:`.
+///
+/// Sem o prefixo, o id da config (que aceita `.`) podia coincidir com o
+/// `entity_id` nativo de um dispositivo do Home Assistant (`light.sala`) e
+/// [`DeviceRegistry::register`] substituiria o ocupante em silêncio. Com os
+/// quatro adapters namespaceados, a colisão entre transportes deixa de ser
+/// uma coincidência a evitar e vira estruturalmente impossível.
+pub const PREFIXO_ID: &str = "gpio:";
+
+/// A chave de registry do dispositivo, a partir do id declarado na config.
+fn id_de_registro(declarado: &str) -> String {
+    format!("{PREFIXO_ID}{declarado}")
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Plano de pinos — puro, testável sem Pi.
@@ -229,6 +259,10 @@ impl GpioAdapterConfig {
 /// nenhuma delas cruza um `.await` — segurar o lock por esse tempo é mais
 /// barato que a alternativa assíncrona, e `spawn_blocking` seria custo puro.
 pub struct GpioDevice {
+    /// A chave do registry e o valor de [`Device::id`]: `gpio:<id da
+    /// config>` (ver [`PREFIXO_ID`]). O id declarado sem o prefixo vive na
+    /// [`GpioAdapterConfig`] do operador — aqui ele nunca aparece cru,
+    /// porque não há protocolo de fio que precise dele (#1168).
     id: String,
     caps: Vec<Capability>,
     plano: PlanoPinos,
@@ -271,7 +305,7 @@ impl GpioDevice {
         }
 
         Ok(Self {
-            id: config.id.clone(),
+            id: id_de_registro(&config.id),
             caps: config.plano.capabilities(),
             plano: config.plano.clone(),
             pwm_freq_hz: config.pwm_freq_hz,
@@ -409,21 +443,25 @@ pub async fn registrar(
     bus: Option<Arc<HardwareEventBus>>,
 ) -> Result<Arc<GpioDevice>> {
     let device = Arc::new(GpioDevice::novo(config)?);
+    // Presença, barramento e log falam o mesmo id namespaceado que o
+    // `Device::id()` e o registry usam (#1168) — quem lê o store, casa uma
+    // automação ou lê o log vê exatamente o id que `device_list` mostra.
+    let id_pub = id_de_registro(&config.id);
     registry.register(device.clone());
     if let Some(store) = state
-        && let Err(e) = store.marcar(&config.id, true).await
+        && let Err(e) = store.marcar(&id_pub, true).await
     {
-        tracing::warn!(dispositivo = %config.id, error = %e, "gpio: falha ao marcar presença");
+        tracing::warn!(dispositivo = %id_pub, error = %e, "gpio: falha ao marcar presença");
     }
     if let Some(bus) = bus {
         bus.publicar(HardwareEvent::StateChanged(StateChanged::agora(
-            config.id.clone(),
+            id_pub.clone(),
             EstadoObservado::com(Some("online".into()), Value::Null, true),
             None,
         )));
     }
     tracing::info!(
-        dispositivo = %config.id,
+        dispositivo = %id_pub,
         entradas = ?config.plano.entradas(),
         saidas = ?config.plano.saidas(),
         "gpio: dispositivo registrado"
@@ -542,6 +580,85 @@ mod tests {
         );
     }
 
+    // ─── Namespace de id de registro (#1168) ───────────────────────────────
+
+    /// A chave do registry é sempre `gpio:<id da config>` — o id declarado
+    /// nunca vira chave sozinho.
+    #[test]
+    fn id_de_registro_e_namespaceado() {
+        assert_eq!(id_de_registro("pi-bancada"), "gpio:pi-bancada");
+        assert!(id_de_registro("pi-bancada").starts_with(PREFIXO_ID));
+    }
+
+    /// O `:` é o que fecha o namespace: sem ele no id declarado, uma config
+    /// não consegue escrever o prefixo de outro transporte dentro do próprio
+    /// id para escapar do `gpio:`.
+    #[test]
+    fn config_recusa_id_com_dois_pontos() {
+        for id in ["serial:arduino-1", "mqtt:sensor-1", "ha:light.sala"] {
+            let err = GpioAdapterConfig::nova(id, vec![17], vec![13])
+                .expect_err("':' não é aceito no id declarado");
+            assert!(
+                err.to_string().contains("inválido"),
+                "id '{id}' devia ser recusado: {err}"
+            );
+        }
+    }
+
+    /// #1168, o gêmeo GPIO do `manifesto_nao_sequestra_id_de_outro_adapter`
+    /// do MQTT: uma config GPIO cujo id coincide textualmente com o id nativo
+    /// de um dispositivo já adotado por outro transporte nunca alcança a
+    /// chave dele — o registro do GPIO sai sempre debaixo de `gpio:`.
+    ///
+    /// Não dá para construir um [`GpioDevice`] fora de um Raspberry Pi (o
+    /// `Gpio::new()` falha no CI x86), então o que se exerce aqui é a única
+    /// coisa que decide o sequestro: a chave que o adapter usaria. Um mock
+    /// ocupa essa chave no lugar do device real.
+    #[cfg(feature = "mock-device")]
+    #[test]
+    fn gpio_nao_sequestra_id_de_outro_adapter() {
+        use crate::capability::Capability;
+        use crate::mock::MockDevice;
+
+        let reg = DeviceRegistry::new();
+
+        // `light.sala` é um `entity_id` nativo de Home Assistant e é também
+        // um id GPIO válido (a config aceita '.') — o par que colidiria sem
+        // namespace. Aqui o HA já está adotado, sob a chave dele.
+        let ha = Arc::new(MockDevice::new(
+            "ha:light.sala",
+            vec![Capability::leitura("state", None)],
+        ));
+        assert!(reg.register_if_absent(ha), "id livre no boot do teste");
+
+        // O adapter GPIO registraria `light.sala` como `gpio:light.sala`.
+        let chave_gpio = id_de_registro("light.sala");
+        assert_eq!(chave_gpio, "gpio:light.sala");
+        assert!(
+            reg.get(&chave_gpio).is_none(),
+            "a chave do GPIO não pode ser a mesma do HA"
+        );
+        let gpio = Arc::new(MockDevice::new(
+            &chave_gpio,
+            vec![Capability::leitura(perifericos::DIGITAL_READ, None)],
+        ));
+        assert!(
+            reg.register_if_absent(gpio),
+            "o GPIO registra na própria chave, sem disputar a do HA"
+        );
+
+        // O dispositivo do HA continua exatamente como estava.
+        let ainda_ha = reg.get("ha:light.sala").expect("HA continua registrado");
+        let caps = ainda_ha.capabilities();
+        let nomes: Vec<&str> = caps.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            nomes,
+            vec!["state"],
+            "o GPIO não deveria ter sobrescrito o dispositivo do HA"
+        );
+        assert_eq!(reg.len(), 2, "dois dispositivos distintos, duas chaves");
+    }
+
     // ─── Host sem Pi ───────────────────────────────────────────────────────
 
     /// O caminho que o CI x86 percorre de verdade: `Gpio::new()` falha e o
@@ -556,10 +673,15 @@ mod tests {
         let registry = Arc::new(DeviceRegistry::new());
         match registrar(&cfg, registry.clone(), None, None).await {
             Ok(_) => {
-                // Rodando num Pi: o dispositivo tem que estar no registry.
+                // Rodando num Pi: o dispositivo tem que estar no registry,
+                // sob a chave namespaceada (#1168).
                 assert!(
-                    registry.get("pi-teste").is_some(),
+                    registry.get("gpio:pi-teste").is_some(),
                     "registro bem-sucedido precisa aparecer na descoberta"
+                );
+                assert!(
+                    registry.get("pi-teste").is_none(),
+                    "o id cru nunca é chave de registro"
                 );
             }
             Err(e) => {
