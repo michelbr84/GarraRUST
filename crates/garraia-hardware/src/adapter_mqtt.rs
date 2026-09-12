@@ -806,20 +806,28 @@ mod tests {
             "required": ["on"]
         });
         // obrigatório ausente
-        let err = crate::schema::validar_args(&json!({}), Some(&schema), "dev", "power").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!({}), Some(&schema), "dev", "power")
+            .expect_err("recusa");
         assert!(err.to_string().contains("obrigatório"), "{err}");
         // tipo errado
-        let err = crate::schema::validar_args(&json!({ "on": "sim" }), Some(&schema), "dev", "power")
-            .expect_err("recusa");
+        let err =
+            crate::schema::validar_args(&json!({ "on": "sim" }), Some(&schema), "dev", "power")
+                .expect_err("recusa");
         assert!(err.to_string().contains("boolean"), "{err}");
         // 50.5 não é integer
         let schema_int =
             json!({ "type": "object", "properties": { "percent": { "type": "integer" } } });
-        let err = crate::schema::validar_args(&json!({ "percent": 50.5 }), Some(&schema_int), "dev", "cap")
-            .expect_err("recusa");
+        let err = crate::schema::validar_args(
+            &json!({ "percent": 50.5 }),
+            Some(&schema_int),
+            "dev",
+            "cap",
+        )
+        .expect_err("recusa");
         assert!(err.to_string().contains("integer"), "{err}");
         // args não-objeto
-        let err = crate::schema::validar_args(&json!(true), Some(&schema), "dev", "power").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!(true), Some(&schema), "dev", "power")
+            .expect_err("recusa");
         assert!(err.to_string().contains("objeto"), "{err}");
     }
 
@@ -827,7 +835,8 @@ mod tests {
     fn validar_args_sem_schema_recusa_argumentos() {
         assert!(crate::schema::validar_args(&json!({}), None, "dev", "power").is_ok());
         assert!(crate::schema::validar_args(&json!(null), None, "dev", "power").is_ok());
-        let err = crate::schema::validar_args(&json!({ "x": 1 }), None, "dev", "power").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!({ "x": 1 }), None, "dev", "power")
+            .expect_err("recusa");
         assert!(err.to_string().contains("não declara argumentos"), "{err}");
     }
 
@@ -844,7 +853,8 @@ mod tests {
             .expect_err("recusa");
         assert!(err.to_string().contains("não declara o tipo"), "{err}");
         // schema de nível de topo não-objeto
-        let err = crate::schema::validar_args(&json!({}), Some(&json!([])), "dev", "cap").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!({}), Some(&json!([])), "dev", "cap")
+            .expect_err("recusa");
         assert!(err.to_string().contains("objeto JSON"), "{err}");
     }
 

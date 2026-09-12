@@ -1619,7 +1619,10 @@ fn valida_home_assistant(
         push_err(
             findings,
             "hardware.home_assistant.url",
-            format!("hardware.home_assistant.url ({:?}) is not a valid URL", ha.url),
+            format!(
+                "hardware.home_assistant.url ({:?}) is not a valid URL",
+                ha.url
+            ),
         );
         return;
     };
@@ -2583,8 +2586,9 @@ mod tests {
         };
         let findings = validate(&cfg);
         assert!(
-            findings.iter().any(|f| f.severity == Severity::Error
-                && f.field == "hardware.home_assistant.url"),
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "hardware.home_assistant.url"),
             "expected error on non-http scheme: {findings:?}"
         );
     }
@@ -2604,8 +2608,9 @@ mod tests {
         };
         let findings = validate(&cfg);
         assert!(
-            findings.iter().any(|f| f.severity == Severity::Error
-                && f.field == "hardware.home_assistant.url"),
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "hardware.home_assistant.url"),
             "expected error on url sem esquema: {findings:?}"
         );
     }
@@ -2625,8 +2630,10 @@ mod tests {
         };
         let findings = validate(&cfg);
         assert!(
-            findings.iter().any(|f| f.severity == Severity::Error
-                && f.field == "hardware.home_assistant.token_env"),
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error
+                    && f.field == "hardware.home_assistant.token_env"),
             "expected error on token_env vazia: {findings:?}"
         );
     }
