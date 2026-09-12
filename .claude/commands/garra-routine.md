@@ -1,5 +1,5 @@
 ---
-description: Roadmap-driven autonomous slice. Reads ROADMAP+Linear, picks the next step, plans it, implements via PR + CI, merges to main when green, updates tracking. Designed to be invoked manually or via cron at xH:15 every 2 hours (Florida local time).
+description: Roadmap-driven autonomous slice. Reads ROADMAP+GitHub issues, picks the next step, plans it, implements via PR + CI, merges to main when green, updates tracking. Designed to be invoked manually or via cron at xH:15 every 2 hours (Florida local time).
 ---
 
 # `/garra-routine` — autonomous next-slice routine
@@ -13,7 +13,7 @@ Each invocation runs the full workflow below from scratch — there is no persis
 - Read `ROADMAP.md` (especially §1.5 latest snapshot, §3.4 chats checklist, §7 "Próximos passos imediatos").
 - `git fetch origin main && git checkout main && git pull --ff-only`.
 - `git log --oneline -20` and `git status`.
-- Query Linear via MCP `mcp__cd3f2209-...__list_issues` (team GAR, project "Fase 3 — Group Workspace", state In Progress + recent Done).
+- Check open issues in this repo via `gh issue list --state open --limit 50 --json number,title,labels` (o Linear foi descontinuado em 2026-08-18; o tracking vive no tracker interno — issues do GitHub e, para trabalho privado, o repo interno GarraIA/GarraIA).
 - Verify open PRs via `mcp__github__list_pull_requests` (state=open). If any open PR is waiting on CI or merge, **complete that first** before opening a new one.
 
 ### 2. Decide next step
@@ -41,8 +41,8 @@ If everything tracked is Done or blocked, fall back to the smallest CI/docs clea
 ### 3. Create the plan
 
 - Write `plans/00NN-...md` with the same shape as plan 0054 (Goal, Architecture, Tech stack, Design invariants, Validações pré-plano, Out of scope, Rollback, §12 Open questions, File Structure, M1 tasks with checkboxes, Risk register, Acceptance criteria, Cross-references, Estimativa).
-- File a Linear child issue under the right epic via MCP `mcp__cd3f2209-...__save_issue` (team GAR, labels per the epic: `epic:ws-chat`/`epic:ws-api`/`epic:test-cov`/etc.). Capture the GAR-NNN id and amend the plan + `plans/README.md` row.
-- **Search Linear first** to avoid duplicates: `list_issues` with a representative query; only create if no candidate matches.
+- File an issue in this repo via `gh issue create` (labels per the epic). Capture the issue number and amend the plan + `plans/README.md` row.
+- **Search the tracker first** to avoid duplicates: `gh issue list --search "<query>"` ; only create if no candidate matches.
 - Commit `docs(plans): add plan 00NN for GAR-NNN ...` on a new branch named `routine/<UTC-yyyymmddhhmm>-<slug>` off the current `main` HEAD.
 
 ### 4. Implement task-by-task
@@ -76,7 +76,7 @@ Follow plan 0054's TDD pattern: tests first → red → impl → green → clipp
 ### 6. Merge + bookkeeping
 
 - Squash-merge via `mcp__github__merge_pull_request` with `merge_method=squash`. Commit title = PR title with `(#PR)` suffix. Body = condensed summary referencing GAR-NNN.
-- Mark Linear issue Done via `mcp__cd3f2209-...__save_issue` with `state=Done`.
+- Close the corresponding issue via `gh issue close <n> --comment "<PR # e sha do merge>"` (só depois do merge, com evidência).
 - If the merged commit didn't already update `ROADMAP.md` and `plans/README.md` (T8 of the plan), open a small doc-only PR flipping the relevant `[ ]` → `[x]` and adding the merged commit sha + PR number to the plan row. CI on docs-only is fast.
 
 ### 7. Stop
@@ -93,7 +93,7 @@ End the iteration with a one-paragraph summary: branch name, PR number, GAR-NNN,
 - Never include automated AI signature in commits beyond the existing `https://claude.ai/code/session_...` line.
 - Never amend or force-push merged commits.
 - Never run `rm -rf` or destructive git ops outside the working tree.
-- Never spam Linear with duplicate issues — search existing issues by `query` first; if a candidate matches, update it instead of creating a new one.
+- Never spam the tracker with duplicate issues — search existing issues first; if a candidate matches, update it instead of creating a new one.
 - If the routine cannot pick a productive next step (everything Done or blocked), file a single status note in the team's tracker (or create one once if absent) and exit cleanly without opening a PR.
 
 ## Local sandbox notes
@@ -105,4 +105,4 @@ End the iteration with a one-paragraph summary: branch name, PR number, GAR-NNN,
 
 - **Manually:** type `/garra-routine` in any Claude Code session.
 - **Cron:** wire to `scripts/run-garra-routine.sh` from system cron at `15 */2 * * *` (Florida local). The wrapper calls `claude --print '/garra-routine'` headlessly.
-- **GitHub Actions reminder:** the workflow `.github/workflows/garra-routine-trigger.yml` opens a tracking issue every 2h at xH:15 UTC; the issue body links back here.
+- **GitHub Actions trigger:** the workflow `.github/workflows/garra-routine-trigger.yml` **está desativado no GitHub** (`gh workflow disable`, reversível — ver TODO.md 2026-08-18); o arquivo ainda tem o `schedule`, mas não dispara.
