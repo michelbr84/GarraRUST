@@ -1,7 +1,7 @@
 //! GAR-583 — MCP server exposing `garra ask` as a stdio tool.
 //!
 //! Implements the `Model Context Protocol` (MCP) `ServerHandler` trait
-//! from `rmcp 2.2` and exposes `garra_ask` — LLM-only — which calls
+//! from `rmcp 3.x` and exposes `garra_ask` — LLM-only — which calls
 //! [`crate::ask::ask_oneshot`] **in-process** (no subprocess spawn, no
 //! shell). Designed for Claude Desktop, Claude Code, and any MCP host
 //! that speaks stdio JSON-RPC.
@@ -29,8 +29,8 @@ use anyhow::Result;
 use garraia_config::AppConfig;
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -433,7 +433,7 @@ impl GarraToolHandler {
     async fn call_agent_tool(
         &self,
         request: CallToolRequestParams,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         let raw = request.arguments.unwrap_or_default();
         let args: crate::mcp_agent::GarraAgentArgs = serde_json::from_value(JsonValue::Object(raw))
             .map_err(|e| McpError::invalid_params(format!("invalid arguments: {e}"), None))?;
@@ -449,9 +449,9 @@ impl GarraToolHandler {
                 });
                 let content = vec![ContentBlock::text(text)];
                 if is_ok {
-                    Ok(CallToolResult::success(content))
+                    Ok(CallToolResult::success(content).into())
                 } else {
-                    Ok(CallToolResult::error(content))
+                    Ok(CallToolResult::error(content).into())
                 }
             }
             Err(e) => Err(McpError::invalid_params(e, None)),
@@ -481,18 +481,22 @@ impl ServerHandler for GarraToolHandler {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult {
-            tools: advertised_tools(&self.policy),
-            next_cursor: None,
-            meta: None,
-        })
+        // rmcp 3.x: `ListToolsResult` ganhou os campos SEP-2322 (`result_type`) e
+        // SEP-2549 (`ttl_ms`/`cache_scope`); o construtor `with_all_items`
+        // preenche o padrão da spec (`result_type = COMPLETE`, resto `None`).
+        Ok(ListToolsResult::with_all_items(advertised_tools(
+            &self.policy,
+        )))
     }
 
+    // rmcp 3.x: o retorno passou a ser o enum MRTR-aware `CallToolResponse`;
+    // este handler só produz respostas finais (`Complete`, via
+    // `From<CallToolResult>` — nunca `InputRequired`/`Task`).
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         // `garra_agent` dispatches only behind the operator opt-in; with
         // the flag off it falls through to the unknown-tool branch so the
         // rejection surface is byte-identical to the pre-agent server.
@@ -559,9 +563,9 @@ impl ServerHandler for GarraToolHandler {
         // success`/`error` recebem como `Vec<ContentBlock>`.
         let content = vec![ContentBlock::text(text)];
         if outcome.is_ok() {
-            Ok(CallToolResult::success(content))
+            Ok(CallToolResult::success(content).into())
         } else {
-            Ok(CallToolResult::error(content))
+            Ok(CallToolResult::error(content).into())
         }
     }
 }
@@ -936,7 +940,9 @@ mod tests {
         assert!(caps.completions.is_none(), "completions must stay off");
         assert!(caps.prompts.is_none(), "prompts must stay off");
         assert!(caps.resources.is_none(), "resources must stay off");
-        assert!(caps.tasks.is_none(), "tasks must stay off");
+        // rmcp 3.x: `tasks` (SEP-2663) saiu do struct `ServerCapabilities` e
+        // virou uma extensão (SEP-1724) em `extensions` — o assert acima de
+        // `extensions.is_none()` já garante "tasks must stay off".
     }
 
     /// GAR-583 §4 invariant #2 — production code MUST NOT register

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
-use rmcp::model::{CallToolRequestParams, ContentBlock};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, ContentBlock};
 use serde_json::Value;
 use tracing::info;
 
@@ -121,8 +121,15 @@ impl Tool for McpTool {
                 ))
             })?;
 
-        // Executa com timeout
-        let resultado = tokio::time::timeout(self.timeout, peer.call_tool(params))
+        // Executa com timeout.
+        //
+        // rmcp 3.x: `Peer::call_tool_once` manda UM `tools/call` e devolve o
+        // enum MRTR-aware `CallToolResponse`. Os braços `InputRequired`
+        // (SEP-2322: o servidor pede input do usuário antes de completar) e
+        // `Task` (SEP-2663: o servidor materializou uma task e quer polling
+        // em `tasks/get`) são fail-closed — este bridge não dirige rounds
+        // interativos nem ciclos de task; o LLM vê o motivo e decide.
+        let resultado = tokio::time::timeout(self.timeout, peer.call_tool_once(params))
             .await
             .map_err(|_| {
                 Error::Mcp(format!(
@@ -136,6 +143,33 @@ impl Tool for McpTool {
                     self.nome_original, self.nome_servidor
                 ))
             })?;
+
+        let resultado = match resultado {
+            CallToolResponse::Complete(resultado) => resultado,
+            CallToolResponse::InputRequired(_) => {
+                return Err(Error::Mcp(format!(
+                    "servidor MCP '{}' pediu input do usuário (SEP-2322 input_required) para '{}'; \
+                     este runtime não conduz rodadas interativas — chame a ferramenta com \
+                     argumentos completos ou negocie fora do MCP",
+                    self.nome_servidor, self.nome_original
+                )));
+            }
+            CallToolResponse::Task(_) => {
+                return Err(Error::Mcp(format!(
+                    "servidor MCP '{}' materializou a chamada como task (SEP-2663) para '{}'; \
+                     polling de tasks/get não é suportado neste runtime",
+                    self.nome_servidor, self.nome_original
+                )));
+            }
+            // `CallToolResponse` é `#[non_exhaustive]` (o mesmo contrato do
+            // `ContentBlock`): variantes novas da spec caem aqui, fail-closed.
+            _ => {
+                return Err(Error::Mcp(format!(
+                    "resposta desconhecida do servidor MCP '{}' para '{}'; fail-closed",
+                    self.nome_servidor, self.nome_original
+                )));
+            }
+        };
 
         // Converte conteúdos retornados pelo MCP em texto único.
         //
