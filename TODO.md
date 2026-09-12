@@ -5,12 +5,41 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-09 (America/New_York)
+**Atualizado:** 2026-09-11 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-11 — varredura autopilot: DNS órfãos, CodeQL e higiene
+
+- **#1099 (bug) fechada**: 5 CNAMEs da zona `garraia.org` (`chatterbox`, `api`,
+  `llm`, `n8n`, `video`) apontavam para o Cloudflare Tunnel **deletado**
+  `ccda170d-…` → HTTP 530 eterno (deleção de túnel não cascata no DNS).
+  Removidos via API Cloudflare com decisão do dono. Restam na zona, para
+  decisão futura: `api-dev`/`cloud-api`/`dev-api`/`gw-dev` (túneis também
+  deletados) e `api-cloud`/`cloud` (túnel `garra-dev` down — pode ser máquina
+  local que liga às vezes). `docs/voice.md` (PR #1115) já declara voz como
+  serviço local; `RuntimeMode.cloud` do mobile falha agora com DNS error
+  (mais rápido que 530) e continua overridável via `--dart-define`.
+- **#1142 (CI/CodeQL) fechada**: PR #1154 corrigiu os sentinelas `all`; run
+  34652716700 provou 160 alertas em todos os estados com **0 em
+  `admin/recovery.rs`** — os 3 FPs nunca materializaram, nada a dispensar no
+  ledger; #1136 já mergeado.
+- **Skill `/max-power`** (trabalho de sessão anterior esquecido no working
+  tree) entrou via PR próprio.
+- **Higiene do TODO (itens antigos fechados)**:
+  - bloco `KNOWN_PRE_PS1_TAG="v0.3.3"` + argumento extra do probe
+    `release-cdn/install.ps1` removidos do `install-endpoints.yml` (o próprio
+    workflow pedia após release ≥ v0.3.4; estamos na v0.4.1);
+  - `.claude/commands/garra-routine.md` migrado de Linear (descontinuado
+    2026-08-18) para o tracker interno (issues GitHub) e nota do trigger
+    desativado;
+  - `docs/deployment/config.turboquant.yml` criado — o
+    `docker-compose.turboquant.yml` montava um config que não existia;
+  - comentário "16 binários" do `ci.yml:528` verificado: correto hoje (16
+    binários em `crates/garraia-auth/tests/`).
 
 ## Lancada 2026-09-09 — v0.4.1: canais e seguranca
 
@@ -823,8 +852,7 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
     (`crates/garraia-cli/Cargo.toml`) — adicionar `tls = ["garraia-gateway/tls"]`
     como já existe para `mcp-http`; até lá o README documenta
     `--features garraia-gateway/tls`.
-  - `docker-compose.turboquant.yml` monta `docs/deployment/config.turboquant.yml`,
-    que não existe no repo.
+  - `docker-compose.turboquant.yml` monta `docs/deployment/config.turboquant.yml` — **resolvido 2026-09-11**: config criado (provider `llamacpp` keyless apontando para o serviço `llama-turboquant:8080`).
   - `benches/agent-framework-comparison/results/2026-08-28-vm/README.md:12`
     cita checkout `ea06286` enquanto `environment.txt:44` registra `f34cbfa`.
   - Comentário "16 binários" em `ci.yml:437` (são 15 arquivos em
@@ -870,9 +898,9 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
 3. Re-triage do RUSTSEC-2026-0253 (`lru` via aws-sdk-s3) até 2026-11-14 —
    o ignore em `deny.toml`/`.cargo/audit.toml` expira em 2026-11-15 e ainda
    cita o owner antigo (`#812 / GAR-896`; hoje tracker interno #162).
-4. Limpar o bloco `KNOWN_PRE_PS1_TAG` do `install-endpoints.yml` (ver
-   Pendências) e ajustar `.claude/commands/garra-routine.md` para o tracker
-   interno.
+4. ~~Limpar o bloco `KNOWN_PRE_PS1_TAG` do `install-endpoints.yml` e ajustar
+   `.claude/commands/garra-routine.md` para o tracker interno~~ — **feito
+   2026-09-11** (ver bloco de conclusão no topo).
 5. Desktop (ROADMAP §4.1): chave de assinatura + `latest.json` para o
    `tauri-plugin-updater`; DMG notarizado; AppImage aarch64
    (`--runtime-file` + segundo pin de runtime).

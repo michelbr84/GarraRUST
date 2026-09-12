@@ -1,0 +1,31 @@
+# Configuração do GarraIA para implantação local com Docker e TurboQuant+
+# Conecta-se ao serviço 'llama-turboquant' do docker-compose.turboquant.yml,
+# que serve o fork TurboQuant+ do llama.cpp com compressão de KV cache.
+#
+# Montado read-only pelo compose em /home/garraia/.config/garraia/config.yml.
+
+gateway:
+  # Vincula a todas as interfaces dentro do container
+  host: "0.0.0.0"
+  port: 3888
+
+llm:
+  # Serviço local do llama.cpp TurboQuant+ (keyless)
+  llamacpp-turboquant:
+    provider: llamacpp
+    # Ajuste o modelo conforme necessário (deve existir em ./models/ e
+    # TURBOQUANT_MODEL no .env aponta para ele, ex.: "models/Qwen3-8B-Q4_K_M.gguf")
+    model: models/model.gguf
+    # Aponta para o serviço 'llama-turboquant' definido no docker-compose.turboquant.yml
+    base_url: "http://llama-turboquant:8080"
+
+agent:
+  system_prompt: "Você é o GarraIA, um assistente de inteligência artificial executando localmente através do llama.cpp TurboQuant+."
+  default_provider: llamacpp-turboquant
+
+# Habilite os canais conforme necessário
+channels:
+  telegram:
+    type: telegram
+    enabled: false
+    # bot_token é resolvido automaticamente a partir da variável de ambiente TELEGRAM_BOT_TOKEN
