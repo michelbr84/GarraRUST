@@ -167,7 +167,10 @@ Todos conferidos contra o código em 2026-09-07:
   `memory_cmd.rs` cruzou 1500 no #1017, desta sessão.
 - **`garra about`** escreve ANSI incondicional em saída redirecionada.
 - **O `session_id` logado é controlado pelo cliente** e pode conter PII.
-- **`openclaw_bridge.rs`** segue no disco (`garraia-agents/src/tools/`).
+- ~~**`openclaw_bridge.rs`** segue no disco (`garraia-agents/src/tools/`)~~ —
+  removido: nunca registrado no `tools/mod.rs` nem referenciado (morte desde
+  2026-04-06); recuperável do histórico se tool-sharing do OpenClaw entrar no
+  roadmap.
 
 ## Concluído 2026-09-04/05 — segundo lote de campo (#920-#925), 4 PRs
 
