@@ -52,6 +52,17 @@ pub enum HardwareError {
     #[error("erro de automações: {0}")]
     Automations(String),
 
+    /// Erro do transporte serial/USB no manager (#1130) — caminho de porta
+    /// recusado, handshake sem resposta, manifesto inválido, linha acima do
+    /// teto.
+    #[error("erro serial: {0}")]
+    Serial(String),
+
+    /// Erro do adapter GPIO (#1130) — host que não é Raspberry Pi, falta de
+    /// permissão em `/dev/gpiomem`, plano de pinos inválido.
+    #[error("erro de GPIO: {0}")]
+    Gpio(String),
+
     /// Erro do SQLite (o store de presença).
     #[error("erro de SQLite no estado de hardware: {0}")]
     Sqlite(#[from] rusqlite::Error),
