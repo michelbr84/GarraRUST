@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Hardware — trait Device, Capability com risco R0-R5, registry e gate. ADR 0020."
+# `examples/firmware/` guarda o sketch de referência do protocolo JSONL
+# (#1130) — é código Arduino/C++, não um alvo Cargo. Sem este flag o Cargo
+# tenta autodescobrir o diretório como exemplo e falha por não achar
+# `main.rs`.
+autoexamples = false
 
 [features]
 # MockDevice in-memory para testes e fixtures, mesmo padrão do
@@ -23,6 +28,17 @@ home-assistant = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures", "dep:ur
 # engine sobre o barramento de eventos. OFF por default — quem não usa
 # automação não paga croner/chrono/toml.
 automations = ["dep:croner", "dep:chrono", "dep:toml"]
+# Adapter Serial/USB (#1130, tokio-serial sobre serialport): OFF por default,
+# mesmo padrão dos adapters acima. O nome vem com o prefixo `hardware-`
+# porque é assim que a issue #1130 o batizou — as features anteriores
+# (`mqtt`, `home-assistant`) nasceram sem prefixo, e renomeá-las agora seria
+# quebra de contrato para quem já as declara no `Cargo.toml`.
+hardware-serial = ["dep:tokio-serial", "dep:serialport"]
+# Adapter GPIO/Raspberry Pi (#1130, rppal): OFF por default. `rppal` compila
+# em qualquer Linux (inclusive x86_64 — é Rust puro sobre libc) e só falha
+# em *runtime*, com erro limpo, quando o host não é um Raspberry Pi; é o que
+# mantém `cargo check --all-features` verde no CI x86 sem fingir cobertura.
+hardware-gpio = ["dep:rppal"]
 default = ["mock-device"]
 
 [dependencies]
@@ -63,6 +79,25 @@ url = { workspace = true, optional = true }
 croner = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
+# Feature `hardware-serial` (#1130): `tokio-serial` dá o `SerialStream`
+# (AsyncRead + AsyncWrite sobre a porta) e o `SerialStream::pair()` que os
+# testes usam como par de PTYs in-process; `serialport` é a camada de baixo,
+# usada aqui para `available_ports()` na descoberta por VID/PID.
+#
+# `default-features = false` nas duas a propósito: o default de ambas liga
+# `libudev`, que exige `libudev-dev` (pkg-config + C) na máquina de build.
+# O CI do repo não tem esse pacote, e ligá-lo transformaria
+# `cargo check --all-features` numa falha de ambiente. O custo é conhecido e
+# documentado no módulo: sem udev, o Linux não reporta VID/PID em
+# `available_ports()`, então a descoberta automática não acha nada e o
+# operador declara a porta explicitamente. macOS e Windows não dependem de
+# udev e mantêm a descoberta por VID/PID.
+tokio-serial = { version = "5", optional = true, default-features = false }
+serialport = { version = "4", optional = true, default-features = false }
+# Feature `hardware-gpio` (#1130): acesso a GPIO/PWM do Raspberry Pi por
+# `/dev/gpiomem`. Rust puro (sem bindgen, sem wiringPi), o que mantém a
+# árvore de supply-chain pequena.
+rppal = { version = "0.22", optional = true }
 
 [dev-dependencies]
 # Broker MQTT embutido para os testes de integração da feature `mqtt`

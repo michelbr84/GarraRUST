@@ -71,12 +71,12 @@ pub const TOPIC_PREFIX_DEFAULT: &str = "garra";
 /// serial usa) substitui em silêncio. O prefixo garante que o espaço de ids
 /// do adapter MQTT nunca colide com o de nenhum outro transporte,
 /// independente do que o dispositivo anuncie como `id`.
-pub const PREFIXO_ID_MQTT: &str = "mqtt:";
+pub const PREFIXO_ID: &str = "mqtt:";
 
 /// O id de registro (chave no [`crate::DeviceRegistry`] e valor de
 /// [`crate::Device::id`]) a partir do id bruto do manifesto/tópico MQTT.
-fn id_registro(id_bruto: &str) -> String {
-    format!("{PREFIXO_ID_MQTT}{id_bruto}")
+fn id_de_registro(id_bruto: &str) -> String {
+    format!("{PREFIXO_ID}{id_bruto}")
 }
 
 /// Timeout padrão de leitura (correlação `get` → `state`).
@@ -297,7 +297,7 @@ pub struct MqttDevice {
     /// (`{prefixo}/devices/{id_bruto}/...`). **Nunca** o valor de
     /// [`Device::id`].
     id_bruto: String,
-    /// Id de registro namespaceado (`mqtt:<id_bruto>`, [`PREFIXO_ID_MQTT`])
+    /// Id de registro namespaceado (`mqtt:<id_bruto>`, [`PREFIXO_ID`])
     /// — o que [`Device::id`] devolve e o que o [`crate::DeviceRegistry`]
     /// usa como chave (#1168).
     id: String,
@@ -317,7 +317,7 @@ impl MqttDevice {
         pendentes: Arc<Pendentes>,
         timeout: Duration,
     ) -> Self {
-        let id = id_registro(&id_bruto);
+        let id = id_de_registro(&id_bruto);
         Self {
             id_bruto,
             id,
@@ -606,7 +606,7 @@ async fn registrar_dispositivo(
     // O id de presença/log segue o mesmo namespace do `Device::id()`
     // (`registry.register` já usa o valor namespaceado internamente) — quem
     // olha o store ou o log vê o mesmo id que `device_list` mostra.
-    let id_pub = id_registro(id_topico);
+    let id_pub = id_de_registro(id_topico);
     registry.register(Arc::new(device));
     if let Some(store) = state
         && let Err(e) = store.marcar(&id_pub, true).await
@@ -633,7 +633,7 @@ async fn aplicar_status(
     };
     // Mesmo namespace do `Device::id()`/registry (#1168) — presença e
     // barramento têm que falar do mesmo dispositivo que `device_list` vê.
-    let id_pub = id_registro(id);
+    let id_pub = id_de_registro(id);
     if let Some(store) = state
         && let Err(e) = store.marcar(&id_pub, online).await
     {
@@ -866,12 +866,12 @@ mod tests {
     /// bruto nunca vira chave de registro sozinho.
     #[test]
     fn id_registro_namespaceia_com_prefixo_mqtt() {
-        assert_eq!(id_registro("sensor-1"), "mqtt:sensor-1");
+        assert_eq!(id_de_registro("sensor-1"), "mqtt:sensor-1");
         // Mesmo um manifesto que tente imitar a convenção de outro adapter
         // (`serial:`, `ha:`) sai namespaceado por baixo do `mqtt:` — nunca
         // colide com a chave real daquele outro transporte (#1168).
-        assert_eq!(id_registro("serial:arduino-1"), "mqtt:serial:arduino-1");
-        assert_eq!(id_registro("ha:light.sala"), "mqtt:ha:light.sala");
+        assert_eq!(id_de_registro("serial:arduino-1"), "mqtt:serial:arduino-1");
+        assert_eq!(id_de_registro("ha:light.sala"), "mqtt:ha:light.sala");
     }
 
     // ─── Mini-validador ────────────────────────────────────────────────────

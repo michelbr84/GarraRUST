@@ -103,12 +103,12 @@ const KEEPALIVE: Duration = Duration::from_secs(600);
 /// principalmente defesa em profundidade e paridade de convenção: o
 /// [`crate::DeviceRegistry`] compartilhado nunca deveria depender de "esse
 /// formato de id não colide hoje" como única garantia entre adapters.
-pub const PREFIXO_ID_HOME_ASSISTANT: &str = "ha:";
+pub const PREFIXO_ID: &str = "ha:";
 
 /// O id de registro (chave no [`crate::DeviceRegistry`] e valor de
 /// [`crate::Device::id`]) a partir do `entity_id` nativo do HA.
-fn id_registro(entity_id: &str) -> String {
-    format!("{PREFIXO_ID_HOME_ASSISTANT}{entity_id}")
+fn id_de_registro(entity_id: &str) -> String {
+    format!("{PREFIXO_ID}{entity_id}")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -383,7 +383,7 @@ fn valida_objeto(objeto: &str) -> bool {
 /// Um dispositivo exposto pelo Home Assistant.
 pub struct HaDevice {
     /// Id de registro namespaceado (`ha:<entity_id>`,
-    /// [`PREFIXO_ID_HOME_ASSISTANT`]) — o que [`Device::id`] devolve e o
+    /// [`PREFIXO_ID`]) — o que [`Device::id`] devolve e o
     /// que o [`crate::DeviceRegistry`] usa como chave, e o que o agente vê
     /// na `device_list` (#1168).
     id: String,
@@ -583,7 +583,7 @@ async fn rodar(
                     // Mesmo namespace do `Device::id()`/registry (#1168) —
                     // presença tem que falar do mesmo dispositivo que
                     // `device_list` mostra.
-                    let id_pub = id_registro(&e.entity_id);
+                    let id_pub = id_de_registro(&e.entity_id);
                     if let Some(store) = &state
                         && let Err(err) = store.marcar(&id_pub, e.online).await
                     {
@@ -804,7 +804,7 @@ async fn consumir_eventos(
                 Some(Ok(Message::Text(t))) => {
                     if let Some(evento) = evento_de_ha(t.as_str()) {
                         // Mesmo namespace do `Device::id()` (#1168).
-                        let id_pub = id_registro(&evento.entity_id);
+                        let id_pub = id_de_registro(&evento.entity_id);
                         if let Some(store) = state
                             && let Err(err) = store.marcar(&id_pub, evento.online).await
                         {
@@ -950,8 +950,8 @@ mod tests {
     /// namespace do MQTT/serial).
     #[test]
     fn id_registro_namespaceia_com_prefixo_ha() {
-        assert_eq!(id_registro("light.sala"), "ha:light.sala");
-        assert_eq!(id_registro("lock.porta"), "ha:lock.porta");
+        assert_eq!(id_de_registro("light.sala"), "ha:light.sala");
+        assert_eq!(id_de_registro("lock.porta"), "ha:lock.porta");
     }
 
     /// O vetting da config: link-local (metadata de cloud) é bloqueado
