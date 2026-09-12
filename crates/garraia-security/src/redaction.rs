@@ -95,7 +95,7 @@ pub fn redact_secrets(input: &str) -> String {
 
             # --- credenciais de terceiro que entram por comando de ferramenta (#937) ---
             | github_pat_[A-Za-z0-9_]{22,}          # GitHub fine-grained PAT
-            | gh[pousr]_[A-Za-z0-9]{20,}            # GitHub PAT/OAuth/user/server/refresh
+            | gh[pousr]_[A-Za-z0-9.\-_]{20,}        # GitHub PAT/OAuth/user/server/refresh (ghs_ stateless incluso)
             | eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}  # JWT
             | (?:AKIA|ASIA)[A-Z0-9]{16}             # AWS access key id (fixa e temporaria)
             | [0-9]{8,10}:AA[A-Za-z0-9_\-]{32,}    # Telegram bot token
@@ -123,6 +123,19 @@ mod tests {
             assert!(!saida.contains(token.as_str()), "vazou: {saida}");
             assert!(saida.contains("[REDACTED]"), "{saida}");
         }
+    }
+
+    /// Formato stateless dos installation tokens do GitHub (`ghs_`, ~520
+    /// chars): o corpo tem pontos. A classe do padrao precisa engolir o token
+    /// inteiro — se ela nao cobre `.`/`-`/`_`, o redactor para no primeiro
+    /// ponto e o restante segue cru para o log.
+    #[test]
+    fn redacts_stateless_installation_token() {
+        let token = format!("ghs_{}.{}.{}", "a".repeat(20), "b".repeat(20), "c".repeat(20));
+        let saida = redact_secrets(&format!("curl -H 'Authorization: Bearer {token}'"));
+        // assert_eq de proposito: se so o pedaco antes do primeiro ponto for
+        // redigido, o `.bbb...ccc...` restante aparece na saida e o teste falha.
+        assert_eq!(saida, "curl -H 'Authorization: Bearer [REDACTED]'");
     }
 
     #[test]

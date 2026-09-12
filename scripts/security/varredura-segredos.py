@@ -12,6 +12,7 @@ PATTERNS = [
     (r"(?i)aws_secret_access_key\s*=\s*['\"][A-Za-z0-9/+=]{40}['\"]", "AWS Secret Key"),
     (r"(?i)ghp_[A-Za-z0-9]{36}", "GitHub Personal Access Token"),
     (r"(?i)gho_[A-Za-z0-9]{36}", "GitHub OAuth Token"),
+    (r"(?i)ghs_[A-Za-z0-9.\-_]{36,}", "GitHub App Installation Token"),
     (r"(?i)\bsk-[A-Za-z0-9]{32,}\b", "Generic API Key (sk-...)"),
     (r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", "Private Key Header"),
 ]
