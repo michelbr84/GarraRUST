@@ -45,8 +45,29 @@
 //! - **Superfície de descoberta**: abrir uma porta serial arbitrária é a
 //!   parte perigosa deste adapter. A descoberta automática só considera
 //!   portas que o SO reporta como **USB com VID/PID na allowlist**; portas
-//!   declaradas à mão passam por [`validar_caminho_porta`]. Nunca varremos
-//!   `/dev/tty*` inteiro.
+//!   declaradas à mão passam por [`validar_caminho_porta`], que aceita só
+//!   caminhos tty-like (`/dev/tty*`, `/dev/cu.*`, `/dev/serial/by-id/...`,
+//!   `/dev/serial/by-path/...`) — `/dev/mem`, `/dev/sda` e `/dev/watchdog`
+//!   são `/dev/...` e nem por isso são portas seriais.
+//! - **Id é do transporte, não da placa**: a placa escolhe o texto do `id` no
+//!   manifesto, então esse texto **não** pode virar chave do registry
+//!   diretamente — um firmware hostil se anunciaria com o id de um device do
+//!   Home Assistant e passaria a receber as leituras e os comandos dele. Duas
+//!   camadas resolvem: o id de registro é **namespaceado** com
+//!   [`PREFIXO_ID`] (`serial:arduino-1`), e `validar_id` proíbe `:` no id
+//!   declarado, então nenhuma placa alcança o namespace de outro transporte;
+//!   e, dentro do próprio namespace serial, a adoção usa
+//!   [`DeviceRegistry::register_if_absent`] e **recusa** (fail-closed) a
+//!   segunda placa que chegar com um id já ocupado, em vez de substituí-la em
+//!   silêncio. O id declarado segue disponível como campo informativo
+//!   ([`SerialDevice::id_declarado`]).
+//! - **Texto da placa é entrada hostil**: todo `String` que vem do outro lado
+//!   do cabo — texto de erro, id ecoado em mensagem, nome de capability,
+//!   `value` de leitura, `state` espontâneo — passa por
+//!   `sanear_texto_da_placa` antes de virar log, mensagem de erro ou
+//!   resultado de tool. Os detalhes (o que é filtrado, e por que o teto do
+//!   `value` é [`VALOR_DA_PLACA_MAX`] e não [`LINHA_MAX`]) estão no doc
+//!   daquelas funções.
 //! - **Presença e barramento**: o registro marca online no
 //!   [`DeviceStateStore`]; EOF ou erro de leitura marca offline. Os dois
 //!   publicam no [`HardwareEventBus`], e linhas espontâneas com `state`
@@ -136,29 +157,97 @@ fn novo_request_id() -> String {
     format!("req-{}", SEQUENCIA.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Teto do texto de erro que a placa manda de volta.
+/// Teto de cada pedaço de texto que a placa manda de volta.
 const ERRO_DA_PLACA_MAX: usize = 300;
 
-/// Higieniza o texto de erro vindo da placa antes de ele virar mensagem de
-/// erro do adapter.
+/// Teto do JSON de uma resposta bem-sucedida (`value`) ou de um `state`
+/// espontâneo, já saneado e re-serializado.
+///
+/// Não é [`LINHA_MAX`]: aquele é o teto do *transporte* (o que o leitor
+/// aceita antes de declarar a placa quebrada), e 64 KiB de texto escolhido
+/// pela placa entrando no histórico do modelo como resultado de tool é caro e
+/// é vetor de prompt injection por volume. 4 KiB é ordem de grandeza acima de
+/// qualquer leitura honesta desta tabela de periféricos — 64 pinos digitais
+/// em `{"pins":{"0":1,...}}` dão ~600 bytes — e continua legível para um
+/// humano depurando.
+///
+/// Os dois tetos se dividem o trabalho: cada string isolada é **truncada** em
+/// [`ERRO_DA_PLACA_MAX`] com `…` (o conteúdo útil de uma mensagem costuma
+/// estar no começo), e é o total do JSON já saneado que bate aqui — estrutura
+/// inflada (milhares de chaves, arrays longos) não tem começo útil para
+/// preservar. Acima do teto a leitura **falha**: meio JSON é pior que nenhum.
+pub const VALOR_DA_PLACA_MAX: usize = 4 * 1024;
+
+/// Higieniza um texto vindo da placa antes de ele virar log, mensagem de erro
+/// ou resultado de tool.
 ///
 /// Esse texto é **entrada não confiável que chega ao modelo**: quem escreveu
 /// o firmware (ou quem plugou a placa) escolhe cada byte, e o resultado vai
 /// para o histórico da conversa como resposta de tool. Duas defesas simples:
-/// caracteres de controle viram espaço (nada de quebra de linha forjando o
-/// fim de uma mensagem, nada de sequência ANSI no terminal de quem estiver
-/// lendo o log) e o comprimento é cortado, para uma placa verborrágica não
-/// gastar o contexto do turno.
+///
+/// - caracteres perigosos viram espaço. Controle (`Cc`) cobre o `\n` que
+///   forjaria o fim de uma mensagem e o `\x1b` que abriria sequência ANSI no
+///   terminal de quem lê o log; a faixa bidi/invisível
+///   (`U+200B`–`U+200F`, `U+202A`–`U+202E`) e os separadores `U+2028`/`U+2029`
+///   cobrem o resto — um `RIGHT-TO-LEFT OVERRIDE` reordena visualmente o que
+///   um humano lê na tela de aprovação, e `U+2028` é quebra de linha para
+///   quase todo parser de JS/log sem ser `Cc`;
+/// - o comprimento é cortado em [`ERRO_DA_PLACA_MAX`], para uma placa
+///   verborrágica não gastar o contexto do turno.
 fn sanear_texto_da_placa(bruto: &str) -> String {
+    let perigoso = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{2028}' | '\u{2029}')
+            || ('\u{200b}'..='\u{200f}').contains(&c)
+            || ('\u{202a}'..='\u{202e}').contains(&c)
+    };
     let mut saneado: String = bruto
         .chars()
         .take(ERRO_DA_PLACA_MAX)
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| if perigoso(c) { ' ' } else { c })
         .collect();
     if bruto.chars().count() > ERRO_DA_PLACA_MAX {
         saneado.push('…');
     }
     saneado
+}
+
+/// Higieniza recursivamente um `Value` vindo da placa: toda string — valor
+/// **e chave de objeto** — passa por [`sanear_texto_da_placa`].
+///
+/// A recursão é limitada porque a profundidade já é: `serde_json` recusa
+/// aninhamento acima do próprio limite de recursão ao *parsear* a linha, então
+/// nenhum `Value` que chega aqui é fundo o bastante para estourar a pilha.
+fn sanear_valor(bruto: Value) -> Value {
+    match bruto {
+        Value::String(texto) => Value::String(sanear_texto_da_placa(&texto)),
+        Value::Array(itens) => Value::Array(itens.into_iter().map(sanear_valor).collect()),
+        Value::Object(mapa) => Value::Object(
+            mapa.into_iter()
+                .map(|(chave, valor)| (sanear_texto_da_placa(&chave), sanear_valor(valor)))
+                .collect(),
+        ),
+        escalar => escalar,
+    }
+}
+
+/// O `value`/`state` da placa, saneado e com teto de [`VALOR_DA_PLACA_MAX`].
+///
+/// `Err` quando o JSON saneado passa do teto — o chamador trata como resposta
+/// inválida (leitura falha, `state` espontâneo descartado), nunca truncando.
+fn sanear_valor_da_placa(bruto: Value, dispositivo: &str) -> Result<Value> {
+    let saneado = sanear_valor(bruto);
+    let tamanho = saneado.to_string().len();
+    if tamanho > VALOR_DA_PLACA_MAX {
+        return Err(HardwareError::Adapter {
+            dispositivo: dispositivo.to_string(),
+            fonte: format!(
+                "resposta de {tamanho} bytes acima do teto de {VALOR_DA_PLACA_MAX} \
+                 — descartada (fail-closed)"
+            ),
+        });
+    }
+    Ok(saneado)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -253,13 +342,28 @@ impl SerialAdapterConfig {
     }
 }
 
+/// Os prefixos de `/dev/` que são porta serial, e o que vem depois deles é um
+/// nome só (sem `/`).
+///
+/// `/dev/tty*` cobre Linux (`ttyUSB0`, `ttyACM0`, `ttyS0`) e o lado
+/// "callin" do macOS (`tty.usbserial-1`); `/dev/cu.*` é o lado "callout" do
+/// macOS, que é o que se usa para falar com uma placa; `serial/by-id/` e
+/// `serial/by-path/` são os links estáveis do udev, recomendados no README do
+/// firmware justamente porque não mudam ao repluga.
+const PREFIXOS_UNIX: [&str; 4] = ["tty", "cu.", "serial/by-id/", "serial/by-path/"];
+
 /// Valida um caminho de porta antes de abri-lo.
 ///
 /// Abrir um caminho arbitrário vindo de config é a superfície perigosa deste
 /// adapter: um valor como `/etc/shadow` ou `../../dev/mem` não deve nem
-/// chegar ao `open`. A regra é uma allowlist de forma — `/dev/...` no Unix,
-/// `COM<n>` (ou `\\.\COM<n>`) no Windows — sem `..` em nenhum segmento e sem
-/// bytes de controle.
+/// chegar ao `open`. A regra é uma allowlist de forma, sem `..` em nenhum
+/// segmento e sem bytes de controle:
+///
+/// - Unix: um dos [`PREFIXOS_UNIX`] sob `/dev/`, com nome não-vazio.
+///   `/dev/<qualquer coisa>` **não** basta — `/dev/mem` (memória física),
+///   `/dev/sda` (disco) e `/dev/watchdog` (reboot ao fechar o fd) moram em
+///   `/dev/` e nenhum deles é uma placa;
+/// - Windows: `COM<n>` ou `\\.\COM<n>`.
 pub fn validar_caminho_porta(porta: &str) -> Result<()> {
     let recusa = |motivo: &str| {
         Err(HardwareError::Serial(format!(
@@ -279,20 +383,46 @@ pub fn validar_caminho_porta(porta: &str) -> Result<()> {
     let e_windows = janela
         .strip_prefix("COM")
         .is_some_and(|resto| !resto.is_empty() && resto.chars().all(|c| c.is_ascii_digit()));
-    let e_unix = porta.strip_prefix("/dev/").is_some_and(|r| !r.is_empty());
+    let e_unix = porta.strip_prefix("/dev/").is_some_and(|resto| {
+        PREFIXOS_UNIX.iter().any(|prefixo| {
+            resto
+                .strip_prefix(prefixo)
+                .is_some_and(|nome| !nome.is_empty() && !nome.contains('/'))
+        })
+    });
     if !e_windows && !e_unix {
-        return recusa("esperado '/dev/<porta>' (Unix) ou 'COM<n>' / '\\\\.\\COM<n>' (Windows)");
+        return recusa(
+            "esperado '/dev/tty*', '/dev/cu.*', '/dev/serial/by-id/<nome>' ou \
+             '/dev/serial/by-path/<nome>' (Unix), ou 'COM<n>' / '\\\\.\\COM<n>' (Windows)",
+        );
     }
     Ok(())
 }
 
-/// Valida o id que a placa declarou — ele vira chave do registry e aparece
-/// em log e no inventário do agente, então nada de espaço, barra ou
-/// caractere de controle.
+/// Prefixo do namespace deste transporte no registry.
+///
+/// A chave de registro de uma placa é `serial:<id declarado>`. O `:` é o que
+/// fecha o namespace: `validar_id` não o aceita no id declarado, então uma
+/// placa não consegue escrever `serial:` (nem o prefixo de nenhum outro
+/// transporte) dentro do próprio id para escapar dele.
+pub const PREFIXO_ID: &str = "serial:";
+
+/// A chave de registry de uma placa, a partir do id que ela declarou.
+fn id_de_registro(declarado: &str) -> String {
+    format!("{PREFIXO_ID}{declarado}")
+}
+
+/// Valida o id que a placa declarou — ele vira chave do registry (sob
+/// [`PREFIXO_ID`]) e aparece em log e no inventário do agente, então nada de
+/// espaço, barra, `:` ou caractere de controle.
+///
+/// O texto ecoado na mensagem de erro já vem saneado: um id recusado é, por
+/// definição, texto arbitrário de uma placa que não segue o contrato.
 fn validar_id(id: &str) -> Result<()> {
+    let eco = sanear_texto_da_placa(id);
     if id.is_empty() || id.len() > 64 {
         return Err(HardwareError::Serial(format!(
-            "id '{id}' inválido: esperado 1..=64 caracteres"
+            "id '{eco}' inválido: esperado 1..=64 caracteres"
         )));
     }
     if !id
@@ -300,7 +430,7 @@ fn validar_id(id: &str) -> Result<()> {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     {
         return Err(HardwareError::Serial(format!(
-            "id '{id}' inválido: só ASCII alfanumérico, '-', '_' e '.'"
+            "id '{eco}' inválido: só ASCII alfanumérico, '-', '_' e '.'"
         )));
     }
     Ok(())
@@ -375,16 +505,34 @@ enum RespostaPlaca {
 
 /// Parseia o manifesto do handshake, validando id e capabilities na
 /// fronteira. Falha fechada: qualquer problema recusa a placa inteira.
+///
+/// Devolve o id **declarado** (já validado); a chave de registro sai dele por
+/// [`id_de_registro`].
 fn parse_manifesto(linha: &str) -> Result<(String, Vec<Capability>)> {
-    let manifesto: ManifestoSerial = serde_json::from_str(linha)
-        .map_err(|e| HardwareError::Serial(format!("manifesto não é JSON válido: {e}")))?;
+    let manifesto: ManifestoSerial = serde_json::from_str(linha).map_err(|e| {
+        // O erro do serde pode citar o valor recebido ("invalid type: string
+        // \"...\""), então ele carrega texto da placa e é saneado como tal.
+        HardwareError::Serial(format!(
+            "manifesto não é JSON válido: {}",
+            sanear_texto_da_placa(&e.to_string())
+        ))
+    })?;
     if !manifesto.garra_hello {
         return Err(HardwareError::Serial(
             "manifesto sem 'garra_hello': true".to_string(),
         ));
     }
     validar_id(&manifesto.id)?;
-    let caps = perifericos::resolver(&manifesto.capabilities, &manifesto.id)?;
+    // Os nomes de capability também são texto da placa e são ecoados pelo
+    // `resolver` na mensagem de recusa. Sanear antes não muda o resultado de
+    // um nome legítimo (a tabela é ASCII fechada) e tira o texto hostil do
+    // caminho do erro.
+    let nomes: Vec<String> = manifesto
+        .capabilities
+        .iter()
+        .map(|nome| sanear_texto_da_placa(nome))
+        .collect();
+    let caps = perifericos::resolver(&nomes, &manifesto.id)?;
     Ok((manifesto.id, caps))
 }
 
@@ -447,7 +595,11 @@ impl<R: AsyncRead + Unpin> LeitorLinhas<R> {
 
 /// Uma placa conectada por serial, exposta como [`Device`].
 pub struct SerialDevice {
+    /// A chave do registry: `serial:<id declarado>` (ver [`PREFIXO_ID`]).
     id: String,
+    /// O id cru do manifesto, **informativo** — é o que está gravado no
+    /// sketch e o que o operador vê no monitor serial. Não endereça nada.
+    declarado: String,
     caps: Vec<Capability>,
     escrita: Arc<Mutex<Escrita>>,
     pendentes: Arc<Pendentes>,
@@ -457,6 +609,14 @@ pub struct SerialDevice {
 }
 
 impl SerialDevice {
+    /// O id que a placa declarou no manifesto, sem o [`PREFIXO_ID`].
+    ///
+    /// Informativo: serve para o operador casar o device do inventário com o
+    /// `PLACA_ID` gravado no sketch. Quem endereça é [`Device::id`].
+    pub fn id_declarado(&self) -> &str {
+        &self.declarado
+    }
+
     fn capability(&self, nome: &str) -> Result<&Capability> {
         self.caps.iter().find(|c| c.name == nome).ok_or_else(|| {
             HardwareError::CapabilityDesconhecida {
@@ -503,7 +663,9 @@ impl SerialDevice {
         }
 
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(RespostaPlaca::Valor(valor))) => Ok(valor),
+            // O `value` de sucesso é tão escolhido pela placa quanto o texto
+            // de erro: ele vira resultado de tool no histórico do modelo.
+            Ok(Ok(RespostaPlaca::Valor(valor))) => sanear_valor_da_placa(valor, &self.id),
             // A placa respondeu, e respondeu "não deu" — o texto dela é o que
             // o modelo precisa ler, depois de higienizado.
             Ok(Ok(RespostaPlaca::Erro(msg))) => Err(self.erro(format!(
@@ -535,7 +697,17 @@ impl Device for SerialDevice {
     }
 
     async fn read(&self, capability: &str) -> Result<Value> {
-        self.capability(capability)?;
+        let cap = self.capability(capability)?;
+        // Simétrico ao `execute`, e pelo mesmo motivo invertido: `read` é o
+        // caminho que o gate trata como R0. Ler por ele uma capability de
+        // escrita seria pedir `digital_write` sem passar pela policy — o
+        // `get` do protocolo não escreve, mas defesa em profundidade não
+        // depende de o firmware do outro lado ser honesto.
+        if !cap.read_only {
+            return Err(self.erro(format!(
+                "capability '{capability}' não é leitura: use execute, não read"
+            )));
+        }
         self.requisitar("get", capability, None).await
     }
 
@@ -577,9 +749,17 @@ impl Device for SerialDevice {
 /// real, e os testes passam uma ponta de um par de PTYs
 /// (`SerialStream::pair()`) — o mesmo código, sem hardware e sem docker.
 ///
-/// Devolve o id registrado. Erro aqui significa "esta porta não é uma placa
-/// Garra" e o chamador simplesmente segue para a próxima; o stream é
-/// devolvido ao nada (fechado no drop).
+/// Devolve a **chave de registro** (`serial:<id declarado>`, ver
+/// [`PREFIXO_ID`]). Erro aqui significa "esta porta não é uma placa Garra" (ou
+/// "é uma placa que não pode ser adotada") e o chamador simplesmente segue
+/// para a próxima; o stream é devolvido ao nada (fechado no drop).
+///
+/// Uma chave já ocupada **recusa** a adoção, sem substituir o que estava lá.
+/// Isso vale inclusive para a mesma placa reconectando: enquanto o device
+/// antigo estiver no registry (marcado offline pelo leitor que caiu), a
+/// re-adoção é recusada. Hoje isso não acontece, porque a varredura é uma
+/// passada única no boot; quando hot-plug entrar, o desregistro no EOF é
+/// pré-requisito dele.
 pub async fn adotar_stream<S>(
     stream: S,
     rotulo: impl Into<String>,
@@ -621,20 +801,36 @@ where
             HardwareError::Serial(format!("'{rotulo}' fechou a porta durante o handshake"))
         })?;
 
-    let (id, caps) =
+    let (declarado, caps) =
         parse_manifesto(&linha).map_err(|e| HardwareError::Serial(format!("'{rotulo}': {e}")))?;
+    let id = id_de_registro(&declarado);
 
-    // 2. Registro.
+    // 2. Registro — fail-closed na colisão de id.
     let pendentes: Arc<Pendentes> = Arc::default();
     let device = SerialDevice {
         id: id.clone(),
+        declarado,
         caps,
         escrita,
         pendentes: pendentes.clone(),
         timeout,
         rotulo: rotulo.clone(),
     };
-    registry.register(Arc::new(device));
+    if !registry.register_if_absent(Arc::new(device)) {
+        // Uma placa se anunciando com um id já registrado não substitui o
+        // device de ninguém: ou é firmware duplicado na bancada, ou é alguém
+        // plugando uma placa para sequestrar as leituras da outra. Os dois
+        // casos se resolvem no operador, não em silêncio.
+        tracing::warn!(
+            dispositivo = %id,
+            porta = %rotulo,
+            "serial: id já registrado — adoção recusada (fail-closed)"
+        );
+        return Err(HardwareError::Serial(format!(
+            "'{rotulo}': id '{id}' já está registrado — adoção recusada (fail-closed); \
+             duas placas não podem dividir o mesmo id"
+        )));
+    }
     marcar(&id, true, state.as_ref(), bus.as_ref()).await;
     tracing::info!(dispositivo = %id, porta = %rotulo, "serial: placa descoberta e registrada");
 
@@ -694,10 +890,19 @@ async fn processar_linha(
         }
         return;
     }
-    // Linha espontânea com estado: alimenta o motor de automações (#1128).
+    // Linha espontânea com estado: alimenta o motor de automações (#1128) —
+    // e chega ao modelo pelo mesmo caminho de um `value`, então é saneada
+    // igual. Acima do teto, a linha é descartada, não truncada.
     if let Some(estado) = bruta.state
         && let Some(bus) = bus
     {
+        let estado = match sanear_valor_da_placa(estado, id) {
+            Ok(estado) => estado,
+            Err(e) => {
+                tracing::warn!(dispositivo = %id, error = %e, "serial: estado espontâneo descartado");
+                return;
+            }
+        };
         bus.publicar(HardwareEvent::StateChanged(StateChanged::agora(
             id,
             EstadoObservado::com(None, estado, true),
@@ -820,7 +1025,12 @@ mod tests {
         for ok in [
             "/dev/ttyUSB0",
             "/dev/ttyACM0",
+            "/dev/ttyS0",
+            "/dev/tty.usbserial-1",
+            "/dev/cu.usbserial-1",
+            "/dev/cu.usbmodem14201",
             "/dev/serial/by-id/usb-Arduino-if00",
+            "/dev/serial/by-path/pci-0000:00:14.0-usb-0:1:1.0-port0",
             "COM3",
             "COM17",
             r"\\.\COM9",
@@ -845,14 +1055,77 @@ mod tests {
         }
     }
 
+    /// Estar em `/dev/` não faz de um arquivo uma porta serial. Estes três
+    /// passavam pela allowlist "qualquer `/dev/<algo>`" e são exatamente os
+    /// que não deveriam: memória física, disco e o watchdog (que reinicia a
+    /// máquina quando o fd fecha).
+    #[test]
+    fn dispositivo_de_dev_que_nao_e_serial_e_recusado() {
+        for perigoso in [
+            "/dev/mem",
+            "/dev/kmem",
+            "/dev/watchdog",
+            "/dev/sda",
+            "/dev/sda1",
+            "/dev/nvme0n1",
+            "/dev/random",
+            "/dev/null",
+            "/dev/tty",              // o terminal de controle do processo
+            "/dev/serial/by-id/",    // prefixo sem nome
+            "/dev/serial/by-id/a/b", // nome com barra não é entrada do udev
+            "/dev/cu.",
+        ] {
+            let recusa = validar_caminho_porta(perigoso);
+            assert!(recusa.is_err(), "'{perigoso}' deveria ser recusado");
+        }
+    }
+
     #[test]
     fn id_da_placa_e_restrito() {
         for ok in ["arduino-1", "esp32_bancada", "placa.A", "a"] {
             validar_id(ok).unwrap_or_else(|e| panic!("'{ok}' deveria passar: {e}"));
         }
-        for ruim in ["", "placa da sala", "a/b", "placa\n", &"x".repeat(65)] {
+        for ruim in [
+            "",
+            "placa da sala",
+            "a/b",
+            "placa\n",
+            "serial:outra",
+            &"x".repeat(65),
+        ] {
             assert!(validar_id(ruim).is_err(), "'{ruim}' deveria ser recusado");
         }
+    }
+
+    /// O id do registry é do transporte; o da placa é informativo. E o `:`
+    /// recusado acima é o que impede a placa de escrever o prefixo sozinha.
+    #[test]
+    fn id_de_registro_e_namespaceado() {
+        assert_eq!(id_de_registro("arduino-1"), "serial:arduino-1");
+        assert!(id_de_registro("arduino-1").starts_with(PREFIXO_ID));
+        assert!(
+            validar_id("serial:arduino-1").is_err(),
+            "a placa não escreve o prefixo — ele é sempre do adapter"
+        );
+    }
+
+    /// O id ecoado numa recusa de handshake é texto da placa como qualquer
+    /// outro: sem controle, sem tamanho livre.
+    #[test]
+    fn id_recusado_nao_ecoa_texto_cru() {
+        let err = validar_id("a\u{1b}[31mb c").expect_err("id com controle é recusado");
+        let msg = err.to_string();
+        assert!(
+            !msg.chars().any(char::is_control),
+            "a mensagem não carrega o escape da placa: {msg:?}"
+        );
+
+        let err = validar_id(&"x".repeat(5_000)).expect_err("id gigante é recusado");
+        assert!(
+            err.to_string().chars().count() < ERRO_DA_PLACA_MAX + 120,
+            "a mensagem não carrega os 5 KB: {} chars",
+            err.to_string().chars().count()
+        );
     }
 
     // ─── Config ────────────────────────────────────────────────────────────
@@ -1028,6 +1301,81 @@ mod tests {
             sanear_texto_da_placa("pino 13 nao e saida"),
             "pino 13 nao e saida"
         );
+    }
+
+    /// `Cc` não é o conjunto inteiro do problema: `U+2028` quebra linha para
+    /// quase todo parser de JS/log e a faixa bidi reordena visualmente o que
+    /// um humano lê na tela de aprovação — nenhum dos dois é `is_control`.
+    #[test]
+    fn invisiveis_e_bidi_tambem_sao_filtrados() {
+        let sujo = "ok\u{2028}\u{2029}\u{200b}\u{200e}\u{202e}oãn\u{202c}";
+        let limpo = sanear_texto_da_placa(sujo);
+        for perigoso in [
+            '\u{2028}', '\u{2029}', '\u{200b}', '\u{200e}', '\u{202e}', '\u{202c}',
+        ] {
+            assert!(
+                !limpo.contains(perigoso),
+                "{perigoso:?} sobreviveu: {limpo:?}"
+            );
+        }
+        assert!(limpo.starts_with("ok"), "o texto útil continua: {limpo:?}");
+        // Acentuado legítimo não é colateral do filtro.
+        assert_eq!(
+            sanear_texto_da_placa("válvula não abriu"),
+            "válvula não abriu"
+        );
+    }
+
+    /// O `value` de sucesso é tão da placa quanto o `error`: strings (e
+    /// chaves) saneadas, tamanho total com teto, fail-closed acima dele.
+    #[test]
+    fn valor_de_sucesso_e_higienizado_e_tem_teto() {
+        let bruto = json!({
+            "pins": { "2": 1 },
+            "nota\u{1b}[31m": "linha1\nlinha2\u{202e}",
+            "lista": ["a\u{0007}b", 3]
+        });
+        let limpo = sanear_valor_da_placa(bruto, "serial:arduino-1").expect("dentro do teto");
+        let texto = limpo.to_string();
+        assert!(
+            !texto.contains('\u{1b}') && !texto.contains('\u{202e}'),
+            "nem chave nem valor carregam escape: {texto}"
+        );
+        assert!(
+            !limpo["lista"][0]
+                .as_str()
+                .expect("string")
+                .chars()
+                .any(char::is_control),
+            "string dentro de array também é saneada"
+        );
+        // A estrutura e os números sobrevivem — isto continua sendo leitura.
+        assert_eq!(limpo["pins"]["2"], json!(1));
+        assert_eq!(limpo["lista"][1], json!(3));
+
+        // Uma string isolada e gigante é truncada com '…' (o começo é o que
+        // tem conteúdo útil), e por isso não derruba a leitura.
+        let verborragica = json!({ "nota": "A".repeat(20 * 1024) });
+        let limpo = sanear_valor_da_placa(verborragica, "serial:arduino-1").expect("truncada");
+        let nota = limpo["nota"].as_str().expect("string");
+        assert_eq!(nota.chars().count(), ERRO_DA_PLACA_MAX + 1);
+        assert!(nota.ends_with('…'));
+
+        // Já estrutura inflada não tem "começo útil" para preservar: erro,
+        // nunca meio JSON.
+        let gigante = json!({ "pins": vec![1; VALOR_DA_PLACA_MAX] });
+        let err = sanear_valor_da_placa(gigante, "serial:arduino-1").expect_err("acima do teto");
+        assert!(err.to_string().contains("acima do teto"), "{err}");
+        assert!(
+            err.to_string().contains("arduino-1"),
+            "cita o dispositivo: {err}"
+        );
+
+        // E uma leitura honesta de 64 pinos passa com folga.
+        let honesta: serde_json::Map<String, Value> =
+            (0..64).map(|p| (p.to_string(), json!(p % 2))).collect();
+        sanear_valor_da_placa(json!({ "pins": honesta }), "serial:arduino-1")
+            .expect("leitura honesta cabe no teto");
     }
 
     /// Linha sem `\n` no fim, seguida de EOF: é lixo incompleto, não

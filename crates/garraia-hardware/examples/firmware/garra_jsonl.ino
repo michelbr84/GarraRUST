@@ -85,6 +85,10 @@ const uint8_t N_ANALOGICO = sizeof(PINOS_ANALOGICOS) / sizeof(PINOS_ANALOGICOS[0
 
 char linha[LINHA_MAX + 1];
 size_t usado = 0;
+// Ligado quando a linha estourou o buffer: tudo até o próximo '\n' é lixo de
+// uma mensagem que já não cabe, e processar a cauda dela seria processar meia
+// mensagem (ou, pior, a segunda metade de uma mensagem forjada).
+bool descartando = false;
 
 int ultimoNivel[N_ENTRADA > 0 ? N_ENTRADA : 1];
 unsigned long ultimoAviso = 0;
@@ -301,16 +305,22 @@ void loop() {
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
     if (c == '\n') {
+      // Fim da linha: ou ela cabia e é processada, ou era a que estourou o
+      // buffer e o descarte termina aqui.
       linha[usado] = '\0';
-      if (usado > 0) processar(String(linha));
+      if (usado > 0 && !descartando) processar(String(linha));
       usado = 0;
+      descartando = false;
     } else if (c != '\r') {
-      if (usado < LINHA_MAX) {
+      if (descartando) {
+        // Cauda da linha estourada: consome sem guardar, até o '\n'.
+      } else if (usado < LINHA_MAX) {
         linha[usado++] = c;
       } else {
-        // Linha maior que o buffer: descarta até o próximo '\n' em vez de
-        // processar meia mensagem.
+        // Linha maior que o buffer: descarta ela inteira, incluindo o que
+        // ainda vem, em vez de processar meia mensagem.
         usado = 0;
+        descartando = true;
       }
     }
   }

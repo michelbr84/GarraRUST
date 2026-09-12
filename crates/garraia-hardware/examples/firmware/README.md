@@ -54,7 +54,7 @@ No topo do sketch:
 
 | Constante | O que é |
 |---|---|
-| `PLACA_ID` | id único desta placa no Garra (vira a chave do registry) |
+| `PLACA_ID` | id único desta placa (a chave do registry é `serial:<PLACA_ID>`) |
 | `PINOS_ENTRADA` | pinos lidos por `digital_read` |
 | `PINOS_SAIDA` | **a allowlist**: só estes pinos podem ser escritos |
 | `PINOS_ANALOGICOS` | canais lidos por `analog_read` (vazio numa placa sem ADC) |
@@ -65,7 +65,19 @@ tudo que não deve ser mexido.
 
 ## Ligando no Garra
 
+> **Ainda não dá para ligar pelo `garraia.toml`.** Este PR entrega o adapter
+> dentro do crate `garraia-hardware` (feature `hardware-serial`), com a config
+> em `SerialAdapterConfig` e o boot em `SerialAdapterManager::spawn`. O que
+> **não** existe ainda é o wiring: o `garraia-config` não tem seção
+> `[hardware.serial]` e nem o gateway nem a CLI sobem o adapter no boot. Isso é
+> um PR seguinte. Até lá, quem usa é código Rust (um binário próprio, um teste
+> de integração) chamando o `spawn` direto.
+>
+> O bloco abaixo é a **forma pretendida** da config, para revisão — não um
+> arquivo que já funciona.
+
 ```toml
+# Pretendido, ainda não lido por ninguém.
 [hardware.serial]
 # Sem esta linha, o Garra tenta descobrir a placa por VID/PID. No Linux sem
 # libudev a descoberta não enxerga VID/PID e não acha nada — declarar a porta
@@ -73,6 +85,11 @@ tudo que não deve ser mexido.
 portas = ["/dev/ttyACM0"]   # ou "COM3" no Windows
 baud   = 115200
 ```
+
+Caminho de porta aceito no Unix: `/dev/tty*`, `/dev/cu.*` (macOS) e os links
+estáveis `/dev/serial/by-id/<nome>` e `/dev/serial/by-path/<nome>`. Outros
+arquivos de `/dev/` são recusados antes de qualquer `open` — `/dev/mem` e
+`/dev/watchdog` moram lá e não são placas.
 
 Para um caminho que não muda quando você repluga a placa, use o link estável:
 

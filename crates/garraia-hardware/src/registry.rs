@@ -29,10 +29,38 @@ impl DeviceRegistry {
     ///
     /// Re-registrar o mesmo id **substitui** — é como um adapter que perdeu
     /// a conexão e reconecta atualiza o device sem que o registry guarde a
-    /// versão velha em silêncio.
+    /// versão velha em silêncio. A substituição é logada em `warn`: um id
+    /// trocando de dono no meio da vida do processo é ou uma reconexão ou uma
+    /// colisão, e as duas merecem aparecer no log.
+    ///
+    /// Transporte em que o **dispositivo** escolhe o próprio id (serial/USB,
+    /// o módulo `adapter_serial`) não deve usar este método: uma placa hostil
+    /// se anunciando com o id de um device legítimo sequestraria as leituras
+    /// endereçadas a ele. Para esses, [`Self::register_if_absent`].
     pub fn register(&self, device: Arc<dyn Device>) {
         let id = device.id().to_string();
-        self.devices.write().unwrap().insert(id, device);
+        let anterior = self.devices.write().unwrap().insert(id.clone(), device);
+        if anterior.is_some() {
+            tracing::warn!(dispositivo = %id, "registry: id re-registrado — versão anterior substituída");
+        }
+    }
+
+    /// Registra **só se o id estiver livre**; devolve `false` sem tocar em
+    /// nada quando já existe um dispositivo com esse id.
+    ///
+    /// A checagem e a inserção acontecem sob o mesmo `write()`: consultar
+    /// [`Self::get`] antes de [`Self::register`] deixaria uma janela entre as
+    /// duas travas, e "registrei porque estava vazio há um instante" não é
+    /// fail-closed.
+    #[must_use = "ignorar o `false` é aceitar a substituição que este método existe para impedir"]
+    pub fn register_if_absent(&self, device: Arc<dyn Device>) -> bool {
+        let id = device.id().to_string();
+        let mut guard = self.devices.write().unwrap();
+        if guard.contains_key(&id) {
+            return false;
+        }
+        guard.insert(id, device);
+        true
     }
 
     /// O dispositivo pelo id, se registrado.
@@ -118,6 +146,35 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         assert!(nomes.contains(&"humidity"), "versão nova vence: {nomes:?}");
+    }
+
+    /// O oposto do teste acima, e a defesa que o transporte serial usa: um
+    /// segundo dispositivo com o mesmo id é recusado, e quem estava lá fica.
+    #[test]
+    fn register_if_absent_nao_substitui_id_ocupado() {
+        let reg = DeviceRegistry::new();
+        assert!(
+            reg.register_if_absent(Arc::new(MockDevice::sensor_temperatura())),
+            "id livre é aceito"
+        );
+
+        let impostor =
+            MockDevice::sensor_temperatura().com_cap(Capability::leitura("humidity", None));
+        assert!(
+            !reg.register_if_absent(Arc::new(impostor)),
+            "id ocupado é recusado"
+        );
+
+        assert_eq!(reg.len(), 1);
+        let nomes: Vec<String> = reg.list()[0]
+            .capabilities
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert!(
+            !nomes.iter().any(|n| n == "humidity"),
+            "o registrado original sobrevive intacto: {nomes:?}"
+        );
     }
 
     #[test]

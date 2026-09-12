@@ -112,7 +112,8 @@ pub use adapter_homeassistant::{HaAdapterConfig, HaAdapterManager, HaDevice};
 
 #[cfg(feature = "hardware-serial")]
 pub use adapter_serial::{
-    ManifestoSerial, SerialAdapterConfig, SerialAdapterManager, SerialDevice, adotar_stream,
+    ManifestoSerial, PREFIXO_ID as PREFIXO_ID_SERIAL, SerialAdapterConfig, SerialAdapterManager,
+    SerialDevice, adotar_stream,
 };
 
 #[cfg(feature = "hardware-gpio")]
