@@ -65,6 +65,12 @@ pub struct AppConfig {
     /// (plan 0046 §5.1) — see [`crate::AuthConfig`] for the env contract.
     #[serde(default)]
     pub auth: AuthSection,
+
+    /// ADR 0020 / #1126 — transporte de hardware (adapter MQTT). `None`
+    /// (o default) = nenhum transporte compilado/configurado; o registry
+    /// de dispositivos segue vazio (fail-closed).
+    #[serde(default)]
+    pub hardware: HardwareConfig,
 }
 
 impl Default for AppConfig {
@@ -86,8 +92,45 @@ impl Default for AppConfig {
             mobile: MobileConfig::default(),
             storage: StorageConfig::default(),
             auth: AuthSection::default(),
+            hardware: HardwareConfig::default(),
         }
     }
+}
+
+/// ADR 0020 / #1126 — configuração do transporte de hardware.
+///
+/// Hoje só o adapter MQTT; adapters futuros (#1127 Home Assistant,
+/// #1130 Serial/GPIO) entram como campos aditivos desta seção.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HardwareConfig {
+    /// Adapter MQTT (rumqttc). `None` = sem MQTT — o gateway não sobe o
+    /// loop de descoberta e o registry fica vazio (fail-closed).
+    #[serde(default)]
+    pub mqtt: Option<MqttConfig>,
+}
+
+/// Conexão com o broker MQTT (#1126). Credencial de senha é **write-only**:
+/// config carrega o nome da env var, nunca o valor — mesma disciplina do
+/// settings registry ("secrets are write-only — value never echoed back").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MqttConfig {
+    /// Endereço do broker, `host:port` (ex.: `"127.0.0.1:1883"`).
+    pub broker: String,
+    /// Usuário do broker, quando o broker exige autenticação.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Nome da env var que guarda a senha. `None` = conexão anônima
+    /// (aceitável em brokers locais sem ACL).
+    #[serde(default)]
+    pub password_env: Option<String>,
+    /// Prefixo do client id MQTT (o pid completa a unicidade). Default
+    /// `"garra"`.
+    #[serde(default = "default_mqtt_client_prefix")]
+    pub client_id_prefix: String,
+}
+
+fn default_mqtt_client_prefix() -> String {
+    "garra".to_string()
 }
 
 /// Non-secret auth knobs (plan 0046 / GAR-379 slice 3).
@@ -435,6 +478,17 @@ impl AppConfig {
     /// relatando uma memoria vazia enquanto o agente conversa com outra.
     pub fn memory_db_path(&self) -> std::path::PathBuf {
         self.resolved_data_dir().join("memory.db")
+    }
+
+    /// Caminho do banco de estado de hardware (presenca online/offline dos
+    /// dispositivos, #1126).
+    ///
+    /// Fonte **unica**, mesmo contrato do `memory_db_path`: gateway e CLI
+    /// precisam abrir o mesmo arquivo, senao a CLI listaria offline um
+    /// dispositivo que o gateway acabou de ver online — e cada processo
+    /// reconectado do adapter reescreveria so a sua copia.
+    pub fn hardware_db_path(&self) -> std::path::PathBuf {
+        self.resolved_data_dir().join("hardware.db")
     }
 }
 
@@ -1031,6 +1085,26 @@ mod tests {
         assert!(config.embeddings.is_empty());
     }
 
+    /// #1126: os dois bancos de estado vivem sob o mesmo data_dir resolvido,
+    /// e cada um tem o nome que a doc declara — `memory.db` para a memoria
+    /// semantica, `hardware.db` para a presenca dos dispositivos. A CLI e o
+    /// gateway leem destes metodos, nunca montam o caminho na mao.
+    #[test]
+    fn db_paths_live_under_the_resolved_data_dir() {
+        let config = AppConfig::default();
+        let dir = config.resolved_data_dir();
+        assert_eq!(config.memory_db_path(), dir.join("memory.db"));
+        assert_eq!(config.hardware_db_path(), dir.join("hardware.db"));
+
+        // E o data_dir explicito vence — a resolucao e a mesma para os dois.
+        let mut custom = AppConfig::default();
+        custom.data_dir = Some(std::path::PathBuf::from("/tmp/garra-data"));
+        assert_eq!(
+            custom.hardware_db_path(),
+            std::path::PathBuf::from("/tmp/garra-data/hardware.db")
+        );
+    }
+
     #[test]
     fn agent_persona_defaults_to_friendly() {
         // Plan 0250 (GAR-771): the warm persona is the default; persona_lang
@@ -1090,5 +1164,41 @@ embeddings:
         assert_eq!(cohere.provider, "cohere");
         assert_eq!(cohere.model.as_deref(), Some("embed-english-v3.0"));
         assert_eq!(cohere.dimensions, Some(1024));
+    }
+
+    // ── ADR 0020 / #1126: seção `hardware:` (transporte MQTT) ──
+
+    #[test]
+    fn hardware_mqtt_parses_broker_username_and_password_env() {
+        let raw = r#"
+hardware:
+  mqtt:
+    broker: "127.0.0.1:1883"
+    username: garra
+    password_env: GARRA_MQTT_PASS
+"#;
+        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let mqtt = config.hardware.mqtt.expect("hardware.mqtt should be Some");
+        assert_eq!(mqtt.broker, "127.0.0.1:1883");
+        assert_eq!(mqtt.username.as_deref(), Some("garra"));
+        assert_eq!(mqtt.password_env.as_deref(), Some("GARRA_MQTT_PASS"));
+        assert_eq!(mqtt.client_id_prefix, "garra");
+    }
+
+    #[test]
+    fn hardware_default_has_no_mqtt() {
+        let config = AppConfig::default();
+        assert!(config.hardware.mqtt.is_none(), "sem seção, sem transporte");
+    }
+
+    #[test]
+    fn hardware_mqtt_write_only_password_never_carries_value() {
+        // Disciplina write-only do settings registry: config carrega o NOME
+        // da env var; o valor só existe no ambiente.
+        let raw = "hardware:\n  mqtt:\n    broker: '127.0.0.1:1883'\n";
+        let config: AppConfig = serde_yaml::from_str(raw).expect("yaml should parse");
+        let mqtt = config.hardware.mqtt.expect("mqtt");
+        assert!(mqtt.password_env.is_none());
+        assert!(mqtt.username.is_none());
     }
 }

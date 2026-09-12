@@ -22,9 +22,11 @@
 //!
 //! Nenhum dispositivo físico é conectado aqui. Sem adaptador registrado, o
 //! [`DeviceRegistry`] fica vazio e as tools do agente (`device_list`,
-//! `device_read`, `device_execute`, em `garraia-agents`) listam nada. I/O
-//! físico de verdade só existe a partir de #1126, cada adapter com o próprio
-//! risco avaliado no PR correspondente.
+//! `device_read`, `device_execute`, em `garraia-agents`) listam nada. O
+//! primeiro transporte real é o adapter MQTT (#1126), em [`adapter_mqtt`],
+//! atrás da feature `mqtt` — OFF por default, mesmo padrão do `storage-s3`:
+//! quem não usa transporte de rede não paga a árvore de deps. Cada adapter
+//! traz o próprio risco avaliado no PR correspondente.
 //!
 //! O estado online/offline dos dispositivos ([`DeviceStateStore`]) segue o
 //! padrão do repo: SQLite via rusqlite bundled, acesso sync sob mutex.
@@ -40,6 +42,9 @@ pub mod state;
 #[cfg(feature = "mock-device")]
 pub mod mock;
 
+#[cfg(feature = "mqtt")]
+pub mod adapter_mqtt;
+
 pub use capability::Capability;
 pub use device::{Device, DeviceSummary};
 pub use error::HardwareError;
@@ -50,6 +55,9 @@ pub use state::DeviceStateStore;
 
 #[cfg(feature = "mock-device")]
 pub use mock::MockDevice;
+
+#[cfg(feature = "mqtt")]
+pub use adapter_mqtt::{DeviceManifest, MqttAdapterConfig, MqttAdapterManager, MqttDevice};
 
 /// Resultado das operações de hardware.
 pub type Result<T> = std::result::Result<T, HardwareError>;

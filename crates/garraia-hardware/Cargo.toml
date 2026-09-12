@@ -12,6 +12,9 @@ description = "Hardware — trait Device, Capability com risco R0-R5, registry e
 # `--all-features`. Builds de produção que usarem `default-features = false`
 # continuam com toda a superfície do trait — só perdem o mock.
 mock-device = []
+# Adapter MQTT (#1126, rumqttc): OFF por default — quem não usa transporte
+# de rede não paga a árvore de deps. Mesmo padrão do `storage-s3`.
+mqtt = ["dep:rumqttc"]
 default = ["mock-device"]
 
 [dependencies]
@@ -24,3 +27,11 @@ rusqlite = { workspace = true }
 # `tokio::sync::Mutex` no DeviceStateStore (padrão SessionStore); os testes
 # usam o mesmo rt para `#[tokio::test]`.
 tokio = { workspace = true }
+# Feature `mqtt` (#1126): cliente MQTT async puro (sem runtime C). O event
+# loop do rumqttc roda como task tokio própria do manager.
+rumqttc = { version = "0.25", optional = true }
+
+[dev-dependencies]
+# Broker MQTT embutido para os testes de integração da feature `mqtt`
+# (#1126): mesmo time do rumqttc, roda in-process (sem docker).
+rumqttd = { version = "0.20", default-features = false }

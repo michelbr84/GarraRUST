@@ -10,7 +10,7 @@ use garraia_agents::{
 };
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
-use garraia_hardware::DeviceRegistry;
+use garraia_hardware::{DeviceRegistry, DeviceStateStore, MqttAdapterConfig, MqttAdapterManager};
 use tracing::{info, warn};
 
 mod channels;
@@ -629,7 +629,15 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // `device_execute` honra `tool_confirmation_enabled` (mesma chave do
     // bash): sem canal, R3/R4/R5 são fail-closed BLOCKED dentro da tool.
     let device_registry = Arc::new(DeviceRegistry::new());
-    let device_config = Arc::new(DeviceToolsConfig::new(device_registry));
+    // #1126: com `hardware.mqtt` configurado, o adapter sobe aqui — event
+    // loop que descobre dispositivos pelos manifestos retained, marca
+    // presenca no store e roteia as respostas de leitura. Sem a secao, o
+    // registry segue vazio: fail-closed, o estado default do deploy.
+    let device_state = spawn_mqtt_adapter(config, device_registry.clone());
+    let device_config = Arc::new(match device_state {
+        Some(state) => DeviceToolsConfig::new(device_registry).com_estado(state),
+        None => DeviceToolsConfig::new(device_registry),
+    });
     runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
     let device_execute = if config.agent.tool_confirmation_enabled {
@@ -1064,6 +1072,107 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     }
 
     runtime
+}
+
+/// Sobe o adapter MQTT (#1126) quando `hardware.mqtt` esta configurado.
+///
+/// Chamado pelo gateway **e** pela CLI (`garra chat`) — e a fonte unica do
+/// wiring: resolucao de senha, client id e caminho do store de presenca
+/// moram aqui, nao em duas copias que divergem. A CLI chama via
+/// `garraia_gateway::bootstrap::spawn_mqtt_adapter`.
+///
+/// Fail-soft no boot: qualquer problema (broker malformado, `password_env`
+/// apontando para env vazia ou inexistente, store de presenca nao abre) nao
+/// derruba o processo — o registry de dispositivos simplesmente segue vazio
+/// e cada warn diz o que faltou. `garra config check` mostra os mesmos
+/// erros de config antes do boot.
+///
+/// Devolve o store de presenca aberto, para as tools de device mostrarem
+/// online/offline — `None` quando nao ha config ou o adapter nao subiu.
+///
+/// Precisa de runtime tokio (spawn do event loop) — gateway e CLI chamam
+/// de dentro de `run()` async. Sem secao `hardware.mqtt`, retorna antes de
+/// tocar tokio, seguro para testes.
+pub fn spawn_mqtt_adapter(
+    config: &AppConfig,
+    registry: Arc<DeviceRegistry>,
+) -> Option<Arc<DeviceStateStore>> {
+    let mqtt = config.hardware.mqtt.as_ref()?;
+
+    // A senha vem do env apontado por `password_env` e nunca e logada — o
+    // warn cita so o NOME da env, que nao e segredo. Configurada e vazia/
+    // ausente e falha de deploy, nao motivo para conectar anonimo: o broker
+    // recusaria depois, com reconnect em loop e sem mensagem clara.
+    let password = match &mqtt.password_env {
+        Some(env_name) => match std::env::var(env_name) {
+            Ok(value) if !value.is_empty() => Some(value),
+            _ => {
+                warn!(
+                    env = env_name,
+                    "hardware.mqtt: password_env aponta para env vazia ou inexistente; \
+                     adapter MQTT nao sobe e o registry de dispositivos fica vazio"
+                );
+                return None;
+            }
+        },
+        None => None,
+    };
+
+    let adapter_config = match MqttAdapterConfig::new(&mqtt.broker, mqtt.username.clone(), password)
+    {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            warn!(
+                "hardware.mqtt: {e}; adapter MQTT nao sobe e o registry de dispositivos fica vazio (veja `garra config check`)"
+            );
+            return None;
+        }
+    };
+
+    // Client id unico por processo: gateway e `garra chat` no mesmo host
+    // conectam ao mesmo broker, e dois clientes com o mesmo id se des
+    // conectam em loop — o pid completa a unicidade do prefixo.
+    let adapter_config =
+        adapter_config.com_client_id(format!("{}-{}", mqtt.client_id_prefix, std::process::id()));
+
+    // Presenca no mesmo padrao do memory.db: fonte unica da resolucao em
+    // `AppConfig::hardware_db_path`, porque gateway e CLI abrem o mesmo
+    // arquivo. O diretório precisa existir antes de abrir o SQLite — o boot
+    // da memoria cria o dele, mas o hardware pode rodar sem memoria ligada.
+    let state_path = config.hardware_db_path();
+    if let Some(parent) = state_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        warn!(
+            "hardware.mqtt: nao consegui criar {} ({e}); adapter MQTT nao sobe",
+            parent.display()
+        );
+        return None;
+    }
+    let state = match DeviceStateStore::abrir_em(&state_path) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            warn!(
+                "hardware.mqtt: nao abri o store de presenca em {} ({e}); adapter MQTT nao sobe",
+                state_path.display()
+            );
+            return None;
+        }
+    };
+
+    // O handle do manager fica solto de proposito: o event loop vive pela
+    // vida do processo (reconnect do rumqttc e interno), e o reload de
+    // config que o pararia e trabalho da #1128.
+    if let Err(e) = MqttAdapterManager::spawn(adapter_config, registry, Some(state.clone())) {
+        warn!("hardware.mqtt: {e}; adapter MQTT nao sobe e o registry de dispositivos fica vazio");
+        return None;
+    }
+
+    info!(
+        broker = %mqtt.broker,
+        "hardware.mqtt no ar — descoberta via manifestos retained, presenca no store"
+    );
+    Some(state)
 }
 
 /// Build MCP tools from merged config (config.yml + mcp.json).
