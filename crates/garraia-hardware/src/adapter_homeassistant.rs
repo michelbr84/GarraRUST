@@ -10,7 +10,7 @@
 //! | `GET /api/states` | REST | descoberta — entidades por domínio |
 //! | `GET /api/states/{entity_id}` | REST | [`crate::Device::read`] |
 //! | `POST /api/services/{domain}/{service}` | REST | [`crate::Device::execute`] |
-//! | `ws(s)://…/api/websocket` | WebSocket | eventos `state_changed` → presença |
+//! | `ws(s)://…/api/websocket` | WebSocket | eventos `state_changed` → presença + barramento |
 //!
 //! # Contratos
 //!
@@ -35,6 +35,10 @@
 //!   [`DeviceStateStore`] (`state == "unavailable"` → offline); a descoberta
 //!   marca quem respondeu. Desconexão do WebSocket → reconexão em loop
 //!   (mesmo padrão do canal Slack), presença segue no retorno.
+//! - **Barramento (#1128)**: cada `state_changed` também é publicado no
+//!   [`HardwareEventBus`] (`Option` — quem não quer o barramento passa
+//!   `None`), com o estado novo e o velho inteiros — o motor de automações
+//!   assina e casa as regras do usuário sobre este fluxo.
 //!
 //! # O que este slice NÃO faz
 //!
@@ -47,6 +51,7 @@ use crate::Result;
 use crate::capability::Capability;
 use crate::device::Device;
 use crate::error::HardwareError;
+use crate::events::{EstadoObservado, HardwareEvent, HardwareEventBus, StateChanged};
 use crate::registry::DeviceRegistry;
 use crate::risk::RiskClass;
 use crate::schema::validar_args;
@@ -522,8 +527,9 @@ impl HaAdapterManager {
         config: HaAdapterConfig,
         registry: Arc<DeviceRegistry>,
         state: Option<Arc<DeviceStateStore>>,
+        bus: Option<Arc<HardwareEventBus>>,
     ) -> Self {
-        let tarefa = tokio::spawn(rodar(Arc::new(config), registry, state));
+        let tarefa = tokio::spawn(rodar(Arc::new(config), registry, state, bus));
         Self { tarefa }
     }
 
@@ -538,6 +544,7 @@ async fn rodar(
     config: Arc<HaAdapterConfig>,
     registry: Arc<DeviceRegistry>,
     state: Option<Arc<DeviceStateStore>>,
+    bus: Option<Arc<HardwareEventBus>>,
 ) {
     // Cada rodada = descoberta + eventos. A descoberta é refeita a cada
     // reconexão de propósito: o hub pode não estar no ar no boot (a task
@@ -571,11 +578,11 @@ async fn rodar(
         }
 
         // Loop de eventos: conecta, autentica, assina `state_changed`; caiu,
-        // espera e reconecta (mesmo padrão do canal Slack). Presença é o
-        // consumo do slice — a #1128 liga as automações neste fluxo depois.
+        // espera e reconecta (mesmo padrão do canal Slack). Presença e
+        // barramento são o consumo: o motor de automações assina o fluxo.
         match conectar_ws(&config).await {
             Ok(mut ws) => match autenticar_e_assinar(&mut ws, &config.token).await {
-                Ok(()) => consumir_eventos(ws, state.as_ref()).await,
+                Ok(()) => consumir_eventos(ws, state.as_ref(), bus.as_ref()).await,
                 Err(e) => tracing::warn!("hardware.home_assistant: handshake falhou: {e}"),
             },
             Err(e) => tracing::warn!("hardware.home_assistant: WebSocket indisponível: {e}"),
@@ -738,6 +745,7 @@ fn exigir_msg(msg: &str, esperado: &str) -> Result<()> {
 async fn consumir_eventos(
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     state: Option<&Arc<DeviceStateStore>>,
+    bus: Option<&Arc<HardwareEventBus>>,
 ) {
     let (mut tx, mut rx) = ws.split();
     let mut ping = tokio::time::interval(PING_INTERVAL);
@@ -765,11 +773,24 @@ async fn consumir_eventos(
             }
             msg = rx.next() => match msg {
                 Some(Ok(Message::Text(t))) => {
-                    if let Some((entity_id, online)) = entidade_do_evento(t.as_str())
-                        && let Some(store) = state
-                        && let Err(err) = store.marcar(&entity_id, online).await
-                    {
-                        tracing::warn!(entity = %entity_id, "presença: {err}");
+                    if let Some(evento) = evento_de_ha(t.as_str()) {
+                        if let Some(store) = state
+                            && let Err(err) = store.marcar(&evento.entity_id, evento.online).await
+                        {
+                            tracing::warn!(entity = %evento.entity_id, "presença: {err}");
+                        }
+                        // #1128: o estado inteiro vai para o barramento — o
+                        // motor de automações assina e casa as regras. Publicar
+                        // nunca bloqueia (`let _ = send`): slow subscriber
+                        // recebe Lagged, o hub segue.
+                        if let Some(bus) = bus {
+                            bus.publicar(HardwareEvent::StateChanged(StateChanged {
+                                device_id: evento.entity_id.clone(),
+                                novo: evento.novo,
+                                velho: evento.velho,
+                                em_milis: crate::events::milis_agora(),
+                            }));
+                        }
                     }
                 }
                 Some(Ok(_)) => continue,
@@ -786,10 +807,22 @@ async fn consumir_eventos(
     }
 }
 
-/// Extrai `(entity_id, online)` de um evento `state_changed`:
-/// `{"id":1,"type":"event","event":{"event_type":"state_changed","data":
-/// {"entity_id":"light.sala","new_state":{"state":"on",…}}}}`.
-fn entidade_do_evento(msg: &str) -> Option<(String, bool)> {
+/// Um evento `state_changed` do HA já destilado: quem mudou, como ficou e
+/// como estava.
+#[derive(Debug, Clone, PartialEq)]
+struct EventoHa {
+    entity_id: String,
+    novo: EstadoObservado,
+    velho: Option<EstadoObservado>,
+    online: bool,
+}
+
+/// Destila um evento `state_changed` do HA para [`EventoHa`]:
+/// `{"event":{"event_type":"state_changed","data":{"entity_id":"light.sala",
+/// "new_state":{"state":"on","attributes":{…}},"old_state":{…}}}}`.
+/// `new_state` null/ausente é estado removido → offline sem estado; os
+/// atributos seguem inteiros — condições do motor avaliam `to.attributes.x`.
+fn evento_de_ha(msg: &str) -> Option<EventoHa> {
     let v: Value = serde_json::from_str(msg).ok()?;
     let evento = v.get("event")?;
     if evento.get("event_type")?.as_str()? != "state_changed" {
@@ -797,11 +830,27 @@ fn entidade_do_evento(msg: &str) -> Option<(String, bool)> {
     }
     let dados = evento.get("data")?;
     let entity_id = dados.get("entity_id")?.as_str()?.to_string();
-    let online = match dados.get("new_state") {
-        Some(Value::Null) | None => false,
-        Some(novo) => novo.get("state").and_then(Value::as_str) != Some("unavailable"),
+    let estado_de = |objeto: Option<&Value>| match objeto {
+        Some(Value::Null) | None => None,
+        Some(objeto) => Some(EstadoObservado {
+            state: objeto
+                .get("state")
+                .and_then(Value::as_str)
+                .map(String::from),
+            attributes: objeto.get("attributes").cloned().unwrap_or(Value::Null),
+            online: objeto.get("state").and_then(Value::as_str) != Some("unavailable"),
+        }),
     };
-    Some((entity_id, online))
+    // `new_state` null/ausente é estado removido → offline sem estado.
+    let novo = estado_de(dados.get("new_state")).unwrap_or_else(|| EstadoObservado::simples(false));
+    let velho = estado_de(dados.get("old_state"));
+    let online = novo.online;
+    Some(EventoHa {
+        entity_id,
+        novo,
+        velho,
+        online,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -992,8 +1041,8 @@ mod tests {
         assert!(sensor.caps.iter().all(|c| c.risk == RiskClass::R0));
     }
 
-    /// O evento `state_changed` do HA rende (entity_id, online) — e eventos
-    /// de outro tipo não.
+    /// O evento `state_changed` do HA rende [`EventoHa`] completo — estado novo
+    /// e velho com atributos, presença derivada — e eventos de outro tipo não.
     #[test]
     fn evento_state_changed_rende_presenca() {
         let evento = json!({
@@ -1002,15 +1051,24 @@ mod tests {
                 "event_type": "state_changed",
                 "data": {
                     "entity_id": "light.sala",
-                    "old_state": {"state": "off"},
-                    "new_state": {"state": "on", "attributes": {}}
+                    "old_state": {"state": "off", "attributes": {"brightness": 0}},
+                    "new_state": {"state": "on", "attributes": {"brightness": 128}}
                 }
             }
         })
         .to_string();
+        let destilado = evento_de_ha(&evento).expect("evento válido");
+        assert_eq!(destilado.entity_id, "light.sala");
+        assert!(destilado.online);
+        assert_eq!(destilado.novo.state.as_deref(), Some("on"));
+        assert_eq!(destilado.novo.attributes["brightness"], 128);
         assert_eq!(
-            entidade_do_evento(&evento),
-            Some(("light.sala".to_string(), true))
+            destilado.velho.as_ref().unwrap().state.as_deref(),
+            Some("off")
+        );
+        assert_eq!(
+            destilado.velho.as_ref().unwrap().attributes["brightness"],
+            0
         );
 
         let offline = json!({
@@ -1020,26 +1078,43 @@ mod tests {
             }}
         })
         .to_string();
-        assert_eq!(
-            entidade_do_evento(&offline),
-            Some(("light.sala".to_string(), false))
-        );
+        let destilado = evento_de_ha(&offline).expect("offline válido");
+        assert!(!destilado.online);
+        assert!(destilado.velho.is_none());
 
-        // Estado removido (new_state: null) → offline.
+        // Estado removido (new_state: null) → offline sem estado.
         let removido = json!({
             "id": 1, "type": "event",
             "event": {"event_type": "state_changed", "data": {"entity_id": "light.sala", "new_state": null}}
         })
         .to_string();
+        let destilado = evento_de_ha(&removido).expect("removido válido");
+        assert!(!destilado.online);
+        assert_eq!(destilado.novo.state, None);
+
+        // Estado numérico (o caso do sensor do motor: "33.5" como string) —
+        // o estado segue verbatim; a coerção string→número é do avaliador.
+        let sensor = json!({
+            "id": 1, "type": "event",
+            "event": {"event_type": "state_changed", "data": {
+                "entity_id": "sensor.garagem",
+                "old_state": {"state": "31.0", "attributes": {"unit": "C"}},
+                "new_state": {"state": "33.5", "attributes": {"unit": "C", "battery": 87}}
+            }}
+        })
+        .to_string();
+        let destilado = evento_de_ha(&sensor).expect("sensor válido");
+        assert_eq!(destilado.novo.state.as_deref(), Some("33.5"));
+        assert_eq!(destilado.novo.attributes["battery"], 87);
         assert_eq!(
-            entidade_do_evento(&removido),
-            Some(("light.sala".to_string(), false))
+            destilado.velho.as_ref().unwrap().state.as_deref(),
+            Some("31.0")
         );
 
         // Outro tipo de evento → None.
         let outro =
             json!({"id": 2, "type": "event", "event": {"event_type": "call_service"}}).to_string();
-        assert_eq!(entidade_do_evento(&outro), None);
+        assert_eq!(evento_de_ha(&outro), None);
     }
 
     /// Debug redige o token — o hub do HA é admin total da casa.

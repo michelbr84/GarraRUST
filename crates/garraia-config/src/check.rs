@@ -1603,6 +1603,9 @@ fn validate_hardware(
     if let Some(ha) = &hardware.home_assistant {
         valida_home_assistant(ha, findings, push_err);
     }
+    if let Some(automacoes) = &hardware.automations {
+        valida_automacoes(automacoes, findings, push_err);
+    }
 }
 
 /// #1127: a URL do HA precisa de esquema http/https e host — é ela que o
@@ -1651,6 +1654,36 @@ fn valida_home_assistant(
             "hardware.home_assistant.token_env must be non-empty (HA has no anonymous API)"
                 .to_string(),
         );
+    }
+}
+
+/// #1128: o diretório de regras precisa existir como valor — config que
+/// cita `dir` vazio sobe com o motor sem regras e ninguém percebe. O teto
+/// tem que ser uma das três formas canônicas (`r0`/`r1`/`r2`): um typo
+/// ("R2" maiúsculo é aceito no engine, mas "r3" não é um teto — R3+ nem
+/// existe aqui) vira erro na carga, não um teto silenciosamente mais alto.
+fn valida_automacoes(
+    automacoes: &crate::model::AutomationsConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    if automacoes.dir.trim().is_empty() {
+        push_err(
+            findings,
+            "hardware.automations.dir",
+            "hardware.automations.dir must be non-empty (the rules directory)".to_string(),
+        );
+    }
+    match automacoes.risk_ceiling.trim().to_ascii_lowercase().as_str() {
+        "r0" | "r1" | "r2" => {}
+        outro => push_err(
+            findings,
+            "hardware.automations.risk_ceiling",
+            format!(
+                "hardware.automations.risk_ceiling ({:?}) must be one of \"r0\", \"r1\", \"r2\" (got {:?}) — R3+ is not configurable for automations",
+                automacoes.risk_ceiling, outro
+            ),
+        ),
     }
 }
 
@@ -2503,6 +2536,7 @@ mod tests {
         use crate::model::{HardwareConfig, MqttConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 mqtt: Some(MqttConfig {
                     broker: "127.0.0.1".to_string(), // sem :port
                     username: None,
@@ -2527,6 +2561,7 @@ mod tests {
         use crate::model::{HardwareConfig, MqttConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 mqtt: Some(MqttConfig {
                     broker: "127.0.0.1:mqtt".to_string(),
                     username: None,
@@ -2551,6 +2586,7 @@ mod tests {
         use crate::model::{HardwareConfig, MqttConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 mqtt: Some(MqttConfig {
                     broker: "127.0.0.1:1883".to_string(),
                     username: Some("garra".to_string()),
@@ -2576,6 +2612,7 @@ mod tests {
         use crate::model::{HaConfig, HardwareConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 home_assistant: Some(HaConfig {
                     url: "ftp://homeassistant.local:8123".to_string(),
                     token_env: "GARRA_HA_TOKEN".to_string(),
@@ -2598,6 +2635,7 @@ mod tests {
         use crate::model::{HaConfig, HardwareConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 home_assistant: Some(HaConfig {
                     url: "homeassistant.local".to_string(), // sem esquema
                     token_env: "GARRA_HA_TOKEN".to_string(),
@@ -2620,6 +2658,7 @@ mod tests {
         use crate::model::{HaConfig, HardwareConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 home_assistant: Some(HaConfig {
                     url: "http://127.0.0.1:8123".to_string(),
                     token_env: "  ".to_string(),
@@ -2643,6 +2682,7 @@ mod tests {
         use crate::model::{HaConfig, HardwareConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 home_assistant: Some(HaConfig {
                     url: "http://homeassistant.local:8123".to_string(),
                     token_env: "GARRA_HA_TOKEN".to_string(),
@@ -2666,6 +2706,7 @@ mod tests {
         use crate::model::{HaConfig, HardwareConfig, MqttConfig};
         let cfg = AppConfig {
             hardware: HardwareConfig {
+                automations: None,
                 mqtt: Some(MqttConfig {
                     broker: "127.0.0.1:1883".to_string(),
                     username: None,
@@ -2683,6 +2724,103 @@ mod tests {
         assert!(
             findings.iter().all(|f| !f.field.starts_with("hardware")),
             "both adapters valid mas encontrou findings: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn automations_valid_config_is_clean() {
+        // #1128: teto canônico + dir não vazio — o caso real da casa.
+        use crate::model::{AutomationsConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                automations: Some(AutomationsConfig {
+                    dir: "rules/automations".to_string(),
+                    risk_ceiling: "r2".to_string(),
+                }),
+                mqtt: None,
+                home_assistant: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("hardware")),
+            "valid automations config produced findings: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn automations_risk_ceiling_desconhecido_e_error() {
+        // "r3" não é um teto — R3+ nem existe para automação (não há quem
+        // confirme). Um typo tem que virar erro na carga, não um teto
+        // silenciosamente mais alto.
+        use crate::model::{AutomationsConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                automations: Some(AutomationsConfig {
+                    dir: "rules".to_string(),
+                    risk_ceiling: "r3".to_string(),
+                }),
+                mqtt: None,
+                home_assistant: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error
+                    && f.field == "hardware.automations.risk_ceiling"),
+            "expected error on unknown risk ceiling: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn automations_dir_vazio_e_error() {
+        use crate::model::{AutomationsConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                automations: Some(AutomationsConfig {
+                    dir: "   ".to_string(),
+                    risk_ceiling: "r1".to_string(),
+                }),
+                mqtt: None,
+                home_assistant: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "hardware.automations.dir"),
+            "expected error on empty dir: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn automations_risk_ceiling_maiusculo_e_aceito() {
+        // O engine normaliza (trim + lowercase), então "R2" é aceito — o
+        // check não pode ser mais estrito que a carga.
+        use crate::model::{AutomationsConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                automations: Some(AutomationsConfig {
+                    dir: "rules".to_string(),
+                    risk_ceiling: "R2".to_string(),
+                }),
+                mqtt: None,
+                home_assistant: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.field != "hardware.automations.risk_ceiling"),
+            "R2 maiúsculo não deve flag: {findings:?}"
         );
     }
 

@@ -1320,6 +1320,7 @@ mod slash_dispatch_tests {
     use garraia_agents::AgentRuntime;
     use garraia_channels::ChannelRegistry;
     use garraia_config::AppConfig;
+    use garraia_security::Allowlist;
     use std::sync::Arc;
 
     fn state_with_commands() -> SharedState {
@@ -1328,6 +1329,12 @@ mod slash_dispatch_tests {
             Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
         ));
+        // Isolamento do host: AppState::new carrega o allowlist do config
+        // dir real (ex.: ~/.config/garraia/allowlist.json), e numa maquina
+        // com instalacao com dono o /start nasce com dono sem nem exercitar
+        // o dispatch. O contrato destes testes e "instalacao nova": allowlist
+        // restricted vazia, sem dono e sem path (nada persiste em disco).
+        *state.allowlist.lock().unwrap() = Allowlist::restricted([]);
         crate::commands::register_commands(&mut state.command_registry.write().unwrap());
         state
     }

@@ -10,9 +10,10 @@ use garraia_agents::{
 };
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
+use garraia_hardware::automations::{EngineConfig, TetoRisco};
 use garraia_hardware::{
-    DeviceRegistry, DeviceStateStore, HaAdapterConfig, HaAdapterManager, MqttAdapterConfig,
-    MqttAdapterManager,
+    AutomationEngine, AutomationStore, DeviceRegistry, DeviceStateStore, HaAdapterConfig,
+    HaAdapterManager, HardwareEventBus, MqttAdapterConfig, MqttAdapterManager, carregar_automacoes,
 };
 use tracing::{info, warn};
 
@@ -1093,6 +1094,12 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 /// mostram. `None` quando nao ha nenhuma secao de hardware no config, ou
 /// quando o store nao abre (nenhum adapter sobe sem presenca).
 ///
+/// O barramento de eventos (#1128) nasce aqui e os adapters publicam nele
+/// o que veem; o motor de automacoes assina quando `hardware.automations`
+/// esta configurado (regras do dir, auditoria em `automations.db`, teto de
+/// risco do config). Automations sem nenhum adapter configurado nao sobe —
+/// nenhum evento chegaria ao barramento — e o warn diz isso.
+///
 /// Fail-soft no boot: qualquer problema (broker malformado, `password_env`/
 /// `token_env` apontando para env vazia ou inexistente, URL vetada recusada
 /// pelo guard SSRF) nao derruba o processo — o registry segue com os
@@ -1107,6 +1114,12 @@ pub fn spawn_hardware_adapters(
     registry: Arc<DeviceRegistry>,
 ) -> Option<Arc<DeviceStateStore>> {
     if config.hardware.mqtt.is_none() && config.hardware.home_assistant.is_none() {
+        if config.hardware.automations.is_some() {
+            warn!(
+                "hardware: automations configurado sem nenhum adapter (mqtt/home_assistant); \
+                 o motor nao sobe porque nenhum evento chegaria ao barramento"
+            );
+        }
         return None;
     }
 
@@ -1135,22 +1148,33 @@ pub fn spawn_hardware_adapters(
         }
     };
 
+    // Barramento de eventos (#1128): adapters publicam o que veem e o motor
+    // de automacoes assina. Publicar sem assinante custa zero (o canal
+    // descarta), entao ele existe sempre que ha hardware no ar.
+    let bus = Arc::new(HardwareEventBus::nova());
+
     // Cada adapter decide sozinho se sobe e explica o que faltou. O
     // operador pode ter os dois, um so, ou nenhum — o registry soma.
     let mut algum_no_ar = false;
-    algum_no_ar |= sobe_mqtt(config, registry.clone(), state.clone());
-    algum_no_ar |= sobe_home_assistant(config, registry, state.clone());
+    algum_no_ar |= sobe_mqtt(config, registry.clone(), state.clone(), Some(bus.clone()));
+    algum_no_ar |= sobe_home_assistant(config, registry.clone(), state.clone(), Some(bus.clone()));
+
+    // O motor de automacoes (#1128) arma por conta do config, independente
+    // de quantos adapters subiram — cada falha anterior ja teve o seu warn.
+    sobe_automacoes(config, bus, registry);
 
     algum_no_ar.then_some(state)
 }
 
 /// Sobe o adapter MQTT (#1126) quando `hardware.mqtt` esta configurado.
-/// Fail-soft: cada problema vira warn e devolve `false` — o deploy segue no
-/// ar, sem o transporte.
+/// Publica presenca e estado no barramento (`bus`) que o motor de
+/// automacoes (#1128) assina. Fail-soft: cada problema vira warn e devolve
+/// `false` — o deploy segue no ar, sem o transporte.
 fn sobe_mqtt(
     config: &AppConfig,
     registry: Arc<DeviceRegistry>,
     state: Arc<DeviceStateStore>,
+    bus: Option<Arc<HardwareEventBus>>,
 ) -> bool {
     let Some(mqtt) = config.hardware.mqtt.as_ref() else {
         return false;
@@ -1195,7 +1219,7 @@ fn sobe_mqtt(
     // O handle do manager fica solto de proposito: o event loop vive pela
     // vida do processo (reconnect do rumqttc e interno), e o reload de
     // config que o pararia e trabalho da #1128.
-    if let Err(e) = MqttAdapterManager::spawn(adapter_config, registry, Some(state)) {
+    if let Err(e) = MqttAdapterManager::spawn(adapter_config, registry, Some(state), bus) {
         warn!("hardware.mqtt: {e}; adapter MQTT nao sobe e o registry de dispositivos fica vazio");
         return false;
     }
@@ -1209,10 +1233,10 @@ fn sobe_mqtt(
 
 /// Sobe o adapter Home Assistant (#1127) quando `hardware.home_assistant`
 /// esta configurado — REST (descoberta `/api/states`, leitura, servicos) +
-/// WebSocket (`state_changed` → presenca), tudo atras do guard SSRF
-/// (`IpScope::AllowPrivate`: hub na LAN/loopback e alvo legitimo). As
-/// entidades viram dispositivos com risco por dominio: sensor/binary_sensor
-/// R0, light/switch/climate R1, cover R2, lock R3.
+/// WebSocket (`state_changed` → presenca + barramento #1128), tudo atras do
+/// guard SSRF (`IpScope::AllowPrivate`: hub na LAN/loopback e alvo
+/// legitimo). As entidades viram dispositivos com risco por dominio:
+/// sensor/binary_sensor R0, light/switch/climate R1, cover R2, lock R3.
 ///
 /// O token vem do env apontado por `token_env` (write-only: nunca logado,
 /// o warn cita so o NOME da env). Fail-soft igual ao MQTT.
@@ -1220,6 +1244,7 @@ fn sobe_home_assistant(
     config: &AppConfig,
     registry: Arc<DeviceRegistry>,
     state: Arc<DeviceStateStore>,
+    bus: Option<Arc<HardwareEventBus>>,
 ) -> bool {
     let Some(ha) = config.hardware.home_assistant.as_ref() else {
         return false;
@@ -1250,12 +1275,71 @@ fn sobe_home_assistant(
     // O handle do manager fica solto de proposito: o loop vive pela vida do
     // processo (reconexao do WebSocket e interna), e o reload de config que
     // o pararia e trabalho da #1128.
-    HaAdapterManager::spawn(adapter_config, registry, Some(state));
+    HaAdapterManager::spawn(adapter_config, registry, Some(state), bus);
     info!(
         url = %ha.url,
         "hardware.home_assistant no ar — descoberta por /api/states, presenca por eventos state_changed"
     );
     true
+}
+
+/// Arma o motor de automacoes (#1128) quando `hardware.automations` esta
+/// configurado: regras compiladas do dir (TOML/JSON), auditoria em
+/// `automations.db` e o teto de risco do config. Fail-soft igual aos
+/// adapters — cada problema vira warn e o boot segue sem o motor. Regra
+/// quebrada nunca derruba o deploy, mas tambem nunca sobe silenciosa.
+fn sobe_automacoes(config: &AppConfig, bus: Arc<HardwareEventBus>, registry: Arc<DeviceRegistry>) {
+    let Some(dir) = config.automations_dir() else {
+        return; // sem secao no config — o motor nao sobe (fail-closed)
+    };
+
+    // Auditoria e pre-condicao do motor: execucao sem auditoria quebraria
+    // o contrato #1128, entao sem store nao ha motor. O diretorio do
+    // `automations.db` e o mesmo do store de presenca, ja criado acima.
+    let store_path = config.automations_db_path();
+    let store = match AutomationStore::abrir_em(&store_path) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            warn!(
+                "hardware.automations: nao abri a auditoria em {} ({e}); motor nao sobe",
+                store_path.display()
+            );
+            return;
+        }
+    };
+
+    // Regras do dir: arquivo quebrado nomeia o arquivo no erro, e dir
+    // ausente tambem e erro — o operador declarou `dir`, e "nenhuma regra
+    // no ar" tem que ser dito, nao presumido.
+    let specs = match carregar_automacoes(&dir) {
+        Ok(specs) => specs,
+        Err(e) => {
+            warn!(
+                "hardware.automations: {e} — regras de {}; motor nao sobe com spec quebrada",
+                dir.display()
+            );
+            return;
+        }
+    };
+
+    // Teto do config, com o default r1 do schema se ausente. `de_texto` so
+    // aceita r0/r1/r2 — o `garra config check` ja recusa R3+ antes do boot.
+    let teto = config
+        .automations_risk_ceiling()
+        .and_then(TetoRisco::de_texto)
+        .unwrap_or(TetoRisco::R1);
+
+    // O handle fica solto de proposito — o motor vive pela vida do
+    // processo, igual aos event loops dos adapters.
+    if let Err(e) = AutomationEngine::spawn(EngineConfig { specs, teto }, bus, registry, store) {
+        warn!("hardware.automations: {e}; motor nao sobe");
+        return;
+    }
+    info!(
+        regras = %dir.display(),
+        teto = teto.as_str(),
+        "hardware.automations no ar — regras compiladas, motor assinando o barramento"
+    );
 }
 
 /// Build MCP tools from merged config (config.yml + mcp.json).
