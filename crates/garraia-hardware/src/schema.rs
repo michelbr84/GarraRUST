@@ -7,8 +7,8 @@
 //! (#1127) validam contra o MESMO código, para dois adapters nunca
 //! divergirem no que aceitam.
 
-use crate::error::HardwareError;
 use crate::Result;
+use crate::error::HardwareError;
 
 /// Checa `args` contra `schema` — fail-closed em tudo que o validador não
 /// entende: tipo de schema diferente de `object`, propriedade sem `type`,
@@ -54,7 +54,10 @@ pub fn validar_args(
             "argumentos precisam ser um objeto JSON; recebi {args}"
         ));
     };
-    if let Some(obrigatorios) = obj_schema.get("required").and_then(serde_json::Value::as_array) {
+    if let Some(obrigatorios) = obj_schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+    {
         for nome in obrigatorios {
             let Some(nome) = nome.as_str() else {
                 return recusa(format!(
@@ -66,7 +69,9 @@ pub fn validar_args(
             }
         }
     }
-    let Some(propriedades) = obj_schema.get("properties").and_then(serde_json::Value::as_object)
+    let Some(propriedades) = obj_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
     else {
         return Ok(());
     };
@@ -122,7 +127,15 @@ mod tests {
             "required": ["on"]
         });
 
-        assert!(validar_args(&json!({"on": true, "brightness": 200}), Some(&schema), "l", "p").is_ok());
+        assert!(
+            validar_args(
+                &json!({"on": true, "brightness": 200}),
+                Some(&schema),
+                "l",
+                "p"
+            )
+            .is_ok()
+        );
         assert!(validar_args(&json!({"on": true, "nome": "x"}), Some(&schema), "l", "p").is_ok());
         // Faltando o obrigatório.
         assert!(validar_args(&json!({}), Some(&schema), "l", "p").is_err());

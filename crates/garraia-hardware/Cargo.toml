@@ -18,7 +18,7 @@ mqtt = ["dep:rumqttc"]
 # Adapter Home Assistant (#1127, REST + WebSocket): OFF por default, mesmo
 # padrão. `garraia-common/ssrf` traz o guard de URL (a chamada REST vai por
 # cliente pinado — o token do HA é credencial de admin do hub).
-home-assistant = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures", "dep:garraia-common"]
+home-assistant = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures", "dep:url", "dep:garraia-common"]
 default = ["mock-device"]
 
 [dependencies]
@@ -50,6 +50,9 @@ garraia-common = { workspace = true, features = ["ssrf"], optional = true }
 reqwest = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
+# A URL base vetada (`VettedUrl.url` do ssrf) é `url::Url` — manter o tipo
+# em vez de remontar paths na mão (`Url::join` evita `//api/states`).
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Broker MQTT embutido para os testes de integração da feature `mqtt`
