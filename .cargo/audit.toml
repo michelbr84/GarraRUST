@@ -1,6 +1,6 @@
 # cargo-audit configuration.
 #
-# Last cleanup: 2026-05-17 (health routine run 3 / GAR-657 — daemonize removed).
+# Last cleanup: 2026-09-12 (RUSTSEC-2026-0253 lru CLOSED — aws-sdk-s3 1.146.1).
 # Originally drafted: 2026-04-22 (plan 0043).
 #
 # Every entry in `ignore` is a REAL advisory against a dep in our
@@ -31,6 +31,7 @@
 #     GAR-456). Drop atomically from BOTH files when the upstream fix lands.
 #     Closed history: wasmtime ×15 (GAR-454),
 #     webpki ×4 (GAR-455 / PR #295), lru ×1 (GAR-593 / this PR),
+#     lru ×1 (GAR-896 / RUSTSEC-2026-0253, 2026-09-12 — aws-sdk-s3 1.146.1),
 #     instant ×1 (GAR-627 / health/202605150000),
 #     rustls-pemfile ×1 (health/20260517 — deny.toml-only, axum-server 0.8),
 #     daemonize ×1 (health/202605171245 — deny.toml-only, PR #382 / GAR-656),
@@ -142,16 +143,12 @@ ignore = [
     # (Tauri-side decision). Tracked by: GAR-513. Expires: 2026-11-15.
     "RUSTSEC-2024-0429",
 
-    # =========================================================================
-    # GAR-896 — lru 0.16.4 (RUSTSEC-2026-0253, unsound pop() panic safety)
-    # =========================================================================
-    # lru 0.16.4 has potential use-after-free if key/value Drop panics in pop().
-    # Pulled transitively via aws-sdk-s3 -> aws-smithy-runtime -> lru 0.16.4.
-    # Fixed in lru 0.18.2+, but aws-sdk-s3 up to current 1.141.0 pins ^0.16.3.
-    # Zero runtime risk in production (no panicking Drop types used as LRU keys/values).
-    # Fix path: upstream aws-sdk-s3 upgrade to lru 0.18+.
-    # Tracked by: issue #812 / GAR-896. Expires: 2026-11-15.
-    "RUSTSEC-2026-0253",
+    # NOTE: RUSTSEC-2026-0253 (lru 0.16.4 — unsound pop() panic safety) CLOSED
+    # 2026-09-12 (GAR-896 / issue #812, hoje issue #162 do tracker interno).
+    # Resolution: `cargo update -p aws-sdk-s3 --precise 1.146.1` moveu a
+    # cadeia aws-smithy para versões que exigem lru >= 0.18.2; Cargo.lock
+    # agora traz lru 0.18.4. Removido de BOTH audit.toml e deny.toml
+    # atomicamente per o SYNC NOTE invariant.
 
     # NOTE: RUSTSEC-2026-0002 (lru 0.12.5 IterMut stacked-borrows violation)
     # closed by GAR-593 (2026-05-12, health routine PR health/202605121530).

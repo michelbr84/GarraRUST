@@ -12,6 +12,7 @@
 #     GAR-456). Closed history: wasmtime-wasi ×1 (GAR-685 / PR #472),
 #     wasmtime ×15 (GAR-454), webpki ×4
 #     (GAR-455 / PR #295), lru ×1 (GAR-593 / health/202605121530),
+#     lru ×1 (GAR-896 / RUSTSEC-2026-0253, 2026-09-12 — aws-sdk-s3 1.146.1),
 #     instant ×1 (GAR-627 / health/202605150000),
 #     rustls-pemfile ×1 (health/20260517 axum-server 0.8),
 #     glib RUSTSEC-2024-0429 ×1 (health/20260523 — advisory-not-detected:
@@ -95,9 +96,11 @@ ignore = [
     # under GAR-456. Pulled via sqlx-mysql lockfile leak (defense-in-depth
     # in PR-4 prevented runtime use). Expires 2026-11-15.
     "RUSTSEC-2023-0071",
-    # lru 0.16.4 — pop() panic safety (RUSTSEC-2026-0253). Mirror of audit.toml
-    # under GAR-896 / issue #812. Expires 2026-11-15.
-    "RUSTSEC-2026-0253",
+    # NOTE: RUSTSEC-2026-0253 (lru 0.16.4 pop() panic safety, unsound) CLOSED
+    # 2026-09-12 (GAR-896 / issue #812, hoje issue #162 do tracker interno).
+    # Resolution: aws-sdk-s3 bumped 1.135.0 → 1.146.1; a cadeia aws-smithy
+    # agora exige lru >= 0.18.2 e Cargo.lock traz lru 0.18.4. Removed from
+    # BOTH deny.toml and audit.toml atomically per SYNC NOTE invariant.
     # NOTE: RUSTSEC-2024-0429 (glib 0.18.5 VariantStrIter unsound) — REMOVED
     # 2026-05-23 health run 19 / GAR-513. cargo deny advisory DB no longer
     # matches glib 0.18.5 for this ID (advisory-not-detected). cargo audit
