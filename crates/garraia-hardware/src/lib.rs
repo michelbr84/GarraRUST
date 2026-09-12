@@ -23,8 +23,11 @@
 //! Nenhum dispositivo físico é conectado aqui. Sem adaptador registrado, o
 //! [`DeviceRegistry`] fica vazio e as tools do agente (`device_list`,
 //! `device_read`, `device_execute`, em `garraia-agents`) listam nada. O
-//! primeiro transporte real é o adapter MQTT (#1126), em [`adapter_mqtt`],
-//! atrás da feature `mqtt` — OFF por default, mesmo padrão do `storage-s3`:
+//! primeiro transporte é o adapter MQTT (#1126), em [`adapter_mqtt`], atrás
+//! da feature `mqtt`; o segundo é o Home Assistant (#1127), em
+//! [`adapter_homeassistant`], atrás da feature `home-assistant` — REST +
+//! WebSocket contra o hub, entidades viram dispositivos por domínio com
+//! risco pré-avaliado. Ambos OFF por default, mesmo padrão do `storage-s3`:
 //! quem não usa transporte de rede não paga a árvore de deps. Cada adapter
 //! traz o próprio risco avaliado no PR correspondente.
 //!
@@ -37,6 +40,7 @@ pub mod error;
 pub mod gate;
 pub mod registry;
 pub mod risk;
+pub mod schema;
 pub mod state;
 
 #[cfg(feature = "mock-device")]
@@ -44,6 +48,9 @@ pub mod mock;
 
 #[cfg(feature = "mqtt")]
 pub mod adapter_mqtt;
+
+#[cfg(feature = "home-assistant")]
+pub mod adapter_homeassistant;
 
 pub use capability::Capability;
 pub use device::{Device, DeviceSummary};
@@ -58,6 +65,9 @@ pub use mock::MockDevice;
 
 #[cfg(feature = "mqtt")]
 pub use adapter_mqtt::{DeviceManifest, MqttAdapterConfig, MqttAdapterManager, MqttDevice};
+
+#[cfg(feature = "home-assistant")]
+pub use adapter_homeassistant::{HaAdapterConfig, HaAdapterManager, HaDevice};
 
 /// Resultado das operações de hardware.
 pub type Result<T> = std::result::Result<T, HardwareError>;

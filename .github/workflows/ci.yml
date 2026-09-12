@@ -398,6 +398,16 @@ jobs:
           cargo test -p garraia-hardware --features mqtt --lib
           echo "::endgroup::"
 
+          # Mesmo buraco para a feature `home-assistant` (#1127): idem —
+          # aqui SEM `--lib`, porque a feature traz testes de integracao
+          # contra um hub mockado (axum) em tests/, e e exatamente esse
+          # fluxo (descoberta, servicos, WebSocket de presenca) que precisa
+          # de gate.
+          echo "::group::garraia-hardware --features home-assistant"
+          cargo clippy -p garraia-hardware --features home-assistant --all-targets -- -D warnings
+          cargo test -p garraia-hardware --features home-assistant
+          echo "::endgroup::"
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,

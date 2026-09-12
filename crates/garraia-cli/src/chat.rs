@@ -18,7 +18,7 @@ use garraia_agents::{
 };
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
-use garraia_gateway::bootstrap::spawn_mqtt_adapter;
+use garraia_gateway::bootstrap::spawn_hardware_adapters;
 use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
@@ -145,7 +145,8 @@ fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option
 /// `review` is the provider + model `code_review` runs its second LLM call
 /// on; `None` skips it, which is what the tests do because building a real
 /// provider needs a backend. `brave_key` gates `web_search` exactly like the
-/// gateway does. `config` feeds `spawn_mqtt_adapter`: com `hardware.mqtt`
+/// gateway does. `config` feeds `spawn_hardware_adapters`: com
+/// `hardware.mqtt` ou `hardware.home_assistant`
 /// configurado o CLI abre o mesmo transporte e o mesmo store de presenca do
 /// gateway (`AppConfig::hardware_db_path`). `schedule_heartbeat` /
 /// `schedule_recurring` need a
@@ -183,7 +184,7 @@ fn register_cli_tools(
     // senha, client id e store de presença idênticos, inclusive os warns).
     // Sem adapter, `device_list` lista nada (#1128 liga o boot via config).
     let device_registry = Arc::new(DeviceRegistry::new());
-    let device_state = spawn_mqtt_adapter(config, device_registry.clone());
+    let device_state = spawn_hardware_adapters(config, device_registry.clone());
     let device_config = Arc::new(match device_state {
         Some(state) => DeviceToolsConfig::new(device_registry).com_estado(state),
         None => DeviceToolsConfig::new(device_registry),

@@ -43,6 +43,11 @@ pub enum HardwareError {
     #[error("erro MQTT: {0}")]
     Mqtt(String),
 
+    /// Erro do transporte Home Assistant no manager (#1127) — sem
+    /// dispositivo associado (URL malformada, descoberta, WebSocket).
+    #[error("erro do Home Assistant: {0}")]
+    HomeAssistant(String),
+
     /// Erro do SQLite (o store de presença).
     #[error("erro de SQLite no estado de hardware: {0}")]
     Sqlite(#[from] rusqlite::Error),

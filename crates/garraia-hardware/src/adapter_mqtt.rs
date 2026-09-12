@@ -262,95 +262,6 @@ fn valida_segmento_topico(segmento: &str) -> Result<()> {
     Ok(())
 }
 
-/// O mini-validador de argumentos (#1126): o subset truncado do JSON Schema
-/// que o `args_schema` de [`Capability`] garante — `type` (object),
-/// `properties` (tipos primitivos) e `required`. Chaves extras nos args são
-/// permitidas (semântica JSON Schema); tipo declarado que o validador não
-/// conhece **recusa** (fail-closed — não dá para provar, não passa).
-fn validar_args(
-    args: &Value,
-    schema: Option<&Value>,
-    dispositivo: &str,
-    capability: &str,
-) -> Result<()> {
-    let recusa = |fonte: String| {
-        Err(HardwareError::Adapter {
-            dispositivo: dispositivo.to_string(),
-            fonte,
-        })
-    };
-    let Some(schema) = schema else {
-        // Sem schema, o dispositivo declarou que não recebe argumentos.
-        return if args.as_object().is_some_and(|obj| obj.is_empty()) || args.is_null() {
-            Ok(())
-        } else {
-            recusa(format!(
-                "capability '{capability}' não declara argumentos; recebi {args}"
-            ))
-        };
-    };
-    let Some(obj_schema) = schema.as_object() else {
-        return recusa(format!("args_schema não é um objeto JSON: {schema}"));
-    };
-    if let Some(tipo) = obj_schema.get("type")
-        && tipo != "object"
-    {
-        return recusa(format!(
-            "args_schema suporta apenas type=object neste slice; recebi {tipo}"
-        ));
-    }
-    let Some(obj_args) = args.as_object() else {
-        return recusa(format!(
-            "argumentos precisam ser um objeto JSON; recebi {args}"
-        ));
-    };
-    if let Some(obrigatorios) = obj_schema.get("required").and_then(Value::as_array) {
-        for nome in obrigatorios {
-            let Some(nome) = nome.as_str() else {
-                return recusa(format!(
-                    "args_schema.required contém item não-texto: {nome}"
-                ));
-            };
-            if !obj_args.contains_key(nome) {
-                return recusa(format!("argumento obrigatório '{nome}' ausente"));
-            }
-        }
-    }
-    let Some(propriedades) = obj_schema.get("properties").and_then(Value::as_object) else {
-        return Ok(());
-    };
-    for (nome, spec) in propriedades {
-        let Some(valor) = obj_args.get(nome) else {
-            continue;
-        };
-        let Some(tipo) = spec.get("type").and_then(Value::as_str) else {
-            return recusa(format!(
-                "argumento '{nome}': schema não declara o tipo — o validador truncado só conhece type/properties/required"
-            ));
-        };
-        let ok = match tipo {
-            "string" => valor.is_string(),
-            "boolean" => valor.is_boolean(),
-            "number" => valor.is_number(),
-            "integer" => valor.as_i64().is_some(),
-            "array" => valor.is_array(),
-            "object" => valor.is_object(),
-            "null" => valor.is_null(),
-            _ => {
-                return recusa(format!(
-                    "argumento '{nome}': tipo '{tipo}' não suportado pelo validador (fail-closed)"
-                ));
-            }
-        };
-        if !ok {
-            return recusa(format!(
-                "argumento '{nome}': esperado {tipo}, recebi {valor}"
-            ));
-        }
-    }
-    Ok(())
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // MqttDevice — o Device que fala MQTT.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -451,7 +362,7 @@ impl Device for MqttDevice {
 
     async fn execute(&self, capability: &str, args: Value) -> Result<Value> {
         let cap = self.capability(capability)?;
-        validar_args(&args, cap.args_schema.as_ref(), &self.id, capability)?;
+        crate::schema::validar_args(&args, cap.args_schema.as_ref(), &self.id, capability)?;
         let rid = novo_request_id();
         let topico = topico_set(&self.prefixo, &self.id, capability);
         self.client
@@ -884,7 +795,7 @@ mod tests {
             "on": true, "percent": 50, "tempo": 1.5,
             "lista": [1, 2], "extra": {}, "nada": null
         });
-        assert!(validar_args(&args, Some(&schema), "dev", "cap").is_ok());
+        assert!(crate::schema::validar_args(&args, Some(&schema), "dev", "cap").is_ok());
     }
 
     #[test]
@@ -895,28 +806,37 @@ mod tests {
             "required": ["on"]
         });
         // obrigatório ausente
-        let err = validar_args(&json!({}), Some(&schema), "dev", "power").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!({}), Some(&schema), "dev", "power")
+            .expect_err("recusa");
         assert!(err.to_string().contains("obrigatório"), "{err}");
         // tipo errado
-        let err = validar_args(&json!({ "on": "sim" }), Some(&schema), "dev", "power")
-            .expect_err("recusa");
+        let err =
+            crate::schema::validar_args(&json!({ "on": "sim" }), Some(&schema), "dev", "power")
+                .expect_err("recusa");
         assert!(err.to_string().contains("boolean"), "{err}");
         // 50.5 não é integer
         let schema_int =
             json!({ "type": "object", "properties": { "percent": { "type": "integer" } } });
-        let err = validar_args(&json!({ "percent": 50.5 }), Some(&schema_int), "dev", "cap")
-            .expect_err("recusa");
+        let err = crate::schema::validar_args(
+            &json!({ "percent": 50.5 }),
+            Some(&schema_int),
+            "dev",
+            "cap",
+        )
+        .expect_err("recusa");
         assert!(err.to_string().contains("integer"), "{err}");
         // args não-objeto
-        let err = validar_args(&json!(true), Some(&schema), "dev", "power").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!(true), Some(&schema), "dev", "power")
+            .expect_err("recusa");
         assert!(err.to_string().contains("objeto"), "{err}");
     }
 
     #[test]
     fn validar_args_sem_schema_recusa_argumentos() {
-        assert!(validar_args(&json!({}), None, "dev", "power").is_ok());
-        assert!(validar_args(&json!(null), None, "dev", "power").is_ok());
-        let err = validar_args(&json!({ "x": 1 }), None, "dev", "power").expect_err("recusa");
+        assert!(crate::schema::validar_args(&json!({}), None, "dev", "power").is_ok());
+        assert!(crate::schema::validar_args(&json!(null), None, "dev", "power").is_ok());
+        let err = crate::schema::validar_args(&json!({ "x": 1 }), None, "dev", "power")
+            .expect_err("recusa");
         assert!(err.to_string().contains("não declara argumentos"), "{err}");
     }
 
@@ -924,16 +844,17 @@ mod tests {
     fn validar_args_fail_closed_em_schema_que_nao_entende() {
         // tipo de propriedade desconhecido
         let schema = json!({ "type": "object", "properties": { "x": { "type": "bloco" } } });
-        let err =
-            validar_args(&json!({ "x": 1 }), Some(&schema), "dev", "cap").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!({ "x": 1 }), Some(&schema), "dev", "cap")
+            .expect_err("recusa");
         assert!(err.to_string().contains("fail-closed"), "{err}");
         // propriedade sem type declarado
         let schema = json!({ "type": "object", "properties": { "x": {} } });
-        let err =
-            validar_args(&json!({ "x": 1 }), Some(&schema), "dev", "cap").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!({ "x": 1 }), Some(&schema), "dev", "cap")
+            .expect_err("recusa");
         assert!(err.to_string().contains("não declara o tipo"), "{err}");
         // schema de nível de topo não-objeto
-        let err = validar_args(&json!({}), Some(&json!([])), "dev", "cap").expect_err("recusa");
+        let err = crate::schema::validar_args(&json!({}), Some(&json!([])), "dev", "cap")
+            .expect_err("recusa");
         assert!(err.to_string().contains("objeto JSON"), "{err}");
     }
 

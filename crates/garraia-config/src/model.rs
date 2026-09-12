@@ -99,14 +99,18 @@ impl Default for AppConfig {
 
 /// ADR 0020 / #1126 — configuração do transporte de hardware.
 ///
-/// Hoje só o adapter MQTT; adapters futuros (#1127 Home Assistant,
-/// #1130 Serial/GPIO) entram como campos aditivos desta seção.
+/// Hoje os adapters MQTT e Home Assistant; adapters futuros (#1130
+/// Serial/GPIO) entram como campos aditivos desta seção.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HardwareConfig {
     /// Adapter MQTT (rumqttc). `None` = sem MQTT — o gateway não sobe o
     /// loop de descoberta e o registry fica vazio (fail-closed).
     #[serde(default)]
     pub mqtt: Option<MqttConfig>,
+    /// Adapter Home Assistant (REST + WebSocket). `None` = sem HA — o
+    /// registry não ganha as entidades do hub (fail-closed).
+    #[serde(default)]
+    pub home_assistant: Option<HaConfig>,
 }
 
 /// Conexão com o broker MQTT (#1126). Credencial de senha é **write-only**:
@@ -131,6 +135,22 @@ pub struct MqttConfig {
 
 fn default_mqtt_client_prefix() -> String {
     "garra".to_string()
+}
+
+/// Conexão com o Home Assistant (#1127). O `token_env` é **obrigatório** —
+/// a API do HA não tem modo anônimo e o long-lived access token é
+/// credencial de admin do hub. Write-only como o resto: config carrega o
+/// nome da env, o boot resolve o valor e **nunca loga**.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaConfig {
+    /// URL base do HA, com esquema e porta (`"http://homeassistant.local:8123"`).
+    /// A chamada REST passa pelo guard de SSRF (`vet_url` + `pinned_client`
+    /// com `IpScope::AllowPrivate` — o HA é alvo legítimo da LAN, e o guard
+    /// ainda bloqueia link-local/CGNAT/multicast).
+    pub url: String,
+    /// Nome da env var que guarda o long-lived access token. Obrigatório
+    /// e não vazio — sem token, o adapter nem sobe.
+    pub token_env: String,
 }
 
 /// Non-secret auth knobs (plan 0046 / GAR-379 slice 3).

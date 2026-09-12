@@ -15,6 +15,10 @@ mock-device = []
 # Adapter MQTT (#1126, rumqttc): OFF por default — quem não usa transporte
 # de rede não paga a árvore de deps. Mesmo padrão do `storage-s3`.
 mqtt = ["dep:rumqttc"]
+# Adapter Home Assistant (#1127, REST + WebSocket): OFF por default, mesmo
+# padrão. `garraia-common/ssrf` traz o guard de URL (a chamada REST vai por
+# cliente pinado — o token do HA é credencial de admin do hub).
+home-assistant = ["dep:reqwest", "dep:tokio-tungstenite", "dep:futures", "dep:url", "dep:garraia-common"]
 default = ["mock-device"]
 
 [dependencies]
@@ -38,8 +42,23 @@ tokio = { workspace = true }
 # rumqttc é código morto aqui; e rumqttd (dev-dep) aceita `tls: None`.
 # TLS MQTT voltar como slice próprio, com avaliação de supply-chain própria.
 rumqttc = { version = "0.25", optional = true, default-features = false }
+# Feature `home-assistant` (#1127): REST (reqwest, por `pinned_client` do
+# ssrf) + WebSocket (tokio-tungstenite, para eventos `state_changed` —
+# presença hoje, motor de automações da #1128 depois). `garraia-common`
+# entra só pelo `ssrf` (vet_url + pinned_client).
+garraia-common = { workspace = true, features = ["ssrf"], optional = true }
+reqwest = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+# A URL base vetada (`VettedUrl.url` do ssrf) é `url::Url` — manter o tipo
+# em vez de remontar paths na mão (`Url::join` evita `//api/states`).
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Broker MQTT embutido para os testes de integração da feature `mqtt`
 # (#1126): mesmo time do rumqttc, roda in-process (sem docker).
 rumqttd = { version = "0.20", default-features = false }
+# Mock do Home Assistant para os testes de integração da feature
+# `home-assistant` (#1127): axum serve os handlers REST e o WebSocket —
+# sem docker, na linha do rumqttd acima.
+axum = { workspace = true }
