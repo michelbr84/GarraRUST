@@ -22,14 +22,24 @@
 //!
 //! Nenhum dispositivo físico é conectado aqui. Sem adaptador registrado, o
 //! [`DeviceRegistry`] fica vazio e as tools do agente (`device_list`,
-//! `device_read`, `device_execute`, em `garraia-agents`) listam nada. O
-//! primeiro transporte é o adapter MQTT (#1126), em [`adapter_mqtt`], atrás
-//! da feature `mqtt`; o segundo é o Home Assistant (#1127), em
-//! [`adapter_homeassistant`], atrás da feature `home-assistant` — REST +
-//! WebSocket contra o hub, entidades viram dispositivos por domínio com
-//! risco pré-avaliado. Ambos OFF por default, mesmo padrão do `storage-s3`:
-//! quem não usa transporte de rede não paga a árvore de deps. Cada adapter
-//! traz o próprio risco avaliado no PR correspondente.
+//! `device_read`, `device_execute`, em `garraia-agents`) listam nada. Os
+//! transportes entram como features, todas OFF por default (mesmo padrão do
+//! `storage-s3`: quem não usa um transporte não paga a árvore de deps dele),
+//! e cada uma traz o próprio risco avaliado no PR correspondente:
+//!
+//! | Feature | Módulo | Transporte | Issue |
+//! |---|---|---|---|
+//! | `mqtt` | [`adapter_mqtt`] | broker MQTT, convenção `garra/devices/...` | #1126 |
+//! | `home-assistant` | [`adapter_homeassistant`] | REST + WebSocket contra o hub | #1127 |
+//! | `hardware-serial` | [`adapter_serial`] | JSONL por USB/serial (Arduino/ESP32) | #1130 |
+//! | `hardware-gpio` | [`adapter_gpio`] | pinos do Raspberry Pi via `/dev/gpiomem` | #1130 |
+//!
+//! Os dois primeiros pegam o risk class do que o hub/dispositivo declara
+//! (MQTT) ou de uma tabela por domínio (Home Assistant). Os dois últimos
+//! compartilham a tabela **fechada** de [`perifericos`] — `digital_read` e
+//! `analog_read` em R0, `digital_write` e `pwm` em R2 — porque uma placa
+//! plugada num cabo USB não passa por ACL nenhuma e não pode ser a fonte da
+//! própria classificação de risco.
 //!
 //! # O motor de automações (#1128)
 //!
@@ -66,6 +76,17 @@ pub mod adapter_mqtt;
 #[cfg(feature = "home-assistant")]
 pub mod adapter_homeassistant;
 
+/// A tabela fechada de capabilities de placa, compartilhada pelos adapters
+/// serial e GPIO (#1130).
+#[cfg(any(feature = "hardware-serial", feature = "hardware-gpio"))]
+pub mod perifericos;
+
+#[cfg(feature = "hardware-serial")]
+pub mod adapter_serial;
+
+#[cfg(feature = "hardware-gpio")]
+pub mod adapter_gpio;
+
 pub use capability::Capability;
 pub use device::{Device, DeviceSummary};
 pub use error::HardwareError;
@@ -88,6 +109,14 @@ pub use adapter_mqtt::{DeviceManifest, MqttAdapterConfig, MqttAdapterManager, Mq
 
 #[cfg(feature = "home-assistant")]
 pub use adapter_homeassistant::{HaAdapterConfig, HaAdapterManager, HaDevice};
+
+#[cfg(feature = "hardware-serial")]
+pub use adapter_serial::{
+    ManifestoSerial, SerialAdapterConfig, SerialAdapterManager, SerialDevice, adotar_stream,
+};
+
+#[cfg(feature = "hardware-gpio")]
+pub use adapter_gpio::{GpioAdapterConfig, GpioDevice, PlanoPinos};
 
 /// Resultado das operações de hardware.
 pub type Result<T> = std::result::Result<T, HardwareError>;
