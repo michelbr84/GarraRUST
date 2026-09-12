@@ -24,6 +24,21 @@
   estado do Home Assistant), com `register_if_absent` — fail-closed, recusa
   a colisao em vez de substituir — como a alternativa para quem registra uma
   vez so.
+  O motor de automacoes (#1128) foi reconciliado com o namespace: o
+  `domain` do contexto de condicao volta a ser derivado do id nativo
+  (`ha:light.sala` da `light`, nao `ha:light`), senao uma condicao
+  `domain == "light"` parava de casar em silencio e uma guarda negativa
+  (`domain != "lock"`) virava sempre verdadeira — fail-open numa condicao
+  escrita para barrar a acao. O `entity_id` do contexto segue sendo o id de
+  registro namespaceado.
+  **Migracao:** quem ja tinha specs de automacao escritas precisa
+  reprefixar `trigger.entity` e `action.device` para o namespace do
+  transporte que originou o dispositivo (`sensor.garagem` vira
+  `ha:sensor.garagem`, `sensor-1` vira `mqtt:sensor-1`, e assim para
+  `gpio:` e `serial:`) — o casamento e por string exata, entao uma regra
+  com id antigo simplesmente nunca dispara. O id correto e o mesmo que a
+  tool `device_list` mostra. Na carga da spec o motor emite `WARN` quando
+  um `trigger.entity` ou `action.device` vem sem prefixo de transporte.
   Sem impacto em producao: `garraia-hardware` nunca foi lancado (todo o
   slice de hardware, incluindo automacoes e os adapters serial/GPIO, chegou
   depois da tag v0.4.1).

@@ -165,6 +165,7 @@ impl AutomationEngine {
             if !spec.enabled {
                 continue; // desabilitada não arma — segue registrada no store
             }
+            avisar_ids_sem_namespace(&spec);
             regras.push(Regra::compilar(spec)?);
         }
         let mut estados = HashMap::new();
@@ -193,6 +194,45 @@ impl AutomationEngine {
     /// próximos).
     pub fn encerrar(self) {
         self.tarefa.abort();
+    }
+}
+
+/// Avisa, na carga, sobre `trigger.entity` / `action.device` sem prefixo de
+/// transporte.
+///
+/// Todo id de registro é namespaceado desde a #1168 (`mqtt:`, `ha:`,
+/// `gpio:`, `serial:`), então um id sem `:` não casa com dispositivo nenhum
+/// — e `regra_casa_evento` compara string exata, sem log: a automação
+/// simplesmente nunca dispara. Este é um teste do **formato**, não uma
+/// consulta ao registry: no `spawn` o registry costuma estar vazio (os
+/// adapters registram depois, de forma assíncrona), então um lookup ali
+/// acusaria falso positivo em toda spec legítima.
+fn avisar_ids_sem_namespace(spec: &AutomationSpec) {
+    let sem_prefixo = |id: &str| !id.contains(':');
+    for t in &spec.trigger {
+        if let TriggerSpec::StateChanged { entity } = t
+            && sem_prefixo(entity)
+        {
+            tracing::warn!(
+                automacao = %spec.name,
+                entidade = %entity,
+                "automations: trigger.entity sem prefixo de transporte \
+                 (mqtt:/ha:/gpio:/serial:) — nenhum dispositivo usa esse id, \
+                 a regra nunca vai disparar"
+            );
+        }
+    }
+    for a in &spec.action {
+        let ActionSpec::DeviceExecute { device, .. } = a;
+        if sem_prefixo(device) {
+            tracing::warn!(
+                automacao = %spec.name,
+                dispositivo = %device,
+                "automations: action.device sem prefixo de transporte \
+                 (mqtt:/ha:/gpio:/serial:) — nenhum dispositivo usa esse id, \
+                 a ação vai falhar como 'dispositivo não registrado'"
+            );
+        }
     }
 }
 
@@ -477,6 +517,11 @@ async fn executar_acao(sh: &Compartilhado, acao: &ActionSpec) -> serde_json::Val
 }
 
 /// O contexto das condições, na forma do docs do módulo `expr`.
+///
+/// `entity_id` é o id **de registro** (namespaceado, `ha:light.sala`) —
+/// o mesmo que `trigger.entity` e `action.device` referenciam e o mesmo que
+/// `device_list` mostra. `domain` é derivado do id nativo (ver
+/// [`dominio_de`]), então segue sendo `"light"`, sem o prefixo.
 fn contexto_do_evento(mudanca: &StateChanged) -> serde_json::Value {
     let mut ctx = serde_json::json!({
         "to": estado_json(&mudanca.novo),
@@ -497,9 +542,30 @@ fn estado_json(estado: &crate::events::EstadoObservado) -> serde_json::Value {
     })
 }
 
-/// A parte antes do ponto da `entity_id` — sensor, light, cover…
-fn dominio_de(entity_id: &str) -> String {
-    entity_id.split('.').next().unwrap_or("").to_string()
+/// A parte antes do ponto do id **nativo** — sensor, light, cover…
+///
+/// O id que cruza o barramento é o id de registro, namespaceado por
+/// transporte desde a #1168 (`mqtt:`, `ha:`, `gpio:`, `serial:` — ver
+/// `PREFIXO_ID` de cada adapter). O domínio é uma noção do id nativo, não
+/// do id de registro: sem tirar o prefixo antes, um `ha:light.sala`
+/// exporia `"domain": "ha:light"` e uma condição `domain == "light"`
+/// pararia de casar em silêncio — pior, uma guarda negativa
+/// (`domain != "lock"`) viraria sempre verdadeira, que é fail-open numa
+/// condição escrita justamente para barrar a ação.
+///
+/// O separador do namespace é `:` nos quatro adapters, e é o **primeiro**
+/// `:` que delimita o prefixo (o id nativo pode conter outros).
+fn dominio_de(device_id: &str) -> String {
+    let nativo = id_nativo(device_id);
+    nativo.split('.').next().unwrap_or("").to_string()
+}
+
+/// Tira o prefixo de transporte (`<transporte>:`) de um id de registro.
+/// Sem prefixo, o id já é o nativo.
+fn id_nativo(device_id: &str) -> &str {
+    device_id
+        .split_once(':')
+        .map_or(device_id, |(_, resto)| resto)
 }
 
 /// Os gatilhos cron devidos: a cada tick, cada regra com cron verifica a
@@ -573,6 +639,70 @@ async fn auditar(
             automacao = %regra.spec.name,
             error = %erro,
             "automations: falha ao registrar execução na auditoria"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::EstadoObservado;
+
+    fn mudanca(device_id: &str) -> StateChanged {
+        StateChanged {
+            device_id: device_id.to_string(),
+            novo: EstadoObservado {
+                state: Some("on".to_string()),
+                attributes: serde_json::json!({}),
+                online: true,
+            },
+            velho: None,
+            em_milis: 0,
+        }
+    }
+
+    /// O prefixo de transporte (#1168) não pode vazar para o `domain`: uma
+    /// condição `domain == "light"` tem que seguir casando, e uma guarda
+    /// negativa (`domain != "lock"`) não pode virar sempre-verdadeira.
+    #[test]
+    fn dominio_ignora_prefixo_de_transporte() {
+        assert_eq!(dominio_de("ha:light.sala"), "light");
+        assert_eq!(dominio_de("ha:sensor.garagem_temperatura"), "sensor");
+        assert_eq!(dominio_de("ha:lock.porta"), "lock");
+        assert_eq!(dominio_de("mqtt:sensor-1"), "sensor-1");
+        assert_eq!(dominio_de("gpio:pi-bancada"), "pi-bancada");
+        assert_eq!(dominio_de("serial:arduino-1"), "arduino-1");
+        // Id nativo sem prefixo (spec antiga) segue derivando igual.
+        assert_eq!(dominio_de("light.sala"), "light");
+        // Só o primeiro `:` delimita o namespace — o resto é id nativo.
+        assert_eq!(dominio_de("mqtt:ha:light.sala"), "ha:light");
+    }
+
+    #[test]
+    fn id_nativo_tira_so_o_prefixo() {
+        assert_eq!(id_nativo("ha:light.sala"), "light.sala");
+        assert_eq!(id_nativo("light.sala"), "light.sala");
+        assert_eq!(id_nativo("gpio:pi-bancada"), "pi-bancada");
+    }
+
+    /// O contrato documentado em `expr`: `entity_id` namespaceado,
+    /// `domain` nativo.
+    #[test]
+    fn contexto_expoe_dominio_nativo_e_entity_id_namespaceado() {
+        let ctx = contexto_do_evento(&mudanca("ha:light.sala"));
+        assert_eq!(ctx["domain"], serde_json::json!("light"));
+        assert_eq!(ctx["entity_id"], serde_json::json!("ha:light.sala"));
+    }
+
+    /// A guarda negativa que o bug tornava fail-open: com `"ha:lock"` no
+    /// `domain`, `domain != "lock"` passava e a ação barrada rodava.
+    #[test]
+    fn guarda_negativa_por_dominio_nao_e_fail_open() {
+        let ctx = contexto_do_evento(&mudanca("ha:lock.porta"));
+        let expr = Expr::parse("domain != \"lock\"").expect("expressão válida");
+        assert_eq!(
+            expr.avaliar(&ctx).expect("avaliação ok"),
+            serde_json::Value::Bool(false),
         );
     }
 }
