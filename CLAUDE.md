@@ -310,6 +310,7 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 
 | Skill | Uso |
 | ------- | ----- |
+| `/max-power` | Ativação do harness em um comando: verifica markers, repara via git se algo falta, oferece o plugin Superpowers, valida o setup, imprime o menu e roteia por goal |
 | `/superpowers-bridge` | Mapeamento skills locais ↔ Superpowers |
 | `/review-pr` | Revisa PR com code-reviewer + security-auditor |
 | `/tdd-loop` | Red-Green-Refactor automático |
