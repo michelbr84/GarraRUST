@@ -1097,8 +1097,10 @@ mod tests {
         assert_eq!(config.hardware_db_path(), dir.join("hardware.db"));
 
         // E o data_dir explicito vence — a resolucao e a mesma para os dois.
-        let mut custom = AppConfig::default();
-        custom.data_dir = Some(std::path::PathBuf::from("/tmp/garra-data"));
+        let custom = AppConfig {
+            data_dir: Some(std::path::PathBuf::from("/tmp/garra-data")),
+            ..AppConfig::default()
+        };
         assert_eq!(
             custom.hardware_db_path(),
             std::path::PathBuf::from("/tmp/garra-data/hardware.db")
