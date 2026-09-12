@@ -11,6 +11,10 @@ garraia-config = { workspace = true }
 garraia-glob = { workspace = true }
 garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "imessage", "openclaw", "google_chat", "teams", "line", "irc", "signal", "matrix"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
+# ADR 0020 (epic #1124): o registry de dispositivos que alimenta as tools
+# device_list/read/execute. Sem adapter registrado, fica vazio (#1128 liga
+# o boot de adapters via config).
+garraia-hardware = { workspace = true }
 garraia-runtime = { workspace = true }
 garraia-db = { workspace = true }
 garraia-security = { workspace = true }

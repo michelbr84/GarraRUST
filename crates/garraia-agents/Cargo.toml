@@ -11,6 +11,9 @@ garraia-common = { workspace = true, features = ["ssrf"] }
 # nenhum consumidor de `TurnEvent` precisar lembrar de redigir.
 garraia-security = { workspace = true }
 garraia-db = { workspace = true }
+# ADR 0020 (epic #1124): as tools device_list/read/execute são a integração
+# do agente com o mundo físico — registry + gate R0-R5 do crate.
+garraia-hardware = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

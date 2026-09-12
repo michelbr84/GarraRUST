@@ -59,7 +59,7 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0017](0017-ui-event-terminal-renderer.md) | Camada de apresentação do CLI (`UiEvent` + `TerminalRenderer`) | ✅ accepted | 2026-09-05 | [#942](https://github.com/michelbr84/GarraRUST/issues/942) |
 | [0018](0018-crate-garraia-embeddings.md) | O que fazer com o crate `garraia-embeddings` | 📋 proposed | 2026-09-07 | [#949](https://github.com/michelbr84/GarraRUST/issues/949) |
 | [0019](0019-process-hardening-and-sandbox.md) | Confinamento das tools — `PR_SET_DUMPABLE` agora, Landlock depois | ✅ accepted | 2026-09-09 | [#1084](https://github.com/michelbr84/GarraRUST/issues/1084) |
-| [0020](0020-crate-garraia-hardware.md) | Crate `garraia-hardware` — abstração de dispositivos físicos | 📋 proposed | 2026-09-11 | [#1124](https://github.com/michelbr84/GarraRUST/issues/1124) |
+| [0020](0020-crate-garraia-hardware.md) | Crate `garraia-hardware` — abstração de dispositivos físicos | ✅ accepted | 2026-09-11 | [#1124](https://github.com/michelbr84/GarraRUST/issues/1124) |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 

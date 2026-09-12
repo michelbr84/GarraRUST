@@ -595,10 +595,20 @@ impl ModeProfile {
                     "list_dir".to_string(),
                     "web_search".to_string(),
                     "web_fetch".to_string(),
+                    // #1129: descoberta/leitura de hardware é R0 (auto) — o
+                    // agente pode VER o mundo físico em qualquer modo que vê
+                    // o sistema de arquivos. Executar (R1+) é a linha abaixo.
+                    "device_list".to_string(),
+                    "device_read".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
                     "bash".to_string(),
+                    // #1129: execução de hardware é PolicyGated ou acima —
+                    // nos modos sem escrita, negada estaticamente. A camada
+                    // de confirmação R3+ vive DENTRO da tool, que só roda
+                    // se passar por aqui.
+                    "device_execute".to_string(),
                 ],
                 required: vec![],
                 whitelist_mode: true,
@@ -633,8 +643,16 @@ impl ModeProfile {
                     "list_dir".to_string(),
                     "web_search".to_string(),
                     "web_fetch".to_string(),
+                    // #1129: leitura de hardware é R0 — permitida no modo
+                    // que só desenha e analisa.
+                    "device_list".to_string(),
+                    "device_read".to_string(),
                 ],
-                denied: vec!["file_write".to_string()],
+                // #1129: sem escrita no mundo físico também.
+                denied: vec![
+                    "file_write".to_string(),
+                    "device_execute".to_string(),
+                ],
                 required: vec![],
                 whitelist_mode: true,
             },
@@ -697,7 +715,15 @@ impl ModeProfile {
                 // o arquivo pelo shell (`printf ... > arquivo`) e furava a
                 // promessa deste modo, que o proprio prompt declara ("Prefer
                 // providing text explanations over executing code").
-                denied: vec!["file_write".to_string(), "bash".to_string()],
+                // #1129: execução de hardware entra no mesmo grupo — é o
+                // mundo físico, que um modo de perguntas não toca. Leitura
+                // (`device_read`) fica: é R0 e responde perguntas do tipo
+                // "que horas estão na sala?".
+                denied: vec![
+                    "file_write".to_string(),
+                    "bash".to_string(),
+                    "device_execute".to_string(),
+                ],
                 required: vec![],
                 whitelist_mode: false,
             },
@@ -731,8 +757,15 @@ impl ModeProfile {
                     "list_dir".to_string(),
                     "bash".to_string(),
                     "run_tests".to_string(),
+                    // #1129: ler sensores ajuda a diagnosticar ("a CPU do
+                    // servidor está a quentar?") — executar não.
+                    "device_list".to_string(),
+                    "device_read".to_string(),
                 ],
-                denied: vec!["file_write".to_string()],
+                denied: vec![
+                    "file_write".to_string(),
+                    "device_execute".to_string(),
+                ],
                 required: vec![],
                 whitelist_mode: true,
             },
@@ -806,10 +839,14 @@ impl ModeProfile {
                     "repo_search".to_string(),
                     "list_dir".to_string(),
                     "code_review".to_string(),
+                    // #1129: revisão pode ler o mundo físico; nunca mexer.
+                    "device_list".to_string(),
+                    "device_read".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
                     "bash".to_string(),
+                    "device_execute".to_string(),
                 ],
                 required: vec![],
                 whitelist_mode: true,
@@ -1183,7 +1220,7 @@ impl ModeContext {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolGate;
+    use super::{AgentMode, ToolGate};
 
     /// A regressao mais provavel do lote, e a razao de `None` existir.
     ///
@@ -1249,6 +1286,56 @@ mod tests {
         assert!(!g.permite("bash"));
         assert!(g.permite("file_read"));
         assert!(g.permite("repo_search"));
+    }
+
+    /// #1129: em TODOS os modos default, onde `file_write` é negado,
+    /// `device_execute` também é. A tabela de risco do ADR 0020 mapeia
+    /// `PolicyGated` para a policy do turno — e os modos sem escrita no
+    /// sistema de arquivos tampouco escrevem no mundo físico.
+    #[test]
+    fn onde_file_write_e_negado_device_execute_tambem_e() {
+        for modo in AgentMode::all_modes() {
+            let g = ToolGate::for_mode_name(modo.as_str());
+            if !g.permite("file_write") {
+                assert!(
+                    !g.permite("device_execute"),
+                    "modo '{}' nega file_write mas permite device_execute (#1129)",
+                    modo
+                );
+            }
+        }
+    }
+
+    /// #1129: leitura e descoberta de hardware (R0, auto pela tabela) ficam
+    /// disponíveis nos modos read-only — o agente pode VER o mundo físico
+    /// em qualquer modo que já vê o sistema de arquivos.
+    #[test]
+    fn modos_read_only_permitem_descoberta_e_leitura_de_hardware() {
+        for modo in ["search", "architect", "debug", "review"] {
+            let g = ToolGate::for_mode_name(modo);
+            assert!(
+                g.permite("device_list"),
+                "{modo} deveria permitir device_list"
+            );
+            assert!(
+                g.permite("device_read"),
+                "{modo} deveria permitir device_read"
+            );
+            assert!(
+                !g.permite("device_execute"),
+                "{modo} deveria negar device_execute"
+            );
+        }
+    }
+
+    /// E o `ask` (blacklist): execução de hardware é negada, leitura fica —
+    /// "que horas estão na sala?" é pergunta, não ação.
+    #[test]
+    fn modo_ask_nega_execucao_de_hardware_e_permite_leitura() {
+        let g = ToolGate::for_mode_name("ask");
+        assert!(!g.permite("device_execute"));
+        assert!(g.permite("device_read"));
+        assert!(g.permite("device_list"));
     }
 
     /// Modo `code` continua podendo tudo — o criterio de aceite da #988 sobre

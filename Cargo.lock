@@ -3263,6 +3263,7 @@ dependencies = [
  "garraia-db",
  "garraia-gateway",
  "garraia-glob",
+ "garraia-hardware",
  "garraia-plugins",
  "garraia-security",
  "garraia-skills",
@@ -3300,6 +3301,7 @@ dependencies = [
  "futures",
  "garraia-common",
  "garraia-db",
+ "garraia-hardware",
  "garraia-security",
  "getrandom 0.4.3",
  "hmac 0.12.1",
@@ -3501,6 +3503,7 @@ dependencies = [
  "garraia-config",
  "garraia-db",
  "garraia-glob",
+ "garraia-hardware",
  "garraia-learning",
  "garraia-runtime",
  "garraia-security",
@@ -3561,6 +3564,19 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "garraia-hardware"
+version = "0.4.1"
+dependencies = [
+ "async-trait",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

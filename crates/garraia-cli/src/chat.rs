@@ -10,13 +10,15 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use garraia_agents::{
-    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, CodeReviewTool, FileReadTool,
+    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, CodeReviewTool,
+    DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, FileReadTool,
     FileWriteTool, ListDirTool, LlamaCppProvider, LlmProvider, MessagePart, OllamaProvider,
     OpenAiProvider, RepoSearchTool, RunTestsTool, WebFetchTool, WebSearchTool,
     normalize_ollama_tag, tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
+use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
 use crate::ui::error_card::ErrorCard;
@@ -169,6 +171,16 @@ fn register_cli_tools(
     // Runs whatever the project's test script says; confirmed like `bash`.
     runtime.register_tool(Box::new(RunTestsTool::new_with_confirmation(None)));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
+    // ADR 0020 / epic #1124: tools de hardware. O CLI é interativo — sempre
+    // com canal de confirmação (R3/R4 pedem "sim" na própria conversa). O
+    // registry nasce vazio: sem adapter, `device_list` lista nada (#1128
+    // liga o boot de adapters via config).
+    let device_config = std::sync::Arc::new(DeviceToolsConfig::new(std::sync::Arc::new(
+        DeviceRegistry::new(),
+    )));
+    runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
+    runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
+    runtime.register_tool(Box::new(DeviceExecuteTool::new(device_config)));
     if let Some((provider, model)) = review {
         runtime.register_tool(Box::new(CodeReviewTool::new(provider, model, None)));
     }
@@ -297,6 +309,18 @@ fn tool_help(name: &str) -> Option<&'static str> {
         "web_fetch" => "Baixa o conteudo de uma URL publica (enderecos internos sao recusados).",
         "web_search" => "Busca na web (Brave) e devolve titulos, links e trechos.",
         "code_review" => "Revisa um diff ou arquivo e aponta problemas e melhorias.",
+        // ADR 0020 / epic #1124: os tres entram no prompt com as tools —
+        // sem linha aqui, o prompt lista quem nao descreve e o teste que
+        // confere a tabela contra o registro falha.
+        "device_list" => {
+            "Lista os dispositivos fisicos registrados e o estado online/offline de cada um."
+        }
+        "device_read" => {
+            "Le uma capability de um dispositivo fisico (ex.: a temperatura do sensor da sala)."
+        }
+        "device_execute" => {
+            "Executa uma capability em um dispositivo fisico (ex.: ligar a luz); o risco (R0-R5) decide se pede confirmacao."
+        }
         _ => return None,
     })
 }

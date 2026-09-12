@@ -1,6 +1,7 @@
 pub mod approval;
 pub mod bash_tool;
 pub mod code_review_tool;
+pub mod device_tools;
 pub mod file_read_tool;
 pub mod file_write_tool;
 pub mod git_diff_tool;
@@ -14,6 +15,7 @@ pub mod web_search_tool;
 
 pub use bash_tool::BashTool;
 pub use code_review_tool::CodeReviewTool;
+pub use device_tools::{DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig};
 pub use file_read_tool::FileReadTool;
 pub use file_write_tool::FileWriteTool;
 pub use git_diff_tool::GitDiffTool;

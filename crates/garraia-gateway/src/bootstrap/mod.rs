@@ -3,12 +3,14 @@ use std::sync::Arc;
 use garraia_agents::tools::Tool;
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, CodeReviewTool, CohereEmbeddingProvider,
-    EmbeddingProvider, FileReadTool, FileWriteTool, ListDirTool, LlamaCppProvider, McpManager,
-    NoisePolicy, OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
+    DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, EmbeddingProvider,
+    FileReadTool, FileWriteTool, ListDirTool, LlamaCppProvider, McpManager, NoisePolicy,
+    OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
     RepoSearchTool, ResilientEmbeddingProvider, RunTestsTool, WebFetchTool, WebSearchTool,
 };
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
+use garraia_hardware::DeviceRegistry;
 use tracing::{info, warn};
 
 mod channels;
@@ -618,6 +620,24 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         RunTestsTool::new(None)
     };
     runtime.register_tool(Box::new(run_tests));
+
+    // ADR 0020 / epic #1124: as tools de hardware (device_list/read/execute).
+    // O registry nasce vazio — nenhum adaptador físico existe ainda (#1126/
+    // #1127/#1130) e o boot de adapters via config é a #1128. Com registry
+    // vazio, `device_list` responde "Nenhum dispositivo registrado" e nada
+    // de hardware roda: o fail-closed é o estado default do deploy.
+    // `device_execute` honra `tool_confirmation_enabled` (mesma chave do
+    // bash): sem canal, R3/R4/R5 são fail-closed BLOCKED dentro da tool.
+    let device_registry = Arc::new(DeviceRegistry::new());
+    let device_config = Arc::new(DeviceToolsConfig::new(device_registry));
+    runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
+    runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
+    let device_execute = if config.agent.tool_confirmation_enabled {
+        DeviceExecuteTool::new(device_config)
+    } else {
+        DeviceExecuteTool::new_without_confirmation(device_config)
+    };
+    runtime.register_tool(Box::new(device_execute));
 
     // `code_review` roda um segundo LLM por dentro, entao precisa de um
     // provider resolvido aqui, e nao de `None`. Usa o default do boot: se o

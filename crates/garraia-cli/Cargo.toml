@@ -15,6 +15,9 @@ garraia-config = { workspace = true }
 garraia-gateway = { workspace = true }
 garraia-channels = { workspace = true }
 garraia-agents = { workspace = true, features = ["mcp"] }
+# ADR 0020 (epic #1124): registry vazio que alimenta as device tools do
+# `garra chat` — o CLI é interativo, sempre com canal de confirmação.
+garraia-hardware = { workspace = true }
 garraia-auth = { workspace = true }
 garraia-db = { workspace = true }
 garraia-plugins = { workspace = true, optional = true }
