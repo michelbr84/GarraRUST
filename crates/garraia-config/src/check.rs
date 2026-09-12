@@ -1597,10 +1597,65 @@ fn validate_hardware(
     findings: &mut Vec<Finding>,
     push_err: &impl Fn(&mut Vec<Finding>, &str, String),
 ) {
-    let Some(mqtt) = &hardware.mqtt else {
+    if let Some(mqtt) = &hardware.mqtt {
+        valida_mqtt(mqtt, findings, push_err);
+    }
+    if let Some(ha) = &hardware.home_assistant {
+        valida_home_assistant(ha, findings, push_err);
+    }
+}
+
+/// #1127: a URL do HA precisa de esquema http/https e host — é ela que o
+/// guard de SSRF (`vet_url`) vai vetar e pinar no boot. O `token_env` é
+/// presença-e-conteúdo: o HA API não tem modo anônimo, e config que cita
+/// env vazia/inexistente sobe com o adapter morto e o registry vazio —
+/// melhor o operador ver isso antes de reiniciar.
+fn valida_home_assistant(
+    ha: &crate::model::HaConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    let Ok(url) = url::Url::parse(&ha.url) else {
+        push_err(
+            findings,
+            "hardware.home_assistant.url",
+            format!("hardware.home_assistant.url ({:?}) is not a valid URL", ha.url),
+        );
         return;
     };
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        push_err(
+            findings,
+            "hardware.home_assistant.url",
+            format!(
+                "hardware.home_assistant.url ({:?}) must use http or https (got {scheme:?})",
+                ha.url
+            ),
+        );
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        push_err(
+            findings,
+            "hardware.home_assistant.url",
+            format!("hardware.home_assistant.url ({:?}) has no host", ha.url),
+        );
+    }
+    if ha.token_env.trim().is_empty() {
+        push_err(
+            findings,
+            "hardware.home_assistant.token_env",
+            "hardware.home_assistant.token_env must be non-empty (HA has no anonymous API)"
+                .to_string(),
+        );
+    }
+}
 
+fn valida_mqtt(
+    mqtt: &crate::model::MqttConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
     let (host, port) = match mqtt.broker.rsplit_once(':') {
         Some((host, port)) => (host, port),
         None => {
@@ -2451,6 +2506,7 @@ mod tests {
                     password_env: None,
                     client_id_prefix: "garra".to_string(),
                 }),
+                home_assistant: None,
             },
             ..AppConfig::default()
         };
@@ -2474,6 +2530,7 @@ mod tests {
                     password_env: None,
                     client_id_prefix: "garra".to_string(),
                 }),
+                home_assistant: None,
             },
             ..AppConfig::default()
         };
@@ -2497,6 +2554,7 @@ mod tests {
                     password_env: Some("GARRA_MQTT_PASS".to_string()),
                     client_id_prefix: "garra".to_string(),
                 }),
+                home_assistant: None,
             },
             ..AppConfig::default()
         };
@@ -2508,6 +2566,117 @@ mod tests {
         // Presence-only: nenhum finding carrega o nome da env var como valor
         // (o nome é público de propósito, mas a disciplina de não ecoar
         // segredo vale por princípio — aqui não há segredo para ecoar).
+    }
+
+    #[test]
+    fn ha_url_badscheme_is_error() {
+        use crate::model::{HaConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                home_assistant: Some(HaConfig {
+                    url: "ftp://homeassistant.local:8123".to_string(),
+                    token_env: "GARRA_HA_TOKEN".to_string(),
+                }),
+                mqtt: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Error
+                && f.field == "hardware.home_assistant.url"),
+            "expected error on non-http scheme: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn ha_url_not_a_url_is_error() {
+        use crate::model::{HaConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                home_assistant: Some(HaConfig {
+                    url: "homeassistant.local".to_string(), // sem esquema
+                    token_env: "GARRA_HA_TOKEN".to_string(),
+                }),
+                mqtt: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Error
+                && f.field == "hardware.home_assistant.url"),
+            "expected error on url sem esquema: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn ha_empty_token_env_is_error() {
+        use crate::model::{HaConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                home_assistant: Some(HaConfig {
+                    url: "http://127.0.0.1:8123".to_string(),
+                    token_env: "  ".to_string(),
+                }),
+                mqtt: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Error
+                && f.field == "hardware.home_assistant.token_env"),
+            "expected error on token_env vazia: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn ha_valid_config_is_clean() {
+        use crate::model::{HaConfig, HardwareConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                home_assistant: Some(HaConfig {
+                    url: "http://homeassistant.local:8123".to_string(),
+                    token_env: "GARRA_HA_TOKEN".to_string(),
+                }),
+                mqtt: None,
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("hardware")),
+            "valid HA config produced findings: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn hardware_both_adapters_at_once_is_clean() {
+        // MQTT e HA no mesmo config é o caso real da casa: o broker para os
+        // zigbee2mqtt e o HA para o resto. Os dois validam em série, sem se
+        // atrapalharem.
+        use crate::model::{HaConfig, HardwareConfig, MqttConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                mqtt: Some(MqttConfig {
+                    broker: "127.0.0.1:1883".to_string(),
+                    username: None,
+                    password_env: None,
+                    client_id_prefix: "garra".to_string(),
+                }),
+                home_assistant: Some(HaConfig {
+                    url: "https://ha.casa.local:8123".to_string(),
+                    token_env: "GARRA_HA_TOKEN".to_string(),
+                }),
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("hardware")),
+            "both adapters valid mas encontrou findings: {findings:?}"
+        );
     }
 
     #[test]
