@@ -38,6 +38,11 @@ pub enum HardwareError {
     #[error("falha no dispositivo '{dispositivo}': {fonte}")]
     Adapter { dispositivo: String, fonte: String },
 
+    /// Erro do transporte MQTT no manager (#1126) — sem dispositivo
+    /// associado (config malformada, assinatura, event loop).
+    #[error("erro MQTT: {0}")]
+    Mqtt(String),
+
     /// Erro do SQLite (o store de presença).
     #[error("erro de SQLite no estado de hardware: {0}")]
     Sqlite(#[from] rusqlite::Error),

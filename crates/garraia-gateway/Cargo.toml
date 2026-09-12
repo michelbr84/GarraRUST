@@ -13,8 +13,11 @@ garraia-channels = { workspace = true, features = ["discord", "telegram", "slack
 garraia-agents = { workspace = true, features = ["mcp"] }
 # ADR 0020 (epic #1124): o registry de dispositivos que alimenta as tools
 # device_list/read/execute. Sem adapter registrado, fica vazio (#1128 liga
-# o boot de adapters via config).
-garraia-hardware = { workspace = true }
+# o boot de adapters via config). A feature `mqtt` fica ligada aqui
+# incondicionalmente: o gateway e o host de hardware, o boot decide pelo
+# config se o transporte sobe (`hardware.mqtt`) — rumqttc e cliente Rust
+# puro, sem runtime C.
+garraia-hardware = { workspace = true, features = ["mqtt"] }
 garraia-runtime = { workspace = true }
 garraia-db = { workspace = true }
 garraia-security = { workspace = true }

@@ -18,6 +18,7 @@ use garraia_agents::{
 };
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
+use garraia_gateway::bootstrap::spawn_mqtt_adapter;
 use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
@@ -144,7 +145,10 @@ fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option
 /// `review` is the provider + model `code_review` runs its second LLM call
 /// on; `None` skips it, which is what the tests do because building a real
 /// provider needs a backend. `brave_key` gates `web_search` exactly like the
-/// gateway does. `schedule_heartbeat` / `schedule_recurring` need a
+/// gateway does. `config` feeds `spawn_mqtt_adapter`: com `hardware.mqtt`
+/// configurado o CLI abre o mesmo transporte e o mesmo store de presenca do
+/// gateway (`AppConfig::hardware_db_path`). `schedule_heartbeat` /
+/// `schedule_recurring` need a
 /// `SessionStore` the chat does not open — they stay gateway-only, on
 /// purpose and said here rather than silently.
 ///
@@ -156,6 +160,7 @@ fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option
 /// ferramentas que depende de uma flag. Fica para um slice proprio.
 fn register_cli_tools(
     runtime: &AgentRuntime,
+    config: &AppConfig,
     review: Option<(Arc<dyn LlmProvider>, String)>,
     brave_key: Option<String>,
     bash_allowlist: Vec<String>,
@@ -173,11 +178,16 @@ fn register_cli_tools(
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
     // ADR 0020 / epic #1124: tools de hardware. O CLI é interativo — sempre
     // com canal de confirmação (R3/R4 pedem "sim" na própria conversa). O
-    // registry nasce vazio: sem adapter, `device_list` lista nada (#1128
-    // liga o boot de adapters via config).
-    let device_config = std::sync::Arc::new(DeviceToolsConfig::new(std::sync::Arc::new(
-        DeviceRegistry::new(),
-    )));
+    // registry nasce vazio; com `hardware.mqtt` configurado, o adapter sobe
+    // pela MESMA função do gateway (fonte única do wiring — resolução de
+    // senha, client id e store de presença idênticos, inclusive os warns).
+    // Sem adapter, `device_list` lista nada (#1128 liga o boot via config).
+    let device_registry = Arc::new(DeviceRegistry::new());
+    let device_state = spawn_mqtt_adapter(config, device_registry.clone());
+    let device_config = Arc::new(match device_state {
+        Some(state) => DeviceToolsConfig::new(device_registry).com_estado(state),
+        None => DeviceToolsConfig::new(device_registry),
+    });
     runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceExecuteTool::new(device_config)));
@@ -1213,6 +1223,7 @@ pub async fn run_chat(
     runtime.register_provider(provider);
     register_cli_tools(
         &runtime,
+        &config,
         Some(review),
         get_api_key(&config, "brave", "BRAVE_API_KEY"),
         config.agent.bash_allowlist.clone(),
@@ -2958,7 +2969,7 @@ mod cli_tools_tests {
     #[test]
     fn registers_the_gateway_tool_set_plus_git_diff() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, None, None, vec![]);
+        register_cli_tools(&runtime, &AppConfig::default(), None, None, vec![]);
         let names = runtime.tool_names();
         for expected in [
             "file_read",
@@ -2988,7 +2999,13 @@ mod cli_tools_tests {
     #[test]
     fn brave_key_turns_web_search_on() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, None, Some("k".into()), vec![]);
+        register_cli_tools(
+            &runtime,
+            &AppConfig::default(),
+            None,
+            Some("k".into()),
+            vec![],
+        );
         assert!(runtime.tool_names().iter().any(|n| n == "web_search"));
     }
 
@@ -2997,7 +3014,7 @@ mod cli_tools_tests {
     #[test]
     fn prompt_lists_every_registered_tool_and_nothing_else() {
         let runtime = AgentRuntime::new();
-        register_cli_tools(&runtime, None, None, vec![]);
+        register_cli_tools(&runtime, &AppConfig::default(), None, None, vec![]);
         let names = runtime.tool_names();
         let doc = tool_docs(&names);
         for n in &names {

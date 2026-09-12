@@ -665,6 +665,9 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // storage (plan 0044): validate the object storage backend config.
     validate_storage(&config.storage, &mut findings, &push_err, &push_warn);
 
+    // hardware (ADR 0020 / #1126): validate the MQTT transport config.
+    validate_hardware(&config.hardware, &mut findings, &push_err);
+
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
@@ -1583,6 +1586,70 @@ fn validate_storage(
     }
 }
 
+/// hardware (ADR 0020 / #1126): validate the MQTT transport config.
+///
+/// O broker precisa ser um `host:port` válido — o adapter conecta no boot
+/// e um endereço mal-formado viraria um crash/silêncio tarde demais. O
+/// `password_env` é presence-only: nunca ecoamos o valor (ele nem passa
+/// por aqui — config carrega só o nome da env var).
+fn validate_hardware(
+    hardware: &crate::model::HardwareConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    let Some(mqtt) = &hardware.mqtt else {
+        return;
+    };
+
+    let (host, port) = match mqtt.broker.rsplit_once(':') {
+        Some((host, port)) => (host, port),
+        None => {
+            push_err(
+                findings,
+                "hardware.mqtt.broker",
+                format!(
+                    "hardware.mqtt.broker ({:?}) must be `host:port` (e.g. \"127.0.0.1:1883\")",
+                    mqtt.broker
+                ),
+            );
+            return;
+        }
+    };
+    if host.trim().is_empty() {
+        push_err(
+            findings,
+            "hardware.mqtt.broker",
+            format!("hardware.mqtt.broker ({:?}) has an empty host", mqtt.broker),
+        );
+    }
+    match port.trim().parse::<u16>() {
+        Ok(0) => push_err(
+            findings,
+            "hardware.mqtt.broker",
+            format!(
+                "hardware.mqtt.broker ({:?}) port 0 is not connectable",
+                mqtt.broker
+            ),
+        ),
+        Err(_) => push_err(
+            findings,
+            "hardware.mqtt.broker",
+            format!(
+                "hardware.mqtt.broker ({:?}) port {:?} is not a number in [1, 65535]",
+                mqtt.broker, port
+            ),
+        ),
+        Ok(_) => {}
+    }
+    if mqtt.client_id_prefix.trim().is_empty() {
+        push_err(
+            findings,
+            "hardware.mqtt.client_id_prefix",
+            "hardware.mqtt.client_id_prefix must be non-empty".to_string(),
+        );
+    }
+}
+
 /// Pure validation of the config directory path. Separated from the
 /// loader/env read so it can be unit-tested without touching process state.
 ///
@@ -2359,6 +2426,88 @@ mod tests {
             findings.iter().all(|f| !f.field.starts_with("storage")),
             "default storage config produced findings: {findings:?}"
         );
+    }
+
+    #[test]
+    fn hardware_default_is_clean() {
+        // ADR 0020 / #1126: default AppConfig must not introduce new
+        // validation errors for the hardware section.
+        let cfg = AppConfig::default();
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("hardware")),
+            "default hardware config produced findings: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn mqtt_broker_malformed_is_error() {
+        use crate::model::{HardwareConfig, MqttConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                mqtt: Some(MqttConfig {
+                    broker: "127.0.0.1".to_string(), // sem :port
+                    username: None,
+                    password_env: None,
+                    client_id_prefix: "garra".to_string(),
+                }),
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "hardware.mqtt.broker"),
+            "expected error on broker without port: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn mqtt_broker_non_numeric_port_is_error() {
+        use crate::model::{HardwareConfig, MqttConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                mqtt: Some(MqttConfig {
+                    broker: "127.0.0.1:mqtt".to_string(),
+                    username: None,
+                    password_env: None,
+                    client_id_prefix: "garra".to_string(),
+                }),
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.field == "hardware.mqtt.broker"),
+            "expected error on non-numeric port: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn mqtt_valid_config_is_clean() {
+        use crate::model::{HardwareConfig, MqttConfig};
+        let cfg = AppConfig {
+            hardware: HardwareConfig {
+                mqtt: Some(MqttConfig {
+                    broker: "127.0.0.1:1883".to_string(),
+                    username: Some("garra".to_string()),
+                    password_env: Some("GARRA_MQTT_PASS".to_string()),
+                    client_id_prefix: "garra".to_string(),
+                }),
+            },
+            ..AppConfig::default()
+        };
+        let findings = validate(&cfg);
+        assert!(
+            findings.iter().all(|f| !f.field.starts_with("hardware")),
+            "valid mqtt config produced findings: {findings:?}"
+        );
+        // Presence-only: nenhum finding carrega o nome da env var como valor
+        // (o nome é público de propósito, mas a disciplina de não ecoar
+        // segredo vale por princípio — aqui não há segredo para ecoar).
     }
 
     #[test]

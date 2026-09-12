@@ -388,6 +388,16 @@ jobs:
             echo "::endgroup::"
           done
 
+          # Mesmo buraco (#1089) para a feature `mqtt` do garraia-hardware
+          # (#1126): OFF por default, entao o `--workspace` de cima nao
+          # compilava uma linha dela. O adapter e o que fala com o broker —
+          # quebrar no escuro significaria descoberta, leitura e execucao
+          # de dispositivo morrendo no deploy sem nenhum gate ver.
+          echo "::group::garraia-hardware --features mqtt"
+          cargo clippy -p garraia-hardware --features mqtt --all-targets -- -D warnings
+          cargo test -p garraia-hardware --features mqtt --lib
+          echo "::endgroup::"
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,
