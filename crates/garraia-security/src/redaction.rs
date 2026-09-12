@@ -131,7 +131,12 @@ mod tests {
     /// ponto e o restante segue cru para o log.
     #[test]
     fn redacts_stateless_installation_token() {
-        let token = format!("ghs_{}.{}.{}", "a".repeat(20), "b".repeat(20), "c".repeat(20));
+        let token = format!(
+            "ghs_{}.{}.{}",
+            "a".repeat(20),
+            "b".repeat(20),
+            "c".repeat(20)
+        );
         let saida = redact_secrets(&format!("curl -H 'Authorization: Bearer {token}'"));
         // assert_eq de proposito: se so o pedaco antes do primeiro ponto for
         // redigido, o `.bbb...ccc...` restante aparece na saida e o teste falha.
