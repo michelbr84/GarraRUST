@@ -37,6 +37,7 @@ pub mod error;
 pub mod gate;
 pub mod registry;
 pub mod risk;
+pub mod schema;
 pub mod state;
 
 #[cfg(feature = "mock-device")]
