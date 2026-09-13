@@ -32,6 +32,27 @@ curtos para a próxima sessão autônoma.
   agregados (`scripts/changelog/assemble.py --write`). Versão do workspace e
   do `pubspec.yaml` do mobile bumpadas juntas.
 
+### Como a v0.4.2 foi tagueada — e o que isso implica
+
+**A tag saiu por `workflow_dispatch`, não por push**: o proxy de egresso da
+sessão autônoma corta o `git push origin v0.4.2` (`send-pack: unexpected
+disconnect`, quatro tentativas com backoff). Foi usado o caminho alternativo
+que o `docs/releasing.md` §2 já documenta — Actions → Release → Run workflow
+em `main` com `version=v0.4.2` —, e o `softprops/action-gh-release` criou a
+tag no commit do run (`fd8f487`).
+
+Consequência conhecida desse modo, e por isso registrada aqui: uma tag criada
+pelo `GITHUB_TOKEN` **não dispara** workflows de tag-push, então o
+`deploy.yml` (imagem ghcr) precisou de dispatch manual com `tag=v0.4.2`.
+Nesse modo a imagem sai com `v0.4.2` + `latest` + sha, **sem** as derivadas
+semver `0.4.2`/`0.4`. Quem for cortar a próxima release de uma máquina com
+saída de rede livre deve preferir o push da tag e ganhar as derivadas de
+volta.
+
+Release publicada com 53 assets, incluindo os seis binários crus e o
+`<asset>.sha256` irmão de cada um — o que o `garra update` exige
+(`crates/garraia-cli/src/update.rs:42-48` e `:127`).
+
 ### Verificação pendente do release (mesma limitação das anteriores)
 
 Instalação limpa e `garra update` 0.4.1 → 0.4.2 continuam **não testados
