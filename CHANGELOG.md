@@ -6,6 +6,673 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-13
+
+Release em que o Garra saiu da tela. O epic de hardware fechou inteiro — as
+sete partes, do `trait Device` aos adapters empacotados como skill — e com ele
+o agente passa a ler sensores, acender luzes e reagir a eventos da casa sob o
+mesmo gate de risco que ja governava bash, arquivos e web. Quatro transportes
+entraram: MQTT (qualquer dispositivo que publique no broker), Home Assistant
+(as entidades do hub, e por elas Zigbee, Matter e Z-Wave), serial/USB (Arduino
+e ESP32 no cabo) e GPIO (pinos do Raspberry Pi); mais um motor de automacoes
+declarativas que roda sob a policy do runtime, com teto de risco no config.
+
+Nada disso liga sozinho: sem secao no config o registro nasce vazio, nenhuma
+descoberta de rede acontece por padrao e cada transporte e uma feature de
+compilacao desligada. O que decide o que o agente pode fazer e uma tabela de
+seis niveis presa por tres invariantes: leitura e sempre R0 e nunca escreve;
+sem canal real de confirmacao humana, R3/R4/R5 nao rodam em vez de rodarem em
+silencio; e quem nao passou por autenticacao nenhuma — uma placa plugada num
+cabo USB — nao classifica o proprio risco, porque a tabela dela e fechada no
+codigo. A ultima parte do epic estendeu a mesma desconfianca ao conteudo
+instalavel: um hardware skill de terceiro so consegue SUBIR o risco de uma
+capability, nunca baixar, e um transporte que o core nao sabe falar carrega
+inerte em vez de virar dispositivo.
+
+Fora do hardware, a release e de superficies que estavam pela metade. O chat do
+app mobile passou a mostrar a resposta enquanto ela acontece, com fallback
+silencioso para HTTP quando o WebSocket nao abre; `garra chat` ganhou
+`--persist` e `--resume` para a conversa sobreviver ao fim do processo, como
+opt-in explicito que nao abre banco nenhum sem as flags; e o painel admin
+deixou de depender de SQL manual para qualquer coisa — 2FA no login com lockout
+duravel e segredo cifrado, troca de senha pela propria UI e recuperacao por
+codigo de uso unico que nunca volta numa resposta HTTP.
+
+Na seguranca, o achado maior foi um canal que o hardening anterior nao tinha
+fechado: o `/proc/<pid>/environ` do processo era legivel por um filho de mesmo
+UID, o que colocava `GARRAIA_JWT_SECRET` e as chaves de provider ao alcance de
+qualquer tool que rodasse um subprocesso. O `prctl(PR_SET_DUMPABLE, 0)` fecha,
+medido com controle nos dois sentidos. Junto foram duas promessas que o codigo
+nao cumpria — o modo `ask` negando `file_write` mas deixando o bash escrever o
+arquivo, e a allowlist do modo `orchestrator` declarada e ignorada — e o
+circuit breaker de restart do systemd, que vivia na secao errada do unit e
+portanto nunca existiu.
+
+### Added
+- O chat do Garra Mobile passa a mostrar a resposta enquanto ela acontece, em
+  vez de esperar o turno inteiro. O app abre o `/ws` do gateway, retoma a
+  sessao que ja tinha e vai concatenando os `delta` numa bolha que cresce;
+  `tool_started` / `tool_finished` viram um indicador de qual ferramenta esta
+  rodando. Um botao Parar aparece durante o turno e manda `{"type":"stop"}`
+  **sempre com o `session_id`** — um stop sem endereco cancelaria qualquer
+  turno que o socket estivesse carregando. O texto parcial que chegou antes do
+  `stopped` vira a mensagem final: o gateway nao persiste turno cancelado,
+  entao descartar aqui apagaria o que o usuario ja tinha lido (#1081).
+- Quando o socket nao abre — gateway antigo sem `/ws`, proxy que recusa o
+  upgrade, LAN que caiu — o app volta sozinho para o `POST` de sempre, sem
+  mostrar erro. O fallback so vale antes de o turno ser submetido; depois
+  disso, repetir por HTTP mandaria a mesma mensagem duas vezes (#1081).
+- Um frame que o app nao conhece e ignorado em vez de derrubar o turno: o
+  gateway pode ganhar um tipo novo antes de o app aprender (#1081).
+- **`garra chat` ganha `--persist` e `--resume <SESSION_ID>` para nao perder a
+  conversa quando o processo acaba (#1088).** O REPL guardava o historico so
+  na memoria, entao a conversa morria com ele; o que decidia isso era um
+  comentario em `chat.rs`, sem flag nem doc. Agora e opt-in explicito: sem
+  nenhuma das duas flags **nenhum** banco e aberto e nada vai para o disco —
+  exatamente o comportamento anterior, e ha teste que prende isso.
+- Com `--persist`, cada turno vai para `<data_dir>/sessions.db` (o mesmo
+  `sessions.db` do gateway) por `upsert_session` + `append_message`, sem
+  mudanca de schema; o id da sessao aparece na abertura ja com o comando para
+  retoma-la. Com `--resume`, o historico gravado e carregado antes do primeiro
+  turno, a tela diz quantos turnos voltaram e a sessao continua gravando dali
+  em diante — as duas flags sao independentes, mas qualquer uma basta para
+  abrir o store. Falha de gravacao avisa e a conversa segue; e se a contagem
+  de mensagens fora da janela falha, o aviso tambem acontece em vez de
+  anunciar zero no silencio. Turnos voltados sao contados pelas perguntas
+  (`user`), nao por divisao da lista — turno incompleto deixado pela
+  hidratacao do gateway nao mente no placar.
+- **#1105: `agent.bash_allowlist` deixa o operador declarar comandos
+  confiaveis.** Um comando do tier arriscado do `safety_gate` morria
+  fail-closed quando nao havia canal de confirmacao — era o caso de um CLI de
+  outro agente instalado pelo proprio dono: bloqueado, sem como permitir. Os
+  padroes da allowlist sao avaliados depois da denylist e antes do tier
+  arriscado, e essa ordem e o ponto: a lista e positiva (so o que esta nela
+  escapa da confirmacao) mas nao perdoa comando perigoso, que continua barrado
+  mesmo que alguem o liste. Sintaxe pobre de proposito, para ser auditavel a
+  olho nu: `prefixo*` com coringa so no fim, ou o comando exato. Padroes com
+  coringa fora do fim sao recusados com warning em vez de interpretados; um
+  `*` puro tambem e recusado — coringa sem prefixo casa com todo comando
+  simples, e o tier arriscado desligado por um caractere nao e um padrao. E
+  um prefixo nunca cobre comando composto (`;`, `&&`, pipe, `$(...)`,
+  redirecao) — esse volta para o tier arriscado, que analisa cada segmento.
+  Vale no gateway, no `garra chat` e no caminho MCP.
+- A equipe de agentes do `.claude/agents/` passa a ter um modelo por funcao em vez
+  de um unico modelo para todos: `team-coordinator` (tencent/hy4-preview) coordena e
+  decide sem executar trabalho operacional, `repo-analyst` e `test-engineer`
+  (deepseek/deepseek-v4-flash-0731) investigam e testam, `implementer`
+  (z-ai/glm-5.3-flash) implementa, `code-reviewer` e `security-auditor`
+  (openai/gpt-5.6-luna) julgam com independencia em relacao a quem escreveu, e
+  `doc-writer` fecha o ciclo com documentacao e higiene do repositorio.
+- `assemble-team` e a nova skill `repo-autopilot` selecionam o time por risco em vez
+  de convocar os sete agentes sempre: R0 e so documentacao, R1 e bug pequeno, R2 e
+  logica interna com revisao, R3 e API/DB/dependencia com revisao reforcada, R4 e
+  auth/seguranca/cripto com auditor obrigatorio, R5 e release/secrets/destrutivo e
+  escala para aprovacao humana.
+- Todo agente devolve o mesmo contrato de status (`PASS`, `FAIL`, `BLOCKED`,
+  `NEEDS_CHANGES`, `NEEDS_HUMAN`) com risco e recomendacao, para o coordenador
+  arbitrar por sinal em vez de interpretar texto longo. `MERGE_READY` passa a exigir
+  causa raiz encontrada, mudanca minima, teste de regressao fmt/check/clippy/test,
+  revisor independente, auditor de seguranca quando aplicavel e docs atualizadas —
+  CI verde sozinho nao e mais suficiente.
+- O admin passa a ter troca de senha do proprio usuario, pela UI e por rota:
+  `POST /admin/api/change-password` recebe a senha atual e a senha nova,
+  reverifica a atual com o mesmo `verify_password` da danger zone antes de
+  mexer em qualquer coisa e so entao grava o novo hash. Antes disso a unica
+  forma de trocar a senha era SQL manual no `admin.db` (#1120).
+- A pagina Account do console traz o formulario: senha atual, senha nova e
+  confirmacao, com validacao de tamanho minimo de 8 caracteres e de igualdade
+  entre os dois campos antes de sair o pedido. E a primeira pagina de conta
+  acessivel a qualquer papel — ate hoje so havia telas de gestao de usuarios,
+  que exigem papel admin (#1120).
+- O hash continua sendo o PBKDF2-HMAC-SHA256 local do `admin/store.rs`, com
+  os mesmos 600 mil iteracoes: nada muda para as linhas ja existentes e o
+  Argon2id do `garraia-auth` segue fora do escopo do admin, que e SQLite e nao
+  o provedor de identidade do workspace (#1120).
+- Cada terminal escreve auditoria (`action` `change_password`, recurso `user`),
+  com `outcome` `success` ou `failure`, e nenhuma delas carrega senha — nem a
+  atual, nem a nova. A resposta de erro repete o formato `{"error": ...}` do
+  resto da API do admin, e a falha de gravacao devolve uma mensagem fixa, com o
+  detalhe do SQLite indo so para o log (#1120).
+- As outras sessoes do usuario sao revogadas NA MESMA TRANSACAO do novo hash,
+  pela `rotate_password_and_revoke_sessions`: ou as duas coisas acontecem,
+  ou nenhuma — a rota nunca responde sucesso com o hash trocado e um cookie
+  roubado ainda valido. A sessao que fez o pedido e mantida, entao o console
+  nao se desloga no meio do proprio submit. Segue sem rate limit dedicado na
+  rota, como todo o resto do router do admin (so o governor per-IP global);
+  o custo de 600 mil iteracoes de PBKDF2 por tentativa errada e o freio que
+  existe hoje (#1120).
+- O login do painel admin passa a exigir o segundo fator quando a conta tem
+  2FA ligado. Antes `POST /admin/api/login` parava na senha: o TOTP (RFC 6238)
+  que o projeto ja implementava so era alcancavel pelo fluxo mobile
+  (`/auth/2fa/*`), entao uma senha vazada abria o console inteiro. Com 2FA, a
+  resposta de login sem codigo vem `401` com `totp_required: true` — nao
+  `401` generico — porque o cliente precisa distinguir "falta o codigo" de
+  "senha errada" para poder mostrar o campo em vez de repetir a senha (#1121).
+- Quatro rotas de enrollment, todas dentro do router autenticado, atras de
+  sessao e CSRF: `GET /admin/api/2fa/status`, `POST /admin/api/2fa/setup`
+  (gera e guarda um segredo **pendente**), `POST /admin/api/2fa/verify`
+  (primeiro codigo valido liga), `POST /admin/api/2fa/disable` (exige o codigo
+  atual — desligar o segundo fator e exatamente o que um invasor com a senha
+  tentaria, entao nao pode ser so uma confirmacao de sessao). Um segredo
+  pendente nao vale nada: so passa a ser cobrado depois que o `verify` roda,
+  o que evita travar o dono fora do painel por um setup abandonado (#1121).
+- Cinco codigos errados em 15 minutos travam o segundo fator por usuario: a
+  sexta tentativa e recusada com `429` sem ser avaliada, e um acerto zera a
+  contagem. Sem isso o TOTP de 6 digitos seria forcavel por forca bruta a
+  partir da propria resposta de erro. Cada terminal — setup, verify, disable,
+  e cada recusa no login, inclusive o `409` de quem tenta girar o segredo com
+  2FA ligado — escreve no `audit_log` com o IP (#1121).
+- Girar o segredo com o 2FA ligado e recusado com `409`: substituir o segredo
+  por baixo do dono deixaria o app dele apontando para o antigo, sem que nada
+  tivesse pedido confirmacao. O caminho e desligar com um codigo valido e
+  refazer o setup (#1121).
+- A pagina **Security** do console ganha o enrollment: mostra o segredo base32
+  e a URI `otpauth://` como texto copiavel. Nenhum QR e gerado por biblioteca
+  ou servico de imagem — isso mandaria o segredo para um terceiro (#1121).
+- As colunas de 2FA entram por `ALTER TABLE` condicional, e o boot passa a
+  esperar 5s por lock do SQLite (`busy_timeout`). A corrida de dois processos
+  abrindo o `admin.db` juntos e resolvida re-lendo o schema apos cada `ALTER`
+  falhar: coluna presente quer dizer que o outro processo ganhou a corrida e a
+  migration e sucesso — nenhum erro e engolido as cegas. Sem isso o `open`
+  falharia e o gateway cairia para store em memoria, o que deixa o
+  `/admin/api/setup` reivindicavel por anonimo. O resgate manual de quem
+  perdeu o autenticador ficou documentado em `docs/security.md` (#1121).
+- Correcoes dos vereditos de seguranca: leitura do estado de 2FA e fail-closed
+  — `is_totp_enabled` devolve erro e o login recusa com `500` **sem abrir
+  sessao** quando o estado nao pode ser lido, em vez de tratar ilegivel como
+  "desligado" e aceitar so a senha; o mesmo vale para a leitura do segredo:
+  erro de banco vira `500` (login sem sessao, verify e disable sem responder
+  "2FA nao configurado"), nunca ausencia de segredo; segredo vazio e estado
+  inconsistente e tambem `500` nos quatro caminhos — avalia-lo seria
+  responder "codigo invalido" contra um segredo que nao existe; ligar, desligar e
+  guardar o segredo pendente so confirmam com o evento de auditoria gravado
+  **na mesma transacao** (sem trilha, a operacao inteira falha), enquanto as
+  recusas seguem best-effort mas com a falha de trilha registrada em log; e
+  o relogio ilegivel tambem recusa o codigo TOTP. Regressoes travam isso:
+  login com a coluna `totp_enabled` ou `totp_secret` derrubada nao abre
+  sessao nem mente o motivo, verify e disable com o segredo ilegivel dao
+  `500` (nao `400`), e desligar o 2FA sem `audit_log` nao confirma. O
+  `audit_log` registra mudanca de estado e recusa de autenticacao; leitura
+  de estado (como `GET /admin/api/2fa/status`) nao gera evento. Residuais
+  rastreados: contador de tentativas em memoria (#1140) e segredo em claro
+  no `admin.db` (#1141) (#1121).
+- O painel admin ganha recuperacao de senha sem e-mail: `garra admin recovery
+  start --username X` gera um codigo de uso unico que nao volta na resposta
+  HTTP. O gateway guarda so o hash PBKDF2 do codigo e escreve o texto num
+  arquivo `0600` no diretorio de dados, entao ler o codigo exige shell na
+  maquina — a mesma barra de quem roda o CLI. `garra admin recovery complete`
+  consome o codigo uma unica vez, troca a senha (minimo 8 caracteres, igual ao
+  resto do admin) e revoga as sessoes antigas (#1122).
+- `POST /admin/api/recovery/start` responde sempre o mesmo corpo, existindo o
+  usuario ou nao, e gasta o mesmo trabalho de PBKDF2 nos dois casos para nao
+  virar um oraculo de enumeracao de usuarios. Com o painel ainda sem nenhum
+  usuario a rota se recusa a gerar codigo: nada a recuperar, e ela nao pode
+  virar caminho de criacao de conta (#1122).
+- As duas rotas de recuperacao sao as primeiras do admin com limitacao por IP
+  (10/min, o `RateLimiter` de auth do gateway). Cada inicio invalida o codigo
+  anterior pendente do mesmo usuario, e se o arquivo nao pode ser escrito o
+  codigo e descartado — nao fica vivo um codigo que ninguem consegue ler
+  (#1122).
+- A tela de login do admin mostra um "Esqueci minha senha" que explica o fluxo
+  e os dois comandos do CLI. Nao ha formulario de envio nem mencao a e-mail: o
+  canal do codigo e o host (#1122).
+- **ADR 0020 propoe a crate `garraia-hardware` (epic #1124).** Documenta a
+  decisao arquitetural que a regra absoluta 8 exige antes do primeiro commit
+  de codigo do epic: `trait Device` + `Capability` com risk class R0-R5
+  embutida desde o inicio (issues #1125+#1129), adapters (MQTT, Home
+  Assistant, Serial/GPIO) aditivos ao core, reusando `ToolApproval`/
+  `safety_gate` em vez de duplicar o gate de risco. Status `Proposed` de
+  proposito: nenhum codigo nasce ate o dono aceitar.
+- Plataforma de hardware completa (epic #1124, ADR 0020): as sete slices do
+  epic estao entregues — crate `garraia-hardware` com `trait Device` e
+  `Capability` carregando risco R0-R5 desde o primeiro commit (#1125/#1129),
+  adapters MQTT (#1126), Home Assistant (#1127) e Serial/USB + GPIO (#1130),
+  motor de automacoes `trigger -> condicao -> acao` sob a mesma policy do
+  runtime (#1128) e integracoes empacotadas como hardware skills (#1131). A
+  visao geral da plataforma — arquitetura em camadas, o north star passo a
+  passo, o modelo de risco em uma tela e o que fica de fora (Modbus e ROS2
+  ainda sem adapter; Zigbee e Matter por preset sobre o hub) — esta em
+  `docs/hardware.md`.
+- **Nova crate `garraia-hardware` + tools `device_list`/`device_read`/`device_execute` (epic #1124; #1125+#1129, ADR 0020 aceito 2026-09-12).** Fundacao do suporte a dispositivos fisicos: `trait Device` (async, `dyn`), `Capability` com risk class R0-R5 embutida desde o primeiro commit e invariante leitura-R0 (`leitura()`/`acao()`/`validar()`), `RiskClass::decisao()` tabela fail-closed (R0/R1 auto - R2 policy - R3 confirmacao humana - R4 aprovacao explicita - R5 deny salvo allowlist), `HardwareGate` consultando a tabela com allowlist do operador para R5, `DeviceRegistry` de `Arc<dyn Device>`, `DeviceStateStore` (presenca em SQLite, best-effort) e `MockDevice` de teste. Integracao no runtime: tres tools novas em `garraia-agents` com duas camadas de enforcement — os modos (`ToolGate`) negam `device_execute` nos read-only e o gate interno da tool trata R3/R4 pelo fluxo de confirmacao GAR-187 (`ToolApproval::Granted(fingerprint)` sobre o assunto `{device}/{capability}: {args}`) e fail-closed sem canal de confirmacao. Gateway e CLI registram as tools com registry vazio (fail-closed de nascimento); adapters reais (#1126 MQTT, #1127 Home Assistant, #1130 Serial/GPIO) entram depois, cada um seu PR.
+- O gateway fala com dispositivos fisicos via MQTT (#1126, epic #1124). Com a
+  secao `hardware.mqtt` no config (broker `host:porta`, `username` e
+  `password_env` — o **nome** da env que guarda a senha, nunca a senha), o
+  boot sobe o adapter rumqttc: descobre dispositivos pelo manifesto que cada
+  um publica retained em `garra/devices/{id}/capabilities`, marca presenca
+  pelos status/LWT em `garra/devices/{id}/status` e guarda o estado em
+  `<data_dir>/hardware.db` (mesma resolucao de `memory.db`, via
+  `AppConfig::hardware_db_path`).
+- A leitura correlaciona `request_id`: publica em `garra/devices/{id}/get/{cap}`
+  e espera a resposta em `state/{cap}` pelo id — sem resposta no timeout
+  (5s), erro claro para o modelo. A execucao publica `set/{cap}` com os
+  args validados contra o schema truncado do manifesto (tipos primitivos,
+  `required`) e confirma **o que o broker aceitou** — nao o que o
+  dispositivo aplicou; conferir o efeito e uma leitura depois.
+- Fail-closed nos dois sentidos: manifesto que viola as invariantes
+  (`validar()` de Capability, id que nao bate com o topico, segmentos
+  perigosos) recusa o dispositivo inteiro, e classe de risco vem do
+  manifesto declarado — nunca inferida de payload em tempo de execucao.
+- `garra chat` sobe o mesmo transporte pela mesma funcao do gateway, entao
+  o registry e o store de presenca (`hardware.db`) sao os mesmos nos dois.
+- Sem `hardware.mqtt` no config, nada muda: registry vazio e
+  `device_list` sem dispositivos, como antes.
+- O gateway fala com o hub Home Assistant (#1127, epic #1124). Com a secao
+  `hardware.home_assistant` no config (`url` do hub e `token_env` — o
+  **nome** da env que guarda o long-lived access token, nunca o token), o
+  boot sobe o adapter REST + WebSocket: descobre entidades por
+  `GET /api/states`, le por `GET /api/states/{entity_id}`, executa por
+  `POST /api/services/{domain}/{service}` e marca presenca pelos eventos
+  `state_changed` do WebSocket, com reconexao automatica.
+- Risco por dominio, pre-avaliado: sensor e binary_sensor so leem (R0);
+  light, switch e climate executam em R1 (power, brightness, temperature);
+  cover em R2 (open, close, set_position); lock em R3 (lock, unlock). Todo
+  dominio fora dessa tabela nao vira dispositivo — fail-closed, sem R4/R5
+  neste slice.
+- Toda chamada ao hub passa pelo guard SSRF (`vet_url` + cliente pinado,
+  regra 14) com escopo de IPs privados: o hub e alvo legitimo da LAN, mas
+  link-local, CGNAT, multicast e addresses nao especificados continuam
+  bloqueados; o WebSocket conecta no mesmo IP pinado, sem re-resolver DNS.
+- `garra chat` sobe o mesmo adapter pela mesma funcao do gateway, e o store
+  de presenca (`hardware.db`) passa a ser compartilhado entre os adapters
+  configurados — uma fonte unica de online/offline.
+- Feature `home-assistant` OFF por default (mesmo padrao do `mqtt` e do
+  `storage-s3`): quem nao usa o hub nao paga a arvore de deps
+  (reqwest + tokio-tungstenite). Sem a secao no config, nada muda.
+- O gateway arma um motor de automacoes declarativas (#1128, epic #1124,
+  ADR 0020) dentro do `garraia-hardware`. Com a secao `hardware.automations`
+  no config (`dir` com as regras e `risk_ceiling` — default `r1`), o boot
+  carrega os arquivos `*.toml`/`*.json` do dir, compila as regras e o motor
+  assina o barramento de eventos que os adapters (#1126/#1127) publicam.
+- Regra declarativa: gatilho `state_changed` (entidade) ou `cron`; condicoes
+  em expressao (`to.state > 32`, avaliadas com fail-closed — erro de
+  avaliacao nunca vira `false` silencioso); acoes `device_execute` em
+  sequencia; knobs `debounce_secs` (rajada de eventos colapsa em uma
+  execucao) e rate limit `max_per_hour` (janela deslizante de 1h).
+- O gate de risco rege sem excecao: automacao roda sem canal de confirmacao
+  (ninguem vai apertar "aprovar" as 3 da manha), entao o teto de risco do
+  config corta o que ela pode pedir — `r0`, `r1` ou `r2`, nunca R3+: acao
+  acima do teto fica bloqueada, com a negativa na auditoria. `garra config
+  check` recusa `risk_ceiling` fora de `r0`/`r1`/`r2`.
+- Toda execucao fica auditada no `automations.db` (mesmo data dir do resto
+  do hardware): disparo, resultado (`executada`, `bloqueada_risco`,
+  `condicao_falsa`, `condicao_erro`, `rate_limited`, `erro`), o detalhe de
+  cada acao e a duracao. Regra desabilitada nao arma; spec quebrada nao sobe
+  silenciosa — warn no boot e o motor fica fora ate o arquivo consertar.
+- Feature `automations` OFF por default no crate; o gateway (e `garra chat`,
+  pela mesma funcao de bootstrap) a liga, e o config decide se o motor arma.
+  Sem a secao `hardware.automations`, nada muda — nenhum arquivo de regra e
+  lido e o motor nao sobe.
+- Terceira onda de transportes do `garraia-hardware` (#1130, epic #1124): uma
+  placa Arduino ou ESP32 ligada pelo cabo USB vira dispositivo do agente. O
+  adapter serial abre a porta, manda `{"garra_hello":true}` e adota a placa
+  que responder com o manifesto; dai em diante o protocolo e JSONL, uma
+  mensagem JSON por linha, com `request_id` correlacionando cada leitura e
+  cada escrita. Porta que nao responde ao handshake e fechada e esquecida —
+  um modem ou um GPS nunca viram "dispositivo".
+- Firmware de referencia publicado em
+  `crates/garraia-hardware/examples/firmware/`: um sketch sem bibliotecas
+  externas (cabe num Uno) mais um README com o protocolo, o passo a passo de
+  gravacao e as permissoes de porta no Linux.
+- Adapter GPIO para Raspberry Pi: os pinos do proprio host expostos como
+  `digital_read`, `digital_write` e `pwm`, com o operador declarando quais
+  pinos sao entrada e quais sao saida. O que nao foi declarado e negado —
+  escrever num pino fora da lista e erro, nao escrita silenciosa. Num host que
+  nao e Raspberry Pi o adapter falha limpo, com o remedio no texto do erro
+  (grupo `gpio` e `/dev/gpiomem`), sem registrar dispositivo fantasma.
+- Risco vem do codigo, nao da placa: os dois adapters compartilham uma tabela
+  fechada de capabilities — leitura (`digital_read`, `analog_read`) em R0 e
+  escrita fisica (`digital_write`, `pwm`) em R2. O manifesto declara apenas os
+  NOMES; nome fora da tabela recusa o dispositivo inteiro. Diferente do MQTT,
+  onde o broker tem ACL e o risco pode vir do manifesto, qualquer pessoa com
+  acesso fisico pluga um USB — entao a placa nao classifica o proprio risco.
+- Hardening da superficie de descoberta: caminho de porta passa por allowlist
+  de forma tty-like (`/dev/tty*`, `/dev/cu.*`, `/dev/serial/by-id/<nome>`,
+  `/dev/serial/by-path/<nome>` ou `COM<n>`, sem `..`), entao `/dev/mem`,
+  `/dev/sda` e `/dev/watchdog` sao recusados antes de qualquer `open`; a
+  descoberta automatica so considera portas USB com VID/PID conhecido; o leitor
+  corta linha acima de 64 KiB sem `\n` em vez de crescer o buffer; e pino,
+  nivel e duty sao validados em faixa fechada antes de qualquer byte sair pela
+  porta.
+- Id de placa serial e do transporte, nao da placa: a chave do registry e
+  `serial:<id declarado>`, o id declarado nao pode conter `:`, e uma segunda
+  placa que chegue com um id ja ocupado tem a adocao **recusada** em vez de
+  substituir o dispositivo que estava registrado. Sem isso, um firmware hostil
+  se anunciaria com o id de um device legitimo (do Home Assistant, por exemplo)
+  e passaria a receber as leituras e os comandos dele.
+- Texto vindo da placa e tratado como entrada hostil no caminho inteiro: erro,
+  id ecoado em recusa de handshake, nome de capability, `value` de leitura e
+  `state` espontaneo passam por higienizacao antes de virar log, mensagem de
+  erro ou resultado de tool — caracteres de controle, `U+2028`/`U+2029` e a
+  superficie invisivel do Trojan Source (CVE-2021-42574) viram espaco:
+  `U+061C`, `U+200B`-`U+200F`, `U+202A`-`U+202E`, `U+2060`-`U+2064`, os
+  isolates `U+2066`-`U+2069` e o BOM `U+FEFF`. Cada string e cortada em 300
+  caracteres e o JSON de uma leitura tem teto de 4 KiB (acima disso a leitura
+  falha, em vez de entregar meio JSON).
+- Pendente para um PR seguinte: **o wiring de config nao existe**. Os adapters
+  vivem no crate (`SerialAdapterConfig`/`SerialAdapterManager`,
+  `GpioAdapterConfig`), mas `garraia-config` ainda nao tem
+  `[hardware.serial]`/`[hardware.gpio]` e nem o gateway nem a CLI sobem os
+  adapters no boot. A issue #1130 tambem pede I2C/SPI, que nao entram aqui.
+- Features `hardware-serial` e `hardware-gpio` OFF por default, mesmo padrao
+  do `mqtt` e do `home-assistant`: quem nao liga hardware fisico nao paga a
+  arvore de deps (`tokio-serial`/`serialport` e `rppal`). Sem as features, o
+  crate compila e testa exatamente como antes.
+- Hardware skills (#1131): adapters e presets de hardware passam a ser
+  empacotados como skill, fechando a arquitetura em camadas do epic #1124 —
+  core sem driver, integracao distribuivel. O frontmatter ganha `kind`
+  (`instruction` por default, `hardware-adapter`, `hardware-preset`) e o bloco
+  `provides` (transporte, capabilities, presets entidade->capability com
+  sinonimos pt/en); a varredura de skills passa a descer em subdiretorios
+  (`hardware/<slug>/SKILL.md`), ignorando symlinks e com teto de profundidade.
+  Duas regras que o manifesto nao escolhe: a lista de transportes e fechada
+  (`mqtt`, `home_assistant`, `serial`, `gpio` — qualquer outro carrega inerte,
+  visivel e nunca ativo) e um skill so SOBE risco, nunca baixa (o risco
+  efetivo e `max(adapter, skill)`, e leitura continua R0). Seis skills
+  oficiais versionados em `skills/hardware/` — Home Assistant, MQTT,
+  serial/Arduino, ESP32, Zigbee e Matter, os dois ultimos como preset sobre o
+  hub em vez de stack propria. Documentado em `docs/hardware-skills.md`.
+- **CI valida o YAML do frontmatter de `.claude/agents/*.md` (#1139).** O #1107 nasceu de uma `description` sem aspas que quebrava o `yaml.safe_load` em silencio; nada na trilha de CI percebia isso. Novo job `agent-frontmatter-lint` roda `scripts/ci/validate_agent_frontmatter.py` em todo push/PR: parseia so o frontmatter (nunca o corpo em prosa) e falha se o YAML for invalido ou faltar `name`/`description`/`model`.
+- **Skill `/max-power` disponivel (ClaudeMaxPower adaptado ao GarraRUST).** Ativacao de um comando do harness GarraIA SuperPowers, portada do upstream `michelbr84/ClaudeMaxPower`: verifica os markers de instalacao (hook de sessao, skill assemble-team, tag ClaudeMaxPower no CLAUDE.md), repara o harness via git quando algo falta (nunca copiando do upstream, para nao destruir o fork), oferece o plugin oficial Superpowers (`superpowers@claude-plugins-official`), valida ferramentas de setup (cargo/gh/jq/python3/flutter), imprime o menu de capacidades e roteia por goal para a skill certa com dashboard de status.
+
+### Changed
+- Sem canal de confirmacao, o `run_tests` deixa de ser bloqueado
+  incondicionalmente e passa a seguir a **mesma regra do `bash`**, aplicada a
+  linha de comando que vai rodar de verdade. O bloqueio antigo nao protegia
+  nada: no mesmo runtime `bash("cargo test")` roda, porque `cargo test` nao e
+  comando sensivel no gate — era a mesma capacidade por outra porta, com o
+  custo de deixar a ferramenta inutil no caminho full-auto. Agora `cargo test`
+  e `npm test` rodam, e `pytest` continua bloqueado, porque roda por um
+  interpretador Python que o gate trata como codigo arbitrario. Nenhuma
+  capacidade nova e concedida. Com canal de confirmacao nada muda: toda suite
+  continua pedindo aprovacao vinculada ao diretorio (#1084).
+- O sha de rollback de skill passa a ser um tipo (`GitSha`) construido a partir
+  do alfabeto aceito, em vez de uma string apenas inspecionada. Na pratica o
+  valor entregue ao `git` e um que o modulo montou, e nao um que ele so olhou:
+  ninguem consegue mais passar string nao checada onde se espera um sha, e o
+  panico de fronteira de caractere fica impossivel por construcao em vez de
+  apenas barrado. Isso tambem fecha o alerta CodeQL #166, que continuou aberto
+  depois da primeira correcao — e corretamente, pelo modelo dele: a validacao
+  devolvia `()` e a string original seguia para `Command::args`, entao nada no
+  fluxo de dados tinha mudado (#1086).
+- **#1089** o CI passa a compilar e rodar `garraia-agents` com
+  `--features mcp`. A feature e OFF por default (`default = []`) e
+  `tests/mcp_lifecycle.rs` comeca com `#![cfg(feature = "mcp")]`, entao os tres
+  testes de ciclo de vida do MCP (reconexao, deteccao de filho morto e
+  disconnect limitado) nunca executavam em nenhum job. O novo step
+  `Run clippy + tests (mcp)` segue o mesmo padrao dos steps `signal`, `line` e
+  `mcp-http`, que ja fechavam buracos identicos.
+- **CLAUDE.md condensado para estado atual e invariantes (#1150).** A secao
+  Estrutura de crates perdeu a narrativa historica de entrega (plans, PRs,
+  datas, IDs GAR-xxx) — o historico de entrega permanece em plans/, docs/adr/
+  e CHANGELOG.md, e o guia de agentes fica so com estado atual e invariantes.
+  Alegacao de continue-on-error corrigida: zero flags ativas apos a #1094.
+- Higiene de instalacao e rotina: bloco de tolerancia
+  `KNOWN_PRE_PS1_TAG="v0.3.3"` e o argumento extra do probe
+  `release-cdn/install.ps1` removidos do `install-endpoints.yml` (o
+  proprio workflow pedia a remocao apos a primeira release >= v0.3.4);
+  `.claude/commands/garra-routine.md` migrado do Linear (descontinuado
+  2026-08-18) para o tracker interno, com nota do trigger desativado.
+- **rmcp 2.2.0 → 3.3.0 (portado do repo privado, tracker GarraIA/GarraIA#163).**
+  O SDK MCP salta um major com a API pós-2.2 preservada: no cliente, a
+  ponte de tools usa `Peer::call_tool_once` — o enum MRTR-aware
+  `CallToolResponse` (`Complete`/`InputRequired`/`Task`) — com os braços
+  `InputRequired` (SEP-2322) e `Task` (SEP-2663) **fail-closed**: o bridge
+  não dirige rodadas interativas nem polling de `tasks/get`, e o LLM vê o
+  motivo. No servidor (`garra mcp-server`), o trait `ServerHandler` passa a
+  devolver `CallToolResponse` (só `Complete`, via `From<CallToolResult>`) e
+  `ListToolsResult` usa o construtor `with_all_items` com os campos novos
+  SEP-2322/2549 (`result_type`/`ttl_ms`/`cache_scope`). O supervisor
+  `get_info_advertises_only_tools_capability` acompanha: `tasks` saiu do
+  `ServerCapabilities` e agora viaja como extensão em `extensions`.
+
+### Removed
+- Remove `crates/garraia-agents/src/tools/openclaw_bridge.rs` (codigo morto):
+  o `OpenClawToolBridge` nunca foi registrado no `tools/mod.rs` nem
+  referenciado em lugar algum desde 2026-04-06. A integracao OpenClaw viva
+  segue em `garraia-channels` (feature `openclaw`) e `garra migrate openclaw`.
+  Recuperavel do historico se tool-sharing entrar no roadmap.
+
+### Fixed
+- **Higiene no learning: o `reason` do rollback passa a ser gravado no ledger e o log do sha rejeitado ganha campos (#1094).** `GitSha::short` agora trunca por fronteira de char (`get(..)`), degradando para o valor inteiro em vez de panicar se o invariante do parse um dia mudar. `bad_sha` loga `sha_len` e a variante do erro, nunca o valor do sha. `validate_process_args` virou `reject_nul_argument`, nome honesto para o que faz: rejeitar so NUL. O rollback grava o motivo em `ScoreEntry.reason` (campo novo com `#[serde(default)]`, ledgers antigos seguem desserializando) e o doc de `rollback` deixa de afirmar que o motivo vai para a mensagem do `git revert`; os dois `git checkout` sem `--` ganharam comentario explicando por que ele fica de fora (medido no git 2.43.0, `--` quebra os dois formatos).
+- **#1098 deixa de passar batido quando os servidores de voz estao fora.**
+  Com `voice.enabled`, o gateway apenas logava um warning que ninguem lia e o
+  `POST /api/tts` respondia 200 com fallback de texto — o dono nao via erro em
+  lugar nenhum. O `GET /api/diagnostics` (e a pagina Diagnostics do console)
+  agora tem as linhas `voice.tts` e `voice.stt`: cada uma sonda o endpoint
+  configurado com budget de 1.5s e responde `ok`, `skipped` (modo voz
+  desligado — nao e defeito) ou `error` com o comando exato de subida da
+  `docs/voice.md` no `next_step`. A URL passa pelo `vet_url` do
+  `garraia_common::ssrf` com `IpScope::AllowPrivate`, como o Ollama: voz e
+  servico local, mas link-local e CGNAT continuam barrados. Falhar alto na
+  propria requisicao continua disponivel em `/api/tts?fallback=false`.
+  O contrato do fallback de texto do `POST /api/tts` agora e pinnado por teste
+  de integracao com TTS que falha por injecao — 200 com `fallback:true` por
+  padrao, 500 com `?fallback=false`. A sonda agora distingue tres erros:
+  endpoint fora do ar (carrega o comando de subida no `next_step`), HTTP 5xx
+  (servico de pe quebrado, aponta para os logs do servidor) e URL invalida
+  (instrucao generica de config) — e nenhuma dessas respostas vaza credencial:
+  o `detail` carrega so `scheme://host[:port]`, nunca `userinfo`.
+- **O form de gateway key volta a aparecer quando a autenticacao e exigida (#1100).**
+  O CSS deixa `.gateway-key-form` escondida com `display: none`, e o boot apenas
+  limpava o estilo inline (`authSection.style.display = ''`), o que nunca sobrepoe a
+  folha de estilo. Com `gateway.api_key` configurada o console avisava "Gateway API Key
+  required." sem nenhum campo visivel para digitar a chave, e o WebSocket reconectava
+  em loop com 401. Passa a usar `display: 'block'` explicito em `webchat.html` e
+  `assets/app.js`, que duplicam a mesma logica.
+- **O `mode` pedido na criacao da sessao volta a valer (#1102).** `POST
+  /api/sessions` respondia 201 ecando o modo, mas a linha no banco nascia sem
+  `agent_mode`: o handler grava o modo e **depois** emite o token de sessao, e
+  `ChatSessionManager::create_token` chama `upsert_session(..., Value::Null)`
+  so para garantir a linha antes da FK. Como `json_patch(T, P)` devolve `P`
+  quando `P` nao e um objeto, aquele "no-op" reescrevia o metadado inteiro com
+  `null` por cima do modo recem-gravado — e o modo escolhido e o que liga a
+  `ToolPolicy` desde #988, entao a sessao rodava sem a politica pedida. O
+  mesmo `upsert` explica por que `/api/mode/select` sempre funcionou: aquele
+  caminho nao emite token. Agora um patch que nao e objeto e ignorado (e uma
+  linha nova criada assim nasce com `{}`); `null` explicito **dentro** de um
+  objeto continua apagando a chave, como o `clear_agent_mode` precisa.
+- A description do agente test-engineer no frontmatter do `.claude/agents`
+  passou a virar string entre aspas. O texto contem "regressao: roda", e o
+  dois-pontos sem aspas quebrava o parse do YAML inteiro — o agente nao
+  carregava em sessao nova nenhuma, e a equipe rodava com 6 dos 7 papeis,
+  sem o Tester (#1107).
+- **Seis paginas implementadas perdem a tag "Em breve" (#1116).** Providers,
+  channels, sessions, settings, diagnostics e logs continuavam marcados como
+  por vir na sidebar mesmo com o roteador ja despachando cada um para o seu
+  loader real. As duas coisas que de fato nao existem - o sino de
+  notificacoes e as abas CLI/Schema do painel direito - mantem a marca, mas
+  o titulo agora cita a issue #1116 em vez do plan 0117a, que nao existe.
+- **Falha de carregamento passa a dizer o codigo HTTP e o que fazer (#1116).**
+  Um helper `renderFetchError` substitui os "Falha ao carregar X." espalhados
+  pelos loaders. No caso 401 - o frequente, quando `gateway.api_key` esta
+  ligada e o navegador nao tem chave salva - a mensagem aponta para o form
+  "Gateway Authentication" do painel direito e o revela, em vez de mandar
+  recarregar a pagina. Como o roteador esconde o painel direito nas paginas
+  nao-chat, o reveal do 401 traz o painel de volta junto - exibir so o form
+  nao valia nada com o ancestral escondido.
+- **Hamburger do header volta a fazer algo no desktop (#1123).** O botao e
+  renderizado em todas as larguras, mas o handler abria o drawer mobile sem
+  checar o viewport: no desktop o unico efeito era o overlay que escurece a
+  tela, porque a sidebar ja estava visivel pelo layout flex. Agora o clique
+  ramifica por `matchMedia('(max-width: 768px)')` - no mobile continua abrindo
+  o drawer, no desktop alterna `collapsed` na sidebar (CSS que ja existia e nao
+  era usado por JS). `aria-expanded` acompanha o estado - a sincronizacao mora dentro de
+  `openSidebarMobile`/`closeSidebarMobile`, entao fechamentos por caminhos
+  pre-existentes (botoes de pagina, itens de sessao, settings) atualizam o
+  atributo sem tocar no hamburger - e um listener de
+  `resize` limpa `mobile-open` e o overlay ao cruzar o breakpoint, para a gaveta
+  nao ficar presa numa janela que cresceu.
+- **#1133 a documentacao do 2FA para de prometer uma cifragem que nao existe.**
+  Quatro lugares (docs/security.md, o modulo TOTP do mobile, o TOTP do painel
+  admin e a doc da store admin) diziam que o segredo do segundo fator era
+  guardado cifrado; na verdade ele fica em claro base32 no banco —
+  `admin_users.totp_secret` no admin.db e `mobile_users.totp_secret` no
+  SQLite do gateway, paridade entre os dois fluxos. A doc agora descreve o
+  estado real: a mitigacao e proteger o arquivo de banco (a mesma que o
+  token de sessao ja usa), o login do painel admin exige o codigo TOTP
+  quando ativado (o /auth/login mobile nao exige), e cifrar o lado admin
+  com a chave mestra do painel e a issue #1141.
+- **`codeql-triage.yml`: os inputs `state` e `tool` ganham o sentinela `all`, que so `severity` tinha (#1142).** As tres descricoes prometiam um "vazio = todos", mas o Actions substitui string vazia pelo `default:` declarado no input, entao o valor era inalcancavel via API — a mesma lacuna que o PR #890 fechou para `severity` e deixou aberta nas outras duas. O script ja suportava: `fetch_alerts` omite da query todo filtro vazio, entao `--state ""` e `--tool ""` sempre significaram "todos". Faltava o input conseguir entregar vazio. O custo apareceu na triagem do #1142, que precisou disparar o workflow duas vezes (`state=open`, depois `state=fixed`) para responder "o alerta existe em algum estado?", que e uma pergunta so. Nenhum valor existente muda de significado, e as permissoes do job seguem read-only (`security-events: read`, `contents: read`).
+- **#1144: o hardening da sonda de voz que o #1098 ja prometia.** A revisao
+  do PR #1115 (que entrou por auto-merge armado antes do veredito) achou
+  tres lacunas no `GET /api/diagnostics`; as tres fecham aqui. (1) O motivo
+  de um veto SSRF sai de um match proprio, campo a campo, e nao do `Display`
+  de `SsrfRejection`: `voice.tts`/`voice.stt` sao auth-free sem a chave do
+  gateway, e a garantia de que nenhuma variante ecoe a URL crua — com
+  `userinfo` embutida — passa a ser estrutural, pinnada por teste. (2) O
+  `next_step` de um HTTP 5xx agora e "inspecione os logs do processo", nao o
+  comando de subida: o servidor esta de pe, e a `docs/voice.md` e o changelog
+  do #1098 ja prometiam esse split. (3) A sonda e single-flight: o lock do
+  cache e seguro atravessando a sonda inteira, entao N requests simultaneos
+  numa janela de cache frio disparam um par de dials, nao N pares — o
+  amplificador que o TTL existe para impedir deixava de valer pela porta dos
+  fundos.
+- **#1146 as instrucoes de instalacao de voz paravam de citar comandos que nao
+  existem.** `docs/voice.md`, os hints do wizard (`garraia init`) e o `next_step`
+  do `/api/diagnostics` mandavam rodar `chatterbox-tts serve` e `fwsh serve`:
+  a wheel `chatterbox-tts` do PyPI e biblioteca e nao expoe CLI nenhuma, e `fwsh`
+  nao existe em pacote algum. A doc tambem apontava para as imagens
+  `ghcr.io/garraia/chatterbox` e `ghcr.io/garraia/hibiki`, que nunca foram
+  publicadas. Os tres lugares agora descrevem o protocolo que os clientes em
+  `garraia-voice` realmente falam: TTS pelo app Gradio `multilingual_app.py` do
+  repo `resemble-ai/chatterbox` na porta 7860, e STT pelo `whisper-server` do
+  `ggml-org/whisper.cpp` na porta 9090 (com a alternativa de qualquer servidor
+  OpenAI-compatible expondo `/v1/audio/transcriptions`). Testes de regressao no
+  wizard e no diagnostics impedem os comandos inventados de voltarem.
+- **`StartLimitIntervalSec`/`StartLimitBurst` movidos para `[Unit]` no template systemd (#1147).** As duas chaves viviam em `[Service]`, onde o systemd as ignora em silencio (`Unknown key name ... ignoring`) — o circuit breaker de restart do gateway (5 quedas em 60s -> `failed`) nunca existiu de fato, e um crash-loop reiniciava para sempre a cada `RestartSec=5`. Adicionado `tests/systemd/verify_garraia_service.sh`, rodado em CI (`systemd-unit-verify`), que falha se `systemd-analyze verify` reportar qualquer chave ignorada/mal-posicionada no unit.
+- Corrige `docker-compose.turboquant.yml`, que montava
+  `docs/deployment/config.turboquant.yml` inexistente no repo — o
+  `docker compose -f docker-compose.turboquant.yml up` falhava no boot.
+  Config criado com provider `llamacpp` (keyless) apontando para o
+  servico `llama-turboquant:8080` da rede do compose.
+- Corrige `garra about`, que escrevia ANSI incondicional: `about > arquivo`,
+  pipe, `NO_COLOR` e `TERM=dumb` recebiam sequencias de escape cruas. A tela
+  agora e renderizada por `about_text(style)` a partir do mesmo dono de
+  decisao do #942 (`ui::Capabilities::detect()`) — plain recebe ASCII puro,
+  sem uma unica sequencia de escape, afirmado em teste.
+- Fecha o RUSTSEC-2026-0253 (unsound pop() no lru 0.16.4): o bump do
+  `aws-sdk-s3` 1.135.0 -> 1.146.1 moveu a cadeia aws-smithy para versoes
+  que exigem lru >= 0.18.2; o Cargo.lock agora traz lru 0.18.4. Os ignores
+  do advisory saem dos dois arquivos (`audit.toml` + `deny.toml`) em
+  sincronia, como manda a invariante SYNC NOTE.
+
+### Security
+- O canal do procfs esta fechado: o processo `garra` passa a rodar
+  `prctl(PR_SET_DUMPABLE, 0)` no inicio do `main`, e o kernel trata o
+  `/proc/<pid>/environ` dele como root-only. Ate aqui um filho de tool de mesmo
+  UID lia o ambiente do pai direto do procfs e alcancava `GARRAIA_JWT_SECRET`,
+  `ANTHROPIC_API_KEY` e companhia — o scrub de ambiente do #1075 fechava a
+  heranca, nao esse caminho. Medido com controle: sem o fix o filho le o
+  segredo, com o fix recebe `EACCES`. Linux e Android; macOS e Windows nao tem
+  esse canal. Nao e fail-closed de proposito — num kernel sem o knob o processo
+  avisa e segue, porque nao subir o gateway seria trocar um vazamento estreito
+  por indisponibilidade total (#1084, ADR 0019).
+- O `test_name` do `run_tests` passa a ser validado antes de virar argumento do
+  runner. Vinha do modelo e ia cru: `cargo test --config
+  'target.<cfg>.runner=...'` aponta um executor de target, que e execucao
+  arbitraria. A forma documentada `-p <crate>` segue aceita (#1084).
+- **Rotas mutantes de /api/learning/ exigem origem propria e peer local quando nao ha api key (#1093).** Um POST para rollback roda `git revert` no repositorio do dono, mas respondia a qualquer um que alcancasse a porta: o gate de `gateway.api_key` e passa-direto na instalacao default e o CORS `Any` do dev mode deixava uma pagina qualquer do navegador disparar o mutante contra o loopback. Um guarda dedicado cobre POST/DELETE/PATCH/PUT das rotas de learning: Origin de outro esquema do transporte, de outro host, `Origin: null` ou `Sec-Fetch-Site: cross-site` viram 403; Origin ou Host fora da gramatica de authority (path, query, fragmento, userinfo, IPv6 sem colchete fechado, `:` dobrado, porta fora do intervalo) tambem viram 403 — o parse estrito rejeita qualquer sobra, do lado de quem manda e do lado de quem compara; peer nao-loopback sem chave configurada vira 503 fail-closed (mesmo precedente do /metrics); sem ConnectInfo, nao se finge que e loopback. No caso default sem chave, pedido de navegador so entra com `Host` de nome de loopback — ancora anti-DNS-rebinding: um dominio do atacante re-resolvido para 127.0.0.1 faz o navegador mandar Origin e Host iguais ao alias, e so o nome de loopback, que DNS publico nenhum aponta para fora da maquina, distingue o console do alias. Leitura (GET/HEAD/OPTIONS) segue como estava, e com a chave configurada a autenticacao continua sendo so do gate global.
+- **O modo `ask` passa a negar `bash` (#1104).** A negacao de `file_write`
+  era decorativa: `bash` e execucao arbitraria e o modelo escrevia o arquivo
+  pelo shell (`printf ... > arquivo`), contornando a promessa "apenas
+  perguntas" do modo padrao de Telegram/Discord/WhatsApp. Leitura (`file_read`,
+  `list_dir`, `repo_search`, `web_search`) segue livre. `run_tests` nao e
+  `bash`: executa toolchains fixas com nome de programa fixo, e continua
+  permitido.
+- **A allowlist do modo `orchestrator` passa a valer (#1110).** O modo
+  declarava `allowed` com seis ferramentas (`bash`, `file_read`, `file_write`,
+  `repo_search`, `web_search`, `web_fetch`), mas `whitelist_mode: false`
+  fazia `ToolGate::permite` liberar qualquer ferramenta e a lista nunca era
+  lida — no modo de maior orcamento do sistema (`max_tool_loops: 100`). A
+  correcao e so fazer a lista valer: o proprio prompt do modo ja anuncia
+  exatamente essas seis, entao nenhuma capacidade que o modo prometia foi
+  retirada. Um teste trava o comportamento nas duas direcoes.
+- **O lockout de TOTP do painel admin virou duravel (#1140).** A contagem de
+  codigos errados (5 em 15 minutos) vivia num `HashMap` dentro do processo:
+  reiniciar o gateway, atingir outra instancia ou usar processos
+  independentes zerava o contador e devolvia o brute force de um codigo de 6
+  digitos a quem ja tinha a senha. Agora ela mora na tabela `totp_attempts`
+  do `admin.db`, com limpeza da janela expirada na mesma transacao em que
+  conta — duas instancias sobre o mesmo banco compartilham um so orcamento
+  de tentativas. Contagem ilegivel virou recusa fechada (500) em vez de "nao
+  esgotou", e uma tentativa avaliada que nao consegue ser registrada tambem
+  recusa: um chute de graca era o mesmo buraco por outro caminho. O custo
+  aceito e o inverso do anterior: o dono espera a janela de 15 minutos, sem
+  atalho por restart.
+- **O segredo TOTP do painel admin passa a ser cifrado no `admin.db`
+  (#1141).** Ele ficava em claro (base32) na coluna `admin_users.totp_secret`
+  e agora e gravado em `totp_secret_enc`/`totp_secret_nonce` com AES-256-GCM
+  sob a chave mestra do painel — a mesma que `admin/secrets.rs` ja usa para
+  as chaves de provider no mesmo arquivo. Isso tira o comprometimento
+  **duravel** do 2FA: o segredo em claro sobrevivia a expiracao da sessao e a
+  troca de senha. Banco existente migra sozinho na primeira leitura (lazy
+  upgrade forward-only, que zera a coluna antiga) — nao ha passo de operador.
+  Decifrar falhando e indisponibilidade, nao "2FA desligado": trocar a chave
+  mestra sem re-cifrar recusa o login em vez de abrir o painel so com a
+  senha.
+- **O re-key da chave mestra do painel passa a levar o segredo do 2FA junto
+  (#1141).** Cifrar o segredo criou uma dependencia da chave mestra que a
+  rotacao de parametros KDF nao conhecia: ela re-cifrava `secrets` e
+  `secret_versions` e deixava `admin_users.totp_secret_enc` sob a chave
+  antiga, o que virava HTTP 500 permanente no login de todo admin com 2FA
+  ligado. As colunas do 2FA entram na mesma transacao do re-key, e um
+  segredo que nao decifra com a chave legada aborta o re-key inteiro em vez
+  de gravar parametros que nao abrem nada. Um `master.key` ilegivel tambem
+  deixou de ser substituido em silencio: ele e preservado como
+  `master.key.unreadable` com aviso no log.
+- A varredura de segredos e o redactor de logs passam a cobrir o formato
+  stateless dos installation tokens do GitHub (`ghs_` com pontos no corpo,
+  ~520 chars; rollout 2026). `varredura-segredos.py` nao tinha padrao `ghs_`
+  nenhum — token vazado passava batido; o redactor cobria `ghs_`, mas a classe
+  de caracteres parava no primeiro ponto e vazava o restante para o log.
+  Padroes na forma recomendada pelo GitHub (`ghs_` seguido de
+  `[A-Za-z0-9.\-_]{36,}` no scanner), cobrindo stateful (40 chars) e
+  stateless; tokens seguem tratados como opacos.
+- **Adapters MQTT, Home Assistant e GPIO namespaceiam o id de registro (#1168).**
+  `valida_segmento_topico` do adapter MQTT so recusava segmento vazio, `/`,
+  `+` e `#` — `:` e `.` continuavam validos, os mesmos separadores usados
+  pela convencao de id de outros adapters (`serial:<id>` e o
+  `<dominio>.<objeto>` do Home Assistant). Um dispositivo MQTT malicioso ou
+  mal configurado que publicasse um manifesto com esse formato de `id`
+  reivindicava a mesma chave no `DeviceRegistry` compartilhado, e
+  `DeviceRegistry::register` substituia o ocupante em silencio — um
+  `digital_write` enderecado a um dispositivo ja adotado por outro
+  transporte passaria a sair por um broker diferente. O adapter GPIO tinha o
+  mesmo defeito por outra porta: o id da config aceita `.`, entao um
+  `light.sala` declarado nos pinos do Pi colidia com o `entity_id` nativo de
+  uma entidade do Home Assistant.
+  Os tres adapters agora registram sob namespace proprio (`mqtt:<id>`,
+  `ha:<entity_id>`, `gpio:<id>`) em vez do id bruto/nativo, fechando o
+  conjunto com o `serial:<id>` que a #1130 ja tinha. Com os quatro
+  transportes namespaceados, a colisao entre adapters deixa de ser uma
+  coincidencia a evitar e vira estruturalmente impossivel, independente do
+  que um dispositivo anuncie. O `DeviceStateStore` e o `HardwareEventBus`
+  (motor de automacoes, #1128) seguem o mesmo id namespaceado, para ficar
+  consistente com o que `device_list` mostra ao agente.
+  `DeviceRegistry::register` passa a ser documentado como a variante
+  intencional de "sim, isto deve sobrescrever" (reconexao MQTT, reentrega de
+  estado do Home Assistant), com `register_if_absent` — fail-closed, recusa
+  a colisao em vez de substituir — como a alternativa para quem registra uma
+  vez so.
+  O motor de automacoes (#1128) foi reconciliado com o namespace: o
+  `domain` do contexto de condicao volta a ser derivado do id nativo
+  (`ha:light.sala` da `light`, nao `ha:light`), senao uma condicao
+  `domain == "light"` parava de casar em silencio e uma guarda negativa
+  (`domain != "lock"`) virava sempre verdadeira — fail-open numa condicao
+  escrita para barrar a acao. O `entity_id` do contexto segue sendo o id de
+  registro namespaceado.
+  **Migracao:** quem ja tinha specs de automacao escritas precisa
+  reprefixar `trigger.entity` e `action.device` para o namespace do
+  transporte que originou o dispositivo (`sensor.garagem` vira
+  `ha:sensor.garagem`, `sensor-1` vira `mqtt:sensor-1`, e assim para
+  `gpio:` e `serial:`) — o casamento e por string exata, entao uma regra
+  com id antigo simplesmente nunca dispara. O id correto e o mesmo que a
+  tool `device_list` mostra. Na carga da spec o motor emite `WARN` quando
+  um `trigger.entity` ou `action.device` vem sem prefixo de transporte.
+  Sem impacto em producao: `garraia-hardware` nunca foi lancado (todo o
+  slice de hardware, incluindo automacoes e os adapters serial/GPIO, chegou
+  depois da tag v0.4.1).
+
 ## [0.4.1] - 2026-09-09
 
 Release de canais e de seguranca. Sete canais que estavam escritos mas nunca
