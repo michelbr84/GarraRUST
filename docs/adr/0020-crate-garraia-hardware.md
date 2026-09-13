@@ -180,3 +180,36 @@ A afirmação central deste ADR — "o plano já está sequenciado e tem aceite
 testável" — é verificável relendo #1124 (comentário de sequenciamento) e
 #1125/#1129 (critérios de aceite), e deve ser reconferida antes de #1125
 começar, caso as issues tenham sido editadas desde 2026-09-11.
+
+## Desfecho (2026-09-13)
+
+O epic #1124 fechou com as sete issues-filhas entregues, e o que este ADR
+decidiu se sustentou na execução:
+
+| Issue | Entrega |
+|---|---|
+| #1125 + #1129 | crate, `trait Device`, `Capability` com risco embutido, registry, gate |
+| #1126 | adapter MQTT (`rumqttc` sobre TCP, sem a cadeia TLS que o GAR-455 tirou do lock) |
+| #1127 | adapter Home Assistant (REST + WebSocket, URL pelo guard de SSRF) |
+| #1128 | motor de automações sob a policy do runtime, sem bypass |
+| #1130 | Serial/USB e GPIO, sobre a tabela **fechada** de periféricos |
+| #1131 | hardware skills — lista fechada de transportes, risco que só sobe |
+
+Duas decisões deste ADR provaram seu valor durante a execução, e viraram
+invariantes com teste:
+
+1. **Risco nasce com o tipo** (a razão de #1129 vir junto de #1125, e não
+   depois). Quando o transporte serial chegou (#1130), a pergunta "de onde vem
+   o risco de uma placa que ninguém autenticou?" já tinha resposta estrutural:
+   não do dispositivo. A tabela de `perifericos` é fechada no código.
+2. **O core não conhece fabricante.** Foi o que permitiu que Zigbee e Matter
+   entrassem como *preset sobre o Home Assistant* (#1131) em vez de stack
+   própria — e que Modbus/ROS2 fiquem de fora sem bloquear nada: um manifesto
+   que os declare carrega inerte.
+
+Nenhuma consequência prevista na seção anterior precisou ser revista. O
+`DeviceRegistry` continua vazio em produção até um adapter ser configurado, e
+todos os transportes seguem atrás de feature desligada por default.
+
+Visão geral da plataforma entregue: [`docs/hardware.md`](../hardware.md).
+
