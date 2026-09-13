@@ -17,6 +17,16 @@
 
 - [Voice Mode: Whisper + Chatterbox/Hibiki, pipeline completo](https://github.com/michelbr84/GarraRUST/blob/main/docs/voice.md) — ativar com `garra start --with-voice`
 
+## Dispositivos físicos (hardware)
+
+- [A plataforma de hardware](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardware.md) — as camadas, o modelo de risco R0-R5 e o motor de automações
+- [Hardware skills: adapters e presets empacotados](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardware-skills.md) — o formato do manifesto e as duas regras que um skill não escolhe
+- [Skills oficiais](https://github.com/michelbr84/GarraRUST/tree/main/skills/hardware) — Home Assistant, MQTT, serial/Arduino, ESP32, Zigbee e Matter
+
+> Zigbee e Matter chegam como **preset sobre o Home Assistant**: a stack vive
+> no hub, e o Garra herda as entidades. Nada liga sozinho — sem seção no
+> config, o registro de dispositivos nasce vazio.
+
 ## MCP (Model Context Protocol)
 
 - [Configurar servidores MCP (stdio + HTTP)](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/mcp.md) (versão mais completa; há um resumo em [docs/mcp.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/mcp.md))
