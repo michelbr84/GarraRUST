@@ -39,6 +39,13 @@ hardware-serial = ["dep:tokio-serial", "dep:serialport"]
 # em *runtime*, com erro limpo, quando o host não é um Raspberry Pi; é o que
 # mantém `cargo check --all-features` verde no CI x86 sem fingir cobertura.
 hardware-gpio = ["dep:rppal"]
+# Hardware skills (#1131): lê os manifestos `kind: hardware-adapter` /
+# `hardware-preset` do diretório de skills e os converte em transporte
+# reconhecido, presets e risco efetivo. OFF por default — quem não empacota
+# integração como skill não paga o parser de manifesto. A dependência é só
+# para os *dados* do manifesto (`garraia-skills` é crate de dados); a regra
+# de que um skill nunca baixa risco mora aqui, ao lado da tabela R0-R5.
+skills = ["dep:garraia-skills"]
 default = ["mock-device"]
 
 [dependencies]
@@ -98,6 +105,11 @@ serialport = { version = "4", optional = true, default-features = false }
 # `/dev/gpiomem`. Rust puro (sem bindgen, sem wiringPi), o que mantém a
 # árvore de supply-chain pequena.
 rppal = { version = "0.22", optional = true }
+# Feature `skills` (#1131): o parser de SKILL.md + o scanner do diretório de
+# skills. Sentido da dependência de propósito: `garraia-skills` não conhece
+# `RiskClass`, então conteúdo empacotado não pode nascer classificando o
+# próprio risco.
+garraia-skills = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Broker MQTT embutido para os testes de integração da feature `mqtt`

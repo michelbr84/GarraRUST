@@ -421,6 +421,19 @@ jobs:
           cargo test -p garraia-hardware --features automations
           echo "::endgroup::"
 
+          # Mesmo buraco para a feature `skills` (#1131): o catalogo que le
+          # os manifestos `hardware-adapter`/`hardware-preset` do diretorio
+          # de skills. SEM `--lib`, porque a feature traz o teste de
+          # integracao em tests/skills.rs que carrega os skills oficiais
+          # VERSIONADOS NO REPO (skills/hardware/) — e esse teste que impede
+          # um manifesto oficial quebrado (transporte com typo, risco fora
+          # de r0..r5) de entrar, e que prende a regra de que um skill so
+          # sobe risco, nunca baixa.
+          echo "::group::garraia-hardware --features skills"
+          cargo clippy -p garraia-hardware --features skills --all-targets -- -D warnings
+          cargo test -p garraia-hardware --features skills
+          echo "::endgroup::"
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,

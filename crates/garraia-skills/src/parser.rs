@@ -2,6 +2,8 @@ use garraia_common::{Error, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::hardware::{HardwareProvides, SkillKind, validate_hardware};
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SkillFrontmatter {
     pub name: String,
@@ -10,6 +12,14 @@ pub struct SkillFrontmatter {
     pub triggers: Vec<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// A categoria do skill (#1131). Ausente = `instruction`, que e o skill
+    /// classico — todo SKILL.md escrito antes da categoria `hardware/` existir
+    /// continua valido sem tocar numa linha.
+    #[serde(default)]
+    pub kind: SkillKind,
+    /// O bloco de hardware, obrigatorio (e exclusivo) dos kinds de hardware.
+    #[serde(default)]
+    pub provides: Option<HardwareProvides>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +83,10 @@ pub fn validate_skill(skill: &SkillDefinition) -> Result<()> {
     if skill.body.is_empty() {
         return Err(Error::Skill("skill body must not be empty".into()));
     }
+    // A categoria de hardware (#1131) traz regras proprias — um manifesto de
+    // adapter sem transporte, ou um skill comum declarando hardware por
+    // acidente, para aqui e nao chega ao catalogo.
+    validate_hardware(skill.frontmatter.kind, skill.frontmatter.provides.as_ref())?;
     Ok(())
 }
 
@@ -141,5 +155,58 @@ This is the skill body with instructions.
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("body must not be empty"));
+    }
+
+    const HARDWARE_SKILL: &str = r#"---
+name: home-assistant
+description: Adapter oficial do Home Assistant
+kind: hardware-adapter
+provides:
+  transport: home_assistant
+  capabilities: [light, climate, sensor]
+  presets:
+    - entity: light.sala_teto
+      capability: power
+      risk: r1
+      synonyms: ["luz da sala", "living room light"]
+---
+
+# Home Assistant
+
+Corpo do skill.
+"#;
+
+    #[test]
+    fn parse_hardware_skill() {
+        let skill = parse_skill(HARDWARE_SKILL).expect("parseia");
+        validate_skill(&skill).expect("valida");
+        assert_eq!(skill.frontmatter.kind, SkillKind::HardwareAdapter);
+        let provides = skill.frontmatter.provides.as_ref().expect("bloco provides");
+        assert_eq!(provides.transport, "home_assistant");
+        assert_eq!(provides.capabilities, vec!["light", "climate", "sensor"]);
+        assert_eq!(provides.presets.len(), 1);
+        assert_eq!(provides.presets[0].entity, "light.sala_teto");
+        assert_eq!(provides.presets[0].risk.as_deref(), Some("r1"));
+    }
+
+    /// O frontmatter de antes da #1131 continua valido — `kind` ausente e
+    /// `instruction`, e nenhum SKILL.md instalado precisa ser reescrito.
+    #[test]
+    fn skill_sem_kind_e_instruction() {
+        let skill = parse_skill(VALID_SKILL).expect("parseia");
+        assert_eq!(skill.frontmatter.kind, SkillKind::Instruction);
+        assert!(skill.frontmatter.provides.is_none());
+        validate_skill(&skill).expect("valida");
+    }
+
+    /// A validacao de hardware corre dentro de `validate_skill`, que e o unico
+    /// portao que o scanner, o installer e o gateway atravessam.
+    #[test]
+    fn validate_skill_reprova_manifesto_de_hardware_incoerente() {
+        let content =
+            "---\nname: quebrado\ndescription: sem provides\nkind: hardware-adapter\n---\nCorpo.";
+        let skill = parse_skill(content).expect("parseia");
+        let err = validate_skill(&skill).expect_err("adapter sem provides");
+        assert!(err.to_string().contains("provides"), "{err}");
     }
 }
