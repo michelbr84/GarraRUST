@@ -63,6 +63,12 @@ pub enum HardwareError {
     #[error("erro de GPIO: {0}")]
     Gpio(String),
 
+    /// Erro ao carregar o catálogo de hardware skills (#1131) — diretório
+    /// de skills ilegível. Manifesto individual inválido **não** chega aqui:
+    /// ele é avisado e pulado, como no `SkillScanner`.
+    #[error("erro no catalogo de hardware skills: {0}")]
+    Skills(String),
+
     /// Erro do SQLite (o store de presença).
     #[error("erro de SQLite no estado de hardware: {0}")]
     Sqlite(#[from] rusqlite::Error),

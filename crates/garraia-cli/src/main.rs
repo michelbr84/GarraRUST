@@ -1756,9 +1756,27 @@ async fn async_main(
                                 } else {
                                     format!(" [triggers: {}]", s.frontmatter.triggers.join(", "))
                                 };
+                                // A categoria de hardware (#1131) e o que o
+                                // operador precisa ver para saber por que um
+                                // skill nao virou dispositivo: o transporte
+                                // declarado aparece junto do kind.
+                                let categoria = if s.frontmatter.kind.e_hardware() {
+                                    let transporte = s
+                                        .frontmatter
+                                        .provides
+                                        .as_ref()
+                                        .map(|p| p.transport.as_str())
+                                        .unwrap_or("?");
+                                    format!(" [{}: {transporte}]", s.frontmatter.kind)
+                                } else {
+                                    String::new()
+                                };
                                 println!(
-                                    "  {} - {}{}",
-                                    s.frontmatter.name, s.frontmatter.description, triggers
+                                    "  {} - {}{}{}",
+                                    s.frontmatter.name,
+                                    s.frontmatter.description,
+                                    categoria,
+                                    triggers
                                 );
                             }
                         }

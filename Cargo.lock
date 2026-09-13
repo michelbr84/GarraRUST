@@ -3712,6 +3712,7 @@ dependencies = [
  "croner",
  "futures",
  "garraia-common",
+ "garraia-skills",
  "reqwest 0.12.28",
  "rppal",
  "rumqttc",

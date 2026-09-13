@@ -33,6 +33,7 @@
 //! | `home-assistant` | [`adapter_homeassistant`] | REST + WebSocket contra o hub | #1127 |
 //! | `hardware-serial` | [`adapter_serial`] | JSONL por USB/serial (Arduino/ESP32) | #1130 |
 //! | `hardware-gpio` | [`adapter_gpio`] | pinos do Raspberry Pi via `/dev/gpiomem` | #1130 |
+//! | `skills` | [`skills`] | catálogo de adapters/presets empacotados como skill | #1131 |
 //!
 //! Os dois primeiros pegam o risk class do que o hub/dispositivo declara
 //! (MQTT) ou de uma tabela por domínio (Home Assistant). Os dois últimos
@@ -87,6 +88,11 @@ pub mod adapter_serial;
 #[cfg(feature = "hardware-gpio")]
 pub mod adapter_gpio;
 
+/// O catálogo de hardware skills (#1131): manifestos empacotados viram
+/// transporte reconhecido, presets e — sempre em uma direção só — risco.
+#[cfg(feature = "skills")]
+pub mod skills;
+
 pub use capability::Capability;
 pub use device::{Device, DeviceSummary};
 pub use error::HardwareError;
@@ -123,6 +129,9 @@ pub use adapter_serial::{
 
 #[cfg(feature = "hardware-gpio")]
 pub use adapter_gpio::{GpioAdapterConfig, GpioDevice, PREFIXO_ID as PREFIXO_ID_GPIO, PlanoPinos};
+
+#[cfg(feature = "skills")]
+pub use skills::{CatalogoDeSkills, HardwareSkill, Preset, TRANSPORTES_SUPORTADOS, Transporte};
 
 /// Resultado das operações de hardware.
 pub type Result<T> = std::result::Result<T, HardwareError>;
