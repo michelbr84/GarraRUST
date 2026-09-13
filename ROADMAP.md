@@ -1202,6 +1202,15 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — em aberto 
 
 ## Fase 7 — Pós-GA & Evolução (contínuo)
 
+- [x] **Plataforma de hardware** (epic #1124, entregue 2026-09-13, ADR 0020):
+      crate `garraia-hardware` com `trait Device`, `Capability` carregando risco
+      R0-R5 desde o primeiro commit e gate fail-closed (#1125/#1129); adapters
+      MQTT (#1126), Home Assistant (#1127) e Serial/USB + GPIO (#1130); motor de
+      automações `trigger → condição → ação` sob a policy do runtime (#1128); e
+      integrações empacotadas como hardware skills, com lista fechada de
+      transportes e risco que só sobe (#1131). Visão geral em
+      `docs/hardware.md`. Próximas ondas (adapters Modbus e ROS2) entram
+      aditivamente, cada uma com PR e avaliação de risco próprios.
 - [ ] **Multi-região ativo/ativo** via CockroachDB ou Postgres com logical replication.
 - [ ] **Federation** entre instâncias Garra (grupos cross-instance como Matrix).
 - [ ] **Marketplace de agentes e plugins WASM** assinados.
