@@ -34,6 +34,12 @@ gateway:
   # tls_key_path: "/etc/garraia/key.pem"
 
 llm:
+  # NOTA: este perfil ENDURECIDO desvia do padrao do projeto de proposito.
+  # O padrao oficial (issue #1180) e nuvem: OpenRouter + `z-ai/glm-5.3-flash`,
+  # com o local como segunda opcao. Aqui a ordem se inverte porque o objetivo
+  # e uma maquina que nao fala com nenhum servico externo. Se voce quer o
+  # padrao do projeto, use `garra init` ou `garra config set-routing`.
+  #
   # Provider local sem chave (troque pelo seu; chaves de cloud provider:
   # prefira o cofre via `garra init` + GARRAIA_VAULT_PASSPHRASE).
   ollama-local:
@@ -42,6 +48,7 @@ llm:
     base_url: "http://localhost:11434"
 
 agent:
+  # Deliberadamente local — ver a nota em `llm:` acima.
   default_provider: ollama-local
   # Tier "arriscado" do safety_gate passa a exigir confirmação humana
   # (o tier "perigoso" é bloqueado SEMPRE, com ou sem esta flag):
