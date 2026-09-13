@@ -39,8 +39,9 @@ use local_stack::{
     print_tts_install_hints, pull_model, start_ollama_systemd_or_nohup, voice_endpoints_summary,
 };
 
-/// Default cloud model — matches `chat.rs` (`openrouter/auto`).
-const DEFAULT_OPENROUTER_MODEL: &str = "openrouter/auto";
+/// Default cloud model — re-exported from [`crate::defaults`], the single
+/// source of truth shared with `chat.rs` and `mcp_server.rs` (issue #1180).
+const DEFAULT_OPENROUTER_MODEL: &str = crate::defaults::DEFAULT_CLOUD_MODEL;
 
 /// One cloud provider the wizard can configure end-to-end.
 ///
@@ -60,7 +61,8 @@ struct CloudProviderPreset {
 }
 
 /// Presets offered by the "Which cloud AI provider?" select, in display
-/// order. OpenRouter stays first (and default): one key fronts many models.
+/// order. OpenRouter stays first (and default): one key fronts many models,
+/// and issue #1180 makes it *the* official default provider of the project.
 /// Default models mirror the provider crates' own defaults
 /// (`garraia-agents/src/{openai,anthropic}.rs`).
 const CLOUD_PROVIDER_PRESETS: &[CloudProviderPreset] = &[
@@ -211,23 +213,32 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     };
 
     // --- 3. Provider mode --------------------------------------------------
-    // GPU + local bootstrap enabled → default to "local-first". Otherwise
-    // cloud-only is the safe default.
+    // Issue #1180: the cloud default (OpenRouter + `z-ai/glm-5.3-flash`) is
+    // the official default of every installation, and the local stack is the
+    // *second* option — offered when the machine can host it, never
+    // preselected. Cloud-first is therefore the highlighted entry even on a
+    // GPU box; local-first stays one keypress away for whoever wants it.
     let local_available = env.supports_local_stack() && local_bootstrap_enabled();
     let (mode_idx, mode_default) = if local_available {
-        (
-            Select::new()
-                .with_prompt("Which LLM mode?")
-                .items([
-                    "Local-first (Ollama on this GPU + cloud fallback)",
-                    "Cloud-first (cloud provider primary + Ollama fallback)",
-                    "Cloud-only (OpenRouter / OpenAI / Anthropic — no local stack)",
-                ])
-                .default(0)
-                .interact()
-                .context("provider mode cancelled")?,
-            "local",
-        )
+        // The displayed order is cloud-first, local-first, cloud-only. The
+        // rest of this function reads `mode_idx` as 0 = local-first,
+        // 1 = cloud-first, 2 = cloud-only, so remap here rather than
+        // renumbering every downstream match arm.
+        let picked = Select::new()
+            .with_prompt("Which LLM mode?")
+            .items([
+                "Cloud-first (recommended — OpenRouter primary + Ollama fallback)",
+                "Local-first (second option — Ollama on this GPU primary + cloud fallback)",
+                "Cloud-only (OpenRouter / OpenAI / Anthropic — no local stack)",
+            ])
+            .default(0)
+            .interact()
+            .context("provider mode cancelled")?;
+        match picked {
+            0 => (1, "cloud-first"),
+            1 => (0, "local"),
+            other => (other, "cloud-only"),
+        }
     } else {
         if env.has_nvidia && !local_bootstrap_enabled() {
             println!(
@@ -522,7 +533,14 @@ fn collect_cloud_provider(out: &mut Option<CloudLlmChoice>) -> Result<Option<(St
     }
 }
 
+/// Local branch of the wizard. Issue #1180: this is the project's *second*
+/// option — the fallback the runtime reaches for when the cloud default is
+/// unavailable, or the primary only when the user explicitly picked
+/// local-first in the mode prompt above.
 fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> Result<()> {
+    println!("  Local stack — the second option: Garra falls back to it when");
+    println!("  the cloud default is unreachable (see `agent.fallback_providers`).");
+
     // Ollama install gate ---------------------------------------------------
     if matches!(env.ollama, OllamaState::NotFound) {
         let install = Confirm::new()
@@ -546,7 +564,7 @@ fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> R
     let mut choice = LocalLlmChoice::default();
     let labels: Vec<&str> = local_stack::MODEL_CHOICES.iter().map(|c| c.label).collect();
     let picked = Select::new()
-        .with_prompt("Qual modelo local o Garra deve usar?")
+        .with_prompt("Qual modelo local o Garra deve usar (segunda opcao / fallback)?")
         .items(&labels)
         .default(0)
         .interact()

@@ -459,18 +459,22 @@ fn decide_default_provider(
 /// both route through here rather than repeating the literals inline, so the
 /// two paths cannot disagree about what "the default" means.
 pub(crate) fn hardcoded_default_model(provider_kind: &str) -> String {
+    // The two project defaults (issue #1180) are keyed by the shared
+    // constants rather than by a literal, so a rename in `crate::defaults`
+    // cannot leave this table pointing at a provider kind that no longer
+    // exists.
     match provider_kind {
-        // `qwen3.8:latest` == `qwen3.8:27b` (Q4_K_M, ~18 GB, 262 144-token
-        // context, vision + tools). Kept byte-identical to
-        // `garraia_agents::ollama::DEFAULT_MODEL`.
-        "ollama" => "qwen3.8:latest",
+        // The local *second* option — see `crate::defaults`.
+        crate::defaults::DEFAULT_LOCAL_PROVIDER => crate::defaults::DEFAULT_LOCAL_MODEL,
         // llama-server serves whatever model it was started with; the
         // OpenAI-compatible API accepts any string here — `default` matches
         // `garraia_agents::llama_cpp::DEFAULT_MODEL` byte-for-byte.
         "llamacpp" => "default",
         "anthropic" => "claude-sonnet-4-5-20250929",
         "openai" => "gpt-4o",
-        "openrouter" => "openrouter/auto",
+        // The official project default. Never `openrouter/auto`: `auto`
+        // stays reachable only when the user passes it explicitly.
+        crate::defaults::DEFAULT_CLOUD_PROVIDER => crate::defaults::DEFAULT_CLOUD_MODEL,
         "echo" => "echo-stub",
         _ => "auto",
     }
@@ -2314,7 +2318,7 @@ mod tests {
         let decision = decide_default_provider(&cfg, false, true, false);
         match decision {
             DefaultProviderDecision::UseDefault { model, .. } => {
-                assert_eq!(model, "openrouter/auto");
+                assert_eq!(model, "z-ai/glm-5.3-flash");
             }
             other => panic!("expected UseDefault with hardcoded model, got {other:?}"),
         }
@@ -2333,9 +2337,27 @@ mod tests {
             "claude-sonnet-4-5-20250929"
         );
         assert_eq!(hardcoded_default_model("openai"), "gpt-4o");
-        assert_eq!(hardcoded_default_model("openrouter"), "openrouter/auto");
+        // Issue #1180: the official default. `openrouter/auto` and
+        // `openrouter/free` are explicit-only from here on.
+        assert_eq!(hardcoded_default_model("openrouter"), "z-ai/glm-5.3-flash");
         assert_eq!(hardcoded_default_model("echo"), "echo-stub");
         assert_eq!(hardcoded_default_model("something-else"), "auto");
+    }
+
+    /// Issue #1180 — `chat.rs` must agree with the single source of truth
+    /// in `crate::defaults`, which the wizard and the MCP server read too.
+    /// Without this, the table above could be edited in isolation and the
+    /// four surfaces would drift apart again.
+    #[test]
+    fn hardcoded_defaults_match_the_shared_constants() {
+        assert_eq!(
+            hardcoded_default_model(crate::defaults::DEFAULT_CLOUD_PROVIDER),
+            crate::defaults::DEFAULT_CLOUD_MODEL
+        );
+        assert_eq!(
+            hardcoded_default_model(crate::defaults::DEFAULT_LOCAL_PROVIDER),
+            crate::defaults::DEFAULT_LOCAL_MODEL
+        );
     }
 
     /// The Ollama default must be byte-identical to the provider crate's own
