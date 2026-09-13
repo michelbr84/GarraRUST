@@ -468,11 +468,14 @@ jobs:
   # forbids outright (CLAUDE.md, Regras absolutas).
   #
   # Why it is treated as unproven: `garraia-desktop` is excluded from every
-  # cargo invocation in ci.yml because its build needs GTK and a sidecar that
-  # Linux runners lack. That reasoning is Linux-specific -- windows-latest ships
+  # cargo invocation in ci.yml, whose jobs install neither GTK/webkit nor the
+  # staged sidecar its build needs. desktop.yml does run this same
+  # build-installer.ps1 on pull requests that touch the desktop or the CLI,
+  # but it is path-filtered and not a required check, so nothing guarantees
+  # that the commit being tagged went through it green. windows-latest ships
   # WebView2, the Tauri CLI fetches WiX and NSIS itself, and step 1 of
-  # build-installer.ps1 produces the sidecar -- but this crate has never been
-  # built in CI, so a failure here must never block the CLI release.
+  # build-installer.ps1 produces the sidecar -- so the build is expected to
+  # work, but a failure here must never block the CLI release.
   #
   # Known failure mode: WiX ProductVersion is a three-part numeric field and
   # cannot express a semver prerelease, so an `-rc` tag fails this job. The
@@ -534,8 +537,9 @@ jobs:
   #
   # Best-effort by design, mesmo tratamento do build-windows-installer acima:
   # em `needs:` do release, fora do `if:`, sem `continue-on-error` (proibido
-  # pelo CLAUDE.md). Único job do pipeline que compila o crate Tauri num
-  # runner Linux — ubuntu-22.04 fixado pela mesma razão do build-linux-x86_64
+  # pelo CLAUDE.md). Único job do release que compila o crate Tauri num
+  # runner Linux (em PR, o espelho é o build-linux-bundles do desktop.yml)
+  # — ubuntu-22.04 fixado pela mesma razão do build-linux-x86_64
   # (baseline glibc 2.35). Os pacotes são ADITIVOS aos da CLI (regra 15):
   # garraia-desktop-linux-x86_64.{deb,AppImage} ao lado de
   # garraia-linux-x86_64.{deb,rpm,AppImage}. O deb declara

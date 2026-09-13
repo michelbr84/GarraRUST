@@ -300,10 +300,15 @@ jobs:
 
 
       - name: Run clippy
-        # garraia-desktop (Tauri) is excluded because its build.rs depends on
-        # the GTK/glib system libraries and a Windows sidecar binary that are
-        # not available on GitHub-hosted runners. Desktop is built locally via
-        # scripts/build-installer.ps1.
+        # garraia-desktop (Tauri) is excluded from every cargo invocation in
+        # this workflow: its build.rs needs the GTK/webkit dev packages and a
+        # staged sidecar binary (binaries/garraia-<target-triple>), and these
+        # jobs install neither. That does not leave the crate unbuilt:
+        # .github/workflows/desktop.yml builds and bundles it (MSI/NSIS on
+        # windows-latest, .deb/AppImage on ubuntu-22.04) on every PR that
+        # touches crates/garraia-desktop/** or crates/garraia-cli/**. That
+        # workflow is path-filtered, so it is not a required check, and it
+        # runs no clippy and no tests on the crate.
         run: cargo clippy --workspace --exclude garraia-desktop --all-targets -- -D warnings
 
       - name: Run clippy (mcp-http)
@@ -546,7 +551,8 @@ jobs:
         uses: ./.github/actions/swagger-ui-cache
 
       - name: Build workspace
-        # See clippy job comment: garraia-desktop excluded on CI.
+        # See clippy job comment: garraia-desktop is excluded from this
+        # workflow (desktop.yml builds it).
         run: cargo build --workspace --exclude garraia-desktop
 
       - name: Run tests
@@ -629,7 +635,9 @@ jobs:
   #     blocking via GAR-453).
   #
   # Excludes (matching test/build/clippy/msrv):
-  #   - garraia-desktop  — Tauri sidecar + GTK absent on GHA runners.
+  #   - garraia-desktop  — Tauri sidecar + GTK/webkit not installed by this
+  #                        job (see the clippy job comment; desktop.yml
+  #                        builds the crate).
   #   - garraia-auth     — integration tests need testcontainers + secrets
   #                        (this job intentionally has no GARRAIA_JWT_SECRET
   #                        or DATABASE_URL provisioned). Coverage of this
@@ -796,7 +804,8 @@ jobs:
 
 
       - name: Build workspace
-        # See clippy job comment: garraia-desktop excluded on CI.
+        # See clippy job comment: garraia-desktop is excluded from this
+        # workflow (desktop.yml builds it).
         run: cargo build --workspace --exclude garraia-desktop --release
 
   # MSRV gate (GAR-441) — bloqueante. Drift descoberto em smoke test do
@@ -818,8 +827,8 @@ jobs:
   # o piso real é ditado pela árvore do wasmtime, não pelas demais deps.
   # `--locked` garante que o lockfile não é regerado durante o check
   # (qualquer drift falha o build). `garraia-desktop` excluído pelos
-  # mesmos motivos do clippy/build (GTK + sidecar Windows ausentes em
-  # runners GHA).
+  # mesmos motivos do clippy/build (este job não instala GTK/webkit nem
+  # prepara o sidecar; quem compila a crate é o desktop.yml).
   msrv:
     name: MSRV check (1.95)
     runs-on: ubuntu-latest
