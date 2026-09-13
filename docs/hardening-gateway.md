@@ -49,7 +49,12 @@ gateway:
   # com ele ligado, em vez de fingir proteção. Ver "Limitações conhecidas" §2.
   session_ttl_secs: 86400         # validade do token (1 dia)
   session_idle_secs: 3600         # corte por inatividade (1h)
-  allowed_origins:                # vazio = allow-all; liste explicitamente
+  # vazio = nenhuma origem cross-origin (default seguro desde #1182). Atrás de
+  # reverse proxy com domínio próprio, liste o domínio aqui — sem isso,
+  # POST/PATCH/DELETE vindos do navegador contra esse domínio são recusados
+  # com 403 pela guarda anti-CSRF (`origin_guard`), e a resposta não carrega
+  # `Access-Control-Allow-Origin`.
+  allowed_origins:
     - "https://seu-dominio.exemplo"
   rate_limit:
     per_second: 1
@@ -61,6 +66,19 @@ gateway:
   suportado hoje é um **reverse proxy com TLS** (Caddy/nginx/Traefik) na
   frente do gateway em loopback — ou seja, muitas vezes o Perfil A + um
   proxy exposto resolve melhor que `0.0.0.0` direto.
+  **Interação com a guarda anti-CSRF (#1182), quebra conhecida e deliberada**:
+  nesse perfil o navegador manda `Origin: https://seu-dominio.exemplo` e o
+  proxy repassa `Host: seu-dominio.exemplo`, mas o gateway por baixo fala
+  `http` — a comparação de esquema recusa, e o nome de domínio ainda teria de
+  atravessar a âncora anti-rebinding. **A correção é listar o domínio em
+  `allowed_origins`**: uma origem declarada ali é aceita como tal, com o
+  esquema que ela tiver, e destrava as duas checagens de uma vez. Sem isso,
+  `POST`/`PATCH`/`DELETE` do navegador contra esse domínio voltam 403 — e
+  note que `gateway.api_key` **não** substitui a lista: a guarda roda igual
+  com a chave configurada, de propósito (um bearer válido não dispensa a
+  origem certa, senão o CSRF voltaria contra um dono autenticado). É o preço
+  de fechar o CSRF do perfil default (loopback, sem chave), que é a instalação
+  da esmagadora maioria.
 - **Métricas**: mantenha `GARRAIA_METRICS_BIND=127.0.0.1:9464` e use
   `GARRAIA_METRICS_TOKEN`/`GARRAIA_METRICS_ALLOW` se precisar raspar de
   fora (ver `.env.example`).

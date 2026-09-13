@@ -50,6 +50,29 @@ pub async fn ws_handler(
     State(state): State<SharedState>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // #1182: anti-CSRF do handshake. CORS nao vale para WebSocket — o
+    // `new WebSocket("ws://127.0.0.1:3888/ws")` de uma pagina qualquer sobe
+    // sem preflight —, entao a unica barreira de navegador aqui e o `Origin`
+    // do handshake. Cliente nao-navegador (app, CLI, `curl`) nao manda
+    // `Origin` e nao e afetado; para ele o gate continua sendo `api_key`.
+    // Mesmo criterio de esquema do `build_router`: cert E chave → https.
+    let scheme = if state.config.gateway.tls_cert_path.is_some()
+        && state.config.gateway.tls_key_path.is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
+    if !crate::origin_guard::ws_upgrade_permitido(
+        &headers,
+        scheme,
+        &state.config.gateway.allowed_origins,
+    ) {
+        // Nada do pedido e ecoado no corpo; o log nao leva o valor do header.
+        warn!("WebSocket upgrade rejected: cross-origin");
+        return (StatusCode::FORBIDDEN, "ws: cross-origin upgrade refused").into_response();
+    }
+
     let gate = crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway);
     if gate.is_enabled() {
         // A query e aceita **aqui** e so aqui: o handshake WebSocket de um

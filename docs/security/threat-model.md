@@ -213,6 +213,15 @@ o GET.
 | **I** Information disclosure | Resposta distingue "não existe" de "fora das raízes", virando oráculo de existência de diretório. | 400 com corpo idêntico para todas as variantes de erro, como o 401 byte-idêntico de `/v1/auth/login`. | — |
 | **T** Tampering | Symlink dentro da raiz apontando para fora, criado entre o registro e a leitura (TOCTOU). | `canonicalize` resolve o symlink, e a re-validação em `list_project_files` roda no momento da leitura. | Janela residual entre o `canonicalize` e o `read_dir` é inerente ao filesystem; reduzida, não eliminada. |
 
+**Nota sobre o pressuposto "auth-free por desenho" (#1182)**: todo o `/api/*`
+ser auth-free se apoia em "quem alcança a porta é o dono". O pressuposto tem um
+buraco: **o navegador do dono alcança a porta rodando código de terceiros**.
+Basta o dono visitar uma página qualquer para ela disparar
+`POST /api/projects {"path":"…"}` contra `127.0.0.1:3888` de dentro do
+navegador dele — com cookies, com a rede local, com tudo. Fechado para a
+superfície HTTP mutante e para `/ws` pela guarda da §5.10; `/ws/parrot` segue
+em aberto, ver lá.
+
 **Nota sobre `working_dir`**: desde o #1028, `POST /api/sessions`
 (`api::create_session`) aceita `working_dir` e o passa por
 `project_root::confine` **antes** de criar a sessão — fora das raízes é 400 com
@@ -369,10 +378,101 @@ assinatura diz isso.
 | **I** Information disclosure | O **dono** escrito no log de toda requisição. No WhatsApp o dono é o próprio número de telefone (`bootstrap/whatsapp.rs:88`, `claim_owner(&from_number)`); no iMessage, número ou Apple ID. | O valor nunca sai: o log diz só se houve dono ou não. Guard `o_valor_do_dono_nao_vai_para_o_log`. | — |
 | **E** Elevation of privilege | Barramento de memória "por usuário" que na verdade é global, ligado por quem leu a assinatura. | Parâmetro removido: a assinatura não sugere mais escopo por pessoa. | Barramento por pessoa, se desejado, exige função nova e decisão explícita. |
 
+**Emenda #1182**: o mesmo pressuposto vale aqui e tinha o mesmo buraco. A rota
+não ter camada de auth não a torna alcançável só pelo dono: o navegador do dono
+alcança a porta rodando código de terceiros, e `POST /v1/chat/completions` gasta
+a chave de LLM **dele**. A identidade gravada deixou de ser escolhida pelo
+chamador no #1012; quem podia *disparar* a chamada só passou a ser restrito na
+§5.10.
+
 **O que ficou fora, de propósito**: promover `Security Gate (BOLA & Tenant
 Isolation)` a required check da `main` (hoje os obrigatórios são quatro —
 `docs/security/protect-main-ruleset.md`). É mudança de branch protection, que
 é do dono.
+
+---
+
+## 5.10. CSRF de navegador contra o gateway local (#1182)
+
+Fechado em 2026-09-13. As §5.7 e §5.9 registram a postura "`/api/*` é auth-free
+por desenho: quem alcança a porta é o dono". O #1093 já tinha mostrado o buraco
+do pressuposto em `/api/learning/*`, e fechado **só ali**. O #1182 é o mesmo
+buraco no resto da superfície.
+
+**O vetor**: o dono visita uma página qualquer. Ela roda
+`fetch("http://127.0.0.1:3888/api/settings", {method:"PATCH", body:…})` — e o
+navegador do dono, que está no loopback, entrega. Nenhum token é necessário
+porque a instalação default não tem `gateway.api_key`. O que dava para fazer:
+
+| Rota | Efeito |
+|---|---|
+| `PATCH /api/settings` | reescrever a config do gateway |
+| `POST /api/mode/select` / `POST /api/modes/custom` | trocar o modo do agente (e com ele o `ToolGate`) |
+| `POST /api/mcp/marketplace/install` | instalar servidor MCP |
+| `POST /api/skills` / `PUT /api/skills/{n}` | escrever skill que o agente executa |
+| `POST /v1/chat/completions`, `POST /v1/messages`, `POST /chat` | gastar a chave de LLM do dono |
+| `DELETE /api/memory`, `DELETE /api/sessions/{id}` | destruir dados |
+| `POST /api/projects` | (§5.7) registrar raiz de projeto |
+
+E a **resposta voltava legível**: o CORS default era `allow_origin(Any)` +
+`allow_methods(Any)` + `allow_headers(Any)`, então a página do atacante não só
+disparava a escrita como lia o retorno — o `GET /api/settings/effective` inteiro,
+por exemplo. Em `/ws` era pior de outro jeito: WebSocket não passa por CORS
+nenhum, então `new WebSocket("ws://127.0.0.1:3888/ws")` de qualquer página subia
+uma sessão de chat completa.
+
+**Mitigação**, em três peças:
+
+1. `garraia_gateway::origin_guard::mutations_guard` — middleware sobre
+   `POST`/`PUT`/`PATCH`/`DELETE` de toda a superfície, montado **por dentro**
+   do gate de `gateway.api_key` (o 401 do gate vem primeiro). Recusa com `403`
+   de corpo constante quando o `Origin` não é o do próprio gateway (mesmo
+   esquema, mesma authority do `Host`, gramática RFC 6454 estrita,
+   `Origin: null` e `Sec-Fetch-Site: cross-site` inclusos) ou quando, havendo
+   `Origin`, o `Host` é um nome DNS que não é `localhost` nem está em
+   `gateway.allowed_origins` — a âncora anti-DNS-rebinding. Nada do pedido é
+   ecoado no corpo nem no log.
+2. **CORS default deixou de ser allow-all.** Sem `gateway.allowed_origins`,
+   nenhuma origem cross-origin é anunciada. O Web Console é servido pelo
+   próprio gateway e é same-origin — não usa CORS; cliente não-navegador
+   (app mobile, `curl`, Claude Code) ignora CORS.
+3. **`/ws` checa o `Origin` do handshake** (`ws_upgrade_permitido`), pelas
+   mesmas duas regras. Sem `Origin` (app, CLI) o handshake segue como antes.
+
+**Recorte deliberado**: o guarda genérico **não** herdou o
+`503 auth not configured` do `learning_mutations_guard` para peer não-loopback
+sem credencial. Herdá-lo mataria o app mobile na LAN contra um Garra sem
+`api_key`, que é cenário suportado. Contra quem já executa código na máquina, o
+gate de verdade continua sendo `gateway.api_key` — este módulo fecha o que o
+**navegador** pode ser forçado a fazer.
+
+**Quebra conhecida**: o perfil "reverse proxy com domínio próprio, sem
+`allowed_origins`". O navegador manda `Origin: https://meu.dominio`, o proxy
+repassa `Host: meu.dominio`, e o gateway por baixo fala `http` — recusado.
+Mitigação: listar a origem em `gateway.allowed_origins`, que é aceita como
+declarada pelo dono (escotilha `origem_declarada`, a mesma confiança que a
+lista já carregava para o CORS). Documentado em `docs/hardening-gateway.md`.
+
+### Gap aberto: `/ws/parrot`
+
+`/ws/parrot` (o overlay do papagaio do Garra Desktop) **não** recebeu a
+checagem, de propósito. O cliente legítimo é uma webview Tauri, cujo `Origin`
+real de handshake varia por plataforma (`tauri://localhost`,
+`http://tauri.localhost`, e variantes) e **não pôde ser verificado no ambiente
+desta entrega** — sem GTK/webkit, sem `DISPLAY`, sem forma de rodar o Tauri e
+capturar o header real. Uma allowlist adivinhada derrubaria o Garra Desktop em
+produção sem forma de testar. Fica como follow-up: capturar o `Origin` real em
+cada plataforma suportada, e só então aplicar `ws_upgrade_permitido` com a
+allowlist Tauri somada.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **T** Tampering | Página visitada pelo dono dispara `PATCH /api/settings` contra `127.0.0.1:3888` e reescreve a config. | `origin_guard::mutations_guard` em toda a superfície mutante fora da skip-list; tabela de rotas reais em `origin_guard.rs` e montagem real em `tests/origin_guard_layering.rs`. | — |
+| **I** Information disclosure | CORS `allow_origin(Any)` deixava a página do atacante **ler** a resposta (`/api/settings/effective`, `/api/sessions`). | Sem `allowed_origins`, nenhuma origem cross-origin é anunciada. | — |
+| **E** Elevation of privilege | DNS rebinding: domínio do atacante re-resolvido para `127.0.0.1` faz `Origin` e `Host` casarem entre si. | Âncora `ancora_ok`: só IP literal, `localhost` ou nome declarado em `allowed_origins`. | — |
+| **T** Tampering | `new WebSocket("ws://127.0.0.1:3888/ws")` de qualquer página abre sessão de chat (WebSocket não passa por CORS). | `ws_upgrade_permitido` no `ws_handler`. | — |
+| **T** Tampering | O mesmo contra `/ws/parrot` (overlay do desktop). | **Nenhuma** — ver "Gap aberto" acima. | Follow-up: capturar o `Origin` real da webview Tauri por plataforma e aplicar a checagem com a allowlist correspondente. |
+| **D** Denial of service | Perfil reverse proxy com domínio próprio deixa de aceitar mutação de navegador. | Quebra conhecida e deliberada; escotilha por `gateway.allowed_origins`. | — |
 
 ---
 

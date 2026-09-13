@@ -64,15 +64,22 @@
 //! a página visitada pelo dono e o DNS rebinding —, e é a camada que falta
 //! quando essa chave não existe.
 
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
 use crate::gateway_auth::ApiKeyGate;
+// #1182: a gramática de authority e a decisão de "cross-origin" saíram daqui
+// para `origin_guard`, que é onde a guarda **genérica** das rotas mutantes do
+// gateway também as usa. A lógica é a mesma, byte a byte — duas cópias seriam
+// duas implementações para divergir em silêncio. O que continua sendo deste
+// módulo é o que só vale para learning: o fail-closed de peer/credencial e os
+// corpos `"learning: …"`.
+use crate::origin_guard::{cross_origin, host_de_loopback};
 
 /// Corpo do 403 do anti-CSRF. Constante: nada do que veio no pedido é ecoado.
 const CORPO_CSRF: &str = "learning: cross-origin mutating request refused";
@@ -85,154 +92,9 @@ const CORPO_SEM_AUTH: &str = "learning: auth not configured";
 /// é loopback.
 const CORPO_SEM_PEER: &str = "learning: peer address unavailable";
 
-/// `true` quando o pedido mutante chega de uma origem de navegador que não
-/// é a do próprio gateway.
-///
-/// Um POST legítimo do console web (servido em `/learning`) traz `Origin`
-/// com o mesmo esquema do transporte e a mesma authority do header `Host`
-/// — porta default (`:80` em http, `:443` em https) normalizada dos dois
-/// lados. Um POST do app (Dio) ou do `curl` não traz `Origin` nenhum. O que
-/// **não** é legítimo: `Origin` de outro esquema (`https` contra um gateway
-/// http, ou um esquema exótico), `Origin` de outra authority, `Origin: null`
-/// (sandbox/redirect), ou `Sec-Fetch-Site: cross-site` sem `Origin`. Origem
-/// malformada ou `Host` ausente são tratados como cross-origin — fail-closed,
-/// e nunca se ecoa o valor rejeitado.
-fn cross_origin(headers: &HeaderMap, scheme: &str) -> bool {
-    match headers.get(header::ORIGIN) {
-        Some(origem) => {
-            let Ok(origem) = origem.to_str() else {
-                return true; // não-ASCII no Origin: fail-closed
-            };
-            if origem.eq_ignore_ascii_case("null") {
-                return true;
-            }
-            let Some((esquema, resto)) = origem.split_once("://") else {
-                return true; // sem esquema, o valor não é uma origem válida
-            };
-            // O esquema do Origin tem de ser o do transporte: `https` contra
-            // um gateway http não é a origem do console que passa aqui.
-            if !esquema.eq_ignore_ascii_case(scheme) {
-                return true;
-            }
-            // Gramática do header `Origin` (RFC 6454): `scheme "://" host
-            // [":" port]` — sem path, query, fragmento ou userinfo. O parse
-            // estrito de `parse_authority` rejeita qualquer sobra; nenhum
-            // navegador manda, quem manda é cliente de mentira: fail-closed.
-            let Some((host_origem, porta_origem)) = parse_authority(resto) else {
-                return true;
-            };
-            match headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
-                // Sem Host não há como confirmar mesma origem — fail-closed.
-                None => true,
-                Some(host) => {
-                    // Host fora da gramática de authority também não
-                    // compara: string alguma se casa por cima de lixo.
-                    let Some((host_header, porta_header)) = parse_authority(host) else {
-                        return true;
-                    };
-                    !mesma_authority(host_origem, porta_origem, host_header, porta_header, scheme)
-                }
-            }
-        }
-        None => headers
-            .get("sec-fetch-site")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.eq_ignore_ascii_case("cross-site")),
-    }
-}
-
-/// Faz o parse **estrito** de uma authority `host[:porta]` — a única forma
-/// que `Origin` (RFC 6454) e `Host` (RFC 3986 §3.2) têm. Retorna o host sem
-/// porta e a porta explícita, e rejeita **qualquer sobra**:
-///
-/// - IPv6 só entre colchetes, com fechamento exato: `[::1]`, `[::1]:3888`;
-///   `[::1]lixo` e `[::1]:3888:80` não parseiam;
-/// - fora de colchetes o `:` só separa porta — `host:porta:porta` morre na
-///   porta que não é dígito;
-/// - porta toda dígito, não vazia, no intervalo `1..=65535`;
-/// - nome de host só com `[A-Za-z0-9.\-_~]`: `@` (userinfo), `/`, `?` e `#`
-///   (path, query, fragmento) não têm vez numa authority.
-///
-/// Fail-closed: `None` para tudo que não é exatamente uma authority.
-fn parse_authority(authority: &str) -> Option<(&str, Option<u16>)> {
-    if let Some(resto) = authority.strip_prefix('[') {
-        // IP-literal: `[…]` ou `[…]:porta`, e nada depois.
-        let (dentro, depois) = resto.split_once(']')?;
-        dentro.parse::<Ipv6Addr>().ok()?;
-        let porta = if depois.is_empty() {
-            None
-        } else {
-            Some(valida_porta(depois.strip_prefix(':')?)?)
-        };
-        return Some((dentro, porta));
-    }
-    // Fora de colchetes um `:` separa a porta — e é o único permitido:
-    // o segundo `:` de `host:porta:porta` morre na porta não-dígito.
-    let (host, porta) = match authority.split_once(':') {
-        None => (authority, None),
-        Some((antes, depois)) => (antes, Some(valida_porta(depois)?)),
-    };
-    if host.is_empty()
-        || !host
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'~'))
-    {
-        return None;
-    }
-    Some((host, porta))
-}
-
-/// Porta de authority válida: toda dígito, não vazia, no intervalo
-/// `1..=65535` (`u16` sem a porta zero).
-fn valida_porta(p: &str) -> Option<u16> {
-    if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let porta: u16 = p.parse().ok()?;
-    (porta > 0).then_some(porta)
-}
-
-/// Compara as duas authorities já parseadas, normalizando a porta default
-/// dos dois lados: `:80` em http e `:443` em https não mudam a origem.
-fn mesma_authority(
-    host_origem: &str,
-    porta_origem: Option<u16>,
-    host_header: &str,
-    porta_header: Option<u16>,
-    scheme: &str,
-) -> bool {
-    let porta_default: u16 = if scheme.eq_ignore_ascii_case("https") {
-        443
-    } else {
-        80
-    };
-    host_origem.eq_ignore_ascii_case(host_header)
-        && porta_origem.unwrap_or(porta_default) == porta_header.unwrap_or(porta_default)
-}
-
-/// `true` quando a authority do header `Host` é um **nome de loopback**:
-/// `127.0.0.1` (ou qualquer IP de loopback), `localhost` ou `[::1]`.
-///
-/// É a âncora anti-DNS-rebinding do passo 3: nomes de loopback não existem
-/// no DNS público, então um `Host` que não é loopback não pode ser o
-/// endereço pelo qual um gateway ligado em loopback foi alcançado — é o
-/// alias de um domínio do atacante que o navegador da vítima resolveu para
-/// `127.0.0.1`. O `Host` passa pelo mesmo parse estrito do passo 1
-/// (`parse_authority`): `[::1]lixo` não é nome de loopback, é lixo —
-/// fail-closed em tudo que não parseia.
-fn host_de_loopback(headers: &HeaderMap) -> bool {
-    let Some(host_header) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
-        return false;
-    };
-    let Some((sem_porta, _)) = parse_authority(host_header) else {
-        return false;
-    };
-    sem_porta.eq_ignore_ascii_case("localhost")
-        || sem_porta
-            .parse::<IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
-}
+// `cross_origin`, `parse_authority`, `valida_porta`, `mesma_authority` e
+// `host_de_loopback` vivem em `crate::origin_guard` desde o #1182 (importadas
+// no topo). Os testes de gramática pura delas migraram junto.
 
 /// Estado da guarda: o gate global (para saber se a porta é autenticada) e o
 /// esquema efetivo do transporte — `https` só quando o TLS nativo está
@@ -908,67 +770,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parse_authority_rejeita_fora_da_gramatica() {
-        // A gramática inteira num só lugar: o `None` de cada lixo é o que o
-        // passo 1, a âncora e a comparação de authority têm em comum.
-        for lixo in [
-            "[::1]lixo",
-            "[::1]:3888:80",
-            "host:porta:porta",
-            "127.0.0.1:99999",
-            "127.0.0.1:0",
-            "usuario@127.0.0.1",
-            "127.0.0.1:3888/qualquer-caminho",
-            "127.0.0.1:3888?q=1",
-            "127.0.0.1:3888#frag",
-            ":3888",
-            "localhost:",
-            "",
-            "::1",
-        ] {
-            assert!(
-                parse_authority(lixo).is_none(),
-                "authority aceita fora da gramática: {lixo}"
-            );
-        }
-        assert_eq!(parse_authority("localhost"), Some(("localhost", None)));
-        assert_eq!(
-            parse_authority("localhost:3888"),
-            Some(("localhost", Some(3888)))
-        );
-        assert_eq!(parse_authority("[::1]"), Some(("::1", None)));
-        assert_eq!(parse_authority("[::1]:3888"), Some(("::1", Some(3888))));
-    }
-
-    #[test]
-    fn host_de_loopback_rejeita_sobra_depois_do_colchete() {
-        // O buraco antigo: o corte no primeiro `]` fazia `[::1]lixo` contar
-        // como loopback na âncora. Agora o `Host` passa pelo mesmo parse
-        // estrito do passo 1 e não parseia — fail-closed.
-        let headers = |valor: &str| {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                header::HOST,
-                axum::http::HeaderValue::from_str(valor).unwrap(),
-            );
-            headers
-        };
-        assert!(!host_de_loopback(&headers("[::1]lixo")));
-        for bom in [
-            "127.0.0.1:3888",
-            "localhost:3888",
-            "LOCALHOST",
-            "[::1]:3888",
-            "[::1]",
-        ] {
-            assert!(host_de_loopback(&headers(bom)), "loopback negado: {bom}");
-        }
-        for ruim in ["evil.example:3888", "localhost.evil.com", "192.168.0.1"] {
-            assert!(
-                !host_de_loopback(&headers(ruim)),
-                "não-loopback aceito: {ruim}"
-            );
-        }
-    }
+    // `parse_authority_rejeita_fora_da_gramatica` e
+    // `host_de_loopback_rejeita_sobra_depois_do_colchete` migraram para
+    // `crate::origin_guard`, junto das funcoes que testam (#1182). Os testes
+    // que ficaram aqui sao os do comportamento desta guarda.
 }

@@ -404,7 +404,17 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub session_tokens_required: bool,
 
-    /// Allowed CORS origins. Empty = allow all (dev mode).
+    /// Allowed CORS origins. Vazio = nenhuma origem cross-origin
+    /// (same-origin apenas, default seguro desde #1182). O Web Console e
+    /// servido pelo proprio gateway (`GET /`) e e same-origin, entao ele
+    /// **nao** precisa desta lista; liste aqui a origem do seu reverse proxy
+    /// / front externo, se houver.
+    ///
+    /// A lista tem dois efeitos: o `Access-Control-Allow-Origin` do CORS e a
+    /// ancora anti-DNS-rebinding da guarda anti-CSRF das rotas mutantes
+    /// (`garraia_gateway::origin_guard`) — um nome de dominio so atravessa a
+    /// ancora se estiver aqui.
+    ///
     /// Example: ["https://app.garraia.org", "http://localhost:3888"]
     #[serde(default)]
     pub allowed_origins: Vec<String>,
