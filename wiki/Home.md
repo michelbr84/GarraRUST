@@ -15,6 +15,7 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 | Configurar provedores, canais e secrets | [Configuração](Configuracao) |
 | Conectar Telegram, voz, MCP, VS Code, plugins | [Guias de Integração](Guias-de-Integracao) |
 | Entender como funciona por dentro | [Arquitetura e ADRs](Arquitetura-e-ADRs) |
+| Ligar dispositivos fisicos (MQTT, Home Assistant, Arduino, Raspberry Pi) | [docs/hardware.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardware.md) |
 | Operar com segurança / reportar vulnerabilidade | [Segurança e Operação](Seguranca-e-Operacao) |
 | Contribuir ou ver o roadmap | [Contribuir, Roadmap e FAQ](Contribuir-Roadmap-e-FAQ) |
 
@@ -22,6 +23,9 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.4.2 — Novidades](Novidades-v0.4.2)** · **[What's New in v0.4.2 (English)](Whats-New-v0.4.2)**
+  — o Garra saiu da tela: MQTT, Home Assistant, serial/USB e GPIO sob um
+  modelo de risco R0-R5, streaming no app, e o canal do `/proc` fechado.
 - **[v0.3.9 — Novidades](Novidades-v0.3.9)** · **[What's New in v0.3.9 (English)](Whats-New-v0.3.9)**
   — 48 issues e PRs: terminal que mostra o que o agente faz, memoria
   inspecionavel, e os modos de execucao passando a valer no executor.
