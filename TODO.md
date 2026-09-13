@@ -45,9 +45,24 @@ Consequência conhecida desse modo, e por isso registrada aqui: uma tag criada
 pelo `GITHUB_TOKEN` **não dispara** workflows de tag-push, então o
 `deploy.yml` (imagem ghcr) precisou de dispatch manual com `tag=v0.4.2`.
 Nesse modo a imagem sai com `v0.4.2` + `latest` + sha, **sem** as derivadas
-semver `0.4.2`/`0.4`. Quem for cortar a próxima release de uma máquina com
-saída de rede livre deve preferir o push da tag e ganhar as derivadas de
-volta.
+semver. Confirmado na publicação (digests lidos direto do registry):
+
+| Tag | Digest | Situação |
+|---|---|---|
+| `v0.4.2` | `sha256:64d9acd…` | nova, multi-arch (linux/amd64 + linux/arm64) |
+| `latest` | `sha256:64d9acd…` | aponta para a v0.4.2 |
+| `0.4.2` | — | não existe |
+| `0.4` | `sha256:bc3caf…` | **obsoleta** — ficou na release anterior |
+
+A linha do `0.4` é a que morde: é uma tag **móvel**, ela não deixou de
+existir, apenas parou de andar. Quem fizer `docker pull
+ghcr.io/michelbr84/garraia:0.4` hoje recebe a versão anterior sem nenhum
+aviso. Até ser corrigida, `v0.4.2` e `latest` são as tags confiáveis desta
+release.
+
+Quem for cortar a próxima release de uma máquina com saída de rede livre deve
+preferir o push da tag: o `deploy.yml` dispara sozinho, as derivadas semver
+voltam a ser geradas e o `0.4` volta a andar.
 
 Release publicada com 53 assets, incluindo os seis binários crus e o
 `<asset>.sha256` irmão de cada um — o que o `garra update` exige
