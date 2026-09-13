@@ -119,7 +119,13 @@ crates/
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
   garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
   garraia-media/      — processamento de PDF, imagens, mídia
-  garraia-skills/     — registry de skills para o agente
+  garraia-skills/     — registry de skills para o agente. Frontmatter com `kind`
+                        (`instruction` default · `hardware-adapter` ·
+                        `hardware-preset`) + bloco `provides` (#1131): a crate
+                        e de DADOS — ela nao conhece `RiskClass`, para que
+                        conteudo empacotado nao classifique o proprio risco.
+                        Varredura desce em subdiretorios (`hardware/<slug>/
+                        SKILL.md`), ignora symlink e tem teto de profundidade.
   garraia-learning/   — Garra Learning Agent / Self-Improving Operations Manual (ADR
                         0010). 10 módulos: miner, generator, registry, retriever (stub
                         até garraia-embeddings real), evaluator, updater, safety (gate
@@ -167,6 +173,16 @@ garraia-hardware/   — ADR 0020 (epic #1124; #1125+#1129): abstração de dispo
                         R3/R4 e fail-closed sem canal de confirmação). Registry começa
                         vazio em produção — adapters (#1126/#1127/#1130) registram
                         dispositivos e é cada um que traz o teto R2.
+                        Hardware skills (#1131, feature `skills`,
+                        `docs/hardware-skills.md`): `CatalogoDeSkills` le os
+                        manifestos e aplica as duas regras que o manifesto NAO
+                        escolhe — lista fechada de transportes (`mqtt`,
+                        `home_assistant`, `serial`, `gpio`; outro carrega
+                        inerte) e risco efetivo = `max(adapter, skill)`, ou
+                        seja, um skill so SOBE risco. Leitura continua R0
+                        (invariante de `Capability`). Seis skills oficiais em
+                        `skills/hardware/`; Zigbee/Matter como preset sobre o
+                        Home Assistant, nunca stack propria.
 apps/
   garraia-mobile/     — Garra Mobile (Flutter, Riverpod 3, go_router, Dio). v0.4.0
                         (ADR 0016): home "Garra Neon" + `lib/runtime/` (`GarraConnection`:
