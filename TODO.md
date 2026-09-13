@@ -5,12 +5,38 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-11 (America/New_York)
+**Atualizado:** 2026-09-13 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-13 — epic de hardware fechado + release v0.4.2
+
+- **#1131 (hardware skills) fechada** (PR #1170): adapters e presets viram
+  conteúdo empacotável. `garraia-skills` ganhou `kind` + `provides` no
+  frontmatter e varredura recursiva (`hardware/<slug>/SKILL.md`, sem seguir
+  symlink, com teto de profundidade); `garraia-hardware` ganhou a feature
+  `skills` com o `CatalogoDeSkills` e as duas regras que o manifesto não
+  escolhe — lista fechada de transportes (outro carrega inerte) e risco
+  efetivo = `max(adapter, skill)`, ou seja, um skill só sobe risco. Seis
+  skills oficiais em `skills/hardware/`; Zigbee e Matter como preset sobre o
+  Home Assistant, nunca stack própria. Modbus e ROS2 ficam de fora até
+  existir adapter no core.
+- **#1124 (epic garraia-hardware) fechada** (PR #1171): as sete slices estão
+  entregues. `docs/hardware.md` amarra a plataforma inteira (camadas, north
+  star passo a passo, risco R0-R5 e as três invariantes); ADR 0020 ganhou
+  seção de desfecho; ROADMAP marca a Fase 7 correspondente.
+- **v0.4.2 cortada** a partir de `main` com 47 fragmentos de changelog
+  agregados (`scripts/changelog/assemble.py --write`). Versão do workspace e
+  do `pubspec.yaml` do mobile bumpadas juntas.
+
+### Verificação pendente do release (mesma limitação das anteriores)
+
+Instalação limpa e `garra update` 0.4.1 → 0.4.2 continuam **não testados
+nesta sessão**: o container não alcança `garraia.org` nem
+`objects.githubusercontent.com`.
 
 ## Concluído em 2026-09-11 — varredura autopilot: DNS órfãos, CodeQL e higiene
 
