@@ -43,7 +43,7 @@ at startup — see [cli-mcp-server.md](cli-mcp-server.md#operator-limits-env-var
       "command": "garraia",
       "args": ["mcp-server"],
       "env": {
-        "GARRAIA_MCP_MODEL_ALLOWLIST": "openrouter/free",
+        "GARRAIA_MCP_MODEL_ALLOWLIST": "z-ai/glm-5.3-flash",
         "GARRAIA_MCP_MAX_TIMEOUT_SECS": "120"
       }
     }
@@ -53,7 +53,9 @@ at startup — see [cli-mcp-server.md](cli-mcp-server.md#operator-limits-env-var
 
 With the allowlist set, a caller passing `model: "openrouter/auto"` (or
 any other model) gets a clean `invalid_params` rejection instead of
-spending money.
+spending money. Pin the allowlist to the server's own default
+(`z-ai/glm-5.3-flash`, issue #1180) — pinning a model that is *not* the
+default makes every default-shaped call fail.
 
 ## Direction 2 — GarraIA → Hermes
 
@@ -176,7 +178,7 @@ Practical rules:
 
 - [ ] `GARRAIA_MCP_MODEL_ALLOWLIST` set where Hermes spawns
       `garra mcp-server` (blocks `openrouter/auto` and other expensive
-      models).
+      models; pin it to the default `z-ai/glm-5.3-flash`).
 - [ ] `GARRAIA_MCP_MAX_TIMEOUT_SECS` set (e.g. `120`).
 - [ ] `GARRAIA_MCP_ENABLE_TOOLS` **not** set on the Hermes-spawned
       process — the full-agent tool must stay out of third-party reach

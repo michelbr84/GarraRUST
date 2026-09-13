@@ -79,8 +79,9 @@ cargo build --release -p garraia
 # Iniciar
 ./target/release/garra start
 
-# Conversa rápida não-interativa (GAR-579) — ideal para Claude Code, CI, scripts
-./target/release/garra ask --provider openrouter --model openrouter/free \
+# Conversa rápida não-interativa (GAR-579) — ideal para Claude Code, CI, scripts.
+# Sem `--model` resolve o padrão do projeto: `z-ai/glm-5.3-flash` (issue #1180).
+./target/release/garra ask --provider openrouter \
   --json --timeout-secs 30 "Responda apenas: GAR-ASK-OK"
 
 # MCP server stdio (GAR-583) — expõe `garra_ask` para Claude Desktop / Claude Code

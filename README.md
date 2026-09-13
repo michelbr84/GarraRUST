@@ -85,13 +85,14 @@ cargo build --release -p garraia
 # Start
 ./target/release/garra start
 
-# Open the chat REPL straight onto a local Ollama model. Bare `garra` does
-# the same with the configured default (qwen3.8:latest). A tag that is not
-# pulled yet prompts to download it; `-y` downloads without asking.
+# Bare `garra` opens the chat REPL on the project default: OpenRouter with
+# `z-ai/glm-5.3-flash` (issue #1180). Local Ollama is the second option —
+# ask for it explicitly. A tag that is not pulled yet prompts to download
+# it; `-y` downloads without asking.
 ./target/release/garra --model qwen3.8
 
 # One-shot non-interactive ask — great for scripts and CI
-./target/release/garra ask --provider openrouter --model openrouter/free \
+./target/release/garra ask --provider openrouter \
   --json --timeout-secs 30 "Reply with exactly: OK"
 
 # MCP server over stdio — exposes `garra_ask` to Claude Desktop / Claude Code
@@ -125,7 +126,11 @@ caller wins over the matching flag. For a fully unattended install:
 
 ```bash
 curl -fsSL https://garraia.org/install.sh | sh -s -- --skip-setup
-garraia config set-model --model qwen3.8:latest
+# The project default — OpenRouter primary, local Ollama as the backup.
+# The key is read from stdin, never from argv.
+printf '%s\n' "$OPENROUTER_API_KEY" | garraia config set-routing \
+  --primary-provider openrouter --primary-model z-ai/glm-5.3-flash \
+  --backup-provider ollama --backup-model qwen3.8:latest --api-key-stdin
 garraia start
 ```
 

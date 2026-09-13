@@ -250,16 +250,22 @@ Inside the chosen provider, the model is resolved in this order:
    kind** and supplies a non-empty `model` (provider-field match — lets
    operators give blocks arbitrary names like `my-router`).
 4. **Hardcoded last-resort default** per kind: `qwen3.8:latest`,
-   `claude-sonnet-4-5-20250929`, `gpt-4o`, `openrouter/auto`.
+   `claude-sonnet-4-5-20250929`, `gpt-4o`, `z-ai/glm-5.3-flash`. The one
+   table lives in `crates/garraia-cli/src/defaults.rs` (issue #1180) and
+   `chat.rs`'s `hardcoded_default_model` reads it.
 
 ### OpenRouter cost policy
 
-The CLI ships with two recommended models for OpenRouter:
+`z-ai/glm-5.3-flash` is the project's official default model (issue
+#1180): a flash-tier model cheap enough to be the unattended default
+while being good enough for real work. Everything else is an explicit
+choice:
 
-| Model              | When to use                                                                                  |
-| ------------------ | -------------------------------------------------------------------------------------------- |
-| `openrouter/free`  | Smoke tests, CI sanity checks, cheap validation runs. Default suggested in `config.yml`.     |
-| `openrouter/auto`  | Real tasks / complex reasoning. Only use explicitly via `--model openrouter/auto`.            |
+| Model               | When to use                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `z-ai/glm-5.3-flash`| **The default.** Every surface (`garra`, `garra ask`, `garra mcp-server`, the wizard, Desktop) resolves to it when nothing is chosen. |
+| `openrouter/auto`   | Real tasks / complex reasoning, at a price. Only via an explicit `--model openrouter/auto`.    |
+| `openrouter/free`   | Zero-cost smoke tests. No longer a default anywhere — pass `--model openrouter/free` to get it.|
 
 Recommended baseline `config.yml`:
 
@@ -267,11 +273,16 @@ Recommended baseline `config.yml`:
 llm:
   openrouter:
     provider: openrouter
-    model: openrouter/free          # default for smoke tests
+    model: z-ai/glm-5.3-flash       # the official default
     base_url: "https://openrouter.ai/api/v1"
+  ollama:
+    provider: ollama
+    model: qwen3.8:latest           # second option / fallback
+    base_url: "http://localhost:11434"
 
 agent:
   default_provider: openrouter      # honored by `garra chat` autodetect
+  fallback_providers: ["ollama"]    # local is always the SECOND option
 ```
 
 To run a heavier task, pass the model explicitly:
@@ -280,8 +291,8 @@ To run a heavier task, pass the model explicitly:
 garra chat --provider openrouter --model openrouter/auto
 ```
 
-There is no automatic `free → auto` upgrade — paid traffic always
-requires an explicit `--model` flag.
+There is no automatic upgrade to a pricier model — paid traffic above
+the default always requires an explicit `--model` flag.
 
 > GAR-579 — esta mesma precedência é consumida por
 > [`garra ask`](cli-ask.md), o comando não-interativo. Tanto `garra chat`

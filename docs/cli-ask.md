@@ -14,7 +14,7 @@ stdout is the answer (or a `garra.ask.v1` JSON envelope when `--json`).
 |---------|--------|------|
 | `garra ask "ping"` | resposta como texto puro | `0` |
 | `garra ask --json "ping"` | linha JSON `garra.ask.v1` | `0` |
-| `garra ask --provider openrouter "ping"` | usa modelo do `config.yml` (precedência GAR-576) | `0` |
+| `garra ask --provider openrouter "ping"` | usa modelo do `config.yml`, ou o padrão `z-ai/glm-5.3-flash` (precedência GAR-576) | `0` |
 | `garra ask --provider openrouter --model openrouter/auto "ping"` | usa `openrouter/auto` explícito | `0` |
 | `echo "ping" \| garra ask` | lê stdin (cap 64 KiB) quando arg posicional ausente | `0` |
 | `garra ask ""` (arg vazio) | erro claro em stderr (ou JSON em stdout se `--json`) | `2` |
@@ -42,7 +42,7 @@ stdout is the answer (or a `garra.ask.v1` JSON envelope when `--json`).
   "ok": true,
   "answer": "GAR-ASK-OK",
   "provider": "openrouter",
-  "model": "openrouter/free",
+  "model": "z-ai/glm-5.3-flash",
   "latency_ms": 1234
 }
 ```
@@ -92,7 +92,7 @@ Para provider:
 
 ## Exemplos
 
-### Smoke barato (recomendado para CI / testes)
+### Smoke sem custo (escolha explícita para CI / testes)
 
 ```bash
 garra ask --provider openrouter --model openrouter/free \
@@ -123,13 +123,13 @@ via Telegram, Discord, Slack, WhatsApp e API REST.
 
 ```bash
 cat README.md | garra ask --json --provider openrouter \
-  --system-prompt "Resuma em 3 bullets." -m openrouter/free
+  --system-prompt "Resuma em 3 bullets."
 ```
 
 ### Em scripts / Claude Code / MCP
 
 ```bash
-RESULT=$(garra ask --json --provider openrouter -m openrouter/free \
+RESULT=$(garra ask --json --provider openrouter \
   --timeout-secs 30 "$prompt")
 ANSWER=$(echo "$RESULT" | jq -r '.answer // .error.message')
 ```
@@ -167,7 +167,7 @@ PRs separados manterão escopo limpo:
 - ~~MCP server wrapper expondo `ask` como tool MCP~~ — entregue por
   GAR-583, veja [`docs/cli-mcp-server.md`](cli-mcp-server.md).
 - `--session <id>` para continuação de conversa.
-- Automatic `openrouter/free → openrouter/auto` fallback.
+- Upgrade automático do modelo padrão para um mais caro.
 
 ## Ver também
 
