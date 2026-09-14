@@ -92,6 +92,8 @@ lib/
 ├── services/                 # api_service (cloud), offline_queue, sync, biometric, notifications
 ├── theme/                    # garra_tokens (cores/raios) + garra_theme (ThemeData, garraText)
 └── widgets/                  # brand/ (WolfMark, NightRidge), home/ (tiles, cards), bottom nav
+tool/
+└── gen_launcher_icons.py     # icones Android (adaptive + legado) a partir do WolfMark
 ```
 
 ## Convenções
