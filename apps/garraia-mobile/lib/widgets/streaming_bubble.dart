@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../l10n/l10n.dart';
 import '../providers/streaming_reply_provider.dart';
 import 'brand/wolf_mark.dart';
 import 'typing_indicator.dart';
@@ -96,7 +97,7 @@ class _ToolChip extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         Text(
-          'rodando $name',
+          context.l10n.chatStreamingRunningTool(name),
           key: const ValueKey('streaming-tool'),
           style: TextStyle(
             fontSize: 12,

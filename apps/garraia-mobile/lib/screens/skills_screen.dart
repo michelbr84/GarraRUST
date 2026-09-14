@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../l10n/l10n.dart';
 import '../runtime/models.dart';
 import '../runtime/runtime_providers.dart';
 import '../theme/garra_theme.dart';
@@ -25,13 +26,14 @@ class SkillsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final skills = ref.watch(learningSkillsProvider);
     final commands = ref.watch(slashCommandsProvider);
+    final l10n = context.l10n;
 
     return GarraPage(
-      title: 'Skills',
+      title: l10n.skillsTitle,
       body: ListView(
         padding: const EdgeInsets.only(bottom: 24),
         children: [
-          const SectionHeader('Learned skills'),
+          SectionHeader(l10n.skillsSectionLearned),
           skills.when(
             loading: () => const Padding(
               padding: EdgeInsets.all(24),
@@ -42,14 +44,13 @@ class SkillsScreen extends ConsumerWidget {
               onRetry: () => ref.invalidate(learningSkillsProvider),
             ),
             data: (list) => list.isEmpty
-                ? const EmptyState(
+                ? EmptyState(
                     icon: Icons.bolt_outlined,
-                    text:
-                        'No learned skills yet. Garra mines them from your sessions (ADR 0010).',
+                    text: l10n.skillsNoLearnedSkills,
                   )
                 : Column(children: [for (final s in list) _SkillRow(skill: s)]),
           ),
-          const SectionHeader('Slash commands'),
+          SectionHeader(l10n.skillsSectionSlashCommands),
           commands.when(
             loading: () => const SizedBox.shrink(),
             error: (e, _) => Padding(
@@ -96,17 +97,17 @@ class _SkillRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return GarraListTile(
       icon: skill.locked ? Icons.lock_outline_rounded : Icons.bolt_outlined,
       iconColor: skill.deprecated ? GarraColors.textDim : GarraColors.gold,
       title: skill.name,
       subtitle: [
-        if (skill.version.isNotEmpty) 'v${skill.version}',
+        if (skill.version.isNotEmpty) l10n.skillsVersion(skill.version),
         if (skill.scope.isNotEmpty) skill.scope,
-        'score ${skill.score.toStringAsFixed(2)}',
-        if (skill.failCount > 0)
-          '${skill.failCount} fail${skill.failCount == 1 ? '' : 's'}',
-        if (skill.deprecated) 'deprecated',
+        l10n.skillsScore(skill.score.toStringAsFixed(2)),
+        if (skill.failCount > 0) l10n.skillsFailCount(skill.failCount),
+        if (skill.deprecated) l10n.skillsDeprecated,
       ].join(' · '),
     );
   }

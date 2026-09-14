@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../l10n/l10n.dart';
 import '../runtime/gateway_connection.dart';
 import '../runtime/models.dart';
 import '../runtime/runtime_config.dart';
@@ -81,7 +82,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   Future<void> _test() async {
     if (!RuntimeConfig.isValidBaseUrl(_url.text)) {
-      setState(() => _probeError = 'Enter a valid http(s) address');
+      setState(() => _probeError = context.l10n.onboardingInvalidAddress);
       return;
     }
     setState(() {
@@ -99,7 +100,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       if (mounted) setState(() => _probe = h);
     } on DioException catch (e) {
       // The probe outlives the screen if the user backs out mid-request.
-      if (mounted) setState(() => _probeError = _explain(e));
+      if (mounted) setState(() => _probeError = _explain(e, context.l10n));
     } catch (e) {
       if (mounted) setState(() => _probeError = e.toString());
     } finally {
@@ -107,22 +108,20 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     }
   }
 
-  String _explain(DioException e) {
+  String _explain(DioException e, AppLocalizations l10n) {
     final code = e.response?.statusCode;
-    if (code == 401 || code == 403) return 'The gateway asked for an API key';
-    if (code != null) return 'HTTP $code from the gateway';
+    if (code == 401 || code == 403) return l10n.onboardingErrorNeedsApiKey;
+    if (code != null) return l10n.onboardingErrorHttpStatus(code);
     return switch (_mode) {
-      RuntimeMode.local =>
-        'Nothing answered on this phone. Is `garra start` running in Termux?',
-      RuntimeMode.remote =>
-        'No answer. Same Wi-Fi? Is the gateway bound to 0.0.0.0?',
-      RuntimeMode.cloud => 'Could not reach Garra Cloud',
+      RuntimeMode.local => l10n.onboardingErrorLocalUnreachable,
+      RuntimeMode.remote => l10n.onboardingErrorRemoteUnreachable,
+      RuntimeMode.cloud => l10n.onboardingErrorCloudUnreachable,
     };
   }
 
   Future<void> _finish() async {
     if (!RuntimeConfig.isValidBaseUrl(_url.text)) {
-      setState(() => _probeError = 'Enter a valid http(s) address');
+      setState(() => _probeError = context.l10n.onboardingInvalidAddress);
       return;
     }
     setState(() => _saving = true);
@@ -152,7 +151,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                   const WolfMark(size: 40),
                   const SizedBox(width: 10),
                   Text(
-                    'Garra Mobile',
+                    context.l10n.appTitle,
                     style: garraText(size: 18, weight: FontWeight.w800),
                   ),
                   const Spacer(),
@@ -227,17 +226,18 @@ class _NameStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         const SizedBox(height: 24),
         Text(
-          'What should Garra\ncall you?',
+          l10n.onboardingNameTitle,
           style: garraText(size: 30, weight: FontWeight.w800, height: 1.1),
         ),
         const SizedBox(height: 10),
         Text(
-          'Only used for the greeting. It never leaves this device.',
+          l10n.onboardingNameSubtitle,
           style: garraText(size: 14, color: GarraColors.textMuted),
         ),
         const SizedBox(height: 28),
@@ -245,11 +245,11 @@ class _NameStep extends StatelessWidget {
           controller: controller,
           autofocus: true,
           textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(hintText: 'Your name'),
+          decoration: InputDecoration(hintText: l10n.profileNameHint),
           onSubmitted: (_) => onNext(),
         ),
         const SizedBox(height: 28),
-        ElevatedButton(onPressed: onNext, child: const Text('Continue')),
+        ElevatedButton(onPressed: onNext, child: Text(l10n.commonContinue)),
       ],
     );
   }
@@ -282,16 +282,17 @@ class _RuntimeStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         Text(
-          'Where does\nGarra run?',
+          l10n.onboardingRuntimeTitle,
           style: garraText(size: 30, weight: FontWeight.w800, height: 1.1),
         ),
         const SizedBox(height: 10),
         Text(
-          'Your memory, skills and files stay on the runtime you pick. The LLM can be anywhere.',
+          l10n.onboardingRuntimeSubtitle,
           style: garraText(size: 14, color: GarraColors.textMuted),
         ),
         const SizedBox(height: 20),
@@ -303,7 +304,7 @@ class _RuntimeStep extends StatelessWidget {
         if (mode == RuntimeMode.local) const _TermuxHint(),
         if (mode != RuntimeMode.cloud) ...[
           Text(
-            'Gateway address',
+            l10n.onboardingGatewayAddressLabel,
             style: garraText(size: 13, weight: FontWeight.w600),
           ),
           const SizedBox(height: 6),
@@ -318,7 +319,7 @@ class _RuntimeStep extends StatelessWidget {
         if (mode == RuntimeMode.remote) ...[
           const SizedBox(height: 12),
           Text(
-            'Gateway API key (optional)',
+            l10n.onboardingGatewayApiKeyLabel,
             style: garraText(size: 13, weight: FontWeight.w600),
           ),
           const SizedBox(height: 6),
@@ -326,8 +327,8 @@ class _RuntimeStep extends StatelessWidget {
             controller: apiKey,
             obscureText: true,
             autocorrect: false,
-            decoration: const InputDecoration(
-              hintText: 'Only if gateway.api_key is set',
+            decoration: InputDecoration(
+              hintText: l10n.onboardingGatewayApiKeyHint,
             ),
           ),
         ],
@@ -342,7 +343,9 @@ class _RuntimeStep extends StatelessWidget {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.wifi_tethering_rounded, size: 18),
-            label: Text(testing ? 'Testing…' : 'Test connection'),
+            label: Text(
+              testing ? l10n.onboardingTesting : l10n.onboardingTestConnection,
+            ),
           ),
           const SizedBox(height: 10),
           if (probe != null) _ProbeResult(health: probe!),
@@ -352,13 +355,13 @@ class _RuntimeStep extends StatelessWidget {
         const SizedBox(height: 24),
         Row(
           children: [
-            TextButton(onPressed: onBack, child: const Text('Back')),
+            TextButton(onPressed: onBack, child: Text(l10n.commonBack)),
             const Spacer(),
             SizedBox(
               width: 160,
               child: ElevatedButton(
                 onPressed: onNext,
-                child: const Text('Continue'),
+                child: Text(l10n.commonContinue),
               ),
             ),
           ],
@@ -386,10 +389,11 @@ class _ModeCard extends StatelessWidget {
       RuntimeMode.cloud => Icons.cloud_rounded,
     };
     final accent = selected ? GarraColors.violetLight : GarraColors.textMuted;
+    final l10n = context.l10n;
     return Semantics(
       button: true,
       selected: selected,
-      label: mode.title,
+      label: mode.title(l10n),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(GarraRadius.card),
@@ -416,12 +420,12 @@ class _ModeCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      mode.title,
+                      mode.title(l10n),
                       style: garraText(size: 15, weight: FontWeight.w700),
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      mode.description,
+                      mode.description(l10n),
                       style: garraText(
                         size: 12.5,
                         color: GarraColors.textMuted,
@@ -461,17 +465,17 @@ class _TermuxHint extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Install Garra in Termux (once):',
+            context.l10n.onboardingTermuxInstallTitle,
             style: garraText(size: 12.5, weight: FontWeight.w600),
           ),
           const SizedBox(height: 6),
           SelectableText(
-            'curl -fsSL https://garraia.org/install.sh | bash\ngarra doctor\ngarra start',
+            'curl -fsSL https://garraia.org/install.sh | bash\ngarra doctor\ngarra start', // l10n-ignore: comando de shell, igual em todo idioma
             style: garraText(size: 12, mono: true, color: GarraColors.cyan),
           ),
           const SizedBox(height: 6),
           Text(
-            'Then come back and tap "Test connection". The app talks to it on 127.0.0.1.',
+            context.l10n.onboardingTermuxInstallHint,
             style: garraText(size: 12, color: GarraColors.textMuted),
           ),
         ],
@@ -509,8 +513,7 @@ class _PlainHttpHint extends StatelessWidget {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  'Plain HTTP: your messages and the API key are readable on '
-                  'this network. Fine on your home Wi-Fi, not on a public one.',
+                  context.l10n.onboardingPlainHttpWarning,
                   style: garraText(
                     size: 12,
                     color: GarraColors.textMuted,
@@ -533,6 +536,15 @@ class _ProbeResult extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ok = health.healthy;
+    final l10n = context.l10n;
+    final provider = health.provider;
+    final summary = provider == null
+        ? l10n.onboardingProbeResult(health.version, health.status)
+        : l10n.onboardingProbeResultWithProvider(
+            health.version,
+            health.status,
+            provider,
+          );
     return Row(
       children: [
         Icon(
@@ -541,13 +553,7 @@ class _ProbeResult extends StatelessWidget {
           size: 18,
         ),
         const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            'Garra ${health.version} · ${health.status}'
-            '${health.provider != null ? ' · ${health.provider}' : ''}',
-            style: garraText(size: 13),
-          ),
-        ),
+        Expanded(child: Text(summary, style: garraText(size: 13))),
       ],
     );
   }
@@ -570,6 +576,13 @@ class _DoneStep extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final trimmedName = name.trim();
+    final isCloud = mode == RuntimeMode.cloud;
+    final runtimeLine = l10n.onboardingDoneRuntime(mode.title(l10n));
+    final nextLine = isCloud
+        ? l10n.onboardingDoneNextCloud
+        : l10n.onboardingDoneNextLocal;
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -577,14 +590,15 @@ class _DoneStep extends StatelessWidget {
         const Center(child: WolfMark(size: 120)),
         const SizedBox(height: 24),
         Text(
-          name.trim().isEmpty ? 'All set.' : 'All set, ${name.trim()}.',
+          trimmedName.isEmpty
+              ? l10n.onboardingDoneTitle
+              : l10n.onboardingDoneTitleNamed(trimmedName),
           textAlign: TextAlign.center,
           style: garraText(size: 28, weight: FontWeight.w800),
         ),
         const SizedBox(height: 10),
         Text(
-          'Runtime: ${mode.title}.\n'
-          '${mode == RuntimeMode.cloud ? 'Next: sign in to your account.' : 'Your AI lives on your device. The model doesn\'t have to.'}',
+          '$runtimeLine\n$nextLine',
           textAlign: TextAlign.center,
           style: garraText(size: 14, color: GarraColors.textMuted, height: 1.4),
         ),
@@ -593,12 +607,12 @@ class _DoneStep extends StatelessWidget {
           onPressed: saving ? null : onFinish,
           child: Text(
             saving
-                ? 'Saving…'
-                : (mode == RuntimeMode.cloud ? 'Sign in' : 'Open Garra'),
+                ? l10n.commonSaving
+                : (isCloud ? l10n.commonSignIn : l10n.onboardingDoneOpenGarra),
           ),
         ),
         const SizedBox(height: 8),
-        TextButton(onPressed: onBack, child: const Text('Back')),
+        TextButton(onPressed: onBack, child: Text(l10n.commonBack)),
       ],
     );
   }

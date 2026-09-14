@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../l10n/l10n.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/mascot_widget.dart';
 
@@ -35,7 +36,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!mounted) return;
     final s = ref.read(authStateProvider);
     if (s is AsyncError) {
-      setState(() => _error = _friendlyError(s.error ?? 'unknown error'));
+      final l10n = context.l10n;
+      setState(() => _error = _friendlyError(l10n, s.error ?? 'unknown error'));
     }
   }
 
@@ -43,6 +45,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     final loading = ref.watch(authStateProvider).isLoading;
     final cs = Theme.of(context).colorScheme;
+    final l10n = context.l10n;
 
     return Scaffold(
       body: SafeArea(
@@ -56,7 +59,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 const MascotWidget(size: 120),
                 const SizedBox(height: 12),
                 Text(
-                  'Olá! Eu sou o Garra.',
+                  l10n.loginGreeting,
                   textAlign: TextAlign.center,
                   style: Theme.of(
                     context,
@@ -64,7 +67,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Faça login para continuar',
+                  l10n.loginSubtitle,
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: cs.onSurface.withValues(alpha: 0.6),
@@ -74,19 +77,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 TextFormField(
                   controller: _emailCtrl,
                   keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'E-mail',
-                    prefixIcon: Icon(Icons.email_outlined),
+                  decoration: InputDecoration(
+                    labelText: l10n.commonEmailLabel,
+                    prefixIcon: const Icon(Icons.email_outlined),
                   ),
-                  validator: (v) =>
-                      v != null && v.contains('@') ? null : 'E-mail inválido',
+                  validator: (v) => v != null && v.contains('@')
+                      ? null
+                      : l10n.commonEmailInvalid,
                 ),
                 const SizedBox(height: 14),
                 TextFormField(
                   controller: _passCtrl,
                   obscureText: _obscure,
                   decoration: InputDecoration(
-                    labelText: 'Senha',
+                    labelText: l10n.commonPasswordLabel,
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       icon: Icon(
@@ -95,8 +99,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       onPressed: () => setState(() => _obscure = !_obscure),
                     ),
                   ),
-                  validator: (v) =>
-                      v != null && v.length >= 8 ? null : 'Mínimo 8 caracteres',
+                  validator: (v) => v != null && v.length >= 8
+                      ? null
+                      : l10n.commonPasswordMinLength,
                 ),
                 const SizedBox(height: 8),
                 if (_error != null)
@@ -116,12 +121,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           width: 20,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Text('Entrar'),
+                      : Text(l10n.commonSignIn),
                 ),
                 const SizedBox(height: 16),
                 TextButton(
                   onPressed: () => context.go('/register'),
-                  child: const Text('Não tem conta? Criar agora'),
+                  child: Text(l10n.loginNoAccountCta),
                 ),
               ],
             ),
@@ -131,17 +136,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     );
   }
 
-  String _friendlyError(Object e) {
+  String _friendlyError(AppLocalizations l10n, Object e) {
     final s = e.toString().toLowerCase();
     if (s.contains('401') || s.contains('invalid credentials')) {
-      return 'E-mail ou senha incorretos.';
+      return l10n.loginErrorInvalidCredentials;
     }
     if (s.contains('network') ||
         s.contains('connection') ||
         s.contains('socketexception') ||
         s.contains('refused')) {
-      return 'Sem conexão. Verifique sua internet.';
+      return l10n.commonErrorNoConnection;
     }
-    return 'Erro ao entrar. Tente novamente.';
+    return l10n.loginErrorGeneric;
   }
 }

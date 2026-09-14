@@ -1,0 +1,11 @@
+# Flutter gen_l10n (#1178). `flutter pub get` regenerates lib/l10n/generated/
+# from the ARB files whenever `generate: true` is set in pubspec.yaml; the
+# generated files are committed so the repo reads without a toolchain, and
+# CI regenerates them identically (same pinned Flutter).
+arb-dir: lib/l10n
+template-arb-file: app_en.arb
+output-dir: lib/l10n/generated
+output-localization-file: app_localizations.dart
+output-class: AppLocalizations
+nullable-getter: false
+untranslated-messages-file: build/l10n_untranslated.json

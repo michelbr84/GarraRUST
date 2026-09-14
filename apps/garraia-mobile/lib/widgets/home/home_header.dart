@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/l10n.dart';
 import '../../theme/garra_theme.dart';
 import '../../theme/garra_tokens.dart';
 import '../brand/wolf_mark.dart';
@@ -12,6 +13,7 @@ class HomeHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -34,7 +36,8 @@ class HomeHeader extends StatelessWidget {
                   children: [
                     const TextSpan(text: 'Garra '),
                     TextSpan(
-                      text: 'Mobile',
+                      text:
+                          'Mobile', // l10n-ignore: segunda metade da marca "Garra Mobile"
                       style: garraText(
                         size: 22,
                         weight: FontWeight.w800,
@@ -46,7 +49,7 @@ class HomeHeader extends StatelessWidget {
               ),
               const SizedBox(height: 3),
               Text(
-                'Local-first AI Assistant',
+                l10n.homeHeaderTagline,
                 style: garraText(size: 12.5, color: GarraColors.textMuted),
               ),
             ],
@@ -63,7 +66,7 @@ class HomeHeader extends StatelessWidget {
               const FittedBox(fit: BoxFit.scaleDown, child: _ValuesPill()),
               const SizedBox(height: 8),
               Text(
-                '“AI that works for you.\nOn your terms.”',
+                l10n.homeHeaderQuote,
                 textAlign: TextAlign.right,
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
@@ -86,6 +89,7 @@ class _ValuesPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final dot = garraText(size: 10.5, color: GarraColors.textMuted);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -100,7 +104,7 @@ class _ValuesPill extends StatelessWidget {
           style: garraText(size: 10.5, weight: FontWeight.w600),
           children: [
             TextSpan(
-              text: 'Private',
+              text: l10n.homeHeaderValuePrivate,
               style: garraText(
                 size: 10.5,
                 weight: FontWeight.w600,
@@ -109,7 +113,7 @@ class _ValuesPill extends StatelessWidget {
             ),
             TextSpan(text: '  •  ', style: dot),
             TextSpan(
-              text: 'Powerful',
+              text: l10n.homeHeaderValuePowerful,
               style: garraText(
                 size: 10.5,
                 weight: FontWeight.w600,
@@ -118,7 +122,7 @@ class _ValuesPill extends StatelessWidget {
             ),
             TextSpan(text: '  •  ', style: dot),
             TextSpan(
-              text: 'Yours',
+              text: l10n.homeHeaderValueYours,
               style: garraText(
                 size: 10.5,
                 weight: FontWeight.w600,

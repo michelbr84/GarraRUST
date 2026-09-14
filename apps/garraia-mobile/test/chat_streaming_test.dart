@@ -6,6 +6,9 @@ import 'package:garraia_mobile/runtime/chat_event.dart';
 import 'package:garraia_mobile/runtime/chat_socket.dart';
 import 'package:garraia_mobile/runtime/gateway_connection.dart';
 import 'package:garraia_mobile/runtime/runtime_config.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/l10n_test_support.dart';
 
 /// A socket with no socket in it: frames go in and out of a controller, so the
 /// turn protocol can be exercised without a gateway.
@@ -24,8 +27,9 @@ class _FakeSocket implements ChatSocket {
   Stream<String> get incoming => _incoming.stream;
 
   @override
-  Future<void> get ready =>
-      failToOpen ? Future.error(StateError('upgrade recusado')) : Future.value();
+  Future<void> get ready => failToOpen
+      ? Future.error(StateError('upgrade recusado'))
+      : Future.value();
 
   @override
   void send(String frame) => sent.add(frame);
@@ -76,6 +80,8 @@ Future<void> settle() async {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('ChatEvent.tryParse', () {
     test('reads every frame the gateway documents', () {
       expect(
@@ -102,17 +108,37 @@ void main() {
         'pronto',
       );
       expect(ChatEvent.tryParse('{"type":"stopped"}'), isA<ChatStopped>());
-      expect(
-        ChatEvent.tryParse('{"type":"error","message":"deu ruim"}'),
-        isA<ChatFailed>(),
-      );
+      final failed =
+          ChatEvent.tryParse('{"type":"error","message":"deu ruim"}')
+              as ChatFailed;
+      // The runtime's own words are never translated.
+      expect(failed.message, 'deu ruim');
+      expect(failed.kind, ChatFailureKind.serverMessage);
+    });
+
+    test('an error frame without a message gets the app copy', () async {
+      // The runtime said nothing, so the client describes the failure — in
+      // the language it was handed, English when it was handed none.
+      final pt = await loadL10n(testLocalePt);
+      final en = await loadL10n(testLocaleEn);
+
+      final localized =
+          ChatEvent.tryParse('{"type":"error"}', l10n: pt) as ChatFailed;
+      expect(localized.kind, ChatFailureKind.runtimeError);
+      expect(localized.message, pt.chatErrorRuntimeReported);
+
+      final fallback = ChatEvent.tryParse('{"type":"error"}') as ChatFailed;
+      expect(fallback.kind, ChatFailureKind.runtimeError);
+      expect(fallback.message, en.chatErrorRuntimeReported);
     });
 
     test('an unknown frame is null, not an exception', () {
       // The gateway may grow a frame type before the app learns it.
       expect(ChatEvent.tryParse('{"type":"telemetry","v":1}'), isNull);
-      expect(ChatEvent.tryParse('{"type":"connected","session_id":"s1"}'),
-          isNull);
+      expect(
+        ChatEvent.tryParse('{"type":"connected","session_id":"s1"}'),
+        isNull,
+      );
       expect(ChatEvent.tryParse('nao e json'), isNull);
       expect(ChatEvent.tryParse('[1,2,3]'), isNull);
       expect(ChatEvent.tryParse('{"sem":"tipo"}'), isNull);
@@ -149,6 +175,14 @@ void main() {
   });
 
   group('sendMessageStreaming', () {
+    // The transport reads the language Settings persisted, the same key the
+    // app does; pt-BR here so an English fallback would fail the assertions.
+    setUp(() {
+      SharedPreferences.setMockInitialValues({
+        AppLanguageState.prefsKey: AppLanguage.ptBR.storageValue,
+      });
+    });
+
     test('resumes the session, submits, and streams the turn', () async {
       final socket = _FakeSocket();
       final conn = _TestGateway((_) => socket);
@@ -274,19 +308,23 @@ void main() {
       expect((events.single as ChatCompleted).content, 'resposta via POST');
     });
 
-    test('falls back when the socket dies before the turn is submitted',
-        () async {
-      final socket = _FakeSocket();
-      final conn = _TestGateway((_) => socket);
+    test(
+      'falls back when the socket dies before the turn is submitted',
+      () async {
+        final socket = _FakeSocket();
+        final conn = _TestGateway((_) => socket);
 
-      final pending = conn.sendMessageStreaming('oi', sessionId: 's1').toList();
-      await settle();
-      await socket.hangUp(); // hung up during the handshake
+        final pending = conn
+            .sendMessageStreaming('oi', sessionId: 's1')
+            .toList();
+        await settle();
+        await socket.hangUp(); // hung up during the handshake
 
-      final events = await pending;
-      expect(conn.posts, 1, reason: 'nothing was submitted, so POST is safe');
-      expect((events.single as ChatCompleted).content, 'resposta via POST');
-    });
+        final events = await pending;
+        expect(conn.posts, 1, reason: 'nothing was submitted, so POST is safe');
+        expect((events.single as ChatCompleted).content, 'resposta via POST');
+      },
+    );
 
     test('does not resend over POST once the turn was submitted', () async {
       // The message is already with the runtime; retrying would send it twice.
@@ -307,7 +345,33 @@ void main() {
       await done;
 
       expect(conn.posts, 0);
-      expect(events.last, isA<ChatFailed>());
+      final failure = events.last as ChatFailed;
+      expect(failure.kind, ChatFailureKind.connectionDropped);
+      // Described by the client, so in the user's language (#1178).
+      final l10n = await loadL10n(testLocalePt);
+      expect(failure.message, l10n.chatErrorConnectionDropped);
+    });
+
+    test('a runtime error without a message is in the user language', () async {
+      final socket = _FakeSocket();
+      final conn = _TestGateway((_) => socket);
+      final events = <ChatEvent>[];
+      final done = conn
+          .sendMessageStreaming('oi', sessionId: 's1')
+          .listen(events.add)
+          .asFuture<void>();
+
+      await settle();
+      socket.emit('{"type":"resumed","session_id":"s1"}');
+      await settle();
+      socket.emit('{"type":"error"}');
+      await done;
+
+      final failure = events.last as ChatFailed;
+      expect(failure.kind, ChatFailureKind.runtimeError);
+      final l10n = await loadL10n(testLocalePt);
+      expect(failure.message, l10n.chatErrorRuntimeReported);
+      expect(conn.posts, 0, reason: 'the turn was submitted; no POST retry');
     });
 
     test('stopStreaming is a no-op with no turn in flight', () async {

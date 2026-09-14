@@ -1,6 +1,8 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../l10n/l10n.dart';
+
 /// Where the Garra runtime that this app talks to lives.
 ///
 /// The UI never branches on this beyond labels and onboarding copy — every
@@ -18,18 +20,20 @@ enum RuntimeMode {
 }
 
 extension RuntimeModeLabels on RuntimeMode {
-  String get title => switch (this) {
-    RuntimeMode.local => 'On this phone',
-    RuntimeMode.remote => 'Another Garra',
-    RuntimeMode.cloud => 'Garra Cloud',
+  /// Display name in the app's language (#1178). Takes the strings rather
+  /// than a `BuildContext` so providers and tests can label a mode too:
+  /// `mode.title(context.l10n)` in widgets, `lookupAppLocalizations` elsewhere.
+  String title(AppLocalizations l10n) => switch (this) {
+    RuntimeMode.local => l10n.runtimeModeLocalTitle,
+    RuntimeMode.remote => l10n.runtimeModeRemoteTitle,
+    RuntimeMode.cloud => l10n.runtimeModeCloudTitle,
   };
 
-  String get description => switch (this) {
-    RuntimeMode.local =>
-      'Garra runs inside Termux on this device. Memory, skills and files stay here.',
-    RuntimeMode.remote =>
-      'Connect to a Garra gateway on your PC or home server over Wi-Fi.',
-    RuntimeMode.cloud => 'Use the hosted Garra service with your account.',
+  /// One-line explanation shown under [title] in onboarding.
+  String description(AppLocalizations l10n) => switch (this) {
+    RuntimeMode.local => l10n.runtimeModeLocalDescription,
+    RuntimeMode.remote => l10n.runtimeModeRemoteDescription,
+    RuntimeMode.cloud => l10n.runtimeModeCloudDescription,
   };
 
   /// Base URL suggested when the user has not typed one.

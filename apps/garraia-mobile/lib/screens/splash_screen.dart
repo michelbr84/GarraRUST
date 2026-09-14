@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/l10n.dart';
 import '../theme/garra_theme.dart';
 import '../theme/garra_tokens.dart';
 import '../widgets/brand/wolf_mark.dart';
@@ -18,7 +19,7 @@ class SplashScreen extends StatelessWidget {
             const WolfMark(size: 112),
             const SizedBox(height: 18),
             Text(
-              'Garra',
+              context.l10n.commonBrand,
               style: garraText(
                 size: 30,
                 weight: FontWeight.w800,

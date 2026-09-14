@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'l10n/l10n.dart';
 import 'router/app_router.dart';
 import 'runtime/runtime_config.dart';
 import 'runtime/runtime_providers.dart';
@@ -29,10 +31,16 @@ void main() async {
   final notificationService = NotificationService();
   await notificationService.initialize();
 
+  // Loaded before the first frame so the persisted UI language (#1178) is
+  // known synchronously — otherwise the app would flash the device language
+  // for a frame before the async load resolved.
+  final prefs = await SharedPreferences.getInstance();
+
   runApp(
     ProviderScope(
       overrides: [
         notificationServiceProvider.overrideWithValue(notificationService),
+        sharedPreferencesProvider.overrideWithValue(prefs),
       ],
       child: const GarraApp(),
     ),
@@ -109,6 +117,16 @@ class _GarraAppState extends ConsumerState<GarraApp>
   }
 
   @override
+  void didChangeLocales(List<Locale>? locales) {
+    // "System default" follows the device: when the device language changes
+    // the Android notification channels have to be recreated in it too (the
+    // `MaterialApp` re-resolves on its own; the channels do not).
+    if (ref.read(appLanguageStateProvider) == AppLanguage.system) {
+      ref.read(notificationServiceProvider).refreshChannels();
+    }
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // Re-check biometric on resume (if enabled)
@@ -134,12 +152,26 @@ class _GarraAppState extends ConsumerState<GarraApp>
       });
     });
 
+    // Settings > Language (#1178). `null` follows the device; the callback
+    // maps any `pt` variant onto pt-BR and everything else onto English.
+    final language = ref.watch(appLanguageStateProvider);
+
+    // The Android notification channels carry their names in the language
+    // too, and only a re-create updates what the system settings show.
+    ref.listen(appLanguageStateProvider, (_, __) {
+      ref.read(notificationServiceProvider).refreshChannels();
+    });
+
     return MaterialApp.router(
-      title: 'Garra Mobile',
+      onGenerateTitle: (context) => context.l10n.appTitle,
       debugShowCheckedModeBanner: false,
       theme: garraTheme(),
       darkTheme: garraTheme(),
       themeMode: ThemeMode.dark,
+      locale: language.locale,
+      supportedLocales: supportedLocales,
+      localizationsDelegates: localizationsDelegates,
+      localeResolutionCallback: resolveLocale,
       routerConfig: router,
     );
   }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/l10n.dart';
 import '../../theme/garra_theme.dart';
 import '../../theme/garra_tokens.dart';
 
@@ -40,7 +41,7 @@ class RuntimeStatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       button: onTap != null,
-      label: '$label $value. $subtitle',
+      label: context.l10n.homeStatusCardSemantics(label, value, subtitle),
       child: Material(
         color: Colors.transparent,
         child: InkWell(

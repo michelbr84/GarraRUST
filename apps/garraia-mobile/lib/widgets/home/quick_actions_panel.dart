@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/l10n.dart';
 import '../../theme/garra_theme.dart';
 import '../../theme/garra_tokens.dart';
 
@@ -24,6 +25,7 @@ class QuickActionsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
       decoration: BoxDecoration(
@@ -40,7 +42,7 @@ class QuickActionsPanel extends StatelessWidget {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  'Quick Actions',
+                  l10n.homeQuickActionsTitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: garraText(size: 16, weight: FontWeight.w700),
@@ -59,7 +61,7 @@ class QuickActionsPanel extends StatelessWidget {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  'Get more done, locally.',
+                  l10n.homeQuickActionsTagline,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.right,
@@ -72,7 +74,7 @@ class QuickActionsPanel extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(left: 28),
             child: Text(
-              'Common tasks, one tap away.',
+              l10n.homeQuickActionsSubtitle,
               style: garraText(size: 12, color: GarraColors.textMuted),
             ),
           ),

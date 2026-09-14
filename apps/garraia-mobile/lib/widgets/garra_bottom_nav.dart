@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../l10n/l10n.dart';
 import '../theme/garra_theme.dart';
 import '../theme/garra_tokens.dart';
 
@@ -15,11 +16,13 @@ extension GarraTabRoute on GarraTab {
     GarraTab.profile => '/profile',
   };
 
-  String get label => switch (this) {
-    GarraTab.home => 'Home',
-    GarraTab.activity => 'Activity',
-    GarraTab.notifications => 'Notifications',
-    GarraTab.profile => 'Profile',
+  /// Localized tab name; takes the strings explicitly because an enum getter
+  /// has no `BuildContext` (#1178).
+  String label(AppLocalizations l10n) => switch (this) {
+    GarraTab.home => l10n.navHome,
+    GarraTab.activity => l10n.activityTitle,
+    GarraTab.notifications => l10n.notificationsTitle,
+    GarraTab.profile => l10n.profileTitle,
   };
 
   IconData get icon => switch (this) {
@@ -89,10 +92,11 @@ class _NavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = active ? GarraColors.violetLight : GarraColors.textMuted;
+    final label = tab.label(context.l10n);
     return Semantics(
       button: true,
       selected: active,
-      label: tab.label,
+      label: label,
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(GarraRadius.card),
@@ -118,7 +122,7 @@ class _NavItem extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              tab.label,
+              label,
               style: garraText(
                 size: 11,
                 weight: active ? FontWeight.w600 : FontWeight.w500,

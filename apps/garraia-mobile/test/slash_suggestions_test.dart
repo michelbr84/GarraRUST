@@ -5,6 +5,8 @@ import 'package:garraia_mobile/runtime/models.dart';
 import 'package:garraia_mobile/runtime/runtime_providers.dart';
 import 'package:garraia_mobile/widgets/slash_suggestions.dart';
 
+import 'support/l10n_test_support.dart';
+
 const _all = [
   SlashCommandInfo(name: 'help', description: 'Show available commands'),
   SlashCommandInfo(name: 'health', description: 'Gateway health'),
@@ -52,9 +54,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [slashCommandsProvider.overrideWith((ref) async => _all)],
-        child: MaterialApp(
-          home: Scaffold(body: SlashSuggestions(controller: ctrl)),
-        ),
+        child: localizedApp(Scaffold(body: SlashSuggestions(controller: ctrl))),
       ),
     );
     await tester.pump();
