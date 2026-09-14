@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/garraia-desktop/src-tauri",
+    "crates/garraia-desktop-core",
     "crates/garraia-cli",
     "crates/garraia-gateway",
     "crates/garraia-config",
@@ -186,6 +187,10 @@ garraia-voice = { path = "crates/garraia-voice" }
 garraia-glob = { path = "crates/garraia-glob" }
 garraia-embeddings = { path = "crates/garraia-embeddings" }
 garraia-hardware = { path = "crates/garraia-hardware" }
+# Núcleo do Desktop Control Center (ADR 0021, #1181). Declarado aqui desde já
+# para que a casca Tauri e a CLI possam consumi-lo nos milestones seguintes
+# sem repetir o path — nenhuma crate depende dele hoje.
+garraia-desktop-core = { path = "crates/garraia-desktop-core" }
 
 [profile.release]
 lto = true

@@ -1,0 +1,17 @@
+[package]
+name = "garraia-desktop-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop Control Center — logica sem Tauri: modulos, estado ligado/desligado, deteccao de agentes e supervisao de processo. ADR 0021."
+
+[dependencies]
+# Deliberadamente minimo. Esta crate existe porque `garraia-desktop` (Tauri)
+# esta fora de todos os gates de CI; arrastar para ca qualquer dependencia
+# pesada — em especial `tauri` — anularia o motivo dela existir.
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
