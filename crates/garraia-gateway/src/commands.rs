@@ -193,8 +193,31 @@ pub fn register_commands(registry: &mut CommandRegistry) {
         true,
         |ctx: &CommandContext| -> CommandResult {
             let state = ctx.state.as_ref().unwrap().downcast_ref::<AppState>().unwrap();
-            let code = state.pairing.lock().unwrap().generate("telegram");
-            Ok(format!("🔗 Pairing code: {code}\n\nShare this with the person you want to invite. They should send this code to the bot within 5 minutes."))
+            // #1191: um segundo /pair substitui o codigo pendente do anterior
+            // — o dono precisa saber que o que ele acabou de mandar para
+            // alguem deixou de valer. E se os codigos foram queimados por
+            // excesso de palpites errados, o canal nao contou a ninguem: e
+            // aqui que o dono descobre que alguem esta chutando codigos.
+            let status = state
+                .pairing
+                .lock()
+                .unwrap()
+                .generate_with_status("telegram");
+            let mut reply = format!(
+                "🔗 Pairing code: {}\n\nShare this with the person you want to invite. They should send this code to the bot within 5 minutes.",
+                status.code
+            );
+            if status.replaced_pending {
+                reply.push_str(
+                    "\n\n⚠️ This replaces the previous unclaimed code, which no longer works.",
+                );
+            }
+            if let Some(tentativas) = status.previous_burned {
+                reply.push_str(&format!(
+                    "\n\n🚨 The previous code was invalidated after {tentativas} wrong guesses from unauthorized users — someone is probing the bot. If it keeps happening, wait for them to be locked out (15 min) before sharing a new code."
+                ));
+            }
+            Ok(reply)
         }
     )));
 

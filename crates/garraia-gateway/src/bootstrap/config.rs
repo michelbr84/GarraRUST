@@ -29,7 +29,12 @@ pub(crate) fn default_vault_path() -> Option<PathBuf> {
 }
 
 /// Os dois gates de canal — allowlist e pairing — vivem no [`AppState`] e
-/// TODO canal compartilha as MESMAS instancias (#1189).
+/// cada canal compartilha as MESMAS instancias (#1189).
+///
+/// Consequencia, coerente com a allowlist global (um `allowlist.json`, um
+/// `/users`): um codigo gerado pelo `/pair` e resgatavel em **qualquer**
+/// canal habilitado. A protecao contra forca bruta do `claim()` e o aviso de
+/// queima ao dono estao em `garraia_security::PairingManager` (#1191).
 ///
 /// Cada bootstrap de canal montava um `Allowlist` e um `PairingManager`
 /// proprios, e isso quebrava o pareamento em todos os 11 canais de uma vez:
@@ -165,7 +170,18 @@ mod tests {
                 continue;
             }
             let fonte = std::fs::read_to_string(&path).expect("fonte legivel");
-            for marcador in ["Allowlist::load_or_create(", "PairingManager::new("] {
+            // Qualquer construtor dos dois tipos, nao so os dois que o bug
+            // usava: `Allowlist::open(`/`restricted(` ou
+            // `PairingManager::with_limits(` reintroduziriam o mesmo gate
+            // duplicado por outra porta (revisao do #1190).
+            for marcador in [
+                "Allowlist::load_or_create(",
+                "Allowlist::open(",
+                "Allowlist::restricted(",
+                "Allowlist::new(",
+                "PairingManager::new(",
+                "PairingManager::with_limits(",
+            ] {
                 if fonte.contains(marcador) {
                     violacoes.push(format!("{nome} constroi `{marcador}`"));
                 }
