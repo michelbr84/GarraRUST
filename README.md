@@ -86,9 +86,14 @@ cargo build --release -p garraia
 ./target/release/garra start
 
 # Bare `garra` opens the chat REPL on the project default: OpenRouter with
-# `z-ai/glm-5.3-flash` (issue #1180). Local Ollama is the second option —
-# ask for it explicitly. A tag that is not pulled yet prompts to download
-# it; `-y` downloads without asking.
+# `z-ai/glm-5.3-flash` (issue #1180). With no `agent.default_provider` in
+# config, autodetect tries the cloud providers you have credentials for
+# first, and falls back to local Ollama only when none exists.
+./target/release/garra
+
+# Local Ollama is the second option — ask for it explicitly by naming a tag.
+# A tag that is not pulled yet prompts to download it; `-y` downloads
+# without asking.
 ./target/release/garra --model qwen3.8
 
 # One-shot non-interactive ask — great for scripts and CI

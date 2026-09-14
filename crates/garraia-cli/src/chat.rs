@@ -22,6 +22,7 @@ use garraia_gateway::bootstrap::spawn_hardware_adapters;
 use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
+use crate::defaults::{DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_PROVIDER};
 use crate::ui::error_card::ErrorCard;
 use crate::ui::panel;
 use crate::ui::tool_log::{Busca, ToolLog};
@@ -450,6 +451,54 @@ fn decide_default_provider(
         provider_kind: provider_kind.to_string(),
         model,
     }
+}
+
+/// #1180 — one stop of the legacy autodetect chain, the heuristic that runs
+/// when `agent.default_provider` is absent or unusable (a fresh clone, an
+/// `install.sh --skip-setup`, a hand-written config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutodetectCandidate {
+    Anthropic,
+    OpenAi,
+    OpenRouter,
+    Ollama,
+}
+
+/// #1180 decision 2 — "the cloud is always the first option, unless the user
+/// asks otherwise". This function is where that sentence is true in code.
+///
+/// The chain used to try Ollama **first**, unconditionally: a box with
+/// `OPENROUTER_API_KEY` exported and a stray `ollama serve` running would
+/// silently answer from the local model, contradicting both the issue and
+/// `README.md`. Now the providers whose credentials actually exist come
+/// first, in the order they already had among themselves
+/// (Anthropic → OpenAI → OpenRouter), and Ollama is what is left when none
+/// of them does — which is exactly the local fallback #1180 wants to keep.
+///
+/// Ollama is always in the returned list, always last: it is the only
+/// provider that needs no credential, so it is the only one that can be the
+/// unconditional end of the chain. Its health check still has to pass; the
+/// caller falls through to an offline Ollama handle if it does not.
+///
+/// Pure on purpose — `detect_provider` itself needs a daemon and a network,
+/// so the ordering is tested here instead of there.
+fn autodetect_order(
+    has_anthropic_credential: bool,
+    has_openai_credential: bool,
+    has_openrouter_credential: bool,
+) -> Vec<AutodetectCandidate> {
+    let mut order = Vec::with_capacity(4);
+    if has_anthropic_credential {
+        order.push(AutodetectCandidate::Anthropic);
+    }
+    if has_openai_credential {
+        order.push(AutodetectCandidate::OpenAi);
+    }
+    if has_openrouter_credential {
+        order.push(AutodetectCandidate::OpenRouter);
+    }
+    order.push(AutodetectCandidate::Ollama);
+    order
 }
 
 /// GAR-576 — Last-resort fallback model name per provider kind, used
@@ -925,63 +974,86 @@ pub async fn detect_provider(
     // so `--model` is honored whichever provider wins — and the returned
     // provider object always carries the model it will actually be asked for.
     let ollama_url = ollama_base_url();
+    let model = resolve_provider_model(config, DEFAULT_LOCAL_PROVIDER, model_override)
+        .unwrap_or_else(|| hardcoded_default_model(DEFAULT_LOCAL_PROVIDER));
 
-    // 1. Try Ollama first (local, offline)
-    let model = resolve_provider_model(config, "ollama", model_override)
-        .unwrap_or_else(|| hardcoded_default_model("ollama"));
-    let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()));
-    if ollama.health_check().await.unwrap_or(false) {
-        return (
-            "ollama".to_string(),
-            model,
-            Arc::new(ollama) as Arc<dyn LlmProvider>,
-        );
+    // #1180 decision 2 — the cloud is the first option unless the user asked
+    // for something else. The credentials are resolved up front (cheap: env
+    // var + `config.llm` lookup, no network, no vault) because the ORDER of
+    // the chain depends on which of them exist, and that ordering decision
+    // lives in a pure function so it can be tested without a daemon.
+    let anthropic_key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY");
+    let openai_key = get_api_key(config, "openai", "OPENAI_API_KEY");
+    let openrouter_key = get_api_key(config, DEFAULT_CLOUD_PROVIDER, "OPENROUTER_API_KEY");
+
+    for candidate in autodetect_order(
+        anthropic_key.is_some(),
+        openai_key.is_some(),
+        openrouter_key.is_some(),
+    ) {
+        match candidate {
+            AutodetectCandidate::Anthropic => {
+                let Some(key) = anthropic_key.as_deref() else {
+                    continue;
+                };
+                let model = resolve_provider_model(config, "anthropic", model_override)
+                    .unwrap_or_else(|| hardcoded_default_model("anthropic"));
+                let provider = AnthropicProvider::new(key, Some(model.clone()), None);
+                return (
+                    "anthropic".to_string(),
+                    model,
+                    Arc::new(provider) as Arc<dyn LlmProvider>,
+                );
+            }
+            AutodetectCandidate::OpenAi => {
+                let Some(key) = openai_key.as_deref() else {
+                    continue;
+                };
+                let model = resolve_provider_model(config, "openai", model_override)
+                    .unwrap_or_else(|| hardcoded_default_model("openai"));
+                let provider = OpenAiProvider::new(key, Some(model.clone()), None);
+                return (
+                    "openai".to_string(),
+                    model,
+                    Arc::new(provider) as Arc<dyn LlmProvider>,
+                );
+            }
+            AutodetectCandidate::OpenRouter => {
+                let Some(key) = openrouter_key.as_deref() else {
+                    continue;
+                };
+                let model = resolve_provider_model(config, DEFAULT_CLOUD_PROVIDER, model_override)
+                    .unwrap_or_else(|| hardcoded_default_model(DEFAULT_CLOUD_PROVIDER));
+                // GAR-582: name the provider "openrouter" so AgentRuntime's
+                // lookup-by-name resolves correctly (avoids WARN at request time).
+                let provider = OpenAiProvider::new(
+                    key,
+                    Some(model.clone()),
+                    Some("https://openrouter.ai/api/v1".to_string()),
+                )
+                .with_name(DEFAULT_CLOUD_PROVIDER);
+                return (
+                    DEFAULT_CLOUD_PROVIDER.to_string(),
+                    model,
+                    Arc::new(provider) as Arc<dyn LlmProvider>,
+                );
+            }
+            AutodetectCandidate::Ollama => {
+                let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()));
+                if ollama.health_check().await.unwrap_or(false) {
+                    return (
+                        DEFAULT_LOCAL_PROVIDER.to_string(),
+                        model,
+                        Arc::new(ollama) as Arc<dyn LlmProvider>,
+                    );
+                }
+            }
+        }
     }
 
-    // 2. Try Anthropic (cloud)
-    if let Some(key) = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY") {
-        let model = resolve_provider_model(config, "anthropic", model_override)
-            .unwrap_or_else(|| hardcoded_default_model("anthropic"));
-        let provider = AnthropicProvider::new(&key, Some(model.clone()), None);
-        return (
-            "anthropic".to_string(),
-            model,
-            Arc::new(provider) as Arc<dyn LlmProvider>,
-        );
-    }
-
-    // 3. Try OpenAI (cloud)
-    if let Some(key) = get_api_key(config, "openai", "OPENAI_API_KEY") {
-        let model = resolve_provider_model(config, "openai", model_override)
-            .unwrap_or_else(|| hardcoded_default_model("openai"));
-        let provider = OpenAiProvider::new(&key, Some(model.clone()), None);
-        return (
-            "openai".to_string(),
-            model,
-            Arc::new(provider) as Arc<dyn LlmProvider>,
-        );
-    }
-
-    // 4. Try OpenRouter (cloud fallback)
-    if let Some(key) = get_api_key(config, "openrouter", "OPENROUTER_API_KEY") {
-        let model = resolve_provider_model(config, "openrouter", model_override)
-            .unwrap_or_else(|| hardcoded_default_model("openrouter"));
-        // GAR-582: name the provider "openrouter" so AgentRuntime's
-        // lookup-by-name resolves correctly (avoids WARN at request time).
-        let provider = OpenAiProvider::new(
-            &key,
-            Some(model.clone()),
-            Some("https://openrouter.ai/api/v1".to_string()),
-        )
-        .with_name("openrouter");
-        return (
-            "openrouter".to_string(),
-            model,
-            Arc::new(provider) as Arc<dyn LlmProvider>,
-        );
-    }
-
-    // 5. Fallback: Ollama with no health check (user will see error on first message)
+    // Last resort: Ollama with no health check (user will see the error on
+    // the first message). Nothing else is left to try — this is the only
+    // provider that needs no credential at all.
     let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url));
     (
         "ollama (offline)".to_string(),
@@ -2321,6 +2393,91 @@ mod tests {
                 assert_eq!(model, "z-ai/glm-5.3-flash");
             }
             other => panic!("expected UseDefault with hardcoded model, got {other:?}"),
+        }
+    }
+
+    // ─── #1180: a ordem do autodetect ─────────────────────────────────────
+
+    /// O caso exato do relatorio de revisao do #1180: clone novo, nenhum
+    /// `agent.default_provider` no config, `OPENROUTER_API_KEY` exportada.
+    /// `decide_default_provider` devolve `FallThroughToChain` e quem decide
+    /// passa a ser a cadeia legada — que tentava Ollama ANTES da nuvem e
+    /// contradizia a decisao 2 da issue.
+    #[test]
+    fn autodetect_tenta_nuvem_antes_do_ollama() {
+        let cfg = AppConfig::default();
+        assert!(
+            matches!(
+                decide_default_provider(&cfg, false, true, false),
+                DefaultProviderDecision::FallThroughToChain { .. }
+            ),
+            "sem agent.default_provider quem decide e a cadeia legada"
+        );
+
+        let ordem = autodetect_order(false, false, true);
+        assert_eq!(
+            ordem,
+            vec![AutodetectCandidate::OpenRouter, AutodetectCandidate::Ollama],
+            "com OPENROUTER_API_KEY o openrouter tem que vir ANTES do ollama"
+        );
+    }
+
+    /// A ordem relativa entre os provedores de nuvem e a que ja existia
+    /// (Anthropic > OpenAI > OpenRouter) — o #1180 so moveu o Ollama para o
+    /// fim, nao reembaralhou a nuvem.
+    #[test]
+    fn autodetect_preserva_a_ordem_entre_os_provedores_de_nuvem() {
+        assert_eq!(
+            autodetect_order(true, true, true),
+            vec![
+                AutodetectCandidate::Anthropic,
+                AutodetectCandidate::OpenAi,
+                AutodetectCandidate::OpenRouter,
+                AutodetectCandidate::Ollama,
+            ]
+        );
+        assert_eq!(
+            autodetect_order(true, false, true),
+            vec![
+                AutodetectCandidate::Anthropic,
+                AutodetectCandidate::OpenRouter,
+                AutodetectCandidate::Ollama,
+            ]
+        );
+    }
+
+    /// O fallback local que a issue quer PRESERVAR: sem nenhuma credencial
+    /// de nuvem, o Ollama continua sendo o que sobra — e continua sendo
+    /// tentado. Ele tambem entra em toda lista, sempre por ultimo, porque e
+    /// o unico provedor que nao precisa de credencial nenhuma.
+    #[test]
+    fn autodetect_mantem_o_ollama_como_o_que_sobra() {
+        assert_eq!(
+            autodetect_order(false, false, false),
+            vec![AutodetectCandidate::Ollama],
+            "sem credencial de nuvem o local segue sendo a saida"
+        );
+        for (a, o, r) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            let ordem = autodetect_order(a, o, r);
+            assert_eq!(
+                ordem.last(),
+                Some(&AutodetectCandidate::Ollama),
+                "ollama tem que ser o ultimo em toda combinacao ({a},{o},{r})"
+            );
+            assert_eq!(
+                ordem
+                    .iter()
+                    .filter(|c| **c == AutodetectCandidate::Ollama)
+                    .count(),
+                1,
+                "ollama entra uma vez so"
+            );
         }
     }
 
