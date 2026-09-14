@@ -1,8 +1,8 @@
 # 21. GarraIA Desktop — Control Center (`garraia desktop`)
 
-- **Status:** Proposed (a aceitação é do dono do projeto)
+- **Status:** Accepted (2026-09-14, decisão do dono — opção D, ver §Histórico de revisões)
 - **Deciders:** @michelbr84 (decisão final) + Claude (levantamento, sessão autônoma 2026-09-13; revisado no mesmo dia após verificação independente — ver §Histórico de revisões)
-- **Date:** 2026-09-13 (America/New_York)
+- **Date:** 2026-09-13 (America/New_York); aceito em 2026-09-14
 - **Tags:** fase-4, desktop, ui, agentes, arquitetura, seguranca
 - **Supersedes:** none
 - **Superseded by:** none
@@ -495,6 +495,15 @@ Antes de cada merge, e obrigatoriamente antes do M7:
 ---
 
 ## Histórico de revisões
+
+### 2026-09-14 — aceito pelo dono
+
+Aceito por @michelbr84 (opção D, como proposta), sem alteração de conteúdo.
+Gatilho do épico #1181: os milestones podem começar, na ordem de dependência
+**core → CLI → casca → abas** (M0 primeiro). Continuam pendentes as duas
+decisões que o ADR deliberadamente não toma — o gatilho S1 do ADR 0007
+(framework de UI, decidido no início do M2) e o desenho da dependência do
+AgentDeck (§Pontos em aberto do M3).
 
 ### 2026-09-13 — revisão após verificação independente
 

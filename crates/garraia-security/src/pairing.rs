@@ -33,8 +33,10 @@
 //!
 //! O que **nao** muda aqui, de proposito: `claim()` continua ignorando o
 //! `channel_id` de origem (a allowlist e global, uma por instalacao, e o
-//! `/pair` gera com a chave literal `"telegram"` em qualquer canal). Escopar o
-//! pareamento por canal e decisao de produto, nao de hardening — ver #1191.
+//! `/pair` gera com a chave literal `"telegram"` em qualquer canal). Decidido
+//! pelo dono em 2026-09-14: pareamento **global por instalacao** — um codigo
+//! vale em qualquer canal habilitado e o `channel_id` e informativo, nao um
+//! escopo; 6 digitos e os limites fixos tambem ficam (threat model 5.11).
 
 use rand::Rng;
 use std::collections::HashMap;
