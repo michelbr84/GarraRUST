@@ -15,6 +15,9 @@
 //! diagnostic.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use crate::state::SharedState;
 
 /// Default vault path under the user's config directory.
 ///
@@ -25,8 +28,32 @@ pub(crate) fn default_vault_path() -> Option<PathBuf> {
     Some(garraia_config::default_vault_path())
 }
 
-pub(super) fn default_allowlist_path() -> PathBuf {
-    garraia_config::ConfigLoader::default_config_dir().join("allowlist.json")
+/// Os dois gates de canal — allowlist e pairing — vivem no [`AppState`] e
+/// TODO canal compartilha as MESMAS instancias (#1189).
+///
+/// Cada bootstrap de canal montava um `Allowlist` e um `PairingManager`
+/// proprios, e isso quebrava o pareamento em todos os 11 canais de uma vez:
+///
+/// - `/pair` gera o codigo em `state.pairing` (`commands.rs`), mas o handler
+///   de mensagens chamava `claim()` na instancia local, cuja tabela esta
+///   sempre vazia. O `claim()` devolvia `None`, o usuario caia em
+///   `unauthorized` e a mensagem era descartada.
+/// - Os dois `Allowlist` liam o MESMO arquivo e ambos gravam nele em
+///   `add()`/`claim_owner()`, entao um sobrescrevia o owner ou o usuario
+///   recem-pareado do outro — perda de escrita silenciosa em disco.
+///
+/// Voltar a construir essas instancias dentro de um bootstrap de canal
+/// reintroduz o bug; o teste `nenhum_canal_constroi_gate_proprio` varre o
+/// diretorio e falha se acontecer.
+///
+/// [`AppState`]: crate::state::AppState
+pub(super) fn channel_gates(
+    state: &SharedState,
+) -> (
+    Arc<Mutex<garraia_security::Allowlist>>,
+    Arc<Mutex<garraia_security::PairingManager>>,
+) {
+    (Arc::clone(&state.allowlist), Arc::clone(&state.pairing))
 }
 
 /// Plan 0250 (GAR-771): emit one friendly, actionable warning when a credential
@@ -71,6 +98,86 @@ pub(crate) fn resolve_api_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1189 — regressao. O `/pair` gera o codigo em `state.pairing`; se o
+    /// gate entregue ao canal nao for a MESMA instancia, o `claim()` do
+    /// handler de mensagens procura numa tabela vazia e todo mundo cai em
+    /// `unauthorized`. Aqui a prova e de comportamento, nao de identidade:
+    /// gera pelo `state` e resgata pelo handle do canal.
+    #[test]
+    fn gate_do_canal_ve_o_codigo_gerado_pelo_pair() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+        use garraia_config::AppConfig;
+
+        let state: SharedState = Arc::new(crate::state::AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+
+        let (allowlist, pairing) = channel_gates(&state);
+
+        // Mesmas instancias, nao copias: uma allowlist paralela sobre o
+        // mesmo arquivo perde escrita em disco no `add()`/`claim_owner()`.
+        assert!(
+            Arc::ptr_eq(&allowlist, &state.allowlist),
+            "o canal recebeu um Allowlist diferente do AppState"
+        );
+        assert!(
+            Arc::ptr_eq(&pairing, &state.pairing),
+            "o canal recebeu um PairingManager diferente do AppState"
+        );
+
+        // `/pair` gera aqui...
+        let code = state.pairing.lock().unwrap().generate("telegram");
+        // ...e o handler de mensagens do canal resgata aqui.
+        let claimed = pairing.lock().unwrap().claim(&code, "7978617919");
+        assert_eq!(
+            claimed.as_deref(),
+            Some("telegram"),
+            "codigo gerado pelo /pair precisa ser resgatavel pelo gate do canal"
+        );
+    }
+
+    /// #1189 — invariante de fonte. O unico lugar que constroi os gates e o
+    /// `AppState`; bootstrap de canal so pode pegar via [`channel_gates`].
+    /// Sem isso o bug volta por copy-paste no proximo canal (foi assim que
+    /// ele chegou a 11 arquivos de uma vez).
+    #[test]
+    fn nenhum_canal_constroi_gate_proprio() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bootstrap");
+        let mut violacoes = Vec::new();
+
+        for entry in std::fs::read_dir(&dir).expect("bootstrap/ legivel") {
+            let path = entry.expect("entrada legivel").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let nome = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            // `config.rs` e este proprio teste: os marcadores aparecem aqui
+            // como literais, e nao como construcao de gate.
+            if nome == "config.rs" {
+                continue;
+            }
+            let fonte = std::fs::read_to_string(&path).expect("fonte legivel");
+            for marcador in ["Allowlist::load_or_create(", "PairingManager::new("] {
+                if fonte.contains(marcador) {
+                    violacoes.push(format!("{nome} constroi `{marcador}`"));
+                }
+            }
+        }
+
+        assert!(
+            violacoes.is_empty(),
+            "gate de canal duplicado quebra o /pair (#1189) -- use \
+             `channel_gates(state)`: {violacoes:?}"
+        );
+    }
 
     #[test]
     fn resolve_api_key_prefers_config_over_env() {

@@ -1,16 +1,15 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use garraia_agents::ChatMessage;
 use garraia_channels::{OnVoiceFn, TelegramChannel};
 use garraia_config::AppConfig;
-use garraia_security::{Allowlist, PairingManager};
 use teloxide::net::Download;
 use teloxide::prelude::Requester;
 use tracing::{error, info, warn};
 
 use crate::state::SharedState;
 
-use super::config::{default_allowlist_path, resolve_api_key};
+use super::config::{channel_gates, resolve_api_key};
 
 pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
     // Check if voice clients are available
@@ -219,13 +218,9 @@ pub fn build_telegram_channels(
             continue;
         };
 
-        let allowlist = Arc::new(Mutex::new(Allowlist::load_or_create(
-            &default_allowlist_path(),
-        )));
-
-        let pairing = Arc::new(Mutex::new(PairingManager::new(
-            std::time::Duration::from_secs(300),
-        )));
+        // #1189: gates compartilhados com o AppState -- instancias
+        // proprias fazem o `/pair` nunca casar com o `claim()`.
+        let (allowlist, pairing) = channel_gates(state);
 
         let state_for_cb = Arc::clone(state);
         let allowlist_for_cb = Arc::clone(&allowlist);
