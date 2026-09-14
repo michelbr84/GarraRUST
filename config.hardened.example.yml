@@ -21,7 +21,13 @@ gateway:
   session_ttl_secs: 86400      # validade do token de sessão (1 dia)
   session_idle_secs: 3600      # corte por inatividade (1h)
 
-  # CORS: vazio = allow-all (dev). Em produção, liste as origens.
+  # CORS + ancora anti-CSRF (#1182): vazio = nenhuma origem cross-origin
+  # (default seguro). O Web Console e servido pelo proprio gateway e e
+  # same-origin, entao por IP ou localhost ele nao precisa desta lista. Se o
+  # console e alcancado por NOME DNS (reverse proxy com dominio proprio, mDNS
+  # `.local`, Tailscale, nome de servico Docker, ingress), liste a origem aqui
+  # com o esquema que o navegador ve — sem isso, POST/PATCH/DELETE e o
+  # WebSocket do chat vindos do navegador voltam 403. `*` nao e aceito.
   allowed_origins: []
 
   rate_limit:
