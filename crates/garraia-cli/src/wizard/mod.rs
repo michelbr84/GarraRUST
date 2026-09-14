@@ -613,7 +613,7 @@ fn collect_local_stack(
     } else {
         println!("  Local stack — the second option: Garra falls back to it when");
         println!("  the cloud default is unreachable (see `agent.fallback_providers`).");
-        println!("  Nada aqui vem marcado: a nuvem ja e o seu padrao.");
+        println!("  Nothing here is preselected: the cloud is already your default.");
     }
 
     // Ollama install gate ---------------------------------------------------

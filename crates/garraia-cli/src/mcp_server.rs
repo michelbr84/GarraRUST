@@ -262,8 +262,22 @@ fn validate_policy_with_cap(
         ));
     }
     if !policy.model_allowlist.is_empty() && !policy.model_allowlist.iter().any(|m| m == model) {
+        // #1180: the default is applied BEFORE this check (fail-closed, on
+        // purpose), so an operator who pinned the retired default —
+        // `GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free`, as the Hermes docs
+        // used to say — sees every model-less call land here. When the
+        // rejected model is the server default, say so and name the fix;
+        // an explicit caller choice gets the plain message.
+        let hint = if model == MODEL_DEFAULT {
+            format!(
+                " — this is the server default (issue #1180): add {MODEL_DEFAULT} to \
+                 GARRAIA_MCP_MODEL_ALLOWLIST or pass an allowed model explicitly"
+            )
+        } else {
+            String::new()
+        };
         return Err(format!(
-            "model '{model}' blocked by GARRAIA_MCP_MODEL_ALLOWLIST"
+            "model '{model}' blocked by GARRAIA_MCP_MODEL_ALLOWLIST{hint}"
         ));
     }
     if let Some(cap) = cap
@@ -1035,6 +1049,35 @@ mod tests {
         let err = validate_policy(&cfg, &policy, "openrouter", "openrouter/auto", 60)
             .expect_err("auto must be blocked when allowlist is set");
         assert!(err.contains("GARRAIA_MCP_MODEL_ALLOWLIST"), "{err}");
+    }
+
+    /// #1180 — the default is applied before the allowlist, so whoever pinned
+    /// the retired default (`GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free`)
+    /// sees every model-less call rejected here. The rejection must stay
+    /// (fail-closed), and the message must say the model is the server
+    /// default and how to fix it. An explicit non-default model gets the
+    /// plain message — no hint about a default the caller did not rely on.
+    #[test]
+    fn allowlist_rejection_of_the_server_default_names_the_fix() {
+        let policy = ServerPolicy::from_values(Some("openrouter/free"), None, None);
+        let cfg = AppConfig::default();
+
+        let err = validate_policy(&cfg, &policy, "openrouter", MODEL_DEFAULT, 60)
+            .expect_err("the default outside the allowlist must still be rejected");
+        assert!(err.contains("GARRAIA_MCP_MODEL_ALLOWLIST"), "{err}");
+        assert!(err.contains("server default"), "{err}");
+        assert!(err.contains("#1180"), "{err}");
+        assert!(err.contains(MODEL_DEFAULT), "{err}");
+
+        let err = validate_policy(&cfg, &policy, "openrouter", "openrouter/auto", 60)
+            .expect_err("an explicit model outside the allowlist is rejected too");
+        assert!(err.contains("GARRAIA_MCP_MODEL_ALLOWLIST"), "{err}");
+        assert!(!err.contains("server default"), "{err}");
+
+        // Same body serves `garra_agent`; the hint follows it there.
+        let err = validate_agent_policy(&cfg, &policy, "openrouter", MODEL_DEFAULT, 300)
+            .expect_err("agent tool shares the allowlist");
+        assert!(err.contains("server default"), "{err}");
     }
 
     #[test]

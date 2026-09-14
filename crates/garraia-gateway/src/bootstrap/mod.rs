@@ -585,8 +585,14 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // `agent.default_provider` here makes it deterministic.
     //
     // Placed BEFORE the unreachable-provider auto-fallback below on purpose:
-    // that block is allowed to override this decision when the chosen default
-    // turns out to be a local daemon nobody started.
+    // that block may override this decision — but only in one narrow case.
+    // `unreachable_local_providers` is filled solely by the `"openai"` arm
+    // above, i.e. an OpenAI-compatible endpoint (LM Studio, vLLM, …) whose
+    // `base_url` points at localhost/127.0.0.1 and whose TCP probe failed.
+    // The `ollama` and `llamacpp` arms probe too, but only log: a local
+    // daemon of those kinds that nobody started is NOT pushed there, so when
+    // one of them is the configured default the decision above stands and
+    // the first request fails instead of auto-switching.
     if let Some(default_key) = config.agent.default_provider.as_deref() {
         match resolve_registered_provider_id(&runtime, config, default_key) {
             Some(id) => {
@@ -639,7 +645,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         info!("╚══════════════════════════════════════╝");
     }
 
-    // --- Auto-fallback: if default_provider is unreachable, try another ---
+    // --- Auto-fallback: if default_provider is an unreachable local
+    // OpenAI-compatible endpoint (the only kind the `"openai"` arm records
+    // in `unreachable_local_providers`), try another ---
     if let Some(ref default_id) = config.agent.default_provider
         && unreachable_local_providers.iter().any(|p| p == default_id)
     {
