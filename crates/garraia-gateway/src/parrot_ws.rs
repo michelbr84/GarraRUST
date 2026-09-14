@@ -43,15 +43,16 @@ pub async fn parrot_ws_handler(
     // tools, com a chave de LLM do dono, e escrevendo na sessao persistente
     // do desktop. O cliente legitimo e a webview Tauri (`ORIGENS_TAURI`) ou
     // um cliente sem `Origin`; pagina web nenhuma consegue apresentar essas
-    // origens. O `cross_origin_guard` do router ja julgou o handshake;
-    // repetir aqui e defesa em profundidade.
+    // origens. O `cross_origin_guard` do router ja julgou o handshake (e e
+    // ele quem loga `gateway: cross-origin request refused` com
+    // `path=/ws/parrot` se o desktop nao conectar); repetir aqui e defesa em
+    // profundidade, para o handler nao depender da montagem.
     if !crate::origin_guard::ws_upgrade_permitido(
         &crate::origin_guard::Pedido::de(&headers, &uri),
         crate::origin_guard::esquema_efetivo(&state.config.gateway),
-        &crate::origin_guard::origens_validas(&state.config.gateway),
+        &crate::origin_guard::origens_validas_silenciosa(&state.config.gateway),
     ) {
-        // Nada do pedido e ecoado; se o desktop parar de conectar, esta e a
-        // linha a procurar no log — e `ORIGENS_TAURI` o lugar a olhar.
+        // Nada do pedido e ecoado.
         warn!(
             "Garra Desktop WebSocket upgrade rejected: cross-origin (see origin_guard::ORIGENS_TAURI)"
         );

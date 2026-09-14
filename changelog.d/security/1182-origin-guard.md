@@ -24,9 +24,12 @@
   escrevendo na sessao persistente do Garra Desktop e lendo a resposta de volta; a rota
   nem tinha gate de `api_key` (ele cobre so `/api/*`). Handshake sem `Origin` (app, CLI,
   `curl`) segue como antes. A webview Tauri do desktop passa pela sua origem exata
-  (`tauri://localhost`; `http://tauri.localhost` no Windows — `origin_guard::ORIGENS_TAURI`,
-  derivada do fonte do Tauri 2.11 e nao medida em runtime nesta entrega; se o passaro
-  parar de conectar, o log diz `ws: cross-origin upgrade refused`). Residual registrado
+  (`tauri://localhost`; `http://tauri.localhost` so num gateway Windows, porque o Safari
+  entrega `*.localhost` ao resolvedor do sistema — `origin_guard::ORIGENS_TAURI` e
+  `ORIGENS_TAURI_WEBVIEW2`, derivadas do fonte do Tauri 2.11 e nao medidas em runtime
+  nesta entrega; se o passaro parar de conectar, o log diz `gateway: cross-origin
+  request refused` com `path=/ws/parrot`). Pelo mesmo motivo a ancora anti-rebinding
+  aceita `localhost` exato, nunca `*.localhost`. Residual registrado
   em `docs/security/threat-model.md` secao 5.10: leitura `GET` sob DNS rebinding nao e
   fechada por regra de `Origin` (o navegador nao manda `Origin` em GET same-origin);
   a mitigacao e `gateway.api_key`.

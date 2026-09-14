@@ -454,14 +454,20 @@ uma sessão de chat completa.
    página web só consegue apresentar `Origin` `http`/`https` (ou `null`),
    então origem de esquema de app (`tauri://localhost`, extensão de
    navegador) passa; e a webview do Garra Desktop passa pela sua origem exata
-   (`origin_guard::ORIGENS_TAURI`: `tauri://localhost`;
-   `http://tauri.localhost`/`https://tauri.localhost` no Windows, WebView2).
-   Essa lista foi derivada do fonte do Tauri 2.11 (`tauri_protocol_url` e o
-   parse do header `Origin` no protocolo de IPC, cujos testes usam
-   `tauri://localhost`), **não medida em runtime nesta entrega** — o
-   ambiente não tem GTK/webkit nem `DISPLAY`. Se o pássaro parar de conectar
-   após o upgrade, o log diz `Garra Desktop WebSocket upgrade rejected` e a
-   lista é o lugar a olhar.
+   (`origin_guard::ORIGENS_TAURI`: `tauri://localhost` em Linux/macOS;
+   `ORIGENS_TAURI_WEBVIEW2`: `http://tauri.localhost`/`https://tauri.localhost`,
+   aceitas **só quando o gateway roda em Windows** — o `ws.js` conecta em
+   `localhost`, então webview e gateway estão no mesmo SO, e num gateway
+   Linux/macOS um `Origin` `http://tauri.localhost` só pode ser navegador:
+   o Safari entrega `*.localhost` ao resolvedor do sistema, que num Wi-Fi
+   hostil é do atacante). Pelo mesmo motivo a âncora anti-rebinding aceita
+   `localhost` **exato**, nunca `*.localhost`. Essa lista foi derivada do
+   fonte do Tauri 2.11 (`tauri_protocol_url` e o parse do header `Origin` no
+   protocolo de IPC, cujos testes usam `tauri://localhost`), **não medida em
+   runtime nesta entrega** — o ambiente não tem GTK/webkit nem `DISPLAY`. Se
+   o pássaro parar de conectar após o upgrade, a guarda do router responde
+   antes do handler: o log diz `gateway: cross-origin request refused` com
+   `path=/ws/parrot method=GET`, e a lista é o lugar a olhar.
 
 **Recorte deliberado**: o guarda genérico **não** herdou o
 `503 auth not configured` do `learning_mutations_guard` para peer não-loopback

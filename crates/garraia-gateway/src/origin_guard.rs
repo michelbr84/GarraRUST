@@ -60,10 +60,14 @@
 //! `/ws/parrot` (Garra Desktop), como defesa em profundidade. O cliente do
 //! desktop é uma webview Tauri v2, cuja origem é `tauri://localhost`
 //! (WebKitGTK/WKWebView) ou `http://tauri.localhost` (WebView2, Windows) —
-//! ver [`ORIGENS_TAURI`]. Uma página web **não consegue** apresentar `Origin`
-//! com esquema que não seja `http`/`https` (ou `null`), e `*.localhost`
-//! resolve para loopback por definição (RFC 6761), então aceitar essas
-//! origens não reabre o vetor do navegador.
+//! ver [`ORIGENS_TAURI`] e [`ORIGENS_TAURI_WEBVIEW2`]. Uma página web **não
+//! consegue** apresentar `Origin` com esquema que não seja `http`/`https` (ou
+//! `null`), então aceitar `tauri://localhost` não reabre o vetor do
+//! navegador. `http://tauri.localhost` é `http` e **poderia** vir de uma
+//! página (Safari entrega `*.localhost` ao resolvedor do sistema, e um
+//! resolvedor hostil responde o que quiser), por isso só é aceito quando
+//! este gateway roda em Windows — o `ws.js` do desktop conecta em
+//! `localhost`, então webview e gateway estão no mesmo SO.
 //!
 //! ## Residual conhecido: leitura sob DNS rebinding
 //!
@@ -119,8 +123,9 @@ pub const CORPO_CSRF: &str = "gateway: cross-origin request refused (see gateway
 /// Corpo do 403 dos handshakes WebSocket (`/ws`, `/ws/parrot`).
 pub const CORPO_WS: &str = "ws: cross-origin upgrade refused (see gateway.allowed_origins)";
 
-/// Caminhos **mutantes** que não passam por [`decide_escrita`]. Leitura com
-/// `Origin` continua sob [`decide_leitura`] em todo caminho.
+/// Caminhos **mutantes** que não passam por [`decide_escrita`]. O handshake
+/// de WebSocket continua sob [`decide_leitura`] em todo caminho, inclusive
+/// nestes.
 ///
 /// Não é "exceção para facilitar": cada um já é guardado por algo mais
 /// estrito, e dupla aplicação só trocaria o corpo do 403 (quebrando o
@@ -142,25 +147,34 @@ pub const CORPO_WS: &str = "ws: cross-origin upgrade refused (see gateway.allowe
 /// O console admin é same-origin, então nada legítimo muda.
 const SEM_GUARDA: &[&str] = &["/api/learning/", "/api/plugins/", "/webhooks/"];
 
-/// Origens da webview do Garra Desktop (Tauri v2), aceitas no handshake de
-/// WebSocket e em leituras.
+/// Origem da webview do Garra Desktop (Tauri v2) em Linux/macOS, aceita no
+/// handshake de WebSocket.
 ///
-/// Fonte: `tauri-2.11.5/src/manager/mod.rs::tauri_protocol_url` — em Windows
-/// e Android o app é servido em `http://tauri.localhost` (ou `https://` com
-/// `useHttpsScheme`), nas demais plataformas em `tauri://localhost`; e o
-/// protocolo de IPC do próprio Tauri (`src/ipc/protocol.rs`) parseia o header
-/// `Origin` desses pedidos como URL, com `tauri://localhost` nos testes dele —
-/// é o mesmo header que a webview manda no handshake. Não foi medido em
-/// runtime nesta entrega (este ambiente não tem GTK/webkit nem `DISPLAY`);
-/// se o desktop não conectar, o log diz `ws: cross-origin upgrade refused` e
-/// esta lista é o lugar a olhar.
+/// Fonte: `tauri-2.11.5/src/manager/mod.rs::tauri_protocol_url` — fora de
+/// Windows/Android o app é servido em `tauri://localhost`; e o protocolo de
+/// IPC do próprio Tauri (`src/ipc/protocol.rs`) parseia o header `Origin`
+/// desses pedidos como URL, com `tauri://localhost` nos testes dele — é o
+/// mesmo header que a webview manda no handshake. Não foi medido em runtime
+/// nesta entrega (este ambiente não tem GTK/webkit nem `DISPLAY`); se o
+/// desktop não conectar, a guarda do router responde antes do handler e o
+/// log diz `gateway: cross-origin request refused` com `path=/ws/parrot` —
+/// esta lista (e [`ORIGENS_TAURI_WEBVIEW2`]) é o lugar a olhar.
 ///
 /// Comparação exata, case-insensitive, barra final tolerada. Nunca curinga.
-pub const ORIGENS_TAURI: &[&str] = &[
-    "tauri://localhost",
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-];
+pub const ORIGENS_TAURI: &[&str] = &["tauri://localhost"];
+
+/// Origem da webview do Garra Desktop no WebView2 (Windows; Android idem):
+/// `http://tauri.localhost`, ou `https://` com `useHttpsScheme`.
+///
+/// Diferente de `tauri://`, este esquema é `http` — e uma página web **pode**
+/// chegar a apresentá-lo: Chromium e Firefox mapeiam `*.localhost` para
+/// loopback dentro do navegador, mas o WebKit (Safari) entrega o nome ao
+/// resolvedor do sistema, e um resolvedor hostil (Wi-Fi do atacante) responde
+/// o que quiser. Por isso só vale quando **este gateway roda em Windows**: o
+/// `ws.js` do desktop conecta em `ws://localhost:3888`, então webview e
+/// gateway estão na mesma máquina e no mesmo SO — num gateway Linux/macOS um
+/// `Origin` desses só pode ser navegador, e é recusado.
+pub const ORIGENS_TAURI_WEBVIEW2: &[&str] = &["http://tauri.localhost", "https://tauri.localhost"];
 
 /// Esquema efetivo do transporte que este processo serve: `https` só quando o
 /// binário tem a feature `tls` **e** cert e chave estão configurados — o mesmo
@@ -179,11 +193,29 @@ pub fn esquema_efetivo(gateway: &GatewayConfig) -> &'static str {
 }
 
 /// `gateway.allowed_origins` limpa para uso na guarda e no CORS: entradas
-/// vazias e o curinga `*` caem fora, com aviso. `*` em particular faria o
+/// vazias, o curinga `*` e o que não é uma origem (`scheme://host[:port]`,
+/// sem path/query/userinfo) caem fora, com aviso. `*` em particular faria o
 /// `CorsLayer::allow_origin(list)` do tower-http entrar em pânico no boot
 /// ("Wildcard origin (`*`) cannot be passed to `AllowOrigin::list`") — e é
-/// exatamente o reflexo de quem quer o allow-all antigo de volta.
+/// exatamente o reflexo de quem quer o allow-all antigo de volta. Uma entrada
+/// com path (`https://meu.dominio/app`) nunca casaria com um `Origin` (que
+/// não tem path), então ficar em silêncio seria deixar o dono achar que
+/// declarou a origem.
+///
+/// Chamada no boot (`build_router`), onde o aviso é útil; os handlers de
+/// WebSocket usam [`origens_validas_silenciosa`] para não repetir o aviso a
+/// cada handshake.
 pub fn origens_validas(gateway: &GatewayConfig) -> Vec<String> {
+    origens_validas_impl(gateway, true)
+}
+
+/// [`origens_validas`] sem os avisos — para caminhos quentes que rodam por
+/// pedido, depois de o boot já ter avisado.
+pub fn origens_validas_silenciosa(gateway: &GatewayConfig) -> Vec<String> {
+    origens_validas_impl(gateway, false)
+}
+
+fn origens_validas_impl(gateway: &GatewayConfig, avisar: bool) -> Vec<String> {
     gateway
         .allowed_origins
         .iter()
@@ -193,10 +225,26 @@ pub fn origens_validas(gateway: &GatewayConfig) -> Vec<String> {
                 return None;
             }
             if limpa == "*" {
-                warn!(
-                    "gateway.allowed_origins: `*` nao e suportado — liste origens explicitas \
-                     (scheme://host[:port]); entrada ignorada"
-                );
+                if avisar {
+                    warn!(
+                        "gateway.allowed_origins: `*` nao e suportado — liste origens explicitas \
+                         (scheme://host[:port]); entrada ignorada"
+                    );
+                }
+                return None;
+            }
+            let bem_formada = limpa.split_once("://").is_some_and(|(esquema, resto)| {
+                !esquema.is_empty() && parse_authority(resto).is_some()
+            });
+            if !bem_formada {
+                if avisar {
+                    // Só a posição, nunca o valor: a lista pode carregar um
+                    // nome interno que o dono não quer no log.
+                    warn!(
+                        "gateway.allowed_origins: entrada nao e uma origem `scheme://host[:port]` \
+                         (path, query ou userinfo nao entram); entrada ignorada"
+                    );
+                }
                 return None;
             }
             Some(limpa.to_string())
@@ -415,8 +463,13 @@ pub fn host_de_loopback(pedido: &Pedido) -> bool {
 ///    da vítima não tem como ser levado a mandar `Host: 192.168.1.10` para
 ///    um servidor que não seja aquele. Cobre o Web Console acessado por IP
 ///    de LAN, que `host_de_loopback` mataria.
-/// 2. **`localhost`** e `*.localhost`, que resolvem para loopback por
-///    definição (RFC 6761) e DNS público nenhum aponta para fora da máquina.
+/// 2. **`localhost`**, exato — o mesmo teste de [`host_de_loopback`]. **Não**
+///    `*.localhost`: a RFC 6761 §6.3 é conselho ao resolvedor, e o WebKit
+///    (Safari) entrega `evil.localhost` ao resolvedor do sistema, que num
+///    Wi-Fi hostil é do atacante — o rebinding clássico, só que com um nome
+///    que a âncora ingênua deixaria passar. Nenhum cliente legítimo alcança o
+///    console por `<x>.localhost` (a webview do desktop entra por
+///    [`decide_leitura`] antes da âncora).
 /// 3. **Nome listado em `gateway.allowed_origins`** — o dono declarou o
 ///    domínio do reverse proxy / da LAN dele; é o mesmo ato de confiança do
 ///    CORS. A comparação é só do **host**, sem esquema nem porta: rebinding
@@ -433,7 +486,7 @@ pub fn ancora_ok(pedido: &Pedido, allowed_origins: &[String]) -> bool {
     };
     // `parse_authority` devolve o IPv6 já sem colchetes, então o `parse`
     // cobre as duas famílias.
-    if host.parse::<IpAddr>().is_ok() || nome_de_localhost(host) {
+    if host.parse::<IpAddr>().is_ok() || host.eq_ignore_ascii_case("localhost") {
         return true;
     }
     allowed_origins.iter().any(|origem| {
@@ -445,16 +498,6 @@ pub fn ancora_ok(pedido: &Pedido, allowed_origins: &[String]) -> bool {
         parse_authority(authority)
             .is_some_and(|(permitido, _)| permitido.eq_ignore_ascii_case(host))
     })
-}
-
-/// `localhost` ou qualquer `*.localhost` (RFC 6761 §6.3: resolvem para
-/// loopback sem consultar DNS). Cobre `tauri.localhost`, a origem da webview
-/// do desktop em Windows.
-fn nome_de_localhost(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .rsplit_once('.')
-            .is_some_and(|(_, sufixo)| sufixo.eq_ignore_ascii_case("localhost"))
 }
 
 /// `true` quando o header `Origin` é **exatamente** uma das origens que o
@@ -496,13 +539,13 @@ fn esquema_web(origem: &str) -> bool {
     })
 }
 
-/// `true` quando o `Origin` é uma das [`ORIGENS_TAURI`] (exato, barra final
-/// tolerada).
+/// `true` quando o `Origin` é a webview do Garra Desktop: uma das
+/// [`ORIGENS_TAURI`] em qualquer SO, ou uma das [`ORIGENS_TAURI_WEBVIEW2`]
+/// quando este gateway roda em Windows (exato, barra final tolerada).
 fn origem_tauri(origem: &str) -> bool {
     let origem = origem.trim_end_matches('/');
-    ORIGENS_TAURI
-        .iter()
-        .any(|tauri| tauri.eq_ignore_ascii_case(origem))
+    let casa = |lista: &[&str]| lista.iter().any(|tauri| tauri.eq_ignore_ascii_case(origem));
+    casa(ORIGENS_TAURI) || (cfg!(target_os = "windows") && casa(ORIGENS_TAURI_WEBVIEW2))
 }
 
 /// Resultado da guarda.
@@ -946,7 +989,6 @@ mod tests {
             ("127.0.0.1:3888", Some("http://127.0.0.1:3888")),
             ("192.168.1.10:3888", Some("http://192.168.1.10:3888")),
             ("localhost:3888", Some("tauri://localhost")),
-            ("localhost:3888", Some("http://tauri.localhost")),
             (
                 "localhost:3888",
                 Some("chrome-extension://abcdefghijklmnop"),
@@ -996,8 +1038,12 @@ mod tests {
             ("[::1]:3888", &[][..], StatusCode::OK),
             ("localhost:3888", &[][..], StatusCode::OK),
             ("LOCALHOST:3888", &[][..], StatusCode::OK),
-            // `*.localhost` resolve para loopback por definição (RFC 6761).
-            ("tauri.localhost:3888", &[][..], StatusCode::OK),
+            // `*.localhost` NÃO é loopback para a âncora: o Safari entrega o
+            // nome ao resolvedor do sistema, e num Wi-Fi hostil ele é do
+            // atacante — rebinding com nome bonito. A webview do desktop
+            // (`tauri.localhost`) entra por `decide_leitura`, não por aqui.
+            ("tauri.localhost:3888", &[][..], StatusCode::FORBIDDEN),
+            ("evil.localhost:3888", &[][..], StatusCode::FORBIDDEN),
             // Nome DNS não listado: rebinding.
             ("evil.example:3888", &[][..], StatusCode::FORBIDDEN),
             (
@@ -1230,9 +1276,8 @@ mod tests {
     #[test]
     fn ws_upgrade_aceita_a_webview_do_desktop() {
         // O `ws.js` do Garra Desktop conecta em `ws://localhost:3888/ws/parrot`
-        // de uma webview Tauri. Linux/macOS: `tauri://localhost`; Windows
-        // (WebView2): `http://tauri.localhost`. Nenhuma página web consegue
-        // apresentar essas origens.
+        // de uma webview Tauri. Linux/macOS: `tauri://localhost` — esquema
+        // que nenhuma página web consegue apresentar, aceito em todo SO.
         for origin in ORIGENS_TAURI {
             assert!(
                 ws_ok(&[("host", "localhost:3888"), ("origin", origin)], &[]),
@@ -1244,6 +1289,25 @@ mod tests {
                 &[]
             ));
         }
+        // Windows (WebView2): `http://tauri.localhost` — esquema http, que
+        // uma página no Safari com resolvedor hostil consegue apresentar.
+        // Só entra quando o gateway roda em Windows (mesmo SO da webview).
+        for origin in ORIGENS_TAURI_WEBVIEW2 {
+            assert_eq!(
+                ws_ok(&[("host", "localhost:3888"), ("origin", origin)], &[]),
+                cfg!(target_os = "windows"),
+                "{origin} so pode entrar num gateway Windows"
+            );
+        }
+        // Rebinding via `*.localhost` (Safari): `Origin == Host`, e a âncora
+        // não pode aceitar o sufixo.
+        assert!(!ws_ok(
+            &[
+                ("host", "evil.localhost:3888"),
+                ("origin", "http://evil.localhost:3888")
+            ],
+            &[]
+        ));
         // Esquema de app que não é o do Tauri (extensão de navegador):
         // também não é página web.
         assert!(ws_ok(
@@ -1294,13 +1358,19 @@ mod tests {
     }
 
     #[test]
-    fn origens_validas_descarta_curinga_e_vazio() {
+    fn origens_validas_descarta_curinga_vazio_e_mal_formado() {
+        // Entrada com path/query/userinfo ou sem esquema nunca casaria com um
+        // `Origin` (que não tem path); cai fora com aviso em vez de deixar o
+        // dono achar que declarou a origem.
         let cfg = GatewayConfig {
             allowed_origins: vec![
                 "*".into(),
                 "".into(),
                 "  ".into(),
                 "https://meu.dominio/".into(),
+                "https://meu.dominio/app".into(),
+                "https://meu.dominio?x=1".into(),
+                "meu.dominio:3888".into(),
                 "http://localhost:3888".into(),
             ],
             ..Default::default()

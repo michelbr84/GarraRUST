@@ -44,20 +44,48 @@ const HANDSHAKE: &[(&str, &str)] = &[("upgrade", "websocket"), ("connection", "U
 /// `merge`/`nest` — um `.merge()` novo colocado abaixo do `.layer()` faria
 /// a rota dele nascer desprotegida, e este loop pegaria.
 const MUTANTES: &[(&str, &str)] = &[
+    // provider, modo e settings
+    ("POST", "/api/providers"),
+    ("POST", "/api/providers/test"),
+    ("PATCH", "/api/providers/default"),
     ("PATCH", "/api/settings"),
-    ("POST", "/api/sessions"),
     ("POST", "/api/mode/select"),
-    ("POST", "/api/mcp/marketplace/install"),
-    ("POST", "/api/skills"),
-    ("DELETE", "/api/skins/x"),
+    ("POST", "/api/modes/custom"),
+    ("PATCH", "/api/modes/custom/x"),
+    ("DELETE", "/api/modes/custom/x"),
+    // sessões e memória
+    ("POST", "/api/sessions"),
+    ("POST", "/api/sessions/x/messages"),
+    ("DELETE", "/api/sessions/x"),
     ("DELETE", "/api/memory"),
+    ("DELETE", "/api/memory/x"),
+    // MCP e integrações
+    ("POST", "/api/mcp/marketplace/install"),
+    ("POST", "/api/openclaw/connect"),
+    ("POST", "/api/openclaw/disconnect"),
+    // disco
+    ("POST", "/api/skills"),
+    ("PUT", "/api/skills/x"),
+    ("DELETE", "/api/skills/x"),
+    ("POST", "/api/skins"),
+    ("DELETE", "/api/skins/x"),
     ("POST", "/api/projects"),
+    ("PUT", "/api/projects/x"),
+    ("DELETE", "/api/projects/x"),
+    // custo
+    ("POST", "/api/tts"),
+    ("POST", "/api/stt"),
+    // fora de /api/
     ("POST", "/v1/chat/completions"),
     ("POST", "/v1/messages"),
+    ("POST", "/v1/messages/count_tokens"),
     ("POST", "/chat"),
     ("POST", "/a2a/tasks"),
+    ("POST", "/a2a/tasks/x/cancel"),
+    // bootstrap do admin, fora do require_csrf do sub-router
     ("POST", "/admin/api/setup"),
     ("POST", "/admin/api/login"),
+    ("POST", "/admin/api/recovery/start"),
 ];
 
 /// Um pedido no `build_router` de verdade.
@@ -281,6 +309,56 @@ async fn toda_rota_mutante_nomeada_recebe_o_403_no_router_real() {
             "{metodo} {uri}: corpo {corpo}"
         );
         assert_eq!(corpo, CORPO_403, "{metodo} {uri}");
+
+        // Controle: a rota EXISTE com esse método. A guarda responde 403
+        // antes do roteamento, então sem isto um caminho digitado errado
+        // passaria por "guardado". Caminhos com `/x` são ids inventados e
+        // podem legitimamente dar 404 no handler; nos literais, um handler
+        // ainda pode responder 404 com corpo ("OpenClaw is not configured"),
+        // mas o 404 de rota inexistente do axum vem sem corpo.
+        let resp = pedido(None, &[], metodo, uri, &[("host", "127.0.0.1:3888")]).await;
+        let (status, corpo) = status_corpo(resp).await;
+        assert_ne!(
+            status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{metodo} {uri} não existe com esse método: {corpo}"
+        );
+        if !uri.contains("/x") {
+            assert!(
+                !(status == StatusCode::NOT_FOUND && corpo.is_empty()),
+                "{metodo} {uri} não existe no router"
+            );
+        }
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{metodo} {uri} sem Origin recusado: {corpo}"
+        );
+    }
+}
+
+/// O console web same-origin atravessa a guarda no router real: `Origin`
+/// igual ao `Host` (IP literal), sem chave. É o pedido que o webchat faz.
+#[tokio::test]
+async fn mutacao_same_origin_do_console_atravessa() {
+    for host in ["127.0.0.1:3888", "192.168.1.10:3888", "localhost:3888"] {
+        let origin = format!("http://{host}");
+        let resp = pedido(
+            None,
+            &[],
+            "PATCH",
+            "/api/settings",
+            &[("host", host), ("origin", &origin)],
+        )
+        .await;
+        let (status, corpo) = status_corpo(resp).await;
+        assert!(
+            !matches!(
+                status,
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::SERVICE_UNAVAILABLE
+            ),
+            "console em {host} bloqueado por camada de auth (status {status}, corpo {corpo})"
+        );
     }
 }
 
@@ -315,8 +393,9 @@ async fn handshake_websocket_cross_origin_da_403_em_ws_e_ws_parrot() {
 
 /// Os clientes legítimos dos dois WebSockets não são recusados pela guarda:
 /// o webchat same-origin em `/ws`, e a webview Tauri do Garra Desktop em
-/// `/ws/parrot` (`tauri://localhost` no Linux/macOS, `http://tauri.localhost`
-/// no Windows), mais o cliente sem `Origin`. O que vier depois (400/426 do
+/// `/ws/parrot` (`tauri://localhost`; a variante `http://tauri.localhost` do
+/// WebView2 só entra num gateway Windows, e é testada em `origin_guard.rs`),
+/// mais o cliente sem `Origin`. O que vier depois (400/426 do
 /// `WebSocketUpgrade` sem `Sec-WebSocket-Key`) é do handler; o que NÃO pode
 /// vir é 403.
 #[tokio::test]
@@ -326,8 +405,6 @@ async fn handshake_websocket_legitimo_nao_e_recusado() {
             None,
             Some("http://127.0.0.1:3888"),
             Some("tauri://localhost"),
-            Some("http://tauri.localhost"),
-            Some("https://tauri.localhost"),
         ] {
             let mut headers = vec![("host", "127.0.0.1:3888")];
             if let Some(origin) = origin {

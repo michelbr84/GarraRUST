@@ -61,7 +61,7 @@ pub async fn ws_handler(
     if !crate::origin_guard::ws_upgrade_permitido(
         &crate::origin_guard::Pedido::de(&headers, &uri),
         crate::origin_guard::esquema_efetivo(&state.config.gateway),
-        &crate::origin_guard::origens_validas(&state.config.gateway),
+        &crate::origin_guard::origens_validas_silenciosa(&state.config.gateway),
     ) {
         // Nada do pedido e ecoado no corpo; o log nao leva o valor do header.
         warn!("WebSocket upgrade rejected: cross-origin");
