@@ -61,4 +61,14 @@ python3 -m http.server 8088 --directory build/web
 
 Abra `http://127.0.0.1:8088/#/home` num navegador com viewport de celular. Para a
 home mostrar dados, aponte o runtime para um gateway real ou para um stub que
-responda `/api/health` e `/api/capabilities` com CORS.
+responda `/api/health` e `/api/capabilities` com CORS. Contra um gateway real,
+desde o #1182 o CORS default não anuncia origem nenhuma e o handshake do chat
+checa o `Origin`: declare a origem do build web no `config.yml` do gateway de
+desenvolvimento —
+
+```yaml
+gateway:
+  allowed_origins: ["http://127.0.0.1:8088"]
+```
+
+O APK não passa por isso (Dio não manda `Origin`).

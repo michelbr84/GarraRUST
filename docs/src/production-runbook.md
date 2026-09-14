@@ -51,6 +51,12 @@ EOF
 cloudflared tunnel route dns garraia garraia.seudominio.com
 cloudflared tunnel run garraia
 
+# 5. Declare a origem no config.yml do gateway (#1182): sem isto, o navegador
+#    recebe 403 nos POST/PATCH/DELETE e o chat do console nao conecta
+#    (o tunnel termina TLS e o gateway por baixo fala http).
+#    gateway:
+#      allowed_origins: ["https://garraia.seudominio.com"]
+
 # Para rodar como serviço systemd:
 cloudflared service install
 systemctl start cloudflared
@@ -84,6 +90,14 @@ server {
 certbot --nginx -d garraia.seudominio.com
 ```
 
+```yaml
+# config.yml do gateway (#1182): o proxy termina TLS e repassa Host, mas o
+# gateway fala http — declare a origem que o navegador ve, senao POST/PATCH/
+# DELETE voltam 403 e o WebSocket do chat (/ws) e recusado.
+gateway:
+  allowed_origins: ["https://garraia.seudominio.com"]
+```
+
 ### 2.3 Docker com Traefik (compose)
 
 ```yaml
@@ -93,6 +107,13 @@ labels:
   - "traefik.http.routers.garraia.rule=Host(`garraia.seudominio.com`)"
   - "traefik.http.routers.garraia.entrypoints=websecure"
   - "traefik.http.routers.garraia.tls.certresolver=letsencrypt"
+```
+
+E no `config.yml` montado no container (#1182), a origem que o navegador vê:
+
+```yaml
+gateway:
+  allowed_origins: ["https://garraia.seudominio.com"]
 ```
 
 ---
