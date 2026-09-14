@@ -18,7 +18,7 @@
 
 ## Estrutura de crates
 
-**23 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
+**24 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
 mais o harness `benches/agent-framework-comparison/` (fora do workspace, não é crate).
 O histórico de entrega (plans, PRs, datas, IDs `GAR-xxx`) vive em `plans/`, `docs/adr/`
 e `CHANGELOG.md` — aqui fica só o estado atual e os invariantes que um agente precisa
@@ -142,6 +142,25 @@ crates/
   garraia-desktop/    — Tauri v2 app: bandeja + overlay do papagaio + Chat Bar
                         (Ctrl+Space); MSI/NSIS no Windows e .deb/AppImage no Linux,
                         CLI como sidecar `binaries/garraia`
+  garraia-desktop-core/ — ADR 0021 (epic #1181, M0): núcleo do Control Center
+                        **sem Tauri**, e por isso dentro dos gates obrigatórios
+                        — a casca `garraia-desktop` roda com `--exclude` em
+                        clippy/build/test e tem zero cobertura. Três módulos:
+                        `state` (ligado/desligado como estado puro, sem relógio
+                        nem I/O, no padrão do `spinner.rs`; `Desired` = o que o
+                        usuário pediu, `Power` = o que de fato acontece, então
+                        queda vira `Failed` sem apagar a intenção), `detect`
+                        (agentes GarraIA/Hermes/OpenClaw/Claude Code/AgentDeck
+                        por leitura de `PATH` + config, **nunca executando** o
+                        binário: nome na PATH não prova identidade — sem
+                        corroboração fica `Ambiguous`, e um teste varre o
+                        próprio fonte atrás de `Command::new`/`.spawn()`) e
+                        `supervise` (launch/restart/kill extraídos do
+                        `gateway.rs` da casca, sem `unwrap` em lock, sem
+                        `sleep` por dentro — `RestartPolicy::backoff` devolve o
+                        intervalo e quem tem o relógio espera — e com o filho
+                        morrendo junto com o supervisor via `Drop`). Nenhuma
+                        crate a consome ainda: M1+ é que liga CLI e casca.
   garraia-embeddings/ — Fase 2.1 (ADR 0002; ADR 0018 Proposed). Só superfície pública:
                         traits `EmbeddingProvider` + `VectorStore` (scoped por `Scope` +
                         `Option<Uuid> group_id`), tipos `Scope`/`EmbeddingVector(768)`/
