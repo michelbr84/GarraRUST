@@ -10,11 +10,17 @@
 //! 1. **Sem limite de tentativas.** Cada palpite e uma mensagem comum de um
 //!    usuario nao autorizado; a unica barreira era o rate limit do transporte
 //!    (Telegram, Discord...), que nao e controle nosso. Agora ha dois freios:
-//!    por usuario (`max_failures_per_user` erros -> `lockout`) e global
-//!    (`max_failures_total` erros desde o ultimo `/pair` **queimam** todo
-//!    codigo pendente — o dono gera outro). O global fecha o palpite
-//!    distribuido por muitas contas; o preco e um DoS barato do pareamento,
-//!    que e raro e se resolve com um `/pair` novo.
+//!    por usuario (`max_failures_per_user` erros -> `lockout`, sem nem
+//!    comparar) e global (`max_failures_total` erros desde o ultimo `/pair`
+//!    **queimam** todo codigo pendente — o dono gera outro). Com 20 palpites
+//!    comparados por ciclo num espaco de 10^6, a chance de acerto por `/pair`
+//!    e 2e-5. O global fecha o palpite distribuido por muitas contas; o preco
+//!    e um DoS do pareamento: num canal onde identidade custa (Telegram,
+//!    WhatsApp, Signal) um `/pair` novo resolve enquanto os ofensores estao
+//!    em `lockout`, mas num canal de identidade gratis (IRC sem NickServ,
+//!    alts de Discord) um atacante persistente queima cada codigo novo — e o
+//!    dono precisa **saber** disso, por isso a queima e reportada no proximo
+//!    `/pair` ([`GenerateStatus::previous_burned`]).
 //! 2. **Comparacao nao constant-time.** `==` em `String` sai no primeiro byte
 //!    diferente. O canal atravessa rede e transporte de chat, entao o sinal
 //!    de tempo e fraco — mas o resto do projeto compara credencial em tempo
@@ -72,6 +78,22 @@ pub enum ClaimOutcome {
     Burned,
 }
 
+/// O que [`PairingManager::generate_with_status`] tem a dizer ao dono alem
+/// do codigo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenerateStatus {
+    /// O codigo de 6 digitos.
+    pub code: String,
+    /// Havia um codigo do mesmo canal ainda valido e nao resgatado — ele
+    /// acabou de deixar de valer.
+    pub replaced_pending: bool,
+    /// Desde o ultimo `/pair`, os codigos pendentes foram queimados por
+    /// excesso de tentativas erradas: quantas foram. `Some` quer dizer que
+    /// alguem esta chutando codigos contra o bot — e que o convidado que nao
+    /// conseguiu entrar nao errou nada.
+    pub previous_burned: Option<u32>,
+}
+
 /// Manages pairing codes for device and channel authentication.
 pub struct PairingManager {
     codes: HashMap<String, PairingCode>,
@@ -81,6 +103,9 @@ pub struct PairingManager {
     failures: HashMap<String, Failures>,
     /// Erros de qualquer usuario desde o ultimo `generate()`.
     failed_since_generate: u32,
+    /// Contagem que provocou a ultima queima, ate o proximo `generate()`
+    /// reporta-la ao dono.
+    burned_since_generate: Option<u32>,
 }
 
 struct PairingCode {
@@ -106,6 +131,7 @@ impl PairingManager {
             limits,
             failures: HashMap::new(),
             failed_since_generate: 0,
+            burned_since_generate: None,
         }
     }
 
@@ -114,16 +140,18 @@ impl PairingManager {
     /// Substitui em silencio um codigo pendente do mesmo canal — use
     /// [`Self::generate_with_status`] quando o chamador quiser avisar.
     pub fn generate(&mut self, channel_id: &str) -> String {
-        self.generate_with_status(channel_id).0
+        self.generate_with_status(channel_id).code
     }
 
     /// [`Self::generate`] dizendo tambem se **substituiu um codigo ainda
-    /// valido e nao resgatado** do mesmo canal — o codigo que o dono acabou
-    /// de mandar para alguem deixou de valer, e ele precisa saber.
+    /// valido e nao resgatado** do mesmo canal, e se os codigos pendentes
+    /// foram **queimados** desde o ultimo `/pair` — as duas coisas que o dono
+    /// precisa saber e que a resposta silenciosa do canal nao conta.
     ///
-    /// Um `/pair` novo tambem zera o contador global de erros: e um ciclo
-    /// novo de pareamento.
-    pub fn generate_with_status(&mut self, channel_id: &str) -> (String, bool) {
+    /// O contador global de erros so zera quando **nenhum outro** codigo
+    /// pendente sobrevive: se um codigo de outro canal continua vivo, o
+    /// atacante nao ganha um orcamento novo de palpites contra ele.
+    pub fn generate_with_status(&mut self, channel_id: &str) -> GenerateStatus {
         self.cleanup_expired();
         let code: String = {
             let mut rng = rand::rng();
@@ -132,6 +160,10 @@ impl PairingManager {
                 .collect()
         };
 
+        let outros_pendentes = self
+            .codes
+            .iter()
+            .any(|(id, pc)| id != channel_id && pc.claimed_by.is_none());
         let anterior = self.codes.insert(
             channel_id.to_string(),
             PairingCode {
@@ -140,9 +172,14 @@ impl PairingManager {
                 claimed_by: None,
             },
         );
-        self.failed_since_generate = 0;
-        let substituiu_pendente = anterior.is_some_and(|pc| pc.claimed_by.is_none());
-        (code, substituiu_pendente)
+        if !outros_pendentes {
+            self.failed_since_generate = 0;
+        }
+        GenerateStatus {
+            code,
+            replaced_pending: anterior.is_some_and(|pc| pc.claimed_by.is_none()),
+            previous_burned: self.burned_since_generate.take(),
+        }
     }
 
     /// Attempt to claim a pairing code. Returns the channel ID if valid.
@@ -210,7 +247,9 @@ impl PairingManager {
                 count: 0,
                 last_at: agora,
             });
-        // Um bloqueio que ja venceu recomeca a contagem.
+        // Cinto e suspensorio: `cleanup_expired` ja removeu bloqueios
+        // vencidos, mas se o relogio cruzou o limite entre o `retain` e este
+        // ponto, a contagem recomeca em vez de estender o bloqueio antigo.
         if f.count >= self.limits.max_failures_per_user
             && f.last_at.elapsed() >= self.limits.lockout
         {
@@ -229,6 +268,7 @@ impl PairingManager {
                 .filter(|pc| pc.claimed_by.is_none())
                 .count();
             self.codes.retain(|_, pc| pc.claimed_by.is_some());
+            self.burned_since_generate = Some(self.failed_since_generate);
             // Sem user_id nem codigo no log: so o fato e a contagem.
             warn!(
                 tentativas = self.failed_since_generate,
@@ -331,17 +371,22 @@ mod tests {
 
     #[test]
     fn bloqueio_expira_e_a_contagem_recomeca() {
+        // Lockout de 300 ms e espera de 600 ms: folga para um runner de CI
+        // carregado, mantendo o teste abaixo de um segundo.
         let mut m = PairingManager::with_limits(
             Duration::from_secs(60),
-            limites(2, Duration::from_millis(20), 100),
+            limites(2, Duration::from_millis(300), 100),
         );
         let code = m.generate("telegram");
         let ruim = errado(&code);
         assert_eq!(m.try_claim(&ruim, "u"), ClaimOutcome::Invalid);
         assert_eq!(m.try_claim(&ruim, "u"), ClaimOutcome::Invalid);
         assert_eq!(m.try_claim(&code, "u"), ClaimOutcome::LockedOut);
-        sleep(Duration::from_millis(40));
-        // Prazo vencido: volta a comparar — e acerta.
+        sleep(Duration::from_millis(600));
+        // Prazo vencido: volta a comparar. Um erro agora e Invalid (a
+        // contagem recomecou, nao somou com as anteriores)...
+        assert_eq!(m.try_claim(&ruim, "u"), ClaimOutcome::Invalid);
+        // ...e o acerto entra.
         assert_eq!(
             m.try_claim(&code, "u"),
             ClaimOutcome::Paired("telegram".into())
@@ -382,13 +427,23 @@ mod tests {
         assert_eq!(m.try_claim(&ruim, "u4"), ClaimOutcome::Burned);
         // O codigo certo ja nao vale para ninguem.
         assert_eq!(m.try_claim(&code, "convidado"), ClaimOutcome::Invalid);
-        // Um /pair novo abre um ciclo novo, com a contagem zerada.
-        let (code2, substituiu) = m.generate_with_status("telegram");
-        assert!(!substituiu, "o pendente anterior ja tinha sido queimado");
+        // Um /pair novo abre um ciclo novo — e conta ao dono o que houve.
+        let status = m.generate_with_status("telegram");
+        assert!(
+            !status.replaced_pending,
+            "o pendente anterior ja tinha sido queimado"
+        );
         assert_eq!(
-            m.try_claim(&code2, "convidado"),
+            status.previous_burned,
+            Some(4),
+            "o dono precisa saber que houve queima, e com quantos erros"
+        );
+        assert_eq!(
+            m.try_claim(&status.code, "convidado"),
             ClaimOutcome::Paired("telegram".into())
         );
+        // O aviso e de uma vez so.
+        assert_eq!(m.generate_with_status("telegram").previous_burned, None);
     }
 
     #[test]
@@ -410,18 +465,54 @@ mod tests {
     }
 
     #[test]
+    fn pair_em_outro_canal_nao_da_orcamento_novo_contra_o_codigo_vivo() {
+        // Dois canais com codigo pendente; 3 erros contra o do Telegram.
+        // Um /pair no Discord NAO zera o contador enquanto o do Telegram
+        // segue vivo — senao o atacante ganharia 20 palpites novos a cada
+        // /pair alheio.
+        let mut m = PairingManager::with_limits(
+            Duration::from_secs(60),
+            limites(100, Duration::from_secs(60), 4),
+        );
+        let code = m.generate("telegram");
+        let ruim = errado(&code);
+        for u in ["u1", "u2", "u3"] {
+            assert_eq!(m.try_claim(&ruim, u), ClaimOutcome::Invalid);
+        }
+        let _ = m.generate("discord");
+        assert_eq!(
+            m.try_claim(&ruim, "u4"),
+            ClaimOutcome::Burned,
+            "o contador tem de sobreviver ao /pair de outro canal"
+        );
+        // Quando nao sobra pendente nenhum, o /pair seguinte zera de verdade.
+        let status = m.generate_with_status("telegram");
+        assert_eq!(status.previous_burned, Some(4));
+        for u in ["v1", "v2", "v3"] {
+            assert_eq!(m.try_claim(&errado(&status.code), u), ClaimOutcome::Invalid);
+        }
+        assert_eq!(
+            m.try_claim(&status.code, "convidado"),
+            ClaimOutcome::Paired("telegram".into())
+        );
+    }
+
+    #[test]
     fn generate_avisa_quando_substitui_um_codigo_pendente() {
         let mut m = PairingManager::new(Duration::from_secs(60));
-        let (_, substituiu) = m.generate_with_status("telegram");
-        assert!(!substituiu, "primeiro codigo do canal");
-        let (code, substituiu) = m.generate_with_status("telegram");
-        assert!(substituiu, "o anterior ainda estava pendente");
-        m.claim(&code, "u");
-        let (_, substituiu) = m.generate_with_status("telegram");
-        assert!(!substituiu, "o anterior ja tinha sido resgatado");
+        let primeiro = m.generate_with_status("telegram");
+        assert!(!primeiro.replaced_pending, "primeiro codigo do canal");
+        assert_eq!(primeiro.previous_burned, None);
+        let segundo = m.generate_with_status("telegram");
+        assert!(segundo.replaced_pending, "o anterior ainda estava pendente");
+        m.claim(&segundo.code, "u");
+        let terceiro = m.generate_with_status("telegram");
+        assert!(
+            !terceiro.replaced_pending,
+            "o anterior ja tinha sido resgatado"
+        );
         // Outro canal nao conta.
-        let (_, substituiu) = m.generate_with_status("discord");
-        assert!(!substituiu);
+        assert!(!m.generate_with_status("discord").replaced_pending);
     }
 
     #[test]
