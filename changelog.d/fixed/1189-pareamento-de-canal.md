@@ -12,4 +12,12 @@
   entrega as instancias do `AppState` compartilhadas por `/pair`, pelo
   handler de mensagens e pelo handler de voz. Telegram, Slack, Discord,
   WhatsApp, Signal, Matrix, IRC, LINE, Teams, Google Chat e iMessage estavam
-  todos afetados pelo mesmo defeito.
+  afetados pela duplicacao da allowlist; o `/pair` sem efeito era o do
+  Telegram (o unico que passa pelo `commands.rs`) — no Discord, cujo `/pair`
+  local gerava e resgatava na mesma instancia, o pareamento ja funcionava, e
+  os outros nove canais nunca puderam emitir `/pair`. Mudanca de
+  comportamento a registrar: com um `PairingManager` so por processo, um
+  codigo gerado pelo `/pair` passa a ser resgatavel em **qualquer** canal
+  habilitado (coerente com a allowlist global, que sempre foi um
+  `allowlist.json` so); a protecao contra forca bruta no `claim()` e o aviso
+  de queima ao dono estao no #1191.

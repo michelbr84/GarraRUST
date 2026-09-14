@@ -265,12 +265,26 @@ fn handle_discord_command(
                 }
                 return Ok("Only the bot owner can generate pairing codes.".to_string());
             }
-            let code = pairing.lock().unwrap().generate("discord");
-            Ok(format!(
-                "Pairing code: {code}\n\n\
+            // #1191: os mesmos avisos do /pair do `commands.rs` — codigo
+            // pendente substituido, e codigos queimados por palpites errados.
+            let status = pairing.lock().unwrap().generate_with_status("discord");
+            let mut reply = format!(
+                "Pairing code: {}\n\n\
                  Share this with the person you want to invite. \
-                 They should send this code to the bot within 5 minutes."
-            ))
+                 They should send this code to the bot within 5 minutes.",
+                status.code
+            );
+            if status.replaced_pending {
+                reply.push_str(
+                    "\n\nThis replaces the previous unclaimed code, which no longer works.",
+                );
+            }
+            if let Some(tentativas) = status.previous_burned {
+                reply.push_str(&format!(
+                    "\n\nThe previous code was invalidated after {tentativas} wrong guesses from unauthorized users — someone is probing the bot. If it keeps happening, wait for them to be locked out (15 min) before sharing a new code."
+                ));
+            }
+            Ok(reply)
         }
         "users" => {
             if !is_owner {
