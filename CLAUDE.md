@@ -361,15 +361,15 @@ O projeto utiliza [Superpowers](https://github.com/obra/superpowers) como framew
 
 | Agent | Modelo | Papel |
 | ------- | ------ | ------- |
-| `team-coordinator` | tencent/hy4-preview | Orquestração, delegação e decisão de merge. Nao implementa |
-| `repo-analyst` | deepseek/deepseek-v4-flash-0731 | Diagnostico de issues/PRs, causa raiz, duplicadas. Nao escreve codigo |
-| `implementer` | z-ai/glm-5.3-flash | Implementacao Rust/Flutter em worktree isolada |
-| `test-engineer` | deepseek/deepseek-v4-flash-0731 | fmt/check/clippy/test e teste de regressao |
-| `code-reviewer` | openai/gpt-5.6-luna | Revisao independente e gate MERGE_READY |
-| `security-auditor` | openai/gpt-5.6-luna | auth, JWT, crypto, RLS, SSRF, secrets. Convocado em R4 |
-| `doc-writer` | deepseek/deepseek-v4-flash-0731 | README/SETUP/CHANGELOG, docstrings e higiene do repo |
+| `team-coordinator` | anthropic/claude-fable-5.1 | Orquestração, delegação e decisão de merge. Nao implementa |
+| `repo-analyst` | anthropic/claude-opus-5 | Diagnostico de issues/PRs, causa raiz, duplicadas. Nao escreve codigo |
+| `implementer` | anthropic/claude-opus-5 | Implementacao Rust/Flutter em worktree isolada |
+| `test-engineer` | anthropic/claude-opus-5 | fmt/check/clippy/test e teste de regressao |
+| `code-reviewer` | anthropic/claude-opus-5 | Revisao independente e gate MERGE_READY |
+| `security-auditor` | anthropic/claude-opus-5 | auth, JWT, crypto, RLS, SSRF, secrets. Convocado em R4 |
+| `doc-writer` | anthropic/claude-opus-5 | README/SETUP/CHANGELOG, docstrings e higiene do repo |
 
-Modelos diferentes de proposito para Implementer e Reviewer: quem escreve nao julga.
+Roster em Claude desde 2026-09-14 (decisão do dono): Opus 5 nos papéis operacionais, Fable 5.1 no coordinator. A independência entre quem escreve e quem julga vem do **contexto separado** (agentes distintos, prompts distintos, worktrees isoladas), não mais de modelos distintos — o Reviewer nunca lê o relatório do Implementer, só o diff.
 Selecao por risco (R0-R5) em `skills/assemble-team.md`; varredura autonoma em
 `skills/repo-autopilot.md`. R5 (release, secrets, destrutivo) sempre escala ao humano.
 
