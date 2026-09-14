@@ -94,6 +94,6 @@ Repository Health: NN/100
 
 ## Custo
 
-Mantenha o `team-coordinator` (hy4) fora do trabalho operacional. Volume de tokens vai para DeepSeek (investigar/testar) e GLM (implementar); Luna julga; Hy4 decide. Se uma etapa puder ser feita por um modelo barato, ela deve ser.
+Mantenha o `team-coordinator` (Fable 5.1) fora do trabalho operacional: ele decide, os demais (Opus 5) investigam, implementam, testam, julgam e documentam. Se uma etapa puder ser feita com menos contexto (um agente `Explore`, um grep), ela deve ser.
 
 Usage: /repo-autopilot [--issues #n,#m] [--max-parallel N] [--dry-run]

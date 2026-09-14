@@ -13,15 +13,15 @@ Monte uma equipe coordenada de agentes para uma tarefa no GarraRUST.
 
 | Papel | Agent | Modelo | Função |
 |-------|-------|--------|--------|
-| Coordinator | `team-coordinator` | tencent/hy4-preview | planeja, delega, arbitra, decide |
-| Analyst | `repo-analyst` | deepseek/deepseek-v4-flash-0731 | diagnóstico e plano |
-| Implementer | `implementer` | z-ai/glm-5.3-flash | escreve o código |
-| Tester | `test-engineer` | deepseek/deepseek-v4-flash-0731 | prova que funciona |
-| Reviewer | `code-reviewer` | openai/gpt-5.6-luna | julgamento independente |
-| Security | `security-auditor` | openai/gpt-5.6-luna | superfície sensível |
-| DocWriter | `doc-writer` | deepseek/deepseek-v4-flash-0731 | docs e higiene |
+| Coordinator | `team-coordinator` | anthropic/claude-fable-5.1 | planeja, delega, arbitra, decide |
+| Analyst | `repo-analyst` | anthropic/claude-opus-5 | diagnóstico e plano |
+| Implementer | `implementer` | anthropic/claude-opus-5 | escreve o código |
+| Tester | `test-engineer` | anthropic/claude-opus-5 | prova que funciona |
+| Reviewer | `code-reviewer` | anthropic/claude-opus-5 | julgamento independente |
+| Security | `security-auditor` | anthropic/claude-opus-5 | superfície sensível |
+| DocWriter | `doc-writer` | anthropic/claude-opus-5 | docs e higiene |
 
-O Implementer e o Reviewer usam modelos diferentes de propósito: quem escreve não julga.
+Roster em Claude desde 2026-09-14 (decisão do dono). Quem escreve não julga: a independência entre Implementer e Reviewer vem do contexto separado (agente, prompt e worktree distintos; o Reviewer lê o diff, nunca o relatório do Implementer), não de modelos distintos.
 
 ## Seleção por risco
 
