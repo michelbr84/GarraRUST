@@ -514,6 +514,27 @@ de servir o console só por IP/`localhost`.
 
 ---
 
+## 5.11. Pareamento de canais — `/pair` e `PairingManager` (#1189, #1191)
+
+O `/pair` (`Role::Owner`) gera um código de 6 dígitos (~20 bits) que vale
+5 minutos; um usuário não autorizado que o envie ao bot entra na allowlist
+**em disco** (`Allowlist::add`). Até o #1190 cada canal tinha um
+`PairingManager` próprio e o `claim()` nunca casava com o código do `/pair`
+(que mora em `state.pairing`) — o pareamento não funcionava, e por isso o
+caminho de `claim()` nunca tinha sido exercido em produção. O #1190 uniu as
+instâncias; o #1191 endureceu o `claim()` que passou a ser alcançável.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **S** Spoofing | Conta não autorizada chuta códigos de 6 dígitos em mensagens comuns dentro da janela de 5 min; a única barreira era o rate limit do transporte (Telegram/Discord), que não é nosso. | `ClaimLimits`: 5 erros do mesmo `user_id` → 15 min de `LockedOut` (sem comparar); 20 erros de qualquer usuário desde o último `/pair` → todo código pendente é queimado (`Burned`), o dono gera outro. O usuário vê o mesmo "unauthorized" nos três casos — a resposta não revela se o código existia. | Palpite distribuído por muitas contas ainda consome os 20 erros globais (DoS barato do pareamento, resolvido com um `/pair` novo). Entropia continua 6 dígitos — aumentar é mudança de UX, decisão do dono. |
+| **I** Information disclosure | Comparação `==` sai no primeiro byte diferente (side channel de tempo). | `subtle::ConstantTimeEq`, percorrendo todos os códigos pendentes sem sair no primeiro que casa. Sinal fraco pela rede + transporte de chat, mas consistente com `garraia-auth`. | — |
+| **E** Elevation of privilege | `claim()` ignora o `channel_id`: código gerado num canal é resgatável em qualquer canal habilitado. | Coerente com o desenho atual — a allowlist é global por instalação e o `/pair` gera com a chave literal `"telegram"` em todo canal. | **Decisão de produto** (#1191 item 3): escopar por canal exige que o `/pair` saiba de onde veio. Não é hardening. |
+| **R** Repudiation / UX | Um segundo `/pair` sobrescrevia em silêncio o código pendente que o dono acabou de mandar para alguém. | `generate_with_status` devolve se substituiu um código pendente e o `/pair` avisa. | — |
+
+O log de `Burned` leva só contagens — nunca `user_id` nem código.
+
+---
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.

@@ -1,11 +1,86 @@
+//! Codigos de pareamento dos canais (`/pair` -> "manda o codigo pro bot").
+//!
+//! O codigo tem 6 digitos (~20 bits) e vale 5 minutos; quem acerta entra na
+//! allowlist **em disco** (`Allowlist::add`), entao um chute certo e acesso
+//! persistente. Ate o #1190 o `claim()` nunca era exercido em producao (cada
+//! canal tinha um `PairingManager` proprio, e o codigo do `/pair` morava em
+//! outro) — quando a fiacao foi consertada, tres fragilidades pre-existentes
+//! passaram a ser alcancaveis (#1191):
+//!
+//! 1. **Sem limite de tentativas.** Cada palpite e uma mensagem comum de um
+//!    usuario nao autorizado; a unica barreira era o rate limit do transporte
+//!    (Telegram, Discord...), que nao e controle nosso. Agora ha dois freios:
+//!    por usuario (`max_failures_per_user` erros -> `lockout`) e global
+//!    (`max_failures_total` erros desde o ultimo `/pair` **queimam** todo
+//!    codigo pendente — o dono gera outro). O global fecha o palpite
+//!    distribuido por muitas contas; o preco e um DoS barato do pareamento,
+//!    que e raro e se resolve com um `/pair` novo.
+//! 2. **Comparacao nao constant-time.** `==` em `String` sai no primeiro byte
+//!    diferente. O canal atravessa rede e transporte de chat, entao o sinal
+//!    de tempo e fraco — mas o resto do projeto compara credencial em tempo
+//!    constante (`garraia-auth`), e a consistencia custa uma linha:
+//!    `subtle::ConstantTimeEq`, sem sair cedo no primeiro codigo que casa.
+//! 3. **`generate()` descartava o codigo pendente anterior em silencio.**
+//!    Um segundo `/pair` invalidava o codigo que o dono acabou de mandar para
+//!    outra pessoa. [`PairingManager::generate_with_status`] devolve se
+//!    substituiu um codigo ainda nao resgatado, e o `/pair` avisa.
+//!
+//! O que **nao** muda aqui, de proposito: `claim()` continua ignorando o
+//! `channel_id` de origem (a allowlist e global, uma por instalacao, e o
+//! `/pair` gera com a chave literal `"telegram"` em qualquer canal). Escopar o
+//! pareamento por canal e decisao de produto, nao de hardening — ver #1191.
+
 use rand::Rng;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
+use tracing::warn;
+
+/// Freios do `claim()`. Os defaults sao os de producao (`AppState`).
+#[derive(Clone, Copy, Debug)]
+pub struct ClaimLimits {
+    /// Erros seguidos de um mesmo `user_id` antes de ele entrar em `lockout`.
+    pub max_failures_per_user: u32,
+    /// Quanto tempo o `user_id` fica sem poder tentar depois de estourar.
+    pub lockout: Duration,
+    /// Erros (de qualquer usuario) desde o ultimo `generate()` que queimam
+    /// todo codigo pendente.
+    pub max_failures_total: u32,
+}
+
+impl Default for ClaimLimits {
+    fn default() -> Self {
+        Self {
+            max_failures_per_user: 5,
+            lockout: Duration::from_secs(15 * 60),
+            max_failures_total: 20,
+        }
+    }
+}
+
+/// O que aconteceu com uma tentativa de resgate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// Codigo valido e ainda nao usado: devolve o `channel_id` que o gerou.
+    Paired(String),
+    /// Codigo errado, ja usado ou expirado.
+    Invalid,
+    /// O usuario estourou `max_failures_per_user`; nada foi comparado.
+    LockedOut,
+    /// Esta tentativa errada estourou `max_failures_total`: todo codigo
+    /// pendente foi invalidado. O dono precisa gerar outro.
+    Burned,
+}
 
 /// Manages pairing codes for device and channel authentication.
 pub struct PairingManager {
     codes: HashMap<String, PairingCode>,
     code_ttl: Duration,
+    limits: ClaimLimits,
+    /// Erros por `user_id`, com o instante do ultimo.
+    failures: HashMap<String, Failures>,
+    /// Erros de qualquer usuario desde o ultimo `generate()`.
+    failed_since_generate: u32,
 }
 
 struct PairingCode {
@@ -14,16 +89,42 @@ struct PairingCode {
     claimed_by: Option<String>,
 }
 
+struct Failures {
+    count: u32,
+    last_at: Instant,
+}
+
 impl PairingManager {
     pub fn new(code_ttl: Duration) -> Self {
+        Self::with_limits(code_ttl, ClaimLimits::default())
+    }
+
+    pub fn with_limits(code_ttl: Duration, limits: ClaimLimits) -> Self {
         Self {
             codes: HashMap::new(),
             code_ttl,
+            limits,
+            failures: HashMap::new(),
+            failed_since_generate: 0,
         }
     }
 
     /// Generate a new 6-digit pairing code for a channel.
+    ///
+    /// Substitui em silencio um codigo pendente do mesmo canal — use
+    /// [`Self::generate_with_status`] quando o chamador quiser avisar.
     pub fn generate(&mut self, channel_id: &str) -> String {
+        self.generate_with_status(channel_id).0
+    }
+
+    /// [`Self::generate`] dizendo tambem se **substituiu um codigo ainda
+    /// valido e nao resgatado** do mesmo canal — o codigo que o dono acabou
+    /// de mandar para alguem deixou de valer, e ele precisa saber.
+    ///
+    /// Um `/pair` novo tambem zera o contador global de erros: e um ciclo
+    /// novo de pareamento.
+    pub fn generate_with_status(&mut self, channel_id: &str) -> (String, bool) {
+        self.cleanup_expired();
         let code: String = {
             let mut rng = rand::rng();
             (0..6)
@@ -31,7 +132,7 @@ impl PairingManager {
                 .collect()
         };
 
-        self.codes.insert(
+        let anterior = self.codes.insert(
             channel_id.to_string(),
             PairingCode {
                 code: code.clone(),
@@ -39,38 +140,138 @@ impl PairingManager {
                 claimed_by: None,
             },
         );
-
-        code
+        self.failed_since_generate = 0;
+        let substituiu_pendente = anterior.is_some_and(|pc| pc.claimed_by.is_none());
+        (code, substituiu_pendente)
     }
 
     /// Attempt to claim a pairing code. Returns the channel ID if valid.
+    ///
+    /// E [`Self::try_claim`] achatado em `Option`: os 11 bootstraps de canal
+    /// so precisam saber se entrou. `LockedOut`/`Burned` viram `None` — o
+    /// usuario ve o mesmo "unauthorized" de sempre, de proposito: a resposta
+    /// nao diz se o codigo existia.
     pub fn claim(&mut self, code: &str, user_id: &str) -> Option<String> {
+        match self.try_claim(code, user_id) {
+            ClaimOutcome::Paired(channel) => Some(channel),
+            ClaimOutcome::Invalid | ClaimOutcome::LockedOut | ClaimOutcome::Burned => None,
+        }
+    }
+
+    /// Tenta resgatar `code` para `user_id`, com os freios de [`ClaimLimits`].
+    pub fn try_claim(&mut self, code: &str, user_id: &str) -> ClaimOutcome {
         self.cleanup_expired();
 
-        let entry = self
-            .codes
-            .iter_mut()
-            .find(|(_, pc)| pc.code == code && pc.claimed_by.is_none());
-
-        if let Some((channel_id, pairing_code)) = entry {
-            pairing_code.claimed_by = Some(user_id.to_string());
-            Some(channel_id.clone())
-        } else {
-            None
+        if self.esta_bloqueado(user_id) {
+            return ClaimOutcome::LockedOut;
         }
+
+        // Comparacao em tempo constante e sem sair cedo: percorre todos os
+        // codigos pendentes acumulando o match, em vez de parar no primeiro.
+        let mut alvo: Option<String> = None;
+        for (channel_id, pc) in &self.codes {
+            let casa: bool = pc.claimed_by.is_none()
+                && pc.code.len() == code.len()
+                && pc.code.as_bytes().ct_eq(code.as_bytes()).into();
+            if casa && alvo.is_none() {
+                alvo = Some(channel_id.clone());
+            }
+        }
+
+        match alvo {
+            Some(channel_id) => {
+                if let Some(pc) = self.codes.get_mut(&channel_id) {
+                    pc.claimed_by = Some(user_id.to_string());
+                }
+                self.failures.remove(user_id);
+                ClaimOutcome::Paired(channel_id)
+            }
+            None => self.registra_falha(user_id),
+        }
+    }
+
+    /// `true` enquanto o usuario estiver dentro do `lockout` depois de
+    /// estourar `max_failures_per_user`. Nao renova o prazo a cada tentativa
+    /// bloqueada — senao um atacante persistente nunca sairia e um usuario
+    /// legitimo que errou tambem nao.
+    fn esta_bloqueado(&self, user_id: &str) -> bool {
+        self.failures.get(user_id).is_some_and(|f| {
+            f.count >= self.limits.max_failures_per_user
+                && f.last_at.elapsed() < self.limits.lockout
+        })
+    }
+
+    fn registra_falha(&mut self, user_id: &str) -> ClaimOutcome {
+        let agora = Instant::now();
+        let f = self
+            .failures
+            .entry(user_id.to_string())
+            .or_insert(Failures {
+                count: 0,
+                last_at: agora,
+            });
+        // Um bloqueio que ja venceu recomeca a contagem.
+        if f.count >= self.limits.max_failures_per_user
+            && f.last_at.elapsed() >= self.limits.lockout
+        {
+            f.count = 0;
+        }
+        f.count += 1;
+        f.last_at = agora;
+
+        self.failed_since_generate = self.failed_since_generate.saturating_add(1);
+        if self.failed_since_generate >= self.limits.max_failures_total
+            && self.codes.values().any(|pc| pc.claimed_by.is_none())
+        {
+            let pendentes = self
+                .codes
+                .values()
+                .filter(|pc| pc.claimed_by.is_none())
+                .count();
+            self.codes.retain(|_, pc| pc.claimed_by.is_some());
+            // Sem user_id nem codigo no log: so o fato e a contagem.
+            warn!(
+                tentativas = self.failed_since_generate,
+                pendentes,
+                "pairing: codigos pendentes queimados por excesso de tentativas erradas; gere outro com /pair"
+            );
+            return ClaimOutcome::Burned;
+        }
+        ClaimOutcome::Invalid
     }
 
     fn cleanup_expired(&mut self) {
         self.codes
             .retain(|_, pc| pc.created_at.elapsed() < self.code_ttl);
+        // Contadores velhos nao interessam: um erro de ontem nao pode somar
+        // com um de hoje para bloquear alguem.
+        let lockout = self.limits.lockout;
+        self.failures.retain(|_, f| f.last_at.elapsed() < lockout);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PairingManager;
+    use super::{ClaimLimits, ClaimOutcome, PairingManager};
     use std::thread::sleep;
     use std::time::Duration;
+
+    fn limites(por_usuario: u32, lockout: Duration, total: u32) -> ClaimLimits {
+        ClaimLimits {
+            max_failures_per_user: por_usuario,
+            lockout,
+            max_failures_total: total,
+        }
+    }
+
+    /// Um codigo errado com 6 digitos, garantidamente diferente de `code`.
+    fn errado(code: &str) -> String {
+        let primeiro = code.as_bytes()[0];
+        let trocado = if primeiro == b'0' { b'1' } else { b'0' };
+        let mut s = String::from(trocado as char);
+        s.push_str(&code[1..]);
+        s
+    }
 
     #[test]
     fn generate_returns_six_digit_code() {
@@ -100,5 +301,139 @@ mod tests {
         sleep(Duration::from_millis(15));
         let claim = manager.claim(&code, "user-1");
         assert!(claim.is_none());
+    }
+
+    // ── #1191 ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn usuario_e_bloqueado_depois_de_errar_demais_mesmo_com_o_codigo_certo() {
+        let mut m = PairingManager::with_limits(
+            Duration::from_secs(60),
+            limites(3, Duration::from_secs(60), 100),
+        );
+        let code = m.generate("telegram");
+        let ruim = errado(&code);
+        for _ in 0..3 {
+            assert_eq!(m.try_claim(&ruim, "atacante"), ClaimOutcome::Invalid);
+        }
+        // A quarta tentativa nem compara: bloqueado, ainda que acerte.
+        assert_eq!(m.try_claim(&code, "atacante"), ClaimOutcome::LockedOut);
+        assert!(
+            m.claim(&code, "atacante").is_none(),
+            "claim() achata em None"
+        );
+        // O bloqueio e por usuario: outra pessoa com o codigo certo entra.
+        assert_eq!(
+            m.try_claim(&code, "convidado"),
+            ClaimOutcome::Paired("telegram".into())
+        );
+    }
+
+    #[test]
+    fn bloqueio_expira_e_a_contagem_recomeca() {
+        let mut m = PairingManager::with_limits(
+            Duration::from_secs(60),
+            limites(2, Duration::from_millis(20), 100),
+        );
+        let code = m.generate("telegram");
+        let ruim = errado(&code);
+        assert_eq!(m.try_claim(&ruim, "u"), ClaimOutcome::Invalid);
+        assert_eq!(m.try_claim(&ruim, "u"), ClaimOutcome::Invalid);
+        assert_eq!(m.try_claim(&code, "u"), ClaimOutcome::LockedOut);
+        sleep(Duration::from_millis(40));
+        // Prazo vencido: volta a comparar — e acerta.
+        assert_eq!(
+            m.try_claim(&code, "u"),
+            ClaimOutcome::Paired("telegram".into())
+        );
+    }
+
+    #[test]
+    fn acerto_zera_as_falhas_do_usuario() {
+        let mut m = PairingManager::with_limits(
+            Duration::from_secs(60),
+            limites(3, Duration::from_secs(60), 100),
+        );
+        let code = m.generate("a");
+        let ruim = errado(&code);
+        m.try_claim(&ruim, "u");
+        m.try_claim(&ruim, "u");
+        assert_eq!(m.try_claim(&code, "u"), ClaimOutcome::Paired("a".into()));
+        // Novo ciclo: dois erros nao bloqueiam, porque os anteriores zeraram.
+        let code2 = m.generate("b");
+        let ruim2 = errado(&code2);
+        m.try_claim(&ruim2, "u");
+        m.try_claim(&ruim2, "u");
+        assert_eq!(m.try_claim(&code2, "u"), ClaimOutcome::Paired("b".into()));
+    }
+
+    #[test]
+    fn excesso_de_erros_de_qualquer_usuario_queima_os_codigos_pendentes() {
+        // O palpite distribuido: cada conta erra pouco, mas somam.
+        let mut m = PairingManager::with_limits(
+            Duration::from_secs(60),
+            limites(100, Duration::from_secs(60), 4),
+        );
+        let code = m.generate("telegram");
+        let ruim = errado(&code);
+        assert_eq!(m.try_claim(&ruim, "u1"), ClaimOutcome::Invalid);
+        assert_eq!(m.try_claim(&ruim, "u2"), ClaimOutcome::Invalid);
+        assert_eq!(m.try_claim(&ruim, "u3"), ClaimOutcome::Invalid);
+        assert_eq!(m.try_claim(&ruim, "u4"), ClaimOutcome::Burned);
+        // O codigo certo ja nao vale para ninguem.
+        assert_eq!(m.try_claim(&code, "convidado"), ClaimOutcome::Invalid);
+        // Um /pair novo abre um ciclo novo, com a contagem zerada.
+        let (code2, substituiu) = m.generate_with_status("telegram");
+        assert!(!substituiu, "o pendente anterior ja tinha sido queimado");
+        assert_eq!(
+            m.try_claim(&code2, "convidado"),
+            ClaimOutcome::Paired("telegram".into())
+        );
+    }
+
+    #[test]
+    fn codigos_ja_resgatados_sobrevivem_a_queima() {
+        let mut m = PairingManager::with_limits(
+            Duration::from_secs(60),
+            limites(100, Duration::from_secs(60), 1),
+        );
+        let code = m.generate("telegram");
+        assert_eq!(
+            m.try_claim(&code, "u"),
+            ClaimOutcome::Paired("telegram".into())
+        );
+        assert_eq!(
+            m.try_claim(&errado(&code), "x"),
+            ClaimOutcome::Invalid,
+            "nada pendente para queimar"
+        );
+    }
+
+    #[test]
+    fn generate_avisa_quando_substitui_um_codigo_pendente() {
+        let mut m = PairingManager::new(Duration::from_secs(60));
+        let (_, substituiu) = m.generate_with_status("telegram");
+        assert!(!substituiu, "primeiro codigo do canal");
+        let (code, substituiu) = m.generate_with_status("telegram");
+        assert!(substituiu, "o anterior ainda estava pendente");
+        m.claim(&code, "u");
+        let (_, substituiu) = m.generate_with_status("telegram");
+        assert!(!substituiu, "o anterior ja tinha sido resgatado");
+        // Outro canal nao conta.
+        let (_, substituiu) = m.generate_with_status("discord");
+        assert!(!substituiu);
+    }
+
+    #[test]
+    fn comprimento_diferente_nunca_casa() {
+        let mut m = PairingManager::new(Duration::from_secs(60));
+        let code = m.generate("telegram");
+        assert_eq!(m.try_claim(&code[..5], "u"), ClaimOutcome::Invalid);
+        assert_eq!(m.try_claim(&format!("{code}0"), "u"), ClaimOutcome::Invalid);
+        assert_eq!(m.try_claim("", "u"), ClaimOutcome::Invalid);
+        assert_eq!(
+            m.try_claim(&code, "u"),
+            ClaimOutcome::Paired("telegram".into())
+        );
     }
 }

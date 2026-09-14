@@ -193,8 +193,19 @@ pub fn register_commands(registry: &mut CommandRegistry) {
         true,
         |ctx: &CommandContext| -> CommandResult {
             let state = ctx.state.as_ref().unwrap().downcast_ref::<AppState>().unwrap();
-            let code = state.pairing.lock().unwrap().generate("telegram");
-            Ok(format!("🔗 Pairing code: {code}\n\nShare this with the person you want to invite. They should send this code to the bot within 5 minutes."))
+            // #1191: um segundo /pair substitui o codigo pendente do anterior
+            // — o dono precisa saber que o que ele acabou de mandar para
+            // alguem deixou de valer.
+            let (code, substituiu) = state
+                .pairing
+                .lock()
+                .unwrap()
+                .generate_with_status("telegram");
+            let mut reply = format!("🔗 Pairing code: {code}\n\nShare this with the person you want to invite. They should send this code to the bot within 5 minutes.");
+            if substituiu {
+                reply.push_str("\n\n⚠️ This replaces the previous unclaimed code, which no longer works.");
+            }
+            Ok(reply)
         }
     )));
 

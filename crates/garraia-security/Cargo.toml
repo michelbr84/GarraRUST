@@ -16,3 +16,6 @@ ring = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
+# #1191: comparacao constant-time do codigo de pareamento (mesma versao que
+# garraia-auth e garraia-gateway).
+subtle = "2.6"
