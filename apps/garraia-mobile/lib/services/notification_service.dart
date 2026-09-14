@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import 'saved_localizations.dart';
+
 part 'notification_service.g.dart';
 
 /// Firebase messaging setup is a stub — actual Firebase config requires
@@ -49,40 +51,52 @@ class NotificationService {
     await _createChannels();
   }
 
+  /// Re-creates the Android channels so the names and descriptions the
+  /// system settings show follow a language change (#1178): Android updates
+  /// an existing channel id in place. `GarraApp` calls it whenever the
+  /// Settings > Language choice changes; a no-op before [initialize].
+  Future<void> refreshChannels() async {
+    if (!_initialized) return;
+    await _createChannels();
+  }
+
+  /// Channel names live in the ARB files like any other copy, resolved from
+  /// the saved language because this runs before `runApp` (no context).
   Future<void> _createChannels() async {
     final android = _localNotifications
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
         >();
+    if (android == null) return;
 
-    if (android != null) {
-      await android.createNotificationChannel(
-        const AndroidNotificationChannel(
-          'chat_messages',
-          'Mensagens do Chat',
-          description: 'Notificacoes de novas mensagens do chat',
-          importance: Importance.high,
-        ),
-      );
+    final l10n = await savedLocalizations();
 
-      await android.createNotificationChannel(
-        const AndroidNotificationChannel(
-          'sync_status',
-          'Status de Sincronizacao',
-          description: 'Notificacoes de sincronizacao entre dispositivos',
-          importance: Importance.low,
-        ),
-      );
+    await android.createNotificationChannel(
+      AndroidNotificationChannel(
+        'chat_messages',
+        l10n.notificationsChannelChatName,
+        description: l10n.notificationsChannelChatDescription,
+        importance: Importance.high,
+      ),
+    );
 
-      await android.createNotificationChannel(
-        const AndroidNotificationChannel(
-          'system',
-          'Sistema',
-          description: 'Notificacoes do sistema',
-          importance: Importance.defaultImportance,
-        ),
-      );
-    }
+    await android.createNotificationChannel(
+      AndroidNotificationChannel(
+        'sync_status',
+        l10n.notificationsChannelSyncName,
+        description: l10n.notificationsChannelSyncDescription,
+        importance: Importance.low,
+      ),
+    );
+
+    await android.createNotificationChannel(
+      AndroidNotificationChannel(
+        'system',
+        l10n.notificationsChannelSystemName,
+        description: l10n.notificationsChannelSystemDescription,
+        importance: Importance.defaultImportance,
+      ),
+    );
   }
 
   void _onNotificationResponse(NotificationResponse response) {
@@ -99,19 +113,22 @@ class NotificationService {
     required String message,
     int notificationId = 0,
   }) async {
+    // Same name as the channel created in [_createChannels]: the plugin
+    // creates the channel from these details when it does not exist yet.
+    final l10n = await savedLocalizations();
     await _localNotifications.show(
       notificationId,
       senderName,
       message,
-      const NotificationDetails(
+      NotificationDetails(
         android: AndroidNotificationDetails(
           'chat_messages',
-          'Mensagens do Chat',
+          l10n.notificationsChannelChatName,
           importance: Importance.high,
           priority: Priority.high,
           showWhen: true,
         ),
-        iOS: DarwinNotificationDetails(
+        iOS: const DarwinNotificationDetails(
           presentAlert: true,
           presentBadge: true,
           presentSound: true,
@@ -126,14 +143,15 @@ class NotificationService {
     required String title,
     required String body,
   }) async {
+    final l10n = await savedLocalizations();
     await _localNotifications.show(
       9999, // Fixed ID for sync notifications (replaces previous)
       title,
       body,
-      const NotificationDetails(
+      NotificationDetails(
         android: AndroidNotificationDetails(
           'sync_status',
-          'Status de Sincronizacao',
+          l10n.notificationsChannelSyncName,
           importance: Importance.low,
           priority: Priority.low,
           ongoing: false,

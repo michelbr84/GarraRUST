@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../l10n/l10n.dart';
 import '../runtime/models.dart';
 import '../runtime/runtime_providers.dart';
 import '../theme/garra_theme.dart';
@@ -30,13 +31,14 @@ class ActivityScreen extends ConsumerWidget {
     final sessions = ref.watch(gatewaySessionsProvider);
     final logs = ref.watch(gatewayLogsProvider);
     final current = ref.watch(currentSessionProvider).value;
+    final l10n = context.l10n;
 
     return GarraPage(
-      title: 'Activity',
+      title: l10n.activityTitle,
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh_rounded),
-          tooltip: 'Refresh',
+          tooltip: l10n.commonRefresh,
           onPressed: () {
             ref.invalidate(gatewaySessionsProvider);
             ref.invalidate(gatewayLogsProvider);
@@ -47,7 +49,7 @@ class ActivityScreen extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 24),
         children: [
-          const SectionHeader('Sessions'),
+          SectionHeader(l10n.activitySectionSessions),
           sessions.when(
             loading: () => const Padding(
               padding: EdgeInsets.all(24),
@@ -58,9 +60,9 @@ class ActivityScreen extends ConsumerWidget {
               onRetry: () => ref.invalidate(gatewaySessionsProvider),
             ),
             data: (list) => list.isEmpty
-                ? const EmptyState(
+                ? EmptyState(
                     icon: Icons.forum_outlined,
-                    text: 'No sessions on the runtime. Start a chat.',
+                    text: l10n.activityNoSessions,
                   )
                 : Column(
                     children: [
@@ -71,11 +73,11 @@ class ActivityScreen extends ConsumerWidget {
                               ? GarraColors.violetLight
                               : GarraColors.textMuted,
                           title: s.sessionId == current
-                              ? 'Current session'
+                              ? l10n.activityCurrentSession
                               : _short(s.sessionId),
                           subtitle:
-                              '${s.historyLength} message${s.historyLength == 1 ? '' : 's'}'
-                              '${s.channelId != null ? ' · ${s.channelId}' : ''}',
+                              l10n.activityMessageCount(s.historyLength) +
+                              (s.channelId != null ? ' · ${s.channelId}' : ''),
                           trailing: const Icon(
                             Icons.chevron_right_rounded,
                             color: GarraColors.textMuted,
@@ -90,7 +92,7 @@ class ActivityScreen extends ConsumerWidget {
                     ],
                   ),
           ),
-          const SectionHeader('Runtime log'),
+          SectionHeader(l10n.activitySectionRuntimeLog),
           logs.when(
             loading: () => const SizedBox.shrink(),
             error: (e, _) => Padding(
@@ -102,7 +104,7 @@ class ActivityScreen extends ConsumerWidget {
             ),
             data: (lines) {
               final text = lines.isEmpty
-                  ? '(empty)'
+                  ? l10n.activityLogEmpty
                   : lines.reversed.take(80).toList().reversed.join('\n');
               return Container(
                 margin: const EdgeInsets.symmetric(horizontal: 16),
@@ -132,8 +134,8 @@ class ActivityScreen extends ConsumerWidget {
                       child: CopyIconButton(
                         key: const ValueKey('copy-log'),
                         text: text,
-                        tooltip: 'Copiar log',
-                        toast: 'Log copiado',
+                        tooltip: l10n.activityCopyLogTooltip,
+                        toast: l10n.activityCopyLogToast,
                         color: GarraColors.textMuted,
                         size: 16,
                       ),

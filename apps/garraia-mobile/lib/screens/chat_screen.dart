@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../l10n/l10n.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../providers/streaming_reply_provider.dart';
@@ -119,16 +120,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           await ref.read(offlineQueueProvider).enqueue(text);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Mensagem salva para envio quando online'),
-              ),
+              SnackBar(content: Text(context.l10n.chatMessageQueuedOffline)),
             );
           }
         } else {
           if (mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('Erro: $e')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  context.l10n.commonErrorWithDetail(
+                    describeError(context.l10n, e),
+                  ),
+                ),
+              ),
+            );
           }
         }
       }
@@ -150,12 +155,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   Future<String> _handleAudioRecorded(String audioPath) async {
+    // Resolved before the await: the widget may be gone by the time the
+    // transcription fails, and `context` would be unusable then.
+    final l10n = context.l10n;
     try {
       final conn = ref.read(garraConnectionProvider);
-      if (conn == null) return 'No runtime configured';
+      if (conn == null) return l10n.chatVoiceNoRuntimeConfigured;
       return await conn.transcribe(audioPath);
     } catch (_) {
-      return 'Erro ao transcrever audio';
+      return l10n.chatVoiceTranscribeError;
     }
   }
 
@@ -172,6 +180,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
     final isCloud =
         ref.watch(runtimeConfigStateProvider).value?.mode == RuntimeMode.cloud;
+    final l10n = context.l10n;
 
     return Scaffold(
       appBar: AppBar(
@@ -180,20 +189,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           children: [
             MascotWidget(size: 32, state: mascotState),
             const SizedBox(width: 10),
-            const Text('Garra'),
+            Text(l10n.commonBrand),
           ],
         ),
         centerTitle: true,
         actions: [
           IconButton(
             icon: const Icon(Icons.devices_rounded),
-            tooltip: 'Parear dispositivos',
+            tooltip: l10n.chatPairDevicesTooltip,
             onPressed: () => context.push('/pair'),
           ),
           IconButton(
             // Plan 0029 / GAR-358 — dedicated Settings screen entry point.
             icon: const Icon(Icons.settings_rounded),
-            tooltip: 'Configurações',
+            tooltip: l10n.settingsTitle,
             onPressed: () => context.push('/settings'),
           ),
           PopupMenuButton<String>(
@@ -208,24 +217,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
             },
             itemBuilder: (_) => [
               if (!isCloud)
-                const PopupMenuItem(
+                PopupMenuItem(
                   value: 'new',
                   child: Row(
                     children: [
-                      Icon(Icons.add_comment_outlined),
-                      SizedBox(width: 8),
-                      Text('New session'),
+                      const Icon(Icons.add_comment_outlined),
+                      const SizedBox(width: 8),
+                      Text(l10n.chatNewSession),
                     ],
                   ),
                 ),
               if (isCloud)
-                const PopupMenuItem(
+                PopupMenuItem(
                   value: 'logout',
                   child: Row(
                     children: [
-                      Icon(Icons.logout),
-                      SizedBox(width: 8),
-                      Text('Sair'),
+                      const Icon(Icons.logout),
+                      const SizedBox(width: 8),
+                      Text(l10n.commonLogout),
                     ],
                   ),
                 ),
@@ -246,7 +255,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Text(
-                    'Could not load the conversation: $e',
+                    l10n.chatLoadConversationError(describeError(l10n, e)),
                     textAlign: TextAlign.center,
                   ),
                 ),
@@ -271,8 +280,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           // the old typing dots when the reply comes over
                           // POST (cloud, or the fallback).
                           itemCount:
-                              msgs.length +
-                              (streaming || isThinking ? 1 : 0),
+                              msgs.length + (streaming || isThinking ? 1 : 0),
                           itemBuilder: (_, i) {
                             if (i == msgs.length) {
                               return streaming
@@ -339,6 +347,7 @@ class _InputBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -364,7 +373,9 @@ class _InputBar extends StatelessWidget {
                     size: 22,
                   ),
                   onPressed: onToggleVoice,
-                  tooltip: showVoiceInput ? 'Teclado' : 'Voz',
+                  tooltip: showVoiceInput
+                      ? l10n.chatKeyboardTooltip
+                      : l10n.chatVoiceTooltip,
                 ),
                 Expanded(
                   child: TextField(
@@ -372,9 +383,7 @@ class _InputBar extends StatelessWidget {
                     maxLines: 4,
                     minLines: 1,
                     textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      hintText: 'Digite uma mensagem...',
-                    ),
+                    decoration: InputDecoration(hintText: l10n.chatInputHint),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -453,18 +462,21 @@ class _EmptyChat extends StatelessWidget {
   final void Function(String) onPrompt;
   const _EmptyChat({required this.onPrompt});
 
-  static const _suggestions = [
-    'Quem e voce, Garra?',
-    'Me conta uma curiosidade insana',
-    'Me ajuda a organizar meu dia',
-    'Qual e seu superpoder?',
-    'Me conta uma piada',
-    'O que voce consegue fazer?',
+  /// The chip label doubles as the prompt sent to the model, so the
+  /// suggestions follow the UI language and are built per `build`.
+  static List<String> _suggestions(AppLocalizations l10n) => [
+    l10n.chatSuggestionWhoAreYou,
+    l10n.chatSuggestionFunFact,
+    l10n.chatSuggestionOrganizeDay,
+    l10n.chatSuggestionSuperpower,
+    l10n.chatSuggestionJoke,
+    l10n.chatSuggestionWhatCanYouDo,
   ];
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l10n = context.l10n;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
@@ -473,7 +485,7 @@ class _EmptyChat extends StatelessWidget {
           const MascotWidget(size: 80),
           const SizedBox(height: 16),
           Text(
-            'Oi! Eu sou o Garra.',
+            l10n.chatEmptyTitle,
             textAlign: TextAlign.center,
             style: Theme.of(
               context,
@@ -481,7 +493,7 @@ class _EmptyChat extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Seu assistente pessoal de IA.\nMe pergunte qualquer coisa!',
+            l10n.chatEmptySubtitle,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: cs.onSurface.withValues(alpha: 0.6),
@@ -492,7 +504,7 @@ class _EmptyChat extends StatelessWidget {
             alignment: WrapAlignment.center,
             spacing: 8,
             runSpacing: 8,
-            children: _suggestions
+            children: _suggestions(l10n)
                 .map(
                   (s) =>
                       ActionChip(label: Text(s), onPressed: () => onPrompt(s)),

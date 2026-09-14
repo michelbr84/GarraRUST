@@ -61,8 +61,14 @@ dependencies:
   # WebSocket for sync
   web_socket_channel: ^3.0.1
 
-  # Date formatting
-  intl: ^0.19.0
+  # Date formatting + gen_l10n runtime. Pinned by flutter_localizations of the
+  # Flutter release in mobile.yml (3.47.x pins ^0.20.3): bump the two together.
+  intl: ^0.20.3
+
+  # UI strings in pt-BR and en (#1178): our ARB-generated AppLocalizations plus
+  # Material/Cupertino's own strings (back tooltip, text-selection menu).
+  flutter_localizations:
+    sdk: flutter
 
 dev_dependencies:
   flutter_test:
@@ -76,6 +82,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # gen_l10n (#1178): `flutter pub get` regenerates lib/l10n/generated/ from
+  # lib/l10n/app_*.arb (see l10n.yaml). The output is committed.
+  generate: true
 
   # Bundled fonts (OFL, licences beside the files) — the app must render the
   # same offline, so nothing is fetched at runtime. Inter is a variable font:

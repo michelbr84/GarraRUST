@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../l10n/l10n.dart';
 import '../services/sync_service.dart';
 
 /// Screen for pairing devices via QR code scanning.
@@ -56,7 +57,7 @@ class _PairScreenState extends ConsumerState<PairScreen>
 
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Pareamento iniciado...')));
+    ).showSnackBar(SnackBar(content: Text(context.l10n.pairPairingStarted)));
 
     // Reset scanning flag after a delay to prevent duplicate scans
     Future.delayed(const Duration(seconds: 3), () {
@@ -67,21 +68,28 @@ class _PairScreenState extends ConsumerState<PairScreen>
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l10n = context.l10n;
     final devices = ref.watch(pairedDevicesProvider);
     final syncStatus = ref.watch(syncConnectionStateProvider);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Parear Dispositivos'),
+        title: Text(l10n.pairTitle),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.pop(),
         ),
         bottom: TabBar(
           controller: _tabController,
-          tabs: const [
-            Tab(text: 'Meu QR Code', icon: Icon(Icons.qr_code_2_rounded)),
-            Tab(text: 'Escanear', icon: Icon(Icons.qr_code_scanner_rounded)),
+          tabs: [
+            Tab(
+              text: l10n.pairTabMyQrCode,
+              icon: const Icon(Icons.qr_code_2_rounded),
+            ),
+            Tab(
+              text: l10n.pairTabScan,
+              icon: const Icon(Icons.qr_code_scanner_rounded),
+            ),
           ],
         ),
       ),
@@ -112,7 +120,7 @@ class _PairScreenState extends ConsumerState<PairScreen>
             Padding(
               padding: const EdgeInsets.all(12),
               child: Text(
-                'Dispositivos Pareados',
+                l10n.pairPairedDevicesHeader,
                 style: Theme.of(
                   context,
                 ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
@@ -133,7 +141,9 @@ class _PairScreenState extends ConsumerState<PairScreen>
                     ),
                     title: Text(device.platform),
                     subtitle: Text(
-                      device.isOnline ? 'Online' : 'Visto: ${device.lastSeen}',
+                      device.isOnline
+                          ? l10n.pairDeviceOnline
+                          : l10n.pairDeviceLastSeen(device.lastSeen),
                       style: TextStyle(
                         color: device.isOnline
                             ? cs.primary
@@ -180,6 +190,7 @@ class _SyncStatusBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final l10n = context.l10n;
 
     if (status == SyncStatus.connected) return const SizedBox.shrink();
 
@@ -189,16 +200,16 @@ class _SyncStatusBanner extends StatelessWidget {
     switch (status) {
       case SyncStatus.connecting:
         bgColor = cs.tertiary;
-        text = 'Conectando ao servidor de sincronizacao...';
+        text = l10n.pairSyncConnecting;
       case SyncStatus.error:
         bgColor = cs.error;
-        text = 'Erro de conexao. Tentando reconectar...';
+        text = l10n.pairSyncError;
       case SyncStatus.disconnected:
         bgColor = cs.secondary;
-        text = 'Desconectado do servidor de sincronizacao';
+        text = l10n.pairSyncDisconnected;
       case SyncStatus.connected:
         bgColor = cs.primary;
-        text = 'Conectado';
+        text = l10n.pairSyncConnected;
     }
 
     return Container(
@@ -235,7 +246,7 @@ class _ShowQrTab extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              'Escaneie este QR Code\nno outro dispositivo',
+              context.l10n.pairShowQrInstruction,
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                 color: cs.onSurface.withValues(alpha: 0.7),
@@ -259,7 +270,7 @@ class _ShowQrTab extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRegenerate,
               icon: const Icon(Icons.refresh_rounded),
-              label: const Text('Gerar novo codigo'),
+              label: Text(context.l10n.pairRegenerateCode),
             ),
           ],
         ),
@@ -295,7 +306,7 @@ class _ScanQrTabState extends State<_ScanQrTab> {
         Padding(
           padding: const EdgeInsets.all(16),
           child: Text(
-            'Aponte a camera para o QR Code\ndo outro dispositivo',
+            context.l10n.pairScanInstruction,
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(
               color: cs.onSurface.withValues(alpha: 0.7),

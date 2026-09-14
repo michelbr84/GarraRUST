@@ -11,4 +11,5 @@ const String kAppVersion = '0.4.2';
 const int kAppBuildNumber = 6;
 
 /// Human-facing label, e.g. `Garra Mobile v0.4.2`.
-const String kAppVersionLabel = 'Garra Mobile v$kAppVersion';
+const String kAppVersionLabel =
+    'Garra Mobile v$kAppVersion'; // l10n-ignore: marca + versao, igual em todo idioma

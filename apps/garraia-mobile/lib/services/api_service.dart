@@ -91,14 +91,19 @@ class ApiService {
 
   /// `POST /api/stt` (`voice_handler.rs`). The old client called
   /// `/api/voice/transcribe`, a path the gateway never exposed.
-  Future<String> transcribeAudio(String audioPath) async {
+  ///
+  /// `null` when the response carries no `text`. The caller shows
+  /// `voiceTranscriptionUnavailable` in the user's language (#1178) — this
+  /// layer has no locale and must not hand back UI copy as if it were a
+  /// transcript.
+  Future<String?> transcribeAudio(String audioPath) async {
     final resp = await _dio.post<Map<String, dynamic>>(
       '/api/stt',
       data: FormData.fromMap({
         'audio': await MultipartFile.fromFile(audioPath),
       }),
     );
-    return resp.data?['text'] as String? ?? 'Transcricao indisponivel';
+    return resp.data?['text'] as String?;
   }
 
   // ── Token ────────────────────────────────────────────────────────────────

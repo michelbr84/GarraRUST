@@ -70,5 +70,5 @@ class NoRuntimeConfigured implements Exception {
   const NoRuntimeConfigured();
 
   @override
-  String toString() => 'No Garra runtime configured';
+  String toString() => 'No Garra runtime configured'; // l10n-ignore: texto de excecao; a UI mapeia via describeError
 }

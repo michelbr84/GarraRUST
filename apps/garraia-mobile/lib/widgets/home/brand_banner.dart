@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/l10n.dart';
 import '../../theme/garra_theme.dart';
 import '../../theme/garra_tokens.dart';
 import '../brand/night_ridge.dart';
@@ -11,6 +12,7 @@ class BrandBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return ClipRRect(
       borderRadius: BorderRadius.circular(GarraRadius.tile),
       child: SizedBox(
@@ -29,7 +31,7 @@ class BrandBanner extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  'LOCAL AI. A BRIGHTER YOU.',
+                  l10n.homeBannerHeadline,
                   textAlign: TextAlign.center,
                   style: garraText(
                     size: 13,
@@ -39,7 +41,7 @@ class BrandBanner extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'More control. A more capable you.',
+                  l10n.homeBannerSubtitle,
                   textAlign: TextAlign.center,
                   style: garraText(size: 12.5, color: GarraColors.textMuted),
                 ),

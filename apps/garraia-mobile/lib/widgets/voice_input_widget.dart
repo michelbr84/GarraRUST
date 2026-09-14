@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 
+import '../l10n/l10n.dart';
+
 /// Hold-to-record voice input widget with waveform visualization.
 ///
 /// The widget sends recorded audio to the backend /voice endpoint via
@@ -63,9 +65,11 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
   }
 
   Future<void> _startRecording() async {
+    // Resolved before the first await so no BuildContext crosses an async gap.
+    final l10n = context.l10n;
     try {
       if (!await _recorder.hasPermission()) {
-        setState(() => _error = 'Permissao de microfone necessaria');
+        setState(() => _error = l10n.voiceMicPermissionRequired);
         return;
       }
 
@@ -114,7 +118,7 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
         }
       });
     } catch (e) {
-      setState(() => _error = 'Erro ao iniciar gravacao: $e');
+      setState(() => _error = l10n.voiceStartRecordingError(e.toString()));
     }
   }
 
@@ -126,6 +130,8 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
 
     if (!_isRecording) return;
 
+    // Resolved before the first await so no BuildContext crosses an async gap.
+    final l10n = context.l10n;
     try {
       final path = await _recorder.stop();
       setState(() {
@@ -138,7 +144,7 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
         widget.onTranscription(transcription);
       }
     } catch (e) {
-      setState(() => _error = 'Erro ao processar audio: $e');
+      setState(() => _error = l10n.voiceProcessAudioError(e.toString()));
     } finally {
       if (mounted) {
         setState(() => _isProcessing = false);
@@ -172,7 +178,7 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
             ),
             const SizedBox(width: 8),
             Text(
-              'Transcrevendo...',
+              context.l10n.voiceTranscribing,
               style: TextStyle(
                 color: cs.onSurface.withValues(alpha: 0.7),
                 fontSize: 13,
@@ -248,7 +254,7 @@ class _VoiceInputWidgetState extends State<VoiceInputWidget>
           Padding(
             padding: const EdgeInsets.only(top: 2),
             child: Text(
-              'Segure para gravar',
+              context.l10n.voiceHoldToRecord,
               style: TextStyle(
                 color: cs.onSurface.withValues(alpha: 0.4),
                 fontSize: 10,

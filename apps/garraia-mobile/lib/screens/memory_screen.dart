@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../l10n/l10n.dart';
 import '../runtime/models.dart';
 import '../runtime/runtime_providers.dart';
 import '../theme/garra_theme.dart';
@@ -41,13 +42,14 @@ class _MemoryScreenState extends ConsumerState<MemoryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final searching = _submitted.isNotEmpty;
     final value = searching
         ? ref.watch(memorySearchProvider(_submitted))
         : ref.watch(recentMemoryProvider);
 
     return GarraPage(
-      title: 'Memory',
+      title: l10n.memoryTitle,
       body: Column(
         children: [
           Padding(
@@ -56,7 +58,7 @@ class _MemoryScreenState extends ConsumerState<MemoryScreen> {
               controller: _query,
               textInputAction: TextInputAction.search,
               decoration: InputDecoration(
-                hintText: 'Search memories',
+                hintText: l10n.memorySearchHint,
                 prefixIcon: const Icon(Icons.search_rounded),
                 suffixIcon: searching
                     ? IconButton(
@@ -75,8 +77,8 @@ class _MemoryScreenState extends ConsumerState<MemoryScreen> {
             child: AsyncBody<List<MemoryEntry>>(
               value: value,
               emptyText: searching
-                  ? 'No memory matches "$_submitted".'
-                  : 'Garra has not stored any memory yet. Chat a little and come back.',
+                  ? l10n.memoryNoMatches(_submitted)
+                  : l10n.memoryEmpty,
               onRetry: () => ref.invalidate(
                 searching
                     ? memorySearchProvider(_submitted)
@@ -136,24 +138,25 @@ class MemorySheet extends ConsumerWidget {
   const MemorySheet({super.key, required this.entry});
 
   Future<void> _delete(BuildContext context, WidgetRef ref) async {
+    // Resolved before the first await: the snackbars below run after the
+    // dialog closes and must not touch `context` for anything but mounting.
+    final l10n = context.l10n;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Apagar esta memoria?'),
+        title: Text(l10n.memoryDeleteTitle),
         content: Text(
-          entry.pinned
-              ? 'Ela esta fixada, mas apagar nao pergunta duas vezes: some do runtime e nao da para desfazer.'
-              : 'Some do runtime e nao da para desfazer.',
+          entry.pinned ? l10n.memoryDeletePinnedBody : l10n.memoryDeleteBody,
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancelar'),
+            child: Text(l10n.commonCancel),
           ),
           FilledButton(
             key: const ValueKey('confirm-delete-memory'),
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Apagar'),
+            child: Text(l10n.commonDelete),
           ),
         ],
       ),
@@ -168,21 +171,22 @@ class MemorySheet extends ConsumerWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(
-          content: Text(existed ? 'Memoria apagada' : 'Ja nao existia'),
+          content: Text(existed ? l10n.memoryDeleted : l10n.memoryAlreadyGone),
           duration: const Duration(seconds: 1),
         ),
       );
       Navigator.of(context).maybePop();
     } catch (e) {
       if (!context.mounted) return;
-      ScaffoldMessenger.maybeOf(
-        context,
-      )?.showSnackBar(SnackBar(content: Text('Nao deu para apagar: $e')));
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(l10n.memoryDeleteFailed(e.toString()))),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = context.l10n;
     final meta = [
       if (entry.role.isNotEmpty) entry.role,
       if (entry.createdAt.isNotEmpty) entry.createdAt.replaceFirst('T', ' '),
@@ -221,10 +225,10 @@ class MemorySheet extends ConsumerWidget {
                       onPressed: () => copyToClipboard(
                         context,
                         entry.content,
-                        toast: 'Memoria copiada',
+                        toast: l10n.memoryCopied,
                       ),
                       icon: const Icon(Icons.copy_rounded, size: 18),
-                      label: const Text('Copiar'),
+                      label: Text(l10n.commonCopy),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -232,7 +236,7 @@ class MemorySheet extends ConsumerWidget {
                     key: const ValueKey('delete-memory'),
                     onPressed: () => _delete(context, ref),
                     icon: const Icon(Icons.delete_outline_rounded, size: 18),
-                    label: const Text('Apagar'),
+                    label: Text(l10n.commonDelete),
                   ),
                 ],
               ),

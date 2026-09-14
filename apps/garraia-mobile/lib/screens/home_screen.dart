@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../l10n/l10n.dart';
 import '../runtime/models.dart';
 import '../runtime/runtime_config.dart';
 import '../runtime/runtime_providers.dart';
@@ -29,6 +30,7 @@ class HomeScreen extends ConsumerWidget {
     final caps =
         ref.watch(runtimeCapabilitiesProvider).value ?? GarraCapabilities.empty;
     final capsLoaded = ref.watch(runtimeCapabilitiesProvider).hasValue;
+    final l10n = context.l10n;
 
     bool available(String feature) => !capsLoaded || caps.has(feature);
 
@@ -71,17 +73,17 @@ class HomeScreen extends ConsumerWidget {
                 QuickActionsPanel(
                   actions: [
                     QuickAction(
-                      label: 'Pair PC',
+                      label: l10n.homeQuickPairPc,
                       icon: Icons.link_rounded,
                       onTap: () => context.push('/onboarding'),
                     ),
                     QuickAction(
-                      label: 'Providers',
+                      label: l10n.providersTitle,
                       icon: Icons.cloud_outlined,
                       onTap: () => context.push('/providers'),
                     ),
                     QuickAction(
-                      label: 'Settings',
+                      label: l10n.settingsTitle,
                       icon: Icons.settings_outlined,
                       onTap: () => context.push('/settings'),
                     ),
@@ -107,6 +109,7 @@ class _StatusRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final mode = config?.mode ?? RuntimeMode.local;
     final h = health.value;
     final reachable = h != null && !health.hasError;
@@ -119,28 +122,28 @@ class _StatusRow extends StatelessWidget {
         : GarraColors.warn;
 
     final runtimeValue = switch (mode) {
-      RuntimeMode.local => 'Local on this phone',
-      RuntimeMode.remote => 'Garra on your network',
-      RuntimeMode.cloud => 'Garra Cloud',
+      RuntimeMode.local => l10n.homeRuntimeLocal,
+      RuntimeMode.remote => l10n.homeRuntimeRemote,
+      RuntimeMode.cloud => l10n.runtimeModeCloudTitle,
     };
     final runtimeSubtitle = health.hasError
         ? (mode == RuntimeMode.local
-              ? 'Not running — open Termux and run `garra start`'
-              : 'Unreachable — check the address')
+              ? l10n.homeRuntimeNotRunning
+              : l10n.homeRuntimeUnreachable)
         : h == null
-        ? 'Checking…'
+        ? l10n.commonChecking
         : mode == RuntimeMode.local
-        ? 'Fast. Private. Always with you.'
-        : 'v${h.version} · ${h.activeSessions} session${h.activeSessions == 1 ? '' : 's'}';
+        ? l10n.homeRuntimeLocalTagline
+        : l10n.homeRuntimeVersionSessions(h.version, h.activeSessions);
 
     final llmValue = !reachable
-        ? 'Not connected'
+        ? l10n.homeLlmNotConnected
         : h.provider == null
-        ? 'No provider set'
-        : _llmLabel(h.provider!, mode);
+        ? l10n.homeLlmNoProvider
+        : _llmLabel(l10n, h.provider!, mode);
     final llmSubtitle = !reachable
-        ? 'Waiting for the runtime'
-        : h.model ?? h.provider ?? 'Pick a provider';
+        ? l10n.homeLlmWaitingRuntime
+        : h.model ?? h.provider ?? l10n.homeLlmPickProvider;
 
     return IntrinsicHeight(
       child: Row(
@@ -153,7 +156,7 @@ class _StatusRow extends StatelessWidget {
                   : Icons.smartphone_rounded,
               iconColor: GarraColors.cyan,
               dotColor: dot,
-              label: 'Runtime:',
+              label: l10n.homeRuntimeLabel,
               value: runtimeValue,
               subtitle: runtimeSubtitle,
               onTap: () => context.push('/settings'),
@@ -165,7 +168,7 @@ class _StatusRow extends StatelessWidget {
               icon: Icons.desktop_windows_rounded,
               iconColor: GarraColors.blue,
               dotColor: reachable ? GarraColors.info : GarraColors.textDim,
-              label: 'LLM:',
+              label: l10n.homeLlmLabel,
               value: llmValue,
               valueColor: reachable ? GarraColors.cyan : GarraColors.textMuted,
               subtitle: llmSubtitle,
@@ -178,10 +181,16 @@ class _StatusRow extends StatelessWidget {
     );
   }
 
-  static String _llmLabel(String provider, RuntimeMode mode) {
+  static String _llmLabel(
+    AppLocalizations l10n,
+    String provider,
+    RuntimeMode mode,
+  ) {
     final p = provider.toLowerCase();
     if (p == 'ollama' || p == 'llamacpp' || p == 'lmstudio' || p == 'vllm') {
-      return mode == RuntimeMode.local ? 'Connected to PC' : 'Local server';
+      return mode == RuntimeMode.local
+          ? l10n.homeLlmConnectedToPc
+          : l10n.homeLlmLocalServer;
     }
     return provider;
   }
@@ -194,50 +203,51 @@ class _TileGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final tiles = <Widget>[
       FeatureTile(
-        title: 'Chat',
-        subtitle: 'Talk with your AI assistant',
+        title: l10n.homeTileChat,
+        subtitle: l10n.homeTileChatSubtitle,
         icon: Icons.chat_bubble_outline_rounded,
         accent: GarraAccent.violet,
         available: available(GarraFeature.chat),
         onTap: () => context.push('/chat'),
       ),
       FeatureTile(
-        title: 'Memory',
-        subtitle: 'What Garra remembers',
+        title: l10n.memoryTitle,
+        subtitle: l10n.homeTileMemorySubtitle,
         icon: Icons.psychology_outlined,
         accent: GarraAccent.magenta,
         available: available(GarraFeature.memory),
         onTap: () => context.push('/memory'),
       ),
       FeatureTile(
-        title: 'Skills',
-        subtitle: 'Extend what Garra can do',
+        title: l10n.skillsTitle,
+        subtitle: l10n.homeTileSkillsSubtitle,
         icon: Icons.bolt_outlined,
         accent: GarraAccent.gold,
         available: available(GarraFeature.learningSkills),
         onTap: () => context.push('/skills'),
       ),
       FeatureTile(
-        title: 'Files',
-        subtitle: 'Access and manage files',
+        title: l10n.filesTitle,
+        subtitle: l10n.homeTileFilesSubtitle,
         icon: Icons.folder_outlined,
         accent: GarraAccent.cyan,
         available: available(GarraFeature.projects),
         onTap: () => context.push('/files'),
       ),
       FeatureTile(
-        title: 'Agents',
-        subtitle: 'Create and manage agents',
+        title: l10n.agentsTitle,
+        subtitle: l10n.homeTileAgentsSubtitle,
         icon: Icons.groups_outlined,
         accent: GarraAccent.indigo,
         available: available(GarraFeature.modes),
         onTap: () => context.push('/agents'),
       ),
       FeatureTile(
-        title: 'Automations',
-        subtitle: 'Set up smart workflows',
+        title: l10n.automationsTitle,
+        subtitle: l10n.homeTileAutomationsSubtitle,
         icon: Icons.settings_suggest_outlined,
         accent: GarraAccent.rose,
         available: available(GarraFeature.automations),

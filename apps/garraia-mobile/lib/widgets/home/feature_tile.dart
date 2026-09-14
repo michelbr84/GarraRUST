@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/l10n.dart';
 import '../../theme/garra_theme.dart';
 import '../../theme/garra_tokens.dart';
 
@@ -31,10 +32,12 @@ class FeatureTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = accent.color;
+    final l10n = context.l10n;
     return Semantics(
       button: true,
-      label:
-          '$title. $subtitle${available ? '' : '. Unavailable on this runtime'}',
+      label: available
+          ? l10n.homeFeatureTileSemantics(title, subtitle)
+          : l10n.homeFeatureTileSemanticsUnavailable(title, subtitle),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
@@ -142,7 +145,7 @@ class _UnavailablePill extends StatelessWidget {
         border: Border.all(color: GarraColors.panelBorderStrong),
       ),
       child: Text(
-        'Unavailable',
+        context.l10n.homeFeatureUnavailable,
         style: garraText(
           size: 10,
           weight: FontWeight.w600,

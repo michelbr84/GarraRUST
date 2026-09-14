@@ -3,6 +3,8 @@ import 'package:local_auth/local_auth.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'saved_localizations.dart';
+
 part 'biometric_service.g.dart';
 
 const _kBiometricEnabledKey = 'garraia_biometric_enabled';
@@ -46,12 +48,16 @@ class BiometricService {
 
   /// Attempt biometric authentication.
   /// Returns true if authenticated, false if cancelled/failed.
-  Future<bool> authenticate({
-    String reason = 'Autentique-se para acessar o Garra',
-  }) async {
+  ///
+  /// [reason] is the line the OS prompt shows. When omitted it is the app's
+  /// own copy in the language picked in Settings (#1178) — the prompt fires
+  /// from `GarraApp` before any route exists, so there is no context to ask.
+  Future<bool> authenticate({String? reason}) async {
     try {
+      final localizedReason =
+          reason ?? (await savedLocalizations()).biometricPromptReason;
       return await _auth.authenticate(
-        localizedReason: reason,
+        localizedReason: localizedReason,
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: false, // Allow PIN/pattern fallback
