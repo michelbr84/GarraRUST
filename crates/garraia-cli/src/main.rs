@@ -2248,6 +2248,13 @@ async fn async_main(
             // Handled in main() before the async runtime starts.
             unreachable!("Commands::Doctor is intercepted in main() before async_main");
         }
+        Commands::Desktop { .. } => {
+            // #1181 (M1): handled in main() before the async runtime starts.
+            // `garra desktop` only resolves a path and spawns the app, so it
+            // must not require a loadable gateway config — the desktop
+            // installer is often the first thing a user runs.
+            unreachable!("Commands::Desktop is intercepted in main() before async_main");
+        }
     }
 
     Ok(())
