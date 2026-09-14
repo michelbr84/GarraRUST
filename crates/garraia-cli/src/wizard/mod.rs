@@ -263,7 +263,13 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
 
     // --- 5. Local branch ---------------------------------------------------
     if matches!(mode_idx, 0 | 1) && local_available {
-        collect_local_stack(&env, &mut local_choice)?;
+        // #1180: `mode_idx == 0` is local-first — there the local stack is
+        // what the user just asked for, so the prompts stay preselected.
+        // `mode_idx == 1` is cloud-first, where the local stack is the
+        // *second* option: same prompts, but nothing preselected, so nobody
+        // installs Ollama and downloads ~18 GB by pressing Enter through a
+        // wizard whose primary answer is already OpenRouter.
+        collect_local_stack(&env, local_stack_role(mode_idx), &mut local_choice)?;
     }
 
     // --- 6. Resolve default / fallback ordering ----------------------------
@@ -281,8 +287,9 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
         _ => {
             // Neither selected — emit a placeholder so the wizard
             // produces a valid `agent.default_provider`. The user can
-            // edit later.
-            "openrouter".to_string()
+            // edit later. #1180: the placeholder is the project default,
+            // read from the shared constant instead of repeated here.
+            crate::defaults::DEFAULT_CLOUD_PROVIDER.to_string()
         }
     };
 
@@ -533,13 +540,81 @@ fn collect_cloud_provider(out: &mut Option<CloudLlmChoice>) -> Result<Option<(St
     }
 }
 
+/// #1180 — what the local stack *is* in the run being configured, which is
+/// the only thing that decides whether its prompts come preselected.
+///
+/// The distinction is not cosmetic: preselected means a user who presses
+/// Enter through the wizard installs Ollama and pulls ~18 GB. That is the
+/// right default when they just chose local-first, and the wrong one when
+/// they chose cloud-first and the local stack is merely on offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalStackRole {
+    /// Local-first: the user picked the local stack as their primary.
+    Primary,
+    /// Cloud-first: local is the second option, opt-in only.
+    Fallback,
+}
+
+impl LocalStackRole {
+    fn is_primary(self) -> bool {
+        matches!(self, LocalStackRole::Primary)
+    }
+
+    /// Default answer of the "Ollama is not installed. Install it now?"
+    /// confirm. `false` on the cloud-first path: installing is a yes the
+    /// user has to type.
+    fn installs_ollama_by_default(self) -> bool {
+        self.is_primary()
+    }
+
+    /// Row preselected in the local-model picker. Row 0 is
+    /// `qwen3.8:latest` (~18 GB) and picking it starts the pull
+    /// immediately, so cloud-first lands on the "skip the download" row.
+    fn default_model_row(self) -> usize {
+        if self.is_primary() {
+            0
+        } else {
+            local_stack::MODEL_CHOICE_SKIP
+        }
+    }
+}
+
+/// #1180 — which role the local stack plays for a given wizard mode.
+///
+/// `mode_idx` is the remapped index the rest of this module uses:
+/// 0 = local-first, 1 = cloud-first, 2 = cloud-only. Only 0 and 1 ever
+/// reach `collect_local_stack`; 2 is treated as cloud-first here so the
+/// mapping is total and can never fall open onto the ~18 GB default.
+fn local_stack_role(mode_idx: usize) -> LocalStackRole {
+    if mode_idx == 0 {
+        LocalStackRole::Primary
+    } else {
+        LocalStackRole::Fallback
+    }
+}
+
 /// Local branch of the wizard. Issue #1180: this is the project's *second*
 /// option — the fallback the runtime reaches for when the cloud default is
 /// unavailable, or the primary only when the user explicitly picked
 /// local-first in the mode prompt above.
-fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> Result<()> {
-    println!("  Local stack — the second option: Garra falls back to it when");
-    println!("  the cloud default is unreachable (see `agent.fallback_providers`).");
+///
+/// `role` carries that distinction into every default below: on the
+/// cloud-first path the install prompt answers "no" and the model picker
+/// lands on "skip", so the ~18 GB download is an explicit yes, never the
+/// consequence of holding Enter.
+fn collect_local_stack(
+    env: &EnvSnapshot,
+    role: LocalStackRole,
+    out: &mut Option<LocalLlmChoice>,
+) -> Result<()> {
+    if role.is_primary() {
+        println!("  Local stack — your primary: Garra runs on this machine and");
+        println!("  falls back to the cloud provider you just configured.");
+    } else {
+        println!("  Local stack — the second option: Garra falls back to it when");
+        println!("  the cloud default is unreachable (see `agent.fallback_providers`).");
+        println!("  Nada aqui vem marcado: a nuvem ja e o seu padrao.");
+    }
 
     // Ollama install gate ---------------------------------------------------
     if matches!(env.ollama, OllamaState::NotFound) {
@@ -547,7 +622,7 @@ fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> R
             .with_prompt(
                 "Ollama is not installed. Install it now via the official script (curl … | sh)?",
             )
-            .default(true)
+            .default(role.installs_ollama_by_default())
             .interact()
             .context("ollama install prompt cancelled")?;
         if install {
@@ -563,10 +638,13 @@ fn collect_local_stack(env: &EnvSnapshot, out: &mut Option<LocalLlmChoice>) -> R
     // Pick + pull the local model -------------------------------------------
     let mut choice = LocalLlmChoice::default();
     let labels: Vec<&str> = local_stack::MODEL_CHOICES.iter().map(|c| c.label).collect();
+    // #1180: cloud-first lands on "skip". Row 0 is `qwen3.8:latest` (~18 GB)
+    // and the pull starts as soon as it is picked, so it may only be the
+    // preselected answer when the user asked for a local-first install.
     let picked = Select::new()
         .with_prompt("Qual modelo local o Garra deve usar (segunda opcao / fallback)?")
         .items(&labels)
-        .default(0)
+        .default(role.default_model_row())
         .interact()
         .context("local model selection cancelled")?;
 
@@ -702,3 +780,76 @@ fn open_or_create_vault(
 // Silence unused-imports in case future refactors drop a re-export.
 #[allow(dead_code)]
 fn _unused_imports(_: HashMap<String, String>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1180 — o caminho cloud-first nao pode empurrar o download de ~18 GB.
+    /// `collect_local_stack` roda nos dois modos (0 = local-first,
+    /// 1 = cloud-first) e antes desta correcao os dois viam `.default(true)`
+    /// no confirm de instalar o Ollama e a linha 0 (`qwen3.8:latest`, ~18 GB,
+    /// com `pull_model` imediato) preselecionada no seletor de modelo. Quem
+    /// escolhia "Cloud-first (recommended)" e seguia apertando Enter baixava
+    /// o modelo local do mesmo jeito.
+    #[test]
+    fn cloud_first_nao_preseleciona_o_download_local() {
+        let papel = local_stack_role(1);
+        assert_eq!(papel, LocalStackRole::Fallback);
+        assert!(
+            !papel.installs_ollama_by_default(),
+            "no caminho cloud-first instalar o Ollama tem que ser um sim explicito"
+        );
+        assert_eq!(
+            papel.default_model_row(),
+            local_stack::MODEL_CHOICE_SKIP,
+            "no caminho cloud-first o seletor tem que cair na linha de pular o download"
+        );
+        assert!(
+            local_stack::MODEL_CHOICES[papel.default_model_row()]
+                .tag
+                .is_none(),
+            "a linha preselecionada no cloud-first nao pode ter tag (tag = pull imediato)"
+        );
+    }
+
+    /// O espelho: quem escolheu local-first pediu o modelo local, entao ali
+    /// os defaults continuam onde estavam — instalar sim, linha 0 do seletor.
+    #[test]
+    fn local_first_mantem_os_defaults_de_antes() {
+        let papel = local_stack_role(0);
+        assert_eq!(papel, LocalStackRole::Primary);
+        assert!(papel.installs_ollama_by_default());
+        assert_eq!(papel.default_model_row(), 0);
+        assert_eq!(
+            local_stack::MODEL_CHOICES[papel.default_model_row()].tag,
+            Some(local_stack::DEFAULT_OLLAMA_MODEL_TAG),
+            "local-first continua caindo no modelo local padrao do projeto"
+        );
+    }
+
+    /// O mapa e total: qualquer indice que nao seja o local-first cai em
+    /// `Fallback`. Um modo novo no seletor nunca pode herdar o download por
+    /// acidente.
+    #[test]
+    fn todo_modo_que_nao_e_local_first_e_fallback() {
+        for idx in [1usize, 2, 3, 99] {
+            assert_eq!(
+                local_stack_role(idx),
+                LocalStackRole::Fallback,
+                "mode_idx {idx} devia ser fallback"
+            );
+        }
+    }
+
+    /// #1180 — o placeholder de `agent.default_provider` (nem nuvem nem
+    /// local escolhidos) e a constante compartilhada, nao um literal solto.
+    #[test]
+    fn o_placeholder_do_default_provider_e_a_constante() {
+        assert_eq!(crate::defaults::DEFAULT_CLOUD_PROVIDER, "openrouter");
+        assert_eq!(
+            DEFAULT_OPENROUTER_MODEL,
+            crate::defaults::DEFAULT_CLOUD_MODEL
+        );
+    }
+}
