@@ -8,6 +8,7 @@ use garraia_agents::{
     OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
     RepoSearchTool, ResilientEmbeddingProvider, RunTestsTool, WebFetchTool, WebSearchTool,
 };
+use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
 use garraia_hardware::automations::{EngineConfig, TetoRisco};
@@ -146,6 +147,36 @@ pub async fn warn_if_embeddings_unhealthy(runtime: &AgentRuntime) {
             );
         }
     }
+}
+
+/// #1180 — map `agent.default_provider` onto an id the runtime actually
+/// knows, or `None` when nothing matches.
+///
+/// The two namespaces do not line up on their own. `config.llm` is keyed by
+/// an operator-chosen *name* (`main`, `nuvem`, `openrouter`…), while a
+/// registered provider answers `provider_id()` — usually its *type*
+/// (`anthropic`, `ollama`, `openrouter`…). A config that says
+/// `llm.main.provider: openrouter` + `agent.default_provider: main` is
+/// perfectly valid and would find nothing under the literal key, so fall
+/// back to the provider type behind that key before giving up.
+///
+/// Returns `None` (caller warns and keeps the current default) rather than
+/// panicking: a default naming a provider that was skipped for want of an
+/// API key must not take the whole gateway down at boot.
+fn resolve_registered_provider_id(
+    runtime: &AgentRuntime,
+    config: &AppConfig,
+    default_key: &str,
+) -> Option<String> {
+    let registered = runtime.provider_ids();
+    if registered.iter().any(|p| p == default_key) {
+        return Some(default_key.to_string());
+    }
+    let kind = config.llm.get(default_key)?.provider.as_str();
+    registered
+        .iter()
+        .find(|p| p.as_str() == kind)
+        .map(|p| p.to_string())
 }
 
 /// Build a fully-configured `AgentRuntime` from the application config.
@@ -514,10 +545,14 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .base_url
                     .clone()
                     .or_else(|| Some("https://openrouter.ai/api/v1".to_string()));
+                // #1180: an `openrouter` block with no explicit `model:` used
+                // to land on a hardcoded `openai/gpt-4o` here — a fifth answer
+                // to "which model runs when nobody chose one?", invisible to
+                // the CLI's lock. Both crates now read the same constant.
                 let model = llm_config
                     .model
                     .clone()
-                    .or_else(|| Some("openai/gpt-4o".to_string()));
+                    .or_else(|| Some(DEFAULT_CLOUD_MODEL.to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
                     .with_client(llm_client.clone())
                     .with_name("openrouter");
@@ -537,6 +572,46 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
             other => {
                 warn!("unknown LLM provider type: {other}, skipping {name}");
             }
+        }
+    }
+
+    // --- #1180: the configured default decides, not `HashMap` iteration ---
+    // `register_provider` promotes the FIRST provider it sees to default, and
+    // the loop above walks `config.llm`, a `HashMap` — so on any box with two
+    // providers configured (the shipped Desktop config has exactly two:
+    // `openrouter` + `ollama`) the effective default was whichever one the
+    // hasher happened to yield first. "A fresh install boots on OpenRouter"
+    // was therefore a coin flip, not a guarantee. Applying
+    // `agent.default_provider` here makes it deterministic.
+    //
+    // Placed BEFORE the unreachable-provider auto-fallback below on purpose:
+    // that block may override this decision — but only in one narrow case.
+    // `unreachable_local_providers` is filled solely by the `"openai"` arm
+    // above, i.e. an OpenAI-compatible endpoint (LM Studio, vLLM, …) whose
+    // `base_url` points at localhost/127.0.0.1 and whose TCP probe failed.
+    // The `ollama` and `llamacpp` arms probe too, but only log: a local
+    // daemon of those kinds that nobody started is NOT pushed there, so when
+    // one of them is the configured default the decision above stands and
+    // the first request fails instead of auto-switching.
+    if let Some(default_key) = config.agent.default_provider.as_deref() {
+        match resolve_registered_provider_id(&runtime, config, default_key) {
+            Some(id) => {
+                if runtime.set_default_provider_id(&id) {
+                    info!("default LLM provider set from agent.default_provider: {id}");
+                } else {
+                    // Unreachable in practice — `resolve_registered_provider_id`
+                    // only ever returns an id it just saw in `provider_ids()`.
+                    warn!("could not apply agent.default_provider '{default_key}'");
+                }
+            }
+            None => warn!(
+                "agent.default_provider '{default_key}' is not a registered provider \
+                 (missing API key, unknown provider type, or absent from the `llm:` map) — \
+                 keeping '{current}'. Fix the key or the `llm.{default_key}` block.",
+                current = runtime
+                    .default_provider_id()
+                    .unwrap_or_else(|| "<none>".to_string())
+            ),
         }
     }
 
@@ -570,7 +645,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         info!("╚══════════════════════════════════════╝");
     }
 
-    // --- Auto-fallback: if default_provider is unreachable, try another ---
+    // --- Auto-fallback: if default_provider is an unreachable local
+    // OpenAI-compatible endpoint (the only kind the `"openai"` arm records
+    // in `unreachable_local_providers`), try another ---
     if let Some(ref default_id) = config.agent.default_provider
         && unreachable_local_providers.iter().any(|p| p == default_id)
     {
@@ -1770,6 +1847,155 @@ mod tests {
         );
         // Should not panic — unknown providers are logged and skipped
         let _runtime = build_agent_runtime(&config);
+    }
+
+    // ─── #1180: o default do gateway ──────────────────────────────────────
+
+    fn llm_block(
+        provider: &str,
+        model: Option<&str>,
+        base_url: Option<&str>,
+    ) -> garraia_config::LlmProviderConfig {
+        garraia_config::LlmProviderConfig {
+            provider: provider.to_string(),
+            model: model.map(str::to_string),
+            // Chave de mentira: o loop pula todo provider com chave ausente,
+            // entao sem ela o `openrouter` nem chega a ser registrado.
+            api_key: Some("sk-teste-nao-e-segredo".to_string()),
+            base_url: base_url.map(str::to_string),
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Porta fechada de proposito: o arm do ollama faz um TCP connect com
+    /// 2s de teto, e `127.0.0.1:1` recusa na hora em vez de esperar o
+    /// timeout inteiro. O provider e registrado de qualquer jeito.
+    const OLLAMA_PORTA_FECHADA: &str = "http://127.0.0.1:1";
+
+    /// #1180 — um bloco `openrouter` sem `model:` explicito nasce no modelo
+    /// padrao do projeto. Antes desta issue o gateway respondia
+    /// `openai/gpt-4o` aqui: uma quinta fonte de verdade, fora do alcance
+    /// dos locks da CLI porque `garraia-cli::defaults` era `pub(crate)`.
+    #[test]
+    fn openrouter_sem_model_explicito_cai_no_default_do_projeto() {
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "openrouter".to_string(),
+            llm_block("openrouter", None, None),
+        );
+
+        let runtime = build_agent_runtime(&config);
+        let provider = runtime
+            .get_provider("openrouter")
+            .expect("openrouter registrado");
+        assert_eq!(
+            provider.configured_model(),
+            Some(garraia_config::defaults::DEFAULT_CLOUD_MODEL),
+            "openrouter sem `model:` tem que herdar o default compartilhado, \
+             nao um literal proprio do gateway"
+        );
+    }
+
+    /// #1180 — com dois providers configurados, quem manda e
+    /// `agent.default_provider`, nao a ordem em que o `HashMap` devolveu as
+    /// chaves. Este teste roda o boot varias vezes justamente porque o
+    /// sintoma antigo era intermitente: `register_provider` promove o
+    /// PRIMEIRO provider a default, e `config.llm` e um `HashMap` com
+    /// `RandomState`, entao "o Desktop nasce em OpenRouter" era sorteio.
+    #[test]
+    fn default_provider_configurado_vence_a_ordem_do_hashmap() {
+        for _ in 0..16 {
+            let mut config = AppConfig::default();
+            config.llm.insert(
+                "openrouter".to_string(),
+                llm_block("openrouter", None, None),
+            );
+            config.llm.insert(
+                "ollama".to_string(),
+                llm_block("ollama", Some("qwen3.8:latest"), Some(OLLAMA_PORTA_FECHADA)),
+            );
+            config.agent.default_provider = Some("openrouter".to_string());
+
+            let runtime = build_agent_runtime(&config);
+            assert_eq!(
+                runtime.default_provider_id().as_deref(),
+                Some("openrouter"),
+                "agent.default_provider foi ignorado no boot"
+            );
+        }
+    }
+
+    /// O espelho do teste acima: local-first tambem tem que valer. Sem a
+    /// correcao os dois passariam ou falhariam junto, ao sabor do hasher.
+    #[test]
+    fn default_provider_local_tambem_e_respeitado() {
+        for _ in 0..16 {
+            let mut config = AppConfig::default();
+            config.llm.insert(
+                "openrouter".to_string(),
+                llm_block("openrouter", None, None),
+            );
+            config.llm.insert(
+                "ollama".to_string(),
+                llm_block("ollama", Some("qwen3.8:latest"), Some(OLLAMA_PORTA_FECHADA)),
+            );
+            config.agent.default_provider = Some("ollama".to_string());
+
+            let runtime = build_agent_runtime(&config);
+            assert_eq!(
+                runtime.default_provider_id().as_deref(),
+                Some("ollama"),
+                "agent.default_provider foi ignorado no boot"
+            );
+        }
+    }
+
+    /// A chave de `config.llm` e um nome escolhido pelo operador; o id que o
+    /// runtime conhece e o *tipo* do provider. `default_provider: "nuvem"`
+    /// com `llm.nuvem.provider: openrouter` tem que resolver mesmo assim.
+    #[test]
+    fn default_provider_resolve_pelo_tipo_quando_a_chave_e_um_apelido() {
+        // Mesmo laco dos testes acima, e pelo mesmo motivo: com dois
+        // providers registrados, uma unica rodada acerta metade das vezes
+        // por sorte do hasher.
+        for _ in 0..16 {
+            let mut config = AppConfig::default();
+            config
+                .llm
+                .insert("nuvem".to_string(), llm_block("openrouter", None, None));
+            config.llm.insert(
+                "local".to_string(),
+                llm_block("ollama", Some("qwen3.8:latest"), Some(OLLAMA_PORTA_FECHADA)),
+            );
+            config.agent.default_provider = Some("nuvem".to_string());
+
+            let runtime = build_agent_runtime(&config);
+            assert_eq!(
+                runtime.default_provider_id().as_deref(),
+                Some("openrouter"),
+                "o apelido devia ter resolvido para o tipo registrado"
+            );
+        }
+    }
+
+    /// Fail-safe: um `agent.default_provider` que nao corresponde a nenhum
+    /// provider registrado (chave errada, provider pulado por falta de
+    /// chave) avisa no log e mantem o que havia — nunca derruba o boot.
+    #[test]
+    fn default_provider_inexistente_nao_quebra_o_boot() {
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "openrouter".to_string(),
+            llm_block("openrouter", None, None),
+        );
+        config.agent.default_provider = Some("provider-que-nao-existe".to_string());
+
+        let runtime = build_agent_runtime(&config);
+        assert_eq!(
+            runtime.default_provider_id().as_deref(),
+            Some("openrouter"),
+            "o unico provider registrado devia ter permanecido como default"
+        );
     }
 
     // ─── #952: a politica de ruido, config <-> agents ─────────────────────

@@ -223,6 +223,10 @@ pub(crate) fn agent_error_envelope(
 /// GAR-583 sibling — build the `garra_agent` tool descriptor (advertised
 /// in `tools/list` only when the opt-in env is set).
 pub(crate) fn garra_agent_tool() -> Tool {
+    // Issue #1180 — same project-wide defaults `garra_ask` advertises; both
+    // tools resolve through `mcp_server::resolve_overrides`.
+    let provider_default = crate::defaults::DEFAULT_CLOUD_PROVIDER;
+    let model_default = crate::defaults::DEFAULT_CLOUD_MODEL;
     let schema_value = json!({
         "type": "object",
         "properties": {
@@ -235,13 +239,13 @@ pub(crate) fn garra_agent_tool() -> Tool {
             "provider": {
                 "type": "string",
                 "enum": PROVIDER_ENUM,
-                "default": "openrouter",
-                "description": "LLM provider. Default 'openrouter'."
+                "default": provider_default,
+                "description": format!("LLM provider. Default '{provider_default}'.")
             },
             "model": {
                 "type": "string",
-                "default": "openrouter/free",
-                "description": "Model name. Default 'openrouter/free'. Pass 'openrouter/auto' explicitly for complex tasks — never automatic."
+                "default": model_default,
+                "description": format!("Model name. Default '{model_default}' (cheap flash-tier model — the default is a spend guardrail). Pass a pricier model such as 'openrouter/auto' explicitly for complex tasks — never automatic.")
             },
             "timeout_secs": {
                 "type": "integer",
@@ -635,8 +639,11 @@ mod tests {
         assert_eq!(ts.get("default").and_then(|v| v.as_u64()), Some(300));
     }
 
+    /// Issue #1180 — `garra_agent` advertises the same project-wide default
+    /// as `garra_ask`; both dispatch through `resolve_overrides`, so a
+    /// divergence here would be a schema that lies about the runtime.
     #[test]
-    fn tool_descriptor_default_model_is_openrouter_free() {
+    fn tool_descriptor_default_model_is_the_project_default() {
         let t = garra_agent_tool();
         let schema = (*t.input_schema).clone();
         let model_default = schema
@@ -644,7 +651,8 @@ mod tests {
             .and_then(|p| p.get("model"))
             .and_then(|m| m.get("default"))
             .and_then(|d| d.as_str());
-        assert_eq!(model_default, Some("openrouter/free"));
+        assert_eq!(model_default, Some("z-ai/glm-5.3-flash"));
+        assert_eq!(model_default, Some(crate::defaults::DEFAULT_CLOUD_MODEL));
     }
 
     #[test]

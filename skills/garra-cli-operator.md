@@ -1,6 +1,6 @@
 ---
 name: garra-cli-operator
-description: Operar Garra (mcp/ask/chat) com guardrails de custo, timeout, sandbox e opt-in para openrouter/auto.
+description: Operar Garra (mcp/ask/chat) com guardrails de custo, timeout e sandbox. Default z-ai/glm-5.3-flash (issue #1180); openrouter/auto so com opt-in.
 triggers:
   - garra
   - garra ask
@@ -14,9 +14,9 @@ dependencies: []
 
 Esta skill define como o Claude Code chama o Garra como **agente auxiliar local**. O Garra oferece três canais com perfis de risco diferentes; esta skill obriga a escolha correta, o custo correto e a verificação pós-execução.
 
-Pré-condições empíricas (verificadas 2026-05-11):
+Pré-condições empíricas (verificadas 2026-05-11; defaults revisados 2026-09-13, issue #1180):
 
-- `garra chat --provider openrouter` SEM `--model` resolve para `openrouter/auto` (caro). **Sempre passar `--model` explicitamente.**
+- `garra chat --provider openrouter` SEM `--model` resolve para `z-ai/glm-5.3-flash`, o default do projeto (flash-tier, barato) — desde a issue #1180 nenhuma superfície cai mais em `openrouter/auto` sozinha. **Ainda assim, sempre passar `--model` explicitamente:** um `model:` no `config.yml` do usuário vence o default, e o banner tem que bater com o pedido.
 - `garra chat` NÃO tem `--timeout-secs` próprio — só `timeout(1)` do shell.
 - REPL do `chat` termina com `/exit` ou `/quit` (banner anuncia `/exit`).
 
@@ -31,14 +31,14 @@ Pré-condições empíricas (verificadas 2026-05-11):
 | Garra precisa ler arquivo/projeto/tool interna | `garra chat …` via stdin pipe | Tools (`file_read`, etc.) só existem no runtime do `chat` |
 | Tarefa complexa que justifica `openrouter/auto` | mesmo `chat`, com **autorização explícita do usuário** | Política de custo locked-in 2026-05-11 (`docs/cli-mcp-server.md`) — nunca auto-upgrade |
 
-Default sempre `openrouter/free`. `openrouter/auto` é **opt-in explícito** — exige o usuário pedir "use auto" ou aprovar a tarefa complexa no turno.
+Default em `chat`, `ask` e MCP é `z-ai/glm-5.3-flash` (issue #1180). `openrouter/free` **não é mais o default de nada** — é uma escolha explícita para smoke de custo zero (`--model openrouter/free` / `model: "openrouter/free"`). `openrouter/auto` é **opt-in explícito** — exige o usuário pedir "use auto" ou aprovar a tarefa complexa no turno.
 
 ---
 
 ## 2. Regras absolutas (segurança e custo)
 
 - **NUNCA** rodar `garra chat` sem prefixo `timeout N` no shell.
-- **SEMPRE** passar `--provider` E `--model` explicitamente em `chat`. Sem `--model`, o `chat` resolve para `openrouter/auto`.
+- **SEMPRE** passar `--provider` E `--model` explicitamente em `chat`. Sem `--model`, o `chat` resolve para `z-ai/glm-5.3-flash` (default do projeto) — ou para o `model:` que estiver no `config.yml` do usuário, que pode ser qualquer coisa.
 - **NUNCA** invocar `openrouter/auto` sem autorização explícita do usuário no turno corrente.
 - **NUNCA** pedir ao Garra para ler `.env`, `~/.garraia/config.yml`, vaults, tokens, chaves API, secrets de qualquer tipo.
 - **NUNCA** permitir escrita do Garra fora de `target/garra-cli-smoke/`. Esse é o único diretório-sandbox. Qualquer outro path requer aprovação explícita do usuário no turno.
@@ -52,7 +52,7 @@ Default sempre `openrouter/free`. `openrouter/auto` é **opt-in explícito** —
 
 ### A. Pergunta simples — preferir MCP
 
-Use a tool `mcp__garra__garra_ask` com `message="..."`. Sem flags adicionais; default já é `openrouter/free`.
+Use a tool `mcp__garra__garra_ask` com `message="..."`. Sem flags adicionais; default já é `z-ai/glm-5.3-flash` (issue #1180). Para smoke de custo zero, passe `model: "openrouter/free"` explicitamente. Se o operador fixou `GARRAIA_MCP_MODEL_ALLOWLIST`, o default precisa estar na lista — o erro `invalid_params` diz isso e como ajustar.
 
 ### B. Pergunta simples via CLI (JSON pipeline, scripts)
 
@@ -63,7 +63,7 @@ garra ask --provider openrouter --model openrouter/free \
 
 `garra ask` é LLM-only (audit-tested). Sem acesso a arquivos.
 
-### C. Leitura de arquivo via `chat` (smoke, free)
+### C. Leitura de arquivo via `chat` (smoke de custo zero — `openrouter/free` é escolha explícita, não o default)
 
 ```bash
 printf '<instrução para o Garra>\n/quit\n' \
@@ -111,7 +111,8 @@ Após qualquer chamada `chat`:
 
 | Sintoma | Causa provável | Correção |
 |---------|----------------|----------|
-| Banner mostra `Model: openrouter/auto` quando esperado era `free` | `--model` omitido | Sempre passar `--model` explícito |
+| Banner mostra `Model: z-ai/glm-5.3-flash` (ou o `model:` do config) quando esperado era `openrouter/free` ou `auto` | `--model` omitido — entrou o default do projeto (issue #1180) ou o valor do `config.yml` | Sempre passar `--model` explícito |
+| MCP responde `invalid_params` com "blocked by GARRAIA_MCP_MODEL_ALLOWLIST … this is the server default" | Operador fixou o allowlist no default antigo (`openrouter/free`) | Adicionar `z-ai/glm-5.3-flash` ao allowlist ou passar `model` permitido explicitamente |
 | `error.kind: provider_error` 401 | `OPENROUTER_API_KEY` ausente do shell | Verificar env vars do terminal que invocou |
 | Pipeline trava | `chat` é REPL — esperando stdin | Sempre terminar input com `\n/quit\n` E prefixar `timeout` |
 | `timeout: command not found` | PowerShell nativo, ou Windows sem GNU coreutils | Ver §6 (Windows/Git Bash) |

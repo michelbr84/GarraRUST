@@ -288,7 +288,7 @@
       "alert_number": 113,
       "rule_id": "rust/cleartext-logging",
       "path": "crates/garraia-cli/src/wizard/mod.rs",
-      "line": 673,
+      "line": 769,
       "sink_snippet": "println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\");",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",

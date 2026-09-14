@@ -156,14 +156,16 @@ Site oficial:
 
 [https://openrouter.ai](https://openrouter.ai)
 
-### Política `openrouter/free` vs `openrouter/auto`
+### Política de modelo e custo
 
 > GAR-576 — alinhamento de custo entre testes e tarefas reais.
+> Issue #1180 — um único padrão para todas as superfícies.
 
-| Modelo              | Quando usar                                                                                   |
-| ------------------- | --------------------------------------------------------------------------------------------- |
-| `openrouter/free`   | Smoke tests, validações rápidas, diagnóstico. Default sugerido em `config.yml`.               |
-| `openrouter/auto`   | Tarefas reais / complexas. Use **apenas** explicitamente via `--model openrouter/auto`.       |
+| Modelo               | Quando usar                                                                                    |
+| -------------------- | ---------------------------------------------------------------------------------------------- |
+| `z-ai/glm-5.3-flash` | **O padrão oficial.** Barato o bastante para rodar sozinho, bom o bastante para tarefa real.   |
+| `openrouter/auto`    | Tarefas pesadas, a preço de mercado. Use **apenas** explicitamente via `--model openrouter/auto`. |
+| `openrouter/free`    | Smoke test sem custo. Deixou de ser padrão — peça explicitamente via `--model openrouter/free`. |
 
 O CLI `garra chat` resolve o modelo na seguinte ordem (ver
 `docs/configuration.md` §"Provider / model resolution precedence"):
@@ -171,24 +173,26 @@ O CLI `garra chat` resolve o modelo na seguinte ordem (ver
 1. Flag `--model <X>` (precedência absoluta).
 2. `config.llm[<key>].model` (key match).
 3. Primeiro `config.llm[*]` cujo campo `provider:` casa com o tipo escolhido.
-4. Fallback hardcoded (`openrouter/auto`).
+4. Fallback hardcoded (`z-ai/glm-5.3-flash`). A constante vive em
+   `crates/garraia-config/src/defaults.rs` — fonte de verdade para CLI e
+   gateway; `crates/garraia-cli/src/defaults.rs` apenas a reexporta.
 
-Exemplo de uso barato:
+Exemplo padrão:
 
 ```bash
-# Smoke test — resolve openrouter/free a partir do config.yml.
+# Resolve z-ai/glm-5.3-flash — o padrão do projeto.
 garra chat --provider openrouter
 ```
 
-Exemplo de uso real:
+Exemplo de uso pesado:
 
 ```bash
 # Tarefa pesada — força openrouter/auto.
 garra chat --provider openrouter --model openrouter/auto
 ```
 
-Não existe upgrade automático `free → auto` — tráfego pago sempre
-exige `--model` explícito.
+Não existe upgrade automático para um modelo mais caro — tráfego acima
+do padrão sempre exige `--model` explícito.
 
 ---
 

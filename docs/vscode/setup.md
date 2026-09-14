@@ -76,5 +76,5 @@ provider default):
 ```bash
 curl -X POST http://localhost:3888/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"openrouter/auto","messages":[{"role":"user","content":"Olá!"}],"stream":false}'
+  -d '{"model":"z-ai/glm-5.3-flash","messages":[{"role":"user","content":"Olá!"}],"stream":false}'
 ```

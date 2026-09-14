@@ -14,27 +14,35 @@ gateway:
 # ============================================
 
 llm:
-  # LM Studio (servidor local — recomendado para uso offline)
-  # Certifique-se de que o LM Studio está rodando em http://localhost:1234
-  lmstudio:
-    provider: "openai"
-    model: "local-model"
-    base_url: "http://localhost:1234/v1"
-    api_key: "lm-studio"
+  # OpenRouter (nuvem) — PADRAO OFICIAL do GarraIA (issue #1180).
+  # Uma chave so, muitos modelos.
+  #
+  # FALTA A CHAVE: descomente a linha `api_key` abaixo e cole a sua
+  # (https://openrouter.ai/keys), ou exporte OPENROUTER_API_KEY no ambiente.
+  # Enquanto ela nao existir, o Garra ignora este bloco e cai no fallback
+  # local (Ollama). Nao deixe um valor de exemplo aqui: uma chave invalida
+  # vira erro 401 em vez de um fallback limpo.
+  openrouter:
+    provider: "openrouter"
+    model: "z-ai/glm-5.3-flash"
+    base_url: "https://openrouter.ai/api/v1"
+    # api_key: "sk-or-v1-SUA-CHAVE-AQUI"
 
-  # Ollama (servidor local alternativo — fallback automático)
+  # Ollama (servidor local) — SEGUNDA opcao: fallback automatico quando a
+  # nuvem nao responde. Veja `agent.fallback_providers` abaixo.
   ollama:
     provider: "ollama"
     model: "qwen3.8:latest"
     base_url: "http://localhost:11434"
 
-  # OpenRouter (provedor em nuvem — requer chave de API)
-  # Obtenha sua chave em https://openrouter.ai
-  # openrouter:
-  #   provider: "openrouter"
-  #   model: "openrouter/auto"
-  #   base_url: "https://openrouter.ai/api/v1"
-  #   api_key: "sk-or-v1-SEU-TOKEN-AQUI"
+  # LM Studio (servidor local alternativo — para uso 100% offline).
+  # Descomente e aponte `agent.default_provider` para "lmstudio" se preferir.
+  # Certifique-se de que o LM Studio esta rodando em http://localhost:1234
+  # lmstudio:
+  #   provider: "openai"
+  #   model: "local-model"
+  #   base_url: "http://localhost:1234/v1"
+  #   api_key: "lm-studio"
 
 # ============================================
 # Agent Configuration
@@ -55,7 +63,10 @@ agent:
     - NAO invente informacoes
     - Para mensagens simples, responda apenas com texto
 
-  default_provider: "lmstudio"
+  # Issue #1180: nuvem primeiro, local como segunda opcao.
+  default_provider: "openrouter"
+  fallback_providers:
+    - "ollama"
   max_tokens: 2048
   max_context_tokens: 12000
   max_history_messages: 10

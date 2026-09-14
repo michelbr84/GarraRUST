@@ -99,7 +99,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 |-----------------|---------|----------|--------------------|------------------------------------------------------|
 | `message`       | string  | yes      | —                  | Max 64 KiB. Trimmed; empty rejected.                 |
 | `provider`      | string  | no       | `openrouter`       | Enum: `ollama`/`anthropic`/`openai`/`openrouter`.    |
-| `model`         | string  | no       | `openrouter/free`  | Pass `openrouter/auto` explicitly for complex tasks. |
+| `model`         | string  | no       | `z-ai/glm-5.3-flash` | The project default (issue #1180). Pass a pricier model such as `openrouter/auto` explicitly for complex tasks. |
 | `timeout_secs`  | integer | no       | `60`               | Range `[1, 600]`. Excedes → `error.kind: "timeout"`. |
 | `system_prompt` | string  | no       | minimal default    | Max 8 KiB.                                           |
 
@@ -117,7 +117,7 @@ envelope. Success:
   "content": [
     {
       "type": "text",
-      "text": "{\"schema\":\"garra.ask.v1\",\"ok\":true,\"answer\":\"...\",\"provider\":\"openrouter\",\"model\":\"openrouter/free\",\"latency_ms\":1234}"
+      "text": "{\"schema\":\"garra.ask.v1\",\"ok\":true,\"answer\":\"...\",\"provider\":\"openrouter\",\"model\":\"z-ai/glm-5.3-flash\",\"latency_ms\":1234}"
     }
   ],
   "isError": false
@@ -141,17 +141,22 @@ Error:
 This shape gives Claude direct visibility into `provider`, `model`,
 `latency_ms`, and `error.kind` without parsing free-form text.
 
-## Cost policy (`openrouter/free` vs `openrouter/auto`)
+## Cost policy (the default is a spend guardrail)
 
-- **`openrouter/free`** is the **default**. Use for general
-  conversation, smoke tests, CI, automation, and anything where cost
-  matters.
-- **`openrouter/auto`** is **opt-in only** — the caller MUST pass
-  `model: "openrouter/auto"` explicitly. There is no automatic
-  `free → auto` upgrade.
+- **`z-ai/glm-5.3-flash`** is the **default** (issue #1180), and the
+  choice is deliberately a cost guardrail: an MCP host can call
+  `garra_ask` in a loop, unattended, so the default has to be a model
+  that cannot run up a bill. This slot used to hold `openrouter/free`
+  for exactly that reason; the flash-tier model keeps the property while
+  actually being good enough for real work.
+- **Anything pricier is opt-in only** — `openrouter/auto` in particular,
+  which the caller MUST pass as `model: "openrouter/auto"`. There is no
+  automatic upgrade to a costlier model.
+- **`openrouter/free`** still works, as an explicit
+  `model: "openrouter/free"`. It is simply no longer anyone's default.
 
 This mirrors the [`garra ask`](cli-ask.md) policy locked-in by user
-2026-05-11.
+2026-05-11 and amended by issue #1180.
 
 ## Operator limits (env vars, opt-in)
 
@@ -162,7 +167,7 @@ at startup via env vars, read once when `garra mcp-server` boots:
 
 | Env var | Effect |
 |---------|--------|
-| `GARRAIA_MCP_MODEL_ALLOWLIST` | Comma-separated model names. When set, a call whose (explicit or defaulted) `model` is not in the list is rejected with `invalid_params`. The operator's way to keep `openrouter/auto` unreachable: `GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free`. Applies to BOTH tools. |
+| `GARRAIA_MCP_MODEL_ALLOWLIST` | Comma-separated model names. When set, a call whose (explicit or defaulted) `model` is not in the list is rejected with `invalid_params`. The operator's way to keep `openrouter/auto` unreachable: `GARRAIA_MCP_MODEL_ALLOWLIST=z-ai/glm-5.3-flash`. Applies to BOTH tools. |
 | `GARRAIA_MCP_MAX_TIMEOUT_SECS` | Cap on `timeout_secs` (clamped to each tool's schema max: 600 for `garra_ask`, 1800 for `garra_agent`). Calls above the cap are rejected; a call omitting `timeout_secs` gets `min(schema_default, cap)` — 60 for `garra_ask`, 300 for `garra_agent`. |
 | `GARRAIA_MCP_ENABLE_TOOLS` | Opt-in for the full-agent tool. Truthy values: `1`, `true`, `yes` (case-insensitive). When unset, `garra_agent` is not advertised in `tools/list` and calls come back as `unknown tool` — the surface is byte-identical to the pre-agent server. |
 | `GARRAIA_MCP_ALLOWED_DIRS` | Optional comma-separated directory allowlist for `garra_agent`'s file tools (`file_read`/`file_write` relative paths). Falls back to the server's CWD. **UX belt only, not a boundary** — unrestricted `bash` can read anywhere the process can. |
@@ -198,7 +203,7 @@ Mirrors the gateway bootstrap exactly (`garraia-gateway/src/bootstrap/`):
 |-----------------|---------|----------|--------------------|-------|
 | `message`       | string  | yes      | —                  | Max 64 KiB. The task for the agent. |
 | `provider`      | string  | no       | `openrouter`       | Same enum as `garra_ask`. |
-| `model`         | string  | no       | `openrouter/free`  | Pass `openrouter/auto` for complex tasks. |
+| `model`         | string  | no       | `z-ai/glm-5.3-flash` | Same default as `garra_ask`. Pass `openrouter/auto` for complex tasks. |
 | `timeout_secs`  | integer | no       | `300`              | Range `[5, 1800]`. **Wall-clock cap for the ENTIRE agent loop** — every LLM round-trip plus every tool execution. |
 | `system_prompt` | string  | no       | generated          | Max 8 KiB. The default prompt names every registered tool and instructs the model to investigate instead of describing. |
 | `working_dir`   | string  | no       | —                  | Directory for file-tool relative paths. Since #1075 R3 the **bash child also runs in it** (`current_dir`). Validated for existence only — not against `GARRAIA_MCP_ALLOWED_DIRS` — and bash is unsandboxed: absolute paths reach anywhere. Must exist and be a directory. |
@@ -320,8 +325,9 @@ If `--help` works but the tool doesn't show up in Claude:
 
 ### Tool calls timeout immediately
 
-The default `timeout_secs` is 60. If the LLM takes longer (rare for
-`openrouter/free`), pass a larger value:
+The default `timeout_secs` is 60. If the LLM takes longer (rare for a
+flash-tier model like the default `z-ai/glm-5.3-flash`), pass a larger
+value:
 
 ```json
 {"name": "garra_ask", "arguments": {"message": "...", "timeout_secs": 120}}
@@ -477,7 +483,7 @@ working under a fully filtered environment:
   flag remains open).
 - Streaming partial responses via MCP.
 - `RedactingWriter` extension for provider error payloads.
-- Automatic `openrouter/free → openrouter/auto` fallback.
+- Automatic upgrade from the default model to a pricier one.
 - Per-user authentication / permissions.
 - MCP server telemetry / Prometheus counters.
 - Bash env allowlist for `garra_agent` (`GARRAIA_MCP_BASH_ENV_ALLOWLIST`)

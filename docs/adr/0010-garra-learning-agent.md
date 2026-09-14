@@ -127,6 +127,11 @@ session log → Miner detecta padrão repetido (≥3 ocorrências em contextos s
               ou Web UI; só então: Registry.promote() → SkillInstaller
 ```
 
+> **Emenda #1180 (2026-09-13):** o default do Generator passa a ser o default
+> do projeto, `z-ai/glm-5.3-flash` via OpenRouter — ver
+> [ADR 0022](0022-default-llm-identity.md). As menções a `openrouter/free`
+> neste ADR são o registro histórico da decisão original, não o valor vigente.
+
 **Loop 2: Use → Evaluate → Update (skill existente)**
 
 ```
