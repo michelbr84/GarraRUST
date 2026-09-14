@@ -36,7 +36,7 @@ reqwest = { workspace = true }
 # deny.toml ignore was removed with this change).
 #
 # Drop `default-features = false` once a lopdf release > 0.44.0 ships the fix.
-lopdf = { version = "0.44", default-features = false, features = ["chrono", "jiff", "rayon"] }
+lopdf = { version = "0.45", default-features = false, features = ["chrono", "jiff", "rayon"] }
 
 # Image processing — AVIF feature-gated OFF intentionally (plan 0053 PR-5,
 # GAR-451) to drop the rav1e → ravif → bitstream-io → core2 (yanked)
