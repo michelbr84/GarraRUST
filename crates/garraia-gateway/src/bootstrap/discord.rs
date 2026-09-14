@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::state::SharedState;
 
-use super::config::default_allowlist_path;
+use super::config::channel_gates;
 
 /// Build Discord channels from config. Must be called after state is
 /// wrapped in `Arc` so the message callback can capture a `SharedState`.
@@ -33,12 +33,9 @@ pub fn build_discord_channels(
             settings.insert("application_id".to_string(), serde_json::json!(id));
         }
 
-        let allowlist = Arc::new(Mutex::new(Allowlist::load_or_create(
-            &default_allowlist_path(),
-        )));
-        let pairing = Arc::new(Mutex::new(PairingManager::new(
-            std::time::Duration::from_secs(300),
-        )));
+        // #1189: gates compartilhados com o AppState -- instancias
+        // proprias fazem o `/pair` nunca casar com o `claim()`.
+        let (allowlist, pairing) = channel_gates(state);
 
         let state_for_cb = Arc::clone(state);
         let allowlist_for_cb = Arc::clone(&allowlist);

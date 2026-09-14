@@ -7,16 +7,15 @@
 //! forma — `(room_id, user_id, user_name, text, delta_tx)` — então o que
 //! muda aqui é a origem das credenciais e o prefixo do `session_id`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use garraia_agents::ChatMessage;
 use garraia_config::AppConfig;
-use garraia_security::{Allowlist, PairingManager};
 use tracing::{info, warn};
 
 use crate::state::SharedState;
 
-use super::config::{default_allowlist_path, resolve_api_key};
+use super::config::{channel_gates, resolve_api_key};
 
 /// Constrói os canais Matrix a partir da config. Chamado depois de o estado
 /// virar `Arc`, para o callback poder capturar um `SharedState`.
@@ -72,12 +71,9 @@ pub fn build_matrix_channels(
             })
             .unwrap_or_default();
 
-        let allowlist = Arc::new(Mutex::new(Allowlist::load_or_create(
-            &default_allowlist_path(),
-        )));
-        let pairing = Arc::new(Mutex::new(PairingManager::new(
-            std::time::Duration::from_secs(300),
-        )));
+        // #1189: gates compartilhados com o AppState -- instancias
+        // proprias fazem o `/pair` nunca casar com o `claim()`.
+        let (allowlist, pairing) = channel_gates(state);
 
         let state_for_cb = Arc::clone(state);
         let allowlist_for_cb = Arc::clone(&allowlist);

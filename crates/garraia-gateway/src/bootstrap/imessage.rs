@@ -1,15 +1,14 @@
 #![cfg(target_os = "macos")]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use garraia_channels::{IMessageChannel, IMessageOnMessageFn};
 use garraia_config::AppConfig;
-use garraia_security::{Allowlist, PairingManager};
 use tracing::{info, warn};
 
 use crate::state::SharedState;
 
-use super::config::default_allowlist_path;
+use super::config::channel_gates;
 
 /// Build iMessage channels from config. macOS-only.
 ///
@@ -31,13 +30,9 @@ pub fn build_imessage_channels(
             .and_then(|v| v.as_u64())
             .unwrap_or(2);
 
-        let allowlist = Arc::new(Mutex::new(Allowlist::load_or_create(
-            &default_allowlist_path(),
-        )));
-
-        let pairing = Arc::new(Mutex::new(PairingManager::new(
-            std::time::Duration::from_secs(300),
-        )));
+        // #1189: gates compartilhados com o AppState -- instancias
+        // proprias fazem o `/pair` nunca casar com o `claim()`.
+        let (allowlist, pairing) = channel_gates(state);
 
         let state_for_cb = Arc::clone(state);
         let allowlist_for_cb = Arc::clone(&allowlist);
