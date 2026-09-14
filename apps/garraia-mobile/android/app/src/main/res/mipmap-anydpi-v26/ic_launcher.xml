@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gerado por tool/gen_launcher_icons.py (#1177). Icone adaptativo: o
+     launcher aplica a propria mascara sobre fundo + frente; a camada
+     monochrome alimenta os themed icons do Android 13+. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/garra_icon_bg"/>
+    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome"/>
+</adaptive-icon>
