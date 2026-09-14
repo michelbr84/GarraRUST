@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
+import '../services/saved_localizations.dart';
 import 'chat_event.dart';
 import 'chat_socket.dart';
 import 'garra_connection.dart';
@@ -109,9 +110,11 @@ class GatewayConnection implements GarraConnection {
     );
     final id = r.data?['session_id'] as String?;
     if (id == null || id.isEmpty) {
+      // The message reaches the chat screen through commonErrorWithDetail,
+      // so it follows the user's language like every other error (#1178).
       throw DioException(
         requestOptions: r.requestOptions,
-        message: 'session_id missing',
+        message: (await savedLocalizations()).chatErrorSessionIdMissing,
       );
     }
     return id;
@@ -150,7 +153,7 @@ class GatewayConnection implements GarraConnection {
       throw DioException(
         requestOptions: r.requestOptions,
         response: r,
-        message: 'reply content missing from the gateway response',
+        message: (await savedLocalizations()).chatErrorReplyMissing,
       );
     }
     return content;
@@ -173,6 +176,12 @@ class GatewayConnection implements GarraConnection {
     if (sessionId == null || sessionId.isEmpty) {
       throw ArgumentError('sessionId is required for gateway chat');
     }
+
+    // Copy for the failures this client describes itself (#1178); the
+    // runtime's own `error` text is shown verbatim. Resolved once per turn,
+    // up front — the failure paths below are the wrong place to start
+    // reading preferences.
+    final l10n = await savedLocalizations();
 
     // The socket never opening is the ordinary case on an older gateway, a
     // proxy that refuses the upgrade, or a LAN that dropped. Nothing was
@@ -223,7 +232,7 @@ class GatewayConnection implements GarraConnection {
           continue;
         }
 
-        final event = ChatEvent.tryParse(raw);
+        final event = ChatEvent.tryParse(raw, l10n: l10n);
         // An unknown frame is skipped, never fatal: the gateway may grow a
         // frame type before the app learns it.
         if (event == null) continue;
@@ -239,13 +248,16 @@ class GatewayConnection implements GarraConnection {
       if (!submitted) {
         yield* _sendOverPost(text, sessionId);
       } else {
-        yield const ChatFailed('a conexao caiu antes de a resposta terminar');
+        yield ChatFailed(
+          l10n.chatErrorConnectionDropped,
+          kind: ChatFailureKind.connectionDropped,
+        );
       }
     } catch (e) {
       if (!submitted) {
         yield* _sendOverPost(text, sessionId);
       } else {
-        yield ChatFailed('$e');
+        yield ChatFailed('$e', kind: ChatFailureKind.transportError);
       }
     } finally {
       _activeSocket = null;

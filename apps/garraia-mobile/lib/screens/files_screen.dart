@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../l10n/l10n.dart';
 import '../runtime/models.dart';
 import '../runtime/runtime_providers.dart';
 import '../theme/garra_theme.dart';
@@ -26,12 +27,12 @@ class FilesScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final value = ref.watch(projectsProvider);
+    final l10n = context.l10n;
     return GarraPage(
-      title: 'Files',
+      title: l10n.filesTitle,
       body: AsyncBody<List<ProjectInfo>>(
         value: value,
-        emptyText:
-            'No projects on this runtime yet. Create one from the Garra console or CLI.',
+        emptyText: l10n.filesNoProjects,
         onRetry: () => ref.invalidate(projectsProvider),
         builder: (list) => ListView.builder(
           padding: const EdgeInsets.only(bottom: 24, top: 4),
@@ -67,8 +68,9 @@ class _ProjectFilesScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final value = ref.watch(projectFilesProvider(project.id));
+    final l10n = context.l10n;
     return GarraPage(
-      title: project.name.isEmpty ? 'Files' : project.name,
+      title: project.name.isEmpty ? l10n.filesTitle : project.name,
       body: Column(
         children: [
           Padding(
@@ -88,7 +90,7 @@ class _ProjectFilesScreen extends ConsumerWidget {
           Expanded(
             child: AsyncBody<List<String>>(
               value: value,
-              emptyText: 'This project has no tracked files.',
+              emptyText: l10n.filesProjectNoTrackedFiles,
               onRetry: () => ref.invalidate(projectFilesProvider(project.id)),
               builder: (files) => ListView.builder(
                 padding: const EdgeInsets.only(bottom: 24),

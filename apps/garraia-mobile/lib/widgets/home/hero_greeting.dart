@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/l10n.dart';
 import '../../theme/garra_theme.dart';
 import '../../theme/garra_tokens.dart';
 import '../brand/night_ridge.dart';
@@ -14,9 +15,10 @@ class HeroGreeting extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final greeting = name.trim().isEmpty
-        ? 'Hello 👋'
-        : 'Hello, ${name.trim()} 👋';
+        ? l10n.homeGreetingAnonymous
+        : l10n.homeGreetingNamed(name.trim());
     // Min height keeps the art a proper card; IntrinsicHeight lets the row
     // grow with the text instead of overflowing when fonts are larger than
     // the design assumed (accessibility text scale, test fonts).
@@ -45,7 +47,7 @@ class HeroGreeting extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Good to see you again.\nYour AI assistant is ready.',
+                    l10n.homeGreetingSubtitle,
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
                     style: garraText(
@@ -82,7 +84,7 @@ class HeroGreeting extends StatelessWidget {
                       right: 8,
                       bottom: 8,
                       child: Text(
-                        'Smaller device.\nBigger possibilities.',
+                        l10n.homeGreetingCaption,
                         textAlign: TextAlign.right,
                         style: garraText(
                           size: 11.5,

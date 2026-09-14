@@ -13,6 +13,8 @@ import 'package:garraia_mobile/screens/settings_screen.dart';
 import 'package:garraia_mobile/services/api_service.dart';
 import 'package:go_router/go_router.dart';
 
+import 'support/l10n_test_support.dart';
+
 class _StubApiService implements ApiService {
   final MeResult _me;
   bool logoutCalled = false;
@@ -71,12 +73,15 @@ const _health = GarraHealth(
   model: 'auto',
 );
 
-ProviderContainer _container(_StubApiService api) {
+Future<ProviderContainer> _container(_StubApiService api) async {
   return ProviderContainer(
     // Riverpod 3 retries throwing providers with a backoff Timer; widget
     // tests must end with no pending timers.
     retry: (_, __) => null,
     overrides: [
+      sharedPreferencesProvider.overrideWithValue(
+        await mockSharedPreferences(),
+      ),
       apiServiceProvider.overrideWithValue(api),
       runtimeConfigStateProvider.overrideWith(_CloudConfig.new),
       runtimeHealthProvider.overrideWith((ref) async => _health),
@@ -101,7 +106,12 @@ Widget _wrap(ProviderContainer container, Widget child) {
   );
   return UncontrolledProviderScope(
     container: container,
-    child: MaterialApp.router(routerConfig: router),
+    child: MaterialApp.router(
+      routerConfig: router,
+      locale: testLocalePt,
+      supportedLocales: supportedLocales,
+      localizationsDelegates: localizationsDelegates,
+    ),
   );
 }
 
@@ -116,22 +126,32 @@ void main() {
     tester,
   ) async {
     final api = _StubApiService(me);
-    final container = _container(api);
+    final container = await _container(api);
     addTearDown(container.dispose);
+    final l10n = await loadL10n();
 
     await tester.pumpWidget(_wrap(container, const SettingsScreen()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Runtime'), findsOneWidget);
-    expect(find.text('Garra Cloud'), findsOneWidget);
+    expect(find.text(l10n.settingsRuntimeTitle), findsOneWidget);
+    expect(find.text(l10n.runtimeModeCloudTitle), findsOneWidget);
     expect(find.textContaining('0.4.0-test'), findsOneWidget);
 
+    // The language card (#1178) sits above the account card, so everything
+    // from the account card down starts below the fold of the test viewport
+    // and the lazy ListView has not built it yet — scroll it in first. The
+    // extra pump lets `ensureVisible`'s jump lay out before asserting/tapping.
+    await tester.scrollUntilVisible(find.text(l10n.settingsAccountTitle), 200);
+    await tester.pumpAndSettle();
     expect(find.text('alice@example.com'), findsOneWidget);
     expect(find.textContaining('8f2c7e1a'), findsOneWidget);
     expect(find.textContaining('89ab'), findsOneWidget);
     expect(find.text('2026-03-10'), findsOneWidget);
-    expect(find.text('Sair da conta'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text(l10n.settingsLogout), 200);
+    await tester.pumpAndSettle();
+    expect(find.text(l10n.settingsLogout), findsOneWidget);
     await tester.scrollUntilVisible(find.textContaining('Garra Mobile v'), 200);
+    await tester.pumpAndSettle();
     expect(find.textContaining('Garra Mobile v'), findsOneWidget);
   });
 
@@ -139,27 +159,32 @@ void main() {
     'logout asks for confirmation; cancel keeps session, confirm logs out',
     (tester) async {
       final api = _StubApiService(me);
-      final container = _container(api);
+      final container = await _container(api);
       addTearDown(container.dispose);
+      final l10n = await loadL10n();
 
       await tester.pumpWidget(_wrap(container, const SettingsScreen()));
       await tester.pumpAndSettle();
 
-      await tester.ensureVisible(find.text('Sair da conta'));
-      await tester.tap(find.text('Sair da conta'));
+      // Below the fold (see the first test); settle after the scroll so the
+      // button is laid out on screen before tapping it.
+      await tester.scrollUntilVisible(find.text(l10n.settingsLogout), 200);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(l10n.settingsLogout));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsOneWidget);
+      expect(find.text(l10n.settingsLogoutConfirmTitle), findsOneWidget);
 
-      await tester.tap(find.text('Cancelar'));
+      await tester.tap(find.text(l10n.commonCancel));
       await tester.pumpAndSettle();
       expect(api.logoutCalled, isFalse);
 
-      await tester.tap(find.text('Sair da conta'));
+      await tester.tap(find.text(l10n.settingsLogout));
       await tester.pumpAndSettle();
       await tester.tap(
         find.descendant(
           of: find.byType(AlertDialog),
-          matching: find.text('Sair'),
+          matching: find.text(l10n.commonLogout),
         ),
       );
       await tester.pumpAndSettle();

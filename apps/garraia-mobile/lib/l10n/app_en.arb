@@ -1,0 +1,1217 @@
+{
+  "@@locale": "en",
+  "activityCopyLogToast": "Log copied",
+  "@activityCopyLogToast": {
+    "description": "CopyIconButton toast: shown after the log is copied to the clipboard"
+  },
+  "activityCopyLogTooltip": "Copy log",
+  "@activityCopyLogTooltip": {
+    "description": "CopyIconButton tooltip: on the runtime log box"
+  },
+  "activityCurrentSession": "Current session",
+  "@activityCurrentSession": {
+    "description": "GarraListTile title when the session is the currently selected one"
+  },
+  "activityLogEmpty": "(empty)",
+  "@activityLogEmpty": {
+    "description": "SelectableText content of the log box when the runtime returned no log lines"
+  },
+  "activityMessageCount": "{count, plural, =1{1 message} other{{count} messages}}",
+  "@activityMessageCount": {
+    "description": "GarraListTile subtitle: message count with hand-rolled plural; an adjacent literal '${s.channelId != null ? ' · ${s.chan",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "activityNoSessions": "No sessions on the runtime. Start a chat.",
+  "@activityNoSessions": {
+    "description": "EmptyState text when the session list is empty"
+  },
+  "activitySectionRuntimeLog": "Runtime log",
+  "@activitySectionRuntimeLog": {
+    "description": "SectionHeader label"
+  },
+  "activitySectionSessions": "Sessions",
+  "@activitySectionSessions": {
+    "description": "SectionHeader label"
+  },
+  "activityTitle": "Activity",
+  "@activityTitle": {
+    "description": "GarraPage title (AppBar)"
+  },
+  "agentsMcpConnected": "connected",
+  "@agentsMcpConnected": {
+    "description": "Status word inside the MCP server subtitle interpolation (s.connected == true)"
+  },
+  "agentsMcpDisconnected": "disconnected",
+  "@agentsMcpDisconnected": {
+    "description": "Status word inside the MCP server subtitle interpolation (s.connected == false)"
+  },
+  "agentsNoMcpServers": "No MCP servers configured on this runtime.",
+  "@agentsNoMcpServers": {
+    "description": "EmptyState text when /api/mcp returns an empty list"
+  },
+  "agentsNoModes": "No agent modes reported.",
+  "@agentsNoModes": {
+    "description": "EmptyState text when /api/modes returns an empty list"
+  },
+  "agentsSectionMcpServers": "MCP servers",
+  "@agentsSectionMcpServers": {
+    "description": "SectionHeader label"
+  },
+  "agentsSectionModes": "Agent modes",
+  "@agentsSectionModes": {
+    "description": "SectionHeader label"
+  },
+  "agentsTitle": "Agents",
+  "@agentsTitle": {
+    "description": "FeatureTile title:"
+  },
+  "agentsToolCount": "{count, plural, =1{1 tool} other{{count} tools}}",
+  "@agentsToolCount": {
+    "description": "GarraListTile subtitle of an MCP server row: tool count with hand-rolled plural, then ' · ' and a connection status word",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "appTitle": "Garra Mobile",
+  "@appTitle": {
+    "description": "Text() app title in the onboarding header row next to WolfMark"
+  },
+  "automationsEditorComingSoon": "This runtime supports automations, but the mobile editor lands in a later release.",
+  "@automationsEditorComingSoon": {
+    "description": "EmptyState text: when the runtime advertises the automations capability"
+  },
+  "automationsTitle": "Automations",
+  "@automationsTitle": {
+    "description": "GarraPage title of AutomationsScreen"
+  },
+  "automationsUnavailableWhy": "The connected Garra runtime does not expose a scheduling API yet. Scheduled tasks are managed from the Garra CLI today; this screen will light up automatically when the runtime advertises the capability.",
+  "@automationsUnavailableWhy": {
+    "description": "UnavailableFeature(why:) explanation body (three adjacent literals concatenated at lines 35-37)"
+  },
+  "biometricPromptReason": "Authenticate to access Garra",
+  "@biometricPromptReason": {
+    "description": "Default `reason` → localizedReason of the OS biometric prompt (system dialog the user reads)"
+  },
+  "chatCodeCopiedToast": "Code copied",
+  "@chatCodeCopiedToast": {
+    "description": "toast: of CopyIconButton (key copy-code), shown after copying a code block"
+  },
+  "chatCopyCodeTooltip": "Copy code",
+  "@chatCopyCodeTooltip": {
+    "description": "tooltip: of CopyIconButton (key copy-code) on fenced code blocks in assistant markdown"
+  },
+  "chatCopyMessageTooltip": "Copy message",
+  "@chatCopyMessageTooltip": {
+    "description": "tooltip: of CopyIconButton (key copy-message) next to the bubble timestamp"
+  },
+  "chatEmptySubtitle": "Your personal AI assistant.\nAsk me anything!",
+  "@chatEmptySubtitle": {
+    "description": "Text() subtitle of the empty-chat state (bodyMedium, two lines separated by \\n)"
+  },
+  "chatEmptyTitle": "Hi! I'm Garra.",
+  "@chatEmptyTitle": {
+    "description": "Text() headline of the empty-chat state (titleLarge, bold)"
+  },
+  "chatErrorConnectionDropped": "The connection dropped before the reply finished.",
+  "@chatErrorConnectionDropped": {
+    "description": "ChatFailed message emitted when the WebSocket stream ends without a terminator after the message was submitted → becomes"
+  },
+  "chatErrorReplyMissing": "The gateway reply came back without content.",
+  "@chatErrorReplyMissing": {
+    "description": "DioException message when the reply has no content; surfaced via commonErrorWithDetail"
+  },
+  "chatErrorRuntimeReported": "The runtime reported an error.",
+  "@chatErrorRuntimeReported": {
+    "description": "ChatFailed fallback message when an `error` frame carries no `message` → ChatTurnFailed → chat screen turn error"
+  },
+  "chatErrorSessionIdMissing": "The gateway did not return a session id.",
+  "@chatErrorSessionIdMissing": {
+    "description": "DioException message when POST /api/sessions returns no id; surfaced via commonErrorWithDetail"
+  },
+  "chatInputHint": "Type a message...",
+  "@chatInputHint": {
+    "description": "hintText: of the chat input TextField"
+  },
+  "chatKeyboardTooltip": "Keyboard",
+  "@chatKeyboardTooltip": {
+    "description": "tooltip: of the voice/keyboard toggle IconButton when voice input is shown (showVoiceInput ? 'Teclado' : 'Voz')"
+  },
+  "chatLoadConversationError": "Could not load the conversation: {error}",
+  "@chatLoadConversationError": {
+    "description": "Text() in the AsyncValue error branch of the message list",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "chatMessageCopiedToast": "Message copied",
+  "@chatMessageCopiedToast": {
+    "description": "toast: of CopyIconButton (key copy-message), shown after copying a message"
+  },
+  "chatMessageQueuedOffline": "Message saved and will be sent when you're back online",
+  "@chatMessageQueuedOffline": {
+    "description": "SnackBar content shown when send fails while offline and the message is queued"
+  },
+  "chatNewSession": "New session",
+  "@chatNewSession": {
+    "description": "PopupMenuItem label (value 'new'), shown when runtime is not cloud"
+  },
+  "chatPairDevicesTooltip": "Pair devices",
+  "@chatPairDevicesTooltip": {
+    "description": "tooltip: of the AppBar IconButton that opens /pair"
+  },
+  "chatStreamingRunningTool": "running {tool}",
+  "@chatStreamingRunningTool": {
+    "description": "Text() in _ToolChip inside the streaming assistant bubble while a tool call is open (italic, onSurfaceVariant)",
+    "placeholders": {
+      "tool": {
+        "type": "String"
+      }
+    }
+  },
+  "chatSuggestionFunFact": "Tell me a wild fun fact",
+  "@chatSuggestionFunFact": {
+    "description": "ActionChip label in _EmptyChat._suggestions (also sent as the prompt when tapped)"
+  },
+  "chatSuggestionJoke": "Tell me a joke",
+  "@chatSuggestionJoke": {
+    "description": "ActionChip label in _EmptyChat._suggestions (also sent as the prompt when tapped)"
+  },
+  "chatSuggestionOrganizeDay": "Help me organize my day",
+  "@chatSuggestionOrganizeDay": {
+    "description": "ActionChip label in _EmptyChat._suggestions (also sent as the prompt when tapped)"
+  },
+  "chatSuggestionSuperpower": "What's your superpower?",
+  "@chatSuggestionSuperpower": {
+    "description": "ActionChip label in _EmptyChat._suggestions (also sent as the prompt when tapped)"
+  },
+  "chatSuggestionWhatCanYouDo": "What can you do?",
+  "@chatSuggestionWhatCanYouDo": {
+    "description": "ActionChip label in _EmptyChat._suggestions (also sent as the prompt when tapped)"
+  },
+  "chatSuggestionWhoAreYou": "Who are you, Garra?",
+  "@chatSuggestionWhoAreYou": {
+    "description": "ActionChip label in _EmptyChat._suggestions (also sent as the prompt when tapped)"
+  },
+  "chatVoiceNoRuntimeConfigured": "No runtime configured",
+  "@chatVoiceNoRuntimeConfigured": {
+    "description": "Return value of _handleAudioRecorded; VoiceInputWidget forwards it to onTranscription, which writes it into the chat Tex"
+  },
+  "chatVoiceTooltip": "Voice",
+  "@chatVoiceTooltip": {
+    "description": "tooltip: of the voice/keyboard toggle IconButton when voice input is hidden (showVoiceInput ? 'Teclado' : 'Voz')"
+  },
+  "chatVoiceTranscribeError": "Could not transcribe audio",
+  "@chatVoiceTranscribeError": {
+    "description": "Return value of _handleAudioRecorded on exception; forwarded by VoiceInputWidget into the chat TextField"
+  },
+  "commonBack": "Back",
+  "@commonBack": {
+    "description": "TextButton label, step 2 footer row (_RuntimeStep)"
+  },
+  "commonBrand": "Garra",
+  "@commonBrand": {
+    "description": "AppBar title Text next to the mascot"
+  },
+  "commonCancel": "Cancel",
+  "@commonCancel": {
+    "description": "TextButton action in the logout AlertDialog (dismiss)"
+  },
+  "commonChecking": "Checking…",
+  "@commonChecking": {
+    "description": "RuntimeStatusCard subtitle: while health is loading"
+  },
+  "commonContinue": "Continue",
+  "@commonContinue": {
+    "description": "ElevatedButton label, step 1 (_NameStep)"
+  },
+  "commonCopied": "Copied",
+  "@commonCopied": {
+    "description": "default value of the `toast` parameter of copyToClipboard(), shown as SnackBar content for 1s after copying"
+  },
+  "commonCopy": "Copy",
+  "@commonCopy": {
+    "description": "FilledButton.icon label: Text()"
+  },
+  "commonDelete": "Delete",
+  "@commonDelete": {
+    "description": "AlertDialog action FilledButton child Text() (confirm delete)"
+  },
+  "commonEmailInvalid": "Invalid email",
+  "@commonEmailInvalid": {
+    "description": "TextFormField validator error for the email field (also register_screen.dart:76)"
+  },
+  "commonEmailLabel": "Email",
+  "@commonEmailLabel": {
+    "description": "_InfoRow label: (account e-mail row)"
+  },
+  "commonEmptyNothingYet": "Nothing here yet.",
+  "@commonEmptyNothingYet": {
+    "description": "Default value of AsyncBody.emptyText, rendered by EmptyState Text() for empty lists"
+  },
+  "commonErrorNoConnection": "No connection. Check your internet.",
+  "@commonErrorNoConnection": {
+    "description": "Error Text() under the form, returned by _friendlyError on network errors (also register_screen.dart:145)"
+  },
+  "commonErrorWithDetail": "Error: {error}",
+  "@commonErrorWithDetail": {
+    "description": "SnackBar content when sending fails while online",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "commonFeatureUnavailableOnRuntime": "{feature} is not available on this runtime",
+  "@commonFeatureUnavailableOnRuntime": {
+    "description": "Text() title of the UnavailableFeature widget (capability-missing explanation screen)",
+    "placeholders": {
+      "feature": {
+        "type": "String"
+      }
+    }
+  },
+  "commonLogout": "Sign out",
+  "@commonLogout": {
+    "description": "PopupMenuItem label (value 'logout'), shown when runtime is cloud"
+  },
+  "commonNotConfigured": "Not configured",
+  "@commonNotConfigured": {
+    "description": "_InfoRow value fallback when config?.mode is null"
+  },
+  "commonNotSet": "Not set",
+  "@commonNotSet": {
+    "description": "_Row subtitle: when ownerName is empty"
+  },
+  "commonPasswordLabel": "Password",
+  "@commonPasswordLabel": {
+    "description": "InputDecoration labelText of the password field (also register_screen.dart:83)"
+  },
+  "commonPasswordMinLength": "At least 8 characters",
+  "@commonPasswordMinLength": {
+    "description": "TextFormField validator error for the password field (also register_screen.dart:93)"
+  },
+  "commonRefresh": "Refresh",
+  "@commonRefresh": {
+    "description": "IconButton tooltip on the refresh action"
+  },
+  "commonRetry": "Retry",
+  "@commonRetry": {
+    "description": "OutlinedButton child Text() in ErrorState"
+  },
+  "commonSave": "Save",
+  "@commonSave": {
+    "description": "AlertDialog action FilledButton child Text()"
+  },
+  "commonSaving": "Saving…",
+  "@commonSaving": {
+    "description": "ElevatedButton label of step 3 while the config is being persisted (saving == true)"
+  },
+  "commonSignIn": "Sign in",
+  "@commonSignIn": {
+    "description": "ElevatedButton label of step 3 when mode == RuntimeMode.cloud (navigates to /login)"
+  },
+  "errorCouldNotReachRuntime": "Could not reach the runtime",
+  "@errorCouldNotReachRuntime": {
+    "description": "Text() title of the shared ErrorState widget (shown by AsyncBody on error)"
+  },
+  "errorNoRuntimeConfigured": "No Garra runtime configured.",
+  "@errorNoRuntimeConfigured": {
+    "description": "ErrorState message when NoRuntimeConfigured is thrown (requireConnection())"
+  },
+  "filesNoProjects": "No projects on this runtime yet. Create one from the Garra console or CLI.",
+  "@filesNoProjects": {
+    "description": "AsyncBody emptyText when /api/projects returns an empty list"
+  },
+  "filesProjectNoTrackedFiles": "This project has no tracked files.",
+  "@filesProjectNoTrackedFiles": {
+    "description": "AsyncBody emptyText when /api/projects/{id}/files returns an empty list"
+  },
+  "filesTitle": "Files",
+  "@filesTitle": {
+    "description": "FeatureTile title:"
+  },
+  "homeBannerHeadline": "LOCAL AI. A BRIGHTER YOU.",
+  "@homeBannerHeadline": {
+    "description": "Text() all-caps headline of the footer BrandBanner (letter-spaced)"
+  },
+  "homeBannerSubtitle": "More control. A more capable you.",
+  "@homeBannerSubtitle": {
+    "description": "Text() muted subtitle under the BrandBanner headline"
+  },
+  "homeFeatureTileSemantics": "{title}. {subtitle}",
+  "@homeFeatureTileSemantics": {
+    "description": "Semantics label of the FeatureTile button (available == true branch)",
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "subtitle": {
+        "type": "String"
+      }
+    }
+  },
+  "homeFeatureTileSemanticsUnavailable": "{title}. {subtitle}. Unavailable on this runtime",
+  "@homeFeatureTileSemanticsUnavailable": {
+    "description": "Semantics label of the FeatureTile button (available == false branch, suffix appended to '$title. $subtitle')",
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "subtitle": {
+        "type": "String"
+      }
+    }
+  },
+  "homeFeatureUnavailable": "Unavailable",
+  "@homeFeatureUnavailable": {
+    "description": "Text() inside the _UnavailablePill badge shown on dimmed feature tiles"
+  },
+  "homeGreetingAnonymous": "Hello 👋",
+  "@homeGreetingAnonymous": {
+    "description": "Text() hero greeting when the onboarding display name is empty"
+  },
+  "homeGreetingCaption": "Smaller device.\nBigger possibilities.",
+  "@homeGreetingCaption": {
+    "description": "Text() right-aligned caption over the NightRidge art in HeroGreeting"
+  },
+  "homeGreetingNamed": "Hello, {name} 👋",
+  "@homeGreetingNamed": {
+    "description": "Text() hero greeting with the user's display name",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "homeGreetingSubtitle": "Good to see you again.\nYour AI assistant is ready.",
+  "@homeGreetingSubtitle": {
+    "description": "Text() two-line muted subtitle under the hero greeting"
+  },
+  "homeHeaderQuote": "“AI that works for you.\nOn your terms.”",
+  "@homeHeaderQuote": {
+    "description": "Text() italic tagline quote on the right side of HomeHeader (multi-line, right-aligned)"
+  },
+  "homeHeaderTagline": "Local-first AI Assistant",
+  "@homeHeaderTagline": {
+    "description": "Text() subtitle under the 'Garra Mobile' brand name in HomeHeader"
+  },
+  "homeHeaderValuePowerful": "Powerful",
+  "@homeHeaderValuePowerful": {
+    "description": "TextSpan (violet) inside the _ValuesPill 'Private • Powerful • Yours' badge"
+  },
+  "homeHeaderValuePrivate": "Private",
+  "@homeHeaderValuePrivate": {
+    "description": "TextSpan (cyan) inside the _ValuesPill 'Private • Powerful • Yours' badge"
+  },
+  "homeHeaderValueYours": "Yours",
+  "@homeHeaderValueYours": {
+    "description": "TextSpan (cyan) inside the _ValuesPill 'Private • Powerful • Yours' badge"
+  },
+  "homeLlmConnectedToPc": "Connected to PC",
+  "@homeLlmConnectedToPc": {
+    "description": "_llmLabel return value shown as LLM card value: local mode with a local-server provider (ollama/llamacpp/lmstudio/vllm)"
+  },
+  "homeLlmLabel": "LLM:",
+  "@homeLlmLabel": {
+    "description": "RuntimeStatusCard label: (small caption above value)"
+  },
+  "homeLlmLocalServer": "Local server",
+  "@homeLlmLocalServer": {
+    "description": "_llmLabel return value shown as LLM card value: remote/cloud mode with a local-server provider"
+  },
+  "homeLlmNoProvider": "No provider set",
+  "@homeLlmNoProvider": {
+    "description": "RuntimeStatusCard value: LLM card when health.provider is null"
+  },
+  "homeLlmNotConnected": "Not connected",
+  "@homeLlmNotConnected": {
+    "description": "RuntimeStatusCard value: LLM card when runtime unreachable"
+  },
+  "homeLlmPickProvider": "Pick a provider",
+  "@homeLlmPickProvider": {
+    "description": "RuntimeStatusCard subtitle: LLM card fallback when model and provider are null"
+  },
+  "homeLlmWaitingRuntime": "Waiting for the runtime",
+  "@homeLlmWaitingRuntime": {
+    "description": "RuntimeStatusCard subtitle: LLM card when runtime unreachable"
+  },
+  "homeQuickActionsSubtitle": "Common tasks, one tap away.",
+  "@homeQuickActionsSubtitle": {
+    "description": "Text() subtitle under the QuickActionsPanel title"
+  },
+  "homeQuickActionsTagline": "Get more done, locally.",
+  "@homeQuickActionsTagline": {
+    "description": "Text() right-aligned muted caption in the QuickActionsPanel header row"
+  },
+  "homeQuickActionsTitle": "Quick Actions",
+  "@homeQuickActionsTitle": {
+    "description": "Text() panel title next to the bolt icon in QuickActionsPanel"
+  },
+  "homeQuickPairPc": "Pair PC",
+  "@homeQuickPairPc": {
+    "description": "QuickAction label (QuickActionsPanel button)"
+  },
+  "homeRuntimeLabel": "Runtime:",
+  "@homeRuntimeLabel": {
+    "description": "RuntimeStatusCard label: (small caption above value)"
+  },
+  "homeRuntimeLocal": "Local on this phone",
+  "@homeRuntimeLocal": {
+    "description": "RuntimeStatusCard value: for RuntimeMode.local"
+  },
+  "homeRuntimeLocalTagline": "Fast. Private. Always with you.",
+  "@homeRuntimeLocalTagline": {
+    "description": "RuntimeStatusCard subtitle: healthy local runtime tagline"
+  },
+  "homeRuntimeNotRunning": "Not running — open Termux and run `garra start`",
+  "@homeRuntimeNotRunning": {
+    "description": "RuntimeStatusCard subtitle: when health errored in local mode"
+  },
+  "homeRuntimeRemote": "Garra on your network",
+  "@homeRuntimeRemote": {
+    "description": "RuntimeStatusCard value: for RuntimeMode.remote"
+  },
+  "homeRuntimeUnreachable": "Unreachable — check the address",
+  "@homeRuntimeUnreachable": {
+    "description": "RuntimeStatusCard subtitle: when health errored in remote/cloud mode"
+  },
+  "homeRuntimeVersionSessions": "v{version} · {count, plural, =1{{count} session} other{{count} sessions}}",
+  "@homeRuntimeVersionSessions": {
+    "description": "RuntimeStatusCard subtitle: healthy remote/cloud runtime, version + session count",
+    "placeholders": {
+      "version": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "homeStatusCardSemantics": "{label} {value}. {subtitle}",
+  "@homeStatusCardSemantics": {
+    "description": "Semantics label of the RuntimeStatusCard (Runtime/LLM status cards under the hero)",
+    "placeholders": {
+      "label": {
+        "type": "String"
+      },
+      "value": {
+        "type": "String"
+      },
+      "subtitle": {
+        "type": "String"
+      }
+    }
+  },
+  "homeTileAgentsSubtitle": "Create and manage agents",
+  "@homeTileAgentsSubtitle": {
+    "description": "FeatureTile subtitle:"
+  },
+  "homeTileAutomationsSubtitle": "Set up smart workflows",
+  "@homeTileAutomationsSubtitle": {
+    "description": "FeatureTile subtitle:"
+  },
+  "homeTileChat": "Chat",
+  "@homeTileChat": {
+    "description": "FeatureTile title:"
+  },
+  "homeTileChatSubtitle": "Talk with your AI assistant",
+  "@homeTileChatSubtitle": {
+    "description": "FeatureTile subtitle:"
+  },
+  "homeTileFilesSubtitle": "Access and manage files",
+  "@homeTileFilesSubtitle": {
+    "description": "FeatureTile subtitle:"
+  },
+  "homeTileMemorySubtitle": "What Garra remembers",
+  "@homeTileMemorySubtitle": {
+    "description": "FeatureTile subtitle:"
+  },
+  "homeTileSkillsSubtitle": "Extend what Garra can do",
+  "@homeTileSkillsSubtitle": {
+    "description": "FeatureTile subtitle:"
+  },
+  "loginErrorGeneric": "Couldn't sign in. Please try again.",
+  "@loginErrorGeneric": {
+    "description": "Error Text() under the form, generic fallback of _friendlyError"
+  },
+  "loginErrorInvalidCredentials": "Incorrect email or password.",
+  "@loginErrorInvalidCredentials": {
+    "description": "Error Text() under the form, returned by _friendlyError on 401 / invalid credentials"
+  },
+  "loginGreeting": "Hi! I'm Garra.",
+  "@loginGreeting": {
+    "description": "Text() greeting under the mascot on the login screen"
+  },
+  "loginNoAccountCta": "Don't have an account? Create one",
+  "@loginNoAccountCta": {
+    "description": "TextButton label linking to /register"
+  },
+  "loginSubtitle": "Sign in to continue",
+  "@loginSubtitle": {
+    "description": "Text() subtitle under the greeting"
+  },
+  "memoryAlreadyGone": "It was already gone",
+  "@memoryAlreadyGone": {
+    "description": "SnackBar content after DELETE returned 404 (existed == false)"
+  },
+  "memoryCopied": "Memory copied",
+  "@memoryCopied": {
+    "description": "copyToClipboard toast: (SnackBar shown after copying the memory text)"
+  },
+  "memoryDeleteBody": "It disappears from the runtime and cannot be undone.",
+  "@memoryDeleteBody": {
+    "description": "AlertDialog content (delete confirmation, entry.pinned == false)"
+  },
+  "memoryDeleteFailed": "Could not delete: {error}",
+  "@memoryDeleteFailed": {
+    "description": "SnackBar content on delete failure (catch block)",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "memoryDeletePinnedBody": "It is pinned, but deleting does not ask twice: it disappears from the runtime and cannot be undone.",
+  "@memoryDeletePinnedBody": {
+    "description": "AlertDialog content (delete confirmation, entry.pinned == true)"
+  },
+  "memoryDeleteTitle": "Delete this memory?",
+  "@memoryDeleteTitle": {
+    "description": "AlertDialog title (delete confirmation)"
+  },
+  "memoryDeleted": "Memory deleted",
+  "@memoryDeleted": {
+    "description": "SnackBar content after successful DELETE (existed == true)"
+  },
+  "memoryEmpty": "Garra has not stored any memory yet. Chat a little and come back.",
+  "@memoryEmpty": {
+    "description": "AsyncBody emptyText: when recent memory list is empty"
+  },
+  "memoryNoMatches": "No memory matches \"{query}\".",
+  "@memoryNoMatches": {
+    "description": "AsyncBody emptyText: when a search returns nothing",
+    "placeholders": {
+      "query": {
+        "type": "String"
+      }
+    }
+  },
+  "memorySearchHint": "Search memories",
+  "@memorySearchHint": {
+    "description": "TextField hintText:"
+  },
+  "memoryTitle": "Memory",
+  "@memoryTitle": {
+    "description": "FeatureTile title:"
+  },
+  "navHome": "Home",
+  "@navHome": {
+    "description": "enum display name: GarraTab.label getter, rendered as Text() and Semantics label in the bottom nav"
+  },
+  "notificationsChannelChatDescription": "Notifications for new chat messages",
+  "@notificationsChannelChatDescription": {
+    "description": "AndroidNotificationChannel description for channel 'chat_messages'"
+  },
+  "notificationsChannelChatName": "Chat messages",
+  "@notificationsChannelChatName": {
+    "description": "AndroidNotificationChannel name for channel id 'chat_messages' (visible in Android system notification settings)"
+  },
+  "notificationsChannelSyncDescription": "Notifications about sync between your devices",
+  "@notificationsChannelSyncDescription": {
+    "description": "AndroidNotificationChannel description for channel 'sync_status'"
+  },
+  "notificationsChannelSyncName": "Sync status",
+  "@notificationsChannelSyncName": {
+    "description": "AndroidNotificationChannel name for channel id 'sync_status'"
+  },
+  "notificationsChannelSystemDescription": "System notifications",
+  "@notificationsChannelSystemDescription": {
+    "description": "AndroidNotificationChannel description for channel 'system'"
+  },
+  "notificationsChannelSystemName": "System",
+  "@notificationsChannelSystemName": {
+    "description": "AndroidNotificationChannel name for channel id 'system'"
+  },
+  "notificationsEmpty": "Nothing yet. Notifications from automations and background agents will show up here.",
+  "@notificationsEmpty": {
+    "description": "EmptyState text: on the notifications tab"
+  },
+  "notificationsTitle": "Notifications",
+  "@notificationsTitle": {
+    "description": "GarraPage title of NotificationsScreen"
+  },
+  "onboardingDoneNextCloud": "Next: sign in to your account.",
+  "@onboardingDoneNextCloud": {
+    "description": "Second line of the muted Text() under the step-3 headline when mode == RuntimeMode.cloud"
+  },
+  "onboardingDoneNextLocal": "Your AI lives on your device. The model doesn't have to.",
+  "@onboardingDoneNextLocal": {
+    "description": "Second line of the muted Text() under the step-3 headline when mode is local or remote"
+  },
+  "onboardingDoneOpenGarra": "Open Garra",
+  "@onboardingDoneOpenGarra": {
+    "description": "ElevatedButton label of step 3 for local/remote modes (navigates to /home)"
+  },
+  "onboardingDoneRuntime": "Runtime: {runtime}.",
+  "@onboardingDoneRuntime": {
+    "description": "First line of the muted Text() under the step-3 headline (_DoneStep); concatenated with the next-step sentence via '\\n'",
+    "placeholders": {
+      "runtime": {
+        "type": "String"
+      }
+    }
+  },
+  "onboardingDoneTitle": "All set.",
+  "@onboardingDoneTitle": {
+    "description": "Text() centered headline of step 3 (_DoneStep) when the name is empty"
+  },
+  "onboardingDoneTitleNamed": "All set, {name}.",
+  "@onboardingDoneTitleNamed": {
+    "description": "Text() centered headline of step 3 (_DoneStep) when the user typed a name",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "onboardingErrorCloudUnreachable": "Could not reach Garra Cloud",
+  "@onboardingErrorCloudUnreachable": {
+    "description": "_explain(DioException) fallback for RuntimeMode.cloud; shown as warning Text(error!) (line 350)"
+  },
+  "onboardingErrorHttpStatus": "HTTP {code} from the gateway",
+  "@onboardingErrorHttpStatus": {
+    "description": "_explain(DioException) return value for any other HTTP status; shown as warning Text(error!) (line 350)",
+    "placeholders": {
+      "code": {
+        "type": "int"
+      }
+    }
+  },
+  "onboardingErrorLocalUnreachable": "Nothing answered on this phone. Is `garra start` running in Termux?",
+  "@onboardingErrorLocalUnreachable": {
+    "description": "_explain(DioException) fallback for RuntimeMode.local (no HTTP status); shown as warning Text(error!) (line 350)"
+  },
+  "onboardingErrorNeedsApiKey": "The gateway asked for an API key",
+  "@onboardingErrorNeedsApiKey": {
+    "description": "_explain(DioException) return value for HTTP 401/403; shown as warning Text(error!) (line 350)"
+  },
+  "onboardingErrorRemoteUnreachable": "No answer. Same Wi-Fi? Is the gateway bound to 0.0.0.0?",
+  "@onboardingErrorRemoteUnreachable": {
+    "description": "_explain(DioException) fallback for RuntimeMode.remote; shown as warning Text(error!) (line 350)"
+  },
+  "onboardingGatewayAddressLabel": "Gateway address",
+  "@onboardingGatewayAddressLabel": {
+    "description": "Text() field label above the URL TextField (shown for local and remote modes)"
+  },
+  "onboardingGatewayApiKeyHint": "Only if gateway.api_key is set",
+  "@onboardingGatewayApiKeyHint": {
+    "description": "InputDecoration(hintText:) of the API key TextField (remote mode only)"
+  },
+  "onboardingGatewayApiKeyLabel": "Gateway API key (optional)",
+  "@onboardingGatewayApiKeyLabel": {
+    "description": "Text() field label above the API key TextField (remote mode only)"
+  },
+  "onboardingInvalidAddress": "Enter a valid http(s) address",
+  "@onboardingInvalidAddress": {
+    "description": "_probeError assigned in _test(); rendered as warning Text(error!) under the Test connection button (line 350)"
+  },
+  "onboardingNameSubtitle": "Only used for the greeting. It never leaves this device.",
+  "@onboardingNameSubtitle": {
+    "description": "Text() muted subtitle of step 1 (_NameStep)"
+  },
+  "onboardingNameTitle": "What should Garra\ncall you?",
+  "@onboardingNameTitle": {
+    "description": "Text() headline of step 1 (_NameStep)"
+  },
+  "onboardingPlainHttpWarning": "Plain HTTP: your messages and the API key are readable on this network. Fine on your home Wi-Fi, not on a public one.",
+  "@onboardingPlainHttpWarning": {
+    "description": "Text() warning under the address field in _PlainHttpHint, shown while the LAN URL is not https:// (remote mode)"
+  },
+  "onboardingProbeResult": "Garra {version} · {status}",
+  "@onboardingProbeResult": {
+    "description": "Text() in _ProbeResult next to the ok/warn icon after a successful health probe (provider absent)",
+    "placeholders": {
+      "version": {
+        "type": "String"
+      },
+      "status": {
+        "type": "String"
+      }
+    }
+  },
+  "onboardingProbeResultWithProvider": "Garra {version} · {status} · {provider}",
+  "@onboardingProbeResultWithProvider": {
+    "description": "Text() in _ProbeResult after a successful health probe when health.provider is set (conditional suffix of the line-546 s",
+    "placeholders": {
+      "version": {
+        "type": "String"
+      },
+      "status": {
+        "type": "String"
+      },
+      "provider": {
+        "type": "String"
+      }
+    }
+  },
+  "onboardingRuntimeSubtitle": "Your memory, skills and files stay on the runtime you pick. The LLM can be anywhere.",
+  "@onboardingRuntimeSubtitle": {
+    "description": "Text() muted subtitle of step 2 (_RuntimeStep)"
+  },
+  "onboardingRuntimeTitle": "Where does\nGarra run?",
+  "@onboardingRuntimeTitle": {
+    "description": "Text() headline of step 2 (_RuntimeStep)"
+  },
+  "onboardingTermuxInstallHint": "Then come back and tap \"Test connection\". The app talks to it on 127.0.0.1.",
+  "@onboardingTermuxInstallHint": {
+    "description": "Text() muted footer inside the _TermuxHint card (local mode only)"
+  },
+  "onboardingTermuxInstallTitle": "Install Garra in Termux (once):",
+  "@onboardingTermuxInstallTitle": {
+    "description": "Text() heading inside the _TermuxHint card (local mode only)"
+  },
+  "onboardingTestConnection": "Test connection",
+  "@onboardingTestConnection": {
+    "description": "OutlinedButton.icon label of the health probe button (idle state)"
+  },
+  "onboardingTesting": "Testing…",
+  "@onboardingTesting": {
+    "description": "OutlinedButton.icon label while the health probe is in flight (testing == true)"
+  },
+  "pairDeviceLastSeen": "Last seen: {lastSeen}",
+  "@pairDeviceLastSeen": {
+    "description": "ListTile subtitle when device is offline; shows last-seen timestamp string from the sync server",
+    "placeholders": {
+      "lastSeen": {
+        "type": "String"
+      }
+    }
+  },
+  "pairDeviceOnline": "Online",
+  "@pairDeviceOnline": {
+    "description": "ListTile subtitle when device.isOnline is true"
+  },
+  "pairPairedDevicesHeader": "Paired Devices",
+  "@pairPairedDevicesHeader": {
+    "description": "Section header Text() above the paired devices ListView"
+  },
+  "pairPairingStarted": "Pairing started...",
+  "@pairPairingStarted": {
+    "description": "SnackBar content shown after a QR code is scanned"
+  },
+  "pairRegenerateCode": "Generate new code",
+  "@pairRegenerateCode": {
+    "description": "OutlinedButton.icon label that regenerates the pairing token"
+  },
+  "pairScanInstruction": "Point the camera at the QR code\non the other device",
+  "@pairScanInstruction": {
+    "description": "Instruction Text() above the MobileScanner camera view (contains a hard line break)"
+  },
+  "pairShowQrInstruction": "Scan this QR code\non the other device",
+  "@pairShowQrInstruction": {
+    "description": "Instruction Text() above the QrImageView in the Show-QR tab (contains a hard line break)"
+  },
+  "pairSyncConnected": "Connected",
+  "@pairSyncConnected": {
+    "description": "_SyncStatusBanner text for SyncStatus.connected (switch arm; effectively unreachable because line 184 returns early for "
+  },
+  "pairSyncConnecting": "Connecting to sync server...",
+  "@pairSyncConnecting": {
+    "description": "_SyncStatusBanner text for SyncStatus.connecting"
+  },
+  "pairSyncDisconnected": "Disconnected from sync server",
+  "@pairSyncDisconnected": {
+    "description": "_SyncStatusBanner text for SyncStatus.disconnected"
+  },
+  "pairSyncError": "Connection error. Reconnecting...",
+  "@pairSyncError": {
+    "description": "_SyncStatusBanner text for SyncStatus.error"
+  },
+  "pairTabMyQrCode": "My QR Code",
+  "@pairTabMyQrCode": {
+    "description": "Tab(text:) label, first tab (show own QR)"
+  },
+  "pairTabScan": "Scan",
+  "@pairTabScan": {
+    "description": "Tab(text:) label, second tab (camera scanner)"
+  },
+  "pairTitle": "Pair Devices",
+  "@pairTitle": {
+    "description": "AppBar title of PairScreen"
+  },
+  "profileDefaultName": "Garra user",
+  "@profileDefaultName": {
+    "description": "Text() headline fallback when ownerName is empty"
+  },
+  "profileDisplayName": "Display name",
+  "@profileDisplayName": {
+    "description": "_Row title: (GarraListTile title)"
+  },
+  "profileNameHint": "Your name",
+  "@profileNameHint": {
+    "description": "InputDecoration(hintText:) of the name TextField (_NameStep)"
+  },
+  "profileNoRuntime": "No runtime",
+  "@profileNoRuntime": {
+    "description": "Text() under the name, fallback when config is null (otherwise config.mode.title)"
+  },
+  "profilePairedDevices": "Paired devices",
+  "@profilePairedDevices": {
+    "description": "_Row title: (GarraListTile title)"
+  },
+  "profilePairedDevicesSubtitle": "Sync sessions across your devices",
+  "@profilePairedDevicesSubtitle": {
+    "description": "_Row subtitle:"
+  },
+  "profileRuntimeSummary": "{mode} · {baseUrl}",
+  "@profileRuntimeSummary": {
+    "description": "_Row subtitle: runtime summary (mode · base URL, optionally · vVERSION)",
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      },
+      "baseUrl": {
+        "type": "String"
+      }
+    }
+  },
+  "profileRuntimeSummaryWithVersion": "{mode} · {baseUrl} · v{version}",
+  "@profileRuntimeSummaryWithVersion": {
+    "description": "_Row subtitle: nested version suffix appended to the runtime summary when health != null",
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      },
+      "baseUrl": {
+        "type": "String"
+      },
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "profileSettingsSubtitle": "Runtime, account and app details",
+  "@profileSettingsSubtitle": {
+    "description": "_Row subtitle:"
+  },
+  "profileSignOutSubtitle": "Clear the cloud session on this device",
+  "@profileSignOutSubtitle": {
+    "description": "_Row subtitle: (sign out row)"
+  },
+  "profileTitle": "Profile",
+  "@profileTitle": {
+    "description": "GarraPage title:"
+  },
+  "providersApiKeysNote": "API keys are configured on the runtime (garra init / web console), never stored on this phone.",
+  "@providersApiKeysNote": {
+    "description": "Footer Text() under the provider list"
+  },
+  "providersDefaultBadge": "default",
+  "@providersDefaultBadge": {
+    "description": "Text() inside the pill badge shown as trailing on the default provider row"
+  },
+  "providersEmpty": "The runtime reported no providers. Run `garra init` to configure one.",
+  "@providersEmpty": {
+    "description": "AsyncBody emptyText when /api/providers returns an empty list"
+  },
+  "providersNoModel": "no model",
+  "@providersNoModel": {
+    "description": "First segment of the provider row subtitle when the provider has no model configured or listed"
+  },
+  "providersStatusActive": "active",
+  "@providersStatusActive": {
+    "description": "Status word in the provider row subtitle (info.active == true), joined with ' · '"
+  },
+  "providersStatusInactive": "inactive",
+  "@providersStatusInactive": {
+    "description": "Status word in the provider row subtitle (inactive, no key required)"
+  },
+  "providersStatusNeedsApiKey": "needs API key",
+  "@providersStatusNeedsApiKey": {
+    "description": "Status word in the provider row subtitle (inactive and needsApiKey)"
+  },
+  "providersTitle": "Providers",
+  "@providersTitle": {
+    "description": "QuickAction label (QuickActionsPanel button)"
+  },
+  "queueOffline": "No connection",
+  "@queueOffline": {
+    "description": "Text() in the offline-queue banner (cs.error background) when offline and no pending messages"
+  },
+  "queueOfflineWithPending": "No connection - {count, plural, one{{count} pending message} other{{count} pending messages}}",
+  "@queueOfflineWithPending": {
+    "description": "Text() in the offline-queue banner (cs.error background) when offline AND pendingCount > 0",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "queuePending": "{count, plural, one{{count} pending message} other{{count} pending messages}}",
+  "@queuePending": {
+    "description": "Text() in the offline-queue banner (cs.secondary background) when online, idle, with pending messages",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "queueSyncing": "Syncing {count, plural, one{{count} message} other{{count} messages}}...",
+  "@queueSyncing": {
+    "description": "Text() in the offline-queue banner (cs.tertiary background) while status.isSyncing, next to a small spinner",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "registerConfirmPasswordLabel": "Confirm password",
+  "@registerConfirmPasswordLabel": {
+    "description": "InputDecoration labelText of the confirm-password field"
+  },
+  "registerCreateAccount": "Create account",
+  "@registerCreateAccount": {
+    "description": "Text() headline title of the register screen (same text reused as button label at line 124)"
+  },
+  "registerErrorEmailTaken": "This email is already registered.",
+  "@registerErrorEmailTaken": {
+    "description": "Error Text() under the form, returned by _friendlyError on 409 / already registered"
+  },
+  "registerErrorGeneric": "Couldn't create account. Please try again.",
+  "@registerErrorGeneric": {
+    "description": "Error Text() under the form, generic fallback of _friendlyError"
+  },
+  "registerHaveAccountCta": "Already have an account? Sign in",
+  "@registerHaveAccountCta": {
+    "description": "TextButton label linking to /login"
+  },
+  "registerPasswordsMismatch": "Passwords don't match",
+  "@registerPasswordsMismatch": {
+    "description": "TextFormField validator error for the confirm-password field"
+  },
+  "runtimeModeCloudDescription": "Use the hosted Garra service with your account.",
+  "@runtimeModeCloudDescription": {
+    "description": "RuntimeModeLabels.description getter — subtitle of the cloud runtime option in onboarding"
+  },
+  "runtimeModeCloudTitle": "Garra Cloud",
+  "@runtimeModeCloudTitle": {
+    "description": "RuntimeStatusCard value: for RuntimeMode.cloud"
+  },
+  "runtimeModeLocalDescription": "Garra runs inside Termux on this device. Memory, skills and files stay here.",
+  "@runtimeModeLocalDescription": {
+    "description": "RuntimeModeLabels.description getter — subtitle of the local runtime option in onboarding"
+  },
+  "runtimeModeLocalTitle": "On this phone",
+  "@runtimeModeLocalTitle": {
+    "description": "RuntimeModeLabels.title getter (enum display name) — runtime option title shown in onboarding cards and as the runtime l"
+  },
+  "runtimeModeRemoteDescription": "Connect to a Garra gateway on your PC or home server over Wi-Fi.",
+  "@runtimeModeRemoteDescription": {
+    "description": "RuntimeModeLabels.description getter — subtitle of the remote (LAN) runtime option in onboarding"
+  },
+  "runtimeModeRemoteTitle": "Another Garra",
+  "@runtimeModeRemoteTitle": {
+    "description": "RuntimeModeLabels.title getter (enum display name) for RuntimeMode.remote"
+  },
+  "settingsAccountCreatedLabel": "Joined",
+  "@settingsAccountCreatedLabel": {
+    "description": "_InfoRow label: (account creation date row)"
+  },
+  "settingsAccountIdLabel": "ID",
+  "@settingsAccountIdLabel": {
+    "description": "_InfoRow label: (shortened user UUID row)"
+  },
+  "settingsAccountLoadError": "Couldn't load account details",
+  "@settingsAccountLoadError": {
+    "description": "_ErrorState headline Text() when authStateProvider errors"
+  },
+  "settingsAccountTitle": "Account",
+  "@settingsAccountTitle": {
+    "description": "Card heading Text() of the account card (cloud mode only)"
+  },
+  "settingsChangeRuntime": "Change runtime",
+  "@settingsChangeRuntime": {
+    "description": "OutlinedButton.icon label that pushes /onboarding"
+  },
+  "settingsLanguageEnglish": "English",
+  "@settingsLanguageEnglish": {
+    "description": "settings language card"
+  },
+  "settingsLanguageHint": "Applies immediately, no restart needed.",
+  "@settingsLanguageHint": {
+    "description": "settings language card"
+  },
+  "settingsLanguagePortuguese": "Português (Brasil)",
+  "@settingsLanguagePortuguese": {
+    "description": "settings language card"
+  },
+  "settingsLanguageSystem": "System default",
+  "@settingsLanguageSystem": {
+    "description": "settings language card"
+  },
+  "settingsLanguageTitle": "Language",
+  "@settingsLanguageTitle": {
+    "description": "settings language card"
+  },
+  "settingsLogout": "Sign out",
+  "@settingsLogout": {
+    "description": "FilledButton.tonalIcon label for logout"
+  },
+  "settingsLogoutConfirmBody": "You'll be signed out and will need to sign in again the next time you open the app.",
+  "@settingsLogoutConfirmBody": {
+    "description": "AlertDialog content of the logout confirmation"
+  },
+  "settingsLogoutConfirmTitle": "Sign out?",
+  "@settingsLogoutConfirmTitle": {
+    "description": "AlertDialog title of the logout confirmation"
+  },
+  "settingsRuntimeAddressLabel": "Address",
+  "@settingsRuntimeAddressLabel": {
+    "description": "_InfoRow label: (runtime base URL row)"
+  },
+  "settingsRuntimeChecking": "checking…",
+  "@settingsRuntimeChecking": {
+    "description": "_InfoRow value while the health probe is still loading (h == null)"
+  },
+  "settingsRuntimeModeLabel": "Mode",
+  "@settingsRuntimeModeLabel": {
+    "description": "_InfoRow label: (runtime mode row)"
+  },
+  "settingsRuntimeProviderLabel": "Provider",
+  "@settingsRuntimeProviderLabel": {
+    "description": "_InfoRow label: (LLM provider row, shown only when h.provider != null)"
+  },
+  "settingsRuntimeProviderModel": "{provider} / {model}",
+  "@settingsRuntimeProviderModel": {
+    "description": "_InfoRow value assembled from provider and optional model, e.g. 'openrouter / gpt-4o'",
+    "placeholders": {
+      "provider": {
+        "type": "String"
+      },
+      "model": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsRuntimeStatusLabel": "Status",
+  "@settingsRuntimeStatusLabel": {
+    "description": "_InfoRow label: (runtime health row)"
+  },
+  "settingsRuntimeStatusVersion": "{status} · v{version}",
+  "@settingsRuntimeStatusVersion": {
+    "description": "_InfoRow value when health loaded: status word plus version, e.g. 'healthy · v0.4.2'",
+    "placeholders": {
+      "status": {
+        "type": "String"
+      },
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "settingsRuntimeTitle": "Runtime",
+  "@settingsRuntimeTitle": {
+    "description": "Card heading Text() of the runtime card"
+  },
+  "settingsRuntimeUnreachable": "unreachable",
+  "@settingsRuntimeUnreachable": {
+    "description": "_InfoRow value when healthValue.hasError (runtime health probe failed)"
+  },
+  "settingsSessionExpiredRedirecting": "Session expired. Redirecting…",
+  "@settingsSessionExpiredRedirecting": {
+    "description": "Centered Text() empty state when authState resolves to null while on the screen (race before router redirect)"
+  },
+  "settingsTitle": "Settings",
+  "@settingsTitle": {
+    "description": "tooltip: of the AppBar IconButton that opens /settings"
+  },
+  "skillsDeprecated": "deprecated",
+  "@skillsDeprecated": {
+    "description": "Segment of the skill row subtitle shown when skill.deprecated is true"
+  },
+  "skillsFailCount": "{count, plural, =1{1 fail} other{{count} fails}}",
+  "@skillsFailCount": {
+    "description": "Segment of the skill row subtitle shown only when failCount > 0, hand-rolled plural",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "skillsNoLearnedSkills": "No learned skills yet. Garra mines them from your sessions (ADR 0010).",
+  "@skillsNoLearnedSkills": {
+    "description": "EmptyState text when /api/learning/skills returns an empty list"
+  },
+  "skillsScore": "score {score}",
+  "@skillsScore": {
+    "description": "Segment of the skill row subtitle (score label + formatted value), joined with ' · '",
+    "placeholders": {
+      "score": {
+        "type": "String"
+      }
+    }
+  },
+  "skillsSectionLearned": "Learned skills",
+  "@skillsSectionLearned": {
+    "description": "SectionHeader label"
+  },
+  "skillsSectionSlashCommands": "Slash commands",
+  "@skillsSectionSlashCommands": {
+    "description": "SectionHeader label"
+  },
+  "skillsTitle": "Skills",
+  "@skillsTitle": {
+    "description": "FeatureTile title:"
+  },
+  "skillsVersion": "v{version}",
+  "@skillsVersion": {
+    "description": "Segment of the skill row subtitle (version prefix), joined with ' · '",
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "voiceHoldToRecord": "Hold to record",
+  "@voiceHoldToRecord": {
+    "description": "Text() hint below the mic button when not recording (fontSize 10, 40% alpha)"
+  },
+  "voiceMicPermissionRequired": "Microphone permission required",
+  "@voiceMicPermissionRequired": {
+    "description": "assigned to _error, rendered via Text(_error!) in cs.error color above the record button"
+  },
+  "voiceProcessAudioError": "Could not process audio: {error}",
+  "@voiceProcessAudioError": {
+    "description": "assigned to _error in catch block of _stopRecording, rendered via Text(_error!) in cs.error color",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "voiceStartRecordingError": "Could not start recording: {error}",
+  "@voiceStartRecordingError": {
+    "description": "assigned to _error in catch block, rendered via Text(_error!) in cs.error color",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "voiceTranscribing": "Transcribing...",
+  "@voiceTranscribing": {
+    "description": "Text() next to CircularProgressIndicator while _isProcessing (waiting for transcription)"
+  },
+  "voiceTranscriptionUnavailable": "Transcription unavailable",
+  "@voiceTranscriptionUnavailable": {
+    "description": "Fallback transcription text returned by ApiService.transcribeAudio when the STT response has no `text` — flows into the "
+  }
+}

@@ -2,6 +2,9 @@
 // Health and capabilities are stubbed; the assertions cover what the screen
 // promises: greeting from onboarding, the two status cards, the six tiles,
 // and capability negotiation (a missing feature renders "Unavailable").
+//
+// The copy is asserted through the l10n getters (#1178), pinned to English
+// because that is the language the reference design was written in.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +15,8 @@ import 'package:garraia_mobile/runtime/runtime_providers.dart';
 import 'package:garraia_mobile/screens/home_screen.dart';
 import 'package:garraia_mobile/widgets/home/feature_tile.dart';
 import 'package:go_router/go_router.dart';
+
+import 'support/l10n_test_support.dart';
 
 class _LocalConfig extends RuntimeConfigState {
   @override
@@ -67,19 +72,27 @@ Widget _app(ProviderContainer container) {
   );
   return UncontrolledProviderScope(
     container: container,
-    child: MaterialApp.router(routerConfig: router),
+    child: MaterialApp.router(
+      routerConfig: router,
+      locale: testLocaleEn,
+      supportedLocales: supportedLocales,
+      localizationsDelegates: localizationsDelegates,
+    ),
   );
 }
 
-ProviderContainer _container({
+Future<ProviderContainer> _container({
   GarraCapabilities caps = _caps,
   Object? healthError,
-}) {
+}) async {
   return ProviderContainer(
     // Riverpod 3 retries throwing providers with a backoff Timer; widget
     // tests must end with no pending timers.
     retry: (_, __) => null,
     overrides: [
+      sharedPreferencesProvider.overrideWithValue(
+        await mockSharedPreferences(),
+      ),
       runtimeConfigStateProvider.overrideWith(_LocalConfig.new),
       runtimeHealthProvider.overrideWith((ref) async {
         if (healthError != null) throw healthError;
@@ -107,25 +120,26 @@ void main() {
   testWidgets('renders header, greeting, status cards and the six tiles', (
     tester,
   ) async {
-    final container = _container();
+    final l10n = await loadL10n(testLocaleEn);
+    final container = await _container();
     addTearDown(container.dispose);
     await pumpPhone(tester, _app(container));
 
-    expect(find.text('Local-first AI Assistant'), findsOneWidget);
-    expect(find.text('Hello, Michel 👋'), findsOneWidget);
+    expect(find.text(l10n.homeHeaderTagline), findsOneWidget);
+    expect(find.text(l10n.homeGreetingNamed('Michel')), findsOneWidget);
 
     // Status cards come from /api/health.
-    expect(find.textContaining('Local on this phone'), findsOneWidget);
-    expect(find.textContaining('Connected to PC'), findsOneWidget);
+    expect(find.textContaining(l10n.homeRuntimeLocal), findsOneWidget);
+    expect(find.textContaining(l10n.homeLlmConnectedToPc), findsOneWidget);
     expect(find.text('qwen2.5:7b'), findsOneWidget);
 
     for (final t in [
-      'Chat',
-      'Memory',
-      'Skills',
-      'Files',
-      'Agents',
-      'Automations',
+      l10n.homeTileChat,
+      l10n.memoryTitle,
+      l10n.skillsTitle,
+      l10n.filesTitle,
+      l10n.agentsTitle,
+      l10n.automationsTitle,
     ]) {
       expect(
         find.widgetWithText(FeatureTile, t),
@@ -134,34 +148,35 @@ void main() {
       );
     }
     await tester.scrollUntilVisible(
-      find.text('Quick Actions'),
+      find.text(l10n.homeQuickActionsTitle),
       200,
       scrollable: find.byType(Scrollable).first,
     );
-    expect(find.text('Quick Actions'), findsOneWidget);
+    expect(find.text(l10n.homeQuickActionsTitle), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('LOCAL AI. A BRIGHTER YOU.'),
+      find.text(l10n.homeBannerHeadline),
       200,
       scrollable: find.byType(Scrollable).first,
     );
-    expect(find.text('LOCAL AI. A BRIGHTER YOU.'), findsOneWidget);
+    expect(find.text(l10n.homeBannerHeadline), findsOneWidget);
   });
 
   testWidgets(
     'a feature the runtime does not advertise renders as Unavailable',
     (tester) async {
-      final container = _container();
+      final l10n = await loadL10n(testLocaleEn);
+      final container = await _container();
       addTearDown(container.dispose);
       await pumpPhone(tester, _app(container));
 
       // Exactly one tile is unavailable: Automations.
-      expect(find.text('Unavailable'), findsOneWidget);
+      expect(find.text(l10n.homeFeatureUnavailable), findsOneWidget);
       final automations = tester.widget<FeatureTile>(
-        find.widgetWithText(FeatureTile, 'Automations'),
+        find.widgetWithText(FeatureTile, l10n.automationsTitle),
       );
       expect(automations.available, isFalse);
       final chat = tester.widget<FeatureTile>(
-        find.widgetWithText(FeatureTile, 'Chat'),
+        find.widgetWithText(FeatureTile, l10n.homeTileChat),
       );
       expect(chat.available, isTrue);
     },
@@ -170,20 +185,24 @@ void main() {
   testWidgets('unreachable runtime is said plainly on the status card', (
     tester,
   ) async {
-    final container = _container(healthError: Exception('connection refused'));
+    final l10n = await loadL10n(testLocaleEn);
+    final container = await _container(
+      healthError: Exception('connection refused'),
+    );
     addTearDown(container.dispose);
     await pumpPhone(tester, _app(container));
 
-    expect(find.textContaining('Not running'), findsOneWidget);
-    expect(find.textContaining('Not connected'), findsOneWidget);
+    expect(find.textContaining(l10n.homeRuntimeNotRunning), findsOneWidget);
+    expect(find.textContaining(l10n.homeLlmNotConnected), findsOneWidget);
   });
 
   testWidgets('tiles navigate to their routes', (tester) async {
-    final container = _container();
+    final l10n = await loadL10n(testLocaleEn);
+    final container = await _container();
     addTearDown(container.dispose);
     await pumpPhone(tester, _app(container));
 
-    await tester.tap(find.widgetWithText(FeatureTile, 'Memory'));
+    await tester.tap(find.widgetWithText(FeatureTile, l10n.memoryTitle));
     await tester.pumpAndSettle();
     expect(find.text('ROUTE /memory'), findsOneWidget);
   });

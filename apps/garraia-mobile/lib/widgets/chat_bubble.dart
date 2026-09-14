@@ -3,6 +3,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:intl/intl.dart';
 import 'package:markdown/markdown.dart' as md;
 
+import '../l10n/l10n.dart';
 import '../runtime/models.dart';
 import 'brand/wolf_mark.dart';
 import 'copy_to_clipboard.dart';
@@ -100,8 +101,8 @@ class ChatBubble extends StatelessWidget {
                         CopyIconButton(
                           key: const ValueKey('copy-message'),
                           text: message.content,
-                          tooltip: 'Copiar mensagem',
-                          toast: 'Mensagem copiada',
+                          tooltip: context.l10n.chatCopyMessageTooltip,
+                          toast: context.l10n.chatMessageCopiedToast,
                           color: cs.onSurface.withValues(alpha: 0.45),
                         ),
                       ],
@@ -227,8 +228,8 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
           child: CopyIconButton(
             key: const ValueKey('copy-code'),
             text: code,
-            tooltip: 'Copiar codigo',
-            toast: 'Codigo copiado',
+            tooltip: context.l10n.chatCopyCodeTooltip,
+            toast: context.l10n.chatCodeCopiedToast,
             color: textColor.withValues(alpha: 0.6),
             size: 16,
           ),

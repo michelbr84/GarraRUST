@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../l10n/l10n.dart';
+
 /// One event of an assistant turn, as it happens.
 ///
 /// The gateway streams a turn frame by frame over `/ws`
@@ -20,7 +22,11 @@ sealed class ChatEvent {
   /// a frame type before the app ships support for it, and a stranger on the
   /// wire must never take the turn down. Handshake frames (`connected`,
   /// `resumed`) are consumed by the transport and are unknown here too.
-  static ChatEvent? tryParse(String raw) {
+  ///
+  /// [l10n] supplies the copy for the one failure this client has to describe
+  /// itself — an `error` frame with no `message` (#1178). Without it the
+  /// fallback is English; the runtime's own message is never translated.
+  static ChatEvent? tryParse(String raw, {AppLocalizations? l10n}) {
     final Object? decoded;
     try {
       decoded = jsonDecode(raw);
@@ -58,8 +64,13 @@ sealed class ChatEvent {
         return const ChatStopped();
 
       case 'error':
+        final message = _string(decoded['message']);
+        if (message != null) return ChatFailed(message);
+        // The first supported locale is the documented fallback (English).
+        final strings = l10n ?? lookupAppLocalizations(supportedLocales.first);
         return ChatFailed(
-          _string(decoded['message']) ?? 'the runtime reported an error',
+          strings.chatErrorRuntimeReported,
+          kind: ChatFailureKind.runtimeError,
         );
 
       default:
@@ -112,10 +123,31 @@ final class ChatStopped extends ChatEvent {
   const ChatStopped();
 }
 
+/// Why a turn failed — so a consumer can tell the runtime's own words (shown
+/// verbatim) from a failure this client had to describe itself.
+enum ChatFailureKind {
+  /// An `error` frame carrying the runtime's message.
+  serverMessage,
+
+  /// An `error` frame with no message; [ChatFailed.message] is the app's copy.
+  runtimeError,
+
+  /// The socket closed after the message was submitted and before a
+  /// terminator arrived; [ChatFailed.message] is the app's copy.
+  connectionDropped,
+
+  /// The transport threw after the message was submitted;
+  /// [ChatFailed.message] is the exception text.
+  transportError,
+}
+
 /// The runtime failed mid-turn, or the transport did.
 final class ChatFailed extends ChatEvent {
+  /// What to show. Already in the app's language for every [kind] except
+  /// [ChatFailureKind.serverMessage], which is the runtime's own text.
   final String message;
-  const ChatFailed(this.message);
+  final ChatFailureKind kind;
+  const ChatFailed(this.message, {this.kind = ChatFailureKind.serverMessage});
 }
 
 /// The gateway answered the handshake with a different session than the one

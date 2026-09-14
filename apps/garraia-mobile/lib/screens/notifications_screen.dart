@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/l10n.dart';
 import '../widgets/garra_bottom_nav.dart';
 import '../widgets/garra_page.dart';
 
@@ -12,13 +13,15 @@ class NotificationsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const GarraPage(
-      title: 'Notifications',
-      bottomNavigationBar: GarraBottomNav(current: GarraTab.notifications),
+    final l10n = context.l10n;
+    return GarraPage(
+      title: l10n.notificationsTitle,
+      bottomNavigationBar: const GarraBottomNav(
+        current: GarraTab.notifications,
+      ),
       body: EmptyState(
         icon: Icons.notifications_none_rounded,
-        text:
-            'Nothing yet. Notifications from automations and background agents will show up here.',
+        text: l10n.notificationsEmpty,
       ),
     );
   }

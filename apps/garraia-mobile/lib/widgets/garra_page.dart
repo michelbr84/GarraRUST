@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../l10n/l10n.dart';
+import '../runtime/garra_connection.dart' show NoRuntimeConfigured;
 import '../theme/garra_theme.dart';
 import '../theme/garra_tokens.dart';
 
@@ -35,7 +37,10 @@ class GarraPage extends StatelessWidget {
 class AsyncBody<T> extends StatelessWidget {
   final AsyncValue<T> value;
   final Widget Function(T data) builder;
-  final String emptyText;
+
+  /// Copy for the empty state; `null` falls back to the localized
+  /// "Nothing here yet." (a const constructor cannot read `context.l10n`).
+  final String? emptyText;
   final bool Function(T data)? isEmpty;
   final VoidCallback? onRetry;
 
@@ -43,7 +48,7 @@ class AsyncBody<T> extends StatelessWidget {
     super.key,
     required this.value,
     required this.builder,
-    this.emptyText = 'Nothing here yet.',
+    this.emptyText,
     this.isEmpty,
     this.onRetry,
   });
@@ -52,10 +57,21 @@ class AsyncBody<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     return value.when(
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => ErrorState(message: e.toString(), onRetry: onRetry),
+      // `NoRuntimeConfigured` is the one app-side exception a screen shows
+      // as-is; everything else is transport/gateway text.
+      error: (e, _) => ErrorState(
+        message: e is NoRuntimeConfigured
+            ? context.l10n.errorNoRuntimeConfigured
+            : e.toString(),
+        onRetry: onRetry,
+      ),
       data: (d) {
         final empty = isEmpty?.call(d) ?? (d is List && d.isEmpty);
-        if (empty) return EmptyState(text: emptyText);
+        if (empty) {
+          return EmptyState(
+            text: emptyText ?? context.l10n.commonEmptyNothingYet,
+          );
+        }
         return builder(d);
       },
     );
@@ -117,7 +133,7 @@ class ErrorState extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              'Could not reach the runtime',
+              context.l10n.errorCouldNotReachRuntime,
               style: garraText(size: 16, weight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
@@ -128,7 +144,10 @@ class ErrorState extends StatelessWidget {
             ),
             if (onRetry != null) ...[
               const SizedBox(height: 16),
-              OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+              OutlinedButton(
+                onPressed: onRetry,
+                child: Text(context.l10n.commonRetry),
+              ),
             ],
           ],
         ),
@@ -163,7 +182,7 @@ class UnavailableFeature extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              '$feature is not available on this runtime',
+              context.l10n.commonFeatureUnavailableOnRuntime(feature),
               textAlign: TextAlign.center,
               style: garraText(size: 16, weight: FontWeight.w700),
             ),

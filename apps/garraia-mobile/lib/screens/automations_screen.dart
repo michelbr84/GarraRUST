@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../l10n/l10n.dart';
 import '../runtime/models.dart';
 import '../runtime/runtime_providers.dart';
 import '../widgets/garra_page.dart';
@@ -17,24 +18,21 @@ class AutomationsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = context.l10n;
     final caps =
         ref.watch(runtimeCapabilitiesProvider).value ?? GarraCapabilities.empty;
     final available = caps.has(GarraFeature.automations);
 
     return GarraPage(
-      title: 'Automations',
+      title: l10n.automationsTitle,
       body: available
-          ? const EmptyState(
+          ? EmptyState(
               icon: Icons.settings_suggest_outlined,
-              text:
-                  'This runtime supports automations, but the mobile editor lands in a later release.',
+              text: l10n.automationsEditorComingSoon,
             )
-          : const UnavailableFeature(
-              feature: 'Automations',
-              why:
-                  'The connected Garra runtime does not expose a scheduling API yet. '
-                  'Scheduled tasks are managed from the Garra CLI today; '
-                  'this screen will light up automatically when the runtime advertises the capability.',
+          : UnavailableFeature(
+              feature: l10n.automationsTitle,
+              why: l10n.automationsUnavailableWhy,
             ),
     );
   }

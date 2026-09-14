@@ -6,6 +6,8 @@ import 'package:garraia_mobile/screens/memory_screen.dart';
 import 'package:garraia_mobile/theme/garra_theme.dart';
 import 'package:garraia_mobile/widgets/chat_bubble.dart';
 
+import 'support/l10n_test_support.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final copied = <String>[];
@@ -28,12 +30,16 @@ void main() {
 
   Widget wrap(Widget child) => MaterialApp(
     theme: garraTheme(),
+    locale: testLocalePt,
+    supportedLocales: supportedLocales,
+    localizationsDelegates: localizationsDelegates,
     home: Scaffold(body: ListView(children: [child])),
   );
 
   testWidgets('user bubble is selectable and copies whole message', (
     tester,
   ) async {
+    final l10n = await loadL10n();
     await tester.pumpWidget(
       wrap(
         const ChatBubble(
@@ -46,7 +52,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('copy-message')));
     await tester.pump();
     expect(copied, ['oi garra']);
-    expect(find.text('Mensagem copiada'), findsOneWidget);
+    expect(find.text(l10n.chatMessageCopiedToast), findsOneWidget);
   });
 
   testWidgets('assistant code block gets its own copy button', (tester) async {

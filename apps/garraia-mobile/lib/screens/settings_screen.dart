@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../app_version.dart';
+import '../l10n/l10n.dart';
 import '../providers/auth_provider.dart';
 import '../runtime/runtime_config.dart';
 import '../runtime/runtime_providers.dart';
@@ -23,11 +24,13 @@ class SettingsScreen extends ConsumerWidget {
     final isCloud = config?.mode == RuntimeMode.cloud;
 
     return GarraPage(
-      title: 'Configurações',
+      title: context.l10n.settingsTitle,
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           _RuntimeCard(config: config, healthValue: health),
+          const SizedBox(height: 16),
+          const _LanguageCard(),
           const SizedBox(height: 16),
           if (isCloud) const _AccountSection(),
           const SizedBox(height: 40),
@@ -50,6 +53,7 @@ class _RuntimeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final h = healthValue.value;
     return Card(
       child: Padding(
@@ -58,37 +62,104 @@ class _RuntimeCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Runtime',
+              l10n.settingsRuntimeTitle,
               style: garraText(size: 16, weight: FontWeight.w600),
             ),
             const SizedBox(height: 14),
             _InfoRow(
-              label: 'Mode',
-              value: config?.mode.title ?? 'Not configured',
+              label: l10n.settingsRuntimeModeLabel,
+              value: config?.mode.title(l10n) ?? l10n.commonNotConfigured,
             ),
             const SizedBox(height: 10),
-            _InfoRow(label: 'Address', value: config?.baseUrl ?? '—'),
+            _InfoRow(
+              label: l10n.settingsRuntimeAddressLabel,
+              value: config?.baseUrl ?? '—',
+            ),
             const SizedBox(height: 10),
             _InfoRow(
-              label: 'Status',
+              label: l10n.settingsRuntimeStatusLabel,
               value: healthValue.hasError
-                  ? 'unreachable'
+                  ? l10n.settingsRuntimeUnreachable
                   : h == null
-                  ? 'checking…'
-                  : '${h.status} · v${h.version}',
+                  ? l10n.settingsRuntimeChecking
+                  : l10n.settingsRuntimeStatusVersion(h.status, h.version),
             ),
             if (h != null && h.provider != null) ...[
               const SizedBox(height: 10),
               _InfoRow(
-                label: 'Provider',
-                value: '${h.provider}${h.model != null ? ' / ${h.model}' : ''}',
+                label: l10n.settingsRuntimeProviderLabel,
+                value: h.model != null
+                    ? l10n.settingsRuntimeProviderModel(h.provider, h.model)
+                    : h.provider,
               ),
             ],
             const SizedBox(height: 14),
             OutlinedButton.icon(
               onPressed: () => context.push('/onboarding'),
               icon: const Icon(Icons.swap_horiz_rounded, size: 18),
-              label: const Text('Change runtime'),
+              label: Text(l10n.settingsChangeRuntime),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Settings > Language (#1178): System default / English / Português (Brasil),
+/// persisted by [AppLanguageState] and applied on the spot — the
+/// `MaterialApp` watches the provider, so every screen rebuilds in the new
+/// language without a restart.
+class _LanguageCard extends ConsumerWidget {
+  const _LanguageCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = context.l10n;
+    final current = ref.watch(appLanguageStateProvider);
+    final labels = {
+      AppLanguage.system: l10n.settingsLanguageSystem,
+      AppLanguage.en: l10n.settingsLanguageEnglish,
+      AppLanguage.ptBR: l10n.settingsLanguagePortuguese,
+    };
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              l10n.settingsLanguageTitle,
+              style: garraText(size: 16, weight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              l10n.settingsLanguageHint,
+              style: garraText(size: 12, color: GarraColors.textDim),
+            ),
+            const SizedBox(height: 8),
+            RadioGroup<AppLanguage>(
+              groupValue: current,
+              onChanged: (value) {
+                if (value != null) {
+                  ref.read(appLanguageStateProvider.notifier).set(value);
+                }
+              },
+              child: Column(
+                children: [
+                  for (final language in AppLanguage.values)
+                    RadioListTile<AppLanguage>(
+                      key: ValueKey('language-${language.storageValue}'),
+                      value: language,
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      title: Text(
+                        labels[language]!,
+                        style: garraText(size: 14),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ],
         ),
@@ -111,7 +182,9 @@ class _AccountSection extends ConsumerWidget {
           // Rare race: AuthState resolved to null while on this screen.
           // The router redirect will kick us to /login on next frame;
           // show a graceful empty state until then.
-          return const Center(child: Text('Sessão expirada. Redirecionando…'));
+          return Center(
+            child: Text(context.l10n.settingsSessionExpiredRedirecting),
+          );
         }
         return _AccountBody(me: me);
       },
@@ -125,6 +198,7 @@ class _AccountBody extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = context.l10n;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -135,15 +209,21 @@ class _AccountBody extends ConsumerWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Conta',
+                  l10n.settingsAccountTitle,
                   style: garraText(size: 16, weight: FontWeight.w600),
                 ),
                 const SizedBox(height: 14),
-                _InfoRow(label: 'Email', value: me.email),
+                _InfoRow(label: l10n.commonEmailLabel, value: me.email),
                 const SizedBox(height: 10),
-                _InfoRow(label: 'ID', value: _shortId(me.userId)),
+                _InfoRow(
+                  label: l10n.settingsAccountIdLabel,
+                  value: _shortId(me.userId),
+                ),
                 const SizedBox(height: 10),
-                _InfoRow(label: 'Cadastro', value: _formatDate(me.createdAt)),
+                _InfoRow(
+                  label: l10n.settingsAccountCreatedLabel,
+                  value: _formatDate(me.createdAt),
+                ),
               ],
             ),
           ),
@@ -160,9 +240,9 @@ class _AccountBody extends ConsumerWidget {
               ),
             ),
             icon: const Icon(Icons.logout_rounded),
-            label: const Text(
-              'Sair da conta',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            label: Text(
+              l10n.settingsLogout,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
             ),
             onPressed: () => _confirmLogout(context, ref),
           ),
@@ -185,21 +265,20 @@ class _AccountBody extends ConsumerWidget {
   }
 
   Future<void> _confirmLogout(BuildContext context, WidgetRef ref) async {
+    final l10n = context.l10n;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: const Text('Sair da conta?'),
-        content: const Text(
-          'Você será desconectado e precisará entrar novamente na próxima vez que abrir o app.',
-        ),
+        title: Text(l10n.settingsLogoutConfirmTitle),
+        content: Text(l10n.settingsLogoutConfirmBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop(false),
-            child: const Text('Cancelar'),
+            child: Text(l10n.commonCancel),
           ),
           FilledButton.tonal(
             onPressed: () => Navigator.of(dialogCtx).pop(true),
-            child: const Text('Sair'),
+            child: Text(l10n.commonLogout),
           ),
         ],
       ),
@@ -252,7 +331,7 @@ class _ErrorState extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Text(
-            'Erro ao carregar informações',
+            context.l10n.settingsAccountLoadError,
             style: garraText(size: 16, weight: FontWeight.w600),
             textAlign: TextAlign.center,
           ),
