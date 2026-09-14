@@ -7,6 +7,7 @@ mod chat;
 mod cli_args;
 mod config_cmd;
 mod defaults;
+mod desktop;
 mod doctor;
 mod glob_cmd;
 mod logs_cmd;
@@ -341,6 +342,22 @@ enum Commands {
     Agents {
         #[command(subcommand)]
         action: AgentsCommands,
+    },
+
+    /// Locate and launch the installed GarraIA Desktop app (#1181, M1).
+    ///
+    /// The CLI never embeds a GUI and gains no Tauri dependency: it resolves
+    /// the installed executable (platform install dir -> PATH -> next to this
+    /// binary) and spawns it. Exit codes (sysexits): 0 ok, 69 not installed,
+    /// 70 found but failed to launch.
+    Desktop {
+        /// Report whether the app is installed and where, without launching.
+        #[arg(long)]
+        status: bool,
+
+        /// Print the resolved path and exit, without launching (scriptable).
+        #[arg(long)]
+        no_launch: bool,
     },
 
     /// Run the local validation pipeline: fmt check, clippy, test, flutter
@@ -1301,6 +1318,17 @@ fn main() -> Result<()> {
             AgentsCommands::Web { args, yes } => (agents::AgentsAction::Web, args, *yes),
         };
         let code = agents::run(agents_action, args, yes, &agents::RealProbe)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // `garra desktop` resolves a path and spawns a GUI app; it touches no
+    // gateway state and must work on a machine that has never run `garra
+    // init` — the desktop installer is often the first thing a user runs.
+    if let Commands::Desktop { status, no_launch } = cli.command {
+        let code = desktop::run(status, no_launch, desktop::locate(), &desktop::RealLauncher);
         if code != 0 {
             std::process::exit(code);
         }
@@ -2519,6 +2547,40 @@ mod tests {
             }
             _ => panic!("expected the Chat subcommand"),
         }
+    }
+
+    /// The `garra desktop` surface is a script contract (#1181, M1), so pin
+    /// it through clap and not only through `desktop::run`. Both flags are
+    /// booleans on purpose: a value-taking flag here would also have to be
+    /// added to `value_taking_flags`, changing how bare `garra --model …` is
+    /// rewritten — see the drift test above.
+    #[test]
+    fn desktop_subcommand_parses_its_flags() {
+        let bare = Cli::try_parse_from(["garra", "desktop"]).expect("`garra desktop` parses");
+        assert!(matches!(
+            bare.command,
+            Commands::Desktop {
+                status: false,
+                no_launch: false
+            }
+        ));
+
+        let status =
+            Cli::try_parse_from(["garra", "desktop", "--status"]).expect("`--status` parses");
+        assert!(matches!(
+            status.command,
+            Commands::Desktop { status: true, .. }
+        ));
+
+        let no_launch =
+            Cli::try_parse_from(["garra", "desktop", "--no-launch"]).expect("`--no-launch` parses");
+        assert!(matches!(
+            no_launch.command,
+            Commands::Desktop {
+                no_launch: true,
+                ..
+            }
+        ));
     }
 
     #[test]
