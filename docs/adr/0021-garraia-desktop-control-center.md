@@ -1,6 +1,6 @@
 # 21. GarraIA Desktop — Control Center (`garraia desktop`)
 
-- **Status:** 📋 proposed — a aceitação é do dono do projeto
+- **Status:** Proposed (a aceitação é do dono do projeto)
 - **Deciders:** @michelbr84 (decisão final) + Claude (levantamento, sessão autônoma 2026-09-13; revisado no mesmo dia após verificação independente — ver §Histórico de revisões)
 - **Date:** 2026-09-13 (America/New_York)
 - **Tags:** fase-4, desktop, ui, agentes, arquitetura, seguranca
@@ -198,7 +198,11 @@ tela:
   estado ligado/desligado, supervisão de processos, resolução de caminhos e o
   cliente do AgentDeck (atrás de trait, testável sem ele instalado). Por não
   depender de Tauri, cai nos checks obrigatórios (`Clippy Linting`,
-  `Test (ubuntu-latest)`, `Test (windows-latest)`) sem workflow novo.
+  `Test (ubuntu-latest)`, `Test (windows-latest)`) sem workflow novo. Ressalva:
+  no leg Windows os testes são só **compilados** (`cargo test --no-run`,
+  `ci.yml`); execução real acontece só no Linux, então a resolução de
+  caminhos específica de Windows precisa de testes de tabela que rodem em
+  Linux, não só de `cfg(windows)`.
 - **`garraia-desktop`** — continua sendo a casca Tauri: janelas, bandeja,
   hotkeys, autostart, updater. Fica fina de propósito; chama o core.
 - **Dados das abas** — vêm do gateway que o desktop **já roda como sidecar**. As
@@ -421,7 +425,7 @@ novas de módulo nascem com default = comportamento atual, então um
 
 | Milestone | Entrega | Risco |
 |---|---|---|
-| **M0** | Crate `garraia-desktop-core` sem Tauri: módulos, estado, supervisão, resolução de caminhos, cliente do AgentDeck atrás de trait. Nos checks obrigatórios (verificado que ela não recebe `--exclude`), com testes. Clippy e teste da casca no job Linux do `desktop.yml` | R2 |
+| **M0** | Crate `garraia-desktop-core` sem Tauri: módulos, estado, supervisão, resolução de caminhos, cliente do AgentDeck atrás de trait. Nos checks obrigatórios (verificado que ela não recebe `--exclude`), com testes. Clippy e teste da casca no job Linux do `desktop.yml`, e o `paths:` desse workflow ganha `crates/garraia-desktop-core/**` **no mesmo PR** que cria a crate — o glob `crates/garraia-desktop/**` não cobre a irmã, e uma mudança só no core deixaria de compilar e empacotar a casca em PR | R2 |
 | **M1** | `garraia desktop` na CLI — localiza, lança, `--status`, `--no-launch`. Zero dependência de Tauri no CLI | R3 |
 | **M2** | Abre com duas decisões: framework (gatilho S1, ADR próprio) e autenticação das abas junto ao gateway (§Superfície de segurança). Depois: janela principal + navegação e CSP definida — gate antes de qualquer aba que renderize dado do gateway —, abas **Home** e **Desktop** | R3 |
 | **M3** | Aba **Agents** — só depois de decididos os pré-requisitos de §Pontos em aberto | **R4 — `security-auditor` obrigatório** |
@@ -480,7 +484,7 @@ Antes de cada merge, e obrigatoriamente antes do M7:
 ## Links de referência
 
 - Baseline Tauri: `crates/garraia-desktop/src-tauri/src/{lib,tray,overlay,chat_bar,gateway,hotkey,commands}.rs`, `tauri.conf.json`, `capabilities/default.json`
-- CI do desktop: `.github/workflows/ci.yml` (`--exclude garraia-desktop` em clippy, build, test, cobertura e MSRV) e `.github/workflows/desktop.yml`; a correção dos comentários desatualizados sobre isso está proposta no PR #1183
+- CI do desktop: `.github/workflows/ci.yml` (`--exclude garraia-desktop` em clippy, build, test, cobertura e MSRV) e `.github/workflows/desktop.yml`; os comentários desatualizados sobre isso foram corrigidos no PR #1183 (`cbef1d6`, 2026-09-13)
 - Superfície HTTP: `crates/garraia-gateway/src/router.rs:295-376`; exposição cross-origin: #1182, com a guarda do #1093 (`learning_auth.rs`) como precedente
 - AgentDeck: `plans/0360-garra-agents-setup.md`; no repositório `michelbr84/AgentDeck`, `packages/adapter-sdk/src/index.ts:89`, `scripts/install.sh:50` e `packages/server/src/index.ts`
 - Probe de binário externo: `crates/garraia-cli/src/agents.rs:52-81`
