@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/l10n.dart';
-import '../runtime/garra_connection.dart' show NoRuntimeConfigured;
 import '../theme/garra_theme.dart';
 import '../theme/garra_tokens.dart';
 
@@ -57,14 +56,8 @@ class AsyncBody<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     return value.when(
       loading: () => const Center(child: CircularProgressIndicator()),
-      // `NoRuntimeConfigured` is the one app-side exception a screen shows
-      // as-is; everything else is transport/gateway text.
-      error: (e, _) => ErrorState(
-        message: e is NoRuntimeConfigured
-            ? context.l10n.errorNoRuntimeConfigured
-            : e.toString(),
-        onRetry: onRetry,
-      ),
+      error: (e, _) =>
+          ErrorState(message: describeError(context.l10n, e), onRetry: onRetry),
       data: (d) {
         final empty = isEmpty?.call(d) ?? (d is List && d.isEmpty);
         if (empty) {

@@ -193,4 +193,66 @@ void main() {
       expect(find.text('LOGIN'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'language card switches the UI language on the spot and persists it',
+    (tester) async {
+      final api = _StubApiService(me);
+      final container = await _container(api);
+      addTearDown(container.dispose);
+      final pt = await loadL10n(testLocalePt);
+      final en = await loadL10n(testLocaleEn);
+
+      // Unlike `_wrap`, the locale here follows the provider — the same
+      // wiring `GarraApp` uses — so the switch is observable.
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: Consumer(
+            builder: (context, ref, _) => MaterialApp(
+              locale:
+                  ref.watch(appLanguageStateProvider).locale ?? testLocalePt,
+              supportedLocales: supportedLocales,
+              localizationsDelegates: localizationsDelegates,
+              home: const SettingsScreen(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(pt.settingsTitle), findsOneWidget);
+      expect(find.text(pt.settingsLanguageTitle), findsOneWidget);
+      expect(find.text(pt.settingsLanguageSystem), findsOneWidget);
+      expect(
+        container.read(appLanguageStateProvider),
+        AppLanguage.system,
+        reason: 'fresh install follows the device',
+      );
+
+      await tester.tap(find.byKey(const ValueKey('language-en')));
+      await tester.pumpAndSettle();
+
+      expect(container.read(appLanguageStateProvider), AppLanguage.en);
+      expect(find.text(en.settingsTitle), findsOneWidget);
+      expect(find.text(pt.settingsTitle), findsNothing);
+      expect(
+        container
+            .read(sharedPreferencesProvider)
+            .getString(AppLanguageState.prefsKey),
+        'en',
+        reason: 'the choice survives a restart',
+      );
+
+      await tester.tap(find.byKey(const ValueKey('language-system')));
+      await tester.pumpAndSettle();
+      expect(
+        container
+            .read(sharedPreferencesProvider)
+            .containsKey(AppLanguageState.prefsKey),
+        isFalse,
+        reason: 'system default clears the override',
+      );
+    },
+  );
 }

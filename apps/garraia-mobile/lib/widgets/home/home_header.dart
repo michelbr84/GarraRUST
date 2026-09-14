@@ -36,7 +36,8 @@ class HomeHeader extends StatelessWidget {
                   children: [
                     const TextSpan(text: 'Garra '),
                     TextSpan(
-                      text: 'Mobile',
+                      text:
+                          'Mobile', // l10n-ignore: segunda metade da marca "Garra Mobile"
                       style: garraText(
                         size: 22,
                         weight: FontWeight.w800,

@@ -127,7 +127,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(context.l10n.commonErrorWithDetail(e.toString())),
+                content: Text(
+                  context.l10n.commonErrorWithDetail(
+                    describeError(context.l10n, e),
+                  ),
+                ),
               ),
             );
           }
@@ -251,7 +255,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Text(
-                    l10n.chatLoadConversationError(e.toString()),
+                    l10n.chatLoadConversationError(describeError(l10n, e)),
                     textAlign: TextAlign.center,
                   ),
                 ),

@@ -43,7 +43,7 @@ class ProfileScreen extends ConsumerWidget {
                 Text(
                   config == null
                       ? l10n.profileNoRuntime
-                      : _modeTitle(l10n, config.mode),
+                      : config.mode.title(l10n),
                   style: garraText(size: 13, color: GarraColors.textMuted),
                 ),
               ],
@@ -65,11 +65,11 @@ class ProfileScreen extends ConsumerWidget {
                 ? l10n.commonNotConfigured
                 : health == null
                 ? l10n.profileRuntimeSummary(
-                    _modeTitle(l10n, config.mode),
+                    config.mode.title(l10n),
                     config.baseUrl,
                   )
                 : l10n.profileRuntimeSummaryWithVersion(
-                    _modeTitle(l10n, config.mode),
+                    config.mode.title(l10n),
                     config.baseUrl,
                     health.version,
                   ),
@@ -109,15 +109,6 @@ class ProfileScreen extends ConsumerWidget {
       ),
     );
   }
-
-  /// The mode's display name in the current language. Lives here (not on
-  /// `RuntimeMode`) because the enum extension has no `BuildContext`.
-  static String _modeTitle(AppLocalizations l10n, RuntimeMode mode) =>
-      switch (mode) {
-        RuntimeMode.local => l10n.runtimeModeLocalTitle,
-        RuntimeMode.remote => l10n.runtimeModeRemoteTitle,
-        RuntimeMode.cloud => l10n.runtimeModeCloudTitle,
-      };
 
   Future<void> _editName(
     BuildContext context,

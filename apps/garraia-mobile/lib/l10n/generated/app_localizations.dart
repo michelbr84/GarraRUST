@@ -1321,19 +1321,19 @@ abstract class AppLocalizations {
   /// Text() in the offline-queue banner (cs.error background) when offline AND pendingCount > 0
   ///
   /// In en, this message translates to:
-  /// **'No connection - {count, plural, one{{count} pending message} other{{count} pending messages}}'**
+  /// **'No connection - {count, plural, =1{{count} pending message} other{{count} pending messages}}'**
   String queueOfflineWithPending(int count);
 
   /// Text() in the offline-queue banner (cs.secondary background) when online, idle, with pending messages
   ///
   /// In en, this message translates to:
-  /// **'{count, plural, one{{count} pending message} other{{count} pending messages}}'**
+  /// **'{count, plural, =1{{count} pending message} other{{count} pending messages}}'**
   String queuePending(int count);
 
   /// Text() in the offline-queue banner (cs.tertiary background) while status.isSyncing, next to a small spinner
   ///
   /// In en, this message translates to:
-  /// **'Syncing {count, plural, one{{count} message} other{{count} messages}}...'**
+  /// **'Syncing {count, plural, =1{{count} message} other{{count} messages}}...'**
   String queueSyncing(int count);
 
   /// InputDecoration labelText of the confirm-password field

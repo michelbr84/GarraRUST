@@ -224,7 +224,7 @@ class AppLocalizationsPt extends AppLocalizations {
 
   @override
   String commonFeatureUnavailableOnRuntime(String feature) {
-    return '$feature não está disponível neste runtime';
+    return 'Recurso indisponível neste runtime: $feature';
   }
 
   @override

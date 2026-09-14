@@ -470,7 +470,7 @@ class _TermuxHint extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           SelectableText(
-            'curl -fsSL https://garraia.org/install.sh | bash\ngarra doctor\ngarra start',
+            'curl -fsSL https://garraia.org/install.sh | bash\ngarra doctor\ngarra start', // l10n-ignore: comando de shell, igual em todo idioma
             style: garraText(size: 12, mono: true, color: GarraColors.cyan),
           ),
           const SizedBox(height: 6),

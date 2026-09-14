@@ -946,7 +946,7 @@
   "@queueOffline": {
     "description": "Text() in the offline-queue banner (cs.error background) when offline and no pending messages"
   },
-  "queueOfflineWithPending": "No connection - {count, plural, one{{count} pending message} other{{count} pending messages}}",
+  "queueOfflineWithPending": "No connection - {count, plural, =1{{count} pending message} other{{count} pending messages}}",
   "@queueOfflineWithPending": {
     "description": "Text() in the offline-queue banner (cs.error background) when offline AND pendingCount > 0",
     "placeholders": {
@@ -955,7 +955,7 @@
       }
     }
   },
-  "queuePending": "{count, plural, one{{count} pending message} other{{count} pending messages}}",
+  "queuePending": "{count, plural, =1{{count} pending message} other{{count} pending messages}}",
   "@queuePending": {
     "description": "Text() in the offline-queue banner (cs.secondary background) when online, idle, with pending messages",
     "placeholders": {
@@ -964,7 +964,7 @@
       }
     }
   },
-  "queueSyncing": "Syncing {count, plural, one{{count} message} other{{count} messages}}...",
+  "queueSyncing": "Syncing {count, plural, =1{{count} message} other{{count} messages}}...",
   "@queueSyncing": {
     "description": "Text() in the offline-queue banner (cs.tertiary background) while status.isSyncing, next to a small spinner",
     "placeholders": {

@@ -117,6 +117,16 @@ class _GarraAppState extends ConsumerState<GarraApp>
   }
 
   @override
+  void didChangeLocales(List<Locale>? locales) {
+    // "System default" follows the device: when the device language changes
+    // the Android notification channels have to be recreated in it too (the
+    // `MaterialApp` re-resolves on its own; the channels do not).
+    if (ref.read(appLanguageStateProvider) == AppLanguage.system) {
+      ref.read(notificationServiceProvider).refreshChannels();
+    }
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // Re-check biometric on resume (if enabled)
