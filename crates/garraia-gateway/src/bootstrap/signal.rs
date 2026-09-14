@@ -12,16 +12,15 @@
 //! escolhido pelo usuário não valer neste canal (a assimetria silenciosa do
 //! #988).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use garraia_agents::ChatMessage;
 use garraia_config::AppConfig;
-use garraia_security::{Allowlist, PairingManager};
 use tracing::{info, warn};
 
 use crate::state::SharedState;
 
-use super::config::default_allowlist_path;
+use super::config::channel_gates;
 
 /// Constrói os canais Signal a partir da config. Chamado depois de o estado
 /// virar `Arc`, para o callback poder capturar um `SharedState`.
@@ -69,12 +68,9 @@ pub fn build_signal_channels(
             continue;
         };
 
-        let allowlist = Arc::new(Mutex::new(Allowlist::load_or_create(
-            &default_allowlist_path(),
-        )));
-        let pairing = Arc::new(Mutex::new(PairingManager::new(
-            std::time::Duration::from_secs(300),
-        )));
+        // #1189: gates compartilhados com o AppState -- instancias
+        // proprias fazem o `/pair` nunca casar com o `claim()`.
+        let (allowlist, pairing) = channel_gates(state);
 
         let state_for_cb = Arc::clone(state);
         let allowlist_for_cb = Arc::clone(&allowlist);
