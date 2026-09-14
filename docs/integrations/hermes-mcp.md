@@ -75,7 +75,9 @@ com `dev-echo-provider` (evidência colada do teste executado em
 > Nota: o campo `model` do envelope reporta o default do schema quando o
 > caller não passa `model` — com `provider: echo` o modelo é ignorado
 > pelo provider (passe `"model": "echo-stub"` para um envelope 100%
-> coerente).
+> coerente). O transcript acima foi capturado antes do #1180 e o campo
+> `model` está **re-derivado para o default novo**
+> (`z-ai/glm-5.3-flash`); na captura original ele dizia `openrouter/free`.
 
 ## 2. Garra → Hermes: Hermes como servidor MCP do Garra (pronto hoje, zero código)
 
