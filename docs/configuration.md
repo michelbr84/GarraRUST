@@ -232,12 +232,23 @@ When `garra chat` runs, the provider is chosen in this strict order:
    `config.llm[...]`. If the matching block has a usable credential
    (api_key in config, matching `*_API_KEY` env var, or, for OpenAI-
    compatible local backends, a `base_url`), this provider wins.
-3. **Legacy autodetect chain** (compat) — Ollama health check →
-   `ANTHROPIC_API_KEY` env → `OPENAI_API_KEY` env → `OPENROUTER_API_KEY`
-   env → silent Ollama fallback.
+3. **Autodetect** (no `--provider`, no usable `default_provider`) —
+   cloud first, since issue #1180: the cloud providers you hold a
+   credential for (`api_key` in config or the matching `*_API_KEY` env
+   var) are tried in the order **Anthropic → OpenAI → OpenRouter**, a
+   provider with no credential being skipped; then **Ollama**, if its
+   health check passes; and, as the last resort, an **offline Ollama**
+   handle so the REPL still opens and tells you what is missing.
 
-The chain in step 3 is what runs today and is preserved verbatim for
-operators who don't set `default_provider`.
+Before #1180 this chain probed Ollama *first*, so a stray `ollama serve`
+silently beat an exported `OPENROUTER_API_KEY`. If you want the local
+daemon to win over a cloud credential, say so explicitly — that is the
+escape hatch, not autodetect:
+
+```yaml
+agent:
+  default_provider: ollama
+```
 
 ### Model resolution (per provider kind)
 
@@ -250,9 +261,17 @@ Inside the chosen provider, the model is resolved in this order:
    kind** and supplies a non-empty `model` (provider-field match — lets
    operators give blocks arbitrary names like `my-router`).
 4. **Hardcoded last-resort default** per kind: `qwen3.8:latest`,
-   `claude-sonnet-4-5-20250929`, `gpt-4o`, `z-ai/glm-5.3-flash`. The one
-   table lives in `crates/garraia-cli/src/defaults.rs` (issue #1180) and
-   `chat.rs`'s `hardcoded_default_model` reads it.
+   `claude-sonnet-4-5-20250929`, `gpt-4o`, `z-ai/glm-5.3-flash`. The
+   source of truth for the two project defaults (`DEFAULT_CLOUD_MODEL`,
+   `DEFAULT_LOCAL_MODEL` and their provider keys) is
+   `crates/garraia-config/src/defaults.rs` (issue #1180) — the CLI *and*
+   the gateway read that file, so `garra chat`, the wizard, `garra
+   mcp-server`, the gateway boot path and `POST /api/providers` cannot
+   disagree. `crates/garraia-cli/src/defaults.rs` only re-exports those
+   constants and holds the test that locks the Desktop's
+   `config.default.yml` to the same values. The per-kind table above is
+   `chat.rs::hardcoded_default_model`, which reads the constants for its
+   two #1180 rows.
 
 ### OpenRouter cost policy
 

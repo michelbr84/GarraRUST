@@ -27,7 +27,7 @@ mod tests {
     /// the four literals. Every other surface is protected by the shared
     /// constant; this file is protected only by this test.
     ///
-    /// Both ADR 0021 and the acceptance criteria of issue #1180 name Desktop
+    /// Both ADR 0022 and the acceptance criteria of issue #1180 name Desktop
     /// explicitly in the promise that a clean install ends on
     /// `agent.default_provider: openrouter` + `z-ai/glm-5.3-flash`
     /// "verificavel por teste". Without this test that promise is unverified

@@ -295,19 +295,25 @@ This wizard will (plan 0126):
   values and only adds missing keys), or cancel. Non-interactive runs
   (e.g. `garraia init` in CI) print the legacy hint and exit 0 without
   touching `config.yml`.
-- Offer a provider mode:
-  - **Local-first** (Ollama on this GPU + cloud fallback) — default
-    when an NVIDIA GPU is detected and `GARRAIA_BOOTSTRAP_LOCAL` is not
-    set to `0`.
-  - **Cloud-first** (cloud provider primary + Ollama fallback).
-  - **Cloud-only** (default for CPU/no-GPU machines).
+- Offer a provider mode (issue #1180 — cloud-first on every machine):
+  - **Cloud-first** (OpenRouter + `z-ai/glm-5.3-flash` primary + Ollama
+    fallback) — **the default**, GPU or not. On this path the "install
+    Ollama?" confirm defaults to **no** and the local model picker lands
+    on **"skip the download"**, so nothing is pulled unless you say so.
+  - **Local-first** (Ollama on this GPU primary + cloud fallback) — the
+    **second option**, offered when an NVIDIA GPU is detected and
+    `GARRAIA_BOOTSTRAP_LOCAL` is not set to `0`. Here the local prompts
+    stay preselected, since local is what you just asked for.
+  - **Cloud-only** (no local stack) — the only mode offered on CPU /
+    no-GPU machines.
 - On the cloud branch, let you pick the provider — **OpenRouter**
-  (recommended default), **OpenAI**, or **Anthropic** — and prompt for
+  (the project default), **OpenAI**, or **Anthropic** — and prompt for
   that provider's API key (each preset names its own env var, default
   model, and key-creation URL).
 - On GPU machines (and only after explicit confirmation), install
-  Ollama via the official upstream script and pull
-  `hf.co/MaziyarPanahi/Qwen3-14B-GGUF:Q4_K_M`. NVIDIA drivers and CUDA
+  Ollama via the official upstream script and pull the local model you
+  pick (`qwen3.8:latest`, ~18 GB, is the preselected row on the
+  local-first path; lighter tags and "skip" are offered). NVIDIA drivers and CUDA
   are **never** installed by the wizard — if `nvidia-smi` works, the
   wizard assumes the GPU runtime is already usable.
 - Offer to enable voice (Chatterbox TTS @ `:7860` + faster-whisper STT

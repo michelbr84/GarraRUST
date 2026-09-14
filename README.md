@@ -85,10 +85,11 @@ cargo build --release -p garraia
 # Start
 ./target/release/garra start
 
-# Bare `garra` opens the chat REPL on the project default: OpenRouter with
-# `z-ai/glm-5.3-flash` (issue #1180). With no `agent.default_provider` in
-# config, autodetect tries the cloud providers you have credentials for
-# first, and falls back to local Ollama only when none exists.
+# Bare `garra` opens the chat REPL. On a clean install that is OpenRouter
+# with `z-ai/glm-5.3-flash` (issue #1180). With no `agent.default_provider`
+# in config, autodetect uses the first cloud provider you have a credential
+# for (Anthropic > OpenAI > OpenRouter) and only falls back to local Ollama
+# when none exists.
 ./target/release/garra
 
 # Local Ollama is the second option — ask for it explicitly by naming a tag.

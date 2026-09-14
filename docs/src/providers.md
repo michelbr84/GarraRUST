@@ -173,8 +173,9 @@ O CLI `garra chat` resolve o modelo na seguinte ordem (ver
 1. Flag `--model <X>` (precedência absoluta).
 2. `config.llm[<key>].model` (key match).
 3. Primeiro `config.llm[*]` cujo campo `provider:` casa com o tipo escolhido.
-4. Fallback hardcoded (`z-ai/glm-5.3-flash`, de
-   `crates/garraia-cli/src/defaults.rs`).
+4. Fallback hardcoded (`z-ai/glm-5.3-flash`). A constante vive em
+   `crates/garraia-config/src/defaults.rs` — fonte de verdade para CLI e
+   gateway; `crates/garraia-cli/src/defaults.rs` apenas a reexporta.
 
 Exemplo padrão:
 

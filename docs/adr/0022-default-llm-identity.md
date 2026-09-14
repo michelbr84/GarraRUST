@@ -1,4 +1,4 @@
-# 21. `z-ai/glm-5.3-flash` via OpenRouter como LLM padrão; local como segunda opção
+# 22. `z-ai/glm-5.3-flash` via OpenRouter como LLM padrão; local como segunda opção
 
 - **Status:** Accepted (2026-09-13, decisão do dono registrada na issue #1180)
 - **Deciders:** @michelbr84 (decisão final) + Claude (levantamento e execução,

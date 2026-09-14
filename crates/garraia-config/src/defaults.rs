@@ -6,7 +6,7 @@
 //! `openrouter/auto`, `garra mcp-server` said `openrouter/free`, the
 //! Desktop config shipped `default_provider: "lmstudio"`, and the gateway
 //! boot path fell back to `openai/gpt-4o`. Five answers to one question.
-//! The owner's decision (issue #1180, ADR 0021) collapses them into one:
+//! The owner's decision (issue #1180, ADR 0022) collapses them into one:
 //!
 //! 1. [`DEFAULT_CLOUD_PROVIDER`] + [`DEFAULT_CLOUD_MODEL`] is the official
 //!    default of every fresh installation.
