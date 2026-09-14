@@ -316,7 +316,8 @@ impl AgentRuntime {
 
     /// If `tools_model` is configured and there are tools registered, re-resolve
     /// (provider, model) so that tool-capable requests use a model that supports
-    /// function calling (e.g. when the default is `openrouter/free`).
+    /// function calling (e.g. when the configured model is a cheap one such
+    /// as `openrouter/free`, which does not).
     /// Returns the original pair unchanged when no override applies.
     fn apply_tools_model_override(
         &self,

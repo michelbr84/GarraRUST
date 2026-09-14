@@ -468,7 +468,7 @@ aprendido, sem nunca promover skill não-validada.
 - MVP (Miner + Generator + Registry + Safety Gate básico): 3 / 5 / 7 semanas.
 - Completo (10 componentes): 4 / 7 / 12 semanas (depende de `garraia-embeddings` Fase 2.1 + Web Console pronto).
 
-**Riscos:** Sobreposição com `garraia-skills` (mitigação: ADR 0010 §"Topologia"); skill perigosa aprendida (Safety Gate hard wall + paths críticos exigem aprovação humana); custo LLM (default `openrouter/free`, batch); PII em skills aprendidas (redaction antes do LLM); concorrência entre sessões (lock-file).
+**Riscos:** Sobreposição com `garraia-skills` (mitigação: ADR 0010 §"Topologia"); skill perigosa aprendida (Safety Gate hard wall + paths críticos exigem aprovação humana); custo LLM (default `openrouter/free`, batch — emenda #1180, 2026-09-13: o default passa a ser o do projeto, `z-ai/glm-5.3-flash`, ver ADR 0022); PII em skills aprendidas (redaction antes do LLM); concorrência entre sessões (lock-file).
 
 **Estimativa fase 1:** 6 / 8 / 12 semanas (TurboQuant+ / Superpowers / GarraMaxPower / Config) + 4 / 7 / 12 semanas (Learning Agent, paralelo).
 **Épicos sugeridos:** `GAR-TURBO-1`, `GAR-SUPERPOWERS-1`, `GAR-CONFIG-1`, `GAR-641`.

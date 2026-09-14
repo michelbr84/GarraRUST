@@ -412,7 +412,7 @@ mod tests {
         out.cloud = Some(CloudLlmChoice {
             key: "openrouter".into(),
             provider: "openrouter".into(),
-            model: "openrouter/auto".into(),
+            model: crate::defaults::DEFAULT_CLOUD_MODEL.into(),
             base_url: Some("https://openrouter.ai/api/v1".into()),
             api_key_plaintext: Some(key.into()),
         });

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::response::Html;
 use axum::routing::{get, patch, post};
+use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 use tokio::sync::Mutex;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -822,6 +823,28 @@ fn validate_provider_base_url(base_url: Option<&String>) -> Result<(), String> {
         .map_err(|e| format!("base_url rejected: {e}"))
 }
 
+/// #1180 — the model an operator already wrote for `provider_type` in
+/// `config.yml`, if any. Key match first (`llm.openrouter.model`), then the
+/// first `llm:` block whose `provider:` field is `provider_type` — the same
+/// two steps `garra chat` walks before its hardcoded default, so the Web
+/// Console and the CLI cannot disagree about what the config asks for.
+fn configured_model_for(config: &garraia_config::AppConfig, provider_type: &str) -> Option<String> {
+    let non_empty = |m: &String| !m.trim().is_empty();
+    config
+        .llm
+        .get(provider_type)
+        .and_then(|block| block.model.clone())
+        .filter(non_empty)
+        .or_else(|| {
+            config
+                .llm
+                .values()
+                .filter(|block| block.provider == provider_type)
+                .filter_map(|block| block.model.clone())
+                .find(non_empty)
+        })
+}
+
 /// POST /api/providers — add a new LLM provider at runtime.
 async fn add_provider(
     axum::extract::State(state): axum::extract::State<SharedState>,
@@ -914,10 +937,18 @@ async fn add_provider(
                 .base_url
                 .clone()
                 .or_else(|| Some("https://openrouter.ai/api/v1".to_string()));
+            // #1180: the Web Console's "Save & Activate" on a fresh install
+            // lands here with the pasted key and nothing else — no `model`.
+            // This path used to fall on a hardcoded `openai/gpt-4o`, one more
+            // answer to "which model runs when nobody chose one?" that the
+            // shared constant could not see. A `model:` the operator already
+            // wrote on the config's `openrouter` block wins; otherwise the
+            // project default, the same one the boot path uses.
             let model = body
                 .model
                 .clone()
-                .or_else(|| Some("openai/gpt-4o".to_string()));
+                .or_else(|| configured_model_for(&state.config, "openrouter"))
+                .or_else(|| Some(DEFAULT_CLOUD_MODEL.to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("openrouter");
             state.agents.register_provider(Arc::new(provider));
@@ -1698,6 +1729,138 @@ mod tests {
         // leaving the endpoints open.
         assert!(!super::bind_is_loopback(""));
         assert!(!super::bind_is_loopback("this is not a hostname"));
+    }
+
+    // ─── #1180: POST /api/providers sem `model` ────────────────────────────
+
+    use crate::state::AppState;
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+    use garraia_config::{AppConfig, LlmProviderConfig};
+
+    fn state_with(config: AppConfig) -> SharedState {
+        Arc::new(AppState::new(
+            config,
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ))
+    }
+
+    /// O request que o "Save & Activate" do Web Console manda numa
+    /// instalacao limpa: a chave colada e mais nada.
+    fn openrouter_request(model: Option<&str>) -> AddProviderRequest {
+        AddProviderRequest {
+            provider_type: "openrouter".to_string(),
+            // Chave de mentira: o arm exige uma, e nada aqui sai para a rede
+            // (registrar um provider nao faz chamada; so `persist_api_key`
+            // roda, e sem GARRAIA_VAULT_PASSPHRASE ele e um no-op).
+            api_key: Some("sk-teste-nao-e-segredo".to_string()),
+            model: model.map(str::to_string),
+            base_url: None,
+            set_default: None,
+        }
+    }
+
+    fn openrouter_block(model: Option<&str>) -> LlmProviderConfig {
+        LlmProviderConfig {
+            provider: "openrouter".to_string(),
+            model: model.map(str::to_string),
+            api_key: None,
+            base_url: None,
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
+    async fn activate(state: &SharedState, body: AddProviderRequest) -> Option<String> {
+        let (status, _) = add_provider(axum::extract::State(state.clone()), axum::Json(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "openrouter deveria ter sido registrado"
+        );
+        state
+            .agents
+            .get_provider("openrouter")
+            .expect("openrouter registrado")
+            .configured_model()
+            .map(str::to_string)
+    }
+
+    /// #1180 — sem `model` no request e sem `model:` no config, o provider
+    /// nasce no default do projeto. Antes caia num `openai/gpt-4o` hardcoded
+    /// aqui, invisivel para o lock da constante compartilhada.
+    #[tokio::test]
+    async fn post_providers_openrouter_sem_model_cai_no_default_do_projeto() {
+        let state = state_with(AppConfig::default());
+        assert_eq!(
+            activate(&state, openrouter_request(None)).await.as_deref(),
+            Some(DEFAULT_CLOUD_MODEL),
+            "POST /api/providers sem `model` tem que herdar o default compartilhado, \
+             nao um literal proprio do router"
+        );
+    }
+
+    /// Um `model:` que o operador ja escreveu no bloco `openrouter` do
+    /// config vence o default — o console nao pode ignorar o config.yml.
+    #[tokio::test]
+    async fn post_providers_openrouter_sem_model_respeita_o_model_do_config() {
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "openrouter".to_string(),
+            openrouter_block(Some("mistralai/mistral-small")),
+        );
+        let state = state_with(config);
+        assert_eq!(
+            activate(&state, openrouter_request(None)).await.as_deref(),
+            Some("mistralai/mistral-small")
+        );
+    }
+
+    /// Bloco com nome arbitrario (`my-router`) e `provider: openrouter`
+    /// tambem conta — mesmo passo 3 da resolucao do `garra chat`.
+    #[tokio::test]
+    async fn post_providers_openrouter_acha_o_model_por_provider_field() {
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "my-router".to_string(),
+            openrouter_block(Some("mistralai/mistral-small")),
+        );
+        let state = state_with(config);
+        assert_eq!(
+            activate(&state, openrouter_request(None)).await.as_deref(),
+            Some("mistralai/mistral-small")
+        );
+    }
+
+    /// `model` explicito no request continua vencendo tudo.
+    #[tokio::test]
+    async fn post_providers_openrouter_com_model_explicito_mantem_o_pedido() {
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "openrouter".to_string(),
+            openrouter_block(Some("mistralai/mistral-small")),
+        );
+        let state = state_with(config);
+        assert_eq!(
+            activate(&state, openrouter_request(Some("gpt-4o-mini")))
+                .await
+                .as_deref(),
+            Some("gpt-4o-mini")
+        );
+    }
+
+    /// `model: ""` no config nao conta como escolha — cai no default.
+    #[test]
+    fn configured_model_for_ignora_model_vazio() {
+        let mut config = AppConfig::default();
+        config
+            .llm
+            .insert("openrouter".to_string(), openrouter_block(Some("  ")));
+        assert_eq!(configured_model_for(&config, "openrouter"), None);
+        assert_eq!(
+            configured_model_for(&AppConfig::default(), "openrouter"),
+            None
+        );
     }
 
     // ─── #1079: status dos canais push ────────────────────────────────────

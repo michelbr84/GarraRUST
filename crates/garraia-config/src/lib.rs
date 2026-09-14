@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod check;
+pub mod defaults;
 pub mod loader;
 pub mod model;
 pub mod provider_keys;
@@ -7,6 +8,9 @@ pub mod watcher;
 
 pub use auth::{AuthConfig, AuthConfigError};
 pub use check::{ConfigCheck, ConfigSummary, Finding, Severity, SourceReport, run_check};
+pub use defaults::{
+    DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_PROVIDER,
+};
 pub use loader::{ConfigLoader, harden_secret_file};
 pub use model::{
     AUTH_ACCESS_TTL_MAX_SECS, AUTH_ACCESS_TTL_MIN_SECS, AUTH_REFRESH_TTL_MAX_SECS,

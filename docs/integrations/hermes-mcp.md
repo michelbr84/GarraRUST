@@ -38,7 +38,7 @@ sessão Claude/Hermes aberta no repo ganha `garra_ask` automaticamente.
 ### Contrato da ferramenta
 
 `garra_ask` recebe `{message, provider?, model?, timeout_secs?,
-system_prompt?}` (defaults: `openrouter` / `openrouter/free`; bounds no
+system_prompt?}` (defaults: `openrouter` / `z-ai/glm-5.3-flash`, issue #1180; bounds no
 schema; `additionalProperties: false`) e devolve o envelope
 `garra.ask.v1` como conteúdo de texto, com `isError` espelhando
 `ok`. O provider precisa de credencial configurada no ambiente do
@@ -68,14 +68,16 @@ com `dev-echo-provider` (evidência colada do teste executado em
      "arguments":{"message":"Responda apenas: HERMES-GARRA-OK","provider":"echo"}}}
 <<< {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":
      "{\"answer\":\"[echo] Responda apenas: HERMES-GARRA-OK\",\"latency_ms\":0,
-       \"model\":\"openrouter/free\",\"ok\":true,\"provider\":\"echo\",
+       \"model\":\"z-ai/glm-5.3-flash\",\"ok\":true,\"provider\":\"echo\",
        \"schema\":\"garra.ask.v1\"}"}],"isError":false}}
 ```
 
 > Nota: o campo `model` do envelope reporta o default do schema quando o
 > caller não passa `model` — com `provider: echo` o modelo é ignorado
 > pelo provider (passe `"model": "echo-stub"` para um envelope 100%
-> coerente).
+> coerente). O transcript acima foi capturado antes do #1180 e o campo
+> `model` está **re-derivado para o default novo**
+> (`z-ai/glm-5.3-flash`); na captura original ele dizia `openrouter/free`.
 
 ## 2. Garra → Hermes: Hermes como servidor MCP do Garra (pronto hoje, zero código)
 

@@ -85,13 +85,20 @@ cargo build --release -p garraia
 # Start
 ./target/release/garra start
 
-# Open the chat REPL straight onto a local Ollama model. Bare `garra` does
-# the same with the configured default (qwen3.8:latest). A tag that is not
-# pulled yet prompts to download it; `-y` downloads without asking.
+# Bare `garra` opens the chat REPL. On a clean install that is OpenRouter
+# with `z-ai/glm-5.3-flash` (issue #1180). With no `agent.default_provider`
+# in config, autodetect uses the first cloud provider you have a credential
+# for (Anthropic > OpenAI > OpenRouter) and only falls back to local Ollama
+# when none exists.
+./target/release/garra
+
+# Local Ollama is the second option — ask for it explicitly by naming a tag.
+# A tag that is not pulled yet prompts to download it; `-y` downloads
+# without asking.
 ./target/release/garra --model qwen3.8
 
 # One-shot non-interactive ask — great for scripts and CI
-./target/release/garra ask --provider openrouter --model openrouter/free \
+./target/release/garra ask --provider openrouter \
   --json --timeout-secs 30 "Reply with exactly: OK"
 
 # MCP server over stdio — exposes `garra_ask` to Claude Desktop / Claude Code
@@ -125,7 +132,11 @@ caller wins over the matching flag. For a fully unattended install:
 
 ```bash
 curl -fsSL https://garraia.org/install.sh | sh -s -- --skip-setup
-garraia config set-model --model qwen3.8:latest
+# The project default — OpenRouter primary, local Ollama as the backup.
+# The key is read from stdin, never from argv.
+printf '%s\n' "$OPENROUTER_API_KEY" | garraia config set-routing \
+  --primary-provider openrouter --primary-model z-ai/glm-5.3-flash \
+  --backup-provider ollama --backup-model qwen3.8:latest --api-key-stdin
 garraia start
 ```
 

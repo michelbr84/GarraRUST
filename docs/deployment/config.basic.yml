@@ -7,6 +7,13 @@ gateway:
   port: 3888
 
 llm:
+  # NOTA: este perfil de exemplo desvia do padrao do projeto de proposito.
+  # O padrao oficial (issue #1180) e OpenRouter + `z-ai/glm-5.3-flash`, com o
+  # local como segunda opcao; aqui o primario e Anthropic porque o exemplo
+  # existe para mostrar dois provedores de nuvem e o encadeamento de
+  # `fallback_providers`. Uma instalacao que nao quer escolher nada e so
+  # rodar `garra init` cai no padrao do projeto, nao neste arquivo.
+  #
   # Anthropic Claude (requer ANTHROPIC_API_KEY)
   claude:
     provider: anthropic

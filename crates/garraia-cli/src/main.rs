@@ -6,6 +6,7 @@ mod capability_prompt;
 mod chat;
 mod cli_args;
 mod config_cmd;
+mod defaults;
 mod doctor;
 mod glob_cmd;
 mod logs_cmd;
