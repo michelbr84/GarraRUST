@@ -31,7 +31,7 @@
 use crate::state::{Desired, ModuleState, PowerEvent};
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
 
 /// Falhas de supervisão.
@@ -93,7 +93,7 @@ impl ProcessSpec {
     }
 }
 
-/// Um processo filho vivo.
+/// Status de saída de um processo filho que já terminou.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExitStatus {
     pub code: Option<i32>,
@@ -275,12 +275,27 @@ impl Supervisor {
 
     /// `true` quando há um filho registrado.
     pub fn is_running(&self) -> bool {
-        self.child.lock().map(|g| g.is_some()).unwrap_or(false)
+        self.lock_child().is_some()
     }
 
     /// PID do filho, quando há um.
     pub fn pid(&self) -> Option<u32> {
-        self.child.lock().ok()?.as_ref()?.id()
+        self.lock_child().as_ref()?.id()
+    }
+
+    /// Tranca o mutex do filho, recuperando-o mesmo se estiver envenenado.
+    ///
+    /// O dado protegido (`Option<Box<dyn ProcessHandle>>`) segue
+    /// estruturalmente válido depois de um panic em outra thread: em todo
+    /// ponto de uso o handle é extraído (`take()`) *antes* de qualquer
+    /// chamada a método que possa entrar em panic, então o guard nunca fica
+    /// pela metade. Desistir aqui não protege nada — só faz o processo filho
+    /// vazar (`Drop`) ou o supervisor mentir que não há nada rodando
+    /// (`is_running`/`pid`).
+    fn lock_child(&self) -> MutexGuard<'_, Option<Box<dyn ProcessHandle>>> {
+        self.child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Lança o processo.
@@ -291,7 +306,7 @@ impl Supervisor {
         self.state.request(Desired::On);
 
         {
-            let guard = self.child.lock().map_err(|_| SuperviseError::Poisoned)?;
+            let guard = self.lock_child();
             if guard.is_some() {
                 return Ok(());
             }
@@ -300,7 +315,22 @@ impl Supervisor {
         match self.spawner.spawn(&self.spec) {
             Ok(handle) => {
                 tracing::info!(comando = %self.spec.display(), "processo supervisionado iniciado");
-                let mut guard = self.child.lock().map_err(|_| SuperviseError::Poisoned)?;
+                // Aqui, diferente dos outros pontos de trava, `handle` ainda
+                // não está guardado em lugar nenhum: se o lock estiver
+                // envenenado, não dá para recuperar o guard e seguir como se
+                // nada tivesse acontecido, porque `*guard = Some(handle)`
+                // seria a única cópia da referência — perdê-la vaza o
+                // processo. Em vez de recuperar, mata o órfão explicitamente
+                // e relata `Poisoned` em vez de fingir sucesso.
+                let mut guard = match self.child.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        let mut orfao = handle;
+                        let _ = orfao.kill();
+                        self.state.observe(PowerEvent::Crashed);
+                        return Err(SuperviseError::Poisoned);
+                    }
+                };
                 *guard = Some(handle);
                 self.state.observe(PowerEvent::Started);
                 Ok(())
@@ -352,7 +382,7 @@ impl Supervisor {
     /// Devolve o status do filho quando ele de fato terminou.
     pub fn poll(&mut self) -> Result<Option<ExitStatus>, SuperviseError> {
         let status = {
-            let mut guard = self.child.lock().map_err(|_| SuperviseError::Poisoned)?;
+            let mut guard = self.lock_child();
             match guard.as_mut() {
                 Some(child) => match child.try_wait()? {
                     Some(status) => {
@@ -377,7 +407,7 @@ impl Supervisor {
     }
 
     fn kill_child(&self) -> Result<(), SuperviseError> {
-        let mut guard = self.child.lock().map_err(|_| SuperviseError::Poisoned)?;
+        let mut guard = self.lock_child();
         if let Some(mut child) = guard.take() {
             child.kill()?;
         }
@@ -394,9 +424,12 @@ impl Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         // Sem `?` e sem panic: `Drop` não pode falhar, e entrar em panic
-        // durante desenrolamento aborta o processo.
-        if let Ok(mut guard) = self.child.lock()
-            && let Some(mut child) = guard.take()
+        // durante desenrolamento aborta o processo. `lock_child` recupera o
+        // guard mesmo envenenado — é exatamente o caminho de panic que esta
+        // garantia promete cobrir, então desistir aqui por causa do próprio
+        // panic que a acionou anularia a garantia.
+        let mut guard = self.lock_child();
+        if let Some(mut child) = guard.take()
             && let Err(e) = child.kill()
         {
             tracing::warn!(erro = %e, "falha ao encerrar processo filho no drop");
@@ -639,6 +672,66 @@ mod tests {
             spawner,
         );
         assert!(!s.is_running());
+    }
+
+    /// Reproduz o cenário que motivou `lock_child`: uma implementação externa
+    /// de `ProcessHandle` (o trait é público, então isto pode acontecer fora
+    /// desta crate) entra em panic durante `kill`/`try_wait`, envenenando o
+    /// mutex. A partir daí, `is_running`/`pid` continuam corretos e `stop`
+    /// ainda mata o filho — nenhum deles é enganado nem desiste em silêncio.
+    #[test]
+    fn recupera_do_lock_envenenado_sem_vazar_ou_mentir() {
+        let spawner = Arc::new(FakeSpawner::default());
+        let killed = Arc::clone(&spawner.killed);
+        let mut s = sup(Arc::clone(&spawner));
+        s.start().expect("lanca");
+
+        let child_mutex = &s.child;
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = child_mutex.lock().expect("mutex ainda saudavel aqui");
+            panic!("panic simulado segurando o lock, como um ProcessHandle externo faria");
+        }));
+        assert!(panicked.is_err(), "o panic simulado devia ter acontecido");
+        assert!(child_mutex.is_poisoned(), "o mutex devia estar envenenado");
+
+        // Nem mente que nao ha nada rodando, nem esconde o pid.
+        assert!(s.is_running());
+        assert_eq!(s.pid(), Some(4242));
+
+        // E ainda mata o filho, mesmo com o lock envenenado.
+        s.stop().expect("mata mesmo com lock envenenado");
+        assert!(killed.load(Ordering::SeqCst));
+        assert!(!s.is_running());
+    }
+
+    /// O outro lado do mesmo bug: se o lock envenena bem no instante entre o
+    /// `spawn` ter sucesso e o handle ser guardado, `start` nao pode fingir
+    /// sucesso guardando uma referencia que o `guard` recuperado ja nao tem
+    /// como assumir com seguranca contra uma corrida — em vez disso mata o
+    /// orfao e relata `Poisoned`, e o processo nao fica sem supervisor.
+    #[test]
+    fn start_mata_o_orfao_quando_o_lock_envenena_apos_o_spawn() {
+        let spawner = Arc::new(FakeSpawner::default());
+        let killed = Arc::clone(&spawner.killed);
+        let mut s = sup(Arc::clone(&spawner));
+
+        let child_mutex = &s.child;
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = child_mutex.lock().expect("mutex ainda saudavel aqui");
+            panic!("panic simulado segurando o lock antes do primeiro start");
+        }));
+        assert!(panicked.is_err());
+        assert!(child_mutex.is_poisoned());
+
+        let err = s
+            .start()
+            .expect_err("lock envenenado deve falhar, nao vazar");
+        assert!(matches!(err, SuperviseError::Poisoned));
+        assert!(
+            killed.load(Ordering::SeqCst),
+            "o orfao devia ter sido morto, nao abandonado"
+        );
+        assert_eq!(s.state().power(), Power::Failed);
     }
 
     #[test]

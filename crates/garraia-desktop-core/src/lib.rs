@@ -43,5 +43,6 @@ pub mod supervise;
 pub use detect::{AgentKind, Confidence, DetectedAgent, Detector, Evidence, Filesystem, RealFs};
 pub use state::{Desired, ModuleId, ModuleState, Modules, Power, PowerEvent};
 pub use supervise::{
-    CommandSpawner, ProcessHandle, ProcessSpec, RestartPolicy, Spawner, SuperviseError, Supervisor,
+    CommandSpawner, ExitStatus, ProcessHandle, ProcessSpec, RestartPolicy, Spawner, SuperviseError,
+    Supervisor,
 };
