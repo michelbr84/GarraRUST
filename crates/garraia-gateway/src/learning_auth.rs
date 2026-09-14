@@ -67,7 +67,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{Method, StatusCode, header};
+use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use tracing::warn;
@@ -79,7 +79,7 @@ use crate::gateway_auth::ApiKeyGate;
 // duas implementações para divergir em silêncio. O que continua sendo deste
 // módulo é o que só vale para learning: o fail-closed de peer/credencial e os
 // corpos `"learning: …"`.
-use crate::origin_guard::{cross_origin, host_de_loopback};
+use crate::origin_guard::{Pedido, cross_origin, host_de_loopback};
 
 /// Corpo do 403 do anti-CSRF. Constante: nada do que veio no pedido é ecoado.
 const CORPO_CSRF: &str = "learning: cross-origin mutating request refused";
@@ -123,7 +123,10 @@ pub async fn learning_mutations_guard(
     }
 
     // 1. Anti-CSRF: um POST/DELETE só entra da origem do próprio gateway.
-    if cross_origin(req.headers(), estado.scheme) {
+    //    O `Pedido` resolve o `Host` pelo header ou, em HTTP/2, pela
+    //    `:authority` da URI (#1182).
+    let pedido = Pedido::de(req.headers(), req.uri());
+    if cross_origin(&pedido, estado.scheme) {
         warn!(
             path = %req.uri().path(),
             method = %method,
@@ -163,7 +166,7 @@ pub async fn learning_mutations_guard(
             // entre si no passo 1. A âncora é o `Host`: pedido de navegador
             // (com `Origin`) só entra com `Host` de loopback, o endereço
             // pelo qual um gateway ligado em loopback de fato é alcançado.
-            if req.headers().contains_key(header::ORIGIN) && !host_de_loopback(req.headers()) {
+            if pedido.tem_origin() && !host_de_loopback(&pedido) {
                 warn!(
                     path = %req.uri().path(),
                     method = %method,
@@ -196,6 +199,7 @@ mod tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
+    use axum::http::header;
     use axum::middleware::from_fn_with_state;
     use axum::routing::{delete, get, post};
     use http_body_util::BodyExt;

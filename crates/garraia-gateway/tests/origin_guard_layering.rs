@@ -30,8 +30,35 @@ const BEARER: &str = "Bearer chave-de-teste-do-gateway";
 /// Corpo do 403 da guarda genérica — o contrato de resposta que este PR
 /// introduz. Diferente do `"learning: …"`, de propósito: quem responde diz
 /// quem é.
-const CORPO_403: &str =
-    "gateway: cross-origin mutating request refused (see gateway.allowed_origins)";
+const CORPO_403: &str = "gateway: cross-origin request refused (see gateway.allowed_origins)";
+
+/// Headers de um handshake WebSocket de navegador, sem os de chave
+/// (`Sec-WebSocket-Key` etc.): basta para a guarda decidir; o que vier
+/// depois dela (400/426 do `WebSocketUpgrade`) é resposta do handler.
+const HANDSHAKE: &[(&str, &str)] = &[("upgrade", "websocket"), ("connection", "Upgrade")];
+
+/// As rotas mutantes reais nomeadas pela #1182, cada uma vinda de um pedaço
+/// diferente da montagem (cadeia principal, `build_skill_skin_routes`,
+/// `nest("/admin")`, `/v1`, `/chat`, `/a2a`). Rodar contra o `build_router`
+/// de verdade é o que prova que a guarda está montada DEPOIS de todo
+/// `merge`/`nest` — um `.merge()` novo colocado abaixo do `.layer()` faria
+/// a rota dele nascer desprotegida, e este loop pegaria.
+const MUTANTES: &[(&str, &str)] = &[
+    ("PATCH", "/api/settings"),
+    ("POST", "/api/sessions"),
+    ("POST", "/api/mode/select"),
+    ("POST", "/api/mcp/marketplace/install"),
+    ("POST", "/api/skills"),
+    ("DELETE", "/api/skins/x"),
+    ("DELETE", "/api/memory"),
+    ("POST", "/api/projects"),
+    ("POST", "/v1/chat/completions"),
+    ("POST", "/v1/messages"),
+    ("POST", "/chat"),
+    ("POST", "/a2a/tasks"),
+    ("POST", "/admin/api/setup"),
+    ("POST", "/admin/api/login"),
+];
 
 /// Um pedido no `build_router` de verdade.
 ///
@@ -226,6 +253,133 @@ async fn cors_default_nao_anuncia_origem_nenhuma() {
             .and_then(|v| v.to_str().ok()),
         Some("http://evil.com"),
         "a origem declarada pelo dono tem de continuar valendo"
+    );
+}
+
+/// Toda rota mutante nomeada pela #1182 recebe o 403 desta guarda no router
+/// de verdade — inclusive as que vêm de `merge`/`nest` (skills/skins, admin,
+/// `/v1`, `/chat`, `/a2a`), e o bootstrap do admin (`/admin/api/setup`), que
+/// não tem `require_csrf` próprio e saiu da skip-list na revisão.
+#[tokio::test]
+async fn toda_rota_mutante_nomeada_recebe_o_403_no_router_real() {
+    for (metodo, uri) in MUTANTES {
+        let resp = pedido(
+            None,
+            &[],
+            metodo,
+            uri,
+            &[
+                ("origin", "http://evil.example"),
+                ("host", "127.0.0.1:3888"),
+            ],
+        )
+        .await;
+        let (status, corpo) = status_corpo(resp).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{metodo} {uri}: corpo {corpo}"
+        );
+        assert_eq!(corpo, CORPO_403, "{metodo} {uri}");
+    }
+}
+
+/// O handshake de WebSocket é um `GET`, mas não passa por CORS: com `Origin`
+/// estranho, `/ws` e `/ws/parrot` recusam com 403. Antes deste PR
+/// `/ws/parrot` não tinha checagem nenhuma — qualquer página visitada pelo
+/// dono abria um turno completo do agente e lia a resposta.
+#[tokio::test]
+async fn handshake_websocket_cross_origin_da_403_em_ws_e_ws_parrot() {
+    for uri in ["/ws", "/ws/parrot"] {
+        for (origin, host) in [
+            ("http://evil.example", "127.0.0.1:3888"),
+            ("http://evil.example:3888", "evil.example:3888"), // rebinding
+            ("null", "127.0.0.1:3888"),
+        ] {
+            let mut headers = vec![("origin", origin), ("host", host)];
+            headers.extend_from_slice(HANDSHAKE);
+            let resp = pedido(None, &[], "GET", uri, &headers).await;
+            let (status, corpo) = status_corpo(resp).await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "{uri} com Origin {origin}: {corpo}"
+            );
+            assert!(
+                corpo.contains("cross-origin"),
+                "{uri}: o 403 tem de ser da guarda, corpo {corpo}"
+            );
+        }
+    }
+}
+
+/// Os clientes legítimos dos dois WebSockets não são recusados pela guarda:
+/// o webchat same-origin em `/ws`, e a webview Tauri do Garra Desktop em
+/// `/ws/parrot` (`tauri://localhost` no Linux/macOS, `http://tauri.localhost`
+/// no Windows), mais o cliente sem `Origin`. O que vier depois (400/426 do
+/// `WebSocketUpgrade` sem `Sec-WebSocket-Key`) é do handler; o que NÃO pode
+/// vir é 403.
+#[tokio::test]
+async fn handshake_websocket_legitimo_nao_e_recusado() {
+    for uri in ["/ws", "/ws/parrot"] {
+        for origin in [
+            None,
+            Some("http://127.0.0.1:3888"),
+            Some("tauri://localhost"),
+            Some("http://tauri.localhost"),
+            Some("https://tauri.localhost"),
+        ] {
+            let mut headers = vec![("host", "127.0.0.1:3888")];
+            if let Some(origin) = origin {
+                headers.push(("origin", origin));
+            }
+            headers.extend_from_slice(HANDSHAKE);
+            let resp = pedido(None, &[], "GET", uri, &headers).await;
+            let (status, corpo) = status_corpo(resp).await;
+            assert_ne!(
+                status,
+                StatusCode::FORBIDDEN,
+                "{uri} com Origin {origin:?} recusado: {corpo}"
+            );
+        }
+    }
+}
+
+/// `GET` puro não é deste guarda: navegação cross-site (link para o console
+/// a partir de outro site) e `GET` com `Origin` estranho passam — quem cuida
+/// da resposta é o CORS, que sem `allowed_origins` não a entrega.
+#[tokio::test]
+async fn leitura_http_atravessa_a_guarda() {
+    for headers in [
+        vec![("host", "127.0.0.1:3888"), ("sec-fetch-site", "cross-site")],
+        vec![
+            ("host", "127.0.0.1:3888"),
+            ("origin", "http://evil.example"),
+        ],
+    ] {
+        let resp = pedido(None, &[], "GET", "/api/sessions", &headers).await;
+        let (status, corpo) = status_corpo(resp).await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "{headers:?}: {corpo}");
+    }
+}
+
+/// `allowed_origins: ["*"]` — o reflexo de quem quer o allow-all antigo —
+/// não pode derrubar o gateway no boot (o `AllowOrigin::list` do tower-http
+/// entra em pânico com `*`). A entrada é ignorada com aviso, e o default
+/// seguro (nenhuma origem anunciada) vale.
+#[tokio::test]
+async fn curinga_em_allowed_origins_nao_derruba_o_boot() {
+    let resp = pedido(
+        None,
+        &["*"],
+        "GET",
+        "/api/sessions",
+        &[("origin", "http://evil.com"), ("host", "127.0.0.1:3888")],
+    )
+    .await;
+    assert!(
+        resp.headers().get("access-control-allow-origin").is_none(),
+        "`*` foi anunciado como origem"
     );
 }
 

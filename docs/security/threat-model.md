@@ -219,8 +219,8 @@ buraco: **o navegador do dono alcança a porta rodando código de terceiros**.
 Basta o dono visitar uma página qualquer para ela disparar
 `POST /api/projects {"path":"…"}` contra `127.0.0.1:3888` de dentro do
 navegador dele — com cookies, com a rede local, com tudo. Fechado para a
-superfície HTTP mutante e para `/ws` pela guarda da §5.10; `/ws/parrot` segue
-em aberto, ver lá.
+superfície HTTP mutante e para os handshakes de `/ws` e `/ws/parrot` pela
+guarda da §5.10.
 
 **Nota sobre `working_dir`**: desde o #1028, `POST /api/sessions`
 (`api::create_session`) aceita `working_dir` e o passa por
@@ -423,21 +423,45 @@ uma sessão de chat completa.
 
 **Mitigação**, em três peças:
 
-1. `garraia_gateway::origin_guard::mutations_guard` — middleware sobre
-   `POST`/`PUT`/`PATCH`/`DELETE` de toda a superfície, montado **por dentro**
-   do gate de `gateway.api_key` (o 401 do gate vem primeiro). Recusa com `403`
-   de corpo constante quando o `Origin` não é o do próprio gateway (mesmo
-   esquema, mesma authority do `Host`, gramática RFC 6454 estrita,
-   `Origin: null` e `Sec-Fetch-Site: cross-site` inclusos) ou quando, havendo
-   `Origin`, o `Host` é um nome DNS que não é `localhost` nem está em
-   `gateway.allowed_origins` — a âncora anti-DNS-rebinding. Nada do pedido é
-   ecoado no corpo nem no log.
+1. `garraia_gateway::origin_guard::cross_origin_guard` — middleware sobre
+   `POST`/`PUT`/`PATCH`/`DELETE` de toda a superfície (e sobre todo handshake
+   de WebSocket, ver 3), montado **por dentro** do gate de `gateway.api_key`
+   (o 401 do gate vem primeiro). Recusa com `403` de corpo constante quando o
+   `Origin` não é o do próprio gateway (mesmo esquema, mesma authority do
+   `Host`, gramática RFC 6454 estrita, `Origin: null` e `Sec-Fetch-Site:
+   cross-site` inclusos) ou quando, havendo `Origin`, o `Host` é um nome DNS
+   que não é `localhost`/`*.localhost` nem está em `gateway.allowed_origins`
+   — a âncora anti-DNS-rebinding. O `Host` vem do header ou, em HTTP/2, da
+   `:authority` (senão o console servido com TLS nativo, onde o navegador
+   negocia h2 e não manda `Host`, seria recusado). O esquema do transporte é
+   o que o `server.rs` de fato serve (`esquema_efetivo`: feature `tls` **e**
+   cert **e** chave) — `tls_cert_path` preenchido num binário sem a feature
+   cai para `http` nos dois lugares. Skip-list só para quem tem guarda
+   própria mais estrita (`/api/learning/`, `/api/plugins/`) ou é
+   server-to-server assinado (`/webhooks/`); `/admin/` **não** está nela,
+   porque `POST /admin/api/setup` (cria o primeiro admin), `/admin/api/login`
+   e `/admin/api/recovery/*` são montados fora do `require_csrf` do
+   sub-router admin. Nada do pedido é ecoado no corpo nem no log.
 2. **CORS default deixou de ser allow-all.** Sem `gateway.allowed_origins`,
    nenhuma origem cross-origin é anunciada. O Web Console é servido pelo
    próprio gateway e é same-origin — não usa CORS; cliente não-navegador
-   (app mobile, `curl`, Claude Code) ignora CORS.
-3. **`/ws` checa o `Origin` do handshake** (`ws_upgrade_permitido`), pelas
-   mesmas duas regras. Sem `Origin` (app, CLI) o handshake segue como antes.
+   (app mobile, `curl`, Claude Code) ignora CORS. Uma entrada `*` é ignorada
+   com aviso (o `AllowOrigin::list` do tower-http entraria em pânico no boot).
+3. **`/ws` e `/ws/parrot` checam o `Origin` do handshake**
+   (`ws_upgrade_permitido`) — no middleware, para qualquer rota com
+   `Upgrade: websocket`, e de novo em cada handler como defesa em
+   profundidade. Sem `Origin` (app, CLI) o handshake segue como antes. Uma
+   página web só consegue apresentar `Origin` `http`/`https` (ou `null`),
+   então origem de esquema de app (`tauri://localhost`, extensão de
+   navegador) passa; e a webview do Garra Desktop passa pela sua origem exata
+   (`origin_guard::ORIGENS_TAURI`: `tauri://localhost`;
+   `http://tauri.localhost`/`https://tauri.localhost` no Windows, WebView2).
+   Essa lista foi derivada do fonte do Tauri 2.11 (`tauri_protocol_url` e o
+   parse do header `Origin` no protocolo de IPC, cujos testes usam
+   `tauri://localhost`), **não medida em runtime nesta entrega** — o
+   ambiente não tem GTK/webkit nem `DISPLAY`. Se o pássaro parar de conectar
+   após o upgrade, o log diz `Garra Desktop WebSocket upgrade rejected` e a
+   lista é o lugar a olhar.
 
 **Recorte deliberado**: o guarda genérico **não** herdou o
 `503 auth not configured` do `learning_mutations_guard` para peer não-loopback
@@ -446,33 +470,41 @@ sem credencial. Herdá-lo mataria o app mobile na LAN contra um Garra sem
 gate de verdade continua sendo `gateway.api_key` — este módulo fecha o que o
 **navegador** pode ser forçado a fazer.
 
-**Quebra conhecida**: o perfil "reverse proxy com domínio próprio, sem
-`allowed_origins`". O navegador manda `Origin: https://meu.dominio`, o proxy
-repassa `Host: meu.dominio`, e o gateway por baixo fala `http` — recusado.
+**Quebra conhecida**: alcançar o console por **nome DNS** sem o nome em
+`allowed_origins` — reverse proxy com domínio próprio, mas também mDNS
+(`nas.local`), Tailscale MagicDNS, nome de serviço Docker/Compose e ingress. A
+âncora só conhece IP literal, `localhost` e nomes declarados; no reverse proxy
+há ainda o esquema (`Origin: https://…` contra um gateway que fala `http`).
+Efeito: 403 em `POST`/`PATCH`/`DELETE` e no handshake do chat (`/ws`).
 Mitigação: listar a origem em `gateway.allowed_origins`, que é aceita como
 declarada pelo dono (escotilha `origem_declarada`, a mesma confiança que a
-lista já carregava para o CORS). Documentado em `docs/hardening-gateway.md`.
+lista já carregava para o CORS). Documentado em `docs/hardening-gateway.md`,
+com a linha adicionada às receitas de proxy do `production-runbook.md`.
 
-### Gap aberto: `/ws/parrot`
+### Residual: leitura `GET` sob DNS rebinding
 
-`/ws/parrot` (o overlay do papagaio do Garra Desktop) **não** recebeu a
-checagem, de propósito. O cliente legítimo é uma webview Tauri, cujo `Origin`
-real de handshake varia por plataforma (`tauri://localhost`,
-`http://tauri.localhost`, e variantes) e **não pôde ser verificado no ambiente
-desta entrega** — sem GTK/webkit, sem `DISPLAY`, sem forma de rodar o Tauri e
-capturar o header real. Uma allowlist adivinhada derrubaria o Garra Desktop em
-produção sem forma de testar. Fica como follow-up: capturar o `Origin` real em
-cada plataforma suportada, e só então aplicar `ws_upgrade_permitido` com a
-allowlist Tauri somada.
+Depois de um rebinding bem-sucedido a página do atacante é **same-origin** com
+o gateway, e o navegador **não manda `Origin` em `GET` same-origin** — então
+nenhuma regra baseada em `Origin` distingue `GET /api/sessions`,
+`/api/memory/recent` ou `/api/logs` vindos dessa página de um `GET` do console
+legítimo. Fechar isso exigiria recusar todo `Host` que é nome DNS não
+declarado, **inclusive sem `Origin`**, o que mataria `curl http://nas.local:3888/health`,
+o app mobile por hostname e os healthchecks do Compose. Fica registrado como
+residual: escrita e WebSocket estão fechados; leitura sob rebinding depende de
+`gateway.api_key` (o gate de verdade, que o rebinding não tem como fornecer) ou
+de servir o console só por IP/`localhost`.
 
 | STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
 |---|---|---|---|
-| **T** Tampering | Página visitada pelo dono dispara `PATCH /api/settings` contra `127.0.0.1:3888` e reescreve a config. | `origin_guard::mutations_guard` em toda a superfície mutante fora da skip-list; tabela de rotas reais em `origin_guard.rs` e montagem real em `tests/origin_guard_layering.rs`. | — |
+| **T** Tampering | Página visitada pelo dono dispara `PATCH /api/settings` contra `127.0.0.1:3888` e reescreve a config. | `origin_guard::cross_origin_guard` em toda a superfície mutante fora da skip-list; tabela de rotas reais em `origin_guard.rs` e no `build_router` de verdade em `tests/origin_guard_layering.rs`. | — |
+| **E** Elevation of privilege | Página visitada pelo dono dispara `POST /admin/api/setup` numa instalação nova e cria o primeiro admin com credenciais do atacante (rota pública, sem `require_csrf`). | `/admin/` fora da skip-list: a guarda cobre o bootstrap do admin. | — |
 | **I** Information disclosure | CORS `allow_origin(Any)` deixava a página do atacante **ler** a resposta (`/api/settings/effective`, `/api/sessions`). | Sem `allowed_origins`, nenhuma origem cross-origin é anunciada. | — |
-| **E** Elevation of privilege | DNS rebinding: domínio do atacante re-resolvido para `127.0.0.1` faz `Origin` e `Host` casarem entre si. | Âncora `ancora_ok`: só IP literal, `localhost` ou nome declarado em `allowed_origins`. | — |
-| **T** Tampering | `new WebSocket("ws://127.0.0.1:3888/ws")` de qualquer página abre sessão de chat (WebSocket não passa por CORS). | `ws_upgrade_permitido` no `ws_handler`. | — |
-| **T** Tampering | O mesmo contra `/ws/parrot` (overlay do desktop). | **Nenhuma** — ver "Gap aberto" acima. | Follow-up: capturar o `Origin` real da webview Tauri por plataforma e aplicar a checagem com a allowlist correspondente. |
-| **D** Denial of service | Perfil reverse proxy com domínio próprio deixa de aceitar mutação de navegador. | Quebra conhecida e deliberada; escotilha por `gateway.allowed_origins`. | — |
+| **E** Elevation of privilege | DNS rebinding: domínio do atacante re-resolvido para `127.0.0.1` faz `Origin` e `Host` casarem entre si. | Âncora `ancora_ok`: só IP literal, `localhost`/`*.localhost` ou nome declarado em `allowed_origins`. | — |
+| **I** Information disclosure | DNS rebinding + `GET` same-origin (sem `Origin`) lê `/api/sessions`, `/api/logs`. | **Residual** — ver acima. | `gateway.api_key`; console só por IP/`localhost`. |
+| **T** Tampering | `new WebSocket("ws://127.0.0.1:3888/ws")` de qualquer página abre sessão de chat (WebSocket não passa por CORS). | `ws_upgrade_permitido` no middleware e no `ws_handler`. | — |
+| **T** Tampering | O mesmo contra `/ws/parrot` (overlay do desktop): turno completo do agente, com tools, escrevendo na sessão persistente `parrot-desktop`, resposta legível — e sem gate de `api_key`, que só cobre `/api/*`. | `ws_upgrade_permitido` no middleware e no `parrot_ws_handler`, com `ORIGENS_TAURI` para a webview. | Medir o `Origin` real da webview por plataforma (Linux WebKitGTK, Windows WebView2) na próxima release do desktop e confirmar a lista. |
+| **D** Denial of service | Console alcançado por nome DNS não declarado deixa de aceitar mutação e chat de navegador. | Quebra conhecida e deliberada; escotilha por `gateway.allowed_origins`. | — |
+| **D** Denial of service | `allowed_origins: ["*"]` (o reflexo de quem quer o allow-all de volta) derrubaria o gateway no boot. | Entrada ignorada com aviso (`origens_validas`). | Validação em `garraia config check`. |
 
 ---
 

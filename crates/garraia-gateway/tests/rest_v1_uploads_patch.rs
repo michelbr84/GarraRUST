@@ -176,13 +176,15 @@ async fn v1_uploads_patch_scenarios() {
 
     // ─── OPTIONS happy path ─────────────────────────────────────────
     //
-    // NB: the production router wraps `/v1` with a permissive
-    // `tower_http::cors::CorsLayer::allow_methods(Any)` which
-    // intercepts pure OPTIONS (no Access-Control-Request-Method) and
-    // returns 200 OK *without* the tus headers. In the test harness
-    // we bypass that layer (no CORS applied), so OPTIONS hits our
-    // handler directly and returns 204 + tus headers. Accept both
-    // shapes so the assertion survives future router-layer changes.
+    // NB: the production router wraps `/v1` with a
+    // `tower_http::cors::CorsLayer` (permissive only when
+    // `gateway.allowed_origins` is set; since #1182 the default announces
+    // no origin) which intercepts pure OPTIONS (no
+    // Access-Control-Request-Method) and returns 200 OK *without* the
+    // tus headers. In the test harness we bypass that layer (no CORS
+    // applied), so OPTIONS hits our handler directly and returns 204 +
+    // tus headers. Accept both shapes so the assertion survives future
+    // router-layer changes.
     {
         let req = req_with_peer(
             Request::builder().method("OPTIONS").uri("/v1/uploads"),

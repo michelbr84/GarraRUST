@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
 /// WebSocket handler for the Garra Desktop overlay — GET /ws/parrot
 ///
@@ -29,7 +30,33 @@ use crate::state::SharedState;
 const SESSION_ID: &str = "parrot-desktop";
 const CHANNEL: &str = "desktop";
 
-pub async fn parrot_ws_handler(State(state): State<SharedState>, ws: WebSocketUpgrade) -> Response {
+pub async fn parrot_ws_handler(
+    headers: HeaderMap,
+    uri: Uri,
+    State(state): State<SharedState>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // #1182: anti-CSRF do handshake. Esta rota nao tem gate de `api_key`
+    // (ele cobre so `/api/*`), entao antes daqui QUALQUER pagina visitada
+    // pelo dono abria `new WebSocket("ws://localhost:3888/ws/parrot")`, mandava
+    // `{"type":"message"}` e recebia um turno completo do agente — com as
+    // tools, com a chave de LLM do dono, e escrevendo na sessao persistente
+    // do desktop. O cliente legitimo e a webview Tauri (`ORIGENS_TAURI`) ou
+    // um cliente sem `Origin`; pagina web nenhuma consegue apresentar essas
+    // origens. O `cross_origin_guard` do router ja julgou o handshake;
+    // repetir aqui e defesa em profundidade.
+    if !crate::origin_guard::ws_upgrade_permitido(
+        &crate::origin_guard::Pedido::de(&headers, &uri),
+        crate::origin_guard::esquema_efetivo(&state.config.gateway),
+        &crate::origin_guard::origens_validas(&state.config.gateway),
+    ) {
+        // Nada do pedido e ecoado; se o desktop parar de conectar, esta e a
+        // linha a procurar no log — e `ORIGENS_TAURI` o lugar a olhar.
+        warn!(
+            "Garra Desktop WebSocket upgrade rejected: cross-origin (see origin_guard::ORIGENS_TAURI)"
+        );
+        return (StatusCode::FORBIDDEN, crate::origin_guard::CORPO_WS).into_response();
+    }
     ws.on_upgrade(move |socket| handle_parrot_socket(socket, state))
 }
 

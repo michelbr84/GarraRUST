@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures::SinkExt;
 use futures::stream::StreamExt;
@@ -47,6 +47,7 @@ const MAX_DEFERRED_MESSAGES: usize = 8;
 pub async fn ws_handler(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
+    uri: Uri,
     State(state): State<SharedState>,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -55,22 +56,16 @@ pub async fn ws_handler(
     // sem preflight —, entao a unica barreira de navegador aqui e o `Origin`
     // do handshake. Cliente nao-navegador (app, CLI, `curl`) nao manda
     // `Origin` e nao e afetado; para ele o gate continua sendo `api_key`.
-    // Mesmo criterio de esquema do `build_router`: cert E chave → https.
-    let scheme = if state.config.gateway.tls_cert_path.is_some()
-        && state.config.gateway.tls_key_path.is_some()
-    {
-        "https"
-    } else {
-        "http"
-    };
+    // O `cross_origin_guard` do router ja julgou este handshake; repetir
+    // aqui e defesa em profundidade (o handler nao depende da montagem).
     if !crate::origin_guard::ws_upgrade_permitido(
-        &headers,
-        scheme,
-        &state.config.gateway.allowed_origins,
+        &crate::origin_guard::Pedido::de(&headers, &uri),
+        crate::origin_guard::esquema_efetivo(&state.config.gateway),
+        &crate::origin_guard::origens_validas(&state.config.gateway),
     ) {
         // Nada do pedido e ecoado no corpo; o log nao leva o valor do header.
         warn!("WebSocket upgrade rejected: cross-origin");
-        return (StatusCode::FORBIDDEN, "ws: cross-origin upgrade refused").into_response();
+        return (StatusCode::FORBIDDEN, crate::origin_guard::CORPO_WS).into_response();
     }
 
     let gate = crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway);
