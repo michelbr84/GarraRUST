@@ -404,8 +404,21 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub session_tokens_required: bool,
 
-    /// Allowed CORS origins. Empty = allow all (dev mode).
-    /// Example: ["https://app.garraia.org", "http://localhost:3888"]
+    /// Allowed CORS origins. Vazio = nenhuma origem cross-origin
+    /// (same-origin apenas, default seguro desde #1182). O Web Console e
+    /// servido pelo proprio gateway (`GET /`) e e same-origin, entao por IP
+    /// ou `localhost` ele **nao** precisa desta lista.
+    ///
+    /// A lista tem dois efeitos: o `Access-Control-Allow-Origin` do CORS e a
+    /// ancora anti-DNS-rebinding da guarda anti-CSRF
+    /// (`garraia_gateway::origin_guard`) — um **nome DNS** so atravessa a
+    /// ancora se estiver aqui. Isso vale para qualquer nome pelo qual o
+    /// console seja alcancado: reverse proxy com dominio proprio, mDNS
+    /// (`nas.local`), Tailscale, nome de servico Docker, ingress. Sem a
+    /// entrada, POST/PATCH/DELETE e o WebSocket do chat vindos do navegador
+    /// contra esse nome voltam 403. Entrada `*` e ignorada com aviso.
+    ///
+    /// Example: ["https://app.garraia.org", "http://nas.local:3888"]
     #[serde(default)]
     pub allowed_origins: Vec<String>,
 

@@ -167,16 +167,42 @@ pub fn build_router(
         }
     });
 
-    // Build CORS layer — use configured origins or allow all in dev mode.
+    // Build CORS layer.
+    //
+    // #1182: o ramo vazio era `allow_origin(Any)` + `allow_methods(Any)` +
+    // `allow_headers(Any)` — "dev mode". So que o default de instalacao e
+    // justamente `allowed_origins` vazio, entao a instalacao default dizia a
+    // QUALQUER pagina da web que ela podia ler a resposta de `127.0.0.1:3888`.
+    // Nao ha caso de uso legitimo para isso: o Web Console e servido pelo
+    // proprio gateway (`GET /`) e e same-origin — CORS nem entra. Cliente
+    // nao-navegador (app mobile, `curl`, Claude Code) ignora CORS. Quem tem
+    // front externo lista a origem dele em `gateway.allowed_origins`.
     let cors_layer = {
-        let origins = &state.config.gateway.allowed_origins;
-        let cors = CorsLayer::new().allow_methods(Any).allow_headers(Any);
+        // `origens_validas` descarta vazio e `*` (que faria o
+        // `AllowOrigin::list` do tower-http entrar em panico no boot).
+        let origins = crate::origin_guard::origens_validas(&state.config.gateway);
         if origins.is_empty() {
-            cors.allow_origin(Any)
+            // Nenhuma origem cross-origin. A camada continua montada (e nao
+            // removida) para o preflight `OPTIONS` seguir sendo tratado aqui,
+            // por fora do gate de api_key.
+            CorsLayer::new()
         } else {
-            let parsed: Vec<axum::http::HeaderValue> =
-                origins.iter().filter_map(|o| o.parse().ok()).collect();
-            cors.allow_origin(parsed)
+            let parsed: Vec<axum::http::HeaderValue> = origins
+                .iter()
+                .filter_map(|o| match o.parse::<axum::http::HeaderValue>() {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        tracing::warn!(
+                            "gateway.allowed_origins: entrada nao e um header value valido; ignorada"
+                        );
+                        None
+                    }
+                })
+                .collect();
+            CorsLayer::new()
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .allow_origin(parsed)
         }
     };
 
@@ -192,15 +218,21 @@ pub fn build_router(
     // gate global, que ja exigiu o bearer quando a chave existe.
     //
     // O guarda compara o `Origin` contra o esquema do transporte, entao ele
-    // precisa saber se este gateway serve TLS nativo. Mesmo criterio do
-    // `use_tls` no server.rs e do `session_cookie_secure` no session_auth:
-    // cert E chave configurados → https; qualquer combinacao falta → http.
-    let use_tls =
-        state.config.gateway.tls_cert_path.is_some() && state.config.gateway.tls_key_path.is_some();
+    // precisa saber se este gateway serve TLS nativo — o que o `server.rs`
+    // de fato serve: feature `tls` E cert E chave (`esquema_efetivo`). Sem a
+    // feature o servidor avisa e cai para HTTP, e a guarda tem de cair junto.
     let learning_guard_state = crate::learning_auth::LearningGuardState {
         gate: api_key_gate.clone(),
-        scheme: if use_tls { "https" } else { "http" },
+        scheme: crate::origin_guard::esquema_efetivo(&state.config.gateway),
     };
+
+    // #1182: a mesma ideia, agora para TODA a superficie mutante do gateway —
+    // `PATCH /api/settings`, `POST /api/mode/select`, `POST /v1/chat/
+    // completions`, `DELETE /api/memory` e companhia — e para todo handshake
+    // de WebSocket. Construido aqui porque o `.nest("/admin", …)` la embaixo
+    // consome `state`. Ver `crate::origin_guard` para o recorte deliberado
+    // (sem `ConnectInfo`, para nao quebrar o app mobile na LAN sem `api_key`).
+    let origin_guard_state = crate::origin_guard::OriginGuardState::new(&state.config.gateway);
     let learning_routes = Router::new()
         .route("/learning", get(crate::learning_handler::learning_ui))
         .route(
@@ -545,6 +577,18 @@ pub fn build_router(
         // quer: o preflight `OPTIONS` e respondido pelo `CorsLayer` sem
         // chegar ao gate, e uma sondagem sem credencial ainda gasta cota do
         // limitador em vez de ser barrada de graca.
+        // #1182: a guarda anti-CSRF generica (rotas mutantes + handshakes de
+        // WebSocket). Escrita ACIMA do `.layer()` do gate de api_key de
+        // proposito: em tower o ultimo `.layer()` do codigo-fonte e o mais
+        // externo, entao aqui ela fica POR DENTRO do gate e roda DEPOIS dele
+        // — um POST sem bearer e com `Origin` estranho morre no 401 do gate,
+        // nao no 403 daqui. E a mesma propriedade que o
+        // `learning_auth_layering.rs` ja exigia para learning, agora travada
+        // tambem para a superficie ampla em `origin_guard_layering.rs`.
+        .layer(axum::middleware::from_fn_with_state(
+            origin_guard_state,
+            crate::origin_guard::cross_origin_guard,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             api_key_gate,
             crate::gateway_auth::api_key_layer,

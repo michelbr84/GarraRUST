@@ -35,6 +35,7 @@ pub mod observability;
 pub mod openai_api;
 pub mod openai_models;
 pub mod openclaw_handler;
+pub mod origin_guard;
 pub mod parrot_ws;
 pub mod path_validation;
 pub mod plugins_handler;
