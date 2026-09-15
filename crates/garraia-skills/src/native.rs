@@ -41,6 +41,11 @@ pub struct SkillRunOutput {
     pub summary: String,
     pub next_steps: Vec<String>,
     pub commands: Vec<SkillCommand>,
+    /// Provider-backed execution (GAR-498 follow-up): raw model text for
+    /// this phase, `None` when the run was deterministic (dry run, or no
+    /// completer configured). The scaffold fields above are always
+    /// populated so reviewers can diff guidance vs. model output.
+    pub model_output: Option<String>,
 }
 
 pub trait NativeSkill: Send + Sync {
@@ -281,6 +286,7 @@ where
             .map(|step| step.as_ref().to_string())
             .collect(),
         commands: commands.into_iter().collect(),
+        model_output: None,
     }
 }
 
