@@ -158,13 +158,20 @@ pub struct StageReport {
     pub chat_members_skipped_conflict: u64,
     pub chat_audit_events_inserted: u64,
     pub sessions_skipped_no_user: u64,
+    // Stage 6 (plan 0046, this slice).
+    pub messages_inserted: u64,
+    pub messages_skipped_conflict: u64,
+    pub messages_skipped_no_chat: u64,
+    pub messages_skipped_no_user: u64,
+    pub messages_skipped_invalid: u64,
+    pub message_audit_events_inserted: u64,
     pub dry_run: bool,
 }
 
 impl StageReport {
     pub fn print_summary(&self) {
         let mode = if self.dry_run { " (dry run)" } else { "" };
-        println!("Workspace Migration Report — Stages 1–3 + 5{mode}");
+        println!("Workspace Migration Report — Stages 1–3 + 5–6{mode}");
         println!("──────────────────────────────────────");
         println!(
             "  users:            {} inserted, {} upserted-on-existing",
@@ -191,10 +198,19 @@ impl StageReport {
             self.chat_members_inserted, self.chat_members_skipped_conflict
         );
         println!(
-            "  audit rows:       {} (users) + {} (groups/members) + {} (chats/members)",
+            "  messages:         {} inserted, {} skipped (conflict), {} no chat, {} no user, {} invalid body",
+            self.messages_inserted,
+            self.messages_skipped_conflict,
+            self.messages_skipped_no_chat,
+            self.messages_skipped_no_user,
+            self.messages_skipped_invalid
+        );
+        println!(
+            "  audit rows:       {} (users) + {} (groups/members) + {} (chats/members) + {} (messages)",
             self.audit_events_inserted,
             self.group_audit_events_inserted,
-            self.chat_audit_events_inserted
+            self.chat_audit_events_inserted,
+            self.message_audit_events_inserted
         );
     }
 }
@@ -365,11 +381,17 @@ pub async fn run(
         "ChatMapping length must equal chats_inserted"
     );
 
+    // Stage 7.6 (plan 0046) — messages from SQLite `messages`, rewritten
+    // into the workspace `messages` table via the Stage 5 chat mapping.
+    // Same tx: a failure here rolls back chats, groups, users — all or
+    // nothing, exactly like stages 1–3+5.
+    run_stage6_messages(sqlite_path, &mut tx, &chat_mapping, &mut report).await?;
+
     if opts.dry_run {
         tx.rollback().await.context("rollback dry-run tx")?;
         info!("dry run: rolled back; no rows persisted");
     } else {
-        tx.commit().await.context("commit stages 1..3 + 5 tx")?;
+        tx.commit().await.context("commit stages 1..3 + 5 + 6 tx")?;
     }
 
     Ok((report, exit_codes::OK))
@@ -1047,6 +1069,354 @@ fn load_sessions(path: &Path) -> Result<Option<Vec<SessionRow>>> {
         });
     }
     Ok(Some(out))
+}
+
+/// Stage 6 (plan 0046) — narrow projection of one SQLite `messages` row.
+/// `legacy_user_id` comes from the JOIN with `sessions` (messages carry no
+/// owner column); it resolves the `sender_user_id` FK in Postgres.
+struct MessageRow {
+    id: String,
+    session_id: String,
+    legacy_user_id: String,
+    direction: String,
+    content: String,
+    timestamp: DateTime<Utc>,
+    metadata_raw: String,
+}
+
+/// Classification outcome for one legacy message row, decided by
+/// [`classify_message_row`] before any Postgres I/O so the fail-closed
+/// rules are unit-testable without a database.
+#[derive(Debug, PartialEq, Eq)]
+enum MessageClass {
+    /// Valid — proceed to resolve chat + user and INSERT.
+    Migrate,
+    /// Empty or > 100_000 chars (`messages.body` CHECK bounds).
+    InvalidBody,
+}
+
+/// Pre-INSERT validation shared by the stage loop and unit tests.
+/// Fail-closed: anything outside the CHECK constraint bounds is skipped,
+/// never truncated (truncation would silently alter message content).
+fn classify_message_row(row: &MessageRow) -> MessageClass {
+    let len = row.content.chars().count();
+    if len == 0 || len > 100_000 {
+        return MessageClass::InvalidBody;
+    }
+    MessageClass::Migrate
+}
+
+/// Load `messages` rows from the SQLite legacy DB, JOINed with `sessions`
+/// for the owner user, ordered deterministically (`timestamp ASC, id ASC`).
+/// Returns `Ok(None)` when the `messages` table does not exist — NOT an
+/// error, Stage 6 skips gracefully with a WARN (same policy as stage 5).
+///
+/// Rows whose `timestamp` fails to parse abort the whole stage: unlike a
+/// cosmetic field (chat title), losing the ordering/created_at of a
+/// message silently corrupts history.
+#[instrument(name = "migrate_workspace.load_messages", skip(path))]
+fn load_messages(path: &Path) -> Result<Option<Vec<MessageRow>>> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .context("reopen sqlite for stage 6")?;
+    let table_exists: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .context("check sqlite_master for messages")?;
+    if table_exists.is_none() {
+        return Ok(None);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.id, m.session_id, s.user_id, m.direction, m.content,
+                    m.timestamp, COALESCE(m.metadata, '{}') AS metadata
+             FROM messages m
+             LEFT JOIN sessions s ON s.id = m.session_id
+             ORDER BY m.timestamp ASC, m.id ASC",
+        )
+        .context("prepare messages SELECT")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,                        // id
+                r.get::<_, String>(1)?,                        // session_id
+                r.get::<_, Option<String>>(2)?.unwrap_or_default(), // session user_id
+                r.get::<_, String>(3)?,                        // direction
+                r.get::<_, String>(4)?,                        // content
+                r.get::<_, String>(5)?,                        // timestamp
+                r.get::<_, String>(6)?,                        // metadata
+            ))
+        })
+        .context("query messages")?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, session_id, legacy_user_id, direction, content, ts_raw, metadata_raw) =
+            row.context("fetch messages row")?;
+        let timestamp = parse_sqlite_timestamp(&ts_raw)
+            .with_context(|| format!("parse messages.timestamp for id={id}: `{ts_raw}`"))?;
+        out.push(MessageRow {
+            id,
+            session_id,
+            legacy_user_id,
+            direction,
+            content,
+            timestamp,
+            metadata_raw,
+        });
+    }
+    Ok(Some(out))
+}
+
+/// Stage 6 (plan 0046) — populate `messages` from SQLite `messages`,
+/// rewriting `session_id` into `chat_id` via the Stage 5 mapping (with
+/// audit-row fallback for chats created by a previous run). Runs inside
+/// the caller's transaction so any failure rolls back the entire
+/// migration.
+///
+/// # Mapping rules
+///
+/// - `chat_id`: Stage 5 in-memory mapping first; on an idempotent rerun
+///   (mapping empty for the session) falls back to the
+///   `chats.imported_from_sqlite` audit row — the same ground truth
+///   Stage 5 itself uses.
+/// - `group_id`: denormalized from the target `chats` row (compound FK
+///   `(chat_id, group_id)` enforced by the DB).
+/// - `sender_user_id`: the session's migrated user via
+///   `users.legacy_sqlite_id` — the schema has no assistant actor, so
+///   `direction = 'assistant'` rows keep the same user as sender and
+///   `sender_label` preserves the original direction. This mirrors how
+///   the gateway stores assistant turns (authenticated principal).
+/// - `sender_label`: original `direction` value verbatim.
+///
+/// # Skip conditions (fail-closed, per-row)
+///
+/// - Chat not found in mapping AND audit → `messages_skipped_no_chat`.
+/// - Session user not migrated → `messages_skipped_no_user`.
+/// - Empty body or body > 100_000 chars (CHECK bounds) →
+///   `messages_skipped_invalid` — never truncated.
+/// - Audit row already present (idempotent rerun) →
+///   `messages_skipped_conflict`.
+///
+/// # Security
+///
+/// Message `content` is PII (LGPD art. 5): it is bound as a query
+/// parameter and NEVER enters `tracing` — log fields carry only the
+/// legacy ids and byte counts. `metadata_raw` is stored as-is (same
+/// treatment as stage 5's session metadata) but not logged.
+#[instrument(
+    name = "migrate_workspace.stage6_messages",
+    skip(sqlite_path, tx, chat_mapping, report)
+)]
+async fn run_stage6_messages(
+    sqlite_path: &Path,
+    tx: &mut sqlx::PgConnection,
+    chat_mapping: &ChatMapping,
+    report: &mut StageReport,
+) -> Result<()> {
+    let messages = match load_messages(sqlite_path)? {
+        Some(m) => m,
+        None => {
+            tracing::warn!(
+                target: "garraia_cli::migrate_workspace",
+                "SQLite `messages` table absent; skipping stage 6"
+            );
+            return Ok(());
+        }
+    };
+    if messages.is_empty() {
+        info!("no messages in SQLite; skipping stage 6");
+        return Ok(());
+    }
+
+    // Cache legacy_sqlite_id → pg users.id once; the JOIN in SQLite gives
+    // per-message owner ids that repeat across sessions.
+    let mut user_cache: HashMap<String, Uuid> = sqlx::query(
+        "SELECT id, legacy_sqlite_id FROM users WHERE legacy_sqlite_id IS NOT NULL",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .context("load migrated users for stage 6")?
+    .into_iter()
+    .filter_map(|(id, legacy)| legacy.map(|l| (l, id)))
+    .collect();
+
+    for msg in &messages {
+        match classify_message_row(msg) {
+            MessageClass::InvalidBody => {
+                report.messages_skipped_invalid += 1;
+                tracing::warn!(
+                    target: "garraia_cli::migrate_workspace",
+                    legacy_message_id = %msg.id,
+                    body_len = msg.content.chars().count(),
+                    "message body outside CHECK bounds; skipping"
+                );
+                continue;
+            }
+            MessageClass::Migrate => {}
+        }
+
+        // Resolve the target chat: in-memory mapping (same run) first,
+        // audit-row lookup (previous runs) second.
+        let chat_id = match chat_mapping.session_to_chat.get(&msg.session_id) {
+            Some(id) => *id,
+            None => {
+                let from_audit: Option<Uuid> = sqlx::query_scalar(
+                    "SELECT resource_id::uuid FROM audit_events
+                     WHERE action = 'chats.imported_from_sqlite'
+                       AND metadata->>'legacy_session_id' = $1
+                     LIMIT 1",
+                )
+                .bind(&msg.session_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("lookup chat via audit for stage 6")?;
+                match from_audit {
+                    Some(id) => id,
+                    None => {
+                        report.messages_skipped_no_chat += 1;
+                        tracing::warn!(
+                            target: "garraia_cli::migrate_workspace",
+                            legacy_message_id = %msg.id,
+                            legacy_session_id = %msg.session_id,
+                            "no chat mapped for session; skipping message"
+                        );
+                        continue;
+                    }
+                }
+            }
+        };
+
+        // Denormalized group_id + existence check in one round-trip.
+        let chat_row: Option<(Uuid,)> =
+            sqlx::query_as("SELECT group_id FROM chats WHERE id = $1")
+                .bind(chat_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .context("fetch chat group for stage 6")?;
+        let Some((group_id,)) = chat_row else {
+            report.messages_skipped_no_chat += 1;
+            tracing::warn!(
+                target: "garraia_cli::migrate_workspace",
+                legacy_message_id = %msg.id,
+                "target chat row missing; skipping message"
+            );
+            continue;
+        };
+
+        // Sender: the session's migrated user (cached).
+        let Some(sender_user_id) = user_cache.get(&msg.legacy_user_id).copied() else {
+            report.messages_skipped_no_user += 1;
+            tracing::warn!(
+                target: "garraia_cli::migrate_workspace",
+                legacy_message_id = %msg.id,
+                legacy_user_id = %msg.legacy_user_id,
+                "session user not migrated; skipping message"
+            );
+            continue;
+        };
+
+        // Idempotency: one audit row per legacy message id, same ground
+        // truth pattern as stage 5 (there is no natural UNIQUE on
+        // `messages` to ON CONFLICT against).
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT resource_id::uuid FROM audit_events
+             WHERE action = 'messages.imported_from_sqlite'
+               AND metadata->>'legacy_message_id' = $1
+             LIMIT 1",
+        )
+        .bind(&msg.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .context("lookup existing stage 6 message via audit")?;
+        if existing.is_some() {
+            report.messages_skipped_conflict += 1;
+            continue;
+        }
+
+        let new_message_id = Uuid::now_v7();
+        let sender_label = msg.direction.trim().to_string();
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO messages
+                (id, chat_id, group_id, sender_user_id, sender_label, body, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+        )
+        .bind(new_message_id)
+        .bind(chat_id)
+        .bind(group_id)
+        .bind(sender_user_id)
+        .bind(&sender_label)
+        .bind(&msg.content)
+        .bind(msg.timestamp)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlstate_error)
+        .context("insert messages (stage 6)")?
+        .rows_affected();
+        if inserted == 0 {
+            report.messages_skipped_conflict += 1;
+            continue;
+        }
+        report.messages_inserted += 1;
+
+        // Atomic audit row — same tx as the message INSERT.
+        let audit_id = Uuid::now_v7();
+        let resource_id = new_message_id.to_string();
+        let audit_inserted = sqlx::query(
+            r#"
+            INSERT INTO audit_events
+                (id, group_id, actor_user_id, actor_label, action,
+                 resource_type, resource_id, metadata, created_at)
+            SELECT $1, $2, NULL, 'system.migrate_workspace',
+                   'messages.imported_from_sqlite', 'message', $3::text,
+                   jsonb_build_object(
+                       'source', 'messages',
+                       'legacy_message_id', $4::text,
+                       'legacy_session_id', $5::text,
+                       'chat_id', $6::text,
+                       'direction', $7::text,
+                       'body_chars', $8::bigint),
+                   NOW()
+            WHERE NOT EXISTS (
+                SELECT 1 FROM audit_events
+                WHERE action = 'messages.imported_from_sqlite'
+                  AND metadata->>'legacy_message_id' = $4::text
+            )
+            "#,
+        )
+        .bind(audit_id)
+        .bind(group_id)
+        .bind(&resource_id)
+        .bind(&msg.id)
+        .bind(&msg.session_id)
+        .bind(chat_id.to_string())
+        .bind(&sender_label)
+        .bind(msg.content.chars().count() as i64)
+        .execute(&mut *tx)
+        .await
+        .context("insert messages.imported_from_sqlite audit row")?
+        .rows_affected();
+        if audit_inserted > 0 {
+            report.message_audit_events_inserted += 1;
+        }
+    }
+
+    info!(
+        inserted = report.messages_inserted,
+        skipped_conflict = report.messages_skipped_conflict,
+        skipped_no_chat = report.messages_skipped_no_chat,
+        skipped_no_user = report.messages_skipped_no_user,
+        skipped_invalid = report.messages_skipped_invalid,
+        "stage 6 complete"
+    );
+    Ok(())
 }
 
 /// Stage 5 — populate `chats` + `chat_members` from SQLite `sessions`
