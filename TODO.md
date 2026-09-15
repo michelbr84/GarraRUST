@@ -978,8 +978,8 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
   `release-cdn/install.ps1` — o próprio workflow pede isso após a primeira
   release ≥ v0.3.4 (v0.3.4 e v0.3.5 já publicam `install.ps1`).
 - `GAR-492`: decidir no tracker interno se o épico fecha como MVP completo ou
-  se abre follow-ups (execução provider-backed das native skills, dogfood em
-  bug real com relatório de review).
+  se abre follow-ups — **execução provider-backed das native skills ✅ Done**
+  (PR #1218); resta o dogfood em bug real com relatório de review.
 
 ## Decisões tomadas
 
