@@ -5,12 +5,53 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-13 (America/New_York)
+**Atualizado:** 2026-09-15 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-15 — repo zerado (só `main`): M1 do desktop, Dependabot, épico #1181 fechado
+
+Estado de partida: 1 issue, 6 PRs e 7 branches. Estado de chegada: 0 issues,
+0 PRs, só `main` — mesmo padrão de 2026-08-18 e 2026-09-07.
+
+- **PR #1205 (`garra desktop`, M1 do épico #1181) mergeado** (`043401a`):
+  subcomando `garra desktop [--status] [--no-launch]`, resolução em
+  `garraia_desktop_core::locate`, exit codes 0/69/70, zero Tauri na CLI,
+  `desktop.yml` passa a disparar em `crates/garraia-desktop-core/**`.
+- **Cinco PRs do Dependabot mergeados em série**: #1199 (wasmtime-wasi
+  48.0.2), #1201 (grupo patch-and-minor: toml, uuid, console, ipnet), #1203
+  (lopdf 0.45.0), #1204 (dirs 7.0.0 — major, mas o diff do crate é uma linha
+  em `preference_dir`, função que este repo não chama) e #1202 (poise 0.7.0 —
+  nenhum `poise::` referenciado em `garraia-channels`). Todos verdes no CI da
+  head atualizada; nenhum recebeu commit manual (Dependabot para de rebasear
+  branch editada).
+- **Épico #1181 (Desktop Control Center) fechado por decisão do dono.** M0
+  (#1195) e M1 (#1205) entregues; **M2–M7 passam a ser rastreados no
+  `ROADMAP.md` §4.1** ("Control Center -- M2..M7"), com risco, pré-requisitos
+  e o critério de "não quebrou nada" copiados do corpo do épico. O ADR 0021
+  continua a decisão de arquitetura; a issue deixa de ser o tracker.
+
+### Lições operacionais desta limpeza
+
+- **A proteção de `main` exige branch atualizada** (strict status checks):
+  um PR verde mas `behind` não mergeia, e **cada merge em `main` põe todos
+  os outros PRs `behind` de novo**. Com N PRs abertos são N ciclos de CI em
+  série (~1 h cada); não adianta atualizar todos de uma vez. Para lotes do
+  Dependabot, mergear do menor risco para o maior.
+- Auto-delete de head branch está ligado: a branch some no merge. Se sobrar
+  órfã, `branch-cleanup.yml` via `workflow_dispatch` (`confirm=true`) apaga
+  tudo exceto `main` e heads de PR aberto — `git push --delete` daqui é
+  cortado pelo proxy.
+
+### Follow-up opcional (não bloqueante)
+
+- `crates/garraia-media/Cargo.toml`: o comentário sobre o `lopdf` diz "drop
+  `default-features = false` once a lopdf release > 0.44.0 ships the fix"
+  (J-F-Liu/lopdf#518 / #527). Com o 0.45.0 em `main`, vale reavaliar num PR
+  próprio, com o teste de PDF (#1208) como guarda.
 
 ## Concluído em 2026-09-13 — epic de hardware fechado + release v0.4.2
 

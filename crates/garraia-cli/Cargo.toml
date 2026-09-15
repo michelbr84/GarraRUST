@@ -20,6 +20,10 @@ garraia-agents = { workspace = true, features = ["mcp"] }
 garraia-hardware = { workspace = true }
 garraia-auth = { workspace = true }
 garraia-db = { workspace = true }
+# #1181 (M1): resolucao do caminho do aplicativo desktop. Esta crate e o nucleo
+# SEM Tauri — depender dela nao arrasta GUI para a CLI, e e por isso que a
+# resolucao mora la e nao aqui. Ver ADR 0021, driver #5.
+garraia-desktop-core = { workspace = true }
 garraia-plugins = { workspace = true, optional = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }

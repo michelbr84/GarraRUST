@@ -36,6 +36,12 @@ crates/
                         `TERM=dumb` / `GARRAIA_NO_SPINNER`; nunca esconde o cursor;
                         fallback ASCII; proibido em `ask.rs` e `mcp_server.rs` (teste
                         varre o fonte). `Ctrl+C` cancela o turno, não o processo.
+                        `desktop.rs` (#1181 M1): `garra desktop [--status]
+                        [--no-launch]` localiza e lança o app instalado via
+                        `garraia_desktop_core::locate` — exit 0/69/70
+                        (sysexits). **Zero dependência de Tauri na CLI**
+                        (teste varre o fonte); "já está rodando" fica para o
+                        M2, com canal de instância única na casca.
   garraia-gateway/    — servidor HTTP/WS (Axum 0.8), admin API, MCP registry, router.
                         `webchat.html` (`GET /`) segue o design system Garra Glass
                         (ADR 0009): tokens `--garra-*`, gold `#ffd400` para CTAs, cyan
@@ -159,8 +165,13 @@ crates/
                         `gateway.rs` da casca, sem `unwrap` em lock, sem
                         `sleep` por dentro — `RestartPolicy::backoff` devolve o
                         intervalo e quem tem o relógio espera — e com o filho
-                        morrendo junto com o supervisor via `Drop`). Nenhuma
-                        crate a consome ainda: M1+ é que liga CLI e casca.
+                        morrendo junto com o supervisor via `Drop`) mais
+                        `locate` (M1, #1181): onde está o aplicativo desktop
+                        instalado — instalador da plataforma > `PATH` >
+                        diretório da própria CLI, com a recusa explícita de
+                        resolver para o próprio executável, que no `.deb` é
+                        irmão do aplicativo. Consumida hoje pela
+                        `garraia-cli` (`garra desktop`); a casca ainda não.
   garraia-embeddings/ — Fase 2.1 (ADR 0002; ADR 0018 Proposed). Só superfície pública:
                         traits `EmbeddingProvider` + `VectorStore` (scoped por `Scope` +
                         `Option<Uuid> group_id`), tipos `Scope`/`EmbeddingVector(768)`/
