@@ -36,18 +36,19 @@ use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::ServerSideEncryption;
+use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart, ServerSideEncryption};
 use base64::Engine as _;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
 use tracing::{debug, warn};
 use url::Url;
 
 use crate::error::{Result, StorageError};
 use crate::hash_util::sha256_hex;
 use crate::object_store::{
-    GetResult, ObjectMetadata, ObjectStore, PutOptions, check_mime_allowlist, check_presign_ttl,
-    maybe_compute_integrity_hmac,
+    AsyncByteReader, GetResult, ObjectMetadata, ObjectStore, PutOptions, check_mime_allowlist,
+    check_presign_ttl, maybe_compute_integrity_hmac,
 };
 use crate::path_sanitize::sanitise_key;
 
@@ -192,6 +193,164 @@ fn sha256_base64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
 }
 
+/// Threshold above which `put_stream` switches to native S3 multipart
+/// (ROADMAP §3.5: "arquivos > 16 MiB").
+pub(crate) const MULTIPART_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
+/// Part size for multipart uploads — must be ≥ the S3 minimum of 5 MiB.
+const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
+
+impl S3Compatible {
+    /// Multipart path: streams the reader in 8 MiB parts. On any failure the
+    /// multipart upload is aborted so the key never exposes partial content.
+    async fn put_stream_multipart(
+        &self,
+        key: &str,
+        mut reader: AsyncByteReader,
+        opts: PutOptions,
+    ) -> Result<ObjectMetadata> {
+        // 1) Create the multipart upload (SSE-S3 mandated by ADR 0004).
+        let mut create = self
+            .client
+            .create_multipart_upload()
+            .bucket(self.bucket.as_ref())
+            .key(key)
+            .server_side_encryption(ServerSideEncryption::Aes256);
+        if let Some(ct) = opts.content_type.clone() {
+            create = create.content_type(ct);
+        }
+        if let Some(cc) = opts.cache_control.clone() {
+            create = create.cache_control(cc);
+        }
+        let created = create
+            .send()
+            .await
+            .map_err(|e| StorageError::Backend(format!("s3 create_multipart_upload: {e}")))?;
+        let upload_id = created
+            .upload_id()
+            .ok_or_else(|| {
+                StorageError::Backend("s3 create_multipart_upload: no upload_id".into())
+            })?
+            .to_owned();
+
+        // 2) Stream parts.
+        let mut hasher = Sha256::new();
+        let mut total: u64 = 0;
+        let mut parts: Vec<CompletedPart> = Vec::new();
+        let mut part_number: i32 = 0;
+        let result: Result<()> = loop {
+            let chunk = match read_chunk(&mut reader, MULTIPART_PART_SIZE).await {
+                Ok(c) => c,
+                Err(e) => break Err(StorageError::Io(e)),
+            };
+            if chunk.is_empty() {
+                break Ok(());
+            }
+            part_number += 1;
+            hasher.update(&chunk);
+            total += chunk.len() as u64;
+
+            let upload = self
+                .client
+                .upload_part()
+                .bucket(self.bucket.as_ref())
+                .key(key)
+                .upload_id(upload_id.as_str())
+                .part_number(part_number)
+                .body(ByteStream::from(chunk));
+            match upload.send().await {
+                Ok(out) => {
+                    let etag = out.e_tag().map(|t| t.to_owned()).unwrap_or_default();
+                    parts.push(
+                        CompletedPart::builder()
+                            .part_number(part_number)
+                            .e_tag(etag)
+                            .build(),
+                    );
+                }
+                Err(e) => {
+                    break Err(StorageError::Backend(format!(
+                        "s3 upload_part {part_number}: {e}"
+                    )));
+                }
+            }
+        };
+
+        // 3) Complete or abort — abort MUST run on any mid-stream failure so
+        //    the key keeps its previous (or no) content.
+        if let Err(e) = result {
+            let abort = self
+                .client
+                .abort_multipart_upload()
+                .bucket(self.bucket.as_ref())
+                .key(key)
+                .upload_id(upload_id.as_str())
+                .send()
+                .await;
+            if let Err(ae) = abort {
+                warn!(target: "garraia_storage::s3", key = %key, "multipart abort failed: {ae}");
+            }
+            return Err(e);
+        }
+
+        let completed = self
+            .client
+            .complete_multipart_upload()
+            .bucket(self.bucket.as_ref())
+            .key(key)
+            .upload_id(upload_id.as_str())
+            .multipart_upload(
+                CompletedMultipartUpload::builder()
+                    .set_parts(Some(parts))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| StorageError::Backend(format!("s3 complete_multipart_upload: {e}")))?;
+        debug!(
+            target: "garraia_storage::s3",
+            bucket = %self.bucket,
+            key = %key,
+            size = total,
+            parts = part_number,
+            "put_stream (multipart, etag={:?})",
+            completed.e_tag()
+        );
+
+        let etag = sha256_hex_from_hasher(hasher);
+        let integrity_hmac = maybe_compute_integrity_hmac(&opts, key, &etag);
+        Ok(ObjectMetadata {
+            key: key.to_owned(),
+            size_bytes: total,
+            etag_sha256: etag,
+            content_type: opts.content_type,
+            integrity_hmac,
+        })
+    }
+}
+
+/// Read up to `len` bytes, looping until the buffer is full or EOF.
+async fn read_chunk(
+    reader: &mut crate::object_store::AsyncByteReader,
+    len: usize,
+) -> std::io::Result<Bytes> {
+    let mut buf = vec![0u8; len];
+    let mut filled = 0usize;
+    while filled < len {
+        let n = reader.read(&mut buf[filled..]).await?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    buf.truncate(filled);
+    Ok(Bytes::from(buf))
+}
+
+/// Finalize a `Sha256` hasher into the hex etag used by this backend.
+fn sha256_hex_from_hasher(hasher: Sha256) -> String {
+    hex::encode(hasher.finalize())
+}
+
 #[async_trait]
 impl ObjectStore for S3Compatible {
     async fn put(&self, key: &str, bytes: Bytes, opts: PutOptions) -> Result<ObjectMetadata> {
@@ -235,6 +394,40 @@ impl ObjectStore for S3Compatible {
             content_type: opts.content_type,
             integrity_hmac,
         })
+    }
+
+    /// Streaming upload with native S3 multipart for large payloads
+    /// (ROADMAP §3.5: files > 16 MiB must not be buffered in memory).
+    ///
+    /// - `content_length <= MULTIPART_THRESHOLD_BYTES` → buffered single
+    ///   `put_object` (same path as [`Self::put`]).
+    /// - Larger → `create_multipart_upload` + 8 MiB parts +
+    ///   `complete_multipart_upload`; any mid-stream failure aborts the
+    ///   multipart upload so the target key never shows partial content.
+    async fn put_stream(
+        &self,
+        key: &str,
+        mut reader: AsyncByteReader,
+        content_length: u64,
+        opts: PutOptions,
+    ) -> Result<ObjectMetadata> {
+        check_mime_allowlist(&opts)?;
+        let key = sanitise_key(key)?;
+
+        if content_length <= MULTIPART_THRESHOLD_BYTES {
+            let mut buf = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut buf)
+                .await
+                .map_err(StorageError::Io)?;
+            let len = buf.len() as u64;
+            return self.put(key, Bytes::from(buf), opts).await.map(|mut m| {
+                m.key = key.to_owned();
+                let _ = len;
+                m
+            });
+        }
+
+        self.put_stream_multipart(&key, reader, opts).await
     }
 
     async fn get(&self, key: &str) -> Result<GetResult> {
