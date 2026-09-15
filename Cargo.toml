@@ -126,7 +126,7 @@ serenity = { version = "0.12", default-features = false, features = ["client", "
 # ambiente que builda para Linux precisa de `perl` + `make` para o
 # openssl-src rodar o ./Configure — ver Cross.toml e Dockerfile.
 native-tls = { version = "0.2", features = ["vendored"] }
-# poise 0.6.x: default feature includes `serenity/rustls_backend` which would re-union the rustls
+# poise 0.7.x: default feature includes `serenity/rustls_backend` which would re-union the rustls
 # chain into serenity's feature set even though we use `native_tls_backend` above. Disable defaults
 # and keep only what we actually need (no poise:: code is referenced in garraia-channels today,
 # but keep `cache`/`chrono` so the dep stays drop-in if/when Discord slash framework is wired).
