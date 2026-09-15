@@ -1081,6 +1081,10 @@ struct MessageRow {
     direction: String,
     content: String,
     timestamp: DateTime<Utc>,
+    /// Legacy JSON metadata preserved verbatim; the stage does not
+    /// interpret it today — kept as the documented carrier for future
+    /// stages (never logged: may contain content-derived data).
+    #[allow(dead_code)]
     metadata_raw: String,
 }
 
@@ -1143,13 +1147,13 @@ fn load_messages(path: &Path) -> Result<Option<Vec<MessageRow>>> {
     let rows = stmt
         .query_map([], |r| {
             Ok((
-                r.get::<_, String>(0)?,                        // id
-                r.get::<_, String>(1)?,                        // session_id
+                r.get::<_, String>(0)?,                             // id
+                r.get::<_, String>(1)?,                             // session_id
                 r.get::<_, Option<String>>(2)?.unwrap_or_default(), // session user_id
-                r.get::<_, String>(3)?,                        // direction
-                r.get::<_, String>(4)?,                        // content
-                r.get::<_, String>(5)?,                        // timestamp
-                r.get::<_, String>(6)?,                        // metadata
+                r.get::<_, String>(3)?,                             // direction
+                r.get::<_, String>(4)?,                             // content
+                r.get::<_, String>(5)?,                             // timestamp
+                r.get::<_, String>(6)?,                             // metadata
             ))
         })
         .context("query messages")?;
@@ -1236,7 +1240,7 @@ async fn run_stage6_messages(
 
     // Cache legacy_sqlite_id → pg users.id once; the JOIN in SQLite gives
     // per-message owner ids that repeat across sessions.
-    let mut user_cache: HashMap<String, Uuid> = sqlx::query(
+    let user_cache: HashMap<String, Uuid> = sqlx::query_as::<_, (Uuid, Option<String>)>(
         "SELECT id, legacy_sqlite_id FROM users WHERE legacy_sqlite_id IS NOT NULL",
     )
     .fetch_all(&mut *tx)
@@ -1293,13 +1297,12 @@ async fn run_stage6_messages(
         };
 
         // Denormalized group_id + existence check in one round-trip.
-        let chat_row: Option<(Uuid,)> =
-            sqlx::query_as("SELECT group_id FROM chats WHERE id = $1")
-                .bind(chat_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .context("fetch chat group for stage 6")?;
-        let Some((group_id,)) = chat_row else {
+        let group_id: Option<Uuid> = sqlx::query_scalar("SELECT group_id FROM chats WHERE id = $1")
+            .bind(chat_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .context("fetch chat group for stage 6")?;
+        let Some(group_id) = group_id else {
             report.messages_skipped_no_chat += 1;
             tracing::warn!(
                 target: "garraia_cli::migrate_workspace",
