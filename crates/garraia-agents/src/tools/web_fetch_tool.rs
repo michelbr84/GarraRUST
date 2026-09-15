@@ -130,7 +130,16 @@ impl Tool for WebFetchTool {
         }
 
         let texto = String::from_utf8_lossy(&bytes);
-        Ok(ToolOutput::success(texto.into_owned()))
+        // Guarda anti-injection indireta: o corpo buscado é dado de terceiros.
+        let (limpo, report) = garraia_security::sanitize_indirect(&texto);
+        if report.is_suspicious() {
+            return Ok(ToolOutput::success(format!(
+                "{}\n{}",
+                garraia_security::warning_banner(&report),
+                limpo
+            )));
+        }
+        Ok(ToolOutput::success(limpo))
     }
 }
 
