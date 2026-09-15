@@ -9,9 +9,17 @@
 //! left off. GAR-495 adds a capability summary showing available providers,
 //! tools, channels, and MCP servers.
 
+use garraia_agents::{
+    AgentRuntime, ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, MessagePart,
+};
 use garraia_common::handoff;
+use garraia_skills::SkillCompleter;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::capability_prompt;
+use crate::chat;
 use crate::repo_workflow;
 use crate::team::{AgentTeam, ReviewDecision, TeamSummary};
 
@@ -111,9 +119,85 @@ pub fn run(goal: Option<String>, mode: String, config: &garraia_config::AppConfi
         None => print_menu_with_capabilities(config),
         Some(g) => {
             print_capability_summary(config);
-            route_goal(&g, &mode);
+            let completer = build_completer(config);
+            route_goal(&g, &mode, completer.as_ref());
         }
     }
+}
+
+/// Provider-backed executor for native skills (GAR-498 follow-up).
+///
+/// Adapts the resolved default provider + `AgentRuntime` (retry/fallback
+/// chain) to the dependency-inverted `SkillCompleter` seam. Raw model text
+/// is filed into `SkillRunOutput.model_output`; the deterministic scaffold
+/// always stays alongside for review.
+struct RuntimeCompleter {
+    runtime: AgentRuntime,
+    provider: Arc<dyn LlmProvider>,
+    model: String,
+}
+
+impl SkillCompleter for RuntimeCompleter {
+    fn complete<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> Pin<Box<dyn Future<Output = garraia_common::Result<String>> + Send + 'a>> {
+        let request = LlmRequest {
+            model: self.model.clone(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text(prompt.to_string()),
+            }],
+            system: None,
+            max_tokens: Some(2048),
+            temperature: None,
+            tools: vec![],
+        };
+        let runtime = &self.runtime;
+        let provider = &self.provider;
+        Box::pin(async move {
+            let response = runtime.complete_with_fallback(provider, &request).await?;
+            let text = response
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(text)
+        })
+    }
+}
+
+/// Resolve the default provider (same chain as `garra chat`) and wrap it
+/// in a `RuntimeCompleter`. `None` → the pipeline runs deterministic
+/// offline mode — never a hard failure, max-power stays usable without
+/// any provider configured.
+fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeCompleter> {
+    let outcome = block_on(async {
+        let (config_key, model, provider) = chat::detect_provider(config, None, None, true).await;
+        Some((config_key, model, provider))
+    });
+    let (_config_key, model, provider) = outcome?;
+    let runtime = AgentRuntime::new();
+    runtime.register_provider(Arc::clone(&provider));
+    Some(RuntimeCompleter {
+        runtime,
+        provider,
+        model,
+    })
+}
+
+/// Run `fut` on a fresh current-thread runtime (max-power dispatch is sync
+/// and not nested inside a tokio runtime in the CLI entry point).
+fn block_on<F: Future>(fut: F) -> F::Output {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime for max-power");
+    runtime.block_on(fut)
 }
 
 /// Load `.garra-estado.md` and print a one-line handoff summary if the file
@@ -170,7 +254,7 @@ fn print_menu_with_capabilities(config: &garraia_config::AppConfig) {
     println!();
 }
 
-fn route_goal(goal: &str, mode: &str) {
+fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
     let (route, matched_kw) = detect_route(goal);
     println!("route: {route}");
     match matched_kw {
@@ -179,10 +263,21 @@ fn route_goal(goal: &str, mode: &str) {
     }
     println!("mode: {mode}");
     println!("goal: {goal}");
+    println!(
+        "execution: {}",
+        if completer.is_some() {
+            "provider-backed"
+        } else {
+            "deterministic (offline)"
+        }
+    );
     println!();
     print_repo_preflight();
     let team = AgentTeam::new();
-    let summary = team.run(goal);
+    let summary = match completer {
+        Some(c) => block_on(team.run_with_completer(goal, c)),
+        None => team.run(goal),
+    };
     print_team_summary(&summary);
 }
 

@@ -627,6 +627,12 @@ jobs:
       NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
       APPIMAGETOOL_VERSION: 1.9.1
       APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+      # Runtime puro aarch64 do AppImageKit — necessário porque o
+      # appimagetool x86_64 não embute um runtime aarch64 no AppImage de
+      # outra arquitetura (ROADMAP §4.1 "AppImage aarch64"). Pino `continuous`
+      # imutabilizado pelo checksum (o arquivo é estável desde 2021).
+      APPIMAGE_RUNTIME_AARCH64_URL: https://github.com/AppImage/AppImageKit/releases/download/continuous/runtime-aarch64
+      APPIMAGE_RUNTIME_AARCH64_SHA256: a9c09a26acb16590370e1ad0310c6f49b2677b0cecc9037fa74bdd53ec5e891f
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -724,6 +730,38 @@ jobs:
           # libfuse2, então o próprio appimagetool precisa rodar extraído.
           APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "${RUNNER_TEMP}/appimagetool" \
             "$appdir" stage/garraia-linux-x86_64.AppImage
+          ls -l stage/
+
+      - name: Build AppImage (aarch64, via --runtime-file)
+        # Best-effort como o binário: se o job build-linux-arm64 não produziu
+        # o binário, este AppImage simplesmente não sai (::warning::).
+        run: |
+          set -euo pipefail
+          bin="artifacts/garraia-linux-aarch64/garraia-linux-aarch64"
+          if [ ! -f "$bin" ]; then
+            echo "::warning ::garraia-linux-aarch64 not built; skipping its AppImage."
+            exit 0
+          fi
+
+          cd "${RUNNER_TEMP}"
+          curl -fsSL --retry 5 --retry-delay 2 -o runtime-aarch64 "${APPIMAGE_RUNTIME_AARCH64_URL}"
+          echo "${APPIMAGE_RUNTIME_AARCH64_SHA256}  runtime-aarch64" | sha256sum -c -
+
+          appdir="${RUNNER_TEMP}/garraia-aarch64.AppDir"
+          rm -rf "$appdir"
+          mkdir -p "$appdir/usr/bin"
+          cp "$bin" "$appdir/usr/bin/garraia"
+          chmod +x "$appdir/usr/bin/garraia"
+          cp packaging/appimage/garraia.desktop "$appdir/garraia.desktop"
+          cp crates/garraia-desktop/src-tauri/icons/128x128@2x.png "$appdir/garraia.png"
+          ln -s usr/bin/garraia "$appdir/AppRun"
+          # --runtime-file: embute o ELF runtime aarch64 no lugar do runtime
+          # x86_64 que o appimagetool usaria por padrão. O mksquashfs é
+          # agnóstico de arquitetura, então o appimagetool x86_64 empacota.
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=aarch64 "${RUNNER_TEMP}/appimagetool" \
+            --runtime-file "${RUNNER_TEMP}/runtime-aarch64" \
+            "$appdir" stage/garraia-linux-aarch64.AppImage
+          file stage/garraia-linux-aarch64.AppImage | grep -F aarch64
           ls -l stage/
 
       - name: Smoke-test packages
@@ -871,7 +909,7 @@ jobs:
               echo "::warning ::${pkg} not packaged; release will ship without it."
             fi
           done
-          for pkg in garraia-linux-aarch64.deb garraia-linux-aarch64.rpm; do
+          for pkg in garraia-linux-aarch64.deb garraia-linux-aarch64.rpm garraia-linux-aarch64.AppImage; do
             if [ -f "artifacts/garraia-linux-packages/${pkg}" ]; then
               cp "artifacts/garraia-linux-packages/${pkg}" release/
             fi
