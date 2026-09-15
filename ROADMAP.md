@@ -283,7 +283,7 @@ Fases 1-2 são **fundação técnica**. Fase 3 é o **salto de produto** (Group 
 - [x] **KV Cache compression** para sessões longas: `LlamaCppProvider` expõe `cache_type_k`/`cache_type_v` via `extra` do provider (q8_0/q4_0/f16 + turbo2/3/4 do TurboQuant+), passados como `--cache-type-k/-v` ao `llama.cpp` (`crates/garraia-agents/src/llama_cpp.rs`); stack local em `docker-compose.turboquant.yml` + `scripts/build-turboquant-llama.sh`. *(A opção não se chama `kv_quant`; o compose monta `docs/deployment/config.turboquant.yml`, que não existe no repo — follow-up em `TODO.md`.)*
 - [ ] **PagedAttention / Continuous Batching**: decisão registrada — [ADR 0001](docs/adr/0001-local-inference-backend.md) Accepted (2026-04-21) escolhe `mistral.rs` como backend default com Ollama como fallback; a implementação do backend `mistral.rs` ainda não começou (sem dependência no `Cargo.lock`).
 - [ ] **Backends paralelos**: detectar CUDA/MPS/Vulkan em runtime e passar flags apropriadas.
-- [ ] **Quantização**: suporte a modelos Q4_K_M, Q5_K_M, Q8_0 com auto-seleção por VRAM disponível.
+- [x] **Quantização**: suporte a modelos Q4_K_M, Q5_K_M, Q8_0 com auto-seleção por VRAM disponível. *(2026-09-15: `garraia-agents::quantization` — `ModelQuant` (bytes/param por nível), `auto_select_quant(vram, params_b)` (política: maior fidelidade que cabe com headroom de 25%, arredondamento para cima; default `Q4_K_M` quando VRAM desconhecida) e `detect_vram_bytes()` via `nvidia-smi`/`rocm-smi` com fallback silencioso. 8 testes unitários table-driven cobrindo fronteiras, monotonicidade e linearidade; wiring em UI/CLI fica para a issue de integração.)*
 
 **Critério de aceite:**
 
