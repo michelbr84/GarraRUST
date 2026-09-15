@@ -42,7 +42,7 @@ console = "0.16"
 dialoguer = "0.12"
 serde_yaml = { workspace = true }
 serde = { workspace = true }
-dirs = "6"
+dirs = "7"
 uuid = { workspace = true }
 regex = { workspace = true }
 ring = { workspace = true }

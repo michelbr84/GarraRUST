@@ -2564,6 +2564,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys 0.5.0",
+]
+
+[[package]]
 name = "dirs-sys"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3365,7 +3374,7 @@ dependencies = [
  "clap",
  "console",
  "dialoguer",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "dotenvy",
  "garraia-agents",
  "garraia-auth",
@@ -3475,7 +3484,7 @@ dependencies = [
  "axum 0.8.9",
  "base64 0.23.1",
  "chrono",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "futures",
  "garraia-common",
  "hmac 0.12.1",
@@ -3523,7 +3532,7 @@ dependencies = [
 name = "garraia-config"
 version = "0.4.2"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "garraia-common",
  "garraia-security",
  "notify",
@@ -3616,7 +3625,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap 6.2.1",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "dotenvy",
  "filetime",
  "futures",
