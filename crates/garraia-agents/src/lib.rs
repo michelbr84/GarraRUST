@@ -22,6 +22,7 @@ pub mod orchestrator;
 pub mod persona;
 pub mod provider_resilience;
 pub mod providers;
+pub mod quantization;
 pub mod runtime;
 pub mod tools;
 pub mod turn_events;
@@ -63,6 +64,7 @@ pub use providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
     StreamEvent, ToolDefinition,
 };
+pub use quantization::{ModelQuant, auto_select_quant, detect_vram_bytes};
 pub use runtime::{AgentRuntime, resolve_provider_from_model};
 pub use tools::{
     BashTool, CodeReviewTool, DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig,
