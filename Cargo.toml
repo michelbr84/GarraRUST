@@ -130,7 +130,7 @@ native-tls = { version = "0.2", features = ["vendored"] }
 # chain into serenity's feature set even though we use `native_tls_backend` above. Disable defaults
 # and keep only what we actually need (no poise:: code is referenced in garraia-channels today,
 # but keep `cache`/`chrono` so the dep stays drop-in if/when Discord slash framework is wired).
-poise = { version = "0.6", default-features = false, features = ["cache", "chrono", "handle_panics"] }
+poise = { version = "0.7", default-features = false, features = ["cache", "chrono", "handle_panics"] }
 # Telegram
 teloxide = { version = "0.17", default-features = false, features = ["rustls", "macros"] }
 # Slack (Socket Mode)
