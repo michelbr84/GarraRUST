@@ -31,7 +31,7 @@ jsonwebtoken = { workspace = true, optional = true }
 # entao um `conversation_id` vindo do corpo nao sobe no caminho.
 url = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
-dirs = { version = "6", optional = true }
+dirs = { version = "7", optional = true }
 
 # Assinatura do webhook do LINE (#1051): HMAC-SHA256 + Base64, comparacao
 # em tempo constante. Mesma pilha RustCrypto ja usada em garraia-auth

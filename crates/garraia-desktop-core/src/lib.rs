@@ -23,6 +23,10 @@
 //! - [`detect`] — detecção de agentes externos. **Leitura, nunca execução**:
 //!   varre `PATH` e configs conhecidas e jamais roda um binário para descobrir
 //!   quem ele é.
+//! - [`locate`] — onde está o aplicativo desktop instalado. É o que permite a
+//!   inversão de controle CLI→Desktop do `garra desktop` (M1 do #1181), e vive
+//!   aqui para a casca poder reusar a mesma lista de caminhos sem uma segunda
+//!   cópia dela.
 //! - [`supervise`] — primitivos de supervisão de processo (launch / restart /
 //!   kill / morte do filho junto com o pai), extraídos do `gateway.rs` da casca
 //!   Tauri sem a dependência do Tauri.
@@ -37,10 +41,12 @@
 //! [`docs/adr/0021-garraia-desktop-control-center.md`]: https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0021-garraia-desktop-control-center.md
 
 pub mod detect;
+pub mod locate;
 pub mod state;
 pub mod supervise;
 
 pub use detect::{AgentKind, Confidence, DetectedAgent, Detector, Evidence, Filesystem, RealFs};
+pub use locate::{DESKTOP_BINARY, DesktopApp, EnvDirs, Locator, Platform, Source, install_dirs};
 pub use state::{Desired, ModuleId, ModuleState, Modules, Power, PowerEvent};
 pub use supervise::{
     CommandSpawner, ExitStatus, ProcessHandle, ProcessSpec, RestartPolicy, Spawner, SuperviseError,
