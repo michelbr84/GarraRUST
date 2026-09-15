@@ -84,16 +84,42 @@ fn project_summary(cwd: &str) -> String {
 }
 
 /// Scan the current directory for project markers and build a context summary.
+///
+/// Correção do **contexto de projeto** (feedback "contexto de projeto"):
+/// o resumo antigo listava qualquer entrada do topo — incluindo diretórios
+/// de build/dependência (`target/`, `node_modules/`, `dist/`) — e não dizia
+/// **que projeto é este** nem **em que ramo** o agente está. Agora:
+///
+/// - diretórios de build/dependência são filtrados da listagem;
+/// - o nome do projeto vem do primeiro heading do `README.md` (quando há);
+/// - o ramo git atual entra no contexto (mesma leitura de `HEAD` usada no
+///   painel `/contexto` — sem spawnar `git`, sem varrer a árvore).
 fn scan_directory_context(cwd: &str) -> String {
     let p = Path::new(cwd);
     let markers = project_summary(cwd);
 
-    // List top-level files (up to 15) for context
+    // List top-level files (up to 15) for context, skipping noise dirs.
+    const NOISE_DIRS: &[&str] = &[
+        "target",
+        "node_modules",
+        "dist",
+        "build",
+        "out",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".next",
+        ".turbo",
+        "vendor",
+        "coverage",
+    ];
     let mut files: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(p) {
         for entry in entries.flatten().take(30) {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.starts_with('.') {
+            let is_noise_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && NOISE_DIRS.contains(&name.as_str());
+            if !name.starts_with('.') && !is_noise_dir {
                 files.push(name);
             }
             if files.len() >= 15 {
@@ -106,14 +132,29 @@ fn scan_directory_context(cwd: &str) -> String {
         return String::new();
     }
 
-    let mut result = markers;
-    if !files.is_empty() {
-        if !result.is_empty() {
-            result.push_str(" | ");
-        }
-        result.push_str(&format!("Arquivos: {}", files.join(", ")));
+    let mut parts: Vec<String> = Vec::new();
+    if !markers.is_empty() {
+        parts.push(markers);
     }
-    result
+    // Project identity: first heading of the README, when present.
+    if let Ok(readme) = std::fs::read_to_string(p.join("README.md")) {
+        let name = readme.lines().map(str::trim).find_map(|l| {
+            l.strip_prefix("# ")
+                .map(str::trim_start)
+                .map(str::to_string)
+        });
+        if let Some(name) = name.filter(|n| !n.is_empty()) {
+            parts.push(format!("Projeto: {name}"));
+        }
+    }
+    // Current git branch (same HEAD read as the /contexto panel).
+    if let Some(ramo) = crate::ui::git_branch(p) {
+        parts.push(format!("Ramo: {ramo}"));
+    }
+    if !files.is_empty() {
+        parts.push(format!("Arquivos: {}", files.join(", ")));
+    }
+    parts.join(" | ")
 }
 
 /// Helper to resolve the API key checking env var, explicit config, and "main" config.
@@ -2037,6 +2078,62 @@ mod tests {
     use super::*;
     use garraia_config::{AgentConfig, AppConfig, LlmProviderConfig};
     use std::collections::HashMap;
+
+    // ── contexto de projeto (scan_directory_context) ────────────────────────
+
+    #[test]
+    fn contexto_filtra_diretorios_de_build_e_dependencia() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for dir in ["target", "node_modules", "dist", "src"] {
+            std::fs::create_dir_all(tmp.path().join(dir)).expect("mkdir");
+        }
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\n").expect("write");
+        let ctx = scan_directory_context(tmp.path().to_str().expect("utf8"));
+        assert!(ctx.contains("src"), "src deve aparecer: {ctx}");
+        assert!(!ctx.contains("target"), "target deve ser filtrado: {ctx}");
+        assert!(
+            !ctx.contains("node_modules"),
+            "node_modules deve ser filtrado: {ctx}"
+        );
+        assert!(!ctx.contains("dist"), "dist deve ser filtrado: {ctx}");
+    }
+
+    #[test]
+    fn contexto_inclui_nome_do_projeto_do_readme() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("README.md"),
+            "# Meu Projeto\n\nTexto.\n\n## Instalação\n",
+        )
+        .expect("write");
+        std::fs::write(tmp.path().join("main.py"), "print(1)\n").expect("write");
+        let ctx = scan_directory_context(tmp.path().to_str().expect("utf8"));
+        assert!(ctx.contains("Projeto: Meu Projeto"), "got: {ctx}");
+        // Só o PRIMEIRO heading vira nome — "## Instalação" não.
+        assert!(!ctx.contains("Instalação"), "got: {ctx}");
+    }
+
+    #[test]
+    fn contexto_inclui_ramo_git_quando_existe() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let git_dir = tmp.path().join(".git");
+        std::fs::create_dir_all(git_dir.join("refs").join("heads")).expect("mkdir");
+        std::fs::write(
+            git_dir.join("HEAD"),
+            "ref: refs/heads/feat/contexto-projeto\n",
+        )
+        .expect("write");
+        std::fs::write(tmp.path().join("app.rs"), "fn main() {}\n").expect("write");
+        let ctx = scan_directory_context(tmp.path().to_str().expect("utf8"));
+        assert!(ctx.contains("Ramo: feat/contexto-projeto"), "got: {ctx}");
+    }
+
+    #[test]
+    fn contexto_vazio_fora_de_projeto() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = scan_directory_context(tmp.path().to_str().expect("utf8"));
+        assert!(ctx.is_empty(), "got: {ctx}");
+    }
 
     /// Apelidos aceitos no `match` que **de proposito** nao aparecem no
     /// `/help`: listar `/sair`, `/limpar` e `/historico` ao lado de `/exit`,
