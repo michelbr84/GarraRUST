@@ -14,3 +14,8 @@ pub use pairing::{ClaimLimits, ClaimOutcome, GenerateStatus, PairingManager};
 pub use random::{RandomError, random_bytes};
 pub use redaction::{RedactingMakeWriter, RedactingWriter, redact_secrets};
 pub use validation::InputValidator;
+
+pub mod injection;
+pub use injection::{
+    IndirectReport, InjectionLevel, assess_indirect, sanitize_indirect, warning_banner,
+};
