@@ -943,8 +943,11 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
   `benches/agent-framework-comparison/results/2026-08-28-vm/` e alimenta a
   tabela do README; só o run de referência no droplet 1 vCPU / 1 GB segue
   adiado por depender de infra externa.
-- Execução async/provider-backed das native skills GarraMaxPower: adiada para
-  slice próprio após decidir o fechamento do épico GAR-492.
+- Execução async/provider-backed das native skills GarraMaxPower: ✅ Done —
+  seam `SkillCompleter` (inversão de dependência, sem edge skills→agents) +
+  `run_provider_backed` + `AgentTeam::run_with_completer` + `garra max-power`
+  com provider resolvido pela mesma chain do `garra chat`; degrada para o
+  modo determinístico offline quando não há provider (com hint explícito).
 
 ## Pendências abertas
 
@@ -973,8 +976,8 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
   bloco já removido do workflow (nenhuma ocorrência); só resta o marker de
   frescor com nota sobre tolerâncias futuras.
 - `GAR-492`: decidir no tracker interno se o épico fecha como MVP completo ou
-  se abre follow-ups (execução provider-backed das native skills, dogfood em
-  bug real com relatório de review).
+  se abre follow-ups — **execução provider-backed das native skills ✅ Done**
+  (PR #1218); resta o dogfood em bug real com relatório de review.
 
 ## Decisões tomadas
 
