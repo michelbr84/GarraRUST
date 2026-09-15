@@ -21,7 +21,10 @@
 
 use std::sync::mpsc;
 
-use garraia_skills::{NativeSkillRegistry, SkillRunOutput, SkillRunRequest, builtin_registry};
+use garraia_skills::{
+    NativeSkillRegistry, SkillCompleter, SkillRunOutput, SkillRunRequest, builtin_registry,
+    run_provider_backed,
+};
 
 // ── public phase taxonomy ─────────────────────────────────────────────────────
 
@@ -141,7 +144,17 @@ struct ExecutorAgent<'a> {
 impl ExecutorAgent<'_> {
     /// Receive one `PhaseTask` from `task_rx`, run the matching skill, send
     /// the result to `reply_tx`.
-    fn process(&self, task_rx: &mpsc::Receiver<PhaseTask>, reply_tx: &mpsc::Sender<ExecMsg>) {
+    ///
+    /// With `completer = Some` the skill runs provider-backed (GAR-498
+    /// follow-up): the model fills the substantive content while the
+    /// deterministic scaffold stays in place. `None` keeps the original
+    /// dry, offline behavior — the pipeline degrades gracefully.
+    async fn process_async(
+        &self,
+        task_rx: &mpsc::Receiver<PhaseTask>,
+        reply_tx: &mpsc::Sender<ExecMsg>,
+        completer: Option<&dyn SkillCompleter>,
+    ) {
         let Ok(task) = task_rx.try_recv() else { return };
         let req = SkillRunRequest {
             goal: task.goal.clone(),
@@ -156,7 +169,7 @@ impl ExecutorAgent<'_> {
                     })
                     .ok();
             }
-            Some(skill) => match skill.run(&req) {
+            Some(skill) => match run_provider_backed(skill, &req, completer).await {
                 Ok(output) => {
                     reply_tx
                         .send(ExecMsg::Completed {
@@ -235,9 +248,33 @@ impl AgentTeam {
 
     /// Run the full pipeline for `goal` and return a `TeamSummary`.
     ///
+    /// Deterministic/offline mode (no provider). See [`Self::run_with_completer`]
+    /// for the provider-backed variant.
+    ///
     /// This method is infallible — phase failures are recorded inside
     /// `PhaseResult.decision` rather than propagated as errors.
     pub fn run(&self, goal: &str) -> TeamSummary {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime for team pipeline");
+        runtime.block_on(self.run_inner(goal, None))
+    }
+
+    /// Provider-backed pipeline (GAR-498 follow-up): every phase runs
+    /// through `run_provider_backed`, so the model fills the substantive
+    /// content and the deterministic scaffold remains as fallback/review
+    /// reference. Still infallible: provider failures land in
+    /// `PhaseResult.decision` as `Rejected`.
+    pub async fn run_with_completer(
+        &self,
+        goal: &str,
+        completer: &dyn SkillCompleter,
+    ) -> TeamSummary {
+        self.run_inner(goal, Some(completer)).await
+    }
+
+    async fn run_inner(&self, goal: &str, completer: Option<&dyn SkillCompleter>) -> TeamSummary {
         // Channels: orch→exec, exec→rev, rev→orch
         let (task_tx, task_rx) = mpsc::channel::<PhaseTask>();
         let (exec_tx, exec_rx) = mpsc::channel::<ExecMsg>();
@@ -261,7 +298,7 @@ impl AgentTeam {
                 .ok();
 
             // 2. Executor processes
-            executor.process(&task_rx, &exec_tx);
+            executor.process_async(&task_rx, &exec_tx, completer).await;
 
             // 3. Orchestrator reads executor reply, forwards to Reviewer
             match exec_rx.try_recv() {
@@ -274,6 +311,7 @@ impl AgentTeam {
                         summary: format!("execution failed: {reason}"),
                         next_steps: vec![],
                         commands: vec![],
+                        model_output: None,
                     };
                     results.push(PhaseResult {
                         phase: p,
@@ -326,6 +364,7 @@ impl AgentTeam {
                         "Check CI green before merge.".to_string(),
                     ],
                     commands: vec![],
+                    model_output: None,
                 },
                 decision: ReviewDecision::Accepted,
             });
@@ -350,6 +389,7 @@ impl Default for AgentTeam {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
 
     fn run(goal: &str) -> TeamSummary {
         AgentTeam::new().run(goal)
@@ -424,6 +464,7 @@ mod tests {
             summary: "Did something useful.".into(),
             next_steps: vec!["Next step.".into()],
             commands: vec![],
+            model_output: None,
         };
         assert_eq!(ReviewerAgent::review(&output), ReviewDecision::Accepted);
     }
@@ -435,6 +476,7 @@ mod tests {
             summary: String::new(),
             next_steps: vec!["step".into()],
             commands: vec![],
+            model_output: None,
         };
         assert!(matches!(
             ReviewerAgent::review(&output),
@@ -449,11 +491,70 @@ mod tests {
             summary: "Has summary but no steps.".into(),
             next_steps: vec![],
             commands: vec![],
+            model_output: None,
         };
         assert!(matches!(
             ReviewerAgent::review(&output),
             ReviewDecision::NeedsRevision { .. }
         ));
+    }
+
+    // ── provider-backed pipeline (GAR-498 follow-up) ────────────────────────
+
+    struct FakeCompleter {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SkillCompleter for FakeCompleter {
+        fn complete<'a>(
+            &'a self,
+            prompt: &'a str,
+        ) -> Pin<Box<dyn std::future::Future<Output = garraia_common::Result<String>> + Send + 'a>>
+        {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let echoed = format!("model says: {prompt}");
+            Box::pin(
+                async move { Ok::<_, garraia_common::Error>(echoed.chars().take(64).collect()) },
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn run_with_completer_attaches_model_output_to_every_phase() {
+        let fake = FakeCompleter {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let summary = AgentTeam::new()
+            .run_with_completer("fix the login crash", &fake)
+            .await;
+        assert!(summary.completed);
+        // One provider call per workflow phase (5), none for the Finish node.
+        assert_eq!(
+            fake.calls.load(std::sync::atomic::Ordering::SeqCst),
+            WORKFLOW.len()
+        );
+        for phase in &summary.phases {
+            if phase.phase == TeamPhase::Finish {
+                assert!(phase.output.model_output.is_none());
+            } else {
+                assert!(
+                    phase.output.model_output.is_some(),
+                    "phase {:?} missing model_output",
+                    phase.phase
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn run_without_completer_keeps_offline_contract() {
+        let summary = AgentTeam::new()
+            .run_inner("fix the login crash", None)
+            .await;
+        assert!(summary.completed);
+        for phase in &summary.phases {
+            assert!(phase.output.model_output.is_none());
+        }
     }
 
     #[test]
