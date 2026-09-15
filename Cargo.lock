@@ -3397,6 +3397,7 @@ dependencies = [
  "garraia-common",
  "garraia-config",
  "garraia-db",
+ "garraia-desktop-core",
  "garraia-gateway",
  "garraia-glob",
  "garraia-hardware",

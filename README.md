@@ -167,6 +167,13 @@ confuse the two AppImages: `garraia-linux-x86_64.AppImage` is the
 terminal CLI only. See [docs/installation.md](docs/installation.md)
 §"Garra Desktop on Linux".
 
+Once it is installed, `garra desktop` opens it from the terminal —
+`--status` reports whether it is installed and where, `--no-launch` just
+prints the resolved path for scripts. The CLI only locates and spawns the
+app: it embeds no GUI and takes no Tauri dependency, so headless installs
+(Termux, RunPod, Docker) are unaffected
+([ADR 0021](docs/adr/0021-garraia-desktop-control-center.md)).
+
 </details>
 
 <details>

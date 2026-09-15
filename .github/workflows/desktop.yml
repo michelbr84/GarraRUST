@@ -16,6 +16,11 @@ on:
   pull_request:
     paths:
       - 'crates/garraia-desktop/**'
+      # A crate irma sem Tauri (ADR 0021) nao e coberta pelo glob acima, e a
+      # casca vai passar a consumi-la. Sem esta linha, uma mudanca so no nucleo
+      # deixaria de compilar e empacotar o desktop em PR -- que e justamente a
+      # janela de drift que este workflow existe para fechar.
+      - 'crates/garraia-desktop-core/**'
       - 'crates/garraia-cli/**'
       - 'scripts/build-installer.ps1'
       - 'scripts/build-desktop-linux.sh'
