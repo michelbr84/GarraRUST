@@ -433,24 +433,71 @@ mod tests {
         assert!(stats.mean_b < 50.0);
     }
 
+    /// `detect_format_from_bytes` so olha para os primeiros bytes, entao as
+    /// fixtures sao cabecalhos reais truncados — e **nunca menores que 12
+    /// bytes**, que e o piso que a funcao exige (ver o teste seguinte).
+    ///
+    /// Era exatamente esse piso que mantinha este teste `#[ignore]`d desde
+    /// 2026-04-15: as fixtures antigas tinham 8 e 4 bytes, caiam no
+    /// `data.len() < 12` e voltavam "unknown". O `#[ignore]` culpava "image
+    /// crate version drift", mas esta funcao nao usa o crate `image` — e
+    /// comparacao de magic bytes pura.
     #[test]
-    #[ignore = "TODO(fix/ci-triage-2026-04-15): pre-existing image format detection failure (likely `image` crate version drift). Deferred to media-test-fixup follow-up PR."]
     fn test_detect_format_from_bytes() {
         let processor = ImageProcessor::new();
 
-        // PNG magic bytes
-        let png_bytes = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        assert_eq!(processor.detect_format_from_bytes(&png_bytes), "png");
+        // Assinatura PNG de 8 bytes + inicio do chunk IHDR.
+        let png = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D,
+        ];
+        assert_eq!(processor.detect_format_from_bytes(&png), "png");
 
-        // JPEG magic bytes
-        let jpeg_bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
-        assert_eq!(processor.detect_format_from_bytes(&jpeg_bytes), "jpeg");
+        // SOI + APP0/JFIF, como num JPEG real.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01,
+        ];
+        assert_eq!(processor.detect_format_from_bytes(&jpeg), "jpeg");
 
-        // Unknown
-        let unknown_bytes = vec![0x00, 0x00, 0x00, 0x00];
-        assert_eq!(
-            processor.detect_format_from_bytes(&unknown_bytes),
-            "unknown"
-        );
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&[0x10, 0x00, 0x10, 0x00, 0x80, 0x00]);
+        assert_eq!(processor.detect_format_from_bytes(&gif), "gif");
+
+        // WEBP e o unico formato que obriga a ler ate o byte 12: o container
+        // RIFF poe o tamanho nos bytes 4..8 e a marca so aparece em 8..12.
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0x24, 0x00, 0x00, 0x00]);
+        webp.extend_from_slice(b"WEBP");
+        assert_eq!(processor.detect_format_from_bytes(&webp), "webp");
+
+        let mut bmp = b"BM".to_vec();
+        bmp.extend_from_slice(&[0x46, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x36, 0]);
+        assert_eq!(processor.detect_format_from_bytes(&bmp), "bmp");
+
+        // RIFF sem a marca WEBP em 8..12 nao e webp.
+        let mut riff_wave = b"RIFF".to_vec();
+        riff_wave.extend_from_slice(&[0x24, 0x00, 0x00, 0x00]);
+        riff_wave.extend_from_slice(b"WAVE");
+        assert_eq!(processor.detect_format_from_bytes(&riff_wave), "unknown");
+
+        assert_eq!(processor.detect_format_from_bytes(&[0u8; 12]), "unknown");
+    }
+
+    /// Entrada com menos de 12 bytes e sempre "unknown", mesmo carregando uma
+    /// assinatura valida.
+    ///
+    /// E comportamento deliberado da funcao, nao acidente: o ramo do WEBP le
+    /// `data[8..12]`, e o piso unico evita um indice fora de faixa. Fica
+    /// fixado em teste porque e a armadilha que derrubou o teste acima —
+    /// quem encurtar uma fixture no futuro ve o porque aqui.
+    #[test]
+    fn test_detect_format_requires_twelve_bytes() {
+        let processor = ImageProcessor::new();
+
+        // Assinatura PNG legitima, curta demais para a funcao opinar.
+        let short_png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(short_png.len(), 8);
+        assert_eq!(processor.detect_format_from_bytes(&short_png), "unknown");
+
+        assert_eq!(processor.detect_format_from_bytes(&[]), "unknown");
     }
 }
