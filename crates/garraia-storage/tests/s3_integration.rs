@@ -276,3 +276,76 @@ async fn minio_put_enforces_sse() {
     // when we explicitly asked for it in `put`.
     assert!(store.exists("sse-check/file/v1").await.expect("exists"));
 }
+
+/// ROADMAP §3.5 — native S3 multipart for files > 16 MiB.
+///
+/// Uploads 24 MiB (threshold + 8 MiB = exactly 3 parts of 8 MiB) through
+/// `put_stream` and verifies the object round-trips byte-for-byte with a
+/// matching etag and metadata.
+#[tokio::test(flavor = "multi_thread")]
+async fn minio_put_stream_multipart_roundtrips_large_object() {
+    let Some((_c, store, _endpoint)) = start_minio().await else {
+        return;
+    };
+
+    // 3 full parts: 16 MiB threshold already crossed + one more 8 MiB part.
+    let payload: Vec<u8> = (0..(16 * 1024 * 1024 + 8 * 1024 * 1024))
+        .map(|i| (i % 251) as u8) // pseudo-random but deterministic
+        .collect();
+    let expected_etag = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(&payload))
+    };
+
+    // Stage the payload in a temp file (same pattern as the gateway's
+    // finalize path: `Box::pin(tokio::fs::File)`).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let staged = tmp.path().join("payload.bin");
+    tokio::fs::write(&staged, &payload)
+        .await
+        .expect("stage payload");
+    let reader: garraia_storage::AsyncByteReader =
+        Box::pin(tokio::fs::File::open(&staged).await.expect("open staged"));
+
+    let meta = store
+        .put_stream(
+            "multipart/big/v1",
+            reader,
+            payload.len() as u64,
+            PutOptions {
+                content_type: Some("application/octet-stream".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("put_stream multipart");
+    assert_eq!(meta.size_bytes, payload.len() as u64);
+    assert_eq!(meta.etag_sha256, expected_etag);
+    assert_eq!(
+        meta.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+
+    let got = store.get("multipart/big/v1").await.expect("get back");
+    assert_eq!(got.bytes.as_ref(), payload.as_slice());
+    assert_eq!(got.metadata.size_bytes, payload.len() as u64);
+
+    // Replace path: a smaller object through the same key must fully replace
+    // the multipart content (single-put path).
+    let staged_small = tmp.path().join("small.bin");
+    tokio::fs::write(&staged_small, b"small")
+        .await
+        .expect("stage small");
+    let reader: garraia_storage::AsyncByteReader = Box::pin(
+        tokio::fs::File::open(&staged_small)
+            .await
+            .expect("open small"),
+    );
+    let small = store
+        .put_stream("multipart/big/v1", reader, 5, PutOptions::default())
+        .await
+        .expect("small put_stream");
+    assert_eq!(small.size_bytes, 5);
+    let got = store.get("multipart/big/v1").await.expect("get small");
+    assert_eq!(got.bytes.as_ref(), b"small");
+}

@@ -1,0 +1,53 @@
+# MinIO dev-only compose (ROADMAP §7.4 — "MinIO ainda ausente").
+#
+# Usage:
+#   docker compose -f docker-compose.minio.yml up -d
+#
+# Console: http://localhost:9001 (minioadmin/minioadmin — DEV ONLY).
+# S3 API:  http://localhost:9000
+#
+# Wire the gateway to it:
+#   GARRAIA_STORAGE_S3_BUCKET=garraia-dev
+#   GARRAIA_STORAGE_S3_REGION=us-east-1
+#   GARRAIA_STORAGE_S3_ENDPOINT=http://localhost:9000
+#   GARRAIA_STORAGE_S3_FORCE_PATH_STYLE=true
+#   GARRAIA_STORAGE_S3_ACCESS_KEY_ID=minioadmin
+#   GARRAIA_STORAGE_S3_SECRET_ACCESS_KEY=minioadmin
+#
+# ⚠️ Default credentials — NEVER use this file outside local dev.
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: garraia-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # One-shot: creates the `garraia-dev` bucket on boot.
+  minio-init:
+    image: minio/mc:latest
+    container_name: garraia-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/garraia-dev &&
+      echo 'bucket garraia-dev ready'"
+
+volumes:
+  minio-data:
