@@ -216,59 +216,36 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    fn create_test_pdf(tmp_dir: &TempDir) -> std::path::PathBuf {
-        // Create a simple PDF with some text
+    /// Texto desenhado pelo gerador de fixture, e o marcador que as
+    /// assercoes de extracao procuram.
+    const MARKER: &str = "Garra smoke";
+
+    /// Grava bytes de PDF num arquivo temporario e devolve o caminho.
+    ///
+    /// Substitui o antigo `create_test_pdf`, que escrevia bytes de PDF na mao
+    /// com offsets de `xref` errados. Aqueles bytes nao carregavam em nenhuma
+    /// versao do lopdf, e era isso — e nao "version drift" — que mantinha cinco
+    /// testes deste modulo `#[ignore]`d desde 2026-04-15. Gerar a fixture pelo
+    /// proprio writer do lopdf mantem ela correta a cada bump da dependencia.
+    fn write_pdf(tmp_dir: &TempDir, bytes: &[u8]) -> std::path::PathBuf {
         let pdf_path = tmp_dir.path().join("test.pdf");
-        let pdf_content = r#"%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
-endobj
-4 0 obj
-<< /Length 44 >>
-stream
-BT
-/F1 12 Tf
-100 700 Td
-(Test PDF) Tj
-ET
-endstream
-endobj
-5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
-endobj
-xref
-0 6
-0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000266 00000 n 
-0000000361 00000 n 
-trailer
-<< /Size 6 /Root 1 0 R >>
-startxref
-454
-%%EOF"#;
-        let mut file = File::create(&pdf_path).unwrap();
-        file.write_all(pdf_content.as_bytes()).unwrap();
+        let mut file = File::create(&pdf_path).expect("temp dir must be writable");
+        file.write_all(bytes).expect("fixture must be written");
         pdf_path
     }
 
     /// Build a minimal, structurally valid single-page PDF using lopdf's own
     /// writer.
     ///
-    /// Deliberately NOT reusing `create_test_pdf`: those are hand-written bytes
-    /// whose `xref` offsets are stale, which is exactly why the four tests
-    /// below are `#[ignore]`d. Generating the fixture through the writer keeps
-    /// it correct for whatever lopdf version is pinned, so it can guard the
-    /// parse path across dependency bumps.
-    fn build_minimal_pdf() -> Vec<u8> {
+    /// Toda fixture de PDF deste modulo sai daqui, e nao de bytes escritos na
+    /// mao: o writer mantem `xref` e offsets corretos para qualquer versao do
+    /// lopdf que estiver pinada, entao a fixture continua carregavel a cada
+    /// bump da dependencia.
+    ///
+    /// `info` vira o dicionario `/Info` do trailer, que e de onde
+    /// `extract_metadata` le titulo e autor. `None` produz um PDF sem `/Info`,
+    /// que e o caso em que todos os campos de metadado devem sair `None`.
+    fn build_minimal_pdf_with_info(info: Option<(&str, &str)>) -> Vec<u8> {
         use lopdf::content::{Content, Operation};
         use lopdf::{Object, Stream, dictionary};
 
@@ -287,7 +264,7 @@ startxref
                 Operation::new("BT", vec![]),
                 Operation::new("Tf", vec!["F1".into(), 12.into()]),
                 Operation::new("Td", vec![100.into(), 700.into()]),
-                Operation::new("Tj", vec![Object::string_literal("Garra smoke")]),
+                Operation::new("Tj", vec![Object::string_literal(MARKER)]),
                 Operation::new("ET", vec![]),
             ],
         };
@@ -316,19 +293,32 @@ startxref
         });
         doc.trailer.set("Root", catalog_id);
 
+        if let Some((title, author)) = info {
+            let info_id = doc.add_object(dictionary! {
+                "Title" => Object::string_literal(title),
+                "Author" => Object::string_literal(author),
+            });
+            doc.trailer.set("Info", info_id);
+        }
+
         let mut buf = Vec::new();
         doc.save_to(&mut buf)
             .expect("lopdf must serialize the document");
         buf
     }
 
+    /// A fixture do caso comum: um PDF de uma pagina, sem `/Info`.
+    fn build_minimal_pdf() -> Vec<u8> {
+        build_minimal_pdf_with_info(None)
+    }
+
     /// Runtime guard for lopdf dependency bumps.
     ///
-    /// The four PDF tests below are `#[ignore]`d, so `cargo test` otherwise
-    /// proves only that garraia-media *compiles* against lopdf. This one
-    /// round-trips a document through `Document::save_to` -> `load_mem` ->
-    /// `extract_text`, which is the surface a parser bump can silently break.
-    /// Added with the 0.42 -> 0.44 bump (plan 0356).
+    /// Round-trips um documento por `Document::save_to` -> `load_mem` ->
+    /// `extract_text`, que e a superficie que um bump de parser pode quebrar em
+    /// silencio. Adicionado no bump 0.42 -> 0.44 (plan 0356); os demais testes
+    /// de PDF deste modulo, antes `#[ignore]`d, hoje exercitam o mesmo caminho
+    /// a partir de arquivo.
     #[test]
     fn test_lopdf_roundtrip_smoke() {
         let bytes = build_minimal_pdf();
@@ -353,40 +343,67 @@ startxref
     }
 
     #[test]
-    #[ignore = "TODO(fix/ci-triage-2026-04-15): pre-existing PDF extraction failure — generated test PDF does not contain 'Test PDF' marker string (lopdf version drift or encoder change). Unrelated to gateway fixture issue. Deferred to media-test-fixup follow-up PR."]
     fn test_extract_text_from_test_pdf() {
         let tmp_dir = TempDir::new().unwrap();
-        let pdf_path = create_test_pdf(&tmp_dir);
+        let pdf_path = write_pdf(&tmp_dir, &build_minimal_pdf());
 
         let processor = PdfProcessor::new();
         let result = processor.extract_text(&pdf_path);
 
         assert!(result.is_ok());
         let doc = result.unwrap();
-        assert!(doc.text.contains("Test PDF"));
+        assert!(
+            doc.text.contains(MARKER),
+            "extracted text was {:?}",
+            doc.text
+        );
         assert_eq!(doc.page_count, 1);
     }
 
     #[test]
-    #[ignore = "TODO(fix/ci-triage-2026-04-15): pre-existing PDF extraction failure. Deferred to media-test-fixup follow-up PR."]
     fn test_extract_metadata() {
         let tmp_dir = TempDir::new().unwrap();
-        let pdf_path = create_test_pdf(&tmp_dir);
+        let pdf_path = write_pdf(&tmp_dir, &build_minimal_pdf());
 
         let processor = PdfProcessor::new();
-        let result = processor.extract_text(&pdf_path);
+        let doc = processor
+            .extract_text(&pdf_path)
+            .expect("PDF gerado pelo writer deve carregar");
 
-        assert!(result.is_ok());
-        let doc = result.unwrap();
-        // Basic metadata should be present (even if None for this simple PDF)
-        assert!(doc.metadata.title.is_none() || doc.metadata.title.is_some());
+        // Sem `/Info` no trailer, todo campo de metadado sai `None`. A
+        // assercao antiga aqui era `title.is_none() || title.is_some()` — uma
+        // tautologia, verdadeira ate para um parser completamente quebrado.
+        assert_eq!(doc.metadata.title, None);
+        assert_eq!(doc.metadata.author, None);
+    }
+
+    /// Com `/Info` no trailer, `extract_metadata` tem que ler de la.
+    ///
+    /// E o par do teste acima: um exercita o caminho ausente, o outro o
+    /// presente. Nenhum dos dois existia de verdade enquanto a fixture nao
+    /// carregava.
+    #[test]
+    fn test_extract_metadata_reads_info_dictionary() {
+        let tmp_dir = TempDir::new().unwrap();
+        let pdf_path = write_pdf(
+            &tmp_dir,
+            &build_minimal_pdf_with_info(Some(("Relatorio Garra", "Equipe GarraIA"))),
+        );
+
+        let processor = PdfProcessor::new();
+        let doc = processor
+            .extract_text(&pdf_path)
+            .expect("PDF com /Info deve carregar");
+
+        assert_eq!(doc.metadata.title.as_deref(), Some("Relatorio Garra"));
+        assert_eq!(doc.metadata.author.as_deref(), Some("Equipe GarraIA"));
+        assert_eq!(doc.metadata.subject, None);
     }
 
     #[test]
-    #[ignore = "TODO(fix/ci-triage-2026-04-15): pre-existing PDF extraction failure. Deferred to media-test-fixup follow-up PR."]
     fn test_get_page_count() {
         let tmp_dir = TempDir::new().unwrap();
-        let pdf_path = create_test_pdf(&tmp_dir);
+        let pdf_path = write_pdf(&tmp_dir, &build_minimal_pdf());
 
         let processor = PdfProcessor::new();
         let count = processor.get_page_count(&pdf_path);
@@ -396,24 +413,34 @@ startxref
     }
 
     #[test]
-    #[ignore = "TODO(fix/ci-triage-2026-04-15): pre-existing PDF extraction failure. Deferred to media-test-fixup follow-up PR."]
     fn test_extract_page_range() {
         let tmp_dir = TempDir::new().unwrap();
-        let pdf_path = create_test_pdf(&tmp_dir);
+        let pdf_path = write_pdf(&tmp_dir, &build_minimal_pdf());
 
         let processor = PdfProcessor::new();
         let result = processor.extract_page_range(&pdf_path, 1, 1);
 
         assert!(result.is_ok());
         let doc = result.unwrap();
-        assert!(doc.text.contains("Test PDF"));
+        assert!(
+            doc.text.contains(MARKER),
+            "extracted text was {:?}",
+            doc.text
+        );
         assert_eq!(doc.page_count, 1);
     }
 
+    /// Faixa invalida tem que ser recusada pela validacao de faixa.
+    ///
+    /// Este teste ja passava antes, mas **pelo motivo errado**: a fixture
+    /// escrita na mao nao carregava, entao o `Err` vinha do
+    /// `Document::load` e a checagem de `start_page`/`end_page` nunca era
+    /// alcancada. Com uma fixture que carrega, o erro passa a ser o da
+    /// validacao de verdade.
     #[test]
     fn test_extract_page_range_invalid() {
         let tmp_dir = TempDir::new().unwrap();
-        let pdf_path = create_test_pdf(&tmp_dir);
+        let pdf_path = write_pdf(&tmp_dir, &build_minimal_pdf());
 
         let processor = PdfProcessor::new();
         let result = processor.extract_page_range(&pdf_path, 2, 5);
@@ -422,10 +449,9 @@ startxref
     }
 
     #[test]
-    #[ignore = "TODO(fix/ci-triage-2026-04-15): pre-existing PDF extraction failure. Deferred to media-test-fixup follow-up PR."]
     fn test_extract_text_from_bytes() {
         let tmp_dir = TempDir::new().unwrap();
-        let pdf_path = create_test_pdf(&tmp_dir);
+        let pdf_path = write_pdf(&tmp_dir, &build_minimal_pdf());
 
         let bytes = std::fs::read(&pdf_path).unwrap();
 
@@ -434,6 +460,10 @@ startxref
 
         assert!(result.is_ok());
         let doc = result.unwrap();
-        assert!(doc.text.contains("Test PDF"));
+        assert!(
+            doc.text.contains(MARKER),
+            "extracted text was {:?}",
+            doc.text
+        );
     }
 }
