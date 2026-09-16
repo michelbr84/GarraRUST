@@ -42,7 +42,7 @@
 - `garraia-db`: SQLite via rusqlite (sessions, messages, memory, chat_sync, mobile_users).
 - `garraia-security`: `CredentialVault` AES-256-GCM + PBKDF2 (parcial).
 - `garraia-channels`: adapters Telegram/Discord/Slack/WhatsApp/iMessage.
-- `garraia-voice`: STT Whisper (dual endpoint) + TTS (Chatterbox/ElevenLabs/Kokoro stubs).
+- `garraia-voice`: STT Whisper (dual endpoint) + TTS (Chatterbox/Hibiki/LM Studio OpenAI-compativel). Os adaptadores ElevenLabs e Kokoro estao em `garraia-channels::voice_channel`, atras da feature `voice` que nenhuma crate liga, e nao sao alcancaveis pelo gateway.
 - Mobile (Flutter): auth JWT + chat + mascote — roda no emulator Android.
 - Desktop (Tauri v2): overlay do papagaio + bandeja + hotkeys + notificações/diálogos nativos + Chat Bar (`Ctrl+Space`, v0.3.5), com a CLI como sidecar. Instaladores Windows MSI/NSIS (job best-effort `build-windows-installer`, desde 2026-08-30) e Linux `.deb`/AppImage x86_64 (job `build-linux-desktop`, v0.3.5 em 2026-09-01). Sem assinatura de codigo (SmartScreen avisa), sem DMG, e com `tauri-plugin-updater` ligado mas inerte (nenhum workflow publica `latest.json`) -- ver `docs/releasing.md`.
 

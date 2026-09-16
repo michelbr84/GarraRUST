@@ -123,7 +123,12 @@ crates/
                         parcial `expires_in_progress_idx`). Handle PII-safe via
                         skip(config) + Debug redigido. ADRs 0003 e 0004.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
-  garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
+  garraia-voice/      — STT (Whisper) + TTS (Chatterbox/Hibiki/LM Studio
+                        OpenAI-compativel). Adaptadores ElevenLabs e Kokoro
+                        vivem em `garraia-channels::voice_channel` (feature
+                        `voice`, que nenhuma crate liga) e nao chegam ao
+                        gateway — `server.rs` so casa `hibiki`/`lmstudio`,
+                        o resto cai no Chatterbox.
   garraia-media/      — processamento de PDF, imagens, mídia
   garraia-skills/     — registry de skills para o agente. Frontmatter com `kind`
                         (`instruction` default · `hardware-adapter` ·
@@ -450,5 +455,5 @@ python3 -m pytest scripts/quality/tests/
 - @imports `TODO.md` (backlog operacional) e `.garra-estado.md` (handoff local, gitignored) para estado da sessão anterior
 - @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
 - @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
-- @imports `docs/adr/` — decisões arquiteturais: 22 ADRs (0001-0022). As 0001-0017, a **0019** (confinamento das tools, #1084), a **0020** (crate `garraia-hardware`, epic #1124 — aceita 2026-09-12, opção A) e a **0021** (Desktop Control Center, epic #1181 — aceita 2026-09-14, opção D: crate `garraia-desktop-core` sem Tauri no CI, casca Tauri fina, abas sobre `/api/*`, aba Agents cliente do AgentDeck) e a **0022** (identidade do LLM padrão — `z-ai/glm-5.3-flash` via OpenRouter, local como segunda opção, #1180 — aceita 2026-09-13) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção. Ver `docs/adr/README.md` para o índice.
+- @imports `docs/adr/` — decisões arquiteturais: 23 ADRs (0001-0023). As 0001-0017, a **0019** (confinamento das tools, #1084), a **0020** (crate `garraia-hardware`, epic #1124 — aceita 2026-09-12, opção A) e a **0021** (Desktop Control Center, epic #1181 — aceita 2026-09-14, opção D: crate `garraia-desktop-core` sem Tauri no CI, casca Tauri fina, abas sobre `/api/*`, aba Agents cliente do AgentDeck) e a **0022** (identidade do LLM padrão — `z-ai/glm-5.3-flash` via OpenRouter, local como segunda opção, #1180 — aceita 2026-09-13) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção. Ver `docs/adr/README.md` para o índice.
 - Tracking: tracker interno (o Linear foi descontinuado em 2026-08-18 — não criar/consultar issues lá; IDs `GAR-xxx` permanecem como registro histórico de entregas)
