@@ -386,7 +386,9 @@ pub async fn pair_with(
                         Effect::PurgeSession => {
                             // Inalcancavel no `pair`: `Event::SessionDead` so
                             // e alimentado depois do codigo de saida, abaixo.
-                            store.purge()?;
+                            // `discard_dead_session` e nao `purge` pelo mesmo
+                            // motivo do desfecho la embaixo.
+                            store.discard_dead_session()?;
                             conn.kill().await;
                             return Err(RunError::SessionDead {
                                 reason_code: dead_reason_code,
@@ -429,7 +431,12 @@ pub async fn pair_with(
     let code = conn.wait().await?;
     if super::protocol::session_is_dead(code, dead_reason_code) {
         machine.on(Event::SessionDead, now);
-        store.purge()?;
+        // NAO e `purge`: num re-vinculo o `session.enc.prev` e a sessao boa
+        // que o `link` acabou de arquivar, e `purge` a triturava junto com a
+        // chave — o guard do chamador ficava sem nada para restaurar. O que
+        // este pareamento pode descartar e o blob que o servidor recusou.
+        // Ver [`SessionStore::discard_dead_session`].
+        store.discard_dead_session()?;
         return Err(RunError::SessionDead {
             reason_code: dead_reason_code,
         });

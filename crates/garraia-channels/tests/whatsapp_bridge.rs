@@ -313,7 +313,81 @@ async fn a_logged_out_account_purges_the_session_and_reports_it() {
         !store.exists(),
         "uma conta deslogada nao pode deixar o blob para tras"
     );
+    // Nota: com passphrase o `session.key` nunca chega a existir, entao a
+    // assercao sobre ele e vacua nesta fixture. O que prova a limpeza aqui e
+    // o SALT: ele existia e tem de sumir junto, porque nao ha arquivado a
+    // proteger.
     assert!(!store.key_path().exists(), "a chave tambem some");
+    assert!(
+        !store.salt_path().exists(),
+        "e o salt vai junto quando nao ha nada arquivado a preservar"
+    );
+}
+
+/// A sequencia que o `purge` do `pair` destruia em silencio: o usuario aceita
+/// re-vincular, o `link` ARQUIVA a sessao boa, o pareamento novo e recusado
+/// pela Meta (401) — e o arquivado tem de continuar la, com a chave e o salt,
+/// para o guard do chamador poder devolve-lo.
+///
+/// Antes: `purge()` triturava blob, `.prev`, `session.key` e `session.salt`,
+/// entao o `Drop` do guard nao achava nada para restaurar e caia no braco
+/// `Ok(false)`, que era silencioso. O usuario perdia o vinculo anterior e so
+/// lia "esta sessao nao vale mais".
+#[tokio::test]
+async fn a_relink_refused_by_the_server_never_destroys_the_archived_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    pair(
+        &FixtureLauncher::new("pair-ok", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect("pareamento inicial");
+    let anterior = store.load(&key).expect("a sessao boa abre");
+
+    // Exatamente o que o `ArchiveGuard` do `link` faz ao aceitar o re-vinculo.
+    assert!(store.archive().expect("archive"));
+
+    let err = pair(
+        &FixtureLauncher::new("logged-out", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect_err("a Meta recusou o vinculo novo");
+    assert!(
+        matches!(err, RunError::SessionDead { .. }),
+        "o desfecho continua sendo sessao morta: {err:?}"
+    );
+
+    assert!(
+        store.archive_path().is_file(),
+        "o arquivado e a sessao do USUARIO, nao material deste pareamento"
+    );
+    // `store_in` deriva a chave de uma passphrase, entao o que precisa
+    // sobreviver aqui e o SALT: sem ele a derivacao muda e o arquivado deixa
+    // de abrir. No modo sem passphrase quem sobrevive e o `session.key`, e
+    // esse caso esta pinado em `session.rs`
+    // (`a_dead_session_never_takes_the_archived_one_nor_its_key`).
+    assert!(
+        store.salt_path().exists(),
+        "sem o salt o arquivado nao recupera nada — .prev, key e salt vivem ou morrem juntos"
+    );
+    assert!(
+        store.restore_archive().expect("restore"),
+        "e o guard consegue devolve-lo"
+    );
+    assert_eq!(
+        store.load(&key).expect("a sessao restaurada abre").expose(),
+        anterior.expose(),
+        "e o que volta e a MESMA sessao"
+    );
 }
 
 #[tokio::test]

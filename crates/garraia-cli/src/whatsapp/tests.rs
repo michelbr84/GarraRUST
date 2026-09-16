@@ -185,7 +185,7 @@ fn config_is_untouched_when_pairing_fails() {
 
     // `link` sem Node instalado (PATH vazio) falha antes de qualquer bridge.
     let prompter = ScriptedPrompter::with_confirms(&[true]);
-    let code = temp_env_without_path(|| run(Action::Link, &ctx, &prompter));
+    let code = link_with(&ctx, &prompter, no_node);
     assert_eq!(code, 69, "faltando node, EX_UNAVAILABLE");
 
     let config = loader.load().expect("load");
@@ -201,24 +201,35 @@ fn config_is_untouched_when_pairing_fails() {
     );
 }
 
-/// `PATH` vazio durante a closure. Serializado por um mutex proprio porque
-/// mexer em env e global ao processo de teste.
-fn temp_env_without_path<T>(f: impl FnOnce() -> T) -> T {
-    use std::sync::Mutex;
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let previous = std::env::var_os("PATH");
-    // SAFETY: o mutex acima serializa os testes que mexem em env neste binario.
-    unsafe { std::env::set_var("PATH", "") };
-    let out = f();
-    // SAFETY: idem.
-    unsafe {
-        match previous {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
+/// "Este computador nao tem Node instalado", sem tocar no ambiente do
+/// processo.
+///
+/// Substitui um `unsafe { std::env::set_var("PATH", "") }` que era invalido
+/// nos proprios termos: `set_var` exige que nenhuma outra thread esteja no
+/// ambiente, e cada `tempfile::tempdir()` deste binario le `TMPDIR` — os
+/// outros testes rodam concorrentes. Ver o docstring de [`super::link_with`].
+fn no_node() -> Result<NodeRuntime, BridgeError> {
+    Err(BridgeError::ToolMissing("node"))
+}
+
+/// Launcher que nunca sobe: o programa nao existe, entao o `spawn` falha e o
+/// `pair` devolve erro sem QR, sem Node e sem bridge. E o que permite levar o
+/// fluxo do `link` ate um desfecho de FALHA *depois* de o guard estar
+/// instalado — o trecho que nenhum teste alcancava.
+struct DeadLauncher;
+
+impl BridgeLauncher for DeadLauncher {
+    fn command(&self) -> Result<tokio::process::Command, BridgeError> {
+        Ok(tokio::process::Command::new(
+            "/nao/existe/garraia-bridge-de-teste",
+        ))
     }
-    out
+    fn describe(&self) -> String {
+        "/nao/existe/garraia-bridge-de-teste".into()
+    }
+    fn dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from("/nao/existe")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +748,7 @@ fn accepting_the_relink_but_failing_before_the_qr_leaves_the_session_untouched()
     // "sim" ao re-vincular, "sim" ao consentimento — e entao o fluxo morre na
     // deteccao do Node, que e o ponto de falha mais comum de todos.
     let prompter = ScriptedPrompter::with_confirms(&[true, true]);
-    let code = temp_env_without_path(|| run(Action::Link, &ctx, &prompter));
+    let code = link_with(&ctx, &prompter, no_node);
 
     assert_eq!(code, 69, "sem node");
     assert!(
@@ -748,6 +759,72 @@ fn accepting_the_relink_but_failing_before_the_qr_leaves_the_session_untouched()
         !store.archive_path().exists(),
         "e nada pode ter sido arquivado antes do QR aparecer"
     );
+}
+
+/// **A linha que instala o [`super::ArchiveGuard`] tem pino.**
+///
+/// Este e o teste que faltava. Os dois vizinhos acima morrem na deteccao do
+/// Node, que acontece ANTES do guard — por construcao eles nunca o alcancam, e
+/// por isso trocar o bloco inteiro do guard por um `store.archive()` cru, sem
+/// inverso (o bug da rodada anterior, exatamente), deixava a crate verde.
+///
+/// Aqui o Node ja nao esta no caminho: entra-se direto pelo
+/// [`super::link_paired`], com um launcher que nunca sobe. O fluxo percorre o
+/// arquivamento, o QR que nunca aparece, o desfecho de erro e o `drop` do
+/// guard. O que se afirma e o que o usuario ve em disco depois: a sessao
+/// anterior de volta, legivel, e nada esquecido no `.prev`.
+#[test]
+fn a_relink_that_never_pairs_puts_the_previous_session_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+    let key = ctx.key().expect("key");
+    let anterior = garraia_channels::whatsapp_linked::SessionBlob::new("eyJhbnRlcmlvciI6MX0=");
+    store.save(&anterior, &key).expect("save");
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let code = link_paired(&ctx, &store, &key, &DeadLauncher, &runtime, true);
+
+    assert_eq!(code, 69, "um bridge que nao sobe e EX_UNAVAILABLE");
+    assert!(
+        store.exists(),
+        "o vinculo anterior tem de estar de volta em session.enc"
+    );
+    assert!(
+        !store.archive_path().exists(),
+        "e nada pode ter ficado para tras no .prev"
+    );
+    assert_eq!(
+        store.load(&key).expect("a sessao restaurada abre").expose(),
+        anterior.expose(),
+        "e tem de ser a MESMA sessao — restaurar um arquivo vazio nao restaura nada"
+    );
+
+    let config = loader.load().expect("load");
+    assert!(
+        !config.channels.contains_key("whatsapp_linked"),
+        "um pareamento que falhou nao escreve enabled = true"
+    );
+}
+
+/// O guard e no-op quando nao houve re-vinculo: sem `relink` nada e arquivado,
+/// e uma falha do bridge nao pode inventar um `.prev`.
+#[test]
+fn a_first_link_that_never_pairs_archives_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+    let key = ctx.key().expect("key");
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let code = link_paired(&ctx, &store, &key, &DeadLauncher, &runtime, false);
+
+    assert_eq!(code, 69);
+    assert!(!store.exists(), "nao havia sessao e continua nao havendo");
+    assert!(!store.archive_path().exists(), "nem arquivado");
 }
 
 /// Com sessao existente e resposta "nao" ao re-vincular, o fluxo segue para a
@@ -768,7 +845,7 @@ fn declining_the_relink_prompt_never_archives_the_session() {
     // Responde "nao" ao re-vincular; o fluxo entao falha por falta de Node,
     // que e o que queremos — a asserção e sobre o estado do disco.
     let prompter = ScriptedPrompter::with_confirms(&[false]);
-    let code = temp_env_without_path(|| run(Action::Link, &ctx, &prompter));
+    let code = link_with(&ctx, &prompter, no_node);
 
     assert_eq!(code, 69, "sem node");
     assert!(store.exists(), "a sessao continua la");

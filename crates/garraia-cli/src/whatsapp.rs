@@ -32,7 +32,9 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use garraia_channels::whatsapp_linked::bridge::{self, BridgeError, NodeLauncher, NodeRuntime};
+use garraia_channels::whatsapp_linked::bridge::{
+    self, BridgeError, BridgeLauncher, NodeLauncher, NodeRuntime,
+};
 use garraia_channels::whatsapp_linked::runner::{self, PairUi, RunError};
 use garraia_channels::whatsapp_linked::{DEFAULT_ACCOUNT, KeyOrigin, SessionKey, SessionStore, qr};
 use garraia_config::{ChannelConfig, ConfigLoader};
@@ -491,9 +493,20 @@ Settings → Linked devices.",
 /// ha mais arquivado — e [`SessionStore::restore_archive`] tambem se recusa a
 /// passar por cima de um `session.enc` vivo. Nos dois sentidos, o guard vira
 /// no-op silencioso exatamente quando deve.
+///
+/// # O braco que nao pode ser silencioso
+///
+/// `restore_archive` devolvendo `false` tem tres causas, e so duas sao o
+/// caminho feliz: nao havia nada arquivado, ou ha sessao nova em disco. A
+/// terceira e o arquivado ter SUMIDO entre o `archive()` e o `drop` — e ai o
+/// usuario perdeu o vinculo anterior e precisa ouvir isso. Por isso o guard
+/// guarda `archived`: sem esse bit os tres casos tem a mesma cara.
 struct ArchiveGuard<'a> {
     store: &'a SessionStore,
     lang: Lang,
+    /// Havia mesmo um blob para arquivar? `archive()` devolve `false` num
+    /// store vazio, e nesse caso nao restaurar nada e o esperado.
+    archived: bool,
 }
 
 impl<'a> ArchiveGuard<'a> {
@@ -501,8 +514,12 @@ impl<'a> ArchiveGuard<'a> {
         store: &'a SessionStore,
         lang: Lang,
     ) -> Result<Self, garraia_channels::whatsapp_linked::SessionError> {
-        store.archive()?;
-        Ok(Self { store, lang })
+        let archived = store.archive()?;
+        Ok(Self {
+            store,
+            lang,
+            archived,
+        })
     }
 }
 
@@ -520,6 +537,18 @@ impl Drop for ArchiveGuard<'_> {
                     "Your previous session was restored — nothing was unlinked."
                 )
             ),
+            // Arquivamos, nao restauramos e nao ha sessao nova: o vinculo
+            // anterior foi embora. Falar e o minimo — o usuario acabou de ler
+            // "esta sessao nao vale mais" e sairia daqui achando que a antiga
+            // continuava la.
+            Ok(false) if self.archived && !self.store.exists() => eprintln!(
+                "! {}",
+                t(
+                    self.lang,
+                    "A sessão anterior não pôde ser restaurada — o vínculo antigo foi perdido. Rode `garra whatsapp` e leia um QR novo.",
+                    "The previous session could not be restored — the old link is gone. Run `garra whatsapp` and scan a new QR."
+                )
+            ),
             Ok(false) => {}
             // Sem `?` porque `Drop` nao propaga, e sem silencio porque uma
             // sessao boa presa no `.prev` e exatamente o que o usuario precisa
@@ -530,6 +559,29 @@ impl Drop for ArchiveGuard<'_> {
 }
 
 fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
+    link_with(ctx, prompter, NodeRuntime::detect)
+}
+
+/// [`link`] com a deteccao do Node injetada.
+///
+/// # Por que um parametro, e nao `PATH=""` no teste
+///
+/// Porque a versao anterior destes testes zerava a `PATH` do processo inteiro
+/// com um `unsafe { std::env::set_var }` cujo SAFETY dizia que "o mutex
+/// serializa os testes que mexem em env neste binario". Essa nao e a condicao
+/// de `set_var`: a condicao e que NENHUMA outra thread esteja no ambiente, e
+/// `tempfile::tempdir()` le `TMPDIR`. Os outros ~530 testes deste binario
+/// rodam concorrentes e chamam `tempdir()` o tempo todo. O raciocinio ja esta
+/// escrito no docstring de `bridge.rs` que este mesmo PR acrescentou; deixa-lo
+/// valer la e nao aqui era so escolher onde nao olhar.
+///
+/// Com a deteccao injetada, "nao ha Node" vira um `Err` que o teste passa —
+/// nao um estado global que ele planta.
+fn link_with(
+    ctx: &Context,
+    prompter: &dyn Prompter,
+    detect_node: impl FnOnce() -> Result<NodeRuntime, BridgeError>,
+) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
         println!("{}", non_interactive_hint(ctx.lang));
@@ -599,7 +651,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         return EX_CANCELLED;
     }
 
-    let node = match NodeRuntime::detect() {
+    let node = match detect_node() {
         Ok(n) => n,
         Err(e) => {
             print_missing_node(ctx, &e);
@@ -650,6 +702,36 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         );
     }
 
+    let launcher = NodeLauncher::new(&node.node, &bridge_dir);
+    link_paired(ctx, &store, &key, &launcher, &runtime, relink)
+}
+
+/// A parte do [`link`] que comeca depois de o Node estar resolvido: arquivar a
+/// sessao atual sob guard, mostrar o QR, parear e traduzir o desfecho em
+/// codigo de saida.
+///
+/// # Por que uma funcao, e nao o resto de `link`
+///
+/// Porque a linha que INSTALA o [`ArchiveGuard`] e a correcao inteira desta
+/// rodada, e dentro de `link` ela era inalcancavel por teste: tudo o que vem
+/// antes — deteccao do Node, `npm ci` — falha primeiro num ambiente de teste,
+/// e os testes existentes morriam na deteccao do Node sem nunca chegar aqui.
+/// Trocar este bloco por um `store.archive()` cru, sem inverso — que e
+/// exatamente o bug da rodada anterior —, deixava os 549 testes da crate
+/// verdes.
+///
+/// Com o `launcher` como `&dyn BridgeLauncher` o teste entra por cima: um
+/// launcher que sempre falha leva o fluxo ate o desfecho de erro, o guard cai,
+/// e o que se afirma e o que o usuario ve em disco — sessao de volta, nada
+/// arquivado.
+fn link_paired(
+    ctx: &Context,
+    store: &SessionStore,
+    key: &SessionKey,
+    launcher: &dyn BridgeLauncher,
+    runtime: &tokio::runtime::Runtime,
+    relink: bool,
+) -> i32 {
     // AGORA: consentimento dado, Node encontrado, dependencias prontas. Este
     // e o ultimo ponto antes de o QR aparecer.
     //
@@ -661,7 +743,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     // e o que faltava — ele desfaz o arquivamento em QUALQUER saida que nao
     // tenha gravado sessao nova, inclusive as que ninguem lembrou de listar.
     let _archive_guard = if relink {
-        match ArchiveGuard::archive(&store, ctx.lang) {
+        match ArchiveGuard::archive(store, ctx.lang) {
             Ok(g) => Some(g),
             Err(e) => {
                 eprintln!("{e}");
@@ -674,7 +756,6 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
 
     print_instructions(ctx);
 
-    let launcher = NodeLauncher::new(&node.node, &bridge_dir);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let mut ui = TerminalUi::new(ctx);
 
@@ -686,7 +767,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                 let _ = cancel_tx.send(true);
             }
         });
-        runner::pair(&launcher, &store, &key, &mut ui, cancel_rx).await
+        runner::pair(launcher, store, key, &mut ui, cancel_rx).await
     });
 
     match outcome {
