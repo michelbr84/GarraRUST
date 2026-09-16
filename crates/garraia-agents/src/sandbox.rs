@@ -16,6 +16,24 @@ use garraia_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Quoting POSIX para interpolar um valor numa linha de shell.
+///
+/// Envolve em **aspas simples** e escapa cada aspa simples interna com a
+/// sequência `'\''` (fecha, escapa uma literal, reabre). Dentro de aspas
+/// simples o shell não expande absolutamente nada — nem `$`, nem crase, nem
+/// `!`, nem `;` — que é precisamente a garantia necessária aqui.
+///
+/// Isto existe porque a primeira versão usava `{:?}` (o `Debug` do Rust) para
+/// "citar" o comando. `escape_debug` escapa `"`, `\` e controles, e **não**
+/// toca em `$` nem em crase — então `$(id)` dentro de aspas duplas seguia vivo
+/// e era expandido pelo shell do host **antes** do `docker run` existir. O
+/// comando nunca entrava no container: rodava no host, contornando
+/// `--network none` e `--security-opt no-new-privileges`. Fail-closed no
+/// backend ausente, fail-open no conteúdo — o pior dos dois.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 /// Backend de sandbox disponível.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -170,15 +188,30 @@ impl SandboxPolicy {
                 if self.mount_workdir && Path::new(cwd).exists() {
                     // cwd do host montado rw no mesmo path dentro do container
                     // (mantém caminhos relativos do comando funcionando).
-                    parts.push_str(&format!(" -v {cwd}:{cwd} -w {cwd}"));
+                    let m = sh_quote(cwd);
+                    parts.push_str(&format!(" -v {m}:{m} -w {m}"));
                 }
-                parts.push_str(&format!(" {} sh -lc {:?}", self.image, command));
+                parts.push_str(&format!(
+                    " {} sh -lc {}",
+                    sh_quote(&self.image),
+                    sh_quote(command)
+                ));
                 parts
             }
             SandboxBackend::Ssh(host) => {
                 // NOTA: ssh não isola o host remoto; é isolamento do host
                 // local. Documentado como tal no módulo e nos docs.
-                format!("ssh {host} -- sh -lc {:?}", command)
+                //
+                // Quoting DUPLO aqui, e não por engano: o `ssh` não entrega
+                // argv ao host remoto — ele junta os argumentos numa string e
+                // o shell remoto **reparseia**. Uma camada de aspas morre no
+                // shell local, a outra no remoto. Com uma só, o comando
+                // voltaria a ser interpretado antes de virar comando.
+                format!(
+                    "ssh {} -- sh -lc {}",
+                    sh_quote(host),
+                    sh_quote(&sh_quote(command))
+                )
             }
         }))
     }
@@ -230,20 +263,31 @@ mod tests {
             ..SandboxPolicy::default()
         };
         // Não assumimos ausência de docker no host de teste; então testamos
-        // o contrato via backend com nome que nunca existe: usamos Ssh com
-        // binário ssh simulado ausente não é possível — validamos apenas a
-        // sintaxe do wrap do Ssh (que não depende de disponibilidade aqui).
+        // o contrato via backend Ssh.
+        //
+        // Os DOIS desfechos são assertados de propósito. `wrap_command` chama
+        // `is_available()` antes de montar a string, então num host sem cliente
+        // `ssh` o retorno é o erro fail-closed — e a versão anterior deste
+        // teste fazia `.unwrap()` direto, quebrando em qualquer máquina sem
+        // ssh. Aceitar só um dos ramos esconderia o outro; ignorar o resultado
+        // seria teste vazio (o defeito da #1230).
         let ssh = SandboxPolicy {
             mode: SandboxMode::All,
             backend: Some(SandboxBackend::Ssh("box".into())),
             mount_workdir: false,
             ..SandboxPolicy::default()
         };
-        let wrapped = ssh
-            .wrap_command("bash", "echo oi", "/tmp")
-            .unwrap()
-            .unwrap();
-        assert_eq!(wrapped, "ssh box -- sh -lc \"echo oi\"");
+        match ssh.wrap_command("bash", "echo oi", "/tmp") {
+            // Host COM ssh: a string precisa sair com quoting duplo — uma
+            // camada para o shell local, outra para o remoto, que reparseia.
+            Ok(Some(wrapped)) => assert_eq!(wrapped, r"ssh 'box' -- sh -lc ''\''echo oi'\'''"),
+            // Host SEM ssh: o contrato exercitado é o fail-closed.
+            Err(e) => assert!(
+                e.to_string().contains("fail-closed"),
+                "erro inesperado: {e}"
+            ),
+            Ok(None) => panic!("mode = all deveria sandboxar a tool `bash`"),
+        }
         let _ = p; // disponibilidade de docker não é assertida (depende do host)
     }
 
@@ -286,5 +330,147 @@ mod tests {
         let p: SandboxPolicy =
             serde_json::from_str(r#"{"mode":"off"}"#).expect("json deve parsear");
         assert!(!p.requires_sandbox("bash"));
+    }
+}
+
+/// Regressao do escape de sandbox: metacaractere de shell precisa chegar ao
+/// container como **dado**, nunca ser expandido pelo shell do host.
+///
+/// Os testes que ja existiam afirmavam a presenca das flags de hardening na
+/// string (`--network none`, `no-new-privileges`). Nenhum afirmava inercia —
+/// e era exatamente ali que o `{:?}` passava.
+#[cfg(all(test, unix))]
+mod shell_injection_regression {
+    use super::*;
+
+    /// Devolve as palavras que o shell REAL produz para `linha`.
+    ///
+    /// Se a interpolacao for insegura, `$(id)` expande aqui e o retorno traz a
+    /// saida do `id` em vez do literal — que e precisamente o bug.
+    fn palavras_do_shell(linha: &str) -> Vec<String> {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf '%s\\n' {linha}"))
+            .output()
+            .expect("sh deve existir no host de teste");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn sh_quote_neutraliza_metacaracteres_num_shell_real() {
+        for bruto in [
+            "$(id)",
+            "`id`",
+            "$HOME",
+            "a; id",
+            "a && id",
+            "a | id",
+            "fim\"; id; echo \"",
+            "aspa'simples",
+            "!bang",
+            "* ? [glob]",
+        ] {
+            let palavras = palavras_do_shell(&sh_quote(bruto));
+            assert_eq!(
+                palavras,
+                vec![bruto.to_string()],
+                "o shell nao devolveu o literal para {bruto:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_command_entrega_o_comando_como_uma_palavra_literal() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Docker),
+            ..Default::default()
+        };
+        for comando in ["$(id)", "`id`", "ls; id", "echo 'oi'"] {
+            let wrapped = p
+                .wrap_command("bash", comando, "/tmp")
+                .expect("wrap")
+                .expect("sandbox aplicado");
+            let palavras = palavras_do_shell(&wrapped);
+            assert_eq!(
+                palavras.last().map(String::as_str),
+                Some(comando),
+                "o comando deveria chegar inteiro e literal; wrapped={wrapped}"
+            );
+        }
+    }
+
+    #[test]
+    fn cwd_hostil_nao_vira_comando_extra_nem_se_parte_em_dois() {
+        let dir = std::env::temp_dir().join("garra dir; id");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let cwd = dir.to_str().expect("utf8");
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Docker),
+            ..Default::default()
+        };
+        let wrapped = p
+            .wrap_command("bash", "ls", cwd)
+            .expect("wrap")
+            .expect("aplicado");
+        let palavras = palavras_do_shell(&wrapped);
+        // O mount chega como UMA palavra "<cwd>:<cwd>", com espaco e ';' dentro.
+        assert!(
+            palavras.iter().any(|w| w == &format!("{cwd}:{cwd}")),
+            "mount deveria ser uma palavra so; wrapped={wrapped}"
+        );
+        assert!(
+            !palavras.iter().any(|w| w == "id"),
+            "o ';' do cwd virou comando; wrapped={wrapped}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// O ramo SSH atravessa **dois** shells: o local, e o remoto que reparseia
+    /// a string que o `ssh` remonta a partir do argv. Por isso o comando leva
+    /// `sh_quote` duas vezes.
+    ///
+    /// Este teste exercita a propriedade direto no `sh_quote`, sem passar pelo
+    /// `wrap_command`, de proposito: o `wrap_command` checa
+    /// `SandboxBackend::is_available()` antes de montar a string, e num host
+    /// sem cliente `ssh` instalado ele devolve (corretamente) o erro
+    /// fail-closed. Amarrar a regressao a presenca do binario faria o teste
+    /// passar sem exercitar nada justamente onde nao ha ssh — o mesmo defeito
+    /// de teste vacuo descrito na #1230.
+    #[test]
+    fn duas_camadas_de_quoting_sobrevivem_a_dois_shells() {
+        for bruto in ["$(id)", "`id`", "a; id", "aspa'simples"] {
+            let carga = sh_quote(&sh_quote(bruto));
+            // Camada 1 — shell local: entrega UMA palavra, ainda citada.
+            let apos_local = palavras_do_shell(&carga);
+            assert_eq!(apos_local.len(), 1, "camada 1 partiu {bruto:?} em varias");
+            // Camada 2 — shell remoto: reparseia e devolve o literal.
+            assert_eq!(
+                palavras_do_shell(&apos_local[0]),
+                vec![bruto.to_string()],
+                "camada 2 expandiu {bruto:?}"
+            );
+        }
+    }
+
+    /// Uma unica camada NAO basta no caminho do `ssh` — guarda contra alguem
+    /// "simplificar" o quoting duplo achando que e redundante.
+    #[test]
+    fn uma_camada_so_seria_insuficiente_para_o_ssh() {
+        let uma = sh_quote("$(id)");
+        let apos_local = palavras_do_shell(&uma);
+        assert_eq!(apos_local, vec!["$(id)".to_string()]);
+        // O shell remoto receberia isto SEM aspas e expandiria.
+        let apos_remoto = palavras_do_shell(&apos_local[0]);
+        assert_ne!(
+            apos_remoto,
+            vec!["$(id)".to_string()],
+            "se isto passar a ser igual, o quoting duplo virou desnecessario \
+             e o comentario do ramo SSH precisa ser revisto"
+        );
     }
 }
