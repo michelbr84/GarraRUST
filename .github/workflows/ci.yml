@@ -443,13 +443,25 @@ jobs:
       # s3_compat.rs INTEIRO e `#[cfg(feature = "storage-s3")]`, entao
       # nenhum job compilava o backend S3 de producao — clippy com a
       # feature ligada chegou a falhar sem ninguem ver. Step proprio, e nao
-      # mais um bloco no step dos canais, porque aqui tambem roda um
-      # testcontainer MinIO: nos runners Linux do GitHub o teste de
-      # integracao sobe de verdade (sem Docker ele se auto-pula).
+      # mais um bloco no step dos canais, porque aqui tambem sobe um
+      # testcontainer MinIO, com o pre-pull e o GARRAIA_REQUIRE_DOCKER que
+      # os dois steps abaixo explicam.
+      - name: Pre-pull MinIO image for testcontainers
+        # Mesmo racional do job auth-integration: warm pull em vez de ~60 s de
+        # cold start dentro do testcontainer. Sem isto o `MinIO::default()
+        # .start()` estoura e o teste se PULA em silencio — foi exatamente o
+        # que aconteceu na primeira execucao deste step (8 testes "ok" em
+        # 0,62 s, sem MinIO nenhum). Tag fixada por testcontainers-modules.
+        run: docker pull minio/minio:RELEASE.2025-02-28T09-55-16Z
+
       - name: Run clippy + tests (storage-s3, com MinIO testcontainer)
+        env:
+          # Aqui o Docker E esperado: faz o teste FALHAR se o container nao
+          # subir, em vez de passar verde sem asserir nada.
+          GARRAIA_REQUIRE_DOCKER: "1"
         run: |
           cargo clippy -p garraia-storage --features storage-s3 --all-targets -- -D warnings
-          cargo test -p garraia-storage --features storage-s3
+          cargo test -p garraia-storage --features storage-s3 -- --nocapture
 
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel

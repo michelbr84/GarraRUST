@@ -34,6 +34,16 @@ async fn start_minio() -> Option<(
     let container = match MinIO::default().start().await {
         Ok(c) => c,
         Err(e) => {
+            // Um teste que se pula sozinho passa verde sem asserir nada — foi
+            // assim que estes 7 testes ficaram desde sempre "passando" sem
+            // nunca tocar o backend S3. Onde o Docker E esperado (CI Linux),
+            // `GARRAIA_REQUIRE_DOCKER` transforma o skip em falha, para que o
+            // verde signifique que o MinIO rodou mesmo. Sem a variavel, o
+            // comportamento antigo continua: pular em maquina sem Docker.
+            assert!(
+                std::env::var_os("GARRAIA_REQUIRE_DOCKER").is_none(),
+                "GARRAIA_REQUIRE_DOCKER esta setado, mas o container MinIO nao subiu: {e}"
+            );
             eprintln!(
                 "[skip] MinIO container failed to start — Docker unavailable? ({e}); \
                  plan 0038 integration tests skipped",
