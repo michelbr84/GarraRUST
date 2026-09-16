@@ -206,6 +206,14 @@ Rationale:
 - LGPD art. 16: dados devem ser apagados ao fim do tratamento. Retention policy por grupo (`groups.settings_jsonb.retention_days`).
 - v1 **não implementa** transition rules (hot → cold tier). Fica para Fase 6.
 - v1 **implementa**: expire de uploads tus incompletos após 24h.
+- **Requisito de deploy (#1214):** o bucket S3 DEVE ter a regra de lifecycle
+  `AbortIncompleteMultipartUpload { DaysAfterInitiation: 1 }`. O `put_stream`
+  do `S3Compatible` aborta o multipart em todo caminho de erro e também no
+  `Drop` (cobrindo o cancelamento da future quando o cliente derruba a
+  conexão), mas o abort do `Drop` é destacado e best-effort: não sobrevive a
+  `kill -9` nem ao shutdown do runtime. Sem a regra de lifecycle, as partes
+  desses uploads ficam **faturadas e invisíveis** no `ListObjects`. A regra é
+  o único backstop que não depende do processo continuar vivo.
 
 ### Cloud provider recommendations (docs, não enforce)
 
