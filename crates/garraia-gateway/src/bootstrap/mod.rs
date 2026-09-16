@@ -870,6 +870,25 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         runtime.set_noise_policy(policy);
     }
 
+    // TODO 2026-09-02: knobs do auto-learning de fatos (`memory.auto_extract`
+    // / `memory.max_facts`). Default preserva o comportamento histórico.
+    {
+        let auto = config.memory.auto_extract;
+        let max = config.memory.max_facts;
+        runtime.set_memory_extraction_policy(auto, max);
+        if !auto {
+            info!(
+                "auto-learning de fatos desligado por config (memory.auto_extract=false) — \
+                 uma chamada LLM a menos por turno"
+            );
+        } else if let Some(cap) = max {
+            info!(
+                cap,
+                "teto de fatos aprendidos por turno ativo (memory.max_facts)"
+            );
+        }
+    }
+
     // Wire tools_model: model override used when tools are present (e.g. avoids openrouter/free
     // which may not support function calling).
     if let Some(ref tm) = config.agent.tools_model {
