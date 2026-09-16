@@ -30,7 +30,7 @@ use tracing::info;
 
 use config_writer::{
     CloudLlmChoice, ExistingConfigStrategy, LocalLlmChoice, TelegramChoice, WizardOutcome,
-    backup_path_for, build_app_config, write_config,
+    backup_path_for, build_app_config, gateway_api_key_for_host, host_is_loopback, write_config,
 };
 use env_detect::{EnvSnapshot, OllamaState};
 use garraia_agents::normalize_ollama_tag;
@@ -402,6 +402,9 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
 
     // --- 11. Build outcome + write config ---------------------------------
     let (host, port) = pick_host_port(&env);
+    // #1241: um bind nao-loopback sai daqui com credencial. Em loopback a
+    // chave e `None` e nada muda para quem instala no proprio laptop.
+    let gateway_api_key = gateway_api_key_for_host(&host)?;
     let outcome = WizardOutcome {
         host,
         port,
@@ -412,6 +415,7 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
         voice_enabled,
         system_prompt,
         telegram: telegram_choice,
+        gateway_api_key,
     };
 
     // Sanity-check the outcome can serialize cleanly before we touch
@@ -420,17 +424,37 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     let _ = build_app_config(&outcome);
     let written = write_config(config_dir, &outcome, strategy)?;
 
-    info!("config written to {}", written.display());
+    // A credencial do gateway NUNCA entra em log estruturado: o `info!` abaixo
+    // reporta so o caminho, e o segredo sai uma unica vez no resumo (#1241).
+    info!("config written to {}", written.path.display());
 
     // --- 12. Final summary -------------------------------------------------
     println!();
     println!("  Prontinho! 🎉 O Garra está configurado e pronto pra te ajudar.");
-    println!("  Config salva em {}", written.display());
+    println!("  Config salva em {}", written.path.display());
     println!("  Agora é só rodar `garraia start` pra eu entrar no ar.");
     println!("  Pra parar, é só Ctrl+C. Pra rodar em segundo plano: garraia start -d");
     println!("  Logs: {}/garraia.log", config_dir.display());
     if outcome.voice_enabled {
         println!("  Voice was enabled — see docs/voice.md to install Chatterbox + faster-whisper.");
+    }
+    // #1241 — o aviso de bind exposto é a última coisa que o operador lê, e a
+    // única vez que a credencial aparece.
+    if let Some(chave) = &written.gateway_api_key_written {
+        println!();
+        println!(
+            "{}",
+            aviso_de_bind_exposto(&outcome.host, outcome.port, chave)
+        );
+    } else if !host_is_loopback(&outcome.host) {
+        // Merge sobre um config que já trazia credencial: nada foi gravado,
+        // então não há segredo a imprimir — mas o operador ainda merece saber
+        // que o bind alcança a rede.
+        println!();
+        println!(
+            "{}",
+            aviso_de_bind_exposto_com_chave_preservada(&outcome.host, outcome.port)
+        );
     }
     println!();
 
@@ -438,6 +462,39 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
 }
 
 // ---------- helpers -----------------------------------------------------------
+
+/// Aviso de bind exposto impresso no fim do wizard (#1241).
+///
+/// Função pura porque é o único jeito de um teste afirmar o que a saída
+/// interativa não deixa afirmar: a credencial aparece **uma vez só** — dentro
+/// da linha de `curl`, que é o que o operador vai copiar — e vem acompanhada
+/// da nota sobre as rotas que continuam abertas.
+fn aviso_de_bind_exposto(host: &str, port: u16, chave: &str) -> String {
+    let cabecalho = aviso_de_bind_exposto_cabecalho(host, port);
+    format!(
+        "{cabecalho}\n\
+         \x20 Gerei uma credencial de acesso e gravei no config (arquivo em modo 0600).\n\
+         \x20 Guarde agora — ela não é impressa de novo:\n\
+         \n\
+         \x20     curl -H \"Authorization: Bearer {chave}\" http://SEU-HOST:{port}/api/sessions\n\
+         \n\
+         \x20 /api/health e /api/capabilities seguem abertas — é por elas que o app\n\
+         \x20 descobre este Garra antes de você digitar a chave."
+    )
+}
+
+/// Mesmo aviso para o caso em que o merge **preservou** a credencial que o
+/// operador já tinha: nada novo foi gravado, então nada de segredo é impresso.
+fn aviso_de_bind_exposto_com_chave_preservada(host: &str, port: u16) -> String {
+    format!(
+        "{}\n  A credencial que já estava no config foi mantida — siga usando ela.",
+        aviso_de_bind_exposto_cabecalho(host, port)
+    )
+}
+
+fn aviso_de_bind_exposto_cabecalho(host: &str, port: u16) -> String {
+    format!("  Atenção: o gateway vai ouvir em {host}:{port} — alcançável pela rede.")
+}
 
 fn print_non_interactive_hint(config_dir: &Path) {
     println!("Non-interactive environment detected.");
@@ -840,6 +897,45 @@ mod tests {
                 "mode_idx {idx} devia ser fallback"
             );
         }
+    }
+
+    /// #1241 — o resumo imprime a credencial **uma vez so**, dentro da linha
+    /// de `curl` que o operador vai copiar. Duas ocorrencias seriam duas
+    /// chances de a chave vazar para o scrollback de alguem.
+    #[test]
+    fn o_aviso_de_bind_exposto_imprime_a_chave_uma_vez_so() {
+        let chave = "f".repeat(64);
+        let saida = aviso_de_bind_exposto("0.0.0.0", 3888, &chave);
+
+        assert_eq!(
+            saida.matches(chave.as_str()).count(),
+            1,
+            "a credencial tem que aparecer exatamente uma vez:\n{saida}"
+        );
+        assert!(
+            saida.contains(&format!("Authorization: Bearer {chave}")),
+            "a chave sai colada no header que o operador vai usar:\n{saida}"
+        );
+        assert!(
+            saida.contains("0.0.0.0:3888"),
+            "o aviso nomeia o bind:\n{saida}"
+        );
+        assert!(
+            saida.contains("/api/health") && saida.contains("/api/capabilities"),
+            "o aviso diz quais rotas seguem abertas:\n{saida}"
+        );
+    }
+
+    /// O caminho do merge que preservou a chave do operador: avisa do bind,
+    /// mas nao inventa nem imprime segredo nenhum.
+    #[test]
+    fn o_aviso_com_chave_preservada_nao_imprime_segredo() {
+        let saida = aviso_de_bind_exposto_com_chave_preservada("0.0.0.0", 3888);
+        assert!(saida.contains("0.0.0.0:3888"));
+        assert!(
+            !saida.contains("Bearer"),
+            "sem chave gravada nao ha header para oferecer:\n{saida}"
+        );
     }
 
     /// #1180 — o placeholder de `agent.default_provider` (nem nuvem nem
