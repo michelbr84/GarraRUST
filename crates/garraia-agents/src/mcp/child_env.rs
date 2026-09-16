@@ -15,6 +15,9 @@ use std::collections::HashMap;
 
 use garraia_common::safety_gate::{env_key_eq, is_mcp_child_env_allowed};
 
+/// Assinatura da comparação de chave de ambiente (`env_key_eq` e parentes).
+type ChaveEq = fn(&str, &str) -> bool;
+
 /// Pares (chave, valor) do ambiente do gateway, em `String`.
 ///
 /// `std::env::vars()` entra em panic diante de uma variável que não é UTF-8
@@ -54,16 +57,35 @@ pub(super) fn build_child_env<I>(
 where
     I: IntoIterator<Item = (String, String)>,
 {
+    build_child_env_com(env_key_eq, parent, explicit, inherit)
+}
+
+/// O corpo de [`build_child_env`], com a comparação de chave por parâmetro.
+///
+/// A comparação entra por parâmetro por um motivo de COBERTURA, não de
+/// desenho: a semântica do Windows mora atrás de um `cfg`, e nenhum job do
+/// CI compila este crate para Windows com os testes ligados — o job
+/// `test (windows-latest)` roda `--no-run` e sem `--features mcp`, e um
+/// cross-check para `x86_64-pc-windows-msvc` num runner Linux não passa do
+/// build script do `ring`. Com o comparador injetável, o dedup do Windows é
+/// exercido no runner Linux como qualquer outro caso de tabela, em vez de
+/// ficar num `#[cfg(windows)]` que job nenhum executa.
+fn build_child_env_com<I>(
+    chave_eq: ChaveEq,
+    parent: I,
+    explicit: &HashMap<String, String>,
+    inherit: bool,
+) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
     let mut env: Vec<(String, String)> = parent
         .into_iter()
         .filter(|(key, _)| inherit || is_mcp_child_env_allowed(key))
         .collect();
 
     for (key, value) in explicit {
-        match env
-            .iter_mut()
-            .find(|(existing, _)| env_key_eq(existing, key))
-        {
+        match env.iter_mut().find(|(existing, _)| chave_eq(existing, key)) {
             Some(slot) => {
                 // Sobrescreve o valor E o nome: no Windows o operador que
                 // declara `PATH` deve ver `PATH`, não o `Path` herdado.
@@ -79,7 +101,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::build_child_env;
+    use super::{build_child_env, build_child_env_com};
+    use garraia_common::safety_gate::{env_key_eq_exact, env_key_eq_windows};
     use std::collections::HashMap;
 
     fn pai() -> Vec<(String, String)> {
@@ -157,14 +180,16 @@ mod tests {
     /// dedup por `==` o filho recebia as duas entradas e quem vencia era
     /// decisão do sistema — ou seja, o operador declarava `PATH` no `env` do
     /// servidor e podia continuar rodando com o `Path` herdado do gateway.
-    #[cfg(windows)]
+    ///
+    /// Roda em TODA plataforma, injetando a semântica do Windows: era
+    /// `#[cfg(windows)]` e, portanto, nunca executado por job nenhum do CI.
     #[test]
-    fn dedup_no_windows_e_case_insensitive() {
+    fn dedup_com_semantica_do_windows_e_case_insensitive() {
         let pai = vec![("Path".to_string(), "C:\\herdado".to_string())];
         let mut explicito = HashMap::new();
         explicito.insert("PATH".to_string(), "C:\\do-operador".to_string());
 
-        let env = build_child_env(pai, &explicito, false);
+        let env = build_child_env_com(env_key_eq_windows, pai, &explicito, true);
 
         assert_eq!(env.len(), 1, "Path e PATH são a mesma variável no Windows");
         assert_eq!(env[0].0, "PATH", "o nome declarado pelo operador vence");
@@ -173,21 +198,38 @@ mod tests {
 
     /// No Unix a comparação é exata: `Path` e `PATH` são variáveis distintas
     /// e ambas devem sobreviver — colapsá-las descartaria uma delas.
-    #[cfg(not(windows))]
+    ///
+    /// `inherit = true` de propósito: `Path` minúsculo não está na allowlist,
+    /// então com a allowlist ligada ele nem chegaria ao dedup e o teste não
+    /// provaria nada (era o defeito da versão anterior deste teste, que
+    /// acabava sendo uma duplicata de `mapa_explicito_sobrescreve_a_heranca`).
+    ///
+    /// Este é o teste que falha se alguém trocar `env_key_eq` por um
+    /// `eq_ignore_ascii_case` incondicional: `Path` sumiria do bloco de
+    /// ambiente do filho, silenciosamente.
+    /// Roda em toda plataforma, injetando a semântica exata do Unix.
     #[test]
-    fn dedup_no_unix_e_exato() {
+    fn dedup_com_semantica_do_unix_e_exato() {
+        let pai = vec![
+            ("Path".to_string(), "/a".to_string()),
+            ("PATH".to_string(), "/b".to_string()),
+        ];
         let mut explicito = HashMap::new();
-        explicito.insert("PATH".to_string(), "/opt/mcp/bin".to_string());
+        explicito.insert("PATH".to_string(), "/c".to_string());
 
-        // `Path` não está na allowlist Unix, então nem chega aqui vindo do
-        // pai; o que se testa é que o dedup não o confunde com `PATH`.
-        let env = build_child_env(
-            vec![("PATH".to_string(), "/usr/bin".to_string())],
-            &explicito,
-            false,
+        let env = build_child_env_com(env_key_eq_exact, pai, &explicito, true);
+
+        assert_eq!(
+            env.len(),
+            2,
+            "no Unix `Path` e `PATH` são variáveis distintas: {env:?}"
         );
-
-        assert_eq!(env, vec![("PATH".to_string(), "/opt/mcp/bin".to_string())]);
+        assert_eq!(
+            valor(&env, "Path"),
+            Some("/a"),
+            "`Path` não pode ser consumido pelo `PATH` explícito"
+        );
+        assert_eq!(valor(&env, "PATH"), Some("/c"));
     }
 
     /// A válvula de escape faz exatamente o que promete — e por isso existe

@@ -387,11 +387,12 @@ const MCP_ENV_BASE: &[&str] = &[
     "CURL_CA_BUNDLE",
 ];
 
-/// Complemento por plataforma. No Windows a lista é obrigatória, não
-/// conveniência: sem `SystemRoot` o Winsock nem inicializa, e o wrapper
-/// `cmd /c` usado para `.cmd` (npx, yarn) depende de `COMSPEC`/`PATHEXT`.
-#[cfg(windows)]
-const MCP_ENV_PLATFORM: &[&str] = &[
+/// Complemento do Windows. A lista é obrigatória, não conveniência: sem
+/// `SystemRoot` o Winsock nem inicializa, e o wrapper `cmd /c` usado para
+/// `.cmd` (npx, yarn) depende de `COMSPEC`/`PATHEXT`.
+///
+/// Compilada em TODA plataforma, de propósito — ver [`MCP_ENV_PLATFORM`].
+const MCP_ENV_WINDOWS: &[&str] = &[
     "SystemRoot",
     "SystemDrive",
     "windir",
@@ -413,8 +414,9 @@ const MCP_ENV_PLATFORM: &[&str] = &[
 
 /// Termux (#909/#913): o exec de um ELF passa pelo shim `termux-exec`, e um
 /// script npm/pip morre no shebang `/usr/bin/...` sem `PREFIX`/`LD_PRELOAD`.
-#[cfg(target_os = "android")]
-const MCP_ENV_PLATFORM: &[&str] = &[
+///
+/// Compilada em TODA plataforma, de propósito — ver [`MCP_ENV_PLATFORM`].
+const MCP_ENV_ANDROID: &[&str] = &[
     "PREFIX",
     "LD_PRELOAD",
     "LD_LIBRARY_PATH",
@@ -422,10 +424,50 @@ const MCP_ENV_PLATFORM: &[&str] = &[
     "ANDROID_ROOT",
 ];
 
-#[cfg(not(any(windows, target_os = "android")))]
-const MCP_ENV_PLATFORM: &[&str] = &[];
+/// Unix que não é Android não precisa de complemento: a lista base já cobre
+/// `PATH`/`HOME`/locale. Existe para que o gate de segurança abaixo tenha as
+/// três listas para varrer, sem `cfg`.
+const MCP_ENV_UNIX: &[&str] = &[];
 
-/// Nomes que um filho MCP pode herdar do gateway.
+/// A lista da plataforma em que este binário foi compilado.
+///
+/// As três listas acima são compiladas SEMPRE, em qualquer alvo, e só a
+/// seleção é `cfg`. O motivo é de segurança, não de estilo: o gate
+/// `allowlist_mcp_nao_contem_nome_de_segredo` só enxerga o que o compilador
+/// enxerga, e o CI que roda testes é Linux. Com as listas atrás de `cfg`,
+/// `AZURE_CLIENT_SECRET` ou `NPM_TOKEN` colados na lista do Windows
+/// passariam verdes para sempre — ninguém nunca compilou aquele ramo num job
+/// que executa testes. Compiladas sempre, o gate varre as três.
+#[cfg(windows)]
+const MCP_ENV_PLATFORM: &[&str] = MCP_ENV_WINDOWS;
+
+/// Ver a variante Windows acima.
+#[cfg(target_os = "android")]
+const MCP_ENV_PLATFORM: &[&str] = MCP_ENV_ANDROID;
+
+/// Ver a variante Windows acima.
+#[cfg(not(any(windows, target_os = "android")))]
+const MCP_ENV_PLATFORM: &[&str] = MCP_ENV_UNIX;
+
+/// Nomes que a allowlist MCP concede em QUALQUER plataforma, não só na
+/// corrente.
+///
+/// Existe porque o gate de segurança precisa varrer as três listas. Com as
+/// listas atrás de `cfg`, ele só enxergaria a da plataforma em que compila —
+/// e o único job de CI que EXECUTA testes é Linux, então `AZURE_CLIENT_SECRET`
+/// ou `NPM_TOKEN` colados na lista do Windows passariam verdes para sempre.
+/// Use [`mcp_child_env_keys`] para a decisão de runtime; esta aqui é para
+/// auditoria da política inteira.
+pub fn mcp_child_env_keys_all_platforms() -> impl Iterator<Item = &'static str> {
+    MCP_ENV_BASE
+        .iter()
+        .copied()
+        .chain(MCP_ENV_WINDOWS.iter().copied())
+        .chain(MCP_ENV_ANDROID.iter().copied())
+        .chain(MCP_ENV_UNIX.iter().copied())
+}
+
+/// Nomes que um filho MCP pode herdar do gateway, na plataforma corrente.
 pub fn mcp_child_env_keys() -> impl Iterator<Item = &'static str> {
     MCP_ENV_BASE
         .iter()
@@ -433,24 +475,46 @@ pub fn mcp_child_env_keys() -> impl Iterator<Item = &'static str> {
         .chain(MCP_ENV_PLATFORM.iter().copied())
 }
 
-/// Comparação de chave de ambiente com a semântica do sistema: o bloco de
-/// ambiente do Windows é case-insensitive (`Path` == `PATH`), o do Unix não.
-/// Usar `eq_ignore_ascii_case` no Unix deixaria passar uma variável que
-/// difere só na caixa — exatamente o tipo de brecha que esta lista fecha.
+/// Semântica de comparação do bloco de ambiente do **Windows**:
+/// case-insensitive, porque lá `Path` e `PATH` são a mesma variável.
+///
+/// Compilada em TODA plataforma, pelo mesmo motivo das listas acima: um
+/// `#[cfg(windows)]` só é verificado por um job que compile para Windows, e
+/// nenhum job do CI compila este crate para Windows com os testes ligados
+/// (o job `test (windows-latest)` roda `--no-run` sem `--features mcp`, e um
+/// cross-check para `x86_64-pc-windows-msvc` não passa do build script do
+/// `ring` num runner Linux). Sempre compilada, ela é testável no runner
+/// Linux como qualquer outra função.
+pub fn env_key_eq_windows(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// Semântica de comparação do bloco de ambiente do **Unix**: exata.
+///
+/// Usar `eq_ignore_ascii_case` aqui deixaria passar uma variável que difere
+/// só na caixa — exatamente o tipo de brecha que a allowlist fecha.
+/// Compilada em toda plataforma; ver [`env_key_eq_windows`].
+pub fn env_key_eq_exact(a: &str, b: &str) -> bool {
+    a == b
+}
+
+/// A comparação correta para a plataforma em que este binário foi compilado.
 ///
 /// Pública porque quem monta o ambiente do filho precisa da MESMA semântica
 /// para deduplicar: filtrar com `is_mcp_child_env_allowed` (case-insensitive
 /// no Windows) e depois deduplicar com `==` faria `Path` herdado e `PATH`
 /// declarado no `env` do servidor virarem duas entradas no mesmo bloco.
+///
+/// Só a SELEÇÃO é `cfg`; as duas semânticas acima existem sempre.
 #[cfg(windows)]
 pub fn env_key_eq(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
+    env_key_eq_windows(a, b)
 }
 
 /// Ver a variante Windows acima.
 #[cfg(not(windows))]
 pub fn env_key_eq(a: &str, b: &str) -> bool {
-    a == b
+    env_key_eq_exact(a, b)
 }
 
 /// `true` quando a variável pode ser repassada a um filho MCP.
@@ -1897,6 +1961,14 @@ mod tests {
     /// A allowlist MCP nunca pode ganhar uma chave que carregue segredo do
     /// gateway. Este teste e o gate: quem adicionar `ANTHROPIC_API_KEY` (ou
     /// qualquer nome com key/token/secret/password/passphrase) quebra aqui.
+    ///
+    /// Varre as TRES listas de plataforma, nao so a da plataforma em que
+    /// compila. Com `MCP_ENV_PLATFORM` atras de `cfg`, este gate so enxergava
+    /// a lista do alvo corrente — e o unico job de CI que EXECUTA testes e
+    /// Linux. Ou seja: `AZURE_CLIENT_SECRET` ou `NPM_TOKEN` colados na lista
+    /// do Windows passariam verdes para sempre, porque nenhum job jamais
+    /// compilou aquele ramo com os testes ligados. As listas agora sao
+    /// sempre compiladas e so a selecao e `cfg`.
     #[test]
     fn allowlist_mcp_nao_contem_nome_de_segredo() {
         const PROIBIDOS: &[&str] = &[
@@ -1908,7 +1980,7 @@ mod tests {
             "credential",
             "garraia_",
         ];
-        for chave in super::mcp_child_env_keys() {
+        for chave in super::mcp_child_env_keys_all_platforms() {
             let minuscula = chave.to_ascii_lowercase();
             for proibido in PROIBIDOS {
                 assert!(
@@ -1917,6 +1989,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `MCP_ENV_PLATFORM` tem que ser uma das tres listas, nunca uma quarta
+    /// lista escrita a mao — senao o gate acima volta a ter um ramo cego.
+    #[test]
+    fn a_lista_da_plataforma_e_uma_das_tres_varridas() {
+        let esperada: &[&str] = if cfg!(windows) {
+            super::MCP_ENV_WINDOWS
+        } else if cfg!(target_os = "android") {
+            super::MCP_ENV_ANDROID
+        } else {
+            super::MCP_ENV_UNIX
+        };
+        assert_eq!(super::MCP_ENV_PLATFORM, esperada);
     }
 
     /// A allowlist MCP e superset da R3: um servidor MCP precisa de tudo que
@@ -1940,6 +2026,21 @@ mod tests {
         assert!(!super::is_mcp_child_env_allowed("GarraIA_VAULT_PASSPHRASE"));
         assert!(!super::is_mcp_child_env_allowed("OPENROUTER_API_KEY"));
         assert!(!super::is_mcp_child_env_allowed("DATABASE_URL"));
+    }
+
+    /// As DUAS semanticas, verificadas em qualquer plataforma — inclusive a
+    /// do Windows no runner Linux, que e onde o CI executa testes.
+    #[test]
+    fn as_duas_semanticas_de_comparacao_valem_sempre() {
+        // Windows: `Path`, `PATH` e `path` sao a mesma variavel.
+        assert!(super::env_key_eq_windows("Path", "PATH"));
+        assert!(super::env_key_eq_windows("path", "PATH"));
+        assert!(!super::env_key_eq_windows("PATHEXT", "PATH"));
+
+        // Unix: caixa importa.
+        assert!(super::env_key_eq_exact("PATH", "PATH"));
+        assert!(!super::env_key_eq_exact("Path", "PATH"));
+        assert!(!super::env_key_eq_exact("path", "PATH"));
     }
 
     /// No Unix a comparacao e exata: `path` minusculo nao e `PATH`. No

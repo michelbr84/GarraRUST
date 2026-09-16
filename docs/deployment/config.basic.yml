@@ -110,7 +110,7 @@ timeouts:
 # config.yml. Elas só funcionam para servidores gerenciados via mcp.json +
 # admin API, que passam pelo McpPersistenceService. No config.yml o valor é
 # usado literalmente, então um "vault:..." aqui chega ao filho como a string
-# "vault:...".
+# "vault:...". Issue #1237.
 
 # GAR-261: Configuração de glob e ignore para ferramentas de busca de arquivos
 fs:

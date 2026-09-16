@@ -42,7 +42,7 @@
   `vault:<chave>` sao resolvidas apenas no caminho `mcp.json` + admin API
   (`McpPersistenceService::load_registry`). No boot do `config.yml`
   (`ConfigLoader::merged_mcp_config`) o valor e copiado como esta, entao um
-  `vault:...` escrito ali chega ao filho como a string literal.
+  `vault:...` escrito ali chega ao filho como a string literal. Issue #1237.
   A lacuna era de teste tanto quanto de codigo: o fixture de MCP agora expoe,
   atras da flag `--expose-env`, uma tool que relata o ambiente que o filho de
   fato recebeu, e os testes plantam uma variavel no processo de teste e afirmam

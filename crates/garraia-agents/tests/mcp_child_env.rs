@@ -38,7 +38,8 @@ const EXPLICITA: &str = "GARRAIA_TEST_EXPLICIT";
 /// ambiente do filho: uma corrida real na glibc.
 ///
 /// Se um teste novo for adicionado a este arquivo, ele PRECISA rodar dentro
-/// do mesmo `#[tokio::test]`, ou a corrida volta.
+/// do mesmo `#[tokio::test]` — e `este_binario_tem_um_unico_teste_async`
+/// abaixo faz disso um gate, não um pedido.
 fn plantar_segredo() {
     unsafe { std::env::set_var(PLANTADA, "hunter2") };
 }
@@ -165,4 +166,39 @@ async fn ambiente_do_filho_por_politica() {
     tokio::time::timeout(Duration::from_secs(90), body)
         .await
         .expect("test must not hang");
+}
+
+/// Prende mecanicamente a garantia que o `plantar_segredo` acima depende.
+///
+/// O comentário SAFETY daquele `set_var` diz que a escrita é segura porque
+/// este binário tem um único teste assíncrono e o plantio acontece antes de
+/// qualquer spawn. Isso é uma propriedade do ARQUIVO, e um comentário não a
+/// defende: bastava alguém colar mais um teste async aqui para reintroduzir
+/// a corrida entre `set_var` e o `vars_os()` que cada spawn faz — silenciosa,
+/// intermitente, e num teste de segurança.
+///
+/// Mesmo idioma que `garraia-cli::spinner` e `garraia-desktop-core::detect`
+/// já usam: o teste varre o próprio fonte.
+///
+/// A agulha é montada por `concat!` para que a string literal não apareça no
+/// arquivo e o gate não conte a si mesmo; a comparação é por início de linha
+/// para não contar as menções em comentário de doc. Este teste é `#[test]`
+/// síncrono e só lê uma `&str` de `include_str!` — não toca no ambiente, então
+/// rodar em paralelo com o teste async não reabre a corrida.
+#[test]
+fn este_binario_tem_um_unico_teste_async() {
+    let agulha = concat!("#[tokio", "::test]");
+    let encontrados = include_str!("mcp_child_env.rs")
+        .lines()
+        .filter(|linha| linha.trim_start().starts_with(agulha))
+        .count();
+
+    assert_eq!(
+        encontrados, 1,
+        "este arquivo precisa ter exatamente UM teste assincrono: `plantar_segredo` \
+         escreve no bloco de ambiente do processo e cada spawn le o `environ` inteiro \
+         via `vars_os()`, entao dois testes async rodam em paralelo e a escrita vira \
+         data race (UB na glibc). Coloque o cenario novo dentro de \
+         `ambiente_do_filho_por_politica`, em sequencia."
+    );
 }

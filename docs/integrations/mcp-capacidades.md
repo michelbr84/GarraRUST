@@ -69,6 +69,7 @@ mcp:
 > literalmente, como a string `"vault:mcp.foo.BAR"` — não como o segredo.
 > Para um servidor declarado no `config.yml`, use o valor literal; para
 > guardar o segredo no cofre, declare o servidor via `mcp.json`/admin API.
+> Fechar essa assimetria e a issue #1237.
 
 `inherit_env` só existe no `config.yml`/`mcp.json`. Servidores criados **ou
 reiniciados** pela admin API conectam sempre isolados, mesmo que o

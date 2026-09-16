@@ -191,6 +191,11 @@ pub async fn admin_restart_mcp(
         server = %server_name,
         admin = %admin.username,
         transport = ?transport,
+        // #1075: um restart pela admin API reconecta sempre isolado, mesmo
+        // que o `config.yml` peca `inherit_env: true` — o registro nao
+        // carrega o campo. Registrar isso aqui e o que torna a divergencia
+        // diagnosticavel a partir do log, sem plumbing novo.
+        env_isolation = "forced",
         "admin: restarting MCP server"
     );
 
