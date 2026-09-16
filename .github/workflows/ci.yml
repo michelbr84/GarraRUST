@@ -439,6 +439,28 @@ jobs:
           cargo test -p garraia-hardware --features skills
           echo "::endgroup::"
 
+      # `storage-s3` estava fora da matriz de features (#1214): o modulo
+      # s3_compat.rs INTEIRO e `#[cfg(feature = "storage-s3")]`, entao
+      # nenhum job compilava o backend S3 de producao — clippy com a
+      # feature ligada chegou a falhar sem ninguem ver. Step proprio, e nao
+      # mais um bloco no step dos canais, pelo que o step abaixo explica
+      # sobre o alcance real deste gate.
+      - name: Run clippy + tests (storage-s3)
+        # ATENCAO ao ler um verde daqui: este step cobre COMPILACAO, clippy e
+        # os testes unitarios do backend S3 — nao a suite de integracao.
+        # Os 8 testes de tests/s3_integration.rs se auto-pulam, porque a
+        # imagem que testcontainers-modules 0.15 fixa (minio/minio) foi
+        # REMOVIDA do Docker Hub: o registry responde "object not found" para
+        # o repositorio inteiro, e o pull morre com "pull access denied".
+        # Enquanto isso valer, nenhum ambiente consegue subir esse container.
+        # Issue #1230 trata de apontar para um registry que ainda sirva a
+        # imagem; so entao faz sentido exigir Docker aqui (a variavel
+        # GARRAIA_REQUIRE_DOCKER, que o proprio teste ja honra, transforma o
+        # skip em falha). `--nocapture` deixa o motivo do skip visivel no log.
+        run: |
+          cargo clippy -p garraia-storage --features storage-s3 --all-targets -- -D warnings
+          cargo test -p garraia-storage --features storage-s3 -- --nocapture
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,
