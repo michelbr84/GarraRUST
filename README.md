@@ -370,7 +370,9 @@ fallback on 429/5xx with exponential backoff and a circuit breaker.
 
 Wired end-to-end today: **Telegram** (streaming, MarkdownV2, bot
 commands, pairing), **Discord** (slash commands, sessions), **Slack**
-(Socket Mode), **WhatsApp** (Meta Cloud API webhooks), **iMessage**
+(Socket Mode), **WhatsApp** (Meta Cloud API webhooks; personal WhatsApp
+by linked device is planned for v0.4.3 —
+[ADR 0023](docs/adr/0023-whatsapp-dispositivo-vinculado.md)), **iMessage**
 (macOS, chat.db polling + AppleScript). Also: web chat console, an
 **OpenAI-compatible API** (`/v1/chat/completions`) for VS Code
 (Continue et al.) sharing the same session history, and an
