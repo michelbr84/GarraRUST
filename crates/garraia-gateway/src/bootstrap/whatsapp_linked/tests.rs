@@ -584,3 +584,337 @@ fn chamadas_de_log(fonte: &str) -> Vec<String> {
     }
     saida
 }
+
+// ---------------------------------------------------------------------------
+// Ponta a ponta contra a ponte falsa
+// ---------------------------------------------------------------------------
+
+/// `#[cfg(unix)]` pelo mesmo motivo da suite de `garraia-channels`: a fixture e
+/// um script Python e o `pre_exec` (PDEATHSIG) do spawn e premissa de Unix.
+#[cfg(unix)]
+mod ponta_a_ponta {
+    use super::*;
+    use garraia_agents::AgentRuntime;
+    use garraia_agents::providers::{
+        ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse,
+    };
+    use garraia_channels::ChannelRegistry;
+    use garraia_channels::whatsapp_linked::bridge::{BridgeError, BridgeLauncher};
+    use garraia_channels::whatsapp_linked::{SessionBlob, runner::serve};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Identidade do remetente na fixture (`PEER_JID`), ja normalizada.
+    const PEER: &str = "5511888880000";
+    const PEER_JID: &str = "5511888880000@s.whatsapp.net";
+
+    /// Provider deterministico: devolve `resposta: <ultimo texto do usuario>`.
+    ///
+    /// Proprio, e nao o `EchoProvider` da crate: aquele esta atras da feature
+    /// `dev-echo-provider`, que o `cargo test --workspace` do CI **nao** liga —
+    /// um teste que so roda com feature extra e um teste que ninguem roda.
+    #[derive(Debug)]
+    struct ProviderDeStub;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ProviderDeStub {
+        fn provider_id(&self) -> &str {
+            "stub"
+        }
+        fn configured_model(&self) -> Option<&str> {
+            Some("stub-1")
+        }
+        async fn complete(&self, request: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+            let ultimo = request
+                .messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, ChatRole::User))
+                .map(|m| format!("{:?}", m.content))
+                .unwrap_or_default();
+            Ok(LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: format!("resposta({})", ultimo.len()),
+                }],
+                model: "stub-1".to_string(),
+                usage: None,
+                stop_reason: Some("end_turn".to_string()),
+            })
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    struct FixtureLauncher {
+        dir: PathBuf,
+    }
+
+    impl BridgeLauncher for FixtureLauncher {
+        fn command(&self) -> Result<tokio::process::Command, BridgeError> {
+            let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("crates/")
+                .join("garraia-channels/tests/fixtures/fake_whatsapp_bridge.py");
+            let mut cmd = tokio::process::Command::new("python3");
+            cmd.arg(script)
+                .arg("--scenario")
+                .arg("serve-echo")
+                .arg("--qr-expires")
+                .arg("0.2")
+                .arg("--handshake-timeout")
+                .arg("5");
+            Ok(cmd)
+        }
+        fn describe(&self) -> String {
+            "python3 fake_whatsapp_bridge.py --scenario serve-echo".to_string()
+        }
+        fn dir(&self) -> PathBuf {
+            self.dir.clone()
+        }
+    }
+
+    /// Sink que grava tudo o que chegou, por cima do de producao.
+    struct SinkEspiao {
+        interno: GatewaySink,
+        recebidas: Mutex<Vec<InboundMessage>>,
+    }
+
+    impl InboundSink for SinkEspiao {
+        fn deliver(&self, message: InboundMessage) {
+            if let Ok(mut v) = self.recebidas.lock() {
+                v.push(message.clone());
+            }
+            self.interno.deliver(message);
+        }
+        fn on_connection(&self, jid: Option<&Jid>, connected: bool) {
+            self.interno.on_connection(jid, connected);
+        }
+    }
+
+    struct Cenario {
+        _dir: tempfile::TempDir,
+        state: SharedState,
+        espiao: Arc<SinkEspiao>,
+        outbound: mpsc::Sender<BridgeCommand>,
+        cancel: watch::Sender<bool>,
+        tarefa: tokio::task::JoinHandle<Result<(), RunError>>,
+    }
+
+    /// Sobe o canal inteiro contra a fixture. `liberado` decide se o remetente
+    /// da fixture esta na allowlist.
+    async fn sobe(liberado: bool) -> Cenario {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let mut config = AppConfig::default();
+        config.data_dir = Some(dir.path().to_path_buf());
+
+        let agents = AgentRuntime::new();
+        agents.register_provider(Arc::new(ProviderDeStub));
+        let state: SharedState = Arc::new(crate::state::AppState::new(
+            config,
+            Arc::new(agents),
+            ChannelRegistry::new(),
+        ));
+
+        // A allowlist de producao grava em disco; aqui trocamos o conteudo da
+        // instancia compartilhada sem tocar no arquivo do usuario — e sem
+        // depender do que houver nele, que mudaria o resultado do teste de
+        // maquina para maquina.
+        //
+        // O caso "nao liberado" usa `Allowlist::open()` **de proposito**: e o
+        // modo em que `is_allowed` devolve `true` para qualquer um. Assim o
+        // teste de recusa fica vermelho se alguem trocar
+        // `esta_explicitamente_liberado` por `is_allowed`.
+        if let Ok(mut list) = state.allowlist.lock() {
+            *list = if liberado {
+                Allowlist::restricted(vec![PEER.to_string()])
+            } else {
+                Allowlist::open()
+            };
+        }
+
+        let paths = LinkedPaths::from_config(&state.config);
+        let key = SessionKey::resolve(paths.store.dir(), None).expect("chave");
+        paths
+            .store
+            .save(&SessionBlob::new("eyJhIjoxfQ=="), &key)
+            .expect("grava sessao");
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(16);
+        let espiao = Arc::new(SinkEspiao {
+            interno: GatewaySink::new(
+                Arc::clone(&state),
+                Arc::clone(&state.whatsapp_linked),
+                LinkedSettings {
+                    enabled: true,
+                    ..LinkedSettings::default()
+                },
+                outbound_tx.clone(),
+            ),
+            recebidas: Mutex::new(Vec::new()),
+        });
+        let sink: Arc<dyn InboundSink> = Arc::clone(&espiao) as Arc<dyn InboundSink>;
+        let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher {
+            dir: paths.bridge_dir.clone(),
+        });
+
+        let (cancel, cancel_rx) = watch::channel(false);
+        let store = paths.store.clone();
+        let tarefa = tokio::spawn(async move {
+            serve(
+                launcher,
+                store,
+                key,
+                sink,
+                outbound_rx,
+                cancel_rx,
+                || 0.0,
+            )
+            .await
+        });
+
+        Cenario {
+            _dir: dir,
+            state,
+            espiao,
+            outbound: outbound_tx,
+            cancel,
+            tarefa,
+        }
+    }
+
+    /// Espera ate `cond` valer, ou desiste. Sem `sleep` cego: a fixture roda em
+    /// milissegundos e o teto so existe para nao travar o CI.
+    async fn ate<F: Fn() -> bool>(cond: F) -> bool {
+        for _ in 0..200 {
+            if cond() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    fn recebidas(c: &Cenario) -> Vec<InboundMessage> {
+        c.espiao.recebidas.lock().expect("lock").clone()
+    }
+
+    /// **A prova de que a fatia D funciona.**
+    ///
+    /// A fixture ecoa todo `send` de volta como `message`. Semeamos um `send`,
+    /// o eco vira mensagem recebida, o canal a gateia, roda o turno e responde
+    /// pelo `outbound` — e a fixture ecoa a resposta, o que so acontece se a
+    /// resposta de fato saiu pela ponte. Duas mensagens recebidas = o circuito
+    /// inteiro fechou.
+    #[tokio::test]
+    async fn a_mensagem_recebida_vira_turno_e_a_resposta_volta_pela_ponte() {
+        let c = sobe(true).await;
+
+        c.outbound
+            .send(BridgeCommand::Send {
+                request_id: "semente".into(),
+                chat_jid: Jid::new(PEER_JID),
+                text: "oi".into(),
+            })
+            .await
+            .expect("semear");
+
+        assert!(
+            ate(|| recebidas(&c).len() >= 2).await,
+            "esperava o eco da semente E o eco da resposta do agente; veio {:?}",
+            recebidas(&c)
+        );
+
+        let msgs = recebidas(&c);
+        assert_eq!(
+            msgs[0].text.as_deref(),
+            Some("echo: oi"),
+            "a semente volta como mensagem recebida"
+        );
+        let resposta = msgs[1].text.clone().unwrap_or_default();
+        assert!(
+            resposta.starts_with("echo: resposta("),
+            "a segunda mensagem e o eco da resposta do agente, provando que ela saiu pela ponte: {resposta}"
+        );
+
+        // A sessao foi hidratada e o turno persistido sob a chave certa.
+        assert!(
+            c.state
+                .sessions
+                .contains_key(&format!("whatsapp-linked-{PEER_JID}")),
+            "o turno tem de rodar sob a sessao deste canal"
+        );
+
+        c.cancel.send(true).expect("cancelar");
+        let _ = c.tarefa.await;
+    }
+
+    /// O mesmo circuito com o remetente **fora** da allowlist: a mensagem
+    /// chega, e nada mais acontece. Sem resposta, sem sessao, sem turno.
+    ///
+    /// Este e o teste que fica vermelho se alguem trocar
+    /// `esta_explicitamente_liberado` por `is_allowed` ou reintroduzir o
+    /// auto-claim de dono do canal Cloud.
+    #[tokio::test]
+    async fn remetente_fora_da_allowlist_nao_recebe_resposta() {
+        let c = sobe(false).await;
+
+        c.outbound
+            .send(BridgeCommand::Send {
+                request_id: "semente".into(),
+                chat_jid: Jid::new(PEER_JID),
+                text: "oi".into(),
+            })
+            .await
+            .expect("semear");
+
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "o eco da semente precisa chegar para o teste ter o que provar"
+        );
+        // Se houvesse resposta, a fixture a ecoaria e viria uma segunda.
+        assert!(
+            !ate(|| recebidas(&c).len() >= 2).await,
+            "remetente fora da allowlist nao pode gerar resposta: {:?}",
+            recebidas(&c)
+        );
+        assert!(
+            !c.state
+                .sessions
+                .contains_key(&format!("whatsapp-linked-{PEER_JID}")),
+            "nenhuma sessao pode nascer de um remetente recusado"
+        );
+        assert!(
+            c.state
+                .allowlist
+                .lock()
+                .expect("lock")
+                .owner()
+                .is_none(),
+            "nenhum estranho pode virar dono por mandar a primeira mensagem"
+        );
+
+        c.cancel.send(true).expect("cancelar");
+        let _ = c.tarefa.await;
+    }
+
+    /// O supervisor reporta conexao real — e e dai que o `/api/channels` e o
+    /// `/api/diagnostics` tiram o status, e nao da maquina de estados (que o
+    /// `serve` nao usa).
+    #[tokio::test]
+    async fn o_supervisor_reporta_a_conexao_no_runtime() {
+        let c = sobe(true).await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte conectou e o runtime tem de saber"
+        );
+
+        c.cancel.send(true).expect("cancelar");
+        let _ = c.tarefa.await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Down).await,
+            "ao encerrar, o runtime volta para desconectado"
+        );
+    }
+}

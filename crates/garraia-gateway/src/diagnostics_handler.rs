@@ -794,6 +794,39 @@ mod tests {
         }
     }
 
+    /// **A fiacao.** Os testes acima exercitam `whatsapp_linked_check`
+    /// diretamente; sem este, apagar o `checks.push(...)` do handler deixaria
+    /// todos eles verdes e o `/api/diagnostics` sem a linha — o padrao de
+    /// defeito que este repositorio ja viu cinco vezes.
+    #[tokio::test]
+    async fn o_relatorio_de_verdade_inclui_a_linha_do_whatsapp() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = garraia_config::AppConfig::default();
+        config.data_dir = Some(dir.path().to_path_buf());
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
+            config,
+            std::sync::Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "whatsapp.linked")
+            .expect("o relatorio precisa carregar a linha `whatsapp.linked`");
+
+        assert!(
+            matches!(linha.status, CheckStatus::Skipped),
+            "sem sessao a linha e `skipped`: {:?}",
+            linha.status
+        );
+        assert_eq!(linha.next_step.as_deref(), Some("rode `garra whatsapp link`"));
+    }
+
     /// O relatorio e auth-free: nada do material de sessao pode vazar para ele.
     #[test]
     fn a_linha_do_whatsapp_nao_carrega_material_de_sessao() {

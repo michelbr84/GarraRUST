@@ -1669,6 +1669,41 @@ mod tests {
         }
     }
 
+    /// Fiacao do canal `whatsapp_linked` (#1238, fatia D).
+    ///
+    /// `Server::run` nao e chamavel de um teste unitario (abre socket, monta
+    /// admin store, entra no `serve`), entao esta e a forma honesta de pinar a
+    /// chamada: varre o proprio fonte. E fraco de proposito, e esta escrito
+    /// aqui que e fraco — mas e a diferenca entre "o supervisor nunca sobe" ser
+    /// pego pelo CI e ser pego pelo usuario. E a licao do comando que se
+    /// chamava `whats-app` com 599 testes verdes: toda funcao bem testada
+    /// precisa de alguem provando que ela e CHAMADA.
+    #[test]
+    fn o_boot_chama_o_supervisor_do_whatsapp_vinculado() {
+        let fonte = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs"),
+        )
+        .expect("fonte legivel");
+        // So o codigo de producao: o proprio corpo deste teste cita o nome da
+        // funcao, e sem este corte ele casaria consigo mesmo — que e como um
+        // teste de fiacao vira decoracao. (Verificado por mutacao: com o corte,
+        // apagar a chamada do boot deixa este teste vermelho.)
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes.to_string())
+            .unwrap_or_else(|| fonte.clone());
+        let codigo: String = producao
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            codigo.contains("spawn_whatsapp_linked(&state)"),
+            "o boot precisa chamar `spawn_whatsapp_linked`; sem isso o canal \
+             nunca sobe e nenhum outro teste percebe"
+        );
+    }
+
     /// O comportamento que a #928 pedia sem saber: uma falha transitória de
     /// boot não pode mais custar o canal — o retry de fundo acaba
     /// registrando-o no `ChannelRegistry`, de onde `send_message` o alcança.
