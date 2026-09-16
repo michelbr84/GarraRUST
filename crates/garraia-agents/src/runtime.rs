@@ -799,7 +799,12 @@ impl AgentRuntime {
             .collect()
     }
 
-    fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+    /// A tool registrada com este nome, se houver.
+    ///
+    /// Publica desde a #1244: um teste precisa alcancar a tool **como o
+    /// runtime a registrou** — e o ponto de chamada de producao, nao o
+    /// construtor, que este repositorio ja errou cinco vezes.
+    pub fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .read()
             .unwrap()

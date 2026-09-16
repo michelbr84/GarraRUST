@@ -4,7 +4,7 @@ use garraia_agents::tools::Tool;
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, CodeReviewTool, CohereEmbeddingProvider,
     DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, EmbeddingProvider,
-    FileReadTool, FileWriteTool, ListDirTool, LlamaCppProvider, McpManager, NoisePolicy,
+    FileJail, FileReadTool, FileWriteTool, ListDirTool, LlamaCppProvider, McpManager, NoisePolicy,
     OllamaEmbeddingProvider, OllamaProvider, OpenAiEmbeddingProvider, OpenAiProvider,
     RepoSearchTool, ResilientEmbeddingProvider, RunTestsTool, WebFetchTool, WebSearchTool,
 };
@@ -682,8 +682,24 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     }
     .with_allowlist(config.agent.bash_allowlist.clone());
     runtime.register_tool(Box::new(bash_tool));
-    runtime.register_tool(Box::new(FileReadTool::new(None)));
-    runtime.register_tool(Box::new(FileWriteTool::new(None)));
+    // #1244: as file tools do gateway recebem um jail obrigatorio. As raizes
+    // sao `agent.file_roots` (vazio por padrao) mais o `working_dir` da
+    // sessao, resolvido por chamada. Sem nenhuma das duas, elas negam tudo —
+    // e um gateway na porta 3888 atende pedido que veio do Telegram.
+    let file_jail = FileJail::from_config_roots(&config.agent.file_roots);
+    if file_jail.has_no_configured_roots() {
+        info!(
+            "file tools confinadas ao working_dir da sessao \
+             (agent.file_roots vazio); sessao sem working_dir nao le nem escreve"
+        );
+    } else {
+        info!(
+            "file tools confinadas a {} raiz(es) de agent.file_roots + working_dir da sessao",
+            file_jail.roots().len()
+        );
+    }
+    runtime.register_tool(Box::new(FileReadTool::new(file_jail.clone())));
+    runtime.register_tool(Box::new(FileWriteTool::new(file_jail.clone())));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
 
     // #1033 / #1035: estas tres existiam, com schema e testes verdes, e nunca
@@ -691,7 +707,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // proprios modulos de teste. As whitelists dos modos (`search`, `debug`,
     // `review`) ja anunciavam `list_dir` e `repo_search`; o modelo via a
     // promessa na policy e nao recebia a ferramenta.
-    runtime.register_tool(Box::new(ListDirTool::new(None)));
+    runtime.register_tool(Box::new(ListDirTool::new(file_jail, None)));
     runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
     // `run_tests` executa o que o projeto mandar (`npm test` roda o script do
     // package.json), entao respeita a mesma chave de confirmacao do bash.
@@ -1752,6 +1768,174 @@ pub(crate) fn select_web_search_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── issue #1244: o jail chega ao ponto de registro ────────────────────
+    //
+    // Este repositorio ja errou cinco vezes o mesmo defeito: funcao pura bem
+    // testada cujo *ponto de chamada em producao* nenhum teste exercita. O
+    // proprio #1244 e uma instancia — `FileReadTool` aceitava
+    // `allowed_directories`, tinha teste para ele, e os dois registros em
+    // producao passavam `None`.
+    //
+    // Por isso estes testes NAO chamam `FileJail` nem `FileReadTool::new`:
+    // eles pedem a tool ao runtime que `build_agent_runtime` montou, que e o
+    // mesmo objeto que o turno do agente usa. Apagar o jail de
+    // `build_agent_runtime` deixa este teste vermelho.
+
+    fn ctx_de_sessao(working_dir: Option<&str>) -> garraia_agents::ToolContext {
+        garraia_agents::ToolContext {
+            session_id: "teste-1244".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: garraia_agents::tools::approval::ToolApproval::None,
+            working_dir: working_dir.map(str::to_string),
+            project_id: None,
+        }
+    }
+
+    /// Um prompt que chegou pelo Telegram pede um caminho absoluto de
+    /// sistema. O runtime do gateway, montado com a config default, recusa.
+    #[tokio::test]
+    async fn file_read_do_runtime_recusa_caminho_fora_da_raiz() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fora = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        let segredo = fora.join("config.yml");
+        std::fs::write(&segredo, b"api_key: sk-em-claro").expect("write");
+
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let tool = runtime
+            .find_tool("file_read")
+            .expect("file_read tem de estar registrada");
+
+        let erro = tool
+            .execute(
+                &ctx_de_sessao(None),
+                serde_json::json!({ "path": segredo.to_str().expect("utf8") }),
+            )
+            .await
+            .expect_err("caminho fora da raiz deve ser recusado");
+
+        let msg = erro.to_string();
+        assert!(
+            msg.ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
+            "{msg}"
+        );
+        assert!(
+            !msg.contains("config.yml"),
+            "a recusa vazou o caminho: {msg}"
+        );
+        assert!(!msg.contains("sk-em-claro"), "{msg}");
+    }
+
+    /// E o caso legitimo segue intocado: com `working_dir` de sessao, ler
+    /// dentro dele funciona sem friccao.
+    #[tokio::test]
+    async fn file_read_do_runtime_le_dentro_do_working_dir_da_sessao() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let raiz = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        std::fs::write(raiz.join("notas.md"), b"conteudo do projeto").expect("write");
+
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let tool = runtime
+            .find_tool("file_read")
+            .expect("file_read tem de estar registrada");
+
+        let out = tool
+            .execute(
+                &ctx_de_sessao(Some(raiz.to_str().expect("utf8"))),
+                serde_json::json!({ "path": "notas.md" }),
+            )
+            .await
+            .expect("dentro da raiz da sessao deve ler");
+
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "conteudo do projeto");
+    }
+
+    /// O mesmo para a escrita: nada e criado fora da raiz.
+    #[tokio::test]
+    async fn file_write_do_runtime_nao_escreve_fora_da_raiz() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fora = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        let alvo = fora.join("plantado.sh");
+
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let tool = runtime
+            .find_tool("file_write")
+            .expect("file_write tem de estar registrada");
+
+        let erro = tool
+            .execute(
+                &ctx_de_sessao(None),
+                serde_json::json!({ "path": alvo.to_str().expect("utf8"), "content": "carga" }),
+            )
+            .await
+            .expect_err("escrita fora da raiz deve ser recusada");
+
+        assert!(
+            erro.to_string()
+                .ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
+            "{erro}"
+        );
+        assert!(!alvo.exists(), "o arquivo foi criado fora da raiz");
+    }
+
+    /// `list_dir` tambem: e com ela que o modelo encontra o alvo antes de
+    /// pedir o `file_read`.
+    #[tokio::test]
+    async fn list_dir_do_runtime_nao_lista_fora_da_raiz() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let fora = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        std::fs::write(fora.join("id_rsa"), b"PRIVATE KEY").expect("write");
+
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let tool = runtime
+            .find_tool("list_dir")
+            .expect("list_dir tem de estar registrada");
+
+        let out = tool
+            .execute(
+                &ctx_de_sessao(None),
+                serde_json::json!({ "path": fora.to_str().expect("utf8") }),
+            )
+            .await
+            .expect("tool nao deve estourar");
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("id_rsa"), "{}", out.content);
+    }
+
+    /// Symlink dentro da raiz apontando para fora, pelo runtime de producao.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_read_do_runtime_recusa_symlink_que_sai_da_raiz() {
+        let raiz_tmp = tempfile::tempdir().expect("tempdir");
+        let raiz = std::fs::canonicalize(raiz_tmp.path()).expect("canonicalize");
+        let fora_tmp = tempfile::tempdir().expect("tempdir");
+        let fora = std::fs::canonicalize(fora_tmp.path()).expect("canonicalize");
+        std::fs::write(fora.join("id_rsa"), b"PRIVATE KEY").expect("write");
+        std::os::unix::fs::symlink(&fora, raiz.join("atalho")).expect("symlink");
+
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let tool = runtime
+            .find_tool("file_read")
+            .expect("file_read tem de estar registrada");
+
+        let erro = tool
+            .execute(
+                &ctx_de_sessao(Some(raiz.to_str().expect("utf8"))),
+                serde_json::json!({ "path": "atalho/id_rsa" }),
+            )
+            .await
+            .expect_err("symlink para fora deve ser recusado");
+
+        assert!(!erro.to_string().contains("PRIVATE KEY"), "{erro}");
+        assert!(
+            erro.to_string()
+                .ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
+            "{erro}"
+        );
+    }
 
     /// #1034: a regra de escolha do backend de busca, sem subir gateway.
     #[test]

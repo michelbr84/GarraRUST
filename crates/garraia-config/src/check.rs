@@ -731,6 +731,72 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         }
     }
 
+    // #1244: agent.file_roots amplia o que as file tools do agente alcancam.
+    // Uma raiz `/` ou o proprio `$HOME` devolve `~/.ssh`, `.env` e o
+    // `config.yml` do gateway ao alcance de um prompt vindo de um canal — que
+    // e exatamente o jail sendo desligado por configuracao.
+    findings.extend(validate_file_roots(
+        &config.agent.file_roots,
+        home_dir_for_check(),
+    ));
+
+    findings
+}
+
+/// O `$HOME` do processo, para [`validate_file_roots`]. Separado para o teste
+/// poder passar um home falso sem mexer no ambiente do processo.
+fn home_dir_for_check() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Nucleo puro do aviso de `agent.file_roots` (#1244).
+///
+/// Avisa — nao e erro: um operador pode ter motivo para abrir o home inteiro,
+/// e `config check` nao e quem decide isso. Mas ele tem de dizer em voz alta,
+/// porque a diferenca entre "o agente le o projeto" e "o agente le a chave
+/// SSH" e uma linha de YAML.
+fn validate_file_roots(roots: &[String], home: Option<PathBuf>) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for raw in roots {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: "agent.file_roots".to_owned(),
+                message: "agent.file_roots contains an empty entry; it is ignored".to_string(),
+            });
+            continue;
+        }
+        let path = std::path::Path::new(trimmed);
+        if path.parent().is_none() {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: "agent.file_roots".to_owned(),
+                message: format!(
+                    "agent.file_roots includes the filesystem root `{trimmed}` — this turns the \
+                     file-tool jail off: the agent can read /etc, ~/.ssh and the gateway's own \
+                     config. Point it at the project directory instead (issue #1244)."
+                ),
+            });
+            continue;
+        }
+        if let Some(home) = home.as_deref()
+            && path == home
+        {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: "agent.file_roots".to_owned(),
+                message: format!(
+                    "agent.file_roots includes $HOME (`{trimmed}`) — that puts ~/.ssh, ~/.aws and \
+                     any .env under it within reach of a prompt arriving from a channel. Prefer a \
+                     project subdirectory (issue #1244)."
+                ),
+            });
+        }
+    }
     findings
 }
 

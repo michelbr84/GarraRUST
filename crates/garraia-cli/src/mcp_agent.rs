@@ -38,8 +38,8 @@ use std::time::{Duration, Instant};
 use garraia_agents::exec_context::ExecContext;
 use garraia_agents::tools::git_diff_tool::GitDiffTool;
 use garraia_agents::{
-    AgentRuntime, BashTool, ChatMessage, FileReadTool, FileWriteTool, TurnEvent, WebFetchTool,
-    WebSearchTool,
+    AgentRuntime, BashTool, ChatMessage, FileJail, FileReadTool, FileWriteTool, TurnEvent,
+    WebFetchTool, WebSearchTool,
 };
 use garraia_config::AppConfig;
 use rmcp::model::Tool;
@@ -321,30 +321,28 @@ pub(crate) fn validate_agent_args(args: &GarraAgentArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Directories the file tools may touch, from the operator's
-/// `GARRAIA_MCP_ALLOWED_DIRS` (comma-separated); falls back to the
-/// server process CWD. Fail-open to `None` (whole filesystem) when the
-/// CWD cannot be read — unrestricted `bash` is the real boundary
-/// anyway (documented: `allowed_dirs` is a UX belt, not a boundary).
-fn allowed_dirs() -> Option<Vec<std::path::PathBuf>> {
+/// O jail das file tools deste servidor MCP, a partir do
+/// `GARRAIA_MCP_ALLOWED_DIRS` do operador (separado por virgula); sem ele, o
+/// CWD do processo servidor mais `agent.file_roots`.
+///
+/// #1244 mudou o fail-open que estava documentado aqui: quando nada resolve, o
+/// jail fica **vazio e nega tudo**, em vez de virar `None` = sistema de
+/// arquivos inteiro. A justificativa antiga ("o `bash` irrestrito e a fronteira
+/// de verdade") explicava por que o cinto era frouxo, nao por que ele podia
+/// sumir — e a #1244 e sobre um modelo que le `~/.ssh/id_rsa` sem passar pelo
+/// `bash`.
+fn file_jail(config: &AppConfig) -> FileJail {
     if let Ok(raw) = std::env::var("GARRAIA_MCP_ALLOWED_DIRS") {
-        let dirs: Vec<std::path::PathBuf> = raw
+        let dirs: Vec<&str> = raw
             .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(std::path::PathBuf::from)
             .collect();
         if !dirs.is_empty() {
-            return Some(dirs);
+            return FileJail::from_roots(dirs);
         }
     }
-    match std::env::current_dir() {
-        Ok(cwd) => Some(vec![cwd]),
-        Err(e) => {
-            tracing::warn!("cannot resolve CWD for file tools allowed_dirs: {e}");
-            None
-        }
-    }
+    FileJail::from_config_roots_plus_cwd(&config.agent.file_roots)
 }
 
 /// Register the same tool set the gateway bootstrap wires
@@ -355,11 +353,11 @@ fn allowed_dirs() -> Option<Vec<std::path::PathBuf>> {
 /// `ListDirTool` is skipped on purpose: `bash ls` + the file tools
 /// cover it, and a tighter tool list helps weaker models route.
 fn build_tools(config: &AppConfig) -> Vec<Box<dyn garraia_agents::Tool>> {
-    let dirs = allowed_dirs();
+    let jail = file_jail(config);
     let mut tools: Vec<Box<dyn garraia_agents::Tool>> = vec![
         Box::new(BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone())),
-        Box::new(FileReadTool::new(dirs.clone())),
-        Box::new(FileWriteTool::new(dirs)),
+        Box::new(FileReadTool::new(jail.clone())),
+        Box::new(FileWriteTool::new(jail)),
         Box::new(WebFetchTool::new(None)),
         Box::new(GitDiffTool::new(None, None)),
     ];
