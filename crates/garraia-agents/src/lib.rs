@@ -48,8 +48,8 @@ pub use modes::{
     AgentMode, ModeContext, ModeEngine, ModeLimits, ModeLlmConfig, ModeProfile, ToolPolicy,
 };
 pub use multi_agent::{
-    AgentCoordinator, AgentHandle, AgentProgress, AgentResult, AgentStatus, MultiAgentSummary,
-    SubAgentConfig,
+    AgentCoordinator, AgentHandle, AgentProgress, AgentResult, AgentStatus, DbRunLedger,
+    MultiAgentSummary, NoopLedger, RunLedger, SubAgentConfig,
 };
 pub use ollama::{OllamaProvider, PullProgress, normalize_ollama_tag};
 pub use openai::OpenAiProvider;

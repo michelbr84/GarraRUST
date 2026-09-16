@@ -442,7 +442,9 @@ pub async fn send_message(
                 body.model.as_deref(),
                 ac.system_prompt.as_deref(),
                 ac.max_tokens,
-                &state.exec_context_for(&session_id, None).await,
+                &state
+                    .exec_context_for_msg(&session_id, None, Some(&body.content))
+                    .await,
             )
             .await
     } else if body.model.is_some() {
@@ -458,7 +460,9 @@ pub async fn send_message(
                 body.model.as_deref(),
                 None,
                 None,
-                &state.exec_context_for(&session_id, None).await,
+                &state
+                    .exec_context_for_msg(&session_id, None, Some(&body.content))
+                    .await,
             )
             .await
     } else {
@@ -479,7 +483,9 @@ pub async fn send_message(
                 None,
                 None,
                 None,
-                &state.exec_context_for(&session_id, None).await,
+                &state
+                    .exec_context_for_msg(&session_id, None, Some(&body.content))
+                    .await,
             )
             .await
     };

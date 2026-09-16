@@ -1,3 +1,4 @@
+pub mod agent_runs;
 pub mod chat_sync;
 pub mod db_trait;
 pub mod memory_store;
@@ -11,6 +12,7 @@ pub mod vector_store;
 #[cfg(feature = "postgres")]
 pub mod postgres_db;
 
+pub use agent_runs::{AgentRunRow, RunStatus};
 pub use chat_sync::{
     ChatSessionManager, ChatSource, SessionHints, SessionKeyStrategy, SessionResolverConfig,
 };

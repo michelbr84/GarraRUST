@@ -24,7 +24,7 @@ pub struct StoredMessage {
 
 /// Persistent storage for conversation sessions and message history.
 pub struct SessionStore {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 /// Mobile user row (GAR-334: Garra Cloud Alpha auth).
@@ -80,6 +80,9 @@ impl SessionStore {
     }
 
     fn run_migrations(&self) -> Result<()> {
+        // Ledger de runs de agentes (P1 gap analysis 2026-09-15): idempotente,
+        // parte das migrations para existir em qualquer store novo/antigo.
+        let _ = self.create_agent_runs_table();
         // Migration: add tenant_id column to pre-existing sessions tables.
         // Ignore error if the table doesn't exist yet or the column already exists.
         let _ = self.conn.execute_batch(

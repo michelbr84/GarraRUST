@@ -852,6 +852,66 @@ impl AppState {
     /// distinguivel — CLI, overlay, `POST /api/chat` — passa `None`, e a sessao
     /// e a pessoa.
     pub async fn exec_context_for(&self, session_id: &str, user_id: Option<&str>) -> ExecContext {
+        self.exec_context_for_msg(session_id, user_id, None).await
+    }
+
+    /// `exec_context_for` com auto-classify de modo (P1 do gap analysis
+    /// 2026-09-15 — o roteador LLM GAR-227 só valia no shim OpenAI).
+    ///
+    /// Quando: (1) a sessão **não tem modo escolhido**, (2)
+    /// `agent.auto_router_llm_enabled = true` e (3) há texto da mensagem —
+    /// roda o `auto_classify` (heurística primeiro, LLM depois) e persiste o
+    /// modo deduzido com `set_agent_mode_auto`: aparece no `/mode`, mas **não**
+    /// liga a ToolPolicy do #988 — deduzir não é consentir. Contrato idêntico
+    /// ao do shim OpenAI, agora em todos os pontos de entrada.
+    ///
+    /// `text = None` preserva o comportamento antigo (a2a, caminhos sem
+    /// mensagem disponível).
+    pub async fn exec_context_for_msg(
+        &self,
+        session_id: &str,
+        user_id: Option<&str>,
+        text: Option<&str>,
+    ) -> ExecContext {
+        // Auto-classify só na ausência de escolha explícita e com flag ligada.
+        if let Some(texto) = text
+            && !texto.trim().is_empty()
+            && self.chosen_agent_mode_for(session_id).await.is_none()
+        {
+            let cfg = self.current_config();
+            let runtime_ref = self.agents.default_provider().map(|_| &*self.agents);
+            if cfg.agent.auto_router_llm_enabled
+                && let Some(modo) = garraia_agents::auto_router::auto_classify(
+                    texto,
+                    true,
+                    cfg.agent.auto_router_model.as_deref(),
+                    runtime_ref,
+                )
+                .await
+                && let Some(store) = &self.session_store
+            {
+                match store
+                    .lock()
+                    .await
+                    .set_agent_mode_auto(session_id, modo.as_str())
+                {
+                    Ok(()) => tracing::debug!(
+                        mode = %modo,
+                        session = %session_id,
+                        "auto_router: modo deduzido persistido (entrada principal)"
+                    ),
+                    Err(e) => tracing::warn!(
+                        session = %session_id,
+                        erro = %e,
+                        "falhou ao gravar o modo deduzido"
+                    ),
+                }
+            }
+        }
+        self.exec_context_for_inner(session_id, user_id).await
+    }
+
+    async fn exec_context_for_inner(&self, session_id: &str, user_id: Option<&str>) -> ExecContext {
         let goal = self.session_goal_for(session_id, user_id).await;
         // O diretorio da sessao existe desde a Fase 1.3 (`SessionState::working_dir`,
         // gravado por `POST /api/sessions` com `project_id`/`working_dir`) e nunca
@@ -1037,6 +1097,27 @@ pub type SharedState = Arc<AppState>;
 
 #[cfg(test)]
 mod tests {
+
+    /// P1 gap analysis 2026-09-15: `exec_context_for_msg` com flag desligada
+    /// (default) NÃO muda o comportamento — sem modo escolhido, `exec` sai
+    /// sem política, exatamente como `exec_context_for` de sempre. (O caminho
+    /// com LLM ligado depende de provider e é exercitado pelo auto-router do
+    /// shim OpenAI, que já tem cobertura própria.)
+    #[tokio::test]
+    async fn exec_context_for_msg_sem_flag_preserva_comportamento() {
+        let st = test_state();
+        let sid = "sess-autorouter-off";
+
+        // Flag desligada (default da config de teste).
+        let a = st.exec_context_for(sid, None).await;
+        let b = st
+            .exec_context_for_msg(sid, None, Some("escreve uma funcao que soma"))
+            .await;
+        assert_eq!(a.agent_mode, b.agent_mode);
+        assert_eq!(a.agent_mode, None);
+        // E nada foi gravado como modo deduzido.
+        assert_eq!(st.chosen_agent_mode_for(sid).await, None);
+    }
 
     /// A chave de sessao do Telegram e montada **num lugar so**.
     ///
