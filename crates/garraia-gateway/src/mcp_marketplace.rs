@@ -45,7 +45,6 @@ use tracing::info;
 use crate::admin::middleware::{
     AuthenticatedAdmin, require_admin_auth, require_csrf, security_headers,
 };
-use crate::admin::rbac::{Permission, has_permission};
 use crate::admin::store::AdminStore;
 use crate::state::SharedState;
 
@@ -327,6 +326,10 @@ pub struct InstallMcpRequest {
 /// A comparacao e case-insensitive: no Windows os nomes ja sao
 /// case-insensitive, e no Unix recusar `Path` junto com `PATH` apenas recusa a
 /// mais — que e o lado certo para errar.
+///
+/// Esta lista cobre os vetores de sequestro conhecidos deste caminho; ela nao
+/// e uma prova de que nenhum outro exista. A defesa primaria do endpoint e o
+/// gate de auth — isto e a segunda camada.
 const ENV_BLOQUEADAS: &[&str] = &[
     // Resolucao do binario: o comando do catalogo e `npx`, resolvido na PATH.
     "PATH",
@@ -341,12 +344,45 @@ const ENV_BLOQUEADAS: &[&str] = &[
     "NODE_OPTIONS",
 ];
 
-/// Devolve o nome da primeira variavel bloqueada presente em `env`, se houver.
+/// Familias bloqueadas por prefixo: `(prefixo, rotulo para a resposta)`.
+///
+/// `npm_config_*` e o sequestro mais direto que existe neste endpoint, e nome
+/// exato nao o pega. O npm interpreta **qualquer** variavel prefixada
+/// `npm_config_` como chave de configuracao (verificado: tanto
+/// `npm_config_registry` quanto `NPM_CONFIG_REGISTRY` trocam o registry
+/// efetivo). Como as 8 entradas de `built_in_catalog()` usam
+/// `install_command: "npx"` com `-y`, um `npm_config_registry` apontando para
+/// um servidor do atacante faz o `npx` **baixar e executar** o pacote dele no
+/// lugar do pacote do catalogo, e `npm_config_script_shell` troca o shell dos
+/// lifecycle scripts que o `-y` roda. Nao adianta barrar `PATH` e deixar isso
+/// aberto: o resultado e o mesmo, execucao de codigo escolhido pelo chamador.
+///
+/// O rotulo devolvido e a familia (`npm_config_*`), nao a chave que o chamador
+/// mandou — a resposta nao reflete entrada do pedido de volta.
+const ENV_PREFIXOS_BLOQUEADOS: &[(&str, &str)] = &[("npm_config_", "npm_config_*")];
+
+/// Devolve o nome (ou a familia) da primeira variavel bloqueada presente em
+/// `env`, se houver.
 fn env_bloqueada(env: &std::collections::HashMap<String, String>) -> Option<&'static str> {
-    ENV_BLOQUEADAS
+    if let Some(exata) = ENV_BLOQUEADAS
         .iter()
         .copied()
         .find(|bloqueada| env.keys().any(|k| k.eq_ignore_ascii_case(bloqueada)))
+    {
+        return Some(exata);
+    }
+
+    ENV_PREFIXOS_BLOQUEADOS
+        .iter()
+        .find(|(prefixo, _)| {
+            env.keys().any(|k| {
+                // `str::get` devolve `None` em fronteira invalida de char, entao
+                // uma chave multi-byte nao entra em panico aqui.
+                k.get(..prefixo.len())
+                    .is_some_and(|inicio| inicio.eq_ignore_ascii_case(prefixo))
+            })
+        })
+        .map(|(_, rotulo)| *rotulo)
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────
@@ -395,14 +431,11 @@ pub async fn marketplace_install(
     Extension(admin): Extension<AuthenticatedAdmin>,
     Json(body): Json<InstallMcpRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    if !has_permission(admin.role, Permission::ManagePlugins) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "status": "error",
-                "message": "missing permission: manage_plugins",
-            })),
-        );
+    // Mesma funcao que guarda `/api/plugins/*`, nao uma copia: e a mesma
+    // capacidade por outra porta, entao a resposta de negacao tem de ser
+    // literalmente a mesma.
+    if let Err((code, json)) = crate::plugins_handler::check_manage_plugins(&admin) {
+        return (code, json);
     }
 
     let catalog = built_in_catalog();

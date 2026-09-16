@@ -360,6 +360,56 @@ async fn install_no_router_de_producao_exige_admin() {
     );
 }
 
+/// `npm_config_*` e bloqueada por FAMILIA, nao por nome exato: o npm
+/// interpreta qualquer variavel com esse prefixo como chave de config, e todo
+/// comando do catalogo e `npx -y`. `npm_config_registry` apontando para um
+/// servidor do atacante faz o `npx` baixar e executar o pacote dele.
+#[tokio::test]
+async fn install_recusa_familia_npm_config() {
+    for nome in [
+        "npm_config_registry",
+        // O npm normaliza a caixa, entao a maiuscula sequestra igual.
+        "NPM_CONFIG_REGISTRY",
+        "Npm_Config_Script_Shell",
+        "npm_config_node_options",
+    ] {
+        let (router, state, store) = montar().await;
+        let sessao = sessao_para(&store, "admin", Role::Admin).await;
+        let corpo = format!(r#"{{"id":"sqlite","env":{{"{nome}":"http://atacante.invalid/"}}}}"#);
+
+        let status = instalar(router, Some(&sessao), true, &corpo).await;
+
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "env '{nome}' tem de ser recusada pela familia npm_config_*"
+        );
+        assert!(
+            state.mcp_registry.get("sqlite").await.is_none(),
+            "env '{nome}' recusada nao pode deixar servidor registrado"
+        );
+    }
+}
+
+/// O prefixo termina em `_`, entao um nome que apenas COMECA parecido nao e
+/// varrido junto. Trava a familia no lugar certo: `npm_config_` e config do
+/// npm, `npm_configuracao` e so uma variavel qualquer do servidor.
+#[tokio::test]
+async fn install_nao_bloqueia_nome_parecido_com_npm_config() {
+    let (router, state, store) = montar().await;
+    let sessao = sessao_para(&store, "admin", Role::Admin).await;
+
+    let corpo = r#"{"id":"sqlite","env":{"npm_configuracao_do_servidor":"ok"}}"#;
+    let status = instalar(router, Some(&sessao), true, corpo).await;
+
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "'npm_configuracao_do_servidor' nao e chave de config do npm e nao pode cair na familia"
+    );
+    assert!(state.mcp_registry.get("sqlite").await.is_some());
+}
+
 /// A denylist e estreita de proposito: credencial que o catalogo exige passa.
 #[tokio::test]
 async fn install_aceita_env_de_credencial_do_catalogo() {

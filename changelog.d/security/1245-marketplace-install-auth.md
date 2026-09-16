@@ -26,8 +26,13 @@
   (`GITHUB_PERSONAL_ACCESS_TOKEN`, `POSTGRES_CONNECTION_STRING`, ...). O que
   entrou junto foi uma denylist estreita: o corpo nao pode mais definir `PATH`,
   `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`,
-  `DYLD_LIBRARY_PATH` nem `NODE_OPTIONS` (comparacao case-insensitive), que sao
-  as variaveis que decidem QUAL codigo o filho executa — o comando vem do
+  `DYLD_LIBRARY_PATH` nem `NODE_OPTIONS` (comparacao case-insensitive), nem
+  nada da familia `npm_config_*`, bloqueada por prefixo — o npm interpreta
+  qualquer variavel com esse prefixo como chave de config, e como todo comando
+  do catalogo e `npx -y`, um `npm_config_registry` apontando para um servidor
+  do atacante faz o `npx` baixar e executar o pacote dele no lugar do pacote do
+  catalogo (`npm_config_script_shell` troca o shell dos lifecycle scripts).
+  Sao as variaveis que decidem QUAL codigo o filho executa — o comando vem do
   catalogo (`npx -y @modelcontextprotocol/server-...`), e deixar o corpo trocar
   a resolucao do binario ou pre-carregar uma biblioteca faz o `id` vetado nao
   garantir mais nada. Secrets do gateway ficaram deliberadamente FORA da
