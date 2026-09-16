@@ -218,23 +218,20 @@ impl ConfigLoader {
 /// the process umask allows (commonly `0644`).
 ///
 /// No-op on non-Unix targets, where the parent directory ACL governs access.
+///
+/// A politica em si mora em [`garraia_common::fs_perms`] desde o
+/// `whatsapp_linked`: `garraia-channels` precisa das mesmas regras (0600 em
+/// arquivo, 0700 em diretorio) e nao depende desta crate. Esta funcao continua
+/// existindo porque dezenas de call sites ja a usam e porque ela mapeia o erro
+/// para [`Error::Config`]; o que ela nao faz mais e ter uma segunda definicao
+/// de "modo seguro" capaz de divergir da primeira.
 pub fn harden_secret_file(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            Error::Config(format!(
-                "failed to restrict permissions on {}: {e}",
-                path.display()
-            ))
-        })?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    garraia_common::fs_perms::harden_secret_file(path).map_err(|e| {
+        Error::Config(format!(
+            "failed to restrict permissions on {}: {e}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(test)]
