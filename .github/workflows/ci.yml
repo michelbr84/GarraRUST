@@ -443,22 +443,20 @@ jobs:
       # s3_compat.rs INTEIRO e `#[cfg(feature = "storage-s3")]`, entao
       # nenhum job compilava o backend S3 de producao — clippy com a
       # feature ligada chegou a falhar sem ninguem ver. Step proprio, e nao
-      # mais um bloco no step dos canais, porque aqui tambem sobe um
-      # testcontainer MinIO, com o pre-pull e o GARRAIA_REQUIRE_DOCKER que
-      # os dois steps abaixo explicam.
-      - name: Pre-pull MinIO image for testcontainers
-        # Mesmo racional do job auth-integration: warm pull em vez de ~60 s de
-        # cold start dentro do testcontainer. Sem isto o `MinIO::default()
-        # .start()` estoura e o teste se PULA em silencio — foi exatamente o
-        # que aconteceu na primeira execucao deste step (8 testes "ok" em
-        # 0,62 s, sem MinIO nenhum). Tag fixada por testcontainers-modules.
-        run: docker pull minio/minio:RELEASE.2025-02-28T09-55-16Z
-
-      - name: Run clippy + tests (storage-s3, com MinIO testcontainer)
-        env:
-          # Aqui o Docker E esperado: faz o teste FALHAR se o container nao
-          # subir, em vez de passar verde sem asserir nada.
-          GARRAIA_REQUIRE_DOCKER: "1"
+      # mais um bloco no step dos canais, pelo que o step abaixo explica
+      # sobre o alcance real deste gate.
+      - name: Run clippy + tests (storage-s3)
+        # ATENCAO ao ler um verde daqui: este step cobre COMPILACAO, clippy e
+        # os testes unitarios do backend S3 — nao a suite de integracao.
+        # Os 8 testes de tests/s3_integration.rs se auto-pulam, porque a
+        # imagem que testcontainers-modules 0.15 fixa (minio/minio) foi
+        # REMOVIDA do Docker Hub: o registry responde "object not found" para
+        # o repositorio inteiro, e o pull morre com "pull access denied".
+        # Enquanto isso valer, nenhum ambiente consegue subir esse container.
+        # Issue #1230 trata de apontar para um registry que ainda sirva a
+        # imagem; so entao faz sentido exigir Docker aqui (a variavel
+        # GARRAIA_REQUIRE_DOCKER, que o proprio teste ja honra, transforma o
+        # skip em falha). `--nocapture` deixa o motivo do skip visivel no log.
         run: |
           cargo clippy -p garraia-storage --features storage-s3 --all-targets -- -D warnings
           cargo test -p garraia-storage --features storage-s3 -- --nocapture
