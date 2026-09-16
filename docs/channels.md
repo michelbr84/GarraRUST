@@ -133,6 +133,9 @@ channels:
 
 ## WhatsApp
 
+> Este capitulo e a **Cloud API oficial da Meta**. Para vincular um numero
+> **pessoal** lendo um QR code, veja [`whatsapp.md`](whatsapp.md).
+
 ### Setup
 
 1. Set up Meta Cloud API

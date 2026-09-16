@@ -1,0 +1,215 @@
+# WhatsApp no GarraIA
+
+Existem **dois** jeitos de conectar o WhatsApp, e eles nao se misturam.
+
+| | Numero pessoal (QR) | WhatsApp Business (Cloud API) |
+|---|---|---|
+| Comando | `garra whatsapp link` | `garra whatsapp cloud` |
+| Conta | qualquer numero | conta Business aprovada pela Meta |
+| Precisa de | Node.js 20+ na maquina | dominio publico com HTTPS |
+| Credencial | sessao cifrada em disco | `access_token` da Meta na config |
+| Suporte | **nao oficial** | oficial |
+| Risco de bloqueio | **sim** | nao |
+
+Este documento e sobre o **primeiro**. O segundo esta em
+[`channels.md`](channels.md#whatsapp).
+
+---
+
+## Tutorial (o caminho inteiro)
+
+```bash
+garra whatsapp
+```
+
+1. Escolha a opcao **1) Conectar meu WhatsApp pessoal (ler um QR code)**.
+2. Leia a tela de aviso e confirme.
+3. No celular: **Configuracoes → Aparelhos conectados → Conectar um aparelho**.
+4. Aponte a camera para o QR no terminal.
+5. Pronto:
+
+```text
+✓ Autenticado. Sincronizando sessao…
+✓ WhatsApp conectado com sucesso.
+✓ Sessao salva em ~/.config/garraia/data/whatsapp/default.
+✓ GarraIA esta pronto para receber mensagens (inicie o gateway: `garra start`)
+```
+
+Rodar `garra whatsapp` de novo com uma sessao valida **nao** repareia e **nao**
+apaga nada: ele valida e responde `✓ Sessao encontrada e valida`.
+
+> **Aviso.** Conectar pelo QR usa o recurso de "aparelho conectado" do WhatsApp
+> por um cliente **nao oficial**, o que contraria os termos de uso da Meta. A
+> conta pode ser bloqueada, temporaria ou permanentemente, sem recurso
+> garantido. **Use um numero secundario.** Se voce precisa de suporte oficial,
+> use a Cloud API (opcao 2).
+
+## Comandos
+
+| Comando | O que faz | Exit code |
+|---|---|---|
+| `garra whatsapp` | menu de duas opcoes | 0, ou 1 se cancelado |
+| `garra whatsapp link` | vincula por QR | 0 · 1 cancelado · 69 sem Node / QR nao lido · 70 erro interno |
+| `garra whatsapp cloud` | wizard da Cloud API | 0 · 1 cancelado · 70 erro interno |
+| `garra whatsapp status` | diz se ha vinculo e se a sessao abre | 0 vinculado · 69 nao vinculado ou ilegivel |
+| `garra whatsapp logout` | apaga a sessao e desliga o canal | 0 · 1 cancelado |
+
+Os codigos seguem `sysexits` (69 = `EX_UNAVAILABLE`, 70 = `EX_SOFTWARE`), como
+`garra desktop` e `garra config check`.
+
+**Sem terminal** (pipe, CI, `curl … | sh`, systemd) o comando **nao trava e nao
+falha**: ele imprime as duas opcoes com o comando de cada uma e sai 0.
+
+## Estados
+
+O pareamento passa por estes estados, e cada um aparece como uma linha curta:
+
+```text
+sem sessao:      not_connected → qr_required → qr_generated → waiting_scan
+                 → authenticated → connected
+com sessao:      session_found → validating → connected
+sessao recusada: validating → (arquiva session.enc.prev) → qr_required → …
+em operacao:     connected → reconnecting{tentativa} → connected
+sessao morta:    → session_dead (apaga o material, exige QR novo)
+```
+
+O QR expira a cada ~20 s. O GarraIA regenera **ate 5 vezes**; na quinta
+expiracao ele desiste com `Nenhum QR foi lido. Rode `garra whatsapp` de novo.`
+e sai 69. O teto e do GarraIA, nao da ponte: a ponte reconectaria para sempre.
+
+## Onde a sessao fica, e como ela e protegida
+
+```text
+<data_dir>/whatsapp/default/          modo 0700
+  session.enc        0600   blob cifrado (AES-256-GCM)
+  session.enc.prev   0600   sessao anterior, arquivada ate o novo link dar certo
+  session.key        0600   chave de 32 B — SO quando nao ha passphrase do cofre
+  session.salt       0600   salt do PBKDF2 — SO quando ha passphrase do cofre
+```
+
+`<data_dir>` e o `data_dir` da config, ou `~/.config/garraia/data` por padrao.
+
+**O blob de sessao e a conta.** Quem o tem fala como voce, le seu historico e
+nao precisa do seu telefone. Trate-o como senha.
+
+### Modelo de seguranca, em uma tabela
+
+| Ameaca | Com `GARRAIA_VAULT_PASSPHRASE` | Sem ela |
+|---|---|---|
+| Backup / snapshot de container vazado | protegido: a chave nunca toca o disco | **nao protegido**: a chave vai junto |
+| Disco roubado com a maquina desligada | protegido | **nao protegido** |
+| Outro usuario do sistema (UID diferente) | protegido pelo modo 0600/0700 | protegido pelo modo 0600/0700 |
+| Root, ou seu proprio usuario | nao protegido | nao protegido |
+
+Por isso `garra whatsapp status` avisa, em letras claras, quando a chave esta no
+disco:
+
+```text
+⚠ chave da sessao sem passphrase do cofre — defina GARRAIA_VAULT_PASSPHRASE
+```
+
+Detalhes do que e feito:
+
+- **AES-256-GCM** (`ring`), a mesma pilha do `CredentialVault`. O AAD e a string
+  de versao do formato, entao um arquivo de outra versao falha a autenticacao em
+  vez de decifrar lixo.
+- **PBKDF2-HMAC-SHA256, 600 000 iteracoes**, com salt de 32 B em disco, quando ha
+  passphrase. Mesmos parametros do cofre.
+- **Escrita atomica**: temporario no mesmo diretorio, ja criado em 0600, `fsync`,
+  `rename`.
+- **Nada disso vai para log.** `SessionBlob` imprime `<redacted>` em `Debug` e
+  `Display`, e um teste varre o proprio fonte atras de linha de log que carregue
+  o valor. O `RedactingWriter` de `garraia-security` redige por prefixo conhecido
+  (`sk-`, `xoxb-`…) e **nao** reconheceria um base64 generico — por isso a defesa
+  esta no tipo, e nao no writer.
+- **JIDs e conteudo de mensagem** tambem nao vao para log: `Jid` imprime so os 4
+  ultimos digitos e `InboundMessage` imprime forma, nunca texto.
+
+### `logout`
+
+`garra whatsapp logout` sobrescreve e remove `session.enc`, `session.enc.prev`,
+`session.key` e `session.salt`, e grava `enabled = false` na config. A
+sobrescrita e best-effort: em SSD com wear leveling ela nao garante que os bytes
+sumiram do meio fisico.
+
+O aparelho **continua listado no celular** ate voce remove-lo em
+*Configuracoes → Aparelhos conectados*.
+
+## O que precisa de Node
+
+Só o caminho do QR. `node` e `npm` sao procurados na `PATH`; faltando qualquer
+um, o comando sai 69 com o link de instalacao e lembra que a opcao 2 (Cloud API)
+nao precisa de Node.
+
+Na primeira execucao o GarraIA materializa a ponte em
+`<data_dir>/whatsapp/bridge/` (0700) e roda `npm install --no-fund --no-audit`.
+Uma atualizacao do `garra` que traga uma ponte nova reescreve o diretorio
+sozinha — o carimbo `.garraia-bridge-sha256` e quem detecta.
+
+Como o filho e contido:
+
+- `env_clear()` + a allowlist R3 (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TERM`,
+  `USER`) mais `TMPDIR`/`TEMP`/`TMP`, `LANGUAGE` e as demais `LC_*`. **Nenhum
+  segredo deste processo chega ao Node** — nem chave de LLM, nem `GARRAIA_JWT_SECRET`,
+  nem a passphrase do cofre.
+- `PDEATHSIG` no Linux/Android: gateway morto de `SIGKILL` nao deixa Node orfao.
+- `kill_on_drop` e um `Drop` que mata o filho, inclusive no caminho de panic.
+- **Sem `RLIMIT_AS`**, ao contrario dos servidores MCP: o V8 reserva uma "cage"
+  de varios GiB de memoria *virtual* no boot, entao esse teto mata o Node com
+  `SIGABRT` antes de ele fazer qualquer coisa. Medir memoria real exigiria cgroup.
+
+## Troubleshooting
+
+| Sintoma | O que fazer |
+|---|---|
+| **QR sai embaralhado / quadrado** | O terminal precisa de **pelo menos 60 colunas** e UTF-8. Abaixo disso o GarraIA imprime a string crua em vez de um QR que nao le. |
+| **O QR expirou** | Normal: ele e regenerado ate 5 vezes, com `QR anterior expirou — novo QR (tentativa N/5)`. Depois da quinta, rode `garra whatsapp` de novo. |
+| **`node nao encontrado na PATH`** | Instale Node.js 20 ou mais novo (<https://nodejs.org/en/download>). So este caminho precisa dele. |
+| **`o bridge esta sem dependencias instaladas`** | Rode `npm ci` no diretorio que a mensagem cita, ou apague o diretorio e rode `garra whatsapp` de novo. |
+| **`a conta foi desvinculada`** / `status` diz nao vinculado | A sessao morreu (401/403/419). Rode `garra whatsapp` de novo e leia um QR novo. |
+| **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garra whatsapp` de novo. |
+| **Mensagem sobre outro aparelho ter assumido** | Alguem conectou o mesmo numero em outro lugar. A sessao gravada **continua valendo**; rode `garra start` de novo. |
+| **Conta bloqueada pelo WhatsApp** | Nao ha o que o GarraIA faca. Foi o risco avisado na tela de consentimento. Use a Cloud API. |
+
+## Validacao manual (o que os testes automatizados nao cobrem)
+
+O pareamento de ponta a ponta com um telefone real **nao e testado no CI** e nao
+tem como ser: exige uma conta do WhatsApp e uma camera. O CI cobre o protocolo,
+a maquina de estados, o store cifrado, o desenho do QR e o ciclo de vida do
+processo filho contra uma ponte falsa em Python.
+
+Antes de cada release que toque este caminho, rode a mao:
+
+1. `garra whatsapp` num terminal de ≥ 80 colunas, com um numero **secundario**.
+2. Leia o QR. Confirme as tres linhas de sucesso.
+3. `garra whatsapp status` → `Vinculado: sim` e `Leitura: ok`.
+4. Rode `garra whatsapp` de novo → `✓ Sessao encontrada e valida`, sem QR.
+5. Remova o aparelho no celular e rode `garra whatsapp status` → deve falhar
+   claramente, e nao dizer que esta tudo bem.
+6. `garra whatsapp logout` → o diretorio da conta fica vazio.
+
+## Textos (pt-BR / en)
+
+O comando responde em pt-BR por padrao e em ingles quando `GARRAIA_LANG`,
+`LC_ALL`, `LC_MESSAGES` ou `LANG` comecam com `en`. O resto da CLI segue em
+pt-BR: a traducao existe aqui porque estas sao as frases que alguem le antes de
+decidir se confia a propria conta ao GarraIA.
+
+| pt-BR | en |
+|---|---|
+| `Conectar meu WhatsApp pessoal (ler um QR code)` | `Link my personal WhatsApp (scan a QR code)` |
+| `Conectar um WhatsApp Business (API oficial da Meta)` | `Connect a WhatsApp Business account (official Meta Cloud API)` |
+| `Abra o WhatsApp no celular: Configuracoes → Aparelhos conectados → Conectar um aparelho` | `Open WhatsApp on your phone: Settings → Linked devices → Link a device` |
+| `QR anterior expirou — novo QR (tentativa N/5)` | `Previous QR expired — new QR (attempt N/5)` |
+| `✓ Autenticado. Sincronizando sessao…` | `✓ Authenticated. Syncing the session…` |
+| `✓ WhatsApp conectado com sucesso.` | `✓ WhatsApp connected successfully.` |
+| `Nenhum QR foi lido. Rode `garra whatsapp` de novo.` | `No QR was scanned. Run `garra whatsapp` again.` |
+
+## Estado da integracao
+
+O comando **vincula e guarda a sessao**. O canal ainda **nao e consumido pelo
+gateway**: receber e responder mensagens entra no slice seguinte, que liga o
+canal pull `whatsapp_linked`, os `channel_gates` (allowlist + pairing) e o check
+`whatsapp.linked` em `/api/diagnostics`.
+
+Decisao e alternativas avaliadas: [ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md).
