@@ -76,6 +76,31 @@ agent:
   bash_allowlist:
     - "hermes send *"
     - "git status"
+  # #1225: sandbox por tool. Camada ADICIONAL — roda depois da denylist, do
+  # tier arriscado e do modo read-only, nunca no lugar deles. A seção inteira
+  # é opcional: ausente = `mode: off` = o comportamento de sempre (host).
+  #
+  # Leia `docs/security/threat-model.md` §5.12 antes de ligar. Em resumo:
+  #   - Hoje SÓ a tool `bash` é envolvida. `run_tests`, `git_diff`,
+  #     `code_review` e `repo_search` continuam nascendo no host mesmo com
+  #     `mode: all`.
+  #   - `backend: ssh` NÃO é sandbox: é execução remota. Ele isola o host
+  #     local e nada mais, e ignora `network_disabled` e `mount_workdir`.
+  #   - Na prática é unix. No Windows o bash tool usa `powershell -Command`,
+  #     que não reparseia o quoting POSIX do wrap.
+  #   - `elevated` é escape hatch: a tool listada roda NO HOST. Só é
+  #     duplamente gated com `tool_confirmation_enabled: true`.
+  # `garra config check` recusa `mode != off` sem `backend`, e `backend: ssh`
+  # sem `ssh_host`.
+  sandbox:
+    mode: all              # off (default) | all | allowlist
+    backend: podman        # docker | podman | ssh — rootless é o preferido
+    image: debian:bookworm-slim
+    network_disabled: true # ignorado por `backend: ssh`
+    mount_workdir: true    # ignorado por `backend: ssh`
+    # ssh_host: bastiao.interno   # obrigatório quando backend: ssh
+    # sandboxed_tools: ["bash"]   # usado só quando mode: allowlist
+    elevated: []           # tools que ESCAPAM do sandbox e rodam no host
   max_tool_calls: 50
 
 # Servidores MCP com política (escopo mínimo + limites + allowlist).

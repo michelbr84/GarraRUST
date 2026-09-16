@@ -17,7 +17,8 @@ pub use model::{
     AUTH_REFRESH_TTL_MIN_SECS, AUTH_SUPPORTED_JWT_ALGORITHMS, AgentConfig, AppConfig, AuthSection,
     ChannelConfig, EmbeddingProviderConfig, GatewayConfig, LlmProviderConfig, MAX_PATCH_BYTES_MAX,
     MAX_PATCH_BYTES_MIN, McpServerConfig, MemoryConfig, NamedAgentConfig, S3StorageConfig,
-    StorageBackend, StorageConfig, TimeoutConfig, TypeTimeout, VoiceConfig,
+    SandboxBackendKind, SandboxConfig, SandboxMode, StorageBackend, StorageConfig, TimeoutConfig,
+    TypeTimeout, VoiceConfig,
 };
 pub use provider_keys::{
     KeySource, default_vault_path, provider_key_env, resolve_api_key, resolve_api_key_source,

@@ -835,6 +835,108 @@ pub struct AgentConfig {
     /// Brave resolve (`llm.brave.api_key`, cofre ou `BRAVE_API_KEY`).
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// #1225: secao `agent.sandbox` — a chave que faltava para o sandbox por
+    /// tool entregue na #1222 ser alcancavel. Ate aqui `SandboxPolicy` so era
+    /// construida pelo `default()` (= `off`) nos tres pontos de producao, e
+    /// `set_sandbox_policy` so era chamado pelos proprios testes: a
+    /// funcionalidade existia, era testada, e nenhum operador conseguia
+    /// liga-la. Ausente => `mode = off` => comportamento identico ao de antes.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+}
+
+/// Modo de aplicacao do sandbox por tool (`agent.sandbox.mode`, #1225).
+///
+/// Espelha `garraia_agents::sandbox::SandboxMode`. Duplicado de proposito: a
+/// crate de config nao depende da de agents (nem o contrario), e criar essa
+/// aresta so para compartilhar um enum de tres variantes custaria mais do que
+/// a duplicacao. A conversao vive onde os dois tipos sao visiveis
+/// (`garraia_gateway::bootstrap::sandbox_policy_from`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxMode {
+    /// Tudo roda no host, como sempre (default).
+    #[default]
+    Off,
+    /// Toda tool sandboxavel roda no backend, menos as listadas em `elevated`.
+    All,
+    /// Apenas as tools listadas em `sandboxed_tools` rodam no backend.
+    Allowlist,
+}
+
+/// Backend de sandbox (`agent.sandbox.backend`, #1225).
+///
+/// Diferente de `garraia_agents::sandbox::SandboxBackend`, que carrega o host
+/// dentro da variante `Ssh(String)`: em config o host e um campo irmao
+/// (`ssh_host`), porque uma variante com payload em TOML/YAML exigiria
+/// `backend = { ssh = "host" }` — forma que ninguem escreve a mao.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxBackendKind {
+    /// `docker run --rm ...` — precisa do binario `docker` no host.
+    Docker,
+    /// `podman run --rm ...` — precisa do binario `podman` (rootless).
+    Podman,
+    /// `ssh <ssh_host> -- ...`. **Nao e sandbox**: e execucao remota, que
+    /// isola o host local e nada mais. O `config check` avisa sobre isso.
+    Ssh,
+}
+
+/// Secao `agent.sandbox` (#1225).
+///
+/// Os campos espelham exatamente os de `garraia_agents::sandbox::SandboxPolicy`
+/// — nenhum botao aqui promete algo que a policy nao saiba honrar. Duas
+/// ressalvas que o `config check` repete ao operador:
+///
+/// - `network_disabled` e `mount_workdir` so valem para `docker`/`podman`; o
+///   ramo `ssh` os ignora em silencio.
+/// - `elevated` e escape hatch: a tool listada roda **no host**, fora do
+///   backend. Sem `tool_confirmation_enabled` ela roda sem pedir nada.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// `off` (default) | `all` | `allowlist`.
+    #[serde(default)]
+    pub mode: SandboxMode,
+    /// `docker` | `podman` | `ssh`. Obrigatorio quando `mode != off` — sem ele
+    /// o `wrap_command` falha fechado a cada comando, que e seguro mas inutil.
+    #[serde(default)]
+    pub backend: Option<SandboxBackendKind>,
+    /// Imagem do container (`docker`/`podman`). Ausente => o default da policy
+    /// (`debian:bookworm-slim`); o default nao e repetido aqui para as duas
+    /// crates nao poderem discordar.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Host do `ssh`, obrigatorio quando `backend = ssh`.
+    #[serde(default)]
+    pub ssh_host: Option<String>,
+    /// Tools sandboxadas quando `mode = allowlist`. Hoje so `bash` e envolvida
+    /// pela policy (#1225 acompanha as demais).
+    #[serde(default)]
+    pub sandboxed_tools: Vec<String>,
+    /// Tools que escapam do sandbox mesmo em `mode = all` — rodam no host.
+    #[serde(default)]
+    pub elevated: Vec<String>,
+    /// Monta o diretorio de trabalho dentro do container (rw) e usa como cwd.
+    #[serde(default = "default_true")]
+    pub mount_workdir: bool,
+    /// Rede do container desligada. Default `true`.
+    #[serde(default = "default_true")]
+    pub network_disabled: bool,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            mode: SandboxMode::Off,
+            backend: None,
+            image: None,
+            ssh_host: None,
+            sandboxed_tools: Vec::new(),
+            elevated: Vec::new(),
+            mount_workdir: true,
+            network_disabled: true,
+        }
+    }
 }
 
 /// Backend da tool `web_search` (#1034).
@@ -1414,5 +1516,64 @@ hardware:
         let mqtt = config.hardware.mqtt.expect("mqtt");
         assert!(mqtt.password_env.is_none());
         assert!(mqtt.username.is_none());
+    }
+
+    /// #1225: a secao `agent.sandbox` parseia do TOML e do YAML, e — o que
+    /// mais importa para nao quebrar instalacao existente — a **ausencia** da
+    /// secao produz exatamente o mesmo default que `SandboxPolicy::default()`
+    /// em `garraia-agents`: `off`, sem backend, workdir montado, rede off.
+    #[test]
+    fn agent_sandbox_parses_from_toml_and_defaults_to_off() {
+        use super::{SandboxBackendKind, SandboxMode};
+
+        // Config que nunca ouviu falar de sandbox continua valida.
+        let sem_secao: AppConfig =
+            toml::from_str("[agent]\ntool_confirmation_enabled = true\n").expect("toml parses");
+        let sb = &sem_secao.agent.sandbox;
+        assert_eq!(sb.mode, SandboxMode::Off);
+        assert_eq!(sb.backend, None);
+        assert_eq!(sb.image, None);
+        assert_eq!(sb.ssh_host, None);
+        assert!(sb.sandboxed_tools.is_empty());
+        assert!(sb.elevated.is_empty());
+        assert!(sb.mount_workdir, "default historico da policy");
+        assert!(sb.network_disabled, "default historico da policy");
+        assert_eq!(sb, &super::SandboxConfig::default());
+
+        // Secao presente mas vazia: os booleanos NAO viram false.
+        let vazia: AppConfig = toml::from_str("[agent.sandbox]\n").expect("toml parses");
+        assert_eq!(vazia.agent.sandbox, super::SandboxConfig::default());
+
+        // Config completa do operador.
+        let cheia: AppConfig = toml::from_str(
+            r#"
+[agent.sandbox]
+mode = "allowlist"
+backend = "podman"
+image = "alpine:3.20"
+sandboxed_tools = ["bash"]
+elevated = ["web_fetch"]
+mount_workdir = false
+network_disabled = false
+"#,
+        )
+        .expect("toml parses");
+        let sb = &cheia.agent.sandbox;
+        assert_eq!(sb.mode, SandboxMode::Allowlist);
+        assert_eq!(sb.backend, Some(SandboxBackendKind::Podman));
+        assert_eq!(sb.image.as_deref(), Some("alpine:3.20"));
+        assert_eq!(sb.sandboxed_tools, vec!["bash".to_string()]);
+        assert_eq!(sb.elevated, vec!["web_fetch".to_string()]);
+        assert!(!sb.mount_workdir);
+        assert!(!sb.network_disabled);
+
+        // `ssh` traz o host num campo irmao, nao dentro da variante.
+        let ssh: AppConfig = serde_yaml::from_str(
+            "agent:\n  sandbox:\n    mode: all\n    backend: ssh\n    ssh_host: box.interno\n",
+        )
+        .expect("yaml parses");
+        assert_eq!(ssh.agent.sandbox.mode, SandboxMode::All);
+        assert_eq!(ssh.agent.sandbox.backend, Some(SandboxBackendKind::Ssh));
+        assert_eq!(ssh.agent.sandbox.ssh_host.as_deref(), Some("box.interno"));
     }
 }

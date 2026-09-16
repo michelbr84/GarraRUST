@@ -668,6 +668,10 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // hardware (ADR 0020 / #1126): validate the MQTT transport config.
     validate_hardware(&config.hardware, &mut findings, &push_err);
 
+    // agent.sandbox (#1225): a containment control that is silently inert is
+    // worse than one that is off, because the operator stops watching.
+    validate_sandbox(&config.agent, &mut findings, &push_err, &push_warn);
+
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
@@ -1592,6 +1596,100 @@ fn validate_storage(
 /// e um endereço mal-formado viraria um crash/silêncio tarde demais. O
 /// `password_env` é presence-only: nunca ecoamos o valor (ele nem passa
 /// por aqui — config carrega só o nome da env var).
+/// `agent.sandbox` (#1225): every finding here describes a config that parses
+/// and boots but does NOT contain what the operator thinks it contains.
+///
+/// The redaction invariant holds trivially: nothing in this section is a
+/// secret. `ssh_host` is never echoed — it names infrastructure, and the
+/// findings only need to say whether it is present.
+fn validate_sandbox(
+    agent: &crate::model::AgentConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    use crate::model::{SandboxBackendKind, SandboxMode};
+    let sb = &agent.sandbox;
+    if sb.mode == SandboxMode::Off {
+        // `off` is the default and the whole section is inert; flagging the
+        // other fields here would nag every operator who left a backend
+        // configured while temporarily turning the sandbox off.
+        return;
+    }
+
+    // mode != off without a backend: `wrap_command` fails closed on EVERY
+    // command, so the agent loses `bash` entirely. Safe, and useless.
+    if sb.backend.is_none() {
+        push_err(
+            findings,
+            "agent.sandbox.backend",
+            "agent.sandbox.mode is not `off` but agent.sandbox.backend is unset; every sandboxed \
+             command will fail closed. Set it to `docker`, `podman` or `ssh`."
+                .to_string(),
+        );
+    }
+
+    if sb.backend == Some(SandboxBackendKind::Ssh) {
+        if sb
+            .ssh_host
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
+            push_err(
+                findings,
+                "agent.sandbox.ssh_host",
+                "agent.sandbox.backend=ssh requires agent.sandbox.ssh_host; without it no backend \
+                 is built and every sandboxed command fails closed."
+                    .to_string(),
+            );
+        }
+        // The SSH branch of `wrap_command` builds `ssh <host> -- sh -lc ...`
+        // and consumes neither flag. Leaving them at their defaults reads as
+        // "network off, workdir mounted" and neither is true.
+        if sb.network_disabled || sb.mount_workdir {
+            push_warn(
+                findings,
+                "agent.sandbox.backend",
+                "agent.sandbox.backend=ssh is REMOTE EXECUTION, not a sandbox: it isolates the \
+                 local host and nothing else, and the remote command runs with whatever the SSH \
+                 user can do. It also ignores agent.sandbox.network_disabled and \
+                 agent.sandbox.mount_workdir — set them to false so the config stops claiming \
+                 containment it does not provide, or use `docker`/`podman`."
+                    .to_string(),
+            );
+        }
+    }
+
+    // `elevated` is the escape hatch: those tools run on the HOST. With no
+    // confirmation channel the escape hatch is also unattended.
+    if !sb.elevated.is_empty() && !agent.tool_confirmation_enabled {
+        push_warn(
+            findings,
+            "agent.sandbox.elevated",
+            format!(
+                "agent.sandbox.elevated lists {} tool(s) that run on the host, outside the \
+                 sandbox, while agent.tool_confirmation_enabled=false — the escape hatch is only \
+                 single-gated (safety denylist) and nobody is asked before it is used.",
+                sb.elevated.len()
+            ),
+        );
+    }
+
+    // `allowlist` with an empty list sandboxes nothing: the section is on,
+    // reads as on, and wraps zero commands. Same failure mode as #1225.
+    if sb.mode == SandboxMode::Allowlist && sb.sandboxed_tools.is_empty() {
+        push_warn(
+            findings,
+            "agent.sandbox.sandboxed_tools",
+            "agent.sandbox.mode=allowlist with an empty agent.sandbox.sandboxed_tools sandboxes \
+             nothing; every tool keeps running on the host."
+                .to_string(),
+        );
+    }
+}
+
 fn validate_hardware(
     hardware: &crate::model::HardwareConfig,
     findings: &mut Vec<Finding>,
@@ -2279,6 +2377,184 @@ mod tests {
                 .any(|f| f.field.starts_with("agent.web_search")),
             "configuracao completa e limpa: {findings:?}"
         );
+    }
+
+    /// #1225: cada linha aqui e uma config que **parseia e sobe**, e onde o
+    /// que o operador acha que ligou nao e o que esta ligado. Tabela no
+    /// estilo do resto do modulo: config, campo esperado, severidade.
+    #[test]
+    fn agent_sandbox_findings_table() {
+        use crate::model::{SandboxBackendKind, SandboxMode};
+
+        // (nome, mutacao, campo esperado, severidade esperada)
+        type Caso = (&'static str, fn(&mut AppConfig), &'static str, Severity);
+        let casos: Vec<Caso> = vec![
+            (
+                "mode=all sem backend falha fechado em todo comando",
+                |c| c.agent.sandbox.mode = SandboxMode::All,
+                "agent.sandbox.backend",
+                Severity::Error,
+            ),
+            (
+                "mode=allowlist sem backend tambem",
+                |c| c.agent.sandbox.mode = SandboxMode::Allowlist,
+                "agent.sandbox.backend",
+                Severity::Error,
+            ),
+            (
+                "backend=ssh sem ssh_host nao constroi backend nenhum",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                },
+                "agent.sandbox.ssh_host",
+                Severity::Error,
+            ),
+            (
+                "ssh_host so com espacos conta como ausente",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("   ".into());
+                },
+                "agent.sandbox.ssh_host",
+                Severity::Error,
+            ),
+            (
+                "ssh ignora network_disabled/mount_workdir e nao e sandbox",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("box".into());
+                },
+                "agent.sandbox.backend",
+                Severity::Warning,
+            ),
+            (
+                "elevated sem confirmacao humana e escape hatch desacompanhado",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                    c.agent.sandbox.elevated = vec!["bash".into()];
+                    c.agent.tool_confirmation_enabled = false;
+                },
+                "agent.sandbox.elevated",
+                Severity::Warning,
+            ),
+            (
+                "allowlist com lista vazia sandboxa zero tools",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::Allowlist;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                },
+                "agent.sandbox.sandboxed_tools",
+                Severity::Warning,
+            ),
+        ];
+
+        for (nome, mutar, campo, severidade) in casos {
+            let mut cfg = AppConfig::default();
+            mutar(&mut cfg);
+            let findings = validate(&cfg);
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| f.severity == severidade && f.field == campo),
+                "{nome}: esperava {severidade:?} em {campo}; findings = {findings:?}"
+            );
+        }
+    }
+
+    /// O outro lado da tabela: config default e config ssh honesta nao
+    /// produzem ruido, e o aviso do `elevated` some com confirmacao ligada.
+    #[test]
+    fn agent_sandbox_quiet_when_config_is_coherent() {
+        use crate::model::{SandboxBackendKind, SandboxMode};
+
+        // Secao ausente (o default de toda instalacao existente): silencio.
+        let findings = validate(&AppConfig::default());
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.sandbox")),
+            "findings = {findings:?}"
+        );
+
+        // `off` com backend sobrando tambem: a secao inteira esta inerte.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+        let findings = validate(&cfg);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.sandbox")),
+            "mode=off nao deve reclamar de nada: {findings:?}"
+        );
+
+        // Docker completo, sem elevated: limpo.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.mode = SandboxMode::All;
+        cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+        let findings = validate(&cfg);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.sandbox")),
+            "findings = {findings:?}"
+        );
+
+        // SSH com os dois flags desligados: o operador reconheceu o que o
+        // backend faz, entao resta so a ausencia de aviso.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.mode = SandboxMode::All;
+        cfg.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+        cfg.agent.sandbox.ssh_host = Some("box".into());
+        cfg.agent.sandbox.network_disabled = false;
+        cfg.agent.sandbox.mount_workdir = false;
+        let findings = validate(&cfg);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.sandbox")),
+            "findings = {findings:?}"
+        );
+
+        // `elevated` com confirmacao ligada: duplamente gated, sem aviso.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.mode = SandboxMode::All;
+        cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+        cfg.agent.sandbox.elevated = vec!["bash".into()];
+        cfg.agent.tool_confirmation_enabled = true;
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.field == "agent.sandbox.elevated"),
+            "findings = {findings:?}"
+        );
+    }
+
+    /// Invariante de redaction do modulo: nenhum finding de sandbox ecoa o
+    /// `ssh_host`. Nao e segredo, mas nomeia infraestrutura e o JSON do
+    /// `config check` e feito para ser colado em bug report.
+    #[test]
+    fn agent_sandbox_findings_never_echo_the_ssh_host() {
+        use crate::model::{SandboxBackendKind, SandboxMode};
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.mode = SandboxMode::All;
+        cfg.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+        cfg.agent.sandbox.ssh_host = Some("bastiao-interno.exemplo".into());
+        let findings = validate(&cfg);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.sandbox")),
+            "o caso precisa produzir algum finding: {findings:?}"
+        );
+        for f in &findings {
+            assert!(
+                !f.message.contains("bastiao-interno.exemplo"),
+                "finding vazou o ssh_host: {f:?}"
+            );
+        }
     }
 
     #[test]

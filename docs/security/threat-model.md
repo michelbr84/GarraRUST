@@ -537,6 +537,76 @@ ele, cada canal tem o seu e o `claim()` do Telegram nunca casa com o `/pair`.
 
 ---
 
+## 5.12. Sandbox por tool (`agent.sandbox`) — #1222, #1225
+
+O `BashTool` pode envolver o comando num backend em vez de executá-lo direto
+no host. A política mora em `garraia_agents::sandbox::SandboxPolicy`, a
+configuração do operador é a seção `agent.sandbox` (#1225) e a tradução entre
+as duas é `garraia_gateway::bootstrap::sandbox_policy_from` — a mesma função
+nos três pontos de produção (gateway, `garra chat`, `garra mcp-agent`).
+
+Até a #1225 a seção não existia: os três construtores fixavam
+`SandboxPolicy::default()` (= `off`) e `set_sandbox_policy` só era chamado
+pelos próprios testes. A contenção estava escrita, testada e **inalcançável**
+— que é o motivo de esta seção existir antes da matriz.
+
+### O que cada backend garante
+
+| Backend | Rede | Sistema de arquivos | Privilégios | Onde o comando roda | O que **não** cobre |
+|---|---|---|---|---|---|
+| `docker` | `--network none` quando `network_disabled` (default `true`) | Só o `cwd` montado rw quando `mount_workdir` (default `true`) e o diretório existe; o resto é a imagem | `--security-opt no-new-privileges`; **sem** `--user`, `--read-only`, `--cap-drop`, limite de pids/memória | Container efêmero (`--rm`) no host local | Não é hardening completo do container (flags acima ficam para um slice próprio); o daemon do Docker é root, então escape do container é escape para root; o `cwd` montado é rw e é código do projeto |
+| `podman` | igual ao `docker` | igual ao `docker` | igual ao `docker`, mais o rootless do próprio podman quando instalado assim | Container efêmero no host local | Idem, menos a parte do daemon root quando rootless |
+| `ssh` | **nenhuma** — `network_disabled` é **ignorado** | **nenhuma** — `mount_workdir` e `image` são **ignorados** | os do usuário SSH no host remoto | Máquina remota, shell do usuário SSH | **Não é sandbox.** É execução remota: isola o host *local* e nada mais. O comando roda com tudo que aquele usuário pode fazer, inclusive rede |
+
+Três limites valem para os três backends:
+
+- **Só a tool `bash` é envolvida hoje.** `run_tests`, `git_diff`, `code_review`
+  e `repo_search` continuam nascendo no host mesmo com `mode = all` — a
+  policy é consultada dentro do `BashTool` e em nenhum outro lugar.
+  Acompanhamento na #1225. Quem liga `mode = all` esperando "nada roda no
+  host" está enganado sobre quatro tools.
+- **Unix na prática.** No Windows o `BashTool` escolhe `powershell -Command` e
+  receberia uma linha com quoting POSIX (`docker run ... sh -lc '…'`), que o
+  PowerShell não reparseia da mesma forma — o quoting de aspa simples é `''`,
+  não `'\''`. Ligar o sandbox fora de unix não contém nada de forma confiável.
+- **`elevated` roda no host.** É o escape hatch: a tool listada pula o
+  backend mesmo em `mode = all`. Ele é duplamente gated só quando
+  `agent.tool_confirmation_enabled = true`; sem isso resta apenas a denylist
+  do `safety_gate`, e o `garra config check` avisa.
+
+### Matriz
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **T** Tampering | Tool call do LLM (influenciável por injeção indireta de prompt, #1213) escreve fora do projeto. | Denylist + tier arriscado do `safety_gate` rodam **antes** do sandbox; com `docker`/`podman` o comando só enxerga o `cwd` montado. | `--read-only` no rootfs e mount do `cwd` em `ro` quando a tool for de leitura: slice próprio da #1225. |
+| **I** Information disclosure | Comando lê `~/.ssh`, `.env` do host, ou exfiltra por rede. | `--network none` por default; `#1075 R3` já limpa o env do filho para uma allowlist; fora do mount o container não vê o host. | Com `backend = ssh` **nada disso vale** — a seção acima diz por quê. |
+| **E** Elevation of privilege | Escape do container; `sudo` dentro do comando. | `--security-opt no-new-privileges`. | Sem `--user` o processo é root **dentro** do container, e o daemon do Docker é root **fora**; podman rootless é a recomendação enquanto o hardening não chega. |
+| **E** Elevation of privilege | Operador liga `mode = all` e acredita que o agente perdeu o host. | Quatro tools seguem no host (acima); `config check` e esta seção dizem quais. | Estender a policy às demais tools (#1225). |
+| **D** Denial of service | Comando consome CPU/memória da máquina inteira dentro do container. | Timeout do próprio `BashTool` + orçamento de tool calls. | Sem `--memory`/`--pids-limit`; mesmo slice de hardening. |
+| **R** Repudiation | Não se sabe depois se um comando rodou contido ou no host. | `tracing::info!` "comando executado dentro do sandbox" no caminho envolvido e `tracing::error!` no fail-closed. | Evento de audit dedicado (`agent.tool.sandboxed`) quando o audit de tools existir. |
+| **S** Spoofing | Backend ausente no host faz o comando cair no host em silêncio. | **Fail-closed**: `wrap_command` devolve erro e o `BashTool` recusa o comando; `backend = ssh` sem `ssh_host` também não constrói backend nenhum. | — |
+
+### Config mínima
+
+```yaml
+agent:
+  tool_confirmation_enabled: true   # `elevated` sem isto é single-gated
+  sandbox:
+    mode: all                       # off (default) | all | allowlist
+    backend: podman                 # docker | podman | ssh
+    image: debian:bookworm-slim
+    network_disabled: true
+    mount_workdir: true
+    elevated: []                    # tools que rodam NO HOST
+```
+
+`garra config check` recusa `mode != off` sem `backend` e `backend: ssh` sem
+`ssh_host`, e avisa sobre `ssh` com `network_disabled`/`mount_workdir` ligados,
+sobre `elevated` sem confirmação humana e sobre `allowlist` com lista vazia.
+Nenhum finding ecoa o `ssh_host`.
+
+---
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.
@@ -566,6 +636,7 @@ Agregado das matrizes. Prioridade = (likelihood × impact) dado o estado atual d
 | 6 | Plugin WASM runtime ainda scaffold | Plugins | Baixa (não shipped) | Fase 2.2 |
 | 7 | Storage HMAC integrity + allow-list MIME pendente impl | Storage (future) | Baixa (ADR apenas) | GAR-394 |
 | 8 | Mobile Android `FLAG_SECURE` ausente | Mobile | Baixa | plan futuro |
+| 9 | Sandbox por tool cobre so `bash`; sem hardening de container (`--user`, `--read-only`, `--cap-drop`, limites) | Agents | Média | #1225 |
 
 ---
 

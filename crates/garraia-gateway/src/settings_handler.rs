@@ -279,6 +279,45 @@ fn settings() -> Vec<SettingSchema> {
             validation: Some("1..=10000"),
             warning: None,
         },
+        // — Security: sandbox por tool (#1222 / #1225) —
+        //
+        // Read-only aqui de proposito. O PATCH desta rota e dry-run (plan
+        // 0121a persiste): uma chave editavel faria a UI dizer "aplicado" para
+        // um controle de contencao que continuaria desligado no proximo boot.
+        // Ate la o registro serve para o operador VER o estado, que era o que
+        // faltava — a #1225 existe porque ninguem conseguia nem ligar nem ver.
+        SettingSchema {
+            id: "security.sandbox_mode",
+            label: "Tool sandbox mode",
+            description: "agent.sandbox.mode — off | all | allowlist. Read-only here; edit garraia.toml.",
+            category: SettingCategory::Security,
+            type_: SettingType::Enum,
+            default: serde_json::json!("off"),
+            editable: false,
+            secret: false,
+            requires_restart: true,
+            choices: Some(vec!["off", "all", "allowlist"]),
+            validation: None,
+            warning: Some(
+                "Only the `bash` tool is wrapped today; run_tests/git_diff/repo_search still spawn on the host. `ssh` is remote execution, not a sandbox. Unix only.",
+            ),
+        },
+        SettingSchema {
+            id: "security.sandbox_backend",
+            label: "Tool sandbox backend",
+            description: "agent.sandbox.backend — docker | podman | ssh. The SSH host is never reported here.",
+            category: SettingCategory::Security,
+            type_: SettingType::String,
+            default: serde_json::Value::Null,
+            editable: false,
+            secret: false,
+            requires_restart: true,
+            choices: None,
+            validation: None,
+            warning: Some(
+                "Empty while the mode is not `off` means every sandboxed command fails closed.",
+            ),
+        },
         // — Appearance —
         SettingSchema {
             id: "appearance.default_theme",
@@ -409,6 +448,28 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
             SettingSource::File,
         ),
         "security.rate_limit_rpm" => (json!(120), None, SettingSource::Default),
+        // #1225: so o discriminante. `ssh_host` nao e segredo, mas nomeia
+        // infraestrutura e nao acrescenta nada ao diagnostico — a rota e
+        // auth-free, entao o que nao precisa sair nao sai.
+        "security.sandbox_mode" => (
+            json!(match state.config.agent.sandbox.mode {
+                garraia_config::SandboxMode::Off => "off",
+                garraia_config::SandboxMode::All => "all",
+                garraia_config::SandboxMode::Allowlist => "allowlist",
+            }),
+            None,
+            SettingSource::File,
+        ),
+        "security.sandbox_backend" => (
+            match state.config.agent.sandbox.backend {
+                None => Value::Null,
+                Some(garraia_config::SandboxBackendKind::Docker) => Value::String("docker".into()),
+                Some(garraia_config::SandboxBackendKind::Podman) => Value::String("podman".into()),
+                Some(garraia_config::SandboxBackendKind::Ssh) => Value::String("ssh".into()),
+            },
+            None,
+            SettingSource::File,
+        ),
         "appearance.default_theme" => (json!("dark"), None, SettingSource::Default),
         "appearance.default_skin" => (json!("garra-blue"), None, SettingSource::Default),
         "experimental.streaming" => (json!(false), None, SettingSource::Default),

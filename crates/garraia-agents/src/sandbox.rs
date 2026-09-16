@@ -9,8 +9,14 @@
 //!   não configurar nada continua com o comportamento atual (GAR-236/497,
 //!   execution budget etc. continuam valendo — sandbox é camada adicional,
 //!   não substituto do safety gate).
-//! - OpenShell e Crabbox ficam 🔵 planejados (variantes `SandboxBackend` não
-//!   implementadas ainda); Docker/Podman/SSH estão funcionais.
+//! - OpenShell e Crabbox **não estão implementados** — não há variante de
+//!   `SandboxBackend` para eles e nenhuma entrega prometida; o assunto está
+//!   registrado na #1225. Backends que existem: Docker, Podman e SSH.
+//! - **Unix na prática**: o `BashTool` escolhe `powershell -Command` no
+//!   Windows e entregaria a ele uma linha com quoting POSIX. Ligar o sandbox
+//!   fora de unix não contém nada — ver `docs/security/threat-model.md` §5.12.
+//! - A configuração do operador é a seção `agent.sandbox` (#1225), traduzida
+//!   por `garraia_gateway::bootstrap::sandbox_policy_from`.
 
 use garraia_common::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -160,7 +166,7 @@ impl SandboxPolicy {
         let backend = self.backend.as_ref().ok_or_else(|| {
             Error::Agent(
                 "sandbox obrigatório por config mas nenhum backend definido \
-                 (tools.sandbox.backend: docker|podman|ssh)"
+                 (agent.sandbox.backend: docker|podman|ssh)"
                     .into(),
             )
         })?;
@@ -168,7 +174,7 @@ impl SandboxPolicy {
             return Err(Error::Agent(format!(
                 "sandbox fail-closed: backend `{}` não encontrado no host; \
                  instale-o, marque a tool como elevated, ou defina \
-                 tools.sandbox.mode = off",
+                 agent.sandbox.mode = off",
                 backend.binary()
             )));
         }
