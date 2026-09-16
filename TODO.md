@@ -955,28 +955,26 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
   2026-09-02 apenas onde havia evidência clara (path:line). Itens sem evidência
   ficaram `[ ]`.
 - Débitos de código encontrados na auditoria de 2026-09-02 (viram itens, não
-  patches na PR de docs):
-  - `sessions.db` cai em `~/.garraia/data/` (`crates/garraia-gateway/src/server.rs:232-241`)
-    enquanto `memory.db` e `memoria/fatos.json` usam o config dir XDG —
-    unificar via `ConfigLoader::default_config_dir()`.
-  - Feature `tls` sem passthrough no binário `garraia`
-    (`crates/garraia-cli/Cargo.toml`) — adicionar `tls = ["garraia-gateway/tls"]`
-    como já existe para `mcp-http`; até lá o README documenta
-    `--features garraia-gateway/tls`.
+  patches na PR de docs) — **limpos 2026-09-15 (PR de débitos):**
+  - ~~`sessions.db` cai em `~/.garraia/data/`~~ ✅ — `server.rs` agora usa
+    `AppConfig::resolved_data_dir()` (fonte única, mesmo `memory.db`/`admin.db`).
+  - ~~Feature `tls` sem passthrough no binário `garraia`~~ ✅ — resolvido pelo
+    PR #1213 (`tls = ["garraia-gateway/tls"]`).
   - `docker-compose.turboquant.yml` monta `docs/deployment/config.turboquant.yml` — **resolvido 2026-09-11**: config criado (provider `llamacpp` keyless apontando para o serviço `llama-turboquant:8080`).
-  - `benches/agent-framework-comparison/results/2026-08-28-vm/README.md:12`
-    cita checkout `ea06286` enquanto `environment.txt:44` registra `f34cbfa`.
-  - Comentário "16 binários" em `ci.yml:437` (são 15 arquivos em
-    `crates/garraia-auth/tests/`).
+  - ~~`benches/agent-framework-comparison/results/2026-08-28-vm/README.md:12`
+    cita checkout `ea06286`~~ ✅ — corrigido para `f34cbfa` (o que
+    `environment.txt:42` registra).
+  - ~~Comentário "16 binários" em `ci.yml`~~ ✅ — corrigido para 15 (contagem
+    real de `crates/garraia-auth/tests/*.rs`; `common/` é módulo, não binário).
   - `MemoryConfig` não tem `auto_extract`/`extraction_interval`/`max_facts`
     (a extração roda em todo turno, sem knob) — as docs que prometiam essas
     chaves foram corrigidas; decidir se viram configuração real.
-  - `.claude/commands/garra-routine.md` (linhas 2/16/44/79) ainda instrui
-    consultar o Linear.
-- `install-endpoints.yml:133-150`: remover o bloco de tolerância
-  `KNOWN_PRE_PS1_TAG="v0.3.3"` e o argumento extra do probe
-  `release-cdn/install.ps1` — o próprio workflow pede isso após a primeira
-  release ≥ v0.3.4 (v0.3.4 e v0.3.5 já publicam `install.ps1`).
+  - ~~`.claude/commands/garra-routine.md` ainda instrui consultar o Linear~~ ✅ —
+    já atualizado (linha 16 documenta a descontinuação do Linear; nenhuma
+    instrução remanescente de consultar o Linear).
+- ~~`install-endpoints.yml`: tolerância `KNOWN_PRE_PS1_TAG="v0.3.3"`~~ ✅ —
+  bloco já removido do workflow (nenhuma ocorrência); só resta o marker de
+  frescor com nota sobre tolerâncias futuras.
 - `GAR-492`: decidir no tracker interno se o épico fecha como MVP completo ou
   se abre follow-ups — **execução provider-backed das native skills ✅ Done**
   (PR #1218); resta o dogfood em bug real com relatório de review.
