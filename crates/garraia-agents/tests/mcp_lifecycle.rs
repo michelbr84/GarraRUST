@@ -36,6 +36,7 @@ async fn connect(manager: &Arc<McpManager>, name: &str, extra: &[&str]) {
             None,
             5,
             1,
+            false,
         )
         .await
         .expect("fixture server should connect");

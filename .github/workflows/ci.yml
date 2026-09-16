@@ -324,18 +324,26 @@ jobs:
 
       - name: Run clippy + tests (mcp)
         # Buraco vizinho do `mcp-http` acima: `crates/garraia-agents` declara
-        # `default = []` e `mcp = ["dep:rmcp"]`, e o unico alvo de teste que
-        # exercita o ciclo de vida real do MCP
-        # (`crates/garraia-agents/tests/mcp_lifecycle.rs`) comeca com
+        # `default = []` e `mcp = ["dep:rmcp"]`, e tanto `pub mod mcp` quanto
+        # os alvos de teste que exercitam o ciclo de vida real
+        # (`tests/mcp_lifecycle.rs`, `tests/mcp_child_env.rs`) estao atras de
         # `#![cfg(feature = "mcp")]`. Como nenhum job passava `--features mcp`
-        # — e `--all-features` nao e usado em lugar nenhum —, os tres testes
-        # (`tool_survives_reconnect`, `detects_dead_child_and_reconnects`,
-        # `disconnect_all_is_bounded_with_stubborn_child`) nunca rodavam no CI.
-        # Issue #1089. O clippy vem junto pelo mesmo motivo dos outros steps:
-        # sem ele o codigo sob a feature apodrece sem aviso.
+        # — e `--all-features` nao e usado em lugar nenhum —, nada disso
+        # rodava no CI. Issue #1089.
+        #
+        # O `cargo test` aqui NAO nomeia alvo de proposito. A versao anterior
+        # deste step era `--test mcp_lifecycle`, um alvo unico, entao todo
+        # arquivo de teste novo sob a feature nascia compilado e nunca
+        # executado — foi exatamente o que aconteceu com `mcp_child_env.rs` e
+        # com os testes unitarios de `src/mcp/` (#1075). Sem `--test`, o cargo
+        # roda a lib e TODOS os alvos de integracao da feature, e um arquivo
+        # novo entra na cobertura sem ninguem lembrar de editar este YAML.
+        #
+        # O clippy vem junto pelo mesmo motivo dos outros steps: sem ele o
+        # codigo sob a feature apodrece sem aviso.
         run: |
           cargo clippy -p garraia-agents --features mcp --all-targets -- -D warnings
-          cargo test -p garraia-agents --features mcp --test mcp_lifecycle
+          cargo test -p garraia-agents --features mcp
 
       - name: Run clippy + tests (signal)
         # Mesmo buraco do `mcp-http` acima, e do `auth-integration` mais
@@ -443,19 +451,28 @@ jobs:
       # s3_compat.rs INTEIRO e `#[cfg(feature = "storage-s3")]`, entao
       # nenhum job compilava o backend S3 de producao — clippy com a
       # feature ligada chegou a falhar sem ninguem ver. Step proprio, e nao
-      # mais um bloco no step dos canais, pelo que o step abaixo explica
+      # mais um bloco no step dos canais, pelo que os steps abaixo explicam
       # sobre o alcance real deste gate.
+      - name: Pre-pull MinIO image for testcontainers
+        # Dois motivos, na ordem de importancia. (1) Se o registry parar de
+        # servir a imagem — foi o que o Docker Hub fez com `minio/minio`,
+        # #1230 — a falha aparece AQUI, com o erro do registry no log, em vez
+        # de virar um timeout opaco dentro do testcontainer. (2) Mesmo
+        # racional do pre-pull do job auth-integration: warm pull de poucos
+        # segundos em vez do cold start dentro do teste. O job roda so em
+        # ubuntu-latest (sem matriz de OS), onde o Docker vem pre-instalado,
+        # entao nao ha o que condicionar por `runner.os` aqui.
+        run: docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+
       - name: Run clippy + tests (storage-s3)
         # ATENCAO ao ler um verde daqui: este step cobre COMPILACAO, clippy e
         # os testes unitarios do backend S3, E a suite de integracao real
-        # contra MinIO (tests/s3_integration.rs). O repositorio `minio/minio`
-        # foi REMOVIDO do Docker Hub (#1230: "object not found" para o repo
-        # inteiro, nao so a tag) — o teste agora puxa a mesma imagem/tag de
-        # `quay.io/minio/minio`. GARRAIA_REQUIRE_DOCKER="1" transforma em
-        # falha o skip que o teste faria se o container nao subir, para que
-        # um verde aqui prove que o MinIO rodou de verdade (segundos, nao
-        # milissegundos). `--nocapture` deixa o log do container visivel se
-        # algo der errado.
+        # contra MinIO (tests/s3_integration.rs). A imagem vem do quay.io
+        # pelo motivo que o step de pre-pull acima explica (#1230).
+        # GARRAIA_REQUIRE_DOCKER="1" transforma em falha o skip que o teste
+        # faria se o container nao subir, para que um verde aqui prove que o
+        # MinIO rodou de verdade (segundos, nao milissegundos). `--nocapture`
+        # deixa o log do container visivel se algo der errado.
         env:
           GARRAIA_REQUIRE_DOCKER: "1"
         run: |

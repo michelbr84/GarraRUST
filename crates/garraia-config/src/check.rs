@@ -2358,6 +2358,7 @@ mod tests {
                 memory_limit_mb: None,
                 max_restarts: None,
                 restart_delay_secs: None,
+                inherit_env: false,
             },
         );
         let findings = validate(&cfg);
