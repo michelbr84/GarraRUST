@@ -288,11 +288,11 @@
       "alert_number": 113,
       "rule_id": "rust/cleartext-logging",
       "path": "crates/garraia-cli/src/wizard/mod.rs",
-      "line": 769,
+      "line": 773,
       "sink_snippet": "println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\");",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "`println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\")` imprime o NOME da entrada do cofre, nunca o segredo. `cloud_secret` e `Option<(&str, &str)>` (wizard/mod.rs:630); o destructuring `(entry, key)` manda o `key` exclusivamente para `vault.set(entry, key)` na linha anterior, e o `println!` interpola apenas `entry`. CodeQL contamina `entry` por ele vir do mesmo tuple que `key`. Re-audit 2026-08-30: esta entrada apontava para a linha 640 e descrevia outro statement — o `eprintln!(\"Warning: vault open failed ({e})...\")`, hoje na linha 643. O alerta vivo sempre esteve ancorado no `println!` de :673, e o §5.3 deste ledger ja o descrevia corretamente; era o .json que estava errado. O drift passou despercebido porque `plan_rekey` pulava entradas cujo numero seguia aberto sem validar a chave — corrigido no mesmo PR.",
+      "justification": "`println!(\"  Cloud provider API key encrypted in vault (entry {entry}).\")` imprime o NOME da entrada do cofre, nunca o segredo. `cloud_secret` e `Option<(&str, &str)>` (wizard/mod.rs:630); o destructuring `(entry, key)` manda o `key` exclusivamente para `vault.set(entry, key)` na linha anterior, e o `println!` interpola apenas `entry`. CodeQL contamina `entry` por ele vir do mesmo tuple que `key`. Re-audit 2026-08-30: esta entrada apontava para a linha 640 e descrevia outro statement — o `eprintln!(\"Warning: vault open failed ({e})...\")`, hoje na linha 643. O alerta vivo sempre esteve ancorado no `println!` de :673, e o §5.3 deste ledger ja o descrevia corretamente; era o .json que estava errado. O drift passou despercebido porque `plan_rekey` pulava entradas cujo numero seguia aberto sem validar a chave — corrigido no mesmo PR. **Reancorada 2026-09-16 (PR #1256):** o sink desceu de `:769` para `:773` porque o comando `garra whatsapp` acrescentou 4 linhas de `use`/roteamento acima deste ponto em `wizard/mod.rs`. Mesmo statement, mesma funcao, mesmo sink — o `sink_snippet` nao mudou um byte.",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-113"
     },
