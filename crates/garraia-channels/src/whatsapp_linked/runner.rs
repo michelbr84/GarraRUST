@@ -51,17 +51,35 @@ const TICK: Duration = Duration::from_secs(1);
 /// verdade. O contador zera a CADA evento, inclusive `log` e `status`.
 pub const DEFAULT_STALL_AFTER_SECS: u64 = 90;
 
-/// Ajustes de [`pair`]. Existe para o teste poder encurtar o prazo de silencio
-/// sem esperar 90 s de relogio real; producao usa o [`Default`].
+/// Silencio maximo **depois de conectar**, em segundos.
+///
+/// O prazo acima exclui [`Phase::Connected`] de proposito: conectado, o
+/// `pair` para de contar e espera o `session_update` final, porque sair antes
+/// gravaria um blob sem as chaves da sincronizacao. So que "espera" sem prazo
+/// e pendurar o terminal para sempre — uma ponte que conecta e nunca fecha o
+/// stdout nao tem nenhum outro prazo, nem do lado dela nem daqui.
+///
+/// Este e o teto desse ultimo trecho. Estourá-lo **nao** e erro: o que ja
+/// chegou e gravado pelo caminho normal de saida, e a ausencia do blob vira a
+/// mesma mensagem explicita de sempre. 60 s e muito mais do que a
+/// sincronizacao final leva e muito menos do que "para sempre".
+pub const DEFAULT_FINAL_FLUSH_SECS: u64 = 60;
+
+/// Ajustes de [`pair`]. Existe para o teste poder encurtar os prazos de
+/// silencio sem esperar minutos de relogio real; producao usa o [`Default`].
 #[derive(Debug, Clone, Copy)]
 pub struct PairOptions {
+    /// Silencio maximo ANTES de conectar.
     pub stall_after_secs: u64,
+    /// Silencio maximo DEPOIS de conectar.
+    pub final_flush_secs: u64,
 }
 
 impl Default for PairOptions {
     fn default() -> Self {
         Self {
             stall_after_secs: DEFAULT_STALL_AFTER_SECS,
+            final_flush_secs: DEFAULT_FINAL_FLUSH_SECS,
         }
     }
 }
@@ -258,9 +276,18 @@ pub async fn pair_with(
 
             _ = ticker.tick() => {
                 now += 1;
-                if now.saturating_sub(last_event_secs) >= options.stall_after_secs
-                    && machine.phase() != Phase::Connected
-                {
+                let silent_for = now.saturating_sub(last_event_secs);
+                if machine.phase() == Phase::Connected {
+                    if silent_for >= options.final_flush_secs {
+                        // Conectado e mudo: o `session_update` final ou ja
+                        // chegou, ou nao vem mais. Fecha pelo caminho normal
+                        // de saida — o que chegou e gravado, e a falta dele
+                        // vira erro explicito la embaixo.
+                        let _ = conn.send(&BridgeCommand::Shutdown).await;
+                        conn.kill().await;
+                        break;
+                    }
+                } else if silent_for >= options.stall_after_secs {
                     let hint = conn.stderr_hint();
                     let _ = conn.send(&BridgeCommand::Shutdown).await;
                     conn.kill().await;
@@ -522,8 +549,33 @@ fn persist(store: &SessionStore, key: &SessionKey, blob: &SessionBlob) {
     }
 }
 
-/// Loop de longa duracao. Reconecta com o backoff da maquina de estados ate
-/// `cancel` ou ate a sessao morrer.
+/// Loop de longa duracao. Reconecta com backoff proprio ate `cancel` ou ate a
+/// sessao morrer.
+///
+/// # O `serve` NAO usa a [`Machine`], e isso e deliberado
+///
+/// A maquina de estados e do [`pair`]. Aqui ela era alimentada e nunca lida —
+/// dava para arrancar as duas chamadas e nenhum teste piscava. Em vez de
+/// fingir, o acoplamento saiu; as tres razoes pelas quais liga-la de verdade
+/// seria pior:
+///
+/// 1. **A queda que mais acontece nao emite evento.** O filho morre (crash,
+///    OOM, `kill`) e o stdout so fecha. O unico evento que a maquina recebe
+///    disso e [`Event::BridgeExited`], que a partir de `Connected` e terminal
+///    ([`Failure::BridgeGone`]) — de proposito, porque e assim que o `pair`
+///    para. Dirigir o `serve` pela maquina significaria nunca reconectar
+///    depois de um crash, ou inverter uma transicao da qual o `pair` depende.
+/// 2. **[`Effect::ScheduleReconnect`] vem com jitter zero.** A maquina e pura
+///    e nao sorteia: ela chama `backoff_ms(attempt, 0.0)`. Consumir o efeito
+///    jogaria fora o jitter que este loop injeta — o mesmo jitter que o doc do
+///    `state.rs` diz existir para N instancias nao reconectarem no mesmo
+///    milissegundo.
+/// 3. **Um `Machine` resetado a cada tentativa nao guarda nada** que o
+///    contador `attempt` daqui ja nao guarde.
+///
+/// A metade de reconexao do `state.rs` continua publica e testada na tabela
+/// unitaria, para quem quiser um driver dirigido por ela; nenhum driver deste
+/// modulo e.
 ///
 /// `outbound` e o outro lado da costura: o gateway manda
 /// [`BridgeCommand::Send`], `Read` e `Typing` por ele. Os comandos mandados
@@ -532,7 +584,9 @@ fn persist(store: &SessionStore, key: &SessionKey, blob: &SessionBlob) {
 /// enfileirar aqui esconderia do gateway que ele precisa decidir isso.
 ///
 /// `jitter` e injetado (o chamador passa `rand`), pelo mesmo motivo de a
-/// maquina nao sortear: o teste precisa de intervalos deterministicos.
+/// maquina nao sortear: o teste precisa de intervalos deterministicos — e
+/// **este backoff e o unico que existe no `serve`**, entao o teste conta as
+/// chamadas de `jitter` para que arranca-lo nao passe em silencio.
 pub async fn serve(
     launcher: Arc<dyn BridgeLauncher>,
     store: SessionStore,
@@ -542,9 +596,7 @@ pub async fn serve(
     mut cancel: watch::Receiver<bool>,
     jitter: impl Fn() -> f64 + Send,
 ) -> Result<(), RunError> {
-    let mut machine = Machine::new();
     let mut attempt: u32 = 0;
-    let mut now: u64 = 0;
 
     loop {
         if *cancel.borrow() {
@@ -561,8 +613,6 @@ pub async fn serve(
             sink.as_ref(),
             &mut outbound,
             &mut cancel,
-            &mut machine,
-            &mut now,
         )
         .await
         {
@@ -611,8 +661,6 @@ async fn serve_once(
     sink: &dyn InboundSink,
     outbound: &mut mpsc::Receiver<BridgeCommand>,
     cancel: &mut watch::Receiver<bool>,
-    machine: &mut Machine,
-    now: &mut u64,
 ) -> Result<ServeExit, RunError> {
     let blob = store.load(key)?;
     let mut conn = BridgeConnection::spawn(launcher).await?;
@@ -669,12 +717,10 @@ async fn serve_once(
                         ServeExit::Dropped
                     });
                 };
-                *now += 1;
                 match event {
                     BridgeEvent::SessionUpdate { ref session, .. } => persist(store, key, session),
                     BridgeEvent::Message(ref msg) => sink.deliver((**msg).clone()),
                     BridgeEvent::Connected { ref jid, .. } => {
-                        machine.on(Event::Connected, *now);
                         sink.on_connection(jid.as_ref(), true);
                     }
                     BridgeEvent::LoggedOut => saw_logged_out = true,
@@ -683,9 +729,10 @@ async fn serve_once(
                         reason_code,
                         ..
                     } => dead_reason_code = reason_code,
-                    _ => {
-                        apply(machine, &event, *now);
-                    }
+                    // Os demais eventos nao movem nada aqui: quem decide
+                    // reconexao neste driver e o codigo de saida do filho, no
+                    // braco acima, e nao uma fase de maquina.
+                    _ => {}
                 }
             }
         }

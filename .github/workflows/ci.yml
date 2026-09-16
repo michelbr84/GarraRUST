@@ -424,6 +424,27 @@ jobs:
           cargo clippy -p garraia-channels --features line --all-targets -- -D warnings
           cargo test -p garraia-channels --features line --lib
 
+      - name: Run clippy + tests (whatsapp-linked)
+        # Variacao do mesmo buraco (#1238). Aqui a feature nao esta OFF no
+        # `--workspace`: o `garraia-cli` a liga, e a unificacao de features do
+        # cargo a acende para o workspace inteiro. A cobertura existe, mas por
+        # ACIDENTE — no dia em que alguem tirar `features = ["whatsapp-linked"]`
+        # da dependencia do CLI, ou mover o comando para tras de outra feature,
+        # o canal inteiro sai do CI em silencio, que e exatamente o modo de
+        # falha que os comentarios do `signal` e do `line` acima descrevem.
+        #
+        # Concreto: `apply_child_env` (`env_clear` + allowlist R3) e o unico
+        # controle que impede o filho `node` de herdar `ANTHROPIC_API_KEY`,
+        # `GARRAIA_JWT_SECRET`, a passphrase do cofre e oito vetores de
+        # execucao de codigo (`NODE_OPTIONS`, `LD_PRELOAD`, `NPM_CONFIG_*`).
+        # O teste que o prova morre junto com este step.
+        #
+        # Os testes de integracao entram junto (sem `--lib`): e neles que o
+        # ciclo de vida do processo filho roda contra a fixture Python.
+        run: |
+          cargo clippy -p garraia-channels --features whatsapp-linked --all-targets -- -D warnings
+          cargo test -p garraia-channels --features whatsapp-linked
+
       - name: Run clippy + tests (google_chat, teams, matrix, irc, voice)
         # Fecha o mesmo buraco dos dois steps acima para as cinco features
         # restantes de `garraia-channels`. Todas sao OFF por default, entao

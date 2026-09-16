@@ -423,6 +423,7 @@ async fn a_silent_bridge_makes_the_driver_give_up_on_its_own() {
             never_cancelled(),
             PairOptions {
                 stall_after_secs: 3,
+                ..PairOptions::default()
             },
         ),
     )
@@ -445,22 +446,68 @@ async fn a_slow_but_progressing_pairing_is_not_cut_short() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, key) = store_in(&dir);
 
-    // Dois QRs com 2 s de validade cada, e um prazo de silencio de 3 s: o
-    // pareamento leva mais que o prazo, mas nunca fica 3 s calado.
+    // Dois QRs de 4 s e um prazo de silencio de 7 s: o pareamento inteiro
+    // (~8 s) passa do prazo, mas o maior silencio (~4 s) fica bem abaixo dele.
+    //
+    // A folga e o ponto. Com 2 s de QR contra 3 s de prazo bastava a fixture
+    // Python levar 50% a mais que o pedido — rotineiro num `cargo test`
+    // paralelo numa maquina carregada — para o watchdog disparar num
+    // pareamento saudavel, e o teste piscava. Agora e preciso 75%. O relogio
+    // continua sendo de parede: o driver so tem `stall_after_secs` como
+    // costura, e encurtar o prazo e justamente o que o teste precisa fazer.
     let outcome = pair_with(
-        &FixtureLauncher::new("pair-expire-then-ok", dir.path().to_path_buf()).qr_expires(2.0),
+        &FixtureLauncher::new("pair-expire-then-ok", dir.path().to_path_buf()).qr_expires(4.0),
         &store,
         &key,
         &mut SilentUi,
         never_cancelled(),
         PairOptions {
-            stall_after_secs: 3,
+            stall_after_secs: 7,
+            ..PairOptions::default()
         },
     )
     .await
     .expect("o pareamento lento precisa concluir");
 
     assert!(outcome.session_saved);
+}
+
+/// O guarda de silencio exclui `Phase::Connected` de proposito — conectado, o
+/// driver espera o `session_update` final. So que "espera" sem teto e o
+/// terminal pendurado para sempre: uma ponte que conecta e nunca fecha o
+/// stdout nao tem prazo nenhum, nem do lado dela nem daqui.
+///
+/// Estourar o teto NAO e erro: o que ja chegou tem de estar gravado.
+#[tokio::test]
+async fn a_bridge_that_connects_and_then_goes_quiet_is_not_waited_on_forever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pair_with(
+            &FixtureLauncher::new("connect-then-hang", dir.path().to_path_buf()),
+            &store,
+            &key,
+            &mut SilentUi,
+            never_cancelled(),
+            PairOptions {
+                // Prazo de pareamento folgado: o unico teto que pode disparar
+                // neste cenario e o de flush final.
+                stall_after_secs: 90,
+                final_flush_secs: 3,
+            },
+        ),
+    )
+    .await
+    .expect("o driver precisa fechar SOZINHO depois de conectar, sem o timeout externo");
+
+    let outcome = outcome.expect("a sessao chegou antes do silencio: isto nao e falha");
+    assert!(
+        outcome.session_saved,
+        "o blob que a ponte entregou antes de emudecer tem de ser gravado"
+    );
+    assert!(store.exists());
 }
 
 #[tokio::test]
@@ -578,22 +625,36 @@ async fn serve_reconnects_after_a_network_flap() {
 
     let sink = Arc::new(CollectingSink::default());
     let (tx, rx) = watch::channel(false);
-    // `network-flap` conecta, cai e sai 0 a cada execucao: cada reconexao do
-    // driver produz mais um `on_connection(true)`. Com jitter 0 o primeiro
-    // degrau e 500 ms, entao 2 s cobrem varias voltas.
+    // `network-flap` em modo serve conecta, cai, reconecta dentro da propria
+    // execucao e entao SAI 0 — a ponte morre. Cada execucao produz dois
+    // `on_connection(true)`, e so uma reconexao do DRIVER produz o terceiro.
+    // Com jitter 0 o primeiro degrau e 500 ms, e cada execucao da fixture leva
+    // ~0,6 s, entao 3 s cobrem duas voltas com folga.
     let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher::new(
         "network-flap",
         dir.path().to_path_buf(),
     ));
 
+    // O `serve` nao usa a maquina de estados: o backoff entre tentativas e
+    // dele, e este contador e o que morre se alguem o arrancar. Sem ele o
+    // teste continuaria verde com o loop reconectando em busy-loop.
+    let jitter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     let (_out_tx, out_rx) = tokio::sync::mpsc::channel(1);
     let task = {
         let sink = Arc::clone(&sink);
         let store = store.clone();
-        tokio::spawn(async move { serve(launcher, store, key, sink, out_rx, rx, || 0.0).await })
+        let jitter_calls = Arc::clone(&jitter_calls);
+        tokio::spawn(async move {
+            serve(launcher, store, key, sink, out_rx, rx, move || {
+                jitter_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                0.0
+            })
+            .await
+        })
     };
 
-    tokio::time::sleep(std::time::Duration::from_millis(2_000)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(3_000)).await;
     tx.send(true).expect("cancelar");
     let _ = task.await.expect("join");
 
@@ -605,8 +666,14 @@ async fn serve_reconnects_after_a_network_flap() {
         .filter(|c| **c)
         .count();
     assert!(
-        connects >= 2,
-        "o driver precisa ter reconectado ao menos uma vez (viu {connects})"
+        connects >= 3,
+        "duas conexoes saem de uma execucao so da fixture; a terceira e a \
+primeira que exige o driver ter relancado a ponte (viu {connects})"
+    );
+    assert!(
+        jitter_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "cada reconexao tem de passar pelo backoff com jitter injetado; \
+zero chamadas significa que o `serve` voltou a reconectar em busy-loop"
     );
 }
 

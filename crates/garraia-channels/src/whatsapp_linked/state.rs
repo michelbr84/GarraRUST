@@ -157,6 +157,14 @@ pub enum Effect {
     /// Apagar o material de sessao: ela nao vale mais.
     PurgeSession,
     /// Esperar `delay_ms` e reconectar. Quem tem o relogio espera.
+    ///
+    /// **Nenhum driver deste modulo consome este efeito hoje**, e nao e
+    /// esquecimento: o `pair` deixa a propria ponte reconectar (ela ja faz
+    /// isso sozinha, com backoff proprio) e o `serve` calcula o dele porque a
+    /// queda que mais acontece la — o processo filho morrendo — nao emite
+    /// evento nenhum para a maquina ver. O contrato fica descrito e testado
+    /// para um driver futuro que queira ser dirigido por ela; ver a secao "O
+    /// `serve` NAO usa a `Machine`" em [`super::runner::serve`].
     ScheduleReconnect { attempt: u32, delay_ms: u64 },
     /// Encerrar com falha.
     Fail(Failure),
@@ -328,7 +336,10 @@ impl Machine {
                 vec![Effect::PurgeSession]
             }
 
-            // --- reconexao (modo serve) ---------------------------------------
+            // --- reconexao ----------------------------------------------------
+            // Alcancavel pelo `pair` depois de conectar (a ponte real cai e
+            // volta com 515 logo apos o pareamento). O `serve` NAO passa por
+            // aqui — ver a nota em `Effect::ScheduleReconnect`.
             (Phase::Connected, Event::Disconnected { will_retry: true }) => {
                 self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
                 let delay = backoff_ms(self.reconnect_attempts, 0.0);

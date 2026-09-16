@@ -104,8 +104,11 @@ whatsapp-linked = [
     "tokio/macros",
 ]
 
-# PDEATHSIG e RLIMIT_AS do filho `node` (`whatsapp_linked::bridge`). Mesma
-# pilha do `garraia-agents::mcp::manager`; sem feature gate porque um
+# PDEATHSIG do filho `node` (`whatsapp_linked::bridge`). **So PDEATHSIG**: ao
+# contrario do MCP, o RLIMIT_AS NAO e aplicado aqui, e o porque esta no topo do
+# `whatsapp_linked/bridge.rs` (a "cage" virtual do V8 mata o Node antes de ele
+# fazer qualquer coisa). Mesma pilha do
+# `garraia-agents::mcp::manager`; sem feature gate porque um
 # `[target.'cfg(unix)'.dependencies]` opcional so seria ligavel por um feature
 # que tambem existe fora de Unix — e contencao atras de gate e contencao que
 # alguem esquece de ligar.

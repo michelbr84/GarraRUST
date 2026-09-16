@@ -105,6 +105,8 @@ pub enum QrError {
 /// a string de pareamento e longa e um nivel maior estouraria a versao,
 /// deixando o simbolo largo demais para caber no terminal.
 pub fn render(data: &str, style: Style) -> Result<String, QrError> {
+    // `Raw` sai ANTES de codificar. Ele e o fallback de quem nao consegue
+    // desenhar nada, entao nao pode passar a depender de o encode dar certo.
     if style == Style::Raw {
         return Ok(data.to_string());
     }
@@ -130,7 +132,11 @@ pub fn render(data: &str, style: Style) -> Result<String, QrError> {
 
     let mut out = String::new();
     match style {
-        Style::Raw => unreachable!("tratado acima"),
+        // `Raw` ja saiu no early-return acima; este braco existe com o MESMO
+        // resultado so para o `match` ser total sem `unreachable!` — era o
+        // unico `panic!` em caminho de producao do slice. Repetir uma linha e
+        // mais barato do que confiar em que o early-return nunca sera movido.
+        Style::Raw => return Ok(data.to_string()),
         Style::Ascii => {
             for y in lo..hi {
                 for x in lo..hi {

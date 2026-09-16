@@ -471,8 +471,14 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         }
     };
 
-    // Sessao existente: pergunta antes de qualquer coisa destrutiva.
-    let mut had_session = store.exists();
+    // Sessao existente: pergunta, mas NAO mexe em disco ainda. Quem responde
+    // "sim" aqui ainda vai ver a tela de consentimento, ainda pode recusa-la,
+    // ainda pode dar Ctrl+C e ainda pode nao ter Node instalado — e em
+    // qualquer um desses caminhos a sessao que funcionava tem de continuar
+    // funcionando. Arquivar agora era desmontar o vinculo antes da ultima
+    // confirmacao.
+    let had_session = store.exists();
+    let mut relink = false;
     if had_session {
         println!(
             "{}",
@@ -482,19 +488,16 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                 "This machine already has a linked session."
             )
         );
+        // O texto diz o que de fato acontece: a sessao atual e ARQUIVADA
+        // (`session.enc.prev`) e so sai de cena quando o vinculo novo conclui.
+        // "Apaga" era impreciso nas duas pontas — nao apaga, e nao restaura.
         let prompt = t(
             ctx.lang,
-            "Re-vincular? Isso apaga a sessão atual",
-            "Re-link? This deletes the current session",
+            "Re-vincular? A sessão atual sai de uso e é descartada ao fim",
+            "Re-link? The current session is set aside and discarded at the end",
         );
         match prompter.confirm(prompt, false) {
-            Ok(true) => {
-                if let Err(e) = store.archive() {
-                    eprintln!("{e}");
-                    return EX_SOFTWARE;
-                }
-                had_session = false;
-            }
+            Ok(true) => relink = true,
             Ok(false) => {
                 // Nao apaga nada: segue com a sessao atual, que e o caminho
                 // idempotente (`session_found → validating → connected`).
@@ -505,9 +508,12 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             }
         }
     }
+    // Vamos mostrar um QR quando nao ha sessao, ou quando o usuario pediu para
+    // trocar a que existe.
+    let will_show_qr = !had_session || relink;
 
     // Consentimento: so quando vamos de fato mostrar um QR.
-    if !had_session && !consent(ctx, prompter) {
+    if will_show_qr && !consent(ctx, prompter) {
         println!("{}", t(ctx.lang, "Cancelado.", "Cancelled."));
         return EX_CANCELLED;
     }
@@ -563,6 +569,14 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         );
     }
 
+    // AGORA: consentimento dado, Node encontrado, dependencias prontas. Este
+    // e o ultimo ponto antes de o QR aparecer, e o primeiro em que arquivar
+    // deixa de poder desmontar um vinculo que continuaria valendo.
+    if relink && let Err(e) = store.archive() {
+        eprintln!("{e}");
+        return EX_SOFTWARE;
+    }
+
     print_instructions(ctx);
 
     let launcher = NodeLauncher::new(&node.node, &bridge_dir);
@@ -602,6 +616,15 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                     )
                 );
             }
+            // O que sai daqui e um DIRETORIO — `<data_dir>/whatsapp/default/`
+            // —, nao credencial: o blob cifrado e a chave ficam dentro dele e
+            // nenhum dos dois e lido aqui. O segmento de conta e
+            // `DEFAULT_ACCOUNT`, constante de compilacao, e e exatamente disso
+            // que depende a supressao do alerta CodeQL 173
+            // (`rust/cleartext-logging`) registrada em
+            // `docs/security/codeql-suppressions.md`. No dia em que a conta
+            // virar dinamica esta linha passa a imprimi-la, e quem avisa e o
+            // teste `every_session_store_in_the_cli_uses_the_constant_account`.
             println!(
                 "✓ {} {}.",
                 t(ctx.lang, "Sessão salva em", "Session saved in"),
@@ -663,6 +686,13 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                     t(ctx.lang, "Código do WhatsApp:", "WhatsApp code:")
                 );
             }
+            // Sem `?` e sem `eprintln!`, ao contrario dos outros call sites:
+            // aqui o runner JA apagou a sessao, e o processo ja vai sair com
+            // erro por causa disso. Falhar tambem a escrita da config nao muda
+            // o que o usuario precisa fazer (rodar `garra whatsapp` de novo) e
+            // uma segunda mensagem de erro so esconderia a primeira, que e a
+            // que importa. O `enabled` remanescente e corrigido no proximo
+            // link ou logout.
             let _ = disable_channel(ctx);
             EX_UNAVAILABLE
         }
@@ -1091,26 +1121,32 @@ pub fn write_cloud_channel(
 ) -> Result<()> {
     loader.ensure_dirs()?;
     let mut config = loader.load()?;
-    let mut settings = std::collections::HashMap::new();
+    // `entry`, e nao `insert`: uma secao `channels.whatsapp` que ja existe
+    // carrega escolhas do operador — gates, allowlists, overrides — que este
+    // comando nao conhece e nao tem por que saber. Substituir a secao inteira
+    // apagava tudo isso em silencio para quem so queria trocar um token.
+    // Mexemos exatamente nas quatro chaves que o wizard pergunta.
+    let entry = config
+        .channels
+        .entry(CLOUD_CONFIG_KEY.to_string())
+        .or_insert_with(|| ChannelConfig {
+            channel_type: CLOUD_CONFIG_KEY.to_string(),
+            enabled: Some(true),
+            settings: Default::default(),
+        });
+    entry.channel_type = CLOUD_CONFIG_KEY.to_string();
+    entry.enabled = Some(true);
     for (key, value) in [
         ("access_token", access_token),
         ("phone_number_id", phone_number_id),
         ("verify_token", verify_token),
         ("app_secret", app_secret),
     ] {
-        settings.insert(
+        entry.settings.insert(
             key.to_string(),
             serde_json::Value::String(value.to_string()),
         );
     }
-    config.channels.insert(
-        CLOUD_CONFIG_KEY.to_string(),
-        ChannelConfig {
-            channel_type: CLOUD_CONFIG_KEY.to_string(),
-            enabled: Some(true),
-            settings,
-        },
-    );
     // `ConfigLoader::save` ja aperta o arquivo para 0600 — o que importa
     // porque acabamos de escrever quatro segredos nele.
     loader.save(&config)?;

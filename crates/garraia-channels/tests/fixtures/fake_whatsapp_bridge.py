@@ -57,10 +57,13 @@ SCENARIOS = (
     # bad-protocol    started com protocol != 1
     # garbage         texto livre no stdout (proibido: stdout e so NDJSON)
     # oversized       linha acima do teto de 256 KiB
+    # connect-then-hang
+    #                 conecta, entrega a sessao e emudece SEM fechar o stdout
     "session-ok",
     "bad-protocol",
     "garbage",
     "oversized",
+    "connect-then-hang",
 )
 
 
@@ -282,6 +285,21 @@ class Bridge:
             self.disconnected(428, "network", True, 1000)
             self.connected()
             self.session_update()
+
+        if scenario == "network-flap" and mode == "serve":
+            # A ponte MORRE aqui, e e isso que obriga o driver a reconectar.
+            # Sem esta saida o processo vivia ate o `shutdown` e as duas
+            # `connected` acima saiam da MESMA execucao: o teste do lado Rust
+            # contava reconexao sem que nenhuma tivesse acontecido.
+            return EXIT_OK
+
+        if scenario == "connect-then-hang":
+            # Conectou, entregou a sessao e emudeceu sem fechar o stdout. O
+            # `pair` para de contar silencio ao conectar (ele espera o
+            # `session_update` final), entao sem o teto de flush final do
+            # driver este processo pendura o terminal para sempre.
+            self.eof.wait(self.args.hang_secs)
+            return EXIT_OK
 
         if mode == "pair":
             self.session_update()

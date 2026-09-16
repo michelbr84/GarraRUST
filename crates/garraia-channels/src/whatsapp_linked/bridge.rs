@@ -864,6 +864,77 @@ mod tests {
         assert!(all.contains(&"HOME"), "node precisa de HOME");
     }
 
+    /// O teste acima afirma o **conteudo** de duas constantes. Este afirma o
+    /// **comportamento**, e e o unico do modulo que morre se alguem apagar a
+    /// linha `cmd.env_clear()` de [`apply_child_env`]: sem ela a allowlist
+    /// deixa de ser allowlist e vira lista decorativa — o filho herda tudo,
+    /// inclusive os oito vetores de execucao de codigo que o teste acima
+    /// proibe por nome.
+    ///
+    /// **Por que nao `Command::get_envs()`**: ele e cego a `env_clear()`. O
+    /// `CommandEnv` guarda o flag `clear` separado do mapa de variaveis e o
+    /// iterador so expoe o mapa, entao `get_envs()` devolve exatamente a mesma
+    /// coisa com e sem `env_clear()` — uma asserção sobre ele passaria nos dois
+    /// lados da mutacao. So um filho de verdade responde a pergunta.
+    ///
+    /// Um unico teste, com a escrita do ambiente imediatamente antes do
+    /// `spawn`: `set_var` e global ao processo e nenhum outro teste deste
+    /// binario lanca processo.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_child_does_not_inherit_the_parent_environment() {
+        // Canarios: um segredo e dois vetores de execucao de codigo. Nenhum
+        // deles esta na allowlist, entao nenhum pode chegar ao filho.
+        const CANARIES: &[(&str, &str)] = &[
+            ("GARRAIA_JWT_SECRET", "canario-jwt"),
+            ("NODE_OPTIONS", "--require=/tmp/canario.js"),
+            ("NPM_CONFIG_REGISTRY", "http://canario.invalido"),
+        ];
+
+        let Some(env_bin) = ["/usr/bin/env", "/bin/env"]
+            .into_iter()
+            .map(Path::new)
+            .find(|p| p.is_file())
+        else {
+            // Sem `env(1)` nao ha como perguntar ao filho o que ele herdou.
+            return;
+        };
+
+        // SAFETY: `set_var` e global ao processo de teste; nenhum outro teste
+        // deste binario lanca processo filho nem le estas variaveis.
+        unsafe {
+            for (key, value) in CANARIES {
+                std::env::set_var(key, value);
+            }
+        }
+
+        let mut cmd = Command::new(env_bin);
+        apply_child_env(&mut cmd);
+        let output = cmd.output().await.expect("env(1)");
+
+        // SAFETY: idem.
+        unsafe {
+            for (key, _) in CANARIES {
+                std::env::remove_var(key);
+            }
+        }
+
+        let seen = String::from_utf8_lossy(&output.stdout);
+        for (key, _) in CANARIES {
+            assert!(
+                !seen
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{key}="))),
+                "{key} chegou ao filho — `env_clear()` nao esta sendo aplicado:\n{seen}"
+            );
+        }
+        // E o outro lado: a allowlist tem de continuar entregando o minimo.
+        assert!(
+            seen.lines().any(|line| line.starts_with("PATH=")),
+            "o filho ficou sem PATH:\n{seen}"
+        );
+    }
+
     #[test]
     fn a_missing_tool_is_reported_by_name() {
         let err = BridgeError::ToolMissing("node");

@@ -155,6 +155,53 @@ vinculado:\n{stdout}"
     );
 }
 
+/// **`Context::from_env` ponta a ponta, com uma sessao VIVA.**
+///
+/// Os testes unitarios montam o `Context` a mao, entao `from_env` — e com ela
+/// `resolved_data_dir()` — nao tinha nenhuma cobertura: apontar o
+/// `data_dir` para o lugar errado passava com tudo verde. O custo do erro e
+/// caro e silencioso: `status` diria "nenhum vinculado" numa maquina
+/// vinculada, e `link` gravaria a sessao onde o gateway nao vai procurar.
+///
+/// Este teste grava a sessao **pelo mesmo `SessionStore`** que a CLI usa, num
+/// diretorio que so o ambiente indica, e exige que o binario a encontre e
+/// consiga ABRI-LA. O irmao acima cobre o mesmo caminho para o arquivado;
+/// este cobre o vivo, que e o caso normal.
+#[test]
+fn status_finds_and_opens_a_live_session_written_where_from_env_resolves() {
+    use garraia_channels::whatsapp_linked::{
+        DEFAULT_ACCOUNT, SessionBlob, SessionKey, SessionStore,
+    };
+
+    let dir = tempdir().expect("tempdir");
+    // `resolved_data_dir()` de uma config default: `<config_dir>/data`. Se a
+    // CLI resolver outra coisa, ela nao acha o que gravamos aqui.
+    let store = SessionStore::for_data_dir(&dir.path().join("data"), DEFAULT_ACCOUNT);
+    let key = SessionKey::resolve(store.dir(), None).expect("chave");
+    store
+        .save(&SessionBlob::new("eyJhIjoxfQ=="), &key)
+        .expect("save");
+
+    let out = garra(dir.path(), &["whatsapp", "status"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        stdout.contains("Vinculado: sim"),
+        "o binario tem de achar a sessao no caminho que `from_env` resolve:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Nenhum WhatsApp pessoal vinculado"),
+        "e nao pode dizer que nao ha nada:\n{stdout}"
+    );
+    // Prova que a chave tambem foi resolvida no mesmo lugar: `status` abre o
+    // blob de verdade antes de dizer isto.
+    assert!(
+        stdout.contains("Leitura:  ok"),
+        "a sessao tem de abrir, nao so existir:\n{stdout}"
+    );
+    assert_eq!(out.status.code(), Some(0), "sessao viva e legivel: exit 0");
+}
+
 /// O comando chama-se `whatsapp`, e nao `whats-app`.
 ///
 /// Regressao real: o clap deriva o nome do subcomando em kebab-case a partir

@@ -45,6 +45,17 @@ for (const [scenario, expectedExit] of Object.entries(SCENARIOS)) {
   });
 }
 
+test('fixture "connect-then-hang" conecta, entrega a sessao e emudece', { skip }, () => {
+  const res = runFixture(['--scenario', 'connect-then-hang', ...FAST, '--hang-secs', '0.3']);
+  assert.equal(res.status, 0);
+  assert.deepEqual(lintStream(res.stdout).errors, []);
+  const types = res.stdout.trim().split('\n').map((l) => JSON.parse(l).type);
+  // O `session_update` e o ULTIMO evento: o silencio que o teto de flush
+  // final do driver Rust cobre comeca exatamente aqui.
+  assert.equal(types.at(-1), 'session_update');
+  assert.ok(types.includes('connected'));
+});
+
 test('fixture "hang" fica muda depois do QR', { skip }, () => {
   const res = runFixture(['--scenario', 'hang', ...FAST, '--hang-secs', '0.3']);
   assert.equal(res.status, 0);

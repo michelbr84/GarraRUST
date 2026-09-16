@@ -259,6 +259,90 @@ fn the_cloud_wizard_writes_the_four_keys_and_hardens_the_file() {
     }
 }
 
+/// **Premissa da supressao CodeQL do alerta 173** (`rust/cleartext-logging`,
+/// `whatsapp.rs`, sink `store.dir().display()` na mensagem de sucesso do
+/// `link`).
+///
+/// O alerta e falso-positivo por **uma** razao, e so por ela: o segmento de
+/// conta do caminho impresso e `DEFAULT_ACCOUNT`, constante de compilacao. O
+/// que vai ao stdout e `<data_dir>/whatsapp/default/` — sem identificador de
+/// usuario nenhum.
+///
+/// So que `SessionStore::for_data_dir` aceita **qualquer** string como conta, e
+/// a fatia do gateway chama a mesma funcao. No dia em que alguem passar um
+/// numero de telefone ali, tres `println!` deste comando passam a imprimi-lo e
+/// a supressao vira mentira. Este teste e o que quebra nesse dia — sem ele, a
+/// justificativa registrada no ledger nao tem nada que a sustente.
+#[test]
+fn every_session_store_in_the_cli_uses_the_constant_account() {
+    let src = include_str!("../whatsapp.rs");
+    let mut calls = 0;
+    for (idx, _) in src.match_indices("for_data_dir(") {
+        calls += 1;
+        let tail = &src[idx..src.len().min(idx + 160)];
+        assert!(
+            tail.contains("DEFAULT_ACCOUNT"),
+            "conta dinamica num SessionStore da CLI: a mensagem de sucesso do \
+`link` imprime esse caminho, e a supressao CodeQL 173 depende de a conta ser \
+constante. Trecho:\n{tail}"
+        );
+    }
+    assert!(
+        calls >= 1,
+        "o scan precisa ter achado a construcao do store"
+    );
+}
+
+/// `garra whatsapp cloud` rodado so para trocar um token nao pode levar junto
+/// o resto da secao. Gates, allowlists e overrides que o operador escreveu a
+/// mao em `channels.whatsapp` sao invisiveis para este wizard — e era
+/// exatamente por isso que reconstruir a secao do zero os apagava em silencio.
+#[test]
+fn the_cloud_wizard_keeps_settings_it_did_not_ask_about() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let loader = ConfigLoader::with_dir(dir.path());
+    loader.ensure_dirs().expect("dirs");
+
+    // O operador ja tinha a secao, com uma chave que o wizard nao conhece e um
+    // token antigo.
+    let mut config = loader.load().expect("load");
+    let mut settings = std::collections::HashMap::new();
+    settings.insert(
+        "allowed_senders".to_string(),
+        serde_json::json!(["5511999990000"]),
+    );
+    settings.insert(
+        "access_token".to_string(),
+        serde_json::Value::String("token-antigo".into()),
+    );
+    config.channels.insert(
+        "whatsapp".to_string(),
+        ChannelConfig {
+            channel_type: "whatsapp".to_string(),
+            enabled: Some(true),
+            settings,
+        },
+    );
+    loader.save(&config).expect("save");
+
+    write_cloud_channel(&loader, "token-novo", "1234567890", "meu-verify", "app-sec")
+        .expect("write");
+
+    let config = loader.load().expect("load");
+    let entry = config.channels.get("whatsapp").expect("secao");
+    assert_eq!(
+        entry.settings.get("allowed_senders"),
+        Some(&serde_json::json!(["5511999990000"])),
+        "a chave do operador tem de sobreviver a troca de token"
+    );
+    assert_eq!(
+        entry.settings.get("access_token"),
+        Some(&serde_json::Value::String("token-novo".into())),
+        "e as quatro chaves do wizard tem de ser sobrescritas"
+    );
+    assert_eq!(entry.enabled, Some(true));
+}
+
 // ---------------------------------------------------------------------------
 // status / logout
 // ---------------------------------------------------------------------------
@@ -398,11 +482,17 @@ fn an_aborted_relink_leaves_nothing_that_logout_refuses_to_clean() {
     assert!(!store.salt_path().exists());
 }
 
-/// O outro lado do F1: o estado nao pode ser invisivel. `status` tem de dizer
-/// que ha material arquivado, em vez de afirmar que nao ha nada vinculado e
-/// parar por ai.
+/// O que este teste pina: com **so** o arquivado em disco, `status` continua
+/// respondendo 69 (nao ha sessao viva) e **nao apaga nada** — ler nao e
+/// limpar.
+///
+/// O que ele **nao** pina, e o nome antigo prometia: o anuncio na tela. Um
+/// teste unitario nao le `println!`, entao apagar os dois
+/// `print_archive_warning` o deixava verde. Quem cobre o anuncio e o smoke
+/// `whatsapp_smoke::status_announces_an_archived_session_and_logout_removes_it`,
+/// que roda o binario e le o stdout de verdade — e que morre na mutacao.
 #[test]
-fn status_reports_an_archived_session_instead_of_claiming_there_is_nothing() {
+fn an_archived_session_alone_keeps_status_unavailable_and_survives_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, false);
     let store = ctx.store();
@@ -484,6 +574,44 @@ fn declining_the_consent_screen_cancels_without_touching_anything() {
     assert!(!ctx.store().exists());
     let config = loader.load().expect("load");
     assert!(!config.channels.contains_key("whatsapp_linked"));
+}
+
+/// **Nada destrutivo antes da ultima confirmacao.** Quem responde "sim" ao
+/// re-vincular ainda vai ver a tela de consentimento, ainda pode recusa-la,
+/// ainda pode dar Ctrl+C e ainda pode nao ter Node instalado. Em qualquer
+/// desses caminhos o comando devolve erro — e a sessao que funcionava tem de
+/// continuar no lugar, inteira.
+///
+/// Antes da correcao o `archive()` acontecia no `Ok(true)` do proprio prompt:
+/// a credencial era desmontada antes de a pessoa sequer ver o que estava
+/// aceitando.
+#[test]
+fn accepting_the_relink_but_failing_before_the_qr_leaves_the_session_untouched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let store = ctx.store();
+    let key = ctx.key().expect("key");
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhIjoxfQ=="),
+            &key,
+        )
+        .expect("save");
+
+    // "sim" ao re-vincular, "sim" ao consentimento — e entao o fluxo morre na
+    // deteccao do Node, que e o ponto de falha mais comum de todos.
+    let prompter = ScriptedPrompter::with_confirms(&[true, true]);
+    let code = temp_env_without_path(|| run(Action::Link, &ctx, &prompter));
+
+    assert_eq!(code, 69, "sem node");
+    assert!(
+        store.exists(),
+        "a sessao que funcionava nao pode ter saido do lugar"
+    );
+    assert!(
+        !store.archive_path().exists(),
+        "e nada pode ter sido arquivado antes do QR aparecer"
+    );
 }
 
 /// Com sessao existente e resposta "nao" ao re-vincular, o fluxo segue para a

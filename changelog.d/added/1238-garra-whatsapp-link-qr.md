@@ -13,8 +13,13 @@
   pareamento abortado nao deixa o gateway pagando timeout a cada boot. Antes
   do primeiro QR ha uma tela de consentimento: cliente de aparelho vinculado
   nao e oficial, a conta pode ser bloqueada e a recomendacao e usar um numero
-  secundario. Vincular precisa de Node.js 20 ou mais novo — so este caminho
-  precisa; a Cloud API nao.
+  secundario. **Nada destrutivo acontece antes dessa ultima confirmacao**: quem
+  pede para re-vincular so tem a sessao atual posta de lado depois de aceitar o
+  consentimento e de o Node ser encontrado, entao recusar, dar Ctrl+C ou nao
+  ter Node deixa o vinculo que funcionava exatamente como estava. E `garra
+  whatsapp cloud` rodado so para trocar um token preserva as demais chaves que
+  o operador ja tinha em `channels.whatsapp`. Vincular precisa de Node.js 20 ou
+  mais novo — so este caminho precisa; a Cloud API nao.
   **O pareamento de ponta a ponta com um telefone real e validacao manual**, e
   esta descrito passo a passo em `docs/whatsapp.md`. O CI cobre protocolo,
   maquina de estados, store cifrado, desenho do QR e ciclo de vida do processo
