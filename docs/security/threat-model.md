@@ -269,6 +269,28 @@ recola a cauda. É o que barra `raiz/link-para-fora/novo.txt` — que uma checag
 só do `parent` textual deixaria passar, e que é o vetor de escrita equivalente
 ao symlink de leitura.
 
+**E aqui está a parte contraintuitiva, que a primeira versão desta mitigação
+errou e a auditoria R4 pegou: `canonicalize` falhar não quer dizer "não
+existe", quer dizer "não resolve".** Um symlink *pendurado* — cujo alvo não
+existe — falha no `canonicalize` e existe para o `lstat`; e o `open(O_CREAT)`
+de uma escrita **segue** esse link e cria o arquivo no alvo. Com a cauda
+recolada dentro da raiz, o `starts_with` aprovava e o byte caía fora. O vetor
+plausível não passa pelo `bash`: um repositório clonado traz
+`raiz/evil -> ../../../home/u/.ssh/authorized_keys` versionado no git, o CWD é
+raiz na CLI, e uma injeção indireta no README manda escrever em `evil` — que é
+exatamente a tese da #1244. Por isso **todo componente que não canonicaliza
+ainda passa por `symlink_metadata`**: existir para o `lstat` sem resolver é
+recusa, não "cauda inexistente". O caminho é normalizado por `components()`
+antes desse `lstat`, porque com barra final (`raiz/evil/`) o `lstat` segue o
+link por POSIX e o pendurado voltaria a parecer inexistente.
+
+Custo aceito: um pendurado apontando para **dentro** da raiz também é recusado.
+Distinguir exigiria reimplementar resolução de symlink à mão — alvo relativo,
+ciclo, teto de profundidade — e fail-closed sai mais barato que uma segunda
+resolução caseira. O furo também tinha reaberto o oráculo de existência da
+terceira linha da tabela abaixo: link vivo devolvia a frase de recusa, link
+pendurado devolvia `Ok` — e escrevia.
+
 O construtor das três tools passou a **exigir** o jail: `FileReadTool::new(None)`
 não compila mais. Era o ponto exato da falha — um jail opcional é um jail
 esquecido.
@@ -279,15 +301,25 @@ esquecido.
 | **I** Information disclosure | Symlink dentro da raiz apontando para fora (`raiz/atalho → /etc`). | `canonicalize` resolve o link **antes** da comparação, que é por componente (`Path::starts_with`). | — |
 | **I** Information disclosure | Recusa distingue "não existe" de "existe mas está fora", virando oráculo. | Uma única frase para as três recusas, sem caminho e sem raiz. A mensagem útil da #923 fica só para arquivo ausente **dentro** da raiz. | — |
 | **T** Tampering | `file_write` cria arquivo fora da raiz através de um diretório-symlink. | Subida até o ancestral existente + canonicalização dele. | — |
+| **T** Tampering | `file_write` cria arquivo fora da raiz através de um symlink **pendurado** (`raiz/evil → /fora/inexistente`), versionado num repositório clonado. `canonicalize` falha por não resolver — não por não existir — e o `open(O_CREAT)` segue o link. | Cada componente que não canonicaliza passa por `symlink_metadata`: existe para o `lstat` e não resolve ⇒ recusa. Caminho normalizado por `components()` antes do `lstat`, senão a barra final (`raiz/evil/`) faz o `lstat` seguir o link. Três testes: função pura (folha e pai) e `FileWriteTool` ponta a ponta. | Pendurado para **dentro** da raiz também é recusado — fail-closed assumido. |
 | **T** Tampering | Troca de symlink entre o `canonicalize` e o `open` (TOCTOU). | Reduzida: a tool abre o caminho **resolvido**, não o original. | **Residual conhecido, não fechado.** Fechar exige abrir por descritor (`openat2` + `RESOLVE_BENEATH` no Linux), sem equivalente portátil nos três sistemas operacionais. Exige quem tenha escrita dentro da raiz. |
 | **E** Elevation of privilege | Operador põe `/` ou `$HOME` em `agent.file_roots` e desliga o jail sem perceber. | `garra config check` avisa nos dois casos; `config.hardened.example.yml` diz para não fazer. | Aviso, não erro — a decisão é do operador. |
+| **E** Elevation of privilege | O mesmo por `GARRAIA_FILE_ROOTS=/`, que **soma** raízes às da config e não aparecia em lugar nenhum: o `config check` só lia o YAML e o boot só contava raízes (`roots().len()`). O jail apertado cria pressão operacional exatamente nessa direção. | `config check` valida também a env (campo `env.GARRAIA_FILE_ROOTS`); o `info!` do boot **nomeia** as raízes e um `warn!` sai por raiz que, já resolvida, seja `/` ou o `$HOME`. Comparação depois do `canonicalize`, senão `$HOME/../$USER` passa. | Continua aviso, não erro. |
 
 **Não coberto de propósito** (cada um com o porquê):
 
-- `repo_search` não recebe caminho do modelo: ele roda `rg`/`grep` com
+- `repo_search` não recebe **caminho** do modelo: ele roda `rg`/`grep` com
   `current_dir` no `working_dir` da sessão e alvo fixo `.`, e o `file_pattern`
   vai por `--glob`, que não escapa da raiz da busca. Sem `working_dir` ele cai
-  no CWD do processo — mesma superfície de antes, nem melhor nem pior.
+  no CWD do processo — mesma superfície de antes.
+  **Correção de um parágrafo errado desta mesma seção:** a versão anterior
+  concluía daí que `repo_search` era "nem melhor nem pior", e esse raciocínio
+  olhou só o `file_pattern`. O `query` também vai como argumento — literalmente
+  `cmd.arg(query).arg(".")`, **sem nenhum `--` separando opção de operando** —
+  e a auditoria R4 achou ali injeção de flag: um `query` começando com `-` é
+  lido pelo `rg` como opção. É defeito próprio, aberto como **#1266** (P0) e
+  **não** corrigido aqui: misturá-lo ao jail de caminho tornaria as duas
+  correções mais difíceis de revisar.
 - `git_diff` e `code_review` passam `file_path` como pathspec para o `git`, que
   só enxerga o repositório. Vale registrar um defeito vizinho encontrado aqui e
   **não corrigido** nesta mudança: `GitDiffTool::run_git_command` não seta

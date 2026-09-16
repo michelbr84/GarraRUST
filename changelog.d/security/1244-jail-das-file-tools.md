@@ -28,6 +28,18 @@
   ancestral existente mais proximo e canonicaliza ele — e o que barra
   `raiz/link-para-fora/novo.txt`, que uma checagem so do `parent` textual
   deixaria passar.
+  Um quinto vetor entrou depois da auditoria de seguranca, e e o contraintuitivo:
+  `canonicalize` falhar nao quer dizer "nao existe", quer dizer "nao resolve".
+  Um symlink **pendurado** — cujo alvo nao existe — falha no `canonicalize` e
+  existe para o `lstat`, e o `open(O_CREAT)` de uma escrita segue o link e cria
+  o arquivo no alvo, fora da raiz. Bastava um repositorio clonado trazer
+  `raiz/evil -> ../../../home/u/.ssh/authorized_keys` versionado no git. Agora
+  cada componente que nao canonicaliza passa por `symlink_metadata`: existir
+  para o `lstat` sem resolver e recusa. O caminho e normalizado por
+  `components()` antes desse `lstat`, porque com barra final (`raiz/evil/`) o
+  `lstat` segue o link por POSIX e o pendurado voltaria a parecer inexistente.
+  Um pendurado apontando para dentro da raiz tambem passou a ser recusado —
+  fail-closed assumido, para nao reimplementar resolucao de symlink a mao.
   A recusa devolve **uma unica frase** ao modelo, sem o caminho, sem a raiz e
   sem distinguir "nao existe" de "existe mas esta fora" — as tres recusas sao
   byte-identicas, para a tool nao virar oraculo de existencia de arquivo. A
@@ -39,7 +51,14 @@
   nao chamam o construtor: eles pedem a tool ao runtime que
   `build_agent_runtime` montou, que e o mesmo objeto que o turno do agente usa.
   `garra config check` avisa quando `agent.file_roots` inclui `/` ou o proprio
-  `$HOME`, que devolvem `~/.ssh` e `.env` ao alcance do modelo.
+  `$HOME`, que devolvem `~/.ssh` e `.env` ao alcance do modelo — e avisa
+  tambem sobre a env `GARRAIA_FILE_ROOTS`, que soma raizes as da config e antes
+  nao passava por validacao nenhuma (`GARRAIA_FILE_ROOTS=/` desligava o jail em
+  silencio). A comparacao acontece depois do `canonicalize`, senao
+  `$HOME/../$USER` passa batido. No boot, o gateway nomeia as raizes em vez de
+  so conta-las e emite um `warn!` por raiz que, ja resolvida, seja `/` ou o
+  `$HOME`: um jail apertado cria pressao operacional exatamente na direcao da
+  unica configuracao que o desliga, e essa saida nao pode ser a silenciosa.
   Residual conhecido, registrado e nao reivindicado como resolvido: a checagem
   resolve o caminho e quem abre o arquivo e a tool, num segundo passo. Entre um
   e outro, quem tiver escrita dentro da raiz pode trocar um componente por

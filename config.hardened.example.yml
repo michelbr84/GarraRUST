@@ -88,7 +88,11 @@ agent:
   # NUNCA coloque `/` nem o seu `$HOME` aqui: os dois devolvem `~/.ssh`,
   # `~/.aws`, qualquer `.env` e este próprio arquivo ao alcance de um prompt
   # que chegou pelo Telegram. `garra config check` avisa nos dois casos.
-  # A env `GARRAIA_FILE_ROOTS` (formato de PATH) soma às raízes daqui.
+  # A env `GARRAIA_FILE_ROOTS` (formato de PATH) soma às raízes daqui — e
+  # vale a mesma regra: `GARRAIA_FILE_ROOTS=/` desliga o jail tão bem quanto
+  # `file_roots: ["/"]`. O `config check` também valida a env, e o gateway
+  # nomeia as raízes no boot e emite `warn!` para cada uma que seja `/` ou o
+  # `$HOME`.
   # file_roots:
   #   - /srv/projetos/notas
 
