@@ -145,6 +145,11 @@ test-helpers = ["garraia-auth/test-support"]
 # `cargo test -p garraia-gateway --test harness_smoke` without
 # `--features test-helpers` produces a clear Cargo-level error instead
 # of a confusing "unresolved import" error from rustc.
+[[test]]
+name = "harness_smoke"
+path = "tests/harness_smoke.rs"
+required-features = ["test-helpers"]
+
 # Issue #1242 path 2: the HTTP arm of the boot-failure `pending` registration
 # only exists under `mcp-http`. Declared here so that running this binary
 # without the feature is a Cargo-level error rather than a silent
@@ -153,11 +158,6 @@ test-helpers = ["garraia-auth/test-support"]
 name = "mcp_boot_pending_allowlist"
 path = "tests/mcp_boot_pending_allowlist.rs"
 required-features = ["mcp-http"]
-
-[[test]]
-name = "harness_smoke"
-path = "tests/harness_smoke.rs"
-required-features = ["test-helpers"]
 
 # Plan 0016 M3-T3: authed /v1/me integration tests. Same gating as
 # harness_smoke — requires the test-helpers feature so

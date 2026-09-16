@@ -14,7 +14,7 @@
 //! test here is the body of the handler.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -31,6 +31,38 @@ use garraia_gateway::state::AppState;
 use tokio::sync::Mutex;
 
 const SERVER: &str = "fake-allowlisted";
+
+/// Point this whole test binary at a throwaway config dir before any test
+/// builds an `AppState`.
+///
+/// `AppState::new` loads `ConfigLoader::default_config_dir()/allowlist.json`
+/// and calls `provision_filesystem_if_missing()`, which writes `mcp.json`
+/// into that same directory. Without this, the tests below would race each
+/// other writing the developer's real `~/.config/garraia` — a shared-state
+/// bug that has already turned `main` red once — and the restart handler
+/// would merge whatever `mcp.json` that machine happens to have into the
+/// allowlist it resolves, making the assertions depend on the host.
+///
+/// Every test calls `test_env()` as its first statement, so `set_var` runs
+/// inside the `LazyLock` initialiser while every other test thread is either
+/// blocked on the same lock or has not reached it yet.
+static TEST_ENV: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
+    let dir = tempfile::tempdir().expect("temp config dir");
+    // SAFETY: see the doc comment above — the `LazyLock` is what serialises
+    // this against the other test threads in this binary.
+    unsafe {
+        std::env::set_var("GARRAIA_CONFIG_DIR", dir.path());
+        std::env::set_var(
+            garraia_gateway::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV,
+            "1",
+        );
+    }
+    dir
+});
+
+fn test_env() {
+    LazyLock::force(&TEST_ENV);
+}
 
 /// The stdio fixture lives in `garraia-agents`; it is the same child process
 /// the MCP lifecycle tests drive, so there is only one fake server to keep
@@ -171,6 +203,7 @@ async fn restart(state: AdminState) -> (axum::http::StatusCode, serde_json::Valu
 /// callable and `tool_count` reported 2.
 #[tokio::test]
 async fn restart_preserves_the_allowlist() {
+    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec!["read_file".to_string()]).await;
@@ -220,22 +253,34 @@ async fn restart_preserves_the_allowlist() {
         .expect("test must not hang");
 }
 
-/// The other half, and the assertion that makes it worth running: a server
-/// the manager *knows* and that nobody restricted must not be tightened by a
-/// restart, **even when `config.yml` declares a narrower list**.
+/// Policy, revised in review: an allowlist the operator **declared** tightens
+/// a server whose live allowlist is empty.
 ///
-/// The previous version of this test connected with `vec![]` and asserted
-/// that everything stayed open — which `unwrap_or_default()` satisfied just
-/// as happily as the fix did, so it passed on both sides of the change and
-/// proved nothing. The live answer from the manager (`Some(vec![])`) is a
-/// real answer, not a missing one, and it has to win over the config
-/// fallback; reordering `resolve_allowlist` to consult the config first
-/// turns the two assertions below red.
+/// The first version of this test asserted the opposite — that `Some(vec![])`
+/// from the manager beat a narrower config entry — under the claim that the
+/// resolution "only narrows". That claim was false: `vec![]` is how
+/// `is_tool_allowed` spells "allow everything", so a server that happened to
+/// connect before the operator wrote `allowed_tools` could never be tightened
+/// by a restart, and the restart that was supposed to apply the operator's
+/// new policy silently applied nothing.
+///
+/// `Some(vec![])` means "the manager never had a restriction for this name",
+/// not "the operator chose not to restrict it" — the manager cannot tell
+/// those apart and the written config can. Flip `resolve_allowlist` back to
+/// returning the live empty list and this test goes red at `tool_count`.
 #[tokio::test]
-async fn live_empty_allowlist_wins_over_a_narrower_config_entry() {
+async fn a_declared_allowlist_tightens_a_server_that_was_never_restricted() {
+    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec![]).await;
+        assert!(
+            manager
+                .call_tool(SERVER, "write_file", HashMap::new())
+                .await
+                .is_ok(),
+            "precondition: nothing restricts the server before the restart"
+        );
 
         let state = admin_state_with(
             &manager,
@@ -246,16 +291,139 @@ async fn live_empty_allowlist_wins_over_a_narrower_config_entry() {
         let (status, json) = restart(state).await;
         assert_eq!(status, axum::http::StatusCode::OK, "restart body: {json}");
         assert_eq!(
-            json["tool_count"], 2,
-            "the live (empty) allowlist is authoritative — the config entry \
-             must not retroactively restrict a running server: {json}"
+            json["tool_count"], 1,
+            "the declared allowlist must be applied — an empty live list is \
+             'never restricted', not 'deliberately unrestricted': {json}"
         );
+
+        let err = manager
+            .call_tool(SERVER, "write_file", HashMap::new())
+            .await
+            .expect_err("the declared allowlist must block write_file");
         assert!(
-            manager
-                .call_tool(SERVER, "write_file", HashMap::new())
-                .await
-                .is_ok(),
-            "no allowlist in force means every discovered tool stays callable"
+            err.contains("blocked by the allowed_tools allowlist"),
+            "expected the GAR-190 allowlist error, got: {err}"
+        );
+
+        manager.disconnect_all().await;
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), body)
+        .await
+        .expect("test must not hang");
+}
+
+/// The other half of that policy, and the invariant the changelog may claim:
+/// **a restart never widens what is in force.**
+///
+/// A live, non-empty allowlist is what is restricting the server right now,
+/// so a broader declaration must not be able to loosen it through a restart.
+/// Make the config branch of `resolve_allowlist` win unconditionally and this
+/// test goes red — `write_file` comes back callable.
+#[tokio::test]
+async fn a_live_allowlist_is_not_widened_by_a_broader_config_entry() {
+    test_env();
+    let body = async {
+        let manager = Arc::new(McpManager::new());
+        connect(&manager, vec!["read_file".to_string()]).await;
+
+        let state = admin_state_with(
+            &manager,
+            "python3",
+            Some(config_yml_entry(
+                "python3",
+                vec!["read_file".to_string(), "write_file".to_string()],
+            )),
+        )
+        .await;
+        let (status, json) = restart(state).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "restart body: {json}");
+        assert_eq!(
+            json["tool_count"], 1,
+            "a restart must not widen the allowlist that is in force: {json}"
+        );
+
+        let err = manager
+            .call_tool(SERVER, "write_file", HashMap::new())
+            .await
+            .expect_err("a broader config entry must not unlock write_file");
+        assert!(
+            err.contains("blocked by the allowed_tools allowlist"),
+            "expected the GAR-190 allowlist error, got: {err}"
+        );
+
+        manager.disconnect_all().await;
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), body)
+        .await
+        .expect("test must not hang");
+}
+
+/// Issue #1242, path 1, second review: a restart the handler **refuses** must
+/// not be the remaining way to lose the allowlist.
+///
+/// `POST /admin/api/mcp` accepts `{"url": ..., "transport": "stdio"}` — it
+/// only checks that one of `command`/`url` is present — and overwrites the
+/// registry entry of a server that is running. The restart then hits the
+/// "stdio transport requires 'command'" 400. While that check lived *after*
+/// `disconnect`, the 400 returned from a torn-down server whose allowlist had
+/// been resolved into a local variable and dropped, so the next restart
+/// resolved `None` and reconnected wide open: the exact fail-open this issue
+/// is about, reachable in two admin calls.
+///
+/// Move the `command`/`url` extraction back below `manager.disconnect(..)`
+/// and both halves of this test go red.
+#[tokio::test]
+async fn a_rejected_restart_leaves_the_live_server_and_its_allowlist_alone() {
+    test_env();
+    let body = async {
+        let manager = Arc::new(McpManager::new());
+        connect(&manager, vec!["read_file".to_string()]).await;
+
+        // The registry entry the admin API would have written: stdio, no
+        // command, only a url. Nothing declares this server in the config, so
+        // `pending`/the live connection is the only place its allowlist can
+        // live.
+        let mut broken = server_config();
+        broken.command = None;
+        broken.url = Some("http://127.0.0.1:1/mcp".to_string());
+        broken.transport = Some(garraia_gateway::mcp::McpTransportType::Stdio);
+        let state = admin_state_with(&manager, "python3", None).await;
+        state
+            .app_state
+            .mcp_registry
+            .add_server(SERVER, broken)
+            .await;
+
+        let (status, json) = restart(state).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "a stdio entry without a command must be refused: {json}"
+        );
+
+        // Half 1: the refusal happened before anything was torn down, so the
+        // server is still connected and still restricted.
+        assert_eq!(
+            manager.allowed_tools_for(SERVER).await,
+            Some(vec!["read_file".to_string()]),
+            "a refused restart must not drop the allowlist of a live server"
+        );
+        let err = manager
+            .call_tool(SERVER, "write_file", HashMap::new())
+            .await
+            .expect_err("the live server must stay restricted after a 400");
+        assert!(
+            err.contains("blocked by the allowed_tools allowlist"),
+            "expected the GAR-190 allowlist error, got: {err}"
+        );
+
+        // Half 2: and the NEXT restart, once the entry is usable again, still
+        // reconnects with that allowlist.
+        let (status, json) = restart(admin_state(&manager).await).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "restart body: {json}");
+        assert_eq!(
+            json["tool_count"], 1,
+            "the allowlist must survive a refused restart: {json}"
         );
 
         manager.disconnect_all().await;
@@ -277,6 +445,7 @@ async fn live_empty_allowlist_wins_over_a_narrower_config_entry() {
 /// and this test goes red at `tool_count`.
 #[tokio::test]
 async fn a_failed_restart_does_not_lose_the_allowlist_for_the_next_one() {
+    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec!["read_file".to_string()]).await;
@@ -333,6 +502,7 @@ async fn a_failed_restart_does_not_lose_the_allowlist_for_the_next_one() {
 /// "allow everything".
 #[tokio::test]
 async fn restart_recovers_the_allowlist_from_config_when_the_manager_forgot() {
+    test_env();
     let body = async {
         // Never connected: `allowed_tools_for` answers `None` for SERVER.
         let manager = Arc::new(McpManager::new());
@@ -378,6 +548,7 @@ async fn restart_recovers_the_allowlist_from_config_when_the_manager_forgot() {
 /// documented "create, then restart to connect" flow would stop working.
 #[tokio::test]
 async fn a_server_that_was_never_restricted_still_starts() {
+    test_env();
     let body = async {
         let manager = Arc::new(McpManager::new());
 
