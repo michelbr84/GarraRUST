@@ -850,10 +850,14 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let data = tmp.path().join("data");
 
+        // A ordem importa para o diagnostico: a primeira conta da lista e uma
+        // que de fato SAI do data dir, entao, com a validacao arrancada, quem
+        // falha e a asserção de contencao — e a mensagem mostra o caminho real
+        // que a sessao cifrada acabou de ocupar la fora.
         for account in [
+            "../../fuga",
             "..",
             "../..",
-            "../../fuga",
             "sub/dir",
             "sub\\dir",
             "/absoluta",
