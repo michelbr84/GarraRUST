@@ -294,6 +294,41 @@ impl McpManager {
             .or_insert_with(|| RestartState::new(max_restarts, restart_delay_secs));
     }
 
+    /// Issue #1242: the HTTP twin of [`register_pending_stdio`].
+    ///
+    /// Boot only queued *stdio* failures. An HTTP server configured with a
+    /// GAR-190 allowlist whose handshake failed therefore left no trace of
+    /// that allowlist anywhere — `connections` never got an entry and
+    /// `pending` was skipped — so the first admin restart resolved `None`
+    /// and reconnected the server wide open.
+    #[cfg(feature = "mcp-http")]
+    pub async fn register_pending_http(
+        &self,
+        name: &str,
+        url: &str,
+        timeout_secs: u64,
+        allowed_tools: Vec<String>,
+        max_restarts: u32,
+        restart_delay_secs: u64,
+    ) {
+        self.pending.write().await.insert(
+            name.to_string(),
+            PendingServer {
+                params: ConnectionParams::Http {
+                    url: url.to_string(),
+                    timeout_secs,
+                },
+                allowed_tools,
+            },
+        );
+        // The retry loop reads max_restarts/backoff from here.
+        self.restart_states
+            .write()
+            .await
+            .entry(name.to_string())
+            .or_insert_with(|| RestartState::new(max_restarts, restart_delay_secs));
+    }
+
     /// Connect to an MCP server by spawning a child process.
     ///
     /// `allowed_tools`: GAR-190 tool allowlist. Pass an empty `Vec` to allow all tools.

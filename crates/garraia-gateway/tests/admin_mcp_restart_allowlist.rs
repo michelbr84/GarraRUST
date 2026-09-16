@@ -70,16 +70,52 @@ fn admin() -> AuthenticatedAdmin {
     }
 }
 
+/// What the `mcp:` section of the running `config.yml` declares for `SERVER`.
+///
+/// This is the only place an allowlist can be *recovered* from once the
+/// manager has forgotten it, so the tests need to be able to set it and to
+/// leave it absent.
+fn config_yml_entry(command: &str, allowed_tools: Vec<String>) -> garraia_config::McpServerConfig {
+    garraia_config::McpServerConfig {
+        command: command.to_string(),
+        args: fixture_args(),
+        env: HashMap::new(),
+        transport: "stdio".to_string(),
+        url: None,
+        enabled: Some(true),
+        timeout: Some(10),
+        allowed_tools,
+        memory_limit_mb: None,
+        max_restarts: Some(5),
+        restart_delay_secs: Some(1),
+    }
+}
+
 /// Build the `AdminState` the handler receives, with `manager` already wired
 /// in and `SERVER` registered exactly as the registry would hold it.
-async fn admin_state(manager: &Arc<McpManager>) -> AdminState {
+///
+/// `registry_command` is what the *registry* will tell the handler to spawn —
+/// pointing it at a command that does not exist is how a test reproduces a
+/// restart whose reconnect fails. `declared` is the `config.yml` entry, absent
+/// by default.
+async fn admin_state_with(
+    manager: &Arc<McpManager>,
+    registry_command: &str,
+    declared: Option<garraia_config::McpServerConfig>,
+) -> AdminState {
+    let mut app_config = AppConfig::default();
+    if let Some(entry) = declared {
+        app_config.mcp.insert(SERVER.to_string(), entry);
+    }
     let mut state = AppState::new(
-        AppConfig::default(),
+        app_config,
         Arc::new(AgentRuntime::new()),
         ChannelRegistry::new(),
     );
     state.mcp_manager_arc = Some(Arc::clone(manager));
-    state.mcp_registry.add_server(SERVER, server_config()).await;
+    let mut registry_config = server_config();
+    registry_config.command = Some(registry_command.to_string());
+    state.mcp_registry.add_server(SERVER, registry_config).await;
 
     AdminState {
         store: Arc::new(Mutex::new(
@@ -88,6 +124,12 @@ async fn admin_state(manager: &Arc<McpManager>) -> AdminState {
         app_state: Arc::new(state),
         encryption_key: Arc::new(vec![0u8; 32]),
     }
+}
+
+/// The common case: registry points at the working fixture, `config.yml`
+/// declares nothing.
+async fn admin_state(manager: &Arc<McpManager>) -> AdminState {
+    admin_state_with(manager, "python3", None).await
 }
 
 async fn connect(manager: &Arc<McpManager>, allowed_tools: Vec<String>) {
@@ -178,27 +220,172 @@ async fn restart_preserves_the_allowlist() {
         .expect("test must not hang");
 }
 
-/// The other half: a server nobody restricted must not be tightened by a
-/// restart. `allowed_tools_for` answers `Some(vec![])` for it, which the
-/// handler passes through unchanged.
+/// The other half, and the assertion that makes it worth running: a server
+/// the manager *knows* and that nobody restricted must not be tightened by a
+/// restart, **even when `config.yml` declares a narrower list**.
+///
+/// The previous version of this test connected with `vec![]` and asserted
+/// that everything stayed open — which `unwrap_or_default()` satisfied just
+/// as happily as the fix did, so it passed on both sides of the change and
+/// proved nothing. The live answer from the manager (`Some(vec![])`) is a
+/// real answer, not a missing one, and it has to win over the config
+/// fallback; reordering `resolve_allowlist` to consult the config first
+/// turns the two assertions below red.
 #[tokio::test]
-async fn restart_leaves_an_unrestricted_server_open() {
+async fn live_empty_allowlist_wins_over_a_narrower_config_entry() {
     let body = async {
         let manager = Arc::new(McpManager::new());
         connect(&manager, vec![]).await;
 
-        let (status, json) = restart(admin_state(&manager).await).await;
+        let state = admin_state_with(
+            &manager,
+            "python3",
+            Some(config_yml_entry("python3", vec!["read_file".to_string()])),
+        )
+        .await;
+        let (status, json) = restart(state).await;
         assert_eq!(status, axum::http::StatusCode::OK, "restart body: {json}");
         assert_eq!(
             json["tool_count"], 2,
-            "every tool stays visible when no allowlist was ever configured: {json}"
+            "the live (empty) allowlist is authoritative — the config entry \
+             must not retroactively restrict a running server: {json}"
         );
         assert!(
             manager
                 .call_tool(SERVER, "write_file", HashMap::new())
                 .await
                 .is_ok(),
-            "no allowlist means every discovered tool stays callable"
+            "no allowlist in force means every discovered tool stays callable"
+        );
+
+        manager.disconnect_all().await;
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), body)
+        .await
+        .expect("test must not hang");
+}
+
+/// Issue #1242, path 1 — the one the reproduction walked.
+///
+/// A restart whose reconnect fails leaves the manager with **no** record of
+/// the server: `disconnect` removed the connection before the reconnect was
+/// attempted. The handler therefore has to park the allowlist it resolved in
+/// `pending`, or the *next* restart resolves `None` and reconnects the server
+/// wide open — a failed restart quietly unlocking what it was protecting.
+///
+/// Delete the `register_pending_after_failure` call in `admin_restart_mcp`
+/// and this test goes red at `tool_count`.
+#[tokio::test]
+async fn a_failed_restart_does_not_lose_the_allowlist_for_the_next_one() {
+    let body = async {
+        let manager = Arc::new(McpManager::new());
+        connect(&manager, vec!["read_file".to_string()]).await;
+
+        // Restart #1: the registry hands the handler a command that cannot be
+        // spawned, so the reconnect fails after `disconnect` already ran.
+        let broken = admin_state_with(&manager, "garraia-no-such-binary-1242", None).await;
+        let (status, json) = restart(broken).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_GATEWAY,
+            "a reconnect against a missing binary must fail: {json}"
+        );
+
+        // Restart #2, this time with a command that works. Nothing else has
+        // re-declared the allowlist: `config.yml` is empty in this test, so
+        // the only way it can survive is the `pending` entry left above.
+        let (status, json) = restart(admin_state(&manager).await).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "restart body: {json}");
+        assert_eq!(
+            json["tool_count"], 1,
+            "the allowlist must survive a failed restart: {json}"
+        );
+
+        let err = manager
+            .call_tool(SERVER, "write_file", HashMap::new())
+            .await
+            .expect_err("write_file must stay blocked after a failed restart");
+        assert!(
+            err.contains("blocked by the allowed_tools allowlist"),
+            "expected the GAR-190 allowlist error, got: {err}"
+        );
+
+        manager.disconnect_all().await;
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(120), body)
+        .await
+        .expect("test must not hang");
+}
+
+/// Issue #1242, the generalisation of path 2 — a server the manager has no
+/// record of at all.
+///
+/// Path 2 is the HTTP shape of this: `bootstrap` parked only *stdio* boot
+/// failures in `pending`, so an HTTP server whose boot handshake failed left
+/// the manager knowing nothing about it and the very first restart resolved
+/// `None`. The resolution that fixes it lives above the transport split, so
+/// it is driven here with the stdio fixture: the manager is empty, the
+/// registry has the server (that is how it reaches the handler at all), and
+/// the running config is the only thing that still knows the allowlist.
+///
+/// Delete the `config.mcp.get(..)` branch of `resolve_allowlist` and this
+/// test goes red — `NeverRestricted` hands the reconnect `vec![]`, which is
+/// "allow everything".
+#[tokio::test]
+async fn restart_recovers_the_allowlist_from_config_when_the_manager_forgot() {
+    let body = async {
+        // Never connected: `allowed_tools_for` answers `None` for SERVER.
+        let manager = Arc::new(McpManager::new());
+        assert!(
+            manager.allowed_tools_for(SERVER).await.is_none(),
+            "precondition: the manager must not know this server"
+        );
+
+        let state = admin_state_with(
+            &manager,
+            "python3",
+            Some(config_yml_entry("python3", vec!["read_file".to_string()])),
+        )
+        .await;
+        let (status, json) = restart(state).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "restart body: {json}");
+        assert_eq!(
+            json["tool_count"], 1,
+            "the config-declared allowlist must be applied to the reconnect: {json}"
+        );
+
+        let err = manager
+            .call_tool(SERVER, "write_file", HashMap::new())
+            .await
+            .expect_err("write_file must be blocked by the config-declared allowlist");
+        assert!(
+            err.contains("blocked by the allowed_tools allowlist"),
+            "expected the GAR-190 allowlist error, got: {err}"
+        );
+
+        manager.disconnect_all().await;
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), body)
+        .await
+        .expect("test must not hang");
+}
+
+/// The floor: a server nobody ever restricted — no manager record, no config
+/// entry, which is every server created through `POST /admin/api/mcp` — still
+/// starts, and starts unrestricted. This is the branch `resolve_allowlist`
+/// spells `NeverRestricted`, and the test exists so that a later attempt to
+/// make the handler fail-closed on *every* `None` cannot land silently: the
+/// documented "create, then restart to connect" flow would stop working.
+#[tokio::test]
+async fn a_server_that_was_never_restricted_still_starts() {
+    let body = async {
+        let manager = Arc::new(McpManager::new());
+
+        let (status, json) = restart(admin_state(&manager).await).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "restart body: {json}");
+        assert_eq!(
+            json["tool_count"], 2,
+            "a server with no allowlist anywhere is unrestricted, not refused: {json}"
         );
 
         manager.disconnect_all().await;
