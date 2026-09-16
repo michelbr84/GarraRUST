@@ -15,6 +15,7 @@ use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region, SharedCredentialsPr
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
 use garraia_storage::{GetOptions, ObjectStore, PutOptions, S3Compatible, StorageError};
+use testcontainers::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::minio::MinIO;
 
@@ -22,6 +23,13 @@ const ACCESS_KEY: &str = "minioadmin";
 const SECRET_KEY: &str = "minioadmin";
 const BUCKET: &str = "garraia-test-bucket";
 const REGION: &str = "us-east-1";
+
+// `testcontainers-modules` 0.15 fixa `minio/minio`, repositorio removido do
+// Docker Hub (#1230: "object not found" para o repo inteiro, nao so a tag).
+// A MinIO publica a mesma imagem, mesma tag, em quay.io — troca de registry,
+// sem mudanca de conteudo ou de comportamento.
+const MINIO_IMAGE: &str = "quay.io/minio/minio";
+const MINIO_TAG: &str = "RELEASE.2025-02-28T09-55-16Z";
 
 /// Spawn a MinIO testcontainer, pre-create a bucket, and hand back an
 /// `S3Compatible` wired against it. Returns `None` when the Docker
@@ -31,7 +39,12 @@ async fn start_minio() -> Option<(
     S3Compatible,
     String, // endpoint URL
 )> {
-    let container = match MinIO::default().start().await {
+    let container = match MinIO::default()
+        .with_name(MINIO_IMAGE)
+        .with_tag(MINIO_TAG)
+        .start()
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             // Um teste que se pula sozinho passa verde sem asserir nada — foi
