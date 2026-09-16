@@ -154,6 +154,80 @@ pub struct AgentCoordinator {
     default_system_prompt: String,
     /// Maximum concurrent agents
     max_concurrent: usize,
+    /// Ledger durável de runs (P1 gap analysis 2026-09-15). Default no-op;
+    /// gateway/CLI injetam o adapter sobre `SessionStore::agent_runs`.
+    ledger: Arc<dyn RunLedger>,
+}
+
+/// Ledger durável de runs de sub-agentes.
+///
+/// `RunId` é gerado pelo chamador (uuid) e devolvido no `on_start` para o
+/// `on_finish`. Implementação padrão: no-op. O gateway/CLI injetam o adapter
+/// sobre a tabela `agent_runs` (`garraia-db`), que também audita runs
+/// `interrupted` no restart.
+pub trait RunLedger: Send + Sync {
+    fn on_start(&self, goal: &str, mode: Option<&str>, session_id: Option<&str>) -> String;
+    fn on_finish(
+        &self,
+        run_id: &str,
+        status: garraia_db::RunStatus,
+        result_snippet: Option<&str>,
+        error_snippet: Option<&str>,
+    );
+}
+
+/// Sem ledger (default): comportamento atual, zero custo.
+pub struct NoopLedger;
+
+impl RunLedger for NoopLedger {
+    fn on_start(&self, _goal: &str, _mode: Option<&str>, _session_id: Option<&str>) -> String {
+        String::new()
+    }
+    fn on_finish(
+        &self,
+        _run_id: &str,
+        _status: garraia_db::RunStatus,
+        _result_snippet: Option<&str>,
+        _error_snippet: Option<&str>,
+    ) {
+    }
+}
+
+/// Adapter sobre a tabela `agent_runs` do `SessionStore` (garraia-db).
+/// Injetado pelo gateway/CLI via `with_ledger`.
+pub struct DbRunLedger {
+    store: Arc<std::sync::Mutex<garraia_db::SessionStore>>,
+}
+
+impl DbRunLedger {
+    pub fn new(store: Arc<std::sync::Mutex<garraia_db::SessionStore>>) -> Self {
+        Self { store }
+    }
+}
+
+impl RunLedger for DbRunLedger {
+    fn on_start(&self, goal: &str, mode: Option<&str>, session_id: Option<&str>) -> String {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        if let Ok(store) = self.store.lock()
+            && let Err(e) = store.start_agent_run(&run_id, session_id, goal, mode)
+        {
+            tracing::warn!(erro = %e, "run ledger: falhou ao gravar início do run");
+        }
+        run_id
+    }
+    fn on_finish(
+        &self,
+        run_id: &str,
+        status: garraia_db::RunStatus,
+        result_snippet: Option<&str>,
+        error_snippet: Option<&str>,
+    ) {
+        if let Ok(store) = self.store.lock()
+            && let Err(e) = store.finish_agent_run(run_id, status, result_snippet, error_snippet)
+        {
+            tracing::warn!(erro = %e, "run ledger: falhou ao fechar o run");
+        }
+    }
 }
 
 impl AgentCoordinator {
@@ -166,7 +240,14 @@ impl AgentCoordinator {
                 "You are an AI assistant. Complete the assigned task precisely and concisely."
                     .to_string(),
             max_concurrent: 5,
+            ledger: Arc::new(NoopLedger),
         }
+    }
+
+    /// Define o ledger durável de runs (adapter sobre `agent_runs` no gateway/CLI).
+    pub fn with_ledger(mut self, ledger: Arc<dyn RunLedger>) -> Self {
+        self.ledger = ledger;
+        self
     }
 
     /// Set default system prompt
@@ -190,121 +271,148 @@ impl AgentCoordinator {
         let provider = Arc::clone(&self.provider);
         let model = self.model.clone();
         let default_prompt = self.default_system_prompt.clone();
+        let ledger = Arc::clone(&self.ledger);
 
         let join_handle = tokio::spawn(async move {
-            let start = std::time::Instant::now();
+            // Ledger: todo run nasce auditado; fim grava status terminal.
+            let run_id = ledger.on_start(&config.task, Some(config.mode.as_str()), None);
+            let outcome: AgentResult = async {
+                let start = std::time::Instant::now();
 
-            // Send "running" progress
-            let _ = progress_tx
-                .send(AgentProgress {
-                    task: config.task.clone(),
-                    status: AgentStatus::Running,
-                    message: "Agent started".to_string(),
-                })
+                // Send "running" progress
+                let _ = progress_tx
+                    .send(AgentProgress {
+                        task: config.task.clone(),
+                        status: AgentStatus::Running,
+                        message: "Agent started".to_string(),
+                    })
+                    .await;
+
+                // Check for cancellation
+                if *cancel_rx.borrow() {
+                    return AgentResult {
+                        task: config.task,
+                        mode: config.mode.as_str().to_string(),
+                        output: String::new(),
+                        success: false,
+                        error: Some("Cancelled before execution".to_string()),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+
+                let system_prompt = config.system_prompt.unwrap_or(default_prompt);
+
+                let messages = vec![ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text(config.task.clone()),
+                }];
+
+                let request = LlmRequest {
+                    model,
+                    messages,
+                    system: Some(system_prompt),
+                    max_tokens: config.max_tokens,
+                    temperature: config.temperature,
+                    tools: vec![],
+                };
+
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(config.timeout_secs),
+                    provider.complete(&request),
+                )
                 .await;
 
-            // Check for cancellation
-            if *cancel_rx.borrow() {
-                return AgentResult {
-                    task: config.task,
-                    mode: config.mode.as_str().to_string(),
-                    output: String::new(),
-                    success: false,
-                    error: Some("Cancelled before execution".to_string()),
-                    duration_ms: start.elapsed().as_millis() as u64,
-                };
+                let duration_ms = start.elapsed().as_millis() as u64;
+
+                match result {
+                    Ok(Ok(response)) => {
+                        let output = response
+                            .content
+                            .iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+
+                        let _ = progress_tx
+                            .send(AgentProgress {
+                                task: config.task.clone(),
+                                status: AgentStatus::Completed,
+                                message: "Agent completed".to_string(),
+                            })
+                            .await;
+
+                        AgentResult {
+                            task: config.task,
+                            mode: config.mode.as_str().to_string(),
+                            output,
+                            success: true,
+                            error: None,
+                            duration_ms,
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        let _ = progress_tx
+                            .send(AgentProgress {
+                                task: config.task.clone(),
+                                status: AgentStatus::Failed,
+                                message: format!("Agent failed: {}", e),
+                            })
+                            .await;
+
+                        AgentResult {
+                            task: config.task,
+                            mode: config.mode.as_str().to_string(),
+                            output: String::new(),
+                            success: false,
+                            error: Some(format!("LLM error: {}", e)),
+                            duration_ms,
+                        }
+                    }
+                    Err(_) => {
+                        let _ = progress_tx
+                            .send(AgentProgress {
+                                task: config.task.clone(),
+                                status: AgentStatus::Failed,
+                                message: format!("Agent timed out after {}s", config.timeout_secs),
+                            })
+                            .await;
+
+                        AgentResult {
+                            task: config.task,
+                            mode: config.mode.as_str().to_string(),
+                            output: String::new(),
+                            success: false,
+                            error: Some(format!("Timeout after {}s", config.timeout_secs)),
+                            duration_ms,
+                        }
+                    }
+                }
             }
-
-            let system_prompt = config.system_prompt.unwrap_or(default_prompt);
-
-            let messages = vec![ChatMessage {
-                role: ChatRole::User,
-                content: MessagePart::Text(config.task.clone()),
-            }];
-
-            let request = LlmRequest {
-                model,
-                messages,
-                system: Some(system_prompt),
-                max_tokens: config.max_tokens,
-                temperature: config.temperature,
-                tools: vec![],
-            };
-
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(config.timeout_secs),
-                provider.complete(&request),
-            )
             .await;
 
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            match result {
-                Ok(Ok(response)) => {
-                    let output = response
-                        .content
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    let _ = progress_tx
-                        .send(AgentProgress {
-                            task: config.task.clone(),
-                            status: AgentStatus::Completed,
-                            message: "Agent completed".to_string(),
-                        })
-                        .await;
-
-                    AgentResult {
-                        task: config.task,
-                        mode: config.mode.as_str().to_string(),
-                        output,
-                        success: true,
-                        error: None,
-                        duration_ms,
-                    }
-                }
-                Ok(Err(e)) => {
-                    let _ = progress_tx
-                        .send(AgentProgress {
-                            task: config.task.clone(),
-                            status: AgentStatus::Failed,
-                            message: format!("Agent failed: {}", e),
-                        })
-                        .await;
-
-                    AgentResult {
-                        task: config.task,
-                        mode: config.mode.as_str().to_string(),
-                        output: String::new(),
-                        success: false,
-                        error: Some(format!("LLM error: {}", e)),
-                        duration_ms,
-                    }
-                }
-                Err(_) => {
-                    let _ = progress_tx
-                        .send(AgentProgress {
-                            task: config.task.clone(),
-                            status: AgentStatus::Failed,
-                            message: format!("Agent timed out after {}s", config.timeout_secs),
-                        })
-                        .await;
-
-                    AgentResult {
-                        task: config.task,
-                        mode: config.mode.as_str().to_string(),
-                        output: String::new(),
-                        success: false,
-                        error: Some(format!("Timeout after {}s", config.timeout_secs)),
-                        duration_ms,
-                    }
-                }
-            }
+            // Ledger: status terminal determinado pelo resultado. Run cancelado
+            // antes da execução tem a marca "Cancelled" no erro (contrato acima).
+            let status = if outcome.success {
+                garraia_db::RunStatus::Done
+            } else if outcome
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Cancelled"))
+            {
+                garraia_db::RunStatus::Cancelled
+            } else {
+                garraia_db::RunStatus::Error
+            };
+            ledger.on_finish(
+                &run_id,
+                status,
+                (!outcome.output.is_empty()).then_some(outcome.output.as_str()),
+                outcome.error.as_deref(),
+            );
+            outcome
         });
 
         AgentHandle {
@@ -514,5 +622,95 @@ mod tests {
         assert_eq!(summary.total_agents, 2);
         assert_eq!(summary.successful, 1);
         assert_eq!(summary.failed, 1);
+    }
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+    use garraia_db::SessionStore;
+    use std::sync::Mutex;
+
+    /// Provider fake: responde texto fixo (sem rede).
+    struct FakeProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for FakeProvider {
+        fn provider_id(&self) -> &str {
+            "fake"
+        }
+        async fn complete(
+            &self,
+            _request: &LlmRequest,
+        ) -> garraia_common::Result<crate::providers::LlmResponse> {
+            Ok(crate::providers::LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: "feito".to_string(),
+                }],
+                model: "fake-model".to_string(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Ledger de teste que conta chamadas (contrato on_start -> on_finish).
+    struct CountingLedger {
+        starts: std::sync::atomic::AtomicUsize,
+        finishes: std::sync::atomic::AtomicUsize,
+    }
+    impl RunLedger for CountingLedger {
+        fn on_start(&self, _goal: &str, _mode: Option<&str>, _session_id: Option<&str>) -> String {
+            self.starts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            format!(
+                "run-{}",
+                self.starts.load(std::sync::atomic::Ordering::SeqCst)
+            )
+        }
+        fn on_finish(
+            &self,
+            _run_id: &str,
+            _status: garraia_db::RunStatus,
+            _r: Option<&str>,
+            _e: Option<&str>,
+        ) {
+            self.finishes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn fake_provider() -> Arc<dyn LlmProvider> {
+        Arc::new(FakeProvider)
+    }
+
+    #[tokio::test]
+    async fn run_gera_start_e_finish_no_ledger() {
+        let ledger = Arc::new(CountingLedger {
+            starts: std::sync::atomic::AtomicUsize::new(0),
+            finishes: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let coord = AgentCoordinator::new(fake_provider(), "m")
+            .with_ledger(Arc::clone(&ledger) as Arc<dyn RunLedger>);
+        let handle = coord.spawn_agent(SubAgentConfig::new("tarefa auditada", AgentMode::Ask));
+        let result = handle.join().await;
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(ledger.starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(ledger.finishes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn db_ledger_grava_no_store_real() {
+        let store = Arc::new(Mutex::new(SessionStore::in_memory().unwrap()));
+        let coord = AgentCoordinator::new(fake_provider(), "m")
+            .with_ledger(Arc::new(DbRunLedger::new(Arc::clone(&store))));
+        let handle = coord.spawn_agent(SubAgentConfig::new("run via db", AgentMode::Ask));
+        handle.join().await;
+        let rows = store.lock().unwrap().list_recent_agent_runs(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, garraia_db::RunStatus::Done);
+        assert_eq!(rows[0].goal, "run via db");
     }
 }
