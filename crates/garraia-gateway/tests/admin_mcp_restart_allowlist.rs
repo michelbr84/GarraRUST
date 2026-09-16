@@ -120,6 +120,10 @@ fn config_yml_entry(command: &str, allowed_tools: Vec<String>) -> garraia_config
         memory_limit_mb: None,
         max_restarts: Some(5),
         restart_delay_secs: Some(1),
+        // #1236: o default de producao. O que estes testes exercitam e a
+        // resolucao da allowlist de TOOL; a heranca de ambiente e outro
+        // controle, e liga-la aqui so acoplaria os dois.
+        inherit_env: false,
     }
 }
 
@@ -176,6 +180,11 @@ async fn connect(manager: &Arc<McpManager>, allowed_tools: Vec<String>) {
             None,
             5,
             1,
+            // #1236: `false` = ambiente do filho filtrado pela allowlist, o
+            // default de producao. E tambem o que o proprio handler forca no
+            // restart (`env_isolation = "forced"`), entao o estado "vivo" que
+            // estes testes montam e o mesmo que o restart vai reproduzir.
+            false,
         )
         .await
         .expect("fixture server should connect");

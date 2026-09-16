@@ -370,7 +370,9 @@ fallback on 429/5xx with exponential backoff and a circuit breaker.
 
 Wired end-to-end today: **Telegram** (streaming, MarkdownV2, bot
 commands, pairing), **Discord** (slash commands, sessions), **Slack**
-(Socket Mode), **WhatsApp** (Meta Cloud API webhooks), **iMessage**
+(Socket Mode), **WhatsApp** (Meta Cloud API webhooks; personal WhatsApp
+by linked device is planned for v0.4.3 —
+[ADR 0023](docs/adr/0023-whatsapp-dispositivo-vinculado.md)), **iMessage**
 (macOS, chat.db polling + AppleScript). Also: web chat console, an
 **OpenAI-compatible API** (`/v1/chat/completions`) for VS Code
 (Continue et al.) sharing the same session history, and an
@@ -517,6 +519,12 @@ the comparison section above for the evidence trail).
   cap (setrlimit, Unix), startup timeout, auto-restart with exponential
   backoff. These are resource limits, not a sandbox: MCP processes keep
   filesystem/network access.
+- **MCP child environment isolation** — a stdio MCP server is spawned with
+  an environment built from scratch: a minimal allowlist (`PATH`, `HOME`,
+  locale, temp dir) plus that server's own `env` map. Gateway secrets
+  (`GARRAIA_JWT_SECRET`, provider API keys, vault passphrase) never reach
+  a third-party MCP binary. Per-server `inherit_env: true` restores the
+  old behaviour and warns on every connect.
 - **WASM plugin sandbox** — optional (`--features plugins`): per-plugin
   memory caps and execution deadlines via wasmtime.
 - **Heuristic input filtering** — control-character sanitization plus a

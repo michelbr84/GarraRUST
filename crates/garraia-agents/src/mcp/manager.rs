@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,6 +14,7 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+use super::child_env::{build_child_env, parent_env_pairs};
 use super::tool_bridge::McpTool;
 use crate::tools::Tool;
 
@@ -112,6 +113,10 @@ enum ConnectionParams {
         timeout_secs: u64,
         /// GAR-293: virtual memory cap in MB (Unix only).
         memory_limit_mb: Option<u64>,
+        /// #1075 (continuação): `true` faz o filho herdar TODO o ambiente do
+        /// gateway. Viaja junto dos parâmetros para que um reconnect não
+        /// mude silenciosamente a política escolhida pelo operador.
+        inherit_env: bool,
     },
     #[cfg(feature = "mcp-http")]
     Http { url: String, timeout_secs: u64 },
@@ -227,6 +232,12 @@ pub struct McpManager {
     /// `connections`, so `check_and_reconnect` (which iterates connections)
     /// could never see them and only a manual admin restart recovered them.
     pending: Arc<RwLock<HashMap<String, PendingServer>>>,
+    /// #1075 (continuação): servidores cujo `inherit_env=true` já rendeu um
+    /// `warn!`. Um servidor que reinicia em loop reconecta com o backoff do
+    /// `RestartState`, e um `warn!` por tentativa afogaria o log justamente
+    /// quando ele é mais lido — sem, em troca, dizer nada de novo. O primeiro
+    /// connect avisa alto; os reconnects registram em `debug!`.
+    inherit_env_warned: Arc<RwLock<HashSet<String>>>,
 }
 
 /// `(name, params, allowed_tools)` for one server needing a (re)connect.
@@ -251,6 +262,7 @@ impl McpManager {
             connections: Arc::new(RwLock::new(HashMap::new())),
             restart_states: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
+            inherit_env_warned: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -272,6 +284,7 @@ impl McpManager {
         memory_limit_mb: Option<u64>,
         max_restarts: u32,
         restart_delay_secs: u64,
+        inherit_env: bool,
     ) {
         self.pending.write().await.insert(
             name.to_string(),
@@ -282,6 +295,7 @@ impl McpManager {
                     env: env.clone(),
                     timeout_secs,
                     memory_limit_mb,
+                    inherit_env,
                 },
                 allowed_tools,
             },
@@ -346,6 +360,7 @@ impl McpManager {
         memory_limit_mb: Option<u64>,
         max_restarts: u32,
         restart_delay_secs: u64,
+        inherit_env: bool,
     ) -> Result<()> {
         // On Windows, script wrappers like `npx`, `uvx`, `yarn`, etc. are `.cmd`
         // files that cannot be spawned directly by CreateProcess. We wrap them in
@@ -371,11 +386,46 @@ impl McpManager {
             c
         };
 
+        // #1075 (continuação): até aqui o filho herdava o ambiente INTEIRO do
+        // gateway — `GARRAIA_JWT_SECRET`, chaves de provider, passphrase do
+        // cofre, tudo que o dotenvy tivesse carregado. Um servidor MCP de
+        // terceiro (tipicamente baixado na hora por `npx`) recebia o cofre
+        // completo só por ser spawnado. O ambiente agora é construído do zero:
+        // allowlist do gateway + o mapa `env` do próprio servidor, que é onde
+        // o operador coloca de propósito o que aquele servidor precisa.
+        if inherit_env {
+            // Primeiro connect avisa alto; reconnects (que num servidor
+            // instável vêm às dezenas) caem para `debug!`. O texto NUNCA leva
+            // nome nem valor de variável — só o nome do servidor.
+            let primeira_vez = self
+                .inherit_env_warned
+                .write()
+                .await
+                .insert(name.to_string());
+            if primeira_vez {
+                warn!(
+                    server = %name,
+                    "MCP server '{name}': inherit_env=true — o processo filho recebe TODO o ambiente do gateway, \
+                     segredos inclusive. Prefira declarar as variáveis necessárias no mapa 'env' deste servidor."
+                );
+            } else {
+                tracing::debug!(
+                    server = %name,
+                    "MCP server '{name}': reconectando com inherit_env=true (aviso já emitido)"
+                );
+            }
+        }
+        cmd.env_clear();
+        for (key, value) in build_child_env(parent_env_pairs(), env, inherit_env) {
+            cmd.env(key, value);
+        }
+
         // Termux (issues #909/#913): on Android an ELF exec goes through the
         // termux-exec shim, and a host that spawns the gateway with a filtered
         // environment strips `LD_PRELOAD` — after which every MCP child that is
-        // an npm/pip script dies on its `/usr/bin/...` shebang. Injected before
-        // the config overlay below so an explicit `env.LD_PRELOAD` still wins.
+        // an npm/pip script dies on its `/usr/bin/...` shebang. Runs after the
+        // overlay above and only fires when neither the parent nor the config
+        // supplied one, so an explicit `env.LD_PRELOAD` still wins.
         #[cfg(target_os = "android")]
         if let Some(preload) = termux_ld_preload(
             env,
@@ -385,10 +435,6 @@ impl McpManager {
         ) {
             tracing::debug!(server = %name, "Termux: injecting LD_PRELOAD (termux-exec) into MCP child");
             cmd.env("LD_PRELOAD", preload);
-        }
-
-        for (k, v) in env {
-            cmd.env(k, v);
         }
 
         // GAR-293: apply memory limit on Unix via setrlimit(RLIMIT_AS).
@@ -468,6 +514,7 @@ impl McpManager {
                 env: env.clone(),
                 timeout_secs,
                 memory_limit_mb,
+                inherit_env,
             },
             allowed_tools,
             connected_at: Instant::now(),
@@ -1159,6 +1206,7 @@ impl McpManager {
                     env,
                     timeout_secs,
                     memory_limit_mb,
+                    inherit_env,
                 } => {
                     // Fetch max_restarts / restart_delay from saved state.
                     let (mr, rd) = {
@@ -1178,6 +1226,7 @@ impl McpManager {
                         *memory_limit_mb,
                         mr,
                         rd,
+                        *inherit_env,
                     )
                     .await
                 }

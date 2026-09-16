@@ -36,6 +36,7 @@ async fn connect(manager: &Arc<McpManager>, name: &str, extra: &[&str]) {
             None,
             5,
             1,
+            false,
         )
         .await
         .expect("fixture server should connect");
@@ -172,6 +173,11 @@ async fn connect_allowlisted(
             None,
             5,
             1,
+            // #1236: `false` e o default de producao — ambiente do filho
+            // filtrado pela allowlist. O gemeo `connect_fixture` acima usa o
+            // mesmo valor; testar allowlist de TOOL sob heranca de ambiente
+            // ligada misturaria dois controles de seguranca num teste so.
+            false,
         )
         .await
         .expect("fixture server should connect");

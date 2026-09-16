@@ -67,7 +67,7 @@ Indicadores: ✅ estável · 🟡 parcial/experimental · 🔵 planejado · ❌ 
 | **Context engineering** | ✅ context_policy por modo, context_summarizer c/ modelo barato, memória híbrida no prompt | ✅ invariantes anti-mutação p/ prompt caching, compressão automática, tools diferidas | ✅ Bootstrap por arquivos (AGENTS/SOUL/USER/MEMORY), memory flush pré-compaction, Tool Search/Code Mode | OpenClaw mais sofisticado em escala de catálogo; Hermes mais rigoroso em cache |
 | **Automação** | ✅ schedule tool + recurrence two-tier (ADR 0013) + automations de hardware (cron/expr) | ✅ cron durável (frases/ISO/5 campos, delivery multiplataforma, no_agent scripts) + webhooks + serverless hibernante | ✅ Automations scheduler + Heartbeat (turno periódico system-owned) + Task Flow + hooks de ciclo de vida + trigger IMAP | OpenClaw tem o leque de triggers mais largo (IMAP, heartbeat); Hermes o cron mais flexível |
 | **Interfaces** | ✅ CLI (REPL+ask), gateway web (chat/admin/learning), desktop Tauri v2 (overlay/tray/hotkeys), REST v1 + shims OpenAI/Anthropic, mobile Flutter, Termux | ✅ CLI, TUI Ink, desktop Electron, dashboard web, ACP p/ IDEs, slash commands | ✅ CLI, Control UI web, apps macOS/iOS/Android (nodes), WebChat, A2UI canvas | Hermes e OpenClaw têm apps desktop móveis/nativos maduros; desktop do Garra está no M1/M2 de 7 milestones |
-| **Canais de mensagem** | ✅ 12 (Telegram, Discord, Slack, WhatsApp, iMessage, Signal, Matrix, IRC, Teams, Google Chat, Line, +) num binário | ✅ 19+ nativas + IRC/Teams por plugin, com acesso pleno a tools | ✅ WhatsApp (Baileys), Telegram, Slack, Discord, Signal, iMessage, Matrix, Teams, Google Chat, Zalo, Mattermost, WebChat | Cobertura de canal é ponto comum forte dos três; Garra lidera em canais por binário único |
+| **Canais de mensagem** | ✅ 12 (Telegram, Discord, Slack, WhatsApp, iMessage, Signal, Matrix, IRC, Teams, Google Chat, Line, +) num binário[^node-whatsapp] | ✅ 19+ nativas + IRC/Teams por plugin, com acesso pleno a tools | ✅ WhatsApp (Baileys), Telegram, Slack, Discord, Signal, iMessage, Matrix, Teams, Google Chat, Zalo, Mattermost, WebChat | Cobertura de canal é ponto comum forte dos três; Garra lidera em canais por binário único |
 | **Execução local/LLM local** | ✅ Ollama + llama.cpp GGUF c/ auto-quantização por VRAM (Q4_K_M/Q5_K_M/Q8_0), embeddings locais, STT/TTS locais | ✅ execução local de comandos; LLM local via OpenAI-compat; não é foco | ✅ Ollama/llama.cpp/vLLM/SGLang suportados; não é o padrão | Garra é o único com **pipeline de quantização automática** e voz local |
 | **Hardware/IoT** | ✅ Crate `garraia-hardware` (ADR 0020): adapters GPIO/MQTT/Home Assistant/serial, capability/risk por ação, automations engine, skills de hardware | 🟡 Via Home Assistant (canal) e terminal/MCP; sem abstração própria | 🟡 Nodes pareados (câmera/tela/localização); sem MQTT/HA nativos | **Diferencial central do Garra** — nada equivalente nos outros |
 | **Segurança** | ✅ CredentialVault AES-256-GCM (→argon2), prompt-injection guard (~20 padrões) em web_fetch/MCP, TLS passthrough, rate limit, TOTP, RLS testada, LGPD/GDPR endpoints, cargo-deny/audit/CodeQL | ✅ redact_secrets (não desligável pelo LLM), redact PII, approvals smart/manual, allowlist de shell, vault p/ browser, env filtering MCP | ✅ Security audit c/ auto-fix, threat model MITRE ATLAS, pairing de dispositivos, sandbox por tool, SSRF policy | Três modelos sérios; OpenClaw tem threat model público mais formal; Garra foca em credenciais + injection; Hermes em redação/approvals |
@@ -75,6 +75,13 @@ Indicadores: ✅ estável · 🟡 parcial/experimental · 🔵 planejado · ❌ 
 | **Persistência** | ✅ SQLite (sessions/messages/memory/projects/recurrence) + vectors + Postgres opcional (feature flag) + S3/MinIO | ✅ state.db (SQLite+FTS5), transcripts JSONL, sessões de gateway sobrevivem a reboot | ✅ SQLite por agente + arquivos de config/memória + wizard de migração | Garra tem o caminho de escala (Postgres) que os outros não documentam |
 | **CI/CD & qualidade** | ✅ matrizes 3 OS, CodeQL, cargo-audit, deny, clippy -D warnings, cobertura c/ baseline, mutation testing, cross-compile | ❓ docs de contribuição; processos internos não públicos na análise | ❓ repo ativo; processos de CI não auditados | Garra auditável por nós; os outros não puderam ser verificados nesta análise |
 | **Benches** | ✅ harness próprio com números medidos comitados | ❓ trajectory export p/ RL (Atropos), sem benches públicos | ❌ não encontrados | Único com evidência de desempenho comitada |
+
+[^node-whatsapp]: Os 12 canais rodam no binário único, **com uma exceção planejada**: o
+    WhatsApp **pessoal** (dispositivo vinculado, por QR code) vai exigir um bridge
+    Node.js na máquina, porque não existe implementação madura desse protocolo em
+    Rust — Hermes e OpenClaw usam Baileys pelo mesmo motivo. O WhatsApp Business
+    (Meta Cloud API), que é o que está implementado hoje, continua 100% dentro do
+    binário. Ver [ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md).
 
 ---
 
@@ -264,7 +271,8 @@ Indicadores: ✅ estável · 🟡 parcial/experimental · 🔵 planejado · ❌ 
 | GitHub | ✅ (gh CLI, workflows) | ✅ | ✅ |
 | Gmail | 🟡 (via canais/MCP) | ✅ (canal email) | ✅ (trigger IMAP) |
 | Telegram/Discord/Slack | ✅ nativos | ✅ nativos | ✅ nativos |
-| WhatsApp | ✅ nativo | ✅ nativo | ✅ nativo (Baileys) |
+| WhatsApp Business (Cloud API) | ✅ nativo (webhook + HMAC) | ✅ (`hermes whatsapp-cloud`) | ❓ |
+| WhatsApp pessoal (dispositivo vinculado, QR) | 🔵 planejado ([ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md), v0.4.3) | ✅ (Baileys) | ✅ (Baileys) |
 | n8n | 🟡 via gateway/webhook | 🟡 via webhook/cron | 🟡 via webhook |
 | Home Assistant | ✅ adapter nativo | ✅ canal | ❌ nativo não encontrado |
 | Browser | ✅ web_fetch/search | ✅ 8 modos de browser | ✅ controle real |

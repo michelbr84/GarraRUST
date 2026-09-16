@@ -337,18 +337,26 @@ jobs:
 
       - name: Run clippy + tests (mcp)
         # Buraco vizinho do `mcp-http` acima: `crates/garraia-agents` declara
-        # `default = []` e `mcp = ["dep:rmcp"]`, e o unico alvo de teste que
-        # exercita o ciclo de vida real do MCP
-        # (`crates/garraia-agents/tests/mcp_lifecycle.rs`) comeca com
+        # `default = []` e `mcp = ["dep:rmcp"]`, e tanto `pub mod mcp` quanto
+        # os alvos de teste que exercitam o ciclo de vida real
+        # (`tests/mcp_lifecycle.rs`, `tests/mcp_child_env.rs`) estao atras de
         # `#![cfg(feature = "mcp")]`. Como nenhum job passava `--features mcp`
-        # — e `--all-features` nao e usado em lugar nenhum —, os tres testes
-        # (`tool_survives_reconnect`, `detects_dead_child_and_reconnects`,
-        # `disconnect_all_is_bounded_with_stubborn_child`) nunca rodavam no CI.
-        # Issue #1089. O clippy vem junto pelo mesmo motivo dos outros steps:
-        # sem ele o codigo sob a feature apodrece sem aviso.
+        # — e `--all-features` nao e usado em lugar nenhum —, nada disso
+        # rodava no CI. Issue #1089.
+        #
+        # O `cargo test` aqui NAO nomeia alvo de proposito. A versao anterior
+        # deste step era `--test mcp_lifecycle`, um alvo unico, entao todo
+        # arquivo de teste novo sob a feature nascia compilado e nunca
+        # executado — foi exatamente o que aconteceu com `mcp_child_env.rs` e
+        # com os testes unitarios de `src/mcp/` (#1075). Sem `--test`, o cargo
+        # roda a lib e TODOS os alvos de integracao da feature, e um arquivo
+        # novo entra na cobertura sem ninguem lembrar de editar este YAML.
+        #
+        # O clippy vem junto pelo mesmo motivo dos outros steps: sem ele o
+        # codigo sob a feature apodrece sem aviso.
         run: |
           cargo clippy -p garraia-agents --features mcp --all-targets -- -D warnings
-          cargo test -p garraia-agents --features mcp --test mcp_lifecycle
+          cargo test -p garraia-agents --features mcp
 
       - name: Run clippy + tests (signal)
         # Mesmo buraco do `mcp-http` acima, e do `auth-integration` mais

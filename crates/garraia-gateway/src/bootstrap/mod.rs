@@ -1499,6 +1499,7 @@ pub async fn build_mcp_tools(
                         memory_limit_mb,
                         max_restarts,
                         restart_delay_secs,
+                        server_config.inherit_env,
                     )
                     .await
             }
@@ -1551,6 +1552,11 @@ pub async fn build_mcp_tools(
                 // restart of that server reconnected it with no allowlist at
                 // all. Parking it here is what makes the restart handler's
                 // `Manager` branch able to answer for HTTP too.
+                //
+                // `inherit_env` (#1236) travels with the stdio arm only, and
+                // that is not an oversight: HTTP transport spawns no child
+                // process, so there is no environment to inherit or withhold.
+                // `register_pending_http` has no such parameter.
                 match server_config.transport.as_str() {
                     "stdio" => {
                         manager
@@ -1564,6 +1570,7 @@ pub async fn build_mcp_tools(
                                 memory_limit_mb,
                                 max_restarts,
                                 restart_delay_secs,
+                                server_config.inherit_env,
                             )
                             .await;
                     }

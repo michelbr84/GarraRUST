@@ -56,6 +56,11 @@ async fn a_failed_http_boot_still_remembers_the_allowlist() {
             memory_limit_mb: None,
             max_restarts: Some(5),
             restart_delay_secs: Some(1),
+            // #1236: inerte aqui — este servidor e de transporte HTTP, que
+            // nao lanca processo filho, entao nao ha ambiente a herdar. Fica
+            // no default (`false`) para nao sugerir que o campo participa do
+            // caminho sob teste.
+            inherit_env: false,
         },
     );
 

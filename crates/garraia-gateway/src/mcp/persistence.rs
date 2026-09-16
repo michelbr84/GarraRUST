@@ -194,7 +194,15 @@ impl McpPersistenceService {
     ///
     /// **GAR-291**: If a vault is configured, `vault:` references in env values
     /// are resolved to their plaintext secrets before the registry is built.
-    /// Servers are never exposed to unresolved `vault:` strings at runtime.
+    /// Servers loaded THROUGH THIS PATH are never exposed to unresolved
+    /// `vault:` strings at runtime.
+    ///
+    /// The qualifier is load-bearing (#1237): this is the registry path
+    /// (admin API / marketplace). The gateway ALSO reads `mcp.json` at boot
+    /// through `ConfigLoader::merged_mcp_config`, which does no resolution at
+    /// all — a `vault:` reference on that path reaches the child process as
+    /// the literal string. Do not read this sentence as "the product resolves
+    /// `vault:` everywhere"; it does not, and #1237 is about closing the gap.
     pub fn load_registry(&self) -> McpRuntimeRegistry {
         match self.load() {
             Ok(mut config) => {
