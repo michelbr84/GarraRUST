@@ -563,12 +563,15 @@ Três limites valem para os três backends:
 - **Só a tool `bash` é envolvida hoje.** `run_tests`, `git_diff`, `code_review`
   e `repo_search` continuam nascendo no host mesmo com `mode = all` — a
   policy é consultada dentro do `BashTool` e em nenhum outro lugar.
-  Acompanhamento na #1225. Quem liga `mode = all` esperando "nada roda no
+  Acompanhamento na #1225 (slices S2/S3) — a issue segue aberta. Quem liga `mode = all` esperando "nada roda no
   host" está enganado sobre quatro tools.
-- **Unix na prática.** No Windows o `BashTool` escolhe `powershell -Command` e
-  receberia uma linha com quoting POSIX (`docker run ... sh -lc '…'`), que o
-  PowerShell não reparseia da mesma forma — o quoting de aspa simples é `''`,
-  não `'\''`. Ligar o sandbox fora de unix não contém nada de forma confiável.
+- **Unix, e agora dito em voz alta.** No Windows o `BashTool` escolhe
+  `powershell -Command` e receberia uma linha com quoting POSIX
+  (`docker run ... sh -lc '…'`), que o PowerShell não reparseia da mesma
+  forma — o quoting de aspa simples lá é `''`, não `'\''`. Desde a #1225
+  isso não é mais só documentação: `wrap_command` **recusa fail-closed**
+  fora de unix e o `config check` reporta Error, em vez de deixar a
+  contenção parecer ligada.
 - **`elevated` roda no host.** É o escape hatch: a tool listada pula o
   backend mesmo em `mode = all`. Ele é duplamente gated só quando
   `agent.tool_confirmation_enabled = true`; sem isso resta apenas a denylist
@@ -581,10 +584,12 @@ Três limites valem para os três backends:
 | **T** Tampering | Tool call do LLM (influenciável por injeção indireta de prompt, #1213) escreve fora do projeto. | Denylist + tier arriscado do `safety_gate` rodam **antes** do sandbox; com `docker`/`podman` o comando só enxerga o `cwd` montado. | `--read-only` no rootfs e mount do `cwd` em `ro` quando a tool for de leitura: slice próprio da #1225. |
 | **I** Information disclosure | Comando lê `~/.ssh`, `.env` do host, ou exfiltra por rede. | `--network none` por default; `#1075 R3` já limpa o env do filho para uma allowlist; fora do mount o container não vê o host. | Com `backend = ssh` **nada disso vale** — a seção acima diz por quê. |
 | **E** Elevation of privilege | Escape do container; `sudo` dentro do comando. | `--security-opt no-new-privileges`. | Sem `--user` o processo é root **dentro** do container, e o daemon do Docker é root **fora**; podman rootless é a recomendação enquanto o hardening não chega. |
-| **E** Elevation of privilege | Operador liga `mode = all` e acredita que o agente perdeu o host. | Quatro tools seguem no host (acima); `config check` e esta seção dizem quais. | Estender a policy às demais tools (#1225). |
-| **D** Denial of service | Comando consome CPU/memória da máquina inteira dentro do container. | Timeout do próprio `BashTool` + orçamento de tool calls. | Sem `--memory`/`--pids-limit`; mesmo slice de hardening. |
+| **E** Elevation of privilege | Operador liga `mode = all` e acredita que o agente perdeu o host. | Quatro tools seguem no host (acima); `config check` e esta seção dizem quais. | Estender a policy às demais tools — tracking na #1225 (slices S2/S3). |
+| **D** Denial of service | Comando consome CPU/memória da máquina inteira dentro do container. | Timeout do próprio `BashTool` + orçamento de tool calls. | Sem `--memory`/`--pids-limit`; mesmo slice de hardening — tracking na #1225 (slices S2/S3). |
 | **R** Repudiation | Não se sabe depois se um comando rodou contido ou no host. | `tracing::info!` "comando executado dentro do sandbox" no caminho envolvido e `tracing::error!` no fail-closed. | Evento de audit dedicado (`agent.tool.sandboxed`) quando o audit de tools existir. |
 | **S** Spoofing | Backend ausente no host faz o comando cair no host em silêncio. | **Fail-closed**: `wrap_command` devolve erro e o `BashTool` recusa o comando; `backend = ssh` sem `ssh_host` também não constrói backend nenhum. | — |
+| **E** Elevation of privilege | **Injeção de opção** por `ssh_host` / `image`: `sh_quote` garante um token, não um *operando*. O host fica antes do `--` em `ssh {host} -- sh -lc …`, então `ssh_host: "-oProxyCommand=…"` é lido como flag e executa no host **local**, já depois do `safety_gate`; `image: "-…"` desloca o posicional do `docker run`. | Valor começando com `-` é recusado em **três** camadas: `garra config check` (Error), `sandbox_policy_from` no boot (backend não é construído / imagem cai no default, com `warn!` que nunca loga o valor) e o próprio `wrap_command` (Err fail-closed, antes do `is_available()`). Nenhum host e nenhuma imagem reais começam com `-`. | Conserto estrutural: montar **argv** em vez de uma linha de shell, eliminando a classe inteira — tracking na #1225 (slices S2/S3), como já recomendado na #1231. |
+| **T** Tampering | Sandbox ligado numa plataforma onde o wrap não tem significado. | `wrap_command` devolve `Err` fail-closed fora de unix, e o `config check` reporta Error em `cfg!(windows)` — em vez de entregar uma linha POSIX ao `powershell -Command`. | — |
 
 ### Config mínima
 
@@ -600,10 +605,16 @@ agent:
     elevated: []                    # tools que rodam NO HOST
 ```
 
-`garra config check` recusa `mode != off` sem `backend` e `backend: ssh` sem
-`ssh_host`, e avisa sobre `ssh` com `network_disabled`/`mount_workdir` ligados,
-sobre `elevated` sem confirmação humana e sobre `allowlist` com lista vazia.
-Nenhum finding ecoa o `ssh_host`.
+`garra config check` recusa (Error) `mode != off` sem `backend`, `backend: ssh`
+sem `ssh_host`, `ssh_host` ou `image` começando com `-`, e a seção ligada fora
+de unix. Avisa (Warning) que `ssh` é execução remota — **sempre**, mesmo com a
+seção coerente —, que `ssh` ignora `network_disabled`/`mount_workdir`, que
+`elevated` sem confirmação humana é escape hatch desacompanhado, que
+`mode: all` com `bash` em `elevated` deixa a seção inerte, que `allowlist` com
+lista vazia sandboxa nada, e nomeia cada entrada de
+`sandboxed_tools`/`elevated` que não é uma tool que o sandbox saiba envolver.
+Nenhum finding ecoa o `ssh_host`; nomes de tool são ecoados de propósito — é o
+ponto do finding.
 
 ---
 
@@ -636,7 +647,7 @@ Agregado das matrizes. Prioridade = (likelihood × impact) dado o estado atual d
 | 6 | Plugin WASM runtime ainda scaffold | Plugins | Baixa (não shipped) | Fase 2.2 |
 | 7 | Storage HMAC integrity + allow-list MIME pendente impl | Storage (future) | Baixa (ADR apenas) | GAR-394 |
 | 8 | Mobile Android `FLAG_SECURE` ausente | Mobile | Baixa | plan futuro |
-| 9 | Sandbox por tool cobre so `bash`; sem hardening de container (`--user`, `--read-only`, `--cap-drop`, limites) | Agents | Média | #1225 |
+| 9 | Sandbox por tool cobre so `bash`; sem hardening de container (`--user`, `--read-only`, `--cap-drop`, limites) | Agents | Média | #1225 (slices S2/S3) |
 
 ---
 

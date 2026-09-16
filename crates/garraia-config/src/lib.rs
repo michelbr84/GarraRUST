@@ -4,6 +4,7 @@ pub mod defaults;
 pub mod loader;
 pub mod model;
 pub mod provider_keys;
+pub mod sandbox;
 pub mod watcher;
 
 pub use auth::{AuthConfig, AuthConfigError};
@@ -17,13 +18,15 @@ pub use model::{
     AUTH_REFRESH_TTL_MIN_SECS, AUTH_SUPPORTED_JWT_ALGORITHMS, AgentConfig, AppConfig, AuthSection,
     ChannelConfig, EmbeddingProviderConfig, GatewayConfig, LlmProviderConfig, MAX_PATCH_BYTES_MAX,
     MAX_PATCH_BYTES_MIN, McpServerConfig, MemoryConfig, NamedAgentConfig, S3StorageConfig,
-    SandboxBackendKind, SandboxConfig, SandboxMode, StorageBackend, StorageConfig, TimeoutConfig,
-    TypeTimeout, VoiceConfig,
+    StorageBackend, StorageConfig, TimeoutConfig, TypeTimeout, VoiceConfig,
 };
+// #1225: os tipos de `agent.sandbox` moram no modulo proprio; o re-export
+// no nivel da crate segue o mesmo caminho de antes para os consumidores.
 pub use provider_keys::{
     KeySource, default_vault_path, provider_key_env, resolve_api_key, resolve_api_key_source,
     resolve_provider_key_source, vault_present_but_locked,
 };
+pub use sandbox::{SandboxBackendKind, SandboxConfig, SandboxMode};
 pub use watcher::ConfigWatcher;
 
 /// Crate-wide lock serializing unit tests that mutate process-global

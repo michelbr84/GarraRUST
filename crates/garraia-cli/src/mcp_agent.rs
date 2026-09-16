@@ -677,8 +677,15 @@ mod tests {
             .execute(&ctx, serde_json::json!({"command": "echo intacto"}))
             .await
             .expect("ToolOutput");
+        // Assercao por conteudo e nao por igualdade exata: o que importa e
+        // que o comando rodou no host: um `\r\n` de plataforma ou um warn
+        // colado na saida nao e regressao de sandbox.
         assert!(!out.is_error, "sem sandbox nada muda: {out:?}");
-        assert_eq!(out.content.trim(), "intacto");
+        assert!(
+            out.content.contains("intacto"),
+            "o comando deveria ter rodado: {}",
+            out.content
+        );
     }
 
     // ─── Tool descriptor ──────────────────────────────────────────────

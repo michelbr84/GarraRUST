@@ -451,25 +451,31 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
         // #1225: so o discriminante. `ssh_host` nao e segredo, mas nomeia
         // infraestrutura e nao acrescenta nada ao diagnostico — a rota e
         // auth-free, entao o que nao precisa sair nao sai.
-        "security.sandbox_mode" => (
-            json!(match state.config.agent.sandbox.mode {
-                garraia_config::SandboxMode::Off => "off",
-                garraia_config::SandboxMode::All => "all",
-                garraia_config::SandboxMode::Allowlist => "allowlist",
-            }),
-            None,
-            SettingSource::File,
-        ),
-        "security.sandbox_backend" => (
-            match state.config.agent.sandbox.backend {
-                None => Value::Null,
-                Some(garraia_config::SandboxBackendKind::Docker) => Value::String("docker".into()),
-                Some(garraia_config::SandboxBackendKind::Podman) => Value::String("podman".into()),
-                Some(garraia_config::SandboxBackendKind::Ssh) => Value::String("ssh".into()),
-            },
-            None,
-            SettingSource::File,
-        ),
+        "security.sandbox_mode" | "security.sandbox_backend" => {
+            let sb = &state.config.agent.sandbox;
+            // Sem secao no arquivo os dois campos ficam no default compilado;
+            // reportar `File` faria a UI dizer que alguem escolheu `off`.
+            let source = if sb.mode == garraia_config::SandboxMode::Off && sb.backend.is_none() {
+                SettingSource::Default
+            } else {
+                SettingSource::File
+            };
+            let value = if s.id == "security.sandbox_mode" {
+                json!(match sb.mode {
+                    garraia_config::SandboxMode::Off => "off",
+                    garraia_config::SandboxMode::All => "all",
+                    garraia_config::SandboxMode::Allowlist => "allowlist",
+                })
+            } else {
+                match sb.backend {
+                    None => Value::Null,
+                    Some(garraia_config::SandboxBackendKind::Docker) => json!("docker"),
+                    Some(garraia_config::SandboxBackendKind::Podman) => json!("podman"),
+                    Some(garraia_config::SandboxBackendKind::Ssh) => json!("ssh"),
+                }
+            };
+            (value, None, source)
+        }
         "appearance.default_theme" => (json!("dark"), None, SettingSource::Default),
         "appearance.default_skin" => (json!("garra-blue"), None, SettingSource::Default),
         "experimental.streaming" => (json!(false), None, SettingSource::Default),

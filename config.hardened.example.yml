@@ -83,7 +83,7 @@ agent:
   # Leia `docs/security/threat-model.md` §5.12 antes de ligar. Em resumo:
   #   - Hoje SÓ a tool `bash` é envolvida. `run_tests`, `git_diff`,
   #     `code_review` e `repo_search` continuam nascendo no host mesmo com
-  #     `mode: all`.
+  #     `mode: all`. Tracking na #1225 (slices S2/S3).
   #   - `backend: ssh` NÃO é sandbox: é execução remota. Ele isola o host
   #     local e nada mais, e ignora `network_disabled` e `mount_workdir`.
   #   - Na prática é unix. No Windows o bash tool usa `powershell -Command`,

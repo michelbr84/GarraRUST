@@ -214,6 +214,29 @@ impl BashTool {
     }
 }
 
+/// Tamanho maximo de comando que vai para o log do sandbox.
+const LOG_COMANDO_MAX: usize = 120;
+
+/// Prepara um comando de `bash` para o log do caminho sandboxado.
+///
+/// Este caminho passou a ser alcancavel com a #1225, e o que ele registra e
+/// uma linha de shell escrita por um LLM — que o projeto ja trata como
+/// influenciavel por injecao indireta de prompt (#1213). Duas consequencias:
+///
+/// 1. O comando pode carregar segredo (`curl -H "Authorization: Bearer …"`),
+///    entao passa por [`garraia_security::redact_secrets`], o mesmo filtro
+///    dos eventos de turno.
+/// 2. Ele pode ser arbitrariamente longo, e log e recurso compartilhado;
+///    truncamos em [`LOG_COMANDO_MAX`] com reticencia, cortando em fronteira
+///    de char para nao panicar em UTF-8 multibyte.
+fn comando_para_log(comando: &str) -> String {
+    let redigido = garraia_security::redact_secrets(comando);
+    match redigido.char_indices().nth(LOG_COMANDO_MAX) {
+        None => redigido,
+        Some((corte, _)) => format!("{}…", &redigido[..corte]),
+    }
+}
+
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -331,7 +354,7 @@ impl Tool for BashTool {
             Ok(None) => comando.to_string(),
             Ok(Some(sandboxed)) => {
                 tracing::info!(
-                    command = %comando,
+                    command = %comando_para_log(comando),
                     session = %context.session_id,
                     "bash: comando executado dentro do sandbox"
                 );
@@ -339,7 +362,7 @@ impl Tool for BashTool {
             }
             Err(e) => {
                 tracing::error!(
-                    command = %comando,
+                    command = %comando_para_log(comando),
                     session = %context.session_id,
                     "bash: sandbox fail-closed: {}",
                     e
@@ -760,6 +783,37 @@ mod tests {
             !output.content.contains("nunca"),
             "comando não pode ter rodado"
         );
+    }
+
+    /// #1225 S5: o caminho sandboxado passou a ser alcancavel, e o que ele
+    /// registra e uma linha escrita por um LLM — tratada pelo projeto como
+    /// influenciavel por injecao indireta de prompt (#1213). Ela pode
+    /// carregar segredo e pode ser enorme; o log e recurso compartilhado.
+    #[test]
+    fn comando_para_log_redige_segredo_e_trunca() {
+        let com_segredo = "curl -H 'Authorization: Bearer sk-ant-api03-SEGREDOAQUI'";
+        let saida = comando_para_log(com_segredo);
+        assert!(
+            !saida.contains("sk-ant-api03-SEGREDOAQUI"),
+            "o token sobreviveu ao log: {saida}"
+        );
+
+        let longo = "x".repeat(500);
+        let saida = comando_para_log(&longo);
+        assert!(
+            saida.chars().count() <= LOG_COMANDO_MAX + 1,
+            "len = {}",
+            saida.chars().count()
+        );
+        assert!(saida.ends_with('…'));
+
+        // Comando curto e comum sai intacto — truncar sempre seria ruido.
+        assert_eq!(comando_para_log("ls -la"), "ls -la");
+
+        // UTF-8 multibyte na fronteira do corte nao pode panicar.
+        let acentos = "á".repeat(500);
+        let saida = comando_para_log(&acentos);
+        assert!(saida.ends_with('…'));
     }
 
     #[cfg(unix)]

