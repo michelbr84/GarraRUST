@@ -214,26 +214,46 @@ impl BashTool {
     }
 }
 
-/// Tamanho maximo de comando que vai para o log do sandbox.
+/// Tamanho maximo de comando que vai para o log.
 const LOG_COMANDO_MAX: usize = 120;
 
-/// Prepara um comando de `bash` para o log do caminho sandboxado.
+/// Prepara um comando de `bash` para ir a um campo de log.
 ///
-/// Este caminho passou a ser alcancavel com a #1225, e o que ele registra e
-/// uma linha de shell escrita por um LLM — que o projeto ja trata como
-/// influenciavel por injecao indireta de prompt (#1213). Duas consequencias:
+/// O que se registra aqui e uma linha de shell escrita por um LLM — que o
+/// projeto ja trata como influenciavel por injecao indireta de prompt
+/// (#1213) — e ela sai por campo `%` do `tracing`, que **nao escapa nada**.
+/// Tres coisas precisam acontecer, nesta ordem:
 ///
-/// 1. O comando pode carregar segredo (`curl -H "Authorization: Bearer …"`),
-///    entao passa por [`garraia_security::redact_secrets`], o mesmo filtro
-///    dos eventos de turno.
-/// 2. Ele pode ser arbitrariamente longo, e log e recurso compartilhado;
-///    truncamos em [`LOG_COMANDO_MAX`] com reticencia, cortando em fronteira
-///    de char para nao panicar em UTF-8 multibyte.
+/// 1. **Redigir — parcialmente, e isto e ressalva, nao garantia.** O
+///    comando pode carregar credencial, entao passa por
+///    [`garraia_security::redact_secrets`], o mesmo filtro dos eventos de
+///    turno. Esse filtro e uma **lista fechada de formatos** (`sk-`,
+///    `ghp_`, `xoxb-`, JWT, AKIA, Telegram, senha em connection string):
+///    ele pega o que tem forma reconhecivel e **nao** pega segredo
+///    generico. Uma senha passada por flag, um par
+///    `<VAR>=<40 chars base64>` ou um cabecalho com token opaco passam
+///    inteiros. "Passa por `redact_secrets`" nao e o mesmo que "esta
+///    redigido", e a diferenca e a razao de o caminho de sucesso logar em
+///    `debug!` e nao em `info!`, e de [`LOG_COMANDO_MAX`] existir como
+///    limite generico.
+/// 2. **Neutralizar controle.** Sem isto um `\x1b]0;…\x07` no comando troca
+///    o titulo da janela do operador, e `\x1b[2J` limpa a tela dele — o
+///    mesmo ataque que o #995 fechou para saida de ferramenta, pela mesma
+///    porta. [`sanear_controles`] tira todo C0/C1/DEL; com
+///    `preservar_quebras: false` a quebra vira espaco, porque campo de log
+///    e de uma linha so.
+/// 3. **Truncar.** Log e recurso compartilhado. Por ultimo de proposito: se
+///    o corte viesse antes, ele poderia cair no meio de uma sequencia ANSI e
+///    deixar um OSC **sem terminador**, e ai o terminal engole as linhas de
+///    log seguintes procurando o fim que nunca vem. Depois do passo 2 nao ha
+///    mais sequencia para partir. O corte e em fronteira de char, para nao
+///    panicar em UTF-8 multibyte.
 fn comando_para_log(comando: &str) -> String {
     let redigido = garraia_security::redact_secrets(comando);
-    match redigido.char_indices().nth(LOG_COMANDO_MAX) {
-        None => redigido,
-        Some((corte, _)) => format!("{}…", &redigido[..corte]),
+    let limpo = crate::turn_events::sanear_controles(&redigido, false);
+    match limpo.char_indices().nth(LOG_COMANDO_MAX) {
+        None => limpo,
+        Some((corte, _)) => format!("{}…", &limpo[..corte]),
     }
 }
 
@@ -272,7 +292,7 @@ impl Tool for BashTool {
 
         // GAR-236: Security check - deny list (hard block, never executes)
         if self.is_dangerous(comando) {
-            tracing::error!("Blocked dangerous command: {}", comando);
+            tracing::error!("Blocked dangerous command: {}", comando_para_log(comando));
             return Ok(ToolOutput::error(
                 "Comando bloqueado por segurança: padrão perigoso detectado".to_string(),
             ));
@@ -304,7 +324,7 @@ impl Tool for BashTool {
         if self.is_risky(comando) && !aprovado {
             if self.confirmation_enabled {
                 tracing::warn!(
-                    command = %comando,
+                    command = %comando_para_log(comando),
                     session = %context.session_id,
                     "bash: risky command requires user confirmation"
                 );
@@ -316,7 +336,7 @@ impl Tool for BashTool {
                 )));
             }
             tracing::warn!(
-                command = %comando,
+                command = %comando_para_log(comando),
                 session = %context.session_id,
                 "bash: risky command BLOCKED (fail-closed: confirmation disabled)"
             );
@@ -329,7 +349,10 @@ impl Tool for BashTool {
 
         // GAR-236: Security check - read-only allow list
         if !self.is_allowed(comando) {
-            tracing::warn!("Command not in allow list for read-only mode: {}", comando);
+            tracing::warn!(
+                "Command not in allow list for read-only mode: {}",
+                comando_para_log(comando)
+            );
             return Ok(ToolOutput::error(
                 "Comando não permitido no modo read-only. Use: ls, dir, cat, git, cargo, etc."
                     .to_string(),
@@ -353,7 +376,18 @@ impl Tool for BashTool {
         ) {
             Ok(None) => comando.to_string(),
             Ok(Some(sandboxed)) => {
-                tracing::info!(
+                // `debug!`, e nao `info!`, de proposito — nao promova.
+                //
+                // Ate a #1225 este ramo era inalcancavel (nenhum operador
+                // conseguia ligar o sandbox), entao em `info!` ele seria
+                // exposicao NOVA: no nivel padrao, TODO comando sandboxado
+                // passaria a ir para o log. E `redact_secrets` e por prefixo
+                // conhecido — nao pega `mysql -p'…'` nem
+                // `AWS_SECRET_ACCESS_KEY=…`, entao "esta redigido" nao
+                // autoriza registrar tudo por padrao. O caso de sucesso e
+                // rotina; quem quer auditar liga o `debug`. O fail-closed
+                // abaixo e que e evento, e fica em `error!`.
+                tracing::debug!(
                     command = %comando_para_log(comando),
                     session = %context.session_id,
                     "bash: comando executado dentro do sandbox"
@@ -789,13 +823,112 @@ mod tests {
     /// registra e uma linha escrita por um LLM — tratada pelo projeto como
     /// influenciavel por injecao indireta de prompt (#1213). Ela pode
     /// carregar segredo e pode ser enorme; o log e recurso compartilhado.
+    /// #1225 N3: nenhum sitio de log desta tool pode registrar o comando
+    /// cru. O `tracing` nao escapa nem campo `%` nem `{}`, e o comando vem de
+    /// um LLM — entao todo caminho tem de passar pelo `comando_para_log`.
+    ///
+    /// Varre o fonte no idioma do `mcp_server.rs`, porque a alternativa e
+    /// confiar em revisao: quando esta funcao foi introduzida, quatro sitios
+    /// passaram a usa-la e dois ficaram crus por descuido, e nada falhou.
+    #[test]
+    fn nenhum_log_do_bash_tool_registra_o_comando_cru() {
+        let fonte = include_str!("bash_tool.rs");
+        let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte);
+        // As duas formas cruas possiveis: campo `%` do tracing e `{}`
+        // posicional. `?comando` (Debug) NAO entra na lista — Debug escapa
+        // controle, e e a escolha deliberada dos dois sitios de
+        // `bash_allowlist`, documentada la.
+        //
+        // A checagem e por fronteira de identificador, e nao por `contains`
+        // simples: `command = %comando` e prefixo de
+        // `command = %comando_para_log(...)`, que e justamente a forma certa.
+        for (i, _) in producao.match_indices("command = %comando") {
+            let resto = &producao[i + "command = %comando".len()..];
+            let proximo = resto.chars().next().unwrap_or(',');
+            assert!(
+                proximo == '_',
+                "log com comando cru em `command = %comando` — use \
+                 `comando_para_log(comando)` (contexto: {:?})",
+                &producao[i..(i + 60).min(producao.len())]
+            );
+        }
+        assert!(
+            !producao.contains("}\", comando)"),
+            "log com comando cru em `{{}}` posicional — use `comando_para_log(comando)`"
+        );
+        // E a contraprova: a funcao E usada, entao o teste acima nao esta
+        // passando so porque ninguem loga comando nenhum.
+        assert!(
+            producao.matches("comando_para_log(comando)").count() >= 6,
+            "esperava ao menos 6 sitios usando o helper; achei {}",
+            producao.matches("comando_para_log(comando)").count()
+        );
+    }
+
+    /// #1225 N1: o campo `%` do `tracing` nao escapa nada, e o comando vem
+    /// de um LLM. Um `ESC` sobrevivente reprograma o terminal de quem le o
+    /// log — o mesmo ataque que o #995 fechou para saida de ferramenta.
+    ///
+    /// A assercao e por **classe de caractere**, nao por padrao: reconhecer
+    /// "sequencia ANSI" por regex e um jogo que se perde (CSI, OSC, DCS,
+    /// formas de dois caracteres, com e sem terminador). Sem `ESC`, `[2J` e
+    /// texto inerte.
+    #[test]
+    fn comando_para_log_nao_deixa_passar_caractere_de_controle() {
+        for hostil in [
+            "echo \x1b[2J",                  // limpa a tela
+            "echo \x1b]0;dono-enganado\x07", // troca o titulo da janela
+            "echo \x1b[?25l",                // esconde o cursor
+            "echo ok\rapagado",              // sobrescreve a linha ja impressa
+            "echo \x07\x00\x08",             // BEL/NUL/BS soltos
+        ] {
+            let saida = comando_para_log(hostil);
+            assert!(
+                !saida.chars().any(char::is_control),
+                "sobrou controle em {hostil:?}: {saida:?}"
+            );
+        }
+    }
+
+    /// O truncamento vem DEPOIS da neutralizacao, e este teste existe para
+    /// essa ordem nao ser invertida por engano: um corte antes poderia cair
+    /// no meio de um OSC e deixa-lo sem terminador, e ai o terminal engole
+    /// as linhas de log seguintes procurando o fim que nunca chega.
+    #[test]
+    fn comando_para_log_trunca_depois_de_neutralizar_e_nunca_parte_sequencia() {
+        // OSC longo o bastante para o corte cair dentro dele.
+        let hostil = format!("echo \x1b]0;{}\x07 fim", "A".repeat(300));
+        let saida = comando_para_log(&hostil);
+        assert!(!saida.chars().any(char::is_control), "saida = {saida:?}");
+        assert!(
+            !saida.contains('\u{1b}'),
+            "o OSC saiu inteiro, nao pela metade: {saida:?}"
+        );
+        assert!(saida.chars().count() <= LOG_COMANDO_MAX + 1);
+    }
+
     #[test]
     fn comando_para_log_redige_segredo_e_trunca() {
-        let com_segredo = "curl -H 'Authorization: Bearer sk-ant-api03-SEGREDOAQUI'";
+        // O fixture usa a forma `ghp_` + 36 `X` por dois motivos que se
+        // somam: `redact_secrets` casa com `gh[pousr]_[A-Za-z0-9.\-_]{20,}`
+        // (36 >= 20), e o `XXXXX+` do allowlist do `.gitleaks.toml` impede o
+        // Secret Scan de reclamar da forma. A versao anterior deste fixture
+        // (`Authorization: Bearer sk-…`) derrubava o CI: este teste e
+        // `#[cfg(test)]` inline em `src/`, e o allowlist de PATH do gitleaks
+        // so alcanca `crates/*/tests/`, como o proprio `.gitleaks.toml`
+        // documenta para os fixtures do plan 0360.
+        let com_segredo = "echo ghp_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
         let saida = comando_para_log(com_segredo);
         assert!(
-            !saida.contains("sk-ant-api03-SEGREDOAQUI"),
+            !saida.contains("ghp_X"),
             "o token sobreviveu ao log: {saida}"
+        );
+        // E a assercao positiva, que e a que impede o teste de passar pelo
+        // motivo errado: sem ela, um `redact_secrets` que parasse de casar
+        // (ou um truncamento que comesse o token) daria verde do mesmo jeito.
+        assert!(
+            saida.contains("[REDACTED]"),
+            "o token tem de ter virado marcador, nao sumido: {saida}"
         );
 
         let longo = "x".repeat(500);

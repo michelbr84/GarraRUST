@@ -7,9 +7,11 @@
   `safety_gate` ter aprovado outra coisa. O mesmo vale para `agent.sandbox.image`, que e
   posicional do `docker run` e desloca tudo que vem depois.
   Nenhum host de verdade e nenhuma imagem de verdade comeca com `-`, entao a defesa e
-  recusar, em tres camadas: o `garra config check` reporta Error antes do boot, o
-  `sandbox_policy_from` nao constroi backend nenhum (imagem cai no default) com um `warn!`
-  que **nunca** loga o valor, e o proprio `wrap_command` recusa fail-closed — antes do
+  recusar, em tres camadas: o `sandbox_policy_from` nao constroi backend nenhum (imagem
+  cai no default) com um `warn!` que **nunca** loga o valor, o proprio `wrap_command`
+  recusa fail-closed, e o `garra config check` reporta Error — este ultimo e comando
+  opt-in, nao gate de boot (nada no boot do gateway chama o `run_check`), entao quem
+  garante a propriedade sao as duas primeiras, que rodam sempre. O guard do wrap fica antes do
   `is_available()`, para que num host sem cliente `ssh` o erro de backend ausente nao
   mascare o de injecao de opcao. O conserto estrutural, montar argv em vez de uma linha de
   shell, fica como tracking na #1225 (slices S2/S3), como ja recomendado na #1231.
@@ -35,6 +37,16 @@
 - **Comando do sandbox deixa de ir inteiro para o log (#1225).** O caminho sandboxado
   virou alcancavel com esta serie, e o que ele registrava era a linha de shell crua
   escrita pelo LLM — que o projeto ja trata como influenciavel por injecao indireta de
-  prompt (#1213) e que pode carregar credencial (`curl -H "Authorization: Bearer …"`).
-  Agora passa por `garraia_security::redact_secrets` e e truncada em 120 chars, cortando
-  em fronteira de char para nao panicar em UTF-8 multibyte.
+  prompt (#1213) e que pode carregar credencial. Agora ela passa por
+  `garraia_security::redact_secrets`, tem todo caractere de controle neutralizado e e
+  truncada em 120 chars (nessa ordem: truncar antes poderia partir uma sequencia ANSI ao
+  meio e deixar um OSC sem terminador, e ai o terminal de quem le o log engole as linhas
+  seguintes).
+  **O que a redacao NAO cobre, dito aqui para ninguem ler garantia onde ha ressalva:** o
+  `redact_secrets` e lista fechada de formatos conhecidos (`sk-`, `ghp_`, `xoxb-`, JWT,
+  AKIA, Telegram, senha em connection string). Segredo em formato generico — senha passada
+  por flag, variavel de ambiente com valor opaco, cabecalho com token nao reconhecivel —
+  passa inteiro, e o unico limite que sobra e a truncagem. Por isso o caminho de sucesso
+  loga em `debug!` e nao em `info!`: ate esta serie ele era inalcancavel, entao em `info!`
+  todo comando sandboxado passaria a ir para o log no nivel padrao, o que seria exposicao
+  nova. O `error!` do fail-closed fica, porque ali o evento e a recusa.

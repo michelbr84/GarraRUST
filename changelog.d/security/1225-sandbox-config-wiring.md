@@ -32,7 +32,7 @@
   `sandboxed_tools` vazio, que sandboxa exatamente nada. Nenhum finding ecoa
   o `ssh_host`, e ha teste so para isso.
 - **Documentado o que cada backend realmente garante (#1225).**
-  `docs/security/threat-model.md` ganhou a secao 5.12 com a tabela backend x
+  `docs/security/threat-model.md` ganhou a secao 5.13 com a tabela backend x
   garantia (rede, sistema de arquivos, privilegios, onde roda, o que NAO
   cobre) e tres limites que estavam so no codigo: hoje somente a tool `bash` e
   envolvida — `run_tests`, `git_diff`, `code_review` e `repo_search` seguem

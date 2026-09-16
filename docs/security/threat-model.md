@@ -537,7 +537,7 @@ ele, cada canal tem o seu e o `claim()` do Telegram nunca casa com o `/pair`.
 
 ---
 
-## 5.12. Sandbox por tool (`agent.sandbox`) — #1222, #1225
+## 5.13. Sandbox por tool (`agent.sandbox`) — #1222, #1225
 
 O `BashTool` pode envolver o comando num backend em vez de executá-lo direto
 no host. A política mora em `garraia_agents::sandbox::SandboxPolicy`, a
@@ -588,7 +588,7 @@ Três limites valem para os três backends:
 | **D** Denial of service | Comando consome CPU/memória da máquina inteira dentro do container. | Timeout do próprio `BashTool` + orçamento de tool calls. | Sem `--memory`/`--pids-limit`; mesmo slice de hardening — tracking na #1225 (slices S2/S3). |
 | **R** Repudiation | Não se sabe depois se um comando rodou contido ou no host. | `tracing::info!` "comando executado dentro do sandbox" no caminho envolvido e `tracing::error!` no fail-closed. | Evento de audit dedicado (`agent.tool.sandboxed`) quando o audit de tools existir. |
 | **S** Spoofing | Backend ausente no host faz o comando cair no host em silêncio. | **Fail-closed**: `wrap_command` devolve erro e o `BashTool` recusa o comando; `backend = ssh` sem `ssh_host` também não constrói backend nenhum. | — |
-| **E** Elevation of privilege | **Injeção de opção** por `ssh_host` / `image`: `sh_quote` garante um token, não um *operando*. O host fica antes do `--` em `ssh {host} -- sh -lc …`, então `ssh_host: "-oProxyCommand=…"` é lido como flag e executa no host **local**, já depois do `safety_gate`; `image: "-…"` desloca o posicional do `docker run`. | Valor começando com `-` é recusado em **três** camadas: `garra config check` (Error), `sandbox_policy_from` no boot (backend não é construído / imagem cai no default, com `warn!` que nunca loga o valor) e o próprio `wrap_command` (Err fail-closed, antes do `is_available()`). Nenhum host e nenhuma imagem reais começam com `-`. | Conserto estrutural: montar **argv** em vez de uma linha de shell, eliminando a classe inteira — tracking na #1225 (slices S2/S3), como já recomendado na #1231. |
+| **E** Elevation of privilege | **Injeção de opção** por `ssh_host` / `image`: `sh_quote` garante um token, não um *operando*. O host fica antes do `--` em `ssh {host} -- sh -lc …`, então `ssh_host: "-oProxyCommand=…"` é lido como flag e executa no host **local**, já depois do `safety_gate`; `image: "-…"` desloca o posicional do `docker run`. | Valor começando com `-` é recusado em **três** camadas. Duas rodam sempre e são as que garantem a propriedade: `sandbox_policy_from` no boot (backend não é construído / imagem cai no default, com `warn!` que nunca loga o valor) e o próprio `wrap_command` (Err fail-closed, antes do `is_available()`). A terceira é o `garra config check`, que **reporta** Error — comando opt-in, **não** gate de boot: nada no boot do gateway invoca o `run_check`. Nenhum host e nenhuma imagem reais começam com `-`. | Conserto estrutural: montar **argv** em vez de uma linha de shell, eliminando a classe inteira — tracking na #1225 (slices S2/S3), como já recomendado na #1231. |
 | **T** Tampering | Sandbox ligado numa plataforma onde o wrap não tem significado. | `wrap_command` devolve `Err` fail-closed fora de unix, e o `config check` reporta Error em `cfg!(windows)` — em vez de entregar uma linha POSIX ao `powershell -Command`. | — |
 
 ### Config mínima
@@ -605,8 +605,14 @@ agent:
     elevated: []                    # tools que rodam NO HOST
 ```
 
-`garra config check` recusa (Error) `mode != off` sem `backend`, `backend: ssh`
-sem `ssh_host`, `ssh_host` ou `image` começando com `-`, e a seção ligada fora
+O `garra config check` é um relatório que o operador roda (`config_cmd.rs`) ou
+que o `garra doctor` invoca — **não** é um gate de boot, e um gateway com a
+seção inválida sobe. O que ele faz é dar nome ao problema antes de alguém
+esbarrar nele em produção; quem impede o comando de rodar são as camadas 2 e 3
+descritas acima.
+
+Ele reporta Error para `mode != off` sem `backend`, `backend: ssh` sem
+`ssh_host`, `ssh_host` ou `image` começando com `-`, e para a seção ligada fora
 de unix. Avisa (Warning) que `ssh` é execução remota — **sempre**, mesmo com a
 seção coerente —, que `ssh` ignora `network_disabled`/`mount_workdir`, que
 `elevated` sem confirmação humana é escape hatch desacompanhado, que

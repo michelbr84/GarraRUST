@@ -15,7 +15,7 @@
 //!   existem: Docker, Podman e SSH.
 //! - **Unix na prática**: o `BashTool` escolhe `powershell -Command` no
 //!   Windows e entregaria a ele uma linha com quoting POSIX. Ligar o sandbox
-//!   fora de unix não contém nada — ver `docs/security/threat-model.md` §5.12.
+//!   fora de unix não contém nada — ver `docs/security/threat-model.md` §5.13.
 //! - A configuração do operador é a seção `agent.sandbox` (#1225), traduzida
 //!   por `garraia_gateway::bootstrap::sandbox_policy_from`.
 
@@ -52,11 +52,20 @@ fn sh_quote(s: &str) -> String {
 /// mesmo vale para `image`, que é posicional do `docker run`.
 ///
 /// Nenhum host real e nenhuma imagem real começa com `-`, então a defesa é
-/// recusar em vez de tentar escapar. Isto aqui é a terceira camada: o
-/// `garra config check` recusa antes do boot e `sandbox_policy_from` recusa
-/// na construção da policy. A camada de dentro existe porque uma
-/// `SandboxPolicy` também pode ser montada por código (ou desserializada)
-/// sem passar por nenhuma das duas.
+/// recusar em vez de tentar escapar. Isto aqui é a terceira camada; as
+/// outras duas são `sandbox_policy_from`, que recusa ao construir a policy,
+/// e o `garra config check`, que **reporta Error** — comando opt-in, não
+/// gate de boot: nada no boot do gateway chama `run_check`, então ele avisa
+/// quem o roda e não impede ninguém de subir.
+///
+/// É por isso que a garantia mora aqui e na conversão, e não no relatório:
+/// estas duas rodam sempre. A camada de dentro existe ainda por outro
+/// motivo — uma `SandboxPolicy` também pode ser montada por código (ou
+/// desserializada) sem passar por nenhuma das outras duas.
+///
+/// Gêmeo em `garraia_config::sandbox::parece_opcao` — mesma regra, do outro
+/// lado da fronteira de crate. As duas existem porque uma `SandboxPolicy`
+/// pode chegar aqui sem ter passado por config nenhuma.
 ///
 /// O conserto estrutural — montar argv em vez de uma linha de shell — é
 /// acompanhamento na #1225 (slices S2/S3), como já recomendado na #1231.
@@ -208,10 +217,30 @@ impl SandboxPolicy {
         command: &str,
         cwd: &str,
     ) -> Result<Option<String>> {
+        self.wrap_command_em(cfg!(unix), tool_name, command, cwd)
+    }
+
+    /// [`Self::wrap_command`] com a plataforma como **parâmetro**.
+    ///
+    /// Existe para o ramo não-unix ter teste de verdade. Testar só
+    /// [`plataforma_permite_wrap`] provava a função e não a ligação: apagar a
+    /// chamada dela daqui deixava a suíte inteira verde, e fora de unix este
+    /// `wrap_command` é a **única** aplicação em runtime — o `config check` é
+    /// consultivo e o `sandbox_policy_from` não olha plataforma. É a mesma
+    /// classe de buraco que a #1225 existe para fechar, um nível abaixo.
+    ///
+    /// `alvo_unix` só deve ser diferente de `cfg!(unix)` em teste.
+    fn wrap_command_em(
+        &self,
+        alvo_unix: bool,
+        tool_name: &str,
+        command: &str,
+        cwd: &str,
+    ) -> Result<Option<String>> {
         if !self.requires_sandbox(tool_name) {
             return Ok(None);
         }
-        plataforma_permite_wrap(cfg!(unix))?;
+        plataforma_permite_wrap(alvo_unix)?;
         if parece_opcao(&self.image) {
             // O valor nao entra na mensagem: ele pode carregar o comando do
             // atacante, e o erro vai para o log e para a resposta da tool.
@@ -476,6 +505,51 @@ mod tests {
             err.to_string().contains("nao suportado fora de unix"),
             "err = {err}"
         );
+    }
+
+    /// #1225 C1: o teste acima prova a FUNCAO; este prova a LIGACAO. Sem ele,
+    /// apagar o `plataforma_permite_wrap(...)?` de dentro do `wrap_command_em`
+    /// deixava a suite inteira verde — e fora de unix esse guard e a unica
+    /// aplicacao em runtime (o `config check` e consultivo, e o
+    /// `sandbox_policy_from` nao olha plataforma).
+    #[test]
+    fn wrap_command_nao_envolve_nada_fora_de_unix() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Docker),
+            ..SandboxPolicy::default()
+        };
+        let err = p
+            .wrap_command_em(false, "bash", "echo nunca", "/tmp")
+            .expect_err("fora de unix o wrap tem de recusar");
+        assert!(
+            err.to_string().contains("nao suportado fora de unix"),
+            "err = {err}"
+        );
+
+        // E a recusa vem ANTES de qualquer coisa que dependa do host: sem
+        // isto o teste passaria por falta de docker em vez de por plataforma.
+        assert!(
+            !err.to_string().contains("nao encontrado no host"),
+            "o erro de backend ausente mascarou o de plataforma: {err}"
+        );
+
+        // `mode = off` continua curto-circuitando antes do guard, em
+        // qualquer plataforma: sem sandbox nao ha o que recusar.
+        let off = SandboxPolicy::default();
+        assert_eq!(
+            off.wrap_command_em(false, "bash", "ls", "/tmp")
+                .expect("off nao recusa"),
+            None
+        );
+
+        // E o mesmo caminho em unix segue funcionando (ou falhando por
+        // ausencia de docker, que e o outro desfecho legitimo deste host).
+        match p.wrap_command_em(true, "bash", "echo oi", "/tmp") {
+            Ok(Some(linha)) => assert!(linha.starts_with("docker run --rm")),
+            Err(e) => assert!(e.to_string().contains("fail-closed"), "e = {e}"),
+            Ok(None) => panic!("mode = all deveria sandboxar `bash`"),
+        }
     }
 
     #[test]

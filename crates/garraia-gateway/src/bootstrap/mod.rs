@@ -1285,8 +1285,9 @@ pub fn spawn_hardware_adapters(
 /// - `backend = ssh` sem `ssh_host` **nao** vira backend nenhum. A policy
 ///   fica com `backend: None`, e `wrap_command` recusa cada comando em vez
 ///   de escolher um backend por conta propria ou cair para o host. O
-///   `garra config check` reporta isso como Error antes do boot; aqui sobra
-///   um `warn!` para quem subiu assim mesmo.
+///   `garra config check` reporta isso como Error, mas e comando opt-in e
+///   nao gate de boot — nada no boot o invoca —, entao a recusa que vale e
+///   esta aqui, mais o `warn!` para quem subiu assim mesmo.
 /// - `image` vazia ou so espacos e tratada como ausente, caindo no default
 ///   da propria `SandboxPolicy` — nunca vira `-v ... '' sh -lc ...`.
 /// - `ssh_host` ou `image` **comecando com `-`** sao recusados. `sh_quote`
@@ -1296,10 +1297,11 @@ pub fn spawn_hardware_adapters(
 ///   pulando o `safety_gate` — o inverso exato do proposito do sandbox. O
 ///   mesmo vale para `image`, posicional do `docker run`. Nenhum host e
 ///   nenhuma imagem de verdade comeca com `-`, entao recusar e barato.
-///   Segunda camada: o `config check` recusa antes do boot; terceira: o
-///   proprio `wrap_command`. O conserto estrutural (montar argv em vez de
-///   linha de shell) e acompanhamento na #1225 (slices S2/S3), como ja
-///   recomendado na #1231.
+///   Esta e a camada que garante a propriedade no boot, junto com o
+///   proprio `wrap_command`; o `config check` **reporta** o mesmo Error,
+///   mas e comando opt-in, nao gate de boot. O conserto estrutural (montar
+///   argv em vez de linha de shell) e acompanhamento na #1225 (slices
+///   S2/S3), como ja recomendado na #1231.
 /// - Nomes em `sandboxed_tools`/`elevated` sao trimados. A comparacao na
 ///   policy e exata, entao `" bash"` no YAML seria um no-op silencioso.
 ///   Maiusculas NAO sao normalizadas: o registry de tools e case-sensitive.
@@ -1315,6 +1317,11 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
         CfgMode::All => SandboxMode::All,
         CfgMode::Allowlist => SandboxMode::Allowlist,
     };
+    // Decidido aqui, e nao no ponto de uso, porque `mode` e movido para dentro
+    // da `SandboxPolicy` construida no fim. Gate dos dois `warn!` abaixo: com a
+    // secao desligada o `validate_sandbox` retorna cedo e nao diz nada, e as
+    // duas camadas nao podem discordar sobre o mesmo estado.
+    let sandbox_ativo = mode != SandboxMode::Off;
 
     let backend = match cfg.backend {
         None => None,
@@ -1325,7 +1332,7 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
                 Some(SandboxBackend::Ssh(host.to_string()))
             }
             outro => {
-                if mode != SandboxMode::Off {
+                if sandbox_ativo {
                     // O valor NUNCA entra no log: um `-oProxyCommand=...`
                     // carrega o comando do atacante, e o log e lido por
                     // humano e por ferramenta.
@@ -1353,10 +1360,15 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
         image: match cfg.image.as_deref().map(str::trim) {
             Some(img) if !img.is_empty() && !parece_opcao(img) => img.to_string(),
             Some(img) if parece_opcao(img) => {
-                warn!(
-                    "agent.sandbox.image comeca com `-` e seria lida como opcao do docker/podman \
-                     em vez de nome de imagem; usando a imagem padrao (veja `garra config check`)"
-                );
+                // Gated como o aviso do `ssh_host`. A imagem cai no default
+                // de qualquer jeito; o que o gate controla e so o ruido.
+                if sandbox_ativo {
+                    warn!(
+                        "agent.sandbox.image comeca com `-` e seria lida como opcao do \
+                         docker/podman em vez de nome de imagem; usando a imagem padrao (veja \
+                         `garra config check`)"
+                    );
+                }
                 padrao.image
             }
             _ => padrao.image,
@@ -2194,6 +2206,72 @@ mod tests {
     }
 
     // ─── #1225: agent.sandbox -> SandboxPolicy ────────────────────────────
+
+    /// #1225 C2: prende o espelho. `garraia_config::TOOLS_SANDBOXAVEIS` e uma
+    /// copia, a mao, do conjunto de tools que de fato consultam a
+    /// `SandboxPolicy` — a lista mora em `garraia-config` porque a aresta
+    /// `config -> agents` (que arrastaria db, security e hardware) seria pior
+    /// que a duplicacao, e esta crate e a unica que ve as duas.
+    ///
+    /// O dano de dessincronizar e **direcional**, e e por isso que vale um
+    /// teste: quando a slice S2/S3 envolver `run_tests`, esquecer de atualizar
+    /// a const NAO abre o sandbox — faz o `config check` emitir um Warning
+    /// ativamente falso ("`run_tests` is not a tool the sandbox can wrap
+    /// today"), mandando o operador remover uma entrada que funciona.
+    /// Conselho errado num controle de seguranca e pior que conselho nenhum.
+    ///
+    /// Varre o fonte, no idioma ja usado em `mcp_server.rs` e em
+    /// `desktop-core/src/detect.rs`. Cobre as tools que existem hoje; uma
+    /// tool NOVA que passe a envolver sem entrar nesta tabela escapa — nesse
+    /// caso a tabela abaixo e que precisa crescer, junto com a const.
+    #[test]
+    fn tools_sandboxaveis_espelha_quem_de_fato_chama_wrap_command() {
+        // (nome registrado pela tool, fonte dela)
+        let fontes: [(&str, &str); 5] = [
+            (
+                "bash",
+                include_str!("../../../garraia-agents/src/tools/bash_tool.rs"),
+            ),
+            (
+                "run_tests",
+                include_str!("../../../garraia-agents/src/tools/run_tests_tool.rs"),
+            ),
+            (
+                "git_diff",
+                include_str!("../../../garraia-agents/src/tools/git_diff_tool.rs"),
+            ),
+            (
+                "code_review",
+                include_str!("../../../garraia-agents/src/tools/code_review_tool.rs"),
+            ),
+            (
+                "repo_search",
+                include_str!("../../../garraia-agents/src/tools/repo_search_tool.rs"),
+            ),
+        ];
+
+        let mut envolvem: Vec<&str> = Vec::new();
+        for (nome, fonte) in fontes {
+            // So a metade de producao: um teste que mencione `wrap_command`
+            // nao significa que a tool envolva comando nenhum.
+            let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte);
+            if producao.contains("sandbox.wrap_command(") {
+                envolvem.push(nome);
+            }
+        }
+        envolvem.sort_unstable();
+
+        let mut declaradas: Vec<&str> = garraia_config::sandbox::TOOLS_SANDBOXAVEIS.to_vec();
+        declaradas.sort_unstable();
+
+        assert_eq!(
+            envolvem, declaradas,
+            "garraia_config::TOOLS_SANDBOXAVEIS ({declaradas:?}) divergiu das tools que \
+             realmente chamam `sandbox.wrap_command(` ({envolvem:?}). Atualize a const em \
+             `crates/garraia-config/src/sandbox.rs` — senao o `garra config check` passa a \
+             dar conselho falso ao operador sobre `sandboxed_tools`/`elevated`."
+        );
+    }
 
     #[test]
     fn sandbox_secao_ausente_e_identica_ao_default_da_policy() {

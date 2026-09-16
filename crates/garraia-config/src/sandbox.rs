@@ -25,15 +25,25 @@ fn default_true() -> bool {
 /// sh -lc ...` continua sendo um token so, e o `ssh` o le como flag: o
 /// comando roda no host **local**, sem passar pelo `safety_gate`, que e
 /// exatamente o contrario do que o sandbox existe para fazer. O mesmo vale
-/// para `image` no `docker run`, onde um token com `-` desloca o
-/// posicional.
+/// para `image` no `docker run`, onde um token com `-` desloca o posicional.
 ///
 /// A defesa e recusar o valor em vez de tentar escapa-lo: nenhum host de
 /// verdade e nenhuma imagem de verdade comeca com `-`. Aplicada em tres
-/// camadas (config check, conversao no boot, e o proprio `wrap_command`).
+/// camadas: aqui (via `config check`, que **reporta** — comando opt-in, nao
+/// gate de boot), na conversao do boot (`sandbox_policy_from`) e no proprio
+/// `wrap_command`. As duas ultimas e que garantem a propriedade: rodam
+/// sempre.
+///
+/// Gemeo em `garraia_agents::sandbox::parece_opcao` — mesma regra, do outro
+/// lado da fronteira de crate, porque a `SandboxPolicy` tambem pode ser
+/// montada sem passar por config nenhuma.
 ///
 /// O conserto estrutural — montar argv em vez de uma linha de shell — e
 /// acompanhamento na #1225 (slices S2/S3), como ja recomendado na #1231.
+pub fn parece_opcao(valor: &str) -> bool {
+    valor.trim_start().starts_with('-')
+}
+
 /// Tools que hoje consultam a `SandboxPolicy` — ou seja, as unicas que
 /// `sandboxed_tools`/`elevated` conseguem afetar.
 ///
@@ -43,13 +53,20 @@ fn default_true() -> bool {
 /// delas aqui nao tem efeito, e o `config check` diz isso em vez de deixar
 /// o operador acreditar que listou.
 ///
-/// A lista cresce junto com o wrap das outras tools — acompanhamento na
-/// #1225 (slices S2/S3).
+/// # Por que um espelho, e o que o prende
+///
+/// A alternativa seria `garraia-config` depender de `garraia-agents`, uma
+/// aresta cara (agents arrasta db, security, hardware) para compartilhar uma
+/// lista de uma palavra. Mas dessincronizar tem dano **direcional**: quando
+/// a slice S2/S3 envolver `run_tests`, esquecer de atualizar esta const NAO
+/// abre o sandbox — faz o `config check` emitir um Warning **ativamente
+/// falso**, mandando o operador remover uma entrada que funciona. Conselho
+/// errado num controle de seguranca e pior que conselho nenhum.
+///
+/// Por isso ha um teste em `garraia-gateway` (a unica crate que ve as duas)
+/// que varre o fonte de `garraia-agents` e falha se esta lista divergir das
+/// tools que de fato consultam a policy.
 pub const TOOLS_SANDBOXAVEIS: &[&str] = &["bash"];
-
-pub fn parece_opcao(valor: &str) -> bool {
-    valor.trim_start().starts_with('-')
-}
 
 /// Modo de aplicacao do sandbox por tool (`agent.sandbox.mode`, #1225).
 ///
