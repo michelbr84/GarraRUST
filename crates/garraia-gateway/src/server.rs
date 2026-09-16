@@ -905,8 +905,13 @@ impl GatewayServer {
         //
         // Nao subir e o caso comum — canal desligado, sem sessao, ou sem Node —
         // e nenhum deles e erro de boot.
+        // `Ok(())` e nao `Ok(cancel)`: o `watch::Sender` que mantem o
+        // supervisor vivo fica estacionado no `AppState`
+        // (`WhatsAppLinkedRuntime::reter_cancelamento`). Ele ja morreu aqui uma
+        // vez, solto no fim deste braco do `match`, e o canal inteiro morria
+        // com ele em ~0,1 s a cada boot.
         match crate::bootstrap::spawn_whatsapp_linked(&state) {
-            Ok(_cancel) => info!("whatsapp_linked: canal supervisionado"),
+            Ok(()) => info!("whatsapp_linked: canal supervisionado"),
             Err(motivo) => info!("whatsapp_linked: canal nao subiu ({motivo:?})"),
         }
 
@@ -1678,6 +1683,15 @@ mod tests {
     /// pego pelo CI e ser pego pelo usuario. E a licao do comando que se
     /// chamava `whats-app` com 599 testes verdes: toda funcao bem testada
     /// precisa de alguem provando que ela e CHAMADA.
+    ///
+    /// **E so isso que ele prova.** Ele ficou verde durante toda a vida do bug
+    /// em que o `watch::Sender` devolvido morria no fim do braco do `match` e
+    /// matava o canal em ~0,1 s: a chamada estava la, o resultado e que nao
+    /// era retido. Quem prova a retencao e a entrega da mensagem e
+    /// `bootstrap::whatsapp_linked::tests::ponta_a_ponta::
+    /// o_boot_retem_o_supervisor_e_a_mensagem_chega_ao_agente`, contra a ponte
+    /// falsa e sem segurar handle nenhum. Hoje a mutacao "soltar o handle"
+    /// nem e expressavel — `spawn_whatsapp_linked` devolve `()`.
     #[test]
     fn o_boot_chama_o_supervisor_do_whatsapp_vinculado() {
         let fonte = std::fs::read_to_string(

@@ -46,6 +46,20 @@ SCENARIOS = (
     "network-flap",
     "hang",
     "serve-echo",
+    # serve-push      conecta e, sem receber nada e sem ecoar nada, empurra UMA
+    #                 mensagem de entrada — conteudo por `--push-text`, autoria
+    #                 por `--push-from-me`.
+    #
+    #                 Existe por dois motivos. (1) E o unico cenario em que o
+    #                 lado Rust nao precisa da ponta de SAIDA para ver uma
+    #                 mensagem chegar, e por isso o unico que serve a um teste
+    #                 da fiacao de boot, onde o teste nao segura handle nenhum.
+    #                 (2) O `serve-echo` ecoa TODO `send`, inclusive as
+    #                 respostas do proprio gateway, entao ali "quantos turnos
+    #                 rodaram" e um numero que nao para de crescer: qualquer
+    #                 asserto de ausencia ("isto nao pode gerar turno") seria
+    #                 poluido pelo eco da propria recusa. Aqui nao ha eco.
+    "serve-push",
     # --- acrescentados pelo lado Rust (branch feat/whatsapp-linked-cli) ------
     # Os quatro abaixo nao existem no bridge real como MODO: sao formas de
     # quebrar o contrato que o supervisor Rust precisa tratar sem travar e sem
@@ -143,7 +157,7 @@ class Bridge:
                 "media_kind": None,
                 "timestamp": BASE_TIMESTAMP + index,
                 "is_group": False,
-                "from_me": False,
+                "from_me": bool(self.args.push_from_me),
                 "push_name": PUSHNAME,
             }
         )
@@ -236,7 +250,7 @@ class Bridge:
         start = self.take("start", self.args.handshake_timeout)
         mode = start.get("mode") if isinstance(start, dict) else None
         if mode not in ("pair", "serve"):
-            mode = "serve" if self.args.scenario == "serve-echo" else "pair"
+            mode = "serve" if self.args.scenario.startswith("serve-") else "pair"
 
         self.status("connecting")
         scenario = self.args.scenario
@@ -308,6 +322,9 @@ class Bridge:
         return self.serve()
 
     def serve(self) -> int:
+        if self.args.scenario == "serve-push":
+            # Sem esperar comando nenhum: o lado Rust so precisa estar de pe.
+            self.message(self.args.push_text, 0)
         while True:
             try:
                 command = self.commands.get(timeout=0.05)
@@ -350,6 +367,16 @@ class Bridge:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Fake WhatsApp bridge (protocolo NDJSON v1)")
     parser.add_argument("--scenario", choices=SCENARIOS, default="pair-ok")
+    parser.add_argument(
+        "--push-text",
+        default="oi do celular",
+        help="texto da mensagem que o cenario serve-push empurra",
+    )
+    parser.add_argument(
+        "--push-from-me",
+        action="store_true",
+        help="marca toda mensagem emitida como da propria conta (from_me)",
+    )
     parser.add_argument("--qr-expires", type=float, default=20.0, help="segundos ate o QR expirar")
     parser.add_argument("--hang-secs", type=float, default=3600.0, help="duracao do cenario hang")
     parser.add_argument(

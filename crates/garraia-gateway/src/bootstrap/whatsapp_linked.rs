@@ -48,7 +48,7 @@ use garraia_channels::whatsapp_linked::{
     SessionStore, bridge, runner::InboundSink, runner::serve,
 };
 use garraia_config::AppConfig;
-use garraia_security::{Allowlist, InputValidator, PairingManager};
+use garraia_security::{InputValidator, PairingManager};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
@@ -76,21 +76,45 @@ const OUTBOUND_CAPACITY: usize = 32;
 // Estado vivo
 // ---------------------------------------------------------------------------
 
-/// O que o supervisor sabe sobre a ponte, legivel pelas rotas de leitura.
+/// O que o supervisor sabe sobre a ponte, legivel pelas rotas de leitura, e
+/// **onde o cancelamento dele mora**.
 ///
-/// `AtomicU8` e nao `Mutex<BridgeView>`: `/api/channels` e `/api/diagnostics`
-/// leem isto por request e um lock envenenado por um panic do supervisor
-/// derrubaria as duas rotas — ou obrigaria a um `unwrap()` em producao, que a
-/// regra 4 do `CLAUDE.md` proibe.
+/// `AtomicU8` e nao `Mutex<BridgeView>` para o `bridge`: `/api/channels` e
+/// `/api/diagnostics` leem isto por request e um lock envenenado por um panic
+/// do supervisor derrubaria as duas rotas — ou obrigaria a um `unwrap()` em
+/// producao, que a regra 4 do `CLAUDE.md` proibe.
+///
+/// # Por que o `watch::Sender` do cancelamento mora aqui
+///
+/// Ele precisa viver enquanto o servidor viver. `watch::Receiver::changed()`
+/// devolve `Err` quando o **ultimo** `Sender` cai, e o primeiro braco do
+/// `select!` `biased` de `serve_once` trata `changed.is_err()` como
+/// cancelamento — entao um `Sender` solto nao "vaza": ele **mata o canal** no
+/// ciclo seguinte, depois de spawn, handshake, `session_load` e `start`, em
+/// decimos de segundo, sem nenhum erro.
+///
+/// Devolver o `Sender` para o chamador era um convite a isso: o boot escrevia
+/// `Ok(_cancel) => info!(...)` e o `_cancel` morria no fim do braco do `match`.
+/// Por isso [`spawn_whatsapp_linked`] nao devolve mais o handle — ele e
+/// estacionado aqui, num `AppState` que vive o processo inteiro, e a unica
+/// forma de encerrar passou a ser [`Self::cancelar`]. A mutacao "soltar o
+/// handle no call-site" deixou de ser expressavel.
+///
+/// O `Mutex` aqui e tocado duas vezes na vida do processo (subir e encerrar),
+/// nunca por request, entao ele nao carrega o risco que motivou o `AtomicU8`
+/// do `bridge`; ainda assim nenhum acesso usa `unwrap()` — ver
+/// [`Self::reter_cancelamento`].
 #[derive(Debug)]
 pub struct WhatsAppLinkedRuntime {
     bridge: AtomicU8,
+    cancel: std::sync::Mutex<Option<watch::Sender<bool>>>,
 }
 
 impl Default for WhatsAppLinkedRuntime {
     fn default() -> Self {
         Self {
             bridge: AtomicU8::new(view_to_u8(BridgeView::Unknown)),
+            cancel: std::sync::Mutex::new(None),
         }
     }
 }
@@ -128,6 +152,43 @@ impl WhatsAppLinkedRuntime {
 
     pub fn set_bridge(&self, view: BridgeView) {
         self.bridge.store(view_to_u8(view), Ordering::Relaxed);
+    }
+
+    /// Estaciona o cancelamento do supervisor que acabou de subir.
+    ///
+    /// Um supervisor anterior (que so existe se alguem subir o canal duas
+    /// vezes) e cancelado ao ser substituido, em vez de ficar orfao com a ponte
+    /// aberta.
+    ///
+    /// # Envenenamento
+    ///
+    /// Os tres acessos recuperam o guarda com `into_inner()` em vez de tratar o
+    /// `Err` como falha. Envenenado aqui significa so "alguem entrou em panico
+    /// segurando este slot"; o `Option<Sender>` dentro dele nao tem invariante
+    /// para quebrar. E o custo de desistir seria alto e silencioso: **soltar** o
+    /// `Sender` mata o canal recem-subido, que e exatamente o defeito que este
+    /// campo existe para impedir.
+    pub fn reter_cancelamento(&self, tx: watch::Sender<bool>) {
+        let mut slot = self.cancel.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(anterior) = slot.replace(tx) {
+            let _ = anterior.send(true);
+        }
+    }
+
+    /// Ha supervisor retido? E a pergunta que o teste de boot faz.
+    pub fn cancelamento_vivo(&self) -> bool {
+        self.cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Encerra o supervisor graciosamente. `false` quando nao havia nenhum.
+    pub fn cancelar(&self) -> bool {
+        match self.cancel.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            Some(tx) => tx.send(true).is_ok(),
+            None => false,
+        }
     }
 }
 
@@ -283,6 +344,62 @@ pub enum Admissao {
     Recusado,
 }
 
+/// A allowlist **deste canal**, e de mais nenhum.
+///
+/// # Por que este canal nao usa o `Allowlist` global
+///
+/// O `garraia_security::Allowlist` e um slot unico por instalacao, e **todo**
+/// canal irmao o preenche sozinho: `bootstrap/whatsapp.rs`, `signal.rs`,
+/// `slack.rs`, `teams.rs` e `matrix.rs` chamam `claim_owner(<primeiro
+/// remetente>)` — auto-claim — e `claim_owner` **tambem insere o dono em
+/// `allowed_users`**. Consultar aquele objeto aqui, por `is_owner` ou por
+/// `list_users()`, anulava o recuso de auto-claim deste canal por tabela:
+/// bastava um estranho mandar "oi" para o numero da Cloud API (que identifica
+/// por `from_number`, digitos puros — a mesma forma que
+/// [`normalizar_identidade`] produz) para ele passar a ser admitido no numero
+/// **pessoal** do operador, sem `allow` e sem codigo de pareamento.
+///
+/// E `Allowlist::add` chama `save()`: a lista `allow` da config era gravada no
+/// `allowlist.json` global. Duas consequencias, as duas erradas — tirar o
+/// numero do `allow` no `config.yml` nao tirava nada (nao havia revogacao por
+/// config), e um numero liberado aqui virava identidade valida em Telegram,
+/// Discord, Slack, Signal, Matrix e no `/start`.
+///
+/// # A fonte de verdade e a config
+///
+/// `da_config` e reconstruido do `AppConfig` a cada boot: o que sai do `allow`
+/// sai do portao. Quem resgata um codigo `/pair` entra em `pareados`, que e
+/// **memoria do processo** e nao sobrevive a um restart — um codigo de
+/// pareamento e um bootstrap, nao uma credencial duravel. Acesso que precisa
+/// durar se declara no `allow`, que e tambem o unico lugar de onde da para
+/// remove-lo. Uma fonte de verdade, revogacao que funciona, e nenhum arquivo
+/// novo com permissao para nascer frouxo.
+#[derive(Debug, Default)]
+pub struct PortaoDoCanal {
+    da_config: std::collections::HashSet<String>,
+    pareados: std::collections::HashSet<String>,
+}
+
+impl PortaoDoCanal {
+    /// O portao que a config descreve. Lista vazia significa **ninguem**.
+    pub fn from_settings(settings: &LinkedSettings) -> Self {
+        Self {
+            da_config: settings.allow.iter().cloned().collect(),
+            pareados: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Presenca explicita: nao existe modo, nem dono, nem valor que signifique
+    /// "todos".
+    pub fn libera(&self, remetente: &str) -> bool {
+        self.da_config.contains(remetente) || self.pareados.contains(remetente)
+    }
+
+    fn parear(&mut self, remetente: &str) {
+        self.pareados.insert(remetente.to_string());
+    }
+}
+
 /// Admite (ou nao) um remetente.
 ///
 /// # A diferenca para o canal Cloud, e por que ela existe
@@ -291,41 +408,41 @@ pub enum Admissao {
 ///
 /// - **Nao ha auto-claim de dono.** La, o primeiro remetente vira dono do bot.
 ///   Num canal onde o remetente e qualquer pessoa que tenha o numero pessoal do
-///   operador, isso entrega o agente ao primeiro estranho que mandar "oi".
+///   operador, isso entrega o agente ao primeiro estranho que mandar "oi". E
+///   nao basta nao fazer auto-claim aqui: e preciso nao **honrar** o auto-claim
+///   que os irmaos fazem — ver [`PortaoDoCanal`].
 /// - **`AllowlistMode::Open` nao vale aqui.** `Allowlist::is_allowed` devolve
 ///   `true` para qualquer um em modo aberto; esse modo existe para ergonomia
-///   local e nao pode valer para um canal exposto a internet. Por isso a
-///   pergunta e `is_owner(..) || list_users().contains(..)` — presenca
-///   explicita — e nao `is_allowed`.
+///   local e nao pode valer para um canal exposto a internet. O
+///   [`PortaoDoCanal`] nao tem modo nenhum, entao a pergunta nem chega a
+///   existir.
 ///
-/// Allowlist vazia significa **ninguem**. Quem precisa entrar entra com um
-/// codigo de 6 digitos do `/pair`, ou pela lista `allow` da config.
+/// Portao vazio significa **ninguem**. Quem precisa entrar entra com um codigo
+/// de 6 digitos do `/pair`, ou pela lista `allow` da config.
+///
+/// O `PairingManager` continua sendo o global de proposito: o docblock dele diz
+/// que um codigo "vale em qualquer canal habilitado e o `channel_id` e
+/// informativo, nao um escopo", e e assim que o operador gera por outro canal o
+/// codigo que entra neste. O que muda e o destino do resgate — ele libera
+/// **aqui**, e nao na allowlist da instalacao.
 pub fn admitir(
-    list: &mut Allowlist,
+    portao: &mut PortaoDoCanal,
     pairing: &mut PairingManager,
     remetente: &str,
     texto: &str,
 ) -> Admissao {
-    if esta_explicitamente_liberado(list, remetente) {
+    if portao.libera(remetente) {
         return Admissao::Aceito;
     }
     let candidato = texto.trim();
     if candidato.len() == 6 && candidato.chars().all(|c| c.is_ascii_digit()) {
         // `claim` e quem conta tentativa e queima o codigo (#1191).
         if pairing.claim(candidato, remetente).is_some() {
-            list.add(remetente);
+            portao.parear(remetente);
             return Admissao::PareadoAgora;
         }
     }
     Admissao::Recusado
-}
-
-/// Presenca **explicita** na allowlist — a pergunta que `is_allowed` nao faz
-/// quando o modo e aberto.
-pub fn esta_explicitamente_liberado(list: &Allowlist, remetente: &str) -> bool {
-    // `contains` e nao `iter().any()` por ordem do clippy; a semantica e a
-    // mesma: presenca EXPLICITA, sem consultar o modo da allowlist.
-    list.is_owner(remetente) || list.list_users().contains(&remetente)
 }
 
 /// O que fazer com uma mensagem antes de ela chegar perto do modelo.
@@ -382,6 +499,51 @@ pub fn piso_somente_leitura(mut exec: ExecContext, modo_default: &str) -> ExecCo
     exec
 }
 
+/// Ha ferramenta de servidor MCP registrada no runtime **agora**?
+///
+/// # Por que este canal recusa rodar enquanto houver uma
+///
+/// O piso [`piso_somente_leitura`] escolhe o perfil `search`, que e
+/// `whitelist_mode`. Mas `ToolGate::permite` tem uma escapatoria explicita e
+/// documentada (`modes.rs`, secao "Ferramenta MCP nao e barrada por
+/// whitelist"): nome que contenha `SEPARADOR_MCP` (`"__"`) passa pelo whitelist
+/// incondicionalmente — a alternativa, quando aquilo foi escrito, era quebrar
+/// MCP em cinco dos nove modos. E a #1264, que fecharia isso, esta aberta.
+///
+/// O encadeamento fecha na configuracao default desta PR: `web_fetch` **esta**
+/// na whitelist do `search`, entao uma pagina buscada pelo agente pode injetar
+/// instrucao, o agente pode chamar uma ferramenta MCP, e o piso nao existe para
+/// ela. Com #1245 e #1260 o caminho ate execucao arbitraria nao tem degrau
+/// faltando — e a mensagem que dispara tudo vem de qualquer pessoa que conheca
+/// o numero pessoal do operador.
+///
+/// ## Por que nao montar um `denied` com os nomes MCP conhecidos
+///
+/// Era a saida mais barata (`denied` vale sempre, inclusive para MCP), e ela
+/// nao fecha o buraco. `ToolPolicy::denied` e uma lista de nomes com
+/// comparacao exata, ou seja, um **instantaneo**; e o inventario e vivo:
+///
+/// - `McpManager::spawn_health_monitor_with_runtime` chama
+///   `AgentRuntime::sync_mcp_tools` a cada **30 s** (`mcp/manager.rs`), e um
+///   turno de agente com varias chamadas de ferramenta dura mais que isso;
+/// - `admin/mcp.rs` re-sincroniza a inventario quando um servidor e adicionado
+///   pela API, a qualquer momento;
+/// - `AgentRuntime::tool_definitions()` e lido **uma vez** por turno e o guard
+///   de pre-execucao (`runtime.rs`) usa o mesmo `ToolGate` do inicio do turno.
+///
+/// Ou seja, o instantaneo fica velho pela duracao inteira de um turno, e uma
+/// ferramenta que aparece nessa janela nao esta no `denied` e passa pela
+/// escapatoria. Um `denied` desses daria a aparencia de piso sem o piso —
+/// exatamente o defeito que esta PR ja pagou tres vezes. Medido, nao adivinhado.
+///
+/// Entao a decisao e a opcao fail-closed: **o canal nao roda** enquanto houver
+/// ferramenta MCP registrada. E avaliado no boot e **de novo a cada turno**,
+/// porque um servidor registrado pela API depois do boot deixaria a checagem de
+/// boot obsoleta. Quando a #1264 fechar, esta funcao sai.
+pub fn ha_ferramenta_mcp(agents: &garraia_agents::AgentRuntime) -> bool {
+    agents.tool_inventory().iter().any(|t| t.source == "mcp")
+}
+
 /// Esta mensagem merece um turno do agente?
 ///
 /// Separada do sink para ser testavel sem runtime. Cada `false` aqui e um
@@ -411,6 +573,9 @@ pub struct GatewaySink {
     state: SharedState,
     runtime: Arc<WhatsAppLinkedRuntime>,
     settings: LinkedSettings,
+    /// O portao **deste** canal. Nao e o `state.allowlist`: ver
+    /// [`PortaoDoCanal`].
+    portao: Arc<std::sync::Mutex<PortaoDoCanal>>,
     outbound: mpsc::Sender<BridgeCommand>,
 }
 
@@ -421,10 +586,14 @@ impl GatewaySink {
         settings: LinkedSettings,
         outbound: mpsc::Sender<BridgeCommand>,
     ) -> Self {
+        let portao = Arc::new(std::sync::Mutex::new(PortaoDoCanal::from_settings(
+            &settings,
+        )));
         Self {
             state,
             runtime,
             settings,
+            portao,
             outbound,
         }
     }
@@ -448,6 +617,7 @@ impl GatewaySink {
     async fn turno(
         state: SharedState,
         settings: LinkedSettings,
+        portao: Arc<std::sync::Mutex<PortaoDoCanal>>,
         outbound: mpsc::Sender<BridgeCommand>,
         msg: InboundMessage,
     ) {
@@ -455,15 +625,18 @@ impl GatewaySink {
         let last4 = msg.sender_jid.last4();
         let bruto = msg.text.clone().unwrap_or_default();
 
-        let (allowlist, pairing) = channel_gates(&state);
+        // Só o `PairingManager` e compartilhado com os outros canais — um
+        // codigo do `/pair` vale em qualquer canal, e o docblock dele diz isso.
+        // A allowlist **nao** e: ver [`PortaoDoCanal`].
+        let (_, pairing) = channel_gates(&state);
         let admissao = {
             // Os dois locks juntos, e soltos antes do `await`: `std::sync::
             // MutexGuard` nao e `Send`.
-            let (Ok(mut list), Ok(mut pair)) = (allowlist.lock(), pairing.lock()) else {
+            let (Ok(mut gate), Ok(mut pair)) = (portao.lock(), pairing.lock()) else {
                 warn!("whatsapp_linked: gate envenenado; recusando por seguranca");
                 return;
             };
-            admitir(&mut list, &mut pair, &remetente, &bruto)
+            admitir(&mut gate, &mut pair, &remetente, &bruto)
         };
 
         match admissao {
@@ -502,6 +675,23 @@ impl GatewaySink {
             .await;
             return;
         };
+
+        // Reavaliado por turno, e nao so no boot: o `admin/mcp.rs` registra
+        // servidor com o gateway ja de pe. Ver [`ha_ferramenta_mcp`].
+        if ha_ferramenta_mcp(&state.agents) {
+            warn!(
+                phone_last4 = %last4,
+                "whatsapp_linked: ha ferramenta MCP registrada e o piso somente-leitura nao a cobre (#1264); turno recusado"
+            );
+            Self::responder(
+                &outbound,
+                &msg.chat_jid,
+                "Este canal esta indisponivel enquanto houver servidor MCP conectado neste GarraIA."
+                    .to_string(),
+            )
+            .await;
+            return;
+        }
 
         let sid = session_id(&msg);
         state
@@ -560,8 +750,9 @@ impl InboundSink for GatewaySink {
         }
         let state = Arc::clone(&self.state);
         let settings = self.settings.clone();
+        let portao = Arc::clone(&self.portao);
         let outbound = self.outbound.clone();
-        tokio::spawn(Self::turno(state, settings, outbound, message));
+        tokio::spawn(Self::turno(state, settings, portao, outbound, message));
     }
 
     fn on_connection(&self, jid: Option<&Jid>, connected: bool) {
@@ -595,6 +786,9 @@ pub enum NaoSubiu {
     SemSessao,
     /// `node` nao esta na PATH.
     SemNode,
+    /// Ha servidor MCP registrado e o piso somente-leitura nao cobre as
+    /// ferramentas dele (#1264). Ver [`ha_ferramenta_mcp`].
+    FerramentaMcpRegistrada,
 }
 
 /// Decide se ha o que supervisionar. Pura o bastante para ter teste proprio.
@@ -602,6 +796,7 @@ pub fn deve_supervisionar(
     settings: &LinkedSettings,
     sessao_existe: bool,
     node_presente: bool,
+    ferramenta_mcp: bool,
 ) -> Result<(), NaoSubiu> {
     if !settings.enabled {
         return Err(NaoSubiu::Desabilitado);
@@ -612,43 +807,51 @@ pub fn deve_supervisionar(
     if !node_presente {
         return Err(NaoSubiu::SemNode);
     }
+    if ferramenta_mcp {
+        return Err(NaoSubiu::FerramentaMcpRegistrada);
+    }
     Ok(())
 }
 
 /// Sobe o canal, quando ha o que subir.
 ///
-/// Devolve o `watch::Sender` de cancelamento quando subiu — o desligamento
-/// gracioso do gateway o usa — e `Err` com o motivo quando nao havia o que
-/// fazer. **Nao e erro**: um gateway sem WhatsApp vinculado e o caso comum.
-pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<watch::Sender<bool>, NaoSubiu> {
+/// `Err` com o motivo quando nao havia o que fazer — **nao e erro**: um gateway
+/// sem WhatsApp vinculado e o caso comum.
+///
+/// # O que esta funcao deliberadamente NAO devolve
+///
+/// O `watch::Sender` de cancelamento. Ele e estacionado em
+/// [`WhatsAppLinkedRuntime::reter_cancelamento`], que vive no `AppState`.
+///
+/// A versao anterior o devolvia, e o boot escrevia
+/// `Ok(_cancel) => info!("canal supervisionado")`. O `_cancel` morria no fim do
+/// braco do `match`, `watch::Receiver::changed()` passava a devolver `Err`, e o
+/// primeiro braco do `select!` `biased` de `serve_once` trata `changed.is_err()`
+/// como cancelamento: a cada boot o canal fazia spawn do node, handshake,
+/// `session_load` e `start`, e entao a primeira iteracao do loop matava o filho
+/// — em decimos de segundo, sem erro nenhum no log. O canal cuja razao de
+/// existir e fazer a mensagem escaneada chegar ao agente nunca recebeu uma.
+///
+/// Devolver um handle cuja queda desliga o subsistema e um convite a esse
+/// defeito, e nenhum teste do supervisor o pega, porque todo harness guarda o
+/// `Sender`. Com o handle estacionado, a mutacao "soltar o cancelamento no
+/// call-site" deixa de ser expressavel: nao ha o que soltar.
+pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     let settings = settings_from_config(&state.config);
     let paths = LinkedPaths::from_config(&state.config);
     let node = bridge::find_executable("node");
 
-    deve_supervisionar(&settings, paths.store.exists(), node.is_some())?;
+    deve_supervisionar(
+        &settings,
+        paths.store.exists(),
+        node.is_some(),
+        ha_ferramenta_mcp(&state.agents),
+    )?;
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
     // compilador nao sabe disso, e um `unwrap()` em producao e proibido.
     let Some(node) = node else {
         return Err(NaoSubiu::SemNode);
     };
-
-    // Seeds da config entram na allowlist compartilhada. Sao identidades
-    // explicitas que o operador escreveu — o oposto de afrouxar o gate.
-    if !settings.allow.is_empty() {
-        let (allowlist, _) = channel_gates(state);
-        match allowlist.lock() {
-            Ok(mut list) => {
-                for identidade in &settings.allow {
-                    list.add(identidade.clone());
-                }
-                info!(
-                    total = settings.allow.len(),
-                    "whatsapp_linked: identidades da config adicionadas a allowlist"
-                );
-            }
-            Err(_) => warn!("whatsapp_linked: allowlist envenenada; seeds da config ignorados"),
-        }
-    }
 
     let key = match SessionKey::resolve(
         paths.store.dir(),
@@ -663,28 +866,49 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<watch::Sender<bool>,
         }
     };
 
+    let launcher: Arc<dyn bridge::BridgeLauncher> =
+        Arc::new(NodeLauncher::new(node, paths.bridge_dir.clone()));
+
+    supervisionar(state, settings, paths.store.clone(), key, launcher);
+    Ok(())
+}
+
+/// A fiacao do supervisor, sem a descoberta do `node`.
+///
+/// Separada de [`spawn_whatsapp_linked`] por um motivo so: e o que permite a um
+/// teste exercitar **esta** fiacao — a que o boot usa — contra a ponte falsa,
+/// em vez de montar a sua propria e provar outra coisa. O que o boot faz a mais
+/// e achar o `node` e abrir a chave; tudo o que vem depois esta aqui.
+pub(crate) fn supervisionar(
+    state: &SharedState,
+    settings: LinkedSettings,
+    store: SessionStore,
+    key: SessionKey,
+    launcher: Arc<dyn bridge::BridgeLauncher>,
+) {
     let runtime = Arc::clone(&state.whatsapp_linked);
     runtime.set_bridge(BridgeView::NotStarted);
 
     let (outbound_tx, outbound_rx) = mpsc::channel(OUTBOUND_CAPACITY);
+    // O `GatewaySink` monta o [`PortaoDoCanal`] a partir destes `settings`: as
+    // identidades do `allow` ficam **neste** canal, e nao no `allowlist.json`
+    // da instalacao. Ver o docblock de `PortaoDoCanal`.
     let sink: Arc<dyn InboundSink> = Arc::new(GatewaySink::new(
         Arc::clone(state),
         Arc::clone(&runtime),
         settings,
         outbound_tx,
     ));
-    let launcher: Arc<dyn bridge::BridgeLauncher> =
-        Arc::new(NodeLauncher::new(node, paths.bridge_dir.clone()));
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let store = paths.store.clone();
 
+    let runtime_para_tarefa = Arc::clone(&runtime);
     tokio::spawn(async move {
         let resultado = serve(launcher, store, key, sink, outbound_rx, cancel_rx, || {
             rand::random::<f64>()
         })
         .await;
-        runtime.set_bridge(BridgeView::Down);
+        runtime_para_tarefa.set_bridge(BridgeView::Down);
         match resultado {
             Ok(()) => info!("whatsapp_linked: supervisor encerrado"),
             Err(RunError::SessionDead { reason_code }) => {
@@ -701,7 +925,9 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<watch::Sender<bool>,
         }
     });
 
-    Ok(cancel_tx)
+    // DEPOIS do spawn, e antes de sair: enquanto este `Sender` viver, o
+    // supervisor vive. Ver o docblock de `WhatsAppLinkedRuntime`.
+    runtime.reter_cancelamento(cancel_tx);
 }
 
 /// Grava `channels.whatsapp_linked.enabled = false`.

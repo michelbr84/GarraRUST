@@ -63,6 +63,21 @@ impl ConfigLoader {
         if yaml_path.exists() {
             info!("loading config from {}", yaml_path.display());
             let contents = std::fs::read_to_string(&yaml_path)?;
+            // Um `config.yml` em branco desserializa **com sucesso** para
+            // `AppConfig::default()`, e esse e o pior resultado possivel: e a
+            // forma exata que uma escrita truncada deixa o arquivo, e o que
+            // vinha depois era um `save()` gravando os defaults por cima da
+            // config do usuario — e todo gate que morava nela (chaves, canais,
+            // credenciais) sumindo em silencio. Arquivo vazio nao e "sem
+            // config": e config ilegivel.
+            if contents.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "{} esta vazio — isso costuma ser uma escrita interrompida, \
+                     nao uma config valida. Restaure o arquivo, ou apague-o para \
+                     que os defaults valham.",
+                    yaml_path.display()
+                )));
+            }
             serde_yaml::from_str(&contents)
                 .map_err(|e| Error::Config(format!("failed to parse YAML config: {e}")))
         } else if toml_path.exists() {
@@ -196,14 +211,7 @@ impl ConfigLoader {
         let contents = serde_yaml::to_string(config)
             .map_err(|e| Error::Config(format!("failed to serialize config: {e}")))?;
 
-        std::fs::write(&yaml_path, contents).map_err(|e| {
-            garraia_common::Error::Config(format!(
-                "failed to write config to {}: {e}",
-                yaml_path.display()
-            ))
-        })?;
-
-        harden_secret_file(&yaml_path)?;
+        write_atomic_secret(&yaml_path, contents.as_bytes())?;
 
         info!("saved updated config to {}", yaml_path.display());
         Ok(())
@@ -253,6 +261,80 @@ impl ConfigLoader {
         self.save(&config)?;
         Ok(true)
     }
+}
+
+/// Escreve `path` de forma atomica e ja apertada: tmp no **mesmo** diretorio,
+/// nascido `0600`, `sync_all`, `rename`.
+///
+/// # Por que isto substituiu `fs::write` + `harden_secret_file`
+///
+/// `std::fs::write` e truncate-then-write: entre o truncate e o fim da escrita
+/// o `config.yml` esta parcial no disco, e uma queda ali deixa o arquivo vazio
+/// — que o `load` acima agora recusa em vez de tratar como "sem config". O
+/// `chmod` vinha **depois** da escrita, entao havia ainda uma janela em que
+/// `llm.*.api_key` e `gateway.api_key` estavam no disco com o modo do umask
+/// (comumente `0644`).
+///
+/// A janela deixou de ser teorica nesta fatia: alem da CLI (`garra whatsapp
+/// link` / `logout`), o gateway passou a chamar `set_channel_enabled` sozinho
+/// quando o servidor invalida a sessao — dois processos, read-modify-write, sem
+/// lock. O `rename` nao remove a corrida de leitura-modificacao-escrita (o
+/// ultimo a escrever ainda vence), mas garante que nenhum leitor jamais veja um
+/// arquivo pela metade, e que o arquivo nunca exista com modo frouxo.
+///
+/// O padrao e o mesmo de `whatsapp_linked::session::write_atomic`, que guarda o
+/// blob de sessao. Sao dois call sites e um padrao; a alternativa era duas
+/// definicoes de "escrita segura" capazes de divergir.
+fn write_atomic_secret(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::Config(format!("{} nao tem diretorio pai", path.display())))?;
+
+    let tmp = dir.join(format!(
+        ".{}.tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "config".into())
+    ));
+
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        // Nasce 0600: apertar depois da escrita deixaria uma janela com o
+        // segredo ja no disco sob o modo do umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp).map_err(|e| {
+            Error::Config(format!("failed to open {} for write: {e}", tmp.display()))
+        })?;
+        f.write_all(bytes)
+            .map_err(|e| Error::Config(format!("failed to write {}: {e}", tmp.display())))?;
+        f.sync_all()
+            .map_err(|e| Error::Config(format!("failed to fsync {}: {e}", tmp.display())))?;
+    }
+    // Fora de Unix o `mode` acima nao existe; aperta pelo caminho generico.
+    harden_secret_file(&tmp)?;
+
+    std::fs::rename(&tmp, path).map_err(|e| {
+        // Um tmp orfao seria um segundo arquivo com a config inteira dentro.
+        let _ = std::fs::remove_file(&tmp);
+        Error::Config(format!(
+            "failed to replace {} atomically: {e}",
+            path.display()
+        ))
+    })?;
+
+    // Best-effort: sem isto o rename pode nao estar duravel depois de uma queda
+    // de energia. Falha aqui nao invalida a escrita.
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
 }
 
 /// Restrict `path` to owner-only read/write (`0600`) on Unix.
@@ -515,6 +597,91 @@ mod tests {
         assert!(dir.join("skills").exists());
         assert!(dir.join("data").exists());
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **A prova de que a escrita e por rename, e nao truncate-then-write.**
+    ///
+    /// `std::fs::write` reaproveita o arquivo existente: mesmo inode, conteudo
+    /// substituido no lugar — e entre o truncate e o fim da escrita o
+    /// `config.yml` esta parcial no disco. Um `rename` atomico **troca** o
+    /// inode. E a unica diferenca observavel das duas implementacoes sem uma
+    /// corrida, e ela morre no instante em que alguem voltar ao `fs::write`.
+    #[cfg(unix)]
+    #[test]
+    fn save_substitui_o_arquivo_por_rename_em_vez_de_truncar() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = temp_dir("save-atomica");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let loader = ConfigLoader::with_dir(&dir);
+        let config = loader.load().expect("defaults");
+
+        loader.save(&config).expect("primeira escrita");
+        let path = dir.join("config.yml");
+        let antes = fs::metadata(&path).expect("metadata").ino();
+
+        loader.save(&config).expect("segunda escrita");
+        let depois = fs::metadata(&path).expect("metadata").ino();
+
+        assert_ne!(
+            antes, depois,
+            "o destino tem de ser substituido por rename; mesmo inode significa \
+             truncate-then-write, que deixa o arquivo parcial no disco durante a escrita"
+        );
+        assert!(
+            fs::read_dir(&dir)
+                .expect("lista")
+                .filter_map(|e| e.ok())
+                .all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")),
+            "nenhum tmp orfao pode sobrar — seria uma segunda copia da config inteira"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **Config vazia nao e "sem config".**
+    ///
+    /// `serde_yaml` desserializa uma string em branco para `AppConfig::default()`
+    /// **com sucesso** — e essa era a forma exata que uma escrita interrompida
+    /// deixava o arquivo. O gate de credencial do gateway desaparecia em
+    /// silencio, e o `save()` seguinte gravava os defaults por cima do que
+    /// restava da config do usuario.
+    #[test]
+    fn load_recusa_config_yml_em_branco() {
+        let dir = temp_dir("load-vazia");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let path = dir.join("config.yml");
+
+        // A premissa que torna o bug possivel — se ela cair, este teste perde o
+        // sentido e quem mexer precisa saber disso.
+        assert!(
+            serde_yaml::from_str::<crate::model::AppConfig>("   \n").is_ok(),
+            "premissa: YAML em branco desserializa com sucesso para os defaults"
+        );
+
+        for conteudo in ["", "   ", "\n\n", "  \n\t\n"] {
+            fs::write(&path, conteudo).expect("seed");
+            let erro = ConfigLoader::with_dir(&dir)
+                .load()
+                .expect_err("config em branco tem de ser recusada");
+            assert!(
+                format!("{erro}").contains("vazio"),
+                "o erro tem de dizer o que fazer: {erro}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// E uma config de verdade continua carregando — a recusa acima nao pode
+    /// ter virado "recusa tudo".
+    #[test]
+    fn load_aceita_config_yml_com_conteudo() {
+        let dir = temp_dir("load-ok");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("config.yml"), "gateway:\n  host: \"127.0.0.1\"\n").expect("seed");
+        assert!(ConfigLoader::with_dir(&dir).load().is_ok());
         let _ = fs::remove_dir_all(dir);
     }
 }

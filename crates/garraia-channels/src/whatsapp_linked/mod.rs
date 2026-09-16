@@ -49,6 +49,12 @@
 
 pub mod bridge;
 pub mod health;
+/// Analise de texto para varredura de fonte (`chamadas_de_log`,
+/// `parte_arriscada`, `bindings_contaminados`). Superficie de teste, nao API do
+/// canal — e `pub` porque o gateway varre o proprio fonte com as mesmas regras,
+/// e duas copias delas foi exatamente o defeito que este modulo corrige.
+#[doc(hidden)]
+pub mod log_audit;
 pub mod protocol;
 pub mod qr;
 pub mod runner;

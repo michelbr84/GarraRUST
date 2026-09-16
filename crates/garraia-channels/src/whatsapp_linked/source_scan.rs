@@ -21,73 +21,89 @@ const SOURCES: &[(&str, &str)] = &[
     ("runner.rs", include_str!("runner.rs")),
 ];
 
-/// Linhas de log (`info!`/`warn!`/`debug!`/`error!`/`trace!`), com o numero da
-/// linha, ignorando comentario e bloco de teste.
-fn log_lines(source: &str) -> Vec<(usize, &str)> {
-    let mut out = Vec::new();
-    let mut in_tests = false;
-    let mut brace_depth = 0i32;
-    for (i, raw) in source.lines().enumerate() {
-        let line = raw.trim();
-        if line.starts_with("#[cfg(test)]") {
-            in_tests = true;
-            brace_depth = 0;
-        }
-        if in_tests {
-            brace_depth += line.matches('{').count() as i32;
-            brace_depth -= line.matches('}').count() as i32;
-            if brace_depth <= 0 && line.contains('}') {
-                in_tests = false;
-            }
-            continue;
-        }
-        if line.starts_with("//") {
-            continue;
-        }
-        if ["info!", "warn!", "debug!", "error!", "trace!"]
-            .iter()
-            .any(|m| line.contains(m))
-        {
-            out.push((i + 1, raw));
-        }
-    }
-    out
-}
+/// Nomes que, no lugar onde um valor cabe, significam "o segredo foi logado".
+///
+/// Sao **identificadores**, e nao os padroes `%blob`/`{blob}`/`blob = ` de
+/// antes: a busca nao acontece mais na linha crua, e sim na parte da invocacao
+/// que pode carregar valor ([`log_audit::parte_arriscada`]), onde `%`, `?`, `=`
+/// e `{}` ja foram descartados. Procurar por `"%blob"` ali nunca casaria.
+const PROIBIDOS: &[&str] = &["expose", "blob", "session", "secret", "passphrase"];
+
+/// O que contamina um binding: se um `let` nasce disto, o nome dele passa a
+/// valer como proibido tambem.
+const GATILHOS: &[&str] = &["expose", "SessionBlob", ".blob"];
+
+/// O que **quebra** a contaminacao: uma redacao. Aqui nao ha nenhuma hoje — o
+/// blob de sessao nao tem forma resumida logavel, ao contrario do `Jid`, que
+/// tem `last4()`. A constante existe para que a proxima tenha onde entrar em
+/// vez de virar excecao solta no meio do teste.
+const ANTIDOTOS: &[&str] = &[];
 
 /// Nenhuma macro de log pode carregar o valor da sessao.
+///
+/// # O que mudou, e por que
+///
+/// A versao anterior casava padrao **linha a linha**, e o `rustfmt` quebra toda
+/// macro `tracing!` com campos estruturados em varias linhas. Duas mutacoes
+/// sobreviviam a ela — `tracing::info!(\n %blob,\n "...")` e
+/// `let apelido = blob.expose().to_string(); info!("{apelido}")` — enquanto as
+/// mesmas duas numa linha so eram pegas. O teste era funcao da formatacao.
+///
+/// Agora ele usa o mesmo par do gateway ([`log_audit`]): a invocacao inteira,
+/// atravessando linhas, e so entao a parte que pode carregar valor. E
+/// [`log_audit::bindings_contaminados`] fecha o rename.
 #[test]
 fn no_log_line_mentions_the_session_value() {
-    // Padroes que significariam "o valor foi para o log": o `expose()` cru, o
-    // `Display`/`Debug` de um binding chamado `session`/`blob`, e o campo
-    // `session` de um evento.
-    const FORBIDDEN: &[&str] = &[
-        "expose()",
-        "%session",
-        "?session",
-        "{session}",
-        "%blob",
-        "?blob",
-        "{blob}",
-        "session = ",
-        "blob = ",
-        ".0",
-    ];
+    use super::log_audit;
 
     let mut offenders = Vec::new();
     for (name, source) in SOURCES {
-        for (line_no, line) in log_lines(source) {
-            for pattern in FORBIDDEN {
-                if line.contains(pattern) {
-                    offenders.push(format!("{name}:{line_no}: {} ({pattern})", line.trim()));
+        let sujos = log_audit::bindings_contaminados(source, GATILHOS, ANTIDOTOS);
+        let mut proibidos: Vec<String> = PROIBIDOS.iter().map(|s| s.to_string()).collect();
+        proibidos.extend(sujos.iter().cloned());
+
+        for chamada in log_audit::chamadas_de_log(source) {
+            let risco = log_audit::parte_arriscada(&chamada);
+            for proibido in &proibidos {
+                if risco.contains(proibido.as_str()) {
+                    offenders.push(format!(
+                        "{name}: `{proibido}` em: {}",
+                        chamada.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ));
                 }
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "linha de log carregando material de sessao:\n{}",
+        "log carregando material de sessao:\n{}",
         offenders.join("\n")
     );
+}
+
+/// O proprio detector, contra as duas mutacoes que a varredura antiga deixava
+/// passar. Sem isto, trocar o corpo de `no_log_line_mentions_the_session_value`
+/// por `assert!(true)` seria invisivel.
+#[test]
+fn a_varredura_pega_as_duas_formas_que_a_antiga_deixava_passar() {
+    use super::log_audit;
+
+    let multilinha =
+        "fn f() {\n    tracing::info!(\n        %blob,\n        \"sessao\"\n    );\n}\n";
+    let renomeado =
+        "fn f() {\n    let apelido = blob.expose().to_string();\n    info!(\"{apelido}\");\n}\n";
+
+    for (rotulo, fonte) in [("multi-linha", multilinha), ("renomeado", renomeado)] {
+        let sujos = log_audit::bindings_contaminados(fonte, GATILHOS, ANTIDOTOS);
+        let mut proibidos: Vec<String> = PROIBIDOS.iter().map(|s| s.to_string()).collect();
+        proibidos.extend(sujos);
+
+        let pegou = log_audit::chamadas_de_log(fonte).iter().any(|c| {
+            let risco = log_audit::parte_arriscada(c);
+            proibidos.iter().any(|p| risco.contains(p.as_str()))
+        });
+        assert!(pegou, "a varredura precisa pegar o vazamento {rotulo}");
+    }
 }
 
 /// `SessionBlob` nao pode derivar `Debug`: o `Debug` dele e manual e redigido.
