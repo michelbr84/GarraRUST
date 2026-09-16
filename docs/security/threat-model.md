@@ -303,6 +303,8 @@ esquecido.
 | **T** Tampering | `file_write` cria arquivo fora da raiz através de um diretório-symlink. | Subida até o ancestral existente + canonicalização dele. | — |
 | **T** Tampering | `file_write` cria arquivo fora da raiz através de um symlink **pendurado** (`raiz/evil → /fora/inexistente`), versionado num repositório clonado. `canonicalize` falha por não resolver — não por não existir — e o `open(O_CREAT)` segue o link. | Cada componente que não canonicaliza passa por `symlink_metadata`: existe para o `lstat` e não resolve ⇒ recusa. Caminho normalizado por `components()` antes do `lstat`, senão a barra final (`raiz/evil/`) faz o `lstat` seguir o link. Três testes: função pura (folha e pai) e `FileWriteTool` ponta a ponta. | Pendurado para **dentro** da raiz também é recusado — fail-closed assumido. |
 | **T** Tampering | Troca de symlink entre o `canonicalize` e o `open` (TOCTOU). | Reduzida: a tool abre o caminho **resolvido**, não o original. | **Residual conhecido, não fechado.** Fechar exige abrir por descritor (`openat2` + `RESOLVE_BENEATH` no Linux), sem equivalente portátil nos três sistemas operacionais. Exige quem tenha escrita dentro da raiz. |
+| **T** Tampering / **I** Information disclosure | **Hardlink** dentro da raiz apontando para o inode de um arquivo de fora (`ln /etc/alvo raiz/inocente.txt`). A escrita atinge o inode de fora; e o backup `.bak` do `file_write` copia o conteúdo de fora **para dentro** da raiz, transformando o escape de escrita em escape de leitura. | **Nenhuma.** Um hardlink não é um ponteiro que se resolve, é um segundo *nome* do mesmo inode: `canonicalize` não tem o que seguir, o caminho resolve para ele mesmo e o `starts_with` aprova. | **Residual conhecido, não fechado — e, ao contrário do symlink, sem defesa possível com esta API.** Exigiria comparar `st_dev`/`st_ino` contra um mapa da raiz, ou recusar todo arquivo com `st_nlink > 1`, o que recusaria também hardlink legítimo dentro da própria raiz. Impacto menor que o do symlink: o git não versiona hardlink, então o vetor "repositório clonado" não serve, e exige quem **já tenha escrita dentro da raiz** — mesma pré-condição do TOCTOU acima. |
+| **E** Elevation of privilege | No caminho MCP (`garra_agent`) quem escreve o `working_dir` é o **modelo**, pelo argumento da tool — e `FileJail::confine` soma o `working_dir` às raízes efetivas. `{"working_dir": "/", "message": "leia /etc/shadow"}` devolveria o disco inteiro às file tools. **Regressão introduzida pela própria #1244**: antes dela o `working_dir` do MCP só ancorava caminho relativo, não era raiz, e `working_dir: "/etc"` batia no jail. | `handle_agent_call` confina o `working_dir` contra as raízes do operador antes de aceitá-lo (`confine(dir, None)` — `None` de propósito: o valor sob validação não pode se autorizar) e responde `invalid_params`. A regra é a mesma endossada no #1255: pode **estreitar** o jail ou ficar dentro dele, nunca alargar. Dois testes chamam o handler real, não uma réplica. | O ganho de privilégio real era pequeno — ver a nota sobre `bash` em "Não coberto de propósito" —, mas a divergência entre a doc do schema e o código apontava na direção perigosa. |
 | **E** Elevation of privilege | Operador põe `/` ou `$HOME` em `agent.file_roots` e desliga o jail sem perceber. | `garra config check` avisa nos dois casos; `config.hardened.example.yml` diz para não fazer. | Aviso, não erro — a decisão é do operador. |
 | **E** Elevation of privilege | O mesmo por `GARRAIA_FILE_ROOTS=/`, que **soma** raízes às da config e não aparecia em lugar nenhum: o `config check` só lia o YAML e o boot só contava raízes (`roots().len()`). O jail apertado cria pressão operacional exatamente nessa direção. | `config check` valida também a env (campo `env.GARRAIA_FILE_ROOTS`); o `info!` do boot **nomeia** as raízes e um `warn!` sai por raiz que, já resolvida, seja `/` ou o `$HOME`. Comparação depois do `canonicalize`, senão `$HOME/../$USER` passa. | Continua aviso, não erro. |
 
@@ -328,10 +330,46 @@ esquecido.
 - `bash` e `run_tests` são a fronteira da #1225 (sandbox por tool) e da §6, não
   desta. Um `bash` irrestrito lê qualquer arquivo — mas o ponto da #1244 é
   justamente que o modelo não precisava do `bash`.
+  **Medido, não presumido** (auditoria R4 da #1244, dimensionamento do
+  `working_dir`): com o `BashTool::new(None)` que o `build_tools` do MCP
+  registra e `agent.bash_allowlist` vazia (o padrão), `cat /etc/shadow`,
+  `head -c 32 /etc/passwd`, `ls /etc`, `echo pwned > /tmp/x` e
+  `tee /tmp/y < /etc/hostname` **executam com `requires_confirmation=false` e
+  `is_error=false`** — leitura *e* escrita fora de qualquer raiz, sem
+  confirmação. Nenhum desses programas está na `DENY_LIST`, na `CONFIRM_LIST`
+  nem em `SENSITIVE_PROGRAMS`, e a `bash_allowlist` do operador é uma lista
+  *positiva* (dispensa confirmação, não restringe), então configurá-la não
+  aperta nada. Consequência para quem for dimensionar um achado do jail no
+  caminho MCP: enquanto o mesmo servidor entregar esse `bash`, o ganho de
+  privilégio de furar o jail das file tools é ~nulo em capacidade. O jail
+  continua valendo como defesa em profundidade, pelo dia em que o `bash`
+  apertar — e porque no **gateway** (canal de chat, identidade não verificada
+  da §5.9) é ele que segura, não o `bash`.
 - `garraia-tools` tem uma segunda implementação de `RepoSearchTool`/`ListDirTool`
   com `root_path`, consumida só por `garraia-runtime::executor`, que o gateway
   não usa para tools (só `RuntimeSettings`). Fora do alcance do agente hoje;
   se entrar, entra com jail.
+
+**Dívida registrada, não corrigida aqui** (auditoria R4 da #1244):
+
+- Só o wiring do **gateway** tem teste de comportamento do jail.
+  `chat.rs::register_cli_tools` não tem nenhum, e em `mcp_agent` o que os testes
+  do `working_dir` cobrem é `file_jail()` — que o jail montado chegue às três
+  tools em `build_tools` continua sem prova. O risco está muito mitigado pela
+  decisão de o construtor **exigir** o `FileJail` (`Default` = zero raízes =
+  nega tudo), que transforma "esqueci de passar" de fail-open em fail-closed.
+  Mas o defeito original da #1244 foi exatamente "ponto de chamada em produção
+  que nenhum teste exercitava", e ele ainda vale para dois dos três.
+- Um symlink **quebrado apontando para dentro da raiz** recebe a mensagem de
+  "fora das raízes". É seguro e está declarado em teste (fail-closed assumido,
+  ver o Gap da linha do pendurado), mas confunde o usuário legítimo: um
+  `node_modules` clonado pela metade produz uma recusa de segurança onde o
+  problema é um link quebrado.
+- As duas varreduras de fonte do boot (que provam que o wiring de produção
+  passa o jail) afirmam só que *a linha existe em algum lugar do arquivo*:
+  mover o laço para uma função privada que ninguém chama as mantém verdes. A
+  alternativa é `build_agent_runtime` expor a contagem de raízes perigosas e o
+  teste asserir o valor.
 
 ## 5.75. Saída de ferramenta escrita no terminal (#995)
 

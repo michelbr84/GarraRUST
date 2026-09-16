@@ -81,6 +81,28 @@
 //! abrir por descritor (`openat2` com `RESOLVE_BENEATH` no Linux) e nao tem
 //! equivalente portatil nos tres sistemas operacionais que o projeto suporta.
 //! Fica registrado como residual em vez de reivindicado como resolvido.
+//!
+//! ## Residual conhecido: hardlink
+//!
+//! Contra symlink a defesa e o `canonicalize`. **Contra hardlink nao existe
+//! defesa com esta API**, e a diferenca merece ser dita em voz alta em vez de
+//! ficar escondida atras do TOCTOU.
+//!
+//! Um hardlink nao e um ponteiro que se resolve: e um segundo *nome* para o
+//! mesmo inode. `raiz/inocente.txt` criado com `ln /etc/alvo
+//! raiz/inocente.txt` canonicaliza para ele mesmo — nao ha link para seguir —,
+//! o `starts_with` aprova, e a escrita cai no inode de fora. Pior no
+//! `file_write`: o backup `.bak` copia o conteudo do arquivo de fora **para
+//! dentro** da raiz, e o escape de escrita vira tambem escape de leitura.
+//!
+//! O impacto pratico e menor que o do symlink, e por uma razao concreta: o git
+//! nao versiona hardlink, entao o vetor "repositorio clonado" — o que move o
+//! symlink pendurado — nao serve aqui. Exige alguem que **ja tenha escrita
+//! dentro da raiz**, a mesma pre-condicao do TOCTOU acima.
+//!
+//! Fechar exigiria comparar `st_dev`/`st_ino` contra um mapa da raiz, ou
+//! recusar todo arquivo com `st_nlink > 1` — que recusaria tambem hardlink
+//! legitimo dentro da propria raiz, sem conseguir distinguir. Fica declarado.
 
 use std::path::{Component, Path, PathBuf};
 

@@ -48,8 +48,18 @@
   O construtor das tres tools passou a exigir o jail: `FileReadTool::new(None)`
   nao compila mais. Um jail que se pode esquecer de passar e um jail que se
   esquece de passar — foi exatamente o que aconteceu. E os testes de regressao
-  nao chamam o construtor: eles pedem a tool ao runtime que
+  do gateway nao chamam o construtor: eles pedem a tool ao runtime que
   `build_agent_runtime` montou, que e o mesmo objeto que o turno do agente usa.
+  No caminho MCP (`garra_agent`) o `working_dir` passou a ser confinado antes
+  de ser aceito. Ele vira raiz das file tools dentro do `FileJail`, e ali quem
+  o escreve e o MODELO, pelo argumento da tool: sem a checagem,
+  `{"working_dir": "/"}` devolvia o disco inteiro as file tools.
+  `handle_agent_call` agora responde `invalid_params` para um `working_dir`
+  fora das raizes do operador — ele pode estreitar o jail ou ficar dentro,
+  nunca alargar. A doc do schema ainda dizia "validated for existence only —
+  not against allowed_dirs", frase escrita quando o `working_dir` nao era raiz
+  e que depois instruia o modelo a usar exatamente o buraco; foi corrigida no
+  schema e no campo da struct.
   `garra config check` avisa quando `agent.file_roots` inclui `/` ou o proprio
   `$HOME`, que devolvem `~/.ssh` e `.env` ao alcance do modelo — e avisa
   tambem sobre a env `GARRAIA_FILE_ROOTS`, que soma raizes as da config e antes
@@ -65,3 +75,14 @@
   symlink para fora (TOCTOU). Fechar isso exige abrir por descritor
   (`openat2` com `RESOLVE_BENEATH` no Linux) e nao tem equivalente portatil nos
   tres sistemas operacionais que o projeto suporta.
+  Segundo residual, e este merece ser dito sem rodeio: **contra symlink a
+  defesa e o `canonicalize`; contra hardlink nao existe defesa com esta API**.
+  Um hardlink dentro da raiz apontando para o inode de um arquivo de fora nao e
+  um ponteiro que se resolve, e um segundo nome do mesmo inode — o
+  `canonicalize` nao tem o que seguir, o `starts_with` aprova, e a escrita cai
+  no inode de fora. No `file_write` o backup `.bak` ainda copia o conteudo de
+  fora para dentro da raiz, e o escape de escrita vira tambem escape de
+  leitura. O impacto pratico e menor que o do symlink pendurado: o git nao
+  versiona hardlink, entao o vetor "repositorio clonado" nao serve, e o ataque
+  exige quem ja tenha escrita dentro da raiz — a mesma pre-condicao do TOCTOU.
+  Fica declarado na §5.72 do threat model em vez de omitido.
