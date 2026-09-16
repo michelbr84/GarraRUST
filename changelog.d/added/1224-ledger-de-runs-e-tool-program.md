@@ -5,13 +5,17 @@
   saber que ela existiu, muito menos que ficou pela metade.
   Agora existe a tabela `agent_runs` e o `SessionStore` sabe abrir, fechar e
   listar run: `start_agent_run` e idempotente e nao reabre run que ja terminou,
-  e `mark_interrupted_runs()` roda na subida e converte todo run que ficou
-  `running` em `interrupted`, devolvendo a lista para o operador. O
-  `AgentCoordinator` fala com isso por um `RunLedger`, cujo default e um
-  `NoopLedger` de custo zero — quem nao injeta o adapter nao paga nada.
+  e `mark_interrupted_runs()` converte todo run que ficou `running` em
+  `interrupted`, devolvendo a lista para o operador. O `AgentCoordinator` fala
+  com isso por um `RunLedger`, cujo default e um `NoopLedger` de custo zero —
+  quem nao injeta o adapter nao paga nada.
   O que **nao** mudou, e vale dizer com todas as letras: o run continua sem
-  sobreviver ao processo. O que sobrevive e a auditoria e a deteccao da
-  interrupcao. Retomar um run interrompido e a #1227.
+  sobreviver ao processo, e nesta fatia nem `mark_interrupted_runs()` roda na
+  subida nem `AgentCoordinator::spawn_agent` tem chamador de producao — CLI e
+  gateway ainda nao gravam run nenhum, entao `agent_runs` fica vazia ate a
+  #1227 decidir onde plugar o escritor real. O que existe aqui e o
+  schema + a auditoria funcionando, prontos para o chamador. Retomar um run
+  interrompido, e ligar o ledger a um caminho de producao, e a #1227.
   Os snippets gravados sao truncados em 500 caracteres de proposito: o ledger e
   auditoria, nao armazenamento de conversa.
 

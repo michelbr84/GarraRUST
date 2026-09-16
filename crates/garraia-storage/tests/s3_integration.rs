@@ -21,33 +21,27 @@ use testcontainers::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::minio::MinIO;
 
-/// O `testcontainers-modules` 0.15 fixa a imagem `minio/minio` do Docker Hub,
-/// e esse repositorio foi REMOVIDO de la: o registry responde "object not
-/// found" para o repositorio inteiro e o pull morre com "pull access denied",
-/// entao NENHUM ambiente conseguia subir o container — os testes abaixo se
-/// auto-pulavam e passavam verdes sem tocar o backend S3 (#1230). A MinIO
-/// publica a MESMA imagem no quay.io, entao sobrescrevemos so o registry e
-/// mantemos o tag que o modulo fixa.
-const MINIO_IMAGE: &str = "quay.io/minio/minio";
-const MINIO_TAG: &str = "RELEASE.2025-02-28T09-55-16Z";
-
-/// O MinIO so aceita SSE-S3 quando tem um KMS configurado. Sem ele, todo
-/// `PUT` com `x-amz-server-side-encryption: AES256` — ou seja, TODO put deste
-/// backend, que exige SSE por ADR 0004 — volta com `NotImplemented` (HTTP
-/// 501, "Server side encryption specified but KMS is not configured"). Foi o
-/// que a primeira execucao real da suite revelou (#1230): 6 dos 8 testes
-/// caiam nisso. `MINIO_KMS_SECRET_KEY=<nome>:<32 bytes em base64>` liga o KMS
-/// embutido de chave unica, que existe exatamente para este cenario.
-///
-/// A chave abaixo e fixa e publica DE PROPOSITO: ela protege apenas objetos
-/// efemeros de um container que morre no fim do teste, nunca dado real, e
-/// fixa-la mantem o teste deterministico. Nao e credencial de nada.
-const MINIO_KMS_SECRET_KEY: &str = "garraia-test-key:fSOpM1BeqF34Pymx26rxbRKKT+XNUJBlgyRFtJvmlyY=";
-
 const ACCESS_KEY: &str = "minioadmin";
 const SECRET_KEY: &str = "minioadmin";
 const BUCKET: &str = "garraia-test-bucket";
 const REGION: &str = "us-east-1";
+
+// `testcontainers-modules` 0.15 fixa `minio/minio`, repositorio removido do
+// Docker Hub (#1230: "object not found" para o repo inteiro, nao so a tag).
+// A MinIO publica a mesma imagem, mesma tag, em quay.io — troca de registry,
+// sem mudanca de conteudo ou de comportamento.
+const MINIO_IMAGE: &str = "quay.io/minio/minio";
+const MINIO_TAG: &str = "RELEASE.2025-02-28T09-55-16Z";
+
+// `S3Compatible::put` sempre manda `server_side_encryption(Aes256)`
+// (s3_compat.rs) — na AWS isso e zero-config (chave gerenciada pela AWS),
+// mas o MinIO recusa QUALQUER SSE sem um KMS configurado ("Server side
+// encryption specified but KMS is not configured"). Sem isto nenhum `put`
+// chegava a rodar de verdade, porque o teste sempre pulava antes (#1230).
+// Chave estatica fixa, so para o container efemero deste teste — nao e
+// segredo de producao, e o modo "legacy single-key" do MinIO documentado em
+// docs.min.io/enterprise/minio-kms/legacy-key-management.
+const MINIO_KMS_SECRET_KEY: &str = "garraia-test-key:7neeKXXrCI7222jSKgyzjaTDD53W0OvdenD3gJ2DZgU=";
 
 /// Spawn a MinIO testcontainer, pre-create a bucket, and hand back an
 /// `S3Compatible` wired against it. Returns `None` when the Docker
@@ -380,15 +374,12 @@ async fn minio_put_stream_multipart_roundtrips_large_object() {
             reader,
             payload.len() as u64,
             PutOptions {
-                // `application/octet-stream` NAO esta na allow-list e nunca
-                // esteve: o teste so passava porque o container jamais subia,
-                // e o primeiro run real morreu em `DisallowedMime` antes de
-                // tocar o multipart (#1230). O caminho multipart existe para
-                // os tipos grandes e permitidos — video e o caso canonico de
-                // objeto acima de 16 MiB. A allow-list continua intacta; quem
-                // precisa mesmo de octet-stream usa o opt-in documentado
-                // `PutOptions::allow_unsafe_mime`.
-                content_type: Some("video/mp4".into()),
+                content_type: Some("application/octet-stream".into()),
+                // Este teste cobre a mecanica do multipart, nao a politica de
+                // MIME (essa e a `minio_rejects_disallowed_mime`) —
+                // `application/octet-stream` nao esta no allow-list padrao
+                // (ADR 0004 Security 3), entao precisa do opt-in explicito.
+                allow_unsafe_mime: true,
                 ..Default::default()
             },
         )
@@ -396,7 +387,10 @@ async fn minio_put_stream_multipart_roundtrips_large_object() {
         .expect("put_stream multipart");
     assert_eq!(meta.size_bytes, payload.len() as u64);
     assert_eq!(meta.etag_sha256, expected_etag);
-    assert_eq!(meta.content_type.as_deref(), Some("video/mp4"));
+    assert_eq!(
+        meta.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
 
     let got = store.get("multipart/big/v1").await.expect("get back");
     assert_eq!(got.bytes.as_ref(), payload.as_slice());

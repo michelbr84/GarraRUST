@@ -457,16 +457,14 @@ jobs:
         run: docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
 
       - name: Run clippy + tests (storage-s3)
-        # Este step cobre compilacao, clippy E a suite de integracao contra um
-        # MinIO de verdade. Ate #1230 os 8 testes de tests/s3_integration.rs
-        # se auto-pulavam e o verde nao significava nada: a imagem que o
-        # testcontainers-modules 0.15 fixa (`minio/minio`) foi REMOVIDA do
-        # Docker Hub, entao o container nunca subia em lugar nenhum. O teste
-        # agora sobrescreve o registry para o quay.io, onde a MinIO publica a
-        # mesma imagem, e `GARRAIA_REQUIRE_DOCKER` (que o proprio teste ja
-        # honrava) transforma o skip em falha — se o container nao subir, este
-        # job fica vermelho em vez de passar sem tocar o backend S3.
-        # `--nocapture` deixa o log do container visivel.
+        # ATENCAO ao ler um verde daqui: este step cobre COMPILACAO, clippy e
+        # os testes unitarios do backend S3, E a suite de integracao real
+        # contra MinIO (tests/s3_integration.rs). A imagem vem do quay.io
+        # pelo motivo que o step de pre-pull acima explica (#1230).
+        # GARRAIA_REQUIRE_DOCKER="1" transforma em falha o skip que o teste
+        # faria se o container nao subir, para que um verde aqui prove que o
+        # MinIO rodou de verdade (segundos, nao milissegundos). `--nocapture`
+        # deixa o log do container visivel se algo der errado.
         env:
           GARRAIA_REQUIRE_DOCKER: "1"
         run: |
