@@ -93,10 +93,16 @@ pub(crate) struct GarraAgentArgs {
     #[serde(default)]
     pub system_prompt: Option<String>,
     /// Directory against which file-tool relative paths resolve, and in
-    /// which the bash child runs (current_dir — #1075 R3). Validated for
-    /// existence only, NOT against GARRAIA_MCP_ALLOWED_DIRS; bash is an
-    /// unsandboxed shell on the server host, so absolute paths reach
-    /// outside this directory.
+    /// which the bash child runs (current_dir — #1075 R3).
+    ///
+    /// Escolhido pelo MODELO, e por isso **confinado** em
+    /// [`handle_agent_call`]: tem de existir e cair dentro das raizes do
+    /// jail deste servidor (`GARRAIA_MCP_ALLOWED_DIRS`, ou
+    /// `agent.file_roots` mais o CWD do processo). Ele pode estreitar o
+    /// jail das file tools, nunca alargar (#1244).
+    ///
+    /// O jail **nao** prende o `bash`, que segue sendo um shell irrestrito
+    /// no host do servidor e alcanca caminho absoluto fora daqui.
     #[serde(default)]
     pub working_dir: Option<String>,
 }
@@ -261,7 +267,7 @@ pub(crate) fn garra_agent_tool() -> Tool {
             },
             "working_dir": {
                 "type": "string",
-                "description": "Directory against which file tools resolve relative paths and in which the bash child runs. Validated for existence only — not against allowed_dirs; bash is an unsandboxed shell."
+                "description": "Directory against which file tools resolve relative paths and in which the bash child runs. Must exist AND be inside this server's file-tool roots (GARRAIA_MCP_ALLOWED_DIRS, or agent.file_roots plus the server's CWD): it may narrow the file-tool jail, never widen it (issue #1244). The jail does not bind bash, which stays an unsandboxed shell."
             }
         },
         "required": ["message"],
@@ -573,6 +579,27 @@ pub(crate) async fn handle_agent_call(
                 "working_dir does not exist or is not a directory: {dir}"
             ));
         }
+        // #1244 (auditoria R4, A1): o `working_dir` **vira raiz** das file
+        // tools dentro de `FileJail::confine`, e neste caminho quem o escolhe
+        // e o MODELO, nao o operador. Sem esta checagem,
+        // `{"working_dir": "/"}` devolve o disco inteiro as file tools — o
+        // oposto do fail-closed que o resto da #1244 afirma.
+        //
+        // A regra e a mesma do #1255: o `working_dir` pode **estreitar** o
+        // jail ou ficar dentro dele, nunca alargar. `session_dir = None` de
+        // proposito: e exatamente o que se esta validando, nao pode se
+        // autorizar. Jail sem raiz nenhuma recusa aqui tambem (`NoRoots`),
+        // que e o mesmo fail-closed das tools.
+        if file_jail(config)
+            .confine(std::path::Path::new(dir), None)
+            .is_err()
+        {
+            return Err(format!(
+                "working_dir is outside this server's file-tool roots: {dir} — it may narrow \
+                 the jail, never widen it (issue #1244). Add the directory to \
+                 GARRAIA_MCP_ALLOWED_DIRS or to agent.file_roots in config.yml to allow it."
+            ));
+        }
     }
     let opts = AgentOptions {
         message: args.message,
@@ -589,7 +616,10 @@ pub(crate) async fn handle_agent_call(
 
 #[cfg(test)]
 mod tests {
-    //! Pure tests. Zero network, zero env-mutation, zero filesystem.
+    //! Zero network, zero env-mutation. Quase todos puros; os dois testes do
+    //! jail do `working_dir` (#1244 A1) **leem** o filesystem — precisam,
+    //! porque o que esta sob teste e a resolucao de um diretorio real — mas
+    //! nao escrevem nada e nao mexem em env.
 
     use super::*;
 
@@ -913,5 +943,110 @@ mod tests {
         let msg = env["error"]["message"].as_str().unwrap_or_default();
         assert!(msg.contains("sk-[REDACTED]"), "{msg}");
         assert!(!msg.contains("sk-abcdefgh12345678"), "{msg}");
+    }
+
+    // ─── working_dir confinado ao jail (#1244, auditoria R4 A1) ───────
+    //
+    // Regressao que a propria #1244 introduziu: `FileJail::confine` soma o
+    // `working_dir` da sessao as raizes efetivas, e neste caminho quem
+    // escreve o `working_dir` e o MODELO, pelo argumento da tool. Antes da
+    // #1244 o `working_dir` do MCP so ancorava caminho relativo — nao era
+    // raiz — e `working_dir: "/etc"` batia no jail.
+    //
+    // Os dois testes chamam `handle_agent_call`, que e o handler REAL do
+    // `tools/call garra_agent`, e nao uma replica montada aqui: mover a
+    // checagem para uma funcao privada e esquecer de chama-la derruba o
+    // primeiro teste.
+
+    fn politica_permissiva() -> ServerPolicy {
+        ServerPolicy::from_values(None, None, Some("1"))
+    }
+
+    fn args_com_working_dir(dir: &str) -> GarraAgentArgs {
+        GarraAgentArgs {
+            message: "ping".into(),
+            provider: Some("ollama".into()),
+            model: None,
+            timeout_secs: Some(AGENT_TIMEOUT_SECS_MIN),
+            system_prompt: None,
+            working_dir: Some(dir.to_string()),
+        }
+    }
+
+    /// O ataque literal da auditoria: `{"working_dir": "/"}` devolvia o disco
+    /// inteiro as file tools. Tem de morrer em `invalid_params`, ANTES de
+    /// qualquer turno — por isso a assercao e sobre `Err`, que so existe no
+    /// ramo de validacao.
+    #[tokio::test]
+    async fn working_dir_raiz_do_sistema_e_recusado() {
+        let config = AppConfig::default();
+        // Pre-condicao: se o operador desligou o jail apontando uma raiz
+        // para `/`, nao ha o que confinar — e o teste estaria medindo outra
+        // coisa. Ver `FileJail::raizes_perigosas`.
+        let jail = file_jail(&config);
+        assert!(
+            jail.raizes_perigosas().is_empty(),
+            "ambiente de teste com jail desligado (raiz / ou $HOME): {:?}",
+            jail.roots()
+        );
+
+        let err = handle_agent_call(&config, &politica_permissiva(), args_com_working_dir("/"))
+            .await
+            .expect_err("working_dir = / precisa ser recusado antes de rodar o agente");
+        assert!(
+            err.contains("outside") && err.contains("#1244"),
+            "mensagem deve dizer que o working_dir esta fora das raizes: {err}"
+        );
+    }
+
+    /// O contrapeso: a regra e "pode estreitar ou ficar dentro", nao "nunca
+    /// aceita". Um `working_dir` que E uma raiz do jail passa a validacao.
+    /// Depois disso o handler segue para o turno e normalmente falha no
+    /// provider (`ollama` local nao atende no CI) — mas a assercao nao depende
+    /// disso: o que importa e o `Ok` com envelope, que so existe do outro lado
+    /// da validacao. Numa maquina que **tenha** Ollama rodando o turno pode dar
+    /// certo, e o teste continua valido. Timeout no minimo (5s) para nao
+    /// pendurar a suite.
+    #[tokio::test]
+    async fn working_dir_dentro_das_raizes_passa_pela_validacao() {
+        let config = AppConfig::default();
+        let jail = file_jail(&config);
+        let raiz = jail
+            .roots()
+            .first()
+            .expect("o jail do MCP tem ao menos o CWD do processo")
+            .clone();
+        let dir = raiz.to_str().expect("CWD com caminho UTF-8");
+
+        let (envelope, _ok) =
+            handle_agent_call(&config, &politica_permissiva(), args_com_working_dir(dir))
+                .await
+                .expect("working_dir dentro da raiz nao pode virar invalid_params");
+        assert_eq!(envelope["schema"], "garra.agent.v1");
+    }
+
+    /// Doc e codigo tem de dizer a mesma coisa. A frase antiga ("Validated
+    /// for existence only — not against allowed_dirs") foi escrita quando o
+    /// `working_dir` nao era raiz; depois da #1244 ela instruia o modelo a
+    /// usar exatamente o buraco.
+    #[test]
+    fn schema_do_working_dir_nao_promete_fail_open() {
+        let t = garra_agent_tool();
+        let schema = (*t.input_schema).clone();
+        let desc = schema
+            .get("properties")
+            .and_then(|p| p.get("working_dir"))
+            .and_then(|w| w.get("description"))
+            .and_then(|d| d.as_str())
+            .expect("working_dir tem description")
+            .to_string();
+        assert!(
+            !desc.contains("not against allowed_dirs"),
+            "schema ainda promete fail-open: {desc}"
+        );
+        assert!(
+            desc.contains("narrow") && desc.contains("never widen"),
+            "schema deve declarar a regra do #1244: {desc}"
+        );
     }
 }
