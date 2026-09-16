@@ -1928,6 +1928,7 @@ async fn async_main(
                             server_config.memory_limit_mb,
                             server_config.max_restarts.unwrap_or(5),
                             server_config.restart_delay_secs.unwrap_or(5),
+                            server_config.inherit_env,
                         )
                         .await
                     {
@@ -1968,6 +1969,7 @@ async fn async_main(
                             server_config.memory_limit_mb,
                             server_config.max_restarts.unwrap_or(5),
                             server_config.restart_delay_secs.unwrap_or(5),
+                            server_config.inherit_env,
                         )
                         .await
                     {
@@ -2013,6 +2015,7 @@ async fn async_main(
                             server_config.memory_limit_mb,
                             server_config.max_restarts.unwrap_or(5),
                             server_config.restart_delay_secs.unwrap_or(5),
+                            server_config.inherit_env,
                         )
                         .await
                     {
