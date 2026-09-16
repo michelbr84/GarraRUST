@@ -932,7 +932,9 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
   Adiado por ser o maior slice aberto da Fase 2 e pré-requisito do GAR-646.
 - GAR-374 / Object storage S3-compatible validation: adiado por depender de
   MinIO/S3/R2/GCS ou CI com serviço externo configurado (o `S3Compatible`
-  existe atrás da feature `storage-s3`; nenhum job de CI exercita MinIO).
+  existe atrás da feature `storage-s3`). Desde #1230 o step `storage-s3` do
+  job `clippy` exercita MinIO real (testcontainer com a imagem do quay.io e
+  `GARRAIA_REQUIRE_DOCKER=1`); o que segue adiado é S3/R2/GCS de produção.
 - GAR-410 / CredentialVault final: adiado por ser item crítico de segurança e
   amplo. O que já existe: leitura de secrets centralizada em
   `garraia-config::auth` (plan 0046) e refactor do `admin/secrets.rs` (plan
