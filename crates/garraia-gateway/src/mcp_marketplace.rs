@@ -2,16 +2,51 @@
 //!
 //! Provides a catalog of popular MCP servers with one-click install:
 //! - `GET /api/mcp/marketplace` — catalog of popular MCP servers
-//! - `POST /api/mcp/marketplace/install` — one-click install
+//! - `POST /api/mcp/marketplace/install` — one-click install (admin only)
 //! - `GET /api/mcp/{id}/health` — health check for a specific MCP server
 //! - `GET /api/mcp/{id}/config-schema` — JSON Schema for config form
+//!
+//! # Gate de autenticacao do install (#1245)
+//!
+//! `POST /api/mcp/marketplace/install` nasceu sem extractor nenhum de
+//! autenticacao: a assinatura era `(State, Json<InstallMcpRequest>)` e a rota
+//! era montada direto no router aberto. Qualquer chamador que alcancasse a
+//! porta registrava um servidor MCP — e o corpo do pedido ainda escolhia
+//! `extra_args` e `env` do processo filho que o gateway ia executar.
+//!
+//! A correcao **reusa exatamente** o padrao das rotas irmas
+//! (`plugins_handler::build_plugin_routes`, que cobre `/api/plugins/*`, e
+//! `admin/mcp.rs`, que cobre `/admin/api/mcp/*`): a rota sai do router aberto
+//! e passa a viver num sub-router com `require_admin_auth` + `require_csrf` +
+//! `security_headers`, e o handler confere `Permission::ManagePlugins` — a
+//! mesma permissao que o enum descreve como "Plugin / MCP server management"
+//! e que `admin_create_mcp` ja exige para registrar um servidor MCP pela
+//! admin API. Nenhuma permissao nova foi criada: `POST /api/plugins/install`
+//! e `POST /admin/api/mcp` sao a mesma capacidade por outra porta, e dar a
+//! esta rota um gate proprio so criaria uma terceira resposta para a mesma
+//! pergunta.
+//!
+//! As tres rotas `GET` continuam abertas de proposito: catalogo, health e
+//! config-schema sao leitura do catalogo embutido/estado do registro, nao
+//! mudam nada e ja estao sob o gate de `gateway.api_key` e a guarda
+//! anti-CSRF genericos do router.
+
+use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::Router;
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
+use axum::routing::post;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tracing::info;
 
+use crate::admin::middleware::{
+    AuthenticatedAdmin, require_admin_auth, require_csrf, security_headers,
+};
+use crate::admin::rbac::{Permission, has_permission};
+use crate::admin::store::AdminStore;
 use crate::state::SharedState;
 
 // ── Catalog types ───────────────────────────────────────────────────────────
@@ -260,6 +295,83 @@ pub struct InstallMcpRequest {
     pub extra_args: Vec<String>,
 }
 
+// ── Env denylist ────────────────────────────────────────────────────────────
+
+/// Variaveis de ambiente que o corpo do pedido **nao** pode definir no
+/// processo filho (#1245).
+///
+/// O recorte e deliberadamente estreito: so entra aqui o que sequestra **qual
+/// codigo o filho executa**, nao "variavel que parece sensivel". A razao e a
+/// premissa do proprio marketplace — o chamador escolhe um `id` do catalogo, e
+/// o comando vem do catalogo (`npx -y @modelcontextprotocol/server-…`), nunca
+/// do corpo. Deixar o corpo definir `PATH` faz `npx` resolver para um binario
+/// do atacante; `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES` carregam uma biblioteca
+/// arbitraria no processo; `NODE_OPTIONS=--require …` executa um script antes
+/// do servidor. Em qualquer um desses casos o "servidor do catalogo" deixa de
+/// ser o que o catalogo prometeu, e o `id` vetado nao garante mais nada.
+///
+/// O que **nao** esta aqui, de proposito:
+///
+/// * Secrets do gateway (`GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`, …). Definir
+///   uma dessas no filho nao vaza a do gateway — o vazamento era a *heranca*
+///   do ambiente, fechada no #1236 com `env_clear()`. Barra-las aqui nao
+///   acrescentaria defesa e quebraria o caso legitimo de um servidor MCP que
+///   precisa de credencial propria (o catalogo pede `GITHUB_PERSONAL_ACCESS_
+///   TOKEN`, `POSTGRES_CONNECTION_STRING`, `SLACK_BOT_TOKEN`, …).
+/// * `extra_args`. O comando e o prefixo de argumentos vem do catalogo e o
+///   corpo so faz `extend` no fim, entao argumento extra configura o servidor
+///   (um diretorio permitido, por exemplo) em vez de trocar o binario. Uma
+///   allowlist de argumentos por entrada do catalogo seria escopo novo; aqui o
+///   que protege `extra_args` e o gate de auth.
+///
+/// A comparacao e case-insensitive: no Windows os nomes ja sao
+/// case-insensitive, e no Unix recusar `Path` junto com `PATH` apenas recusa a
+/// mais — que e o lado certo para errar.
+const ENV_BLOQUEADAS: &[&str] = &[
+    // Resolucao do binario: o comando do catalogo e `npx`, resolvido na PATH.
+    "PATH",
+    // Linker dinamico (glibc).
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    // Linker dinamico (macOS).
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    // Node executa isso antes do entrypoint; todo comando do catalogo e node.
+    "NODE_OPTIONS",
+];
+
+/// Devolve o nome da primeira variavel bloqueada presente em `env`, se houver.
+fn env_bloqueada(env: &std::collections::HashMap<String, String>) -> Option<&'static str> {
+    ENV_BLOQUEADAS
+        .iter()
+        .copied()
+        .find(|bloqueada| env.keys().any(|k| k.eq_ignore_ascii_case(bloqueada)))
+}
+
+// ── Router ──────────────────────────────────────────────────────────────────
+
+/// Sub-router protegido do install do marketplace (#1245).
+///
+/// Espelha `plugins_handler::build_plugin_routes`, inclusive a ordem das
+/// camadas: em tower o ultimo `.layer()` e o mais externo, entao
+/// `require_admin_auth` roda **antes** de `require_csrf` e o CSRF ja encontra
+/// o `AuthenticatedAdmin` na extension (sem sessao valida o pedido morre em
+/// 401 no auth, nao em 401 do CSRF). `Extension(admin_store)` precisa estar
+/// disponivel para `require_admin_auth` resolver a sessao.
+pub fn build_marketplace_install_routes(
+    state: SharedState,
+    admin_store: Arc<Mutex<AdminStore>>,
+) -> Router {
+    Router::new()
+        .route("/api/mcp/marketplace/install", post(marketplace_install))
+        .layer(axum::middleware::from_fn(require_csrf))
+        .layer(axum::middleware::from_fn(require_admin_auth))
+        .layer(Extension(admin_store))
+        .layer(axum::middleware::from_fn(security_headers))
+        .with_state(state)
+}
+
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// GET /api/mcp/marketplace — catalog of popular MCP servers with metadata.
@@ -273,10 +385,26 @@ pub async fn marketplace_catalog(State(_state): State<SharedState>) -> Json<serd
 }
 
 /// POST /api/mcp/marketplace/install — one-click install of an MCP server.
+///
+/// Exige sessao de admin valida (`require_admin_auth`, aplicado em
+/// [`build_marketplace_install_routes`]) e `Permission::ManagePlugins` — a
+/// mesma dupla que guarda `POST /api/plugins/install` e `POST /admin/api/mcp`.
+/// `Role::Admin` e `Role::Operator` tem a permissao; `Role::Viewer` nao.
 pub async fn marketplace_install(
     State(state): State<SharedState>,
+    Extension(admin): Extension<AuthenticatedAdmin>,
     Json(body): Json<InstallMcpRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if !has_permission(admin.role, Permission::ManagePlugins) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": "missing permission: manage_plugins",
+            })),
+        );
+    }
+
     let catalog = built_in_catalog();
     let entry = match catalog.iter().find(|e| e.id == body.id) {
         Some(e) => e,
@@ -290,6 +418,20 @@ pub async fn marketplace_install(
             );
         }
     };
+
+    // #1245: o corpo nao pode redefinir o que decide qual codigo o filho
+    // executa. Ver `ENV_BLOQUEADAS` para o recorte e o porque.
+    if let Some(bloqueada) = env_bloqueada(&body.env) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": format!(
+                    "environment variable '{bloqueada}' cannot be set from the install request"
+                ),
+            })),
+        );
+    }
 
     // Check required env vars
     for var in &entry.env_vars {
@@ -323,9 +465,13 @@ pub async fn marketplace_install(
     // Register in the MCP runtime registry
     state.mcp_registry.add_server(&entry.id, config).await;
 
+    // #1245: o actor entra no log. Nomes de variavel nunca, valores muito
+    // menos — o catalogo pede token do GitHub, connection string do Postgres
+    // e bot token do Slack por esse mesmo mapa.
     info!(
         mcp_server = %entry.id,
         name = %entry.name,
+        actor = %admin.username,
         "MCP server installed from marketplace"
     );
 
