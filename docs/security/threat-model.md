@@ -234,6 +234,73 @@ o confinava, segue **não roteado**. Guards:
 `post_sessions_accepts_working_dir_inside_the_allowed_root` em
 `tests/projects_test.rs`.
 
+## 5.72. Caminhos de filesystem vindos da tool call do LLM (#1244)
+
+Fechado em 2026-09-16. A §5.7 fechou o caminho que vem do **request HTTP**. O
+que ficou aberto foi o irmão dele: o caminho que vem da **tool call do modelo**.
+
+`file_read`, `file_write` e `list_dir` recebiam o argumento `path` cru,
+expandiam `~` e aceitavam caminho absoluto sem confinamento. O parâmetro
+`allowed_directories` existia no construtor, tinha teste próprio, e os dois
+pontos de registro em produção (`bootstrap/mod.rs` do gateway e `chat.rs` da
+CLI) passavam `None`. Um prompt chegando por Telegram, Discord ou WhatsApp
+mandava o modelo ler `~/.ssh/id_rsa`, `/etc/shadow` ou o próprio `config.yml`
+do gateway — que carrega chave de LLM em claro quando o operador não usa o
+cofre. `list_dir` era o reconhecimento: com ela o modelo achava o alvo antes de
+pedir a leitura.
+
+Combina mal com três coisas que existem: o guard de injeção indireta não cobre
+`file_read` (o conteúdo lido vira instrução), o `sandbox` por tool tem default
+`Off`, e a §5.9 já descreve a rota de chat como identidade não verificada.
+
+**Mitigação**: `garraia_agents::FileJail`, o mesmo "resolve, depois confina" da
+§5.7, com a diferença que a escrita exige. As raízes efetivas de uma chamada
+são a união de `agent.file_roots` (config, vazia por padrão, mais a env
+`GARRAIA_FILE_ROOTS`) com o `working_dir` da sessão. **Conjunto vazio nega
+tudo** — sem raiz conhecida não há como afirmar que um caminho é seguro. No
+gateway isso faz a raiz padrão ser o diretório da sessão e nada mais, e esse
+`working_dir` já passou por `project_root::confine` (§5.7) antes de ser
+gravado. Na CLI o CWD do processo entra como raiz, porque quem roda
+`garra chat` é o dono da máquina no diretório que escolheu.
+
+O alvo de uma escrita normalmente não existe, então `canonicalize` falharia: o
+jail sobe até o **ancestral existente mais próximo**, canonicaliza esse e
+recola a cauda. É o que barra `raiz/link-para-fora/novo.txt` — que uma checagem
+só do `parent` textual deixaria passar, e que é o vetor de escrita equivalente
+ao symlink de leitura.
+
+O construtor das três tools passou a **exigir** o jail: `FileReadTool::new(None)`
+não compila mais. Era o ponto exato da falha — um jail opcional é um jail
+esquecido.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **I** Information disclosure | Prompt de canal faz o modelo chamar `file_read {"path": "~/.ssh/id_rsa"}` ou o `config.yml` do gateway. | `FileJail::confine` nas três tools, obrigatório no construtor; testes que pedem a tool ao runtime de `build_agent_runtime`, não ao construtor. | — |
+| **I** Information disclosure | Symlink dentro da raiz apontando para fora (`raiz/atalho → /etc`). | `canonicalize` resolve o link **antes** da comparação, que é por componente (`Path::starts_with`). | — |
+| **I** Information disclosure | Recusa distingue "não existe" de "existe mas está fora", virando oráculo. | Uma única frase para as três recusas, sem caminho e sem raiz. A mensagem útil da #923 fica só para arquivo ausente **dentro** da raiz. | — |
+| **T** Tampering | `file_write` cria arquivo fora da raiz através de um diretório-symlink. | Subida até o ancestral existente + canonicalização dele. | — |
+| **T** Tampering | Troca de symlink entre o `canonicalize` e o `open` (TOCTOU). | Reduzida: a tool abre o caminho **resolvido**, não o original. | **Residual conhecido, não fechado.** Fechar exige abrir por descritor (`openat2` + `RESOLVE_BENEATH` no Linux), sem equivalente portátil nos três sistemas operacionais. Exige quem tenha escrita dentro da raiz. |
+| **E** Elevation of privilege | Operador põe `/` ou `$HOME` em `agent.file_roots` e desliga o jail sem perceber. | `garra config check` avisa nos dois casos; `config.hardened.example.yml` diz para não fazer. | Aviso, não erro — a decisão é do operador. |
+
+**Não coberto de propósito** (cada um com o porquê):
+
+- `repo_search` não recebe caminho do modelo: ele roda `rg`/`grep` com
+  `current_dir` no `working_dir` da sessão e alvo fixo `.`, e o `file_pattern`
+  vai por `--glob`, que não escapa da raiz da busca. Sem `working_dir` ele cai
+  no CWD do processo — mesma superfície de antes, nem melhor nem pior.
+- `git_diff` e `code_review` passam `file_path` como pathspec para o `git`, que
+  só enxerga o repositório. Vale registrar um defeito vizinho encontrado aqui e
+  **não corrigido** nesta mudança: `GitDiffTool::run_git_command` não seta
+  `current_dir`, então ignora o `working_dir` da sessão e roda no CWD do
+  processo do gateway. É bug de correção, não de confinamento.
+- `bash` e `run_tests` são a fronteira da #1225 (sandbox por tool) e da §6, não
+  desta. Um `bash` irrestrito lê qualquer arquivo — mas o ponto da #1244 é
+  justamente que o modelo não precisava do `bash`.
+- `garraia-tools` tem uma segunda implementação de `RepoSearchTool`/`ListDirTool`
+  com `root_path`, consumida só por `garraia-runtime::executor`, que o gateway
+  não usa para tools (só `RuntimeSettings`). Fora do alcance do agente hoje;
+  se entrar, entra com jail.
+
 ## 5.75. Saída de ferramenta escrita no terminal (#995)
 
 O `garra chat` imprime, a cada chamada de ferramenta, uma linha com o que ela
