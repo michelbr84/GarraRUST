@@ -27,3 +27,16 @@
   diziam. As duas skills de orquestracao ganharam uma secao de pre-requisitos
   dizendo que sem ferramenta de spawn de subagente o R4 nao e mergeavel por
   construcao, e o que fazer nesse caso.
+- **Quem muta a arvore trabalha em worktree propria (#1228).** `code-reviewer` e
+  `test-engineer` passam a dizer isso explicitamente. Uma mutacao aplicada e
+  restaurada numa worktree compartilhada apareceu, para o Implementer que
+  trabalhava nela, como edicao nao-commitada desativando a maquina de estados:
+  ele parou, reverteu para a versao auditada e reportou — comportamento certo,
+  arranjo errado. Junto, `assemble-team.md` ganha o gate que faltava em R4: o
+  `security-auditor` pede o controle e o `code-reviewer` **muta o controle**,
+  provando que sua remocao fica vermelha. O caso que motivou: uma auditoria R4
+  exigiu `env_clear()` no spawn do filho e a allowlist de ambiente, os dois
+  foram aplicados, e apagar o `env_clear()` depois deixava 93 de 93 testes
+  verdes — o teste afirmava o conteudo de duas constantes, nunca que o
+  ambiente era limpo.
+

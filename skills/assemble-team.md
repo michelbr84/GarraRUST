@@ -68,6 +68,21 @@ dogfood registrado na #1228.
 | R2 | lógica interna, refactor, teste novo | + Reviewer |
 | R3 | API pública, schema, migration, dependência, CI | + revisão reforçada |
 | R4 | auth, JWT, crypto, RLS, secrets, SSRF, upload | + **Security obrigatório** |
+
+**Em R4 o Security pede o controle e o Reviewer muta o controle.** Não basta o
+`security-auditor` exigir a correção e o Implementer aplicá-la: o
+`code-reviewer` remove o controle e prova que algum teste fica **vermelho**.
+
+Sem esse segundo passo, "o fix foi aplicado" é uma *alegação*, não uma
+evidência — que é exatamente o que o `team-coordinator` já é instruído a não
+aceitar.
+
+Caso real, medido: numa auditoria R4 o Security exigiu `env_clear()` no spawn
+do processo filho e uma allowlist de ambiente. Os dois foram aplicados. O
+Reviewer depois apagou o `env_clear()` e **93 de 93 testes seguiram verdes** —
+o teste afirmava o conteúdo de duas constantes, nunca que o ambiente era de
+fato limpo. O controle que a auditoria exigiu não restringia o comportamento
+que dizia restringir. Ninguém tinha pedido o pino.
 | R5 | release, secrets de CI, destrutivo, `install.sh`/`install.ps1` | **pare e escale ao humano** |
 
 ## Pipeline
