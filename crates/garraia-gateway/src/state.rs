@@ -82,6 +82,15 @@ pub struct AppState {
     pub pairing: Arc<std::sync::Mutex<PairingManager>>,
     /// Tracks when the application started for uptime calculation.
     pub boot_time: std::time::Instant,
+    /// #1238 (fatia D): o que o supervisor do canal `whatsapp_linked` sabe
+    /// sobre a ponte Node/Baileys.
+    ///
+    /// Nao e `Option`: o handle e barato (um `AtomicU8`) e criar sempre evita
+    /// a ordem impossivel — o sink precisa de `SharedState` e o `AppState`
+    /// precisa do handle, entao um dos dois teria de nascer vazio. Com o
+    /// handle sempre presente, `BridgeView::Unknown` diz "ninguem
+    /// supervisiona", que e a verdade num gateway sem WhatsApp vinculado.
+    pub whatsapp_linked: Arc<crate::bootstrap::WhatsAppLinkedRuntime>,
     /// Runtime settings for agent execution.
     pub runtime_settings: RuntimeSettings,
 
@@ -248,6 +257,7 @@ impl AppState {
                 std::time::Duration::from_secs(300),
             ))),
             boot_time: Instant::now(),
+            whatsapp_linked: Arc::new(crate::bootstrap::WhatsAppLinkedRuntime::default()),
             runtime_settings: RuntimeSettings::default(),
             // GAR-391c auth wiring — None until bootstrap loads AuthConfig.
             auth_provider: None,

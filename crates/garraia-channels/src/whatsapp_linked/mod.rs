@@ -48,6 +48,7 @@
 //! Nada mais deste modulo precisa mudar quando esse slice chegar.
 
 pub mod bridge;
+pub mod health;
 pub mod protocol;
 pub mod qr;
 pub mod runner;
@@ -58,6 +59,7 @@ pub use bridge::{
     BridgeAssets, BridgeConnection, BridgeError, BridgeLauncher, EmbeddedAssets, NodeLauncher,
     NodeRuntime,
 };
+pub use health::{BridgeView, DiskFacts, LinkHealth, classify};
 pub use protocol::{
     BridgeCommand, BridgeEvent, InboundMessage, Jid, PROTOCOL_VERSION, StartMode,
     UNAUTHORIZED_REASON_CODES, session_is_dead,

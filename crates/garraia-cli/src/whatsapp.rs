@@ -33,6 +33,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use garraia_channels::whatsapp_linked::bridge::{self, BridgeError, NodeLauncher, NodeRuntime};
+use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, LinkHealth, classify};
 use garraia_channels::whatsapp_linked::runner::{self, PairUi, RunError};
 use garraia_channels::whatsapp_linked::{DEFAULT_ACCOUNT, KeyOrigin, SessionKey, SessionStore, qr};
 use garraia_config::{ChannelConfig, ConfigLoader};
@@ -252,9 +253,17 @@ fn menu(ctx: &Context, prompter: &dyn Prompter) -> i32 {
 
 fn status(ctx: &Context) -> i32 {
     let store = ctx.store();
+    let bridge_dir = ctx.bridge_dir();
     print_header(ctx);
 
-    if !store.exists() {
+    // A MESMA classificacao que o `/api/diagnostics` do gateway usa (#1238,
+    // fatia D). Daqui a ponte e `BridgeView::Unknown` — este processo nao
+    // supervisiona o filho `node`, e afirmar "caiu" seria inventar um defeito
+    // que so o gateway pode observar.
+    let facts = DiskFacts::read(&store, &bridge_dir);
+    let saude = classify(&facts, BridgeView::Unknown);
+
+    if saude == LinkHealth::NotLinked {
         println!(
             "{}",
             t(
@@ -264,14 +273,7 @@ fn status(ctx: &Context) -> i32 {
             )
         );
         print_archive_warning(ctx, &store);
-        println!(
-            "{}",
-            t(
-                ctx.lang,
-                "Para vincular: garra whatsapp",
-                "To link one: garra whatsapp"
-            )
-        );
+        print_next_step(ctx, saude, &bridge_dir);
         return EX_UNAVAILABLE;
     }
 
@@ -300,7 +302,9 @@ fn status(ctx: &Context) -> i32 {
             println!("{} {origin}", t(ctx.lang, "Chave:", "Key:    "));
 
             // Prova real de que a sessao abre — `status` que so olha o nome do
-            // arquivo mente quando a passphrase mudou.
+            // arquivo mente quando a passphrase mudou. Esta e a unica pergunta
+            // que o `/api/diagnostics` NAO faz: derivar a chave por request
+            // custaria PBKDF2 600k a cada consulta.
             match store.load(&key) {
                 Ok(_) => println!("{}", t(ctx.lang, "Leitura:  ok", "Readable: yes")),
                 Err(e) => {
@@ -331,16 +335,45 @@ fn status(ctx: &Context) -> i32 {
         }
     }
 
+    if saude == LinkHealth::MissingDependencies {
+        println!();
+        println!(
+            "⚠ {}",
+            t(
+                ctx.lang,
+                "A ponte está sem dependências instaladas — o gateway não consegue subir este canal.",
+                "The bridge has no dependencies installed — the gateway cannot start this channel.",
+            )
+        );
+        print_next_step(ctx, saude, &bridge_dir);
+        return EX_UNAVAILABLE;
+    }
+
     println!();
     println!(
         "{}",
         t(
             ctx.lang,
-            "O gateway ainda não consome este canal (chega no próximo slice).",
-            "The gateway does not consume this channel yet (next slice)."
+            "O gateway consome este canal quando `channels.whatsapp_linked.enabled` está ligado.",
+            "The gateway consumes this channel when `channels.whatsapp_linked.enabled` is on.",
         )
     );
     0
+}
+
+/// Imprime o proximo passo da mesma fonte que o `/api/diagnostics` usa.
+///
+/// Sem isto haveria duas listas de "o que fazer agora" — uma na CLI, outra no
+/// console — e elas divergiriam no primeiro comando que mudasse de nome. Foi
+/// exatamente assim que o `whats-app` sobreviveu a 599 testes verdes.
+fn print_next_step(ctx: &Context, saude: LinkHealth, bridge_dir: &std::path::Path) {
+    let passo = match ctx.lang {
+        Lang::Pt => saude.next_step(bridge_dir),
+        Lang::En => saude.next_step_en(bridge_dir),
+    };
+    if let Some(passo) = passo {
+        println!("{passo}");
+    }
 }
 
 /// Avisa sobre `session.enc.prev`, quando existir.
@@ -1080,35 +1113,13 @@ fn disable_channel(ctx: &Context) -> Result<bool> {
 }
 
 /// Nucleo testavel: recebe o loader, mexe so em `channels.whatsapp_linked`.
+///
+/// Delega para [`ConfigLoader::set_channel_enabled`] (fatia D, #1238). Antes
+/// esta funcao tinha a escrita inteira aqui; o gateway precisa da MESMA
+/// escrita para se desligar quando o servidor mata a sessao, e uma segunda
+/// copia divergiria no dia em que uma das duas ganhasse um campo.
 pub fn set_linked_enabled(loader: &ConfigLoader, enabled: bool) -> Result<bool> {
-    // `save` escreve `<config_dir>/config.yml`; numa maquina que nunca rodou
-    // `garra init` o diretorio ainda nao existe.
-    loader.ensure_dirs()?;
-    let mut config = loader.load()?;
-    match config.channels.get_mut(CONFIG_KEY) {
-        Some(existing) => {
-            if existing.enabled == Some(enabled) {
-                return Ok(false);
-            }
-            existing.enabled = Some(enabled);
-        }
-        None => {
-            if !enabled {
-                // Nao criamos a secao so para escrever `false`.
-                return Ok(false);
-            }
-            config.channels.insert(
-                CONFIG_KEY.to_string(),
-                ChannelConfig {
-                    channel_type: CONFIG_KEY.to_string(),
-                    enabled: Some(true),
-                    settings: Default::default(),
-                },
-            );
-        }
-    }
-    loader.save(&config)?;
-    Ok(true)
+    Ok(loader.set_channel_enabled(CONFIG_KEY, enabled)?)
 }
 
 /// Grava `channels.whatsapp` (Cloud API) com os quatro segredos.

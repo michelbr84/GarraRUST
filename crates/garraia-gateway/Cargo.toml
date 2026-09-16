@@ -9,7 +9,10 @@ description = "WebSocket gateway and control plane for GarraIA"
 garraia-common = { workspace = true, features = ["ssrf"] }
 garraia-config = { workspace = true }
 garraia-glob = { workspace = true }
-garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "imessage", "openclaw", "google_chat", "teams", "line", "irc", "signal", "matrix"] }
+# `whatsapp-linked` (#1238 fatia D) e disjunta de `whatsapp`: a primeira e o
+# bridge Node/Baileys por NDJSON, a segunda e a Cloud API da Meta por webhook.
+# As duas ligadas ao mesmo tempo e o caso suportado.
+garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "whatsapp-linked", "imessage", "openclaw", "google_chat", "teams", "line", "irc", "signal", "matrix"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
 # ADR 0020 (epic #1124): o registry de dispositivos que alimenta as tools
 # device_list/read/execute. Sem adapter registrado, fica vazio (#1128 liga
@@ -65,6 +68,10 @@ serde_yaml = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+# #1238 (fatia D): o jitter do backoff de reconexao do canal `whatsapp_linked`.
+# `runner::serve` recebe o sorteio injetado justamente para que o teste use um
+# valor fixo — o gateway e o unico que passa aleatoriedade de verdade.
+rand = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 chrono = { workspace = true }

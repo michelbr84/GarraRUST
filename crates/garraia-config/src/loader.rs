@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use garraia_common::{Error, Result};
 use tracing::info;
 
-use crate::model::{AppConfig, McpServerConfig};
+use crate::model::{AppConfig, ChannelConfig, McpServerConfig};
 
 pub struct ConfigLoader {
     config_dir: PathBuf,
@@ -207,6 +207,51 @@ impl ConfigLoader {
 
         info!("saved updated config to {}", yaml_path.display());
         Ok(())
+    }
+
+    /// Liga ou desliga `channels.<key>.enabled`, sem tocar em mais nada.
+    ///
+    /// Devolve `true` quando o arquivo mudou; `false` quando ja estava assim
+    /// (ou quando a secao nao existe e o pedido era `false` — nao se cria uma
+    /// secao so para escrever "desligado").
+    ///
+    /// # Por que isto mora aqui
+    ///
+    /// Dois processos precisam desta escrita e precisam dela **igual**: a CLI
+    /// (`garra whatsapp link` liga, `logout` desliga) e o gateway (que desliga
+    /// sozinho quando o servidor mata a sessao — senao todo boot seguinte paga
+    /// timeout e retry por uma credencial que nao existe mais). Duas copias
+    /// desta funcao divergiriam no dia em que uma delas ganhasse um campo, e o
+    /// sintoma seria o pior possivel: a CLI dizendo "desligado" e o gateway
+    /// subindo o canal assim mesmo.
+    pub fn set_channel_enabled(&self, key: &str, enabled: bool) -> Result<bool> {
+        // `save` escreve `<config_dir>/config.yml`; numa maquina que nunca
+        // rodou `garra init` o diretorio ainda nao existe.
+        self.ensure_dirs()?;
+        let mut config = self.load()?;
+        match config.channels.get_mut(key) {
+            Some(existing) => {
+                if existing.enabled == Some(enabled) {
+                    return Ok(false);
+                }
+                existing.enabled = Some(enabled);
+            }
+            None => {
+                if !enabled {
+                    return Ok(false);
+                }
+                config.channels.insert(
+                    key.to_string(),
+                    ChannelConfig {
+                        channel_type: key.to_string(),
+                        enabled: Some(true),
+                        settings: Default::default(),
+                    },
+                );
+            }
+        }
+        self.save(&config)?;
+        Ok(true)
     }
 }
 

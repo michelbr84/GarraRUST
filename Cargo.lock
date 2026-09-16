@@ -3659,6 +3659,7 @@ dependencies = [
  "jsonwebtoken",
  "metrics 0.24.6",
  "metrics-exporter-prometheus 0.18.3",
+ "rand 0.9.4",
  "reqwest 0.12.28",
  "ring",
  "rusqlite",

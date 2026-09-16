@@ -1364,6 +1364,18 @@ const KNOWN_CHANNELS: &[(&str, &str, bool, ChannelKind)] = &[
     ("discord", "Discord", true, ChannelKind::Pull),
     ("slack", "Slack", true, ChannelKind::Pull),
     ("whatsapp", "WhatsApp", true, ChannelKind::Push),
+    // #1238 (fatia D). `needs_secret: false` de proposito: a credencial deste
+    // canal nao e um valor de config, e um blob cifrado em `<data_dir>/
+    // whatsapp/default/session.enc`. O console nao tem campo para pedir, entao
+    // a pilula ambar de "falta o segredo" seria mentira. Quando ha sessao e a
+    // ponte nao esta de pe, quem transforma o `optional` em `offline` e o
+    // `provisioned` — ver `channel_status`.
+    (
+        "whatsapp_linked",
+        "WhatsApp (dispositivo vinculado)",
+        false,
+        ChannelKind::Pull,
+    ),
     ("imessage", "iMessage", false, ChannelKind::Pull),
     ("google_chat", "Google Chat", true, ChannelKind::Push),
     ("teams", "Microsoft Teams", true, ChannelKind::Push),
@@ -1387,12 +1399,22 @@ const KNOWN_CHANNELS: &[(&str, &str, bool, ChannelKind)] = &[
 /// significa que a tabela e o struct discordam — tratado como `"unknown"`
 /// em vez de virar `"offline"` numa linha que ninguem consegue explicar.
 ///
+/// `provisioned` responde "o operador ligou este canal?" para os canais cuja
+/// credencial **nao** e um valor de config e por isso nao cabe no
+/// `needs_secret` estatico (#1238: o `whatsapp_linked` guarda a sessao cifrada
+/// no data dir). `None` mantem a regra antiga, onde `needs_secret` responde
+/// pelos dois. A distincao importa: um canal que ninguem ligou esta
+/// `"optional"` — nao ha defeito —, mas um canal que alguem ligou e que nao
+/// esta de pe esta `"offline"`, e um console que mostrasse `"optional"` nos
+/// dois casos esconderia exatamente a falha que o operador precisa ver.
+///
 /// [`PushChannelStates`]: crate::push_channels::PushChannelStates
 fn channel_status(
     kind: ChannelKind,
     needs_secret: bool,
     live: bool,
     mounted: Option<usize>,
+    provisioned: Option<bool>,
 ) -> &'static str {
     let up = match kind {
         ChannelKind::Pull => live,
@@ -1406,7 +1428,7 @@ fn channel_status(
 
     if up {
         "active"
-    } else if needs_secret {
+    } else if provisioned.unwrap_or(needs_secret) {
         "offline"
     } else {
         "optional"
@@ -1453,7 +1475,17 @@ async fn list_channels(
             ChannelKind::Pull => None,
         };
         let live_aqui = live.iter().any(|name| name == *id);
-        let status = channel_status(*kind, *needs_secret, live_aqui, mounted);
+        // #1238: o unico canal cuja credencial vive em disco e nao na config.
+        // A leitura e a MESMA que o `/api/diagnostics` faz — `health()` —,
+        // para as duas telas nao poderem discordar sobre o mesmo canal.
+        let provisioned = if *id == crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY {
+            let (saude, _) =
+                crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked);
+            Some(saude.provisioned())
+        } else {
+            None
+        };
+        let status = channel_status(*kind, *needs_secret, live_aqui, mounted, provisioned);
         if status == "unknown" {
             tracing::warn!(
                 channel = id,
@@ -1877,6 +1909,7 @@ mod tests {
             true,  // needs_secret — era isto que empurrava para "offline"
             false, // nunca aparece no ChannelRegistry: e desenho
             Some(1),
+            None,
         );
         assert_eq!(status, "active");
     }
@@ -1886,7 +1919,7 @@ mod tests {
         // Configurado errado, ou recusado no boot (LINE com channel_secret
         // invalido, Teams sem app_id, WhatsApp sem app_secret desde a #1070).
         assert_eq!(
-            super::channel_status(ChannelKind::Push, true, false, Some(0)),
+            super::channel_status(ChannelKind::Push, true, false, Some(0), None),
             "offline"
         );
     }
@@ -1894,7 +1927,7 @@ mod tests {
     #[test]
     fn canal_push_sem_segredo_e_opcional_e_nao_offline() {
         assert_eq!(
-            super::channel_status(ChannelKind::Push, false, false, Some(0)),
+            super::channel_status(ChannelKind::Push, false, false, Some(0), None),
             "optional"
         );
     }
@@ -1905,7 +1938,7 @@ mod tests {
     #[test]
     fn live_do_registry_nao_promove_canal_push() {
         assert_eq!(
-            super::channel_status(ChannelKind::Push, true, true, Some(0)),
+            super::channel_status(ChannelKind::Push, true, true, Some(0), None),
             "offline"
         );
     }
@@ -1913,15 +1946,15 @@ mod tests {
     #[test]
     fn canal_pull_continua_vindo_do_registry() {
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, true, true, None),
+            super::channel_status(ChannelKind::Pull, true, true, None, None),
             "active"
         );
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, true, false, None),
+            super::channel_status(ChannelKind::Pull, true, false, None, None),
             "offline"
         );
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, false, false, None),
+            super::channel_status(ChannelKind::Pull, false, false, None, None),
             "optional"
         );
     }
@@ -1932,7 +1965,7 @@ mod tests {
     #[test]
     fn mounted_de_canal_pull_e_ignorado() {
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, true, true, Some(0)),
+            super::channel_status(ChannelKind::Pull, true, true, Some(0), None),
             "active"
         );
     }
@@ -1943,7 +1976,7 @@ mod tests {
     #[test]
     fn tabela_e_struct_em_desacordo_dao_unknown() {
         assert_eq!(
-            super::channel_status(ChannelKind::Push, true, false, None),
+            super::channel_status(ChannelKind::Push, true, false, None, None),
             "unknown"
         );
     }

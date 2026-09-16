@@ -33,6 +33,7 @@ mod slack;
 mod teams;
 mod telegram;
 mod whatsapp;
+mod whatsapp_linked;
 
 // Slice 10.a (GAR-440): path resolvers and API-key precedence chain extracted
 // to `bootstrap::config`. Re-exported at this level so external paths
@@ -51,6 +52,16 @@ pub use slack::build_slack_channels;
 
 // Slice 10.e (GAR-479): WhatsApp wiring extracted to `bootstrap::whatsapp`.
 pub use whatsapp::build_whatsapp_channels;
+
+/// #1238 (fatia D): o canal PULL `whatsapp_linked` — WhatsApp por dispositivo
+/// vinculado. Irmao do `whatsapp` acima (Cloud API) e disjunto dele: chave de
+/// config propria, transporte proprio (bridge Node/Baileys por NDJSON) e um
+/// modelo de ameaca proprio, porque a mensagem vem de qualquer pessoa que
+/// conheca o numero pessoal do operador.
+pub use whatsapp_linked::{
+    CONFIG_KEY as WHATSAPP_LINKED_CONFIG_KEY, LinkedPaths, WhatsAppLinkedRuntime,
+    health as whatsapp_linked_health, spawn_whatsapp_linked,
+};
 
 /// #1050: o canal Google Chat. Canal push, como o WhatsApp — o `Vec<Arc<_>>`
 /// vira estado da rota `/webhooks/google-chat`, nao entrada do

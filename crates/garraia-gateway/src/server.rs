@@ -894,6 +894,22 @@ impl GatewayServer {
             }
         }
 
+        // Sobe o canal WhatsApp por dispositivo vinculado (#1238, fatia D).
+        //
+        // Canal PULL e supervisao propria: nao entra no `ChannelRegistry` (o
+        // `Channel` trait pressupoe `connect()/disconnect()` sincronos sobre um
+        // objeto mutavel, e aqui quem vive e um processo filho Node com loop de
+        // reconexao proprio), e nao entra no `PushChannelStates` (nao ha
+        // webhook). O status dele sai do `AppState::whatsapp_linked`, que o
+        // `/api/channels` e o `/api/diagnostics` leem pela MESMA funcao.
+        //
+        // Nao subir e o caso comum — canal desligado, sem sessao, ou sem Node —
+        // e nenhum deles e erro de boot.
+        match crate::bootstrap::spawn_whatsapp_linked(&state) {
+            Ok(_cancel) => info!("whatsapp_linked: canal supervisionado"),
+            Err(motivo) => info!("whatsapp_linked: canal nao subiu ({motivo:?})"),
+        }
+
         // Build WhatsApp channels (webhook-driven — no persistent connection)
         let whatsapp_channels = build_whatsapp_channels(&state.config, &state);
         for channel in &whatsapp_channels {
