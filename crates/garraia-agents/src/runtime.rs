@@ -211,6 +211,11 @@ pub struct AgentRuntime {
     fallback_providers_list: RwLock<Vec<String>>,
     /// GAR-208: Sliding window + summarization policy.
     context_policy: ContextPolicy,
+    /// #982/TODO 2026-09-02: knobs do auto-learning de fatos.
+    /// `auto_extract = false` pula a chamada LLM extra por turno;
+    /// `max_facts` limita os fatos gravados por turno (maior confidence).
+    auto_extract: bool,
+    max_facts: Option<u32>,
     /// Model to use when tools are available and the default model may not support function calling.
     /// Overrides model_override for any request that has tools registered.
     tools_model: RwLock<Option<String>>,
@@ -306,6 +311,8 @@ impl AgentRuntime {
             context_policy: ContextPolicy::default(),
             tools_model: RwLock::new(None),
             noise_policy: crate::memory_noise::NoisePolicy::default(),
+            auto_extract: true,
+            max_facts: None,
         }
     }
 
@@ -359,6 +366,14 @@ impl AgentRuntime {
     /// #952: define o que nao merece vetor na ingestao.
     pub fn set_noise_policy(&mut self, policy: crate::memory_noise::NoisePolicy) {
         self.noise_policy = policy;
+    }
+
+    /// Configura o auto-learning de fatos (`memory.auto_extract` /
+    /// `memory.max_facts` do config.yml). Default preserva o comportamento
+    /// histórico: extração ligada, sem teto.
+    pub fn set_memory_extraction_policy(&mut self, auto_extract: bool, max_facts: Option<u32>) {
+        self.auto_extract = auto_extract;
+        self.max_facts = max_facts;
     }
 
     /// #952: a politica em vigor. A CLI precisa dela para reindexar com o
@@ -1348,39 +1363,42 @@ impl AgentRuntime {
                     warn!("failed to store turn in memory: {}", e);
                 }
 
-                // Auto-learning: extrair fatos da mensagem do usuário
-                let facts_result = self.memory_extractor.extract_facts(self, user_text).await;
+                // Auto-learning: extrair fatos da mensagem do usuário. A chamada LLM
+                // extra é skippada por `memory.auto_extract` (TODO 2026-09-02) — quando
+                // desligada, o turno responde sem o custo da extração.
+                let facts_result = if self.auto_extract {
+                    self.memory_extractor.extract_facts(self, user_text).await
+                } else {
+                    Ok(Vec::new())
+                };
                 if let Ok(facts) = facts_result {
+                    // Validação + teto por turno (`memory.max_facts`), maior confidence
+                    // primeiro — extraído como função pura para ser afirmável em teste.
+                    let facts = select_learned_facts(facts, self.max_facts);
                     for fact in facts {
-                        // Validar que o fato tem valores não vazios
-                        if fact.confidence >= 0.80
-                            && !fact.key.trim().is_empty()
-                            && !fact.value.trim().is_empty()
-                        {
-                            let content = format!(
-                                "[FACT] type={} key={} value={} confidence={:.2}",
-                                fact.fact_type, fact.key, fact.value, fact.confidence
-                            );
-                            if let Some(memory) = &self.memory {
-                                // Store fact in memory with embedding
-                                let embedding = self.embed_document(&content).await;
-                                let fact_embedding_model = self.embedding_model_for(&embedding);
-                                let _ = memory
-                                    .remember(NewMemoryEntry {
-                                        tenant_id: "default".to_string(),
-                                        session_id: session_id.to_string(),
-                                        channel_id: None,
-                                        user_id: user_id.map(|s| s.to_string()),
-                                        continuity_key: continuity_key.map(|s| s.to_string()),
-                                        role: MemoryRole::User,
-                                        content,
-                                        embedding,
-                                        embedding_model: fact_embedding_model,
-                                        metadata: serde_json::json!({ "kind": "learned_fact" }),
-                                    })
-                                    .await;
-                                info!("stored learned fact: {}={}", fact.key, fact.value);
-                            }
+                        let content = format!(
+                            "[FACT] type={} key={} value={} confidence={:.2}",
+                            fact.fact_type, fact.key, fact.value, fact.confidence
+                        );
+                        if let Some(memory) = &self.memory {
+                            // Store fact in memory with embedding
+                            let embedding = self.embed_document(&content).await;
+                            let fact_embedding_model = self.embedding_model_for(&embedding);
+                            let _ = memory
+                                .remember(NewMemoryEntry {
+                                    tenant_id: "default".to_string(),
+                                    session_id: session_id.to_string(),
+                                    channel_id: None,
+                                    user_id: user_id.map(|s| s.to_string()),
+                                    continuity_key: continuity_key.map(|s| s.to_string()),
+                                    role: MemoryRole::User,
+                                    content,
+                                    embedding,
+                                    embedding_model: fact_embedding_model,
+                                    metadata: serde_json::json!({ "kind": "learned_fact" }),
+                                })
+                                .await;
+                            info!("stored learned fact: {}={}", fact.key, fact.value);
                         }
                     }
                 }
@@ -2735,6 +2753,63 @@ impl Default for AgentRuntime {
 
 #[cfg(test)]
 mod tests {
+    use super::select_learned_facts;
+    use crate::memory_extractor::StructuredFact;
+
+    fn fato(tipo: &str, key: &str, value: &str, confidence: f32) -> StructuredFact {
+        StructuredFact {
+            fact_type: tipo.into(),
+            key: key.into(),
+            value: value.into(),
+            confidence,
+        }
+    }
+
+    #[test]
+    fn select_facts_mantem_somente_validos() {
+        let out = select_learned_facts(
+            vec![
+                fato("preference", "food", "sushi", 0.95),
+                // confidence abaixo do gate
+                fato("preference", "cor", "azul", 0.5),
+                // key vazia
+                fato("preference", "  ", "algo", 0.9),
+                // value vazia
+                fato("preference", "cidade", " ", 0.9),
+            ],
+            None,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].key, "food");
+    }
+
+    #[test]
+    fn select_facts_respeita_teto_por_confidence() {
+        let out = select_learned_facts(
+            vec![
+                fato("a", "baixa", "1", 0.81),
+                fato("a", "alta", "2", 0.99),
+                fato("a", "media", "3", 0.9),
+            ],
+            Some(2),
+        );
+        assert_eq!(out.len(), 2);
+        // Os dois de maior confidence sobrevivem.
+        assert_eq!(out[0].key, "alta");
+        assert_eq!(out[1].key, "media");
+    }
+
+    #[test]
+    fn select_facts_sem_teto_preserva_ordem_de_chegada() {
+        let out = select_learned_facts(
+            vec![fato("a", "um", "1", 0.9), fato("a", "dois", "2", 0.95)],
+            None,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].key, "um");
+        assert_eq!(out[1].key, "dois");
+    }
+
     /// Provider que so sabe responder de uma vez — o `stream_complete` cai no
     /// padrao do trait, que devolve erro.
     ///
@@ -4459,4 +4534,29 @@ fn extract_text_opt(content: &[ContentBlock]) -> Option<String> {
 fn extract_text(content: &[ContentBlock]) -> String {
     extract_text_opt(content)
         .unwrap_or_else(|| "[no textual response provided by the model]".to_string())
+}
+
+/// Validação + teto do auto-learning de fatos (TODO 2026-09-02).
+///
+/// Mantém apenas fatos com `confidence >= 0.80` e key/value não vazios
+/// (regra que antes vivia inline no loop). Com `max_facts = Some(n)`,
+/// sobrevivem os `n` de **maior confidence** — empate resolve pela ordem
+/// de chegada (sort estável). Função pura para ser afirmável em teste.
+fn select_learned_facts(
+    facts: Vec<crate::memory_extractor::StructuredFact>,
+    max_facts: Option<u32>,
+) -> Vec<crate::memory_extractor::StructuredFact> {
+    let mut valid: Vec<_> = facts
+        .into_iter()
+        .filter(|f| f.confidence >= 0.80 && !f.key.trim().is_empty() && !f.value.trim().is_empty())
+        .collect();
+    if let Some(cap) = max_facts {
+        valid.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        valid.truncate(cap as usize);
+    }
+    valid
 }

@@ -601,6 +601,24 @@ pub struct MemoryConfig {
     /// O que merece vetor na ingestao (#952).
     #[serde(default)]
     pub ingestion: IngestionConfig,
+
+    /// Auto-learning de fatos: liga/desliga a chamada LLM **extra** que roda
+    /// a cada turno do usuário para extrair `[FACT]`s para o `memory.db`
+    /// (`MemoryExtractor::extract_facts`). Default `true` — preserva o
+    /// comportamento atual; `false` economiza uma chamada por turno sem
+    /// desligar a memória semântica inteira. (TODO 2026-09-02.)
+    #[serde(default = "default_memory_auto_extract")]
+    pub auto_extract: bool,
+
+    /// Teto de fatos gravados **por turno** (após o filtro de confiança
+    /// minima de 0.80), mantendo os de maior confidence. `None` = sem teto
+    /// (comportamento histórico).
+    #[serde(default)]
+    pub max_facts: Option<u32>,
+}
+
+fn default_memory_auto_extract() -> bool {
+    true
 }
 
 impl Default for MemoryConfig {
@@ -611,6 +629,8 @@ impl Default for MemoryConfig {
             shared_continuity: false,
             retention: RetentionConfig::default(),
             ingestion: IngestionConfig::default(),
+            auto_extract: default_memory_auto_extract(),
+            max_facts: None,
         }
     }
 }
@@ -1152,6 +1172,27 @@ pub struct McpServerConfig {
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
+
+    /// TODO 2026-09-02: knobs do auto-learning. O default preserva o
+    /// comportamento histórico (extração ligada, sem teto) e o YAML aceita
+    /// os dois campos.
+    #[test]
+    fn memory_auto_extract_defaults_on_and_parses_from_yaml() {
+        let padrao = super::MemoryConfig::default();
+        assert!(padrao.auto_extract);
+        assert_eq!(padrao.max_facts, None);
+
+        let config: AppConfig =
+            serde_yaml::from_str("memory:\n  auto_extract: false\n  max_facts: 3\n")
+                .expect("yaml should parse");
+        assert!(!config.memory.auto_extract);
+        assert_eq!(config.memory.max_facts, Some(3));
+
+        // Seção ausente => defaults (não panic nem inverta o default).
+        let config: AppConfig = serde_yaml::from_str("agent: {}\n").expect("yaml should parse");
+        assert!(config.memory.auto_extract);
+        assert_eq!(config.memory.max_facts, None);
+    }
 
     /// #962: o timeout de embeddings tem default proprio (30s) e NAO herda
     /// o do LLM (120s) — herdar era exatamente o bug, porque uma chamada que
