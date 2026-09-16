@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use garraia_channels::whatsapp_linked::bridge::{BridgeError, BridgeLauncher};
 use garraia_channels::whatsapp_linked::runner::{
-    InboundSink, PairUi, RunError, SilentUi, pair, serve,
+    InboundSink, PairOptions, PairUi, RunError, SilentUi, pair, pair_with, serve,
 };
 use garraia_channels::whatsapp_linked::{
     BridgeCommand, InboundMessage, Jid, SessionKey, SessionStore,
@@ -366,28 +366,63 @@ async fn an_oversized_line_is_rejected_instead_of_allocated() {
     assert!(!msg.contains("xxxxxxxxxx"), "a linha vazou no erro: {msg}");
 }
 
+/// O `pair` da ponte **nao tem prazo proprio** — ele reconecta para sempre.
+/// Quem cronometra e este lado, e este teste e a prova: com o bridge mudo, o
+/// driver desiste sozinho, com mensagem, sem persistir nada e sem depender de
+/// um `timeout` externo.
 #[tokio::test]
-async fn a_hanging_bridge_hits_the_caller_timeout() {
+async fn a_silent_bridge_makes_the_driver_give_up_on_its_own() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, key) = store_in(&dir);
 
-    // O driver nao tem timeout proprio de propósito (o usuario pode demorar a
-    // pegar o telefone); quem limita e o chamador. Este teste fixa que o
-    // limite externo funciona e que nada foi persistido.
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        pair(
+    let outer = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pair_with(
             &FixtureLauncher::new("hang", dir.path().to_path_buf()),
             &store,
             &key,
             &mut SilentUi,
             never_cancelled(),
+            PairOptions {
+                stall_after_secs: 3,
+            },
         ),
     )
-    .await;
+    .await
+    .expect("o driver precisa desistir SOZINHO, sem o timeout externo");
 
-    assert!(result.is_err(), "o bridge travado precisa estourar o prazo");
+    let err = outer.expect_err("bridge mudo");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("parou de responder"),
+        "a mensagem precisa dizer o que aconteceu: {msg}"
+    );
     assert!(!store.exists(), "nada pode ter sido gravado");
+}
+
+/// O prazo de silencio nao pode disparar num pareamento que esta progredindo:
+/// cada evento do bridge zera o contador.
+#[tokio::test]
+async fn a_slow_but_progressing_pairing_is_not_cut_short() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    // Dois QRs com 2 s de validade cada, e um prazo de silencio de 3 s: o
+    // pareamento leva mais que o prazo, mas nunca fica 3 s calado.
+    let outcome = pair_with(
+        &FixtureLauncher::new("pair-expire-then-ok", dir.path().to_path_buf()).qr_expires(2.0),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+        PairOptions {
+            stall_after_secs: 3,
+        },
+    )
+    .await
+    .expect("o pareamento lento precisa concluir");
+
+    assert!(outcome.session_saved);
 }
 
 #[tokio::test]

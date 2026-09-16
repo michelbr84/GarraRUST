@@ -37,6 +37,35 @@ use super::state::{Desired, Effect, Event, Failure, Machine, Phase, backoff_ms};
 /// expiracao de QR, que e de 20 s.
 const TICK: Duration = Duration::from_secs(1);
 
+/// Silencio maximo do bridge antes de [`pair`] desistir, em segundos.
+///
+/// **O `pair` do bridge nao tem prazo proprio**: QR expirado (408) e queda de
+/// rede reconectam sozinhos, com backoff ate 30 s, para sempre. Quem
+/// cronometra o pareamento e este lado. O teto de 5 QRs cobre o caso normal;
+/// este cobre o outro — o bridge que para de falar sem nunca mandar o proximo
+/// QR (rede caida, servidor recusando o handshake). Sem ele o usuario fica com
+/// um terminal parado ate lembrar do Ctrl+C.
+///
+/// 90 s e folgado de proposito: e mais que o maior backoff (30 s) somado a
+/// validade de um QR (20 s), entao nao dispara num pareamento lento de
+/// verdade. O contador zera a CADA evento, inclusive `log` e `status`.
+pub const DEFAULT_STALL_AFTER_SECS: u64 = 90;
+
+/// Ajustes de [`pair`]. Existe para o teste poder encurtar o prazo de silencio
+/// sem esperar 90 s de relogio real; producao usa o [`Default`].
+#[derive(Debug, Clone, Copy)]
+pub struct PairOptions {
+    pub stall_after_secs: u64,
+}
+
+impl Default for PairOptions {
+    fn default() -> Self {
+        Self {
+            stall_after_secs: DEFAULT_STALL_AFTER_SECS,
+        }
+    }
+}
+
 /// Falhas do driver.
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -122,7 +151,19 @@ pub async fn pair(
     store: &SessionStore,
     key: &SessionKey,
     ui: &mut dyn PairUi,
+    cancel: watch::Receiver<bool>,
+) -> Result<PairOutcome, RunError> {
+    pair_with(launcher, store, key, ui, cancel, PairOptions::default()).await
+}
+
+/// [`pair`] com os prazos explicitos.
+pub async fn pair_with(
+    launcher: &dyn BridgeLauncher,
+    store: &SessionStore,
+    key: &SessionKey,
+    ui: &mut dyn PairUi,
     mut cancel: watch::Receiver<bool>,
+    options: PairOptions,
 ) -> Result<PairOutcome, RunError> {
     let mut machine = Machine::new();
 
@@ -195,6 +236,9 @@ pub async fn pair(
     // sessao morreu — e so entao se apaga alguma coisa.
     let mut saw_logged_out = false;
     let mut dead_reason_code: Option<i64> = None;
+    // Segundo do ultimo evento vindo do bridge. Qualquer evento conta como
+    // sinal de vida, inclusive `log`.
+    let mut last_event_secs: u64 = 0;
 
     loop {
         tokio::select! {
@@ -214,6 +258,18 @@ pub async fn pair(
 
             _ = ticker.tick() => {
                 now += 1;
+                if now.saturating_sub(last_event_secs) >= options.stall_after_secs
+                    && machine.phase() != Phase::Connected
+                {
+                    let hint = conn.stderr_hint();
+                    let _ = conn.send(&BridgeCommand::Shutdown).await;
+                    conn.kill().await;
+                    return Err(BridgeError::Protocol(format!(
+                        "o bridge parou de responder por {}s sem concluir o pareamento{hint}",
+                        options.stall_after_secs
+                    ))
+                    .into());
+                }
                 for effect in machine.tick(now) {
                     match effect {
                         Effect::QrExpired { .. } => previous_expired = true,
@@ -242,6 +298,7 @@ pub async fn pair(
                     machine.on(Event::BridgeExited, now);
                     break;
                 };
+                last_event_secs = now;
 
                 // O QR precisa ser guardado antes de aplicar o evento: so
                 // depois da maquina sabemos QUAL tentativa ele e.

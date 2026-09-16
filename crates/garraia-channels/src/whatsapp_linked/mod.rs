@@ -63,7 +63,7 @@ pub use protocol::{
     UNAUTHORIZED_REASON_CODES, session_is_dead,
 };
 pub use qr::{Style as QrStyle, render as render_qr};
-pub use runner::{InboundSink, PairOutcome, PairUi, RunError, pair, serve};
+pub use runner::{InboundSink, PairOptions, PairOutcome, PairUi, RunError, pair, pair_with, serve};
 pub use session::{
     DEFAULT_ACCOUNT, KeyOrigin, SessionBlob, SessionError, SessionKey, SessionStore,
 };
