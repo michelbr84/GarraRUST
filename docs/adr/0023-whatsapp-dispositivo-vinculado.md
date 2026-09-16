@@ -12,7 +12,7 @@
 - **Supersedes:** none
 - **Superseded by:** none
 - **Links:**
-  - Issue de acompanhamento: #1237 (guarda-chuva de `garra whatsapp`)
+  - Issue de acompanhamento: #1238 (guarda-chuva de `garra whatsapp`)
   - Canal atual (Cloud API): `crates/garraia-channels/src/whatsapp/`,
     `crates/garraia-gateway/src/bootstrap/whatsapp.rs`
   - [ADR 0019](0019-process-hardening-and-sandbox.md) — confinamento de

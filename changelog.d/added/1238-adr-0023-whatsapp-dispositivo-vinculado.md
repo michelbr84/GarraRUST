@@ -1,4 +1,4 @@
-- **ADR 0023 decide como o WhatsApp pessoal vai funcionar (#1237).** O canal
+- **ADR 0023 decide como o WhatsApp pessoal vai funcionar (#1238).** O canal
   WhatsApp de hoje e a Meta Cloud API, que exige conta Business, numero
   cadastrado na Meta e URL publica — barreira que o usuario domestico nao
   passa. O ADR registra o caminho do WhatsApp **pessoal**, por dispositivo

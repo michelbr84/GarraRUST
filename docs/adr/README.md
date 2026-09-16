@@ -62,7 +62,7 @@ Rationale curta ("porque sim") é sinal de que a decisão não deveria ser ADR �
 | [0020](0020-crate-garraia-hardware.md) | Crate `garraia-hardware` — abstração de dispositivos físicos | ✅ accepted | 2026-09-11 | [#1124](https://github.com/michelbr84/GarraRUST/issues/1124) |
 | [0021](0021-garraia-desktop-control-center.md) | GarraIA Desktop — Control Center (`garraia desktop`) | ✅ accepted | 2026-09-14 | [#1181](https://github.com/michelbr84/GarraRUST/issues/1181) |
 | [0022](0022-default-llm-identity.md) | `z-ai/glm-5.3-flash` via OpenRouter como LLM padrão; local como segunda opção | ✅ accepted | 2026-09-13 | [#1180](https://github.com/michelbr84/GarraRUST/issues/1180) |
-| [0023](0023-whatsapp-dispositivo-vinculado.md) | WhatsApp pessoal por dispositivo vinculado (`garra whatsapp`) — bridge Node/Baileys por stdio + sessão cifrada | ✅ accepted | 2026-09-16 | [#1237](https://github.com/michelbr84/GarraRUST/issues/1237) |
+| [0023](0023-whatsapp-dispositivo-vinculado.md) | WhatsApp pessoal por dispositivo vinculado (`garra whatsapp`) — bridge Node/Baileys por stdio + sessão cifrada | ✅ accepted | 2026-09-16 | [#1238](https://github.com/michelbr84/GarraRUST/issues/1238) |
 
 Legenda: ✅ accepted · 📋 proposed (aguardando execução) · 🔒 blocked (issue Linear aguardando este ADR ser escrito).
 
