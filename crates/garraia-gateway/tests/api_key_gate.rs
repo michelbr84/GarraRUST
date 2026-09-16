@@ -330,6 +330,90 @@ async fn a_chave_na_query_nao_abre_o_plano_de_conversa() {
     }
 }
 
+/// A igualdade exata do conjunto `/v1/` é segura só enquanto **nenhuma
+/// variante de URI for roteada até o handler** (auditoria R4 do PR #1251).
+///
+/// Hoje não há bypass: o `matchit` do Axum é tão literal quanto o
+/// `is_gated_path`, então nenhuma variante (`/v1/messages/`, `//v1/messages`,
+/// dot-segment, `%2f`, caixa, `;x=1`) alcança o handler — o gate diz "não é
+/// do conjunto", o roteador diz "não existe", e as duas literalidades se
+/// cancelam. Mas isso é segurança por **acoplamento entre dois arquivos**
+/// (a tabela de rotas do `router.rs` e o `is_gated_path` do
+/// `gateway_auth.rs`), e nada a segurava.
+///
+/// **Qual é o risco de verdade, e qual não é.** A auditoria imaginou um
+/// `NormalizePathLayer` acrescentado à cadeia reescrevendo o path por dentro
+/// do gate. Esse caminho é **inerte**, e vale registrar por quê: o gate é um
+/// `Router::layer`, e `Router::layer` roda **depois** do roteamento (ele
+/// embrulha o serviço de cada rota e o do fallback — é justamente por isso
+/// que rota inexistente sob `/api/` também leva 401). Reescrever o path ali
+/// não muda mais nada, porque a rota já foi escolhida. E um normalizador
+/// posto por **fora** do router inteiro também não abre nada: ele roda antes
+/// do gate, que então já vê o caminho canônico e o gateia.
+///
+/// O que reabre a #1240 é a tabela de rotas crescer sem o `is_gated_path`
+/// crescer junto — registrar `/v1/messages/` para consertar um 404, trocar a
+/// rota por um wildcard, montar um alias. Aí a variante passa a ser roteada
+/// ao handler enquanto o gate continua dizendo "não é do conjunto". Foi
+/// assim que este teste foi visto vermelho.
+///
+/// **O que o teste afirma, e por que não é um status literal.** A propriedade
+/// que importa é negativa: sem credencial, **nenhuma variante pode alcançar
+/// o `messages_handler`**. Quem chega ao handler recebe a resposta dele — com
+/// corpo vazio e sem `content-type`, um `415` do extractor `Json` (e um
+/// `400`/`200` se algum dia o corpo for válido). Quem **não** chega recebe
+/// `401`, `404` ou `405`, conforme a camada que barrou. Os dois conjuntos são
+/// disjuntos, e é essa disjunção que o teste mede.
+///
+/// Cuidado que quase invalidou a medição: **o status sozinho não distingue
+/// "gateado" de "rota não existe"**. Toda rota inexistente do gateway já
+/// responde `401` de corpo vazio — o `require_admin_auth` que
+/// `build_plugin_routes` monta como `.layer()` (GAR-459), anterior à #1045 e
+/// alheio a ela. Por isso a âncora de sanidade abaixo compara o **corpo**: é
+/// o único jeito de provar que o gate está de fato ligado, e sem ela o resto
+/// passaria por vacuidade.
+#[tokio::test]
+async fn nenhuma_variante_de_uri_alcanca_o_plano_de_conversa_sem_credencial() {
+    // As variantes que um normalizador reescreveria para `/v1/messages`, e que
+    // um alias mal colocado rotearia para la: barra final, barra dupla e
+    // dot-segment.
+    const VARIANTES: &[&str] = &[
+        "/v1/messages/",
+        // Forma absoluta para o `http::Uri` preservar o `//` no path em vez
+        // de lê-lo como autoridade.
+        "http://127.0.0.1:3888//v1/messages",
+        "/v1/./messages",
+        "/v1/messages/../messages",
+    ];
+
+    // Âncora: o gate está ligado e o caminho canônico é gateado **com o corpo
+    // do gate**, não com o 401 vazio do fallback.
+    let resp = pedido(Some(CHAVE), Method::POST, "/v1/messages", None, None).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .expect("corpo");
+    assert_eq!(
+        &bytes[..],
+        b"gateway: invalid or missing api key",
+        "o caminho canonico deixou de ser gateado — o resto deste teste nao mede nada"
+    );
+
+    for variante in VARIANTES {
+        let status = status_de(Some(CHAVE), Method::POST, variante, None, None).await;
+        assert!(
+            matches!(
+                status,
+                StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ),
+            "{variante} respondeu {status} sem credencial: isso e resposta do \
+             messages_handler, ou seja, alguma rota nova passou a levar esta \
+             variante ate ele enquanto o is_gated_path continuou sem cobri-la — \
+             a #1240 reaberta. Ver o comentario de montagem em router.rs."
+        );
+    }
+}
+
 /// A garantia de "zero mudança": sem chave configurada, tudo responde como
 /// antes deste PR.
 #[tokio::test]

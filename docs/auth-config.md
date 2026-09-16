@@ -236,6 +236,7 @@ same raw router and had been left out:
 | `/v1/chat/completions` | `POST` | #1240 |
 | `/v1/messages`, `/v1/messages/count_tokens` | `POST` | #1240 |
 | `/a2a/*` (whole namespace, by prefix) | any | #1240 |
+| `/ws`, `/ws/parrot` (handshake) | `GET` | #1045 / #1240 |
 
 These were the reason the gate had to stop being a single `/api/` prefix test.
 The original exclusion note said "`/v1/*` has its own JWT" — true of the
@@ -266,9 +267,28 @@ The key travels in the `Authorization: Bearer` header. The two Anthropic compat
 routes (`/v1/messages`, `/v1/messages/count_tokens`) also accept it in
 `x-api-key`, because Claude Code and the official Anthropic SDK never send a
 bearer — the two headers are alternatives, and either one being right is
-enough. Only `/ws` also accepts the key in the query string, because a
-browser's WebSocket handshake cannot carry a header; on REST it would end up in
-access logs and in the request span.
+enough. Only the two WebSocket handshakes also accept the key in the query
+string, because a browser's WebSocket handshake cannot carry a header; on REST
+it would end up in access logs and in the request span.
+
+### The two WebSocket handshakes
+
+`/ws` (web chat) and `/ws/parrot` (the Garra Desktop overlay) are checked
+**inside their handlers**, not by the `/api/*` middleware, and both accept the
+key as `?token=` or `?api_key=` as well as `Authorization: Bearer`. The query
+string is not a convenience here, it is the only channel that works: the Tauri
+webview opens the overlay with `new WebSocket(...)`, which cannot set a header
+at all, so gating `/ws/parrot` in the middleware — which only reads headers —
+would lock the desktop out instead of authenticating it.
+
+`/ws/parrot` was gated in the R4 audit of PR #1251, not in #1240 itself. It had
+been guarded only by the #1182 origin check, which passes by design when there
+is no `Origin` header (a non-browser client — app, CLI, `curl` — never sends
+one). With `gateway.api_key` set and the gateway on `0.0.0.0`, a
+`websocat ws://host:3888/ws/parrot` therefore connected with no credential and
+drove a full agent turn, with the tools and the operator's LLM key, on the
+desktop's persistent session. Its sibling `/ws`, mounted on the line above in
+`router.rs`, had checked the key since #1045.
 
 The key is read once at startup, so changing it on disk needs a gateway
 restart — the config hot-reload does not reach it.

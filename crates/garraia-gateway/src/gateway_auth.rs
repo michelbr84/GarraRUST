@@ -432,6 +432,24 @@ mod tests {
         assert!(!is_gated_path("/API/sessions"));
     }
 
+    /// Os dois WebSockets ficam fora deste middleware **de proposito**, e a
+    /// razao nao e "eles nao precisam de chave" — e que o middleware so
+    /// aceita a chave por header, e handshake de navegador nao leva header.
+    /// A webview Tauri do Garra Desktop abre `/ws/parrot` com
+    /// `new WebSocket(...)`; gatear a rota aqui fecharia o desktop em vez de
+    /// autentica-lo. Os dois handlers checam `ApiKeyGate::admits` por dentro,
+    /// aceitando `?token=` / `?api_key=` (`ws.rs` e `parrot_ws.rs`) — e e la
+    /// que `origin_guard_layering.rs` trava o comportamento.
+    ///
+    /// Quem "consertar" a ausencia de `/ws/parrot` desta lista adicionando a
+    /// rota aqui quebra o Garra Desktop; quem apagar o gate de dentro do
+    /// handler reabre o buraco da auditoria R4 do PR #1251.
+    #[test]
+    fn os_websockets_ficam_fora_do_middleware_e_gateiam_por_dentro() {
+        assert!(!is_gated_path("/ws"));
+        assert!(!is_gated_path("/ws/parrot"));
+    }
+
     // ── #1240: o plano de conversa e o A2A ────────────────────────────────
 
     /// As rotas compat OpenAI/Anthropic e o A2A estao no mesmo router cru
@@ -535,7 +553,18 @@ mod tests {
     }
 
     /// Rota inexistente sob `/api/` responde 401, e não 404: o gate não conta
-    /// a quem não tem a chave quais rotas existem.
+    /// a quem não tem a chave quais rotas existem. É o invariante
+    /// "`layer`, não `route_layer`".
+    ///
+    /// **Aqui, e só aqui, o 401 prova o gate** (auditoria R4 do PR #1251).
+    /// Este teste roda num router de mentira com `fallback` próprio, então o
+    /// único 401 possível é o deste middleware. No `build_router` de verdade
+    /// não é assim: o `require_admin_auth` que `build_plugin_routes` monta
+    /// como `.layer()` (GAR-459, e portanto anterior à #1045) faz **toda**
+    /// rota inexistente do gateway responder 401 — de corpo vazio. Quem for
+    /// medir a cobertura do gate no router real tem de distinguir pelo
+    /// **corpo** (`CORPO_401`), nunca pelo status: pelo status, mede-se o
+    /// fallback e conclui-se que está tudo gateado.
     #[tokio::test]
     async fn rota_inexistente_sob_api_da_401_e_nao_404() {
         assert_eq!(

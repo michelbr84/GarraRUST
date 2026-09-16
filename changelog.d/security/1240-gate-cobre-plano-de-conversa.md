@@ -14,3 +14,18 @@
   `/v1/models`, `/.well-known/agent.json`, `/health` e `/ping` seguem abertas.
   **Sem `gateway.api_key` configurada nada muda** — este PR nao fecha nada por
   default.
+
+  **O socket do papagaio (`/ws/parrot`) entrou junto**, achado pela auditoria R4
+  do PR. Ele executa um turno completo do agente — com as tools e a chave de LLM
+  do dono — sobre a sessao persistente do Garra Desktop, e a unica guarda que
+  tinha era o anti-CSRF da #1182, que passa de proposito quando nao ha header
+  `Origin`, porque cliente nao-navegador (app, CLI, `curl`) nao manda um. Com a
+  chave configurada e o gateway em `0.0.0.0` — o caso do app na LAN, que e o
+  motivo de a chave existir — um `websocat ws://host:3888/ws/parrot` conectava
+  sem credencial e dirigia o agente na maquina do dono. O irmao `/ws`, montado na
+  linha de cima do `router.rs`, ja checava a chave desde a #1045. A checagem ficou
+  **dentro do handler**, e nao na lista de caminhos do middleware: o middleware so
+  le header, e a webview Tauri abre o overlay com `new WebSocket(...)`, que nao
+  manda header — gatear a rota la fecharia o desktop em vez de autentica-lo. Como
+  no `/ws`, a chave vai por `?token=` / `?api_key=` ou por bearer, com a mesma
+  comparacao de tempo constante e o mesmo 401.

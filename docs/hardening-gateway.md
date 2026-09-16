@@ -180,8 +180,9 @@ Arquivo completo comentado, validado com `garra config check`:
 1. `gateway.api_key` só aceita valor literal no arquivo — não há
    interpolação de env no config (a linha `GARRAIA_API_KEY` do
    `.env.example` é aspiracional; suportá-la de verdade é follow-up).
-2. Auth do gateway local: com `gateway.api_key` definido, o gate cobre o
-   WebSocket `/ws` **e** o REST `/api/*` (#1045). Sem a chave definida,
+2. Auth do gateway local: com `gateway.api_key` definido, o gate cobre os
+   WebSockets `/ws` e `/ws/parrot` **e** o REST `/api/*` (#1045; o
+   `/ws/parrot` desde a auditoria R4 do PR #1251). Sem a chave definida,
    nada é exigido — é o comportamento de sempre, e é o adequado para um
    gateway em loopback.
 
@@ -199,6 +200,25 @@ Arquivo completo comentado, validado com `garra config check`:
    runtime executa as tools do GarraIA na máquina do dono. Quem
    configurava a chave acreditava tê-las fechado.
 
+   **E o socket do papagaio (`/ws/parrot`), desde a auditoria R4 do PR
+   #1251.** Ele roda um turno completo do agente — com as tools e a chave
+   de LLM do dono — sobre a sessão persistente do desktop, e até então a
+   única guarda da rota era o anti-CSRF da #1182, que passa **de
+   propósito** quando não há header `Origin`: cliente não-navegador (app,
+   CLI, `curl`) não manda um. Com a chave configurada e o gateway em
+   `0.0.0.0` — o cenário do §2 —, um `websocat ws://host:3888/ws/parrot`
+   conectava sem credencial nenhuma e dirigia o agente. O irmão `/ws`,
+   montado na linha de cima do `router.rs`, já checava a chave.
+
+   A checagem do `/ws/parrot` mora **dentro do handler**, e não na lista
+   de caminhos do middleware, por um motivo que não é óbvio: o middleware
+   só lê header, e a webview Tauri abre o overlay com
+   `new WebSocket(...)`, que não consegue mandar header nenhum. Gatear a
+   rota no middleware fecharia o Garra Desktop em vez de autenticá-lo.
+   Como no `/ws`, a chave é aceita por `?token=` / `?api_key=` — e também
+   por `Authorization: Bearer`, para o cliente de CLI que consegue
+   mandá-lo.
+
    Continuam abertas, por serem descoberta e não execução: `/v1/models` e
    `/.well-known/agent.json`, além de `/health` e `/ping`. As rotas
    `/v1/*` do workspace (`rest_v1`) e o `/v1/auth/*` seguem **fora** deste
@@ -212,9 +232,10 @@ Arquivo completo comentado, validado com `garra config check`:
    alternativa nas duas rotas compat Anthropic (`/v1/messages`,
    `/v1/messages/count_tokens`), que aceitam também `x-api-key`, porque o
    Claude Code e o SDK da Anthropic nunca mandam bearer. Na query string
-   ela é aceita apenas pelo `/ws`, porque o handshake WebSocket de um
-   navegador não permite header; no REST, chave em query acabaria em log
-   de acesso e no span de tracing.
+   ela é aceita apenas pelos dois handshakes de WebSocket (`/ws` e
+   `/ws/parrot`), porque o handshake WebSocket de um navegador não
+   permite header; no REST, chave em query acabaria em log de acesso e no
+   span de tracing.
 
    `session_tokens_required` **não está implementado**: o middleware nunca
    foi ligado ao router, e desde a investigação da issue #930 o gateway
