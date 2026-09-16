@@ -213,7 +213,13 @@ mod tests {
                 "sem deps vence a queda: reiniciar nao conserta, instalar conserta",
             ),
             (true, true, B::Connected, H::Connected, "caminho feliz"),
-            (true, true, B::Down, H::BridgeDown, "vinculado e a ponte caiu"),
+            (
+                true,
+                true,
+                B::Down,
+                H::BridgeDown,
+                "vinculado e a ponte caiu",
+            ),
             (
                 true,
                 true,
@@ -262,7 +268,9 @@ mod tests {
             LinkHealth::MissingDependencies,
             LinkHealth::BridgeDown,
         ] {
-            let pt = h.next_step(&dir).unwrap_or_else(|| panic!("{h:?} sem passo"));
+            let pt = h
+                .next_step(&dir)
+                .unwrap_or_else(|| panic!("{h:?} sem passo"));
             let en = h
                 .next_step_en(&dir)
                 .unwrap_or_else(|| panic!("{h:?} sem passo em ingles"));

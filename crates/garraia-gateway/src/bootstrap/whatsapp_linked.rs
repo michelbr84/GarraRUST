@@ -436,9 +436,7 @@ impl GatewaySink {
             text: texto,
         };
         if outbound.send(comando).await.is_err() {
-            warn!(
-                "whatsapp_linked: a fila de saida fechou; a resposta nao sera enviada"
-            );
+            warn!("whatsapp_linked: a fila de saida fechou; a resposta nao sera enviada");
         }
     }
 
@@ -680,15 +678,9 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<watch::Sender<bool>,
     let store = paths.store.clone();
 
     tokio::spawn(async move {
-        let resultado = serve(
-            launcher,
-            store,
-            key,
-            sink,
-            outbound_rx,
-            cancel_rx,
-            || rand::random::<f64>(),
-        )
+        let resultado = serve(launcher, store, key, sink, outbound_rx, cancel_rx, || {
+            rand::random::<f64>()
+        })
         .await;
         runtime.set_bridge(BridgeView::Down);
         match resultado {

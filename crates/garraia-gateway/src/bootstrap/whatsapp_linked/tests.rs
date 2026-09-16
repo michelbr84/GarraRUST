@@ -69,10 +69,7 @@ fn sem_secao_o_canal_nasce_desligado_e_fechado() {
 fn enabled_ausente_nao_liga_o_canal() {
     let s = settings_from_config(&config_com(Some(secao(None, serde_json::json!({})))));
     assert!(!s.enabled);
-    let s = settings_from_config(&config_com(Some(secao(
-        Some(false),
-        serde_json::json!({}),
-    ))));
+    let s = settings_from_config(&config_com(Some(secao(Some(false), serde_json::json!({})))));
     assert!(!s.enabled);
 }
 
@@ -367,7 +364,10 @@ fn grupo_so_com_opt_in_explicito() {
 #[test]
 fn midia_e_texto_vazio_nao_geram_turno() {
     assert!(!deve_responder(&msg(None), &LinkedSettings::default()));
-    assert!(!deve_responder(&msg(Some("   ")), &LinkedSettings::default()));
+    assert!(!deve_responder(
+        &msg(Some("   ")),
+        &LinkedSettings::default()
+    ));
     assert!(deve_responder(&msg(Some("oi")), &LinkedSettings::default()));
 }
 
@@ -595,9 +595,7 @@ fn chamadas_de_log(fonte: &str) -> Vec<String> {
 mod ponta_a_ponta {
     use super::*;
     use garraia_agents::AgentRuntime;
-    use garraia_agents::providers::{
-        ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse,
-    };
+    use garraia_agents::providers::{ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse};
     use garraia_channels::ChannelRegistry;
     use garraia_channels::whatsapp_linked::bridge::{BridgeError, BridgeLauncher};
     use garraia_channels::whatsapp_linked::{SessionBlob, runner::serve};
@@ -762,16 +760,7 @@ mod ponta_a_ponta {
         let (cancel, cancel_rx) = watch::channel(false);
         let store = paths.store.clone();
         let tarefa = tokio::spawn(async move {
-            serve(
-                launcher,
-                store,
-                key,
-                sink,
-                outbound_rx,
-                cancel_rx,
-                || 0.0,
-            )
-            .await
+            serve(launcher, store, key, sink, outbound_rx, cancel_rx, || 0.0).await
         });
 
         Cenario {
@@ -886,12 +875,7 @@ mod ponta_a_ponta {
             "nenhuma sessao pode nascer de um remetente recusado"
         );
         assert!(
-            c.state
-                .allowlist
-                .lock()
-                .expect("lock")
-                .owner()
-                .is_none(),
+            c.state.allowlist.lock().expect("lock").owner().is_none(),
             "nenhum estranho pode virar dono por mandar a primeira mensagem"
         );
 

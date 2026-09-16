@@ -824,7 +824,10 @@ mod tests {
             "sem sessao a linha e `skipped`: {:?}",
             linha.status
         );
-        assert_eq!(linha.next_step.as_deref(), Some("rode `garra whatsapp link`"));
+        assert_eq!(
+            linha.next_step.as_deref(),
+            Some("rode `garra whatsapp link`")
+        );
     }
 
     /// O relatorio e auth-free: nada do material de sessao pode vazar para ele.
@@ -839,7 +842,12 @@ mod tests {
         ] {
             let c = wa(saude);
             let json = serde_json::to_string(&c).expect("serializa");
-            for proibido in ["session.enc", "session.key", "whatsapp/default", "@s.whatsapp"] {
+            for proibido in [
+                "session.enc",
+                "session.key",
+                "whatsapp/default",
+                "@s.whatsapp",
+            ] {
                 assert!(
                     !json.contains(proibido),
                     "{saude:?} vazou {proibido:?} num corpo auth-free: {json}"
