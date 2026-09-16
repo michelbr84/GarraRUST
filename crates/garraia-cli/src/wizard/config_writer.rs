@@ -5,6 +5,17 @@
 //!   `config.yml.bak-YYYYMMDD-HHMMSS` (UTC, deterministic), then write
 //!   the new file. The rename is atomic on POSIX so the user is never
 //!   left without a config.
+//!
+//!   **Uma `gateway.api_key` que ja existia e SUBSTITUIDA neste caminho**
+//!   (#1241, achado do code review do #1252). Nao e descuido: a opcao que o
+//!   operador escolheu diz "write a new one", o arquivo e reconstruido do
+//!   zero por [`build_app_config`], e trocar a credencial e uma razao
+//!   legitima para escolher justamente esta estrategia. Mas ela **quebra
+//!   todo cliente ja configurado**, e essa opcao e o default do `Select`,
+//!   entao quem apertar Enter precisa ser avisado: o resumo do wizard diz
+//!   isso em uma linha, e o valor antigo continua no `.bak-`. A garantia de
+//!   "credencial de operador nunca e sobrescrita" vale **so** no
+//!   `MergeUpdate`.
 //! * `MergeUpdate` — load existing config, patch only the fields the
 //!   wizard owns:
 //!     - `gateway.host`, `gateway.port` — replaced (wizard owns).
@@ -58,7 +69,7 @@ use super::local_stack::{
 /// Everything the wizard collected during the interactive flow. Passed
 /// to [`write_config`] which translates it into the on-disk
 /// [`AppConfig`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WizardOutcome {
     /// "0.0.0.0" on RunPod/root, "127.0.0.1" otherwise.
     pub host: String,
@@ -219,6 +230,38 @@ fn generate_gateway_api_key() -> Result<String> {
 /// state has no operator key to protect, so the wizard may fill it.
 fn gateway_api_key_is_set(api_key: Option<&str>) -> bool {
     !api_key.unwrap_or_default().trim().is_empty()
+}
+
+/// Marcador que substitui a credencial de gateway em qualquer saida `Debug`.
+const CREDENCIAL_REDIGIDA: &str = "<redacted>";
+
+// `Debug` manual em vez de `derive` (#1241): a credencial gerada e hex puro
+// de 64 caracteres, sem prefixo, entao **nao casa com nenhum padrao** de
+// `garraia_security::redact_secrets` — um `debug!(?outcome)` futuro, ou um
+// `anyhow` que capture a struct, imprimiria o segredo em claro no log. Aqui
+// ele nunca chega la. O valor continua `String` (e nao `SecretString`)
+// porque o destino imediato e `AppConfig.gateway.api_key: Option<String>`,
+// serializado por serde para o YAML: um wrapper seria exposto uma linha
+// depois e daria sensacao de protecao sem protecao. O unico ponto que
+// imprime a chave e o resumo final do wizard, de proposito e uma vez so.
+impl std::fmt::Debug for WizardOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WizardOutcome")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("default_provider", &self.default_provider)
+            .field("fallback_providers", &self.fallback_providers)
+            .field("cloud", &self.cloud)
+            .field("local_llm", &self.local_llm)
+            .field("voice_enabled", &self.voice_enabled)
+            .field("system_prompt", &self.system_prompt)
+            .field("telegram", &self.telegram)
+            .field(
+                "gateway_api_key",
+                &self.gateway_api_key.as_ref().map(|_| CREDENCIAL_REDIGIDA),
+            )
+            .finish()
+    }
 }
 
 // ---------- Build / merge ----------------------------------------------------
@@ -394,15 +437,60 @@ pub fn merge_update(existing: &mut AppConfig, outcome: &WizardOutcome) -> bool {
 
 // ---------- Top-level write --------------------------------------------------
 
-/// What [`write_config`] left on disk.
+/// What [`write_config`] left on disk. Sem segredo dentro — logo, `Debug`
+/// derivado e seguro aqui.
 #[derive(Debug, Clone)]
 pub struct WrittenConfig {
     /// The `config.yml` that was written.
     pub path: PathBuf,
-    /// `Some` only when **this run** wrote the generated `gateway.api_key`
-    /// (#1241) — so the summary prints a key that is really in the file, and
+    /// `true` only when **this run** wrote the generated `gateway.api_key`
+    /// (#1241) — so the closing summary warns about the exposed bind, and
     /// stays quiet when an operator key was preserved instead.
-    pub gateway_api_key_written: Option<String>,
+    ///
+    /// Um **bool**, e nao a chave. O valor nao tem consumidor fora deste
+    /// modulo desde que o resumo do wizard parou de imprimir a credencial: o
+    /// operador le o campo `gateway.api_key` no proprio `config.yml`, que
+    /// acabou de ser gravado em modo 0600. Carregar o segredo aqui era o
+    /// comeco do fluxo que o CodeQL seguiu ate um `println!`
+    /// (`rust/cleartext-logging`, alerta HIGH no #1252).
+    pub gateway_api_key_written: bool,
+}
+
+/// Grava `config.yml` **ja** em modo `0600`, em vez de criar o arquivo com
+/// `0666 & ~umask` e apertar depois (#1241).
+///
+/// `std::fs::write` cria o arquivo com a permissao default do umask e so
+/// entao `harden_secret_file` faz o `chmod`. Entre as duas coisas existe uma
+/// janela em que a credencial de gateway recem-mintada (e as `llm.*.api_key`)
+/// estao em disco legiveis por qualquer usuario da maquina — uma VM
+/// multiusuario ou um container com sidecar bastam. Aqui o modo entra no
+/// proprio `open(2)`, entao a janela nao existe.
+///
+/// `harden_secret_file` continua sendo chamado pelo [`write_config`] como
+/// cinto-e-suspensorio: no caminho `MergeUpdate` o arquivo **ja existia**, e
+/// `mode` so vale na criacao, entao um `config.yml` que ja estava em `0644`
+/// so e corrigido la.
+///
+/// Em Windows nao ha `mode`: o comportamento e o de antes (`fs::write`), o
+/// mesmo no-op que `harden_secret_file` ja documenta.
+fn escreve_config_com_permissao_restrita(path: &Path, conteudo: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(conteudo.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, conteudo)
+    }
 }
 
 /// Write `<config_dir>/config.yml` according to `strategy`. Returns the
@@ -427,13 +515,13 @@ pub fn write_config(
 ) -> Result<WrittenConfig> {
     let config_path = config_dir.join("config.yml");
     // Set by the branch that actually wrote it; `MergeUpdate` may decline.
-    let mut gateway_api_key_written = None;
+    let mut gateway_api_key_written = false;
     match strategy {
         ExistingConfigStrategy::FirstWrite => {
             let cfg = build_app_config(outcome);
-            gateway_api_key_written = cfg.gateway.api_key.clone();
+            gateway_api_key_written = cfg.gateway.api_key.is_some();
             let yaml = serde_yaml::to_string(&cfg).context("serialize AppConfig")?;
-            std::fs::write(&config_path, yaml)
+            escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
         ExistingConfigStrategy::Backup { backup_path } => {
@@ -447,9 +535,9 @@ pub fn write_config(
                 })?;
             }
             let cfg = build_app_config(outcome);
-            gateway_api_key_written = cfg.gateway.api_key.clone();
+            gateway_api_key_written = cfg.gateway.api_key.is_some();
             let yaml = serde_yaml::to_string(&cfg).context("serialize AppConfig")?;
-            std::fs::write(&config_path, yaml)
+            escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
         ExistingConfigStrategy::MergeUpdate => {
@@ -458,10 +546,10 @@ pub fn write_config(
             let mut existing: AppConfig =
                 serde_yaml::from_str(&raw).context("parse existing config.yml")?;
             if merge_update(&mut existing, outcome) {
-                gateway_api_key_written = outcome.gateway_api_key.clone();
+                gateway_api_key_written = true;
             }
             let yaml = serde_yaml::to_string(&existing).context("serialize merged AppConfig")?;
-            std::fs::write(&config_path, yaml)
+            escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
     }
@@ -617,8 +705,14 @@ mod tests {
     }
 
     /// A chave e CSPRNG de verdade: 32 bytes em hex, e duas execucoes nunca
-    /// dao a mesma coisa. Um PRNG semeado por relogio passaria no primeiro
-    /// assert e falharia neste.
+    /// dao a mesma coisa.
+    ///
+    /// O que este teste prova e **formato e nao-constancia**, e so isso: um
+    /// PRNG semeado por relogio tambem devolve dois valores diferentes em
+    /// duas chamadas, logo passaria aqui inteiro. A prova de que a fonte e um
+    /// CSPRNG esta na leitura de `garraia_security::random_bytes`
+    /// (`random.rs:49-57`, `ring::SystemRandom`), nao em teste nenhum —
+    /// entropia nao se demonstra por amostra.
     #[test]
     fn chave_gerada_tem_entropia_e_nao_se_repete() {
         let a = gateway_api_key_for_host("0.0.0.0").unwrap().unwrap();
@@ -694,16 +788,15 @@ mod tests {
         }
     }
 
-    /// `write_config` so devolve a chave que ele **de fato** colocou no
-    /// arquivo — imprimir uma chave que nao esta em disco seria pior do que
-    /// nao imprimir nada.
+    /// `write_config` so sinaliza a gravacao que ele **de fato** fez — avisar
+    /// sobre uma chave que nao esta em disco seria pior do que nao avisar.
     #[test]
     fn write_config_reporta_so_a_chave_que_gravou() {
         // FirstWrite num host exposto: grava e reporta.
         let dir = tempdir().unwrap();
         let out = outcome_cloud_only();
         let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
-        assert_eq!(escrito.gateway_api_key_written, out.gateway_api_key);
+        assert!(escrito.gateway_api_key_written);
         let cfg: AppConfig =
             serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
         assert_eq!(cfg.gateway.api_key, out.gateway_api_key);
@@ -718,8 +811,8 @@ mod tests {
         .unwrap();
         let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::MergeUpdate).unwrap();
         assert!(
-            escrito.gateway_api_key_written.is_none(),
-            "nada foi gravado, entao nada pode ser impresso"
+            !escrito.gateway_api_key_written,
+            "nada foi gravado, entao nada pode ser anunciado"
         );
         let cfg: AppConfig =
             serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
@@ -729,7 +822,52 @@ mod tests {
         let dir = tempdir().unwrap();
         let out = outcome_cloud_only_on_host("127.0.0.1");
         let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
-        assert!(escrito.gateway_api_key_written.is_none());
+        assert!(!escrito.gateway_api_key_written);
+    }
+
+    /// O contra-exemplo da promessa de preservacao (#1241, code review do
+    /// #1252): no `Backup` a credencial do operador **e** trocada, e o valor
+    /// antigo fica no `.bak-`. Este teste existe para que a mudanca dessa
+    /// politica seja deliberada, e nao um efeito colateral.
+    #[test]
+    fn backup_troca_a_chave_do_operador_e_o_bak_guarda_a_antiga() {
+        let dir = tempdir().unwrap();
+        let existing = config_com_gateway_key(Some("chave-do-operador"));
+        std::fs::write(
+            dir.path().join("config.yml"),
+            serde_yaml::to_string(&existing).unwrap(),
+        )
+        .unwrap();
+
+        let backup_path = dir.path().join("config.yml.bak-teste");
+        let out = outcome_cloud_only(); // host exposto => outcome traz chave nova
+        let escrito = write_config(
+            dir.path(),
+            &out,
+            ExistingConfigStrategy::Backup {
+                backup_path: backup_path.clone(),
+            },
+        )
+        .unwrap();
+
+        let novo: AppConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
+        assert_eq!(
+            novo.gateway.api_key, out.gateway_api_key,
+            "o Backup reconstroi o config: a chave nova entra no lugar da antiga"
+        );
+        assert!(
+            escrito.gateway_api_key_written,
+            "o wizard tem que anunciar que gravou credencial nova"
+        );
+
+        let antigo: AppConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+        assert_eq!(
+            antigo.gateway.api_key.as_deref(),
+            Some("chave-do-operador"),
+            "a chave antiga tem que sobreviver no .bak- — e o unico caminho de volta"
+        );
     }
 
     #[test]

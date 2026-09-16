@@ -422,10 +422,14 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     // the existing file. (`build_app_config` is also exercised in the
     // unit tests so this is a defense-in-depth check.)
     let _ = build_app_config(&outcome);
+    // Lido antes do `write_config`, que consome a estrategia: so o caminho
+    // `Backup` troca uma credencial de operador que ja existia (#1241).
+    let era_backup = matches!(strategy, ExistingConfigStrategy::Backup { .. });
     let written = write_config(config_dir, &outcome, strategy)?;
 
-    // A credencial do gateway NUNCA entra em log estruturado: o `info!` abaixo
-    // reporta so o caminho, e o segredo sai uma unica vez no resumo (#1241).
+    // A credencial do gateway nao entra em log estruturado NEM na saida do
+    // terminal: o `info!` abaixo reporta so o caminho, e o resumo manda ler o
+    // arquivo (#1241).
     info!("config written to {}", written.path.display());
 
     // --- 12. Final summary -------------------------------------------------
@@ -438,14 +442,18 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     if outcome.voice_enabled {
         println!("  Voice was enabled — see docs/voice.md to install Chatterbox + faster-whisper.");
     }
-    // #1241 — o aviso de bind exposto é a última coisa que o operador lê, e a
-    // única vez que a credencial aparece.
-    if let Some(chave) = &written.gateway_api_key_written {
+    // #1241 — o aviso de bind exposto é a última coisa que o operador lê. Ele
+    // aponta para o arquivo; a credencial não é impressa (ver a doc de
+    // `aviso_de_bind_exposto`).
+    if written.gateway_api_key_written {
         println!();
         println!(
             "{}",
-            aviso_de_bind_exposto(&outcome.host, outcome.port, chave)
+            aviso_de_bind_exposto(&outcome.host, outcome.port, &written.path)
         );
+        if era_backup {
+            println!("{AVISO_BACKUP_TROCOU_A_CREDENCIAL}");
+        }
     } else if !host_is_loopback(&outcome.host) {
         // Merge sobre um config que já trazia credencial: nada foi gravado,
         // então não há segredo a imprimir — mas o operador ainda merece saber
@@ -465,23 +473,49 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
 
 /// Aviso de bind exposto impresso no fim do wizard (#1241).
 ///
-/// Função pura porque é o único jeito de um teste afirmar o que a saída
-/// interativa não deixa afirmar: a credencial aparece **uma vez só** — dentro
-/// da linha de `curl`, que é o que o operador vai copiar — e vem acompanhada
-/// da nota sobre as rotas que continuam abertas.
-fn aviso_de_bind_exposto(host: &str, port: u16, chave: &str) -> String {
+/// **A credencial não aparece na saída.** O aviso diz onde ela está.
+///
+/// Por quê: a chave acabou de ser gravada no `config.yml` em modo 0600, então
+/// o terminal nunca foi o único canal de recuperação — imprimir era
+/// conveniência, e o custo é real (scrollback, `tee`/pipe da saída do `init`,
+/// captura de stdout em automação, screenshot). A regra absoluta 6 do
+/// `CLAUDE.md` não abre exceção para stdout, e o CodeQL apontou exatamente
+/// este fluxo no #1252 (`rust/cleartext-logging`, HIGH): ele estava certo, e
+/// a correção é parar de imprimir, não suprimir o alerta no ledger.
+///
+/// De quebra, a versão anterior afirmava "Guarde agora — ela não é impressa
+/// de novo", o que era **falso**: a chave está no arquivo do operador. A
+/// frase podia empurrá-lo a rodar `garra init` de novo por pânico — que é
+/// justamente o caminho de merge onde mora o risco sobre o config existente.
+///
+/// Continua função pura porque é o único jeito de um teste afirmar o que a
+/// saída interativa não deixa afirmar.
+fn aviso_de_bind_exposto(host: &str, port: u16, config_path: &Path) -> String {
     let cabecalho = aviso_de_bind_exposto_cabecalho(host, port);
+    let caminho = config_path.display();
     format!(
         "{cabecalho}\n\
-         \x20 Gerei uma credencial de acesso e gravei no config (arquivo em modo 0600).\n\
-         \x20 Guarde agora — ela não é impressa de novo:\n\
+         \x20 Gerei uma credencial de acesso e gravei em {caminho} (modo 0600).\n\
+         \x20 Ela não é impressa aqui de propósito — saída de terminal vai parar em\n\
+         \x20 scrollback, pipe e captura de automação. Leia o valor no campo\n\
+         \x20 `gateway.api_key` desse arquivo e use assim:\n\
          \n\
-         \x20     curl -H \"Authorization: Bearer {chave}\" http://SEU-HOST:{port}/api/sessions\n\
+         \x20     curl -H \"Authorization: Bearer <a chave do config>\" http://SEU-HOST:{port}/api/sessions\n\
          \n\
          \x20 /api/health e /api/capabilities seguem abertas — é por elas que o app\n\
          \x20 descobre este Garra antes de você digitar a chave."
     )
 }
+
+/// Linha extra do caminho `Backup` (#1241, code review do #1252).
+///
+/// "Backup the existing config and write a new one" e o **default** do
+/// `Select`, e reconstruir o config troca uma `gateway.api_key` que ja
+/// existia. Quem apertou Enter sem ler precisa saber que os clientes
+/// antigos pararam de autenticar e onde esta o valor anterior.
+const AVISO_BACKUP_TROCOU_A_CREDENCIAL: &str = "\x20 Se o config anterior ja tinha uma credencial de gateway, ela foi SUBSTITUIDA:\n\
+     \x20 atualize seus clientes (app, scripts, reverse proxy). O valor antigo continua\n\
+     \x20 no arquivo .bak- que acabei de criar ao lado do config.";
 
 /// Mesmo aviso para o caso em que o merge **preservou** a credencial que o
 /// operador já tinha: nada novo foi gravado, então nada de segredo é impresso.
@@ -505,6 +539,13 @@ fn print_non_interactive_hint(config_dir: &Path) {
     println!();
     println!("Minimal config.yml example:");
     println!("---");
+    // #1241: este e o caminho de container/CI, justamente o que tem mais
+    // chance de rodar com HOST=0.0.0.0 — e sem credencial de gateway o gate
+    // de /api/* e /ws fica desligado. O exemplo minimo tem que dizer isso,
+    // porque aqui nao ha wizard para mintar a credencial.
+    println!("gateway:");
+    println!("  host: 127.0.0.1   # 0.0.0.0 expoe /api/* e /ws a rede inteira");
+    println!("  api_key: <32 bytes aleatorios em hex>   # exigido se host nao for loopback");
     println!("llm:");
     println!("  main:");
     println!("    provider: anthropic");
@@ -842,6 +883,124 @@ fn _unused_imports(_: HashMap<String, String>) {}
 mod tests {
     use super::*;
 
+    // ---- #1241: fiacao do mint da credencial de gateway -------------------
+    //
+    // `gateway_api_key_for_host` tem teste proprio em `config_writer`, mas o
+    // PONTO DE MONTAGEM (`run_wizard`, onde o host escolhido vira o campo
+    // `gateway_api_key` do `WizardOutcome`) nao tinha cobertura nenhuma:
+    // trocar aquela linha por `gateway_api_key: None` deixava os 41 testes do
+    // wizard verdes e devolvia a issue #1241 inteira.
+    //
+    // `run_wizard` exige TTY e uma dezena de prompts, entao nao da para
+    // chama-lo de um teste. A cobertura vem em duas camadas: um teste de
+    // COMPORTAMENTO sobre o par de funcoes que ele compoe, e um teste que
+    // varre o proprio fonte para fixar o elo entre as duas — o mesmo idioma
+    // que o `spinner.rs` e o `garraia-desktop-core::detect` ja usam neste
+    // repo para call sites que nenhum teste alcanca.
+
+    fn env_de_teste(is_root: bool, is_runpod: bool) -> EnvSnapshot {
+        EnvSnapshot {
+            os: env_detect::OsId::Linux {
+                distro: "debian".into(),
+                version: "13".into(),
+            },
+            is_root,
+            is_runpod,
+            has_systemd: false,
+            has_nvidia: false,
+            gpu_summary: None,
+            ollama: env_detect::OllamaState::NotFound,
+            ports: env_detect::PortReport::default(),
+        }
+    }
+
+    /// Comportamento: o host que o wizard escolhe e a credencial que ele
+    /// minta tem que andar juntos. Servidor (root/RunPod) => `0.0.0.0` COM
+    /// credencial; laptop => loopback SEM credencial.
+    #[test]
+    fn host_de_servidor_sai_com_credencial_e_laptop_sai_sem() {
+        for (is_root, is_runpod) in [(true, false), (false, true), (true, true)] {
+            let (host, _porta) = pick_host_port(&env_de_teste(is_root, is_runpod));
+            assert_eq!(host, "0.0.0.0", "root={is_root} runpod={is_runpod}");
+            let chave =
+                config_writer::gateway_api_key_for_host(&host).expect("CSPRNG do sistema no teste");
+            assert!(
+                chave.is_some(),
+                "bind exposto tem que sair do wizard COM credencial"
+            );
+        }
+
+        let (host, _porta) = pick_host_port(&env_de_teste(false, false));
+        assert_eq!(host, "127.0.0.1");
+        assert!(
+            config_writer::gateway_api_key_for_host(&host)
+                .expect("CSPRNG do sistema no teste")
+                .is_none(),
+            "o laptop nao pode ganhar credencial: nada muda para quem instala local"
+        );
+    }
+
+    /// Fiacao: fixa que `run_wizard` de fato liga as duas pontas acima, e que
+    /// a credencial nao escapa para a saida do terminal.
+    ///
+    /// Varredura de fonte e um instrumento grosseiro — ela nao roda o codigo,
+    /// e uma renomeacao honesta a quebra. Ela esta aqui porque a alternativa
+    /// hoje e ZERO cobertura num ponto onde a regressao e "o gateway volta
+    /// para a internet sem credencial". Quem renomear, renomeie aqui tambem.
+    #[test]
+    fn run_wizard_monta_o_outcome_com_a_credencial_do_host() {
+        let fonte = include_str!("mod.rs");
+        let corpo = fonte
+            .split_once("pub fn run_wizard(")
+            .expect("run_wizard existe neste arquivo")
+            .1
+            .split_once("\n// ---------- helpers")
+            .expect("run_wizard termina antes do bloco de helpers")
+            .0;
+        let literal = corpo
+            .split_once("let outcome = WizardOutcome {")
+            .expect("run_wizard monta um WizardOutcome")
+            .1
+            .split_once("};")
+            .expect("o literal do WizardOutcome fecha")
+            .0;
+
+        assert!(
+            corpo.contains("gateway_api_key_for_host(&host)"),
+            "run_wizard tem que mintar a credencial a partir do host RESOLVIDO"
+        );
+        assert!(
+            literal.contains("gateway_api_key,"),
+            "o WizardOutcome tem que receber a credencial mintada, por shorthand"
+        );
+        assert!(
+            !literal.contains("gateway_api_key:"),
+            "nenhum valor literal no campo: ele so pode vir de gateway_api_key_for_host"
+        );
+
+        // #1252 / CodeQL `rust/cleartext-logging`: a credencial esta em escopo
+        // dentro de `run_wizard` (`outcome.gateway_api_key`) e o resumo final
+        // e um monte de `println!`. Nenhum deles pode toca-la.
+        for linha in corpo.lines() {
+            let l = linha.trim_start();
+            if l.starts_with("//") || l.starts_with("///") {
+                continue;
+            }
+            assert!(
+                !(l.contains("println!") && l.contains("gateway_api_key")),
+                "a credencial nao pode ir para stdout — mande ler o config: {linha}"
+            );
+        }
+        let bloco_resumo = corpo
+            .split_once("--- 12. Final summary")
+            .expect("o resumo final existe")
+            .1;
+        assert!(
+            !bloco_resumo.contains("outcome.gateway_api_key"),
+            "o resumo final nao pode nem alcancar a credencial"
+        );
+    }
+
     /// #1180 — o caminho cloud-first nao pode empurrar o download de ~18 GB.
     /// `collect_local_stack` roda nos dois modos (0 = local-first,
     /// 1 = cloud-first) e antes desta correcao os dois viam `.default(true)`
@@ -903,18 +1062,31 @@ mod tests {
     /// de `curl` que o operador vai copiar. Duas ocorrencias seriam duas
     /// chances de a chave vazar para o scrollback de alguem.
     #[test]
-    fn o_aviso_de_bind_exposto_imprime_a_chave_uma_vez_so() {
-        let chave = "f".repeat(64);
-        let saida = aviso_de_bind_exposto("0.0.0.0", 3888, &chave);
+    fn o_aviso_de_bind_exposto_manda_ler_o_config_em_vez_de_imprimir() {
+        let caminho = std::path::PathBuf::from("/root/.garraia/config.yml");
+        let saida = aviso_de_bind_exposto("0.0.0.0", 3888, &caminho);
 
-        assert_eq!(
-            saida.matches(chave.as_str()).count(),
-            1,
-            "a credencial tem que aparecer exatamente uma vez:\n{saida}"
+        // A propriedade inverteu (auditoria do #1252 + CodeQL HIGH): antes
+        // este teste afirmava que a chave saia "uma vez so"; agora afirma que
+        // ela NAO sai. A assinatura e a primeira linha de defesa — reintroduzir
+        // um parametro de credencial aqui nem compila.
+        assert!(
+            !saida.chars().collect::<Vec<_>>().windows(32).any(|j| j
+                .iter()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())),
+            "nenhuma corrida longa de hex pode aparecer na saida:\n{saida}"
         );
         assert!(
-            saida.contains(&format!("Authorization: Bearer {chave}")),
-            "a chave sai colada no header que o operador vai usar:\n{saida}"
+            saida.contains("/root/.garraia/config.yml"),
+            "o aviso tem que dizer em que ARQUIVO a chave esta:\n{saida}"
+        );
+        assert!(
+            saida.contains("gateway.api_key"),
+            "e em que CAMPO desse arquivo:\n{saida}"
+        );
+        assert!(
+            saida.contains("Authorization: Bearer <a chave do config>"),
+            "a linha de curl continua util, com placeholder no lugar do segredo:\n{saida}"
         );
         assert!(
             saida.contains("0.0.0.0:3888"),
@@ -924,6 +1096,22 @@ mod tests {
             saida.contains("/api/health") && saida.contains("/api/capabilities"),
             "o aviso diz quais rotas seguem abertas:\n{saida}"
         );
+        assert!(
+            !saida.contains("não é impressa de novo"),
+            "a frase antiga era falsa: a chave esta no config do operador:\n{saida}"
+        );
+    }
+
+    /// A linha extra do `Backup` tem que dizer as tres coisas que importam:
+    /// que a credencial mudou, que os clientes precisam ser atualizados, e
+    /// onde esta o valor antigo. Sem imprimir segredo nenhum.
+    #[test]
+    fn o_aviso_de_backup_diz_que_a_credencial_antiga_foi_trocada() {
+        let t = AVISO_BACKUP_TROCOU_A_CREDENCIAL;
+        assert!(t.contains("SUBSTITUIDA"), "{t}");
+        assert!(t.contains("atualize seus clientes"), "{t}");
+        assert!(t.contains(".bak-"), "{t}");
+        assert!(!t.contains("Bearer"), "nada de credencial aqui: {t}");
     }
 
     /// O caminho do merge que preservou a chave do operador: avisa do bind,

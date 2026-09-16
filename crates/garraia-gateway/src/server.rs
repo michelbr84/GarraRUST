@@ -186,10 +186,13 @@ impl GatewayServer {
         refuse_inert_auth_flag(&self.config)?;
 
         let addr = format!("{}:{}", self.config.gateway.host, self.config.gateway.port);
-        // Mesma normalizacao do gate de `/api/*`: ausente, vazia ou so com
-        // espaco significam "sem credencial" (#1241).
-        let api_key_ativa =
-            crate::gateway_auth::ApiKeyGate::from_config(&self.config.gateway).is_enabled();
+        // Copia da secao `gateway` para depois do `AppState::new`, que consome
+        // a config. `serve_plain`/`serve_tls` recebem a CONFIG, e nao um bool
+        // ja decidido aqui (#1241): enquanto existia o bool, um
+        // `let api_key_ativa = true;` nesta linha desligava o aviso do boot
+        // inteiro sem quebrar teste nenhum — a decisao agora e tomada no
+        // ponto de uso, que tem teste de fiacao.
+        let gateway_cfg = self.config.gateway.clone();
         let tls_cert = self.config.gateway.tls_cert_path.clone();
         let tls_key = self.config.gateway.tls_key_path.clone();
 
@@ -1018,7 +1021,7 @@ impl GatewayServer {
                     tls_cert.as_deref(),
                     tls_key.as_deref(),
                     app,
-                    api_key_ativa,
+                    &gateway_cfg,
                 )
                 .await
             }
@@ -1027,10 +1030,10 @@ impl GatewayServer {
                 warn!(
                     "TLS cert/key configured but 'tls' feature not enabled — falling back to HTTP"
                 );
-                serve_plain(&addr, app, api_key_ativa).await
+                serve_plain(&addr, app, &gateway_cfg).await
             }
         } else {
-            serve_plain(&addr, app, api_key_ativa).await
+            serve_plain(&addr, app, &gateway_cfg).await
         };
 
         // Cleanup runs even when the listener errored out: this block used to
@@ -1176,22 +1179,36 @@ const MCP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 ///
 /// Nao recusa o boot: quem roda assim de proposito atras de firewall nao pode
 /// ser derrubado por esta mudanca. Isso e decisao do dono (R5).
-fn aviso_de_bind_exposto(bound: &std::net::SocketAddr, api_key_ativa: bool) -> Option<String> {
+///
+/// `pub` porque `garra start -d` / `restart -d` precisa emitir o mesmo texto
+/// **antes** do fork: depois dele o tracing aponta para
+/// `~/.garraia/garraia.log` e o `warn!` de [`serve_plain`] nunca chega ao
+/// terminal do operador — justamente no modo que o `install.sh` recomenda e
+/// que uma unit systemd usa.
+pub fn aviso_de_bind_exposto(bound: &std::net::SocketAddr, api_key_ativa: bool) -> Option<String> {
     if api_key_ativa || bound.ip().is_loopback() {
         return None;
     }
     Some(format!(
         "gateway ouvindo em {bound}, que nao e loopback, SEM credencial de \
          gateway configurada: todo o /api/* (sessoes, memoria, providers, \
-         logs, diagnosticos) responde a qualquer um que alcance esta porta. \
-         Corrija rodando `garra init` ou definindo `gateway.api_key` no \
-         config.yml e reiniciando; para ouvir so localmente, use \
+         logs, diagnosticos) E o /ws (o canal do agente, com as tools de \
+         arquivo e de dispositivo) respondem a qualquer um que alcance esta \
+         porta. Corrija rodando `garra init` ou definindo `gateway.api_key` \
+         no config.yml e reiniciando; para ouvir so localmente, use \
          `--host 127.0.0.1`."
     ))
 }
 
 /// Serve plain HTTP until the shutdown signal.
-async fn serve_plain(addr: &str, app: axum::Router, api_key_ativa: bool) -> Result<()> {
+async fn serve_plain(
+    addr: &str,
+    app: axum::Router,
+    gateway: &garraia_config::GatewayConfig,
+) -> Result<()> {
+    // Mesma normalizacao do gate de `/api/*` e do `/ws`: ausente, vazia ou so
+    // com espaco significam "sem credencial" (#1241).
+    let api_key_ativa = crate::gateway_auth::ApiKeyGate::from_config(gateway).is_enabled();
     let listener = TcpListener::bind(addr).await?;
     // Depois do bind: `local_addr` e o endereco real, inclusive quando `addr`
     // era um nome. Uma vez por boot (#1241).
@@ -1217,8 +1234,9 @@ async fn serve_tls(
     cert_path: Option<&str>,
     key_path: Option<&str>,
     app: axum::Router,
-    api_key_ativa: bool,
+    gateway: &garraia_config::GatewayConfig,
 ) -> Result<()> {
+    let api_key_ativa = crate::gateway_auth::ApiKeyGate::from_config(gateway).is_enabled();
     let (Some(cert_path), Some(key_path)) = (cert_path, key_path) else {
         return Err(garraia_common::Error::Gateway(
             "TLS requested without cert/key paths".to_string(),
@@ -1674,6 +1692,13 @@ mod tests {
             aviso.contains("/api/"),
             "o aviso nomeia o que esta aberto: {aviso}"
         );
+        // #1241 (achado 6 da auditoria): sem chave o `/ws` cai no MESMO gate
+        // (`ws.rs`), e e o canal do agente com tools — file ops,
+        // `device_execute`. Omiti-lo subestimava o alcance do aviso.
+        assert!(
+            aviso.contains("/ws"),
+            "o aviso tem que nomear o /ws, nao so o /api/*: {aviso}"
+        );
         assert!(
             aviso.contains("garra init") && aviso.contains("127.0.0.1"),
             "o aviso nomeia as duas correcoes: {aviso}"
@@ -1725,6 +1750,65 @@ mod tests {
         };
         let ativa = crate::gateway_auth::ApiKeyGate::from_config(&gateway).is_enabled();
         assert!(aviso_de_bind_exposto(&addr("0.0.0.0:3888"), ativa).is_none());
+    }
+
+    // ---- #1241: testes de FIACAO, nao da funcao pura ---------------------
+    //
+    // Os cinco testes acima seguem verdes se alguem apagar a chamada de
+    // `aviso_de_bind_exposto` de dentro de `serve_plain` — eles so exercitam
+    // a funcao. Os dois abaixo ligam um listener de verdade e olham o log.
+    //
+    // `serve_plain` so retorna no shutdown, entao o teste roda com timeout: o
+    // aviso sai logo depois do `bind`, muito antes dele expirar.
+
+    fn gateway_sem_credencial() -> garraia_config::GatewayConfig {
+        garraia_config::GatewayConfig {
+            api_key: None,
+            ..Default::default()
+        }
+    }
+
+    fn gateway_com_credencial() -> garraia_config::GatewayConfig {
+        garraia_config::GatewayConfig {
+            api_key: Some("uma-credencial".into()),
+            ..Default::default()
+        }
+    }
+
+    /// Apagar a chamada em `serve_plain` tem que quebrar AQUI.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn serve_plain_avisa_em_bind_exposto_sem_credencial() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(400),
+            serve_plain("0.0.0.0:0", axum::Router::new(), &gateway_sem_credencial()),
+        )
+        .await;
+
+        assert!(
+            logs_contain("SEM credencial de gateway configurada"),
+            "o bind em 0.0.0.0 sem credencial tem que emitir o warn no boot"
+        );
+    }
+
+    /// O outro lado, e o motivo de `serve_plain` receber a CONFIG e nao um
+    /// bool: um `api_key_ativa = true` hardcoded dentro dela some com o aviso
+    /// (o teste acima pega), e um `= false` o torna incondicional, ruido em
+    /// toda instalacao correta (este pega). Com o bool vindo de `run()` o
+    /// hardcode ficava fora do alcance dos dois.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn serve_plain_nao_avisa_com_credencial() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(400),
+            serve_plain("0.0.0.0:0", axum::Router::new(), &gateway_com_credencial()),
+        )
+        .await;
+
+        assert!(
+            !logs_contain("SEM credencial de gateway configurada"),
+            "com credencial configurada o boot nao pode avisar nada"
+        );
     }
 
     /// A borda que importa: cresce exponencialmente, satura no teto, e não

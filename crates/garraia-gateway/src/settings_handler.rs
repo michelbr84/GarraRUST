@@ -382,9 +382,12 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
             // Async access deferred — read the list outside this fn.
             (Value::Null, None, SettingSource::Runtime)
         }
+        // #1241: `is_some()` reportava `configured: true` para um
+        // `api_key: "  "` que deixa o gate de `/api/*` e `/ws` DESLIGADO.
+        // `api_key_configurada` e a mesma regra que o `ApiKeyGate` aplica.
         "secrets.gateway_api_key" => (
             Value::Null,
-            Some(state.config.gateway.api_key.is_some()),
+            Some(state.config.gateway.api_key_configurada()),
             SettingSource::File,
         ),
         "secrets.jwt_secret" => (
