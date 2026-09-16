@@ -18,7 +18,11 @@
 
 services:
   minio:
-    image: minio/minio:latest
+    # quay.io, nao Docker Hub: o repositorio `minio/minio` foi REMOVIDO de la
+    # (o registry responde "object not found" e o pull morre com "pull access
+    # denied") — #1230. Tag fixado no mesmo release que o testcontainer da
+    # suite de integracao usa, para que dev local e CI subam o mesmo binario.
+    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
     container_name: garraia-minio
     command: server /data --console-address ":9001"
     ports:
@@ -30,6 +34,10 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
+      # `mc` vem dentro da imagem do servidor; mantido como estava porque nao
+      # houve como confirmar o conteudo deste tag sem um daemon Docker. Se
+      # falhar como "executable not found", trocar por
+      # `curl -f http://localhost:9000/minio/health/live`.
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
@@ -38,7 +46,10 @@ services:
 
   # One-shot: creates the `garraia-dev` bucket on boot.
   minio-init:
-    image: minio/mc:latest
+    # Idem quay.io. O `mc` tem ciclo de release proprio, com tags de data
+    # diferentes das do servidor, entao aqui fica `latest`: fixar o tag do
+    # servidor apontaria para uma tag que nao existe neste repositorio.
+    image: quay.io/minio/mc:latest
     container_name: garraia-minio-init
     depends_on:
       minio:

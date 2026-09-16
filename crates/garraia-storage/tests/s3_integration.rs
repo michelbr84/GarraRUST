@@ -15,8 +15,19 @@ use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region, SharedCredentialsPr
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
 use garraia_storage::{GetOptions, ObjectStore, PutOptions, S3Compatible, StorageError};
+use testcontainers::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::minio::MinIO;
+
+/// O `testcontainers-modules` 0.15 fixa a imagem `minio/minio` do Docker Hub,
+/// e esse repositorio foi REMOVIDO de la: o registry responde "object not
+/// found" para o repositorio inteiro e o pull morre com "pull access denied",
+/// entao NENHUM ambiente conseguia subir o container — os testes abaixo se
+/// auto-pulavam e passavam verdes sem tocar o backend S3 (#1230). A MinIO
+/// publica a MESMA imagem no quay.io, entao sobrescrevemos so o registry e
+/// mantemos o tag que o modulo fixa.
+const MINIO_IMAGE: &str = "quay.io/minio/minio";
+const MINIO_TAG: &str = "RELEASE.2025-02-28T09-55-16Z";
 
 const ACCESS_KEY: &str = "minioadmin";
 const SECRET_KEY: &str = "minioadmin";
@@ -31,11 +42,16 @@ async fn start_minio() -> Option<(
     S3Compatible,
     String, // endpoint URL
 )> {
-    let container = match MinIO::default().start().await {
+    let container = match MinIO::default()
+        .with_name(MINIO_IMAGE)
+        .with_tag(MINIO_TAG)
+        .start()
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             // Um teste que se pula sozinho passa verde sem asserir nada — foi
-            // assim que estes 7 testes ficaram desde sempre "passando" sem
+            // assim que estes 8 testes ficaram desde sempre "passando" sem
             // nunca tocar o backend S3. Onde o Docker E esperado (CI Linux),
             // `GARRAIA_REQUIRE_DOCKER` transforma o skip em falha, para que o
             // verde signifique que o MinIO rodou mesmo. Sem a variavel, o

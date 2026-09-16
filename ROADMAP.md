@@ -729,7 +729,7 @@ Novo crate: `garraia-storage`.
 
 - [x] Abstração `trait ObjectStore` com impls `LocalFs` e `S3Compatible` (via `aws-sdk-s3`, feature `storage-s3`; MinIO via `endpoint_url` + path-style, não impl separada) — plans 0037/0038 / GAR-394 ✅
 - [x] **Presigned URLs** (PUT/GET) com TTL em [30s, 900s] — só no `S3Compatible` (`LocalFs` responde unsupported) ✅
-- [x] **Multipart upload** nativo do S3 para arquivos > 16 MiB ✅ (`put_stream` no `S3Compatible` faz `create/upload/complete` em partes de 8 MiB com abort em falha; testado contra MinIO testcontainer — 24 MiB em 3 partes, round-trip byte-a-byte)
+- [x] **Multipart upload** nativo do S3 para arquivos > 16 MiB ✅ (`put_stream` no `S3Compatible` faz `create/upload/complete` em partes de 8 MiB com abort em falha; o round-trip byte-a-byte de 24 MiB em 3 partes roda em CI contra um MinIO real — testcontainer com a imagem do quay.io e `GARRAIA_REQUIRE_DOCKER=1`, que reprova o job se o container não subir, em vez de pular o teste (#1230))
 - [x] **tus 1.0** server implementation para clientes mobile — `POST`/`OPTIONS /v1/uploads`, `HEAD`/`PATCH`/`DELETE /v1/uploads/{id}`, migrations 014 + 032 (plans 0041/0044/0047 / GAR-395, PR #62) ✅
 - [ ] **Versionamento**: `file_versions` por update + soft delete (`deleted_at`) ✅ (migration 003, plans 0094/0095); lixeira com retenção configurável / purge worker ainda pendente.
 - [ ] **Criptografia em repouso**: SSE-S3 obrigatório em todo `put` do `S3Compatible` ✅ (ADR 0004 §Security); SSE-KMS e chave local via `CredentialVault` para `LocalFs` pendentes.
@@ -1100,7 +1100,7 @@ estático proibido (quebra DNS).
 ### 5.2 Testes & Continuous Fuzzing
 
 - [ ] Cobertura ≥ 70% em `garraia-agents`, `garraia-db`, `garraia-security`, `garraia-auth`, `garraia-workspace`.
-- [ ] **Integration tests** com testcontainers (Postgres, MinIO) em CI. *(Parcial 2026-08-18: job `auth-integration` roda os 16 binários de integração do garraia-auth — matriz RLS incluída — contra pgvector/pg16 em todo PR; MinIO segue gated por feature.)*
+- [ ] **Integration tests** com testcontainers (Postgres, MinIO) em CI. *(Parcial 2026-08-18: job `auth-integration` roda os 16 binários de integração do garraia-auth — matriz RLS incluída — contra pgvector/pg16 em todo PR; MinIO roda desde #1230 no step `storage-s3` do job `clippy`, com `GARRAIA_REQUIRE_DOCKER=1`, ainda atrás da feature.)*
 - [ ] **Property tests** (`proptest`) em parsers, scopes, RBAC.
 - [ ] **Fuzzing contínuo** via `cargo-fuzz` nos parsers de MCP, config e protocolos de canais.
 - [ ] **Mutation testing** (`cargo-mutants`) — `mutants.yml` roda **semanal** (segundas 05:00 UTC) em `garraia-auth`; verde desde 2026-08-24 após o fix do seed no plan 0354. Expandir a outros crates pendente.
@@ -1443,7 +1443,7 @@ Quando retomar execução, priorizar **nesta ordem**:
 
 6. **Fase 2.1 RAG / embeddings (`GAR-372`)** — pré-requisito direto do Skill Retriever do Learning Agent (componente 4/10). O crate `garraia-embeddings` existe como scaffold (traits + `DeterministicProvider`, plan 0145); o Retriever ainda é um stub que retorna erro — `PgVectorStore` + `MxbaiProvider` + wiring em learning/agents são os próximos slices.
 
-7. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; resta exercitar `feature = "storage-s3"` contra MinIO real em CI e contra S3/R2/GCS produção. Issue: GAR-374.
+7. **Fase 3.5 — Object storage S3-compatible validation** — ADR 0004 + plans 0037/0038/0041/0044/0047 implementados; o MinIO real em CI entrou com #1230 (step `storage-s3` do job `clippy`); resta exercitar `feature = "storage-s3"` contra S3/R2/GCS produção. Issue: GAR-374.
 
 8. **Fase 5.1 — CredentialVault final** (GAR-410, adiado — ver `TODO.md`) — requisito de segurança pré-existente; bloqueia release público mas não o desenvolvimento da Fase 3/1.4. Fecha o escopo aberto pela GAR-291 (MCP tokens, ✅ Done).
 
