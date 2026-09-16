@@ -123,7 +123,12 @@ crates/
                         parcial `expires_in_progress_idx`). Handle PII-safe via
                         skip(config) + Debug redigido. ADRs 0003 e 0004.
   garraia-plugins/    — sandbox WASM inicial (wasmtime) — features adicionais na Fase 2.2
-  garraia-voice/      — STT (Whisper) + TTS (Chatterbox/ElevenLabs/Kokoro)
+  garraia-voice/      — STT (Whisper) + TTS (Chatterbox/Hibiki/LM Studio
+                        OpenAI-compativel). Adaptadores ElevenLabs e Kokoro
+                        vivem em `garraia-channels::voice_channel` (feature
+                        `voice`, que nenhuma crate liga) e nao chegam ao
+                        gateway — `server.rs` so casa `hibiki`/`lmstudio`,
+                        o resto cai no Chatterbox.
   garraia-media/      — processamento de PDF, imagens, mídia
   garraia-skills/     — registry de skills para o agente. Frontmatter com `kind`
                         (`instruction` default · `hardware-adapter` ·
