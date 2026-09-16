@@ -368,6 +368,11 @@ enum Commands {
     /// opcoes com o comando de cada uma e sai 0 — mesma postura do `garra
     /// init`. Exit codes (sysexits): 0 ok, 1 cancelado, 69 falta Node / nao ha
     /// sessao, 70 erro interno.
+    ///
+    /// `name` explicito porque o clap deriva kebab-case do nome da variante, e
+    /// `WhatsApp` viraria `whats-app` — um comando que ninguem digitaria. O
+    /// teste `whatsapp_smoke` e quem pega isso.
+    #[command(name = "whatsapp")]
     WhatsApp {
         #[command(subcommand)]
         action: Option<WhatsAppCommands>,

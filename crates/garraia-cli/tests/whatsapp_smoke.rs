@@ -119,21 +119,27 @@ fn top_level_help_mentions_whatsapp() {
     assert!(stdout.contains("whatsapp"), "{stdout}");
 }
 
-/// `garra whatsapp` nao acrescentou nenhuma flag com valor, entao o
-/// rewriting de argv do `cli_args` nao pode ter mudado de comportamento.
+/// O comando chama-se `whatsapp`, e nao `whats-app`.
+///
+/// Regressao real: o clap deriva o nome do subcomando em kebab-case a partir
+/// do nome da variante, entao `Commands::WhatsApp` vira `whats-app` sozinho.
+/// O comando ficou inteiramente inalcancavel por um `#[command(name = ...)]`
+/// faltando, e os outros testes deste arquivo falharam todos de uma vez. Este
+/// aqui pina os dois lados da moeda para o erro nao voltar em silencio.
 #[test]
-fn a_bare_flag_still_falls_through_to_chat_not_to_whatsapp() {
+fn the_command_is_named_whatsapp_and_not_the_kebab_case_derivation() {
     let dir = tempdir().expect("tempdir");
-    // `--model` pertence a `chat`; se a injecao de subcomando tivesse
-    // quebrado, isto viraria erro de argumento inesperado.
-    let out = garra(dir.path(), &["--model", "whatsapp", "--help"]);
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+
+    let good = garra(dir.path(), &["whatsapp", "--help"]);
     assert!(
-        !combined.contains("unexpected argument"),
-        "a injecao de subcomando regrediu:\n{combined}"
+        good.status.success(),
+        "`garra whatsapp` precisa existir:\n{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+
+    let bad = garra(dir.path(), &["whats-app", "--help"]);
+    assert!(
+        !bad.status.success(),
+        "`whats-app` nao pode ser um nome valido — seria o derivado acidental"
     );
 }

@@ -29,7 +29,7 @@
 //! | 70 `EX_SOFTWARE` | erro interno (disco, config ilegivel) |
 
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use garraia_channels::whatsapp_linked::bridge::{self, BridgeError, NodeLauncher, NodeRuntime};
@@ -1037,13 +1037,6 @@ pub fn write_cloud_channel(
     // porque acabamos de escrever quatro segredos nele.
     loader.save(&config)?;
     Ok(())
-}
-
-/// Caminho do diretorio de sessao, para mensagem e teste.
-pub fn session_dir(data_dir: &Path) -> PathBuf {
-    SessionStore::for_data_dir(data_dir, DEFAULT_ACCOUNT)
-        .dir()
-        .to_path_buf()
 }
 
 #[cfg(test)]
