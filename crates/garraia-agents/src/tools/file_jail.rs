@@ -743,7 +743,11 @@ mod tests {
         let rodeio = home.join("..").join(&nome).join(".");
 
         let jail = FileJail::from_roots([&rodeio]);
-        assert_eq!(jail.roots(), [home.clone()], "a raiz tinha de resolver");
+        assert_eq!(
+            jail.roots(),
+            std::slice::from_ref(&home),
+            "a raiz tinha de resolver"
+        );
 
         // `raizes_perigosas` usa o `$HOME` real do processo, que nao e este
         // tempdir; o nucleo puro e quem prova a deteccao.
