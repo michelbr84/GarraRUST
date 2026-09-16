@@ -90,6 +90,21 @@ timeouts:
 #     command: npx
 #     args: ["-y", "my-mcp-server"]
 #     # allowed_tools: []  <- padrão: todas as tools permitidas
+#
+# #1075 (continuação): o processo do servidor MCP NÃO herda o ambiente do
+# gateway. Ele recebe uma allowlist mínima (PATH, HOME, locale, TMPDIR) mais
+# o mapa `env` deste servidor — nenhum segredo do gateway (JWT, chaves de
+# provider, passphrase do cofre) chega ao filho. Declare no `env` o que o
+# servidor precisar:
+# mcp:
+#   meu-servidor:
+#     command: npx
+#     args: ["-y", "my-mcp-server"]
+#     env:
+#       GITHUB_TOKEN: "vault:mcp.meu-servidor.GITHUB_TOKEN"
+#     # inherit_env: true   <- válvula de escape: devolve o ambiente INTEIRO
+#     #                        do gateway (segredos inclusive) ao filho.
+#     #                        Padrão false; emite warn! a cada conexão.
 
 # GAR-261: Configuração de glob e ignore para ferramentas de busca de arquivos
 fs:

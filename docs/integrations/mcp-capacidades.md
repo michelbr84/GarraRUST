@@ -20,7 +20,49 @@ política disponíveis:
 | `maxRestarts` / `restartDelaySecs` | `max_restarts` / `restart_delay_secs` | política de restart com backoff |
 | `timeoutSecs` | `timeout` | timeout de inicialização |
 | — | `allowed_tools` | **allowlist de tools do servidor** (vazio = todas) |
+| — | `inherit_env` | válvula de escape do isolamento de ambiente (padrão `false`) |
 | `env` com valores sensíveis | idem | viram `vault:mcp.<server>.<KEY>` quando `GARRAIA_VAULT_PASSPHRASE` está setada |
+
+## Ambiente do processo filho
+
+O processo de um servidor MCP stdio **não** herda o ambiente do gateway.
+Ele é montado do zero, nesta ordem:
+
+1. Uma allowlist mínima do ambiente do gateway — `PATH`, `HOME`, `LANG`,
+   `LC_ALL`, `LC_CTYPE`, `TERM`, `USER`, `LOGNAME`, `TMPDIR`, `TZ`,
+   `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS` (mais o
+   complemento da plataforma: `SystemRoot`/`COMSPEC`/`APPDATA` e afins no
+   Windows, `PREFIX`/`LD_PRELOAD` no Termux). Só caminhos, locale e
+   identidade: nada que carregue credencial. `HTTP_PROXY`/`HTTPS_PROXY`
+   ficam de fora porque uma URL de proxy pode embutir usuário e senha —
+   declare no `env` do servidor se precisar.
+2. O mapa `env` **daquele servidor**, por cima — é aqui que o operador
+   coloca de propósito o `GITHUB_TOKEN`, a URL do banco, etc. O que está
+   no mapa vence o que veio da allowlist.
+
+Até a versão anterior o filho recebia o ambiente inteiro do gateway:
+`GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`,
+`GarraIA_VAULT_PASSPHRASE` e tudo que o `.env` tivesse carregado. Como
+servidores MCP são rotineiramente pacotes de terceiro baixados na hora
+por `npx`, isso entregava o cofre inteiro a código não auditado.
+
+Se um servidor legado depender de alguma variável do gateway, o caminho
+certo é declará-la no `env` dele. `inherit_env: true` existe só como
+destravamento temporário — devolve o ambiente completo ao filho e emite
+um `warn!` nomeando o servidor a cada conexão:
+
+```yaml
+mcp:
+  servidor-legado:
+    command: npx
+    args: ["-y", "algum-server"]
+    env:
+      GITHUB_TOKEN: "vault:mcp.servidor-legado.GITHUB_TOKEN"
+    # inherit_env: true   # NÃO faça isto sem entender o que entrega
+```
+
+`inherit_env` só existe no `config.yml`/`mcp.json`. Servidores criados
+pela admin API nunca herdam o ambiente.
 
 ## Receita 1 — Filesystem com escopo restrito
 
@@ -117,6 +159,8 @@ reais, todos com implicações fortes de segurança:
 - [ ] Escopo mínimo (diretório, banco, credencial read-only)
 - [ ] `memoryLimitMb` definido
 - [ ] `allowed_tools` no `config.yml` quando o servidor expõe mais do que você quer
+- [ ] Variáveis que o servidor precisa declaradas no `env` dele (o filho
+      não herda o ambiente do gateway) e `inherit_env` deixado em `false`
 - [ ] Secrets com nome sensível (para irem ao cofre) + `GARRAIA_VAULT_PASSPHRASE` setada
 - [ ] `tool_confirmation_enabled: true` no `agent`
 - [ ] `garra mcp list` / `garra mcp inspect <nome>` para conferir o que ficou exposto

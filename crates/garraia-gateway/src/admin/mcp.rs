@@ -232,6 +232,10 @@ pub async fn admin_restart_mcp(
                     memory_limit_mb,
                     max_restarts,
                     restart_delay_secs,
+                    // #1075 (continuação): servidor criado pela admin API
+                    // nunca herda o ambiente do gateway. A válvula de escape
+                    // `inherit_env` existe só no arquivo de config.
+                    false,
                 )
                 .await
         }
