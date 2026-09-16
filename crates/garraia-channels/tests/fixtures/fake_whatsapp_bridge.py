@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import queue
 import sys
 import threading
@@ -45,6 +46,21 @@ SCENARIOS = (
     "network-flap",
     "hang",
     "serve-echo",
+    # --- acrescentados pelo lado Rust (branch feat/whatsapp-linked-cli) ------
+    # Os quatro abaixo nao existem no bridge real como MODO: sao formas de
+    # quebrar o contrato que o supervisor Rust precisa tratar sem travar e sem
+    # persistir nada. Ficam aqui, e nao num segundo arquivo, porque sao o mesmo
+    # dublê e o mesmo enquadramento.
+    #
+    # session-ok      sessao carregada vale: conecta SEM emitir QR (e o que o
+    #                 bridge real faz; `pair-ok` sempre emite QR)
+    # bad-protocol    started com protocol != 1
+    # garbage         texto livre no stdout (proibido: stdout e so NDJSON)
+    # oversized       linha acima do teto de 256 KiB
+    "session-ok",
+    "bad-protocol",
+    "garbage",
+    "oversized",
 )
 
 
@@ -159,8 +175,6 @@ class Bridge:
     def _hard_exit(code: int) -> None:
         sys.stdout.flush()
         # os._exit e proposital: o thread leitor nao pode esperar o main.
-        import os
-
         os._exit(code)
 
     def take(self, wanted: str, timeout: float) -> dict | None:
@@ -188,18 +202,34 @@ class Bridge:
 
     # -- cenarios ----------------------------------------------------------
     def run(self) -> int:
+        if self.args.scenario == "garbage":
+            # stdout com texto livre ANTES do handshake.
+            sys.stdout.write("Debugger listening on ws://127.0.0.1:9229\n")
+            sys.stdout.flush()
+            time.sleep(self.args.hang_secs)
+            return EXIT_OK
+
         emit(
             {
                 "type": "started",
-                "protocol": PROTOCOL_VERSION,
+                "protocol": 99 if self.args.scenario == "bad-protocol" else PROTOCOL_VERSION,
                 "bridge_version": BRIDGE_VERSION,
                 "baileys_version": "fake",
                 "node_version": "fake",
             }
         )
+        if self.args.scenario == "bad-protocol":
+            time.sleep(self.args.hang_secs)
+            return EXIT_OK
+        if self.args.scenario == "oversized":
+            sys.stdout.write("x" * (300 * 1024) + "\n")
+            sys.stdout.flush()
+            time.sleep(self.args.hang_secs)
+            return EXIT_OK
+
         threading.Thread(target=self.reader, daemon=True).start()
 
-        self.take("session_load", self.args.handshake_timeout)
+        loaded = self.take("session_load", self.args.handshake_timeout)
         start = self.take("start", self.args.handshake_timeout)
         mode = start.get("mode") if isinstance(start, dict) else None
         if mode not in ("pair", "serve"):
@@ -207,6 +237,15 @@ class Bridge:
 
         self.status("connecting")
         scenario = self.args.scenario
+
+        if scenario == "session-ok":
+            # Sessao valida: o bridge real NUNCA emite QR neste caminho.
+            if not (isinstance(loaded, dict) and loaded.get("session")):
+                sys.stderr.write("session-ok exige session_load com sessao\n")
+                return EXIT_FATAL
+            self.connected()
+            self.session_update()
+            return EXIT_OK if mode == "pair" else self.serve()
 
         if scenario == "logged-out":
             self.disconnected(401, "logged_out", False, 0)
@@ -306,4 +345,13 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    _code = main(sys.argv[1:])
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # `os._exit` e nao `sys.exit`: o thread leitor e daemon e fica bloqueado
+    # num `read` de stdin. Quando o pai fecha o stdin no mesmo instante em que
+    # o interpretador finaliza, esse thread acorda DEPOIS do `Py_Finalize` e
+    # o CPython aborta com SIGABRT — e um processo morto por sinal nao tem
+    # codigo de saida, entao o supervisor Rust perde justamente o bit que
+    # distingue "sessao morta" (2) de "encerramento normal" (0).
+    os._exit(_code)

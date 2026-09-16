@@ -42,6 +42,23 @@ sha2 = { version = "0.10", optional = true }
 subtle = { version = "2", optional = true }
 base64 = { workspace = true, optional = true }
 
+# --- whatsapp-linked (#1239) -------------------------------------------------
+# AES-256-GCM + PBKDF2-HMAC-SHA256 do blob de sessao e SHA-256 do hash dos
+# assets do bridge. `ring` e exatamente a pilha que o `CredentialVault` de
+# `garraia-security` ja usa (credentials.rs) — trazer um segundo AEAD para a
+# arvore so para este caminho seria superficie criptografica nova sem motivo.
+ring = { workspace = true, optional = true }
+# Chave aleatoria de 32 B quando nao ha passphrase do cofre.
+rand = { workspace = true, optional = true }
+# Apaga o texto claro da sessao da memoria assim que ele sai de escopo. Ja
+# estava no Cargo.lock como dependencia transitiva (1.8.2), entao promove-la a
+# direta nao acrescenta nenhuma crate nova a arvore.
+zeroize = { version = "1.8", features = ["zeroize_derive"], optional = true }
+# Renderizador de QR no terminal. MIT OR Apache-2.0 (ambas ja na allowlist do
+# deny.toml). `default-features = false` derruba `image` e `svg`: so
+# precisamos da matriz de modulos, o desenho e nosso (qr.rs).
+qrcode = { version = "0.14", default-features = false, optional = true }
+
 [features]
 default = []
 # Interna, nunca ligada sozinha: a verificacao de JWT de entrada que o
@@ -71,6 +88,29 @@ voice = []
 # `whatsapp/signature.rs` para nao acrescentar o crate `hex`.
 whatsapp = ["dep:axum", "dep:hmac", "dep:sha2", "dep:subtle"]
 imessage = ["dep:rusqlite", "dep:dirs"]
+# WhatsApp por dispositivo vinculado (#1239, ADR 0023). Canal PULL, sem webhook
+# e sem axum: o Rust supervisiona um bridge Node/Baileys por NDJSON em stdio.
+# Disjunto da feature `whatsapp`, que e a Cloud API da Meta — as duas podem
+# estar ligadas ao mesmo tempo e nao compartilham codigo.
+whatsapp-linked = [
+    "dep:ring",
+    "dep:rand",
+    "dep:zeroize",
+    "dep:qrcode",
+    "dep:base64",
+    "tokio/process",
+    "tokio/io-util",
+    "tokio/time",
+    "tokio/macros",
+]
+
+# PDEATHSIG e RLIMIT_AS do filho `node` (`whatsapp_linked::bridge`). Mesma
+# pilha do `garraia-agents::mcp::manager`; sem feature gate porque um
+# `[target.'cfg(unix)'.dependencies]` opcional so seria ligavel por um feature
+# que tambem existe fora de Unix — e contencao atras de gate e contencao que
+# alguem esquece de ligar.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 # `ServiceExt::oneshot` para exercitar os handlers de webhook como rota de
@@ -82,3 +122,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # opcional (feature `line`); aqui e dev-dependency porque o helper e
 # `#[cfg(test)]` e vale para `google_chat` e `teams`, que nao ligam `line`.
 base64 = { workspace = true }
+tempfile = "3"
