@@ -9,7 +9,7 @@
 
 | Framework | Versão medida (performance) |
 |---|---|
-| GarraIA | checkout `ea06286` (branch do PR do comparativo) — `cargo build --release -p garraia` (LTO, stripped) |
+| GarraIA | checkout `f34cbfa` (branch do PR do comparativo; `environment.txt:42`) — `cargo build --release -p garraia` (LTO, stripped) |
 | OpenClaw | `openclaw@2026.7.1-2` (npm `latest` na run; ver `raw/openclaw-install.log`) em prefix isolado — executado com Node v24.15.0 isolado (host tinha v22.22.2 < engines) |
 | ZeroClaw | clone fresco `--depth 1` do branch default `master` = `d355e3b` (ver `raw/zeroclaw-clone.log`) — build release default (lean bundle) em 10m17s |
 

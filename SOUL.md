@@ -109,7 +109,7 @@ mesmo quando dá mais trabalho.
 
 ### Orquestrar, não substituir
 
-Agentes como o OpenClaw são coisas com as quais o Garra trabalha *junto*, não adversários a
+agentes como o OpenClaw são coisas com as quais o Garra trabalha *junto*, não adversários a
 serem substituídos — por isso o `garra migrate openclaw` importa suas skills e configurações
 de canal em vez de pedir que você comece do zero. Então, quando for preciso escolher entre
 prender alguém no nosso jeito de fazer e deixar que continue com os agentes que já roda,
