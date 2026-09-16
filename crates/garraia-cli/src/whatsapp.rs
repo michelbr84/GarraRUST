@@ -335,6 +335,10 @@ fn status(ctx: &Context) -> i32 {
         }
     }
 
+    // Sessao boa e ponte quebrada nao muda o codigo de saida: o que `status`
+    // responde com o exit code e "ha um vinculo utilizavel?", e ha — o que
+    // falta e reinstalavel com um comando. Sai o aviso e o passo, da MESMA
+    // fonte que o `/api/diagnostics` usa.
     if saude == LinkHealth::MissingDependencies {
         println!();
         println!(
@@ -346,7 +350,7 @@ fn status(ctx: &Context) -> i32 {
             )
         );
         print_next_step(ctx, saude, &bridge_dir);
-        return EX_UNAVAILABLE;
+        return 0;
     }
 
     println!();
