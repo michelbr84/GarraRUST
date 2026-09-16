@@ -191,15 +191,30 @@ Arquivo completo comentado, validado com `garra config check`:
    `/api/auth-check`, que é como o console web descobre que precisa
    pedi-la. As três são secret-free.
 
-   **Ainda sem gate por api_key:** `/v1/chat/completions`, `/v1/messages`
-   e `/a2a/*` — proteja-as por topologia (loopback, firewall, reverse
-   proxy). As rotas `/v1/*` do workspace têm autenticação JWT própria, e
-   `/admin/*` tem cookie de sessão.
+   **Desde a #1240 o gate também cobre o plano de conversa e o A2A:**
+   `POST /v1/chat/completions`, `POST /v1/messages`,
+   `POST /v1/messages/count_tokens` e todo o `/a2a/*` (por prefixo). Eram
+   a lacuna mais cara que existia: montadas no mesmo router cru que
+   `/api/*`, sem resolução de identidade nenhuma, e é por elas que o
+   runtime executa as tools do GarraIA na máquina do dono. Quem
+   configurava a chave acreditava tê-las fechado.
 
-   A chave vai **só** no header `Authorization: Bearer` no REST. Na query
-   string ela é aceita apenas pelo `/ws`, porque o handshake WebSocket de
-   um navegador não permite header; no REST, chave em query acabaria em
-   log de acesso e no span de tracing.
+   Continuam abertas, por serem descoberta e não execução: `/v1/models` e
+   `/.well-known/agent.json`, além de `/health` e `/ping`. As rotas
+   `/v1/*` do workspace (`rest_v1`) e o `/v1/auth/*` seguem **fora** deste
+   eixo — têm autenticação JWT própria, e `/admin/*` tem cookie de
+   sessão.
+
+   **A #1240 não fechou nada por default.** Sem a chave configurada, todas
+   essas rotas respondem exatamente como antes.
+
+   A chave vai **só** no header `Authorization: Bearer` no REST — com uma
+   alternativa nas duas rotas compat Anthropic (`/v1/messages`,
+   `/v1/messages/count_tokens`), que aceitam também `x-api-key`, porque o
+   Claude Code e o SDK da Anthropic nunca mandam bearer. Na query string
+   ela é aceita apenas pelo `/ws`, porque o handshake WebSocket de um
+   navegador não permite header; no REST, chave em query acabaria em log
+   de acesso e no span de tracing.
 
    `session_tokens_required` **não está implementado**: o middleware nunca
    foi ligado ao router, e desde a investigação da issue #930 o gateway

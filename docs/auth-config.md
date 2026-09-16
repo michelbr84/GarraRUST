@@ -199,7 +199,8 @@ whether it mattered. It usually does not.
 | --- | --- |
 | Web Console (`/`, `webchat.html`) | the `/api/*` endpoints never use a JWT — see the note below on the gateway API key |
 | WebSocket chat (`/ws`) | authenticates with the gateway API key, not a JWT |
-| `POST /v1/chat/completions` | OpenAI-compatible surface, same API-key path |
+| `POST /v1/chat/completions`, `POST /v1/messages` | compat surfaces (OpenAI/Anthropic): no JWT in the path, they sit on the gateway API-key axis instead (#1240) |
+| `POST /a2a/tasks` and the rest of `/a2a/*` | same axis — the A2A surface never used a JWT |
 | `garra mcp-server` (stdio) | in-process, no HTTP auth in the path at all |
 | `garra chat` / `garra ask` | local CLI, talks to the runtime directly |
 | Telegram / Discord / Slack / WhatsApp | channel adapters carry their own allowlist |
@@ -225,18 +226,49 @@ answers a different question. The JWT stack is *who are you*; the gateway key
 is *are you allowed on this port at all*.
 
 Since #1045, a configured `gateway.api_key` is required on the whole `/api/*`
-REST surface, not just on the `/ws` handshake as before. Three routes stay open
-so a client can find the gateway before it has the key: `/api/health`,
-`/api/capabilities` and `/api/auth-check`. All three are secret-free.
+REST surface, not just on the `/ws` handshake as before. Since #1240 it also
+covers the **conversation plane and the A2A surface**, which are mounted on the
+same raw router and had been left out:
 
-**With no `gateway.api_key` set, nothing changes** — `/api/*` answers as it
-always did, which is the right default for a gateway bound to `127.0.0.1`. It
-is binding to `0.0.0.0` that makes the key worth setting, and that is the case
-the mobile app on the LAN puts you in. See `docs/hardening-gateway.md` §2.
+| Path | Method | Gated since |
+| --- | --- | --- |
+| `/api/*` | any | #1045 |
+| `/v1/chat/completions` | `POST` | #1240 |
+| `/v1/messages`, `/v1/messages/count_tokens` | `POST` | #1240 |
+| `/a2a/*` (whole namespace, by prefix) | any | #1240 |
 
-The key travels in the `Authorization: Bearer` header. Only `/ws` also accepts
-it in the query string, because a browser's WebSocket handshake cannot carry a
-header; on REST it would end up in access logs and in the request span.
+These were the reason the gate had to stop being a single `/api/` prefix test.
+The original exclusion note said "`/v1/*` has its own JWT" — true of the
+`rest_v1` workspace routes (`/v1/me`, `/v1/groups`) and of `/v1/auth/*`, and
+**not** true of the OpenAI/Anthropic compat routes, which only share the
+prefix and resolve no identity at all. Those routes run GarraIA's tools on the
+operator's machine, so a key that did not cover them was a control the operator
+had switched on believing it closed the port.
+
+Open with the key configured, because they are how a client *finds* the
+gateway before it has one, and none of them executes anything:
+
+- `/api/health`, `/api/capabilities`, `/api/auth-check` (all secret-free);
+- `/v1/models` and `/.well-known/agent.json` (discovery);
+- `/health`, `/ping`.
+
+`/v1/auth/*`, `/v1/me` and the rest of `rest_v1` are **not** on this axis: they
+answer with their own JWT/503 contract, gate or no gate.
+
+**With no `gateway.api_key` set, nothing changes** — every one of the routes
+above answers exactly as it always did, which is the right default for a
+gateway bound to `127.0.0.1`. #1240 closed nothing by default; it only made the
+key cover what the operator already thought it covered. It is binding to
+`0.0.0.0` that makes the key worth setting, and that is the case the mobile app
+on the LAN puts you in. See `docs/hardening-gateway.md` §2.
+
+The key travels in the `Authorization: Bearer` header. The two Anthropic compat
+routes (`/v1/messages`, `/v1/messages/count_tokens`) also accept it in
+`x-api-key`, because Claude Code and the official Anthropic SDK never send a
+bearer — the two headers are alternatives, and either one being right is
+enough. Only `/ws` also accepts the key in the query string, because a
+browser's WebSocket handshake cannot carry a header; on REST it would end up in
+access logs and in the request span.
 
 The key is read once at startup, so changing it on disk needs a gateway
 restart — the config hot-reload does not reach it.

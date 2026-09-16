@@ -1,19 +1,32 @@
-//! #1045: o gate de `gateway.api_key` sobre `/api/*`, montado no
-//! `build_router` de verdade.
+//! #1045 + #1240: o gate de `gateway.api_key` sobre `/api/*` **e** sobre o
+//! plano de conversa (`/v1/chat/completions`, `/v1/messages`,
+//! `/v1/messages/count_tokens`) e o A2A (`/a2a/*`), montado no `build_router`
+//! de verdade.
 //!
 //! Os testes de unidade em `gateway_auth.rs` provam a decisão do middleware
 //! sobre um router de mentira. Só isto aqui prova a **montagem**: que o layer
 //! cobre as rotas reais, incluindo as que `build_skill_skin_routes` e
 //! `build_plugin_routes` montam sob `/api/` por caminhos próprios; que as
-//! três rotas abertas continuam abertas; e que `/v1/*` e `/health` ficam de
-//! fora. Um layer no lugar errado da cadeia passaria nos testes de unidade e
-//! falharia aqui.
+//! rotas de descoberta continuam abertas; e que o plano de conversa, montado
+//! no mesmo router cru, passou a ser coberto. Um layer no lugar errado da
+//! cadeia passaria nos testes de unidade e falharia aqui.
+//!
+//! **Por que o arquivo mudou de opinião sobre `/v1/*` (#1240).** Até esta
+//! issue este teste dizia, no doc acima e em `fora_de_api_o_gate_nao_age`,
+//! que "`/v1/*` fica de fora" — e prendia assim o fail-open: o operador
+//! configurava `gateway.api_key` achando que tinha fechado a porta, e
+//! `POST /v1/chat/completions` (que executa as tools do GarraIA na máquina
+//! dele) seguia respondendo a qualquer `curl`. A justificativa original —
+//! "`/v1/*` tem JWT próprio" — vale para o `rest_v1` do workspace, **não**
+//! para as rotas compat OpenAI/Anthropic, que só compartilham o prefixo.
+//! Quem for "consertar" isto de volta para um `starts_with("/api/")` único
+//! está reabrindo a #1240: o recorte agora é por conjunto explícito.
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{Method, Request, StatusCode, header};
 use garraia_agents::AgentRuntime;
 use garraia_channels::ChannelRegistry;
 use garraia_config::AppConfig;
@@ -53,9 +66,25 @@ async fn status(chave: Option<&str>, uri: &str, auth: Option<&str>) -> StatusCod
 }
 
 async fn resposta(chave: Option<&str>, uri: &str, auth: Option<&str>) -> axum::response::Response {
-    let mut req = Request::builder().uri(uri);
+    pedido(chave, Method::GET, uri, auth, None).await
+}
+
+/// A forma geral: método, `Authorization` e `x-api-key` (o header que o
+/// Claude Code e o SDK da Anthropic mandam, e que só as rotas Anthropic
+/// aceitam — #1240).
+async fn pedido(
+    chave: Option<&str>,
+    metodo: Method,
+    uri: &str,
+    auth: Option<&str>,
+    x_api_key: Option<&str>,
+) -> axum::response::Response {
+    let mut req = Request::builder().method(metodo).uri(uri);
     if let Some(a) = auth {
         req = req.header(header::AUTHORIZATION, a);
+    }
+    if let Some(k) = x_api_key {
+        req = req.header("x-api-key", k);
     }
     let mut req = req.body(Body::empty()).expect("request");
     // O rate limiter le o IP do par em `ConnectInfo`, que em producao vem do
@@ -68,6 +97,16 @@ async fn resposta(chave: Option<&str>, uri: &str, auth: Option<&str>) -> axum::r
             40404,
         ))));
     router_com(chave).oneshot(req).await.expect("resposta")
+}
+
+async fn status_de(
+    chave: Option<&str>,
+    metodo: Method,
+    uri: &str,
+    auth: Option<&str>,
+    x_api_key: Option<&str>,
+) -> StatusCode {
+    pedido(chave, metodo, uri, auth, x_api_key).await.status()
 }
 
 /// Rotas que representam cada forma de montagem sob `/api/`: a cadeia
@@ -139,13 +178,154 @@ async fn as_rotas_do_onboarding_continuam_abertas() {
     }
 }
 
+/// A descoberta continua sem credencial. `/v1/models` e
+/// `/.well-known/agent.json` são como um cliente descobre o que há do outro
+/// lado antes de ter a chave — o mesmo papel de `/api/capabilities`.
+///
+/// **#1240**: esta lista era `["/health", "/ping", "/v1/models"]` sob o nome
+/// "fora de /api o gate não age", e o nome afirmava mais do que a lista.
+/// Continuam abertas as mesmas rotas; o que mudou é que "fora de `/api/`"
+/// deixou de ser sinônimo de "aberto". Ver o doc no topo do arquivo.
 #[tokio::test]
-async fn fora_de_api_o_gate_nao_age() {
-    for fora in ["/health", "/ping", "/v1/models"] {
+async fn as_rotas_de_descoberta_continuam_abertas() {
+    for aberta in ["/health", "/ping", "/v1/models", "/.well-known/agent.json"] {
         assert_ne!(
-            status(Some(CHAVE), fora, None).await,
+            status(Some(CHAVE), aberta, None).await,
             StatusCode::UNAUTHORIZED,
-            "{fora} foi gateado sem precisar"
+            "{aberta} foi gateado sem precisar"
+        );
+    }
+}
+
+// ── #1240: o plano de conversa e o A2A ────────────────────────────────────
+
+/// As rotas que a #1240 trouxe para dentro do gate. São o router cru — não
+/// o `rest_v1`, que tem JWT próprio e continua fora deste assunto.
+const PLANO_DE_CONVERSA: &[(&str, &str)] = &[
+    ("POST", "/v1/chat/completions"),
+    ("POST", "/v1/messages"),
+    ("POST", "/v1/messages/count_tokens"),
+    ("POST", "/a2a/tasks"),
+    ("GET", "/a2a/tasks/alguma-tarefa"),
+    ("POST", "/a2a/tasks/alguma-tarefa/cancel"),
+];
+
+fn metodo(m: &str) -> Method {
+    Method::from_bytes(m.as_bytes()).expect("metodo")
+}
+
+/// O coração da #1240: com a chave configurada, a superfície que executa
+/// tools na máquina do dono deixa de responder a quem não a tem.
+#[tokio::test]
+async fn com_chave_o_plano_de_conversa_exige_credencial() {
+    for (m, rota) in PLANO_DE_CONVERSA {
+        let resp = pedido(Some(CHAVE), metodo(m), rota, None, None).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "{m} {rota} respondeu sem a chave"
+        );
+        // Corpo constante: o 401 do gate nunca ecoa o que veio no pedido.
+        assert_eq!(
+            resp.headers().get(header::WWW_AUTHENTICATE).unwrap(),
+            r#"Bearer realm="garraia""#
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .expect("corpo");
+        assert_eq!(&bytes[..], b"gateway: invalid or missing api key");
+    }
+}
+
+#[tokio::test]
+async fn com_chave_errada_o_plano_de_conversa_segue_fechado() {
+    for (m, rota) in PLANO_DE_CONVERSA {
+        assert_eq!(
+            status_de(
+                Some(CHAVE),
+                metodo(m),
+                rota,
+                Some("Bearer nao-e-a-chave"),
+                None
+            )
+            .await,
+            StatusCode::UNAUTHORIZED,
+            "{m} {rota} aceitou uma chave errada"
+        );
+    }
+}
+
+/// Com o bearer certo o gate sai da frente. O que vem depois é problema do
+/// handler (415/400/404 com corpo vazio) — o que este teste trava é só que
+/// não é mais 401.
+#[tokio::test]
+async fn com_bearer_valido_o_plano_de_conversa_passa_o_gate() {
+    for (m, rota) in PLANO_DE_CONVERSA {
+        assert_ne!(
+            status_de(
+                Some(CHAVE),
+                metodo(m),
+                rota,
+                Some(&format!("Bearer {CHAVE}")),
+                None
+            )
+            .await,
+            StatusCode::UNAUTHORIZED,
+            "{m} {rota} recusou o bearer certo"
+        );
+    }
+}
+
+/// O Claude Code e o SDK da Anthropic nunca mandam `Authorization: Bearer` —
+/// mandam `x-api-key`. Sem isto, gatear `/v1/messages` quebraria a
+/// integração documentada.
+#[tokio::test]
+async fn as_rotas_anthropic_aceitam_x_api_key() {
+    for rota in ["/v1/messages", "/v1/messages/count_tokens"] {
+        assert_ne!(
+            status_de(Some(CHAVE), Method::POST, rota, None, Some(CHAVE)).await,
+            StatusCode::UNAUTHORIZED,
+            "{rota} recusou a chave em x-api-key"
+        );
+        assert_eq!(
+            status_de(Some(CHAVE), Method::POST, rota, None, Some("errada")).await,
+            StatusCode::UNAUTHORIZED,
+            "{rota} aceitou x-api-key errada"
+        );
+    }
+}
+
+/// O `x-api-key` é uma concessão às rotas Anthropic, não um segundo header
+/// de autenticação do gateway inteiro. Em `/api/*`, no OpenAI-compat e no
+/// A2A ele não vale — lá a chave é `Authorization: Bearer`.
+#[tokio::test]
+async fn x_api_key_nao_vale_fora_das_rotas_anthropic() {
+    for (m, rota) in [
+        ("GET", "/api/sessions"),
+        ("POST", "/v1/chat/completions"),
+        ("POST", "/a2a/tasks"),
+    ] {
+        assert_eq!(
+            status_de(Some(CHAVE), metodo(m), rota, None, Some(CHAVE)).await,
+            StatusCode::UNAUTHORIZED,
+            "{m} {rota} aceitou x-api-key"
+        );
+    }
+}
+
+/// A chave nunca entra por query string — o invariante do módulo, agora
+/// também para as rotas novas.
+#[tokio::test]
+async fn a_chave_na_query_nao_abre_o_plano_de_conversa() {
+    for uri in [
+        "/v1/chat/completions?api_key=chave-de-teste-do-gateway",
+        "/v1/messages?token=chave-de-teste-do-gateway",
+        "/a2a/tasks?api_key=chave-de-teste-do-gateway",
+    ] {
+        assert_eq!(
+            status_de(Some(CHAVE), Method::POST, uri, None, None).await,
+            StatusCode::UNAUTHORIZED,
+            "{uri} aceitou a chave pela query"
         );
     }
 }
@@ -159,6 +339,27 @@ async fn sem_chave_configurada_nada_muda() {
             status(None, rota, None).await,
             StatusCode::UNAUTHORIZED,
             "{rota} passou a exigir chave sem haver chave configurada"
+        );
+    }
+}
+
+/// #1240 não fecha nada por default. Sem `gateway.api_key`, cada rota que
+/// este PR trouxe para dentro do gate responde exatamente como antes — e
+/// isso vale também para o `/v1/models` e o card do A2A.
+#[tokio::test]
+async fn sem_chave_configurada_o_plano_de_conversa_nao_muda() {
+    for (m, rota) in PLANO_DE_CONVERSA {
+        assert_ne!(
+            status_de(None, metodo(m), rota, None, None).await,
+            StatusCode::UNAUTHORIZED,
+            "{m} {rota} passou a exigir chave sem haver chave configurada"
+        );
+    }
+    for aberta in ["/v1/models", "/.well-known/agent.json"] {
+        assert_ne!(
+            status(None, aberta, None).await,
+            StatusCode::UNAUTHORIZED,
+            "{aberta} passou a exigir chave sem haver chave configurada"
         );
     }
 }
