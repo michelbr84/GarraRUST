@@ -694,8 +694,26 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         );
     } else {
         info!(
-            "file tools confinadas a {} raiz(es) de agent.file_roots + working_dir da sessao",
-            file_jail.roots().len()
+            "file tools confinadas a {} raiz(es) de agent.file_roots + working_dir da sessao: {}",
+            file_jail.roots().len(),
+            file_jail
+                .roots()
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    // #1244: contar raizes nao diz **quais**, e `GARRAIA_FILE_ROOTS=/` nunca
+    // passa pelo `config check`. Uma raiz que resolve para `/` ou para o
+    // `$HOME` e o jail desligado — nao e erro (a decisao e do operador), mas
+    // nao pode ser silencioso, senao a saida mais comoda para um jail apertado
+    // e tambem a que desfaz a #1244 sem deixar rastro.
+    for (root, motivo) in file_jail.raizes_perigosas() {
+        warn!(
+            root = %root.display(),
+            "raiz de file tool perigosa ({motivo}): as file tools do agente alcancam tudo \
+             debaixo dela. Confira agent.file_roots e a env GARRAIA_FILE_ROOTS (issue #1244)"
         );
     }
     runtime.register_tool(Box::new(FileReadTool::new(file_jail.clone())));
@@ -2198,6 +2216,61 @@ mod tests {
             runtime.default_provider_id().as_deref(),
             Some("openrouter"),
             "o unico provider registrado devia ter permanecido como default"
+        );
+    }
+
+    // ─── #1244 rodada 2: o aviso de raiz perigosa chega ao boot ───────────
+
+    /// `raizes_perigosas` e funcao pura com teste proprio em `garraia-agents`;
+    /// o que **este** teste impede e a repeticao do defeito da propria #1244 —
+    /// nucleo testado, call site nao exercitado. O aviso so vale se
+    /// `build_agent_runtime` o emitir, e nao ha como observar um `warn!` sem
+    /// montar subscriber, entao varre-se o fonte, como ja se faz com o
+    /// `spinner.rs` da CLI e o `detect.rs` do desktop-core.
+    #[test]
+    fn o_boot_avisa_sobre_raiz_de_file_tool_perigosa() {
+        let fonte = include_str!("mod.rs");
+        // As agulhas sao montadas em tempo de execucao de proposito: escritas
+        // por extenso elas apareceriam neste proprio fonte e o teste passaria
+        // sozinho — que e exatamente o teste vacuo que esta rodada esta
+        // matando.
+        let chamada = format!("file_jail.{}()", "raizes_perigosas");
+        assert!(
+            fonte.contains(&chamada),
+            "o boot deixou de avisar sobre raiz de file tool que desliga o jail (#1244)"
+        );
+        let env = format!("GARRAIA_{}_ROOTS", "FILE");
+        assert!(
+            fonte.contains(&env),
+            "o aviso de boot tem de citar a env, que e a raiz que o config check nao via"
+        );
+    }
+
+    /// E o `info!` tem de dizer **quais** raizes, nao so quantas: contar nao
+    /// distingue `agent.file_roots: [/srv/dados]` de `GARRAIA_FILE_ROOTS=/`.
+    #[test]
+    fn o_boot_nomeia_as_raizes_de_file_tool() {
+        let fonte = include_str!("mod.rs");
+        let trecho = fonte
+            .split("file tools confinadas a {} raiz(es)")
+            .nth(1)
+            .expect("a linha de info das raizes sumiu");
+        assert!(
+            trecho.starts_with(" de agent.file_roots + working_dir da sessao: {}"),
+            "o info do boot voltou a contar raizes sem nomea-las (#1244)"
+        );
+    }
+
+    /// `garraia-config` nao depende de `garraia-agents`, entao o nome da env
+    /// que amplia o jail existe escrito nos dois lados. Este crate e o unico
+    /// que ve os dois: se divergirem, o `config check` passa a validar uma
+    /// variavel que ninguem le, e a que o `FileJail` le volta a nao ser
+    /// validada por ninguem — que e exatamente o F4 desta rodada.
+    #[test]
+    fn os_dois_lados_conhecem_a_mesma_env_de_file_roots() {
+        assert_eq!(
+            garraia_agents::tools::file_jail::ROOTS_ENV,
+            garraia_config::check::FILE_ROOTS_ENV,
         );
     }
 

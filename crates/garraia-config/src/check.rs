@@ -735,8 +735,13 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // Uma raiz `/` ou o proprio `$HOME` devolve `~/.ssh`, `.env` e o
     // `config.yml` do gateway ao alcance de um prompt vindo de um canal — que
     // e exatamente o jail sendo desligado por configuracao.
+    //
+    // A env entra junto: `GARRAIA_FILE_ROOTS` **soma** raizes as da config
+    // (`FileJail::from_config_roots`), e checar so o YAML deixava
+    // `GARRAIA_FILE_ROOTS=/` desligar o jail sem uma palavra de ninguem.
     findings.extend(validate_file_roots(
         &config.agent.file_roots,
+        &env_file_roots(),
         home_dir_for_check(),
     ));
 
@@ -752,45 +757,93 @@ fn home_dir_for_check() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Nucleo puro do aviso de `agent.file_roots` (#1244).
+/// A env que **soma** raizes as de `agent.file_roots`.
+///
+/// Escrita aqui por extenso porque `garraia-config` nao depende de
+/// `garraia-agents` (de proposito): o dono da constante e
+/// `garraia_agents::tools::file_jail::ROOTS_ENV`, e
+/// `garraia-gateway`, que ve os dois lados, tem um teste que impede as duas
+/// grafias de divergirem.
+pub const FILE_ROOTS_ENV: &str = "GARRAIA_FILE_ROOTS";
+
+/// O campo com que um achado vindo da env e reportado.
+const FILE_ROOTS_ENV_FIELD: &str = "env.GARRAIA_FILE_ROOTS";
+
+/// As raizes declaradas em [`FILE_ROOTS_ENV`], no mesmo formato de `PATH` que
+/// `FileJail::from_config_roots` consome.
+fn env_file_roots() -> Vec<String> {
+    match std::env::var_os(FILE_ROOTS_ENV) {
+        Some(raw) => std::env::split_paths(&raw)
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Uma raiz comparavel: resolvida quando o disco deixa, normalizada por
+/// componentes quando nao.
+///
+/// A comparacao acontece **depois** de resolver porque `$HOME/../$USER`,
+/// `$HOME/link-para-si-mesmo` e o `$HOME` sao a mesma raiz perigosa escrita
+/// de tres jeitos, e so o `canonicalize` achata `..` e segue symlink.
+///
+/// `.` e `//` **nao** estao nessa lista, e a distincao importa para quem
+/// mexer aqui: `Path::parent` e o `PartialEq` de `Path` comparam por
+/// componente, entao `/.` ja devolvia `parent() == None` e `$HOME/.` ja era
+/// `== $HOME` sem ajuda nenhuma. O `components().collect()` do fallback
+/// existe so para o caso em que `canonicalize` falha (raiz ainda inexistente,
+/// caminho de outro sistema num teste) — nao e ele que fecha o buraco.
+fn normalizar_raiz(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.components().collect())
+}
+
+/// Nucleo puro do aviso de raizes de file tool (#1244).
 ///
 /// Avisa — nao e erro: um operador pode ter motivo para abrir o home inteiro,
 /// e `config check` nao e quem decide isso. Mas ele tem de dizer em voz alta,
 /// porque a diferenca entre "o agente le o projeto" e "o agente le a chave
-/// SSH" e uma linha de YAML.
-fn validate_file_roots(roots: &[String], home: Option<PathBuf>) -> Vec<Finding> {
+/// SSH" e uma linha de YAML — ou uma variavel de ambiente.
+fn validate_file_roots(
+    config_roots: &[String],
+    env_roots: &[String],
+    home: Option<PathBuf>,
+) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for raw in roots {
+    let home = home.map(|h| normalizar_raiz(&h));
+    let entradas = config_roots
+        .iter()
+        .map(|raw| ("agent.file_roots", raw))
+        .chain(env_roots.iter().map(|raw| (FILE_ROOTS_ENV_FIELD, raw)));
+
+    for (campo, raw) in entradas {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             findings.push(Finding {
                 severity: Severity::Warning,
-                field: "agent.file_roots".to_owned(),
-                message: "agent.file_roots contains an empty entry; it is ignored".to_string(),
+                field: campo.to_owned(),
+                message: format!("{campo} contains an empty entry; it is ignored"),
             });
             continue;
         }
-        let path = std::path::Path::new(trimmed);
-        if path.parent().is_none() {
+        let resolvida = normalizar_raiz(std::path::Path::new(trimmed));
+        if resolvida.parent().is_none() {
             findings.push(Finding {
                 severity: Severity::Warning,
-                field: "agent.file_roots".to_owned(),
+                field: campo.to_owned(),
                 message: format!(
-                    "agent.file_roots includes the filesystem root `{trimmed}` — this turns the \
+                    "{campo} includes the filesystem root (`{trimmed}`) — this turns the \
                      file-tool jail off: the agent can read /etc, ~/.ssh and the gateway's own \
                      config. Point it at the project directory instead (issue #1244)."
                 ),
             });
             continue;
         }
-        if let Some(home) = home.as_deref()
-            && path == home
-        {
+        if home.as_deref() == Some(resolvida.as_path()) {
             findings.push(Finding {
                 severity: Severity::Warning,
-                field: "agent.file_roots".to_owned(),
+                field: campo.to_owned(),
                 message: format!(
-                    "agent.file_roots includes $HOME (`{trimmed}`) — that puts ~/.ssh, ~/.aws and \
+                    "{campo} includes $HOME (`{trimmed}`) — that puts ~/.ssh, ~/.aws and \
                      any .env under it within reach of a prompt arriving from a channel. Prefer a \
                      project subdirectory (issue #1244)."
                 ),
@@ -1904,7 +1957,7 @@ mod tests {
     /// A config default nao reclama de si mesma: sem `file_roots`, sem achado.
     #[test]
     fn file_roots_vazio_nao_produz_achado() {
-        assert!(validate_file_roots(&[], Some(PathBuf::from("/home/u"))).is_empty());
+        assert!(validate_file_roots(&[], &[], Some(PathBuf::from("/home/u"))).is_empty());
     }
 
     /// Uma raiz de projeto normal tambem nao.
@@ -1912,6 +1965,7 @@ mod tests {
     fn file_roots_com_subdiretorio_de_projeto_nao_produz_achado() {
         let achados = validate_file_roots(
             &["/home/u/projetos/garra".to_string()],
+            &[],
             Some(PathBuf::from("/home/u")),
         );
         assert!(achados.is_empty(), "{achados:?}");
@@ -1920,7 +1974,7 @@ mod tests {
     /// `/` e o jail desligado por configuracao — tem de aparecer.
     #[test]
     fn file_roots_com_a_raiz_do_sistema_avisa() {
-        let achados = validate_file_roots(&["/".to_string()], Some(PathBuf::from("/home/u")));
+        let achados = validate_file_roots(&["/".to_string()], &[], Some(PathBuf::from("/home/u")));
         assert_eq!(achados.len(), 1, "{achados:?}");
         assert_eq!(achados[0].severity, Severity::Warning);
         assert_eq!(achados[0].field, "agent.file_roots");
@@ -1930,7 +1984,11 @@ mod tests {
     /// `$HOME` devolve `~/.ssh` e `.env` ao alcance do modelo.
     #[test]
     fn file_roots_com_home_avisa() {
-        let achados = validate_file_roots(&["/home/u".to_string()], Some(PathBuf::from("/home/u")));
+        let achados = validate_file_roots(
+            &["/home/u".to_string()],
+            &[],
+            Some(PathBuf::from("/home/u")),
+        );
         assert_eq!(achados.len(), 1, "{achados:?}");
         assert!(achados[0].message.contains("$HOME"), "{:?}", achados[0]);
     }
@@ -1938,16 +1996,116 @@ mod tests {
     /// Sem `$HOME` conhecido o aviso de home nao dispara — e o de `/` continua.
     #[test]
     fn file_roots_sem_home_conhecido_nao_chuta() {
-        assert!(validate_file_roots(&["/home/u".to_string()], None).is_empty());
-        assert_eq!(validate_file_roots(&["/".to_string()], None).len(), 1);
+        assert!(validate_file_roots(&["/home/u".to_string()], &[], None).is_empty());
+        assert_eq!(validate_file_roots(&["/".to_string()], &[], None).len(), 1);
     }
 
     /// Entrada vazia e ignorada em silencio no boot; aqui ela e dita.
     #[test]
     fn file_roots_com_entrada_vazia_avisa() {
-        let achados = validate_file_roots(&["  ".to_string()], None);
+        let achados = validate_file_roots(&["  ".to_string()], &[], None);
         assert_eq!(achados.len(), 1, "{achados:?}");
         assert!(achados[0].message.contains("empty"), "{:?}", achados[0]);
+    }
+
+    // ─── #1244 rodada 2: a env e a comparacao depois de resolver ──────────
+
+    /// F4: `GARRAIA_FILE_ROOTS` **soma** raizes as da config, e o `config
+    /// check` so olhava o YAML — `GARRAIA_FILE_ROOTS=/` desligava o jail sem
+    /// uma linha de aviso. O achado sai com campo proprio, senao o operador
+    /// procura no YAML o que nao esta la.
+    #[test]
+    fn file_roots_da_env_tambem_avisa() {
+        let achados = validate_file_roots(&[], &["/".to_string()], None);
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].field, "env.GARRAIA_FILE_ROOTS");
+        assert!(achados[0].message.contains("#1244"), "{:?}", achados[0]);
+    }
+
+    /// E as duas origens sao contadas juntas.
+    #[test]
+    fn file_roots_de_config_e_env_somam_achados() {
+        let achados = validate_file_roots(
+            &["/home/u".to_string()],
+            &["/".to_string()],
+            Some(PathBuf::from("/home/u")),
+        );
+        assert_eq!(achados.len(), 2, "{achados:?}");
+        assert_eq!(achados[0].field, "agent.file_roots");
+        assert_eq!(achados[1].field, "env.GARRAIA_FILE_ROOTS");
+    }
+
+    /// `/.`, `//.` e `/./.` sao `/`. Isto **nao** prova a correcao de F5 — o
+    /// `Path::parent` do Rust ja compara por componente e ja devolvia `None`
+    /// para os tres, entao o aviso original tambem os pegava. Fica como
+    /// guarda de regressao contra uma reescrita que passe a comparar string,
+    /// e dito aqui para ninguem creditar ao `canonicalize` um buraco que
+    /// nunca existiu.
+    #[test]
+    fn raiz_do_sistema_escrita_de_outro_jeito_continua_sendo_raiz() {
+        for disfarce in ["/.", "//.", "/./."] {
+            let achados = validate_file_roots(&[disfarce.to_string()], &[], None);
+            assert_eq!(achados.len(), 1, "{disfarce}: {achados:?}");
+        }
+    }
+
+    /// F5, o buraco de verdade: `$HOME/../$USER` **e** o `$HOME`, e nenhuma
+    /// comparacao por componente ve isso — `..` so e achatado pelo
+    /// `canonicalize`, que precisa do disco. Tire o `normalizar_raiz` e este
+    /// e o teste que fica vermelho.
+    #[test]
+    fn file_roots_com_home_disfarcado_por_dotdot_avisa() {
+        let bruto = temp_dir("file-roots-home");
+        fs::create_dir_all(&bruto).expect("mkdir");
+        let home = fs::canonicalize(&bruto).expect("canonicalize");
+        let nome = home.file_name().expect("nome").to_owned();
+        let rodeio = home.join("..").join(&nome);
+        let projeto = home.join("projeto");
+        fs::create_dir_all(&projeto).expect("mkdir");
+
+        let achados = validate_file_roots(
+            &[rodeio.to_string_lossy().into_owned()],
+            &[],
+            Some(home.clone()),
+        );
+        // Controle: um subdiretorio real do mesmo home continua limpo.
+        let controle = validate_file_roots(
+            &[projeto.to_string_lossy().into_owned()],
+            &[],
+            Some(home.clone()),
+        );
+        fs::remove_dir_all(&home).ok();
+
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert!(achados[0].message.contains("$HOME"), "{:?}", achados[0]);
+        assert!(controle.is_empty(), "{controle:?}");
+    }
+
+    /// E o caminho de producao da env: `validate` tem de **ler**
+    /// `GARRAIA_FILE_ROOTS`, nao so aceitar o parametro.
+    #[test]
+    fn validate_le_a_env_de_file_roots() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let anterior = std::env::var_os(FILE_ROOTS_ENV);
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(FILE_ROOTS_ENV, "/") };
+
+        let config = AppConfig::default();
+        let achados: Vec<_> = validate(&config)
+            .into_iter()
+            .filter(|f| f.field == "env.GARRAIA_FILE_ROOTS")
+            .collect();
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            match anterior {
+                Some(v) => std::env::set_var(FILE_ROOTS_ENV, v),
+                None => std::env::remove_var(FILE_ROOTS_ENV),
+            }
+        }
+        assert_eq!(achados.len(), 1, "{achados:?}");
     }
 
     /// E o caminho de producao: `validate` (o que o `config check` roda) tem
