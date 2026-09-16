@@ -967,8 +967,11 @@ foram mergeados (ver `plans/README.md` para hash e data de cada um).
   - ~~Comentário "16 binários" em `ci.yml`~~ ✅ — corrigido para 15 (contagem
     real de `crates/garraia-auth/tests/*.rs`; `common/` é módulo, não binário).
   - `MemoryConfig` não tem `auto_extract`/`extraction_interval`/`max_facts`
-    (a extração roda em todo turno, sem knob) — as docs que prometiam essas
-    chaves foram corrigidas; decidir se viram configuração real.
+    (a extração roda em todo turno, sem knob) — **resolvido 2026-09-15**: chaves
+    `memory.auto_extract` (default `true`) e `memory.max_facts` (teto por turno,
+    maior confidence) implementadas com gate no `AgentRuntime` + wiring no
+    bootstrap; `extraction_interval` deliberadamente não implementado (menor
+    ganho, exige contador por sessão).
   - ~~`.claude/commands/garra-routine.md` ainda instrui consultar o Linear~~ ✅ —
     já atualizado (linha 16 documenta a descontinuação do Linear; nenhuma
     instrução remanescente de consultar o Linear).
