@@ -115,7 +115,9 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                         None,
                         None,
                         None,
-                        &state.exec_context_for(&session_id, Some(&user_id)).await,
+                        &state
+                            .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
+                            .await,
                     )
                     .await
                     .map_err(|e| {
@@ -317,7 +319,9 @@ pub fn build_telegram_channels(
                                 model_override.as_deref(),
                                 None,
                                 None,
-                                &state.exec_context_for(&session_id, Some(&user_id)).await,
+                                &state
+                                    .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
+                                    .await,
                             )
                             .await
                     } else {
@@ -333,7 +337,9 @@ pub fn build_telegram_channels(
                                 model_override.as_deref(),
                                 None,
                                 None,
-                                &state.exec_context_for(&session_id, Some(&user_id)).await,
+                                &state
+                                    .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
+                                    .await,
                             )
                             .await
                     }
