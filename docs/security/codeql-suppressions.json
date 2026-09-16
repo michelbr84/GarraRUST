@@ -360,7 +360,7 @@
       "alert_number": 173,
       "rule_id": "rust/cleartext-logging",
       "path": "crates/garraia-cli/src/whatsapp.rs",
-      "line": 631,
+      "line": 668,
       "sink_snippet": "store.dir().display()",
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
