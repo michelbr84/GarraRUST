@@ -372,12 +372,19 @@ const MCP_ENV_BASE: &[&str] = &[
     // Timestamps do filho consistentes com os do gateway.
     "TZ",
     // Bundle de CA: em ambiente corporativo (TLS interceptado) o filho não
-    // consegue sequer fazer handshake sem isto, e os três são CAMINHOS de
-    // arquivo — não carregam credencial. `HTTP_PROXY`/`HTTPS_PROXY` ficam
-    // de fora de propósito: uma URL de proxy pode embutir usuário e senha.
+    // consegue sequer fazer handshake sem isto, e todos são CAMINHOS de
+    // arquivo — não carregam credencial. A lista cobre os três runtimes que
+    // um servidor MCP costuma ser: OpenSSL (`SSL_CERT_*`), Node
+    // (`NODE_EXTRA_CA_CERTS`) e Python/curl (`REQUESTS_CA_BUNDLE`,
+    // `CURL_CA_BUNDLE`) — deixar um de fora quebra `uvx` num ambiente onde
+    // `npx` funciona, que é o tipo de assimetria que ninguém diagnostica.
+    // `HTTP_PROXY`/`HTTPS_PROXY` ficam de fora de propósito: uma URL de
+    // proxy pode embutir usuário e senha.
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
     "NODE_EXTRA_CA_CERTS",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
 ];
 
 /// Complemento por plataforma. No Windows a lista é obrigatória, não
@@ -393,6 +400,8 @@ const MCP_ENV_PLATFORM: &[&str] = &[
     "TEMP",
     "TMP",
     "USERPROFILE",
+    // Equivalente Windows de `USER`/`LOGNAME`, que já estão na lista base.
+    "USERNAME",
     "APPDATA",
     "LOCALAPPDATA",
     "PROGRAMFILES",
@@ -428,28 +437,25 @@ pub fn mcp_child_env_keys() -> impl Iterator<Item = &'static str> {
 /// ambiente do Windows é case-insensitive (`Path` == `PATH`), o do Unix não.
 /// Usar `eq_ignore_ascii_case` no Unix deixaria passar uma variável que
 /// difere só na caixa — exatamente o tipo de brecha que esta lista fecha.
+///
+/// Pública porque quem monta o ambiente do filho precisa da MESMA semântica
+/// para deduplicar: filtrar com `is_mcp_child_env_allowed` (case-insensitive
+/// no Windows) e depois deduplicar com `==` faria `Path` herdado e `PATH`
+/// declarado no `env` do servidor virarem duas entradas no mesmo bloco.
 #[cfg(windows)]
-fn env_key_eq(a: &str, b: &str) -> bool {
+pub fn env_key_eq(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
+/// Ver a variante Windows acima.
 #[cfg(not(windows))]
-fn env_key_eq(a: &str, b: &str) -> bool {
+pub fn env_key_eq(a: &str, b: &str) -> bool {
     a == b
 }
 
 /// `true` quando a variável pode ser repassada a um filho MCP.
 pub fn is_mcp_child_env_allowed(key: &str) -> bool {
     mcp_child_env_keys().any(|allowed| env_key_eq(allowed, key))
-}
-
-/// Pares (chave, valor) que um filho MCP herda do processo atual. Igual ao
-/// [`allowed_child_env`], a política vive aqui e o caller aplica
-/// mecanicamente (`env_clear` + `env`) porque o tipo de `Command` varia.
-pub fn allowed_mcp_child_env() -> Vec<(&'static str, String)> {
-    mcp_child_env_keys()
-        .filter_map(|key| std::env::var(key).ok().map(|value| (key, value)))
-        .collect()
 }
 
 /// Environment interpolation that dumps the whole environment — the

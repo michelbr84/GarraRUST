@@ -19,20 +19,28 @@ use std::time::Duration;
 use garraia_agents::McpManager;
 use garraia_agents::tools::ToolContext;
 
-/// Nome único por design: os testes rodam em paralelo dentro do mesmo
-/// binário, então a variável é só PLANTADA (nunca removida nem alterada) e
-/// não colide com nada que outro teste leia.
+/// Nome único por design, para não colidir com nada que o runner exporte.
 const PLANTADA: &str = "GARRAIA_TEST_PLANTED_SECRET";
 const EXPLICITA: &str = "GARRAIA_TEST_EXPLICIT";
 
+/// Planta o segredo no ambiente DESTE processo de teste.
+///
+/// SAFETY: `set_var` é `unsafe` na edition 2024 porque escrever no bloco de
+/// ambiente enquanto outra thread o lê é UB — e ler é exatamente o que
+/// `std::process::Command` faz ao copiar o ambiente para um filho.
+///
+/// A garantia aqui NÃO é o `Once`: é que este binário de teste tem um único
+/// `#[tokio::test]` (ver `ambiente_do_filho_por_politica` abaixo), e a
+/// chamada acontece antes de qualquer spawn. Um `Once` não serviria — ele
+/// garante que a escrita ocorre uma vez, não que ninguém esteja lendo o
+/// ambiente naquele instante. A versão anterior deste arquivo tinha três
+/// `#[tokio::test]` paralelos, cada um iterando `vars_os()` para montar o
+/// ambiente do filho: uma corrida real na glibc.
+///
+/// Se um teste novo for adicionado a este arquivo, ele PRECISA rodar dentro
+/// do mesmo `#[tokio::test]`, ou a corrida volta.
 fn plantar_segredo() {
-    static UMA_VEZ: std::sync::Once = std::sync::Once::new();
-    UMA_VEZ.call_once(|| {
-        // SAFETY: edition 2024 exige `unsafe` para `set_var`. A escrita
-        // acontece uma única vez, antes de qualquer spawn deste binário de
-        // teste, e a variável não é lida por nenhuma outra thread.
-        unsafe { std::env::set_var(PLANTADA, "hunter2") };
-    });
+    unsafe { std::env::set_var(PLANTADA, "hunter2") };
 }
 
 fn fixture_args() -> Vec<String> {
@@ -62,8 +70,6 @@ async fn ambiente_do_filho(
     explicito: HashMap<String, String>,
     inherit_env: bool,
 ) -> serde_json::Value {
-    plantar_segredo();
-
     let manager = Arc::new(McpManager::new());
     manager
         .connect(
@@ -104,64 +110,59 @@ fn tem(relatorio: &serde_json::Value, chave: &str) -> bool {
         .any(|n| n.as_str() == Some(chave))
 }
 
-/// O defeito. Falha antes da correção: a variável plantada no gateway
-/// chegava inteira ao filho, junto de todo o resto do cofre.
+/// Os três cenários do isolamento de ambiente, num ÚNICO teste e em
+/// sequência.
+///
+/// Sequencial de propósito, e não por estilo: `plantar_segredo` escreve no
+/// bloco de ambiente do processo e cada spawn o lê inteiro (`vars_os`). Com
+/// `#[tokio::test]` separados o cargo roda os três em paralelo, e escrita
+/// concorrente com leitura do `environ` é UB na glibc — o teste passaria
+/// quase sempre e falharia sem explicação de vez em quando, que é o pior
+/// resultado possível para um teste de segurança.
+///
+/// O plantio acontece uma vez, aqui, antes de qualquer `connect`.
 #[tokio::test]
-async fn filho_mcp_nao_recebe_a_variavel_plantada_no_gateway() {
-    let body = async {
-        let relatorio = ambiente_do_filho("env-default", HashMap::new(), false).await;
+async fn ambiente_do_filho_por_politica() {
+    plantar_segredo();
 
+    let body = async {
+        // 1. O defeito. Falha antes da correção: a variável plantada no
+        //    gateway chegava inteira ao filho, junto de todo o resto do cofre.
+        let padrao = ambiente_do_filho("env-default", HashMap::new(), false).await;
         assert!(
-            !tem(&relatorio, PLANTADA),
+            !tem(&padrao, PLANTADA),
             "o filho MCP recebeu '{PLANTADA}', plantada no ambiente do gateway"
         );
         // A allowlist continua entregando o mínimo para o filho sequer subir.
-        assert!(tem(&relatorio, "PATH"), "o filho precisa de PATH");
-    };
-    tokio::time::timeout(Duration::from_secs(30), body)
-        .await
-        .expect("test must not hang");
-}
+        assert!(tem(&padrao, "PATH"), "o filho precisa de PATH");
 
-/// O mapa `env` do servidor é onde o operador coloca de propósito o que
-/// aquele servidor precisa (`GITHUB_TOKEN` e afins) — e ele passa.
-#[tokio::test]
-async fn mapa_env_explicito_do_servidor_chega_ao_filho() {
-    let body = async {
+        // 2. O mapa `env` do servidor é onde o operador coloca de propósito o
+        //    que aquele servidor precisa (`GITHUB_TOKEN` e afins) — e ele
+        //    passa, sem reabrir a herança.
         let mut explicito = HashMap::new();
         explicito.insert(EXPLICITA.to_string(), "do-operador".to_string());
-
-        let relatorio = ambiente_do_filho("env-explicit", explicito, false).await;
-
+        let com_mapa = ambiente_do_filho("env-explicit", explicito, false).await;
         assert_eq!(
-            relatorio["values"][EXPLICITA].as_str(),
+            com_mapa["values"][EXPLICITA].as_str(),
             Some("do-operador"),
             "o mapa 'env' do servidor não chegou ao filho"
         );
         assert!(
-            !tem(&relatorio, PLANTADA),
+            !tem(&com_mapa, PLANTADA),
             "o mapa explícito não pode reabrir a herança do ambiente"
         );
-    };
-    tokio::time::timeout(Duration::from_secs(30), body)
-        .await
-        .expect("test must not hang");
-}
 
-/// A válvula de escape faz exatamente o que promete — é por isso que o
-/// default é `false` e a conexão emite `warn!`.
-#[tokio::test]
-async fn inherit_env_true_restaura_a_heranca_completa() {
-    let body = async {
-        let relatorio = ambiente_do_filho("env-inherit", HashMap::new(), true).await;
-
+        // 3. A válvula de escape faz exatamente o que promete — é por isso
+        //    que o default é `false` e a conexão emite `warn!`.
+        let herdado = ambiente_do_filho("env-inherit", HashMap::new(), true).await;
         assert_eq!(
-            relatorio["values"][PLANTADA].as_str(),
+            herdado["values"][PLANTADA].as_str(),
             Some("hunter2"),
             "inherit_env=true deve entregar o ambiente inteiro do gateway"
         );
     };
-    tokio::time::timeout(Duration::from_secs(30), body)
+
+    tokio::time::timeout(Duration::from_secs(90), body)
         .await
         .expect("test must not hang");
 }

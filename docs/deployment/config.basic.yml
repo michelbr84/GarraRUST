@@ -101,10 +101,16 @@ timeouts:
 #     command: npx
 #     args: ["-y", "my-mcp-server"]
 #     env:
-#       GITHUB_TOKEN: "vault:mcp.meu-servidor.GITHUB_TOKEN"
+#       GITHUB_TOKEN: "ghp_..."
 #     # inherit_env: true   <- válvula de escape: devolve o ambiente INTEIRO
 #     #                        do gateway (segredos inclusive) ao filho.
-#     #                        Padrão false; emite warn! a cada conexão.
+#     #                        Padrão false; emite warn! na conexão.
+#
+# Atenção: referências `vault:<chave>` em `env` NÃO são resolvidas no
+# config.yml. Elas só funcionam para servidores gerenciados via mcp.json +
+# admin API, que passam pelo McpPersistenceService. No config.yml o valor é
+# usado literalmente, então um "vault:..." aqui chega ao filho como a string
+# "vault:...".
 
 # GAR-261: Configuração de glob e ignore para ferramentas de busca de arquivos
 fs:

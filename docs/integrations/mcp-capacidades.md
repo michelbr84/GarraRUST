@@ -21,7 +21,7 @@ política disponíveis:
 | `timeoutSecs` | `timeout` | timeout de inicialização |
 | — | `allowed_tools` | **allowlist de tools do servidor** (vazio = todas) |
 | — | `inherit_env` | válvula de escape do isolamento de ambiente (padrão `false`) |
-| `env` com valores sensíveis | idem | viram `vault:mcp.<server>.<KEY>` quando `GARRAIA_VAULT_PASSPHRASE` está setada |
+| `env` com valores sensíveis | idem | viram `vault:mcp.<server>.<KEY>` quando `GARRAIA_VAULT_PASSPHRASE` está setada — **apenas no caminho `mcp.json` + admin API** (ver abaixo) |
 
 ## Ambiente do processo filho
 
@@ -57,12 +57,28 @@ mcp:
     command: npx
     args: ["-y", "algum-server"]
     env:
-      GITHUB_TOKEN: "vault:mcp.servidor-legado.GITHUB_TOKEN"
+      GITHUB_TOKEN: "ghp_..."
     # inherit_env: true   # NÃO faça isto sem entender o que entrega
 ```
 
-`inherit_env` só existe no `config.yml`/`mcp.json`. Servidores criados
-pela admin API nunca herdam o ambiente.
+> **`vault:` não vale no `config.yml`.** A resolução de referências
+> `vault:<chave>` acontece no `McpPersistenceService::load_registry`, que
+> serve os servidores gerenciados por `mcp.json` + admin API. O caminho de
+> boot do `config.yml` (`ConfigLoader::merged_mcp_config`) copia o mapa `env`
+> como está, então um `vault:mcp.foo.BAR` escrito ali chega ao processo filho
+> literalmente, como a string `"vault:mcp.foo.BAR"` — não como o segredo.
+> Para um servidor declarado no `config.yml`, use o valor literal; para
+> guardar o segredo no cofre, declare o servidor via `mcp.json`/admin API.
+
+`inherit_env` só existe no `config.yml`/`mcp.json`. Servidores criados **ou
+reiniciados** pela admin API conectam sempre isolados, mesmo que o
+`config.yml` declare `inherit_env: true` para aquele nome: o registro do
+gateway (`crates/garraia-gateway/src/mcp/mod.rs::McpServerConfig`) não
+carrega o campo, e o restart passa `false` explicitamente. Na prática, um
+`POST /admin/mcp/<nome>/restart` num servidor que subiu do `config.yml` com
+`inherit_env: true` o traz de volta SEM a herança — a diferença é
+silenciosa, e é o motivo de `inherit_env` ser destravamento temporário e não
+configuração de regime.
 
 ## Receita 1 — Filesystem com escopo restrito
 

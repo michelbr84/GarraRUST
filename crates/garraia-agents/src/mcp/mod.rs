@@ -1,3 +1,4 @@
+mod child_env;
 mod manager;
 mod tool_bridge;
 

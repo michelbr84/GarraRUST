@@ -561,12 +561,21 @@ ficam separadas para que afrouxar uma não afrouxe a outra.
 | STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
 |---|---|---|---|
 | **I** Information disclosure | Um servidor MCP de terceiro (`npx`) lê `std::env` no `main()` e exfiltra o JWT secret e as chaves de provider do dono na primeira execução. Não precisa de tool call, prompt injection nem rede do agente — basta ser spawnado. | `cmd.env_clear()` + allowlist + mapa `env` explícito do servidor. Nenhum nome com `key`/`token`/`secret`/`password`/`passphrase` pode entrar na allowlist (teste de unidade é o gate). | Residual: o filho roda com o **mesmo UID** do gateway e pode ler `/proc/<pid>/environ` do pai. Sandbox real do processo MCP segue no #1225; os limites atuais (`setrlimit`, PDEATHSIG) são limites de recurso, não confinamento. |
-| **E** Elevation of privilege | Servidor MCP usa uma credencial do gateway (ex.: `DATABASE_URL` do Postgres de workspace) para agir fora do escopo que o operador lhe deu. | A credencial não chega mais ao filho por herança. O que ele recebe é o que o operador declarou em `env` — auditável por servidor, e passível de ir ao cofre (`vault:mcp.<server>.<KEY>`). | — |
+| **E** Elevation of privilege | Servidor MCP usa uma credencial do gateway (ex.: `DATABASE_URL` do Postgres de workspace) para agir fora do escopo que o operador lhe deu. | A credencial não chega mais ao filho por herança. O que ele recebe é o que o operador declarou em `env` — auditável por servidor. Guardar esse valor no cofre (`vault:mcp.<server>.<KEY>`) só funciona pelo caminho `mcp.json` + admin API; no `config.yml` o valor é literal. | Resolver `vault:` também no boot do `config.yml` — hoje a referência chega ao filho como string. |
 | **D** Denial of service | Um servidor legado que dependia de variável herdada (`HTTP_PROXY`/`HTTPS_PROXY` corporativo, `NODE_OPTIONS`, `npm_config_*`) para de subir após a atualização. Bundles de CA (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`) estão na allowlist porque são caminhos; as variáveis de proxy não, porque a URL pode embutir credencial. | Válvula de escape por servidor `inherit_env: true`, que restaura a herança completa e emite `warn!` nomeando o servidor a cada conexão. Padrão `false`. | O caminho certo é migrar a variável para o mapa `env` do servidor; `inherit_env` é destravamento temporário, não configuração de regime. |
 
 O `warn!` de `inherit_env` leva apenas o **nome** do servidor — nunca nome
-nem valor de variável. A válvula existe só no `config.yml`/`mcp.json`:
-servidores criados pela admin API conectam sempre com o ambiente isolado.
+nem valor de variável — e é emitido no primeiro connect daquele servidor; os
+reconnects automáticos registram em `debug!`, para que um servidor em loop de
+restart não afogue o log justamente quando ele está sendo lido.
+
+A válvula existe só no `config.yml`/`mcp.json`. Servidores criados **ou
+reiniciados** pela admin API conectam sempre com o ambiente isolado, mesmo
+quando o `config.yml` declara `inherit_env: true` para aquele nome: o
+`McpServerConfig` do registro do gateway não carrega o campo e o handler de
+restart passa `false` explicitamente. É fail-safe na direção certa (o
+restart isola mais, nunca menos), mas é uma diferença silenciosa de
+comportamento entre subir pelo boot e reiniciar pela admin API.
 
 ---
 

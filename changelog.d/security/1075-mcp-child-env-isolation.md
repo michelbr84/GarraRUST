@@ -30,11 +30,19 @@
   embutir usuario e senha.
   A valvula de escape e `inherit_env: true` por servidor no `config.yml` /
   `mcp.json` (default `false`): devolve ao filho o ambiente completo, emite
-  `warn!` nomeando o servidor a cada conexao e nunca registra nome nem valor de
-  variavel. Ela existe para destravar um servidor legado enquanto o operador
-  migra a variavel para o mapa `env`, e nao esta disponivel na admin API —
-  servidor criado por ali conecta sempre isolado. A politica viaja junto dos
-  parametros de conexao, entao um reconnect automatico nao a troca em silencio.
+  `warn!` nomeando o servidor no primeiro connect (reconnects automaticos caem
+  para `debug!`, para nao afogar o log de um servidor em loop de restart) e
+  nunca registra nome nem valor de variavel. Ela existe para destravar um
+  servidor legado enquanto o operador migra a variavel para o mapa `env`, e
+  nao esta disponivel na admin API — servidor criado OU reiniciado por ali
+  conecta sempre isolado, mesmo que o `config.yml` declare `inherit_env: true`
+  para aquele nome. A politica viaja junto dos parametros de conexao, entao um
+  reconnect automatico do proprio gateway nao a troca em silencio.
+  Nota para quem for escrever `env` no `config.yml`: referencias
+  `vault:<chave>` sao resolvidas apenas no caminho `mcp.json` + admin API
+  (`McpPersistenceService::load_registry`). No boot do `config.yml`
+  (`ConfigLoader::merged_mcp_config`) o valor e copiado como esta, entao um
+  `vault:...` escrito ali chega ao filho como a string literal.
   A lacuna era de teste tanto quanto de codigo: o fixture de MCP agora expoe,
   atras da flag `--expose-env`, uma tool que relata o ambiente que o filho de
   fato recebeu, e os testes plantam uma variavel no processo de teste e afirmam
