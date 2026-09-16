@@ -323,7 +323,9 @@ pub fn admitir(
 /// Presenca **explicita** na allowlist — a pergunta que `is_allowed` nao faz
 /// quando o modo e aberto.
 pub fn esta_explicitamente_liberado(list: &Allowlist, remetente: &str) -> bool {
-    list.is_owner(remetente) || list.list_users().iter().any(|u| *u == remetente)
+    // `contains` e nao `iter().any()` por ordem do clippy; a semantica e a
+    // mesma: presenca EXPLICITA, sem consultar o modo da allowlist.
+    list.is_owner(remetente) || list.list_users().contains(&remetente)
 }
 
 /// O que fazer com uma mensagem antes de ela chegar perto do modelo.

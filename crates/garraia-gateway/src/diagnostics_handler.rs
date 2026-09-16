@@ -804,8 +804,10 @@ mod tests {
         use garraia_channels::ChannelRegistry;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut config = garraia_config::AppConfig::default();
-        config.data_dir = Some(dir.path().to_path_buf());
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
         let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
             config,
             std::sync::Arc::new(AgentRuntime::new()),

@@ -112,8 +112,10 @@ fn secao_com_tipo_errado_nao_liga_o_canal() {
 #[test]
 fn os_caminhos_saem_do_data_dir_resolvido() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut config = AppConfig::default();
-    config.data_dir = Some(dir.path().to_path_buf());
+    let config = AppConfig {
+        data_dir: Some(dir.path().to_path_buf()),
+        ..Default::default()
+    };
 
     let paths = LinkedPaths::from_config(&config);
     assert_eq!(
@@ -408,8 +410,10 @@ async fn o_boot_nao_sobe_canal_desligado_nem_canal_sem_sessao() {
 
     let dir = tempfile::tempdir().expect("tempdir");
 
-    let mut config = AppConfig::default();
-    config.data_dir = Some(dir.path().to_path_buf());
+    let config = AppConfig {
+        data_dir: Some(dir.path().to_path_buf()),
+        ..Default::default()
+    };
     let state: SharedState = Arc::new(crate::state::AppState::new(
         config,
         Arc::new(AgentRuntime::new()),
@@ -421,12 +425,16 @@ async fn o_boot_nao_sobe_canal_desligado_nem_canal_sem_sessao() {
         "sem secao na config nao ha canal"
     );
 
-    let mut config = AppConfig::default();
-    config.data_dir = Some(dir.path().to_path_buf());
-    config.channels.insert(
-        CONFIG_KEY.to_string(),
-        secao(Some(true), serde_json::json!({})),
-    );
+    let config = AppConfig {
+        data_dir: Some(dir.path().to_path_buf()),
+        channels: [(
+            CONFIG_KEY.to_string(),
+            secao(Some(true), serde_json::json!({})),
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
     let state: SharedState = Arc::new(crate::state::AppState::new(
         config,
         Arc::new(AgentRuntime::new()),
@@ -704,8 +712,10 @@ mod ponta_a_ponta {
     async fn sobe(liberado: bool) -> Cenario {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let mut config = AppConfig::default();
-        config.data_dir = Some(dir.path().to_path_buf());
+        let config = AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
 
         let agents = AgentRuntime::new();
         agents.register_provider(Arc::new(ProviderDeStub));

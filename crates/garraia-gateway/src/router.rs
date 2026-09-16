@@ -1993,8 +1993,10 @@ mod tests {
         dir: &std::path::Path,
         ponte: garraia_channels::whatsapp_linked::health::BridgeView,
     ) -> serde_json::Value {
-        let mut config = AppConfig::default();
-        config.data_dir = Some(dir.to_path_buf());
+        let config = AppConfig {
+            data_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
         let state = state_with(config);
         state.whatsapp_linked.set_bridge(ponte);
 
