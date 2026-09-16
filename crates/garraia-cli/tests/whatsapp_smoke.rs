@@ -119,6 +119,42 @@ fn top_level_help_mentions_whatsapp() {
     assert!(stdout.contains("whatsapp"), "{stdout}");
 }
 
+/// **F1 da auditoria R4, ponta a ponta.** O arquivado e uma credencial viva.
+/// `status` tem de fala-lo em voz alta e `logout` tem de apaga-lo — os testes
+/// unitarios afirmam o exit code e o disco, mas so este aqui le o que o
+/// usuario de fato ve no terminal.
+#[test]
+fn status_announces_an_archived_session_and_logout_removes_it() {
+    let dir = tempdir().expect("tempdir");
+    // O `status` decide pelo arquivo existir; conteudo nao importa aqui.
+    let account = dir.path().join("data").join("whatsapp").join("default");
+    std::fs::create_dir_all(&account).expect("mkdir");
+    let archived = account.join("session.enc.prev");
+    std::fs::write(&archived, b"credencial-arquivada").expect("write");
+
+    let status = garra(dir.path(), &["whatsapp", "status"]);
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("ARQUIVADA"),
+        "o status precisa anunciar o arquivado, nao so dizer que nada esta \
+vinculado:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("logout"),
+        "e precisa dizer como limpar:\n{stdout}"
+    );
+    assert!(archived.is_file(), "status e leitura: nao apaga nada");
+
+    // Sem TTY o `logout` nao pergunta e vai direto ao ponto.
+    let out = garra(dir.path(), &["whatsapp", "logout"]);
+    assert!(out.status.success(), "logout precisa aceitar o trabalho");
+    assert!(
+        !archived.exists(),
+        "a credencial arquivada tem de sumir:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 /// O comando chama-se `whatsapp`, e nao `whats-app`.
 ///
 /// Regressao real: o clap deriva o nome do subcomando em kebab-case a partir

@@ -348,6 +348,92 @@ fn logout_purges_the_material_and_disables_the_channel() {
     );
 }
 
+/// **F1 (auditoria R4, bloqueante).** Um re-vinculo abortado deixa
+/// `session.enc.prev` — uma credencial VIVA — no disco, com a `session.key` ao
+/// lado. Antes da correcao, `logout` respondia "Nada para desvincular." e saia
+/// 0, porque `store.exists()` so olha o `session.enc`. Os dois comandos que o
+/// usuario tem para limpar mentiam enquanto a credencial estava la.
+///
+/// O caminho nao e exotico: e o que acontece toda vez que o pareamento novo
+/// nao conclui — QR expirado, Ctrl+C, Node ausente, ponte travada.
+#[test]
+fn an_aborted_relink_leaves_nothing_that_logout_refuses_to_clean() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let store = ctx.store();
+    let key = ctx.key().expect("key");
+
+    // 1. sessao funcionando.
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhIjoxfQ=="),
+            &key,
+        )
+        .expect("save");
+
+    // 2. o usuario responde "sim" ao re-vincular: o `link` arquiva.
+    assert!(store.archive().expect("archive"));
+    assert!(!store.exists(), "o blob saiu do lugar");
+    assert!(
+        store.archive_path().is_file(),
+        "e virou .prev, ainda valido"
+    );
+
+    // 3. o pareamento novo NAO conclui. Nada restaura, nada apaga.
+
+    // 4. o usuario faz o obvio.
+    let prompter = ScriptedPrompter::with_confirms(&[true]);
+    assert_eq!(
+        run(Action::Logout, &ctx, &prompter),
+        0,
+        "logout precisa aceitar o trabalho"
+    );
+
+    // 5. e o material tem de sumir — este e o ponto.
+    assert!(
+        !store.archive_path().exists(),
+        "a sessao arquivada e uma credencial viva: logout tem de apaga-la"
+    );
+    assert!(!store.key_path().exists(), "a chave ao lado dela tambem");
+    assert!(!store.salt_path().exists());
+}
+
+/// O outro lado do F1: o estado nao pode ser invisivel. `status` tem de dizer
+/// que ha material arquivado, em vez de afirmar que nao ha nada vinculado e
+/// parar por ai.
+#[test]
+fn status_reports_an_archived_session_instead_of_claiming_there_is_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let store = ctx.store();
+    let key = ctx.key().expect("key");
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhIjoxfQ=="),
+            &key,
+        )
+        .expect("save");
+    store.archive().expect("archive");
+
+    // Continua "nao vinculado" — isso e verdade —, mas nao pode ser 0, e o
+    // usuario precisa saber que sobrou credencial.
+    assert_eq!(run(Action::Status, &ctx, &ScriptedPrompter::default()), 69);
+    assert!(
+        store.archive_path().is_file(),
+        "status e leitura: nao apaga nada"
+    );
+}
+
+/// `logout` num diretorio de verdade vazio continua sendo no-op de sucesso —
+/// a correcao do F1 nao pode transformar isso em trabalho ou em erro.
+#[test]
+fn logout_with_neither_a_session_nor_an_archive_is_still_a_no_op() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let prompter = ScriptedPrompter::with_confirms(&[true]);
+    assert_eq!(run(Action::Logout, &ctx, &prompter), 0);
+}
+
 #[test]
 fn logout_answered_no_keeps_everything() {
     let dir = tempfile::tempdir().expect("tempdir");

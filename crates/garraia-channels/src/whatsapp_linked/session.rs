@@ -134,14 +134,35 @@ pub enum KeyOrigin {
 }
 
 impl KeyOrigin {
-    /// Aviso a exibir no `garra whatsapp status`, ou `None` quando nao ha o que
-    /// avisar.
+    /// Aviso a exibir, ou `None` quando nao ha o que avisar.
+    ///
+    /// **F5 da auditoria R4**: o texto anterior nomeava a correcao
+    /// (`defina GARRAIA_VAULT_PASSPHRASE`) sem nomear a **exposicao**, e quem
+    /// nao sabe o que a passphrase protege nao tem como decidir. Agora diz o
+    /// risco concreto — a chave fica no mesmo diretorio do arquivo cifrado,
+    /// entao qualquer copia do diretorio leva a sessao junto.
     pub fn warning(self) -> Option<&'static str> {
         match self {
             KeyOrigin::VaultPassphrase => None,
-            KeyOrigin::RandomKeyFile => {
-                Some("chave da sessao sem passphrase do cofre — defina GARRAIA_VAULT_PASSPHRASE")
-            }
+            KeyOrigin::RandomKeyFile => Some(
+                "a chave da sessao esta em session.key, no MESMO diretorio do arquivo \
+cifrado: um backup do seu home, um snapshot do container ou um disco roubado \
+levam a sessao junto. Defina GARRAIA_VAULT_PASSPHRASE para a chave deixar de \
+tocar o disco.",
+            ),
+        }
+    }
+
+    /// Mesma advertencia em ingles, para a tela de consentimento.
+    pub fn warning_en(self) -> Option<&'static str> {
+        match self {
+            KeyOrigin::VaultPassphrase => None,
+            KeyOrigin::RandomKeyFile => Some(
+                "the session key lives in session.key, in the SAME directory as the \
+encrypted file: a backup of your home, a container snapshot or a stolen disk \
+takes the session with it. Set GARRAIA_VAULT_PASSPHRASE so the key never \
+touches disk.",
+            ),
         }
     }
 }

@@ -89,6 +89,13 @@ e sai 69. O teto e do GarraIA, nao da ponte: a ponte reconectaria para sempre.
 
 `<data_dir>` e o `data_dir` da config, ou `~/.config/garraia/data` por padrao.
 
+**`session.enc.prev` tambem e uma credencial viva.** Ele nasce quando voce
+responde "sim" ao re-vincular e sobrevive a qualquer pareamento que nao termine
+(QR expirado, `Ctrl+C`, Node ausente). Por isso `garra whatsapp status` o
+reporta mesmo quando nao ha sessao ativa, e `garra whatsapp logout` o apaga —
+sem isso, os dois comandos afirmariam que nao ha nada enquanto a credencial
+estivesse no disco.
+
 **O blob de sessao e a conta.** Quem o tem fala como voce, le seu historico e
 nao precisa do seu telefone. Trate-o como senha.
 
@@ -101,11 +108,14 @@ nao precisa do seu telefone. Trate-o como senha.
 | Outro usuario do sistema (UID diferente) | protegido pelo modo 0600/0700 | protegido pelo modo 0600/0700 |
 | Root, ou seu proprio usuario | nao protegido | nao protegido |
 
-Por isso `garra whatsapp status` avisa, em letras claras, quando a chave esta no
-disco:
+Por isso o aviso aparece **na tela de consentimento**, antes de a pessoa
+decidir, e de novo no `garra whatsapp status`:
 
 ```text
-⚠ chave da sessao sem passphrase do cofre — defina GARRAIA_VAULT_PASSPHRASE
+⚠ a chave da sessao esta em session.key, no MESMO diretorio do arquivo
+  cifrado: um backup do seu home, um snapshot do container ou um disco
+  roubado levam a sessao junto. Defina GARRAIA_VAULT_PASSPHRASE para a
+  chave deixar de tocar o disco.
 ```
 
 Detalhes do que e feito:
@@ -142,9 +152,13 @@ um, o comando sai 69 com o link de instalacao e lembra que a opcao 2 (Cloud API)
 nao precisa de Node.
 
 Na primeira execucao o GarraIA materializa a ponte em
-`<data_dir>/whatsapp/bridge/` (0700) e roda `npm install --no-fund --no-audit`.
-Uma atualizacao do `garra` que traga uma ponte nova reescreve o diretorio
-sozinha — o carimbo `.garraia-bridge-sha256` e quem detecta.
+`<data_dir>/whatsapp/bridge/` (0700) e roda `npm ci --no-fund --no-audit`.
+`npm ci` e nao `npm install`: o `package-lock.json` e versionado e o pin exato
+do Baileys faz parte do contrato — e a mesma arvore que o CI audita. Uma
+atualizacao do `garra` que traga uma ponte nova reescreve o diretorio sozinha
+(o carimbo `.garraia-bridge-sha256` e quem detecta) **e reinstala as
+dependencias**, para um bump de versao por CVE nao ficar parado atras de um
+`node_modules` antigo.
 
 Como o filho e contido:
 

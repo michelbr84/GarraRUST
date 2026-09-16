@@ -96,10 +96,10 @@ Atualize com `garra update` ou apague {dir} para reinstalar o bridge."
     )]
     ProtocolVersion { found: u32, dir: String },
 
-    #[error("`npm install` falhou (codigo {code}):\n{tail}")]
+    #[error("`npm ci` falhou (codigo {code}):\n{tail}")]
     NpmInstall { code: String, tail: String },
 
-    #[error("`npm install` passou de {}s sem terminar", NPM_INSTALL_TIMEOUT.as_secs())]
+    #[error("`npm ci` passou de {}s sem terminar", NPM_INSTALL_TIMEOUT.as_secs())]
     NpmTimeout,
 
     /// O bridge nao respondeu dentro do prazo do driver.
@@ -272,15 +272,27 @@ pub fn deps_installed(dir: &Path) -> bool {
     dir.join("node_modules").is_dir()
 }
 
-/// Roda `npm install --no-fund --no-audit --progress=false` em `dir`.
+/// Roda `npm ci --no-fund --no-audit --progress=false` em `dir`.
+///
+/// **`ci`, e nao `install`** (F2 da auditoria R4). O `package-lock.json` e
+/// versionado e o pin exato do Baileys faz parte do contrato — e o que o
+/// bridge reporta em `started.baileys_version`, e e a arvore cujo `integrity`
+/// o CI audita. `npm install` pode resolver para outra coisa, o que jogaria
+/// fora essa garantia exatamente no unico lugar onde ela protege alguem: a
+/// maquina do usuario. `ci` e seguro aqui porque [`materialize`] escreve
+/// `package.json` **e** `package-lock.json` do mesmo commit embutido, entao os
+/// dois nunca ficam dessincronizados — que e a unica pre-condicao do `ci`.
+///
+/// Efeito colateral desejado: `npm ci` **apaga e recria** o `node_modules`, o
+/// que torna o upgrade de dependencia correto por construcao (F3).
 ///
 /// Este e o **unico** lugar do fluxo em que saida crua de ferramenta externa
 /// aparece para o usuario, e so no caminho de falha: as ultimas
 /// [`STDERR_TAIL_LINES`] linhas de stderr. Sem isso, "instalacao falhou" e um
 /// beco sem saida; com o log inteiro, e ruido que esconde a linha que importa.
-pub async fn npm_install(npm: &Path, dir: &Path) -> Result<(), BridgeError> {
+pub async fn npm_ci(npm: &Path, dir: &Path) -> Result<(), BridgeError> {
     let mut cmd = Command::new(npm);
-    cmd.args(["install", "--no-fund", "--no-audit", "--progress=false"])
+    cmd.args(["ci", "--no-fund", "--no-audit", "--progress=false"])
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -814,6 +826,39 @@ mod tests {
                     "{name} parece carregar segredo e nao pode estar na allowlist"
                 );
             }
+        }
+
+        // F4 da auditoria R4: a varredura por segredo acima nao pega o vetor
+        // que de fato importa aqui. Estas variaveis nao VAZAM nada — elas dao
+        // **execucao de codigo** dentro do filho, carregando biblioteca ou
+        // modulo escolhido por quem conseguir escreve-las no ambiente do
+        // gateway. Nenhuma delas casa com "KEY|SECRET|TOKEN|...", entao
+        // precisam ser proibidas pelo nome.
+        const CODE_EXECUTION_VECTORS: &[&str] = &[
+            "NODE_OPTIONS",
+            "NODE_PATH",
+            "NODE_REPL_EXTERNAL_MODULE",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+        ];
+        for vector in CODE_EXECUTION_VECTORS {
+            assert!(
+                !all.iter().any(|name| name.eq_ignore_ascii_case(vector)),
+                "{vector} da execucao de codigo no filho e nao pode ser herdada"
+            );
+        }
+
+        // `NPM_CONFIG_*` e familia inteira, nao nome unico: `NPM_CONFIG_SCRIPT_SHELL`
+        // troca o shell dos lifecycle scripts e `NPM_CONFIG_REGISTRY` troca de onde
+        // o pacote vem. Prefixo, entao.
+        for name in &all {
+            assert!(
+                !name.to_uppercase().starts_with("NPM_CONFIG_"),
+                "{name} reconfigura o npm (registry, script-shell) e nao pode ser herdada"
+            );
         }
         assert!(all.contains(&"PATH"), "node precisa de PATH");
         assert!(all.contains(&"HOME"), "node precisa de HOME");

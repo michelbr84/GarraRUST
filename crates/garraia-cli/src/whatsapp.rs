@@ -263,6 +263,7 @@ fn status(ctx: &Context) -> i32 {
                 "No personal WhatsApp linked."
             )
         );
+        print_archive_warning(ctx, &store);
         println!(
             "{}",
             t(
@@ -280,6 +281,7 @@ fn status(ctx: &Context) -> i32 {
         t(ctx.lang, "Sessão:", "Session:"),
         store.blob_path().display()
     );
+    print_archive_warning(ctx, &store);
 
     match ctx.key() {
         Ok(key) => {
@@ -341,11 +343,47 @@ fn status(ctx: &Context) -> i32 {
     0
 }
 
+/// Avisa sobre `session.enc.prev`, quando existir.
+///
+/// **F1 da auditoria R4.** O arquivado e uma credencial **viva**: quem o tem
+/// fala como o usuario. Ele nasce quando alguem responde "sim" ao re-vincular
+/// e sobrevive a qualquer pareamento que nao conclua — QR expirado, Ctrl+C,
+/// Node ausente. Um `status` que nao o mostra deixa o estado invisivel, e foi
+/// isso que permitiu o `logout` recusar o trabalho.
+fn print_archive_warning(ctx: &Context, store: &SessionStore) {
+    if !store.archive_path().is_file() {
+        return;
+    }
+    println!();
+    println!(
+        "⚠ {}",
+        t(
+            ctx.lang,
+            "Ha uma sessão ARQUIVADA neste aparelho, de um re-vínculo que não terminou:",
+            "There is an ARCHIVED session on this machine, from a re-link that never finished:"
+        )
+    );
+    println!("  {}", store.archive_path().display());
+    println!(
+        "  {}",
+        t(
+            ctx.lang,
+            "Ela ainda é uma credencial válida. Apague com: garra whatsapp logout",
+            "It is still a valid credential. Delete it with: garra whatsapp logout"
+        )
+    );
+}
+
 fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     let store = ctx.store();
     print_header(ctx);
 
-    if !store.exists() {
+    // F1: `exists()` olha so o `session.enc`. O arquivado e igualmente uma
+    // credencial viva, entao "nao ha nada" so e verdade quando os DOIS
+    // sumiram — senao o comando que existe para limpar recusa o trabalho e
+    // ainda responde 0, afirmando que limpou.
+    let archived = store.archive_path().is_file();
+    if !store.exists() && !archived {
         println!(
             "{}",
             t(ctx.lang, "Nada para desvincular.", "Nothing to unlink.")
@@ -354,11 +392,20 @@ fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     }
 
     if ctx.interactive {
-        let prompt = t(
-            ctx.lang,
-            "Desvincular e apagar a sessão deste aparelho?",
-            "Unlink and delete this device's session?",
-        );
+        let prompt = if store.exists() {
+            t(
+                ctx.lang,
+                "Desvincular e apagar a sessão deste aparelho?",
+                "Unlink and delete this device's session?",
+            )
+        } else {
+            // So sobrou o arquivado: dizer "desvincular" seria impreciso.
+            t(
+                ctx.lang,
+                "Apagar a sessão arquivada deste aparelho?",
+                "Delete the archived session on this machine?",
+            )
+        };
         match prompter.confirm(prompt, false) {
             Ok(true) => {}
             Ok(false) | Err(_) => {
@@ -474,10 +521,19 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     };
 
     let bridge_dir = ctx.bridge_dir();
-    if let Err(e) = bridge::materialize(&bridge_dir, &bridge::EmbeddedAssets) {
-        eprintln!("{e}");
-        return EX_SOFTWARE;
-    }
+    // F3 da auditoria R4: o retorno NAO pode ser descartado. `Written`
+    // significa que o `package.json`/`package-lock.json` embutidos mudaram —
+    // tipicamente um `garra update` que bumpou o Baileys por causa de CVE. Se
+    // a decisao de reinstalar olhasse so para `node_modules/` existir, o npm
+    // nunca rodaria e a ponte subiria com a versao vulneravel indefinidamente,
+    // reportando a versao velha em `started.baileys_version`.
+    let materialized = match bridge::materialize(&bridge_dir, &bridge::EmbeddedAssets) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -487,7 +543,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         }
     };
 
-    if !bridge::deps_installed(&bridge_dir) {
+    if materialized == bridge::Materialized::Written || !bridge::deps_installed(&bridge_dir) {
         println!(
             "→ {}",
             t(
@@ -496,7 +552,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                 "Installing bridge dependencies (this can take a few minutes)…"
             )
         );
-        if let Err(e) = runtime.block_on(bridge::npm_install(&node.npm, &bridge_dir)) {
+        if let Err(e) = runtime.block_on(bridge::npm_ci(&node.npm, &bridge_dir)) {
             eprintln!();
             eprintln!("{e}");
             return EX_UNAVAILABLE;
@@ -636,6 +692,20 @@ fn consent(ctx: &Context, prompter: &dyn Prompter) -> bool {
     for line in consent_body(ctx.lang) {
         println!("  {line}");
     }
+    // F5: ate aqui o aviso do modo sem cofre so existia no `status` — depois
+    // de a conta ja estar vinculada. Ele pertence ao momento em que a pessoa
+    // decide, e precisa dizer a exposicao, nao so a variavel a definir.
+    if let Ok(key) = ctx.key() {
+        let warning = match ctx.lang {
+            Lang::Pt => key.origin().warning(),
+            Lang::En => key.origin().warning_en(),
+        };
+        if let Some(warning) = warning {
+            println!();
+            println!("  ⚠ {warning}");
+        }
+    }
+
     println!();
     let prompt = t(
         ctx.lang,
@@ -662,6 +732,10 @@ pub fn consent_body(lang: Lang) -> &'static [&'static str] {
             "",
             "Se você precisa de suporte oficial, escolha a opção 2 do menu",
             "(WhatsApp Business / Cloud API da Meta).",
+            "",
+            "A sessão fica cifrada no seu computador e É a conta: quem tiver o",
+            "arquivo fala como você, sem precisar do seu telefone. Trate-o como",
+            "senha, inclusive nos backups.",
         ],
         Lang::En => &[
             "Linking by QR uses WhatsApp's \"linked device\" feature through an",
@@ -675,6 +749,10 @@ pub fn consent_body(lang: Lang) -> &'static [&'static str] {
             "",
             "If you need official support, pick option 2 in the menu",
             "(WhatsApp Business / Meta Cloud API).",
+            "",
+            "The session is stored encrypted on your computer and IS the account:",
+            "whoever holds that file speaks as you, without needing your phone.",
+            "Treat it like a password, backups included.",
         ],
     }
 }
