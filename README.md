@@ -519,6 +519,12 @@ the comparison section above for the evidence trail).
   cap (setrlimit, Unix), startup timeout, auto-restart with exponential
   backoff. These are resource limits, not a sandbox: MCP processes keep
   filesystem/network access.
+- **MCP child environment isolation** — a stdio MCP server is spawned with
+  an environment built from scratch: a minimal allowlist (`PATH`, `HOME`,
+  locale, temp dir) plus that server's own `env` map. Gateway secrets
+  (`GARRAIA_JWT_SECRET`, provider API keys, vault passphrase) never reach
+  a third-party MCP binary. Per-server `inherit_env: true` restores the
+  old behaviour and warns on every connect.
 - **WASM plugin sandbox** — optional (`--features plugins`): per-plugin
   memory caps and execution deadlines via wasmtime.
 - **Heuristic input filtering** — control-character sanitization plus a
