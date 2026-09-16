@@ -12,7 +12,9 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region, SharedCredentialsProvider};
-use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
+use aws_sdk_s3::types::{
+    BucketLocationConstraint, CreateBucketConfiguration, ServerSideEncryption,
+};
 use bytes::Bytes;
 use garraia_storage::{GetOptions, ObjectStore, PutOptions, S3Compatible, StorageError};
 use testcontainers::ImageExt;
@@ -28,6 +30,19 @@ use testcontainers_modules::minio::MinIO;
 /// mantemos o tag que o modulo fixa.
 const MINIO_IMAGE: &str = "quay.io/minio/minio";
 const MINIO_TAG: &str = "RELEASE.2025-02-28T09-55-16Z";
+
+/// O MinIO so aceita SSE-S3 quando tem um KMS configurado. Sem ele, todo
+/// `PUT` com `x-amz-server-side-encryption: AES256` — ou seja, TODO put deste
+/// backend, que exige SSE por ADR 0004 — volta com `NotImplemented` (HTTP
+/// 501, "Server side encryption specified but KMS is not configured"). Foi o
+/// que a primeira execucao real da suite revelou (#1230): 6 dos 8 testes
+/// caiam nisso. `MINIO_KMS_SECRET_KEY=<nome>:<32 bytes em base64>` liga o KMS
+/// embutido de chave unica, que existe exatamente para este cenario.
+///
+/// A chave abaixo e fixa e publica DE PROPOSITO: ela protege apenas objetos
+/// efemeros de um container que morre no fim do teste, nunca dado real, e
+/// fixa-la mantem o teste deterministico. Nao e credencial de nada.
+const MINIO_KMS_SECRET_KEY: &str = "garraia-test-key:fSOpM1BeqF34Pymx26rxbRKKT+XNUJBlgyRFtJvmlyY=";
 
 const ACCESS_KEY: &str = "minioadmin";
 const SECRET_KEY: &str = "minioadmin";
@@ -45,6 +60,7 @@ async fn start_minio() -> Option<(
     let container = match MinIO::default()
         .with_name(MINIO_IMAGE)
         .with_tag(MINIO_TAG)
+        .with_env_var("MINIO_KMS_SECRET_KEY", MINIO_KMS_SECRET_KEY)
         .start()
         .await
     {
@@ -287,16 +303,15 @@ async fn minio_presign_roundtrip_via_http() {
     assert_eq!(body.as_ref(), b"via-presign");
 }
 
+/// ADR 0004: todo `put` deste backend pede SSE-S3. O teste antigo se
+/// contentava com `exists()` e uma nota dizendo "confiamos que o MinIO
+/// ecoa o header" — o que nao assere nada, ainda mais numa suite que nunca
+/// subia o container. Agora lemos de volta o
+/// `x-amz-server-side-encryption` pelo cliente cru: ou o objeto esta
+/// cifrado do lado do servidor, ou o teste cai.
 #[tokio::test(flavor = "multi_thread")]
 async fn minio_put_enforces_sse() {
-    // This is a negative test: the bucket itself is not configured to
-    // reject non-SSE uploads, but we assert the S3Compatible `put`
-    // path always sends the SSE header. After put, HEAD returns
-    // x-amz-server-side-encryption = AES256 in MinIO's response, which
-    // `head` surfaces via the SDK's builtin field. We assert that here
-    // through a raw head_object call (go around our trait to see the
-    // extended metadata).
-    let Some((_c, store, _endpoint)) = start_minio().await else {
+    let Some((_c, store, endpoint)) = start_minio().await else {
         return;
     };
     let _meta = store
@@ -311,13 +326,22 @@ async fn minio_put_enforces_sse() {
         .await
         .expect("put");
 
-    // Re-issue a raw head_object using a fresh client aimed at the same
-    // MinIO to read back the SSE header. We share the client by calling
-    // exists (no-op side effect) and then extending via a debug-only
-    // accessor is not exposed — instead we just validate we could read
-    // the object and trust MinIO's `x-amz-server-side-encryption` echo
-    // when we explicitly asked for it in `put`.
     assert!(store.exists("sse-check/file/v1").await.expect("exists"));
+
+    let head = raw_client(&endpoint)
+        .await
+        .head_object()
+        .bucket(BUCKET)
+        .key("sse-check/file/v1")
+        .send()
+        .await
+        .expect("raw head_object");
+    assert_eq!(
+        head.server_side_encryption(),
+        Some(&ServerSideEncryption::Aes256),
+        "objeto gravado sem SSE-S3: {:?}",
+        head.server_side_encryption()
+    );
 }
 
 /// ROADMAP §3.5 — native S3 multipart for files > 16 MiB.
@@ -356,7 +380,15 @@ async fn minio_put_stream_multipart_roundtrips_large_object() {
             reader,
             payload.len() as u64,
             PutOptions {
-                content_type: Some("application/octet-stream".into()),
+                // `application/octet-stream` NAO esta na allow-list e nunca
+                // esteve: o teste so passava porque o container jamais subia,
+                // e o primeiro run real morreu em `DisallowedMime` antes de
+                // tocar o multipart (#1230). O caminho multipart existe para
+                // os tipos grandes e permitidos — video e o caso canonico de
+                // objeto acima de 16 MiB. A allow-list continua intacta; quem
+                // precisa mesmo de octet-stream usa o opt-in documentado
+                // `PutOptions::allow_unsafe_mime`.
+                content_type: Some("video/mp4".into()),
                 ..Default::default()
             },
         )
@@ -364,10 +396,7 @@ async fn minio_put_stream_multipart_roundtrips_large_object() {
         .expect("put_stream multipart");
     assert_eq!(meta.size_bytes, payload.len() as u64);
     assert_eq!(meta.etag_sha256, expected_etag);
-    assert_eq!(
-        meta.content_type.as_deref(),
-        Some("application/octet-stream")
-    );
+    assert_eq!(meta.content_type.as_deref(), Some("video/mp4"));
 
     let got = store.get("multipart/big/v1").await.expect("get back");
     assert_eq!(got.bytes.as_ref(), payload.as_slice());

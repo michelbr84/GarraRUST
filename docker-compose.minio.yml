@@ -31,6 +31,12 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      # Sem KMS o MinIO recusa SSE-S3 com `NotImplemented` (HTTP 501), e como
+      # ADR 0004 exige `x-amz-server-side-encryption: AES256` em todo `put`,
+      # o gateway nao conseguiria gravar UM objeto sequer contra este MinIO.
+      # Esta e a chave de teste do KMS embutido, dev-only como as credenciais
+      # acima: `<nome>:<32 bytes em base64>`.
+      MINIO_KMS_SECRET_KEY: ${MINIO_KMS_SECRET_KEY:-garraia-dev-key:fSOpM1BeqF34Pymx26rxbRKKT+XNUJBlgyRFtJvmlyY=}
     volumes:
       - minio-data:/data
     healthcheck:
