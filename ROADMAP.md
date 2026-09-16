@@ -42,7 +42,7 @@
 - `garraia-db`: SQLite via rusqlite (sessions, messages, memory, chat_sync, mobile_users).
 - `garraia-security`: `CredentialVault` AES-256-GCM + PBKDF2 (parcial).
 - `garraia-channels`: adapters Telegram/Discord/Slack/WhatsApp/iMessage.
-- `garraia-voice`: STT Whisper (dual endpoint) + TTS (Chatterbox/ElevenLabs/Kokoro stubs).
+- `garraia-voice`: STT Whisper (dual endpoint) + TTS (Chatterbox/Hibiki/LM Studio OpenAI-compativel). Os adaptadores ElevenLabs e Kokoro estao em `garraia-channels::voice_channel`, atras da feature `voice` que nenhuma crate liga, e nao sao alcancaveis pelo gateway.
 - Mobile (Flutter): auth JWT + chat + mascote — roda no emulator Android.
 - Desktop (Tauri v2): overlay do papagaio + bandeja + hotkeys + notificações/diálogos nativos + Chat Bar (`Ctrl+Space`, v0.3.5), com a CLI como sidecar. Instaladores Windows MSI/NSIS (job best-effort `build-windows-installer`, desde 2026-08-30) e Linux `.deb`/AppImage x86_64 (job `build-linux-desktop`, v0.3.5 em 2026-09-01). Sem assinatura de codigo (SmartScreen avisa), sem DMG, e com `tauri-plugin-updater` ligado mas inerte (nenhum workflow publica `latest.json`) -- ver `docs/releasing.md`.
 
@@ -729,7 +729,7 @@ Novo crate: `garraia-storage`.
 
 - [x] Abstração `trait ObjectStore` com impls `LocalFs` e `S3Compatible` (via `aws-sdk-s3`, feature `storage-s3`; MinIO via `endpoint_url` + path-style, não impl separada) — plans 0037/0038 / GAR-394 ✅
 - [x] **Presigned URLs** (PUT/GET) com TTL em [30s, 900s] — só no `S3Compatible` (`LocalFs` responde unsupported) ✅
-- [x] **Multipart upload** nativo do S3 para arquivos > 16 MiB ✅ (`put_stream` no `S3Compatible` faz `create/upload/complete` em partes de 8 MiB com abort em falha; testado contra MinIO testcontainer — 24 MiB em 3 partes, round-trip byte-a-byte)
+- [x] **Multipart upload** nativo do S3 para arquivos > 16 MiB ✅ (`put_stream` no `S3Compatible` faz `create/upload/complete` em partes de 8 MiB com abort em falha; 24 MiB em 3 partes, round-trip byte-a-byte — cobertura real via MinIO testcontainer confirmada em 2026-09-16 pela #1230, depois que a #1214 a levou para a matriz de CI: ate entao os 8 testes de `s3_integration.rs` se auto-puravam calados porque `minio/minio` saiu do Docker Hub, e "testado contra MinIO" nao era reproduzivel em lugar nenhum. Ainda sem checksum server-side por parte acima de 16 MiB — #1229.)
 - [x] **tus 1.0** server implementation para clientes mobile — `POST`/`OPTIONS /v1/uploads`, `HEAD`/`PATCH`/`DELETE /v1/uploads/{id}`, migrations 014 + 032 (plans 0041/0044/0047 / GAR-395, PR #62) ✅
 - [ ] **Versionamento**: `file_versions` por update + soft delete (`deleted_at`) ✅ (migration 003, plans 0094/0095); lixeira com retenção configurável / purge worker ainda pendente.
 - [ ] **Criptografia em repouso**: SSE-S3 obrigatório em todo `put` do `S3Compatible` ✅ (ADR 0004 §Security); SSE-KMS e chave local via `CredentialVault` para `LocalFs` pendentes.

@@ -20,7 +20,66 @@ política disponíveis:
 | `maxRestarts` / `restartDelaySecs` | `max_restarts` / `restart_delay_secs` | política de restart com backoff |
 | `timeoutSecs` | `timeout` | timeout de inicialização |
 | — | `allowed_tools` | **allowlist de tools do servidor** (vazio = todas) |
-| `env` com valores sensíveis | idem | viram `vault:mcp.<server>.<KEY>` quando `GARRAIA_VAULT_PASSPHRASE` está setada |
+| — | `inherit_env` | válvula de escape do isolamento de ambiente (padrão `false`) |
+| `env` com valores sensíveis | idem | viram `vault:mcp.<server>.<KEY>` quando `GARRAIA_VAULT_PASSPHRASE` está setada — **apenas no caminho `mcp.json` + admin API** (ver abaixo) |
+
+## Ambiente do processo filho
+
+O processo de um servidor MCP stdio **não** herda o ambiente do gateway.
+Ele é montado do zero, nesta ordem:
+
+1. Uma allowlist mínima do ambiente do gateway — `PATH`, `HOME`, `LANG`,
+   `LC_ALL`, `LC_CTYPE`, `TERM`, `USER`, `LOGNAME`, `TMPDIR`, `TZ`,
+   `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS` (mais o
+   complemento da plataforma: `SystemRoot`/`COMSPEC`/`APPDATA` e afins no
+   Windows, `PREFIX`/`LD_PRELOAD` no Termux). Só caminhos, locale e
+   identidade: nada que carregue credencial. `HTTP_PROXY`/`HTTPS_PROXY`
+   ficam de fora porque uma URL de proxy pode embutir usuário e senha —
+   declare no `env` do servidor se precisar.
+2. O mapa `env` **daquele servidor**, por cima — é aqui que o operador
+   coloca de propósito o `GITHUB_TOKEN`, a URL do banco, etc. O que está
+   no mapa vence o que veio da allowlist.
+
+Até a versão anterior o filho recebia o ambiente inteiro do gateway:
+`GARRAIA_JWT_SECRET`, `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`,
+`GarraIA_VAULT_PASSPHRASE` e tudo que o `.env` tivesse carregado. Como
+servidores MCP são rotineiramente pacotes de terceiro baixados na hora
+por `npx`, isso entregava o cofre inteiro a código não auditado.
+
+Se um servidor legado depender de alguma variável do gateway, o caminho
+certo é declará-la no `env` dele. `inherit_env: true` existe só como
+destravamento temporário — devolve o ambiente completo ao filho e emite
+um `warn!` nomeando o servidor a cada conexão:
+
+```yaml
+mcp:
+  servidor-legado:
+    command: npx
+    args: ["-y", "algum-server"]
+    env:
+      GITHUB_TOKEN: "ghp_..."
+    # inherit_env: true   # NÃO faça isto sem entender o que entrega
+```
+
+> **`vault:` não vale no `config.yml`.** A resolução de referências
+> `vault:<chave>` acontece no `McpPersistenceService::load_registry`, que
+> serve os servidores gerenciados por `mcp.json` + admin API. O caminho de
+> boot do `config.yml` (`ConfigLoader::merged_mcp_config`) copia o mapa `env`
+> como está, então um `vault:mcp.foo.BAR` escrito ali chega ao processo filho
+> literalmente, como a string `"vault:mcp.foo.BAR"` — não como o segredo.
+> Para um servidor declarado no `config.yml`, use o valor literal; para
+> guardar o segredo no cofre, declare o servidor via `mcp.json`/admin API.
+> Fechar essa assimetria e a issue #1237.
+
+`inherit_env` só existe no `config.yml`/`mcp.json`. Servidores criados **ou
+reiniciados** pela admin API conectam sempre isolados, mesmo que o
+`config.yml` declare `inherit_env: true` para aquele nome: o registro do
+gateway (`crates/garraia-gateway/src/mcp/mod.rs::McpServerConfig`) não
+carrega o campo, e o restart passa `false` explicitamente. Na prática, um
+`POST /admin/mcp/<nome>/restart` num servidor que subiu do `config.yml` com
+`inherit_env: true` o traz de volta SEM a herança — a diferença é
+silenciosa, e é o motivo de `inherit_env` ser destravamento temporário e não
+configuração de regime.
 
 ## Receita 1 — Filesystem com escopo restrito
 
@@ -117,6 +176,8 @@ reais, todos com implicações fortes de segurança:
 - [ ] Escopo mínimo (diretório, banco, credencial read-only)
 - [ ] `memoryLimitMb` definido
 - [ ] `allowed_tools` no `config.yml` quando o servidor expõe mais do que você quer
+- [ ] Variáveis que o servidor precisa declaradas no `env` dele (o filho
+      não herda o ambiente do gateway) e `inherit_env` deixado em `false`
 - [ ] Secrets com nome sensível (para irem ao cofre) + `GARRAIA_VAULT_PASSPHRASE` setada
 - [ ] `tool_confirmation_enabled: true` no `agent`
 - [ ] `garra mcp list` / `garra mcp inspect <nome>` para conferir o que ficou exposto

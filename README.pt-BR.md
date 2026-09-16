@@ -342,7 +342,7 @@ cenário — corrigimos a tabela, não o resultado.
 - **Telegram** - respostas streaming, MarkdownV2, comandos do bot, indicadores de digitação, lista de permissões de usuários com códigos de pareamento
 - **Discord** - comandos slash, tratamento de mensagens orientado a eventos, gerenciamento de sessões
 - **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
-- **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento
+- **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento (WhatsApp pessoal por dispositivo vinculado, com QR code, está planejado para a v0.4.3 — [ADR 0023](docs/adr/0023-whatsapp-dispositivo-vinculado.md))
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/src/channels/imessage.md))
 - **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
 - **Claude Code** - via shim Anthropic-compatible `POST /v1/messages` ([ADR 0014](docs/adr/0014-anthropic-messages-shim.md)); `garra agents setup|status|link|rollback|web` provisiona GarraIA, OpenClaw, Hermes e Claude Code com um mesmo provedor+modelo via AgentDeck

@@ -116,17 +116,43 @@ Alternative GPU TTS. There is no published GarraIA image for it either —
 follow the upstream project's own instructions and point
 `voice.tts_endpoint` at whatever host and port you start it on.
 
-### OpenAI TTS
+### LM Studio (OpenAI-compatible)
 
-Cloud-based TTS:
+Any server that speaks the OpenAI `POST /v1/audio/speech` shape, such as
+LM Studio, is driven by the `lmstudio` provider. Point `tts_endpoint` at
+that server and name the model it serves:
 
 ```yaml
 voice:
   enabled: true
-  tts_provider: openai
-  tts_model: "tts-1-hd"
-  tts_voice: "alloy"
+  tts_provider: lmstudio
+  tts_endpoint: "http://127.0.0.1:1234"
+  tts_model: "vieneu-tts-v2-turbo"
 ```
+
+`tts_model` defaults to `vieneu-tts-v2-turbo` when omitted. GarraIA runs a
+health check against the endpoint at startup and warns if it is
+unreachable, but still boots.
+
+### Accepted values for `tts_provider`
+
+Only three values do anything today:
+
+| Value | Client | Notes |
+|---|---|---|
+| `chatterbox` | Chatterbox over the Gradio API | The default, and the fallback |
+| `hibiki` | Hibiki, at `voice.hibiki_endpoint` | Note: its own endpoint key, not `tts_endpoint` |
+| `lmstudio` | Any OpenAI-compatible `/v1/audio/speech` server | Uses `tts_endpoint` + `tts_model` |
+
+**Any other value silently falls back to Chatterbox.** There is no
+`openai` provider and no `tts_voice` key: `VoiceConfig` has exactly
+`enabled`, `tts_provider`, `tts_model`, `tts_endpoint`, `stt_endpoint`,
+`hibiki_endpoint` and `language`. Earlier versions of this page documented
+both, and neither was ever read.
+
+ElevenLabs and Kokoro adapters exist in `garraia-channels::voice_channel`,
+behind the `voice` feature, which no crate in the workspace enables. They
+are not reachable from the gateway and are not options here.
 
 ## STT Providers
 
