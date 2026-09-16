@@ -3,6 +3,7 @@ name = "garraia-media"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Media processing (image, audio, video, PDF, OCR) for GarraIA"
 
 [dependencies]

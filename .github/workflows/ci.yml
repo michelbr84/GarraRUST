@@ -135,6 +135,43 @@ jobs:
       - name: Testes do checker de ancoras
         run: python3 scripts/security/tests/test_ledger_anchors.py
 
+  # Slice D1 da #1228. O formato dos fragmentos de `changelog.d/` so era
+  # validado por quem lembrasse de rodar `assemble.py --check` a mao — e a
+  # auditoria achou 4 de 6 PRs abertas sem fragmento nenhum. Como as notas de
+  # release saem do CHANGELOG.md e nao da lista de commits (regra 15 do
+  # CLAUDE.md), o silencio so aparecia no dia da release.
+  #
+  # Este job valida FORMATO e roda os testes dos proprios scripts. A checagem
+  # de PRESENCA de fragmento e a slice D2, deliberadamente separada: ela
+  # precisa de label de escape e de um periodo em modo observacao antes de
+  # bloquear.
+  changelog:
+    name: Changelog fragments
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install pytest
+        run: python3 -m pip install --quiet pytest
+
+      - name: Formato dos fragmentos de changelog.d/
+        run: python3 scripts/changelog/assemble.py --check
+
+      # As duas suites rodam em invocacoes SEPARADAS de proposito: as duas
+      # trazem um `tests/__init__.py` chamado `tests`, entao um unico
+      # `pytest scripts/changelog/tests scripts/quality/tests` quebra na
+      # coleta com `ModuleNotFoundError: No module named 'tests.<...>'`.
+      # Medido neste repositorio; nao junte os dois numa linha so.
+      - name: Testes do assemble.py
+        run: python3 -m pytest scripts/changelog/tests -q
+
+      - name: Testes dos parsers do quality ratchet
+        run: python3 -m pytest scripts/quality/tests -q
+
   # Plan 0127 (PR-B) — shellcheck `install.sh` and the bash test harness.
   # `install.sh` is the public `curl | sh` entry point and has been
   # historically linted by hand; promoting that to a blocking CI step
