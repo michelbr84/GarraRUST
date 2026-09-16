@@ -335,12 +335,10 @@ impl GatewayServer {
         }
 
         // Initialize persistent session storage used by channel memory bus hydration.
-        let data_dir = state
-            .config
-            .data_dir
-            .clone()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".garraia").join("data")))
-            .unwrap_or_else(|| ".garraia/data".into());
+        // Fonte única (`AppConfig::resolved_data_dir`) — o fallback inline
+        // `~/.garraia/data` divergia do `memory.db`/`admin.db`, que usam o
+        // config dir XDG (`ConfigLoader::default_config_dir()/data`).
+        let data_dir = state.config.resolved_data_dir();
         if let Err(e) = std::fs::create_dir_all(&data_dir) {
             warn!("failed to create data directory: {e}");
         }

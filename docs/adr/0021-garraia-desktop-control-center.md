@@ -210,7 +210,7 @@ tela:
   (que está nos checks obrigatórios) e fica disponível de graça para o Web
   Console, o mobile e o Garra Cloud. A **UI** das abas é local, empacotada no
   bundle — ver §Superfície de segurança das abas.
-- **Agentes** — o desktop **lê e comanda o AgentDeck**, não reimplementa
+- **agentes** — o desktop **lê e comanda o AgentDeck**, não reimplementa
   adapters. Onde o AgentDeck já resolve (detect, install, health, backup,
   rollback, grupos), o painel é cliente. O que ele não tem — ciclo de vida de
   processo, Windows, saída legível por máquina — está em §Pontos em aberto, como
