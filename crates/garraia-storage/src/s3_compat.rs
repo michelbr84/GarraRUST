@@ -200,6 +200,23 @@ pub(crate) const MULTIPART_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
 const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
 
 impl S3Compatible {
+    /// Best-effort abort of an in-flight multipart upload. Failure to abort is
+    /// logged and swallowed: the caller is already returning the original
+    /// error, which must not be masked by the cleanup.
+    async fn abort_upload(&self, key: &str, upload_id: &str) {
+        let abort = self
+            .client
+            .abort_multipart_upload()
+            .bucket(self.bucket.as_ref())
+            .key(key)
+            .upload_id(upload_id)
+            .send()
+            .await;
+        if let Err(ae) = abort {
+            warn!(target: "garraia_storage::s3", key = %key, "multipart abort failed: {ae}");
+        }
+    }
+
     /// Multipart path: streams the reader in 8 MiB parts. On any failure the
     /// multipart upload is aborted so the key never exposes partial content.
     async fn put_stream_multipart(
@@ -207,6 +224,7 @@ impl S3Compatible {
         key: &str,
         mut reader: AsyncByteReader,
         opts: PutOptions,
+        content_length: u64,
     ) -> Result<ObjectMetadata> {
         // 1) Create the multipart upload (SSE-S3 mandated by ADR 0004).
         let mut create = self
@@ -259,7 +277,13 @@ impl S3Compatible {
                 .body(ByteStream::from(chunk));
             match upload.send().await {
                 Ok(out) => {
-                    let etag = out.e_tag().map(|t| t.to_owned()).unwrap_or_default();
+                    // Sem ETag o `complete` falharia com erro opaco de parte
+                    // invalida; falhar aqui nomeia a causa real.
+                    let Some(etag) = out.e_tag().map(|t| t.to_owned()) else {
+                        break Err(StorageError::Backend(format!(
+                            "s3 upload_part {part_number}: no e_tag in response"
+                        )));
+                    };
                     parts.push(
                         CompletedPart::builder()
                             .part_number(part_number)
@@ -275,24 +299,30 @@ impl S3Compatible {
             }
         };
 
-        // 3) Complete or abort — abort MUST run on any mid-stream failure so
-        //    the key keeps its previous (or no) content.
+        // 3) Complete or abort — abort MUST run on every failure path so the
+        //    key never exposes partial content and no orphan upload is billed.
         if let Err(e) = result {
-            let abort = self
-                .client
-                .abort_multipart_upload()
-                .bucket(self.bucket.as_ref())
-                .key(key)
-                .upload_id(upload_id.as_str())
-                .send()
-                .await;
-            if let Err(ae) = abort {
-                warn!(target: "garraia_storage::s3", key = %key, "multipart abort failed: {ae}");
-            }
+            self.abort_upload(key, &upload_id).await;
             return Err(e);
         }
+        // An empty stream would make `complete_multipart_upload` fail with the
+        // upload still open; reject it here so the abort is not skipped.
+        if parts.is_empty() {
+            self.abort_upload(key, &upload_id).await;
+            return Err(StorageError::Backend(
+                "s3 multipart: stream yielded no bytes".into(),
+            ));
+        }
+        // A reader that ends early would otherwise be committed as a complete
+        // object, with `size_bytes` silently below the declared length.
+        if total != content_length {
+            self.abort_upload(key, &upload_id).await;
+            return Err(StorageError::Backend(format!(
+                "s3 multipart: stream yielded {total} bytes, expected {content_length}"
+            )));
+        }
 
-        let completed = self
+        let completed = match self
             .client
             .complete_multipart_upload()
             .bucket(self.bucket.as_ref())
@@ -305,7 +335,15 @@ impl S3Compatible {
             )
             .send()
             .await
-            .map_err(|e| StorageError::Backend(format!("s3 complete_multipart_upload: {e}")))?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                self.abort_upload(key, &upload_id).await;
+                return Err(StorageError::Backend(format!(
+                    "s3 complete_multipart_upload: {e}"
+                )));
+            }
+        };
         debug!(
             target: "garraia_storage::s3",
             bucket = %self.bucket,
@@ -416,18 +454,15 @@ impl ObjectStore for S3Compatible {
 
         if content_length <= MULTIPART_THRESHOLD_BYTES {
             let mut buf = Vec::new();
-            tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut buf)
+            reader
+                .read_to_end(&mut buf)
                 .await
                 .map_err(StorageError::Io)?;
-            let len = buf.len() as u64;
-            return self.put(key, Bytes::from(buf), opts).await.map(|mut m| {
-                m.key = key.to_owned();
-                let _ = len;
-                m
-            });
+            return self.put(key, Bytes::from(buf), opts).await;
         }
 
-        self.put_stream_multipart(&key, reader, opts).await
+        self.put_stream_multipart(key, reader, opts, content_length)
+            .await
     }
 
     async fn get(&self, key: &str) -> Result<GetResult> {

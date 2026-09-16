@@ -74,6 +74,23 @@ async fn start_minio() -> Option<(
     Some((container, store, endpoint))
 }
 
+/// Cliente S3 cru contra o mesmo endpoint, para assertar estado que o trait
+/// `ObjectStore` de proposito nao expoe (ex.: multiparts em aberto).
+async fn raw_client(endpoint: &str) -> Client {
+    let creds = Credentials::new(ACCESS_KEY, SECRET_KEY, None, None, "minio-test");
+    let shared = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(REGION))
+        .credentials_provider(SharedCredentialsProvider::new(creds))
+        .load()
+        .await;
+    Client::from_conf(
+        S3ConfigBuilder::from(&shared)
+            .endpoint_url(endpoint)
+            .force_path_style(true)
+            .build(),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn minio_put_get_head_delete_roundtrip() {
     let Some((_c, store, _endpoint)) = start_minio().await else {
@@ -348,4 +365,66 @@ async fn minio_put_stream_multipart_roundtrips_large_object() {
     assert_eq!(small.size_bytes, 5);
     let got = store.get("multipart/big/v1").await.expect("get small");
     assert_eq!(got.bytes.as_ref(), b"small");
+}
+
+/// Um stream que termina antes do `content_length` declarado nao pode virar
+/// um objeto "completo" com tamanho menor: o multipart e abortado e a chave
+/// fica intacta. Cobre o contrato "a chave nunca expoe conteudo parcial" no
+/// caminho que escolhe o multipart justamente pelo valor declarado.
+#[tokio::test(flavor = "multi_thread")]
+async fn minio_multipart_aborts_when_stream_is_shorter_than_declared() {
+    let Some((_c, store, endpoint)) = start_minio().await else {
+        return;
+    };
+
+    // Conteudo previo: precisa sobreviver a tentativa falha.
+    store
+        .put(
+            "multipart/short/v1",
+            Bytes::from_static(b"previous"),
+            PutOptions::default(),
+        )
+        .await
+        .expect("seed previous content");
+
+    // 20 MiB reais, 24 MiB declarados: acima do limiar, entao vai por
+    // multipart, e o stream acaba no meio da terceira parte.
+    let actual: Vec<u8> = (0..(20 * 1024 * 1024)).map(|i| (i % 251) as u8).collect();
+    let declared = 24 * 1024 * 1024u64;
+    let reader: garraia_storage::AsyncByteReader = Box::pin(std::io::Cursor::new(actual));
+
+    let err = store
+        .put_stream(
+            "multipart/short/v1",
+            reader,
+            declared,
+            PutOptions::default(),
+        )
+        .await
+        .expect_err("short stream must not commit");
+    assert!(
+        matches!(err, StorageError::Backend(ref m) if m.contains("expected")),
+        "erro deve nomear o descasamento de tamanho, veio: {err:?}"
+    );
+
+    // A chave mantem o conteudo anterior — nada parcial foi exposto.
+    let got = store
+        .get("multipart/short/v1")
+        .await
+        .expect("previous kept");
+    assert_eq!(got.bytes.as_ref(), b"previous");
+
+    // E nenhum multipart ficou aberto sendo faturado.
+    let open = raw_client(&endpoint)
+        .await
+        .list_multipart_uploads()
+        .bucket(BUCKET)
+        .send()
+        .await
+        .expect("list_multipart_uploads");
+    assert!(
+        open.uploads().is_empty(),
+        "multipart orfao deixado aberto: {:?}",
+        open.uploads()
+    );
 }
