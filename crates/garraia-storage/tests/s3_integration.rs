@@ -31,6 +31,16 @@ const REGION: &str = "us-east-1";
 const MINIO_IMAGE: &str = "quay.io/minio/minio";
 const MINIO_TAG: &str = "RELEASE.2025-02-28T09-55-16Z";
 
+// `S3Compatible::put` sempre manda `server_side_encryption(Aes256)`
+// (s3_compat.rs) — na AWS isso e zero-config (chave gerenciada pela AWS),
+// mas o MinIO recusa QUALQUER SSE sem um KMS configurado ("Server side
+// encryption specified but KMS is not configured"). Sem isto nenhum `put`
+// chegava a rodar de verdade, porque o teste sempre pulava antes (#1230).
+// Chave estatica fixa, so para o container efemero deste teste — nao e
+// segredo de producao, e o modo "legacy single-key" do MinIO documentado em
+// docs.min.io/enterprise/minio-kms/legacy-key-management.
+const MINIO_KMS_SECRET_KEY: &str = "garraia-test-key:7neeKXXrCI7222jSKgyzjaTDD53W0OvdenD3gJ2DZgU=";
+
 /// Spawn a MinIO testcontainer, pre-create a bucket, and hand back an
 /// `S3Compatible` wired against it. Returns `None` when the Docker
 /// daemon is unreachable — in CI without docker we skip instead of fail.
@@ -42,6 +52,7 @@ async fn start_minio() -> Option<(
     let container = match MinIO::default()
         .with_name(MINIO_IMAGE)
         .with_tag(MINIO_TAG)
+        .with_env_var("MINIO_KMS_SECRET_KEY", MINIO_KMS_SECRET_KEY)
         .start()
         .await
     {
@@ -354,6 +365,11 @@ async fn minio_put_stream_multipart_roundtrips_large_object() {
             payload.len() as u64,
             PutOptions {
                 content_type: Some("application/octet-stream".into()),
+                // Este teste cobre a mecanica do multipart, nao a politica de
+                // MIME (essa e a `minio_rejects_disallowed_mime`) —
+                // `application/octet-stream` nao esta no allow-list padrao
+                // (ADR 0004 Security 3), entao precisa do opt-in explicito.
+                allow_unsafe_mime: true,
                 ..Default::default()
             },
         )
