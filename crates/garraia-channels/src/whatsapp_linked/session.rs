@@ -76,6 +76,37 @@ const SALT_FILE: &str = "session.salt";
 /// houver mais de um numero vinculado; hoje so existe `default`.
 pub const DEFAULT_ACCOUNT: &str = "default";
 
+/// Teto do identificador de conta. Nao ha razao para um segmento de diretorio
+/// mais longo que isto, e um teto explicito evita depender do limite do
+/// sistema de arquivos para recusar entrada absurda.
+const MAX_ACCOUNT_LEN: usize = 64;
+
+/// A conta e **um unico segmento** de caminho, e e esta funcao que garante.
+///
+/// Sem ela, [`SessionStore::for_data_dir`] aceitava qualquer string:
+/// `join("../../..")` saia do data dir, e o store passava a cifrar — e a
+/// apagar, no `purge` — arquivos escolhidos por quem controlasse a conta. O
+/// unico chamador de hoje passa uma constante, entao o traversal estava
+/// fechado **por acidente**; esta regra o fecha por construcao, para o dia em
+/// que a fatia do gateway passar um valor vindo de config ou de request.
+///
+/// A regra e uma allowlist, nao uma lista de proibidos: so
+/// `[A-Za-z0-9_-]{1,64}`. Isso recusa de uma vez `/`, `\`, `..`, `.`, a
+/// string vazia, o NUL, o espaco e qualquer forma Unicode que o sistema de
+/// arquivos possa dobrar em separador — sem precisar enumerar nenhuma delas.
+fn validate_account(account: &str) -> Result<(), SessionError> {
+    let ok = !account.is_empty()
+        && account.len() <= MAX_ACCOUNT_LEN
+        && account
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(SessionError::InvalidAccount(account.to_string()))
+    }
+}
+
 /// Blob de sessao serializado pelo bridge (base64 de `{creds, keys}`).
 ///
 /// `Debug` e `Display` imprimem `<redacted>`. Isto nao e cosmetico: o
@@ -256,8 +287,15 @@ impl SessionStore {
     }
 
     /// Caminho canonico a partir do data dir da aplicacao.
-    pub fn for_data_dir(data_dir: &Path, account: &str) -> Self {
-        Self::new(data_dir.join("whatsapp").join(account))
+    ///
+    /// Recusa qualquer `account` que nao seja um unico segmento
+    /// `[A-Za-z0-9_-]{1,64}` — ver [`validate_account`]. E por isso que esta
+    /// funcao devolve `Result` e a irma [`SessionStore::new`] nao: `new`
+    /// recebe o diretorio ja resolvido de quem sabe o que esta fazendo,
+    /// enquanto aqui o segmento pode um dia vir de fora.
+    pub fn for_data_dir(data_dir: &Path, account: &str) -> Result<Self, SessionError> {
+        validate_account(account)?;
+        Ok(Self::new(data_dir.join("whatsapp").join(account)))
     }
 
     pub fn dir(&self) -> &Path {
@@ -363,6 +401,43 @@ impl SessionStore {
         std::fs::rename(&from, &to).map_err(|e| SessionError::io(&from, e))?;
         // `rename` preserva o modo do arquivo de origem (0600); o aperto e
         // cinto e suspensorio para o caso de um `session.enc` legado frouxo.
+        let _ = fs_perms::harden_secret_file(&to);
+        Ok(true)
+    }
+
+    /// Inverso de [`SessionStore::archive`]: traz `session.enc.prev` de volta
+    /// para `session.enc`. Devolve `false` quando nao havia nada a restaurar.
+    ///
+    /// # Por que ela precisa existir
+    ///
+    /// O docstring de `archive` diz que arquivar existe para que "uma
+    /// validacao que falha por rede instavel nao possa destruir a unica copia
+    /// de uma sessao que talvez ainda sirva" — e ate agora **nada** cumpria
+    /// essa promessa: o `.prev` so era lido por `discard_archive` (shred) e
+    /// por `purge` (shred). Um Ctrl+C na tela do QR, ou cinco QRs expirando,
+    /// deixavam o usuario sem sessao viva e com a boa num arquivo que nenhum
+    /// caminho de codigo reabria.
+    ///
+    /// # A guarda do blob novo
+    ///
+    /// Restaurar **nunca** sobrescreve um `session.enc` existente: se ha blob
+    /// novo em disco, o link seguiu em frente e o arquivado ja nao vale. Hoje
+    /// isso nao chega a ser uma corrida — o `pair` segura o blob em memoria e
+    /// so grava depois de conectar, entao nos desfechos cancelado/QR expirado
+    /// nao existe blob parcial nenhum —, mas a guarda fica porque a ordem de
+    /// gravacao do `pair` e do `pair`, e nao um contrato deste store.
+    pub fn restore_archive(&self) -> Result<bool, SessionError> {
+        let from = self.archive_path();
+        if !from.is_file() {
+            return Ok(false);
+        }
+        let to = self.blob_path();
+        if to.exists() {
+            // Ha sessao viva: o arquivado perdeu a vez. Nao e erro — e o
+            // caminho feliz, em que `discard_archive` ja passou ou vai passar.
+            return Ok(false);
+        }
+        std::fs::rename(&from, &to).map_err(|e| SessionError::io(&from, e))?;
         let _ = fs_perms::harden_secret_file(&to);
         Ok(true)
     }
@@ -520,6 +595,11 @@ pub enum SessionError {
     /// arquivo de outra instalacao.
     #[error("a sessao existe mas nao abre com a chave atual")]
     Undecryptable,
+    /// A conta nao e um segmento de caminho aceitavel. O valor recusado entra
+    /// na mensagem de proposito: ele e um identificador de conta escolhido
+    /// pelo operador, nao segredo, e sem ele o erro nao orienta ninguem.
+    #[error("conta invalida: {0:?} — use apenas [A-Za-z0-9_-], ate 64 caracteres")]
+    InvalidAccount(String),
     #[error("erro criptografico: {0}")]
     Crypto(String),
 }
@@ -733,8 +813,117 @@ mod tests {
 
     #[test]
     fn for_data_dir_uses_the_documented_layout() {
-        let store = SessionStore::for_data_dir(Path::new("/data"), DEFAULT_ACCOUNT);
+        let store =
+            SessionStore::for_data_dir(Path::new("/data"), DEFAULT_ACCOUNT).expect("conta valida");
         assert!(store.blob_path().ends_with("whatsapp/default/session.enc"));
+    }
+
+    /// Contas que um dia podem existir de verdade (mais de um numero
+    /// vinculado) continuam passando: a regra fecha o traversal, nao o
+    /// recurso.
+    #[test]
+    fn plausible_account_names_are_accepted() {
+        for account in [
+            "default",
+            "pessoal",
+            "conta_2",
+            "linha-b",
+            "A1",
+            &"x".repeat(64),
+        ] {
+            let store = SessionStore::for_data_dir(Path::new("/data"), account)
+                .unwrap_or_else(|e| panic!("conta {account:?} deveria valer: {e}"));
+            assert!(store.dir().ends_with(account));
+        }
+    }
+
+    /// **Este e o teste do bloqueador.** Cada conta abaixo e uma forma de sair
+    /// do data dir ou de nomear algo que nao e um segmento; o `for_data_dir`
+    /// tem de recusar todas.
+    ///
+    /// E ele vai ate o disco de proposito: no dia em que alguem apagar o
+    /// `validate_account`, o `Ok` cai no braco que **de fato grava** e o
+    /// teste reporta o caminho real que a sessao cifrada acabou de ocupar
+    /// fora do data dir. Uma asserção so sobre o `Result` provaria bem menos.
+    #[test]
+    fn an_account_that_escapes_the_data_dir_is_refused_before_any_write() {
+        let tmp = tempdir().expect("tempdir");
+        let data = tmp.path().join("data");
+
+        for account in [
+            "..",
+            "../..",
+            "../../fuga",
+            "sub/dir",
+            "sub\\dir",
+            "/absoluta",
+            ".",
+            "",
+            "conta com espaco",
+            "acentuada\u{e7}",
+        ] {
+            match SessionStore::for_data_dir(&data, account) {
+                Err(SessionError::InvalidAccount(recusada)) => assert_eq!(recusada, account),
+                Err(outro) => panic!("conta {account:?} recusada pelo motivo errado: {outro}"),
+                Ok(store) => {
+                    // Sem a validacao, este e o caminho que o codigo antigo
+                    // tomava. Grava-se de verdade para mostrar onde para.
+                    let key = SessionKey::resolve(store.dir(), None).expect("chave");
+                    store.save(&blob(), &key).expect("save");
+                    let escrito = store.blob_path().canonicalize().expect("canonicalize");
+                    let raiz = data.canonicalize().expect("canonicalize data dir");
+                    assert!(
+                        escrito.starts_with(&raiz),
+                        "a conta {account:?} escapou do data dir: {} nao esta sob {}",
+                        escrito.display(),
+                        raiz.display()
+                    );
+                    panic!("a conta {account:?} deveria ter sido recusada");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restoring_the_archive_brings_the_previous_session_back_readable() {
+        let dir = tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        store.save(&blob(), &key).expect("save");
+
+        assert!(store.archive().expect("archive"));
+        assert!(!store.exists(), "arquivar tira a sessao de cena");
+
+        assert!(store.restore_archive().expect("restore"));
+        assert!(store.exists(), "restaurar traz a sessao de volta");
+        assert!(!store.archive_path().exists(), "o arquivado saiu de la");
+        // Nao basta o arquivo existir: ele tem de continuar abrindo.
+        assert_eq!(store.load(&key).expect("load").expose(), blob().expose());
+    }
+
+    #[test]
+    fn restoring_is_a_noop_without_an_archive_and_never_clobbers_a_live_session() {
+        let dir = tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+
+        assert!(!store.restore_archive().expect("sem arquivado"));
+
+        store.save(&blob(), &key).expect("save");
+        store.archive().expect("archive");
+        let novo = SessionBlob::new("bm92bw==");
+        store.save(&novo, &key).expect("link novo concluiu");
+
+        assert!(
+            !store.restore_archive().expect("restore"),
+            "com sessao viva em disco o arquivado perdeu a vez"
+        );
+        assert_eq!(
+            store.load(&key).expect("load").expose(),
+            novo.expose(),
+            "a sessao viva nao pode ser sobrescrita pelo arquivado"
+        );
+        assert!(store.archive_path().is_file(), "o arquivado fica onde esta");
     }
 
     #[test]

@@ -259,38 +259,164 @@ fn the_cloud_wizard_writes_the_four_keys_and_hardens_the_file() {
     }
 }
 
-/// **Premissa da supressao CodeQL do alerta 173** (`rust/cleartext-logging`,
+/// Segundo pino da supressao CodeQL do alerta 173 (`rust/cleartext-logging`,
 /// `whatsapp.rs`, sink `store.dir().display()` na mensagem de sucesso do
 /// `link`).
 ///
-/// O alerta e falso-positivo por **uma** razao, e so por ela: o segmento de
-/// conta do caminho impresso e `DEFAULT_ACCOUNT`, constante de compilacao. O
-/// que vai ao stdout e `<data_dir>/whatsapp/default/` — sem identificador de
-/// usuario nenhum.
+/// O primeiro pino e estrutural e mora no store:
+/// `SessionStore::for_data_dir` **recusa** conta que nao seja um segmento
+/// `[A-Za-z0-9_-]{1,64}`, entao nenhum caminho impresso por este comando pode
+/// sair do data dir. Isso fecha o path traversal, mas nao fecha o outro medo
+/// do alerta: `5511999998888` casa a regra e seria PII no stdout.
 ///
-/// So que `SessionStore::for_data_dir` aceita **qualquer** string como conta, e
-/// a fatia do gateway chama a mesma funcao. No dia em que alguem passar um
-/// numero de telefone ali, tres `println!` deste comando passam a imprimi-lo e
-/// a supressao vira mentira. Este teste e o que quebra nesse dia — sem ele, a
-/// justificativa registrada no ledger nao tem nada que a sustente.
+/// E isto que este teste fecha — que o segmento de conta impresso pela CLI e
+/// a **constante** `DEFAULT_ACCOUNT`, e nao algo escolhido em tempo de
+/// execucao. Ele varre a arvore inteira de `src/` (nao um arquivo so) e exige
+/// que o segundo argumento de cada `for_data_dir(` seja literalmente
+/// `DEFAULT_ACCOUNT` — `account.unwrap_or(DEFAULT_ACCOUNT)` nao passa.
+///
+/// A varredura nao e a prova do traversal: essa e
+/// `an_account_that_escapes_the_data_dir_is_refused_before_any_write`, em
+/// `garraia-channels`. Aqui a pergunta e outra, e menor.
 #[test]
 fn every_session_store_in_the_cli_uses_the_constant_account() {
-    let src = include_str!("../whatsapp.rs");
+    let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let files = rust_sources_under(&src_root);
+    assert!(
+        files.len() > 10,
+        "a varredura precisa enxergar a arvore inteira da CLI, achou {} arquivo(s) em {}",
+        files.len(),
+        src_root.display()
+    );
+
     let mut calls = 0;
-    for (idx, _) in src.match_indices("for_data_dir(") {
-        calls += 1;
-        let tail = &src[idx..src.len().min(idx + 160)];
-        assert!(
-            tail.contains("DEFAULT_ACCOUNT"),
-            "conta dinamica num SessionStore da CLI: a mensagem de sucesso do \
-`link` imprime esse caminho, e a supressao CodeQL 173 depende de a conta ser \
-constante. Trecho:\n{tail}"
-        );
+    let mut offenders = Vec::new();
+    for (name, source) in &files {
+        for account in account_arguments(source) {
+            calls += 1;
+            if account != "DEFAULT_ACCOUNT" {
+                offenders.push(format!("{name}: for_data_dir(.., {account})"));
+            }
+        }
     }
+    assert!(
+        offenders.is_empty(),
+        "conta dinamica num SessionStore da CLI: os `println!` do `link` \
+imprimem esse segmento, e a supressao CodeQL 173 depende de ele ser a \
+constante `DEFAULT_ACCOUNT`.\n{}",
+        offenders.join("\n")
+    );
     assert!(
         calls >= 1,
         "o scan precisa ter achado a construcao do store"
     );
+}
+
+/// Todos os `.rs` sob `dir`, recursivamente. Ler do disco em vez de listar
+/// `include_str!` a mao e o que faz um arquivo NOVO da CLI entrar na varredura
+/// sem ninguem se lembrar dele — era exatamente assim que um `for_data_dir`
+/// em `doctor.rs` passaria batido.
+fn rust_sources_under(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = std::fs::read_dir(&current)
+            .unwrap_or_else(|e| panic!("ler {}: {e}", current.display()));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // `symlink_metadata`: um link nao e seguido, pelo mesmo motivo do
+            // scanner de skills — a varredura nao pode sair da arvore.
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file()
+                && path.extension().is_some_and(|e| e == "rs")
+                // Modulos de teste ficam de fora, e a exclusao e estreita de
+                // proposito: o que este scan protege e o que vai ao **stdout
+                // de producao**, e codigo de teste nao imprime para o usuario.
+                // Incluir `tests.rs` faria o scan achar as proprias fixtures
+                // deste arquivo e a si mesmo.
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("ler {}: {e}", path.display()));
+                out.push((path.display().to_string(), text));
+            }
+        }
+    }
+    out
+}
+
+/// Segundo argumento de cada chamada a `for_data_dir(`, ja normalizado.
+///
+/// Le ate o parentese que fecha a chamada (contando aninhamento) e corta na
+/// virgula de topo, em vez de olhar uma janela de N caracteres: era a janela
+/// que deixava `account.unwrap_or(DEFAULT_ACCOUNT)` passar, porque a
+/// constante aparecia dentro dela como *fallback*.
+fn account_arguments(source: &str) -> Vec<String> {
+    const NEEDLE: &str = "for_data_dir(";
+    let mut out = Vec::new();
+    for (idx, _) in source.match_indices(NEEDLE) {
+        let mut depth = 1i32;
+        let mut split = None;
+        let rest = &source[idx + NEEDLE.len()..];
+        let mut end = rest.len();
+        for (i, ch) in rest.char_indices() {
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                ',' if depth == 1 && split.is_none() => split = Some(i),
+                _ => {}
+            }
+        }
+        let args = &rest[..end];
+        let account = match split {
+            Some(at) if at < args.len() => args[at + 1..],
+            // Um argumento so: nao e a assinatura que conhecemos, entao o
+            // scan reporta o texto cru em vez de fingir que esta tudo bem.
+            _ => args,
+        };
+        // A virgula final que o rustfmt deixa numa chamada quebrada em varias
+        // linhas nao e parte do argumento.
+        let account = account.trim().trim_end_matches(',').trim();
+        out.push(account.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    out
+}
+
+/// As duas mutacoes que derrubaram a versao anterior deste scan, agora como
+/// asserção sobre o proprio parser — o unico jeito de provar que ele as pega
+/// sem plantar codigo ruim na arvore de verdade.
+#[test]
+fn the_account_scan_catches_a_dynamic_account_with_a_constant_fallback() {
+    // O literal e montado, e nao escrito inteiro, para a varredura de verdade
+    // (que le este diretorio) nao achar a fixture como se fosse call site.
+    let needle = ["for_data_dir", "("].concat();
+    let dinamico = format!(
+        "let account = std::env::var(\"GARRAIA_WA_ACCOUNT\").ok();\n\
+         SessionStore::{needle}&self.data_dir, account.unwrap_or(DEFAULT_ACCOUNT))"
+    );
+    assert_eq!(
+        account_arguments(&dinamico),
+        vec!["account.unwrap_or(DEFAULT_ACCOUNT)".to_string()],
+        "a janela de 160 chars aprovava isto porque DEFAULT_ACCOUNT aparecia \
+dentro dela; o argumento inteiro nao aprova"
+    );
+
+    let constante = format!("SessionStore::{needle}&self.data_dir, DEFAULT_ACCOUNT)");
+    assert_eq!(account_arguments(&constante), vec!["DEFAULT_ACCOUNT"]);
+
+    // Quebra de linha do rustfmt entre os argumentos continua sendo aceita.
+    let quebrado = format!("SessionStore::{needle}\n    &self.data_dir,\n    DEFAULT_ACCOUNT,\n)");
+    assert_eq!(account_arguments(&quebrado), vec!["DEFAULT_ACCOUNT"]);
 }
 
 /// `garra whatsapp cloud` rodado so para trocar um token nao pode levar junto

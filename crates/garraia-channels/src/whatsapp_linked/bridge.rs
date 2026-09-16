@@ -877,57 +877,67 @@ mod tests {
     /// coisa com e sem `env_clear()` — uma asserção sobre ele passaria nos dois
     /// lados da mutacao. So um filho de verdade responde a pergunta.
     ///
-    /// Um unico teste, com a escrita do ambiente imediatamente antes do
-    /// `spawn`: `set_var` e global ao processo e nenhum outro teste deste
-    /// binario lanca processo.
+    /// **Por que subconjunto, e nao canarios.** A versao anterior plantava
+    /// tres variaveis com `unsafe { std::env::set_var }` e afirmava que elas
+    /// nao chegavam ao filho. O `SAFETY` que a acompanhava estava errado: a
+    /// condicao de soundness do `setenv` nao e "nenhum outro teste le ESTAS
+    /// variaveis" — e que nenhuma outra thread esteja no ambiente, porque o
+    /// `setenv` pode realocar o `environ` enquanto outra faz `getenv`, e todo
+    /// `tempfile::tempdir()` deste binario le `TMPDIR`. Perguntar ao filho
+    /// quais chaves ele tem e comparar com a allowlist nao escreve no
+    /// ambiente, nao precisa de `unsafe`, e e mais forte: um `cargo test` ja
+    /// carrega dezenas de `CARGO_*` e `RUST*` fora da lista, entao qualquer
+    /// vazamento aparece — inclusive os que canario nenhum cobria.
     #[cfg(unix)]
     #[tokio::test]
-    async fn the_child_does_not_inherit_the_parent_environment() {
-        // Canarios: um segredo e dois vetores de execucao de codigo. Nenhum
-        // deles esta na allowlist, entao nenhum pode chegar ao filho.
-        const CANARIES: &[(&str, &str)] = &[
-            ("GARRAIA_JWT_SECRET", "canario-jwt"),
-            ("NODE_OPTIONS", "--require=/tmp/canario.js"),
-            ("NPM_CONFIG_REGISTRY", "http://canario.invalido"),
-        ];
-
-        let Some(env_bin) = ["/usr/bin/env", "/bin/env"]
+    async fn the_child_only_gets_what_the_allowlist_names() {
+        let env_bin = ["/usr/bin/env", "/bin/env"]
             .into_iter()
             .map(Path::new)
             .find(|p| p.is_file())
-        else {
-            // Sem `env(1)` nao ha como perguntar ao filho o que ele herdou.
-            return;
-        };
-
-        // SAFETY: `set_var` e global ao processo de teste; nenhum outro teste
-        // deste binario lanca processo filho nem le estas variaveis.
-        unsafe {
-            for (key, value) in CANARIES {
-                std::env::set_var(key, value);
-            }
-        }
+            .expect(
+                "sem `env(1)` nao ha como perguntar ao filho o que ele herdou. \
+Este e um teste de contencao: ele falha em vez de sumir em silencio, que era \
+o que o `return` anterior fazia.",
+            );
 
         let mut cmd = Command::new(env_bin);
         apply_child_env(&mut cmd);
         let output = cmd.output().await.expect("env(1)");
+        assert!(
+            output.status.success(),
+            "env(1) falhou: {:?}",
+            output.status
+        );
 
-        // SAFETY: idem.
-        unsafe {
-            for (key, _) in CANARIES {
-                std::env::remove_var(key);
-            }
-        }
+        let permitidas: Vec<&str> = garraia_common::safety_gate::R3_ENV_ALLOWLIST
+            .iter()
+            .copied()
+            .chain(EXTRA_CHILD_ENV.iter().copied())
+            .collect();
 
         let seen = String::from_utf8_lossy(&output.stdout);
-        for (key, _) in CANARIES {
-            assert!(
-                !seen
-                    .lines()
-                    .any(|line| line.starts_with(&format!("{key}="))),
-                "{key} chegou ao filho — `env_clear()` nao esta sendo aplicado:\n{seen}"
-            );
+        let mut intrusas = Vec::new();
+        for line in seen.lines() {
+            // Linha sem `=` nao e atribuicao: e a continuacao de um valor
+            // multilinha. Ignorar isso e o unico jeito de nao confundir o
+            // corpo de um valor com o nome de uma variavel.
+            let Some((name, _)) = line.split_once('=') else {
+                continue;
+            };
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                continue;
+            }
+            if !permitidas.contains(&name) {
+                intrusas.push(name.to_string());
+            }
         }
+        assert!(
+            intrusas.is_empty(),
+            "o filho herdou variaveis fora da allowlist — `env_clear()` nao \
+esta sendo aplicado: {intrusas:?}"
+        );
+
         // E o outro lado: a allowlist tem de continuar entregando o minimo.
         assert!(
             seen.lines().any(|line| line.starts_with("PATH=")),

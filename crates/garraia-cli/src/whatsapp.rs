@@ -159,7 +159,15 @@ impl Context {
         }
     }
 
-    fn store(&self) -> SessionStore {
+    /// Store da conta default.
+    ///
+    /// `for_data_dir` devolve `Result` porque recusa conta que nao seja um
+    /// unico segmento `[A-Za-z0-9_-]{1,64}` — e a CLI passa `DEFAULT_ACCOUNT`,
+    /// constante de compilacao que a regra aceita, entao o `Err` daqui e
+    /// inalcancavel hoje. Ele e propagado assim mesmo: `unwrap()` em codigo de
+    /// producao e proibido, e o dia em que a CLI aprender a escolher conta e
+    /// exatamente o dia em que este erro passa a valer.
+    fn store(&self) -> Result<SessionStore, garraia_channels::whatsapp_linked::SessionError> {
         SessionStore::for_data_dir(&self.data_dir, DEFAULT_ACCOUNT)
     }
 
@@ -168,7 +176,7 @@ impl Context {
     }
 
     fn key(&self) -> Result<SessionKey, garraia_channels::whatsapp_linked::SessionError> {
-        SessionKey::resolve(self.store().dir(), self.vault_passphrase.as_deref())
+        SessionKey::resolve(self.store()?.dir(), self.vault_passphrase.as_deref())
     }
 }
 
@@ -251,7 +259,13 @@ fn menu(ctx: &Context, prompter: &dyn Prompter) -> i32 {
 // ---------------------------------------------------------------------------
 
 fn status(ctx: &Context) -> i32 {
-    let store = ctx.store();
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
     print_header(ctx);
 
     if !store.exists() {
@@ -375,7 +389,13 @@ fn print_archive_warning(ctx: &Context, store: &SessionStore) {
 }
 
 fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
-    let store = ctx.store();
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
     print_header(ctx);
 
     // F1: `exists()` olha so o `session.enc`. O arquivado e igualmente uma
@@ -455,6 +475,60 @@ Settings → Linked devices.",
 // link
 // ---------------------------------------------------------------------------
 
+/// Arquiva a sessao atual e a traz de volta se o link nao gravar uma nova.
+///
+/// # Por que um guard, e nao duas chamadas nos bracos que falham
+///
+/// Porque os bracos que falham nao sao dois. Entre o arquivamento e o blob
+/// novo cabem o Ctrl+C na tela do QR, os cinco QRs expirando, o bridge que
+/// morre antes de conectar, o que conecta e nunca entrega a sessao, e o
+/// proximo que alguem acrescentar. Listar os bracos e escolher quais
+/// restauram; um guard restaura em todos, porque restaurar e o que acontece
+/// quando **nao** se fez nada melhor.
+///
+/// O caminho de sucesso nao precisa de `commit()`: quando o `pair` grava o
+/// blob novo ele mesmo chama `discard_archive()`, entao na hora do `drop` nao
+/// ha mais arquivado — e [`SessionStore::restore_archive`] tambem se recusa a
+/// passar por cima de um `session.enc` vivo. Nos dois sentidos, o guard vira
+/// no-op silencioso exatamente quando deve.
+struct ArchiveGuard<'a> {
+    store: &'a SessionStore,
+    lang: Lang,
+}
+
+impl<'a> ArchiveGuard<'a> {
+    fn archive(
+        store: &'a SessionStore,
+        lang: Lang,
+    ) -> Result<Self, garraia_channels::whatsapp_linked::SessionError> {
+        store.archive()?;
+        Ok(Self { store, lang })
+    }
+}
+
+impl Drop for ArchiveGuard<'_> {
+    fn drop(&mut self) {
+        match self.store.restore_archive() {
+            // Sai DEPOIS da mensagem do desfecho ("Cancelado.", "Nenhum QR foi
+            // lido."), que e a ordem certa: primeiro o que aconteceu, depois o
+            // que sobrou.
+            Ok(true) => println!(
+                "↩ {}",
+                t(
+                    self.lang,
+                    "A sessão anterior foi restaurada — nada foi desvinculado.",
+                    "Your previous session was restored — nothing was unlinked."
+                )
+            ),
+            Ok(false) => {}
+            // Sem `?` porque `Drop` nao propaga, e sem silencio porque uma
+            // sessao boa presa no `.prev` e exatamente o que o usuario precisa
+            // saber para recupera-la a mao.
+            Err(e) => eprintln!("{e}"),
+        }
+    }
+}
+
 fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
@@ -462,7 +536,13 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         return 0;
     }
 
-    let store = ctx.store();
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
     let key = match ctx.key() {
         Ok(k) => k,
         Err(e) => {
@@ -489,12 +569,13 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             )
         );
         // O texto diz o que de fato acontece: a sessao atual e ARQUIVADA
-        // (`session.enc.prev`) e so sai de cena quando o vinculo novo conclui.
-        // "Apaga" era impreciso nas duas pontas — nao apaga, e nao restaura.
+        // (`session.enc.prev`), so e descartada quando o vinculo novo conclui,
+        // e volta sozinha se ele nao concluir (ver `ArchiveGuard`). "Apaga"
+        // era impreciso nas duas pontas.
         let prompt = t(
             ctx.lang,
-            "Re-vincular? A sessão atual sai de uso e é descartada ao fim",
-            "Re-link? The current session is set aside and discarded at the end",
+            "Re-vincular? A sessão atual sai de uso e só é descartada quando o novo vínculo concluir",
+            "Re-link? The current session is set aside and only discarded once the new link completes",
         );
         match prompter.confirm(prompt, false) {
             Ok(true) => relink = true,
@@ -570,12 +651,26 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     }
 
     // AGORA: consentimento dado, Node encontrado, dependencias prontas. Este
-    // e o ultimo ponto antes de o QR aparecer, e o primeiro em que arquivar
-    // deixa de poder desmontar um vinculo que continuaria valendo.
-    if relink && let Err(e) = store.archive() {
-        eprintln!("{e}");
-        return EX_SOFTWARE;
-    }
+    // e o ultimo ponto antes de o QR aparecer.
+    //
+    // O comentario anterior dizia que era tambem "o primeiro ponto em que
+    // arquivar deixa de poder desmontar um vinculo que continuaria valendo", e
+    // isso era falso: depois daqui ainda vem o QR, e um Ctrl+C na tela dele ou
+    // cinco QRs expirando deixavam o usuario **sem sessao viva**, com a boa
+    // parada num `.prev` que nenhum caminho de codigo reabria. O guard abaixo
+    // e o que faltava — ele desfaz o arquivamento em QUALQUER saida que nao
+    // tenha gravado sessao nova, inclusive as que ninguem lembrou de listar.
+    let _archive_guard = if relink {
+        match ArchiveGuard::archive(&store, ctx.lang) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                eprintln!("{e}");
+                return EX_SOFTWARE;
+            }
+        }
+    } else {
+        None
+    };
 
     print_instructions(ctx);
 

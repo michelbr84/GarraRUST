@@ -21,7 +21,7 @@ use garraia_channels::whatsapp_linked::runner::{
     InboundSink, PairOptions, PairUi, RunError, SilentUi, pair, pair_with, serve,
 };
 use garraia_channels::whatsapp_linked::{
-    BridgeCommand, InboundMessage, Jid, SessionKey, SessionStore,
+    BridgeCommand, InboundMessage, Jid, SessionKey, SessionStore, backoff_ms,
 };
 use tokio::process::Command;
 use tokio::sync::watch;
@@ -109,7 +109,7 @@ impl PairUi for RecordingUi {
 }
 
 fn store_in(dir: &tempfile::TempDir) -> (SessionStore, SessionKey) {
-    let store = SessionStore::for_data_dir(dir.path(), "default");
+    let store = SessionStore::for_data_dir(dir.path(), "default").expect("conta valida");
     let key = SessionKey::resolve(store.dir(), Some("passphrase-de-teste")).expect("chave");
     (store, key)
 }
@@ -630,24 +630,33 @@ async fn serve_reconnects_after_a_network_flap() {
     // `on_connection(true)`, e so uma reconexao do DRIVER produz o terceiro.
     // Com jitter 0 o primeiro degrau e 500 ms, e cada execucao da fixture leva
     // ~0,6 s, entao 3 s cobrem duas voltas com folga.
-    let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher::new(
-        "network-flap",
-        dir.path().to_path_buf(),
-    ));
+    //
+    // O QR da fixture expira rapido de proposito: a asserção de tempo la
+    // embaixo so distingue "esperou o backoff" de "reconectou em busy-loop"
+    // enquanto UMA execucao da fixture custar bem menos que o backoff. Com o
+    // default de 0,5 s a execucao sozinha ja passava dos 500 ms do primeiro
+    // degrau, e a asserção passaria verde com o `sleep` arrancado.
+    let launcher: Arc<dyn BridgeLauncher> =
+        Arc::new(FixtureLauncher::new("network-flap", dir.path().to_path_buf()).qr_expires(0.02));
 
     // O `serve` nao usa a maquina de estados: o backoff entre tentativas e
-    // dele, e este contador e o que morre se alguem o arrancar. Sem ele o
-    // teste continuaria verde com o loop reconectando em busy-loop.
-    let jitter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // dele. Marca-se o INSTANTE de cada chamada de `jitter`, e nao o numero
+    // delas: contar prova que o atraso foi calculado, nao que alguem esperou —
+    // com o `tokio::select!{ sleep(delay) }` arrancado, o contador continuava
+    // subindo e o teste continuava verde em cima de um busy-loop de
+    // reconexao.
+    let jitter_marks: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
 
     let (_out_tx, out_rx) = tokio::sync::mpsc::channel(1);
     let task = {
         let sink = Arc::clone(&sink);
         let store = store.clone();
-        let jitter_calls = Arc::clone(&jitter_calls);
+        let jitter_marks = Arc::clone(&jitter_marks);
         tokio::spawn(async move {
             serve(launcher, store, key, sink, out_rx, rx, move || {
-                jitter_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(mut marks) = jitter_marks.lock() {
+                    marks.push(std::time::Instant::now());
+                }
                 0.0
             })
             .await
@@ -670,10 +679,19 @@ async fn serve_reconnects_after_a_network_flap() {
         "duas conexoes saem de uma execucao so da fixture; a terceira e a \
 primeira que exige o driver ter relancado a ponte (viu {connects})"
     );
+    let marks = jitter_marks.lock().expect("lock").clone();
     assert!(
-        jitter_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
-        "cada reconexao tem de passar pelo backoff com jitter injetado; \
-zero chamadas significa que o `serve` voltou a reconectar em busy-loop"
+        marks.len() >= 2,
+        "sao precisas duas reconexoes para medir um intervalo; vieram {}",
+        marks.len()
+    );
+    let esperado = std::time::Duration::from_millis(backoff_ms(1, 0.0));
+    let medido = marks[1].duration_since(marks[0]);
+    assert!(
+        medido >= esperado,
+        "entre duas reconexoes passaram {medido:?}, menos que o primeiro \
+degrau do backoff ({esperado:?}): o `serve` calculou o atraso e nao esperou \
+por ele — isto e o busy-loop de reconexao"
     );
 }
 
