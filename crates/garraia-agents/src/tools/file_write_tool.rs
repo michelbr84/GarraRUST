@@ -302,6 +302,63 @@ mod tests {
         assert!(!alvo_real.exists(), "a escrita vazou pelo symlink");
     }
 
+    /// O furo da auditoria R4, provado pelo **call site** e não só pela
+    /// função pura: `raiz/evil` é um symlink pendurado para fora da raiz.
+    /// `canonicalize` falha (o alvo não existe), o jail recolava a cauda
+    /// dentro da raiz, o `starts_with` aprovava — e o `open(O_CREAT)` do
+    /// `tokio::fs::write` **segue** o link e materializa o byte lá fora.
+    ///
+    /// É o vetor plausível: um repositório clonado traz o symlink versionado
+    /// no git, o CWD é raiz na CLI, e uma injeção indireta no README manda
+    /// escrever em `evil`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn escrita_em_symlink_pendurado_e_recusada() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        let alvo_fora = fora.join("authorized_keys");
+        std::os::unix::fs::symlink(&alvo_fora, root.join("evil")).expect("symlink");
+        assert!(!alvo_fora.exists(), "precondicao: o alvo ainda nao existe");
+
+        let tool = FileWriteTool::new(FileJail::sessions_only());
+        let err = tool
+            .execute(
+                &ctx_with(Some(root.to_str().expect("utf8"))),
+                serde_json::json!({ "path": "evil", "content": "ssh-rsa AAAA..." }),
+            )
+            .await
+            .expect_err("symlink pendurado para fora deve ser recusado");
+
+        assert!(err.to_string().ends_with(DENIAL_MESSAGE), "{err}");
+        assert!(
+            !alvo_fora.exists(),
+            "a escrita vazou pelo symlink pendurado: {}",
+            alvo_fora.display()
+        );
+    }
+
+    /// A mesma coisa com o pendurado como **diretório pai**.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn escrita_atraves_de_pai_symlink_pendurado_e_recusada() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        let dir_fora = fora.join("dir-inexistente");
+        std::os::unix::fs::symlink(&dir_fora, root.join("saida")).expect("symlink");
+
+        let tool = FileWriteTool::new(FileJail::sessions_only());
+        let err = tool
+            .execute(
+                &ctx_with(Some(root.to_str().expect("utf8"))),
+                serde_json::json!({ "path": "saida/plantado.txt", "content": "carga" }),
+            )
+            .await
+            .expect_err("pai pendurado para fora deve ser recusado");
+
+        assert!(err.to_string().ends_with(DENIAL_MESSAGE), "{err}");
+        assert!(!dir_fora.exists(), "criou diretorio fora da raiz");
+    }
+
     /// Fail-closed: sem raiz de config e sem `working_dir`, não escreve nada.
     #[tokio::test]
     async fn sem_raiz_nenhuma_nao_escreve() {

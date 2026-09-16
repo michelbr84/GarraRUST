@@ -40,9 +40,30 @@
 //!
 //! Para escrita o arquivo alvo ainda nao existe, entao `canonicalize` falha.
 //! A funcao sobe ate o **ancestral existente mais proximo**, canonicaliza esse
-//! e recola a cauda. Como `..` ja foi recusado antes (em `resolve_tool_path`)
-//! e a cauda nao existe, ela nao pode conter symlink: o resultado e o caminho
-//! real onde a escrita vai cair.
+//! e recola a cauda.
+//!
+//! O passo contraintuitivo esta aqui, e e o que a primeira versao desta
+//! funcao errou: **`canonicalize` falhar nao quer dizer "nao existe", quer
+//! dizer "nao resolve"**. Um symlink pendurado — aquele cujo alvo nao existe —
+//! falha no `canonicalize` e existe para o `lstat`; e o `open(O_CREAT)` de uma
+//! escrita **segue** esse link e cria o arquivo no alvo, fora da raiz. O vetor
+//! concreto e um `raiz/evil -> ../../../home/u/.ssh/authorized_keys`
+//! versionado num repositorio clonado: a cauda `evil` era recolada dentro da
+//! raiz, o `starts_with` aprovava, e o byte caia fora. Por isso cada
+//! componente que nao canonicaliza ainda passa por `symlink_metadata`:
+//! existir para o `lstat` sem resolver e recusa (`Denial::Outside`), nao
+//! "cauda inexistente".
+//!
+//! Custo aceito: um symlink pendurado apontando para **dentro** da raiz
+//! tambem e recusado. Distinguir exigiria reimplementar a resolucao de
+//! symlink a mao — alvo relativo, ciclo, teto de profundidade — e fail-closed
+//! sai mais barato que uma segunda resolucao caseira.
+//!
+//! O caminho e normalizado (`components().collect()`) antes desse `lstat`:
+//! com barra final (`raiz/evil/`) o `lstat` **segue** o symlink por POSIX, e
+//! um pendurado voltaria a parecer inexistente. A normalizacao derruba a
+//! barra final, o `//` e o `.` do meio — e nao toca em `..`, que ja foi
+//! recusado antes.
 //!
 //! ## Mensagem de recusa
 //!
@@ -125,28 +146,30 @@ impl FileJail {
 
     /// Canonicaliza e guarda. Raiz que nao resolve e descartada com `warn!`:
     /// uma raiz inexistente nao pode autorizar nada.
+    ///
+    /// Uma raiz que **resolve para `/` ou para o `$HOME`** e guardada — a
+    /// decisao e do operador — mas sai no log como aviso. Sem isso a unica
+    /// configuracao que desliga o jail e tambem a mais silenciosa, e a pressao
+    /// operacional de um jail apertado empurra exatamente para ela.
     pub fn from_roots<I, P>(roots: I) -> Self
     where
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
-        let roots = roots
+        let roots: Vec<PathBuf> = roots
             .into_iter()
-            .filter_map(|root| {
-                let root = root.as_ref();
-                match std::fs::canonicalize(root) {
-                    Ok(resolved) => Some(resolved),
-                    Err(e) => {
-                        warn!(
-                            root = %root.display(),
-                            error = %e,
-                            "raiz de file tool ignorada: nao foi possivel resolver"
-                        );
-                        None
-                    }
-                }
-            })
+            .filter_map(|root| canonicalizar_raiz(root.as_ref()))
             .collect();
+        let home = process_home_dir();
+        for root in &roots {
+            if let Some(motivo) = motivo_de_raiz_perigosa(root, home.as_deref()) {
+                warn!(
+                    root = %root.display(),
+                    "raiz de file tool perigosa: {motivo} — as file tools do agente alcancam \
+                     tudo debaixo dela (issue #1244)"
+                );
+            }
+        }
         Self { roots }
     }
 
@@ -170,7 +193,10 @@ impl FileJail {
     pub fn from_config_roots_plus_cwd<S: AsRef<str>>(configured: &[S]) -> Self {
         let mut jail = Self::from_config_roots(configured);
         match std::env::current_dir() {
-            Ok(cwd) => jail.roots.extend(Self::from_roots([cwd]).roots),
+            // Sem passar pelo aviso de `from_roots`: o CWD nao e uma raiz
+            // *declarada*, e quem roda `garra chat` no proprio home nao esta
+            // desligando jail nenhum — esta no diretorio que escolheu.
+            Ok(cwd) => jail.roots.extend(canonicalizar_raiz(&cwd)),
             Err(e) => {
                 warn!(error = %e, "CWD indisponivel: file tools ficam so com as raizes da config")
             }
@@ -193,6 +219,26 @@ impl FileJail {
     /// mesmo que "nega tudo": a sessao ainda pode trazer a dela.
     pub fn has_no_configured_roots(&self) -> bool {
         self.roots.is_empty()
+    }
+
+    /// As raizes que, **ja resolvidas**, desligam o jail na pratica: `/` e o
+    /// `$HOME` do processo. O boot do gateway imprime cada uma.
+    ///
+    /// Resolver antes de comparar e o ponto: `$HOME/../$USER` e um symlink
+    /// que aponta para o `$HOME` sao a mesma raiz perigosa escrita de outro
+    /// jeito, e so o `canonicalize` achata `..` e segue link. (`/.` e `//.`
+    /// ja caiam pelo `Path::parent`, que compara por componente — nao e
+    /// merito daqui.) As raizes deste jail ja chegam canonicalizadas por
+    /// [`FileJail::from_roots`].
+    pub fn raizes_perigosas(&self) -> Vec<(&Path, &'static str)> {
+        let home = process_home_dir();
+        self.roots
+            .iter()
+            .filter_map(|root| {
+                motivo_de_raiz_perigosa(root, home.as_deref())
+                    .map(|motivo| (root.as_path(), motivo))
+            })
+            .collect()
     }
 
     /// Raizes efetivas desta chamada: as do operador mais o `working_dir` da
@@ -235,6 +281,43 @@ impl FileJail {
     }
 }
 
+/// Canonicaliza uma raiz declarada. `None` (com `warn!`) quando ela nao
+/// resolve: uma raiz inexistente nao pode autorizar nada.
+fn canonicalizar_raiz(root: &Path) -> Option<PathBuf> {
+    match std::fs::canonicalize(root) {
+        Ok(resolved) => Some(resolved),
+        Err(e) => {
+            warn!(
+                root = %root.display(),
+                error = %e,
+                "raiz de file tool ignorada: nao foi possivel resolver"
+            );
+            None
+        }
+    }
+}
+
+/// Por que uma raiz **ja canonicalizada** desliga o jail, ou `None`.
+///
+/// Recebe `resolvida` e `home` resolvidos pelo chamador — nucleo puro, para o
+/// teste nao depender do `$HOME` da maquina que roda a suite.
+fn motivo_de_raiz_perigosa(resolvida: &Path, home: Option<&Path>) -> Option<&'static str> {
+    if resolvida.parent().is_none() {
+        return Some("e a raiz do sistema (/)");
+    }
+    if home == Some(resolvida) {
+        return Some("e o $HOME do processo (~/.ssh, ~/.aws, qualquer .env)");
+    }
+    None
+}
+
+/// O `$HOME` do processo, **canonicalizado**, para comparar com uma raiz que
+/// tambem ja foi canonicalizada. Sem isso um home que e symlink (o
+/// `/var` -> `/private/var` do macOS) nunca casaria.
+fn process_home_dir() -> Option<PathBuf> {
+    crate::tools::tool_context::process_home_dir().and_then(|home| std::fs::canonicalize(home).ok())
+}
+
 /// Canonicaliza `path`; se ele ainda nao existe, canonicaliza o ancestral
 /// existente mais proximo e recola a cauda.
 ///
@@ -242,13 +325,31 @@ impl FileJail {
 /// tambem, e nao so em `resolve_tool_path`, porque esta funcao e o ponto de
 /// decisao e um `..` na cauda depois da canonicalizacao do ancestral
 /// reescreveria o caminho depois da checagem.
+///
+/// Essa guarda **nao** e so defesa em profundidade: sem ela, um `..` depois
+/// de um componente inexistente nao vira `Outside`, vira `Unresolvable` — a
+/// subida chega a um caminho terminado em `..`, cujo `file_name()` e `None`.
+/// As duas recusam, mas so a guarda diz *por que*, e e o que
+/// `dotdot_depois_de_componente_inexistente_e_outside` fixa.
 fn resolve_nearest_existing(path: &Path) -> Result<PathBuf, Denial> {
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(Denial::Outside);
     }
 
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        return Ok(resolved);
+    // Normaliza antes de qualquer `lstat`. Com barra final (`raiz/evil/`) o
+    // `lstat` **segue** o symlink por POSIX, e um pendurado voltaria a parecer
+    // inexistente — furando a checagem logo abaixo. `components()` derruba a
+    // barra final, o `//` e o `.` do meio, e preserva `..` (ja recusado).
+    let normalizado: PathBuf = path.components().collect();
+    let path: &Path = &normalizado;
+
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => return Ok(resolved),
+        // Nao resolve, mas existe para o `lstat`: symlink pendurado ou ciclo.
+        // O `open(O_CREAT)` segue esse link e escreve no alvo — que e o que a
+        // recolagem da cauda nao ve. Ver o doc do modulo.
+        Err(_) if pendurado(path) => return Err(Denial::Outside),
+        Err(_) => {}
     }
 
     let mut cauda: Vec<std::ffi::OsString> = Vec::new();
@@ -271,15 +372,28 @@ fn resolve_nearest_existing(path: &Path) -> Result<PathBuf, Denial> {
         } else {
             pai
         };
-        if let Ok(base) = std::fs::canonicalize(pai) {
-            let mut resolvido = base;
-            for parte in cauda.iter().rev() {
-                resolvido.push(parte);
+        match std::fs::canonicalize(pai) {
+            Ok(base) => {
+                let mut resolvido = base;
+                for parte in cauda.iter().rev() {
+                    resolvido.push(parte);
+                }
+                return Ok(resolvido);
             }
-            return Ok(resolvido);
+            // Mesmo furo, um nivel acima: `raiz/saida -> /fora/inexistente` e
+            // um ancestral que nao resolve e existe.
+            Err(_) if pendurado(pai) => return Err(Denial::Outside),
+            Err(_) => {}
         }
         atual = pai;
     }
+}
+
+/// `true` quando o componente existe para o `lstat` mas nao canonicaliza —
+/// symlink pendurado, ciclo de symlink. Chamado **so** depois de um
+/// `canonicalize` que ja falhou.
+fn pendurado(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
 }
 
 #[cfg(test)]
@@ -475,6 +589,182 @@ mod tests {
         let jail = FileJail::from_roots(["/nao/existe/mesmo"]);
         assert!(jail.roots().is_empty());
         assert!(jail.has_no_configured_roots());
+    }
+
+    // ─── #1244 rodada 2: symlink pendurado ────────────────────────────────
+
+    /// O furo que a auditoria R4 achou: `canonicalize` falhar nao quer dizer
+    /// "nao existe". Um symlink pendurado dentro da raiz falha no
+    /// `canonicalize`, existe para o `lstat`, e o `open(O_CREAT)` da escrita
+    /// segue o link e cria o arquivo **fora**. Com a cauda recolada dentro da
+    /// raiz, o `starts_with` aprovava.
+    ///
+    /// Remova o `Err(_) if pendurado(path)` e este teste fica vermelho.
+    #[cfg(unix)]
+    #[test]
+    fn recusa_symlink_pendurado_para_fora() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        // O alvo nao existe: e disso que vem o "pendurado".
+        let alvo_fora = fora.join("authorized_keys");
+        let link = root.join("evil");
+        std::os::unix::fs::symlink(&alvo_fora, &link).expect("symlink");
+        assert!(!alvo_fora.exists(), "precondicao: alvo nao existe");
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "precondicao: o link existe para o lstat"
+        );
+
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(jail.confine(&link, None), Err(Denial::Outside));
+    }
+
+    /// Mesma coisa com barra final. `lstat("raiz/evil/")` **segue** o symlink
+    /// por POSIX e devolve ENOENT, entao sem a normalizacao por
+    /// `components()` o pendurado volta a parecer inexistente e passa.
+    #[cfg(unix)]
+    #[test]
+    fn recusa_symlink_pendurado_com_barra_final() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        let link = root.join("evil");
+        std::os::unix::fs::symlink(fora.join("authorized_keys"), &link).expect("symlink");
+
+        let com_barra = PathBuf::from(format!("{}/", link.to_str().expect("utf8")));
+        assert!(
+            std::fs::symlink_metadata(&com_barra).is_err(),
+            "precondicao: com barra final o lstat segue o link e falha"
+        );
+
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(jail.confine(&com_barra, None), Err(Denial::Outside));
+    }
+
+    /// A variante com o pendurado como **diretorio pai**: `raiz/saida` aponta
+    /// para um diretorio que nao existe fora da raiz, e o pedido e por um
+    /// arquivo debaixo dele. O furo estava um nivel acima da folha.
+    #[cfg(unix)]
+    #[test]
+    fn recusa_pai_symlink_pendurado_para_fora() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        let link = root.join("saida");
+        std::os::unix::fs::symlink(fora.join("dir-inexistente"), &link).expect("symlink");
+
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(
+            jail.confine(&link.join("arquivo.txt"), None),
+            Err(Denial::Outside)
+        );
+    }
+
+    /// O preco do fail-closed, dito em teste para ninguem "consertar" sem
+    /// perceber: pendurado apontando para **dentro** da raiz tambem e
+    /// recusado. Distinguir exigiria resolver symlink a mao.
+    #[cfg(unix)]
+    #[test]
+    fn pendurado_para_dentro_tambem_e_recusado() {
+        let (_t, root) = raiz();
+        let link = root.join("interno");
+        std::os::unix::fs::symlink(root.join("ainda-nao-existe"), &link).expect("symlink");
+
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(jail.confine(&link, None), Err(Denial::Outside));
+    }
+
+    /// E a recusa continua sendo a mesma frase: o furo tinha reaberto o
+    /// oraculo de existencia (alvo vivo dava `DENIAL_MESSAGE`, alvo morto
+    /// escrevia e respondia `Ok`).
+    #[cfg(unix)]
+    #[test]
+    fn pendurado_e_link_vivo_recusam_igual() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        let vivo = root.join("vivo");
+        let morto = root.join("morto");
+        std::os::unix::fs::symlink(&fora, &vivo).expect("symlink");
+        std::os::unix::fs::symlink(fora.join("nao-existe"), &morto).expect("symlink");
+
+        let jail = FileJail::from_roots([&root]);
+        let a = jail.confine(&vivo.join("x.txt"), None).expect_err("vivo");
+        let b = jail.confine(&morto, None).expect_err("morto");
+        assert_eq!(a.message(), b.message());
+    }
+
+    // ─── #1244 rodada 2: a guarda de `..` ─────────────────────────────────
+
+    /// `recusa_dotdot` passa pelo caminho normal (o `canonicalize` do pai
+    /// achata o `..` e cai fora), entao nao fixa a guarda: apagar
+    /// `Component::ParentDir` de `resolve_nearest_existing` deixava a suite
+    /// inteira verde. Aqui o pai **nao existe**, o `canonicalize` nao achata
+    /// nada, a subida chega a um caminho terminado em `..` e `file_name()`
+    /// devolve `None` — sem a guarda isto vira `Unresolvable`.
+    #[test]
+    fn dotdot_depois_de_componente_inexistente_e_outside() {
+        let (_t, root) = raiz();
+        let jail = FileJail::from_roots([&root]);
+        assert_eq!(
+            jail.confine(&root.join("naoexiste/../fora.txt"), None),
+            Err(Denial::Outside)
+        );
+    }
+
+    // ─── #1244 rodada 2: raiz que desliga o jail ──────────────────────────
+
+    #[test]
+    fn raiz_do_sistema_e_perigosa() {
+        assert!(motivo_de_raiz_perigosa(Path::new("/"), None).is_some());
+    }
+
+    #[test]
+    fn raiz_de_projeto_nao_e_perigosa() {
+        let (_t, root) = raiz();
+        assert!(motivo_de_raiz_perigosa(&root, Some(Path::new("/home/u"))).is_none());
+    }
+
+    #[test]
+    fn home_e_perigoso_e_so_o_home() {
+        let (_t, home) = raiz();
+        let outro = home.join("projeto");
+        std::fs::create_dir_all(&outro).expect("mkdir");
+        assert!(motivo_de_raiz_perigosa(&home, Some(&home)).is_some());
+        assert!(motivo_de_raiz_perigosa(&outro, Some(&home)).is_none());
+        // Sem `$HOME` conhecido nao se chuta.
+        assert!(motivo_de_raiz_perigosa(&home, None).is_none());
+    }
+
+    /// F5: a comparacao acontece **depois** do canonicalize. `$HOME/../$HOME`
+    /// e `raiz/.` sao a mesma raiz escrita de outro jeito, e a comparacao
+    /// textual (`path.parent().is_none()`) nao ve nenhuma das duas.
+    #[test]
+    fn raiz_perigosa_e_detectada_depois_de_resolver() {
+        let (_t, home) = raiz();
+        let nome = home.file_name().expect("nome").to_owned();
+        let rodeio = home.join("..").join(&nome).join(".");
+
+        let jail = FileJail::from_roots([&rodeio]);
+        assert_eq!(jail.roots(), [home.clone()], "a raiz tinha de resolver");
+
+        // `raizes_perigosas` usa o `$HOME` real do processo, que nao e este
+        // tempdir; o nucleo puro e quem prova a deteccao.
+        let resolvida = &jail.roots()[0];
+        assert!(motivo_de_raiz_perigosa(resolvida, Some(&home)).is_some());
+    }
+
+    /// `/.` e guardado como `/` e acusado sem depender de nenhum `$HOME`.
+    #[test]
+    fn barra_ponto_e_acusada_como_raiz_do_sistema() {
+        let jail = FileJail::from_roots(["/."]);
+        assert_eq!(jail.roots(), [PathBuf::from("/")]);
+        let perigosas = jail.raizes_perigosas();
+        assert_eq!(perigosas.len(), 1, "{perigosas:?}");
+        assert_eq!(perigosas[0].0, Path::new("/"));
+    }
+
+    #[test]
+    fn jail_de_projeto_nao_tem_raiz_perigosa() {
+        let (_t, root) = raiz();
+        assert!(FileJail::from_roots([&root]).raizes_perigosas().is_empty());
     }
 
     #[test]
