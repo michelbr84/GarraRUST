@@ -34,6 +34,16 @@ async fn start_minio() -> Option<(
     let container = match MinIO::default().start().await {
         Ok(c) => c,
         Err(e) => {
+            // Um teste que se pula sozinho passa verde sem asserir nada — foi
+            // assim que estes 7 testes ficaram desde sempre "passando" sem
+            // nunca tocar o backend S3. Onde o Docker E esperado (CI Linux),
+            // `GARRAIA_REQUIRE_DOCKER` transforma o skip em falha, para que o
+            // verde signifique que o MinIO rodou mesmo. Sem a variavel, o
+            // comportamento antigo continua: pular em maquina sem Docker.
+            assert!(
+                std::env::var_os("GARRAIA_REQUIRE_DOCKER").is_none(),
+                "GARRAIA_REQUIRE_DOCKER esta setado, mas o container MinIO nao subiu: {e}"
+            );
             eprintln!(
                 "[skip] MinIO container failed to start — Docker unavailable? ({e}); \
                  plan 0038 integration tests skipped",
@@ -72,6 +82,23 @@ async fn start_minio() -> Option<(
 
     let store = S3Compatible::from_client(client, BUCKET);
     Some((container, store, endpoint))
+}
+
+/// Cliente S3 cru contra o mesmo endpoint, para assertar estado que o trait
+/// `ObjectStore` de proposito nao expoe (ex.: multiparts em aberto).
+async fn raw_client(endpoint: &str) -> Client {
+    let creds = Credentials::new(ACCESS_KEY, SECRET_KEY, None, None, "minio-test");
+    let shared = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(REGION))
+        .credentials_provider(SharedCredentialsProvider::new(creds))
+        .load()
+        .await;
+    Client::from_conf(
+        S3ConfigBuilder::from(&shared)
+            .endpoint_url(endpoint)
+            .force_path_style(true)
+            .build(),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -275,4 +302,139 @@ async fn minio_put_enforces_sse() {
     // the object and trust MinIO's `x-amz-server-side-encryption` echo
     // when we explicitly asked for it in `put`.
     assert!(store.exists("sse-check/file/v1").await.expect("exists"));
+}
+
+/// ROADMAP §3.5 — native S3 multipart for files > 16 MiB.
+///
+/// Uploads 24 MiB (threshold + 8 MiB = exactly 3 parts of 8 MiB) through
+/// `put_stream` and verifies the object round-trips byte-for-byte with a
+/// matching etag and metadata.
+#[tokio::test(flavor = "multi_thread")]
+async fn minio_put_stream_multipart_roundtrips_large_object() {
+    let Some((_c, store, _endpoint)) = start_minio().await else {
+        return;
+    };
+
+    // 3 full parts: 16 MiB threshold already crossed + one more 8 MiB part.
+    let payload: Vec<u8> = (0..(16 * 1024 * 1024 + 8 * 1024 * 1024))
+        .map(|i| (i % 251) as u8) // pseudo-random but deterministic
+        .collect();
+    let expected_etag = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(&payload))
+    };
+
+    // Stage the payload in a temp file (same pattern as the gateway's
+    // finalize path: `Box::pin(tokio::fs::File)`).
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let staged = tmp.path().join("payload.bin");
+    tokio::fs::write(&staged, &payload)
+        .await
+        .expect("stage payload");
+    let reader: garraia_storage::AsyncByteReader =
+        Box::pin(tokio::fs::File::open(&staged).await.expect("open staged"));
+
+    let meta = store
+        .put_stream(
+            "multipart/big/v1",
+            reader,
+            payload.len() as u64,
+            PutOptions {
+                content_type: Some("application/octet-stream".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("put_stream multipart");
+    assert_eq!(meta.size_bytes, payload.len() as u64);
+    assert_eq!(meta.etag_sha256, expected_etag);
+    assert_eq!(
+        meta.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+
+    let got = store.get("multipart/big/v1").await.expect("get back");
+    assert_eq!(got.bytes.as_ref(), payload.as_slice());
+    assert_eq!(got.metadata.size_bytes, payload.len() as u64);
+
+    // Replace path: a smaller object through the same key must fully replace
+    // the multipart content (single-put path).
+    let staged_small = tmp.path().join("small.bin");
+    tokio::fs::write(&staged_small, b"small")
+        .await
+        .expect("stage small");
+    let reader: garraia_storage::AsyncByteReader = Box::pin(
+        tokio::fs::File::open(&staged_small)
+            .await
+            .expect("open small"),
+    );
+    let small = store
+        .put_stream("multipart/big/v1", reader, 5, PutOptions::default())
+        .await
+        .expect("small put_stream");
+    assert_eq!(small.size_bytes, 5);
+    let got = store.get("multipart/big/v1").await.expect("get small");
+    assert_eq!(got.bytes.as_ref(), b"small");
+}
+
+/// Um stream que termina antes do `content_length` declarado nao pode virar
+/// um objeto "completo" com tamanho menor: o multipart e abortado e a chave
+/// fica intacta. Cobre o contrato "a chave nunca expoe conteudo parcial" no
+/// caminho que escolhe o multipart justamente pelo valor declarado.
+#[tokio::test(flavor = "multi_thread")]
+async fn minio_multipart_aborts_when_stream_is_shorter_than_declared() {
+    let Some((_c, store, endpoint)) = start_minio().await else {
+        return;
+    };
+
+    // Conteudo previo: precisa sobreviver a tentativa falha.
+    store
+        .put(
+            "multipart/short/v1",
+            Bytes::from_static(b"previous"),
+            PutOptions::default(),
+        )
+        .await
+        .expect("seed previous content");
+
+    // 20 MiB reais, 24 MiB declarados: acima do limiar, entao vai por
+    // multipart, e o stream acaba no meio da terceira parte.
+    let actual: Vec<u8> = (0..(20 * 1024 * 1024)).map(|i| (i % 251) as u8).collect();
+    let declared = 24 * 1024 * 1024u64;
+    let reader: garraia_storage::AsyncByteReader = Box::pin(std::io::Cursor::new(actual));
+
+    let err = store
+        .put_stream(
+            "multipart/short/v1",
+            reader,
+            declared,
+            PutOptions::default(),
+        )
+        .await
+        .expect_err("short stream must not commit");
+    assert!(
+        matches!(err, StorageError::Backend(ref m) if m.contains("expected")),
+        "erro deve nomear o descasamento de tamanho, veio: {err:?}"
+    );
+
+    // A chave mantem o conteudo anterior — nada parcial foi exposto.
+    let got = store
+        .get("multipart/short/v1")
+        .await
+        .expect("previous kept");
+    assert_eq!(got.bytes.as_ref(), b"previous");
+
+    // E nenhum multipart ficou aberto sendo faturado.
+    let open = raw_client(&endpoint)
+        .await
+        .list_multipart_uploads()
+        .bucket(BUCKET)
+        .send()
+        .await
+        .expect("list_multipart_uploads");
+    assert!(
+        open.uploads().is_empty(),
+        "multipart orfao deixado aberto: {:?}",
+        open.uploads()
+    );
 }

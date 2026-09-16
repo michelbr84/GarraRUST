@@ -46,6 +46,13 @@ pub struct BashTool {
     /// mas ela não perdoa um comando perigoso — `is_dangerous` continua
     /// rodando primeiro e é inegociável.
     allowlist: Vec<String>,
+    /// Sandbox por tool (P0 gap analysis 2026-09-15). `default` = Off: o
+    /// comando roda no host como sempre. Quando a policy se aplica à tool
+    /// `bash`, o comando é envolvido no backend (Docker/Podman/SSH) —
+    /// fail-closed se o backend não existir. Aplicado por ÚLTIMO, depois de
+    /// todas as checagens de segurança (sandbox é camada adicional, não
+    /// substituto do safety gate).
+    sandbox: crate::sandbox::SandboxPolicy,
 }
 
 impl BashTool {
@@ -55,6 +62,7 @@ impl BashTool {
             allow_readonly: false,
             confirmation_enabled: false,
             allowlist: Vec::new(),
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
     }
 
@@ -65,6 +73,7 @@ impl BashTool {
             allow_readonly: false,
             confirmation_enabled: true,
             allowlist: Vec::new(),
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
     }
 
@@ -75,6 +84,7 @@ impl BashTool {
             allow_readonly: true,
             confirmation_enabled: false,
             allowlist: Vec::new(),
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
     }
 
@@ -165,6 +175,12 @@ impl BashTool {
             Some(prefixo) => cmd.starts_with(prefixo),
             None => cmd == p,
         })
+    }
+
+    /// Sandbox por tool: define a política avaliada a cada execução de `bash`.
+    /// `SandboxPolicy::default()` mantém o comportamento atual (Off).
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox = policy;
     }
 
     /// Check if command matches the hard-block denylist (GAR-236, GAR-497).
@@ -301,6 +317,38 @@ impl Tool for BashTool {
             ("powershell", "-Command")
         } else {
             ("bash", "-c")
+        };
+
+        // Sandbox por tool (P0 gap analysis 2026-09-15): avalia DEPOIS de
+        // denylist/risco/read-only. Se aplicável, o comando vira o payload
+        // do backend (Docker/Podman com no-new-privileges + --network none);
+        // backend ausente => erro fail-closed, nunca fallback para o host.
+        let comando = match self.sandbox.wrap_command(
+            self.name(),
+            comando,
+            context.working_dir.as_deref().unwrap_or("."),
+        ) {
+            Ok(None) => comando.to_string(),
+            Ok(Some(sandboxed)) => {
+                tracing::info!(
+                    command = %comando,
+                    session = %context.session_id,
+                    "bash: comando executado dentro do sandbox"
+                );
+                sandboxed
+            }
+            Err(e) => {
+                tracing::error!(
+                    command = %comando,
+                    session = %context.session_id,
+                    "bash: sandbox fail-closed: {}",
+                    e
+                );
+                return Ok(ToolOutput::error(format!(
+                    "Comando bloqueado: sandbox obrigatório não pôde ser aplicado. {}",
+                    e
+                )));
+            }
         };
 
         let mut cmd = Command::new(shell);
@@ -662,6 +710,99 @@ mod tests {
         assert!(
             !output.content.contains("leak-canary"),
             "approval flag leaked through in fail-closed mode: {}",
+            output.content
+        );
+    }
+
+    // ── Sandbox por tool (P0 gap analysis 2026-09-15) ───────────────────────
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandbox_off_preserva_comportamento_atual() {
+        let tool = BashTool::new(None);
+        assert!(!tool.sandbox.requires_sandbox("bash"));
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "echo direto"}))
+            .await
+            .unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        assert_eq!(output.content.trim(), "direto");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandbox_fail_closed_quando_backend_nao_existe() {
+        // Backend com binário que não existe em Nenhum PATH de CI: usamos
+        // Podman só se ausente; alternativa determinística: policy com
+        // backend Docker mas modo allowlist sem a tool => não deve envolver.
+        // Para o fail-closed real, mascaramos PATH do host? Não dá — então
+        // testamos via SSH com host que rejeita? O contrato fail-closed
+        // unitário já é coberto em crate::sandbox::tests. Aqui validamos a
+        // integração: policy Off => comando passa; policy All com backend
+        // None => erro amigável (sem backend definido), SEM executar.
+        let mut tool = BashTool::new(None);
+        tool.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+            mode: crate::sandbox::SandboxMode::All,
+            backend: None,
+            ..crate::sandbox::SandboxPolicy::default()
+        });
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "echo nunca"}))
+            .await
+            .unwrap();
+        assert!(output.is_error, "sandbox obrigatório deve bloquear");
+        assert!(
+            output.content.contains("sandbox"),
+            "mensagem deve explicar o sandbox: {}",
+            output.content
+        );
+        assert!(
+            !output.content.contains("nunca"),
+            "comando não pode ter rodado"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandbox_allowlist_so_envolve_tool_listada() {
+        // denylist continua inegociável mesmo sandboxado.
+        let mut tool = BashTool::new(None);
+        tool.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+            mode: crate::sandbox::SandboxMode::Allowlist,
+            sandboxed_tools: vec!["file_read".into()], // bash fora da lista
+            backend: None,                             // nem precisaria de backend
+            ..crate::sandbox::SandboxPolicy::default()
+        });
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "echo fora"}))
+            .await
+            .unwrap();
+        assert!(
+            !output.is_error,
+            "bash fora da allowlist roda no host: {}",
+            output.content
+        );
+        assert_eq!(output.content.trim(), "fora");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandbox_nao_perdoa_comando_perigoso() {
+        // denylist roda ANTES do sandbox: rm -rf / nem chega ao container.
+        let mut tool = BashTool::new(None);
+        tool.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+            mode: crate::sandbox::SandboxMode::All,
+            backend: Some(crate::sandbox::SandboxBackend::Docker),
+            ..crate::sandbox::SandboxPolicy::default()
+        });
+        let output = tool
+            .execute(&ctx(false), serde_json::json!({"command": "rm -rf /"}))
+            .await
+            .unwrap();
+        assert!(output.is_error);
+        assert!(
+            output.content.contains("bloqueado por segurança"),
+            "denylist deve vencer: {}",
             output.content
         );
     }
