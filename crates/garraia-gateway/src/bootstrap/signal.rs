@@ -133,7 +133,7 @@ pub fn build_signal_channels(
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key();
                     let exec = state
-                        .exec_context_for(&session_id, Some(&source_number))
+                        .exec_context_for_msg(&session_id, Some(&source_number), Some(&text))
                         .await;
 
                     let response = if let Some(delta_sender) = delta_tx {
