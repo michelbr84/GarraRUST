@@ -75,7 +75,10 @@ impl BridgeLauncher for FixtureLauncher {
     }
 
     fn describe(&self) -> String {
-        format!("python3 fake_whatsapp_bridge.py --scenario {}", self.scenario)
+        format!(
+            "python3 fake_whatsapp_bridge.py --scenario {}",
+            self.scenario
+        )
     }
 
     fn dir(&self) -> PathBuf {
@@ -260,7 +263,12 @@ async fn a_logged_out_account_purges_the_session_and_reports_it() {
     .expect_err("logged_out precisa falhar");
 
     assert!(
-        matches!(err, RunError::SessionDead { reason_code: Some(401) }),
+        matches!(
+            err,
+            RunError::SessionDead {
+                reason_code: Some(401)
+            }
+        ),
         "o codigo cru do Baileys precisa chegar ao usuario: {err:?}"
     );
     assert!(
@@ -310,7 +318,10 @@ async fn a_protocol_version_mismatch_is_refused_with_the_bridge_directory() {
     .expect_err("protocolo incompativel");
 
     let msg = err.to_string();
-    assert!(msg.contains("99"), "precisa citar a versao encontrada: {msg}");
+    assert!(
+        msg.contains("99"),
+        "precisa citar a versao encontrada: {msg}"
+    );
     assert!(
         msg.contains(&dir.path().display().to_string()),
         "precisa citar o diretorio do bridge para o usuario apagar: {msg}"
@@ -388,9 +399,7 @@ async fn ctrl_c_cancels_without_persisting_anything() {
     let handle = {
         let launcher = FixtureLauncher::new("hang", dir.path().to_path_buf());
         let store = store.clone();
-        tokio::spawn(async move {
-            pair(&launcher, &store, &key, &mut SilentUi, rx).await
-        })
+        tokio::spawn(async move { pair(&launcher, &store, &key, &mut SilentUi, rx).await })
     };
 
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -441,10 +450,8 @@ async fn serve_delivers_messages_and_refreshes_the_session() {
     let sink = Arc::new(CollectingSink::default());
     let (tx, rx) = watch::channel(false);
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(4);
-    let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher::new(
-        "serve-echo",
-        dir.path().to_path_buf(),
-    ));
+    let launcher: Arc<dyn BridgeLauncher> =
+        Arc::new(FixtureLauncher::new("serve-echo", dir.path().to_path_buf()));
 
     let task = {
         let sink = Arc::clone(&sink);

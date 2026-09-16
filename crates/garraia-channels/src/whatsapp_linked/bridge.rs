@@ -489,9 +489,10 @@ impl BridgeConnection {
         let mut line = serde_json::to_string(command)
             .map_err(|e| BridgeError::Protocol(format!("comando nao serializa: {e}")))?;
         line.push('\n');
-        let stdin = self.stdin.as_mut().ok_or_else(|| {
-            BridgeError::Protocol("stdin do bridge ja foi fechado".into())
-        })?;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| BridgeError::Protocol("stdin do bridge ja foi fechado".into()))?;
         stdin
             .write_all(line.as_bytes())
             .await
@@ -781,7 +782,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("bridge");
         materialize(&target, &FakeAssets(A)).expect("write");
-        let mode = std::fs::metadata(&target).expect("stat").permissions().mode();
+        let mode = std::fs::metadata(&target)
+            .expect("stat")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o700);
     }
 

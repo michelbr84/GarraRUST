@@ -139,9 +139,9 @@ impl KeyOrigin {
     pub fn warning(self) -> Option<&'static str> {
         match self {
             KeyOrigin::VaultPassphrase => None,
-            KeyOrigin::RandomKeyFile => Some(
-                "chave da sessao sem passphrase do cofre — defina GARRAIA_VAULT_PASSPHRASE",
-            ),
+            KeyOrigin::RandomKeyFile => {
+                Some("chave da sessao sem passphrase do cofre — defina GARRAIA_VAULT_PASSPHRASE")
+            }
         }
     }
 }
@@ -571,10 +571,7 @@ mod tests {
         file["ciphertext"] = serde_json::Value::String(BASE64.encode(&bytes));
         std::fs::write(store.blob_path(), file.to_string()).expect("write");
 
-        assert!(matches!(
-            store.load(&key),
-            Err(SessionError::Undecryptable)
-        ));
+        assert!(matches!(store.load(&key), Err(SessionError::Undecryptable)));
     }
 
     #[test]
@@ -689,11 +686,7 @@ mod tests {
     #[test]
     fn for_data_dir_uses_the_documented_layout() {
         let store = SessionStore::for_data_dir(Path::new("/data"), DEFAULT_ACCOUNT);
-        assert!(
-            store
-                .blob_path()
-                .ends_with("whatsapp/default/session.enc")
-        );
+        assert!(store.blob_path().ends_with("whatsapp/default/session.enc"));
     }
 
     #[test]

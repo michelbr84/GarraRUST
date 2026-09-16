@@ -290,7 +290,9 @@ pub enum StartMode {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BridgeCommand {
     /// Primeiro comando, sempre. `None` = sem sessao (pareamento).
-    SessionLoad { session: Option<SessionBlob> },
+    SessionLoad {
+        session: Option<SessionBlob>,
+    },
     Start {
         mode: StartMode,
     },
@@ -516,15 +518,30 @@ mod tests {
             (Some(2), None, true, "exit 2 basta sozinho"),
             (Some(0), None, false, "logout que nos pedimos"),
             (Some(0), Some(440), false, "440: outro aparelho assumiu"),
-            (Some(0), Some(401), false, "exit 0 vence: o bridge saiu limpo"),
+            (
+                Some(0),
+                Some(401),
+                false,
+                "exit 0 vence: o bridge saiu limpo",
+            ),
             (Some(1), None, false, "erro fatal de init nao mata a sessao"),
             (Some(3), None, false, "erro de protocolo nao mata a sessao"),
-            (None, Some(401), true, "sem codigo, o 401 e a evidencia que resta"),
+            (
+                None,
+                Some(401),
+                true,
+                "sem codigo, o 401 e a evidencia que resta",
+            ),
             (None, Some(403), true, "403 tambem e UNAUTHORIZED"),
             (None, Some(419), true, "419 tambem e UNAUTHORIZED"),
             (None, Some(515), false, "515 e restart_required, nao morte"),
             (None, Some(428), false, "428 e rede"),
-            (None, None, false, "sem evidencia nenhuma, nao se apaga nada"),
+            (
+                None,
+                None,
+                false,
+                "sem evidencia nenhuma, nao se apaga nada",
+            ),
         ];
         for &(exit_code, reason_code, expected, why) in cases {
             assert_eq!(

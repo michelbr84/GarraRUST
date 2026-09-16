@@ -356,7 +356,8 @@ pub async fn pair(
         // valendo, entao NADA e apagado.
         return Err(BridgeError::Protocol(
             "outro aparelho assumiu esta sessao, ou o logout foi solicitado; \
-a sessao gravada continua valendo".into(),
+a sessao gravada continua valendo"
+                .into(),
         )
         .into());
     }
@@ -534,7 +535,9 @@ pub async fn serve(
 enum ServeExit {
     Cancelled,
     /// Sessao morta (exit 2): apaga o material e para.
-    SessionDead { reason_code: Option<i64> },
+    SessionDead {
+        reason_code: Option<i64>,
+    },
     /// `logged_out` com exit 0: para, mas **nao** apaga nada.
     Stopped,
     Dropped,

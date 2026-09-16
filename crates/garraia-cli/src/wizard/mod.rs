@@ -18,7 +18,11 @@
 mod config_writer;
 mod env_detect;
 mod local_stack;
-mod prompts;
+// `pub(crate)` desde o `garra whatsapp` (#1238): o comando tem o mesmo problema
+// que o wizard — precisa de um `select`/`confirm`/`password` que o teste possa
+// roteirizar sem TTY. Duplicar o trait seria criar uma segunda superficie de
+// prompt para o mesmo binario.
+pub(crate) mod prompts;
 
 use std::collections::HashMap;
 use std::io::IsTerminal;

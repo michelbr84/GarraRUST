@@ -283,7 +283,13 @@ impl Machine {
                 Event::QrShown { expires_in_secs },
             ) => self.enter_qr(expires_in_secs, now_secs),
 
-            (Phase::QrGenerated { attempt, expires_at_secs }, Event::ScanPending) => {
+            (
+                Phase::QrGenerated {
+                    attempt,
+                    expires_at_secs,
+                },
+                Event::ScanPending,
+            ) => {
                 self.phase = Phase::WaitingScan {
                     attempt,
                     expires_at_secs,
@@ -390,7 +396,10 @@ impl Machine {
 
         if attempt >= self.max_qr_attempts {
             self.phase = Phase::Failed(Failure::QrExpired);
-            return vec![Effect::QrExpired { attempt }, Effect::Fail(Failure::QrExpired)];
+            return vec![
+                Effect::QrExpired { attempt },
+                Effect::Fail(Failure::QrExpired),
+            ];
         }
         // Volta para `QrRequired`: o proximo `qr` do bridge conta como a
         // tentativa seguinte. A maquina nao pede o QR — ela so deixa de
@@ -534,9 +543,20 @@ mod tests {
     #[test]
     fn a_dead_session_purges_and_clears_the_intent_from_any_phase() {
         for setup in [
-            vec![Event::NoSession, Event::QrShown { expires_in_secs: 20 }],
+            vec![
+                Event::NoSession,
+                Event::QrShown {
+                    expires_in_secs: 20,
+                },
+            ],
             vec![Event::SessionFound, Event::BridgeStarted],
-            vec![Event::NoSession, Event::QrShown { expires_in_secs: 20 }, Event::Connected],
+            vec![
+                Event::NoSession,
+                Event::QrShown {
+                    expires_in_secs: 20,
+                },
+                Event::Connected,
+            ],
         ] {
             let mut m = Machine::new();
             for ev in setup {
@@ -565,7 +585,9 @@ mod tests {
         for ev in [
             Event::Authenticated,
             Event::Connected,
-            Event::QrShown { expires_in_secs: 20 },
+            Event::QrShown {
+                expires_in_secs: 20,
+            },
             Event::ScanPending,
             Event::BridgeStarted,
         ] {
@@ -653,9 +675,9 @@ mod tests {
             (2, 0.0, 1_000),
             (3, 0.0, 2_000),
             (5, 0.0, 8_000),
-            (6, 0.0, 15_000),   // base saturou no teto de 30 s
+            (6, 0.0, 15_000), // base saturou no teto de 30 s
             (7, 0.0, 15_000),
-            (30, 0.0, 15_000),  // saturacao nao estoura
+            (30, 0.0, 15_000), // saturacao nao estoura
             (30, 1.0, 30_000),
             // jitter fora da faixa e apertado, nao aceito
             (1, -5.0, 500),

@@ -165,14 +165,12 @@ pub fn render(data: &str, style: Style) -> Result<String, QrError> {
 }
 
 /// Dica impressa junto com a string crua quando nao da para desenhar.
-pub const RAW_HINT_PT: &str =
-    "Terminal sem Unicode ou estreito demais para desenhar o QR. \
+pub const RAW_HINT_PT: &str = "Terminal sem Unicode ou estreito demais para desenhar o QR. \
 Cole a string acima num gerador de QR, ou rode de novo num terminal com \
 pelo menos 60 colunas e UTF-8.";
 
 /// Idem, em ingles.
-pub const RAW_HINT_EN: &str =
-    "This terminal cannot draw the QR (no Unicode, or fewer than 60 columns). \
+pub const RAW_HINT_EN: &str = "This terminal cannot draw the QR (no Unicode, or fewer than 60 columns). \
 Paste the string above into a QR generator, or re-run in a UTF-8 terminal at \
 least 60 columns wide.";
 
