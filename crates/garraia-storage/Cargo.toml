@@ -3,6 +3,7 @@ name = "garraia-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Object storage abstraction for GarraIA — ObjectStore trait + LocalFs + S3Compatible (GAR-394 slices 1+2)"
 
 [features]
