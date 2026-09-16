@@ -32,7 +32,9 @@ use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::http::HttpResponse;
-use aws_sdk_s3::config::{Builder as S3ConfigBuilder, SharedCredentialsProvider};
+use aws_sdk_s3::config::{
+    Builder as S3ConfigBuilder, RequestChecksumCalculation, SharedCredentialsProvider,
+};
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::presigning::PresigningConfig;
@@ -162,6 +164,24 @@ impl S3Compatible {
         if cfg.force_path_style {
             builder = builder.force_path_style(true);
         }
+        // Checksum de request PINADO (#1229).
+        //
+        // O SDK le `AWS_REQUEST_CHECKSUM_CALCULATION` (e o
+        // `request_checksum_calculation` do profile) do ambiente, e
+        // `WHEN_REQUIRED` desliga o checksum que ele carimba sozinho. Este
+        // `.request_checksum_calculation(...)` e aplicado DEPOIS do
+        // `S3ConfigBuilder::from(&shared)` — que copia o valor vindo do
+        // ambiente — entao o ambiente deixa de ter voto.
+        //
+        // Nota de escopo, para nao virar falsa sensacao de seguranca: os
+        // checksums que importam aqui sao os EXPLICITOS. `put_object` e cada
+        // `upload_part` mandam `checksum_sha256` como campo da operacao, e o
+        // interceptor do SDK faz short-circuit quando o header ja existe,
+        // antes mesmo de consultar esta preferencia. O pin cobre (a) as
+        // operacoes onde nao nomeamos algoritmo nenhum e (b) a regressao
+        // futura em que alguem remova o `.checksum_sha256(...)` e o ambiente
+        // volte a decidir sozinho se o servidor verifica o que recebeu.
+        builder = builder.request_checksum_calculation(RequestChecksumCalculation::WhenSupported);
         let client = Client::from_conf(builder.build());
         Ok(Self {
             client: Arc::new(client),
@@ -868,6 +888,58 @@ mod tests {
             }
             other => panic!("esperado Backend, veio {other:?}"),
         }
+    }
+
+    /// Regressao de #1229: o ambiente NAO pode desligar o checksum de
+    /// request.
+    ///
+    /// `AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED` e uma variavel que o
+    /// SDK honra sozinho — uma linha no deploy bastaria para o cliente parar
+    /// de carimbar checksum e o servidor parar de verificar o que recebeu.
+    /// `S3Compatible::new` fixa `WhenSupported` DEPOIS de herdar a config do
+    /// ambiente, entao o valor do ambiente e engolido.
+    ///
+    /// O teste roda `#[serial]` porque mexe em env var, que e estado global
+    /// do processo, e restaura o valor anterior antes de sair.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn env_cannot_downgrade_request_checksum_calculation() {
+        const VAR: &str = "AWS_REQUEST_CHECKSUM_CALCULATION";
+        let previous = std::env::var(VAR).ok();
+        // SAFETY: edicao 2024 exige `unsafe` para mexer no env do processo.
+        // `#[serial]` garante que nenhum outro teste deste binario roda em
+        // paralelo, e o valor anterior e restaurado no fim.
+        unsafe { std::env::set_var(VAR, "WHEN_REQUIRED") };
+
+        let store = S3Compatible::new(S3Config {
+            bucket: "bucket-de-teste".into(),
+            region: "us-east-1".into(),
+            endpoint_url: Some("http://127.0.0.1:1".into()),
+            force_path_style: true,
+            credentials: Some(Credentials::new("AKID", "SECRET", None, None, "test")),
+        })
+        .await
+        .expect("construir o cliente nao faz I/O de rede");
+
+        let effective = store
+            .client
+            .config()
+            .request_checksum_calculation()
+            .cloned();
+
+        // SAFETY: mesmo racional do `set_var` acima.
+        unsafe {
+            match previous {
+                Some(v) => std::env::set_var(VAR, v),
+                None => std::env::remove_var(VAR),
+            }
+        }
+
+        assert_eq!(
+            effective,
+            Some(RequestChecksumCalculation::WhenSupported),
+            "o ambiente conseguiu rebaixar o checksum de request: {effective:?}"
+        );
     }
 
     /// Cliente que nunca sai para a rede: so precisamos de um `S3Compatible`
