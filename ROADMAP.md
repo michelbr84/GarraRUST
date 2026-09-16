@@ -1221,7 +1221,7 @@ Related: GAR-333 (provisionar `api.garraia.org` com gateway cloud — em aberto 
 - [ ] **Multi-região ativo/ativo** via CockroachDB ou Postgres com logical replication.
 - [ ] **Federation** entre instâncias Garra (grupos cross-instance como Matrix).
 - [ ] **Marketplace de agentes e plugins WASM** assinados.
-- [ ] **Agentes proativos**: garra sugere ações antes de ser perguntada (respect privacy preferences).
+- [ ] **agentes proativos**: garra sugere ações antes de ser perguntada (respect privacy preferences).
 - [ ] **Voice-first**: chamadas de voz full-duplex com STT+TTS local.
 - [ ] **Vision**: multi-modal (imagens, PDFs) via providers compatíveis.
 - [ ] **Enterprise features**: SAML, SCIM, audit export para SIEM, BYOK.

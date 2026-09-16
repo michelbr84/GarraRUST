@@ -599,7 +599,7 @@ jobs:
 
   # Integração garraia-auth com test-support (plan 0354).
   #
-  # Os 16 binários de teste de integração do garraia-auth (extractor, matriz
+  # Os 15 binários de teste de integração do garraia-auth (extractor, matriz
   # RLS de 81 cenários, signup_flow, sessions_lifecycle, password_change, …)
   # declaram `required-features = ["test-support"]`, que NÃO é default — o
   # `cargo test --workspace` do job `test` os pula SILENCIOSAMENTE. Até este
