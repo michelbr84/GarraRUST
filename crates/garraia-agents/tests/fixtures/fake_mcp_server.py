@@ -8,12 +8,17 @@ Flags let a test drive the failure modes that matter:
   --ignore-eof           keep running after stdin closes (tests bounded shutdown)
   --hang-on-call         never answer tools/call (tests the per-call timeout)
   --tool-reply TEXT      text returned by the echo tool (default "pong")
+  --expose-env           add an `env_report` tool that reports the child's own
+                         environment (issue #1075 continuation: pins that MCP
+                         children no longer inherit the gateway's secrets).
+                         Off by default so the default tool list stays at one.
 
 Deliberately dependency-free: only the stdlib, so it runs anywhere CI runs.
 """
 
 import argparse
 import json
+import os
 import sys
 import threading
 
@@ -35,6 +40,7 @@ def main():
     ap.add_argument("--ignore-eof", action="store_true")
     ap.add_argument("--hang-on-call", action="store_true")
     ap.add_argument("--tool-reply", default="pong")
+    ap.add_argument("--expose-env", action="store_true")
     args = ap.parse_args()
 
     calls = 0
@@ -57,16 +63,38 @@ def main():
                 "serverInfo": {"name": "fake-mcp-server", "version": "0.1.0"},
             })
         elif method == "tools/list":
-            result(req_id, {"tools": [{
+            tools = [{
                 "name": "echo",
                 "description": "Echoes a fixed reply.",
                 "inputSchema": {"type": "object", "properties": {}},
-            }]})
+            }]
+            if args.expose_env:
+                tools.append({
+                    "name": "env_report",
+                    "description": "Reports this child's own environment.",
+                    "inputSchema": {"type": "object", "properties": {}},
+                })
+            result(req_id, {"tools": tools})
         elif method == "tools/call":
             if args.hang_on_call:
                 # Block forever without closing the transport.
                 threading.Event().wait()
             calls += 1
+            if msg.get("params", {}).get("name") == "env_report":
+                # Names always; values only for the test-scoped prefix, so the
+                # fixture can never print a real credential into CI logs.
+                payload = {
+                    "names": sorted(os.environ),
+                    "values": {
+                        k: v for k, v in os.environ.items()
+                        if k.startswith("GARRAIA_TEST_")
+                    },
+                }
+                result(req_id, {
+                    "content": [{"type": "text", "text": json.dumps(payload)}],
+                    "isError": False,
+                })
+                continue
             result(req_id, {
                 "content": [{"type": "text", "text": args.tool_reply}],
                 "isError": False,
