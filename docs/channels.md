@@ -133,6 +133,27 @@ channels:
 
 ## WhatsApp
 
+### Which one do you need: Business or personal?
+
+There are two different WhatsApp integrations, and they are **separate
+channels**, not two modes of one. Decide which you want before configuring
+anything.
+
+| | WhatsApp Business (Cloud API) | Personal WhatsApp (linked device) |
+|---|---|---|
+| Channel type | `whatsapp` | `whatsapp_linked` |
+| How it connects | Meta `POST`s to your webhook | the gateway holds a linked-device session, paired by scanning a QR code |
+| What it costs you to set up | a WhatsApp Business account, a number registered with Meta, a Meta app, and a publicly reachable URL | the phone you already use, plus Node.js on the machine running GarraIA |
+| Official? | yes, it is Meta's own API | no — it is the mechanism behind WhatsApp Web, driven by a third-party client, and Meta may block the account |
+| Pick it when | the assistant answers on a **business** number, or you already have a Meta app | you want to talk to your own assistant from **your own** WhatsApp, at home |
+| Status | **available today** — everything below documents this channel | **planned for v0.4.3**, via `garra whatsapp` ([ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md)) |
+
+Everything in the rest of this section is about the **Cloud API** channel. The
+linked-device channel is a design decision recorded in
+[ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md) — no command, config key
+or channel type for it exists in a released build yet, so do not try to
+configure `whatsapp_linked` today.
+
 ### Setup
 
 1. Set up Meta Cloud API

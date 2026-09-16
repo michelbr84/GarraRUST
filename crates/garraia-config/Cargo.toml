@@ -3,6 +3,7 @@ name = "garraia-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Configuration loading and management for GarraIA"
 
 [dependencies]
