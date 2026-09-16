@@ -628,8 +628,8 @@ async fn serve_reconnects_after_a_network_flap() {
     // `network-flap` em modo serve conecta, cai, reconecta dentro da propria
     // execucao e entao SAI 0 — a ponte morre. Cada execucao produz dois
     // `on_connection(true)`, e so uma reconexao do DRIVER produz o terceiro.
-    // Com jitter 0 o primeiro degrau e 500 ms, e cada execucao da fixture leva
-    // ~0,6 s, entao 3 s cobrem duas voltas com folga.
+    // Com jitter 0 o primeiro degrau e 500 ms, e a execucao da fixture com o
+    // QR curto abaixo leva ~0,15 s, entao 3 s cobrem varias voltas com folga.
     //
     // O QR da fixture expira rapido de proposito: a asserção de tempo la
     // embaixo so distingue "esperou o backoff" de "reconectou em busy-loop"

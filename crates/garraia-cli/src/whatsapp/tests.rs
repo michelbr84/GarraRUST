@@ -194,7 +194,9 @@ fn config_is_untouched_when_pairing_fails() {
         "pareamento que falhou NAO pode ter escrito enabled = true"
     );
     assert!(
-        !ctx.store().exists(),
+        !ctx.store()
+            .expect("DEFAULT_ACCOUNT e conta valida")
+            .exists(),
         "e nao pode ter deixado sessao para tras"
     );
 }
@@ -379,7 +381,7 @@ fn account_arguments(source: &str) -> Vec<String> {
         }
         let args = &rest[..end];
         let account = match split {
-            Some(at) if at < args.len() => args[at + 1..],
+            Some(at) if at < args.len() => &args[at + 1..],
             // Um argumento so: nao e a assinatura que conhecemos, entao o
             // scan reporta o texto cru em vez de fingir que esta tudo bem.
             _ => args,
@@ -484,7 +486,7 @@ fn status_without_a_session_is_unavailable_not_an_error() {
 fn status_with_a_session_succeeds() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, false);
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
     store
         .save(
@@ -500,7 +502,7 @@ fn status_with_a_session_succeeds() {
 fn status_reports_an_unreadable_session_instead_of_claiming_it_is_fine() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut ctx = ctx_in(&dir, false);
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
     store
         .save(
@@ -533,7 +535,7 @@ fn logout_purges_the_material_and_disables_the_channel() {
     loader.ensure_dirs().expect("dirs");
     set_linked_enabled(loader, true).expect("enable");
 
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
     store
         .save(
@@ -570,7 +572,7 @@ fn logout_purges_the_material_and_disables_the_channel() {
 fn an_aborted_relink_leaves_nothing_that_logout_refuses_to_clean() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
 
     // 1. sessao funcionando.
@@ -621,7 +623,7 @@ fn an_aborted_relink_leaves_nothing_that_logout_refuses_to_clean() {
 fn an_archived_session_alone_keeps_status_unavailable_and_survives_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, false);
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
     store
         .save(
@@ -654,7 +656,7 @@ fn logout_with_neither_a_session_nor_an_archive_is_still_a_no_op() {
 fn logout_answered_no_keeps_everything() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
     store
         .save(
@@ -684,7 +686,11 @@ fn link_without_a_tty_also_exits_zero_with_the_hint() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, false);
     assert_eq!(run(Action::Link, &ctx, &ScriptedPrompter::default()), 0);
-    assert!(!ctx.store().exists());
+    assert!(
+        !ctx.store()
+            .expect("DEFAULT_ACCOUNT e conta valida")
+            .exists()
+    );
 }
 
 #[test]
@@ -697,7 +703,11 @@ fn declining_the_consent_screen_cancels_without_touching_anything() {
     let prompter = ScriptedPrompter::with_confirms(&[false]);
     assert_eq!(run(Action::Link, &ctx, &prompter), 1);
 
-    assert!(!ctx.store().exists());
+    assert!(
+        !ctx.store()
+            .expect("DEFAULT_ACCOUNT e conta valida")
+            .exists()
+    );
     let config = loader.load().expect("load");
     assert!(!config.channels.contains_key("whatsapp_linked"));
 }
@@ -715,7 +725,7 @@ fn declining_the_consent_screen_cancels_without_touching_anything() {
 fn accepting_the_relink_but_failing_before_the_qr_leaves_the_session_untouched() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
     store
         .save(
@@ -746,7 +756,7 @@ fn accepting_the_relink_but_failing_before_the_qr_leaves_the_session_untouched()
 fn declining_the_relink_prompt_never_archives_the_session() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
-    let store = ctx.store();
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
     let key = ctx.key().expect("key");
     store
         .save(
