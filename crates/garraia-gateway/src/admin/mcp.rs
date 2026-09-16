@@ -194,6 +194,17 @@ pub async fn admin_restart_mcp(
         "admin: restarting MCP server"
     );
 
+    // Issue #1242: capture the GAR-190 allowlist BEFORE tearing the
+    // connection down. `disconnect` drops the `McpConnection` that holds it,
+    // and an empty `allowed_tools` means "allow every discovered tool"
+    // (`is_tool_allowed`) — so reconnecting with `vec![]` turned a routine
+    // hot-reload into a silent fail-open. `None` means the manager never knew
+    // this server, i.e. there was no allowlist to preserve.
+    let allowed_tools = manager
+        .allowed_tools_for(&server_name)
+        .await
+        .unwrap_or_default();
+
     // Disconnect existing connection (no-op if not connected).
     manager.disconnect(&server_name).await;
     // GAR-293: reset the crash counter so the server gets a fresh restart budget.
@@ -228,7 +239,7 @@ pub async fn admin_restart_mcp(
                     &config.args,
                     &config.env,
                     config.timeout_secs,
-                    vec![],
+                    allowed_tools,
                     memory_limit_mb,
                     max_restarts,
                     restart_delay_secs,
@@ -251,7 +262,7 @@ pub async fn admin_restart_mcp(
                     &server_name,
                     &url,
                     config.timeout_secs,
-                    vec![],
+                    allowed_tools,
                     max_restarts,
                     restart_delay_secs,
                 )

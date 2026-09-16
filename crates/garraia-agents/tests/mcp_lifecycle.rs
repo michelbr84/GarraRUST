@@ -153,3 +153,152 @@ async fn disconnect_all_is_bounded_with_stubborn_child() {
         .await
         .expect("test must not hang");
 }
+
+/// Connect exactly like the boot path does, with a GAR-190 allowlist in force.
+async fn connect_allowlisted(
+    manager: &Arc<McpManager>,
+    name: &str,
+    extra: &[&str],
+    allowed_tools: Vec<String>,
+) {
+    manager
+        .connect(
+            name,
+            "python3",
+            &fixture_args(extra),
+            &HashMap::new(),
+            10,
+            allowed_tools,
+            None,
+            5,
+            1,
+        )
+        .await
+        .expect("fixture server should connect");
+}
+
+/// Issue #1242: `admin_restart_mcp` reconnected with `vec![]` as the
+/// allowlist, and `is_tool_allowed` reads an empty allowlist as "allow
+/// everything" — so a routine hot-reload silently re-opened every discovered
+/// tool to the LLM. `disconnect` had already dropped the only copy of the
+/// allowlist, so nothing downstream could notice.
+///
+/// This is the manager-side half: it pins that `allowed_tools_for` reports
+/// the allowlist a reconnect needs, and that `take_tools`/`call_tool`/
+/// `tool_info` all agree once it is passed back in. The handler itself is
+/// covered by `garraia-gateway/tests/admin_mcp_restart_allowlist.rs`, which
+/// calls `admin_restart_mcp` for real — `admin/mcp.rs` had no test executing
+/// it at all, which is how this path drifted from the boot path and the
+/// health-monitor reconnect without anything going red.
+#[tokio::test]
+async fn restart_preserves_tool_allowlist() {
+    let body = async {
+        let manager = Arc::new(McpManager::new());
+        let fixture = ["--tools", "read_file,write_file"];
+        connect_allowlisted(&manager, "fake", &fixture, vec!["read_file".to_string()]).await;
+
+        // Baseline: the allowlist binds before the restart.
+        assert!(
+            manager
+                .call_tool("fake", "write_file", HashMap::new())
+                .await
+                .is_err(),
+            "allowlist must block write_file before the restart"
+        );
+
+        // --- what admin_restart_mcp does ---
+        let captured = manager
+            .allowed_tools_for("fake")
+            .await
+            .expect("a connected server must report its allowlist");
+        manager.disconnect("fake").await;
+        connect_allowlisted(&manager, "fake", &fixture, captured).await;
+        // --- end of restart ---
+
+        let err = manager
+            .call_tool("fake", "write_file", HashMap::new())
+            .await
+            .expect_err("write_file must stay blocked across a restart");
+        assert!(
+            err.contains("blocked by the allowed_tools allowlist"),
+            "expected the GAR-190 allowlist error, got: {err}"
+        );
+
+        let names: Vec<String> = manager
+            .take_tools("fake", Duration::from_secs(10))
+            .await
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("read_file")),
+            "allowed tool must still be registered, got: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.ends_with("write_file")),
+            "blocked tool must not be registered after a restart, got: {names:?}"
+        );
+
+        // The restart response reports `tool_info().len()` as `tool_count`;
+        // counting a blocked tool tells the operator the allowlist is off.
+        assert_eq!(
+            manager.tool_info("fake").await.len(),
+            1,
+            "tool_count must not include allowlist-blocked tools"
+        );
+
+        manager.disconnect_all().await;
+    };
+    tokio::time::timeout(Duration::from_secs(60), body)
+        .await
+        .expect("test must not hang");
+}
+
+/// The other half of #1242: a server that never had an allowlist must keep
+/// behaving as before. `Some(vec![])` (known, no allowlist) and `None`
+/// (unknown server) are different answers, and the restart handler relies on
+/// the difference to avoid tightening a server nobody restricted.
+#[tokio::test]
+async fn restart_leaves_an_unrestricted_server_unrestricted() {
+    let body = async {
+        let manager = Arc::new(McpManager::new());
+        let fixture = ["--tools", "read_file,write_file"];
+        connect_allowlisted(&manager, "fake", &fixture, vec![]).await;
+
+        assert_eq!(
+            manager.allowed_tools_for("fake").await,
+            Some(vec![]),
+            "a known server without an allowlist reports an empty one, not None"
+        );
+        assert_eq!(
+            manager.allowed_tools_for("never-registered").await,
+            None,
+            "an unknown server must be distinguishable from an unrestricted one"
+        );
+
+        let captured = manager
+            .allowed_tools_for("fake")
+            .await
+            .expect("a connected server must report its allowlist");
+        manager.disconnect("fake").await;
+        connect_allowlisted(&manager, "fake", &fixture, captured).await;
+
+        assert!(
+            manager
+                .call_tool("fake", "write_file", HashMap::new())
+                .await
+                .is_ok(),
+            "no allowlist means every discovered tool stays callable"
+        );
+        assert_eq!(
+            manager.tool_info("fake").await.len(),
+            2,
+            "tool_count must still report every tool when nothing is blocked"
+        );
+
+        manager.disconnect_all().await;
+    };
+    tokio::time::timeout(Duration::from_secs(60), body)
+        .await
+        .expect("test must not hang");
+}

@@ -7,7 +7,10 @@ Flags let a test drive the failure modes that matter:
   --crash-after-calls N  exit(1) right after answering the Nth tools/call
   --ignore-eof           keep running after stdin closes (tests bounded shutdown)
   --hang-on-call         never answer tools/call (tests the per-call timeout)
-  --tool-reply TEXT      text returned by the echo tool (default "pong")
+  --tool-reply TEXT      text returned by every tool (default "pong")
+  --tools A,B            comma-separated tool names to advertise (default "echo"),
+                         so a test can exercise an allowlist that permits one
+                         tool and blocks another
 
 Deliberately dependency-free: only the stdlib, so it runs anywhere CI runs.
 """
@@ -35,7 +38,18 @@ def main():
     ap.add_argument("--ignore-eof", action="store_true")
     ap.add_argument("--hang-on-call", action="store_true")
     ap.add_argument("--tool-reply", default="pong")
+    ap.add_argument("--tools", default="echo")
     args = ap.parse_args()
+
+    tools = [
+        {
+            "name": name,
+            "description": "Echoes a fixed reply.",
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+        for name in args.tools.split(",")
+        if name
+    ]
 
     calls = 0
     for line in sys.stdin:
@@ -57,11 +71,7 @@ def main():
                 "serverInfo": {"name": "fake-mcp-server", "version": "0.1.0"},
             })
         elif method == "tools/list":
-            result(req_id, {"tools": [{
-                "name": "echo",
-                "description": "Echoes a fixed reply.",
-                "inputSchema": {"type": "object", "properties": {}},
-            }]})
+            result(req_id, {"tools": tools})
         elif method == "tools/call":
             if args.hang_on_call:
                 # Block forever without closing the transport.

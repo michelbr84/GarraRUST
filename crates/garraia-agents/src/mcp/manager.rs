@@ -560,6 +560,30 @@ impl McpManager {
         }
     }
 
+    /// GAR-190 / issue #1242: the tool allowlist currently in force for `name`.
+    ///
+    /// The `Option` is load-bearing and must not be flattened at the call
+    /// site: `None` means the manager has never heard of this server, while
+    /// `Some(vec![])` means it is known and was configured *without* an
+    /// allowlist — which `is_tool_allowed` reads as "allow every discovered
+    /// tool". Anything that tears a connection down and builds it back up has
+    /// to capture this **before** `disconnect`, because `disconnect` drops the
+    /// `McpConnection` that is the only place the allowlist lives.
+    ///
+    /// Falls back to `pending` so a server that never completed its boot
+    /// handshake still reports the allowlist it was registered with, instead
+    /// of coming back from a manual restart wide open.
+    pub async fn allowed_tools_for(&self, name: &str) -> Option<Vec<String>> {
+        {
+            let conns = self.connections.read().await;
+            if let Some(conn) = conns.get(name) {
+                return Some(conn.allowed_tools.clone());
+            }
+        }
+        let pending = self.pending.read().await;
+        pending.get(name).map(|p| p.allowed_tools.clone())
+    }
+
     /// Disconnect a specific MCP server.
     pub async fn disconnect(&self, name: &str) {
         if let Some(conn) = self.connections.write().await.remove(name) {
@@ -685,9 +709,24 @@ impl McpManager {
     }
 
     /// Get tool info for a specific server.
+    ///
+    /// GAR-190: allowlist-blocked tools are filtered out, exactly like
+    /// `take_tools` and `call_tool`. This used to return the raw discovery
+    /// list, which made the admin restart response's `tool_count` (issue
+    /// #1242) and the MCP slash-command registry advertise tools that every
+    /// execution path would then refuse.
     pub async fn tool_info(&self, name: &str) -> Vec<McpToolInfo> {
         let conns = self.connections.read().await;
-        conns.get(name).map(|c| c.tools.clone()).unwrap_or_default()
+        conns
+            .get(name)
+            .map(|c| {
+                c.tools
+                    .iter()
+                    .filter(|t| is_tool_allowed(&c.allowed_tools, &t.name))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// List resources from a specific MCP server.
