@@ -128,7 +128,9 @@ pub fn spawn_openclaw_router(
                 .await;
             let history = state.session_history(&session_id);
             let continuity_key = state.continuity_key();
-            let exec = state.exec_context_for(&session_id, Some(&user_id)).await;
+            let exec = state
+                .exec_context_for_msg(&session_id, Some(&user_id), Some(&texto))
+                .await;
 
             let resposta = state
                 .agents

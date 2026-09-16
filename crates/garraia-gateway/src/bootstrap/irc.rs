@@ -158,7 +158,9 @@ pub fn build_irc_channels(
                     let history: Vec<ChatMessage> = state.session_history(&session_id);
                     let continuity_key = state.continuity_key();
                     // `exec_context_for`, nunca o wrapper `_with_context` (#988).
-                    let exec = state.exec_context_for(&session_id, Some(&nick)).await;
+                    let exec = state
+                        .exec_context_for_msg(&session_id, Some(&nick), Some(&text))
+                        .await;
 
                     let response = if let Some(delta_sender) = delta_tx {
                         state

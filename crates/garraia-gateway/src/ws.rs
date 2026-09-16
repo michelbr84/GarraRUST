@@ -502,7 +502,9 @@ async fn process_text_message(
     let continuity_key = state.continuity_key();
     // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
     // pelo tempo do turno inteiro (mesma licao do `parrot_ws.rs`).
-    let exec = state.exec_context_for(session_id, None).await;
+    let exec = state
+        .exec_context_for_msg(session_id, None, Some(&user_text))
+        .await;
 
     let (events_tx, events_rx) = tokio::sync::mpsc::channel::<TurnEvent>(TURN_EVENT_CHANNEL);
     let agents = state.agents.clone();

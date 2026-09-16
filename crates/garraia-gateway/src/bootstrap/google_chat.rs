@@ -188,7 +188,9 @@ pub fn build_google_chat_channels(
                     // (#988): o wrapper passa `ExecContext::default()`, e
                     // entao `/mode search` responde "modo definido" sem a
                     // politica de ferramenta valer.
-                    let exec = state.exec_context_for(&session_id, Some(&user_id)).await;
+                    let exec = state
+                        .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
+                        .await;
 
                     let response = if let Some(delta_sender) = delta_tx {
                         state
