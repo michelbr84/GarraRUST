@@ -199,6 +199,74 @@ pub(crate) const MULTIPART_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
 /// Part size for multipart uploads — must be ≥ the S3 minimum of 5 MiB.
 const MULTIPART_PART_SIZE: usize = 8 * 1024 * 1024;
 
+/// Aborta um multipart em voo a menos que explicitamente desarmado.
+///
+/// Os caminhos de erro do `put_stream_multipart` ja abortam com `await`, que
+/// e o modo confiavel. Este guard cobre o que nenhum `?` alcanca: o
+/// cancelamento da future. `finalize_upload` roda dentro de um handler Axum e,
+/// quando o cliente derruba a conexao, o hyper dropa a future no meio — sem
+/// isto o `upload_id` e as partes ja enviadas ficariam orfaos e faturados,
+/// invisiveis no `ListObjects`.
+///
+/// O abort do `Drop` e best-effort e destacado (um `Drop` nao pode `await`):
+/// nao sobrevive a `kill -9` nem ao shutdown do runtime. O backstop que
+/// sobrevive e a regra de lifecycle `AbortIncompleteMultipartUpload` no
+/// bucket — requisito de deploy, nao de codigo. Ver ADR 0004.
+struct MultipartGuard {
+    client: Arc<Client>,
+    bucket: Arc<str>,
+    key: String,
+    upload_id: Option<String>,
+}
+
+impl MultipartGuard {
+    /// Desarma: o caminho normal ja tratou este upload (completou ou abortou).
+    fn disarm(&mut self) {
+        self.upload_id = None;
+    }
+}
+
+impl Drop for MultipartGuard {
+    fn drop(&mut self) {
+        let Some(upload_id) = self.upload_id.take() else {
+            return;
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            warn!(
+                target: "garraia_storage::s3",
+                key = %self.key,
+                "multipart abort ignorado: sem runtime tokio; \
+                 depende da regra de lifecycle do bucket"
+            );
+            return;
+        };
+        let client = self.client.clone();
+        let bucket = self.bucket.clone();
+        let key = self.key.clone();
+        handle.spawn(async move {
+            let abort = client
+                .abort_multipart_upload()
+                .bucket(bucket.as_ref())
+                .key(&key)
+                .upload_id(&upload_id)
+                .send()
+                .await;
+            match abort {
+                Ok(_) => debug!(
+                    target: "garraia_storage::s3",
+                    key = %key,
+                    "multipart abortado apos cancelamento da future"
+                ),
+                Err(e) => warn!(
+                    target: "garraia_storage::s3",
+                    key = %key,
+                    "multipart abort apos cancelamento falhou: {e}"
+                ),
+            }
+        });
+    }
+}
+
 impl S3Compatible {
     /// Best-effort abort of an in-flight multipart upload. Failure to abort is
     /// logged and swallowed: the caller is already returning the original
@@ -249,6 +317,15 @@ impl S3Compatible {
                 StorageError::Backend("s3 create_multipart_upload: no upload_id".into())
             })?
             .to_owned();
+
+        // Armado aqui: a partir deste ponto existe um upload em voo que
+        // precisa ser abortado mesmo se esta future for cancelada.
+        let mut guard = MultipartGuard {
+            client: self.client.clone(),
+            bucket: self.bucket.clone(),
+            key: key.to_owned(),
+            upload_id: Some(upload_id.clone()),
+        };
 
         // 2) Stream parts.
         let mut hasher = Sha256::new();
@@ -301,14 +378,18 @@ impl S3Compatible {
 
         // 3) Complete or abort — abort MUST run on every failure path so the
         //    key never exposes partial content and no orphan upload is billed.
+        //    Ordem: abortar e so entao desarmar, para que o cancelamento da
+        //    future durante o proprio abort ainda caia no `Drop` do guard.
         if let Err(e) = result {
             self.abort_upload(key, &upload_id).await;
+            guard.disarm();
             return Err(e);
         }
         // An empty stream would make `complete_multipart_upload` fail with the
         // upload still open; reject it here so the abort is not skipped.
         if parts.is_empty() {
             self.abort_upload(key, &upload_id).await;
+            guard.disarm();
             return Err(StorageError::Backend(
                 "s3 multipart: stream yielded no bytes".into(),
             ));
@@ -317,6 +398,7 @@ impl S3Compatible {
         // object, with `size_bytes` silently below the declared length.
         if total != content_length {
             self.abort_upload(key, &upload_id).await;
+            guard.disarm();
             return Err(StorageError::Backend(format!(
                 "s3 multipart: stream yielded {total} bytes, expected {content_length}"
             )));
@@ -339,11 +421,14 @@ impl S3Compatible {
             Ok(c) => c,
             Err(e) => {
                 self.abort_upload(key, &upload_id).await;
+                guard.disarm();
                 return Err(StorageError::Backend(format!(
                     "s3 complete_multipart_upload: {e}"
                 )));
             }
         };
+        // Objeto materializado: nao ha mais nada a abortar.
+        guard.disarm();
         debug!(
             target: "garraia_storage::s3",
             bucket = %self.bucket,
