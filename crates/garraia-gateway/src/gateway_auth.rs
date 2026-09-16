@@ -434,16 +434,23 @@ mod tests {
 
     /// Os dois WebSockets ficam fora deste middleware **de proposito**, e a
     /// razao nao e "eles nao precisam de chave" — e que o middleware so
-    /// aceita a chave por header, e handshake de navegador nao leva header.
-    /// A webview Tauri do Garra Desktop abre `/ws/parrot` com
-    /// `new WebSocket(...)`; gatear a rota aqui fecharia o desktop em vez de
-    /// autentica-lo. Os dois handlers checam `ApiKeyGate::admits` por dentro,
-    /// aceitando `?token=` / `?api_key=` (`ws.rs` e `parrot_ws.rs`) — e e la
-    /// que `origin_guard_layering.rs` trava o comportamento.
+    /// aceita a chave por header, e `new WebSocket(...)` nao consegue mandar
+    /// header nenhum, nem no navegador nem na webview Tauri. Por isso os
+    /// clientes legitimos mandam o token pela **query string**, e os dois
+    /// handlers o leem de la (`ws.rs` e `parrot_ws.rs`, via `?token=` /
+    /// `?api_key=`, com bearer ainda aceito para cliente de CLI):
+    ///
+    ///   - `/ws`: `webchat.html` monta `?token=${encodeURIComponent(...)}`;
+    ///   - `/ws/parrot`: `garraia-desktop/ui/ws.js` faz o mesmo, com a chave
+    ///     vinda do comando Tauri `gateway_api_key`, que a le do mesmo
+    ///     `config.yml` deste gateway.
+    ///
+    /// `origin_guard_layering.rs` e `auth_test.rs` travam o comportamento.
     ///
     /// Quem "consertar" a ausencia de `/ws/parrot` desta lista adicionando a
-    /// rota aqui quebra o Garra Desktop; quem apagar o gate de dentro do
-    /// handler reabre o buraco da auditoria R4 do PR #1251.
+    /// rota aqui recusa os dois clientes, porque aqui a query nao e olhada;
+    /// quem apagar o gate de dentro do handler reabre o buraco da auditoria
+    /// R4 do PR #1251.
     #[test]
     fn os_websockets_ficam_fora_do_middleware_e_gateiam_por_dentro() {
         assert!(!is_gated_path("/ws"));

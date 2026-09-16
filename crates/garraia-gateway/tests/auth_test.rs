@@ -274,6 +274,57 @@ async fn a_credencial_certa_abre_o_ws_parrot() {
     }
 }
 
+/// O contrato exato que o Garra Desktop passou a cumprir.
+///
+/// O gate acima so vale se o cliente de fato mandar a credencial, e ate a
+/// revisao deste PR ele **nao mandava**: `ui/ws.js` conectava numa URL
+/// constante, sem token, e nao havia plumbing de chave em lugar nenhum da
+/// casca Tauri — o overlay levava 401 e caia em reconexao infinita, mudo.
+/// Agora o `ws.js` monta `?token=${encodeURIComponent(chave)}`, com a chave
+/// vinda do comando Tauri `gateway_api_key`.
+///
+/// `encodeURIComponent` e o par certo do decode de query do axum: ele escapa
+/// `+` como `%2B`, entao uma chave com `+` nao chega como espaco (a pegadinha
+/// classica do form-urlencoded). Este teste percorre uma chave com `/`, `+`,
+/// `=` e espaco pelo caminho inteiro para que a escolha do encoder fique
+/// travada nos dois lados.
+#[tokio::test]
+async fn o_token_do_desktop_chega_inteiro_mesmo_precisando_de_escape() {
+    // Os mesmos caracteres que o simulador do ws.js exercita.
+    let chave = "sk-cha ve/com+especiais=";
+    let base = sobe_router_de_teste(Some(chave)).await;
+
+    // `percent-encoding` nao e dep de teste aqui; este escape cobre
+    // exatamente o conjunto acima, no mesmo formato do encodeURIComponent.
+    let escapada = chave
+        .replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('/', "%2F")
+        .replace('+', "%2B")
+        .replace('=', "%3D");
+
+    for rota in ["/ws", "/ws/parrot"] {
+        exige_conexao(&format!("{base}{rota}?token={escapada}")).await;
+    }
+}
+
+/// A pegadinha do `+`, isolada.
+///
+/// Um `+` cru e caractere valido de URI, entao nada falha no transporte — ele
+/// so **decodifica como espaco**, e a chave chega diferente da configurada.
+/// E o unico caractere em que "mandar sem escapar" produz um 401 silencioso
+/// em vez de um erro visivel, e e exatamente por isso que o `ws.js` usa
+/// `encodeURIComponent` (que o escapa como `%2B`) e nao uma interpolacao nua.
+#[tokio::test]
+async fn um_mais_nao_escapado_vira_espaco_e_a_chave_nao_bate() {
+    let base = sobe_router_de_teste(Some("chave+com+mais")).await;
+
+    for rota in ["/ws", "/ws/parrot"] {
+        exige_conexao(&format!("{base}{rota}?token=chave%2Bcom%2Bmais")).await;
+        exige_recusa_401(&format!("{base}{rota}?token=chave+com+mais")).await;
+    }
+}
+
 /// A garantia de "sem chave nada muda": a instalacao default segue aberta, e
 /// o Garra Desktop conecta sem credencial como sempre.
 #[tokio::test]

@@ -75,11 +75,20 @@ pub async fn parrot_ws_handler(
     // mesmo bloco de `ws.rs`, pela mesma razao.
     //
     // **Por que nao em `is_gated_path`.** O middleware so aceita a chave por
-    // header, e a webview Tauri abre o socket com `new WebSocket(...)`, que
-    // nao consegue mandar header nenhum: gatear `/ws/parrot` no middleware
-    // fecharia o Garra Desktop. Como no `/ws`, a query e aceita **aqui** e so
-    // aqui. Quem mover esta decisao para o middleware quebra o desktop; quem
-    // a apagar reabre o buraco.
+    // header, e `new WebSocket(...)` nao consegue mandar header nenhum — nem
+    // na webview Tauri, nem no navegador. Por isso os dois clientes legitimos
+    // mandam o token pela **query string** do handshake:
+    //
+    //   - Garra Desktop: `crates/garraia-desktop/ui/ws.js` monta
+    //     `?token=${encodeURIComponent(chave)}`, com a chave vinda do comando
+    //     Tauri `gateway_api_key` (`src-tauri/src/commands.rs`), que a le do
+    //     mesmo `config.yml` que este gateway carregou.
+    //   - Web Console: `webchat.html` faz o mesmo com `State.gatewayKey`.
+    //
+    // Gatear a rota no middleware generico de `/api/*` recusaria os dois,
+    // porque la a query nao e olhada. Como no `/ws`, a query e aceita **aqui**
+    // e so aqui. Quem mover esta decisao para o middleware quebra os dois
+    // clientes; quem a apagar reabre o buraco.
     let gate = crate::gateway_auth::ApiKeyGate::from_config(&state.config.gateway);
     if gate.is_enabled() {
         let token_from_query = params.get("token").or_else(|| params.get("api_key"));

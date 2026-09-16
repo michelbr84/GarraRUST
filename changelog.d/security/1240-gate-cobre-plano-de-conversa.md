@@ -29,3 +29,18 @@
   manda header — gatear a rota la fecharia o desktop em vez de autentica-lo. Como
   no `/ws`, a chave vai por `?token=` / `?api_key=` ou por bearer, com a mesma
   comparacao de tempo constante e o mesmo 401.
+
+  **E o Garra Desktop passou a de fato mandar essa credencial**, fechando o
+  outro lado do mesmo buraco: o gate acima recusava o handshake, mas o
+  `ui/ws.js` conectava numa URL constante, sem token nenhum, e nao havia
+  plumbing de credencial em lugar nenhum da casca Tauri. Com a chave
+  configurada — o caso comum desde que o #1252 passou a gera-la sozinha em
+  bind exposto — o overlay e a Chat Bar levavam 401 e caiam em reconexao
+  infinita com backoff ate 30s, sem nenhum aviso ao usuario. Agora um comando
+  Tauri `gateway_api_key` le a chave do **mesmo** `config.yml` que o gateway
+  carregou (via `garraia_config::ConfigLoader`, o resolvedor de path canonico,
+  que honra `GARRAIA_CONFIG_DIR` e o diretorio legado) e o `ws.js` a manda por
+  `?token=`, no mesmo formato do `webchat.html`. A copia do config default no
+  primeiro boot passou a usar esse mesmo resolvedor, em vez de remontar o path
+  a mao, para que as duas pontas nunca discordem de qual arquivo vale. Sem
+  chave configurada o socket conecta na URL nua, como sempre.
