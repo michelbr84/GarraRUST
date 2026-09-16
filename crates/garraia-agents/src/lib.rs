@@ -24,7 +24,9 @@ pub mod provider_resilience;
 pub mod providers;
 pub mod quantization;
 pub mod runtime;
+pub mod sandbox;
 pub mod tools;
+pub use sandbox::{SandboxBackend, SandboxMode, SandboxPolicy};
 pub mod turn_events;
 pub mod turn_stats;
 
