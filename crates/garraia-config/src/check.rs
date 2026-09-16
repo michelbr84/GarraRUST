@@ -1899,6 +1899,70 @@ mod tests {
         ))
     }
 
+    // ─── #1244: aviso de agent.file_roots ─────────────────────────────────
+
+    /// A config default nao reclama de si mesma: sem `file_roots`, sem achado.
+    #[test]
+    fn file_roots_vazio_nao_produz_achado() {
+        assert!(validate_file_roots(&[], Some(PathBuf::from("/home/u"))).is_empty());
+    }
+
+    /// Uma raiz de projeto normal tambem nao.
+    #[test]
+    fn file_roots_com_subdiretorio_de_projeto_nao_produz_achado() {
+        let achados = validate_file_roots(
+            &["/home/u/projetos/garra".to_string()],
+            Some(PathBuf::from("/home/u")),
+        );
+        assert!(achados.is_empty(), "{achados:?}");
+    }
+
+    /// `/` e o jail desligado por configuracao — tem de aparecer.
+    #[test]
+    fn file_roots_com_a_raiz_do_sistema_avisa() {
+        let achados = validate_file_roots(&["/".to_string()], Some(PathBuf::from("/home/u")));
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Warning);
+        assert_eq!(achados[0].field, "agent.file_roots");
+        assert!(achados[0].message.contains("#1244"), "{:?}", achados[0]);
+    }
+
+    /// `$HOME` devolve `~/.ssh` e `.env` ao alcance do modelo.
+    #[test]
+    fn file_roots_com_home_avisa() {
+        let achados = validate_file_roots(&["/home/u".to_string()], Some(PathBuf::from("/home/u")));
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert!(achados[0].message.contains("$HOME"), "{:?}", achados[0]);
+    }
+
+    /// Sem `$HOME` conhecido o aviso de home nao dispara — e o de `/` continua.
+    #[test]
+    fn file_roots_sem_home_conhecido_nao_chuta() {
+        assert!(validate_file_roots(&["/home/u".to_string()], None).is_empty());
+        assert_eq!(validate_file_roots(&["/".to_string()], None).len(), 1);
+    }
+
+    /// Entrada vazia e ignorada em silencio no boot; aqui ela e dita.
+    #[test]
+    fn file_roots_com_entrada_vazia_avisa() {
+        let achados = validate_file_roots(&["  ".to_string()], None);
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert!(achados[0].message.contains("empty"), "{:?}", achados[0]);
+    }
+
+    /// E o caminho de producao: `validate` (o que o `config check` roda) tem
+    /// de chamar `validate_file_roots`. Apagar essa linha deixa este vermelho.
+    #[test]
+    fn validate_reporta_file_roots_perigoso() {
+        let mut config = AppConfig::default();
+        config.agent.file_roots = vec!["/".to_string()];
+        let achados: Vec<_> = validate(&config)
+            .into_iter()
+            .filter(|f| f.field == "agent.file_roots")
+            .collect();
+        assert_eq!(achados.len(), 1, "{achados:?}");
+    }
+
     // ─── #952: filtro de ruido na ingestao ────────────────────────────────
 
     fn achados_de(config: &AppConfig, campo: &str) -> Vec<Finding> {
