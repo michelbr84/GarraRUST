@@ -235,6 +235,44 @@ async fn an_expired_qr_is_replaced_and_the_second_attempt_is_announced() {
     );
 }
 
+/// Depois de um re-link bem-sucedido o `session.enc.prev` nao pode sobreviver:
+/// ele e material de autenticacao vivo num arquivo que ninguem mais abre.
+#[tokio::test]
+async fn a_successful_relink_discards_the_archived_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    // Pareia, arquiva (como faz o `link` quando o usuario aceita re-vincular)
+    // e pareia de novo.
+    pair(
+        &FixtureLauncher::new("pair-ok", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect("primeiro pareamento");
+    assert!(store.archive().expect("archive"));
+    assert!(store.archive_path().is_file());
+
+    pair(
+        &FixtureLauncher::new("pair-ok", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect("re-link");
+
+    assert!(store.exists(), "a sessao nova esta la");
+    assert!(
+        !store.archive_path().exists(),
+        "a sessao arquivada precisa ter sido descartada depois do re-link"
+    );
+}
+
 #[tokio::test]
 async fn a_logged_out_account_purges_the_session_and_reports_it() {
     let dir = tempfile::tempdir().expect("tempdir");

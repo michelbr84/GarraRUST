@@ -22,21 +22,21 @@ Este documento e sobre o **primeiro**. O segundo esta em
 garra whatsapp
 ```
 
-1. Escolha a opcao **1) Conectar meu WhatsApp pessoal (ler um QR code)**.
+1. Escolha a opção **1) Conectar meu WhatsApp pessoal (ler um QR code)**.
 2. Leia a tela de aviso e confirme.
-3. No celular: **Configuracoes → Aparelhos conectados → Conectar um aparelho**.
+3. No celular: **Configurações → Aparelhos conectados → Conectar um aparelho**.
 4. Aponte a camera para o QR no terminal.
 5. Pronto:
 
 ```text
-✓ Autenticado. Sincronizando sessao…
+✓ Autenticado. Sincronizando sessão…
 ✓ WhatsApp conectado com sucesso.
-✓ Sessao salva em ~/.config/garraia/data/whatsapp/default.
-✓ GarraIA esta pronto para receber mensagens (inicie o gateway: `garra start`)
+✓ Sessão salva em ~/.config/garraia/data/whatsapp/default.
+✓ GarraIA está pronto para receber mensagens (inicie o gateway: `garra start`)
 ```
 
 Rodar `garra whatsapp` de novo com uma sessao valida **nao** repareia e **nao**
-apaga nada: ele valida e responde `✓ Sessao encontrada e valida`.
+apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 
 > **Aviso.** Conectar pelo QR usa o recurso de "aparelho conectado" do WhatsApp
 > por um cliente **nao oficial**, o que contraria os termos de uso da Meta. A
@@ -133,7 +133,7 @@ sobrescrita e best-effort: em SSD com wear leveling ela nao garante que os bytes
 sumiram do meio fisico.
 
 O aparelho **continua listado no celular** ate voce remove-lo em
-*Configuracoes → Aparelhos conectados*.
+*Configurações → Aparelhos conectados*.
 
 ## O que precisa de Node
 
@@ -166,7 +166,7 @@ Como o filho e contido:
 | **O QR expirou** | Normal: ele e regenerado ate 5 vezes, com `QR anterior expirou — novo QR (tentativa N/5)`. Depois da quinta, rode `garra whatsapp` de novo. |
 | **`node nao encontrado na PATH`** | Instale Node.js 20 ou mais novo (<https://nodejs.org/en/download>). So este caminho precisa dele. |
 | **`o bridge esta sem dependencias instaladas`** | Rode `npm ci` no diretorio que a mensagem cita, ou apague o diretorio e rode `garra whatsapp` de novo. |
-| **`a conta foi desvinculada`** / `status` diz nao vinculado | A sessao morreu (401/403/419). Rode `garra whatsapp` de novo e leia um QR novo. |
+| **`Esta sessão não vale mais`** / `status` diz nao vinculado | A sessao morreu (401/403/419) e o comando imprime o codigo cru do WhatsApp. Rode `garra whatsapp` de novo e leia um QR novo. |
 | **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garra whatsapp` de novo. |
 | **Mensagem sobre outro aparelho ter assumido** | Alguem conectou o mesmo numero em outro lugar. A sessao gravada **continua valendo**; rode `garra start` de novo. |
 | **Conta bloqueada pelo WhatsApp** | Nao ha o que o GarraIA faca. Foi o risco avisado na tela de consentimento. Use a Cloud API. |
@@ -199,9 +199,9 @@ decidir se confia a propria conta ao GarraIA.
 |---|---|
 | `Conectar meu WhatsApp pessoal (ler um QR code)` | `Link my personal WhatsApp (scan a QR code)` |
 | `Conectar um WhatsApp Business (API oficial da Meta)` | `Connect a WhatsApp Business account (official Meta Cloud API)` |
-| `Abra o WhatsApp no celular: Configuracoes → Aparelhos conectados → Conectar um aparelho` | `Open WhatsApp on your phone: Settings → Linked devices → Link a device` |
+| `Abra o WhatsApp no celular: Configurações → Aparelhos conectados → Conectar um aparelho` | `Open WhatsApp on your phone: Settings → Linked devices → Link a device` |
 | `QR anterior expirou — novo QR (tentativa N/5)` | `Previous QR expired — new QR (attempt N/5)` |
-| `✓ Autenticado. Sincronizando sessao…` | `✓ Authenticated. Syncing the session…` |
+| `✓ Autenticado. Sincronizando sessão…` | `✓ Authenticated. Syncing the session…` |
 | `✓ WhatsApp conectado com sucesso.` | `✓ WhatsApp connected successfully.` |
 | `Nenhum QR foi lido. Rode `garra whatsapp` de novo.` | `No QR was scanned. Run `garra whatsapp` again.` |
 

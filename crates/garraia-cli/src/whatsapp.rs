@@ -200,7 +200,7 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     let mut out = String::new();
     out.push_str(t(
         lang,
-        "Ambiente nao-interativo detectado. Escolha uma das duas opcoes e rode o comando:\n\n",
+        "Ambiente não-interativo detectado. Escolha uma das duas opções e rode o comando:\n\n",
         "Non-interactive environment detected. Pick one of the two options and run the command:\n\n",
     ));
     out.push_str(&format!(
@@ -213,7 +213,7 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(t(
         lang,
-        "Tambem existem: garra whatsapp status | garra whatsapp logout",
+        "Também existem: garra whatsapp status | garra whatsapp logout",
         "Also available: garra whatsapp status | garra whatsapp logout",
     ));
     out
@@ -232,7 +232,7 @@ fn menu(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     ];
     let prompt = t(
         ctx.lang,
-        "Como voce quer usar o WhatsApp com o GarraIA?",
+        "Como você quer usar o WhatsApp com o GarraIA?",
         "How do you want to use WhatsApp with GarraIA?",
     );
     match prompter.select(prompt, &options, 0) {
@@ -277,7 +277,7 @@ fn status(ctx: &Context) -> i32 {
     println!("{}", t(ctx.lang, "Vinculado: sim", "Linked:  yes"));
     println!(
         "{} {}",
-        t(ctx.lang, "Sessao:", "Session:"),
+        t(ctx.lang, "Sessão:", "Session:"),
         store.blob_path().display()
     );
 
@@ -334,7 +334,7 @@ fn status(ctx: &Context) -> i32 {
         "{}",
         t(
             ctx.lang,
-            "O gateway ainda nao consome este canal (chega no proximo slice).",
+            "O gateway ainda não consome este canal (chega no próximo slice).",
             "The gateway does not consume this channel yet (next slice)."
         )
     );
@@ -356,7 +356,7 @@ fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     if ctx.interactive {
         let prompt = t(
             ctx.lang,
-            "Desvincular e apagar a sessao deste aparelho?",
+            "Desvincular e apagar a sessão deste aparelho?",
             "Unlink and delete this device's session?",
         );
         match prompter.confirm(prompt, false) {
@@ -372,7 +372,7 @@ fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         eprintln!("{e}");
         return EX_SOFTWARE;
     }
-    println!("✓ {}", t(ctx.lang, "Sessao apagada.", "Session deleted."));
+    println!("✓ {}", t(ctx.lang, "Sessão apagada.", "Session deleted."));
 
     // `enabled = false` DEPOIS da remocao, espelhando a ordem do link.
     match disable_channel(ctx) {
@@ -395,8 +395,8 @@ fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         "{}",
         t(
             ctx.lang,
-            "O aparelho continua listado no celular ate voce remove-lo em \
-Configuracoes → Aparelhos conectados.",
+            "O aparelho continua listado no celular até você removê-lo em \
+Configurações → Aparelhos conectados.",
             "The device stays listed on your phone until you remove it under \
 Settings → Linked devices.",
         )
@@ -431,13 +431,13 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             "{}",
             t(
                 ctx.lang,
-                "Ja existe uma sessao vinculada neste aparelho.",
+                "Já existe uma sessão vinculada neste aparelho.",
                 "This machine already has a linked session."
             )
         );
         let prompt = t(
             ctx.lang,
-            "Re-vincular? Isso apaga a sessao atual",
+            "Re-vincular? Isso apaga a sessão atual",
             "Re-link? This deletes the current session",
         );
         match prompter.confirm(prompt, false) {
@@ -492,7 +492,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             "→ {}",
             t(
                 ctx.lang,
-                "Instalando as dependencias do bridge (pode levar alguns minutos)…",
+                "Instalando as dependências do bridge (pode levar alguns minutos)…",
                 "Installing bridge dependencies (this can take a few minutes)…"
             )
         );
@@ -503,7 +503,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         }
         println!(
             "✓ {}",
-            t(ctx.lang, "Dependencias prontas.", "Dependencies ready.")
+            t(ctx.lang, "Dependências prontas.", "Dependencies ready.")
         );
     }
 
@@ -532,7 +532,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                     "✓ {}",
                     t(
                         ctx.lang,
-                        "Sessao encontrada e valida",
+                        "Sessão encontrada e válida",
                         "Session found and valid"
                     )
                 );
@@ -548,7 +548,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             }
             println!(
                 "✓ {} {}.",
-                t(ctx.lang, "Sessao salva em", "Session saved in"),
+                t(ctx.lang, "Sessão salva em", "Session saved in"),
                 store.dir().display()
             );
 
@@ -565,7 +565,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                 "✓ {}",
                 t(
                     ctx.lang,
-                    "GarraIA esta pronto para receber mensagens (inicie o gateway: `garra start`)",
+                    "GarraIA está pronto para receber mensagens (inicie o gateway: `garra start`)",
                     "GarraIA is ready to receive messages (start the gateway: `garra start`)"
                 )
             );
@@ -588,19 +588,31 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             );
             EX_UNAVAILABLE
         }
-        Err(RunError::LoggedOut) => {
+        Err(RunError::SessionDead { reason_code }) => {
             println!();
             println!(
                 "{}",
                 t(
                     ctx.lang,
-                    "A conta foi desvinculada no aparelho. Rode `garra whatsapp` de novo.",
-                    "The account was unlinked on the phone. Run `garra whatsapp` again."
+                    "Esta sessão não vale mais. Rode `garra whatsapp` de novo e leia um QR novo.",
+                    "This session is no longer valid. Run `garra whatsapp` again and scan a new QR."
                 )
             );
+            // O codigo cru do Baileys e o que distingue "voce removeu o
+            // aparelho no celular" (401) de "a Meta recusou esta sessao"
+            // (403/419). Esconde-lo deixaria os dois com a mesma cara.
+            if let Some(code) = reason_code {
+                println!(
+                    "  {} {code}",
+                    t(ctx.lang, "Código do WhatsApp:", "WhatsApp code:")
+                );
+            }
             let _ = disable_channel(ctx);
             EX_UNAVAILABLE
         }
+        // `MissingDependencies` cai aqui de proposito: o `Display` dele ja
+        // diz o comando (`npm ci`) e o diretorio exato, que e tudo o que o
+        // usuario precisa. Reescrever a mensagem aqui a faria divergir.
         Err(e) => {
             eprintln!();
             eprintln!("{e}");
@@ -640,15 +652,15 @@ pub fn consent_body(lang: Lang) -> &'static [&'static str] {
     match lang {
         Lang::Pt => &[
             "Conectar pelo QR usa o recurso de \"aparelho conectado\" do WhatsApp",
-            "por um cliente NAO oficial. Isso contraria os termos de uso da Meta.",
+            "por um cliente NÃO oficial. Isso contraria os termos de uso da Meta.",
             "",
-            "O risco real: a conta pode ser bloqueada, temporaria ou",
-            "permanentemente. Nao existe recurso garantido.",
+            "O risco real: a conta pode ser bloqueada, temporária ou",
+            "permanentemente. Não existe recurso garantido.",
             "",
-            "Recomendacao: use um numero secundario, e nao o seu numero",
-            "principal. Um chip pre-pago ou um numero virtual resolve.",
+            "Recomendação: use um número secundário, e não o seu número",
+            "principal. Um chip pré-pago ou um número virtual resolve.",
             "",
-            "Se voce precisa de suporte oficial, escolha a opcao 2 do menu",
+            "Se você precisa de suporte oficial, escolha a opção 2 do menu",
             "(WhatsApp Business / Cloud API da Meta).",
         ],
         Lang::En => &[
@@ -680,7 +692,7 @@ pub fn instructions(lang: Lang) -> &'static [&'static str] {
     match lang {
         Lang::Pt => &[
             "Abra o WhatsApp no celular:",
-            "  Configuracoes → Aparelhos conectados → Conectar um aparelho",
+            "  Configurações → Aparelhos conectados → Conectar um aparelho",
         ],
         Lang::En => &[
             "Open WhatsApp on your phone:",
@@ -698,7 +710,7 @@ fn print_missing_node(ctx: &Context, err: &BridgeError) {
         t(
             ctx.lang,
             "Vincular o WhatsApp pessoal precisa do Node.js 20 ou mais novo \
-(so este caminho precisa; o resto do GarraIA nao).",
+(só este caminho precisa; o resto do GarraIA não).",
             "Linking a personal WhatsApp needs Node.js 20 or newer (only this \
 path does; the rest of GarraIA does not)."
         )
@@ -709,7 +721,7 @@ path does; the rest of GarraIA does not)."
         "{}",
         t(
             ctx.lang,
-            "Sem Node, a opcao 2 (WhatsApp Business / Cloud API) funciona: \
+            "Sem Node, a opção 2 (WhatsApp Business / Cloud API) funciona: \
 garra whatsapp cloud",
             "Without Node, option 2 (WhatsApp Business / Cloud API) works: \
 garra whatsapp cloud"
@@ -805,7 +817,7 @@ impl PairUi for TerminalUi<'_> {
         self.say("");
         self.say(t(
             self.ctx.lang,
-            "✓ Autenticado. Sincronizando sessao…",
+            "✓ Autenticado. Sincronizando sessão…",
             "✓ Authenticated. Syncing the session…",
         ));
     }
@@ -826,7 +838,7 @@ fn cloud(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             "{}",
             t(
                 ctx.lang,
-                "Nao consegui abrir a config. Rode `garra init` primeiro.",
+                "Não consegui abrir a config. Rode `garra init` primeiro.",
                 "Could not open the config. Run `garra init` first."
             )
         );
@@ -860,7 +872,7 @@ developers.facebook.com → your app → WhatsApp."
     let verify_token = match prompter.password(
         t(
             ctx.lang,
-            "Verify token (o que voce escolheu no webhook)",
+            "Verify token (o que você escolheu no webhook)",
             "Verify token (the one you chose for the webhook)",
         ),
         None,
@@ -920,7 +932,7 @@ developers.facebook.com → your app → WhatsApp."
         "  {}",
         t(
             ctx.lang,
-            "Os segredos ficam so no arquivo (modo 0600) — nao sao exibidos aqui.",
+            "Os segredos ficam só no arquivo (modo 0600) — não são exibidos aqui.",
             "The secrets live only in the file (mode 0600) — they are never echoed."
         )
     );

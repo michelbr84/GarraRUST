@@ -346,6 +346,16 @@ impl SessionStore {
         Ok(true)
     }
 
+    /// Apaga o arquivo `session.enc.prev`, se houver.
+    ///
+    /// A sessao anterior fica arquivada **ate o novo link dar certo** (decisao
+    /// 3 do ADR 0023). "Dar certo" e ter um blob novo em disco; a partir dai o
+    /// arquivado e so material de autenticacao vivo esquecido num arquivo que
+    /// ninguem mais vai abrir — exatamente o que nao se quer deixar para tras.
+    pub fn discard_archive(&self) -> Result<(), SessionError> {
+        shred(&self.archive_path())
+    }
+
     /// Logout: sobrescreve e remove blob, arquivo e chave.
     ///
     /// A sobrescrita e best-effort e esta documentada como tal: em SSD com
@@ -607,6 +617,23 @@ mod tests {
             assert!(!path.exists(), "{} sobreviveu ao purge", path.display());
         }
         assert!(!store.exists());
+    }
+
+    #[test]
+    fn discarding_the_archive_leaves_the_live_session_alone() {
+        let dir = tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        store.save(&blob(), &key).expect("save");
+        store.archive().expect("archive");
+        store.save(&blob(), &key).expect("novo link");
+
+        store.discard_archive().expect("discard");
+
+        assert!(!store.archive_path().exists(), "o arquivado some");
+        assert!(store.exists(), "a sessao viva fica");
+        // Idempotente: descartar duas vezes nao e erro.
+        store.discard_archive().expect("discard de novo");
     }
 
     #[test]

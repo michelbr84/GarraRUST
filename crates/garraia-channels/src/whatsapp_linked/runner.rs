@@ -430,6 +430,10 @@ a sessao gravada continua valendo"
     let session_saved = match latest_blob {
         Some(ref blob) if !blob.is_empty() => {
             store.save(blob, key)?;
+            // O blob novo esta em disco: a sessao arquivada cumpriu seu papel
+            // e nao pode ficar para tras como material de autenticacao vivo
+            // num arquivo esquecido (decisao 3 do ADR 0023).
+            store.discard_archive()?;
             true
         }
         _ => false,
