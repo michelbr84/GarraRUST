@@ -439,16 +439,17 @@ jobs:
           cargo test -p garraia-hardware --features skills
           echo "::endgroup::"
 
-          # Mesmo buraco para `storage-s3` (#1214): o modulo s3_compat.rs
-          # INTEIRO e `#[cfg(feature = "storage-s3")]`, entao sem este step
-          # nenhum job compila o backend S3 de producao — clippy com a
-          # feature ligada chegou a falhar sem ninguem ver. O teste de
-          # integracao sobe um testcontainer MinIO e se auto-pula quando
-          # nao ha Docker; nos runners Linux do GitHub ele roda de verdade.
-          echo "::group::garraia-storage --features storage-s3"
+      # `storage-s3` estava fora da matriz de features (#1214): o modulo
+      # s3_compat.rs INTEIRO e `#[cfg(feature = "storage-s3")]`, entao
+      # nenhum job compilava o backend S3 de producao — clippy com a
+      # feature ligada chegou a falhar sem ninguem ver. Step proprio, e nao
+      # mais um bloco no step dos canais, porque aqui tambem roda um
+      # testcontainer MinIO: nos runners Linux do GitHub o teste de
+      # integracao sobe de verdade (sem Docker ele se auto-pula).
+      - name: Run clippy + tests (storage-s3, com MinIO testcontainer)
+        run: |
           cargo clippy -p garraia-storage --features storage-s3 --all-targets -- -D warnings
           cargo test -p garraia-storage --features storage-s3
-          echo "::endgroup::"
 
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
