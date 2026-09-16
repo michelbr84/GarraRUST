@@ -3,6 +3,7 @@ name = "garraia-learning"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Garra Learning Agent — skill mining, generation, evaluation and lifecycle management"
 
 [dependencies]

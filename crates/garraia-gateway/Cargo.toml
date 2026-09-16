@@ -3,6 +3,7 @@ name = "garraia-gateway"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "WebSocket gateway and control plane for GarraIA"
 
 [dependencies]

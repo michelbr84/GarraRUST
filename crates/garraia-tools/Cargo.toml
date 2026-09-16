@@ -3,6 +3,10 @@ name = "garraia-tools"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+# Literal, nao `.workspace = true`: esta crate ainda nao herda do
+# [workspace.package] (version 0.1.0 e edition 2021 proprios). Migrar a
+# heranca inteira mudaria version e edition junto, o que nao e desta fatia.
+rust-version = "1.95"
 description = "Sistema de ferramentas do GarraIA — trait Tool, registry e execução com timeout"
 
 [dependencies]

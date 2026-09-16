@@ -23,6 +23,42 @@ Monte uma equipe coordenada de agentes para uma tarefa no GarraRUST.
 
 Roster em Claude desde 2026-09-14 (decisão do dono). Quem escreve não julga: a independência entre Implementer e Reviewer vem do contexto separado (agente, prompt e worktree distintos; o Reviewer lê o diff, nunca o relatório do Implementer), não de modelos distintos.
 
+## Pré-requisitos e modo degradado
+
+Este pipeline **depende de uma ferramenta de spawn de subagente**. Sem ela, a
+sessão só consegue falar com agentes que já existem (`SendMessage`), e a
+independência de julgamento que o roster inteiro pressupõe deixa de existir:
+ela vem de **contexto separado** — agente, prompt e worktree distintos, com o
+Reviewer lendo o diff e nunca o relatório do Implementer.
+
+Verifique antes de prometer um time. Se não houver spawn:
+
+- **R0–R1** seguem normalmente: são trabalho que uma sessão só faz e assina.
+- **R2–R3** seguem com ressalva escrita no PR dizendo que a revisão foi feita
+  pela mesma sessão que implementou.
+- **R4+ não é mergeável por construção.** Não implemente. Diagnostique,
+  documente com file:line, abra a issue e **escale ao humano**. Auto-revisão em
+  superfície sensível é proibida pelo `CLAUDE.md`, e "eu reli com cuidado" não
+  substitui contexto separado.
+
+Descobrir isso no meio da rodada custa a rodada inteira — foi o atrito nº 1 do
+dogfood registrado na #1228.
+
+### Outros pré-requisitos que já morderam
+
+- **`cargo` sem `CARGO_TARGET_DIR` exportado cria uma árvore de build inteira
+  dentro do worktree.** A variável **não persiste entre chamadas de shell**:
+  reexporte em *cada* comando. Numa rodada real isso produziu um `target/` de
+  4,5 GB dentro de um worktree e levou o disco a 100%, travando todos os
+  agentes ao mesmo tempo.
+- **Um `target/` compartilhado entre worktrees serve artefato velho.** Já
+  produziu duas leituras falsas: um "vermelho" que não existia e um erro de
+  compilação logo depois de o clippy passar na mesma lib. Em medição que vai
+  virar decisão, force rebuild.
+- **`cargo test` não roda sem egresso** por causa do build script do
+  `utoipa-swagger-ui`; use `SWAGGER_UI_DOWNLOAD_URL=file://...`. Ver a skill
+  `steward`.
+
 ## Seleção por risco
 
 | Risco | Exemplos | Time |
@@ -32,6 +68,21 @@ Roster em Claude desde 2026-09-14 (decisão do dono). Quem escreve não julga: a
 | R2 | lógica interna, refactor, teste novo | + Reviewer |
 | R3 | API pública, schema, migration, dependência, CI | + revisão reforçada |
 | R4 | auth, JWT, crypto, RLS, secrets, SSRF, upload | + **Security obrigatório** |
+
+**Em R4 o Security pede o controle e o Reviewer muta o controle.** Não basta o
+`security-auditor` exigir a correção e o Implementer aplicá-la: o
+`code-reviewer` remove o controle e prova que algum teste fica **vermelho**.
+
+Sem esse segundo passo, "o fix foi aplicado" é uma *alegação*, não uma
+evidência — que é exatamente o que o `team-coordinator` já é instruído a não
+aceitar.
+
+Caso real, medido: numa auditoria R4 o Security exigiu `env_clear()` no spawn
+do processo filho e uma allowlist de ambiente. Os dois foram aplicados. O
+Reviewer depois apagou o `env_clear()` e **93 de 93 testes seguiram verdes** —
+o teste afirmava o conteúdo de duas constantes, nunca que o ambiente era de
+fato limpo. O controle que a auditoria exigiu não restringia o comportamento
+que dizia restringir. Ninguém tinha pedido o pino.
 | R5 | release, secrets de CI, destrutivo, `install.sh`/`install.ps1` | **pare e escale ao humano** |
 
 ## Pipeline

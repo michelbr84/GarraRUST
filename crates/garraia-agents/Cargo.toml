@@ -3,6 +3,7 @@ name = "garraia-agents"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "LLM agent runtime and orchestration for GarraIA"
 
 [dependencies]
