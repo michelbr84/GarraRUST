@@ -53,6 +53,7 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garra whatsapp cloud` | wizard da Cloud API | 0 · 1 cancelado · 70 erro interno |
 | `garra whatsapp status` | diz se ha vinculo e se a sessao abre | 0 vinculado · 69 nao vinculado ou ilegivel |
 | `garra whatsapp logout` | apaga a sessao e desliga o canal | 0 · 1 cancelado |
+| `garra whatsapp restore` | devolve o `session.enc.prev` ao lugar | 0 · 69 nao ha arquivada, ou ha sessao em uso · 70 erro interno |
 
 Os codigos seguem `sysexits` (69 = `EX_UNAVAILABLE`, 70 = `EX_SOFTWARE`), como
 `garra desktop` e `garra config check`.
@@ -95,6 +96,14 @@ quando nao ha sessao ativa, e `garra whatsapp logout` o apaga — sem isso, os
 dois comandos afirmariam que nao ha nada enquanto a credencial estivesse no
 disco.
 
+**E `garra whatsapp restore` o traz de volta.** Se um re-vinculo foi
+interrompido de um jeito que nao deu ao GarraIA a chance de desfaze-lo — um
+`kill -9`, uma queda de energia —, a sessao boa fica no `.prev` sem
+`session.enc`. O `restore` a devolve ao lugar e religa o canal. Ele **nunca**
+passa por cima de uma sessao em uso: nesse caso diz o que ha e sai 69, sem
+apagar nada. Restaurar nao garante que o WhatsApp ainda aceite o aparelho — rode
+`garra whatsapp status` depois.
+
 **Um re-vinculo que nao termina devolve a sessao antiga.** QR expirado,
 `Ctrl+C` na tela do QR, ponte que morre antes de conectar: em qualquer desfecho
 sem sessao nova em disco, o `session.enc.prev` volta a ser `session.enc` e o
@@ -133,11 +142,23 @@ Detalhes do que e feito:
   passphrase. Mesmos parametros do cofre.
 - **Escrita atomica**: temporario no mesmo diretorio, ja criado em 0600, `fsync`,
   `rename`.
-- **Nada disso vai para log.** `SessionBlob` imprime `<redacted>` em `Debug` e
-  `Display`, e um teste varre o proprio fonte atras de linha de log que carregue
-  o valor. O `RedactingWriter` de `garraia-security` redige por prefixo conhecido
+- **Nada disso vai para log**, e o que garante isso e uma regra fechada, nao uma
+  promessa. `SessionBlob` imprime `<redacted>` em `Debug` e `Display`; alem
+  disso, um teste varre o proprio fonte do modulo e reprova **qualquer**
+  ocorrencia de `SessionBlob::expose()` fora de uma allowlist de call sites
+  nomeados — hoje ha exatamente dois, a declaracao e o `seal_in_place` do
+  `save`. A garantia vale para o codigo destes sete arquivos: e o call site do
+  `expose()` que e fixado, e nao a lista de macros de log, justamente porque
+  enumerar macros nao alcanca `let s = blob.expose(); let t = s;`. Uma segunda
+  varredura, essa por bloco de macro (nao por linha), continua pegando um campo
+  `session`/`blob`/`creds`/`qr` que nunca passou por `expose()`.
+  O `RedactingWriter` de `garraia-security` redige por prefixo conhecido
   (`sk-`, `xoxb-`…) e **nao** reconheceria um base64 generico — por isso a defesa
-  esta no tipo, e nao no writer.
+  esta no tipo e na allowlist, e nao no writer.
+- **A cauda de stderr do Node tambem e redigida** antes de chegar a tela:
+  sequencias longas que parecem base64 viram `<redigido: N caracteres>` e a
+  linha tem teto de comprimento. Ela e a unica saida crua de ferramenta externa
+  deste fluxo, e o lado JS nao cobre todo `throw` que passa por ela.
 - **JIDs e conteudo de mensagem** tambem nao vao para log: `Jid` imprime so os 4
   ultimos digitos e `InboundMessage` imprime forma, nunca texto.
 
@@ -150,6 +171,18 @@ sumiram do meio fisico.
 
 O aparelho **continua listado no celular** ate voce remove-lo em
 *Configurações → Aparelhos conectados*.
+
+### `restore`
+
+`garra whatsapp restore` renomeia `session.enc.prev` de volta para
+`session.enc`, aperta o modo do arquivo para 0600 (um `.prev` restaurado de
+backup pode ter chegado frouxo) e grava `enabled = true` na config — nessa
+ordem, a mesma do `link`, porque um `enabled` sem sessao faz o gateway pagar
+timeout e retry a cada boot.
+
+Ele recusa, com 69, quando nao ha arquivada ou quando ja ha `session.enc`: a
+sessao em uso e a que o servidor conhece, e substitui-la as cegas trocaria um
+problema por outro.
 
 ## O que precisa de Node
 

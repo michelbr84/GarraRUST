@@ -23,7 +23,70 @@ const SOURCES: &[(&str, &str)] = &[
     ("runner.rs", include_str!("runner.rs")),
 ];
 
-const LOG_MACROS: &[&str] = &["info!", "warn!", "debug!", "error!", "trace!"];
+/// Macros que levam texto para fora do processo.
+///
+/// A lista e propositalmente maior que a do `tracing`: o terminal aceita muito
+/// mais do que cinco macros, e a auditoria R4 plantou um `eprintln!` com
+/// `blob.expose()` que passou verde por nao estar aqui. Ela continua sendo,
+/// porem, a **segunda** linha de defesa — enumerar macros e uma corrida que
+/// nao se ganha, e quem fecha o buraco de verdade e a allowlist de
+/// [`EXPOSE_ALLOWED`]. Esta lista pega o que a outra nao pega: um campo
+/// chamado `session`/`blob`/`creds` que nunca passou por `expose()`.
+const LOG_MACROS: &[&str] = &[
+    "info!",
+    "warn!",
+    "debug!",
+    "error!",
+    "trace!",
+    "event!",
+    "info_span!",
+    "warn_span!",
+    "debug_span!",
+    "error_span!",
+    "trace_span!",
+    "span!",
+    "println!",
+    "eprintln!",
+    "print!",
+    "eprint!",
+    "dbg!",
+    "panic!",
+];
+
+/// **Os unicos call sites de `SessionBlob::expose()` que existem.**
+///
+/// # Por que a regra e invertida
+///
+/// A varredura de macro — a que existia antes desta linha — reprova o que ela
+/// conhece. A auditoria R4 mostrou o custo disso plantando `eprintln!` e
+/// `tracing::event!` com `blob.expose()`: ambos passaram verdes. E registrou a
+/// limitacao de fundo, que nenhuma lista de macros resolve:
+///
+/// ```ignore
+/// let s = blob.expose();
+/// let t = s;
+/// tracing::info!(dado = %t);   // nenhuma varredura de macro ve isto
+/// ```
+///
+/// A linha de defesa certa e o call site do `expose()`, porque e ali que a
+/// protecao de tipo acaba: a partir dali o valor e um `&str` como outro
+/// qualquer. Entao a regra passou a ser fechada — **toda** ocorrencia de
+/// `expose` no codigo de producao destes arquivos precisa estar nomeada aqui,
+/// e acrescentar uma linha nova e uma decisao consciente de quem escreve, em
+/// vez de um silencio.
+///
+/// A checagem e sobre a linha de CODIGO (comentario fora), no mesmo espirito
+/// de [`the_store_exposes_a_single_validating_constructor`]: ela pergunta se a
+/// palavra continua onde deve, e quem de fato impede a chamada e o rustc.
+const EXPOSE_ALLOWED: &[(&str, &str)] = &[
+    // A declaracao. Ela precisa existir: o bridge e o store leem o blob.
+    ("session.rs", "pub fn expose(&self) -> &str {"),
+    // O unico uso: o que vai para o AES-GCM dentro de `SessionStore::save`.
+    (
+        "session.rs",
+        "let mut in_out = blob.expose().as_bytes().to_vec();",
+    ),
+];
 
 /// Padroes que significam "o valor da sessao foi para o log": o `expose()`
 /// cru, o `Display`/`Debug` de um binding chamado `session`/`blob`/`creds`, o
@@ -43,6 +106,19 @@ const FORBIDDEN: &[&str] = &[
     "{creds}",
     "creds = ",
     ".0",
+    // L4: a string crua do QR e uma credencial de ~20 s. Ela e impressa
+    // literalmente em `Style::Raw` — por design, e e o que o usuario le com a
+    // camera —, mas nada dela pertence a um log. Sem estes padroes um
+    // `tracing::debug!(qr = %data)` futuro passaria mesmo com a allowlist de
+    // `expose()` no lugar, porque o QR nunca passa por `SessionBlob`.
+    "%qr",
+    "?qr",
+    "{qr}",
+    "qr = ",
+    "%data",
+    "?data",
+    "{data}",
+    "data = ",
 ];
 
 /// O fonte com os blocos `#[cfg(test)]` apagados, preservando a numeracao das
@@ -70,6 +146,37 @@ fn production_source(source: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Fim de um literal de char que comeca em `at` (o proprio `'`), ou `None`
+/// quando aquele `'` e um tempo de vida (`&'a str`) ou um rotulo (`'outer:`).
+///
+/// # O furo que isto fecha
+///
+/// Sem este tratamento, um `'"'` ou um `b'"'` no fonte — e `bridge.rs`, o
+/// arquivo de enquadramento NDJSON, e o candidato mais natural do repositorio
+/// a ganhar um — deixava uma aspa desemparelhada. O parser lia dali ate a
+/// proxima aspa do arquivo como se fosse uma string, e **todas** as fronteiras
+/// de literal ficavam invertidas: o arquivo inteiro passava a render zero
+/// bloco, em silencio. A auditoria R4 plantou
+/// `fn is_quote(b: u8) -> bool { b == b'"' }` mais um `tracing::info!`
+/// multilinha com `%blob.expose()` em `bridge.rs` e teve 7/7 verdes.
+fn end_of_char(src: &str, at: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut i = at + 1;
+    if bytes.get(i) == Some(&b'\\') {
+        // `\n`, `\'`, `\\`, `\x1b`, `\u{1b}`: todos fecham na proxima aspa.
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'\'' {
+            i += 1;
+        }
+        return (i < bytes.len()).then_some(i + 1);
+    }
+    // Um unico char (possivelmente multibyte) seguido da aspa que fecha. Se
+    // nao fechar ali, aquele `'` era tempo de vida ou rotulo.
+    let ch = src.get(i..)?.chars().next()?;
+    i += ch.len_utf8();
+    (bytes.get(i) == Some(&b'\'')).then_some(i + 1)
 }
 
 /// Fim de um literal de string que comeca em `at` (o proprio `"`), incluindo
@@ -159,6 +266,13 @@ fn log_blocks(source: &str) -> Vec<(usize, String)> {
                 i = end;
                 continue;
             }
+            // Um literal de char com aspa dentro (`'"'`, `b'"'`) inverteria
+            // todas as fronteiras de string daqui para baixo. Ver
+            // [`end_of_char`].
+            b'\'' => {
+                i = end_of_char(&src, i).unwrap_or(i + 1);
+                continue;
+            }
             _ => {}
         }
 
@@ -213,6 +327,11 @@ fn log_blocks(source: &str) -> Vec<(usize, String)> {
                     text.push_str(&src[k..end]);
                     k = end;
                 }
+                b'\'' => {
+                    let end = end_of_char(&src, k).unwrap_or(k + 1);
+                    text.push_str(&src[k..end]);
+                    k = end;
+                }
                 b'(' | b'[' | b'{' => {
                     depth += 1;
                     text.push(bytes[k] as char);
@@ -240,6 +359,67 @@ fn log_blocks(source: &str) -> Vec<(usize, String)> {
         i = k;
     }
     out
+}
+
+/// O fonte sem comentarios, preservando a numeracao das linhas.
+///
+/// Literal de string e literal de char sao pulados inteiros: um `//` dentro de
+/// `"http://x"` nao comeca comentario nenhum, e um `'"'` nao abre string.
+fn without_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let end = end_of_string(bytes, i);
+                out.push_str(&src[i..end]);
+                i = end;
+            }
+            b'\'' => {
+                let end = end_of_char(src, i).unwrap_or(i + 1);
+                out.push_str(&src[i..end]);
+                i = end;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < bytes.len() && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                    if bytes[i] == b'\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            _ => {
+                let end = (i + 1..=bytes.len())
+                    .find(|e| src.is_char_boundary(*e))
+                    .unwrap_or(bytes.len());
+                out.push_str(&src[i..end]);
+                i = end;
+            }
+        }
+    }
+    out
+}
+
+/// Quantas macros de log ha neste texto, pela mesma regra de fronteira do
+/// [`log_blocks`] — `debug_span!` nao conta como `span!`.
+fn count_log_macros(code: &str) -> usize {
+    let bytes = code.as_bytes();
+    (0..bytes.len())
+        .filter(|i| {
+            LOG_MACROS.iter().any(|m| {
+                bytes[*i..].starts_with(m.as_bytes())
+                    && !matches!(bytes.get(i.wrapping_sub(1)), Some(b) if b.is_ascii_alphanumeric() || *b == b'_')
+            })
+        })
+        .count()
 }
 
 fn normalize(text: &str) -> String {
@@ -340,6 +520,157 @@ tracing::warn!(sessao = %blob.expose(), "depois");
     assert!(
         !offending_log_blocks("paren.rs", paren_in_message).is_empty(),
         "um parentese dentro da mensagem nao pode esconder o log seguinte"
+    );
+}
+
+/// **A regra invertida: `expose()` so pode aparecer onde a allowlist diz.**
+///
+/// A varredura de macro reprova o que conhece; esta reprova tudo o que nao foi
+/// declarado. E a unica das duas que sobrevive a um `eprintln!`, a um
+/// `tracing::event!`, a um `#[tracing::instrument(fields(…))]` e ao
+/// `let s = blob.expose(); let t = s;` que nenhuma leitura de macro alcanca.
+///
+/// Acrescentar uma linha a [`EXPOSE_ALLOWED`] e o ponto: vira uma decisao
+/// consciente, com nome e diff, em vez de um silencio.
+#[test]
+fn expose_is_only_called_where_the_allowlist_says() {
+    let mut offenders = Vec::new();
+    for (name, source) in SOURCES {
+        let code = without_comments(&production_source(source));
+        for (i, raw) in code.lines().enumerate() {
+            let line = normalize(raw);
+            if !line.contains("expose") {
+                continue;
+            }
+            if EXPOSE_ALLOWED
+                .iter()
+                .any(|(f, allowed)| f == name && line.contains(allowed))
+            {
+                continue;
+            }
+            offenders.push(format!("{name}:{}: {line}", i + 1));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "`SessionBlob::expose()` fora da allowlist — a partir do call site o valor \
+e um `&str` e a protecao de tipo acabou. Se o uso e legitimo, declare-o em \
+EXPOSE_ALLOWED:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A allowlist tem de continuar **descrevendo** a arvore, e nao so existir.
+///
+/// Uma allowlist cujas linhas ja nao casam com nada nao reprova nada: o teste
+/// acima passaria verde com `EXPOSE_ALLOWED` apontando para codigo que foi
+/// renomeado, e ninguem saberia. Aqui se exige o inverso — toda linha
+/// declarada precisa ser encontrada.
+#[test]
+fn every_allowed_expose_call_site_still_exists() {
+    for (name, allowed) in EXPOSE_ALLOWED {
+        let (_, source) = SOURCES
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} nao esta em SOURCES"));
+        let code = without_comments(&production_source(source));
+        assert!(
+            code.lines().any(|l| normalize(l).contains(allowed)),
+            "{name}: a allowlist declara `{allowed}`, que nao existe mais no fonte de \
+producao — allowlist morta nao guarda nada"
+        );
+    }
+}
+
+/// **Cada macro de log em producao tem de virar exatamente um bloco.**
+///
+/// Ancora de um arquivo so nao serve: hoje `runner.rs` tem 3 blocos e os
+/// outros seis tem 0 cada, entao um `b'"'` plantado em `mod.rs`, `protocol.rs`,
+/// `state.rs`, `session.rs`, `qr.rs` ou `bridge.rs` cegaria o parser **em
+/// silencio** — nao ha ancora possivel num arquivo sem log. Esta asserção e
+/// global e nao depende de um log especifico existir: ela compara o que o
+/// parser devolveu com uma contagem crua do mesmo texto.
+///
+/// A contagem crua e deliberadamente ingenua (so comentario e removido, por
+/// [`without_comments`]). Se um dia uma string literal de producao contiver
+/// `"info!"`, este teste fica vermelho — ruidoso, mas visivel, que e o oposto
+/// do que se esta consertando aqui.
+#[test]
+fn every_log_macro_in_production_yields_exactly_one_block() {
+    for (name, source) in SOURCES {
+        let code = without_comments(&production_source(source));
+        let esperado = count_log_macros(&code);
+        let blocos = log_blocks(source);
+        assert_eq!(
+            blocos.len(),
+            esperado,
+            "{name}: o texto de producao tem {esperado} macro(s) de log e o parser \
+devolveu {} bloco(s). Uma contagem menor significa que as fronteiras de literal \
+se inverteram — e dai em diante nenhum log deste arquivo e examinado. Blocos \
+vistos:\n{}",
+            blocos.len(),
+            blocos
+                .iter()
+                .map(|(l, b)| format!("{l}: {b}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
+/// Um literal de char com aspa dentro nao pode cegar o arquivo inteiro.
+///
+/// `bridge.rs` e o arquivo de enquadramento NDJSON — o candidato mais natural
+/// do repositorio a ganhar um `b'"'`. Antes desta rodada, uma aspa
+/// desemparelhada fazia o parser ler dali ate a proxima aspa do arquivo como
+/// "string", invertia todas as fronteiras e devolvia **zero** blocos.
+#[test]
+fn a_char_literal_holding_a_quote_does_not_blind_the_scan() {
+    let mutacao = r#"
+fn is_quote(b: u8) -> bool {
+    b == b'"'
+}
+
+fn persistir(blob: &SessionBlob) {
+    tracing::info!(
+        sessao = %blob.expose(),
+        "sessao persistida"
+    );
+}
+"#;
+    assert!(
+        !offending_log_blocks("mutacao.rs", mutacao).is_empty(),
+        "um `b'\"'` antes do log nao pode esconder o log"
+    );
+
+    // E o `'a` de um tempo de vida continua sendo tempo de vida, nao literal:
+    // trata-lo como literal engoliria tudo ate a proxima aspa simples.
+    let com_lifetime = r#"
+impl<'a> Guarda<'a> {
+    fn fala(&self, blob: &'a SessionBlob) {
+        tracing::warn!(sessao = %blob.expose(), "vazou");
+    }
+}
+"#;
+    assert!(
+        !offending_log_blocks("lifetime.rs", com_lifetime).is_empty(),
+        "um tempo de vida nao pode ser lido como literal de char"
+    );
+
+    // Um log honesto depois de um literal de char nao pode virar falso
+    // positivo por causa dele.
+    let ok = r#"
+fn separador() -> char {
+    '"'
+}
+
+fn reconectar(attempt: u32) {
+    tracing::info!(attempt, "caiu; reconectando");
+}
+"#;
+    assert!(
+        offending_log_blocks("ok.rs", ok).is_empty(),
+        "log sem material de sessao nao pode ser reprovado"
     );
 }
 

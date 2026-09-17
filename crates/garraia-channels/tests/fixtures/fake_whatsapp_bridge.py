@@ -59,11 +59,16 @@ SCENARIOS = (
     # oversized       linha acima do teto de 256 KiB
     # connect-then-hang
     #                 conecta, entrega a sessao e emudece SEM fechar o stdout
+    # silent-start    sobe e NUNCA emite `started` — o `node` da PATH que e um
+    #                 shim preso antes de rodar o bridge. Todos os outros
+    #                 cenarios emitem `started` antes de qualquer coisa, entao
+    #                 nenhum deles exercita o handshake sem resposta.
     "session-ok",
     "bad-protocol",
     "garbage",
     "oversized",
     "connect-then-hang",
+    "silent-start",
 )
 
 
@@ -209,6 +214,11 @@ class Bridge:
             # stdout com texto livre ANTES do handshake.
             sys.stdout.write("Debugger listening on ws://127.0.0.1:9229\n")
             sys.stdout.flush()
+            time.sleep(self.args.hang_secs)
+            return EXIT_OK
+
+        if self.args.scenario == "silent-start":
+            # Nem `started`, nem nada: o stdout fica aberto e mudo.
             time.sleep(self.args.hang_secs)
             return EXIT_OK
 

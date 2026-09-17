@@ -8,6 +8,7 @@
 use super::*;
 use crate::wizard::prompts::Prompter;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Prompter roteirizado: cada chamada consome a proxima resposta.
 #[derive(Default)]
@@ -807,6 +808,250 @@ fn a_relink_that_never_pairs_puts_the_previous_session_back() {
     assert!(
         !config.channels.contains_key("whatsapp_linked"),
         "um pareamento que falhou nao escreve enabled = true"
+    );
+}
+
+/// **O botao que faltava.** `restore_archive()` existia desde a revisao
+/// anterior e nenhuma superficie a expunha: o `status` via o arquivado e
+/// mandava **apagar**.
+#[test]
+fn restore_brings_the_archived_session_back_and_enables_the_channel() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+    let key = ctx.key().expect("key");
+    let anterior = garraia_channels::whatsapp_linked::SessionBlob::new("eyJhbnRlcmlvciI6MX0=");
+    store.save(&anterior, &key).expect("save");
+    assert!(store.archive().expect("archive"), "havia o que arquivar");
+    assert!(
+        !store.exists(),
+        "e o cenario e justamente o de ficar sem sessao viva"
+    );
+
+    assert_eq!(
+        super::run(Action::Restore, &ctx, &ScriptedPrompter::default()),
+        0
+    );
+
+    assert!(store.exists(), "a sessao voltou para session.enc");
+    assert!(!store.archive_path().exists(), "e nao ficou copia no .prev");
+    assert_eq!(
+        store.load(&key).expect("a restaurada abre").expose(),
+        anterior.expose(),
+        "e tem de ser a MESMA sessao"
+    );
+    let config = loader.load().expect("load");
+    assert!(
+        config
+            .channels
+            .get("whatsapp_linked")
+            .is_some_and(|c| c.enabled == Some(true)),
+        "com sessao em disco o canal volta a valer na config"
+    );
+}
+
+/// Sem arquivado, o comando recusa o trabalho em vez de responder 0 dizendo
+/// que fez algo.
+#[test]
+fn restore_without_an_archive_refuses_instead_of_claiming_success() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+
+    assert_eq!(
+        super::run(Action::Restore, &ctx, &ScriptedPrompter::default()),
+        69
+    );
+}
+
+/// E ele **nunca** passa por cima de uma sessao viva: a viva e a que o
+/// servidor conhece.
+#[test]
+fn restore_never_clobbers_a_live_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+    let key = ctx.key().expect("key");
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJ2ZWxoYSI6MX0="),
+            &key,
+        )
+        .expect("save velha");
+    assert!(store.archive().expect("archive"));
+    let viva = garraia_channels::whatsapp_linked::SessionBlob::new("eyJ2aXZhIjoxfQ==");
+    store.save(&viva, &key).expect("save viva");
+
+    assert_eq!(
+        super::run(Action::Restore, &ctx, &ScriptedPrompter::default()),
+        69
+    );
+    assert_eq!(
+        store.load(&key).expect("load").expose(),
+        viva.expose(),
+        "a sessao viva nao pode ter sido substituida"
+    );
+    assert!(
+        store.archive_path().is_file(),
+        "e a arquivada fica onde esta"
+    );
+}
+
+/// O aviso de arquivado tem de **oferecer** a recuperacao, nao so mandar
+/// apagar — e essa oferta e a razao de o comando existir.
+#[test]
+fn the_archive_warning_offers_the_way_back() {
+    let fonte = include_str!("../whatsapp.rs");
+    let i = fonte
+        .find("fn print_archive_warning")
+        .expect("print_archive_warning precisa existir");
+    let corpo = &fonte[i..i + 3000];
+    assert!(
+        corpo.contains("garra whatsapp restore"),
+        "o aviso precisa nomear o comando que devolve a sessao"
+    );
+    assert!(
+        corpo.contains("garra whatsapp logout"),
+        "e continuar oferecendo o descarte"
+    );
+}
+
+/// Saida do [`super::ArchiveGuard`] gravada em memoria.
+///
+/// `Rc<RefCell<…>>` e nao um canal porque o guard cai no `drop`, que roda no
+/// mesmo thread: o teste so precisa ler depois.
+#[derive(Default)]
+struct RecordedOut {
+    ok: Rc<RefCell<Vec<String>>>,
+    warn: Rc<RefCell<Vec<String>>>,
+}
+
+impl super::GuardOut for RecordedOut {
+    fn ok(&mut self, line: &str) {
+        self.ok.borrow_mut().push(line.to_string());
+    }
+    fn warn(&mut self, line: &str) {
+        self.warn.borrow_mut().push(line.to_string());
+    }
+}
+
+/// **A mensagem de perda do vinculo tem pino.**
+///
+/// Era a correcao inteira do ponto 5 da rodada anterior e nao tinha teste
+/// nenhum: arrancar o braco `Ok(false) if self.archived && !self.store.exists()`
+/// por completo e neutralizar o campo `archived` deixava os 28 testes deste
+/// arquivo verdes, identicos ao baseline. Nenhum dos tres testes do guard
+/// alcancava esse braco, e nenhum teste do arquivo capturava a saida.
+///
+/// O cenario e o unico em que o usuario de fato perdeu o vinculo anterior: o
+/// `.prev` some entre o `archive()` e o `drop`.
+#[test]
+fn the_guard_says_so_when_the_archived_session_vanished() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+    let key = ctx.key().expect("key");
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhbnRlcmlvciI6MX0="),
+            &key,
+        )
+        .expect("save");
+
+    let out = RecordedOut::default();
+    let (ok, warn) = (Rc::clone(&out.ok), Rc::clone(&out.warn));
+    {
+        let _guard =
+            super::ArchiveGuard::archive_to(&store, ctx.lang, Box::new(out)).expect("archive");
+        // O arquivado some debaixo do guard — disco cheio, antivirus,
+        // `rm` de alguem. E o unico dos tres desfechos de `Ok(false)` que
+        // significa perda.
+        std::fs::remove_file(store.archive_path()).expect("apagar o .prev");
+    }
+
+    assert!(
+        ok.borrow().is_empty(),
+        "nada foi restaurado, entao nada pode ter sido anunciado como restaurado: {:?}",
+        ok.borrow()
+    );
+    let warn = warn.borrow();
+    assert_eq!(warn.len(), 1, "esperava exatamente um aviso: {warn:?}");
+    assert!(
+        warn[0].contains("vínculo antigo foi perdido"),
+        "o usuario precisa ouvir que perdeu o vinculo: {:?}",
+        warn[0]
+    );
+    assert!(
+        warn[0].contains("garra whatsapp"),
+        "e precisa ouvir o que fazer a seguir: {:?}",
+        warn[0]
+    );
+}
+
+/// E o desfecho bom tambem fala — pelo outro canal.
+///
+/// O par do teste acima: sem ele, trocar `self.out.ok(…)` por silencio no
+/// braco `Ok(true)` passaria despercebido, porque as asserções de disco dos
+/// vizinhos nao olham a saida.
+#[test]
+fn the_guard_announces_the_session_it_put_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+    let key = ctx.key().expect("key");
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhbnRlcmlvciI6MX0="),
+            &key,
+        )
+        .expect("save");
+
+    let out = RecordedOut::default();
+    let (ok, warn) = (Rc::clone(&out.ok), Rc::clone(&out.warn));
+    drop(super::ArchiveGuard::archive_to(&store, ctx.lang, Box::new(out)).expect("archive"));
+
+    assert!(
+        warn.borrow().is_empty(),
+        "nada deu errado: {:?}",
+        warn.borrow()
+    );
+    let ok = ok.borrow();
+    assert_eq!(ok.len(), 1, "esperava exatamente um anuncio: {ok:?}");
+    assert!(
+        ok[0].contains("restaurada"),
+        "o usuario precisa ouvir que a sessao voltou: {:?}",
+        ok[0]
+    );
+    assert!(store.exists(), "e ela precisa estar de volta em disco");
+}
+
+/// Sem `relink` o guard nao fala nada — nao havia o que arquivar.
+#[test]
+fn a_guard_with_nothing_archived_stays_quiet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+
+    let out = RecordedOut::default();
+    let (ok, warn) = (Rc::clone(&out.ok), Rc::clone(&out.warn));
+    drop(super::ArchiveGuard::archive_to(&store, ctx.lang, Box::new(out)).expect("archive"));
+
+    assert!(ok.borrow().is_empty(), "{:?}", ok.borrow());
+    assert!(
+        warn.borrow().is_empty(),
+        "um store vazio nao perdeu vinculo nenhum: {:?}",
+        warn.borrow()
     );
 }
 

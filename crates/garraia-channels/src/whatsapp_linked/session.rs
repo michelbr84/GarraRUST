@@ -81,6 +81,28 @@ pub const DEFAULT_ACCOUNT: &str = "default";
 /// sistema de arquivos para recusar entrada absurda.
 const MAX_ACCOUNT_LEN: usize = 64;
 
+/// Nomes de dispositivo reservados do Windows.
+///
+/// Todos casam a allowlist `[A-Za-z0-9_-]` — e nenhum deles pode virar
+/// diretorio no Windows, com ou sem extensao, em qualquer pasta. O efeito de
+/// deixar passar nao e traversal: e um erro opaco do sistema operacional
+/// (`ERROR_INVALID_NAME`) no meio de `create_secret_dir`, em vez de um
+/// [`SessionError::InvalidAccount`] que diz o que houve.
+///
+/// A recusa e **case-insensitive** porque a reserva do Windows tambem e:
+/// `CON`, `Con` e `con` sao o mesmo dispositivo. A lista fica aqui e nao sob
+/// `#[cfg(windows)]` de proposito — a conta viaja em config e em backup entre
+/// maquinas, e uma conta que so e valida no Linux e uma armadilha para o dia
+/// em que o mesmo `config.yml` abrir no Windows.
+///
+/// Impacto hoje: nenhum. O unico chamador passa [`DEFAULT_ACCOUNT`], e esta
+/// funcao inteira existe para o dia em que a fatia do gateway passar um valor
+/// vindo de config ou de request.
+const WINDOWS_RESERVED: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
 /// A conta e **um unico segmento** de caminho, e e esta funcao que garante.
 ///
 /// Sem ela, [`SessionStore::for_data_dir`] aceitava qualquer string:
@@ -94,13 +116,20 @@ const MAX_ACCOUNT_LEN: usize = 64;
 /// `[A-Za-z0-9_-]{1,64}`. Isso recusa de uma vez `/`, `\`, `..`, `.`, a
 /// string vazia, o NUL, o espaco e qualquer forma Unicode que o sistema de
 /// arquivos possa dobrar em separador — sem precisar enumerar nenhuma delas.
+///
+/// A unica lista de proibidos e [`WINDOWS_RESERVED`], e ela existe porque o
+/// Windows tem nomes que a allowlist **aceita** e o sistema de arquivos
+/// recusa. Ver o docstring dela.
 fn validate_account(account: &str) -> Result<(), SessionError> {
-    let ok = !account.is_empty()
+    let charset_ok = !account.is_empty()
         && account.len() <= MAX_ACCOUNT_LEN
         && account
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    if ok {
+    let reserved = WINDOWS_RESERVED
+        .iter()
+        .any(|r| account.eq_ignore_ascii_case(r));
+    if charset_ok && !reserved {
         Ok(())
     } else {
         Err(SessionError::InvalidAccount(account.to_string()))
@@ -496,9 +525,17 @@ impl SessionStore {
     /// esquecesse de limpar deixaria blob morto em disco. Aqui nenhum pode
     /// esquecer, e nenhum pode triturar o que nao foi ele quem criou.
     ///
-    /// Devolve `true` quando havia arquivado e ele foi PRESERVADO — e o que o
-    /// chamador precisa saber para dizer ao usuario que a sessao anterior
-    /// ainda da para recuperar.
+    /// Devolve `true` quando havia arquivado e ele foi PRESERVADO.
+    ///
+    /// L3 da auditoria R4: o texto anterior dizia que este `bool` era "o que o
+    /// chamador precisa saber para dizer ao usuario…", e os dois call sites de
+    /// hoje ([`super::runner::pair`]) o descartam — a afirmacao era mais forte
+    /// que o uso. Eles o descartam com razao: quem fala com o usuario sobre o
+    /// arquivado e o `ArchiveGuard` da CLI, no `Drop`, que le o **disco** e nao
+    /// precisa de aviso de ninguem. O valor continua saindo daqui porque o
+    /// store e o dono da regra: um call site futuro que precise decidir ("dar
+    /// a opcao de restaurar?") nao pode ser obrigado a reimplementar a
+    /// condicao olhando o `.prev` de fora e errando a corrida.
     pub fn discard_dead_session(&self) -> Result<bool, SessionError> {
         shred(&self.blob_path())?;
         if self.archive_path().is_file() {
@@ -610,10 +647,20 @@ fn write_tmp_file(tmp: &Path, bytes: &[u8]) -> Result<(), SessionError> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(fs_perms::SECRET_FILE_MODE);
     }
+    // Um `?` aqui e o desfecho CERTO de `create_new` recusando um caminho
+    // ocupado: nada foi criado, e portanto nada ha para limpar. Quem limpa e o
+    // bloco abaixo, e so a partir do ponto em que o arquivo e nosso — triturar
+    // o que nao se criou seria o mesmo erro que `create_new` existe para
+    // evitar, com outro nome.
     let mut f = opts.open(tmp).map_err(|e| SessionError::io(tmp, e))?;
-    f.write_all(bytes).map_err(|e| SessionError::io(tmp, e))?;
-    f.sync_all().map_err(|e| SessionError::io(tmp, e))?;
+    let written = f.write_all(bytes).and_then(|()| f.sync_all());
     drop(f);
+    if let Err(e) = written {
+        // Daqui em diante o arquivo E nosso, e ele ja tem material de sessao:
+        // deixa-lo orfao seria o pior dos dois mundos.
+        let _ = shred(tmp);
+        return Err(SessionError::io(tmp, e));
+    }
     // Fora de Unix o `mode` acima nao existe; aperta pelo caminho generico.
     let _ = fs_perms::harden_secret_file(tmp);
     Ok(())
@@ -636,25 +683,41 @@ fn write_tmp_file(tmp: &Path, bytes: &[u8]) -> Result<(), SessionError> {
 /// inclusive — e o sufixo aleatorio faz o caminho nao ser adivinhavel. As duas
 /// juntas, porque cada uma sozinha ainda deixa metade do problema.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
+    write_atomic_with_nonce(path, bytes, u64::from_ne_bytes(random_bytes::<8>()?))
+}
+
+/// O caminho do temporario que [`write_atomic_with_nonce`] vai usar.
+///
+/// Funcao nomeada, e nao um `format!` no meio da escrita, porque e o que
+/// permite ao teste plantar no caminho EXATO — e sem isso nao ha como pinar o
+/// `create_new`. A versao anterior destes testes plantava em
+/// `.session.key.tmp`, o nome deterministico de antes do nonce: trocar
+/// `create_new(true)` por `create(true).truncate(true)` deixava os 22 testes
+/// do modulo verdes, porque o caminho plantado ja nao era o caminho escrito.
+fn tmp_path_for(path: &Path, nonce: u64) -> PathBuf {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    dir.join(format!(
+        ".{}.{nonce:016x}.tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "session".into())
+    ))
+}
+
+/// [`write_atomic`] com o nonce injetado. Ver [`tmp_path_for`].
+fn write_atomic_with_nonce(path: &Path, bytes: &[u8], nonce: u64) -> Result<(), SessionError> {
     let dir = path
         .parent()
         .ok_or_else(|| SessionError::Format(format!("{} nao tem diretorio pai", path.display())))?;
     fs_perms::create_secret_dir(dir).map_err(|e| SessionError::io(dir, e))?;
 
-    let nonce = u64::from_ne_bytes(random_bytes::<8>()?);
-    let tmp = dir.join(format!(
-        ".{}.{nonce:016x}.tmp",
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "session".into())
-    ));
+    let tmp = tmp_path_for(path, nonce);
 
-    // Qualquer falha daqui para baixo deixaria material de sessao num
-    // temporario orfao com nome que ninguem mais conhece — o pior dos dois
-    // mundos. Por isso o desfecho de erro tritura o `tmp` antes de propagar.
-    let written = write_tmp_file(&tmp, bytes)
-        .and_then(|()| std::fs::rename(&tmp, path).map_err(|e| SessionError::io(path, e)));
-    if let Err(e) = written {
+    // `write_tmp_file` ja limpa o que ele mesmo criou; o que sobra aqui e a
+    // falha do `rename`, que deixaria material de sessao num temporario orfao
+    // com nome que ninguem mais conhece — o pior dos dois mundos.
+    write_tmp_file(&tmp, bytes)?;
+    if let Err(e) = std::fs::rename(&tmp, path).map_err(|e| SessionError::io(path, e)) {
         let _ = shred(&tmp);
         return Err(e);
     }
@@ -685,7 +748,10 @@ pub enum SessionError {
     /// A conta nao e um segmento de caminho aceitavel. O valor recusado entra
     /// na mensagem de proposito: ele e um identificador de conta escolhido
     /// pelo operador, nao segredo, e sem ele o erro nao orienta ninguem.
-    #[error("conta invalida: {0:?} — use apenas [A-Za-z0-9_-], ate 64 caracteres")]
+    #[error(
+        "conta invalida: {0:?} — use apenas [A-Za-z0-9_-], ate 64 caracteres, \
+e nenhum nome de dispositivo do Windows (con, prn, aux, nul, com1-9, lpt1-9)"
+    )]
     InvalidAccount(String),
     #[error("erro criptografico: {0}")]
     Crypto(String),
@@ -824,19 +890,65 @@ mod tests {
         store.discard_archive().expect("discard de novo");
     }
 
-    #[test]
-    fn a_dead_session_takes_the_key_with_it_when_there_is_nothing_archived() {
+    /// O material de chave que EXISTE em disco para uma dada origem.
+    ///
+    /// As duas origens gravam arquivos diferentes, e e exatamente por isso que
+    /// esta funcao existe: sem passphrase ha `session.key` e **nao** ha
+    /// `session.salt` (o salt so nasce no braco `Some(pass)` de
+    /// [`SessionKey::resolve`]); com passphrase e o contrario. Uma asserção
+    /// sobre o arquivo que nunca foi criado naquele modo nao pode falhar —
+    /// era assim que `assert!(!salt_path().exists())` passava verde com
+    /// `shred(&self.salt_path())` arrancado do `discard_dead_session`.
+    fn key_material_on_disk(store: &SessionStore) -> Vec<PathBuf> {
+        [store.key_path(), store.salt_path()]
+            .into_iter()
+            .filter(|p| p.is_file())
+            .collect()
+    }
+
+    /// O corpo do invariante, rodado nas DUAS origens de chave.
+    fn a_dead_session_takes_its_key_material(passphrase: Option<&str>) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SessionStore::new(dir.path().join("wa"));
-        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        let key = SessionKey::resolve(store.dir(), passphrase).expect("key");
         store.save(&blob(), &key).expect("save");
+
+        let material = key_material_on_disk(&store);
+        assert!(
+            !material.is_empty(),
+            "sem material de chave em disco o teste nao prova nada (passphrase: {})",
+            passphrase.is_some()
+        );
 
         let preservou = store.discard_dead_session().expect("discard");
 
         assert!(!preservou, "nao havia arquivado a preservar");
         assert!(!store.exists(), "o blob que o servidor recusou vai embora");
-        assert!(!store.key_path().exists(), "e a chave vai junto");
-        assert!(!store.salt_path().exists(), "o salt tambem");
+        for path in material {
+            assert!(
+                !path.exists(),
+                "{} sobreviveu ao descarte da sessao morta",
+                path.display()
+            );
+        }
+    }
+
+    /// Chave em `session.key` (sem passphrase): e ela que tem de ir junto.
+    #[test]
+    fn a_dead_session_takes_the_key_with_it_when_there_is_nothing_archived() {
+        a_dead_session_takes_its_key_material(None);
+    }
+
+    /// Chave derivada da passphrase: aqui nao ha `session.key`, e quem tem de
+    /// ir junto e o `session.salt`.
+    ///
+    /// O espelho exato do vizinho acima, e a razao de ele existir: o teste com
+    /// `None` afirmava o salt, que naquele modo **nunca** e criado. Arrancar
+    /// `shred(&self.salt_path())` de `discard_dead_session` deixava os 22
+    /// testes do modulo verdes.
+    #[test]
+    fn a_dead_session_takes_the_salt_with_it_when_the_key_came_from_a_passphrase() {
+        a_dead_session_takes_its_key_material(Some("passphrase-de-teste"));
     }
 
     /// O invariante do F2: com arquivado em disco, `.prev`, `session.key` e
@@ -854,10 +966,27 @@ mod tests {
         store
             .save(&SessionBlob::new("eyJub3ZvIjoxfQ=="), &key)
             .expect("save novo");
+        let material = key_material_on_disk(&store);
+        assert!(
+            !material.is_empty(),
+            "o teste precisa de material a preservar"
+        );
 
         let preservou = store.discard_dead_session().expect("discard");
 
         assert!(preservou, "havia arquivado, e ele foi preservado");
+        // A outra metade do "vivem ou morrem juntos": com `.prev` em disco, a
+        // chave que o decifra NAO pode ter ido embora. Sem esta asserção,
+        // mover o `shred` da chave para antes do `return Ok(true)` — que e
+        // justamente o que destroi a recuperacao — passava verde, porque o
+        // teste reusava a `key` que ja estava em memoria.
+        for path in material {
+            assert!(
+                path.is_file(),
+                "{} sumiu, e um .prev sem a chave que o abre nao recupera nada",
+                path.display()
+            );
+        }
         assert!(!store.exists(), "o blob recusado some");
         assert!(store.archive_path().is_file(), "o arquivado fica");
         assert!(store.key_path().exists(), "e a chave que o abre tambem");
@@ -997,6 +1126,12 @@ mod tests {
             "",
             "conta com espaco",
             "acentuada\u{e7}",
+            // Nomes de dispositivo do Windows: casam a allowlist de charset e
+            // mesmo assim nao podem virar diretorio la. Case-insensitive.
+            "con",
+            "NUL",
+            "Com1",
+            "lpt9",
         ] {
             match SessionStore::for_data_dir(&data, account) {
                 Err(SessionError::InvalidAccount(recusada)) => assert_eq!(recusada, account),
@@ -1062,14 +1197,82 @@ mod tests {
         assert!(store.archive_path().is_file(), "o arquivado fica onde esta");
     }
 
-    /// O temporario do `write_atomic` nao reaproveita um arquivo que ja
-    /// estivesse no caminho previsivel de antes.
+    /// Nonce arbitrario, fixo, para os testes que plantam no caminho exato.
+    const NONCE_DO_TESTE: u64 = 0x0123_4567_89ab_cdef;
+
+    /// **O `create_new` tem pino.** Planta no caminho EXATO que a escrita vai
+    /// usar e exige que ela recuse.
     ///
-    /// Com o nome deterministico (`.session.key.tmp`) e
-    /// `create(true).truncate(true)`, o store abria o preexistente e o
-    /// renomeava por cima do destino: o `mode(0600)` do `OpenOptions` so vale
-    /// na CRIACAO, entao o segredo passava a existir em disco com o modo do
-    /// arquivo alheio ate o `harden_secret_file` de depois do `write_all`.
+    /// # Por que o nonce injetado, e nao `store.save()`
+    ///
+    /// Porque com o nonce em jogo o caminho deterministico antigo
+    /// (`.session.key.tmp`) ja nao e escrito por ninguem, e plantar la prova o
+    /// nonce — nao o `create_new`. A matriz de mutacao da revisao R4 mostrou
+    /// isso: trocar `create_new(true)` por `create(true).truncate(true)`,
+    /// mantendo o nonce, deixava os 22 testes do modulo **verdes**. Os dois
+    /// testes vizinhos (`..._predictable_name`) continuam pinando a outra
+    /// metade; estes dois pinam esta.
+    #[test]
+    fn a_temporary_file_in_the_way_is_never_reused() {
+        let dir = tempdir().expect("tempdir");
+        let wa = dir.path().join("wa");
+        std::fs::create_dir_all(&wa).expect("mkdir");
+        let destino = wa.join(KEY_FILE);
+        let tmp = tmp_path_for(&destino, NONCE_DO_TESTE);
+        std::fs::write(&tmp, b"nao sou do store").expect("plantar");
+
+        let err = write_atomic_with_nonce(&destino, b"segredo novo", NONCE_DO_TESTE)
+            .expect_err("o temporario ja existia: `create_new` tem de recusar a escrita");
+
+        assert!(matches!(err, SessionError::Io { .. }), "veio {err:?}");
+        assert_eq!(
+            std::fs::read(&tmp).expect("o plantado continua la"),
+            b"nao sou do store",
+            "o store nao pode escrever sobre um temporario que nao e dele — \
+nem para depois tritura-lo"
+        );
+        assert!(
+            !destino.exists(),
+            "e nada pode ter chegado ao destino por um caminho que ele recusou"
+        );
+    }
+
+    /// E nao SEGUE um symlink que esteja nesse caminho exato.
+    ///
+    /// O desfecho pior: `create(true)` segue o link, e quem leva a escrita (e
+    /// o `chmod` 0600) e o alvo, um arquivo de outra pessoa.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_in_the_way_is_never_followed() {
+        let dir = tempdir().expect("tempdir");
+        let wa = dir.path().join("wa");
+        std::fs::create_dir_all(&wa).expect("mkdir");
+        let vitima = dir.path().join("arquivo-da-vitima");
+        std::fs::write(&vitima, b"conteudo da vitima").expect("vitima");
+        let destino = wa.join(KEY_FILE);
+        std::os::unix::fs::symlink(&vitima, tmp_path_for(&destino, NONCE_DO_TESTE))
+            .expect("symlink");
+
+        write_atomic_with_nonce(&destino, b"segredo novo", NONCE_DO_TESTE).expect_err(
+            "`create_new` recusa abrir qualquer coisa que ja exista — symlink inclusive",
+        );
+
+        assert_eq!(
+            std::fs::read(&vitima).expect("a vitima continua la"),
+            b"conteudo da vitima",
+            "um symlink no caminho do temporario nao pode redirecionar a escrita do store"
+        );
+        assert!(!destino.exists(), "e nada chegou ao destino");
+    }
+
+    /// O temporario ja **nao cai** no caminho previsivel de antes.
+    ///
+    /// Esta e a outra metade do fecho: o nonce. Com o nome deterministico
+    /// (`.session.key.tmp`) e `create(true).truncate(true)`, o store abria o
+    /// preexistente e o renomeava por cima do destino — o `mode(0600)` do
+    /// `OpenOptions` so vale na CRIACAO, entao o segredo passava a existir em
+    /// disco com o modo do arquivo alheio ate o `harden_secret_file` de depois
+    /// do `write_all`. Hoje o caminho nem e adivinhavel.
     #[test]
     fn a_planted_temporary_file_is_never_reused() {
         let dir = tempdir().expect("tempdir");
@@ -1093,12 +1296,12 @@ mod tests {
         );
     }
 
-    /// E nao SEGUE um symlink plantado nesse caminho.
+    /// E o symlink com o nome previsivel de antes tambem ficou fora da mira.
     ///
-    /// Era o desfecho pior do nome previsivel: `create(true)` segue o link, e
-    /// quem levava a escrita (e o `chmod` 0600) era o alvo, um arquivo de
-    /// outra pessoa. `create_new(true)` recusa abrir o que ja existe — symlink
-    /// inclusive — e o sufixo aleatorio tira o alvo da mira.
+    /// Mesma metade do fecho do vizinho acima — o nonce —, no caso em que o
+    /// preexistente nao e um arquivo, e sim um link para o arquivo de outra
+    /// pessoa. O `create_new` desta mesma escrita tem pino proprio em
+    /// [`a_symlink_in_the_way_is_never_followed`].
     #[cfg(unix)]
     #[test]
     fn a_planted_symlink_is_never_followed() {
