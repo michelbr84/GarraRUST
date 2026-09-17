@@ -241,6 +241,34 @@ Antes de cada release que toque este caminho, rode a mao:
    claramente, e nao dizer que esta tudo bem.
 6. `garra whatsapp logout` → o diretorio da conta fica vazio.
 
+### O que JA foi exercitado contra o Baileys real (2026-09-17)
+
+Estes tres pontos sairam de rodar a ponte de verdade (`@whiskeysockets/baileys`
+`7.0.0-rc14`, Node 22.22.2) num ambiente **sem alcance** aos servidores do
+WhatsApp. Ficam registrados para o roteiro acima nao reexaminar o que ja se
+sabe, e para deixar explicito o que continua em aberto.
+
+1. **A ponte sobe e carrega o Baileys.** `node bridge.mjs --protocol-check`
+   devolve `started` com `protocol: 1` e a versao do Baileys.
+2. **O blob de sessao faz round-trip byte a byte.** Um `session_update` emitido
+   pelo Baileys real, devolvido a uma instancia nova via `session_load`, produz
+   `log: "session restored"` e um `creds` **identico** ao de entrada
+   (`registrationId`, `advSecretKey`, `noiseKey`, `signedIdentityKey` e o
+   objeto inteiro comparados). E o contrato de persistencia da §Sessao valendo
+   contra a biblioteca, e nao so contra a fixture Python.
+3. **O caminho de rede ruim tem feedback, e nao so um teto.** Sem alcance ao
+   WhatsApp, o Baileys emite `status connecting` aos 2 s e fica **85 segundos**
+   mudo. Era nessa janela que o terminal exibia uma linha congelada; hoje o
+   pulso de `PairUi::connecting` diz de 5 em 5 s ha quanto tempo tenta e em
+   quanto desiste. Ver o teste `silence_before_the_first_qr_still_shows_the_user_something`
+   e o cenario `quiet-before-qr` da fixture.
+
+**Continua sem prova, e e o motivo de o roteiro acima existir:** nenhum QR real
+apareceu, porque isso exige alcancar o WhatsApp. A fidelidade do Baileys aos
+eventos `qr`, `connection.update` e `creds.update` contra o servidor de
+verdade — e o comportamento nos codigos 401/403/419 e no `restart_required`
+515 — segue dependendo dos 6 passos com um telefone.
+
 ## Textos (pt-BR / en)
 
 O comando responde em pt-BR por padrao e em ingles quando `GARRAIA_LANG`,
