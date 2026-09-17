@@ -67,6 +67,14 @@ SCENARIOS = (
     "bad-protocol",
     "garbage",
     "oversized",
+    # quiet-before-qr emite `connecting` e emudece por `--hang-secs` ANTES do
+    #                 primeiro QR, que so entao sai. E a forma medida do
+    #                 Baileys real (7.0.0-rc14) contra uma rede que nao
+    #                 alcanca o WhatsApp: `status connecting` aos 2 s e nada
+    #                 mais por 85 s. Nenhum outro cenario cobre silencio
+    #                 PRE-QR: o `hang` emite o QR antes de emudecer, e o
+    #                 `retry-forever` fala o tempo todo.
+    "quiet-before-qr",
     # retry-forever  fala sem parar e nunca progride: `disconnected` com
     #                 will_retry a cada segundo, nenhum `qr`, nenhum
     #                 `connected`. E o usuario atras de captive portal, com
@@ -314,6 +322,16 @@ class Bridge:
             self.disconnected(401, "logged_out", False, 0)
             emit({"type": "logged_out"})
             return EXIT_LOGGED_OUT
+
+        if scenario == "quiet-before-qr":
+            # Silencio TOTAL: nem `log`, nem `status`. Qualquer evento
+            # realimentaria o relogio de silencio do runner e o teste deixaria
+            # de medir o que quer.
+            self.eof.wait(self.args.hang_secs)
+            self.qr()
+            self.connected()
+            self.session_update()
+            return EXIT_OK
 
         if scenario == "hang":
             self.qr()

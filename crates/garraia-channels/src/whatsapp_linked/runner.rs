@@ -236,6 +236,22 @@ pub trait PairUi: Send {
     fn qr(&mut self, data: &str, attempt: u32, max_attempts: u32, previous_expired: bool);
     /// Contador regressivo enquanto esperamos a leitura.
     fn waiting(&mut self, attempt: u32, max_attempts: u32, seconds_left: u64);
+    /// Sinal de vida ANTES de haver QR.
+    ///
+    /// `status` e chamado uma vez, na troca de fase. Sem isto, um handshake
+    /// que demora deixava `→ conectando ao WhatsApp…` parado na tela ate o
+    /// teto de [`DEFAULT_NO_PROGRESS_AFTER_SECS`] — medido com o Baileys real
+    /// contra uma rede que nao alcanca o WhatsApp: a ponte fica **85
+    /// segundos** sem emitir nada. Dois minutos de uma linha estatica sao
+    /// indistinguiveis de um travamento, e "nao e infinito" nao e o mesmo que
+    /// "tem feedback".
+    ///
+    /// `giving_up_in_secs` vai junto de proposito: o usuario precisa saber
+    /// que a espera tem fim, e quando.
+    ///
+    /// Sem implementacao default. Uma UI nova tem de **decidir** o que
+    /// mostrar aqui; herdar silencio em silencio foi exatamente o defeito.
+    fn connecting(&mut self, elapsed_secs: u64, giving_up_in_secs: u64);
     /// O pareamento foi aceito e a sessao esta sincronizando.
     fn authenticated(&mut self);
 }
@@ -248,6 +264,7 @@ impl PairUi for SilentUi {
     fn status(&mut self, _line: &str) {}
     fn qr(&mut self, _d: &str, _a: u32, _m: u32, _p: bool) {}
     fn waiting(&mut self, _a: u32, _m: u32, _s: u64) {}
+    fn connecting(&mut self, _e: u64, _g: u64) {}
     fn authenticated(&mut self) {}
 }
 
@@ -513,6 +530,16 @@ pub async fn pair_with(
                         attempt,
                         super::state::MAX_QR_ATTEMPTS,
                         expires_at_secs.saturating_sub(now),
+                    );
+                } else if machine.phase() != Phase::Connected {
+                    // Toda fase que ainda nao tem QR na tela e nao terminou:
+                    // conectando, validando, reconectando. O relogio e o
+                    // MESMO que decide o teto logo acima, entao a conta que o
+                    // usuario le e a conta que de fato vale.
+                    let parado = now.saturating_sub(last_progress_secs);
+                    ui.connecting(
+                        parado,
+                        options.no_progress_after_secs.saturating_sub(parado),
                     );
                 }
             }

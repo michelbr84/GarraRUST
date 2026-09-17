@@ -56,6 +56,21 @@ test('fixture "connect-then-hang" conecta, entrega a sessao e emudece', { skip }
   assert.ok(types.includes('connected'));
 });
 
+test('fixture "quiet-before-qr" emudece ANTES do QR, e nao depois', { skip }, () => {
+  const res = runFixture(['--scenario', 'quiet-before-qr', ...FAST, '--hang-secs', '0.3']);
+  assert.equal(res.status, 0);
+  assert.deepEqual(lintStream(res.stdout).errors, []);
+  const types = res.stdout.trim().split('\n').map((l) => JSON.parse(l).type);
+  // O silencio cai entre o `status connecting` e o `qr`. E a forma medida do
+  // Baileys real contra rede que nao alcanca o WhatsApp, e a unica janela em
+  // que o driver Rust nao tinha nada a dizer ao usuario.
+  assert.equal(types[0], 'started');
+  assert.equal(types[1], 'status');
+  assert.equal(types[2], 'qr');
+  assert.ok(types.includes('connected'));
+  assert.ok(types.includes('session_update'));
+});
+
 test('fixture "hang" fica muda depois do QR', { skip }, () => {
   const res = runFixture(['--scenario', 'hang', ...FAST, '--hang-secs', '0.3']);
   assert.equal(res.status, 0);

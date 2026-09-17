@@ -50,6 +50,11 @@ impl FixtureLauncher {
         self
     }
 
+    fn hang_secs(mut self, secs: f64) -> Self {
+        self.hang_secs = secs;
+        self
+    }
+
     fn script() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -103,6 +108,12 @@ impl PairUi for RecordingUi {
     }
     fn waiting(&mut self, attempt: u32, _max: u32, _left: u64) {
         self.lines.push(format!("waiting:{attempt}"));
+    }
+    fn connecting(&mut self, elapsed: u64, giving_up_in: u64) {
+        // `elapsed + giving_up_in` e o invariante que o teste checa: o numero
+        // que o usuario le tem de ser o mesmo teto que de fato encerra.
+        self.lines
+            .push(format!("connecting:{elapsed}:+{giving_up_in}"));
     }
     fn authenticated(&mut self) {
         self.lines.push("authenticated".into());
@@ -641,6 +652,82 @@ async fn a_slow_but_progressing_pairing_is_not_cut_short() {
     .expect("o pareamento lento precisa concluir");
 
     assert!(outcome.session_saved);
+}
+
+/// Silencio ANTES do QR nao pode deixar a tela parada.
+///
+/// Medido com o Baileys real (7.0.0-rc14) num container que nao alcanca os
+/// servidores do WhatsApp: `status connecting` aos 2 s, e **nada** por 85 s.
+/// O `status` do driver e chamado UMA vez, na troca de fase, e `waiting` so
+/// roda nas fases que ja tem QR — entao o usuario via `→ conectando ao
+/// WhatsApp…` congelado ate o teto de `no_progress_after_secs` (120 s por
+/// default) encerrar. Nao e infinito, mas dois minutos de linha estatica sao
+/// indistinguiveis de um travamento, que e o que o requisito da v0.4.3
+/// proibe.
+///
+/// MUTACAO QUE ESTE TESTE MATA: arrancar o braco `else if` que chama
+/// `ui.connecting` no tick do `pair`. Sem ele a sequencia gravada nao tem
+/// nenhuma linha `connecting:` antes do `qr:`, e a assercao morre. O teste
+/// tambem exige `elapsed + giving_up_in == no_progress_after_secs`: o numero
+/// que o usuario le tem de ser o teto que de fato encerra, e nao um segundo
+/// relogio que se pareca com ele.
+#[tokio::test]
+async fn silence_before_the_first_qr_still_shows_the_user_something() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    let mut ui = RecordingUi::default();
+
+    // 11 s de silencio pre-QR: pulsos aos 5 s e aos 10 s. O teto de
+    // no-progress fica em 60 s, folgado, porque o que se mede aqui e o
+    // feedback e nao a desistencia.
+    let outcome = pair_with(
+        &FixtureLauncher::new("quiet-before-qr", dir.path().to_path_buf())
+            .hang_secs(11.0)
+            .qr_expires(20.0),
+        &store,
+        &key,
+        &mut ui,
+        never_cancelled(),
+        PairOptions {
+            stall_after_secs: 40,
+            no_progress_after_secs: 60,
+            ..PairOptions::default()
+        },
+    )
+    .await
+    .expect("o pareamento conclui depois do silencio");
+    assert!(outcome.session_saved);
+
+    let ate_o_qr: Vec<&String> = ui
+        .lines
+        .iter()
+        .take_while(|l| !l.starts_with("qr:"))
+        .collect();
+    let pulsos: Vec<&&String> = ate_o_qr
+        .iter()
+        .filter(|l| l.starts_with("connecting:"))
+        .collect();
+
+    assert!(
+        pulsos.len() >= 2,
+        "11 s de silencio pre-QR tem de render pelo menos dois pulsos; \
+         a sequencia foi {:?}",
+        ui.lines
+    );
+
+    for pulso in &pulsos {
+        let (elapsed, resto) = pulso
+            .trim_start_matches("connecting:")
+            .split_once(":+")
+            .expect("formato connecting:<elapsed>:+<giving_up_in>");
+        let elapsed: u64 = elapsed.parse().expect("elapsed");
+        let faltando: u64 = resto.parse().expect("giving_up_in");
+        assert_eq!(
+            elapsed + faltando,
+            60,
+            "o prazo anunciado ao usuario tem de ser o MESMO teto que encerra: {pulso}"
+        );
+    }
 }
 
 /// O guarda de silencio exclui `Phase::Connected` de proposito — conectado, o

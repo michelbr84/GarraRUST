@@ -41,6 +41,9 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 
 use crate::wizard::prompts::Prompter;
 
+/// De quantos em quantos segundos o `connecting` pulsa na tela.
+const CONNECTING_PULSE_SECS: u64 = 5;
+
 const EX_UNAVAILABLE: i32 = 69;
 const EX_SOFTWARE: i32 = 70;
 const EX_CANCELLED: i32 = 1;
@@ -1287,6 +1290,7 @@ struct TerminalUi<'a> {
     style: qr::Style,
     /// Ultimo segundo ja impresso, para o contador nao repetir a mesma linha.
     last_countdown: Option<u64>,
+    last_connecting: Option<u64>,
     sink: Box<dyn Write + Send>,
 }
 
@@ -1296,6 +1300,7 @@ impl<'a> TerminalUi<'a> {
             ctx,
             style: qr::Style::for_terminal(ctx.unicode, ctx.interactive, ctx.columns),
             last_countdown: None,
+            last_connecting: None,
             sink: Box::new(std::io::stdout()),
         }
     }
@@ -1313,6 +1318,7 @@ impl PairUi for TerminalUi<'_> {
 
     fn qr(&mut self, data: &str, attempt: u32, max: u32, previous_expired: bool) {
         self.last_countdown = None;
+        self.last_connecting = None;
         if previous_expired {
             // Separador em vez de redesenho: limpar a tela apagaria as
             // instrucoes que o usuario ainda esta lendo.
@@ -1357,7 +1363,32 @@ impl PairUi for TerminalUi<'_> {
         self.say(&line);
     }
 
+    /// Um pulso a cada [`CONNECTING_PULSE_SECS`], nao a cada segundo.
+    ///
+    /// Segundo a segundo seriam ~120 linhas antes de o teto estourar, o que
+    /// num log (pipe, systemd) e ruido puro. De cinco em cinco a linha se
+    /// move o bastante para provar que o processo esta vivo.
+    fn connecting(&mut self, elapsed_secs: u64, giving_up_in_secs: u64) {
+        if elapsed_secs == 0 || !elapsed_secs.is_multiple_of(CONNECTING_PULSE_SECS) {
+            return;
+        }
+        if self.last_connecting == Some(elapsed_secs) {
+            return;
+        }
+        self.last_connecting = Some(elapsed_secs);
+        let line = match self.ctx.lang {
+            Lang::Pt => format!(
+                "   ainda tentando… ({elapsed_secs}s; desisto em {giving_up_in_secs}s e explico o que checar)"
+            ),
+            Lang::En => format!(
+                "   still trying… ({elapsed_secs}s; giving up in {giving_up_in_secs}s with what to check)"
+            ),
+        };
+        self.say(&line);
+    }
+
     fn authenticated(&mut self) {
+        self.last_connecting = None;
         self.say("");
         self.say(t(
             self.ctx.lang,
