@@ -1054,6 +1054,173 @@ aos 25 s, e o timeout externo nao e o mecanismo",
     assert!(!store.exists(), "nada pode ter sido gravado");
 }
 
+/// **O quarto caminho da mesma classe, e o que muda a SEMANTICA do relogio.**
+///
+/// A rodada 6 trocou o booleano pegajoso por um relogio de progresso — melhor
+/// instrumento, semantica errada: ele renovava por **residencia** numa fase de
+/// progresso. E residir e precisamente o que permite estacionar. O caminho so
+/// andou uma fase adiante, de [`Phase::QrRequired`] para
+/// [`Phase::Authenticated`].
+///
+/// `Authenticated` nao tem teto nenhum:
+/// - `Machine::tick` so expira as duas fases de QR — dali ela nao sai;
+/// - `(Authenticated, Disconnected)` **nao esta na tabela** e cai no no-op, de
+///   modo que a fase nao se move nem com a ponte gritando queda a cada
+///   segundo;
+/// - `final_flush_secs` so vale em `Connected`.
+///
+/// O gatilho e o caminho REAL do WhatsApp: escaneia, `authenticated`,
+/// `disconnected` codigo 515 `restart_required` (o que a propria ponte faz
+/// logo apos o pareamento), e a reconexao nunca fecha — portal cativo que caiu
+/// depois do scan, 443 intermitente.
+///
+/// O conserto e renovar por **TRANSICAO** em vez de residencia: a fase muda
+/// uma vez, renova uma vez, e dali tem `no_progress_after_secs` inteiros para
+/// virar `Connected`. Tirar `Authenticated` de `is_progress` fecharia ESTE
+/// caso e deixaria o desenho por residencia de pe — ou seja, deixaria o
+/// quinto caminho para a rodada seguinte. Ver
+/// `every_phase_is_bounded_by_transition_tick_or_loop_exit`, que e a prova de
+/// que nao ha quinta fase.
+#[tokio::test]
+async fn authenticated_without_connected_is_not_an_endless_terminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    let mut ui = RecordingUi::default();
+
+    let outer = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pair_with(
+            &FixtureLauncher::new("auth-then-retry-forever", dir.path().to_path_buf()),
+            &store,
+            &key,
+            &mut ui,
+            never_cancelled(),
+            PairOptions {
+                // Curtos de proposito, e mesmo assim o de silencio nao
+                // dispara: a ponte fala a cada segundo.
+                stall_after_secs: 4,
+                no_progress_after_secs: 5,
+                final_flush_secs: 3,
+            },
+        ),
+    )
+    .await
+    .expect(
+        "o driver precisa desistir SOZINHO — antes da correcao ele ficava em \
+Phase::Authenticated para sempre, e o timeout externo nao e o mecanismo",
+    );
+
+    let err = outer.expect_err("autenticou e nunca conectou");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sem chegar a um QR nem conectar"),
+        "a mensagem precisa dizer que o pareamento nao andou: {msg}"
+    );
+    assert!(
+        msg.contains("garra whatsapp"),
+        "e precisa dizer o que fazer: {msg}"
+    );
+
+    // O `authenticated` CHEGOU: e isso que distingue este cenario do
+    // `qr-then-retry-forever`, e e exatamente a fase que a residencia deixava
+    // sem teto.
+    assert!(
+        ui.lines.iter().any(|l| l.starts_with("authenticated")),
+        "este cenario existe para autenticar antes de a reconexao falhar: {:?}",
+        ui.lines
+    );
+    // E a tela andou enquanto isso — `avanca ou termina` exige as duas
+    // metades, e aqui quem faltava era a segunda.
+    assert!(
+        ui.lines
+            .iter()
+            .filter(|l| l.starts_with("status:") && l.contains("nova tentativa em"))
+            .count()
+            >= 2,
+        "cada tentativa fracassada tem de aparecer: {:?}",
+        ui.lines
+    );
+
+    assert!(!store.exists(), "nada pode ter sido gravado");
+}
+
+/// **O quinto caminho: o ciclo. Ele so cai com a monotonia.**
+///
+/// Fechar [`Phase::Authenticated`] renovando por TRANSICAO em vez de
+/// residencia resolve a fase parada — e nao resolve a fase que volta. Uma
+/// ponte que conecta de verdade, cai, e conecta outra vez, sem parar, entra
+/// em `Connected` a cada volta; se cada entrada renovar o relogio, o `pair`
+/// nunca termina, exatamente como nos quatro caminhos anteriores.
+///
+/// **Foi medido, e nao deduzido.** Com a renovacao por transicao e
+/// `stall=4`, `no_progress=5`, `final_flush=3`, este mesmo cenario seguia
+/// rodando aos 25 s, com a tela alternando "sincronizando a sessao…" e "a
+/// rede caiu — nova tentativa em 1s" indefinidamente. Nenhum dos tres
+/// relogios do driver dispara: o de silencio porque a ponte fala, o de flush
+/// final porque ha evento dentro do prazo, e o de progresso porque o ciclo o
+/// realimenta.
+///
+/// O conserto e exigir **RECORDE**, e nao mudanca: `progress_rank` e
+/// monotono, entao ha no maximo `MAX_QR_ATTEMPTS + 2` renovacoes em toda a
+/// vida de um `pair`. Nenhum ciclo de fases escapa, porque nenhum ciclo pode
+/// bater recorde para sempre. A prova por enumeracao esta em
+/// `every_phase_is_bounded_by_the_progress_ratchet`.
+#[tokio::test]
+async fn a_bridge_that_connects_and_drops_in_a_loop_is_not_an_endless_terminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    let mut ui = RecordingUi::default();
+
+    let outer = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pair_with(
+            &FixtureLauncher::new("connect-flap-forever", dir.path().to_path_buf()),
+            &store,
+            &key,
+            &mut ui,
+            never_cancelled(),
+            PairOptions {
+                stall_after_secs: 4,
+                no_progress_after_secs: 5,
+                final_flush_secs: 3,
+            },
+        ),
+    )
+    .await
+    .expect(
+        "o driver precisa desistir SOZINHO — com o relogio renovado por transicao \
+ele seguia rodando aos 25 s, e o timeout externo nao e o mecanismo",
+    );
+
+    let err = outer.expect_err("conectou e caiu em ciclo, sem nunca concluir");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sem chegar a um QR nem conectar"),
+        "a mensagem precisa dizer que o pareamento nao andou: {msg}"
+    );
+
+    // O ciclo ACONTECEU: sem estas duas linhas o cenario poderia ter morrido
+    // cedo por outro motivo e o teste ficaria verde sem exercitar nada.
+    assert!(
+        ui.lines
+            .iter()
+            .filter(|l| l.contains("sincronizando a sessao"))
+            .count()
+            >= 2,
+        "este cenario existe para CONECTAR mais de uma vez: {:?}",
+        ui.lines
+    );
+    assert!(
+        ui.lines
+            .iter()
+            .filter(|l| l.starts_with("status:") && l.contains("nova tentativa em"))
+            .count()
+            >= 2,
+        "e para cair mais de uma vez: {:?}",
+        ui.lines
+    );
+}
+
 /// O prazo de "nunca progrediu" **nao** pode cortar um pareamento que
 /// progrediu e depois ficou esperando a leitura do QR.
 ///
@@ -1176,6 +1343,7 @@ async fn a_serve_bridge_that_goes_mute_before_connecting_is_dropped_and_retried(
                 },
                 ServeOptions {
                     stall_after_secs: 2,
+                    ..ServeOptions::default()
                 },
             )
             .await
@@ -1200,6 +1368,93 @@ laco de eventos esse numero e ZERO, porque a primeira execucao nunca termina"
     assert!(
         sink.connections.lock().expect("lock").iter().all(|c| !*c),
         "o cenario `hang` nunca conecta"
+    );
+}
+
+/// **O gemeo do B1 do lado do daemon: falar nao e conectar.**
+///
+/// O relogio que o `serve` ganhou na rodada 6 e de SILENCIO — conta desde o
+/// ultimo evento. Uma ponte que reconecta sozinha emite `disconnected` +
+/// `status` a cada rodada de backoff, e cada fracasso o realimenta: ele nunca
+/// dispara, e o backoff do supervisor **nunca chega a rodar**. O canal fica
+/// preso numa unica execucao que tenta para sempre, sem ninguem olhando um
+/// terminal.
+///
+/// A decisao `if !saw_connected` continua certa e nao e o problema: depois do
+/// `connected` o silencio e o normal de uma conta sem mensagens. O que
+/// faltava era o segundo relogio, o que nao zera com evento nenhum.
+///
+/// O cenario `retry-forever` e exatamente isso em modo `serve`: fala a cada
+/// segundo e nunca conecta.
+#[tokio::test]
+async fn a_serve_bridge_that_talks_without_ever_connecting_falls_into_the_backoff() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    pair(
+        &FixtureLauncher::new("pair-ok", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect("pareamento");
+
+    let sink = Arc::new(CollectingSink::default());
+    let (tx, rx) = watch::channel(false);
+    let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher::new(
+        "retry-forever",
+        dir.path().to_path_buf(),
+    ));
+
+    let jitter_marks: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
+    let (_out_tx, out_rx) = tokio::sync::mpsc::channel(1);
+    let task = {
+        let sink = Arc::clone(&sink);
+        let store = store.clone();
+        let jitter_marks = Arc::clone(&jitter_marks);
+        tokio::spawn(async move {
+            serve_with(
+                launcher,
+                store,
+                key,
+                sink,
+                out_rx,
+                rx,
+                move || {
+                    if let Ok(mut marks) = jitter_marks.lock() {
+                        marks.push(std::time::Instant::now());
+                    }
+                    0.0
+                },
+                ServeOptions {
+                    // O de SILENCIO e curto de proposito, e mesmo assim nao
+                    // dispara: a ponte fala a cada segundo. Quem tem de
+                    // cortar e o outro.
+                    stall_after_secs: 10,
+                    no_progress_after_secs: 3,
+                },
+            )
+            .await
+        })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_millis(9_000)).await;
+    tx.send(true).expect("cancelar");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("o `serve` tem de sair no cancelamento, e nao ficar preso no laco");
+
+    let marks = jitter_marks.lock().expect("lock").len();
+    assert!(
+        marks >= 2,
+        "uma ponte que fala sem nunca conectar tem de cair no backoff; o driver \
+reconectou {marks} vez(es) em 9 s — sem o teto de progresso esse numero e \
+ZERO, porque o relogio de silencio e realimentado por cada `disconnected`"
+    );
+    assert!(
+        sink.connections.lock().expect("lock").iter().all(|c| !*c),
+        "o cenario `retry-forever` nunca conecta"
     );
 }
 

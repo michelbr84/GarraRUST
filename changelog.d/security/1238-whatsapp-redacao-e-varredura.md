@@ -40,6 +40,21 @@
   coluna 0. Agora o cortador trata o resto da linha do atributo, e a guarda
   alcanca item de producao em qualquer profundidade — por indentacao, e nao
   contando chaves, para nao errar junto com o que ela vigia.
+- **Um comentario no FIM da linha do `#[cfg(test)]` ainda cegava a varredura
+  (#1238).** A correcao anterior tratava comentario no COMECO da linha e nao
+  no fim: em `#[cfg(test)] use std::fmt; // so no teste` o texto termina em
+  `teste` e nao em `;`, entao o item ficava pendente, a linha seguinte era
+  julgada como se fosse ele, e a primeira que abrisse chave ligava o modo
+  "apaga" sobre producao. Medido com as funcoes reais, as duas varreduras
+  voltavam zero achado sobre um `expose()` plantado. A guarda que deveria ser
+  a segunda opiniao ficava MUDA quando o item apagado comecava com
+  `pub(crate)`, comum nesta crate: a lista de prefixos tinha `pub ` e nao
+  `pub(`. Agora o comentario de fim de linha e cortado respeitando literais —
+  contar aspas, a solucao obvia, quebra tanto `"http://x"` quanto
+  `const S: &str = "a // b";` — e a lista de prefixos ganhou `pub(`, `mod`,
+  `use` e `unsafe`, de modo que qualquer falha residual apareca alto. A guarda
+  passou a examinar 292 itens de producao contra 257. O buraco era latente: a
+  arvore nao tinha nenhum caso.
 - **A regra invertida do `expose()` deixou de poder sumir em silencio
   (#1238).** Numa arvore sem violacao, "zero achados" nao distingue regra viva
   de regra ausente, e arrancar a allowlist inteira deixava o teste verde. O

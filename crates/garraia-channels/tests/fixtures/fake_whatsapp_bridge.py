@@ -88,10 +88,22 @@ SCENARIOS = (
     #                 a maquina estaciona em `QrRequired` (onde `tick` nao tem
     #                 mais nada a expirar) e o de "nunca progrediu" porque
     #                 aquele unico QR o desarmava para sempre.
+    # auth-then-retry-forever
+    #                 emite `qr`, depois `authenticated`, e dali em diante SO
+    #                 `disconnected(515, restart_required, will_retry)`, uma
+    #                 vez por segundo — nunca `connected`. E o caminho REAL do
+    #                 WhatsApp: o 515 logo apos o pareamento e o que a propria
+    #                 ponte faz, e aqui a reconexao nunca fecha (portal cativo
+    #                 que caiu depois do scan, 443 intermitente). `Phase::
+    #                 Authenticated` nao expira por `tick` e nao sai com
+    #                 `Disconnected`, entao um relogio de progresso renovado
+    #                 por RESIDENCIA nunca vence.
     "connect-then-hang",
     "silent-start",
     "retry-forever",
     "qr-then-retry-forever",
+    "auth-then-retry-forever",
+    "connect-flap-forever",
     "crash-with-secret",
 )
 
@@ -307,6 +319,32 @@ class Bridge:
             deadline = time.monotonic() + self.args.hang_secs
             while time.monotonic() < deadline:
                 self.disconnected(428, "network", True, 1000)
+                time.sleep(1)
+            return EXIT_OK
+
+        if scenario == "connect-flap-forever":
+            # Conecta DE VERDADE e cai, sem parar, sem nunca fechar o stdout.
+            self.qr()
+            emit({"type": "authenticated"})
+            self.status("authenticated")
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.connected()
+                time.sleep(0.5)
+                self.disconnected(428, "network", True, 500)
+                time.sleep(0.5)
+            return EXIT_OK
+
+        if scenario == "auth-then-retry-forever":
+            # O usuario escaneou: `authenticated` chega e a fase ANDA. O que
+            # nao chega nunca e o `connected`. O 515 e o comportamento real
+            # logo apos o pareamento.
+            self.qr()
+            emit({"type": "authenticated"})
+            self.status("authenticated")
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.disconnected(515, "restart_required", True, 1000)
                 time.sleep(1)
             return EXIT_OK
 

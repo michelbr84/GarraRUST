@@ -79,26 +79,31 @@ pub const DEFAULT_FINAL_FLUSH_SECS: u64 = 60;
 /// o relogio dele.
 ///
 /// Este prazo e o outro: ele mede **tempo sem progresso** e **nao zera com
-/// evento nenhum**. Quem o renova e a FASE do pareamento — ha QR na tela, ou
-/// o servidor aceitou a sessao (ver [`is_progress`]) —, e nao a chegada de um
-/// evento. Enquanto o pareamento nao andar, os dois relogios correm juntos e
-/// este e o que cobre o caso em que o outro e realimentado.
+/// evento nenhum**. Quem o renova e o pareamento chegar mais longe do que ja
+/// esteve (ver [`progress_rank`]), e nao a chegada de um evento. Enquanto o
+/// pareamento nao andar, os dois relogios correm juntos e este e o que cobre
+/// o caso em que o outro e realimentado.
 ///
-/// # Por que um relogio, e nao "ja progrediu alguma vez"
+/// # Tres leituras de "progresso", e por que so a terceira fecha
 ///
 /// A primeira versao deste teto era um booleano pegajoso: o primeiro QR o
-/// ligava e nada o desligava. Isso deixava um terceiro caminho de travamento
-/// aberto — a rede caindo logo DEPOIS de o QR aparecer. Ali os tres tetos do
-/// driver ficam desarmados ao mesmo tempo: o de silencio porque cada
-/// `disconnected` o realimenta, o de QR porque a maquina estaciona em
-/// `Phase::QrRequired` (onde [`super::state::Machine::tick`] nao tem mais
-/// nada a expirar, ja que o contador de tentativas so anda com um evento `qr`
-/// novo) e este, pelo booleano. Com os prazos de producao o comando nao
-/// terminava nunca. O cenario `qr-then-retry-forever` da fixture e ele.
+/// ligava e nada o desligava, e a rede caindo logo DEPOIS do QR rodava sem
+/// fim (cenario `qr-then-retry-forever`). A segunda o media pela fase atual,
+/// e entao residir numa fase de progresso passou a ser o estacionamento:
+/// [`super::state::Phase::Authenticated`] nao expira por
+/// [`super::state::Machine::tick`] nem sai com `Disconnected`, e o 515
+/// `restart_required` logo apos o scan prendia o comando para sempre
+/// (`auth-then-retry-forever`). A terceira — a de agora — exige **recorde**,
+/// e com isso o numero de renovacoes vira finito: sem monotonia, `Connected`
+/// caindo para `Reconnecting` e voltando renovava a cada volta
+/// (`connect-flap-forever`).
+///
+/// O teto duro que sai dai: um `pair` termina em, no pior caso,
+/// `(MAX_QR_ATTEMPTS + 2) * DEFAULT_NO_PROGRESS_AFTER_SECS`.
 ///
 /// 120 s e folgado: quatro backoffs no teto da ponte cabem dentro. E um
-/// usuario lento para pegar o celular nao e cortado, porque o QR na tela
-/// renova o relogio a cada tick — quem limita esse caso e o teto de
+/// usuario lento para pegar o celular nao e cortado, porque cada QR novo e
+/// recorde e o QR expira em 20 s — quem limita esse caso e o teto de
 /// [`super::state::MAX_QR_ATTEMPTS`] QRs, que e o teto certo para ele.
 pub const DEFAULT_NO_PROGRESS_AFTER_SECS: u64 = 120;
 
@@ -140,12 +145,35 @@ pub struct ServeOptions {
     /// canal saudavel a cada madrugada. Antes do `connected`, silencio e
     /// travamento — e e o caso que nao tinha relogio nenhum.
     pub stall_after_secs: u64,
+
+    /// Tempo maximo que uma execucao da ponte pode passar **falando sem
+    /// nunca conectar**, em segundos.
+    ///
+    /// # Por que o prazo de silencio nao cobre isto
+    ///
+    /// Ele e o gemeo, do lado do daemon, do teto de progresso do [`pair`]:
+    /// `stall_after_secs` conta desde o ULTIMO EVENTO, e uma ponte que
+    /// reconecta sozinha emite `disconnected` + `status` a cada rodada de
+    /// backoff. Cada fracasso realimenta o relogio de silencio, entao ele
+    /// nunca dispara — e o backoff do supervisor, logo acima de
+    /// [`serve_once`], **nunca chega a rodar**. O canal fica preso numa
+    /// execucao que tenta para sempre, sem ninguem olhando um terminal.
+    ///
+    /// Aqui o "progresso" nao precisa da `Machine` (o `serve` nao e dirigido
+    /// por ela): so `connected` conta, e o proprio guarda `if !saw_connected`
+    /// do ticker congela este relogio no instante em que a conexao fecha.
+    /// Depois disso nada mais o arma.
+    ///
+    /// Estourar o prazo **nao e erro**: e uma [`ServeExit::Dropped`], ou
+    /// seja, exatamente o caminho que entrega o caso ao backoff.
+    pub no_progress_after_secs: u64,
 }
 
 impl Default for ServeOptions {
     fn default() -> Self {
         Self {
             stall_after_secs: DEFAULT_STALL_AFTER_SECS,
+            no_progress_after_secs: DEFAULT_NO_PROGRESS_AFTER_SECS,
         }
     }
 }
@@ -373,13 +401,17 @@ pub async fn pair_with(
     // Segundo do ultimo evento vindo do bridge. Qualquer evento conta como
     // sinal de vida, inclusive `log`.
     let mut last_event_secs: u64 = 0;
-    // Segundo em que o pareamento esteve pela ultima vez numa fase que
-    // ANDA. E um relogio, e nao um booleano: "ja progrediu uma vez" deixava
-    // um unico QR desarmar o teto para sempre, e entao a rede caindo logo
-    // depois do QR rodava sem fim. Quem o renova e a FASE (ver
-    // [`is_progress`]), nao o evento — evento de fracasso e exatamente o que
-    // realimenta o outro relogio, o de silencio.
+    // Segundo do ultimo AVANCO. Um relogio, e nao um booleano: "ja progrediu
+    // uma vez" deixava um unico QR desarmar o teto para sempre. E renovado
+    // por RECORDE de fase — nao por residencia, nao por transicao. Ver
+    // [`progress_rank`]: e a diferenca entre fechar uma instancia e fechar a
+    // classe.
     let mut last_progress_secs: u64 = 0;
+    // O mais longe que o pareamento JA chegou (ver [`progress_rank`]). So um
+    // recorde NOVO renova o relogio, e e isso que torna o numero de
+    // renovacoes finito — sem essa monotonia, `Connected` e `Reconnecting`
+    // alternando renovavam para sempre.
+    let mut best_progress: u32 = 0;
 
     loop {
         tokio::select! {
@@ -400,12 +432,15 @@ pub async fn pair_with(
             _ = ticker.tick() => {
                 now += 1;
                 let silent_for = now.saturating_sub(last_event_secs);
-                // Antes do teste, e medido pela fase: enquanto houver QR na
-                // tela o relogio anda junto com o `now` e o prazo nunca
-                // vence. `QrRequired` (o QR expirou e o proximo nao veio) e
-                // `Reconnecting` NAO renovam — sao justamente as fases em que
-                // o pareamento parou.
-                if is_progress(machine.phase()) {
+                // Antes do teste, e por RECORDE: o relogio so volta a zero
+                // quando o pareamento chega mais longe do que ja esteve. Aqui
+                // o que se colhe sao as mudancas que `machine.tick` fez na
+                // volta anterior do laco (expiracao de QR); nenhuma delas e
+                // progresso, e e por isso que um QR expirado nao renova nada.
+                if let Some(rank) = progress_rank(machine.phase())
+                    && rank > best_progress
+                {
+                    best_progress = rank;
                     last_progress_secs = now;
                 }
                 if now.saturating_sub(last_progress_secs) >= options.no_progress_after_secs {
@@ -533,10 +568,14 @@ pub async fn pair_with(
                 let effects = apply(&mut machine, &event, now);
                 // Depois de aplicar, e nao antes: e a maquina que sabe se o
                 // evento moveu o pareamento para frente. Aqui e no braco do
-                // ticker pela mesma regra — o relogio segue a FASE — para que
-                // um QR de vida curta, que nasca e expire entre dois ticks,
-                // ainda conte como progresso.
-                if is_progress(machine.phase()) {
+                // ticker pela mesma regra — o relogio segue o RECORDE de
+                // fase — para que um QR de vida curta, que nasca e expire
+                // entre dois ticks, ainda conte como progresso: cada QR novo
+                // e `QrGenerated { attempt: n+1, .. }`, e `n+1` e recorde.
+                if let Some(rank) = progress_rank(machine.phase())
+                    && rank > best_progress
+                {
+                    best_progress = rank;
                     last_progress_secs = now;
                 }
                 for effect in effects {
@@ -753,7 +792,14 @@ where
 }
 
 /// Prazo maximo do `shutdown` de cortesia. Ver [`shutdown_politely`].
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+///
+/// Meio segundo, e nao dois. O que se espera aqui e um `write_all` + `flush`
+/// de UMA linha curta num pipe saudavel — microssegundos. Os 2 s originais
+/// cobriam o mesmo caso e punham dois segundos de latencia no `Ctrl+C`, que e
+/// justamente o caminho que esta rodada existe para nao deixar preso. Quem
+/// nao respondeu em 500 ms nao vai responder: o `conn.kill()` vem logo
+/// depois, em todos os chamadores.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 /// Pede saida limpa ao bridge **sob prazo**, e desiste sem drama.
 ///
@@ -790,28 +836,77 @@ Rode `node --version` a mao para ver se ele responde, e depois \
     ))
 }
 
-/// O pareamento esta ANDANDO? E o que renova o relogio de
-/// [`DEFAULT_NO_PROGRESS_AFTER_SECS`].
+/// Quao longe o pareamento chegou nesta fase, ou `None` quando a fase nao e
+/// avanco nenhum. E o que renova o relogio de
+/// [`DEFAULT_NO_PROGRESS_AFTER_SECS`] — mas so quando bate o RECORDE.
 ///
-/// "Progredir" e uma coisa so: ou ha um QR na tela para o usuario ler, ou o
-/// servidor aceitou a sessao. Tudo o mais — `status`, `log`, `disconnected`
-/// com retry — e ruido que a ponte produz enquanto nao chega a lugar nenhum,
-/// e e exatamente esse ruido que realimenta o outro relogio.
+/// # Chegar mais longe, e nao chegar de novo, e muito menos ficar
 ///
-/// Repare no que **nao** esta na lista, e por que: [`Phase::QrRequired`] e a
-/// fase em que o QR anterior expirou e o proximo ainda nao veio. Ela e a fase
-/// de um pareamento PARADO, ainda que a ponte esteja falando sem parar — e e
-/// nela que o cenario `qr-then-retry-forever` estaciona para sempre.
-/// [`Phase::Reconnecting`] tem a mesma forma. Incluir qualquer uma das duas
-/// aqui desarmaria o teto do mesmo jeito que o booleano pegajoso desarmava.
-fn is_progress(phase: Phase) -> bool {
-    matches!(
-        phase,
-        Phase::QrGenerated { .. }
-            | Phase::WaitingScan { .. }
-            | Phase::Authenticated
-            | Phase::Connected
-    )
+/// A regra do chamador e uma so: renove o relogio quando
+/// `progress_rank(fase) > melhor_rank_ja_visto`. Isso e mais forte do que as
+/// duas leituras que vieram antes, e cada uma delas custou uma rodada:
+///
+/// - **por residencia** ("a fase atual e de progresso"): toda fase de
+///   progresso vira um estacionamento, porque o relogio e renovado a cada
+///   tick enquanto se permanece nela. Bastou uma fase sem teto proprio —
+///   [`Phase::Authenticated`], que `Machine::tick` nao expira e de onde
+///   `Event::Disconnected` nao sai, porque o par nao esta na tabela de
+///   `Machine::on` — para o comando rodar para sempre: escaneou, veio o 515
+///   `restart_required` (o que a ponte real faz logo apos o pareamento) e a
+///   reconexao nunca fechou.
+/// - **por transicao** ("a fase MUDOU para uma de progresso"): fecha a fase
+///   parada, mas nao o CICLO. `Connected` caindo para `Reconnecting` e
+///   voltando renova a cada volta, e o pareamento nunca termina. Medido: com
+///   `stall=4`, `no_progress=5`, `final_flush=3` e uma ponte que conecta e
+///   cai a cada 0,5 s, o driver seguia rodando aos 25 s.
+/// - **por recorde** (esta): o rank e monotono, entao o numero de renovacoes
+///   e finito — no maximo [`super::state::MAX_QR_ATTEMPTS`] QRs, mais
+///   `Authenticated`, mais `Connected`. Dai sai o teto duro: um `pair`
+///   termina em, no pior caso, `(MAX_QR_ATTEMPTS + 2) *
+///   no_progress_after_secs`. **Nao existe fase, nem ciclo de fases, que
+///   escape** — e e isso que
+///   `every_phase_is_bounded_by_the_progress_ratchet` fixa, num `match`
+///   exaustivo sobre [`Phase`] que nao compila se alguem acrescentar uma
+///   variante sem classificar o teto dela.
+///
+/// # O que nao corta nada legitimo
+///
+/// Cada QR novo e `QrGenerated { attempt: n+1, .. }`, e `n+1` e recorde: o
+/// intervalo entre dois QRs e o proprio prazo de expiracao
+/// ([`super::protocol::DEFAULT_QR_EXPIRY_SECS`], 20 s), muito abaixo dos
+/// 120 s. O usuario lento para pegar o celular segue limitado por
+/// [`super::state::MAX_QR_ATTEMPTS`], que e o teto certo para ele — e nao
+/// por este relogio. `QrGenerated` e `WaitingScan` compartilham o rank de
+/// proposito: sao o MESMO QR, e a leitura do usuario nao recomeca o prazo.
+///
+/// # As fases sem rank
+///
+/// [`Phase::QrRequired`] e a fase em que o QR anterior expirou e o proximo
+/// ainda nao veio: um pareamento PARADO, ainda que a ponte fale sem parar.
+/// [`Phase::Reconnecting`] tem a mesma forma. As terminais
+/// ([`Phase::SessionDead`], [`Phase::Failed`], [`Phase::Stopped`]) nao
+/// precisam de rank porque o driver ja saiu do laco quando chega nelas.
+fn progress_rank(phase: Phase) -> Option<u32> {
+    match phase {
+        // O QR na tela: o rank e a propria tentativa, e ela so cresce
+        // (`Machine::enter_qr` nunca zera `qr_attempts`).
+        Phase::QrGenerated { attempt, .. } | Phase::WaitingScan { attempt, .. } => Some(attempt),
+        // Acima de qualquer QR. Se `attempt` algum dia passasse de
+        // `MAX_QR_ATTEMPTS` — hoje impossivel, `enter_qr` falha antes —, o
+        // efeito seria `Authenticated` deixar de renovar, ou seja, um prazo
+        // MAIS curto. O erro cai do lado seguro.
+        Phase::Authenticated => Some(super::state::MAX_QR_ATTEMPTS.saturating_add(1)),
+        Phase::Connected => Some(super::state::MAX_QR_ATTEMPTS.saturating_add(2)),
+        Phase::NotConnected
+        | Phase::SessionFound
+        | Phase::Validating
+        | Phase::ValidationFailed
+        | Phase::QrRequired
+        | Phase::Reconnecting { .. }
+        | Phase::SessionDead
+        | Phase::Failed(_)
+        | Phase::Stopped => None,
+    }
 }
 
 /// A linha que o usuario le quando a ponte cai e vai tentar de novo.
@@ -1185,12 +1280,34 @@ async fn serve_once(
             // fica quieta por horas —, e um prazo aqui derrubaria o canal
             // saudavel toda madrugada. Antes do `connected`, silencio e
             // travamento.
+            //
+            // O que fica sem dono e "conectou e emudeceu": o `pair` tem o
+            // `final_flush_secs` para isso, o `serve` nao tem equivalente, e
+            // um relogio de silencio aqui seria cura pior que a doenca. O
+            // conserto e prova de vida NO PROTOCOLO (ping/pong ou `presence`
+            // periodico), que mexe nos dois lados e esta fora do escopo desta
+            // PR — rastreado em
+            // https://github.com/michelbr84/GarraRUST/issues/1275.
             _ = ticker.tick(), if !saw_connected => {
                 now += 1;
                 if now.saturating_sub(last_event_secs) >= options.stall_after_secs {
                     tracing::warn!(
                         secs = options.stall_after_secs,
                         "o bridge subiu e emudeceu sem conectar; reconectando"
+                    );
+                    shutdown_politely(&mut conn).await;
+                    conn.kill().await;
+                    return Ok(ServeExit::Dropped { was_connected: false });
+                }
+                // O outro relogio, e nao o mesmo: este conta desde o INICIO
+                // desta execucao e nao zera com evento nenhum. Como o braco
+                // so roda enquanto `!saw_connected`, `now` e literalmente
+                // "segundos falando sem conectar". Ver
+                // [`ServeOptions::no_progress_after_secs`].
+                if now >= options.no_progress_after_secs {
+                    tracing::warn!(
+                        secs = options.no_progress_after_secs,
+                        "o bridge falou o tempo todo e nunca conectou; reconectando"
                     );
                     shutdown_politely(&mut conn).await;
                     conn.kill().await;
@@ -1373,5 +1490,149 @@ mod tests {
 
         // E o contador nunca estoura: `serve` roda por meses.
         assert_eq!(next_attempt(u32::MAX, false), u32::MAX);
+    }
+
+    /// Como cada fase de [`Phase`] deixa de ser um estacionamento.
+    ///
+    /// E a classificacao exigida pela revisao R4: cada variante ou (a) so
+    /// pode ser alcancada um numero finito de vezes e portanto renova o
+    /// relogio um numero finito de vezes, ou (b) expira por
+    /// [`super::super::state::Machine::tick`], ou (c) ja esta fora do laco.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Teto {
+        /// (a) Renova o relogio de progresso, mas so **uma vez por recorde**,
+        /// e ha no maximo `MAX_QR_ATTEMPTS + 2` recordes.
+        RecordeFinito,
+        /// (a) Nunca renova o relogio de progresso: enquanto se esta aqui, o
+        /// prazo corre ate vencer.
+        NaoRenova,
+        /// (c) O driver ja saiu do laco quando a maquina chega aqui.
+        ForaDoLaco,
+    }
+
+    /// **A prova de que nao existe uma quinta fase.**
+    ///
+    /// As quatro rodadas anteriores fecharam INSTANCIAS: o handshake sem
+    /// prazo, o retry sem voz nem teto, o QR unico que desarmava o booleano,
+    /// e o `Authenticated` sem saida. Cada conserto empurrava o mesmo sintoma
+    /// — *nem avanca nem termina* — uma fase adiante. Este teste fecha a
+    /// CLASSE.
+    ///
+    /// Ele e um `match` exaustivo sobre [`Phase`] de proposito, e nao uma
+    /// lista em comentario: acrescentar uma variante sem dizer qual e o teto
+    /// dela **nao compila**. A tabela tambem e cruzada com
+    /// [`progress_rank`], para que classificar errado falhe alto.
+    ///
+    /// O teto duro que a tabela sustenta: como so `RecordeFinito` renova, e
+    /// como o rank e estritamente crescente, um `pair` nao pode durar mais do
+    /// que `(MAX_QR_ATTEMPTS + 2) * no_progress_after_secs` sem terminar.
+    #[test]
+    fn every_phase_is_bounded_by_the_progress_ratchet() {
+        use super::super::state::{Failure, MAX_QR_ATTEMPTS, Phase};
+
+        fn teto(phase: Phase) -> Teto {
+            match phase {
+                // (a) O rank e a tentativa do QR, e `enter_qr` para em
+                // `MAX_QR_ATTEMPTS`: no maximo 5 recordes. Alem disso (b),
+                // `Machine::tick` expira as duas em `expires_at_secs`.
+                Phase::QrGenerated { .. } | Phase::WaitingScan { .. } => Teto::RecordeFinito,
+                // (a) Um recorde cada, e nunca mais. Foi a residencia em
+                // `Authenticated` que segurou a rodada 6, e o ciclo
+                // `Connected` <-> `Reconnecting` que a transicao nao pegou.
+                Phase::Authenticated | Phase::Connected => Teto::RecordeFinito,
+                // (a) Sem rank: o prazo corre ate vencer. `QrRequired` e o QR
+                // que expirou e nao voltou; `Reconnecting` e a queda que nao
+                // fecha; as tres primeiras sao o handshake, ja coberto
+                // tambem pelo prazo de silencio.
+                Phase::NotConnected
+                | Phase::SessionFound
+                | Phase::Validating
+                | Phase::ValidationFailed
+                | Phase::QrRequired
+                | Phase::Reconnecting { .. } => Teto::NaoRenova,
+                // (c) O driver retorna antes de voltar ao `select!`:
+                // `Effect::PurgeSession`/`Effect::Fail` para as duas
+                // primeiras, o braco de cancelamento para `Stopped`.
+                Phase::SessionDead | Phase::Failed(_) | Phase::Stopped => Teto::ForaDoLaco,
+            }
+        }
+
+        // Uma instancia de CADA variante. O `match` acima e que garante a
+        // exaustao; esta lista existe para cruzar a classificacao com
+        // `progress_rank` de verdade, e nao no papel.
+        let todas = [
+            Phase::NotConnected,
+            Phase::SessionFound,
+            Phase::Validating,
+            Phase::ValidationFailed,
+            Phase::QrRequired,
+            Phase::QrGenerated {
+                attempt: 1,
+                expires_at_secs: 20,
+            },
+            Phase::WaitingScan {
+                attempt: 1,
+                expires_at_secs: 20,
+            },
+            Phase::Authenticated,
+            Phase::Connected,
+            Phase::Reconnecting {
+                attempt: 1,
+                retry_at_secs: 1,
+            },
+            Phase::SessionDead,
+            Phase::Failed(Failure::QrExpired),
+            Phase::Stopped,
+        ];
+
+        for phase in todas {
+            let tem_rank = progress_rank(phase).is_some();
+            let esperado = teto(phase) == Teto::RecordeFinito;
+            assert_eq!(
+                tem_rank, esperado,
+                "{phase:?}: a tabela de tetos e `progress_rank` discordam. \
+Uma fase so pode renovar o relogio de progresso se o teto dela for \
+`RecordeFinito`; qualquer outra combinacao e um estacionamento novo."
+            );
+        }
+
+        // O recorde e limitado, e e dai que sai o teto duro do comando. Sem
+        // esta asserção `RecordeFinito` seria so um nome.
+        let maior = todas
+            .iter()
+            .filter_map(|p| progress_rank(*p))
+            .max()
+            .expect("ha fases de progresso");
+        assert!(
+            maior <= MAX_QR_ATTEMPTS + 2,
+            "o rank maximo e {maior}, acima do teto de recordes que o prazo duro \
+do `pair` supoe"
+        );
+
+        // E os ranks respeitam a ordem do pareamento: QR < autenticado <
+        // conectado. Trocar a ordem deixaria `Connected` sem renovar depois
+        // de `Authenticated`, encurtando o prazo em silencio.
+        let qr = progress_rank(Phase::QrGenerated {
+            attempt: MAX_QR_ATTEMPTS,
+            expires_at_secs: 0,
+        })
+        .expect("QR tem rank");
+        let auth = progress_rank(Phase::Authenticated).expect("autenticado tem rank");
+        let conn = progress_rank(Phase::Connected).expect("conectado tem rank");
+        assert!(qr < auth && auth < conn, "{qr} < {auth} < {conn}");
+
+        // O mesmo QR nao pode renovar duas vezes: `QrGenerated` e
+        // `WaitingScan` da MESMA tentativa compartilham o rank de proposito.
+        assert_eq!(
+            progress_rank(Phase::QrGenerated {
+                attempt: 2,
+                expires_at_secs: 0
+            }),
+            progress_rank(Phase::WaitingScan {
+                attempt: 2,
+                expires_at_secs: 0
+            }),
+            "ler o QR nao e progredir alem de te-lo na tela"
+        );
     }
 }

@@ -149,6 +149,22 @@ const FORBIDDEN: &[&str] = &[
 /// - Sem chave e terminando em `;` (`mod tests;`, `use …;`, `const …;`): o
 ///   item acabou ali.
 /// - Comentario ou outro atributo: nao decide nada, o item continua pendente.
+///
+/// # O comentario no FIM da linha
+///
+/// A versao anterior so tratava comentario no COMECO (`text.starts_with("//")`).
+/// Em `#[cfg(test)] use std::fmt; // so no teste` o texto termina em `teste`,
+/// e nao em `;`: o item ficava **pendente**, a proxima linha era julgada como
+/// se fosse ele, e a primeira que abrisse chave ligava o modo "apaga" sobre
+/// PRODUCAO. As tres varreduras deste modulo leem o mesmo texto, entao caiam
+/// juntas — a coincidencia "verde com bug" pela terceira vez nesta suite.
+/// Medido: `#[cfg(test)] use std::fmt; // c` seguido de um
+/// `pub(crate) fn` com `expose()` num `tracing::info!` dava
+/// `offending_log_blocks == 0` e `exposes_outside_the_allowlist == 0`.
+///
+/// Por isso o comentario e cortado por [`strip_line_comment`], que respeita
+/// literais — cortar no primeiro `//` cru quebraria `"http://x"` e tambem
+/// `const S: &str = "a // b";`, que HOJE e lido certo.
 fn absorb_cfg_test_item(
     text: &str,
     pending: &mut bool,
@@ -156,12 +172,14 @@ fn absorb_cfg_test_item(
     brace_depth: &mut i32,
 ) {
     // Comentario entre o atributo e o item nao decide nada: um `// veja foo;`
-    // nao encerra o item.
-    if text.starts_with("//") {
+    // nao encerra o item. Vale para o comentario que ocupa a linha inteira
+    // (o `code` sai vazio) e para o que vem depois do codigo.
+    let code = strip_line_comment(text);
+    if code.is_empty() {
         return;
     }
-    let opens = text.matches('{').count() as i32;
-    let closes = text.matches('}').count() as i32;
+    let opens = code.matches('{').count() as i32;
+    let closes = code.matches('}').count() as i32;
     *brace_depth += opens - closes;
     if opens > 0 {
         *pending = false;
@@ -170,10 +188,34 @@ fn absorb_cfg_test_item(
         } else {
             *brace_depth = 0;
         }
-    } else if text.ends_with(';') {
+    } else if code.ends_with(';') {
         *pending = false;
         *brace_depth = 0;
     }
+}
+
+/// A linha sem o comentario `//` do fim, ou a linha inteira quando nao ha um.
+///
+/// O corte **precisa** respeitar literal: um `//` dentro de `"http://x"` ou de
+/// `const S: &str = "a // b";` nao e comentario, e cortar ali inverteria o
+/// julgamento do item — no segundo caso estragando um `;` que hoje e lido
+/// certo. Reusa [`end_of_string`] e [`end_of_char`], os mesmos que o parser de
+/// blocos ja usa, em vez de contar aspas: contar aspas acerta `"http://x"` e
+/// erra `"a // b"`.
+fn strip_line_comment(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => i = end_of_string(bytes, i).max(i + 1),
+            // `'` tanto abre char quanto e tempo de vida/rotulo; `None` e o
+            // segundo caso e ali basta seguir um byte.
+            b'\'' => i = end_of_char(text, i).unwrap_or(i + 1),
+            b'/' if bytes.get(i + 1) == Some(&b'/') => return text[..i].trim_end(),
+            _ => i += 1,
+        }
+    }
+    text
 }
 
 /// O fonte com os blocos `#[cfg(test)]` apagados, preservando a numeracao das
@@ -199,6 +241,21 @@ fn absorb_cfg_test_item(
 /// A regra nova: o `#[cfg(test)]` fica **pendente**, e so vira modo "apaga"
 /// quando uma chave de verdade abre um bloco. Um item que fecha em `;` apaga
 /// exatamente a propria linha.
+///
+/// # Dois limites conhecidos, ambos na direcao segura
+///
+/// 1. **So a forma canonica de UMA linha e reconhecida.**
+///    `#[cfg(all(test, feature = "x"))]` e o atributo quebrado em varias
+///    linhas (`#[cfg(\n    test\n)]`) nao sao cortados: aquele corpo de teste
+///    entra na varredura como se fosse producao. O erro cai do lado seguro —
+///    um `expose()` legitimo de teste vira **falso positivo** que quebra o CI,
+///    e nao um vazamento que passa. Se alguem escrever uma dessas formas, o
+///    conserto e aqui, e o CI vai avisar.
+/// 2. **String crua de producao que contenha `#[cfg(test)]` em inicio de
+///    linha** faz o cortador comecar a apagar dali. A guarda
+///    [`production_source_never_drops_a_production_item`] **pega** o caso e
+///    falha alto, mas acusa o item errado: o que ela reporta e o primeiro
+///    item de producao engolido, e nao o literal que causou o corte.
 fn production_source(source: &str) -> String {
     const ATTR: &str = "#[cfg(test)]";
     let mut out = String::with_capacity(source.len());
@@ -1165,6 +1222,19 @@ fn is_under_cfg_test(lines: &[&str], i: usize) -> bool {
 fn production_source_never_drops_a_production_item() {
     const ITEM_STARTS: &[&str] = &[
         "pub ",
+        // `pub(crate)` nao casa com `"pub "`, e e comum nesta crate
+        // (`session.rs` tem dois, incluindo `pub(crate) fn expose`). Sem ele
+        // a guarda ficava MUDA justamente no caso medido do comentario de fim
+        // de linha: as tres varreduras cegas e a guarda sem nada a dizer.
+        // `mod`/`use`/`unsafe` entram pelo mesmo motivo — qualquer miss
+        // residual tem de falhar ALTO, e nao em silencio. Medido sobre a
+        // arvore real: a guarda passou a examinar 292 itens de producao
+        // contra 257, e o maior ganho e em `session.rs` (64 -> 79), que e
+        // exatamente onde mora o `pub(crate) fn expose`.
+        "pub(",
+        "mod ",
+        "use ",
+        "unsafe ",
         "impl ",
         "impl<",
         "fn ",
@@ -1206,6 +1276,114 @@ varrido. A partir dali nenhuma das tres varreduras deste modulo ve mais nada.",
             "{name}: nenhum item de producao foi examinado; a guarda nao mediu nada"
         );
     }
+}
+
+/// **Um comentario no fim da linha nao pode cegar a varredura.**
+///
+/// Latente, e nao hipotetico: hoje `grep -rn '#\[cfg(test)\].*//'` volta
+/// vazio na arvore, entao nenhuma varredura sobre `SOURCES` reprova isso. Por
+/// isso o caso negativo entra como TEXTO — a mesma tecnica de
+/// `an_expose_outside_the_allowlist_is_actually_reported`, e pelo mesmo
+/// motivo: uma regra que so olha a arvore limpa nao distingue regra viva de
+/// regra ausente.
+///
+/// A medicao que originou este teste, com as funcoes reais:
+///
+/// | entrada | blocos | expose | guarda |
+/// |---|---|---|---|
+/// | `#[cfg(test)] use std::fmt; // c` + `pub fn` que vaza | 0 | 0 | falhava alto |
+/// | o mesmo em duas linhas | 0 | 0 | falhava alto |
+/// | o mesmo com `pub(crate) fn` | 0 | 0 | **silencio** |
+/// | controle sem comentario, `pub(crate)` | 1 | 1 | ok |
+///
+/// A terceira linha e a que importa: `ITEM_STARTS` tinha `"pub "` e nao
+/// `"pub("`, entao a "segunda opiniao" nao tinha opiniao nenhuma. As duas
+/// metades do conserto — [`strip_line_comment`] e os prefixos novos —
+/// aparecem aqui, e cada uma sozinha deixaria metade do buraco em pe.
+#[test]
+fn a_trailing_comment_after_cfg_test_does_not_blind_the_scan() {
+    // O corpo vazado e identico nos quatro; o que muda e so a moldura.
+    const VAZA_PUB: &str =
+        "pub fn vaza(b: &SessionBlob) {\n    tracing::info!(s = %b.expose(), \"x\");\n}\n";
+    const VAZA_CRATE: &str =
+        "pub(crate) fn vaza(b: &SessionBlob) {\n    tracing::info!(s = %b.expose(), \"x\");\n}\n";
+
+    let casos: &[(&str, String)] = &[
+        (
+            "atributo e item na MESMA linha, com comentario no fim",
+            format!("#[cfg(test)] use std::fmt; // so no teste\n{VAZA_PUB}"),
+        ),
+        (
+            "atributo numa linha, item na seguinte com comentario no fim",
+            format!("#[cfg(test)]\nuse std::fmt; // so no teste\n{VAZA_PUB}"),
+        ),
+        (
+            "o mesmo, mas o item vazado e `pub(crate)`",
+            format!("#[cfg(test)] use std::fmt; // so no teste\n{VAZA_CRATE}"),
+        ),
+        (
+            "controle: sem comentario nenhum",
+            format!("#[cfg(test)] use std::fmt;\n{VAZA_CRATE}"),
+        ),
+    ];
+
+    for (nome, fonte) in casos {
+        // 1. O item de producao sobrevive ao cortador. E a raiz: se ele some,
+        //    as TRES varreduras ficam cegas juntas.
+        let producao = production_source(fonte);
+        for (esperada, obtida) in fonte.lines().zip(producao.lines()) {
+            if esperada.trim_start().starts_with("pub") {
+                assert_eq!(
+                    esperada, obtida,
+                    "{nome}: `{esperada}` e producao e foi apagado pelo cortador"
+                );
+            }
+        }
+        // 2. E, por consequencia, as duas varreduras reprovam o vazamento.
+        assert!(
+            !offending_log_blocks("probe.rs", fonte).is_empty(),
+            "{nome}: o `tracing::info!` com `expose()` passou em branco"
+        );
+        assert!(
+            !exposes_outside_the_allowlist("probe.rs", fonte).is_empty(),
+            "{nome}: o `expose()` fora da allowlist passou em branco"
+        );
+    }
+}
+
+/// O corte do comentario nao pode estragar quem esta certo hoje.
+///
+/// Contar aspas — a primeira ideia — acerta `"http://x"` e **erra**
+/// `const S: &str = "a // b";`: o corte cairia dentro do literal e o `;` que
+/// encerra o item sumiria, transformando um acerto de hoje numa cegueira
+/// nova. Por isso [`strip_line_comment`] reusa o scanner de literais.
+#[test]
+fn stripping_the_trailing_comment_respects_literals() {
+    assert_eq!(strip_line_comment("use std::fmt;"), "use std::fmt;");
+    assert_eq!(strip_line_comment("use std::fmt; // nota"), "use std::fmt;");
+    assert_eq!(strip_line_comment("// linha inteira"), "");
+    // `//` dentro de string nao e comentario — nos dois formatos.
+    assert_eq!(
+        strip_line_comment(r#"const U: &str = "http://x";"#),
+        r#"const U: &str = "http://x";"#
+    );
+    assert_eq!(
+        strip_line_comment(r#"const S: &str = "a // b";"#),
+        r#"const S: &str = "a // b";"#
+    );
+    assert_eq!(
+        strip_line_comment(r##"const R: &str = r#"a // b"#;"##),
+        r##"const R: &str = r#"a // b"#;"##
+    );
+    // E o `'` de tempo de vida nao pode engolir o resto da linha.
+    assert_eq!(
+        strip_line_comment("fn f<'a>(s: &'a str); // nota"),
+        "fn f<'a>(s: &'a str);"
+    );
+    assert_eq!(
+        strip_line_comment(r#"const C: char = '/'; // nota"#),
+        r#"const C: char = '/';"#
+    );
 }
 
 /// A regra invertida do `expose` precisa reprovar de verdade.
