@@ -24,6 +24,7 @@ mod ui;
 mod update;
 mod update_scan;
 mod verify;
+mod whatsapp;
 mod wizard;
 
 use std::path::PathBuf;
@@ -360,6 +361,23 @@ enum Commands {
         no_launch: bool,
     },
 
+    /// Conecta o WhatsApp ao GarraIA: numero pessoal por QR, ou WhatsApp
+    /// Business pela Cloud API da Meta (#1238, ADR 0023).
+    ///
+    /// Sem subcomando, mostra o menu de duas opcoes. Sem TTY, imprime as duas
+    /// opcoes com o comando de cada uma e sai 0 — mesma postura do `garra
+    /// init`. Exit codes (sysexits): 0 ok, 1 cancelado, 69 falta Node / nao ha
+    /// sessao, 70 erro interno.
+    ///
+    /// `name` explicito porque o clap deriva kebab-case do nome da variante, e
+    /// `WhatsApp` viraria `whats-app` — um comando que ninguem digitaria. O
+    /// teste `whatsapp_smoke` e quem pega isso.
+    #[command(name = "whatsapp")]
+    WhatsApp {
+        #[command(subcommand)]
+        action: Option<WhatsAppCommands>,
+    },
+
     /// Run the local validation pipeline: fmt check, clippy, test, flutter
     /// analyze, gitleaks detect (GAR-501).
     ///
@@ -385,6 +403,21 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         workspace: Option<std::path::PathBuf>,
     },
+}
+
+/// Subcomandos de `garra whatsapp`.
+#[derive(Subcommand)]
+enum WhatsAppCommands {
+    /// Vincula o WhatsApp pessoal lendo um QR code (precisa de Node 20+).
+    Link,
+    /// Configura um WhatsApp Business pela Cloud API oficial da Meta.
+    Cloud,
+    /// Mostra se ha WhatsApp pessoal vinculado e onde a sessao esta.
+    Status,
+    /// Desvincula e apaga a sessao deste aparelho.
+    Logout,
+    /// Traz de volta a sessao arquivada por um re-vinculo que nao terminou.
+    Restore,
 }
 
 #[derive(Subcommand)]
@@ -1354,6 +1387,26 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `garra whatsapp` resolve a propria config (e funciona sem ela): `status`
+    // e `logout` so precisam do diretorio de dados, e devem responder numa
+    // maquina que nunca rodou `garra init`. Mesmo padrao de `garra desktop`.
+    if let Commands::WhatsApp { ref action } = cli.command {
+        let whatsapp_action = match action {
+            None => whatsapp::Action::Menu,
+            Some(WhatsAppCommands::Link) => whatsapp::Action::Link,
+            Some(WhatsAppCommands::Cloud) => whatsapp::Action::Cloud,
+            Some(WhatsAppCommands::Status) => whatsapp::Action::Status,
+            Some(WhatsAppCommands::Logout) => whatsapp::Action::Logout,
+            Some(WhatsAppCommands::Restore) => whatsapp::Action::Restore,
+        };
+        let ctx = whatsapp::Context::from_env();
+        let code = whatsapp::run(whatsapp_action, &ctx, &wizard::prompts::DialoguerPrompter);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
     let config_loader = garraia_config::ConfigLoader::new()?;
     config_loader.ensure_dirs()?;
     let config = config_loader.load()?;
@@ -2279,6 +2332,11 @@ async fn async_main(
             // Handled in main() before the async runtime starts.
             unreachable!("Commands::Doctor is intercepted in main() before async_main");
         }
+        Commands::WhatsApp { .. } => {
+            // Interceptado em `main()` antes do ConfigLoader.
+            unreachable!("Commands::WhatsApp is intercepted in main() before async_main");
+        }
+
         Commands::Desktop { .. } => {
             // #1181 (M1): handled in main() before the async runtime starts.
             // `garra desktop` only resolves a path and spawns the app, so it

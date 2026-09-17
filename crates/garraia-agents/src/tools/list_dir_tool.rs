@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use garraia_common::Result;
 use std::path::{Path, PathBuf};
 
+use super::file_jail::FileJail;
 use super::tool_context::{process_home_dir, resolve_tool_path};
 use super::{Tool, ToolContext, ToolOutput};
 
@@ -39,13 +40,19 @@ const SKIP_DIRS: &[&str] = &[
 /// Intelligent directory listing with tree-style output.
 /// Respects common ignore patterns and provides file sizes.
 pub struct ListDirTool {
+    jail: FileJail,
     max_entries: usize,
 }
 
 impl ListDirTool {
-    /// Create a new ListDirTool
-    pub fn new(max_entries: Option<usize>) -> Self {
+    /// Create a new ListDirTool.
+    ///
+    /// Issue #1244: `jail` e obrigatorio. `list_dir` e a tool de
+    /// *reconhecimento* do par — com ela o modelo acha `~/.ssh` antes de
+    /// pedir o `file_read`, entao confinar so a leitura seria meia correcao.
+    pub fn new(jail: FileJail, max_entries: Option<usize>) -> Self {
         Self {
+            jail,
             max_entries: max_entries.unwrap_or(MAX_ENTRIES),
         }
     }
@@ -237,7 +244,33 @@ impl Tool for ListDirTool {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::error(e.to_string())),
         };
-        let path: PathBuf = resolved.path.clone();
+        // #1244: confina antes de tocar o disco. `list_dir` devolve a recusa
+        // como `ToolOutput::error` (o modelo continua o turno) em vez de `Err`,
+        // que e como o resto desta tool reporta problema de caminho.
+        let path: PathBuf = match self
+            .jail
+            .confine(&resolved.path, context.working_dir.as_deref())
+        {
+            Ok(p) => p,
+            Err(denial) => {
+                tracing::warn!(
+                    session = %context.session_id,
+                    motivo = ?denial,
+                    "list_dir: caminho recusado pelo jail"
+                );
+                // #1039 preservado dentro da #1244: a dica de "a sessao nao
+                // tem working_dir" fala da SESSAO, nao do disco, entao ela
+                // pode acompanhar a recusa sem virar oraculo de existencia.
+                let dica =
+                    if resolved.origin == super::tool_context::PathOrigin::RelativeToProcessCwd {
+                        " O caminho era relativo e a sessão não tem working_dir: \
+                     peça um caminho dentro do diretório da sessão."
+                    } else {
+                        ""
+                    };
+                return Ok(ToolOutput::error(format!("{}{dica}", denial.message())));
+            }
+        };
 
         // Validate path exists
         if !path.exists() {
@@ -275,6 +308,7 @@ impl Tool for ListDirTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::file_jail::DENIAL_MESSAGE;
 
     #[test]
     fn test_format_size() {
@@ -314,7 +348,7 @@ mod tests {
     /// `.` e o diretorio da sessao, e sem `path` o default e o mesmo.
     #[tokio::test]
     async fn test_list_dir_current() {
-        let tool = ListDirTool::new(None);
+        let tool = ListDirTool::new(FileJail::sessions_only(), None);
         let ctx = ctx(Some(env!("CARGO_MANIFEST_DIR")));
 
         let output = tool
@@ -337,7 +371,7 @@ mod tests {
     /// absoluto em vez de tentar de novo.
     #[tokio::test]
     async fn test_list_dir_relative_without_session_dir_explains_itself() {
-        let tool = ListDirTool::new(None);
+        let tool = ListDirTool::new(FileJail::sessions_only(), None);
         let output = tool
             .execute(&ctx(None), serde_json::json!({"path": "nao_existe_xyz"}))
             .await
@@ -353,7 +387,7 @@ mod tests {
     /// `..` nunca passa, com ou sem sessao.
     #[tokio::test]
     async fn test_list_dir_rejects_parent_dir() {
-        let tool = ListDirTool::new(None);
+        let tool = ListDirTool::new(FileJail::sessions_only(), None);
         for wd in [Some(env!("CARGO_MANIFEST_DIR")), None] {
             let output = tool
                 .execute(&ctx(wd), serde_json::json!({"path": "../.."}))
@@ -365,7 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_dir_not_found() {
-        let tool = ListDirTool::new(None);
+        let tool = ListDirTool::new(FileJail::sessions_only(), None);
         let ctx = ToolContext {
             session_id: "test".into(),
             user_id: None,
@@ -381,5 +415,76 @@ mod tests {
             .expect("should not error");
 
         assert!(output.is_error);
+    }
+
+    // ─── issue #1244: o jail ───────────────────────────────────────────────
+
+    fn raiz() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        (tmp, root)
+    }
+
+    /// `list_dir` é a tool de reconhecimento do par: sem jail nela, o modelo
+    /// encontra `~/.ssh` e só então pede o `file_read`.
+    #[tokio::test]
+    async fn diretorio_fora_da_raiz_e_recusado() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        std::fs::write(fora.join("segredo.txt"), b"x").expect("write");
+
+        let tool = ListDirTool::new(FileJail::from_roots([&root]), None);
+        let out = tool
+            .execute(
+                &ctx(None),
+                serde_json::json!({ "path": fora.to_str().expect("utf8") }),
+            )
+            .await
+            .expect("tool nao deve estourar");
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.starts_with(DENIAL_MESSAGE), "{}", out.content);
+        assert!(!out.content.contains("segredo.txt"), "{}", out.content);
+    }
+
+    /// Symlink de diretório apontando para fora da raiz.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_de_diretorio_para_fora_e_recusado() {
+        let (_t, root) = raiz();
+        let (_t2, fora) = raiz();
+        std::fs::write(fora.join("segredo.txt"), b"x").expect("write");
+        std::os::unix::fs::symlink(&fora, root.join("atalho")).expect("symlink");
+
+        let tool = ListDirTool::new(FileJail::sessions_only(), None);
+        let out = tool
+            .execute(
+                &ctx(Some(root.to_str().expect("utf8"))),
+                serde_json::json!({ "path": "atalho" }),
+            )
+            .await
+            .expect("tool nao deve estourar");
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("segredo.txt"), "{}", out.content);
+    }
+
+    /// Fail-closed: sem raiz nenhuma, nem um diretório que existe é listado.
+    #[tokio::test]
+    async fn sem_raiz_nenhuma_nao_lista() {
+        let (_t, root) = raiz();
+        std::fs::write(root.join("a.txt"), b"x").expect("write");
+
+        let tool = ListDirTool::new(FileJail::sessions_only(), None);
+        let out = tool
+            .execute(
+                &ctx(None),
+                serde_json::json!({ "path": root.to_str().expect("utf8") }),
+            )
+            .await
+            .expect("tool nao deve estourar");
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("a.txt"), "{}", out.content);
     }
 }

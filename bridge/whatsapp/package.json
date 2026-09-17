@@ -1,0 +1,19 @@
+{
+  "name": "garraia-whatsapp-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ponte stateless Node/Baileys do GarraIA: fala NDJSON v1 por stdio e nunca escreve no disco.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "protocol-check": "node bridge.mjs --protocol-check"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "9.14.0"
+  }
+}

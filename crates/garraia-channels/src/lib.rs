@@ -36,6 +36,11 @@ pub mod teams;
 pub mod voice_channel;
 #[cfg(feature = "whatsapp")]
 pub mod whatsapp;
+/// WhatsApp por dispositivo vinculado (QR) — canal PULL sobre um bridge
+/// Node/Baileys. Irmao, e nao substituto, de [`whatsapp`] (Cloud API da Meta).
+/// Ver ADR 0023.
+#[cfg(feature = "whatsapp-linked")]
+pub mod whatsapp_linked;
 
 pub use commands::{
     CommandContext, CommandError, CommandRegistry, CommandResult, Role, SlashCommand,
