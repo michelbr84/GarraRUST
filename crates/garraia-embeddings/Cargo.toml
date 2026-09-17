@@ -3,6 +3,7 @@ name = "garraia-embeddings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Embeddings and vector search — traits, strong types, deterministic test provider. ADR 0002."
 
 [features]

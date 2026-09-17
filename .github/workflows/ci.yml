@@ -135,6 +135,43 @@ jobs:
       - name: Testes do checker de ancoras
         run: python3 scripts/security/tests/test_ledger_anchors.py
 
+  # Slice D1 da #1228. O formato dos fragmentos de `changelog.d/` so era
+  # validado por quem lembrasse de rodar `assemble.py --check` a mao — e a
+  # auditoria achou 4 de 6 PRs abertas sem fragmento nenhum. Como as notas de
+  # release saem do CHANGELOG.md e nao da lista de commits (regra 15 do
+  # CLAUDE.md), o silencio so aparecia no dia da release.
+  #
+  # Este job valida FORMATO e roda os testes dos proprios scripts. A checagem
+  # de PRESENCA de fragmento e a slice D2, deliberadamente separada: ela
+  # precisa de label de escape e de um periodo em modo observacao antes de
+  # bloquear.
+  changelog:
+    name: Changelog fragments
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install pytest
+        run: python3 -m pip install --quiet pytest
+
+      - name: Formato dos fragmentos de changelog.d/
+        run: python3 scripts/changelog/assemble.py --check
+
+      # As duas suites rodam em invocacoes SEPARADAS de proposito: as duas
+      # trazem um `tests/__init__.py` chamado `tests`, entao um unico
+      # `pytest scripts/changelog/tests scripts/quality/tests` quebra na
+      # coleta com `ModuleNotFoundError: No module named 'tests.<...>'`.
+      # Medido neste repositorio; nao junte os dois numa linha so.
+      - name: Testes do assemble.py
+        run: python3 -m pytest scripts/changelog/tests -q
+
+      - name: Testes dos parsers do quality ratchet
+        run: python3 -m pytest scripts/quality/tests -q
+
   # Plan 0127 (PR-B) — shellcheck `install.sh` and the bash test harness.
   # `install.sh` is the public `curl | sh` entry point and has been
   # historically linted by hand; promoting that to a blocking CI step
@@ -464,19 +501,28 @@ jobs:
       # s3_compat.rs INTEIRO e `#[cfg(feature = "storage-s3")]`, entao
       # nenhum job compilava o backend S3 de producao — clippy com a
       # feature ligada chegou a falhar sem ninguem ver. Step proprio, e nao
-      # mais um bloco no step dos canais, pelo que o step abaixo explica
+      # mais um bloco no step dos canais, pelo que os steps abaixo explicam
       # sobre o alcance real deste gate.
+      - name: Pre-pull MinIO image for testcontainers
+        # Dois motivos, na ordem de importancia. (1) Se o registry parar de
+        # servir a imagem — foi o que o Docker Hub fez com `minio/minio`,
+        # #1230 — a falha aparece AQUI, com o erro do registry no log, em vez
+        # de virar um timeout opaco dentro do testcontainer. (2) Mesmo
+        # racional do pre-pull do job auth-integration: warm pull de poucos
+        # segundos em vez do cold start dentro do teste. O job roda so em
+        # ubuntu-latest (sem matriz de OS), onde o Docker vem pre-instalado,
+        # entao nao ha o que condicionar por `runner.os` aqui.
+        run: docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+
       - name: Run clippy + tests (storage-s3)
         # ATENCAO ao ler um verde daqui: este step cobre COMPILACAO, clippy e
         # os testes unitarios do backend S3, E a suite de integracao real
-        # contra MinIO (tests/s3_integration.rs). O repositorio `minio/minio`
-        # foi REMOVIDO do Docker Hub (#1230: "object not found" para o repo
-        # inteiro, nao so a tag) — o teste agora puxa a mesma imagem/tag de
-        # `quay.io/minio/minio`. GARRAIA_REQUIRE_DOCKER="1" transforma em
-        # falha o skip que o teste faria se o container nao subir, para que
-        # um verde aqui prove que o MinIO rodou de verdade (segundos, nao
-        # milissegundos). `--nocapture` deixa o log do container visivel se
-        # algo der errado.
+        # contra MinIO (tests/s3_integration.rs). A imagem vem do quay.io
+        # pelo motivo que o step de pre-pull acima explica (#1230).
+        # GARRAIA_REQUIRE_DOCKER="1" transforma em falha o skip que o teste
+        # faria se o container nao subir, para que um verde aqui prove que o
+        # MinIO rodou de verdade (segundos, nao milissegundos). `--nocapture`
+        # deixa o log do container visivel se algo der errado.
         env:
           GARRAIA_REQUIRE_DOCKER: "1"
         run: |
