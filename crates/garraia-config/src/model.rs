@@ -431,6 +431,31 @@ pub struct GatewayConfig {
     pub tls_key_path: Option<String>,
 }
 
+impl GatewayConfig {
+    /// A credencial de gateway **normalizada**: `None` quando o campo esta
+    /// ausente, vazio ou so com espaco em branco.
+    ///
+    /// Fonte unica da regra "ha gate de `/api/*` e de `/ws`?" (#1241). Antes
+    /// dela, tres superficies respondiam coisas diferentes para o mesmo
+    /// `api_key: "  "`: o gate (`garraia_gateway::gateway_auth::ApiKeyGate`)
+    /// ficava desligado, enquanto `garra config check` e o
+    /// `GET /api/settings/effective` do Web Console diziam `configured:
+    /// true` — falsa garantia justamente para quem foi consultar o
+    /// diagnostico. Qualquer consumidor novo deve chamar isto em vez de
+    /// `api_key.is_some()`.
+    pub fn api_key_normalizada(&self) -> Option<&str> {
+        self.api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+    }
+
+    /// Acucar para [`Self::api_key_normalizada`] quando so a presenca importa.
+    pub fn api_key_configurada(&self) -> bool {
+        self.api_key_normalizada().is_some()
+    }
+}
+
 fn default_session_ttl_secs() -> i64 {
     86_400
 }
