@@ -25,7 +25,7 @@
 //! |---|---|
 //! | 0 | tudo certo, inclusive o caminho sem TTY |
 //! | 1 | o usuario cancelou (Ctrl+C, resposta "nao") |
-//! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, ou nao ha sessao |
+//! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, nao ha sessao, ou `link`/`cloud` foram chamados sem terminal |
 //! | 70 `EX_SOFTWARE` | erro interno (disco, config ilegivel) |
 
 use std::io::{IsTerminal, Write};
@@ -228,6 +228,55 @@ pub fn non_interactive_hint(lang: Lang) -> String {
         lang,
         "Também existem: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
         "Also available: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
+    ));
+    out
+}
+
+/// O que `link` e `cloud` dizem quando nao ha terminal.
+///
+/// # Por que NAO e o [`non_interactive_hint`]
+///
+/// O hint do menu termina mandando rodar `garra whatsapp link`. Quando o
+/// proprio `link` respondia com esse mesmo texto — byte a byte, e saindo 0 —,
+/// quem estava num pipe recebia como orientacao a repeticao do comando que
+/// acabara de rodar. `ssh servidor 'garra whatsapp link'`, que e como se
+/// conecta um GarraIA headless num VPS, nao tem TTY: o usuario ficava num
+/// ciclo fechado, sem QR, sem erro e com exit 0 dizendo que deu certo.
+///
+/// Quem JA escolheu o fluxo precisa de outra coisa: o motivo (o QR se le
+/// deste terminal, e o consentimento se da nele) e a saida (`ssh -t`). E de
+/// um exit code que nao minta — 69 `EX_UNAVAILABLE`, o mesmo que o `status`
+/// usa para "nao da para fazer isto aqui", e nao 0.
+pub fn needs_a_terminal(lang: Lang, subcomando: &str) -> String {
+    let mut out = String::new();
+    out.push_str(t(
+        lang,
+        "Este fluxo precisa de um terminal de verdade.\n\n",
+        "This flow needs a real terminal.\n\n",
+    ));
+    out.push_str(t(
+        lang,
+        "O QR code é desenhado neste terminal e você confirma o vínculo aqui, \
+         então um pipe, um cron ou um `ssh` sem TTY não conseguem levar o \
+         processo ate o fim.\n\n",
+        "The QR code is drawn in this terminal and you confirm the link here, \
+         so a pipe, a cron job or an `ssh` without a TTY cannot carry the \
+         process through.\n\n",
+    ));
+    out.push_str(&format!(
+        "  {}\n    ssh -t <usuario>@<maquina> garra whatsapp {subcomando}\n",
+        t(
+            lang,
+            "Por ssh, peça um TTY com -t:",
+            "Over ssh, ask for a TTY with -t:"
+        )
+    ));
+    out.push_str(t(
+        lang,
+        "\nNum multiplexador (tmux, screen) ou num terminal local, basta rodar \
+         o comando normalmente.",
+        "\nInside a multiplexer (tmux, screen) or in a local terminal, just run \
+         the command as usual.",
     ));
     out
 }
@@ -795,8 +844,8 @@ fn link_with(
 ) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
-        println!("{}", non_interactive_hint(ctx.lang));
-        return 0;
+        println!("{}", needs_a_terminal(ctx.lang, "link"));
+        return EX_UNAVAILABLE;
     }
 
     let store = match ctx.store() {
@@ -1325,8 +1374,8 @@ impl PairUi for TerminalUi<'_> {
 fn cloud(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
-        println!("{}", non_interactive_hint(ctx.lang));
-        return 0;
+        println!("{}", needs_a_terminal(ctx.lang, "cloud"));
+        return EX_UNAVAILABLE;
     }
     let Some(loader) = ctx.loader.as_ref() else {
         eprintln!(

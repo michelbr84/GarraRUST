@@ -693,16 +693,31 @@ fn the_menu_without_a_tty_prints_both_options_and_exits_zero() {
     assert_eq!(run(Action::Menu, &ctx, &ScriptedPrompter::default()), 0);
 }
 
+/// Sem terminal, `link` e `cloud` recusam com 69 — e nao gravam nada.
+///
+/// Este teste exigia exit **0**, e era o segundo a codificar o defeito: os
+/// tres comandos respondiam com o texto do menu, que termina mandando rodar
+/// `garra whatsapp link`. O smoke
+/// `link_and_cloud_without_a_tty_refuse_instead_of_repeating_the_menu` prova
+/// no binario que as saidas hoje diferem; aqui a afirmacao e a do exit code
+/// mais a de que a recusa acontece **antes** de qualquer escrita.
 #[test]
-fn link_without_a_tty_also_exits_zero_with_the_hint() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let ctx = ctx_in(&dir, false);
-    assert_eq!(run(Action::Link, &ctx, &ScriptedPrompter::default()), 0);
-    assert!(
-        !ctx.store()
-            .expect("DEFAULT_ACCOUNT e conta valida")
-            .exists()
-    );
+fn link_and_cloud_without_a_tty_refuse_with_69_before_touching_disk() {
+    for acao in [Action::Link, Action::Cloud] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ctx_in(&dir, false);
+        assert_eq!(
+            run(acao, &ctx, &ScriptedPrompter::default()),
+            69,
+            "{acao:?} num pipe tem de sair EX_UNAVAILABLE, nao 0"
+        );
+        assert!(
+            !ctx.store()
+                .expect("DEFAULT_ACCOUNT e conta valida")
+                .exists(),
+            "{acao:?} recusou, entao nao pode ter criado sessao"
+        );
+    }
 }
 
 #[test]
