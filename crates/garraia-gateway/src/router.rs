@@ -489,10 +489,11 @@ pub fn build_router(
             "/api/mcp/marketplace",
             get(crate::mcp_marketplace::marketplace_catalog),
         )
-        .route(
-            "/api/mcp/marketplace/install",
-            post(crate::mcp_marketplace::marketplace_install),
-        )
+        // #1245: `POST /api/mcp/marketplace/install` NAO mora aqui. Ele vive
+        // no sub-router protegido `mcp_marketplace::build_marketplace_install_
+        // routes`, merjado mais abaixo junto com `/api/plugins/*`. Montar de
+        // volta neste grupo aberto reabre o bug: registrar servidor MCP sem
+        // sessao de admin, com `env` e `extra_args` escolhidos pelo chamador.
         .route(
             "/api/mcp/{id}/health",
             get(crate::mcp_marketplace::mcp_server_health),
@@ -559,6 +560,13 @@ pub fn build_router(
         // for both consumers — same admin store, two mounting points.
         .merge(build_skill_skin_routes(state.clone(), admin_store.clone()))
         .merge(crate::plugins_handler::build_plugin_routes(
+            state.clone(),
+            admin_store.clone(),
+        ))
+        // #1245: mesmo tratamento para o install do marketplace — sessao de
+        // admin + CSRF + `Permission::ManagePlugins`. Merjado aqui, ao lado
+        // das rotas irmas, e antes do `nest` que consome o `admin_store`.
+        .merge(crate::mcp_marketplace::build_marketplace_install_routes(
             state.clone(),
             admin_store.clone(),
         ))
