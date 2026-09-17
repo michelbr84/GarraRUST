@@ -22,6 +22,81 @@ const DEFAULT_MAX_RESULTS: usize = 50;
 /// Default context lines around matches
 const DEFAULT_CONTEXT_LINES: u32 = 2;
 
+/// Argumentos do `rg`, com a `query` **sempre** depois do terminador `--`.
+///
+/// #1266 (P0): a `query` vem crua da tool call do modelo, e sem terminador ela
+/// cai em posicao de flag — `rg --pre=/bin/sh` faz o proprio ripgrep executar
+/// cada arquivo varrido como script, o que atravessa o jail de diretorio e o
+/// allowlist do `bash_tool` sem passar por nenhum dos dois. O `--` fecha a
+/// classe inteira: tudo depois dele e padrao de busca, nunca opcao.
+///
+/// O `file_pattern` vai na forma `--glob=<valor>` em vez de dois argumentos
+/// separados: assim o valor fica preso ao nome da opcao pelo `=` e nao depende
+/// de como esta ou aquela versao do ripgrep resolve um valor que comeca com
+/// `-`. Isto e funcao pura de proposito — o teste consegue afirmar a ordem dos
+/// argumentos sem subir processo nenhum.
+fn rg_args(
+    query: &str,
+    file_pattern: Option<&str>,
+    context_lines: u32,
+    max_results: usize,
+) -> Vec<String> {
+    let mut args = vec![
+        "--line-number".to_string(),
+        "--no-heading".to_string(),
+        "--color".to_string(),
+        "never".to_string(),
+        "-C".to_string(),
+        context_lines.to_string(),
+        "--max-count".to_string(),
+        max_results.to_string(),
+    ];
+    if let Some(pattern) = file_pattern {
+        args.push(format!("--glob={pattern}"));
+    }
+    args.push("--".to_string());
+    args.push(query.to_string());
+    args.push(".".to_string());
+    args
+}
+
+/// Argumentos do `grep` (fallback Unix), mesma regra do `--` (#1266).
+///
+/// Sem ele, uma `query` como `-f/etc/passwd` faz o grep ler os padroes de um
+/// arquivo escolhido pelo modelo em vez de procurar o texto pedido.
+fn grep_args(query: &str, context_lines: u32) -> Vec<String> {
+    vec![
+        "-rn".to_string(),
+        "--color=never".to_string(),
+        "-C".to_string(),
+        context_lines.to_string(),
+        "--".to_string(),
+        query.to_string(),
+        ".".to_string(),
+    ]
+}
+
+/// Argumentos do `findstr` (fallback Windows) — #1266.
+///
+/// O `findstr` **nao tem** terminador `--`: as opcoes dele sao `/s`, `/n`, etc.,
+/// e qualquer argumento que comece com `/` e lido como opcao mesmo entre aspas.
+/// O equivalente documentado pela Microsoft e `/C:<string>`, que declara o texto
+/// como string de busca literal. Como o texto viaja grudado no proprio nome da
+/// opcao, nao sobra posicao em que ele possa virar flag — nem comecando com `/`
+/// nem com `-` (que o findstr, alias, nunca trata como opcao).
+///
+/// Efeito colateral aceito: `/C:` torna a busca **literal** nesse fallback, em
+/// vez da lista de termos separados por espaco que o findstr usa por padrao.
+/// Perder regex num caminho de fallback vale menos que a classe de injecao.
+fn findstr_args(query: &str) -> Vec<String> {
+    vec![
+        "/s".to_string(),
+        "/n".to_string(),
+        format!("/C:{query}"),
+        "*.*".to_string(),
+    ]
+}
+
 /// Searches code in a repository using grep and file pattern matching.
 /// Returns matching file paths with line numbers and surrounding context.
 pub struct RepoSearchTool {
@@ -128,20 +203,18 @@ impl Tool for RepoSearchTool {
                 cmd.env(key, value);
             }
         }
-        cmd.arg("--line-number")
-            .arg("--no-heading")
-            .arg("--color")
-            .arg("never")
-            .arg("-C")
-            .arg(context_lines.to_string())
-            .arg("--max-count")
-            .arg(max_results.to_string());
-
-        if let Some(pattern) = file_pattern {
-            cmd.arg("--glob").arg(pattern);
-        }
-
-        cmd.arg(query).arg(".");
+        // #1266: o filho nunca le a entrada padrao do gateway. Sem isto o
+        // ripgrep decide o que fazer olhando o stdin herdado — com um pipe no
+        // lugar (`garra ask`, teste, servico), ele **busca no stdin** em vez de
+        // varrer o diretorio, e fica pendurado ate o timeout consumindo a
+        // entrada de quem o chamou. `Stdio::null()` torna o comportamento o
+        // mesmo em terminal, pipe e servico.
+        cmd.stdin(std::process::Stdio::null()).args(rg_args(
+            query,
+            file_pattern,
+            context_lines,
+            max_results,
+        ));
 
         let result = tokio::time::timeout(self.timeout, cmd.output()).await;
 
@@ -189,16 +262,13 @@ impl Tool for RepoSearchTool {
                     }
                 }
 
+                // #1266: mesma regra do rg — o fallback tambem nao herda stdin.
+                grep_cmd.stdin(std::process::Stdio::null());
+
                 if cfg!(target_os = "windows") {
-                    grep_cmd.arg("/s").arg("/n").arg(query).arg("*.*");
+                    grep_cmd.args(findstr_args(query));
                 } else {
-                    grep_cmd
-                        .arg("-rn")
-                        .arg("--color=never")
-                        .arg("-C")
-                        .arg(context_lines.to_string())
-                        .arg(query)
-                        .arg(".");
+                    grep_cmd.args(grep_args(query, context_lines));
                 }
 
                 let fallback = tokio::time::timeout(self.timeout, grep_cmd.output()).await;
@@ -302,5 +372,108 @@ mod tests {
 
         let result = tool.execute(&ctx, serde_json::json!({})).await;
         assert!(result.is_err());
+    }
+
+    // ─── #1266: a query do modelo nunca pode cair em posicao de flag ──────
+    //
+    // Os tres call sites (`rg`, `grep`, `findstr`) sao cobertos aqui pelos
+    // construtores puros de argumento; o caminho do `rg` ganha ainda um teste
+    // de execucao pela tool que o runtime registra, em `runtime.rs`
+    // (`repo_search_registrada_nao_executa_pre_do_ripgrep`), porque e nele que
+    // a injecao virava execucao de comando.
+
+    /// Posicao do `--` no `rg`: tudo que vem do modelo fica depois dele.
+    #[test]
+    fn rg_args_poem_a_query_depois_do_terminador() {
+        let args = rg_args("--pre=/bin/sh", None, 2, 50);
+        let term = args
+            .iter()
+            .position(|a| a == "--")
+            .expect("o terminador tem de existir");
+        let query = args
+            .iter()
+            .position(|a| a == "--pre=/bin/sh")
+            .expect("a query tem de estar na linha");
+        assert!(
+            term < query,
+            "query antes do terminador vira flag: {args:?}"
+        );
+        // E nada de padrao de busca duplicado antes do terminador.
+        assert!(
+            !args[..term].iter().any(|a| a == "--pre=/bin/sh"),
+            "{args:?}"
+        );
+    }
+
+    /// O `file_pattern` tambem vem do modelo: fica colado no `--glob=` para
+    /// nao depender de como o parser da vez resolve um valor com `-`.
+    #[test]
+    fn rg_args_colam_o_glob_no_nome_da_opcao() {
+        let args = rg_args("agulha", Some("--pre=/bin/sh"), 2, 50);
+        assert!(
+            args.contains(&"--glob=--pre=/bin/sh".to_string()),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|a| a == "--glob"), "{args:?}");
+    }
+
+    /// Mesma regra no fallback Unix.
+    #[test]
+    fn grep_args_poem_a_query_depois_do_terminador() {
+        let args = grep_args("-f/etc/passwd", 2);
+        let term = args.iter().position(|a| a == "--").expect("terminador");
+        let query = args
+            .iter()
+            .position(|a| a == "-f/etc/passwd")
+            .expect("query");
+        assert!(term < query, "{args:?}");
+    }
+
+    /// O `findstr` nao tem `--`; o equivalente e `/C:`, e a query nunca pode
+    /// aparecer como argumento solto (ai um `/` inicial viraria opcao).
+    #[test]
+    fn findstr_args_embrulham_a_query_em_barra_c() {
+        for adversarial in ["/OFF", "-f/etc/passwd", "--pre=/bin/sh"] {
+            let args = findstr_args(adversarial);
+            assert!(args.contains(&format!("/C:{adversarial}")), "{args:?}");
+            assert!(
+                !args.iter().any(|a| a == adversarial),
+                "query solta na linha do findstr: {args:?}"
+            );
+        }
+    }
+
+    /// Fallback Unix de ponta a ponta: os argumentos que a tool monta, dados
+    /// ao `grep` de verdade. O caminho de fallback so dispara quando o `rg`
+    /// nao existe na maquina, o que nao da para forcar de dentro do teste —
+    /// entao o que se exercita e exatamente a linha de comando que a tool
+    /// produz, sem reescreve-la a mao.
+    ///
+    /// Sem o `--`, o grep leria `/etc/passwd` como arquivo de padroes (`-f`) e
+    /// nao acharia a linha; com ele, a busca e literal e acha.
+    #[cfg(not(windows))]
+    #[test]
+    fn grep_trata_query_com_traco_como_texto_literal() {
+        let dir = std::env::temp_dir().join(format!(
+            "garra-grep-flag-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        std::fs::write(dir.join("notas.txt"), "antes -f/etc/passwd depois\n").expect("write");
+
+        let saida = std::process::Command::new("grep")
+            .args(grep_args("-f/etc/passwd", 0))
+            .current_dir(&dir)
+            .output();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let saida = saida.expect("grep tem de existir em Unix");
+        let stdout = String::from_utf8_lossy(&saida.stdout);
+        assert!(
+            stdout.contains("notas.txt"),
+            "a query devia ser padrao literal; stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&saida.stderr)
+        );
     }
 }
