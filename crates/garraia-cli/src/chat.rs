@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, CodeReviewTool,
-    DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, FileReadTool,
+    DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, FileJail, FileReadTool,
     FileWriteTool, ListDirTool, LlamaCppProvider, LlmProvider, MessagePart, OllamaProvider,
     OpenAiProvider, RepoSearchTool, RunTestsTool, WebFetchTool, WebSearchTool,
     normalize_ollama_tag, tools::git_diff_tool::GitDiffTool,
@@ -208,17 +208,25 @@ fn register_cli_tools(
     brave_key: Option<String>,
     bash_allowlist: Vec<String>,
 ) {
-    runtime.register_tool(Box::new(FileReadTool::new(None)));
-    runtime.register_tool(Box::new(FileWriteTool::new(None)));
+    // #1244: na CLI quem roda o binario e o dono da maquina, e o diretorio
+    // corrente e a escolha explicita dele — dai o CWD ser raiz aqui e nao no
+    // gateway, que atende pedido de terceiro. `agent.file_roots` soma.
+    let file_jail = FileJail::from_config_roots_plus_cwd(&config.agent.file_roots);
+    runtime.register_tool(Box::new(FileReadTool::new(file_jail.clone())));
+    runtime.register_tool(Box::new(FileWriteTool::new(file_jail.clone())));
     // #1225: mesma policy de sandbox do gateway, pela MESMA funcao
     // (`sandbox_policy_from`) — o `garra chat` nao pode divergir do servidor
     // sobre onde um comando roda. Sem `agent.sandbox` no config a policy e
     // `Off` e nada muda.
+    //
+    // As duas correcoes sao ortogonais e ficam as duas: o jail decide ONDE o
+    // arquivo pode estar, a policy decide ONDE o comando roda. O `bash`
+    // continua fora do jail de proposito — ver #1272.
     let mut bash_tool = BashTool::new_with_confirmation(Some(30)).with_allowlist(bash_allowlist);
     bash_tool.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
     runtime.register_tool(Box::new(bash_tool));
     runtime.register_tool(Box::new(GitDiffTool::new(None, None)));
-    runtime.register_tool(Box::new(ListDirTool::new(None)));
+    runtime.register_tool(Box::new(ListDirTool::new(file_jail, None)));
     runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
     // Runs whatever the project's test script says; confirmed like `bash`.
     runtime.register_tool(Box::new(RunTestsTool::new_with_confirmation(None)));
