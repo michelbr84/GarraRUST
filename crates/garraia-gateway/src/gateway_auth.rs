@@ -137,12 +137,10 @@ impl ApiKeyGate {
     /// divergência atual — mas quem estender o hot-reload precisa mexer
     /// aqui **e** em `auth_check`, que lê o mesmo campo.
     pub fn from_config(gateway: &garraia_config::GatewayConfig) -> Self {
-        let key = gateway
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .map(Arc::from);
+        // A normalizacao mora em `GatewayConfig::api_key_normalizada` para
+        // que o gate, o `garra config check` e o `/api/settings/effective`
+        // nao possam divergir sobre o mesmo `api_key: "  "` (#1241).
+        let key = gateway.api_key_normalizada().map(Arc::from);
         Self { key }
     }
 
