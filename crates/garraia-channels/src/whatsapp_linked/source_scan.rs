@@ -134,6 +134,48 @@ const FORBIDDEN: &[&str] = &[
     "data = ",
 ];
 
+/// Consome UM pedaco do item que segue um `#[cfg(test)]` e diz ao cortador o
+/// que fazer em seguida.
+///
+/// Existe como funcao, e nao inline no laco, porque ela roda em DOIS lugares:
+/// sobre o resto da linha do proprio atributo (`#[cfg(test)] use std::fmt;`) e
+/// sobre as linhas seguintes (`#[cfg(test)]` sozinho, item na linha de baixo).
+/// Eram esses dois lugares que a rodada 5 tratou de formas diferentes — e a
+/// forma "mesma linha" ficou sem tratamento nenhum.
+///
+/// - Abriu chave e ela continua aberta: comeca o modo "apaga".
+/// - Abriu e fechou no mesmo pedaco (`mod tests { fn t() {} }`): o item acabou
+///   ali.
+/// - Sem chave e terminando em `;` (`mod tests;`, `use …;`, `const …;`): o
+///   item acabou ali.
+/// - Comentario ou outro atributo: nao decide nada, o item continua pendente.
+fn absorb_cfg_test_item(
+    text: &str,
+    pending: &mut bool,
+    in_tests: &mut bool,
+    brace_depth: &mut i32,
+) {
+    // Comentario entre o atributo e o item nao decide nada: um `// veja foo;`
+    // nao encerra o item.
+    if text.starts_with("//") {
+        return;
+    }
+    let opens = text.matches('{').count() as i32;
+    let closes = text.matches('}').count() as i32;
+    *brace_depth += opens - closes;
+    if opens > 0 {
+        *pending = false;
+        if *brace_depth > 0 {
+            *in_tests = true;
+        } else {
+            *brace_depth = 0;
+        }
+    } else if text.ends_with(';') {
+        *pending = false;
+        *brace_depth = 0;
+    }
+}
+
 /// O fonte com os blocos `#[cfg(test)]` apagados, preservando a numeracao das
 /// linhas (cada linha removida vira uma linha vazia).
 ///
@@ -158,6 +200,7 @@ const FORBIDDEN: &[&str] = &[
 /// quando uma chave de verdade abre um bloco. Um item que fecha em `;` apaga
 /// exatamente a propria linha.
 fn production_source(source: &str) -> String {
+    const ATTR: &str = "#[cfg(test)]";
     let mut out = String::with_capacity(source.len());
     // Vimos `#[cfg(test)]` e ainda nao sabemos se o item abre bloco.
     let mut pending = false;
@@ -165,37 +208,24 @@ fn production_source(source: &str) -> String {
     let mut brace_depth = 0i32;
     for raw in source.lines() {
         let line = raw.trim();
-        if !in_tests && !pending && line.starts_with("#[cfg(test)]") {
-            pending = true;
+        if !in_tests && !pending && line.starts_with(ATTR) {
             brace_depth = 0;
+            pending = true;
+            // **O resto da linha e parte do item**, e nao lixo a ignorar.
+            // Setar `pending` e seguir em frente era o furo da rodada 5 pela
+            // metade: em `#[cfg(test)] use std::fmt;` o item ja acabou nesta
+            // linha, mas o cortador ia julgar a PROXIMA linha como se ela
+            // fosse o item — e a primeira linha de producao que abrisse chave
+            // ligava o modo "apaga".
+            let rest = line[ATTR.len()..].trim();
+            if !rest.is_empty() {
+                absorb_cfg_test_item(rest, &mut pending, &mut in_tests, &mut brace_depth);
+            }
             out.push('\n');
             continue;
         }
         if pending {
-            // Comentario entre o atributo e o item nao decide nada: um
-            // `// veja foo;` nao encerra o item.
-            if line.starts_with("//") {
-                out.push('\n');
-                continue;
-            }
-            let opens = line.matches('{').count() as i32;
-            let closes = line.matches('}').count() as i32;
-            brace_depth += opens - closes;
-            if opens > 0 {
-                // Abriu bloco: se ele continua aberto, o modo "apaga" comeca
-                // aqui; se fechou na mesma linha, o item ja acabou.
-                pending = false;
-                if brace_depth > 0 {
-                    in_tests = true;
-                } else {
-                    brace_depth = 0;
-                }
-            } else if line.ends_with(';') {
-                // Item sem chave (`mod tests;`, `use …;`, `const …;`): apaga
-                // esta linha e SO esta.
-                pending = false;
-                brace_depth = 0;
-            }
+            absorb_cfg_test_item(line, &mut pending, &mut in_tests, &mut brace_depth);
             out.push('\n');
             continue;
         }
@@ -882,7 +912,7 @@ fn the_qr_renderer_never_touches_the_terminal_state() {
 
 /// **Um `#[cfg(test)]` sobre item sem chave nao pode cegar o arquivo.**
 ///
-/// Este e o furo de uma linha que a rodada 5 fechou. `mod.rs:77` ja tem
+/// Este e o furo de uma linha que a rodada 5 fechou. `mod.rs:76` ja tem
 /// `#[cfg(test)] mod source_scan;` na arvore — o dano hoje e zero so porque a
 /// declaracao esta na ultima linha do arquivo. As tres varreduras que usam
 /// [`production_source`] (macro de log, `expose` fora da allowlist,
@@ -939,6 +969,68 @@ fn vaza(blob: &SessionBlob) {
         );
     }
 
+    // **A forma que a rodada 5 nao cobriu: atributo e item na MESMA linha.**
+    // O primeiro ramo consumia a linha inteira e deixava `pending = true`; a
+    // proxima linha nao-comentario era avaliada como se fosse o item, e a
+    // primeira linha de producao que abrisse chave ligava o modo "apaga".
+    for item in [
+        "#[cfg(test)] use std::fmt;",
+        "#[cfg(test)] mod tests;",
+        "#[cfg(test)] const SO_NO_TESTE: u8 = 1;",
+    ] {
+        let fonte = format!("{item}\n\nfn prod() {{\n    let x = 1;\n}}\n");
+        let producao = production_source(&fonte);
+        assert!(
+            producao.contains("fn prod()"),
+            "`{item}` (atributo e item na mesma linha) apagou a producao seguinte:\n{producao}"
+        );
+        assert!(
+            !producao.contains("SO_NO_TESTE") && !producao.contains("std::fmt"),
+            "`{item}` e codigo de teste e precisa sair do texto de producao:\n{producao}"
+        );
+    }
+
+    // E a mesma forma COM bloco na mesma linha: o item acaba ali.
+    let uma_linha = "#[cfg(test)] mod tests { fn t() {} }\n\nfn prod() {}\n";
+    let producao = production_source(uma_linha);
+    assert!(
+        !producao.contains("fn t()"),
+        "`#[cfg(test)] mod tests {{ … }}` numa linha so precisa sair:\n{producao}"
+    );
+    assert!(
+        producao.contains("fn prod()"),
+        "e o que vem depois precisa sobreviver:\n{producao}"
+    );
+
+    // **Aninhado, que e a forma mais funda do mesmo furo.** Em coluna 0 o
+    // guarda de topo de arquivo ainda pegaria; dentro de um `mod`, nao — e
+    // as tres varreduras ficam cegas juntas, a mesma coincidencia
+    // "verde com bug".
+    let aninhado = r#"
+mod interno {
+    #[cfg(test)] use std::fmt;
+    pub fn vaza(blob: &SessionBlob) {
+        let s = blob.expose();
+        tracing::info!(dado = %s, "vazou a sessao inteira");
+        eprintln!("sessao: {}", blob.expose());
+    }
+}
+"#;
+    let producao = production_source(aninhado);
+    assert!(
+        producao.contains("tracing::info!"),
+        "a producao dentro do `mod` foi apagada por um `#[cfg(test)]` de uma \
+linha so:\n{producao}"
+    );
+    assert!(
+        !offending_log_blocks("aninhado.rs", &producao).is_empty(),
+        "o log com material de sessao precisa ser reprovado mesmo aninhado"
+    );
+    assert!(
+        !exposes_outside_the_allowlist("aninhado.rs", aninhado).is_empty(),
+        "o `expose()` fora da allowlist precisa ser reprovado mesmo aninhado"
+    );
+
     // E o bloco de verdade continua sendo apagado inteiro.
     let com_bloco =
         "#[cfg(test)]\nmod tests {\n    fn t() {\n        let x = 1;\n    }\n}\n\nfn prod() {}\n";
@@ -966,19 +1058,111 @@ fn vaza(blob: &SessionBlob) {
     );
 }
 
-/// **Nenhum item de topo de arquivo pode desaparecer da producao.**
+/// Indentacao da linha, ou `None` se ela e vazia/so espaco.
+fn indent_of(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    (!trimmed.is_empty()).then(|| line.len() - trimmed.len())
+}
+
+/// O item que ABRE o bloco que contem a linha `i`: a linha mais proxima acima
+/// com indentacao estritamente menor **que termina em `{`**.
 ///
-/// A asserção barata que faltava: um item no primeiro nivel (coluna 0) e
-/// producao por construcao — o conteudo de um `#[cfg(test)] mod tests { … }`
-/// e indentado. Se [`production_source`] apagar um deles, apagou producao, e
-/// nao importa por qual caminho. Ela e global e nao depende de haver violacao
-/// nenhuma na arvore, que e o que distingue regra viva de regra ausente.
+/// O `ends_with('{')` nao e cosmetico. Sem ele, a continuacao de um literal de
+/// string multilinha — que fica encostada na coluna 0 mesmo dentro de um `mod`
+/// — passava por "bloco que me contem", e todo o `mod tests` abaixo dela
+/// deixava de ser reconhecido como teste. `session.rs:1247` e uma dessas.
+fn enclosing_opener(lines: &[&str], i: usize) -> Option<usize> {
+    let ind = indent_of(lines[i])?;
+    (0..i).rev().find(|&j| {
+        indent_of(lines[j]).is_some_and(|x| x < ind) && lines[j].trim_end().ends_with('{')
+    })
+}
+
+/// A linha `i` carrega `#[cfg(test)]` — nela mesma, ou nos atributos e
+/// comentarios imediatamente acima, na mesma indentacao?
+fn attributed_with_cfg_test(lines: &[&str], i: usize) -> bool {
+    let Some(ind) = indent_of(lines[i]) else {
+        return false;
+    };
+    if lines[i].trim_start().starts_with("#[cfg(test)]") {
+        return true;
+    }
+    for j in (0..i).rev() {
+        let Some(jind) = indent_of(lines[j]) else {
+            continue; // linha em branco nao separa atributo de item
+        };
+        if jind != ind {
+            return false;
+        }
+        let t = lines[j].trim_start();
+        if let Some(rest) = t.strip_prefix("#[cfg(test)]") {
+            // So atribui a NOSSA linha se estiver sozinho. Com item na mesma
+            // linha (`#[cfg(test)] use std::fmt;`) aquela linha e um item
+            // completo, que acabou nela — e e justamente essa forma que
+            // cegava o cortador. Trata-la como atributo daria a resposta
+            // errada com a mesma cara de certa.
+            return rest.trim().is_empty();
+        }
+        // Outro atributo ou comentario entre o `#[cfg(test)]` e o item nao
+        // encerra a busca — `#[allow(…)]` e doc-comment sao normais ali.
+        if t.starts_with("#[") || t.starts_with("//") {
+            continue;
+        }
+        return false;
+    }
+    false
+}
+
+/// A linha `i` esta dentro de algum item `#[cfg(test)]`, em qualquer
+/// profundidade?
+///
+/// # Por que por indentacao, e nao contando chaves
+///
+/// Esta e a **segunda opiniao** sobre a mesma pergunta que [`production_source`]
+/// responde. Ela so vale como guarda se chegar a resposta por outro caminho:
+/// se as duas contassem chaves, o mesmo erro de contagem cegaria as duas
+/// juntas — que e exatamente a falha que esta suite ja viu duas vezes. Aqui a
+/// estrutura vem da INDENTACAO, e ela e confiavel porque `cargo fmt --check`
+/// e gate de CI neste repositorio.
+///
+/// Sobe de bloco em bloco: basta que ALGUM ancestral seja `#[cfg(test)]` para
+/// a linha ser codigo de teste. Chegar ao topo sem encontrar nenhum significa
+/// producao.
+fn is_under_cfg_test(lines: &[&str], i: usize) -> bool {
+    let mut idx = i;
+    loop {
+        if attributed_with_cfg_test(lines, idx) {
+            return true;
+        }
+        match enclosing_opener(lines, idx) {
+            Some(parent) => idx = parent,
+            None => return false,
+        }
+    }
+}
+
+/// **Nenhum item de producao pode desaparecer, em nenhuma profundidade.**
+///
+/// A asserção barata que faltava: se [`production_source`] apagar um item que
+/// nao e de teste, apagou producao, e nao importa por qual caminho. Ela e
+/// global e nao depende de haver violacao nenhuma na arvore, que e o que
+/// distingue regra viva de regra ausente.
 ///
 /// Foi isto que a versao anterior nao tinha: mover `#[cfg(test)] mod
-/// source_scan;` de `mod.rs:77` para o topo do arquivo cegava `mod.rs`
+/// source_scan;` de `mod.rs:76` para o topo do arquivo cegava `mod.rs`
 /// inteiro — incluindo `pub const CONFIG_KEY` — sem nenhum teste piscar.
+///
+/// # Por que "em qualquer profundidade", e nao so coluna 0
+///
+/// A primeira versao olhava so a coluna 0, com o argumento de que o conteudo
+/// de um `#[cfg(test)] mod tests { … }` e indentado. O argumento e verdadeiro
+/// e a guarda era fraca do mesmo jeito: um `#[cfg(test)] use std::fmt;`
+/// DENTRO de um `mod` interno apagava o resto daquele `mod` sem tocar em
+/// nenhuma linha de coluna 0 — as tres varreduras cegas ao mesmo tempo, e a
+/// guarda de topo acusando `[]`. Quem decide o que e teste aqui e
+/// [`is_under_cfg_test`], que chega a resposta pela indentacao.
 #[test]
-fn production_source_never_drops_a_top_level_item() {
+fn production_source_never_drops_a_production_item() {
     const ITEM_STARTS: &[&str] = &[
         "pub ",
         "impl ",
@@ -996,23 +1180,31 @@ fn production_source_never_drops_a_top_level_item() {
     for (name, source) in SOURCES {
         let texto = production_source(source);
         let producao: Vec<&str> = texto.lines().collect();
-        for (i, raw) in source.lines().enumerate() {
-            // Coluna 0 apenas: o corpo de um `mod tests` e indentado.
-            if raw.starts_with(char::is_whitespace) || raw.is_empty() {
+        let linhas: Vec<&str> = source.lines().collect();
+        let mut vistos = 0usize;
+        for (i, raw) in linhas.iter().enumerate() {
+            let t = raw.trim_start();
+            if !ITEM_STARTS.iter().any(|p| t.starts_with(p)) {
                 continue;
             }
-            if !ITEM_STARTS.iter().any(|p| raw.starts_with(p)) {
+            if is_under_cfg_test(&linhas, i) {
                 continue;
             }
+            vistos += 1;
             assert_eq!(
                 producao.get(i).copied(),
-                Some(raw),
-                "{name}:{}: `{raw}` e um item de topo de arquivo — producao por \
-construcao — e sumiu do texto varrido. A partir dali nenhuma das tres \
-varreduras deste modulo ve mais nada.",
+                Some(*raw),
+                "{name}:{}: `{raw}` e um item de PRODUCAO e sumiu do texto \
+varrido. A partir dali nenhuma das tres varreduras deste modulo ve mais nada.",
                 i + 1
             );
         }
+        // Sem isto a guarda seria vazia num arquivo em que `is_under_cfg_test`
+        // resolvesse tudo como teste — ela passaria sem ter olhado nada.
+        assert!(
+            vistos > 0,
+            "{name}: nenhum item de producao foi examinado; a guarda nao mediu nada"
+        );
     }
 }
 

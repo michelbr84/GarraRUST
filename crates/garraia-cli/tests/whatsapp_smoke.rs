@@ -197,6 +197,69 @@ vinculado:\n{stdout}"
     );
 }
 
+/// **Uma passphrase que so FALTA no ambiente nao pode consumir o arquivado.**
+///
+/// A prova de que o blob abre existia, e rodava DEPOIS de
+/// `restore_archive()`. Bastava rodar `garra whatsapp restore` num shell sem
+/// a passphrase do cofre — a distracao mais comum de quem normalmente a
+/// exporta — para o `.prev` sair do lugar: exit 69, arquivo consumido, e a
+/// mensagem mandando ler um QR novo, conselho que descartaria uma sessao
+/// intacta. Nao sobrava comando que ligasse o canal: um segundo `restore`,
+/// ja com a passphrase, respondia "nao ha arquivada".
+///
+/// O que este teste fixa nao e a mensagem, e o DISCO: o arquivado continua
+/// onde estava, e por isso a segunda tentativa ainda tem o que restaurar.
+#[test]
+fn a_missing_vault_passphrase_never_consumes_the_archived_session() {
+    let dir = tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let store = SessionStore::for_data_dir(&data_dir, DEFAULT_ACCOUNT).expect("conta valida");
+
+    // A sessao arquivada foi cifrada COM passphrase do cofre...
+    let key = SessionKey::resolve(store.dir(), Some("senha-do-cofre")).expect("chave");
+    store
+        .save(&SessionBlob::new("eyJhcnF1aXZhZGEiOjF9"), &key)
+        .expect("save");
+    assert!(store.archive().expect("archive"), "havia o que arquivar");
+
+    let account = data_dir.join("whatsapp").join("default");
+    let archived = account.join("session.enc.prev");
+    assert!(archived.is_file(), "o cenario comeca com um arquivado real");
+
+    // ...e o `restore` roda SEM ela no ambiente (o helper nao a exporta).
+    let out = garra(dir.path(), &["whatsapp", "restore"]);
+    assert_eq!(
+        out.status.code(),
+        Some(69),
+        "restore sem a chave certa precisa recusar:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // **A asserção que importa.** Antes da correcao o `.prev` ja tinha sido
+    // movido para `session.enc` quando a prova falhou.
+    assert!(
+        archived.is_file(),
+        "o arquivado foi CONSUMIDO por uma falha que nao destruiu nada de \
+fato — ele tem de continuar onde estava"
+    );
+    assert!(
+        !account.join("session.enc").exists(),
+        "e nada pode ter chegado ao lugar da sessao viva"
+    );
+
+    // E a mensagem nao pode mandar jogar fora o que ainda serve.
+    let tela = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !tela.contains("QR"),
+        "mandar ler um QR novo aqui descartaria uma sessao intacta:\n{tela}"
+    );
+}
+
 /// **`Context::from_env` ponta a ponta, com uma sessao VIVA.**
 ///
 /// Os testes unitarios montam o `Context` a mao, entao `from_env` — e com ela

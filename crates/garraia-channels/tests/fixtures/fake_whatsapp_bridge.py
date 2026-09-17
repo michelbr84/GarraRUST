@@ -78,14 +78,27 @@ SCENARIOS = (
     #                 morre cuspindo material que parece credencial no
     #                 stderr, para provar que a redacao esta ligada NO CALL
     #                 SITE e nao so testada como funcao pura.
+    # qr-then-retry-forever
+    #                 emite UM `qr` e depois SO `disconnected` com retry, uma
+    #                 vez por segundo: nunca um segundo `qr`, nunca
+    #                 `connected`. E a rede caindo logo DEPOIS de o QR
+    #                 aparecer, e e o unico cenario em que os tres tetos do
+    #                 driver ficam desarmados ao mesmo tempo — o de silencio
+    #                 porque cada `disconnected` o realimenta, o de QR porque
+    #                 a maquina estaciona em `QrRequired` (onde `tick` nao tem
+    #                 mais nada a expirar) e o de "nunca progrediu" porque
+    #                 aquele unico QR o desarmava para sempre.
     "connect-then-hang",
     "silent-start",
     "retry-forever",
+    "qr-then-retry-forever",
     "crash-with-secret",
 )
 
-# Base64 padrao de 32 bytes (44 chars, sem `.`/`@`/`-`/`_`): a forma exata de
-# uma `noiseKey` do Baileys. O teste Rust afirma que ela NAO chega a tela.
+# Base64 padrao sem `.`/`@`/`-`/`_`, com a forma de uma `noiseKey` do Baileys.
+# O literal tem 45 caracteres e decodifica 33 bytes -- e uma imitacao, e nao
+# uma chave de 32 B de verdade; o que o teste Rust afirma e que ela NAO chega
+# a tela, e para isso basta passar dos 40 caracteres de BASE64_RUN_MIN.
 SECRET_B64 = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0="
 
 
@@ -285,6 +298,16 @@ class Bridge:
         if scenario == "hang":
             self.qr()
             self.eof.wait(self.args.hang_secs)
+            return EXIT_OK
+
+        if scenario == "qr-then-retry-forever":
+            # UM QR, e depois so fracasso. O QR faz o pareamento progredir
+            # exatamente uma vez; dali em diante nada mais anda.
+            self.qr()
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.disconnected(428, "network", True, 1000)
+                time.sleep(1)
             return EXIT_OK
 
         if scenario == "retry-forever":

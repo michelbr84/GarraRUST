@@ -11,7 +11,13 @@
   npm, que nenhum alfabeto base64 produz. Com isso o vazamento cai para ruido
   (~1,3 caractere) tanto no base64 padrao quanto no url-safe, em quatro
   contextos diferentes, e os caminhos que a cauda existe para mostrar
-  continuam legiveis.
+  continuam legiveis. Isentar tambem `-` e `_`, que caminho real tem, seria a
+  escolha obvia e e a errada: medido, `npm ERR! _auth=<chave>` volta a vazar
+  os 44 de 44 caracteres em 100% dos casos, porque o `_` do nome do campo
+  entra na mesma sequencia e isenta a chave junto. Isentar `/` "junto de"
+  `-`/`_` tambem nao serve: a chave em base64 padrao traz a propria barra, e o
+  vazamento inteiro volta em 48,8% dos casos. O preco aceito e um falso
+  positivo conhecido — caminho longo sem ponto e sem `@` vira `<redigido>`.
 - **A redacao passou a ser exercitada nos dois lugares em que ela e aplicada
   (#1238).** Ela tinha teste como funcao pura e nenhum nos dois call sites:
   neutralizar os dois — devolver a linha crua em vez da redigida — desfazia a
@@ -27,7 +33,13 @@
   entao ficavam cegas juntas e a comparacao entre elas continuava batendo:
   verde com bug. `mod.rs` ja tem um `#[cfg(test)] mod source_scan;` na
   arvore — o dano era zero so porque ele esta na ultima linha do arquivo, e
-  move-lo para o topo cegaria o arquivo inteiro sem nenhum teste piscar.
+  move-lo para o topo cegaria o arquivo inteiro sem nenhum teste piscar. A
+  primeira correcao cobriu so o atributo em linha propria; com atributo e item
+  na MESMA linha (`#[cfg(test)] use std::fmt;`) o furo continuava aberto, e
+  aninhado dentro de um `mod` ele escapava tambem da guarda que olhava so a
+  coluna 0. Agora o cortador trata o resto da linha do atributo, e a guarda
+  alcanca item de producao em qualquer profundidade — por indentacao, e nao
+  contando chaves, para nao errar junto com o que ela vigia.
 - **A regra invertida do `expose()` deixou de poder sumir em silencio
   (#1238).** Numa arvore sem violacao, "zero achados" nao distingue regra viva
   de regra ausente, e arrancar a allowlist inteira deixava o teste verde. O

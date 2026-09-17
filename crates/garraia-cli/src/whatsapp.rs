@@ -487,6 +487,30 @@ fn restore(ctx: &Context) -> i32 {
         return EX_UNAVAILABLE;
     }
 
+    // **A PROVA VEM ANTES DO MOVIMENTO.** Ela ja existia, mas rodava depois
+    // do `restore_archive()`, e entao uma passphrase do cofre apenas AUSENTE
+    // do ambiente consumia o `.prev`: o comando saia 69, o arquivo ja tinha
+    // saido do lugar, e a mensagem mandava ler um QR novo — conselho que
+    // descartaria uma sessao intacta. O blob sobrevivia em `session.enc`, mas
+    // nao sobrava comando que ligasse o canal: um segundo `restore`, ja com a
+    // passphrase, respondia "nao ha arquivada".
+    //
+    // Provar primeiro custa a mesma leitura e devolve o erro com o arquivo
+    // ainda no lugar. Mesmo principio do relogio de progresso do `runner.rs`:
+    // nao destrua estado antes de saber que pode.
+    if let Err(e) = ctx.key().and_then(|key| store.load_archive(&key)) {
+        eprintln!("{e}");
+        eprintln!(
+            "{}",
+            t(
+                ctx.lang,
+                "A sessão arquivada não abre com a chave atual — ela NÃO foi movida e continua onde está. Se a senha do cofre estava só faltando no ambiente, exporte-a e rode de novo.",
+                "The archived session does not open with the current key — it was NOT moved and is still in place. If the vault passphrase was merely missing from the environment, export it and run again."
+            )
+        );
+        return EX_UNAVAILABLE;
+    }
+
     match store.restore_archive() {
         Ok(true) => {}
         // Inalcancavel depois dos dois guards acima, mas `restore_archive` e o
@@ -508,29 +532,6 @@ fn restore(ctx: &Context) -> i32 {
             return EX_SOFTWARE;
         }
     }
-    // A ORDEM (blob primeiro, `enabled` depois) so vale se o blob for de fato
-    // utilizavel. `restore_archive` move bytes; ela nao decifra nada. Se a
-    // `session.key` se perdeu ou a passphrase do cofre mudou desde o
-    // arquivamento, dizer "restaurada" e ligar o canal entrega ao gateway
-    // exatamente o `enabled` sem sessao que esta ordem existe para evitar — e
-    // ele paga timeout e retry a cada boot, em silencio.
-    //
-    // O `status` ja faz esta mesma prova (`store.load`); aqui ela custa cinco
-    // linhas e troca sucesso falso por erro que diz o que fazer.
-    let abre = ctx.key().and_then(|key| store.load(&key));
-    if let Err(e) = abre {
-        eprintln!("{e}");
-        eprintln!(
-            "{}",
-            t(
-                ctx.lang,
-                "A sessão foi restaurada mas não abre com a chave atual — o canal NÃO foi ligado. Rode `garra whatsapp` para ler um QR novo.",
-                "The session was restored but does not open with the current key — the channel was NOT enabled. Run `garra whatsapp` to scan a new QR."
-            )
-        );
-        return EX_UNAVAILABLE;
-    }
-
     println!(
         "✓ {}",
         t(ctx.lang, "Sessão restaurada.", "Session restored.")

@@ -98,9 +98,21 @@ const BASE64_RUN_MIN: usize = 40;
 ///
 /// **Por que `-` e `_` nao isentam**, embora caminho real os tenha: isenta-los
 /// cobre o base64 url-safe inteiro, e pior, um nome de chave vizinho cola na
-/// sequencia. Medido: com `-`/`_` isentando, `npm ERR! _auth=<chave>` vaza
-/// **22 dos 44 caracteres**, porque o `_` do `_auth` entra na mesma sequencia
-/// e isenta a chave junto. E o proprio `fake_npm.py` da fixture.
+/// sequencia. Medido sobre 400 chaves de 32 B: com `-`/`_` isentando,
+/// `npm ERR! _auth=<chave>` vaza **os 44 de 44 caracteres, em 100% dos
+/// casos** — o `_` do `_auth` entra na mesma sequencia e isenta a chave
+/// junto, sempre. E o proprio `fake_npm.py` da fixture. Nos outros tres
+/// contextos medidos o estrago depende do alfabeto: no padrao eles seguem
+/// protegidos (~1,2 caracteres), no url-safe vazam ~33 dos 44.
+///
+/// **E por que nao isentar `/` "junto de" `-`/`_`**, combinacao que nenhum
+/// alfabeto base64 produz sozinha: porque a chave e o nome vizinho entram na
+/// MESMA sequencia, e ai basta a propria chave conter uma barra — base64
+/// padrao tem — para a combinacao se formar. Medido sobre 4000 chaves:
+/// `npm ERR! _auth=<chave>` volta a vazar a chave inteira em **48,8%** dos
+/// casos. A isencao recuperaria um falso positivo real (um `EACCES … mkdir
+/// '/usr/lib/node_modules/…/subpasta'`, caminho sem ponto e sem `@`) ao preco
+/// de reabrir metade do caso que esta regra existe para fechar.
 ///
 /// O preco e um falso positivo conhecido: um caminho longo **sem ponto, sem
 /// `@`** vira `<redigido: N caracteres>`. Erro real de Node nomeia arquivo com
@@ -846,8 +858,8 @@ mod tests {
         );
 
         // Base64 **url-safe**: `-` e `_` no lugar de `+` e `/`. E por isso que
-        // a isencao nao pode ser "contem `-` ou `_`" — so `.`/`@`, ou `/`
-        // JUNTO de `-`/`_`, que nenhum alfabeto base64 produz.
+        // a isencao nao pode ser "contem `-` ou `_`": a isencao e so `.`/`@`,
+        // e nada mais.
         let url_safe = "c2VjcmV0-Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0_";
         let redigida = redact_tail_line(&format!("at connect ({url_safe})"));
         assert!(

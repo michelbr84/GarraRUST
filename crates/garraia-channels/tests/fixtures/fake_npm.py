@@ -12,8 +12,11 @@ Ignora os argumentos de proposito: quem o chama e o `npm_ci` de verdade, com
 
 import sys
 
-# Base64 padrao de 32 bytes (44 chars): a forma de uma chave do Baileys, com a
-# barra que a regra anterior usava para quebrar a sequencia em pedacos curtos.
+# Base64 padrao com a forma de uma chave do Baileys, com a barra que a regra
+# anterior usava para quebrar a sequencia em pedacos curtos. O literal tem 45
+# caracteres e decodifica 33 bytes -- e uma imitacao, nao uma chave de 32 B de
+# verdade, e para o que se mede aqui (a sequencia longa chega a tela?) o que
+# importa e so passar dos 40 caracteres de BASE64_RUN_MIN.
 SECRET_B64 = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0="
 
 sys.stderr.write("npm ERR! code ERESOLVE\n")
