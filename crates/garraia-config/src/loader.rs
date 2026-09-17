@@ -457,6 +457,51 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// #1273: the gateway's registry writer spells the tuning fields in
+    /// camelCase; the allowlist / inherit_env / enabled in snake_case. A
+    /// file written through the admin API must keep its declared values at
+    /// the next boot. `timeout` deliberately has NO camelCase alias — see
+    /// the field docs in `model.rs`.
+    #[test]
+    fn load_mcp_json_reads_gateway_written_tuning_aliases() {
+        let dir = temp_dir("mcp-aliases");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+        let mcp_json = r#"{
+            "mcpServers": {
+                "admin-written": {
+                    "command": "npx",
+                    "transport": "stdio",
+                    "timeoutSecs": 30,
+                    "memoryLimitMb": 256,
+                    "maxRestarts": 3,
+                    "restartDelaySecs": 2,
+                    "allowed_tools": ["read_file"],
+                    "inherit_env": true,
+                    "enabled": false
+                }
+            }
+        }"#;
+        fs::write(dir.join("mcp.json"), mcp_json).expect("failed to write mcp.json");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        let mcp = loader.load_mcp_json();
+
+        let cfg = mcp.get("admin-written").expect("entry parsed");
+        assert_eq!(cfg.allowed_tools, vec!["read_file".to_string()]);
+        assert!(cfg.inherit_env);
+        assert_eq!(cfg.enabled, Some(false));
+        assert_eq!(cfg.memory_limit_mb, Some(256));
+        assert_eq!(cfg.max_restarts, Some(3));
+        assert_eq!(cfg.restart_delay_secs, Some(2));
+        // Sem alias de propósito: ler o `timeoutSecs: 30` do writer
+        // sobrescreveria `timeouts.mcp.default_secs` em servidores em que o
+        // operador nunca escolheu um timeout.
+        assert_eq!(cfg.timeout, None);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn ensure_dirs_creates_expected_subdirectories() {
         let dir = temp_dir("ensure-dirs");

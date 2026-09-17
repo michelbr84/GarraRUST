@@ -493,6 +493,11 @@ pub async fn marketplace_install(
         memory_limit_mb: None,
         max_restarts: Some(5),
         restart_delay_secs: Some(5),
+        // #1273: marketplace installs carry no allowlist (allow-all) and stay
+        // env-isolated, consistent with the POST /admin/api/mcp contract.
+        allowed_tools: Vec::new(),
+        inherit_env: false,
+        enabled: None,
     };
 
     // Register in the MCP runtime registry
