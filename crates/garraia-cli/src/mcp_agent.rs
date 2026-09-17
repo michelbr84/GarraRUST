@@ -42,6 +42,7 @@ use garraia_agents::{
     WebFetchTool, WebSearchTool,
 };
 use garraia_config::AppConfig;
+use garraia_gateway::bootstrap::sandbox_policy_from;
 use rmcp::model::Tool;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
@@ -365,8 +366,17 @@ fn file_jail(config: &AppConfig) -> FileJail {
 /// validacao aprovando contra uma e as tools operando com outra (#1244,
 /// rodada 4 I2).
 fn build_tools(config: &AppConfig, jail: &FileJail) -> Vec<Box<dyn garraia_agents::Tool>> {
+    // #1225: `agent.sandbox` vale tambem no caminho MCP — e onde ele mais
+    // importa, porque aqui NAO existe canal de confirmacao humana (#1075 R1):
+    // o tier arriscado ja falha fechado, e o sandbox e a unica camada que
+    // pode conter o que passa. Mesma funcao do gateway e do `garra chat`.
+    //
+    // Ortogonal ao jail: a policy diz ONDE o comando roda, o jail diz ONDE o
+    // arquivo pode estar. O `bash` segue fora do jail — ver #1272.
+    let mut bash = BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone());
+    bash.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
     let mut tools: Vec<Box<dyn garraia_agents::Tool>> = vec![
-        Box::new(BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone())),
+        Box::new(bash),
         Box::new(FileReadTool::new(jail.clone())),
         Box::new(FileWriteTool::new(jail.clone())),
         Box::new(WebFetchTool::new(None)),
@@ -643,6 +653,93 @@ mod tests {
     //! diretorio real — mas nao escrevem nada e nao mexem em env.
 
     use super::*;
+
+    // ─── #1225: agent.sandbox chega ao BashTool ────────────────────────
+
+    /// Prova de fiacao ponta a ponta, pela funcao de PRODUCAO
+    /// (`build_tools`), e nao por uma reconstrucao do wiring dentro do teste.
+    ///
+    /// O caso escolhido e `mode = all` com `backend` ausente de proposito: a
+    /// policy entao recusa todo comando sem consultar binario nenhum do host,
+    /// entao o teste e deterministico com ou sem docker/podman/ssh
+    /// instalados. Antes da #1225 esta config era ignorada — os tres
+    /// construtores de producao fixavam `SandboxPolicy::default()` — e o
+    /// `echo` teria rodado no host normalmente.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandbox_do_config_chega_ao_bash_tool_pelo_build_tools() {
+        use garraia_agents::tools::ToolContext;
+
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+
+        let tools = build_tools(&config, &file_jail(&config));
+        let bash = tools
+            .iter()
+            .find(|t| t.name() == "bash")
+            .expect("build_tools registra a tool bash");
+
+        let ctx = ToolContext {
+            session_id: "teste-1225".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: Default::default(),
+            working_dir: None,
+            project_id: None,
+        };
+        let out = bash
+            .execute(&ctx, serde_json::json!({"command": "echo nunca"}))
+            .await
+            .expect("a tool devolve ToolOutput, nao Err");
+        assert!(out.is_error, "sandbox obrigatorio tem de bloquear: {out:?}");
+        assert!(
+            out.content.contains("sandbox"),
+            "a mensagem deve explicar o sandbox: {}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("nunca"),
+            "o comando nao pode ter rodado no host: {}",
+            out.content
+        );
+    }
+
+    /// E o contrapositivo, que e o que protege toda instalacao existente:
+    /// sem a secao `agent.sandbox`, `build_tools` devolve a mesma tool de
+    /// sempre e o comando roda no host.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sem_secao_sandbox_o_bash_continua_rodando_no_host() {
+        use garraia_agents::tools::ToolContext;
+
+        let cfg = AppConfig::default();
+        let tools = build_tools(&cfg, &file_jail(&cfg));
+        let bash = tools
+            .iter()
+            .find(|t| t.name() == "bash")
+            .expect("build_tools registra a tool bash");
+        let ctx = ToolContext {
+            session_id: "teste-1225".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: Default::default(),
+            working_dir: None,
+            project_id: None,
+        };
+        let out = bash
+            .execute(&ctx, serde_json::json!({"command": "echo intacto"}))
+            .await
+            .expect("ToolOutput");
+        // Assercao por conteudo e nao por igualdade exata: o que importa e
+        // que o comando rodou no host: um `\r\n` de plataforma ou um warn
+        // colado na saida nao e regressao de sandbox.
+        assert!(!out.is_error, "sem sandbox nada muda: {out:?}");
+        assert!(
+            out.content.contains("intacto"),
+            "o comando deveria ter rodado: {}",
+            out.content
+        );
+    }
 
     // ─── Tool descriptor ──────────────────────────────────────────────
 

@@ -18,7 +18,7 @@ use garraia_agents::{
 };
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
-use garraia_gateway::bootstrap::spawn_hardware_adapters;
+use garraia_gateway::bootstrap::{sandbox_policy_from, spawn_hardware_adapters};
 use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
@@ -214,9 +214,17 @@ fn register_cli_tools(
     let file_jail = FileJail::from_config_roots_plus_cwd(&config.agent.file_roots);
     runtime.register_tool(Box::new(FileReadTool::new(file_jail.clone())));
     runtime.register_tool(Box::new(FileWriteTool::new(file_jail.clone())));
-    runtime.register_tool(Box::new(
-        BashTool::new_with_confirmation(Some(30)).with_allowlist(bash_allowlist),
-    ));
+    // #1225: mesma policy de sandbox do gateway, pela MESMA funcao
+    // (`sandbox_policy_from`) — o `garra chat` nao pode divergir do servidor
+    // sobre onde um comando roda. Sem `agent.sandbox` no config a policy e
+    // `Off` e nada muda.
+    //
+    // As duas correcoes sao ortogonais e ficam as duas: o jail decide ONDE o
+    // arquivo pode estar, a policy decide ONDE o comando roda. O `bash`
+    // continua fora do jail de proposito — ver #1272.
+    let mut bash_tool = BashTool::new_with_confirmation(Some(30)).with_allowlist(bash_allowlist);
+    bash_tool.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
+    runtime.register_tool(Box::new(bash_tool));
     runtime.register_tool(Box::new(GitDiffTool::new(None, None)));
     runtime.register_tool(Box::new(ListDirTool::new(file_jail, None)));
     runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));

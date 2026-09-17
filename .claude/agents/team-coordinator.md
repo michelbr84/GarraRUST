@@ -26,14 +26,21 @@ Reutilize resultados já produzidos por teammates em vez de refazer. Se um agent
 
 | Papel | Agent | Modelo | Quando convocar |
 |-------|-------|--------|-----------------|
-| Analyst | `repo-analyst` | deepseek/deepseek-v4-flash-0731 | Sempre que a causa raiz não estiver óbvia |
-| Implementer | `implementer` | z-ai/glm-5.3-flash | Sempre que houver código a escrever |
-| Tester | `test-engineer` | deepseek/deepseek-v4-flash-0731 | Sempre que houver código escrito |
-| Reviewer | `code-reviewer` | openai/gpt-5.6-luna | Sempre que houver código escrito (obrigatório) |
-| Security | `security-auditor` | openai/gpt-5.6-luna | Risco R4, ou gatilho de superfície sensível |
-| DocWriter | `doc-writer` | deepseek/deepseek-v4-flash-0731 | API pública, setup, CHANGELOG, higiene |
+| Analyst | `repo-analyst` | anthropic/claude-opus-5 | Sempre que a causa raiz não estiver óbvia |
+| Implementer | `implementer` | anthropic/claude-opus-5 | Sempre que houver código a escrever |
+| Tester | `test-engineer` | anthropic/claude-opus-5 | Sempre que houver código escrito |
+| Reviewer | `code-reviewer` | anthropic/claude-opus-5 | Sempre que houver código escrito (obrigatório) |
+| Security | `security-auditor` | anthropic/claude-opus-5 | Risco R4, ou gatilho de superfície sensível |
+| DocWriter | `doc-writer` | anthropic/claude-opus-5 | API pública, setup, CHANGELOG, higiene |
 
-**Independência de julgamento é obrigatória.** O Reviewer e o Security usam um modelo *diferente* do Implementer de propósito: nunca aceite auto-revisão. Se o Implementer disser "está pronto", isso é uma *alegação*, não uma evidência.
+Roster em Claude desde 2026-09-14 (decisão do dono). Esta tabela estava
+defasada — listava deepseek/glm/gpt e contradizia `skills/assemble-team.md` e o
+`CLAUDE.md`, que já descreviam o roster atual (#1228 slice A).
+
+**Independência de julgamento é obrigatória**, e ela vem do **contexto
+separado**, não de modelos distintos: agente, prompt e worktree diferentes, e o
+Reviewer lê o **diff**, nunca o relatório do Implementer. Se o Implementer
+disser "está pronto", isso é uma *alegação*, não uma evidência.
 
 ## Classificação de risco
 

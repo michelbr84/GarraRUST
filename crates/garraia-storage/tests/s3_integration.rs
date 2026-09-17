@@ -12,7 +12,11 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region, SharedCredentialsProvider};
-use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
+use aws_sdk_s3::error::ProvideErrorMetadata;
+use aws_sdk_s3::types::{
+    BucketLocationConstraint, ChecksumAlgorithm, CreateBucketConfiguration, ObjectAttributes,
+    ServerSideEncryption,
+};
 use bytes::Bytes;
 use garraia_storage::{GetOptions, ObjectStore, PutOptions, S3Compatible, StorageError};
 use testcontainers::ImageExt;
@@ -59,7 +63,7 @@ async fn start_minio() -> Option<(
         Ok(c) => c,
         Err(e) => {
             // Um teste que se pula sozinho passa verde sem asserir nada — foi
-            // assim que estes 7 testes ficaram desde sempre "passando" sem
+            // assim que estes testes ficaram desde sempre "passando" sem
             // nunca tocar o backend S3. Onde o Docker E esperado (CI Linux),
             // `GARRAIA_REQUIRE_DOCKER` transforma o skip em falha, para que o
             // verde signifique que o MinIO rodou mesmo. Sem a variavel, o
@@ -295,16 +299,15 @@ async fn minio_presign_roundtrip_via_http() {
     assert_eq!(body.as_ref(), b"via-presign");
 }
 
+/// ADR 0004: todo `put` deste backend pede SSE-S3. O teste antigo se
+/// contentava com `exists()` e uma nota dizendo "confiamos que o MinIO
+/// ecoa o header" — o que nao assere nada, ainda mais numa suite que nunca
+/// subia o container. Agora lemos de volta o
+/// `x-amz-server-side-encryption` pelo cliente cru: ou o objeto esta
+/// cifrado do lado do servidor, ou o teste cai.
 #[tokio::test(flavor = "multi_thread")]
 async fn minio_put_enforces_sse() {
-    // This is a negative test: the bucket itself is not configured to
-    // reject non-SSE uploads, but we assert the S3Compatible `put`
-    // path always sends the SSE header. After put, HEAD returns
-    // x-amz-server-side-encryption = AES256 in MinIO's response, which
-    // `head` surfaces via the SDK's builtin field. We assert that here
-    // through a raw head_object call (go around our trait to see the
-    // extended metadata).
-    let Some((_c, store, _endpoint)) = start_minio().await else {
+    let Some((_c, store, endpoint)) = start_minio().await else {
         return;
     };
     let _meta = store
@@ -319,13 +322,22 @@ async fn minio_put_enforces_sse() {
         .await
         .expect("put");
 
-    // Re-issue a raw head_object using a fresh client aimed at the same
-    // MinIO to read back the SSE header. We share the client by calling
-    // exists (no-op side effect) and then extending via a debug-only
-    // accessor is not exposed — instead we just validate we could read
-    // the object and trust MinIO's `x-amz-server-side-encryption` echo
-    // when we explicitly asked for it in `put`.
     assert!(store.exists("sse-check/file/v1").await.expect("exists"));
+
+    let head = raw_client(&endpoint)
+        .await
+        .head_object()
+        .bucket(BUCKET)
+        .key("sse-check/file/v1")
+        .send()
+        .await
+        .expect("raw head_object");
+    assert_eq!(
+        head.server_side_encryption(),
+        Some(&ServerSideEncryption::Aes256),
+        "objeto gravado sem SSE-S3: {:?}",
+        head.server_side_encryption()
+    );
 }
 
 /// ROADMAP §3.5 — native S3 multipart for files > 16 MiB.
@@ -335,7 +347,7 @@ async fn minio_put_enforces_sse() {
 /// matching etag and metadata.
 #[tokio::test(flavor = "multi_thread")]
 async fn minio_put_stream_multipart_roundtrips_large_object() {
-    let Some((_c, store, _endpoint)) = start_minio().await else {
+    let Some((_c, store, endpoint)) = start_minio().await else {
         return;
     };
 
@@ -385,6 +397,72 @@ async fn minio_put_stream_multipart_roundtrips_large_object() {
     let got = store.get("multipart/big/v1").await.expect("get back");
     assert_eq!(got.bytes.as_ref(), payload.as_slice());
     assert_eq!(got.metadata.size_bytes, payload.len() as u64);
+
+    // #1229 — o servidor tem de ter VERIFICADO cada parte, nao so aceitado os
+    // bytes. `GetObjectAttributes` e o unico jeito de ler de volta o que o
+    // backend guardou por parte: se `put_stream_multipart` parar de declarar
+    // SHA-256 em `create`/`upload_part`/`complete`, os `checksum_sha256`
+    // abaixo somem e este teste cai.
+    //
+    // Se o MinIO desta tag nao popular esses campos, o teste TEM de falhar
+    // com a resposta inteira no log — e informacao que so o CI consegue
+    // produzir, e afrouxar a assercao aqui seria voltar ao verde vazio que a
+    // #1230 acabou de desfazer.
+    let attrs = raw_client(&endpoint)
+        .await
+        .get_object_attributes()
+        .bucket(BUCKET)
+        .key("multipart/big/v1")
+        .object_attributes(ObjectAttributes::Checksum)
+        .object_attributes(ObjectAttributes::ObjectParts)
+        .object_attributes(ObjectAttributes::Etag)
+        .send()
+        .await
+        .expect("get_object_attributes");
+
+    let parts = attrs
+        .object_parts()
+        .unwrap_or_else(|| panic!("GetObjectAttributes sem ObjectParts: {attrs:?}"));
+    assert_eq!(
+        parts.total_parts_count(),
+        Some(3),
+        "esperadas 3 partes de 8 MiB: {attrs:?}"
+    );
+    assert_eq!(parts.parts().len(), 3, "partes listadas: {attrs:?}");
+    for part in parts.parts() {
+        let sum = part.checksum_sha256().unwrap_or_else(|| {
+            panic!(
+                "parte {:?} sem checksum_sha256 — o servidor nao verificou esta parte: {attrs:?}",
+                part.part_number()
+            )
+        });
+        assert!(
+            !sum.is_empty(),
+            "parte {:?} com checksum_sha256 vazio: {attrs:?}",
+            part.part_number()
+        );
+    }
+    let composite = attrs
+        .checksum()
+        .and_then(|c| c.checksum_sha256())
+        .unwrap_or_else(|| panic!("objeto sem checksum SHA-256 agregado: {attrs:?}"));
+
+    // O checksum composto do S3 (`<digest>-<n>`) e o ETag do multipart NAO
+    // sao o `etag_sha256` que a crate devolve: esse e sempre o SHA-256 do
+    // conteudo inteiro, calculado por nos, e ja foi conferido acima contra
+    // `expected_etag`. Confundir os dois quebraria todo consumidor que trata
+    // `etag_sha256` como hash do arquivo.
+    assert_ne!(
+        composite, meta.etag_sha256,
+        "checksum composto do S3 vazou como etag_sha256: {attrs:?}"
+    );
+    if let Some(server_etag) = attrs.e_tag() {
+        assert_ne!(
+            server_etag.trim_matches('"'),
+            meta.etag_sha256,
+            "ETag do servidor vazou como etag_sha256: {attrs:?}"
+        );
+    }
 
     // Replace path: a smaller object through the same key must fully replace
     // the multipart content (single-put path).
@@ -466,4 +544,85 @@ async fn minio_multipart_aborts_when_stream_is_shorter_than_declared() {
         "multipart orfao deixado aberto: {:?}",
         open.uploads()
     );
+}
+
+/// #1229 — o checksum por parte tem de ser VERIFICADO pelo servidor, nao so
+/// transportado.
+///
+/// Os testes positivos provam que um multipart honesto passa; nenhum deles
+/// prova que um multipart desonesto seria barrado — e um servidor que
+/// ignorasse o `x-amz-checksum-sha256` passaria em todos eles igual. Aqui
+/// mandamos, pelo cliente cru, uma parte cujo checksum declarado nao bate com
+/// os bytes enviados: se o `upload_part` for aceito, o checksum e decorativo e
+/// a garantia de integridade do #1229 nao existe.
+#[tokio::test(flavor = "multi_thread")]
+async fn minio_rejects_upload_part_with_wrong_checksum() {
+    let Some((_c, _store, endpoint)) = start_minio().await else {
+        return;
+    };
+    let client = raw_client(&endpoint).await;
+    let key = "multipart/checksum-errado/v1";
+
+    let created = client
+        .create_multipart_upload()
+        .bucket(BUCKET)
+        .key(key)
+        .server_side_encryption(ServerSideEncryption::Aes256)
+        .checksum_algorithm(ChecksumAlgorithm::Sha256)
+        .send()
+        .await
+        .expect("create_multipart_upload");
+    let upload_id = created
+        .upload_id()
+        .expect("upload_id ausente na criacao")
+        .to_owned();
+
+    // SHA-256 de 32 bytes zerados: base64 bem-formado, tamanho certo, e
+    // categoricamente NAO e o digest do corpo abaixo.
+    const CHECKSUM_ERRADO: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let corpo = b"estes-bytes-nao-batem-com-o-checksum-declarado".to_vec();
+
+    let resultado = client
+        .upload_part()
+        .bucket(BUCKET)
+        .key(key)
+        .upload_id(&upload_id)
+        .part_number(1)
+        .checksum_sha256(CHECKSUM_ERRADO)
+        .body(aws_sdk_s3::primitives::ByteStream::from(corpo))
+        .send()
+        .await;
+
+    // Aborta antes de asserir: um `panic!` aqui nao pode deixar um multipart
+    // pendurado no bucket para o proximo teste tropecar.
+    let _ = client
+        .abort_multipart_upload()
+        .bucket(BUCKET)
+        .key(key)
+        .upload_id(&upload_id)
+        .send()
+        .await;
+
+    match resultado {
+        Ok(out) => panic!(
+            "MinIO ACEITOU uma parte com checksum errado — a verificacao por \
+             parte do #1229 nao esta acontecendo. Resposta: {out:?}"
+        ),
+        Err(e) => {
+            assert!(
+                e.as_service_error().is_some(),
+                "esperado erro de servico (o servidor recusando), veio erro de \
+                 transporte/SDK: {e:?}"
+            );
+            // O codigo exato varia entre implementacoes S3 (BadDigest,
+            // InvalidRequest, XAmzContentSHA256Mismatch...). O contrato que
+            // este teste trava e "o servidor recusa"; o codigo vai para o log
+            // para documentarmos o que o MinIO desta tag devolve.
+            eprintln!(
+                "upload_part com checksum errado recusado: code={:?} message={:?}",
+                e.code(),
+                e.message()
+            );
+        }
+    }
 }

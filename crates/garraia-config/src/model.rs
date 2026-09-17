@@ -848,6 +848,14 @@ pub struct AgentConfig {
     /// Brave resolve (`llm.brave.api_key`, cofre ou `BRAVE_API_KEY`).
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// #1225: secao `agent.sandbox` — a chave que faltava para o sandbox por
+    /// tool entregue na #1222 ser alcancavel. Ate aqui `SandboxPolicy` so era
+    /// construida pelo `default()` (= `off`) nos tres pontos de producao, e
+    /// `set_sandbox_policy` so era chamado pelos proprios testes: a
+    /// funcionalidade existia, era testada, e nenhum operador conseguia
+    /// liga-la. Ausente => `mode = off` => comportamento identico ao de antes.
+    #[serde(default)]
+    pub sandbox: crate::sandbox::SandboxConfig,
 }
 
 /// Backend da tool `web_search` (#1034).
@@ -1180,6 +1188,29 @@ pub struct McpServerConfig {
     /// Each subsequent attempt doubles the delay (exponential backoff), capped at 300s.
     /// Default: `5`.
     pub restart_delay_secs: Option<u64>,
+
+    /// #1075 (continuação): válvula de escape para o isolamento de ambiente.
+    ///
+    /// Por padrão (`false`) o processo do servidor MCP é iniciado com o
+    /// ambiente construído do zero — allowlist mínima do gateway (`PATH`,
+    /// `HOME`, locale, temp) mais o mapa `env` deste servidor. Segredos do
+    /// gateway (`GARRAIA_JWT_SECRET`, chaves de provider, passphrase do
+    /// cofre) **não** chegam ao filho.
+    ///
+    /// `true` restaura o comportamento antigo e entrega ao filho o ambiente
+    /// inteiro do gateway, segredos inclusive. Existe apenas para destravar
+    /// um servidor legado enquanto o operador migra as variáveis para `env`,
+    /// e é registrado com `warn!` a cada conexão.
+    ///
+    /// ```yaml
+    /// mcp:
+    ///   meu-servidor:
+    ///     env:
+    ///       GITHUB_TOKEN: ghp_...
+    ///     inherit_env: false   # default
+    /// ```
+    #[serde(default)]
+    pub inherit_env: bool,
 }
 
 #[cfg(test)]
