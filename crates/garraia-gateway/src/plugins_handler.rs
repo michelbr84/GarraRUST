@@ -166,11 +166,17 @@ pub fn build_plugin_routes(state: SharedState, admin_store: Arc<Mutex<AdminStore
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
-/// Permission gate shared by every plugin handler. Returns `Err(403)` if
+/// Permission gate shared por todo handler de plugin. Returns `Err(403)` if
 /// the caller's role lacks `Permission::ManagePlugins`. `Role::Admin` and
 /// `Role::Operator` carry it; `Role::Viewer` does not. Defined in
 /// `crate::admin::rbac`.
-fn check_manage_plugins(
+///
+/// `pub(crate)` desde o #1245: o install do marketplace MCP
+/// (`mcp_marketplace::marketplace_install`) exige a mesma permissao e devolve
+/// o mesmo corpo 403. Duplicar a checagem la criava a classe de bug "mudar um
+/// e esquecer o outro" — com uma funcao so, a resposta de negacao das duas
+/// portas para a mesma capacidade nao pode divergir em silencio.
+pub(crate) fn check_manage_plugins(
     admin: &AuthenticatedAdmin,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if has_permission(admin.role, Permission::ManagePlugins) {
