@@ -723,6 +723,25 @@ fn fonte_nao_loga_jid_cru_nem_material_de_sessao() {
         violacoes.is_empty(),
         "log com PII ou material de sessao (use `phone_last4`/`last4()`): {violacoes:#?}"
     );
+
+    // **E a varredura precisa ter lido o arquivo.** Um `'"'` ou `b'"'` em
+    // producao deixa uma aspa desemparelhada, o parser le dali ate a proxima
+    // aspa como se fosse string, e TODAS as fronteiras de literal se invertem:
+    // o arquivo passa a render zero bloco e o assert acima fica verde por nao
+    // ter nada para reprovar. A contagem crua do mesmo texto e o que denuncia.
+    let blocos = log_audit::chamadas_de_log(&fonte).len();
+    let esperado = log_audit::conta_macros_de_log(&fonte);
+    assert_eq!(
+        blocos, esperado,
+        "whatsapp_linked.rs tem {esperado} macro(s) de log e o parser devolveu \
+         {blocos}: menos blocos que macros significa varredura cega, e varredura \
+         cega fica verde"
+    );
+    assert!(
+        esperado > 0,
+        "premissa: este arquivo TEM log — se um dia nao tiver, a asserção acima \
+         passa a comparar zero com zero e nao guarda mais nada"
+    );
 }
 
 // ---------------------------------------------------------------------------

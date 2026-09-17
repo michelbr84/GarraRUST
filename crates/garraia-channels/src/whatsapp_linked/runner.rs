@@ -209,8 +209,33 @@ pub async fn pair_with(
     let had_existing = existing.is_some();
 
     // 2. Sobe o bridge e confere o protocolo ANTES de mandar qualquer coisa.
+    //
+    // Esta linha de status sai ANTES do handshake de proposito: ela e o
+    // primeiro sinal de vida que o usuario recebe depois das instrucoes, e sem
+    // ela um bridge que demora deixa a tela parada no texto do QR sem nada
+    // dizendo que alguma coisa esta acontecendo.
+    ui.status("iniciando o bridge…");
     let mut conn = BridgeConnection::spawn(launcher).await?;
-    let started = conn.expect_started().await?;
+    // Daqui ate o `tokio::select!` do laco, cada etapa roda sob prazo e com o
+    // Ctrl+C valendo — ver [`step_with_deadline`].
+    let handshake =
+        step_with_deadline(&mut cancel, options.stall_after_secs, conn.expect_started()).await;
+    let started = match handshake {
+        Ok(Step::Done(ev)) => ev,
+        Ok(Step::Cancelled) => {
+            conn.kill().await;
+            return Err(RunError::Cancelled);
+        }
+        Ok(Step::TimedOut) => {
+            let hint = conn.stderr_hint();
+            conn.kill().await;
+            return Err(handshake_timeout("o handshake", options.stall_after_secs, &hint).into());
+        }
+        Err(e) => {
+            conn.kill().await;
+            return Err(e.into());
+        }
+    };
     if let BridgeEvent::Started {
         baileys_version: None,
         ..
@@ -227,12 +252,37 @@ pub async fn pair_with(
     }
     machine.on(Event::BridgeStarted, 0);
 
-    conn.send(&BridgeCommand::SessionLoad { session: existing })
-        .await?;
-    conn.send(&BridgeCommand::Start {
-        mode: StartMode::Pair,
-    })
-    .await?;
+    for (what, command) in [
+        (
+            "`session_load`",
+            BridgeCommand::SessionLoad { session: existing },
+        ),
+        (
+            "`start`",
+            BridgeCommand::Start {
+                mode: StartMode::Pair,
+            },
+        ),
+    ] {
+        let sent =
+            step_with_deadline(&mut cancel, options.stall_after_secs, conn.send(&command)).await;
+        match sent {
+            Ok(Step::Done(())) => {}
+            Ok(Step::Cancelled) => {
+                conn.kill().await;
+                return Err(RunError::Cancelled);
+            }
+            Ok(Step::TimedOut) => {
+                let hint = conn.stderr_hint();
+                conn.kill().await;
+                return Err(handshake_timeout(what, options.stall_after_secs, &hint).into());
+            }
+            Err(e) => {
+                conn.kill().await;
+                return Err(e.into());
+            }
+        }
+    }
     ui.status(if had_existing {
         "validando a sessao existente…"
     } else {
@@ -428,7 +478,32 @@ pub async fn pair_with(
     }
 
     // O filho fechou o stdout: o codigo de saida e quem decide o que aconteceu.
-    let code = conn.wait().await?;
+    //
+    // Sob prazo pelo mesmo motivo do handshake: um filho que fecha o stdout e
+    // nao termina prende este `wait` para sempre, e aqui ja nao ha nenhum
+    // outro relogio — o laco acabou.
+    let waited = step_with_deadline(&mut cancel, options.stall_after_secs, conn.wait()).await;
+    let code = match waited {
+        Ok(Step::Done(code)) => code,
+        Ok(Step::Cancelled) => {
+            conn.kill().await;
+            return Err(RunError::Cancelled);
+        }
+        Ok(Step::TimedOut) => {
+            let hint = conn.stderr_hint();
+            conn.kill().await;
+            return Err(BridgeError::Protocol(format!(
+                "o bridge fechou a saida mas nao terminou em {}s — foi encerrado a forca. \
+Rode `garra whatsapp` de novo.{hint}",
+                options.stall_after_secs
+            ))
+            .into());
+        }
+        Err(e) => {
+            conn.kill().await;
+            return Err(e.into());
+        }
+    };
     if super::protocol::session_is_dead(code, dead_reason_code) {
         machine.on(Event::SessionDead, now);
         // NAO e `purge`: num re-vinculo o `session.enc.prev` e a sessao boa
@@ -487,6 +562,86 @@ a sessao gravada continua valendo"
         session_saved,
         phone_last4,
     })
+}
+
+/// Desfecho de uma etapa do handshake rodada sob prazo.
+///
+/// Existe porque as tres respostas — pronto, o usuario desistiu, o prazo
+/// estourou — precisam de tratamentos diferentes no chamador, e so ele tem a
+/// mensagem certa para cada uma. Um `Result<T, BridgeError>` achataria
+/// "cancelado" em "erro".
+enum Step<T> {
+    Done(T),
+    /// Ctrl+C durante a etapa.
+    Cancelled,
+    /// O prazo estourou sem resposta.
+    TimedOut,
+}
+
+/// Roda uma etapa do handshake com prazo **e** com o Ctrl+C valendo.
+///
+/// # Por que isto existe
+///
+/// O `tokio::select!` do laco principal — com o relogio, o watchdog de
+/// silencio e o braco de cancelamento — so comeca DEPOIS do handshake. Tudo o
+/// que vem antes dele (`expect_started`, os dois `send`) rodava sem prazo e
+/// sem cancelamento: um `node` que sobe e nao fala (shim de asdf/volta/nvm
+/// baixando versao, stub de snap esperando confirmacao, wrapper que le stdin)
+/// pendurava o terminal para sempre, e nem o primeiro nem o segundo Ctrl+C
+/// faziam nada — a CLI ja tinha trocado o SIGINT default por um canal que
+/// ninguem estava lendo.
+///
+/// O `send` esta aqui pelo mesmo motivo, e nao por simetria: `session_load`
+/// carrega o blob inteiro, e acima do buffer do pipe (64 KiB no Linux) um
+/// filho que nao le trava o `write_all`.
+///
+/// `biased` para que o cancelamento nunca fique atras do prazo, e o laco para
+/// que um `changed()` com valor falso — um `send(false)` de quem quer que seja
+/// — nao vire cancelamento, exatamente como no laco principal.
+async fn step_with_deadline<T, F>(
+    cancel: &mut watch::Receiver<bool>,
+    secs: u64,
+    fut: F,
+) -> Result<Step<T>, BridgeError>
+where
+    F: std::future::Future<Output = Result<T, BridgeError>>,
+{
+    let deadline = tokio::time::timeout(Duration::from_secs(secs), fut);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            biased;
+
+            changed = cancel.changed() => {
+                if changed.is_err() || *cancel.borrow() {
+                    return Ok(Step::Cancelled);
+                }
+            }
+
+            done = &mut deadline => {
+                return match done {
+                    Ok(Ok(value)) => Ok(Step::Done(value)),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Ok(Step::TimedOut),
+                };
+            }
+        }
+    }
+}
+
+/// A mensagem de um prazo estourado no handshake.
+///
+/// Destravar nao basta: quem le isto precisa saber o que aconteceu e o que
+/// fazer. O culpado quase sempre e o `node` da PATH, e o comando que confirma
+/// isso cabe na mesma linha.
+fn handshake_timeout(what: &str, secs: u64, hint: &str) -> BridgeError {
+    BridgeError::Protocol(format!(
+        "o bridge nao respondeu {what} em {secs}s. \
+O `node` da PATH pode estar preso antes de rodar o bridge — um shim (asdf, \
+volta, nvm, corepack) baixando versao, ou um stub esperando confirmacao. \
+Rode `node --version` a mao para ver se ele responde, e depois \
+`garra whatsapp` de novo.{hint}"
+    ))
 }
 
 /// Traduz um evento do bridge em evento da maquina e aplica.
@@ -711,15 +866,66 @@ async fn serve_once(
 ) -> Result<ServeExit, RunError> {
     let blob = store.load(key)?;
     let mut conn = BridgeConnection::spawn(launcher).await?;
-    conn.expect_started().await?;
-    conn.send(&BridgeCommand::SessionLoad {
-        session: Some(blob),
-    })
-    .await?;
-    conn.send(&BridgeCommand::Start {
-        mode: StartMode::Serve,
-    })
-    .await?;
+    // O mesmo prazo do `pair`, pela mesma razao, com uma diferenca de
+    // consequencia: aqui ninguem esta olhando o terminal. Sem ele um `node`
+    // preso no handshake nao pendura uma tela — pendura o boot do gateway, e a
+    // reconexao com backoff que existe logo acima nunca chega a rodar.
+    let handshake = step_with_deadline(
+        &mut *cancel,
+        DEFAULT_STALL_AFTER_SECS,
+        conn.expect_started(),
+    )
+    .await;
+    match handshake {
+        Ok(Step::Done(_)) => {}
+        Ok(Step::Cancelled) => {
+            conn.kill().await;
+            return Ok(ServeExit::Cancelled);
+        }
+        Ok(Step::TimedOut) => {
+            let hint = conn.stderr_hint();
+            conn.kill().await;
+            return Err(handshake_timeout("o handshake", DEFAULT_STALL_AFTER_SECS, &hint).into());
+        }
+        Err(e) => {
+            conn.kill().await;
+            return Err(e.into());
+        }
+    }
+
+    for (what, command) in [
+        (
+            "`session_load`",
+            BridgeCommand::SessionLoad {
+                session: Some(blob),
+            },
+        ),
+        (
+            "`start`",
+            BridgeCommand::Start {
+                mode: StartMode::Serve,
+            },
+        ),
+    ] {
+        let sent =
+            step_with_deadline(&mut *cancel, DEFAULT_STALL_AFTER_SECS, conn.send(&command)).await;
+        match sent {
+            Ok(Step::Done(())) => {}
+            Ok(Step::Cancelled) => {
+                conn.kill().await;
+                return Ok(ServeExit::Cancelled);
+            }
+            Ok(Step::TimedOut) => {
+                let hint = conn.stderr_hint();
+                conn.kill().await;
+                return Err(handshake_timeout(what, DEFAULT_STALL_AFTER_SECS, &hint).into());
+            }
+            Err(e) => {
+                conn.kill().await;
+                return Err(e.into());
+            }
+        }
+    }
 
     let mut saw_logged_out = false;
     let mut dead_reason_code: Option<i64> = None;

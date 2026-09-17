@@ -513,6 +513,102 @@ async fn a_silent_bridge_makes_the_driver_give_up_on_its_own() {
     assert!(!store.exists(), "nada pode ter sido gravado");
 }
 
+/// **O handshake tem prazo, e o Ctrl+C alcanca ele.**
+///
+/// Ate a revisao R4 tudo o que vinha antes do `tokio::select!` do laco —
+/// `expect_started` e os dois `send` — rodava sem relogio e sem cancelamento:
+/// o ticker, o watchdog de silencio e o braco de `cancel` so comecam depois.
+/// Um `node` que sobe e nunca fala (shim de asdf/volta/nvm, stub de snap)
+/// pendurava o terminal para sempre, e nem o primeiro nem o segundo Ctrl+C
+/// faziam nada, porque a CLI ja tinha trocado o SIGINT default do sistema por
+/// um canal que ninguem estava lendo.
+///
+/// Nenhum cenario cobria isso porque **todos** emitem `started` antes de
+/// qualquer outra coisa — inclusive o `hang` e o `garbage`. Dai o
+/// `silent-start`.
+///
+/// O `timeout` externo aqui e rede de seguranca do teste, nao o mecanismo: se
+/// ele for quem dispara, o driver falhou.
+#[tokio::test]
+async fn a_bridge_that_never_says_started_does_not_hang_the_terminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    let outer = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        pair_with(
+            &FixtureLauncher::new("silent-start", dir.path().to_path_buf()),
+            &store,
+            &key,
+            &mut SilentUi,
+            never_cancelled(),
+            PairOptions {
+                stall_after_secs: 3,
+                ..PairOptions::default()
+            },
+        ),
+    )
+    .await
+    .expect("o driver ficou pendurado no handshake: nenhum prazo o alcanca");
+
+    let err = outer.expect_err("um bridge mudo no handshake nao pode virar sucesso");
+    let msg = err.to_string();
+    // Destravar nao basta: a mensagem tem de dizer o que houve e o que fazer.
+    assert!(
+        msg.contains("nao respondeu o handshake"),
+        "a mensagem precisa nomear o handshake: {msg}"
+    );
+    assert!(
+        msg.contains("node --version"),
+        "e precisa dizer o que fazer a seguir: {msg}"
+    );
+    assert!(!store.exists(), "nada pode ter sido gravado");
+}
+
+/// E o Ctrl+C volta a matar o processo **durante** o handshake.
+///
+/// O prazo sozinho nao resolveria o que o dono nomeou como inaceitavel: 90 s
+/// de tela parada ainda sao 90 s. O braco de cancelamento e a outra metade, e
+/// ele vem `biased` para nunca ficar atras do relogio.
+#[tokio::test]
+async fn ctrl_c_during_the_handshake_is_not_swallowed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    let (tx, rx) = watch::channel(false);
+
+    let handle = {
+        let launcher = FixtureLauncher::new("silent-start", dir.path().to_path_buf());
+        let store = store.clone();
+        tokio::spawn(async move {
+            pair_with(
+                &launcher,
+                &store,
+                &key,
+                &mut SilentUi,
+                rx,
+                PairOptions {
+                    // Prazo folgado de proposito: quem tem de terminar este
+                    // teste e o Ctrl+C, nao o relogio.
+                    stall_after_secs: 600,
+                    ..PairOptions::default()
+                },
+            )
+            .await
+        })
+    };
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tx.send(true).expect("cancelar");
+
+    let err = tokio::time::timeout(std::time::Duration::from_secs(12), handle)
+        .await
+        .expect("o Ctrl+C precisa alcancar o handshake")
+        .expect("join")
+        .expect_err("cancelado");
+    assert!(matches!(err, RunError::Cancelled), "veio {err:?}");
+    assert!(!store.exists(), "Ctrl+C no handshake nao persiste nada");
+}
+
 /// O prazo de silencio nao pode disparar num pareamento que esta progredindo:
 /// cada evento do bridge zera o contador.
 #[tokio::test]

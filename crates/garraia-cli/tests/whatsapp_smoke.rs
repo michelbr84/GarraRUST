@@ -98,12 +98,12 @@ fn whatsapp_logout_without_a_session_exits_zero() {
 }
 
 #[test]
-fn whatsapp_help_lists_the_four_subcommands() {
+fn whatsapp_help_lists_every_subcommand() {
     let dir = tempdir().expect("tempdir");
     let out = garra(dir.path(), &["whatsapp", "--help"]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for sub in ["link", "cloud", "status", "logout"] {
+    for sub in ["link", "cloud", "status", "logout", "restore"] {
         assert!(stdout.contains(sub), "faltou `{sub}` no --help:\n{stdout}");
     }
 }
@@ -143,7 +143,38 @@ vinculado:\n{stdout}"
         stdout.contains("logout"),
         "e precisa dizer como limpar:\n{stdout}"
     );
+    // E precisa OFERECER a volta, nao so mandar apagar: `restore_archive()`
+    // existia e nenhuma superficie a expunha. Quem chegou aqui por um
+    // re-vinculo interrompido quer, quase sempre, a sessao de volta.
+    assert!(
+        stdout.contains("restore"),
+        "e precisa dizer como recuperar:\n{stdout}"
+    );
     assert!(archived.is_file(), "status e leitura: nao apaga nada");
+
+    // O `restore` devolve o arquivado ao lugar, sem TTY e sem perguntar.
+    let restaurado = garra(dir.path(), &["whatsapp", "restore"]);
+    assert!(
+        restaurado.status.success(),
+        "restore precisa aceitar o trabalho:\n{}",
+        String::from_utf8_lossy(&restaurado.stderr)
+    );
+    assert!(!archived.exists(), "o .prev saiu do lugar");
+    assert!(
+        account.join("session.enc").is_file(),
+        "e virou a sessao viva"
+    );
+    // Restaurado, ele volta a ser a sessao em uso — e um segundo `restore` ja
+    // nao tem o que fazer.
+    let de_novo = garra(dir.path(), &["whatsapp", "restore"]);
+    assert_eq!(
+        de_novo.status.code(),
+        Some(69),
+        "sem arquivada, `restore` recusa em vez de fingir que fez algo"
+    );
+    // E o `logout` continua limpando tudo: recoloca o arquivado ao lado da
+    // sessao viva para conferir que nenhum dos dois sobrevive.
+    std::fs::write(&archived, b"credencial-arquivada").expect("write");
 
     // Sem TTY o `logout` nao pergunta e vai direto ao ponto.
     let out = garra(dir.path(), &["whatsapp", "logout"]);

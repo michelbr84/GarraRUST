@@ -64,6 +64,65 @@ pub const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// Quantas linhas de stderr do filho ficam guardadas para o diagnostico.
 const STDERR_TAIL_LINES: usize = 30;
 
+/// Teto de caracteres por linha de stderr repassada ao usuario.
+///
+/// Stack trace de Node cabe folgado; despejo de credencial, nao.
+const STDERR_TAIL_LINE_CHARS: usize = 240;
+
+/// A partir de quantos caracteres uma sequencia continua de `[A-Za-z0-9+=]`
+/// deixa de parecer identificador e passa a parecer material cifrado.
+///
+/// 40 e folgado para nome de funcao, de modulo e de segmento de caminho. E a
+/// barra fica **de fora** da classe de proposito: com ela, um caminho inteiro
+/// (`/home/user/.local/share/garraia/...`) viraria uma sequencia so e seria
+/// redigido — e dizer qual arquivo o Node nao achou e justamente o motivo de
+/// esta cauda existir.
+const BASE64_RUN_MIN: usize = 40;
+
+/// Redige o que parece material cifrado numa linha de stderr do filho.
+///
+/// # Por que existe
+///
+/// `stderr_hint` repassa a cauda do stderr do Node **verbatim** para o
+/// terminal, e ela e a unica saida crua de ferramenta externa deste fluxo. O
+/// lado JS e cuidadoso — `pino` silencioso, `describeError` redigindo JID e
+/// digitos —, mas `describeError` nao cobre base64 de credencial, e um
+/// `throw` de dentro do Baileys, de um `JSON.stringify` de estado ou de um
+/// modulo de terceiros nao passa por ele. Nada mais redigia este caminho.
+///
+/// A regra e conservadora nos dois sentidos: corta sequencias longas que
+/// parecem base64 **e** limita o comprimento da linha, porque nenhuma das duas
+/// sozinha fecha o caso — base64 com `/` quebra em pedacos curtos, e uma linha
+/// truncada em 240 caracteres ainda seriam 240 caracteres de credencial.
+fn redact_tail_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if run.chars().count() >= BASE64_RUN_MIN {
+            let n = run.chars().count();
+            out.push_str(&format!("<redigido: {n} caracteres>"));
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for ch in line.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '+' || ch == '=' {
+            run.push(ch);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(ch);
+        }
+    }
+    flush(&mut run, &mut out);
+
+    if out.chars().count() > STDERR_TAIL_LINE_CHARS {
+        let cut: String = out.chars().take(STDERR_TAIL_LINE_CHARS).collect();
+        return format!("{cut}… (linha truncada)");
+    }
+    out
+}
+
 /// Falhas do bridge.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -316,13 +375,16 @@ pub async fn npm_ci(npm: &Path, dir: &Path) -> Result<(), BridgeError> {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let tail: Vec<&str> = stderr
+    // Mesma redacao do [`BridgeConnection::stderr_hint`]: e a mesma classe de
+    // saida crua indo para a mesma tela.
+    let tail: Vec<String> = stderr
         .lines()
         .rev()
         .take(STDERR_TAIL_LINES)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
+        .map(redact_tail_line)
         .collect();
     Err(BridgeError::NpmInstall {
         code: output
@@ -575,12 +637,16 @@ impl BridgeConnection {
     }
 
     /// Cauda do stderr, ja formatada para mensagem de erro.
+    ///
+    /// Cada linha passa por [`redact_tail_line`] **na entrada**, e nao na
+    /// formatacao: assim nem a copia guardada carrega o material, e nao ha
+    /// segundo caminho por onde ela possa sair sem redacao.
     pub fn stderr_hint(&mut self) -> String {
         while let Ok(line) = self.stderr_tail.try_recv() {
             if self.tail.len() == STDERR_TAIL_LINES {
                 self.tail.pop_front();
             }
-            self.tail.push_back(line);
+            self.tail.push_back(redact_tail_line(&line));
         }
         if self.tail.is_empty() {
             String::new()
@@ -688,6 +754,53 @@ async fn read_line_capped(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cauda do stderr do Node nao pode carregar credencial para a tela.
+    ///
+    /// L2 da auditoria R4: este era o **unico** caminho do fluxo que repassava
+    /// saida crua de ferramenta externa verbatim, e nada o redigia. O lado JS
+    /// redige JID e digitos, mas nao base64 de creds — e um `throw` de dentro
+    /// do Baileys nem passa por la.
+    #[test]
+    fn the_stderr_tail_never_carries_a_credential_to_the_screen() {
+        // Um blob de sessao caindo num stack trace.
+        let creds = "e".repeat(64) + &"Z".repeat(80);
+        let linha = format!("Error: failed to persist {creds} at Object.<anonymous>");
+        let redigida = redact_tail_line(&linha);
+        assert!(
+            !redigida.contains(&creds),
+            "o material saiu inteiro: {redigida}"
+        );
+        assert!(
+            redigida.contains("<redigido:"),
+            "e precisa dizer que cortou: {redigida}"
+        );
+        assert!(
+            redigida.starts_with("Error: failed to persist"),
+            "o diagnostico em volta tem de sobreviver: {redigida}"
+        );
+
+        // O que a cauda existe para mostrar continua legivel: caminho de
+        // arquivo, nome de modulo, numero de linha.
+        let util = "Error: Cannot find module '/home/user/.local/share/garraia/bridge/node_modules/@whiskeysockets/baileys/lib/index.js'";
+        assert_eq!(
+            redact_tail_line(util),
+            util,
+            "um erro de modulo nao pode virar `<redigido>` — e justamente o que \
+a cauda existe para dizer"
+        );
+
+        // E uma linha absurdamente longa e cortada, porque redigir sequencias
+        // sozinho nao fecha o caso: base64 com `/` quebra em pedacos curtos.
+        let longa = (0..400).map(|i| format!("{}/", i % 10)).collect::<String>();
+        let cortada = redact_tail_line(&longa);
+        assert!(
+            cortada.chars().count() <= STDERR_TAIL_LINE_CHARS + 20,
+            "a linha nao foi truncada: {} caracteres",
+            cortada.chars().count()
+        );
+        assert!(cortada.contains("truncada"), "e precisa dizer que truncou");
+    }
 
     struct FakeAssets(&'static [Asset]);
     impl BridgeAssets for FakeAssets {

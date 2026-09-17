@@ -11,8 +11,10 @@
   como conserto anti-corrida tinha uma corrida propria — tmp com fragmentos
   dos dois, renomeado por cima da config. Agora o sufixo e aleatorio e a
   abertura e `create_new`, que tambem recusa seguir symlink plantado no
-  caminho. E o temporario e apagado em QUALQUER falha, e nao so na do
-  `rename`.
+  caminho. E o temporario e apagado em qualquer falha a partir do
+  ponto em que ele e **nosso** — e so a partir dali: apagar um temporario que
+  o `create_new` acabou de recusar destruiria o arquivo do outro escritor,
+  que e exatamente o que o `create_new` existe para evitar.
   O par disso: `ConfigLoader::load` **recusa** um `config.yml` sem conteudo —
   em branco, ou so com comentarios — em vez de devolver `AppConfig::default()`
   com sucesso. Era o pior dos tres estados —

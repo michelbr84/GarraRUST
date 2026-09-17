@@ -60,6 +60,8 @@ pub enum Action {
     Cloud,
     Status,
     Logout,
+    /// Traz de volta a sessao que ficou em `session.enc.prev`.
+    Restore,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +194,7 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
     match action {
         Action::Status => status(ctx),
         Action::Logout => logout(ctx, prompter),
+        Action::Restore => restore(ctx),
         Action::Menu => menu(ctx, prompter),
         Action::Link => link(ctx, prompter),
         Action::Cloud => cloud(ctx, prompter),
@@ -421,10 +424,148 @@ fn print_archive_warning(ctx: &Context, store: &SessionStore) {
         "  {}",
         t(
             ctx.lang,
-            "Ela ainda é uma credencial válida. Apague com: garra whatsapp logout",
-            "It is still a valid credential. Delete it with: garra whatsapp logout"
+            "Ela ainda é uma credencial válida.",
+            "It is still a valid credential."
         )
     );
+    // Ate a revisao R4 este aviso so mandava APAGAR. `restore_archive()` ja
+    // existia e nenhuma superficie a expunha: a funcao que salva o usuario
+    // estava escrita e o botao nao existia. Quem chegou aqui por um
+    // re-vinculo que nao terminou quer, quase sempre, a sessao de volta — e
+    // apagar e a unica das duas escolhas que nao tem volta, entao ela vem
+    // depois.
+    if store.exists() {
+        // Ha sessao viva: restaurar por cima nao e o que `restore_archive`
+        // faz, e prometer isso seria mentira. Ver o docstring dela.
+        println!(
+            "  {}",
+            t(
+                ctx.lang,
+                "Há uma sessão em uso, então ela não será substituída. Para descartar a arquivada: garra whatsapp logout",
+                "A session is in use, so it will not be replaced. To discard the archived one: garra whatsapp logout"
+            )
+        );
+        return;
+    }
+    println!(
+        "  {}",
+        t(
+            ctx.lang,
+            "Para voltar a usá-la: garra whatsapp restore",
+            "To use it again: garra whatsapp restore"
+        )
+    );
+    println!(
+        "  {}",
+        t(
+            ctx.lang,
+            "Para apagá-la: garra whatsapp logout",
+            "To delete it: garra whatsapp logout"
+        )
+    );
+}
+
+/// `garra whatsapp restore` — devolve o `session.enc.prev` ao lugar.
+///
+/// # Por que este comando existe
+///
+/// Porque [`SessionStore::restore_archive`] existia desde a revisao anterior e
+/// **nenhuma superficie a expunha**: a funcao que recupera o vinculo estava
+/// escrita, testada, e o usuario nao tinha como chama-la. O `status` via o
+/// arquivado e mandava apaga-lo.
+///
+/// O caminho que produz um arquivado orfao foi fechado nesta mesma rodada (o
+/// handshake sem prazo do `runner`, que obrigava a SIGKILL e pulava o `Drop`
+/// do `ArchiveGuard`), mas fechar a porta nao devolve a sessao de quem ja
+/// passou por ela. Este comando devolve.
+///
+/// Ele **nao** sobrescreve uma sessao viva: quem decide isso e
+/// `restore_archive`, que recusa quando ha `session.enc` — e recusar e o
+/// certo, porque a viva e a que o servidor conhece. Nesse caso o comando diz
+/// o que ha e sai 69, sem apagar nada.
+fn restore(ctx: &Context) -> i32 {
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
+    print_header(ctx);
+
+    if !store.archive_path().is_file() {
+        println!(
+            "{}",
+            t(
+                ctx.lang,
+                "Não há sessão arquivada para restaurar.",
+                "There is no archived session to restore."
+            )
+        );
+        return EX_UNAVAILABLE;
+    }
+    if store.exists() {
+        println!(
+            "{}",
+            t(
+                ctx.lang,
+                "Já há uma sessão em uso — a arquivada não pode substituí-la.",
+                "A session is already in use — the archived one cannot replace it."
+            )
+        );
+        println!(
+            "{}",
+            t(
+                ctx.lang,
+                "Se quiser descartar a arquivada: garra whatsapp logout",
+                "To discard the archived one: garra whatsapp logout"
+            )
+        );
+        return EX_UNAVAILABLE;
+    }
+
+    match store.restore_archive() {
+        Ok(true) => {}
+        // Inalcancavel depois dos dois guards acima, mas `restore_archive` e o
+        // dono da regra e nao este comando: se ela recusar por um motivo que
+        // ainda nao existe, dizer "restaurado" seria mentira.
+        Ok(false) => {
+            eprintln!(
+                "{}",
+                t(
+                    ctx.lang,
+                    "A sessão arquivada não pôde ser restaurada.",
+                    "The archived session could not be restored."
+                )
+            );
+            return EX_UNAVAILABLE;
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    }
+    println!(
+        "✓ {}",
+        t(ctx.lang, "Sessão restaurada.", "Session restored.")
+    );
+
+    // ORDEM: o blob primeiro, o `enabled = true` depois — a mesma do `link`,
+    // pelo mesmo motivo (um `enabled` sem sessao faz o gateway pagar timeout e
+    // retry a cada boot).
+    if let Err(e) = enable_channel(ctx) {
+        eprintln!("{e}");
+        return EX_SOFTWARE;
+    }
+    println!(
+        "{}",
+        t(
+            ctx.lang,
+            "Ela só volta a valer se o WhatsApp ainda aceitar este aparelho — rode `garra whatsapp status` e, se não aceitar, `garra whatsapp` para ler um QR novo.",
+            "It only works again if WhatsApp still accepts this device — run `garra whatsapp status`, and if it does not, run `garra whatsapp` to scan a new QR."
+        )
+    );
+    0
 }
 
 fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
@@ -538,12 +679,44 @@ Settings → Linked devices.",
 /// terceira e o arquivado ter SUMIDO entre o `archive()` e o `drop` — e ai o
 /// usuario perdeu o vinculo anterior e precisa ouvir isso. Por isso o guard
 /// guarda `archived`: sem esse bit os tres casos tem a mesma cara.
+///
+/// # Por que a saida e injetada
+///
+/// Porque `Drop` nao devolve valor, nao propaga erro e nao aparece em nenhuma
+/// assinatura: com `println!`/`eprintln!` direto, a mensagem de MAIOR
+/// consequencia deste arquivo — "o vinculo antigo foi perdido" — nao tinha
+/// como ser afirmada por teste. A auditoria R4 mediu o custo disso: arrancar o
+/// braco `Ok(false) if self.archived && !self.store.exists()` inteiro e
+/// neutralizar o campo `archived` deixava os 28 testes do arquivo verdes,
+/// identicos ao baseline. Em producao o destino e o terminal; no teste e um
+/// vetor.
 struct ArchiveGuard<'a> {
     store: &'a SessionStore,
     lang: Lang,
     /// Havia mesmo um blob para arquivar? `archive()` devolve `false` num
     /// store vazio, e nesse caso nao restaurar nada e o esperado.
     archived: bool,
+    out: Box<dyn GuardOut + 'a>,
+}
+
+/// Para onde o [`ArchiveGuard`] fala. Ver o docstring dele.
+trait GuardOut {
+    /// Desfecho bom — em producao, stdout.
+    fn ok(&mut self, line: &str);
+    /// Desfecho ruim — em producao, stderr.
+    fn warn(&mut self, line: &str);
+}
+
+/// A saida de producao.
+struct TerminalOut;
+
+impl GuardOut for TerminalOut {
+    fn ok(&mut self, line: &str) {
+        println!("{line}");
+    }
+    fn warn(&mut self, line: &str) {
+        eprintln!("{line}");
+    }
 }
 
 impl<'a> ArchiveGuard<'a> {
@@ -551,46 +724,60 @@ impl<'a> ArchiveGuard<'a> {
         store: &'a SessionStore,
         lang: Lang,
     ) -> Result<Self, garraia_channels::whatsapp_linked::SessionError> {
+        Self::archive_to(store, lang, Box::new(TerminalOut))
+    }
+
+    /// [`ArchiveGuard::archive`] com a saida injetada.
+    fn archive_to(
+        store: &'a SessionStore,
+        lang: Lang,
+        out: Box<dyn GuardOut + 'a>,
+    ) -> Result<Self, garraia_channels::whatsapp_linked::SessionError> {
         let archived = store.archive()?;
         Ok(Self {
             store,
             lang,
             archived,
+            out,
         })
     }
 }
 
 impl Drop for ArchiveGuard<'_> {
     fn drop(&mut self) {
-        match self.store.restore_archive() {
+        let lang = self.lang;
+        let restored = self.store.restore_archive();
+        let archived = self.archived;
+        let live = self.store.exists();
+        match restored {
             // Sai DEPOIS da mensagem do desfecho ("Cancelado.", "Nenhum QR foi
             // lido."), que e a ordem certa: primeiro o que aconteceu, depois o
             // que sobrou.
-            Ok(true) => println!(
+            Ok(true) => self.out.ok(&format!(
                 "↩ {}",
                 t(
-                    self.lang,
+                    lang,
                     "A sessão anterior foi restaurada — nada foi desvinculado.",
                     "Your previous session was restored — nothing was unlinked."
                 )
-            ),
+            )),
             // Arquivamos, nao restauramos e nao ha sessao nova: o vinculo
             // anterior foi embora. Falar e o minimo — o usuario acabou de ler
             // "esta sessao nao vale mais" e sairia daqui achando que a antiga
             // continuava la.
-            Ok(false) if self.archived && !self.store.exists() => eprintln!(
+            Ok(false) if archived && !live => self.out.warn(&format!(
                 "! {}",
                 t(
-                    self.lang,
+                    lang,
                     "A sessão anterior não pôde ser restaurada — o vínculo antigo foi perdido. Rode `garra whatsapp` e leia um QR novo.",
                     "The previous session could not be restored — the old link is gone. Run `garra whatsapp` and scan a new QR."
                 )
-            ),
+            )),
             Ok(false) => {}
             // Sem `?` porque `Drop` nao propaga, e sem silencio porque uma
             // sessao boa presa no `.prev` e exatamente o que o usuario precisa
             // saber para recupera-la a mao.
-            Err(e) => eprintln!("{e}"),
+            Err(e) => self.out.warn(&format!("{e}")),
         }
     }
 }

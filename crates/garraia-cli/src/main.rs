@@ -416,6 +416,8 @@ enum WhatsAppCommands {
     Status,
     /// Desvincula e apaga a sessao deste aparelho.
     Logout,
+    /// Traz de volta a sessao arquivada por um re-vinculo que nao terminou.
+    Restore,
 }
 
 #[derive(Subcommand)]
@@ -1395,6 +1397,7 @@ fn main() -> Result<()> {
             Some(WhatsAppCommands::Cloud) => whatsapp::Action::Cloud,
             Some(WhatsAppCommands::Status) => whatsapp::Action::Status,
             Some(WhatsAppCommands::Logout) => whatsapp::Action::Logout,
+            Some(WhatsAppCommands::Restore) => whatsapp::Action::Restore,
         };
         let ctx = whatsapp::Context::from_env();
         let code = whatsapp::run(whatsapp_action, &ctx, &wizard::prompts::DialoguerPrompter);

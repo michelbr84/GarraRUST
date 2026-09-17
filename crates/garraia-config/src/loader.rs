@@ -318,43 +318,65 @@ impl ConfigLoader {
 /// blob de sessao, ate no sufixo: sao dois call sites e um padrao, e a
 /// alternativa era duas definicoes de "escrita segura" capazes de divergir.
 fn write_atomic_secret(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| Error::Config(format!("{} nao tem diretorio pai", path.display())))?;
-
     let nonce = u64::from_ne_bytes(garraia_security::random_bytes::<8>().map_err(|_| {
         Error::Config("RNG do sistema indisponivel para nomear o temporario da config".into())
     })?);
-    let tmp = dir.join(format!(
+    write_atomic_secret_with_nonce(path, bytes, nonce)
+}
+
+/// O caminho do temporario que [`write_atomic_secret_with_nonce`] vai usar.
+///
+/// Funcao nomeada, e nao um `format!` no meio da escrita, porque e o que
+/// permite ao teste plantar no caminho EXATO — e sem isso nao ha como pinar o
+/// `create_new`. Plantar no nome deterministico de antes do nonce so pina o
+/// nonce: trocar `create_new(true)` por `create(true).truncate(true)` deixa
+/// esse teste verde, porque o caminho plantado ja nao e o caminho escrito.
+/// Mesma licao, e mesma forma, do `session::tmp_path_for`.
+fn tmp_path_for(path: &Path, nonce: u64) -> PathBuf {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    dir.join(format!(
         ".{}.{nonce:016x}.tmp",
         path.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "config".into())
-    ));
+    ))
+}
 
-    // Qualquer falha daqui para baixo deixaria a config inteira num temporario
-    // orfao — 0600, entao nao e exposicao, mas e uma segunda copia que ninguem
-    // espera e que o proximo `save` nao reaproveita, porque o nome mudou. Por
-    // isso o desfecho de erro apaga o `tmp` antes de propagar, e nao so no
-    // braco do `rename`, que era o unico coberto antes.
-    let escrito = escreve_tmp(&tmp, bytes)
-        // Roda em TODA plataforma, e nao so fora de Unix como o comentario
-        // anterior dizia. Em Unix o `mode(0o600)` do `open` ja garante que o
-        // arquivo nunca existiu mais frouxo que isso — o `open(2)` aplica
-        // `mode & ~umask`, e umask so tira bit. O que sobra para esta chamada
-        // fazer la e o caso patologico do umask que tira tambem os bits do
-        // dono: `0000` e restritivo demais, e o proprio processo nao reabriria
-        // o arquivo.
-        .and_then(|()| harden_secret_file(&tmp))
-        .and_then(|()| {
-            std::fs::rename(&tmp, path).map_err(|e| {
-                Error::Config(format!(
-                    "failed to replace {} atomically: {e}",
-                    path.display()
-                ))
-            })
-        });
-    if let Err(e) = escrito {
+/// [`write_atomic_secret`] com o nonce injetado. Ver [`tmp_path_for`].
+fn write_atomic_secret_with_nonce(path: &Path, bytes: &[u8], nonce: u64) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::Config(format!("{} nao tem diretorio pai", path.display())))?;
+
+    let tmp = tmp_path_for(path, nonce);
+
+    // `escreve_tmp` ja limpa o que ele mesmo criou — e SO o que ele criou.
+    // Se o `create_new` recusar um caminho ocupado, nada foi criado e nada ha
+    // para apagar: apagar ali seria destruir o arquivo do outro escritor, que
+    // e exatamente o que `create_new` existe para evitar, com outro nome.
+    //
+    // Daqui para baixo o `tmp` E nosso e ja tem a config inteira dentro —
+    // 0600, entao nao e exposicao, mas e uma segunda copia que ninguem espera
+    // e que o proximo `save` nao reaproveita, porque o nome muda. Por isso o
+    // desfecho de erro o apaga, e nao so no braco do `rename`, que era o unico
+    // coberto antes.
+    escreve_tmp(&tmp, bytes)?;
+    // `harden_secret_file` roda em TODA plataforma, e nao so fora de Unix como
+    // o comentario anterior dizia. Em Unix o `mode(0o600)` do `open` ja
+    // garante que o arquivo nunca existiu mais frouxo que isso — o `open(2)`
+    // aplica `mode & ~umask`, e umask so tira bit. O que sobra para esta
+    // chamada fazer la e o caso patologico do umask que tira tambem os bits do
+    // dono: `0000` e restritivo demais, e o proprio processo nao reabriria o
+    // arquivo.
+    let terminado = harden_secret_file(&tmp).and_then(|()| {
+        std::fs::rename(&tmp, path).map_err(|e| {
+            Error::Config(format!(
+                "failed to replace {} atomically: {e}",
+                path.display()
+            ))
+        })
+    });
+    if let Err(e) = terminado {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
@@ -383,13 +405,21 @@ fn escreve_tmp(tmp: &Path, bytes: &[u8]) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
+    // Um `?` aqui e o desfecho CERTO de `create_new` recusando um caminho
+    // ocupado: nada foi criado, e portanto nada ha para limpar.
     let mut f = opts
         .open(tmp)
         .map_err(|e| Error::Config(format!("failed to open {} for write: {e}", tmp.display())))?;
-    f.write_all(bytes)
-        .map_err(|e| Error::Config(format!("failed to write {}: {e}", tmp.display())))?;
-    f.sync_all()
-        .map_err(|e| Error::Config(format!("failed to fsync {}: {e}", tmp.display())))?;
+    let escrito = f.write_all(bytes).and_then(|()| f.sync_all());
+    drop(f);
+    if let Err(e) = escrito {
+        // Daqui em diante o arquivo E nosso, e ja tem parte da config dentro.
+        let _ = std::fs::remove_file(tmp);
+        return Err(Error::Config(format!(
+            "failed to write {}: {e}",
+            tmp.display()
+        )));
+    }
     Ok(())
 }
 
@@ -419,7 +449,7 @@ pub fn harden_secret_file(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::ConfigLoader;
+    use super::{ConfigLoader, tmp_path_for, write_atomic_secret_with_nonce};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -770,6 +800,42 @@ mod tests {
         assert!(
             dir.join("config.yml").is_file(),
             "e a config tem de ter sido gravada assim mesmo"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **O `create_new` pinado no caminho EXATO.**
+    ///
+    /// Os dois testes acima plantam no nome deterministico de antes do nonce,
+    /// entao o que eles pinam e o NONCE: trocar `create_new(true)` por
+    /// `create(true).truncate(true)` os deixa verdes, porque o caminho
+    /// plantado ja nao e o caminho escrito. Aqui o nonce e injetado, o
+    /// temporario e plantado no caminho que a escrita vai de fato usar, e o
+    /// que se exige e que a escrita **recuse** em vez de passar por cima.
+    ///
+    /// E a licao que a fatia C aprendeu em `session::tmp_path_for`, aplicada
+    /// ao outro call site do mesmo padrao.
+    #[test]
+    fn o_create_new_recusa_um_temporario_que_ja_exista_no_caminho_exato() {
+        let dir = temp_dir("save-create-new");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let path = dir.join("config.yml");
+
+        const NONCE: u64 = 0x0123_4567_89ab_cdef;
+        let tmp = tmp_path_for(&path, NONCE);
+        fs::write(&tmp, b"de outro escritor").expect("planta no caminho exato");
+
+        let erro = write_atomic_secret_with_nonce(&path, b"gateway:\n", NONCE)
+            .expect_err("o temporario ja existe: a escrita tem de recusar, nao truncar");
+        assert!(
+            format!("{erro}").contains("failed to open"),
+            "o erro tem de vir do `open`, e nao de outro ponto: {erro}"
+        );
+        assert_eq!(
+            fs::read(&tmp).expect("o plantado continua la"),
+            b"de outro escritor",
+            "`create(true).truncate(true)` teria apagado isto"
         );
 
         let _ = fs::remove_dir_all(dir);

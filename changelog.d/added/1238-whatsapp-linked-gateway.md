@@ -49,3 +49,13 @@
   agente rodando. A rota "o `Sender` cai junto com o `AppState`" nao existe
   aqui, por um ciclo de `Arc` (o sink do canal detem o estado que detem o
   cancelamento), e por isso o cancelamento e explicito.
+  A varredura de PII do canal e a do gateway compartilham **uma** implementacao
+  (`whatsapp_linked::log_audit`), e nao duas mantidas iguais por disciplina:
+  cada conserto do parser — string crua, literal de char, comentario de bloco,
+  macro sem delimitador — chega as duas de uma vez. A regra principal deixou de
+  ser "reprove a macro que eu conheco" e passou a ser a allowlist fechada de
+  call site do `expose()`, porque e no call site que a protecao de tipo acaba:
+  dali em diante o valor e um `&str`, e `let s = blob.expose(); let t = s;
+  info!(dado = %t)` nao e alcancado por leitura de macro nenhuma. A lista de
+  macros ficou como segunda linha, cobrindo o que a primeira nao cobre (um
+  campo `session`/`blob`/`creds`/`qr` que nunca passou por `expose()`).

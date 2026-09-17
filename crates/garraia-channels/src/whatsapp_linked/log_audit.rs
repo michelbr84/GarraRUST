@@ -49,6 +49,14 @@
 //! String crua (`r"…"`, `r#"…"#`) entra aqui de proposito: dentro dela `\"`
 //! **nao** escapa nada, e um parser que achasse que escapa continuaria lendo
 //! como literal um trecho que ja e codigo — engolindo, junto, o log seguinte.
+//!
+//! E literal de **char** entra pelo mesmo motivo, com consequencia pior: um
+//! `'"'` ou `b'"'` no fonte deixa uma aspa desemparelhada, o parser le dali
+//! ate a proxima aspa do arquivo como se fosse string, e **todas** as
+//! fronteiras de literal daquele ponto em diante ficam invertidas. O arquivo
+//! inteiro passa a render zero bloco, em silencio. `bridge.rs` — o
+//! enquadramento NDJSON — e o candidato mais natural do repositorio a ganhar
+//! um. Ver [`fim_de_char`].
 
 /// Fim de um literal de string que comeca em `at` (o proprio `"`), incluindo o
 /// `"` que fecha. Trata escape (`\"`) e string crua (`r"…"`, `r#"…"#`).
@@ -84,6 +92,35 @@ fn fim_de_literal(bytes: &[u8], at: usize) -> usize {
     bytes.len()
 }
 
+/// Fim de um literal de char que comeca em `at` (o proprio `'`), ou `None`
+/// quando aquele `'` e um tempo de vida (`&'a str`) ou um rotulo (`'outer:`).
+///
+/// # O furo que isto fecha
+///
+/// Uma aspa dentro de um literal de char (`'"'`, `b'"'`) e, para um parser que
+/// so conhece string, uma aspa que abre. Dali em diante tudo o que e codigo
+/// vira "texto" e tudo o que e texto vira "codigo": o arquivo inteiro para de
+/// render blocos, e nenhum log dele volta a ser examinado. E silencioso — a
+/// varredura continua verde, porque nao ha nada para reprovar quando nao ha
+/// nada lido.
+fn fim_de_char(fonte: &str, at: usize) -> Option<usize> {
+    let bytes = fonte.as_bytes();
+    let mut i = at + 1;
+    if bytes.get(i) == Some(&b'\\') {
+        // `\n`, `\'`, `\\`, `\x1b`, `\u{1b}`: todos fecham na proxima aspa.
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'\'' {
+            i += 1;
+        }
+        return (i < bytes.len()).then_some(i + 1);
+    }
+    // Um unico char (possivelmente multibyte) seguido da aspa que fecha. Se
+    // nao fechar ali, aquele `'` era tempo de vida ou rotulo.
+    let ch = fonte.get(i..)?.chars().next()?;
+    i += ch.len_utf8();
+    (bytes.get(i) == Some(&b'\'')).then_some(i + 1)
+}
+
 /// O proximo limite de caractere depois de `i`, para copiar um caractere
 /// multi-byte sem cortar no meio.
 fn fim_do_caractere(texto: &str, i: usize) -> usize {
@@ -92,7 +129,37 @@ fn fim_do_caractere(texto: &str, i: usize) -> usize {
         .unwrap_or(texto.len())
 }
 
-const MACROS: &[&str] = &["info!", "warn!", "error!", "debug!", "trace!"];
+/// Macros que levam texto para fora do processo.
+///
+/// Propositalmente maior que as cinco do `tracing`: o terminal aceita muito
+/// mais do que isso, e uma auditoria plantou um `eprintln!` com
+/// `blob.expose()` que passou verde por nao estar aqui.
+///
+/// Esta lista e, e continua sendo, a **segunda** linha de defesa — enumerar
+/// macro e uma corrida que nao se ganha. Quem fecha o buraco de verdade e a
+/// allowlist de call site do `expose()` (`source_scan::EXPOSE_ALLOWED`). O que
+/// esta lista pega e o que aquela nao pega: um campo chamado
+/// `session`/`blob`/`creds` que nunca passou por `expose()`.
+pub const MACROS: &[&str] = &[
+    "info!",
+    "warn!",
+    "error!",
+    "debug!",
+    "trace!",
+    "event!",
+    "info_span!",
+    "warn_span!",
+    "debug_span!",
+    "error_span!",
+    "trace_span!",
+    "span!",
+    "println!",
+    "eprintln!",
+    "print!",
+    "eprint!",
+    "dbg!",
+    "panic!",
+];
 
 /// Cada invocacao de macro de log do fonte, inteira, atravessando linhas, com
 /// o numero da linha em que ela **comeca**.
@@ -129,6 +196,12 @@ pub fn chamadas_de_log(fonte: &str) -> Vec<(usize, String)> {
                 let fim = fim_de_literal(bytes, i);
                 linha += bytes[i..fim].iter().filter(|b| **b == b'\n').count();
                 i = fim;
+                continue;
+            }
+            // Um literal de char com aspa dentro (`'"'`, `b'"'`) inverteria
+            // todas as fronteiras daqui para baixo. Ver [`fim_de_char`].
+            b'\'' => {
+                i = fim_de_char(&codigo, i).unwrap_or(i + 1);
                 continue;
             }
             _ => {}
@@ -178,6 +251,11 @@ pub fn chamadas_de_log(fonte: &str) -> Vec<(usize, String)> {
                     texto.push_str(&codigo[k..fim]);
                     k = fim;
                 }
+                b'\'' => {
+                    let fim = fim_de_char(&codigo, k).unwrap_or(k + 1);
+                    texto.push_str(&codigo[k..fim]);
+                    k = fim;
+                }
                 b'(' | b'[' | b'{' => {
                     nivel += 1;
                     texto.push(bytes[k] as char);
@@ -202,6 +280,42 @@ pub fn chamadas_de_log(fonte: &str) -> Vec<(usize, String)> {
         i = k;
     }
     saida
+}
+
+/// Quantas macros de log ha no fonte, pela mesma regra de fronteira do
+/// [`chamadas_de_log`] — `debug_span!` nao conta como `span!`.
+///
+/// Existe para a asserção global de [`super::source_scan`]: uma contagem crua
+/// do MESMO texto, para comparar com o que o parser devolveu. Se o parser
+/// devolver menos, as fronteiras de literal se inverteram em algum ponto e
+/// dali em diante nenhum log daquele arquivo esta sendo examinado — que e
+/// exatamente o tipo de falha que nao aparece sozinha, porque uma varredura
+/// cega fica verde.
+///
+/// Deliberadamente ingenua: so comentario e bloco de teste sao removidos. Se
+/// um dia um literal de producao contiver `"info!"`, a asserção fica vermelha
+/// — ruidoso, mas visivel, que e o oposto do que se esta consertando aqui.
+pub fn conta_macros_de_log(fonte: &str) -> usize {
+    let codigo = codigo_sem_comentario_nem_teste(fonte);
+    let bytes = codigo.as_bytes();
+    (0..bytes.len())
+        .filter(|i| {
+            MACROS.iter().any(|m| {
+                bytes[*i..].starts_with(m.as_bytes())
+                    && !matches!(
+                        bytes.get(i.wrapping_sub(1)),
+                        Some(b) if b.is_ascii_alphanumeric() || *b == b'_'
+                    )
+            })
+        })
+        .count()
+}
+
+/// O fonte sem comentario e sem corpo de `#[cfg(test)]`, preservando a
+/// numeracao das linhas. Publico porque as varreduras precisam do MESMO texto
+/// que o parser leu para conferir call site fora de macro (`expose()`).
+pub fn codigo_de_producao(fonte: &str) -> String {
+    codigo_sem_comentario_nem_teste(fonte)
 }
 
 fn normaliza(texto: &str) -> String {
@@ -229,6 +343,12 @@ pub fn parte_arriscada(chamada: &str) -> String {
                     capturas.push(' ');
                 }
             }
+            i = fim;
+        } else if bytes[i] == b'\'' && fim_de_char(chamada, i).is_some() {
+            // `'"'` dentro da chamada: se ele fosse lido como aspa de abertura,
+            // o resto da chamada viraria "prosa" e sairia da parte arriscada.
+            let fim = fim_de_char(chamada, i).unwrap_or(i + 1);
+            fora.push_str(&chamada[i..fim]);
             i = fim;
         } else {
             let fim = fim_do_caractere(chamada, i);
@@ -370,10 +490,28 @@ fn sem_comentario(fonte: &str) -> String {
                 saida.push_str(&fonte[i..fim]);
                 i = fim;
             }
+            // `'"'` nao abre string, e `'a` nao abre nada. Ver [`fim_de_char`].
+            b'\'' => {
+                let fim = fim_de_char(fonte, i).unwrap_or(i + 1);
+                saida.push_str(&fonte[i..fim]);
+                i = fim;
+            }
             b'/' if bytes.get(i + 1) == Some(&b'/') => {
                 while i < bytes.len() && bytes[i] != b'\n' {
                     i += 1;
                 }
+            }
+            // Comentario de bloco, com as quebras de linha preservadas para a
+            // numeracao nao andar.
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < bytes.len() && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                    if bytes[i] == b'\n' {
+                        saida.push('\n');
+                    }
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
             }
             _ => {
                 let fim = fim_do_caractere(fonte, i);
@@ -533,6 +671,68 @@ mod tests {
         let chamadas = chamadas_de_log(fonte);
         assert_eq!(chamadas.len(), 1, "{chamadas:?}");
         assert_eq!(chamadas[0].0, 6, "a macro esta na linha 6 do fonte");
+    }
+
+    /// **Um literal de char com aspa dentro nao pode cegar o arquivo inteiro.**
+    ///
+    /// Sem `fim_de_char`, o `b'"'` deixa uma aspa desemparelhada: o parser le
+    /// dali ate a proxima aspa como string, inverte TODAS as fronteiras e o
+    /// `warn!` de baixo nunca e examinado. A falha e silenciosa — varredura
+    /// cega nao reprova nada.
+    #[test]
+    fn literal_de_char_com_aspa_nao_cega_o_resto_do_arquivo() {
+        let fonte = "fn e_aspa(b: u8) -> bool {\n    b == b'\"'\n}\nfn f() {\n    warn!(campo = %blob);\n}\n";
+        let chamadas = textos(fonte);
+        assert_eq!(chamadas.len(), 1, "{chamadas:?}");
+        assert!(
+            parte_arriscada(&chamadas[0]).contains("blob"),
+            "{chamadas:?}"
+        );
+    }
+
+    /// E tempo de vida continua sendo tempo de vida: trata-lo como literal
+    /// engoliria tudo ate a proxima aspa simples.
+    #[test]
+    fn tempo_de_vida_nao_e_literal_de_char() {
+        let fonte = "impl<'a> G<'a> {\n    fn f(&self, blob: &'a B) {\n        warn!(campo = %blob);\n    }\n}\n";
+        let chamadas = textos(fonte);
+        assert_eq!(chamadas.len(), 1, "{chamadas:?}");
+        assert!(parte_arriscada(&chamadas[0]).contains("blob"));
+    }
+
+    /// A lista de macros nao e so `tracing`: `eprintln!` leva texto para fora
+    /// do processo do mesmo jeito, e uma auditoria ja plantou um.
+    #[test]
+    fn o_terminal_tambem_conta_como_saida() {
+        for macro_ in ["eprintln!", "println!", "dbg!", "panic!", "event!"] {
+            let fonte = format!("fn f() {{\n    {macro_}(\"{{}}\", blob.expose());\n}}\n");
+            let chamadas = textos(&fonte);
+            assert_eq!(chamadas.len(), 1, "{macro_}: {chamadas:?}");
+            assert!(
+                parte_arriscada(&chamadas[0]).contains("expose"),
+                "{macro_} tem de ser lido como saida: {chamadas:?}"
+            );
+        }
+    }
+
+    /// `debug_span!` nao e `span!`, e `eprintln!` nao e `println!`: a
+    /// fronteira de identificador vale nas duas pontas, e a contagem crua tem
+    /// de concordar com o parser.
+    #[test]
+    fn a_contagem_crua_concorda_com_o_parser() {
+        let fonte = "fn f() {\n    let _s = debug_span!(\"a\");\n    eprintln!(\"b\");\n}\n";
+        assert_eq!(conta_macros_de_log(fonte), 2, "uma cada, e nao quatro");
+        assert_eq!(chamadas_de_log(fonte).len(), 2);
+    }
+
+    /// Comentario de bloco tambem nao e codigo — e as linhas dele nao podem
+    /// sumir da numeracao.
+    #[test]
+    fn comentario_de_bloco_e_descartado_sem_mover_a_numeracao() {
+        let fonte = "fn f() {\n/* nada de\n   blob.expose() aqui */\n    info!(%blob);\n}\n";
+        let chamadas = chamadas_de_log(fonte);
+        assert_eq!(chamadas.len(), 1, "{chamadas:?}");
+        assert_eq!(chamadas[0].0, 4, "a macro esta na linha 4 do fonte");
     }
 
     /// Bloco de teste nao conta: la o segredo e fixture, nao vazamento.

@@ -18,7 +18,22 @@
 //! A leitura do texto nao mora aqui: mora em [`super::log_audit`], que o
 //! gateway usa para varrer o **seu** fonte com as mesmas regras. Duas copias
 //! que precisam ser mantidas iguais por disciplina foi exatamente o defeito
-//! que este modulo corrige.
+//! que este modulo corrige — e cada conserto do parser (string crua, literal
+//! de char, comentario de bloco, macro sem delimitador) chega as duas de uma
+//! vez por isso.
+//!
+//! # Duas regras, e a ordem importa
+//!
+//! 1. [`EXPOSE_ALLOWED`] — regra **fechada**: `expose()` so pode aparecer onde
+//!    a lista diz. E a linha de defesa principal, porque e no call site que a
+//!    protecao de tipo acaba: dali em diante o valor e um `&str` como outro
+//!    qualquer, e nenhuma leitura de macro alcanca
+//!    `let s = blob.expose(); let t = s; info!(dado = %t)`.
+//! 2. [`PROIBIDOS`]/[`PADROES_PROIBIDOS`] — regra **aberta**: reprova o que
+//!    conhece. Segunda linha, e por construcao incompleta (enumerar macro e
+//!    uma corrida que nao se ganha). Ela pega o que a primeira nao pega: um
+//!    campo chamado `session`/`blob`/`creds`/`qr` que nunca passou por
+//!    `expose()`.
 
 use super::log_audit;
 
@@ -33,13 +48,61 @@ const SOURCES: &[(&str, &str)] = &[
     ("health.rs", include_str!("health.rs")),
 ];
 
+/// **Os unicos call sites de `SessionBlob::expose()` que existem.**
+///
+/// # Por que a regra e invertida
+///
+/// A varredura de macro reprova o que ela conhece. Uma auditoria mostrou o
+/// custo disso plantando `eprintln!` e `tracing::event!` com `blob.expose()`:
+/// os dois passaram verdes. E registrou a limitacao de fundo, que nenhuma
+/// lista de macros resolve:
+///
+/// ```ignore
+/// let s = blob.expose();
+/// let t = s;
+/// tracing::info!(dado = %t);   // nenhuma varredura de macro ve isto
+/// ```
+///
+/// A linha de defesa certa e o call site do `expose()`, porque e ali que a
+/// protecao de tipo acaba. Entao a regra passou a ser fechada: **toda**
+/// ocorrencia de `expose` no codigo de producao destes arquivos precisa estar
+/// nomeada aqui, e acrescentar uma linha e uma decisao consciente, com nome e
+/// diff, em vez de um silencio.
+///
+/// A checagem e sobre a linha de CODIGO (comentario fora), no mesmo espirito
+/// de [`the_store_exposes_a_single_validating_constructor`]: ela pergunta se a
+/// palavra continua onde deve, e quem de fato impede a chamada e o rustc.
+const EXPOSE_ALLOWED: &[(&str, &str)] = &[
+    // A declaracao. Ela precisa existir: o bridge e o store leem o blob.
+    ("session.rs", "pub fn expose(&self) -> &str {"),
+    // O unico uso: o que vai para o AES-GCM dentro de `SessionStore::save`.
+    (
+        "session.rs",
+        "let mut in_out = blob.expose().as_bytes().to_vec();",
+    ),
+];
+
 /// Nomes que, no lugar onde um valor cabe, significam "o segredo foi logado".
 ///
-/// Sao **identificadores**, e nao os padroes `%blob`/`{blob}`/`blob = ` de
-/// antes: a busca nao acontece mais na linha crua, e sim na parte da invocacao
-/// que pode carregar valor ([`log_audit::parte_arriscada`]), onde `%`, `?`, `=`
-/// e `{}` ja foram descartados. Procurar por `"%blob"` ali nunca casaria.
+/// Sao **identificadores**, e nao os padroes `%blob`/`{blob}`/`blob = `: a
+/// busca acontece na parte da invocacao que pode carregar valor
+/// ([`log_audit::parte_arriscada`]), onde `%`, `?`, `=` e `{}` ja foram
+/// descartados. Procurar por `"%blob"` ali nunca casaria.
 const PROIBIDOS: &[&str] = &["expose", "blob", "session", "secret", "passphrase", "creds"];
+
+/// Padroes conferidos no texto **cru** do bloco, e nao na parte arriscada.
+///
+/// Existem para os nomes genericos demais para virar identificador proibido:
+/// `data` casaria `data_dir` e `metadata`, e `qr` casaria qualquer coisa. Com
+/// o sigilo na frente (`%qr`, `{qr}`, `qr = `) a busca volta a ser precisa.
+///
+/// L4: a string crua do QR e uma credencial de ~20 s. Ela e impressa
+/// literalmente em `Style::Raw` — por design, e e o que o usuario le com a
+/// camera —, mas nada dela pertence a um log. O QR nunca passa por
+/// `SessionBlob`, entao a allowlist de `expose()` nao o cobre.
+const PADROES_PROIBIDOS: &[&str] = &[
+    "%qr", "?qr", "{qr}", "qr = ", "%data", "?data", "{data}", "data = ", ".0",
+];
 
 /// O que contamina um binding: se um `let` nasce disto, o nome dele passa a
 /// valer como proibido tambem.
@@ -71,6 +134,11 @@ fn blocos_ofensivos(name: &str, source: &str) -> Vec<String> {
                 saida.push(format!("{name}:{linha}: `{proibido}` em: {chamada}"));
             }
         }
+        for padrao in PADROES_PROIBIDOS {
+            if chamada.contains(padrao) {
+                saida.push(format!("{name}:{linha}: `{padrao}` em: {chamada}"));
+            }
+        }
     }
     saida
 }
@@ -99,6 +167,174 @@ fn no_log_line_mentions_the_session_value() {
         "log carregando material de sessao:\n{}",
         offenders.join("\n")
     );
+}
+
+/// **A regra invertida: `expose()` so pode aparecer onde a allowlist diz.**
+///
+/// A varredura de macro reprova o que conhece; esta reprova tudo o que nao foi
+/// declarado. E a unica das duas que sobrevive a um `eprintln!`, a um
+/// `tracing::event!`, a um `#[tracing::instrument(fields(…))]` e ao
+/// `let s = blob.expose(); let t = s;` que nenhuma leitura de macro alcanca.
+/// Os `expose()` de um fonte que a allowlist nao declara.
+///
+/// Funcao separada do `#[test]` pelo mesmo motivo de [`blocos_ofensivos`]: e
+/// ela que o teste do proprio detector exercita, com as mutacoes como entrada.
+/// Uma allowlist so tem caso negativo quando alguem o planta — na arvore
+/// limpa, por construcao, nao ha nenhum, e um teste que so varre a arvore
+/// passaria verde com a regra inteira arrancada.
+fn exposes_fora_da_allowlist(name: &str, source: &str) -> Vec<String> {
+    let mut saida = Vec::new();
+    let code = log_audit::codigo_de_producao(source);
+    for (i, raw) in code.lines().enumerate() {
+        let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !line.contains("expose") {
+            continue;
+        }
+        if EXPOSE_ALLOWED
+            .iter()
+            .any(|(f, allowed)| *f == name && line.contains(allowed))
+        {
+            continue;
+        }
+        saida.push(format!("{name}:{}: {line}", i + 1));
+    }
+    saida
+}
+
+#[test]
+fn expose_is_only_called_where_the_allowlist_says() {
+    let mut offenders = Vec::new();
+    for (name, source) in SOURCES {
+        offenders.extend(exposes_fora_da_allowlist(name, source));
+    }
+    assert!(
+        offenders.is_empty(),
+        "`SessionBlob::expose()` fora da allowlist — a partir do call site o valor \
+e um `&str` e a protecao de tipo acabou. Se o uso e legitimo, declare-o em \
+EXPOSE_ALLOWED:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// **O detector da regra fechada, contra o que a regra aberta nao alcanca.**
+///
+/// Sem este teste, `expose_is_only_called_where_the_allowlist_says` passaria
+/// verde com a allowlist arrancada: na arvore limpa nao ha violacao, entao
+/// "zero achados" nao distingue regra viva de regra ausente. As entradas aqui
+/// sao plantadas como TEXTO, e nao na arvore de verdade.
+#[test]
+fn a_regra_fechada_pega_o_que_nenhuma_leitura_de_macro_alcanca() {
+    // O caso que motivou a inversao: dois renames antes do log. Nenhuma
+    // varredura de macro ve `%t` como segredo — mas o `expose()` esta ali.
+    let renomeado_duas_vezes = r#"
+fn vaza(blob: &SessionBlob) {
+    let s = blob.expose();
+    let t = s;
+    tracing::info!(dado = %t);
+}
+"#;
+    assert!(
+        !exposes_fora_da_allowlist("mutacao.rs", renomeado_duas_vezes).is_empty(),
+        "o call site do `expose()` e a linha de defesa: dali em diante o valor \
+         e um `&str` e nenhuma leitura de macro alcanca o rename"
+    );
+    assert!(
+        blocos_ofensivos("mutacao.rs", renomeado_duas_vezes)
+            .iter()
+            .all(|o| !o.contains("%t")),
+        "premissa: e justamente o que a regra aberta NAO pega — se ela passar a \
+         pegar, esta asserção vira ruido e deve ser reescrita, nao apagada"
+    );
+
+    // Saida que nenhuma lista de macros cobre por completo.
+    let atributo = r#"
+#[tracing::instrument(fields(sessao = %blob.expose()))]
+fn persistir(blob: &SessionBlob) {}
+"#;
+    assert!(
+        !exposes_fora_da_allowlist("atributo.rs", atributo).is_empty(),
+        "`#[instrument(fields(…))]` nao e macro de log, e leva o valor ao span"
+    );
+
+    // E o que a allowlist declara continua passando, senao a regra condenaria
+    // o unico uso legitimo que existe.
+    let legitimo = "fn save() {\n    let mut in_out = blob.expose().as_bytes().to_vec();\n}\n";
+    assert!(
+        exposes_fora_da_allowlist("session.rs", legitimo).is_empty(),
+        "o call site declarado do AES-GCM nao pode ser reprovado"
+    );
+    // ... e so no arquivo em que foi declarado.
+    assert!(
+        !exposes_fora_da_allowlist("runner.rs", legitimo).is_empty(),
+        "a allowlist e por ARQUIVO: a mesma linha noutro arquivo nao esta declarada"
+    );
+}
+
+/// A allowlist tem de continuar **descrevendo** a arvore, e nao so existir.
+///
+/// Uma allowlist cujas linhas ja nao casam com nada nao reprova nada: o teste
+/// acima passaria verde com `EXPOSE_ALLOWED` apontando para codigo que foi
+/// renomeado, e ninguem saberia. Aqui se exige o inverso — toda linha
+/// declarada precisa ser encontrada.
+#[test]
+fn every_allowed_expose_call_site_still_exists() {
+    for (name, allowed) in EXPOSE_ALLOWED {
+        let (_, source) = SOURCES
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} nao esta em SOURCES"));
+        let code = log_audit::codigo_de_producao(source);
+        assert!(
+            code.lines().any(|l| l
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains(allowed)),
+            "{name}: a allowlist declara `{allowed}`, que nao existe mais no fonte de \
+producao — allowlist morta nao guarda nada"
+        );
+    }
+}
+
+/// **Cada macro de log em producao tem de virar exatamente um bloco.**
+///
+/// Ancora de um arquivo so nao serve: hoje `runner.rs` tem os blocos e a
+/// maioria dos outros tem zero cada, entao um `b'"'` plantado em `mod.rs`,
+/// `protocol.rs`, `state.rs`, `session.rs`, `qr.rs`, `bridge.rs` ou `health.rs`
+/// cegaria o parser **em silencio** — nao ha ancora possivel num arquivo sem
+/// log. Esta asserção e global e nao depende de um log especifico existir: ela
+/// compara o que o parser devolveu com uma contagem crua do mesmo texto.
+#[test]
+fn every_log_macro_in_production_yields_exactly_one_block() {
+    let total: usize = SOURCES
+        .iter()
+        .map(|(_, source)| log_audit::conta_macros_de_log(source))
+        .sum();
+    assert!(
+        total > 0,
+        "premissa: o canal TEM log em producao. Se a contagem total zerar, esta \
+         asserção passa a comparar zero com zero em todo arquivo e nao guarda \
+         mais nada — que e o modo de falha que ela existe para pegar"
+    );
+
+    for (name, source) in SOURCES {
+        let esperado = log_audit::conta_macros_de_log(source);
+        let blocos = log_audit::chamadas_de_log(source);
+        assert_eq!(
+            blocos.len(),
+            esperado,
+            "{name}: o texto de producao tem {esperado} macro(s) de log e o parser \
+devolveu {} bloco(s). Uma contagem menor significa que as fronteiras de literal \
+se inverteram — e dai em diante nenhum log deste arquivo e examinado. Blocos \
+vistos:\n{}",
+            blocos.len(),
+            blocos
+                .iter()
+                .map(|(l, b)| format!("{l}: {b}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 }
 
 /// `SOURCES` e lista manual, e lista manual fica para tras: `health.rs` entrou
@@ -232,10 +468,71 @@ tracing::warn!(sessao = %blob.expose(), "depois");
     );
 }
 
+/// Um literal de char com aspa dentro nao pode cegar o arquivo inteiro.
+///
+/// `bridge.rs` e o arquivo de enquadramento NDJSON — o candidato mais natural
+/// do repositorio a ganhar um `b'"'`. Antes, uma aspa desemparelhada fazia o
+/// parser ler dali ate a proxima aspa do arquivo como "string", invertia todas
+/// as fronteiras e devolvia **zero** blocos.
+#[test]
+fn a_char_literal_holding_a_quote_does_not_blind_the_scan() {
+    let mutacao = r#"
+fn is_quote(b: u8) -> bool {
+    b == b'"'
+}
+
+fn persistir(blob: &SessionBlob) {
+    tracing::info!(
+        sessao = %blob.expose(),
+        "sessao persistida"
+    );
+}
+"#;
+    assert!(
+        !blocos_ofensivos("mutacao.rs", mutacao).is_empty(),
+        "um `b'\"'` antes do log nao pode esconder o log"
+    );
+
+    // E o `'a` de um tempo de vida continua sendo tempo de vida, nao literal:
+    // trata-lo como literal engoliria tudo ate a proxima aspa simples.
+    let com_lifetime = r#"
+impl<'a> Guarda<'a> {
+    fn fala(&self, blob: &'a SessionBlob) {
+        tracing::warn!(sessao = %blob.expose(), "vazou");
+    }
+}
+"#;
+    assert!(
+        !blocos_ofensivos("lifetime.rs", com_lifetime).is_empty(),
+        "um tempo de vida nao pode ser lido como literal de char"
+    );
+
+    // Um log honesto depois de um literal de char nao pode virar falso
+    // positivo por causa dele.
+    let ok = r#"
+fn separador() -> char {
+    '"'
+}
+
+fn reconectar(attempt: u32) {
+    tracing::info!(attempt, "caiu; reconectando");
+}
+"#;
+    assert!(
+        blocos_ofensivos("ok.rs", ok).is_empty(),
+        "log sem material de sessao nao pode ser reprovado"
+    );
+}
+
 /// Ancora na arvore de verdade: o `tracing::info!` multilinha que ja existe em
 /// producao e lido INTEIRO. Se a varredura voltar ao modo linha, este teste
 /// morre junto com a garantia — e ele nao depende de ninguem ter imaginado a
 /// mutacao certa.
+///
+/// Complementa, e nao substitui,
+/// [`every_log_macro_in_production_yields_exactly_one_block`]: aquela pega a
+/// cegueira em arquivo **sem** log, que ancora nenhuma consegue cobrir; esta
+/// pega o conteudo do bloco, que a contagem nao olha.
 #[test]
 fn the_scan_sees_the_multiline_log_that_already_exists_in_production() {
     let blocos = log_audit::chamadas_de_log(include_str!("runner.rs"));
