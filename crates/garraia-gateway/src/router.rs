@@ -1388,6 +1388,18 @@ const KNOWN_CHANNELS: &[(&str, &str, bool, ChannelKind)] = &[
     ("discord", "Discord", true, ChannelKind::Pull),
     ("slack", "Slack", true, ChannelKind::Pull),
     ("whatsapp", "WhatsApp", true, ChannelKind::Push),
+    // #1238 (fatia D). `needs_secret: false` de proposito: a credencial deste
+    // canal nao e um valor de config, e um blob cifrado em `<data_dir>/
+    // whatsapp/default/session.enc`. O console nao tem campo para pedir, entao
+    // a pilula ambar de "falta o segredo" seria mentira. Quando ha sessao e a
+    // ponte nao esta de pe, quem transforma o `optional` em `offline` e o
+    // `provisioned` — ver `channel_status`.
+    (
+        "whatsapp_linked",
+        "WhatsApp (dispositivo vinculado)",
+        false,
+        ChannelKind::Pull,
+    ),
     ("imessage", "iMessage", false, ChannelKind::Pull),
     ("google_chat", "Google Chat", true, ChannelKind::Push),
     ("teams", "Microsoft Teams", true, ChannelKind::Push),
@@ -1411,12 +1423,22 @@ const KNOWN_CHANNELS: &[(&str, &str, bool, ChannelKind)] = &[
 /// significa que a tabela e o struct discordam — tratado como `"unknown"`
 /// em vez de virar `"offline"` numa linha que ninguem consegue explicar.
 ///
+/// `provisioned` responde "o operador ligou este canal?" para os canais cuja
+/// credencial **nao** e um valor de config e por isso nao cabe no
+/// `needs_secret` estatico (#1238: o `whatsapp_linked` guarda a sessao cifrada
+/// no data dir). `None` mantem a regra antiga, onde `needs_secret` responde
+/// pelos dois. A distincao importa: um canal que ninguem ligou esta
+/// `"optional"` — nao ha defeito —, mas um canal que alguem ligou e que nao
+/// esta de pe esta `"offline"`, e um console que mostrasse `"optional"` nos
+/// dois casos esconderia exatamente a falha que o operador precisa ver.
+///
 /// [`PushChannelStates`]: crate::push_channels::PushChannelStates
 fn channel_status(
     kind: ChannelKind,
     needs_secret: bool,
     live: bool,
     mounted: Option<usize>,
+    provisioned: Option<bool>,
 ) -> &'static str {
     let up = match kind {
         ChannelKind::Pull => live,
@@ -1430,7 +1452,7 @@ fn channel_status(
 
     if up {
         "active"
-    } else if needs_secret {
+    } else if provisioned.unwrap_or(needs_secret) {
         "offline"
     } else {
         "optional"
@@ -1476,8 +1498,22 @@ async fn list_channels(
             ChannelKind::Push => push.mounted(id),
             ChannelKind::Pull => None,
         };
-        let live_aqui = live.iter().any(|name| name == *id);
-        let status = channel_status(*kind, *needs_secret, live_aqui, mounted);
+        // #1238: o `whatsapp_linked` e pull mas **nao** entra no
+        // `ChannelRegistry` — o `Channel` trait pressupoe `connect()` sobre um
+        // objeto mutavel, e aqui quem vive e um processo filho Node com loop de
+        // reconexao proprio. E o mesmo desencontro que a #1079 custou nos
+        // canais push, entao a correcao e a mesma: o status sai de quem
+        // observa o canal de verdade — o supervisor —, e a leitura e a MESMA
+        // que o `/api/diagnostics` faz (`whatsapp_linked_health`), para as duas
+        // telas nao poderem discordar sobre o mesmo canal.
+        let (live_aqui, provisioned) = if *id == crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY {
+            let (saude, _) =
+                crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked);
+            (saude.healthy(), Some(saude.provisioned()))
+        } else {
+            (live.iter().any(|name| name == *id), None)
+        };
+        let status = channel_status(*kind, *needs_secret, live_aqui, mounted, provisioned);
         if status == "unknown" {
             tracing::warn!(
                 channel = id,
@@ -1901,6 +1937,7 @@ mod tests {
             true,  // needs_secret — era isto que empurrava para "offline"
             false, // nunca aparece no ChannelRegistry: e desenho
             Some(1),
+            None,
         );
         assert_eq!(status, "active");
     }
@@ -1910,7 +1947,7 @@ mod tests {
         // Configurado errado, ou recusado no boot (LINE com channel_secret
         // invalido, Teams sem app_id, WhatsApp sem app_secret desde a #1070).
         assert_eq!(
-            super::channel_status(ChannelKind::Push, true, false, Some(0)),
+            super::channel_status(ChannelKind::Push, true, false, Some(0), None),
             "offline"
         );
     }
@@ -1918,7 +1955,7 @@ mod tests {
     #[test]
     fn canal_push_sem_segredo_e_opcional_e_nao_offline() {
         assert_eq!(
-            super::channel_status(ChannelKind::Push, false, false, Some(0)),
+            super::channel_status(ChannelKind::Push, false, false, Some(0), None),
             "optional"
         );
     }
@@ -1929,7 +1966,7 @@ mod tests {
     #[test]
     fn live_do_registry_nao_promove_canal_push() {
         assert_eq!(
-            super::channel_status(ChannelKind::Push, true, true, Some(0)),
+            super::channel_status(ChannelKind::Push, true, true, Some(0), None),
             "offline"
         );
     }
@@ -1937,15 +1974,15 @@ mod tests {
     #[test]
     fn canal_pull_continua_vindo_do_registry() {
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, true, true, None),
+            super::channel_status(ChannelKind::Pull, true, true, None, None),
             "active"
         );
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, true, false, None),
+            super::channel_status(ChannelKind::Pull, true, false, None, None),
             "offline"
         );
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, false, false, None),
+            super::channel_status(ChannelKind::Pull, false, false, None, None),
             "optional"
         );
     }
@@ -1956,7 +1993,7 @@ mod tests {
     #[test]
     fn mounted_de_canal_pull_e_ignorado() {
         assert_eq!(
-            super::channel_status(ChannelKind::Pull, true, true, Some(0)),
+            super::channel_status(ChannelKind::Pull, true, true, Some(0), None),
             "active"
         );
     }
@@ -1967,9 +2004,149 @@ mod tests {
     #[test]
     fn tabela_e_struct_em_desacordo_dao_unknown() {
         assert_eq!(
-            super::channel_status(ChannelKind::Push, true, false, None),
+            super::channel_status(ChannelKind::Push, true, false, None, None),
             "unknown"
         );
+    }
+
+    // ─── #1238: o canal `whatsapp_linked` no /api/channels ────────────────
+
+    /// Monta um estado com o data dir apontado para `dir` e devolve a linha
+    /// `whatsapp_linked` do `/api/channels`, ja com o status resolvido.
+    async fn linha_do_whatsapp_linked(
+        dir: &std::path::Path,
+        ponte: garraia_channels::whatsapp_linked::health::BridgeView,
+    ) -> serde_json::Value {
+        let config = AppConfig {
+            data_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
+        let state = state_with(config);
+        state.whatsapp_linked.set_bridge(ponte);
+
+        let axum::Json(body) = super::list_channels(
+            axum::extract::State(state),
+            axum::Extension(Arc::new(PushChannelStates::empty())),
+        )
+        .await;
+
+        body["channels"]
+            .as_array()
+            .expect("lista de canais")
+            .iter()
+            .find(|c| c["id"] == "whatsapp_linked")
+            .cloned()
+            .expect("o canal precisa aparecer na lista")
+    }
+
+    /// Grava um `session.enc` e um `node_modules` de mentira: os dois fatos de
+    /// disco que a classificacao le.
+    fn vincula(dir: &std::path::Path) {
+        let store = garraia_channels::whatsapp_linked::SessionStore::for_data_dir(
+            dir,
+            garraia_channels::whatsapp_linked::DEFAULT_ACCOUNT,
+        )
+        .expect("DEFAULT_ACCOUNT e um segmento valido");
+        let key = garraia_channels::whatsapp_linked::SessionKey::resolve(store.dir(), None)
+            .expect("chave");
+        store
+            .save(
+                &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhIjoxfQ=="),
+                &key,
+            )
+            .expect("grava sessao");
+        std::fs::create_dir_all(dir.join("whatsapp/bridge/node_modules")).expect("node_modules");
+    }
+
+    /// Os **tres** estados do canal, na mesma tela onde o operador olha.
+    ///
+    /// A distincao entre `optional` e `offline` e o ponto: sem sessao ninguem
+    /// ligou o canal e nao ha defeito; com sessao e sem ponte, alguem ligou e
+    /// o canal nao esta funcionando — e o console precisa dizer isso.
+    #[tokio::test]
+    async fn o_whatsapp_vinculado_tem_os_tres_estados_no_api_channels() {
+        use garraia_channels::whatsapp_linked::health::BridgeView;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let linha = linha_do_whatsapp_linked(dir.path(), BridgeView::Unknown).await;
+        assert_eq!(
+            linha["status"], "optional",
+            "sem sessao o canal e opcional, nao offline: {linha}"
+        );
+        assert_eq!(
+            linha["needs_secret"], false,
+            "a credencial deste canal nao e um valor de config"
+        );
+        assert_eq!(linha["display_name"], "WhatsApp (dispositivo vinculado)");
+
+        vincula(dir.path());
+
+        let linha = linha_do_whatsapp_linked(dir.path(), BridgeView::Down).await;
+        assert_eq!(
+            linha["status"], "offline",
+            "ha sessao e a ponte caiu: isto e defeito, nao 'opcional': {linha}"
+        );
+
+        let linha = linha_do_whatsapp_linked(dir.path(), BridgeView::Connected).await;
+        assert_eq!(linha["status"], "active", "ponte conectada: {linha}");
+    }
+
+    /// `provisioned` so vale para quem o passa. Os quinze canais restantes
+    /// continuam classificados pelo `needs_secret`, como antes da #1238.
+    #[test]
+    fn provisioned_ausente_preserva_a_regra_antiga() {
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, true, false, None, None),
+            "offline"
+        );
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, false, false, None, None),
+            "optional"
+        );
+        // E quando ele e passado, vence o `needs_secret`.
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, false, false, None, Some(true)),
+            "offline"
+        );
+        assert_eq!(
+            super::channel_status(ChannelKind::Pull, true, false, None, Some(false)),
+            "optional"
+        );
+    }
+
+    /// **Uma fonte.** A CLI (`garra whatsapp status`) e o gateway
+    /// (`/api/diagnostics`, `/api/channels`) rodam em processos diferentes e
+    /// respondem a mesma pergunta ao mesmo usuario. As duas tem de classificar
+    /// pela `whatsapp_linked::health::classify`.
+    ///
+    /// Este e o mesmo guard do `todo_canal_push_da_tabela_e_conhecido_pelo_struct`
+    /// (#1079), aplicado a um par de superficies em vez de a um par de tabelas:
+    /// foi divergencia assim que fez o console chamar de `offline` um canal que
+    /// estava respondendo.
+    #[test]
+    fn a_cli_e_o_gateway_classificam_pela_mesma_funcao() {
+        let raiz = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/");
+        let superficies = [
+            raiz.join("garraia-cli/src/whatsapp.rs"),
+            raiz.join("garraia-gateway/src/bootstrap/whatsapp_linked.rs"),
+        ];
+        for caminho in superficies {
+            let fonte = std::fs::read_to_string(&caminho)
+                .unwrap_or_else(|e| panic!("{} ilegivel: {e}", caminho.display()));
+            assert!(
+                fonte.contains("health::{") || fonte.contains("whatsapp_linked::health"),
+                "{} precisa importar `whatsapp_linked::health`",
+                caminho.display()
+            );
+            assert!(
+                fonte.contains("classify(&facts"),
+                "{} precisa classificar pela funcao compartilhada, e nao por regra propria",
+                caminho.display()
+            );
+        }
     }
 
     /// O guard estrutural. A #1079 objetou que consultar as listas push

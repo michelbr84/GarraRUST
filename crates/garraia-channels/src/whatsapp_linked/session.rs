@@ -384,7 +384,7 @@ impl SessionStore {
         let aead = key.aead()?;
         let mut in_out = blob.expose().as_bytes().to_vec();
         aead.seal_in_place_append_tag(
-            Nonce::assume_unique_for_key(nonce_bytes),
+            Nonce::assume_unique_for_key(*nonce_bytes),
             Aad::from(AEAD_CONTEXT),
             &mut in_out,
         )
@@ -622,14 +622,17 @@ fn load_or_create_salt(dir: &Path) -> Result<Vec<u8>, SessionError> {
         )));
     }
     let salt = random_bytes::<SALT_LEN>()?;
-    write_atomic(&path, &salt)?;
+    write_atomic(&path, &salt[..])?;
     Ok(salt.to_vec())
 }
 
 fn load_or_create_key_file(dir: &Path) -> Result<Zeroizing<[u8; KEY_LEN]>, SessionError> {
     let path = dir.join(KEY_FILE);
     if path.is_file() {
-        let raw = std::fs::read(&path).map_err(|e| SessionError::io(&path, e))?;
+        // `Zeroizing` desde a leitura: este `Vec` **e** a chave. Sem ele, o
+        // buffer do `fs::read` ficava no heap depois do `copy_from_slice`,
+        // desfazendo boa parte do cuidado que o `Zeroizing` do destino tem.
+        let raw = Zeroizing::new(std::fs::read(&path).map_err(|e| SessionError::io(&path, e))?);
         let mut bytes = Zeroizing::new([0u8; KEY_LEN]);
         if raw.len() != KEY_LEN {
             return Err(SessionError::Format(format!(
@@ -646,17 +649,25 @@ fn load_or_create_key_file(dir: &Path) -> Result<Zeroizing<[u8; KEY_LEN]>, Sessi
         return Ok(bytes);
     }
     let fresh = random_bytes::<KEY_LEN>()?;
-    write_atomic(&path, &fresh)?;
+    write_atomic(&path, &fresh[..])?;
     let mut bytes = Zeroizing::new([0u8; KEY_LEN]);
-    bytes.copy_from_slice(&fresh);
+    bytes.copy_from_slice(&fresh[..]);
     Ok(bytes)
 }
 
-fn random_bytes<const N: usize>() -> Result<[u8; N], SessionError> {
+/// Bytes do RNG do sistema, ja embrulhados para zerar na queda.
+///
+/// `Zeroizing` e nao `[u8; N]` cru porque um dos usos e a **chave** de
+/// `session.key`: a versao anterior devolvia o array por valor, o chamador o
+/// copiava para dentro de um `Zeroizing` e o original ficava na pilha ate ser
+/// sobrescrito por acaso. O nonce e o salt nao sao segredo e nao precisavam
+/// disto — mas o tipo certo na fonte e o que impede o proximo uso de tamanho de
+/// chave de esquecer.
+fn random_bytes<const N: usize>() -> Result<Zeroizing<[u8; N]>, SessionError> {
     use rand::TryRngCore;
-    let mut buf = [0u8; N];
+    let mut buf = Zeroizing::new([0u8; N]);
     rand::rngs::OsRng
-        .try_fill_bytes(&mut buf)
+        .try_fill_bytes(buf.as_mut())
         .map_err(|e| SessionError::Crypto(format!("RNG do sistema indisponivel: {e}")))?;
     Ok(buf)
 }
@@ -721,7 +732,7 @@ fn write_tmp_file(tmp: &Path, bytes: &[u8]) -> Result<(), SessionError> {
 /// inclusive — e o sufixo aleatorio faz o caminho nao ser adivinhavel. As duas
 /// juntas, porque cada uma sozinha ainda deixa metade do problema.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
-    write_atomic_with_nonce(path, bytes, u64::from_ne_bytes(random_bytes::<8>()?))
+    write_atomic_with_nonce(path, bytes, u64::from_ne_bytes(*random_bytes::<8>()?))
 }
 
 /// O caminho do temporario que [`write_atomic_with_nonce`] vai usar.

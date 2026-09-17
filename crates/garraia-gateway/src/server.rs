@@ -901,6 +901,27 @@ impl GatewayServer {
             }
         }
 
+        // Sobe o canal WhatsApp por dispositivo vinculado (#1238, fatia D).
+        //
+        // Canal PULL e supervisao propria: nao entra no `ChannelRegistry` (o
+        // `Channel` trait pressupoe `connect()/disconnect()` sincronos sobre um
+        // objeto mutavel, e aqui quem vive e um processo filho Node com loop de
+        // reconexao proprio), e nao entra no `PushChannelStates` (nao ha
+        // webhook). O status dele sai do `AppState::whatsapp_linked`, que o
+        // `/api/channels` e o `/api/diagnostics` leem pela MESMA funcao.
+        //
+        // Nao subir e o caso comum — canal desligado, sem sessao, ou sem Node —
+        // e nenhum deles e erro de boot.
+        // `Ok(())` e nao `Ok(cancel)`: o `watch::Sender` que mantem o
+        // supervisor vivo fica estacionado no `AppState`
+        // (`WhatsAppLinkedRuntime::reter_cancelamento`). Ele ja morreu aqui uma
+        // vez, solto no fim deste braco do `match`, e o canal inteiro morria
+        // com ele em ~0,1 s a cada boot.
+        match crate::bootstrap::spawn_whatsapp_linked(&state) {
+            Ok(()) => info!("whatsapp_linked: canal supervisionado"),
+            Err(motivo) => info!("whatsapp_linked: canal nao subiu ({motivo:?})"),
+        }
+
         // Build WhatsApp channels (webhook-driven — no persistent connection)
         let whatsapp_channels = build_whatsapp_channels(&state.config, &state);
         for channel in &whatsapp_channels {
@@ -1039,31 +1060,7 @@ impl GatewayServer {
         // Cleanup runs even when the listener errored out: this block used to
         // sit after a `?`, so any serve error skipped it and orphaned every
         // MCP child process. The serve result is propagated at the end.
-        //
-        // Bounded: `disconnect_all` cancels each service, and a server that
-        // ignores stdin EOF can take up to its own drain time; unbounded and
-        // sequential, N bad servers could hang shutdown indefinitely.
-        if let Some(ref manager) = state_for_shutdown.mcp_manager_arc {
-            info!("disconnecting MCP servers...");
-            if tokio::time::timeout(MCP_SHUTDOWN_TIMEOUT, manager.disconnect_all())
-                .await
-                .is_err()
-            {
-                warn!(
-                    "MCP disconnect exceeded {:?}; continuing shutdown (children are killed on drop)",
-                    MCP_SHUTDOWN_TIMEOUT
-                );
-            }
-        }
-
-        info!("disconnecting channels...");
-        state_for_shutdown
-            .channels
-            .write()
-            .await
-            .disconnect_all()
-            .await
-            .ok();
+        shutdown_subsystems(&state_for_shutdown).await;
 
         serve_result?;
 
@@ -1669,11 +1666,135 @@ async fn build_storage_wiring(
     (object_store, Some(staging))
 }
 
+/// Desliga, na ordem, tudo que este processo pos de pe e que sobrevive ao
+/// listener: servidores MCP, canais push e o supervisor do WhatsApp vinculado.
+///
+/// # Por que isto e uma funcao, e nao um bloco dentro do `serve`
+///
+/// Porque a unica coisa que se pode testar de um bloco inline e o texto dele.
+/// A regressao que importa aqui — "o subsistema novo entrou no boot e ninguem
+/// o desligou" — ja aconteceu uma vez neste canal, e uma varredura de fonte a
+/// pegaria so ate alguem renomear a chamada.
+///
+/// # O ciclo de `Arc`, e por que o cancelamento e explicito
+///
+/// "O `Sender` cai junto com o `AppState`" nao vale para o WhatsApp vinculado:
+/// `AppState` guarda `whatsapp_linked: Arc<WhatsAppLinkedRuntime>`, o runtime
+/// guarda o `watch::Sender` do supervisor, e a tarefa do supervisor detem um
+/// `GatewaySink` que detem um `Arc<AppState>`. A tarefa so termina quando o
+/// `cancel_rx` dispara; o `cancel_tx` so cai quando o `AppState` cai; o
+/// `AppState` so cai quando a tarefa termina. Sem a chamada abaixo o gateway
+/// imprime "shut down gracefully" com a ponte Node viva, mensagens sendo lidas
+/// e turnos de agente rodando — ate o processo morrer.
+///
+/// Quebrar o ciclo com `Weak<AppState>` no sink foi considerado e recusado: o
+/// sink usa o estado em todo turno (sessoes, agentes, allowlist), cada uso
+/// viraria um `upgrade()` falivel, e o resultado seria um desligamento que
+/// depende de **nenhum outro** `Arc<AppState>` ter sobrado em lugar nenhum —
+/// mecanismo implicito, que e o que falhou aqui em primeiro lugar. O
+/// cancelamento explicito diz o que faz.
+async fn shutdown_subsystems(state: &Arc<AppState>) {
+    // Bounded: `disconnect_all` cancels each service, and a server that
+    // ignores stdin EOF can take up to its own drain time; unbounded and
+    // sequential, N bad servers could hang shutdown indefinitely.
+    if let Some(ref manager) = state.mcp_manager_arc {
+        info!("disconnecting MCP servers...");
+        if tokio::time::timeout(MCP_SHUTDOWN_TIMEOUT, manager.disconnect_all())
+            .await
+            .is_err()
+        {
+            warn!(
+                "MCP disconnect exceeded {:?}; continuing shutdown (children are killed on drop)",
+                MCP_SHUTDOWN_TIMEOUT
+            );
+        }
+    }
+
+    info!("disconnecting channels...");
+    state.channels.write().await.disconnect_all().await.ok();
+
+    if state.whatsapp_linked.cancelar() {
+        info!("whatsapp_linked: supervisor cancelado");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// **A outra metade do F1: o canal sobe, e agora ele tambem para.**
+    ///
+    /// `WhatsAppLinkedRuntime::cancelar()` existia, estava correto e nao tinha
+    /// UM chamador de producao — so os dois testes do proprio runtime. O bloco
+    /// de desligamento deste arquivo desligava MCP e canais push e passava ao
+    /// largo deste. Depois do Ctrl+C o gateway imprimia "shut down gracefully"
+    /// com a ponte Node viva, mensagens sendo lidas e turnos de agente rodando.
+    ///
+    /// E a rota de escape "o `Sender` cai junto com o `AppState`" nao existe,
+    /// por um ciclo de `Arc` — ver o docstring de `shutdown_subsystems`.
+    ///
+    /// Este teste nao varre o fonte: ele **chama** o desligamento e pergunta do
+    /// outro lado do canal de cancelamento se o sinal chegou. Uma varredura de
+    /// texto morreria no dia em que alguem renomeasse a chamada; esta so morre
+    /// se o comportamento morrer junto.
+    #[tokio::test]
+    async fn o_desligamento_cancela_o_supervisor_do_whatsapp_vinculado() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+
+        let state: Arc<AppState> = Arc::new(AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+
+        // O supervisor de mentira: so o lado que importa para o desligamento.
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        state.whatsapp_linked.reter_cancelamento(cancel_tx);
+        assert!(
+            state.whatsapp_linked.cancelamento_vivo(),
+            "premissa: ha supervisor retido antes do desligamento"
+        );
+        assert!(
+            !*cancel_rx.borrow_and_update(),
+            "premissa: ninguem cancelou ainda"
+        );
+
+        shutdown_subsystems(&state).await;
+
+        // O que o `serve` do supervisor observa e o valor do canal. (O
+        // `has_changed()` aqui devolveria `Err`, porque `cancelar()` **solta**
+        // o `Sender` depois de enviar — o que, do lado do supervisor, tambem e
+        // um sinal de parada; nao e o que este teste mede.)
+        assert!(
+            *cancel_rx.borrow(),
+            "o supervisor tem de receber o cancelamento no desligamento do gateway; \
+             sem isto a ponte Node segue viva e turnos de agente seguem rodando \
+             depois de `gateway shut down gracefully`"
+        );
+        assert!(
+            !state.whatsapp_linked.cancelamento_vivo(),
+            "e o slot tem de ficar vazio: um segundo desligamento nao tem o que cancelar"
+        );
+    }
+
+    /// E desligar sem canal vinculado nao pode explodir nem mentir — o caminho
+    /// de toda instalacao que nunca rodou `garra whatsapp link`.
+    #[tokio::test]
+    async fn o_desligamento_sem_supervisor_e_um_noop() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+
+        let state: Arc<AppState> = Arc::new(AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+        shutdown_subsystems(&state).await;
+        assert!(!state.whatsapp_linked.cancelamento_vivo());
+    }
 
     // ---- #1241: aviso de bind exposto sem credencial ---------------------
 
@@ -1852,6 +1973,50 @@ mod tests {
         fn status(&self) -> garraia_channels::ChannelStatus {
             garraia_channels::ChannelStatus::Connected
         }
+    }
+
+    /// Fiacao do canal `whatsapp_linked` (#1238, fatia D).
+    ///
+    /// `Server::run` nao e chamavel de um teste unitario (abre socket, monta
+    /// admin store, entra no `serve`), entao esta e a forma honesta de pinar a
+    /// chamada: varre o proprio fonte. E fraco de proposito, e esta escrito
+    /// aqui que e fraco — mas e a diferenca entre "o supervisor nunca sobe" ser
+    /// pego pelo CI e ser pego pelo usuario. E a licao do comando que se
+    /// chamava `whats-app` com 599 testes verdes: toda funcao bem testada
+    /// precisa de alguem provando que ela e CHAMADA.
+    ///
+    /// **E so isso que ele prova.** Ele ficou verde durante toda a vida do bug
+    /// em que o `watch::Sender` devolvido morria no fim do braco do `match` e
+    /// matava o canal em ~0,1 s: a chamada estava la, o resultado e que nao
+    /// era retido. Quem prova a retencao e a entrega da mensagem e
+    /// `bootstrap::whatsapp_linked::tests::ponta_a_ponta::
+    /// o_boot_retem_o_supervisor_e_a_mensagem_chega_ao_agente`, contra a ponte
+    /// falsa e sem segurar handle nenhum. Hoje a mutacao "soltar o handle"
+    /// nem e expressavel — `spawn_whatsapp_linked` devolve `()`.
+    #[test]
+    fn o_boot_chama_o_supervisor_do_whatsapp_vinculado() {
+        let fonte = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs"),
+        )
+        .expect("fonte legivel");
+        // So o codigo de producao: o proprio corpo deste teste cita o nome da
+        // funcao, e sem este corte ele casaria consigo mesmo — que e como um
+        // teste de fiacao vira decoracao. (Verificado por mutacao: com o corte,
+        // apagar a chamada do boot deixa este teste vermelho.)
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes.to_string())
+            .unwrap_or_else(|| fonte.clone());
+        let codigo: String = producao
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            codigo.contains("spawn_whatsapp_linked(&state)"),
+            "o boot precisa chamar `spawn_whatsapp_linked`; sem isso o canal \
+             nunca sobe e nenhum outro teste percebe"
+        );
     }
 
     /// O comportamento que a #928 pedia sem saber: uma falha transitória de

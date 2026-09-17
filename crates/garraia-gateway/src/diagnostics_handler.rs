@@ -52,8 +52,12 @@ struct DiagnosticCheck {
     status: CheckStatus,
     /// Short evidence string. Never contains secret values.
     detail: String,
-    /// Suggested next step when status != Ok. Empty when not applicable.
-    next_step: Option<&'static str>,
+    /// Suggested next step when status != Ok. `None` when not applicable.
+    ///
+    /// `String` e nao `&'static str` desde a #1238: o passo do
+    /// `whatsapp.linked` precisa citar o diretorio real da ponte, e um
+    /// "rode `npm ci`" sem dizer onde manda a pessoa procurar.
+    next_step: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -268,17 +272,20 @@ fn voice_check(
         VoiceProbe::Unhealthy(code) => (
             CheckStatus::Error,
             format!("{ep} respondeu HTTP {code} — servidor de pe, servico quebrado"),
-            Some(unhealthy_step),
+            Some(unhealthy_step.to_string()),
         ),
         VoiceProbe::Unreachable(reason) => (
             CheckStatus::Error,
             format!("{ep} unreachable: {reason}"),
-            Some(next_step),
+            Some(next_step.to_string()),
         ),
         VoiceProbe::Invalid(reason) => (
             CheckStatus::Error,
             format!("{ep}: {reason}"),
-            Some("Set the voice endpoint to an http(s) URL on a host this gateway may reach."),
+            Some(
+                "Set the voice endpoint to an http(s) URL on a host this gateway may reach."
+                    .to_string(),
+            ),
         ),
     };
     DiagnosticCheck {
@@ -353,6 +360,64 @@ async fn sondas_de_voz(cfg: &garraia_config::VoiceConfig) -> (VoiceProbe, VoiceP
     (tts, stt)
 }
 
+/// A linha `whatsapp.linked` do relatorio.
+///
+/// Recebe o veredito ja classificado (e nao o `AppConfig`) para poder ser
+/// exercitada sem montar `AppState`: os cinco estados cabem em cinco asserts.
+///
+/// Mapeamento de severidade, e o porque de cada um:
+///
+/// | Veredito | Status | Por que |
+/// |---|---|---|
+/// | `NotLinked` | `skipped` | canal opcional que ninguem ligou — nao e defeito |
+/// | `MissingDependencies` | `error` | o operador ligou e o canal nao funciona |
+/// | `BridgeDown` | `error` | idem: ha sessao e nao ha canal |
+/// | `Connected` | `ok` | |
+/// | `Linked` | `ok` | ha sessao e a ponte nao esta sendo supervisionada aqui |
+///
+/// Secret-free: nenhum caminho de sessao, nenhum JID, nenhum telefone. O
+/// diretorio da **ponte** aparece porque e onde o `npm ci` precisa rodar — ele
+/// nao guarda credencial, so `bridge.mjs` e `node_modules`.
+fn whatsapp_linked_check(
+    (saude, bridge_dir): (
+        garraia_channels::whatsapp_linked::health::LinkHealth,
+        std::path::PathBuf,
+    ),
+) -> DiagnosticCheck {
+    use garraia_channels::whatsapp_linked::health::LinkHealth;
+
+    let (status, detail) = match saude {
+        LinkHealth::NotLinked => (
+            CheckStatus::Skipped,
+            "nenhum aparelho vinculado (canal opcional)".to_string(),
+        ),
+        LinkHealth::MissingDependencies => (
+            CheckStatus::Error,
+            format!(
+                "ha sessao vinculada, mas a ponte esta sem dependencias em {}",
+                bridge_dir.display()
+            ),
+        ),
+        LinkHealth::BridgeDown => (
+            CheckStatus::Error,
+            "ha sessao vinculada e a ponte nao esta conectada".to_string(),
+        ),
+        LinkHealth::Connected => (CheckStatus::Ok, "conectado".to_string()),
+        LinkHealth::Linked => (
+            CheckStatus::Ok,
+            "sessao vinculada (a ponte nao e supervisionada por este processo)".to_string(),
+        ),
+    };
+
+    DiagnosticCheck {
+        id: "whatsapp.linked",
+        label: "WhatsApp (dispositivo vinculado)",
+        status,
+        detail,
+        next_step: saude.next_step(&bridge_dir),
+    }
+}
+
 /// GET /api/diagnostics — full diagnostic report.
 pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<DiagnosticsReport> {
     let mut checks: Vec<DiagnosticCheck> = Vec::new();
@@ -383,7 +448,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: if (1..=65535).contains(&port) {
             None
         } else {
-            Some("Set gateway.port in garraia.toml to a value 1..=65535.")
+            Some("Set gateway.port in garraia.toml to a value 1..=65535.".to_string())
         },
     });
 
@@ -402,7 +467,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: if cfg_exists {
             None
         } else {
-            Some("Run `garraia init` to scaffold ~/.garraia.")
+            Some("Run `garraia init` to scaffold ~/.garraia.".to_string())
         },
     });
 
@@ -425,7 +490,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: if dotenv {
             None
         } else {
-            Some("Copy .env.example to .env and fill in the values you need.")
+            Some("Copy .env.example to .env and fill in the values you need.".to_string())
         },
     });
 
@@ -446,7 +511,8 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
             None
         } else {
             Some(
-                "Register at least one LLM provider via /api/providers POST or seed an API key in .env.",
+                "Register at least one LLM provider via /api/providers POST or seed an API key in .env."
+                    .to_string(),
             )
         },
     });
@@ -513,7 +579,8 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
             Some(
                 "Optional on a local single-user gateway. To enable auth you need all \
                  four auth env vars plus Postgres, not this one alone; start with \
-                 export GARRAIA_JWT_SECRET=$(openssl rand -hex 32). See docs/auth-config.md.",
+                 export GARRAIA_JWT_SECRET=$(openssl rand -hex 32). See docs/auth-config.md."
+                    .to_string(),
             )
         },
     });
@@ -532,7 +599,8 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         detail: format!("host={}", bind),
         next_step: if exposed {
             Some(
-                "Binding to all interfaces — make sure a firewall protects the port or switch to 127.0.0.1.",
+                "Binding to all interfaces — make sure a firewall protects the port or switch to 127.0.0.1."
+                    .to_string(),
             )
         } else {
             None
@@ -580,7 +648,10 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
             channels.join(", ")
         },
         next_step: if channels.is_empty() {
-            Some("At least 'web' is expected. Check the bootstrap log for channel registration errors.")
+            Some(
+                "At least 'web' is expected. Check the bootstrap log for channel registration errors."
+                    .to_string(),
+            )
         } else {
             None
         },
@@ -613,7 +684,17 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         tts_probe,
     ));
 
-    // 14. STT server reachable (#1098).
+    // 14. WhatsApp vinculado (#1238, fatia D).
+    //
+    //     Le a MESMA fonte que o `garra whatsapp status` e que a linha
+    //     `whatsapp_linked` do `/api/channels`: `whatsapp_linked::health::
+    //     classify`. Duas fontes divergentes sobre o mesmo canal e o defeito
+    //     que a #1079 ja custou uma vez.
+    checks.push(whatsapp_linked_check(
+        crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked),
+    ));
+
+    // 15. STT server reachable (#1098).
     let stt_endpoint = state.config.voice.stt_endpoint.clone();
     checks.push(voice_check(
         "voice.stt",
@@ -653,6 +734,126 @@ mod tests {
     use super::*;
 
     const ENDPOINT: &str = "http://127.0.0.1:7860";
+
+    // ─── #1238: WhatsApp vinculado ────────────────────────────────────────
+
+    use garraia_channels::whatsapp_linked::health::LinkHealth;
+
+    fn wa(saude: LinkHealth) -> DiagnosticCheck {
+        whatsapp_linked_check((
+            saude,
+            std::path::PathBuf::from("/home/ana/.garraia/data/whatsapp/bridge"),
+        ))
+    }
+
+    /// Canal que ninguem ligou nao e defeito — e `skipped`, como o modo voz
+    /// desligado. Mas o proximo passo existe: e como a pessoa liga.
+    #[test]
+    fn nao_vinculado_e_skipped_com_o_comando_de_link() {
+        let c = wa(LinkHealth::NotLinked);
+        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert_eq!(
+            c.next_step.as_deref(),
+            Some("rode `garra whatsapp link`"),
+            "sem sessao o passo e vincular"
+        );
+    }
+
+    /// O modo de falha que a issue nomeia: ponte sem `node_modules`. O passo
+    /// tem de citar o diretorio real — `npm ci` sem `cd` nao ajuda ninguem.
+    #[test]
+    fn sem_dependencias_e_error_com_o_npm_ci_no_diretorio_certo() {
+        let c = wa(LinkHealth::MissingDependencies);
+        assert!(matches!(c.status, CheckStatus::Error));
+        let passo = c.next_step.expect("passo acionavel");
+        assert!(passo.contains("npm ci"), "{passo}");
+        assert!(
+            passo.contains("/home/ana/.garraia/data/whatsapp/bridge"),
+            "{passo}"
+        );
+    }
+
+    /// Sessao vinculada e ponte caida e **defeito**, nao "opcional": alguem
+    /// ligou o canal e ele nao esta funcionando.
+    #[test]
+    fn ponte_caida_com_sessao_e_error() {
+        let c = wa(LinkHealth::BridgeDown);
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(c.next_step.is_some(), "todo erro precisa de proximo passo");
+    }
+
+    #[test]
+    fn conectado_e_ok_sem_proximo_passo() {
+        for saude in [LinkHealth::Connected, LinkHealth::Linked] {
+            let c = wa(saude);
+            assert!(matches!(c.status, CheckStatus::Ok), "{saude:?}");
+            assert!(c.next_step.is_none(), "{saude:?} nao tem o que consertar");
+        }
+    }
+
+    /// **A fiacao.** Os testes acima exercitam `whatsapp_linked_check`
+    /// diretamente; sem este, apagar o `checks.push(...)` do handler deixaria
+    /// todos eles verdes e o `/api/diagnostics` sem a linha — o padrao de
+    /// defeito que este repositorio ja viu cinco vezes.
+    #[tokio::test]
+    async fn o_relatorio_de_verdade_inclui_a_linha_do_whatsapp() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
+            config,
+            std::sync::Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "whatsapp.linked")
+            .expect("o relatorio precisa carregar a linha `whatsapp.linked`");
+
+        assert!(
+            matches!(linha.status, CheckStatus::Skipped),
+            "sem sessao a linha e `skipped`: {:?}",
+            linha.status
+        );
+        assert_eq!(
+            linha.next_step.as_deref(),
+            Some("rode `garra whatsapp link`")
+        );
+    }
+
+    /// O relatorio e auth-free: nada do material de sessao pode vazar para ele.
+    #[test]
+    fn a_linha_do_whatsapp_nao_carrega_material_de_sessao() {
+        for saude in [
+            LinkHealth::NotLinked,
+            LinkHealth::MissingDependencies,
+            LinkHealth::BridgeDown,
+            LinkHealth::Connected,
+            LinkHealth::Linked,
+        ] {
+            let c = wa(saude);
+            let json = serde_json::to_string(&c).expect("serializa");
+            for proibido in [
+                "session.enc",
+                "session.key",
+                "whatsapp/default",
+                "@s.whatsapp",
+            ] {
+                assert!(
+                    !json.contains(proibido),
+                    "{saude:?} vazou {proibido:?} num corpo auth-free: {json}"
+                );
+            }
+        }
+    }
 
     /// #1098: com o modo voz desligado nao ha servidor para alcancar, e isso
     /// nao e defeito — a linha e `skipped`, nao `error`.
@@ -703,7 +904,7 @@ mod tests {
         assert!(matches!(c.status, CheckStatus::Error));
         assert!(c.detail.contains(ENDPOINT));
         assert!(c.detail.contains("nothing listening"));
-        assert_eq!(c.next_step, Some(TTS_NEXT_STEP));
+        assert_eq!(c.next_step.as_deref(), Some(TTS_NEXT_STEP));
         assert!(
             TTS_NEXT_STEP.contains("7860"),
             "o proximo passo do TTS tem de citar a porta certa"
@@ -890,7 +1091,7 @@ mod tests {
         assert!(c.detail.contains("HTTP 500"), "{}", c.detail);
         // #1144: um 5xx aponta para os logs, nao para o comando de subida —
         // o processo esta de pe; restart seria a instrucao errada.
-        assert_eq!(c.next_step, Some(TTS_LOGS_STEP));
+        assert_eq!(c.next_step.as_deref(), Some(TTS_LOGS_STEP));
         assert!(
             !TTS_LOGS_STEP.contains("chatterbox-tts serve"),
             "o passo do 5xx nao e o comando de subida"

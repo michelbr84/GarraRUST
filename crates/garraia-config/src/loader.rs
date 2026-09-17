@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use garraia_common::{Error, Result};
 use tracing::info;
 
-use crate::model::{AppConfig, McpServerConfig};
+use crate::model::{AppConfig, ChannelConfig, McpServerConfig};
 
 pub struct ConfigLoader {
     config_dir: PathBuf,
@@ -63,6 +63,34 @@ impl ConfigLoader {
         if yaml_path.exists() {
             info!("loading config from {}", yaml_path.display());
             let contents = std::fs::read_to_string(&yaml_path)?;
+            // Um `config.yml` sem conteudo desserializa **com sucesso** para
+            // `AppConfig::default()`, e esse e o pior resultado possivel: e a
+            // forma exata que uma escrita truncada deixa o arquivo, e o que
+            // vinha depois era um `save()` gravando os defaults por cima da
+            // config do usuario — e todo gate que morava nela (chaves, canais,
+            // credenciais) sumindo em silencio. Arquivo sem conteudo nao e "sem
+            // config": e config ilegivel.
+            //
+            // Dois criterios, porque nenhum cobre o outro. `trim().is_empty()`
+            // pega o arquivo em branco, inclusive quando ele tem um TAB, que o
+            // YAML nem consegue tokenizar. E `Value::Null` pega o arquivo que
+            // sobrou so com comentarios: ele tem bytes, passa pelo `trim`, cai
+            // no mesmo `AppConfig::default()` e faria a mesma perda silenciosa
+            // de gate. Erro de parse com conteudo de verdade cai fora daqui de
+            // proposito: a mensagem do `from_str` abaixo diz linha e coluna, e
+            // esta nao diria.
+            let sem_conteudo = contents.trim().is_empty()
+                || serde_yaml::from_str::<serde_yaml::Value>(&contents)
+                    .map(|v| v.is_null())
+                    .unwrap_or(false);
+            if sem_conteudo {
+                return Err(Error::Config(format!(
+                    "{} esta vazio (ou so tem comentarios) — isso costuma ser uma \
+                     escrita interrompida, nao uma config valida. Restaure o \
+                     arquivo, ou apague-o para que os defaults valham.",
+                    yaml_path.display()
+                )));
+            }
             serde_yaml::from_str(&contents)
                 .map_err(|e| Error::Config(format!("failed to parse YAML config: {e}")))
         } else if toml_path.exists() {
@@ -196,18 +224,203 @@ impl ConfigLoader {
         let contents = serde_yaml::to_string(config)
             .map_err(|e| Error::Config(format!("failed to serialize config: {e}")))?;
 
-        std::fs::write(&yaml_path, contents).map_err(|e| {
-            garraia_common::Error::Config(format!(
-                "failed to write config to {}: {e}",
-                yaml_path.display()
-            ))
-        })?;
-
-        harden_secret_file(&yaml_path)?;
+        write_atomic_secret(&yaml_path, contents.as_bytes())?;
 
         info!("saved updated config to {}", yaml_path.display());
         Ok(())
     }
+
+    /// Liga ou desliga `channels.<key>.enabled`, sem tocar em mais nada.
+    ///
+    /// Devolve `true` quando o arquivo mudou; `false` quando ja estava assim
+    /// (ou quando a secao nao existe e o pedido era `false` — nao se cria uma
+    /// secao so para escrever "desligado").
+    ///
+    /// # Por que isto mora aqui
+    ///
+    /// Dois processos precisam desta escrita e precisam dela **igual**: a CLI
+    /// (`garra whatsapp link` liga, `logout` desliga) e o gateway (que desliga
+    /// sozinho quando o servidor mata a sessao — senao todo boot seguinte paga
+    /// timeout e retry por uma credencial que nao existe mais). Duas copias
+    /// desta funcao divergiriam no dia em que uma delas ganhasse um campo, e o
+    /// sintoma seria o pior possivel: a CLI dizendo "desligado" e o gateway
+    /// subindo o canal assim mesmo.
+    pub fn set_channel_enabled(&self, key: &str, enabled: bool) -> Result<bool> {
+        // `save` escreve `<config_dir>/config.yml`; numa maquina que nunca
+        // rodou `garra init` o diretorio ainda nao existe.
+        self.ensure_dirs()?;
+        let mut config = self.load()?;
+        match config.channels.get_mut(key) {
+            Some(existing) => {
+                if existing.enabled == Some(enabled) {
+                    return Ok(false);
+                }
+                existing.enabled = Some(enabled);
+            }
+            None => {
+                if !enabled {
+                    return Ok(false);
+                }
+                config.channels.insert(
+                    key.to_string(),
+                    ChannelConfig {
+                        channel_type: key.to_string(),
+                        enabled: Some(true),
+                        settings: Default::default(),
+                    },
+                );
+            }
+        }
+        self.save(&config)?;
+        Ok(true)
+    }
+}
+
+/// Escreve `path` de forma atomica e ja apertada: tmp no **mesmo** diretorio,
+/// nascido `0600`, `sync_all`, `rename`.
+///
+/// # Por que isto substituiu `fs::write` + `harden_secret_file`
+///
+/// `std::fs::write` e truncate-then-write: entre o truncate e o fim da escrita
+/// o `config.yml` esta parcial no disco, e uma queda ali deixa o arquivo vazio
+/// — que o `load` acima agora recusa em vez de tratar como "sem config". O
+/// `chmod` vinha **depois** da escrita, entao havia ainda uma janela em que
+/// `llm.*.api_key` e `gateway.api_key` estavam no disco com o modo do umask
+/// (comumente `0644`).
+///
+/// A janela deixou de ser teorica nesta fatia: alem da CLI (`garra whatsapp
+/// link` / `logout`), o gateway passou a chamar `set_channel_enabled` sozinho
+/// quando o servidor invalida a sessao — dois processos, read-modify-write, sem
+/// lock. O `rename` nao remove a corrida de leitura-modificacao-escrita (o
+/// ultimo a escrever ainda vence), mas garante que nenhum leitor jamais veja um
+/// arquivo pela metade, e que o arquivo nunca exista com modo frouxo.
+///
+/// # Por que o nome do temporario e aleatorio, e por que `create_new`
+///
+/// O nome era deterministico (`.config.yml.tmp`) e o arquivo era aberto com
+/// `create(true).truncate(true)`, sem `O_EXCL`. Com **um** escritor isso e
+/// inofensivo; com dois — e o paragrafo acima declara dois — os dois calculam
+/// o mesmo caminho. A escrita do gateway abre o tmp e comeca a escrever; a da
+/// CLI abre o MESMO tmp com `O_TRUNC` no meio; a primeira segue escrevendo do
+/// offset antigo, e o que sobra e um arquivo com buraco de NULs e fragmentos
+/// dos dois. Os dois `rename`: o `config.yml` resultante ou nao parseia (o
+/// gateway nao sobe) ou parseia pela metade e **perde secoes** — exatamente a
+/// perda silenciosa de gate que esta funcao existe para impedir.
+///
+/// E com nome previsivel o preexistente nao precisa ser um arquivo: um symlink
+/// plantado no mesmo diretorio seria SEGUIDO por `create(true)`, e o alvo dele
+/// e que receberia a config e o `chmod`. `create_new(true)` recusa abrir
+/// qualquer coisa que ja exista — symlink inclusive — e o sufixo aleatorio faz
+/// o caminho nao ser adivinhavel. As duas juntas, porque cada uma sozinha
+/// ainda deixa metade do problema.
+///
+/// O padrao e o mesmo de `whatsapp_linked::session::write_atomic`, que guarda o
+/// blob de sessao, ate no sufixo: sao dois call sites e um padrao, e a
+/// alternativa era duas definicoes de "escrita segura" capazes de divergir.
+fn write_atomic_secret(path: &Path, bytes: &[u8]) -> Result<()> {
+    let nonce = u64::from_ne_bytes(garraia_security::random_bytes::<8>().map_err(|_| {
+        Error::Config("RNG do sistema indisponivel para nomear o temporario da config".into())
+    })?);
+    write_atomic_secret_with_nonce(path, bytes, nonce)
+}
+
+/// O caminho do temporario que [`write_atomic_secret_with_nonce`] vai usar.
+///
+/// Funcao nomeada, e nao um `format!` no meio da escrita, porque e o que
+/// permite ao teste plantar no caminho EXATO — e sem isso nao ha como pinar o
+/// `create_new`. Plantar no nome deterministico de antes do nonce so pina o
+/// nonce: trocar `create_new(true)` por `create(true).truncate(true)` deixa
+/// esse teste verde, porque o caminho plantado ja nao e o caminho escrito.
+/// Mesma licao, e mesma forma, do `session::tmp_path_for`.
+fn tmp_path_for(path: &Path, nonce: u64) -> PathBuf {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    dir.join(format!(
+        ".{}.{nonce:016x}.tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "config".into())
+    ))
+}
+
+/// [`write_atomic_secret`] com o nonce injetado. Ver [`tmp_path_for`].
+fn write_atomic_secret_with_nonce(path: &Path, bytes: &[u8], nonce: u64) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::Config(format!("{} nao tem diretorio pai", path.display())))?;
+
+    let tmp = tmp_path_for(path, nonce);
+
+    // `escreve_tmp` ja limpa o que ele mesmo criou — e SO o que ele criou.
+    // Se o `create_new` recusar um caminho ocupado, nada foi criado e nada ha
+    // para apagar: apagar ali seria destruir o arquivo do outro escritor, que
+    // e exatamente o que `create_new` existe para evitar, com outro nome.
+    //
+    // Daqui para baixo o `tmp` E nosso e ja tem a config inteira dentro —
+    // 0600, entao nao e exposicao, mas e uma segunda copia que ninguem espera
+    // e que o proximo `save` nao reaproveita, porque o nome muda. Por isso o
+    // desfecho de erro o apaga, e nao so no braco do `rename`, que era o unico
+    // coberto antes.
+    escreve_tmp(&tmp, bytes)?;
+    // `harden_secret_file` roda em TODA plataforma, e nao so fora de Unix como
+    // o comentario anterior dizia. Em Unix o `mode(0o600)` do `open` ja
+    // garante que o arquivo nunca existiu mais frouxo que isso — o `open(2)`
+    // aplica `mode & ~umask`, e umask so tira bit. O que sobra para esta
+    // chamada fazer la e o caso patologico do umask que tira tambem os bits do
+    // dono: `0000` e restritivo demais, e o proprio processo nao reabriria o
+    // arquivo.
+    let terminado = harden_secret_file(&tmp).and_then(|()| {
+        std::fs::rename(&tmp, path).map_err(|e| {
+            Error::Config(format!(
+                "failed to replace {} atomically: {e}",
+                path.display()
+            ))
+        })
+    });
+    if let Err(e) = terminado {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    // Best-effort: sem isto o rename pode nao estar duravel depois de uma queda
+    // de energia. Falha aqui nao invalida a escrita.
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// O temporario do [`write_atomic_secret`]: criado do zero, 0600 desde o
+/// `open`, escrito e sincronizado.
+fn escreve_tmp(tmp: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let mut opts = std::fs::OpenOptions::new();
+    // `create_new`: se o caminho ja existe — arquivo ou symlink — isto falha
+    // em vez de escrever por cima. Ver o docstring de [`write_atomic_secret`].
+    opts.write(true).create_new(true);
+    // Nasce 0600: apertar depois da escrita deixaria uma janela com o
+    // segredo ja no disco sob o modo do umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    // Um `?` aqui e o desfecho CERTO de `create_new` recusando um caminho
+    // ocupado: nada foi criado, e portanto nada ha para limpar.
+    let mut f = opts
+        .open(tmp)
+        .map_err(|e| Error::Config(format!("failed to open {} for write: {e}", tmp.display())))?;
+    let escrito = f.write_all(bytes).and_then(|()| f.sync_all());
+    drop(f);
+    if let Err(e) = escrito {
+        // Daqui em diante o arquivo E nosso, e ja tem parte da config dentro.
+        let _ = std::fs::remove_file(tmp);
+        return Err(Error::Config(format!(
+            "failed to write {}: {e}",
+            tmp.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Restrict `path` to owner-only read/write (`0600`) on Unix.
@@ -236,7 +449,7 @@ pub fn harden_secret_file(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::ConfigLoader;
+    use super::{ConfigLoader, tmp_path_for, write_atomic_secret_with_nonce};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -516,6 +729,201 @@ mod tests {
         assert!(dir.join("skills").exists());
         assert!(dir.join("data").exists());
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **A prova de que a escrita e por rename, e nao truncate-then-write.**
+    ///
+    /// `std::fs::write` reaproveita o arquivo existente: mesmo inode, conteudo
+    /// substituido no lugar — e entre o truncate e o fim da escrita o
+    /// `config.yml` esta parcial no disco. Um `rename` atomico **troca** o
+    /// inode. E a unica diferenca observavel das duas implementacoes sem uma
+    /// corrida, e ela morre no instante em que alguem voltar ao `fs::write`.
+    #[cfg(unix)]
+    #[test]
+    fn save_substitui_o_arquivo_por_rename_em_vez_de_truncar() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = temp_dir("save-atomica");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let loader = ConfigLoader::with_dir(&dir);
+        let config = loader.load().expect("defaults");
+
+        loader.save(&config).expect("primeira escrita");
+        let path = dir.join("config.yml");
+        let antes = fs::metadata(&path).expect("metadata").ino();
+
+        loader.save(&config).expect("segunda escrita");
+        let depois = fs::metadata(&path).expect("metadata").ino();
+
+        assert_ne!(
+            antes, depois,
+            "o destino tem de ser substituido por rename; mesmo inode significa \
+             truncate-then-write, que deixa o arquivo parcial no disco durante a escrita"
+        );
+        assert!(
+            fs::read_dir(&dir)
+                .expect("lista")
+                .filter_map(|e| e.ok())
+                .all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")),
+            "nenhum tmp orfao pode sobrar — seria uma segunda copia da config inteira"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **Config vazia nao e "sem config".**
+    ///
+    /// `serde_yaml` desserializa uma string em branco para `AppConfig::default()`
+    /// **com sucesso** — e essa era a forma exata que uma escrita interrompida
+    /// deixava o arquivo. O gate de credencial do gateway desaparecia em
+    /// silencio, e o `save()` seguinte gravava os defaults por cima do que
+    /// restava da config do usuario.
+    #[test]
+    fn load_recusa_config_yml_em_branco() {
+        let dir = temp_dir("load-vazia");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let path = dir.join("config.yml");
+
+        // A premissa que torna o bug possivel — se ela cair, este teste perde o
+        // sentido e quem mexer precisa saber disso.
+        assert!(
+            serde_yaml::from_str::<crate::model::AppConfig>("   \n").is_ok(),
+            "premissa: YAML em branco desserializa com sucesso para os defaults"
+        );
+
+        // O ultimo caso e o que `trim().is_empty()` deixava passar: um arquivo
+        // que sobrou so com comentarios tem bytes, cai no MESMO
+        // `AppConfig::default()` e faz a MESMA perda silenciosa de gate. E
+        // criterio de YAML, nao de espaco em branco, que fecha os dois.
+        for conteudo in ["", "   ", "\n\n", "  \n\t\n", "# so um comentario\n"] {
+            fs::write(&path, conteudo).expect("seed");
+            let erro = ConfigLoader::with_dir(&dir)
+                .load()
+                .expect_err("config sem conteudo tem de ser recusada");
+            assert!(
+                format!("{erro}").contains("vazio"),
+                "o erro tem de dizer o que fazer: {erro}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **O temporario nao pode ter nome que outro escritor saiba adivinhar.**
+    ///
+    /// Esta fatia declara dois escritores do mesmo `config.yml` — a CLI
+    /// (`garra whatsapp link`/`logout`) e o gateway (`desligar_na_config()` →
+    /// `set_channel_enabled` → `save`). Com o nome deterministico
+    /// (`.config.yml.tmp`) e `create(true).truncate(true)` os dois abriam o
+    /// MESMO arquivo, e o resultado era um tmp com fragmentos dos dois — que
+    /// os dois entao renomeavam por cima da config.
+    ///
+    /// O teste planta um arquivo exatamente no nome antigo e exige que ele
+    /// sobreviva intacto: com a construcao anterior ele seria truncado no
+    /// `open`, entao a mutacao "voltar ao nome fixo" sai vermelha aqui.
+    #[test]
+    fn o_temporario_nao_usa_o_nome_deterministico_de_antes() {
+        let dir = temp_dir("save-tmp-unico");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let loader = ConfigLoader::with_dir(&dir);
+        let config = loader.load().expect("defaults");
+
+        let antigo = dir.join(".config.yml.tmp");
+        fs::write(&antigo, b"escrita de outro processo").expect("planta o tmp antigo");
+
+        loader
+            .save(&config)
+            .expect("a escrita nao pode depender do tmp antigo");
+
+        assert_eq!(
+            fs::read(&antigo).expect("o tmp plantado tem de continuar la"),
+            b"escrita de outro processo",
+            "o nome do temporario nao pode ser adivinhavel: este arquivo e o que \
+             o outro escritor estaria no meio de escrever"
+        );
+        assert!(
+            dir.join("config.yml").is_file(),
+            "e a config tem de ter sido gravada assim mesmo"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **O `create_new` pinado no caminho EXATO.**
+    ///
+    /// Os dois testes acima plantam no nome deterministico de antes do nonce,
+    /// entao o que eles pinam e o NONCE: trocar `create_new(true)` por
+    /// `create(true).truncate(true)` os deixa verdes, porque o caminho
+    /// plantado ja nao e o caminho escrito. Aqui o nonce e injetado, o
+    /// temporario e plantado no caminho que a escrita vai de fato usar, e o
+    /// que se exige e que a escrita **recuse** em vez de passar por cima.
+    ///
+    /// E a licao que a fatia C aprendeu em `session::tmp_path_for`, aplicada
+    /// ao outro call site do mesmo padrao.
+    #[test]
+    fn o_create_new_recusa_um_temporario_que_ja_exista_no_caminho_exato() {
+        let dir = temp_dir("save-create-new");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let path = dir.join("config.yml");
+
+        const NONCE: u64 = 0x0123_4567_89ab_cdef;
+        let tmp = tmp_path_for(&path, NONCE);
+        fs::write(&tmp, b"de outro escritor").expect("planta no caminho exato");
+
+        let erro = write_atomic_secret_with_nonce(&path, b"gateway:\n", NONCE)
+            .expect_err("o temporario ja existe: a escrita tem de recusar, nao truncar");
+        assert!(
+            format!("{erro}").contains("failed to open"),
+            "o erro tem de vir do `open`, e nao de outro ponto: {erro}"
+        );
+        assert_eq!(
+            fs::read(&tmp).expect("o plantado continua la"),
+            b"de outro escritor",
+            "`create(true).truncate(true)` teria apagado isto"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// **E nem symlink plantado no caminho do temporario e seguido.**
+    ///
+    /// Nome previsivel mais `create(true)` seguia um symlink: o alvo dele e que
+    /// receberia a config inteira e o `chmod 0600`. `create_new` recusa abrir
+    /// qualquer coisa que ja exista. Este teste cobre o caso que o anterior
+    /// nao cobre — la o plantado e um arquivo comum, e truncar um arquivo
+    /// comum estraga o do vizinho; aqui o plantado redireciona a escrita para
+    /// fora do diretorio.
+    #[cfg(unix)]
+    #[test]
+    fn o_temporario_nao_segue_symlink_plantado_no_nome_antigo() {
+        let dir = temp_dir("save-tmp-symlink");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let vitima = dir.join("vitima.txt");
+        fs::write(&vitima, b"conteudo da vitima").expect("vitima");
+        std::os::unix::fs::symlink(&vitima, dir.join(".config.yml.tmp")).expect("symlink");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        let config = loader.load().expect("defaults");
+        loader.save(&config).expect("salva");
+
+        assert_eq!(
+            fs::read(&vitima).expect("vitima"),
+            b"conteudo da vitima",
+            "a escrita nao pode ter atravessado o symlink"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// E uma config de verdade continua carregando — a recusa acima nao pode
+    /// ter virado "recusa tudo".
+    #[test]
+    fn load_aceita_config_yml_com_conteudo() {
+        let dir = temp_dir("load-ok");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("config.yml"), "gateway:\n  host: \"127.0.0.1\"\n").expect("seed");
+        assert!(ConfigLoader::with_dir(&dir).load().is_ok());
         let _ = fs::remove_dir_all(dir);
     }
 }

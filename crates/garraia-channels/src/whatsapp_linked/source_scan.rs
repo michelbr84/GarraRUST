@@ -66,6 +66,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("qr.rs", include_str!("qr.rs")),
     ("bridge.rs", include_str!("bridge.rs")),
     ("runner.rs", include_str!("runner.rs")),
+    // Fatia D (#1265): a saude do canal tambem e fonte deste modulo, e a
+    // varredura de log a cobre como aos demais. `health.rs` nao faz log de
+    // QR/blob/session nenhum — a entrada existe para MANTER isso verdade.
+    ("health.rs", include_str!("health.rs")),
 ];
 
 /// Macros que levam texto para fora do processo.
