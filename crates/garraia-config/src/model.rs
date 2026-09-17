@@ -860,6 +860,14 @@ pub struct AgentConfig {
     /// Brave resolve (`llm.brave.api_key`, cofre ou `BRAVE_API_KEY`).
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// #1225: secao `agent.sandbox` — a chave que faltava para o sandbox por
+    /// tool entregue na #1222 ser alcancavel. Ate aqui `SandboxPolicy` so era
+    /// construida pelo `default()` (= `off`) nos tres pontos de producao, e
+    /// `set_sandbox_policy` so era chamado pelos proprios testes: a
+    /// funcionalidade existia, era testada, e nenhum operador conseguia
+    /// liga-la. Ausente => `mode = off` => comportamento identico ao de antes.
+    #[serde(default)]
+    pub sandbox: crate::sandbox::SandboxConfig,
 }
 
 /// Backend da tool `web_search` (#1034).
