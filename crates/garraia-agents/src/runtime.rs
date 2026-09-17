@@ -4086,6 +4086,75 @@ mod tests {
         assert!(rt.find_tool("schedule_heartbeat").is_some());
     }
 
+    /// #1266 (P0): a `repo_search` **como o runtime a registra** nao pode
+    /// executar comando nenhum quando o modelo escolhe uma query que e flag do
+    /// ripgrep.
+    ///
+    /// O registro aqui e o mesmo do boot (`bootstrap::mod` e `cli::chat`:
+    /// `register_tool(Box::new(RepoSearchTool::new(..)))`) e a chamada passa
+    /// pelo `find_tool`, que e por onde o loop de tool call do LLM acha a tool
+    /// — nao por uma copia montada no teste.
+    ///
+    /// A carga e um `.txt` comum, do tipo que a `file_write` pode gravar
+    /// dentro do jail: com `--pre=/bin/sh` o proprio ripgrep o executa como
+    /// script para cada arquivo varrido, e o marcador aparece. Tirar o `--` do
+    /// `rg_args` deixa este teste vermelho — foi assim que a falha foi
+    /// reproduzida antes da correcao.
+    ///
+    /// Numa maquina sem `rg` o teste exercita o fallback `grep`, que tambem
+    /// nao pode executar nada; so a demonstracao da mutacao depende do `rg`.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn repo_search_registrada_nao_executa_pre_do_ripgrep() {
+        use crate::tools::RepoSearchTool;
+
+        let dir = std::env::temp_dir().join(format!(
+            "garra-repo-search-1266-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let marcador = dir.join("EXECUTADO");
+        std::fs::write(
+            dir.join("carga.txt"),
+            format!("#!/bin/sh\ntouch {}\n", marcador.display()),
+        )
+        .expect("write");
+
+        let rt = Arc::new(AgentRuntime::new());
+        rt.register_tool(Box::new(RepoSearchTool::new(Some(10), None)));
+        let tool = rt.find_tool("repo_search").expect("tool registrada");
+
+        let ctx = ToolContext {
+            session_id: "test-1266".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: crate::tools::approval::ToolApproval::None,
+            working_dir: Some(dir.to_string_lossy().into_owned()),
+            project_id: None,
+        };
+
+        let saida = tool
+            .execute(&ctx, serde_json::json!({"query": "--pre=/bin/sh"}))
+            .await
+            .expect("a tool devolve saida, nao erro de runtime");
+
+        let executou = marcador.exists();
+        let conteudo = saida.content.clone();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            !executou,
+            "a query do modelo virou flag e o ripgrep executou a carga: {conteudo}"
+        );
+        // Busca literal por um texto que nao esta em lugar nenhum: sem match.
+        assert!(
+            conteudo.contains("No matches found") || saida.is_error,
+            "esperava busca literal sem match ou erro controlado, veio: {conteudo}"
+        );
+    }
+
     /// Test that AgentRuntime can be created with an empty/default config without crashing.
     /// This test verifies the "empty config" scenario is handled safely.
     #[test]
