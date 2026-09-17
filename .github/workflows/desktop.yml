@@ -67,6 +67,35 @@ jobs:
             echo "ok: $ref"
           done
 
+      # #1240: mesmo tipo de falha silenciosa do sidecar (ver o passo
+      # "Assert the sidecar name matches the config and the code" abaixo). O
+      # /ws/parrot exige `gateway.api_key` quando ela existe, e `new
+      # WebSocket()` nao manda header — o token PRECISA ir pela query. Se o
+      # ws.js voltar a conectar numa URL nua, o app instala, abre, e o overlay
+      # entra em reconexao infinita com 401 sem dizer nada ao usuario. Nao ha
+      # harness de JS aqui, entao o contrato e verificado por grep, que e
+      # barato e pega o modo de falha real (o plumbing sumir).
+      - name: Desktop manda a credencial no handshake do /ws/parrot
+        run: |
+          set -euo pipefail
+          ws=crates/garraia-desktop/ui/ws.js
+          lib=crates/garraia-desktop/src-tauri/src/lib.rs
+          cmds=crates/garraia-desktop/src-tauri/src/commands.rs
+
+          grep -q 'gateway_api_key' "$ws" \
+            || { echo "::error ::$ws nao pede a chave ao backend Tauri — o /ws/parrot vai responder 401 e o overlay morre em silencio (#1240)"; exit 1; }
+
+          grep -q 'token=' "$ws" \
+            || { echo "::error ::$ws nao manda ?token= no handshake — new WebSocket() nao manda header, entao a query e o unico canal (#1240)"; exit 1; }
+
+          grep -q 'commands::gateway_api_key' "$lib" \
+            || { echo "::error ::o comando gateway_api_key nao esta no invoke_handler! de $lib — o invoke do ws.js falharia (#1240)"; exit 1; }
+
+          grep -q 'pub async fn gateway_api_key' "$cmds" \
+            || { echo "::error ::$cmds nao define gateway_api_key (#1240)"; exit 1; }
+
+          echo "ok: ws.js pede a chave, manda ?token=, e o comando existe e esta registrado"
+
       - name: Sprite sheet is a 1280x600 PNG
         run: |
           set -euo pipefail

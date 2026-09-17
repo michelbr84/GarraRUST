@@ -579,6 +579,22 @@ pub fn build_router(
         // `build_skill_skin_routes` e `build_plugin_routes` montam sob
         // `/api/`. Com a chave ausente e um passa-direto.
         //
+        // A igualdade exata do conjunto `/v1/` do gate (`ROTAS_DE_CONVERSA`)
+        // depende de a TABELA DE ROTAS acima e o `is_gated_path` do
+        // `gateway_auth.rs` crescerem juntos. Hoje as duas literalidades se
+        // cancelam: o `matchit` nao casa `/v1/messages/`, `//v1/messages` nem
+        // dot-segment, e o gate tampouco os cobre. Quem registrar uma dessas
+        // variantes aqui — para consertar um 404, ou via wildcard ou alias —
+        // sem acrescenta-la la, reabre a #1240: a rota passa a levar ao
+        // handler e o gate segue dizendo "nao e do conjunto". Travado em
+        // `nenhuma_variante_de_uri_alcanca_o_plano_de_conversa_sem_credencial`.
+        //
+        // (Um `NormalizePathLayer` NAO e o risco aqui, ao contrario do que
+        // parece: `Router::layer` roda DEPOIS do roteamento — e por isso que
+        // rota inexistente sob `/api/` tambem leva 401 —, entao reescrever o
+        // path por dentro nao muda a rota ja escolhida; e por fora do router
+        // ele roda antes do gate, que entao ja ve o caminho canonico.)
+        //
         // Cuidado ao mover: em tower, o ultimo `.layer()` e o mais externo,
         // entao a ordem no codigo e o inverso da ordem de execucao. Escrito
         // aqui, o gate roda DEPOIS do CORS e do rate limit — que e o que se

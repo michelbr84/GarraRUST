@@ -366,6 +366,12 @@ async fn mutacao_same_origin_do_console_atravessa() {
 /// estranho, `/ws` e `/ws/parrot` recusam com 403. Antes deste PR
 /// `/ws/parrot` não tinha checagem nenhuma — qualquer página visitada pelo
 /// dono abria um turno completo do agente e lia a resposta.
+///
+/// A outra metade da guarda de `/ws/parrot` — o gate de `gateway.api_key`,
+/// que é o que cobre o cliente **sem** `Origin` (app, CLI, `websocat`) — não
+/// pode ser medida aqui: ela mora no corpo do handler, e o `WebSocketUpgrade`
+/// rejeita antes disso com 426 sempre que não há conexão hyper por trás, como
+/// num `oneshot`. Está em `auth_test.rs`, contra um servidor de verdade.
 #[tokio::test]
 async fn handshake_websocket_cross_origin_da_403_em_ws_e_ws_parrot() {
     for uri in ["/ws", "/ws/parrot"] {

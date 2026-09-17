@@ -52,6 +52,24 @@ pub(crate) fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
     }
 }
 
+/// Extrai a credencial de um header que a carrega **crua**, sem esquema.
+///
+/// Hoje serve um caso só: o `x-api-key` das rotas compat Anthropic (#1240).
+/// O Claude Code e o SDK da Anthropic nunca mandam `Authorization: Bearer`,
+/// então gatear `/v1/messages` sem aceitar este header quebraria a
+/// integração documentada. As bordas são tratadas como no
+/// [`extract_bearer`] — `trim` na borda, vazio vira `None` — para os dois
+/// caminhos não divergirem em silêncio.
+pub(crate) fn extract_raw_header_token<'a>(headers: &'a HeaderMap, nome: &str) -> Option<&'a str> {
+    let value = headers.get(nome)?.to_str().ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +94,19 @@ mod tests {
             h.insert(header::AUTHORIZATION, HeaderValue::from_str(ruim).unwrap());
             assert_eq!(extract_bearer(&h), None, "aceitou {ruim:?}");
         }
+    }
+
+    #[test]
+    fn header_cru_sem_esquema() {
+        let mut h = HeaderMap::new();
+        h.insert("x-api-key", HeaderValue::from_static("  k1 "));
+        // Case-insensitive na busca, como manda a HTTP; `trim` na borda.
+        assert_eq!(extract_raw_header_token(&h, "X-API-Key"), Some("k1"));
+        assert_eq!(extract_raw_header_token(&h, "x-nao-existe"), None);
+
+        let mut vazio = HeaderMap::new();
+        vazio.insert("x-api-key", HeaderValue::from_static("   "));
+        assert_eq!(extract_raw_header_token(&vazio, "x-api-key"), None);
     }
 
     #[test]
