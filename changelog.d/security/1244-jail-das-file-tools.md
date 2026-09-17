@@ -59,7 +59,15 @@
   nunca alargar. A doc do schema ainda dizia "validated for existence only —
   not against allowed_dirs", frase escrita quando o `working_dir` nao era raiz
   e que depois instruia o modelo a usar exatamente o buraco; foi corrigida no
-  schema e no campo da struct.
+  schema, no campo da struct e — a copia de maior alavancagem — no system
+  prompt que o modelo le a cada turno, onde ela sobrevivera a primeira
+  correcao. Um modelo que leia "o campo e validado apenas quanto a existencia"
+  trata a recusa do jail como erro de caminho e roteia pelo `bash`, que de fato
+  passa por fora; e o mesmo prompt manda "nunca contornar silenciosamente um
+  bloqueio de seguranca". O jail tambem passou a ser construido **uma vez por
+  chamada**, em `handle_agent_call`, e desce por parametro ate `build_tools`:
+  a instancia que valida o `working_dir` e a mesma que vai para as file tools,
+  entao nao ha duas reguas para manter em concordancia.
   `garra config check` avisa quando `agent.file_roots` inclui `/` ou o proprio
   `$HOME`, que devolvem `~/.ssh` e `.env` ao alcance do modelo — e avisa
   tambem sobre a env `GARRAIA_FILE_ROOTS`, que soma raizes as da config e antes
