@@ -3,6 +3,7 @@ name = "garraia-hardware"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Hardware — trait Device, Capability com risco R0-R5, registry e gate. ADR 0020."
 # `examples/firmware/` guarda o sketch de referência do protocolo JSONL
 # (#1130) — é código Arduino/C++, não um alvo Cargo. Sem este flag o Cargo
