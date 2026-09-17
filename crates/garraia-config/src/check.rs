@@ -359,9 +359,14 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         || config.gateway.host == "[::]";
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
-    if bind_all_interfaces && (config.gateway.api_key.is_none() || !tls_enabled) {
+    // #1241: `is_some()` mentia aqui. An empty or whitespace-only `api_key`
+    // leaves the gate OFF (`ApiKeyGate::from_config`), and `config check`
+    // stayed silent about a wide-open `/api/*` + `/ws`. Both surfaces now ask
+    // `GatewayConfig::api_key_configurada`, the single source of that rule.
+    let api_key_configurada = config.gateway.api_key_configurada();
+    if bind_all_interfaces && (!api_key_configurada || !tls_enabled) {
         let mut unguarded: Vec<&str> = Vec::new();
-        if config.gateway.api_key.is_none() {
+        if !api_key_configurada {
             unguarded.push("gateway.api_key is not set");
         }
         if !tls_enabled {
@@ -3901,6 +3906,31 @@ mod tests {
             "api_key + TLS on 0.0.0.0 must not warn: {findings:?}"
         );
     }
+
+    /// #1241: `config check` reportava pela PRESENCA do campo, entao um
+    /// `api_key: "  "` — que deixa o gate de `/api/*` e do `/ws` desligado —
+    /// passava calado. Falsa garantia exatamente para quem foi consultar o
+    /// diagnostico antes de expor a porta.
+    #[test]
+    fn credencial_em_branco_conta_como_ausente_no_check() {
+        for valor in [None, Some(String::new()), Some("   ".to_string())] {
+            let mut cfg = AppConfig::default();
+            cfg.gateway.host = "0.0.0.0".into();
+            cfg.gateway.api_key = valor.clone();
+            cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
+            cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
+            let findings = validate(&cfg);
+            let f = findings
+                .iter()
+                .find(|f| f.field == "gateway.host")
+                .unwrap_or_else(|| panic!("com {valor:?} o gate esta desligado: {findings:?}"));
+            assert!(
+                f.message.contains("gateway.api_key is not set"),
+                "o finding tem que nomear a credencial ausente: {f:?}"
+            );
+        }
+    }
+
     // ─── #1050: as duas credenciais do canal Google Chat ──────────────────
 
     fn cfg_google_chat(enabled: Option<bool>, settings: serde_json::Value) -> AppConfig {

@@ -5,6 +5,17 @@
 //!   `config.yml.bak-YYYYMMDD-HHMMSS` (UTC, deterministic), then write
 //!   the new file. The rename is atomic on POSIX so the user is never
 //!   left without a config.
+//!
+//!   **Uma `gateway.api_key` que ja existia e SUBSTITUIDA neste caminho**
+//!   (#1241, achado do code review do #1252). Nao e descuido: a opcao que o
+//!   operador escolheu diz "write a new one", o arquivo e reconstruido do
+//!   zero por [`build_app_config`], e trocar a credencial e uma razao
+//!   legitima para escolher justamente esta estrategia. Mas ela **quebra
+//!   todo cliente ja configurado**, e essa opcao e o default do `Select`,
+//!   entao quem apertar Enter precisa ser avisado: o resumo do wizard diz
+//!   isso em uma linha, e o valor antigo continua no `.bak-`. A garantia de
+//!   "credencial de operador nunca e sobrescrita" vale **so** no
+//!   `MergeUpdate`.
 //! * `MergeUpdate` — load existing config, patch only the fields the
 //!   wizard owns:
 //!     - `gateway.host`, `gateway.port` — replaced (wizard owns).
@@ -19,6 +30,15 @@
 //!     - `voice.*` — replaced when the wizard just opted into voice;
 //!       otherwise untouched.
 //!     - `channels.telegram` — only added when missing.
+//!     - `gateway.api_key` — set **only** when the existing value is absent
+//!       or blank. A key the operator already chose is never overwritten
+//!       (#1241).
+//!
+//! Gateway credential (#1241): when the host the wizard resolved is **not**
+//! loopback, `garraia init` used to emit `gateway.api_key: None` — a gateway
+//! on the whole internet with no credential at all. [`gateway_api_key_for_host`]
+//! now mints 32 CSPRNG bytes for that case, and only that case; a loopback
+//! bind keeps emitting no key.
 //!
 //! Secret invariant: API keys appear in the YAML written by this module only
 //! when the operator chose config storage (`SecretStorage::Config`, the
@@ -31,6 +51,7 @@
 #![allow(dead_code)] // M1.7 orchestrator wires these in.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -48,7 +69,7 @@ use super::local_stack::{
 /// Everything the wizard collected during the interactive flow. Passed
 /// to [`write_config`] which translates it into the on-disk
 /// [`AppConfig`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WizardOutcome {
     /// "0.0.0.0" on RunPod/root, "127.0.0.1" otherwise.
     pub host: String,
@@ -78,6 +99,13 @@ pub struct WizardOutcome {
 
     /// Optional Telegram channel — same shape as before the rewrite.
     pub telegram: Option<TelegramChoice>,
+
+    /// Credential for `gateway.api_key`, minted by [`gateway_api_key_for_host`]
+    /// when [`host`](Self::host) is **not** loopback and left `None` when it
+    /// is (#1241). On `MergeUpdate` it is written only into a config whose
+    /// `gateway.api_key` is absent or blank — an operator key is never
+    /// overwritten.
+    pub gateway_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +173,97 @@ pub fn backup_path_for_with(config_dir: &Path, when: chrono::DateTime<Utc>) -> P
     config_dir.join(format!("config.yml.bak-{stamp}"))
 }
 
+// ---------- Gateway credential (#1241) ---------------------------------------
+
+/// Length of the generated `gateway.api_key`, in raw CSPRNG bytes. Rendered
+/// as lowercase hex, so the key the operator sees is twice this many chars.
+pub const GATEWAY_API_KEY_BYTES: usize = 32;
+
+/// `true` when `host` only reaches the machine the gateway runs on.
+///
+/// Fail-closed on anything it cannot parse: a name that is not `localhost`
+/// counts as exposed, so the wizard errs towards minting a credential rather
+/// than towards leaving a reachable gateway open.
+pub fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim();
+    // `[::1]` — the way an IPv6 literal is written in a URL authority.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    match host.parse::<IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host.eq_ignore_ascii_case("localhost"),
+    }
+}
+
+/// The `gateway.api_key` a config emitted for `host` must carry.
+///
+/// `None` for a loopback bind — nothing changes for the laptop case. For any
+/// other host (the `0.0.0.0` that [`super::pick_host_port`] picks on a
+/// root/RunPod box) this returns a fresh credential: `garra init` on a cloud
+/// VM used to leave `/api/*` open to the whole internet (#1241).
+///
+/// Each call draws new bytes from the system CSPRNG — never a time-seeded
+/// PRNG.
+pub fn gateway_api_key_for_host(host: &str) -> Result<Option<String>> {
+    if host_is_loopback(host) {
+        return Ok(None);
+    }
+    Ok(Some(generate_gateway_api_key()?))
+}
+
+/// [`GATEWAY_API_KEY_BYTES`] bytes from the system CSPRNG, lowercase hex.
+///
+/// `garraia_security::random_bytes` is the shared helper — it hands back an
+/// array that `ring` already filled, so no zeroed buffer exists in between.
+fn generate_gateway_api_key() -> Result<String> {
+    let bytes: [u8; GATEWAY_API_KEY_BYTES] = garraia_security::random_bytes()
+        .context("system CSPRNG refused to produce a gateway.api_key")?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// `true` when `api_key` is a credential rather than an absent/blank field.
+///
+/// Mirrors `garraia_gateway::gateway_auth::ApiKeyGate::from_config`: there,
+/// absent, empty and whitespace-only all mean "gate off". A config in that
+/// state has no operator key to protect, so the wizard may fill it.
+fn gateway_api_key_is_set(api_key: Option<&str>) -> bool {
+    !api_key.unwrap_or_default().trim().is_empty()
+}
+
+/// Marcador que substitui a credencial de gateway em qualquer saida `Debug`.
+const CREDENCIAL_REDIGIDA: &str = "<redacted>";
+
+// `Debug` manual em vez de `derive` (#1241): a credencial gerada e hex puro
+// de 64 caracteres, sem prefixo, entao **nao casa com nenhum padrao** de
+// `garraia_security::redact_secrets` — um `debug!(?outcome)` futuro, ou um
+// `anyhow` que capture a struct, imprimiria o segredo em claro no log. Aqui
+// ele nunca chega la. O valor continua `String` (e nao `SecretString`)
+// porque o destino imediato e `AppConfig.gateway.api_key: Option<String>`,
+// serializado por serde para o YAML: um wrapper seria exposto uma linha
+// depois e daria sensacao de protecao sem protecao. O unico ponto que
+// imprime a chave e o resumo final do wizard, de proposito e uma vez so.
+impl std::fmt::Debug for WizardOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WizardOutcome")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("default_provider", &self.default_provider)
+            .field("fallback_providers", &self.fallback_providers)
+            .field("cloud", &self.cloud)
+            .field("local_llm", &self.local_llm)
+            .field("voice_enabled", &self.voice_enabled)
+            .field("system_prompt", &self.system_prompt)
+            .field("telegram", &self.telegram)
+            .field(
+                "gateway_api_key",
+                &self.gateway_api_key.as_ref().map(|_| CREDENCIAL_REDIGIDA),
+            )
+            .finish()
+    }
+}
+
 // ---------- Build / merge ----------------------------------------------------
 
 /// Translate a [`WizardOutcome`] into a fresh [`AppConfig`] — used by
@@ -173,6 +292,8 @@ pub fn build_app_config(outcome: &WizardOutcome) -> AppConfig {
         gateway: GatewayConfig {
             host: outcome.host.clone(),
             port: outcome.port,
+            // #1241: `Some` exactly when the bind is not loopback.
+            api_key: outcome.gateway_api_key.clone(),
             ..GatewayConfig::default()
         },
         llm,
@@ -252,9 +373,26 @@ fn backfill_missing_api_key(existing: &mut AppConfig, provider_type: &str, api_k
 
 /// Patch `existing` in place with the additive `MergeUpdate` rules.
 /// See module docs for which fields are wizard-owned vs. user-owned.
-pub fn merge_update(existing: &mut AppConfig, outcome: &WizardOutcome) {
+///
+/// Returns `true` when the wizard's generated `gateway.api_key` was installed
+/// — i.e. only when the existing config had none. The caller needs that
+/// answer to decide whether to print the key: printing a key that was **not**
+/// written would be worse than printing nothing (#1241).
+pub fn merge_update(existing: &mut AppConfig, outcome: &WizardOutcome) -> bool {
     existing.gateway.host = outcome.host.clone();
     existing.gateway.port = outcome.port;
+
+    // The one rule that must never regress: an operator who already set
+    // `gateway.api_key` and re-runs `garra init` keeps their key. Only an
+    // absent/blank field — which the gateway treats as "no gate at all" —
+    // gets filled.
+    let mut gateway_key_written = false;
+    if let Some(generated) = &outcome.gateway_api_key
+        && !gateway_api_key_is_set(existing.gateway.api_key.as_deref())
+    {
+        existing.gateway.api_key = Some(generated.clone());
+        gateway_key_written = true;
+    }
 
     if let Some(cloud) = &outcome.cloud {
         if let Some(key) = cloud.api_key_plaintext.as_deref() {
@@ -293,12 +431,71 @@ pub fn merge_update(existing: &mut AppConfig, outcome: &WizardOutcome) {
             .channels
             .insert("telegram".to_string(), telegram_channel(tg));
     }
+
+    gateway_key_written
 }
 
 // ---------- Top-level write --------------------------------------------------
 
+/// What [`write_config`] left on disk. Sem segredo dentro — logo, `Debug`
+/// derivado e seguro aqui.
+#[derive(Debug, Clone)]
+pub struct WrittenConfig {
+    /// The `config.yml` that was written.
+    pub path: PathBuf,
+    /// `true` only when **this run** wrote the generated `gateway.api_key`
+    /// (#1241) — so the closing summary warns about the exposed bind, and
+    /// stays quiet when an operator key was preserved instead.
+    ///
+    /// Um **bool**, e nao a chave. O valor nao tem consumidor fora deste
+    /// modulo desde que o resumo do wizard parou de imprimir a credencial: o
+    /// operador le o campo `gateway.api_key` no proprio `config.yml`, que
+    /// acabou de ser gravado em modo 0600. Carregar o segredo aqui era o
+    /// comeco do fluxo que o CodeQL seguiu ate um `println!`
+    /// (`rust/cleartext-logging`, alerta HIGH no #1252).
+    pub gateway_api_key_written: bool,
+}
+
+/// Grava `config.yml` **ja** em modo `0600`, em vez de criar o arquivo com
+/// `0666 & ~umask` e apertar depois (#1241).
+///
+/// `std::fs::write` cria o arquivo com a permissao default do umask e so
+/// entao `harden_secret_file` faz o `chmod`. Entre as duas coisas existe uma
+/// janela em que a credencial de gateway recem-mintada (e as `llm.*.api_key`)
+/// estao em disco legiveis por qualquer usuario da maquina — uma VM
+/// multiusuario ou um container com sidecar bastam. Aqui o modo entra no
+/// proprio `open(2)`, entao a janela nao existe.
+///
+/// `harden_secret_file` continua sendo chamado pelo [`write_config`] como
+/// cinto-e-suspensorio: no caminho `MergeUpdate` o arquivo **ja existia**, e
+/// `mode` so vale na criacao, entao um `config.yml` que ja estava em `0644`
+/// so e corrigido la.
+///
+/// Em Windows nao ha `mode`: o comportamento e o de antes (`fs::write`), o
+/// mesmo no-op que `harden_secret_file` ja documenta.
+fn escreve_config_com_permissao_restrita(path: &Path, conteudo: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(conteudo.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, conteudo)
+    }
+}
+
 /// Write `<config_dir>/config.yml` according to `strategy`. Returns the
-/// path that was written.
+/// path that was written plus the gateway key, if any, that this run put
+/// there.
 ///
 /// * `FirstWrite` and `Backup` build a fresh `AppConfig` from `outcome`
 ///   and serialize it.
@@ -315,13 +512,16 @@ pub fn write_config(
     config_dir: &Path,
     outcome: &WizardOutcome,
     strategy: ExistingConfigStrategy,
-) -> Result<PathBuf> {
+) -> Result<WrittenConfig> {
     let config_path = config_dir.join("config.yml");
+    // Set by the branch that actually wrote it; `MergeUpdate` may decline.
+    let mut gateway_api_key_written = false;
     match strategy {
         ExistingConfigStrategy::FirstWrite => {
             let cfg = build_app_config(outcome);
+            gateway_api_key_written = cfg.gateway.api_key.is_some();
             let yaml = serde_yaml::to_string(&cfg).context("serialize AppConfig")?;
-            std::fs::write(&config_path, yaml)
+            escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
         ExistingConfigStrategy::Backup { backup_path } => {
@@ -335,8 +535,9 @@ pub fn write_config(
                 })?;
             }
             let cfg = build_app_config(outcome);
+            gateway_api_key_written = cfg.gateway.api_key.is_some();
             let yaml = serde_yaml::to_string(&cfg).context("serialize AppConfig")?;
-            std::fs::write(&config_path, yaml)
+            escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
         ExistingConfigStrategy::MergeUpdate => {
@@ -344,18 +545,25 @@ pub fn write_config(
                 .with_context(|| format!("read {}", config_path.display()))?;
             let mut existing: AppConfig =
                 serde_yaml::from_str(&raw).context("parse existing config.yml")?;
-            merge_update(&mut existing, outcome);
+            if merge_update(&mut existing, outcome) {
+                gateway_api_key_written = true;
+            }
             let yaml = serde_yaml::to_string(&existing).context("serialize merged AppConfig")?;
-            std::fs::write(&config_path, yaml)
+            escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
     }
-    // The wizard now writes `llm.*.api_key` into this file by default, so it
-    // must not be left at the umask default (commonly 0644). Applies to all
-    // three strategies — they converge on the same `config_path`.
+    // The wizard now writes `llm.*.api_key` into this file by default — and,
+    // on an exposed bind, the gateway credential (#1241) — so it must not be
+    // left at the umask default (commonly 0644). Applies to all three
+    // strategies: they converge on the same `config_path`. On Windows
+    // `harden_secret_file` is a no-op; that predates this change.
     garraia_config::harden_secret_file(&config_path)
         .with_context(|| format!("restrict permissions on {}", config_path.display()))?;
-    Ok(config_path)
+    Ok(WrittenConfig {
+        path: config_path,
+        gateway_api_key_written,
+    })
 }
 
 // ---------- Tests --------------------------------------------------------------
@@ -366,8 +574,15 @@ mod tests {
     use tempfile::tempdir;
 
     fn outcome_cloud_only() -> WizardOutcome {
+        outcome_cloud_only_on_host("0.0.0.0")
+    }
+
+    /// Same fixture parametrized by host, so the gateway-credential tests run
+    /// through the very policy `run_wizard` uses (#1241) instead of restating
+    /// it.
+    fn outcome_cloud_only_on_host(host: &str) -> WizardOutcome {
         WizardOutcome {
-            host: "0.0.0.0".into(),
+            host: host.into(),
             port: 3888,
             default_provider: "openrouter".into(),
             fallback_providers: vec![],
@@ -382,6 +597,7 @@ mod tests {
             voice_enabled: false,
             system_prompt: Some("You are a helpful personal AI assistant.".into()),
             telegram: None,
+            gateway_api_key: gateway_api_key_for_host(host).expect("csprng"),
         }
     }
 
@@ -402,6 +618,7 @@ mod tests {
             voice_enabled: true,
             system_prompt: None,
             telegram: None,
+            gateway_api_key: gateway_api_key_for_host("0.0.0.0").expect("csprng"),
         }
     }
 
@@ -436,11 +653,230 @@ mod tests {
         cfg
     }
 
+    // ---- #1241: credencial do gateway em bind exposto --------------------
+
+    /// O caso da issue: `garra init` como root escolhe `0.0.0.0`, e ate
+    /// #1241 saia dali com `gateway.api_key: None` — gateway na internet
+    /// inteira sem credencial nenhuma.
+    #[test]
+    fn bind_exposto_gera_chave_de_gateway() {
+        let out = outcome_cloud_only(); // host = "0.0.0.0"
+        let cfg = build_app_config(&out);
+        assert!(
+            cfg.gateway.api_key.is_some(),
+            "bind nao-loopback tem que sair com gateway.api_key gravada"
+        );
+    }
+
+    /// O espelho, e o limite do blast radius: no laptop nada muda.
+    #[test]
+    fn bind_loopback_nao_gera_chave_de_gateway() {
+        let out = outcome_cloud_only_on_host("127.0.0.1");
+        let cfg = build_app_config(&out);
+        assert!(
+            cfg.gateway.api_key.is_none(),
+            "bind loopback nao pode ganhar chave — o wizard nao muda nada nesse caminho"
+        );
+    }
+
+    /// A tabela de `host_is_loopback`, incluindo o fail-closed: um nome que
+    /// nao seja `localhost` conta como exposto.
+    #[test]
+    fn classificacao_de_host_loopback() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.53",
+            "::1",
+            "[::1]",
+            "localhost",
+            "LocalHost",
+        ] {
+            assert!(host_is_loopback(host), "{host} devia contar como loopback");
+        }
+        for host in [
+            "0.0.0.0",
+            "::",
+            "192.168.1.10",
+            "10.0.0.2",
+            "garra.example.com",
+        ] {
+            assert!(!host_is_loopback(host), "{host} devia contar como exposto");
+        }
+    }
+
+    /// A chave e CSPRNG de verdade: 32 bytes em hex, e duas execucoes nunca
+    /// dao a mesma coisa.
+    ///
+    /// O que este teste prova e **formato e nao-constancia**, e so isso: um
+    /// PRNG semeado por relogio tambem devolve dois valores diferentes em
+    /// duas chamadas, logo passaria aqui inteiro. A prova de que a fonte e um
+    /// CSPRNG esta na leitura de `garraia_security::random_bytes`
+    /// (`random.rs:49-57`, `ring::SystemRandom`), nao em teste nenhum —
+    /// entropia nao se demonstra por amostra.
+    #[test]
+    fn chave_gerada_tem_entropia_e_nao_se_repete() {
+        let a = gateway_api_key_for_host("0.0.0.0").unwrap().unwrap();
+        let b = gateway_api_key_for_host("0.0.0.0").unwrap().unwrap();
+        assert_eq!(
+            a.len(),
+            GATEWAY_API_KEY_BYTES * 2,
+            "32 bytes em hex sao 64 caracteres"
+        );
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "a chave tem que ser hex minusculo: {a}"
+        );
+        assert_ne!(a, b, "duas execucoes nao podem devolver a mesma chave");
+    }
+
+    /// `AppConfig` de teste com a credencial de gateway ja no lugar (ou
+    /// ausente/em branco), sem `field_reassign_with_default`.
+    fn config_com_gateway_key(valor: Option<&str>) -> AppConfig {
+        AppConfig {
+            gateway: GatewayConfig {
+                api_key: valor.map(str::to_string),
+                ..GatewayConfig::default()
+            },
+            ..AppConfig::default()
+        }
+    }
+
+    /// **A regressao mais cara**: quem ja tem chave e roda `garra init` de
+    /// novo nao pode perde-la. Um merge que sobrescreve derruba todo cliente
+    /// ja configurado — celular, script, reverse proxy.
+    #[test]
+    fn merge_nao_sobrescreve_chave_de_operador() {
+        let mut existing = config_com_gateway_key(Some("chave-do-operador"));
+
+        let out = outcome_cloud_only(); // host exposto => outcome traz chave nova
+        assert!(
+            out.gateway_api_key.is_some(),
+            "fixture precisa trazer chave"
+        );
+        let gravou = merge_update(&mut existing, &out);
+
+        assert_eq!(
+            existing.gateway.api_key.as_deref(),
+            Some("chave-do-operador"),
+            "a chave do operador tem que sobreviver ao re-run do wizard"
+        );
+        assert!(
+            !gravou,
+            "o merge nao gravou chave nenhuma, e precisa dizer isso"
+        );
+    }
+
+    /// O outro lado do merge: config sem chave (ou com a chave em branco, que
+    /// o `ApiKeyGate` trata como gate desligado) recebe a chave gerada.
+    #[test]
+    fn merge_preenche_chave_ausente_ou_em_branco() {
+        for existente in [None, Some(""), Some("   ")] {
+            let mut existing = config_com_gateway_key(existente);
+
+            let out = outcome_cloud_only();
+            let gravou = merge_update(&mut existing, &out);
+
+            assert!(
+                gravou,
+                "com {existente:?} em disco o merge tinha que gravar"
+            );
+            assert_eq!(
+                existing.gateway.api_key, out.gateway_api_key,
+                "a chave gravada tem que ser a do outcome"
+            );
+        }
+    }
+
+    /// `write_config` so sinaliza a gravacao que ele **de fato** fez — avisar
+    /// sobre uma chave que nao esta em disco seria pior do que nao avisar.
+    #[test]
+    fn write_config_reporta_so_a_chave_que_gravou() {
+        // FirstWrite num host exposto: grava e reporta.
+        let dir = tempdir().unwrap();
+        let out = outcome_cloud_only();
+        let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        assert!(escrito.gateway_api_key_written);
+        let cfg: AppConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
+        assert_eq!(cfg.gateway.api_key, out.gateway_api_key);
+
+        // MergeUpdate sobre config com chave de operador: nao grava, nao reporta.
+        let dir = tempdir().unwrap();
+        let existing = config_com_gateway_key(Some("chave-do-operador"));
+        std::fs::write(
+            dir.path().join("config.yml"),
+            serde_yaml::to_string(&existing).unwrap(),
+        )
+        .unwrap();
+        let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::MergeUpdate).unwrap();
+        assert!(
+            !escrito.gateway_api_key_written,
+            "nada foi gravado, entao nada pode ser anunciado"
+        );
+        let cfg: AppConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
+        assert_eq!(cfg.gateway.api_key.as_deref(), Some("chave-do-operador"));
+
+        // FirstWrite em loopback: nada a gravar, nada a reportar.
+        let dir = tempdir().unwrap();
+        let out = outcome_cloud_only_on_host("127.0.0.1");
+        let escrito = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        assert!(!escrito.gateway_api_key_written);
+    }
+
+    /// O contra-exemplo da promessa de preservacao (#1241, code review do
+    /// #1252): no `Backup` a credencial do operador **e** trocada, e o valor
+    /// antigo fica no `.bak-`. Este teste existe para que a mudanca dessa
+    /// politica seja deliberada, e nao um efeito colateral.
+    #[test]
+    fn backup_troca_a_chave_do_operador_e_o_bak_guarda_a_antiga() {
+        let dir = tempdir().unwrap();
+        let existing = config_com_gateway_key(Some("chave-do-operador"));
+        std::fs::write(
+            dir.path().join("config.yml"),
+            serde_yaml::to_string(&existing).unwrap(),
+        )
+        .unwrap();
+
+        let backup_path = dir.path().join("config.yml.bak-teste");
+        let out = outcome_cloud_only(); // host exposto => outcome traz chave nova
+        let escrito = write_config(
+            dir.path(),
+            &out,
+            ExistingConfigStrategy::Backup {
+                backup_path: backup_path.clone(),
+            },
+        )
+        .unwrap();
+
+        let novo: AppConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&escrito.path).unwrap()).unwrap();
+        assert_eq!(
+            novo.gateway.api_key, out.gateway_api_key,
+            "o Backup reconstroi o config: a chave nova entra no lugar da antiga"
+        );
+        assert!(
+            escrito.gateway_api_key_written,
+            "o wizard tem que anunciar que gravou credencial nova"
+        );
+
+        let antigo: AppConfig =
+            serde_yaml::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+        assert_eq!(
+            antigo.gateway.api_key.as_deref(),
+            Some("chave-do-operador"),
+            "a chave antiga tem que sobreviver no .bak- — e o unico caminho de volta"
+        );
+    }
+
     #[test]
     fn config_storage_writes_api_key_into_llm_entry() {
         let dir = tempdir().unwrap();
         let out = outcome_cloud_with_key("test-key-abc");
-        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite)
+            .unwrap()
+            .path;
         let cfg: AppConfig = serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(
             cfg.llm.get("openrouter").unwrap().api_key.as_deref(),
@@ -465,7 +901,9 @@ mod tests {
         });
 
         let dir = tempdir().unwrap();
-        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite)
+            .unwrap()
+            .path;
         let cfg: AppConfig = serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let entry = cfg.llm.get("openai").unwrap();
         assert_eq!(entry.provider, "openai");
@@ -551,7 +989,9 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let out = outcome_cloud_with_key("secret-in-file");
-        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite)
+            .unwrap()
+            .path;
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(
@@ -566,7 +1006,9 @@ mod tests {
     fn first_write_emits_complete_config() {
         let dir = tempdir().unwrap();
         let out = outcome_local_first();
-        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite).unwrap();
+        let path = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite)
+            .unwrap()
+            .path;
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("host: 0.0.0.0"));
         assert!(raw.contains("port: 3888"));
