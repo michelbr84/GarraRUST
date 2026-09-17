@@ -76,6 +76,37 @@ const SALT_FILE: &str = "session.salt";
 /// houver mais de um numero vinculado; hoje so existe `default`.
 pub const DEFAULT_ACCOUNT: &str = "default";
 
+/// Teto do identificador de conta. Nao ha razao para um segmento de diretorio
+/// mais longo que isto, e um teto explicito evita depender do limite do
+/// sistema de arquivos para recusar entrada absurda.
+const MAX_ACCOUNT_LEN: usize = 64;
+
+/// A conta e **um unico segmento** de caminho, e e esta funcao que garante.
+///
+/// Sem ela, [`SessionStore::for_data_dir`] aceitava qualquer string:
+/// `join("../../..")` saia do data dir, e o store passava a cifrar — e a
+/// apagar, no `purge` — arquivos escolhidos por quem controlasse a conta. O
+/// unico chamador de hoje passa uma constante, entao o traversal estava
+/// fechado **por acidente**; esta regra o fecha por construcao, para o dia em
+/// que a fatia do gateway passar um valor vindo de config ou de request.
+///
+/// A regra e uma allowlist, nao uma lista de proibidos: so
+/// `[A-Za-z0-9_-]{1,64}`. Isso recusa de uma vez `/`, `\`, `..`, `.`, a
+/// string vazia, o NUL, o espaco e qualquer forma Unicode que o sistema de
+/// arquivos possa dobrar em separador — sem precisar enumerar nenhuma delas.
+fn validate_account(account: &str) -> Result<(), SessionError> {
+    let ok = !account.is_empty()
+        && account.len() <= MAX_ACCOUNT_LEN
+        && account
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if ok {
+        Ok(())
+    } else {
+        Err(SessionError::InvalidAccount(account.to_string()))
+    }
+}
+
 /// Blob de sessao serializado pelo bridge (base64 de `{creds, keys}`).
 ///
 /// `Debug` e `Display` imprimem `<redacted>`. Isto nao e cosmetico: o
@@ -251,13 +282,37 @@ pub struct SessionStore {
 impl SessionStore {
     /// `dir` e o diretorio da conta, tipicamente
     /// `<resolved_data_dir()>/whatsapp/default`.
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
+    ///
+    /// # Por que `pub(crate)`, e nao `pub`
+    ///
+    /// Porque ela nao valida nada — recebe o diretorio ja resolvido — e um
+    /// **segundo construtor sem guarda torna a guarda do primeiro invisivel**:
+    /// a supressao CodeQL 173 afirmava que a contencao no data dir "fecha por
+    /// construcao, sem depender de call site", e enquanto `new` fosse `pub`
+    /// isso era falso, porque qualquer crate podia montar o store com uma
+    /// conta de runtime e o scan da CLI, que chaveia em `for_data_dir`, nao
+    /// via nada.
+    ///
+    /// Estreitar a visibilidade nao custou call site nenhum: fora desta crate
+    /// **ninguem** chamava `new` — a CLI, o smoke e os testes de integracao
+    /// entram todos por [`SessionStore::for_data_dir`]. Ou seja, para quem
+    /// esta de fora hoje existe um unico construtor, e ele valida. Quem esta
+    /// dentro do modulo continua podendo montar um store sobre um `tempdir`.
+    pub(crate) fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
     }
 
-    /// Caminho canonico a partir do data dir da aplicacao.
-    pub fn for_data_dir(data_dir: &Path, account: &str) -> Self {
-        Self::new(data_dir.join("whatsapp").join(account))
+    /// Caminho canonico a partir do data dir da aplicacao — e, de fora desta
+    /// crate, o **unico** jeito de construir um [`SessionStore`].
+    ///
+    /// Recusa qualquer `account` que nao seja um unico segmento
+    /// `[A-Za-z0-9_-]{1,64}` — ver [`validate_account`]. E por isso que esta
+    /// funcao devolve `Result` e a irma [`SessionStore::new`] nao: `new`
+    /// recebe o diretorio ja resolvido de quem sabe o que esta fazendo, e por
+    /// isso mesmo ela e `pub(crate)`.
+    pub fn for_data_dir(data_dir: &Path, account: &str) -> Result<Self, SessionError> {
+        validate_account(account)?;
+        Ok(Self::new(data_dir.join("whatsapp").join(account)))
     }
 
     pub fn dir(&self) -> &Path {
@@ -367,6 +422,46 @@ impl SessionStore {
         Ok(true)
     }
 
+    /// Inverso de [`SessionStore::archive`]: traz `session.enc.prev` de volta
+    /// para `session.enc`. Devolve `false` quando nao havia nada a restaurar.
+    ///
+    /// # Por que ela precisa existir
+    ///
+    /// O docstring de `archive` diz que arquivar existe para que "uma
+    /// validacao que falha por rede instavel nao possa destruir a unica copia
+    /// de uma sessao que talvez ainda sirva" — e ate agora **nada** cumpria
+    /// essa promessa: o `.prev` so era lido por `discard_archive` (shred) e
+    /// por `purge` (shred). Um Ctrl+C na tela do QR, ou cinco QRs expirando,
+    /// deixavam o usuario sem sessao viva e com a boa num arquivo que nenhum
+    /// caminho de codigo reabria.
+    ///
+    /// # A guarda do blob novo
+    ///
+    /// Restaurar **nunca** sobrescreve um `session.enc` existente: se ha blob
+    /// novo em disco, o link seguiu em frente e o arquivado ja nao vale. Hoje
+    /// isso nao chega a ser uma corrida — o `pair` segura o blob em memoria e
+    /// so grava depois de conectar, entao nos desfechos cancelado/QR expirado
+    /// nao existe blob parcial nenhum —, mas a guarda fica porque a ordem de
+    /// gravacao do `pair` e do `pair`, e nao um contrato deste store.
+    pub fn restore_archive(&self) -> Result<bool, SessionError> {
+        let from = self.archive_path();
+        if !from.is_file() {
+            return Ok(false);
+        }
+        let to = self.blob_path();
+        if to.exists() {
+            // Ha sessao viva: o arquivado perdeu a vez. Nao e erro — e o
+            // caminho feliz, em que `discard_archive` ja passou ou vai passar.
+            return Ok(false);
+        }
+        std::fs::rename(&from, &to).map_err(|e| SessionError::io(&from, e))?;
+        // Mesmo motivo do gemeo em `archive`: o `rename` preserva o modo da
+        // origem, e este aperto e para o caso de um `.prev` que chegou frouxo
+        // (restaurado de backup, copiado com `cp`).
+        let _ = fs_perms::harden_secret_file(&to);
+        Ok(true)
+    }
+
     /// Apaga o arquivo `session.enc.prev`, se houver.
     ///
     /// A sessao anterior fica arquivada **ate o novo link dar certo** (decisao
@@ -375,6 +470,43 @@ impl SessionStore {
     /// ninguem mais vai abrir — exatamente o que nao se quer deixar para tras.
     pub fn discard_archive(&self) -> Result<(), SessionError> {
         shred(&self.archive_path())
+    }
+
+    /// Descarte da sessao que o SERVIDOR recusou, no meio de um pareamento.
+    ///
+    /// # Por que nao e o [`SessionStore::purge`]
+    ///
+    /// Porque `purge` tritura tambem o `session.enc.prev`, e num re-vinculo o
+    /// `.prev` e a sessao BOA do usuario — foi o `link` quem a arquivou,
+    /// segundos antes, justamente para poder devolve-la. A sequencia real era:
+    /// `archive()` → pareamento novo → a Meta recusa (401/403/419) →
+    /// `purge()` → o guard tenta restaurar e ja nao ha o que restaurar. O
+    /// vinculo anterior sumia, e sumia em silencio.
+    ///
+    /// # A regra, e o invariante que ela protege
+    ///
+    /// O blob vivo vai embora sempre: foi ele que o servidor recusou. A chave
+    /// e o salt so vao junto quando **nao ha arquivado** — porque `.prev`,
+    /// `session.key` e `session.salt` vivem ou morrem juntos. Um `.prev` sem a
+    /// chave que o decifra nao recupera nada e seria pior do que nao ter
+    /// guardado: daria a impressao de recuperacao.
+    ///
+    /// Isto e uma regra do store, e nao uma decisao de quem chama, de
+    /// proposito: `pair` e API publica desta crate, e um call site novo que
+    /// esquecesse de limpar deixaria blob morto em disco. Aqui nenhum pode
+    /// esquecer, e nenhum pode triturar o que nao foi ele quem criou.
+    ///
+    /// Devolve `true` quando havia arquivado e ele foi PRESERVADO — e o que o
+    /// chamador precisa saber para dizer ao usuario que a sessao anterior
+    /// ainda da para recuperar.
+    pub fn discard_dead_session(&self) -> Result<bool, SessionError> {
+        shred(&self.blob_path())?;
+        if self.archive_path().is_file() {
+            return Ok(true);
+        }
+        shred(&self.key_path())?;
+        shred(&self.salt_path())?;
+        Ok(false)
     }
 
     /// Logout: sobrescreve e remove blob, arquivo e chave.
@@ -475,38 +607,68 @@ fn random_bytes<const N: usize>() -> Result<Zeroizing<[u8; N]>, SessionError> {
     Ok(buf)
 }
 
+/// O temporario do [`write_atomic`]: criado do zero, 0600 desde o `open`,
+/// escrito e sincronizado.
+fn write_tmp_file(tmp: &Path, bytes: &[u8]) -> Result<(), SessionError> {
+    let mut opts = OpenOptions::new();
+    // `create_new`: se o caminho ja existe — arquivo ou symlink — isto falha
+    // em vez de escrever por cima. Ver o docstring de [`write_atomic`].
+    opts.write(true).create_new(true);
+    // Nasce 0600: o `chmod` depois da escrita deixaria uma janela em que o
+    // segredo ja esta no disco com o modo do umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(fs_perms::SECRET_FILE_MODE);
+    }
+    let mut f = opts.open(tmp).map_err(|e| SessionError::io(tmp, e))?;
+    f.write_all(bytes).map_err(|e| SessionError::io(tmp, e))?;
+    f.sync_all().map_err(|e| SessionError::io(tmp, e))?;
+    drop(f);
+    // Fora de Unix o `mode` acima nao existe; aperta pelo caminho generico.
+    let _ = fs_perms::harden_secret_file(tmp);
+    Ok(())
+}
+
 /// tmp no mesmo diretorio, ja 0600, fsync, rename, fsync do diretorio.
+///
+/// # Por que o nome do temporario e aleatorio, e por que `create_new`
+///
+/// O nome era deterministico (`.session.enc.tmp`) e o arquivo era aberto com
+/// `create(true).truncate(true)`. Juntas, as duas coisas desmentiam o "nasce
+/// 0600" do comentario abaixo: `mode()` so vale na **criacao**, entao sobre um
+/// `.tmp` preexistente o modo antigo ficava, e o segredo passava a existir em
+/// disco frouxo ate o `harden_secret_file`, que so roda depois do `write_all`.
+///
+/// E com nome previsivel o preexistente nao precisa ser um arquivo: um symlink
+/// plantado por outro usuario no mesmo diretorio seria SEGUIDO por
+/// `create(true)`, e o alvo dele e que receberia a escrita e o `chmod`.
+/// `create_new(true)` recusa abrir qualquer coisa que ja exista — symlink
+/// inclusive — e o sufixo aleatorio faz o caminho nao ser adivinhavel. As duas
+/// juntas, porque cada uma sozinha ainda deixa metade do problema.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SessionError> {
     let dir = path
         .parent()
         .ok_or_else(|| SessionError::Format(format!("{} nao tem diretorio pai", path.display())))?;
     fs_perms::create_secret_dir(dir).map_err(|e| SessionError::io(dir, e))?;
 
+    let nonce = u64::from_ne_bytes(*random_bytes::<8>()?);
     let tmp = dir.join(format!(
-        ".{}.tmp",
+        ".{}.{nonce:016x}.tmp",
         path.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "session".into())
     ));
 
-    {
-        let mut opts = OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        // Nasce 0600: o `chmod` depois da escrita deixaria uma janela em que o
-        // segredo ja esta no disco com o modo do umask.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(fs_perms::SECRET_FILE_MODE);
-        }
-        let mut f = opts.open(&tmp).map_err(|e| SessionError::io(&tmp, e))?;
-        f.write_all(bytes).map_err(|e| SessionError::io(&tmp, e))?;
-        f.sync_all().map_err(|e| SessionError::io(&tmp, e))?;
+    // Qualquer falha daqui para baixo deixaria material de sessao num
+    // temporario orfao com nome que ninguem mais conhece — o pior dos dois
+    // mundos. Por isso o desfecho de erro tritura o `tmp` antes de propagar.
+    let written = write_tmp_file(&tmp, bytes)
+        .and_then(|()| std::fs::rename(&tmp, path).map_err(|e| SessionError::io(path, e)));
+    if let Err(e) = written {
+        let _ = shred(&tmp);
+        return Err(e);
     }
-    // Fora de Unix o `mode` acima nao existe; aperta pelo caminho generico.
-    let _ = fs_perms::harden_secret_file(&tmp);
-
-    std::fs::rename(&tmp, path).map_err(|e| SessionError::io(path, e))?;
 
     // Best-effort: sem isto o rename pode nao estar durável depois de uma queda
     // de energia. Falha aqui nao invalida a escrita, entao nao vira erro.
@@ -531,6 +693,11 @@ pub enum SessionError {
     /// arquivo de outra instalacao.
     #[error("a sessao existe mas nao abre com a chave atual")]
     Undecryptable,
+    /// A conta nao e um segmento de caminho aceitavel. O valor recusado entra
+    /// na mensagem de proposito: ele e um identificador de conta escolhido
+    /// pelo operador, nao segredo, e sem ele o erro nao orienta ninguem.
+    #[error("conta invalida: {0:?} — use apenas [A-Za-z0-9_-], ate 64 caracteres")]
+    InvalidAccount(String),
     #[error("erro criptografico: {0}")]
     Crypto(String),
 }
@@ -669,6 +836,51 @@ mod tests {
     }
 
     #[test]
+    fn a_dead_session_takes_the_key_with_it_when_there_is_nothing_archived() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().join("wa"));
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        store.save(&blob(), &key).expect("save");
+
+        let preservou = store.discard_dead_session().expect("discard");
+
+        assert!(!preservou, "nao havia arquivado a preservar");
+        assert!(!store.exists(), "o blob que o servidor recusou vai embora");
+        assert!(!store.key_path().exists(), "e a chave vai junto");
+        assert!(!store.salt_path().exists(), "o salt tambem");
+    }
+
+    /// O invariante do F2: com arquivado em disco, `.prev`, `session.key` e
+    /// `session.salt` sobrevivem juntos. Preservar o `.prev` sem a chave seria
+    /// pior que nao preservar — daria a impressao de recuperacao.
+    #[test]
+    fn a_dead_session_never_takes_the_archived_one_nor_its_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().join("wa"));
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        store.save(&blob(), &key).expect("save");
+        assert!(store.archive().expect("archive"));
+        // Um blob novo em disco, como o de um pareamento que o servidor
+        // acabou de recusar.
+        store
+            .save(&SessionBlob::new("eyJub3ZvIjoxfQ=="), &key)
+            .expect("save novo");
+
+        let preservou = store.discard_dead_session().expect("discard");
+
+        assert!(preservou, "havia arquivado, e ele foi preservado");
+        assert!(!store.exists(), "o blob recusado some");
+        assert!(store.archive_path().is_file(), "o arquivado fica");
+        assert!(store.key_path().exists(), "e a chave que o abre tambem");
+        assert!(store.restore_archive().expect("restore"));
+        assert_eq!(
+            store.load(&key).expect("abre").expose(),
+            blob().expose(),
+            "o que volta e a sessao anterior, legivel"
+        );
+    }
+
+    #[test]
     fn purge_on_an_empty_store_succeeds() {
         let dir = tempdir().expect("tempdir");
         SessionStore::new(dir.path().join("never-used"))
@@ -744,8 +956,179 @@ mod tests {
 
     #[test]
     fn for_data_dir_uses_the_documented_layout() {
-        let store = SessionStore::for_data_dir(Path::new("/data"), DEFAULT_ACCOUNT);
+        let store =
+            SessionStore::for_data_dir(Path::new("/data"), DEFAULT_ACCOUNT).expect("conta valida");
         assert!(store.blob_path().ends_with("whatsapp/default/session.enc"));
+    }
+
+    /// Contas que um dia podem existir de verdade (mais de um numero
+    /// vinculado) continuam passando: a regra fecha o traversal, nao o
+    /// recurso.
+    #[test]
+    fn plausible_account_names_are_accepted() {
+        for account in [
+            "default",
+            "pessoal",
+            "conta_2",
+            "linha-b",
+            "A1",
+            &"x".repeat(64),
+        ] {
+            let store = SessionStore::for_data_dir(Path::new("/data"), account)
+                .unwrap_or_else(|e| panic!("conta {account:?} deveria valer: {e}"));
+            assert!(store.dir().ends_with(account));
+        }
+    }
+
+    /// **Este e o teste do bloqueador.** Cada conta abaixo e uma forma de sair
+    /// do data dir ou de nomear algo que nao e um segmento; o `for_data_dir`
+    /// tem de recusar todas.
+    ///
+    /// E ele vai ate o disco de proposito: no dia em que alguem apagar o
+    /// `validate_account`, o `Ok` cai no braco que **de fato grava** e o
+    /// teste reporta o caminho real que a sessao cifrada acabou de ocupar
+    /// fora do data dir. Uma asserção so sobre o `Result` provaria bem menos.
+    #[test]
+    fn an_account_that_escapes_the_data_dir_is_refused_before_any_write() {
+        let tmp = tempdir().expect("tempdir");
+        let data = tmp.path().join("data");
+
+        // A ordem importa para o diagnostico: a primeira conta da lista e uma
+        // que de fato SAI do data dir, entao, com a validacao arrancada, quem
+        // falha e a asserção de contencao — e a mensagem mostra o caminho real
+        // que a sessao cifrada acabou de ocupar la fora.
+        for account in [
+            "../../fuga",
+            "..",
+            "../..",
+            "sub/dir",
+            "sub\\dir",
+            "/absoluta",
+            ".",
+            "",
+            "conta com espaco",
+            "acentuada\u{e7}",
+        ] {
+            match SessionStore::for_data_dir(&data, account) {
+                Err(SessionError::InvalidAccount(recusada)) => assert_eq!(recusada, account),
+                Err(outro) => panic!("conta {account:?} recusada pelo motivo errado: {outro}"),
+                Ok(store) => {
+                    // Sem a validacao, este e o caminho que o codigo antigo
+                    // tomava. Grava-se de verdade para mostrar onde para.
+                    let key = SessionKey::resolve(store.dir(), None).expect("chave");
+                    store.save(&blob(), &key).expect("save");
+                    let escrito = store.blob_path().canonicalize().expect("canonicalize");
+                    let raiz = data.canonicalize().expect("canonicalize data dir");
+                    assert!(
+                        escrito.starts_with(&raiz),
+                        "a conta {account:?} escapou do data dir: {} nao esta sob {}",
+                        escrito.display(),
+                        raiz.display()
+                    );
+                    panic!("a conta {account:?} deveria ter sido recusada");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restoring_the_archive_brings_the_previous_session_back_readable() {
+        let dir = tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        store.save(&blob(), &key).expect("save");
+
+        assert!(store.archive().expect("archive"));
+        assert!(!store.exists(), "arquivar tira a sessao de cena");
+
+        assert!(store.restore_archive().expect("restore"));
+        assert!(store.exists(), "restaurar traz a sessao de volta");
+        assert!(!store.archive_path().exists(), "o arquivado saiu de la");
+        // Nao basta o arquivo existir: ele tem de continuar abrindo.
+        assert_eq!(store.load(&key).expect("load").expose(), blob().expose());
+    }
+
+    #[test]
+    fn restoring_is_a_noop_without_an_archive_and_never_clobbers_a_live_session() {
+        let dir = tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path());
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+
+        assert!(!store.restore_archive().expect("sem arquivado"));
+
+        store.save(&blob(), &key).expect("save");
+        store.archive().expect("archive");
+        let novo = SessionBlob::new("bm92bw==");
+        store.save(&novo, &key).expect("link novo concluiu");
+
+        assert!(
+            !store.restore_archive().expect("restore"),
+            "com sessao viva em disco o arquivado perdeu a vez"
+        );
+        assert_eq!(
+            store.load(&key).expect("load").expose(),
+            novo.expose(),
+            "a sessao viva nao pode ser sobrescrita pelo arquivado"
+        );
+        assert!(store.archive_path().is_file(), "o arquivado fica onde esta");
+    }
+
+    /// O temporario do `write_atomic` nao reaproveita um arquivo que ja
+    /// estivesse no caminho previsivel de antes.
+    ///
+    /// Com o nome deterministico (`.session.key.tmp`) e
+    /// `create(true).truncate(true)`, o store abria o preexistente e o
+    /// renomeava por cima do destino: o `mode(0600)` do `OpenOptions` so vale
+    /// na CRIACAO, entao o segredo passava a existir em disco com o modo do
+    /// arquivo alheio ate o `harden_secret_file` de depois do `write_all`.
+    #[test]
+    fn a_planted_temporary_file_is_never_reused() {
+        let dir = tempdir().expect("tempdir");
+        let wa = dir.path().join("wa");
+        std::fs::create_dir_all(&wa).expect("mkdir");
+        let plantado = wa.join(".session.key.tmp");
+        std::fs::write(&plantado, b"nao sou do store").expect("plantar");
+
+        let store = SessionStore::new(&wa);
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        store.save(&blob(), &key).expect("save");
+
+        assert!(
+            store.key_path().is_file(),
+            "a chave foi escrita assim mesmo"
+        );
+        assert_eq!(
+            std::fs::read(&plantado).expect("o plantado continua la"),
+            b"nao sou do store",
+            "o store nao pode ter reaproveitado um temporario que nao e dele"
+        );
+    }
+
+    /// E nao SEGUE um symlink plantado nesse caminho.
+    ///
+    /// Era o desfecho pior do nome previsivel: `create(true)` segue o link, e
+    /// quem levava a escrita (e o `chmod` 0600) era o alvo, um arquivo de
+    /// outra pessoa. `create_new(true)` recusa abrir o que ja existe — symlink
+    /// inclusive — e o sufixo aleatorio tira o alvo da mira.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_is_never_followed() {
+        let dir = tempdir().expect("tempdir");
+        let wa = dir.path().join("wa");
+        std::fs::create_dir_all(&wa).expect("mkdir");
+        let vitima = dir.path().join("arquivo-da-vitima");
+        std::fs::write(&vitima, b"conteudo da vitima").expect("vitima");
+        std::os::unix::fs::symlink(&vitima, wa.join(".session.key.tmp")).expect("symlink");
+
+        let store = SessionStore::new(&wa);
+        let key = SessionKey::resolve(store.dir(), None).expect("key");
+        store.save(&blob(), &key).expect("save");
+
+        assert_eq!(
+            std::fs::read(&vitima).expect("a vitima continua la"),
+            b"conteudo da vitima",
+            "um symlink com nome previsivel nao pode redirecionar a escrita do store"
+        );
     }
 
     #[test]

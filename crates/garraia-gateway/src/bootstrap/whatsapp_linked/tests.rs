@@ -126,7 +126,7 @@ fn os_caminhos_saem_do_data_dir_resolvido() {
         ..Default::default()
     };
 
-    let paths = LinkedPaths::from_config(&config);
+    let paths = LinkedPaths::from_config(&config).expect("DEFAULT_ACCOUNT e valido");
     assert_eq!(
         paths.store.blob_path(),
         dir.path().join("whatsapp/default/session.enc"),
@@ -612,11 +612,13 @@ fn fonte_nao_loga_jid_cru_nem_material_de_sessao() {
     proibidos.extend(sujos);
 
     let mut violacoes = Vec::new();
-    for chamada in log_audit::chamadas_de_log(&fonte) {
+    for (linha, chamada) in log_audit::chamadas_de_log(&fonte) {
         let risco = log_audit::parte_arriscada(&chamada);
         for proibido in &proibidos {
             if risco.contains(proibido.as_str()) {
-                violacoes.push(format!("`{proibido}` em: {chamada}"));
+                violacoes.push(format!(
+                    "whatsapp_linked.rs:{linha}: `{proibido}` em: {chamada}"
+                ));
             }
         }
     }
@@ -849,7 +851,7 @@ mod ponta_a_ponta {
     }
 
     fn grava_sessao(state: &SharedState) -> (SessionStore, SessionKey) {
-        let paths = LinkedPaths::from_config(&state.config);
+        let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
         let key = SessionKey::resolve(paths.store.dir(), None).expect("chave");
         paths
             .store
@@ -895,7 +897,9 @@ mod ponta_a_ponta {
             ..LinkedSettings::default()
         };
         let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher {
-            dir: LinkedPaths::from_config(&state.config).bridge_dir,
+            dir: LinkedPaths::from_config(&state.config)
+                .expect("DEFAULT_ACCOUNT e valido")
+                .bridge_dir,
             roteiro: Roteiro::empurra("oi do celular"),
         });
 
@@ -936,7 +940,9 @@ mod ponta_a_ponta {
         let (store, key) = grava_sessao(&state);
 
         let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher {
-            dir: LinkedPaths::from_config(&state.config).bridge_dir,
+            dir: LinkedPaths::from_config(&state.config)
+                .expect("DEFAULT_ACCOUNT e valido")
+                .bridge_dir,
             roteiro: Roteiro::eco(),
         });
         supervisionar(
@@ -1018,7 +1024,7 @@ mod ponta_a_ponta {
         }
 
         let (store, key) = grava_sessao(&state);
-        let paths = LinkedPaths::from_config(&state.config);
+        let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
 
         let settings = LinkedSettings {
             enabled: true,

@@ -32,7 +32,9 @@ use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::Result;
-use garraia_channels::whatsapp_linked::bridge::{self, BridgeError, NodeLauncher, NodeRuntime};
+use garraia_channels::whatsapp_linked::bridge::{
+    self, BridgeError, BridgeLauncher, NodeLauncher, NodeRuntime,
+};
 use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, LinkHealth, classify};
 use garraia_channels::whatsapp_linked::runner::{self, PairUi, RunError};
 use garraia_channels::whatsapp_linked::{DEFAULT_ACCOUNT, KeyOrigin, SessionKey, SessionStore, qr};
@@ -160,7 +162,15 @@ impl Context {
         }
     }
 
-    fn store(&self) -> SessionStore {
+    /// Store da conta default.
+    ///
+    /// `for_data_dir` devolve `Result` porque recusa conta que nao seja um
+    /// unico segmento `[A-Za-z0-9_-]{1,64}` — e a CLI passa `DEFAULT_ACCOUNT`,
+    /// constante de compilacao que a regra aceita, entao o `Err` daqui e
+    /// inalcancavel hoje. Ele e propagado assim mesmo: `unwrap()` em codigo de
+    /// producao e proibido, e o dia em que a CLI aprender a escolher conta e
+    /// exatamente o dia em que este erro passa a valer.
+    fn store(&self) -> Result<SessionStore, garraia_channels::whatsapp_linked::SessionError> {
         SessionStore::for_data_dir(&self.data_dir, DEFAULT_ACCOUNT)
     }
 
@@ -169,7 +179,7 @@ impl Context {
     }
 
     fn key(&self) -> Result<SessionKey, garraia_channels::whatsapp_linked::SessionError> {
-        SessionKey::resolve(self.store().dir(), self.vault_passphrase.as_deref())
+        SessionKey::resolve(self.store()?.dir(), self.vault_passphrase.as_deref())
     }
 }
 
@@ -252,7 +262,13 @@ fn menu(ctx: &Context, prompter: &dyn Prompter) -> i32 {
 // ---------------------------------------------------------------------------
 
 fn status(ctx: &Context) -> i32 {
-    let store = ctx.store();
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
     let bridge_dir = ctx.bridge_dir();
     print_header(ctx);
 
@@ -412,7 +428,13 @@ fn print_archive_warning(ctx: &Context, store: &SessionStore) {
 }
 
 fn logout(ctx: &Context, prompter: &dyn Prompter) -> i32 {
-    let store = ctx.store();
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
     print_header(ctx);
 
     // F1: `exists()` olha so o `session.enc`. O arquivado e igualmente uma
@@ -492,14 +514,124 @@ Settings → Linked devices.",
 // link
 // ---------------------------------------------------------------------------
 
+/// Arquiva a sessao atual e a traz de volta se o link nao gravar uma nova.
+///
+/// # Por que um guard, e nao duas chamadas nos bracos que falham
+///
+/// Porque os bracos que falham nao sao dois. Entre o arquivamento e o blob
+/// novo cabem o Ctrl+C na tela do QR, os cinco QRs expirando, o bridge que
+/// morre antes de conectar, o que conecta e nunca entrega a sessao, e o
+/// proximo que alguem acrescentar. Listar os bracos e escolher quais
+/// restauram; um guard restaura em todos, porque restaurar e o que acontece
+/// quando **nao** se fez nada melhor.
+///
+/// O caminho de sucesso nao precisa de `commit()`: quando o `pair` grava o
+/// blob novo ele mesmo chama `discard_archive()`, entao na hora do `drop` nao
+/// ha mais arquivado — e [`SessionStore::restore_archive`] tambem se recusa a
+/// passar por cima de um `session.enc` vivo. Nos dois sentidos, o guard vira
+/// no-op silencioso exatamente quando deve.
+///
+/// # O braco que nao pode ser silencioso
+///
+/// `restore_archive` devolvendo `false` tem tres causas, e so duas sao o
+/// caminho feliz: nao havia nada arquivado, ou ha sessao nova em disco. A
+/// terceira e o arquivado ter SUMIDO entre o `archive()` e o `drop` — e ai o
+/// usuario perdeu o vinculo anterior e precisa ouvir isso. Por isso o guard
+/// guarda `archived`: sem esse bit os tres casos tem a mesma cara.
+struct ArchiveGuard<'a> {
+    store: &'a SessionStore,
+    lang: Lang,
+    /// Havia mesmo um blob para arquivar? `archive()` devolve `false` num
+    /// store vazio, e nesse caso nao restaurar nada e o esperado.
+    archived: bool,
+}
+
+impl<'a> ArchiveGuard<'a> {
+    fn archive(
+        store: &'a SessionStore,
+        lang: Lang,
+    ) -> Result<Self, garraia_channels::whatsapp_linked::SessionError> {
+        let archived = store.archive()?;
+        Ok(Self {
+            store,
+            lang,
+            archived,
+        })
+    }
+}
+
+impl Drop for ArchiveGuard<'_> {
+    fn drop(&mut self) {
+        match self.store.restore_archive() {
+            // Sai DEPOIS da mensagem do desfecho ("Cancelado.", "Nenhum QR foi
+            // lido."), que e a ordem certa: primeiro o que aconteceu, depois o
+            // que sobrou.
+            Ok(true) => println!(
+                "↩ {}",
+                t(
+                    self.lang,
+                    "A sessão anterior foi restaurada — nada foi desvinculado.",
+                    "Your previous session was restored — nothing was unlinked."
+                )
+            ),
+            // Arquivamos, nao restauramos e nao ha sessao nova: o vinculo
+            // anterior foi embora. Falar e o minimo — o usuario acabou de ler
+            // "esta sessao nao vale mais" e sairia daqui achando que a antiga
+            // continuava la.
+            Ok(false) if self.archived && !self.store.exists() => eprintln!(
+                "! {}",
+                t(
+                    self.lang,
+                    "A sessão anterior não pôde ser restaurada — o vínculo antigo foi perdido. Rode `garra whatsapp` e leia um QR novo.",
+                    "The previous session could not be restored — the old link is gone. Run `garra whatsapp` and scan a new QR."
+                )
+            ),
+            Ok(false) => {}
+            // Sem `?` porque `Drop` nao propaga, e sem silencio porque uma
+            // sessao boa presa no `.prev` e exatamente o que o usuario precisa
+            // saber para recupera-la a mao.
+            Err(e) => eprintln!("{e}"),
+        }
+    }
+}
+
 fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
+    link_with(ctx, prompter, NodeRuntime::detect)
+}
+
+/// [`link`] com a deteccao do Node injetada.
+///
+/// # Por que um parametro, e nao `PATH=""` no teste
+///
+/// Porque a versao anterior destes testes zerava a `PATH` do processo inteiro
+/// com um `unsafe { std::env::set_var }` cujo SAFETY dizia que "o mutex
+/// serializa os testes que mexem em env neste binario". Essa nao e a condicao
+/// de `set_var`: a condicao e que NENHUMA outra thread esteja no ambiente, e
+/// `tempfile::tempdir()` le `TMPDIR`. Os outros ~530 testes deste binario
+/// rodam concorrentes e chamam `tempdir()` o tempo todo. O raciocinio ja esta
+/// escrito no docstring de `bridge.rs` que este mesmo PR acrescentou; deixa-lo
+/// valer la e nao aqui era so escolher onde nao olhar.
+///
+/// Com a deteccao injetada, "nao ha Node" vira um `Err` que o teste passa —
+/// nao um estado global que ele planta.
+fn link_with(
+    ctx: &Context,
+    prompter: &dyn Prompter,
+    detect_node: impl FnOnce() -> Result<NodeRuntime, BridgeError>,
+) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
         println!("{}", non_interactive_hint(ctx.lang));
         return 0;
     }
 
-    let store = ctx.store();
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
     let key = match ctx.key() {
         Ok(k) => k,
         Err(e) => {
@@ -526,12 +658,13 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
             )
         );
         // O texto diz o que de fato acontece: a sessao atual e ARQUIVADA
-        // (`session.enc.prev`) e so sai de cena quando o vinculo novo conclui.
-        // "Apaga" era impreciso nas duas pontas — nao apaga, e nao restaura.
+        // (`session.enc.prev`), so e descartada quando o vinculo novo conclui,
+        // e volta sozinha se ele nao concluir (ver `ArchiveGuard`). "Apaga"
+        // era impreciso nas duas pontas.
         let prompt = t(
             ctx.lang,
-            "Re-vincular? A sessão atual sai de uso e é descartada ao fim",
-            "Re-link? The current session is set aside and discarded at the end",
+            "Re-vincular? A sessão atual sai de uso e só é descartada quando o novo vínculo concluir",
+            "Re-link? The current session is set aside and only discarded once the new link completes",
         );
         match prompter.confirm(prompt, false) {
             Ok(true) => relink = true,
@@ -555,7 +688,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         return EX_CANCELLED;
     }
 
-    let node = match NodeRuntime::detect() {
+    let node = match detect_node() {
         Ok(n) => n,
         Err(e) => {
             print_missing_node(ctx, &e);
@@ -606,17 +739,60 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         );
     }
 
+    let launcher = NodeLauncher::new(&node.node, &bridge_dir);
+    link_paired(ctx, &store, &key, &launcher, &runtime, relink)
+}
+
+/// A parte do [`link`] que comeca depois de o Node estar resolvido: arquivar a
+/// sessao atual sob guard, mostrar o QR, parear e traduzir o desfecho em
+/// codigo de saida.
+///
+/// # Por que uma funcao, e nao o resto de `link`
+///
+/// Porque a linha que INSTALA o [`ArchiveGuard`] e a correcao inteira desta
+/// rodada, e dentro de `link` ela era inalcancavel por teste: tudo o que vem
+/// antes — deteccao do Node, `npm ci` — falha primeiro num ambiente de teste,
+/// e os testes existentes morriam na deteccao do Node sem nunca chegar aqui.
+/// Trocar este bloco por um `store.archive()` cru, sem inverso — que e
+/// exatamente o bug da rodada anterior —, deixava os 549 testes da crate
+/// verdes.
+///
+/// Com o `launcher` como `&dyn BridgeLauncher` o teste entra por cima: um
+/// launcher que sempre falha leva o fluxo ate o desfecho de erro, o guard cai,
+/// e o que se afirma e o que o usuario ve em disco — sessao de volta, nada
+/// arquivado.
+fn link_paired(
+    ctx: &Context,
+    store: &SessionStore,
+    key: &SessionKey,
+    launcher: &dyn BridgeLauncher,
+    runtime: &tokio::runtime::Runtime,
+    relink: bool,
+) -> i32 {
     // AGORA: consentimento dado, Node encontrado, dependencias prontas. Este
-    // e o ultimo ponto antes de o QR aparecer, e o primeiro em que arquivar
-    // deixa de poder desmontar um vinculo que continuaria valendo.
-    if relink && let Err(e) = store.archive() {
-        eprintln!("{e}");
-        return EX_SOFTWARE;
-    }
+    // e o ultimo ponto antes de o QR aparecer.
+    //
+    // O comentario anterior dizia que era tambem "o primeiro ponto em que
+    // arquivar deixa de poder desmontar um vinculo que continuaria valendo", e
+    // isso era falso: depois daqui ainda vem o QR, e um Ctrl+C na tela dele ou
+    // cinco QRs expirando deixavam o usuario **sem sessao viva**, com a boa
+    // parada num `.prev` que nenhum caminho de codigo reabria. O guard abaixo
+    // e o que faltava — ele desfaz o arquivamento em QUALQUER saida que nao
+    // tenha gravado sessao nova, inclusive as que ninguem lembrou de listar.
+    let _archive_guard = if relink {
+        match ArchiveGuard::archive(store, ctx.lang) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                eprintln!("{e}");
+                return EX_SOFTWARE;
+            }
+        }
+    } else {
+        None
+    };
 
     print_instructions(ctx);
 
-    let launcher = NodeLauncher::new(&node.node, &bridge_dir);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
     let mut ui = TerminalUi::new(ctx);
 
@@ -628,7 +804,7 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
                 let _ = cancel_tx.send(true);
             }
         });
-        runner::pair(&launcher, &store, &key, &mut ui, cancel_rx).await
+        runner::pair(launcher, store, key, &mut ui, cancel_rx).await
     });
 
     match outcome {

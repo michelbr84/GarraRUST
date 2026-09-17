@@ -1510,6 +1510,7 @@ pub async fn build_mcp_tools(
                         memory_limit_mb,
                         max_restarts,
                         restart_delay_secs,
+                        server_config.inherit_env,
                     )
                     .await
             }
@@ -1565,6 +1566,7 @@ pub async fn build_mcp_tools(
                             memory_limit_mb,
                             max_restarts,
                             restart_delay_secs,
+                            server_config.inherit_env,
                         )
                         .await;
                 }

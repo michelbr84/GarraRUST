@@ -2021,7 +2021,8 @@ mod tests {
         let store = garraia_channels::whatsapp_linked::SessionStore::for_data_dir(
             dir,
             garraia_channels::whatsapp_linked::DEFAULT_ACCOUNT,
-        );
+        )
+        .expect("DEFAULT_ACCOUNT e um segmento valido");
         let key = garraia_channels::whatsapp_linked::SessionKey::resolve(store.dir(), None)
             .expect("chave");
         store

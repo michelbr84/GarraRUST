@@ -386,7 +386,9 @@ pub async fn pair_with(
                         Effect::PurgeSession => {
                             // Inalcancavel no `pair`: `Event::SessionDead` so
                             // e alimentado depois do codigo de saida, abaixo.
-                            store.purge()?;
+                            // `discard_dead_session` e nao `purge` pelo mesmo
+                            // motivo do desfecho la embaixo.
+                            store.discard_dead_session()?;
                             conn.kill().await;
                             return Err(RunError::SessionDead {
                                 reason_code: dead_reason_code,
@@ -429,7 +431,12 @@ pub async fn pair_with(
     let code = conn.wait().await?;
     if super::protocol::session_is_dead(code, dead_reason_code) {
         machine.on(Event::SessionDead, now);
-        store.purge()?;
+        // NAO e `purge`: num re-vinculo o `session.enc.prev` e a sessao boa
+        // que o `link` acabou de arquivar, e `purge` a triturava junto com a
+        // chave — o guard do chamador ficava sem nada para restaurar. O que
+        // este pareamento pode descartar e o blob que o servidor recusou.
+        // Ver [`SessionStore::discard_dead_session`].
+        store.discard_dead_session()?;
         return Err(RunError::SessionDead {
             reason_code: dead_reason_code,
         });
@@ -585,8 +592,14 @@ fn persist(store: &SessionStore, key: &SessionKey, blob: &SessionBlob) {
 ///
 /// `jitter` e injetado (o chamador passa `rand`), pelo mesmo motivo de a
 /// maquina nao sortear: o teste precisa de intervalos deterministicos — e
-/// **este backoff e o unico que existe no `serve`**, entao o teste conta as
-/// chamadas de `jitter` para que arranca-lo nao passe em silencio.
+/// **este backoff e o unico que existe no `serve`**. O teste nao conta as
+/// chamadas de `jitter`, ele **cronometra** o intervalo entre duas: contar
+/// prova que o atraso foi calculado, nao que alguem esperou, e arrancar o
+/// `sleep` deixava a contagem intacta.
+///
+/// O contador de tentativas volta a zero a cada execucao que chegou a
+/// conectar: ele mede quedas SEGUIDAS, nao quedas acumuladas na vida do
+/// processo.
 pub async fn serve(
     launcher: Arc<dyn BridgeLauncher>,
     store: SessionStore,
@@ -625,9 +638,17 @@ pub async fn serve(
                 sink.on_connection(None, false);
                 return Err(RunError::SessionDead { reason_code });
             }
-            Ok(ServeExit::Dropped) | Err(_) => {
+            outcome @ (Ok(ServeExit::Dropped { .. }) | Err(_)) => {
                 sink.on_connection(None, false);
-                attempt = attempt.saturating_add(1);
+                attempt = next_attempt(
+                    attempt,
+                    matches!(
+                        outcome,
+                        Ok(ServeExit::Dropped {
+                            was_connected: true
+                        })
+                    ),
+                );
                 let delay = backoff_ms(attempt, jitter());
                 tracing::info!(
                     attempt,
@@ -643,6 +664,26 @@ pub async fn serve(
     }
 }
 
+/// Proximo valor do contador de tentativas do [`serve`].
+///
+/// Uma execucao que chegou a conectar volta o contador ao primeiro degrau.
+/// Sem isso o `attempt` so cresce: um gateway de longa duracao que caia uma
+/// vez por dia caminha ate o teto de 30 s e fica la, e a queda seguinte — a
+/// que acontece depois de meses no ar — espera meio minuto por nada. O
+/// contador mede **quedas seguidas sem sucesso**, que e o que o backoff
+/// exponencial existe para punir.
+///
+/// Funcao nomeada, e nao duas linhas dentro do `loop`, porque assim a regra e
+/// testavel sem relogio, sem processo filho e sem esperar dois backoffs reais
+/// — o mesmo motivo de a maquina de estados nao ter relogio.
+fn next_attempt(current: u32, was_connected: bool) -> u32 {
+    if was_connected {
+        1
+    } else {
+        current.saturating_add(1)
+    }
+}
+
 enum ServeExit {
     Cancelled,
     /// Sessao morta (exit 2): apaga o material e para.
@@ -651,7 +692,13 @@ enum ServeExit {
     },
     /// `logged_out` com exit 0: para, mas **nao** apaga nada.
     Stopped,
-    Dropped,
+    /// Caiu e vale reconectar. `was_connected` diz se esta execucao chegou a
+    /// receber um `connected` — e o que separa "a ponte estava no ar e caiu"
+    /// de "a ponte nem subiu", que e a diferenca entre zerar o backoff e
+    /// deixa-lo crescer.
+    Dropped {
+        was_connected: bool,
+    },
 }
 
 async fn serve_once(
@@ -676,6 +723,7 @@ async fn serve_once(
 
     let mut saw_logged_out = false;
     let mut dead_reason_code: Option<i64> = None;
+    let mut saw_connected = false;
 
     loop {
         tokio::select! {
@@ -714,13 +762,14 @@ async fn serve_once(
                         // 440 (outro aparelho assumiu). Para, sem apagar nada.
                         ServeExit::Stopped
                     } else {
-                        ServeExit::Dropped
+                        ServeExit::Dropped { was_connected: saw_connected }
                     });
                 };
                 match event {
                     BridgeEvent::SessionUpdate { ref session, .. } => persist(store, key, session),
                     BridgeEvent::Message(ref msg) => sink.deliver((**msg).clone()),
                     BridgeEvent::Connected { ref jid, .. } => {
+                        saw_connected = true;
                         sink.on_connection(jid.as_ref(), true);
                     }
                     BridgeEvent::LoggedOut => saw_logged_out = true,
@@ -736,5 +785,35 @@ async fn serve_once(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O contador de tentativas do `serve`, e o que ele significa para o
+    /// atraso real. A segunda asserção e a que importa: zerar o contador so
+    /// vale se o ATRASO voltar ao primeiro degrau.
+    #[test]
+    fn a_connection_that_worked_puts_the_backoff_back_on_the_first_step() {
+        // Sem conectar, o contador sobe e o atraso sobe com ele.
+        assert_eq!(next_attempt(0, false), 1);
+        assert_eq!(next_attempt(1, false), 2);
+        assert_eq!(next_attempt(9, false), 10);
+        assert!(backoff_ms(next_attempt(9, false), 0.0) > backoff_ms(1, 0.0));
+
+        // Tendo conectado, volta ao primeiro degrau — de qualquer altura.
+        assert_eq!(next_attempt(1, true), 1);
+        assert_eq!(next_attempt(9, true), 1);
+        assert_eq!(next_attempt(u32::MAX, true), 1);
+        assert_eq!(
+            backoff_ms(next_attempt(9, true), 0.0),
+            backoff_ms(1, 0.0),
+            "depois de uma conexao que valeu, a proxima espera e a menor de todas"
+        );
+
+        // E o contador nunca estoura: `serve` roda por meses.
+        assert_eq!(next_attempt(u32::MAX, false), u32::MAX);
     }
 }

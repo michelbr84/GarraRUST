@@ -44,8 +44,8 @@ use garraia_agents::ChatMessage;
 use garraia_agents::exec_context::ExecContext;
 use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, LinkHealth, classify};
 use garraia_channels::whatsapp_linked::{
-    BridgeCommand, DEFAULT_ACCOUNT, InboundMessage, Jid, NodeLauncher, RunError, SessionKey,
-    SessionStore, bridge, runner::InboundSink, runner::serve,
+    BridgeCommand, DEFAULT_ACCOUNT, InboundMessage, Jid, NodeLauncher, RunError, SessionError,
+    SessionKey, SessionStore, bridge, runner::InboundSink, runner::serve,
 };
 use garraia_config::AppConfig;
 use garraia_security::{InputValidator, PairingManager};
@@ -200,23 +200,53 @@ pub struct LinkedPaths {
 }
 
 impl LinkedPaths {
-    pub fn from_config(config: &AppConfig) -> Self {
+    /// # Por que `Result`
+    ///
+    /// `SessionStore::for_data_dir` valida o segmento de conta e devolve
+    /// `Result`; o gateway so passa [`DEFAULT_ACCOUNT`], `pub const … =
+    /// "default"`, que satisfaz a allowlist em tempo de compilacao, entao o
+    /// `Err` nao tem como acontecer hoje. Ele e propagado assim mesmo porque a
+    /// alternativa seria `unwrap()` em producao (regra 4) e porque e esse
+    /// `Result` que mantem verdadeira a afirmacao de que `for_data_dir` e o
+    /// unico construtor visivel de fora da crate — de que a supressao CodeQL
+    /// 173 depende.
+    pub fn from_config(config: &AppConfig) -> Result<Self, SessionError> {
         let data_dir = config.resolved_data_dir();
-        Self {
-            store: SessionStore::for_data_dir(&data_dir, DEFAULT_ACCOUNT),
-            bridge_dir: data_dir.join("whatsapp").join("bridge"),
-        }
+        Ok(Self {
+            store: SessionStore::for_data_dir(&data_dir, DEFAULT_ACCOUNT)?,
+            bridge_dir: bridge_dir(&data_dir),
+        })
     }
 }
 
-/// O veredito que o `/api/channels` e o `/api/diagnostics` mostram.
+/// Onde a ponte Node vive. Nao depende do store, e por isso sobrevive ao
+/// braco de erro de [`LinkedPaths::from_config`].
+fn bridge_dir(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("whatsapp").join("bridge")
+}
+
+/// O veredito que o `/api/channels` e o `/api/diagnostics` mostram, com o
+/// diretorio da ponte que a mensagem de proximo passo cita.
 ///
 /// **Uma** chamada, os dois consumidores: e o que impede o console de dizer
-/// "ativo" enquanto a pagina de diagnostico diz "ponte caida".
-pub fn health(config: &AppConfig, runtime: &WhatsAppLinkedRuntime) -> (LinkHealth, LinkedPaths) {
-    let paths = LinkedPaths::from_config(config);
-    let facts = DiskFacts::read(&paths.store, &paths.bridge_dir);
-    (classify(&facts, runtime.bridge()), paths)
+/// "ativo" enquanto a pagina de diagnostico diz "ponte caida". Devolve o
+/// `bridge_dir` e nao o [`LinkedPaths`] inteiro porque e so isso que os dois
+/// consomem — o store fica onde e usado.
+pub fn health(config: &AppConfig, runtime: &WhatsAppLinkedRuntime) -> (LinkHealth, PathBuf) {
+    match LinkedPaths::from_config(config) {
+        Ok(paths) => {
+            let facts = DiskFacts::read(&paths.store, &paths.bridge_dir);
+            (classify(&facts, runtime.bridge()), paths.bridge_dir)
+        }
+        // Inalcancavel com `DEFAULT_ACCOUNT` — ver o docstring acima. Sem
+        // store nao ha fato de disco para ler, entao fail-closed em "ninguem
+        // vinculou": o console mostra o canal como opcional em vez de mentir
+        // "conectado".
+        Err(_) => (
+            LinkHealth::NotLinked,
+            bridge_dir(&config.resolved_data_dir()),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +868,7 @@ pub fn deve_supervisionar(
 /// call-site" deixa de ser expressavel: nao ha o que soltar.
 pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     let settings = settings_from_config(&state.config);
-    let paths = LinkedPaths::from_config(&state.config);
+    let paths = LinkedPaths::from_config(&state.config).map_err(|_| NaoSubiu::SemSessao)?;
     let node = bridge::find_executable("node");
 
     deve_supervisionar(

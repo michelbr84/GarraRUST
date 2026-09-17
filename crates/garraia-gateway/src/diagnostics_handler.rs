@@ -379,9 +379,9 @@ async fn sondas_de_voz(cfg: &garraia_config::VoiceConfig) -> (VoiceProbe, VoiceP
 /// diretorio da **ponte** aparece porque e onde o `npm ci` precisa rodar — ele
 /// nao guarda credencial, so `bridge.mjs` e `node_modules`.
 fn whatsapp_linked_check(
-    (saude, paths): (
+    (saude, bridge_dir): (
         garraia_channels::whatsapp_linked::health::LinkHealth,
-        crate::bootstrap::LinkedPaths,
+        std::path::PathBuf,
     ),
 ) -> DiagnosticCheck {
     use garraia_channels::whatsapp_linked::health::LinkHealth;
@@ -395,7 +395,7 @@ fn whatsapp_linked_check(
             CheckStatus::Error,
             format!(
                 "ha sessao vinculada, mas a ponte esta sem dependencias em {}",
-                paths.bridge_dir.display()
+                bridge_dir.display()
             ),
         ),
         LinkHealth::BridgeDown => (
@@ -414,7 +414,7 @@ fn whatsapp_linked_check(
         label: "WhatsApp (dispositivo vinculado)",
         status,
         detail,
-        next_step: saude.next_step(&paths.bridge_dir),
+        next_step: saude.next_step(&bridge_dir),
     }
 }
 
@@ -740,13 +740,10 @@ mod tests {
     use garraia_channels::whatsapp_linked::health::LinkHealth;
 
     fn wa(saude: LinkHealth) -> DiagnosticCheck {
-        let paths = crate::bootstrap::LinkedPaths {
-            store: garraia_channels::whatsapp_linked::SessionStore::new(
-                "/home/ana/.garraia/data/whatsapp/default",
-            ),
-            bridge_dir: std::path::PathBuf::from("/home/ana/.garraia/data/whatsapp/bridge"),
-        };
-        whatsapp_linked_check((saude, paths))
+        whatsapp_linked_check((
+            saude,
+            std::path::PathBuf::from("/home/ana/.garraia/data/whatsapp/bridge"),
+        ))
     }
 
     /// Canal que ninguem ligou nao e defeito — e `skipped`, como o modo voz

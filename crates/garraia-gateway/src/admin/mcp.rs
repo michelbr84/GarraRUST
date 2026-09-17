@@ -191,6 +191,11 @@ pub async fn admin_restart_mcp(
         server = %server_name,
         admin = %admin.username,
         transport = ?transport,
+        // #1075: um restart pela admin API reconecta sempre isolado, mesmo
+        // que o `config.yml` peca `inherit_env: true` — o registro nao
+        // carrega o campo. Registrar isso aqui e o que torna a divergencia
+        // diagnosticavel a partir do log, sem plumbing novo.
+        env_isolation = "forced",
         "admin: restarting MCP server"
     );
 
@@ -232,6 +237,20 @@ pub async fn admin_restart_mcp(
                     memory_limit_mb,
                     max_restarts,
                     restart_delay_secs,
+                    // #1075 (continuação): um servidor reiniciado pela
+                    // admin API reconecta sempre isolado. O `McpServerConfig`
+                    // do registro (`crate::mcp`) não carrega `inherit_env` —
+                    // a válvula existe só no `config.yml`/`mcp.json` —, então
+                    // não há como honrá-la aqui nem como avisar que ela está
+                    // sendo ignorada: a informação não chega a este handler.
+                    //
+                    // Consequência real, documentada em
+                    // `docs/security/threat-model.md` §5.12: um servidor que
+                    // subiu do `config.yml` com `inherit_env: true` volta SEM
+                    // a herança depois de um restart pela admin API. Fail-safe
+                    // na direção certa (isola mais, nunca menos), mas é uma
+                    // divergência silenciosa entre os dois caminhos.
+                    false,
                 )
                 .await
         }

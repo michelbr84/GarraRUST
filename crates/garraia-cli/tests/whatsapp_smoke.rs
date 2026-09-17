@@ -176,7 +176,8 @@ fn status_finds_and_opens_a_live_session_written_where_from_env_resolves() {
     let dir = tempdir().expect("tempdir");
     // `resolved_data_dir()` de uma config default: `<config_dir>/data`. Se a
     // CLI resolver outra coisa, ela nao acha o que gravamos aqui.
-    let store = SessionStore::for_data_dir(&dir.path().join("data"), DEFAULT_ACCOUNT);
+    let store = SessionStore::for_data_dir(&dir.path().join("data"), DEFAULT_ACCOUNT)
+        .expect("DEFAULT_ACCOUNT e uma conta valida");
     let key = SessionKey::resolve(store.dir(), None).expect("chave");
     store
         .save(&SessionBlob::new("eyJhIjoxfQ=="), &key)

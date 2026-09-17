@@ -21,7 +21,7 @@ use garraia_channels::whatsapp_linked::runner::{
     InboundSink, PairOptions, PairUi, RunError, SilentUi, pair, pair_with, serve,
 };
 use garraia_channels::whatsapp_linked::{
-    BridgeCommand, InboundMessage, Jid, SessionKey, SessionStore,
+    BridgeCommand, InboundMessage, Jid, SessionKey, SessionStore, backoff_ms,
 };
 use tokio::process::Command;
 use tokio::sync::watch;
@@ -109,7 +109,7 @@ impl PairUi for RecordingUi {
 }
 
 fn store_in(dir: &tempfile::TempDir) -> (SessionStore, SessionKey) {
-    let store = SessionStore::for_data_dir(dir.path(), "default");
+    let store = SessionStore::for_data_dir(dir.path(), "default").expect("conta valida");
     let key = SessionKey::resolve(store.dir(), Some("passphrase-de-teste")).expect("chave");
     (store, key)
 }
@@ -313,7 +313,81 @@ async fn a_logged_out_account_purges_the_session_and_reports_it() {
         !store.exists(),
         "uma conta deslogada nao pode deixar o blob para tras"
     );
+    // Nota: com passphrase o `session.key` nunca chega a existir, entao a
+    // assercao sobre ele e vacua nesta fixture. O que prova a limpeza aqui e
+    // o SALT: ele existia e tem de sumir junto, porque nao ha arquivado a
+    // proteger.
     assert!(!store.key_path().exists(), "a chave tambem some");
+    assert!(
+        !store.salt_path().exists(),
+        "e o salt vai junto quando nao ha nada arquivado a preservar"
+    );
+}
+
+/// A sequencia que o `purge` do `pair` destruia em silencio: o usuario aceita
+/// re-vincular, o `link` ARQUIVA a sessao boa, o pareamento novo e recusado
+/// pela Meta (401) — e o arquivado tem de continuar la, com a chave e o salt,
+/// para o guard do chamador poder devolve-lo.
+///
+/// Antes: `purge()` triturava blob, `.prev`, `session.key` e `session.salt`,
+/// entao o `Drop` do guard nao achava nada para restaurar e caia no braco
+/// `Ok(false)`, que era silencioso. O usuario perdia o vinculo anterior e so
+/// lia "esta sessao nao vale mais".
+#[tokio::test]
+async fn a_relink_refused_by_the_server_never_destroys_the_archived_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    pair(
+        &FixtureLauncher::new("pair-ok", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect("pareamento inicial");
+    let anterior = store.load(&key).expect("a sessao boa abre");
+
+    // Exatamente o que o `ArchiveGuard` do `link` faz ao aceitar o re-vinculo.
+    assert!(store.archive().expect("archive"));
+
+    let err = pair(
+        &FixtureLauncher::new("logged-out", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect_err("a Meta recusou o vinculo novo");
+    assert!(
+        matches!(err, RunError::SessionDead { .. }),
+        "o desfecho continua sendo sessao morta: {err:?}"
+    );
+
+    assert!(
+        store.archive_path().is_file(),
+        "o arquivado e a sessao do USUARIO, nao material deste pareamento"
+    );
+    // `store_in` deriva a chave de uma passphrase, entao o que precisa
+    // sobreviver aqui e o SALT: sem ele a derivacao muda e o arquivado deixa
+    // de abrir. No modo sem passphrase quem sobrevive e o `session.key`, e
+    // esse caso esta pinado em `session.rs`
+    // (`a_dead_session_never_takes_the_archived_one_nor_its_key`).
+    assert!(
+        store.salt_path().exists(),
+        "sem o salt o arquivado nao recupera nada — .prev, key e salt vivem ou morrem juntos"
+    );
+    assert!(
+        store.restore_archive().expect("restore"),
+        "e o guard consegue devolve-lo"
+    );
+    assert_eq!(
+        store.load(&key).expect("a sessao restaurada abre").expose(),
+        anterior.expose(),
+        "e o que volta e a MESMA sessao"
+    );
 }
 
 #[tokio::test]
@@ -628,26 +702,35 @@ async fn serve_reconnects_after_a_network_flap() {
     // `network-flap` em modo serve conecta, cai, reconecta dentro da propria
     // execucao e entao SAI 0 — a ponte morre. Cada execucao produz dois
     // `on_connection(true)`, e so uma reconexao do DRIVER produz o terceiro.
-    // Com jitter 0 o primeiro degrau e 500 ms, e cada execucao da fixture leva
-    // ~0,6 s, entao 3 s cobrem duas voltas com folga.
-    let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher::new(
-        "network-flap",
-        dir.path().to_path_buf(),
-    ));
+    // Com jitter 0 o primeiro degrau e 500 ms, e a execucao da fixture com o
+    // QR curto abaixo leva ~0,15 s, entao 3 s cobrem varias voltas com folga.
+    //
+    // O QR da fixture expira rapido de proposito: a asserção de tempo la
+    // embaixo so distingue "esperou o backoff" de "reconectou em busy-loop"
+    // enquanto UMA execucao da fixture custar bem menos que o backoff. Com o
+    // default de 0,5 s a execucao sozinha ja passava dos 500 ms do primeiro
+    // degrau, e a asserção passaria verde com o `sleep` arrancado.
+    let launcher: Arc<dyn BridgeLauncher> =
+        Arc::new(FixtureLauncher::new("network-flap", dir.path().to_path_buf()).qr_expires(0.02));
 
     // O `serve` nao usa a maquina de estados: o backoff entre tentativas e
-    // dele, e este contador e o que morre se alguem o arrancar. Sem ele o
-    // teste continuaria verde com o loop reconectando em busy-loop.
-    let jitter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // dele. Marca-se o INSTANTE de cada chamada de `jitter`, e nao o numero
+    // delas: contar prova que o atraso foi calculado, nao que alguem esperou —
+    // com o `tokio::select!{ sleep(delay) }` arrancado, o contador continuava
+    // subindo e o teste continuava verde em cima de um busy-loop de
+    // reconexao.
+    let jitter_marks: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
 
     let (_out_tx, out_rx) = tokio::sync::mpsc::channel(1);
     let task = {
         let sink = Arc::clone(&sink);
         let store = store.clone();
-        let jitter_calls = Arc::clone(&jitter_calls);
+        let jitter_marks = Arc::clone(&jitter_marks);
         tokio::spawn(async move {
             serve(launcher, store, key, sink, out_rx, rx, move || {
-                jitter_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(mut marks) = jitter_marks.lock() {
+                    marks.push(std::time::Instant::now());
+                }
                 0.0
             })
             .await
@@ -670,10 +753,19 @@ async fn serve_reconnects_after_a_network_flap() {
         "duas conexoes saem de uma execucao so da fixture; a terceira e a \
 primeira que exige o driver ter relancado a ponte (viu {connects})"
     );
+    let marks = jitter_marks.lock().expect("lock").clone();
     assert!(
-        jitter_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
-        "cada reconexao tem de passar pelo backoff com jitter injetado; \
-zero chamadas significa que o `serve` voltou a reconectar em busy-loop"
+        marks.len() >= 2,
+        "sao precisas duas reconexoes para medir um intervalo; vieram {}",
+        marks.len()
+    );
+    let esperado = std::time::Duration::from_millis(backoff_ms(1, 0.0));
+    let medido = marks[1].duration_since(marks[0]);
+    assert!(
+        medido >= esperado,
+        "entre duas reconexoes passaram {medido:?}, menos que o primeiro \
+degrau do backoff ({esperado:?}): o `serve` calculou o atraso e nao esperou \
+por ele — isto e o busy-loop de reconexao"
     );
 }
 

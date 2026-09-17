@@ -90,11 +90,17 @@ e sai 69. O teto e do GarraIA, nao da ponte: a ponte reconectaria para sempre.
 `<data_dir>` e o `data_dir` da config, ou `~/.config/garraia/data` por padrao.
 
 **`session.enc.prev` tambem e uma credencial viva.** Ele nasce quando voce
-responde "sim" ao re-vincular e sobrevive a qualquer pareamento que nao termine
-(QR expirado, `Ctrl+C`, Node ausente). Por isso `garra whatsapp status` o
-reporta mesmo quando nao ha sessao ativa, e `garra whatsapp logout` o apaga —
-sem isso, os dois comandos afirmariam que nao ha nada enquanto a credencial
-estivesse no disco.
+responde "sim" ao re-vincular. Por isso `garra whatsapp status` o reporta mesmo
+quando nao ha sessao ativa, e `garra whatsapp logout` o apaga — sem isso, os
+dois comandos afirmariam que nao ha nada enquanto a credencial estivesse no
+disco.
+
+**Um re-vinculo que nao termina devolve a sessao antiga.** QR expirado,
+`Ctrl+C` na tela do QR, ponte que morre antes de conectar: em qualquer desfecho
+sem sessao nova em disco, o `session.enc.prev` volta a ser `session.enc` e o
+comando diz isso na ultima linha (`A sessao anterior foi restaurada`). Voce nao
+fica sem WhatsApp por ter desistido no meio. O arquivado so e descartado — com
+sobrescrita — quando o vinculo novo conclui de verdade.
 
 **O blob de sessao e a conta.** Quem o tem fala como voce, le seu historico e
 nao precisa do seu telefone. Trate-o como senha.

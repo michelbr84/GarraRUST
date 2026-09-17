@@ -16,7 +16,13 @@
   secundario. **Nada destrutivo acontece antes dessa ultima confirmacao**: quem
   pede para re-vincular so tem a sessao atual posta de lado depois de aceitar o
   consentimento e de o Node ser encontrado, entao recusar, dar Ctrl+C ou nao
-  ter Node deixa o vinculo que funcionava exatamente como estava. E `garra
+  ter Node deixa o vinculo que funcionava exatamente como estava. **E depois
+  dela tambem nao**: um re-vinculo que nao chega a gravar sessao nova — QR
+  expirado, Ctrl+C na tela do QR, ponte que morre antes de conectar, ou o
+  proprio WhatsApp recusando o vinculo novo (401/403/419) — restaura a sessao
+  anterior e avisa que restaurou. A antiga so e descartada quando a nova
+  existe em disco, e se por algum motivo a restauracao nao acontecer o comando
+  diz isso em vez de calar. E `garra
   whatsapp cloud` rodado so para trocar um token preserva as demais chaves que
   o operador ja tinha em `channels.whatsapp`. Vincular precisa de Node.js 20 ou
   mais novo — so este caminho precisa; a Cloud API nao.

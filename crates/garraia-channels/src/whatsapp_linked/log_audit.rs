@@ -32,56 +32,180 @@
 //! porque e a crate que possui o segredo; o gateway depende dela.
 //!
 //! `#[doc(hidden)]` no reexport: e superficie de teste, nao API do canal.
+//!
+//! # O que e ciente de literal, e por que isso nao e detalhe
+//!
+//! Tres passos deste modulo tem de saber onde comeca e termina um literal de
+//! string, e e sempre [`fim_de_literal`] quem responde — **um** parser, nao
+//! tres:
+//!
+//! 1. a contagem de delimitadores em [`chamadas_de_log`], para que o `)` de
+//!    `"foo (bar)"` nao feche a macro no lugar errado;
+//! 2. a separacao de [`parte_arriscada`], que so conta como prosa o que de
+//!    fato esta dentro das aspas;
+//! 3. o corte de comentario em [`codigo_sem_comentario_nem_teste`], que nao
+//!    pode transformar `"https://exemplo"` no comeco de um comentario.
+//!
+//! String crua (`r"…"`, `r#"…"#`) entra aqui de proposito: dentro dela `\"`
+//! **nao** escapa nada, e um parser que achasse que escapa continuaria lendo
+//! como literal um trecho que ja e codigo — engolindo, junto, o log seguinte.
 
-/// Cada invocacao de macro de log do fonte, inteira, atravessando linhas.
+/// Fim de um literal de string que comeca em `at` (o proprio `"`), incluindo o
+/// `"` que fecha. Trata escape (`\"`) e string crua (`r"…"`, `r#"…"#`).
 ///
-/// Ignora linha de comentario e o corpo de `#[cfg(test)]` — nos dois os termos
-/// aparecem como prosa ou como fixture, e nao como valor logado.
+/// O prefixo e descoberto por lookbehind: conta os `#` imediatamente antes da
+/// aspa e exige um `r` antes deles. `bytes` tem de ser o fonte inteiro, e nao
+/// uma fatia que ja comece na aspa, senao o prefixo nao esta la para ser visto.
+fn fim_de_literal(bytes: &[u8], at: usize) -> usize {
+    let mut cerquilhas = 0usize;
+    while at > cerquilhas && bytes[at - 1 - cerquilhas] == b'#' {
+        cerquilhas += 1;
+    }
+    let crua = at > cerquilhas && bytes[at - 1 - cerquilhas] == b'r';
+
+    let mut i = at + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if !crua => i += 2,
+            b'"' => {
+                if !crua {
+                    return i + 1;
+                }
+                // Crua: fecha na aspa seguida do mesmo numero de `#`.
+                let fechando = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
+                if fechando >= cerquilhas {
+                    return i + 1 + cerquilhas;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// O proximo limite de caractere depois de `i`, para copiar um caractere
+/// multi-byte sem cortar no meio.
+fn fim_do_caractere(texto: &str, i: usize) -> usize {
+    (i + 1..=texto.len())
+        .find(|e| texto.is_char_boundary(*e))
+        .unwrap_or(texto.len())
+}
+
+const MACROS: &[&str] = &["info!", "warn!", "error!", "debug!", "trace!"];
+
+/// Cada invocacao de macro de log do fonte, inteira, atravessando linhas, com
+/// o numero da linha em que ela **comeca**.
 ///
-/// A contagem de parenteses e **ciente de literal**: um `)` dentro de
+/// Ignora comentario (de linha inteira e de fim de linha) e o corpo de
+/// `#[cfg(test)]` — nos dois os termos aparecem como prosa ou como fixture, e
+/// nao como valor logado.
+///
+/// A contagem de delimitadores e **ciente de literal**: um `)` dentro de
 /// `"foo (bar)"` nao fecha a macro.
-pub fn chamadas_de_log(fonte: &str) -> Vec<String> {
-    const MACROS: &[&str] = &["info!(", "warn!(", "error!(", "debug!(", "trace!("];
-
+///
+/// # Macro sem delimitador
+///
+/// `info!` seguido de qualquer coisa que nao seja `(`, `[` ou `{` nao e a
+/// forma que este parser conhece. Em vez de seguir adiante — que e dizer
+/// "verde" sobre codigo que nao foi lido — ele devolve a linha crua, e quem
+/// chama decide. Fail-closed: uma forma nova de escrever log aparece como
+/// achado, nao como silencio.
+pub fn chamadas_de_log(fonte: &str) -> Vec<(usize, String)> {
     let codigo = codigo_sem_comentario_nem_teste(fonte);
-    let chars: Vec<char> = codigo.chars().collect();
+    let bytes = codigo.as_bytes();
     let mut saida = Vec::new();
+    let mut linha = 1usize;
     let mut i = 0usize;
 
-    while i < chars.len() {
-        let janela: String = chars[i..].iter().take(7).collect();
-        let Some(macro_) = MACROS.iter().find(|m| janela.starts_with(**m)) else {
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                linha += 1;
+                i += 1;
+                continue;
+            }
+            b'"' => {
+                let fim = fim_de_literal(bytes, i);
+                linha += bytes[i..fim].iter().filter(|b| **b == b'\n').count();
+                i = fim;
+                continue;
+            }
+            _ => {}
+        }
+
+        // O nome da macro tem de comecar aqui: `ainfo!` nao e `info!`.
+        let encontrada = MACROS.iter().find(|m| {
+            bytes[i..].starts_with(m.as_bytes())
+                && !matches!(
+                    bytes.get(i.wrapping_sub(1)),
+                    Some(b) if b.is_ascii_alphanumeric() || *b == b'_'
+                )
+        });
+        let Some(macro_) = encontrada else {
             i += 1;
             continue;
         };
+
+        let inicio = linha;
         let mut j = i + macro_.len();
-        let mut nivel = 1usize;
-        let mut em_literal = false;
-        let mut escapado = false;
-        while j < chars.len() && nivel > 0 {
-            let c = chars[j];
-            if em_literal {
-                if escapado {
-                    escapado = false;
-                } else if c == '\\' {
-                    escapado = true;
-                } else if c == '"' {
-                    em_literal = false;
-                }
-            } else {
-                match c {
-                    '"' => em_literal = true,
-                    '(' => nivel += 1,
-                    ')' => nivel -= 1,
-                    _ => {}
-                }
+        while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+            if bytes[j] == b'\n' {
+                linha += 1;
             }
             j += 1;
         }
-        saida.push(chars[i..j].iter().collect::<String>());
-        i = j;
+        if !matches!(bytes.get(j), Some(b'(' | b'[' | b'{')) {
+            let resto = codigo[i..].lines().next().unwrap_or("");
+            saida.push((inicio, normaliza(resto)));
+            i += macro_.len();
+            continue;
+        }
+
+        let mut nivel = 0i32;
+        let mut texto = String::from(*macro_);
+        let mut k = j;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'\n' => {
+                    linha += 1;
+                    texto.push(' ');
+                    k += 1;
+                }
+                b'"' => {
+                    let fim = fim_de_literal(bytes, k);
+                    linha += bytes[k..fim].iter().filter(|b| **b == b'\n').count();
+                    texto.push_str(&codigo[k..fim]);
+                    k = fim;
+                }
+                b'(' | b'[' | b'{' => {
+                    nivel += 1;
+                    texto.push(bytes[k] as char);
+                    k += 1;
+                }
+                b')' | b']' | b'}' => {
+                    nivel -= 1;
+                    texto.push(bytes[k] as char);
+                    k += 1;
+                    if nivel == 0 {
+                        break;
+                    }
+                }
+                _ => {
+                    let fim = fim_do_caractere(&codigo, k);
+                    texto.push_str(&codigo[k..fim]);
+                    k = fim;
+                }
+            }
+        }
+        saida.push((inicio, normaliza(&texto)));
+        i = k;
     }
     saida
+}
+
+fn normaliza(texto: &str) -> String {
+    texto.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// O que de uma chamada de log pode carregar valor: o codigo **fora** dos
@@ -91,34 +215,25 @@ pub fn chamadas_de_log(fonte: &str) -> Vec<String> {
 /// nao um telefone. Mas `"...{texto}"` conta, e e a forma mais facil de vazar
 /// sem perceber.
 pub fn parte_arriscada(chamada: &str) -> String {
+    let bytes = chamada.as_bytes();
     let mut fora = String::new();
     let mut capturas = String::new();
-    let mut dentro = false;
-    let mut escapado = false;
-    let mut literal = String::new();
+    let mut i = 0usize;
 
-    for c in chamada.chars() {
-        if dentro {
-            if escapado {
-                escapado = false;
-            } else if c == '\\' {
-                escapado = true;
-            } else if c == '"' {
-                dentro = false;
-                for trecho in literal.split('{').skip(1) {
-                    if let Some((nome, _)) = trecho.split_once('}') {
-                        capturas.push_str(nome);
-                        capturas.push(' ');
-                    }
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let fim = fim_de_literal(bytes, i);
+            for trecho in chamada[i..fim].split('{').skip(1) {
+                if let Some((nome, _)) = trecho.split_once('}') {
+                    capturas.push_str(nome);
+                    capturas.push(' ');
                 }
-                literal.clear();
-                continue;
             }
-            literal.push(c);
-        } else if c == '"' {
-            dentro = true;
+            i = fim;
         } else {
-            fora.push(c);
+            let fim = fim_do_caractere(chamada, i);
+            fora.push_str(&chamada[i..fim]);
+            i = fim;
         }
     }
     format!("{fora} {capturas}")
@@ -136,9 +251,31 @@ pub fn parte_arriscada(chamada: &str) -> String {
 /// justamente a forma que se pode logar — e sem esta lista o teste condenaria o
 /// proprio remedio que ele existe para exigir.
 ///
+/// # O antidoto e a chamada EXTERNA, e nao uma substring
+///
+/// A primeira versao perguntava `rhs.contains(antidoto)`, e isso desarmava a
+/// varredura sem redigir nada: em
+///
+/// ```ignore
+/// let vazamento = format!("{} {}", msg.sender_jid.as_str(), msg.sender_jid.last4());
+/// ```
+///
+/// o `.last4()` aparece, o `contains` acha, e o JID inteiro — que esta no mesmo
+/// RHS — segue para o log com a varredura verde. Quem calou o teste foi a
+/// mencao ao remedio, nao o remedio.
+///
+/// Agora o antidoto precisa **terminar** o RHS (ignorando `;`, `?` e espaco ao
+/// final), que e o unico caso em que ele de fato descreve o valor inteiro do
+/// binding. `let last4 = msg.sender_jid.last4();` continua verde; o `format!`
+/// misto volta a ser vermelho.
+///
+/// A direcao do erro que sobra e a segura: `let x = jid.last4().to_string();`
+/// e condenado embora seja honesto. Falso positivo custa uma linha de
+/// `#[allow]` conversada numa revisao; falso negativo custa um JID em disco.
+///
 /// Heuristica de linha, de proposito: `let <nome> = <rhs>` com `<rhs>` tocando
-/// um gatilho e nenhum antidoto. Nao e analise de fluxo — e um portao que custa
-/// nada e fecha a forma que de fato aparece em codigo.
+/// um gatilho e terminando fora de um antidoto. Nao e analise de fluxo — e um
+/// portao que custa nada e fecha a forma que de fato aparece em codigo.
 pub fn bindings_contaminados(fonte: &str, gatilhos: &[&str], antidotos: &[&str]) -> Vec<String> {
     let mut nomes = Vec::new();
     for linha in codigo_sem_comentario_nem_teste(fonte).lines() {
@@ -153,7 +290,8 @@ pub fn bindings_contaminados(fonte: &str, gatilhos: &[&str], antidotos: &[&str])
         if !gatilhos.iter().any(|g| rhs.contains(g)) {
             continue;
         }
-        if antidotos.iter().any(|a| rhs.contains(a)) {
+        let terminal = rhs.trim().trim_end_matches([';', '?']).trim();
+        if antidotos.iter().any(|a| terminal.ends_with(a)) {
             continue;
         }
         // `let x: T = ...` e `let Some(x) = ...`: fica so o identificador.
@@ -175,9 +313,19 @@ pub fn bindings_contaminados(fonte: &str, gatilhos: &[&str], antidotos: &[&str])
     nomes
 }
 
-/// O fonte sem linha de comentario e sem corpo de `#[cfg(test)]`.
+/// O fonte sem comentario e sem corpo de `#[cfg(test)]`, **preservando a
+/// numeracao das linhas** — cada linha apagada vira uma linha vazia.
+///
+/// A numeracao so aparece em mensagem de erro, mas e ela que decide se o
+/// achado custa cinco segundos ou cinco minutos de quem for conferir.
 fn codigo_sem_comentario_nem_teste(fonte: &str) -> String {
-    let mut saida = Vec::new();
+    sem_comentario(&sem_bloco_de_teste(fonte))
+}
+
+/// O fonte com os blocos `#[cfg(test)]` apagados, linha a linha e preservando
+/// a contagem.
+fn sem_bloco_de_teste(fonte: &str) -> String {
+    let mut saida = String::with_capacity(fonte.len());
     let mut em_teste = false;
     let mut profundidade = 0i32;
 
@@ -186,7 +334,6 @@ fn codigo_sem_comentario_nem_teste(fonte: &str) -> String {
         if linha.starts_with("#[cfg(test)]") {
             em_teste = true;
             profundidade = 0;
-            continue;
         }
         if em_teste {
             profundidade += linha.matches('{').count() as i32;
@@ -194,26 +341,64 @@ fn codigo_sem_comentario_nem_teste(fonte: &str) -> String {
             if profundidade <= 0 && linha.contains('}') {
                 em_teste = false;
             }
+            saida.push('\n');
             continue;
         }
-        if linha.starts_with("//") {
-            continue;
-        }
-        saida.push(raw);
+        saida.push_str(raw);
+        saida.push('\n');
     }
-    saida.join("\n")
+    saida
+}
+
+/// O fonte sem comentario `//` — **inclusive o de fim de linha** — e sem tocar
+/// num `//` que esteja dentro de um literal de string.
+///
+/// Cortar so a linha que **comeca** com `//` deixava um buraco barato: em
+/// `let cru = msg.sender_jid.as_str(); // prefira .last4()` o comentario
+/// entrava no RHS e valia como antidoto. Cortar sem saber onde estao as aspas
+/// abriria o buraco simetrico, transformando `"https://exemplo"` em comeco de
+/// comentario e engolindo o resto da linha.
+fn sem_comentario(fonte: &str) -> String {
+    let bytes = fonte.as_bytes();
+    let mut saida = String::with_capacity(fonte.len());
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let fim = fim_de_literal(bytes, i);
+                saida.push_str(&fonte[i..fim]);
+                i = fim;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            _ => {
+                let fim = fim_do_caractere(fonte, i);
+                saida.push_str(&fonte[i..fim]);
+                i = fim;
+            }
+        }
+    }
+    saida
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn textos(fonte: &str) -> Vec<String> {
+        chamadas_de_log(fonte).into_iter().map(|(_, c)| c).collect()
+    }
+
     /// A mutacao que a varredura antiga, linha a linha, deixava passar.
     #[test]
     fn macro_multilinha_e_capturada_inteira() {
         let fonte =
             "fn f() {\n    tracing::info!(\n        %blob,\n        \"sessao\"\n    );\n}\n";
-        let chamadas = chamadas_de_log(fonte);
+        let chamadas = textos(fonte);
         assert_eq!(chamadas.len(), 1, "{chamadas:?}");
         assert!(
             parte_arriscada(&chamadas[0]).contains("blob"),
@@ -225,7 +410,7 @@ mod tests {
     #[test]
     fn parentese_em_literal_nao_fecha_a_chamada() {
         let fonte = "fn f() {\n    info!(\"abriu (e fechou)\", campo = %blob);\n}\n";
-        let chamadas = chamadas_de_log(fonte);
+        let chamadas = textos(fonte);
         assert_eq!(chamadas.len(), 1);
         assert!(parte_arriscada(&chamadas[0]).contains("blob"));
     }
@@ -262,6 +447,92 @@ mod tests {
             vec!["last4".to_string()],
             "premissa: sem o antidoto ele seria condenado"
         );
+    }
+
+    /// O antidoto tem de ser a chamada **externa**, e nao uma mencao em
+    /// qualquer posicao do RHS.
+    ///
+    /// A forma vermelha aqui e a que passava verde antes: o mesmo `format!`
+    /// carrega o JID cru *e* o `last4()`, e o `contains` bastava para desarmar
+    /// a varredura. A forma verde e o remedio que a lista de antidotos existe
+    /// para nao condenar — as duas no mesmo teste porque trocar o furo por um
+    /// falso positivo nao seria conserto.
+    #[test]
+    fn antidoto_no_meio_do_rhs_nao_desarma_a_varredura() {
+        let misto = "fn f() {\n    let vazamento = format!(\"{} {}\", msg.sender_jid.as_str(), msg.sender_jid.last4());\n    warn!(\"{vazamento}\");\n}\n";
+        assert_eq!(
+            bindings_contaminados(misto, &["sender_jid"], &[".last4()"]),
+            vec!["vazamento".to_string()],
+            "o RHS carrega o JID inteiro: mencionar `.last4()` nao pode absolver"
+        );
+
+        let remedio = "fn f() {\n    let last4 = jid.last4();\n}\n";
+        assert_eq!(
+            bindings_contaminados(remedio, &["jid"], &[".last4()"]),
+            Vec::<String>::new(),
+            "e o remedio continua verde"
+        );
+    }
+
+    /// Comentario de **fim de linha** tambem nao e RHS.
+    ///
+    /// Variante ainda mais barata do furo anterior: sem cortar o comentario,
+    /// `// prefira .last4()` entrava no RHS e valia como antidoto.
+    #[test]
+    fn comentario_de_fim_de_linha_nao_vale_como_antidoto() {
+        let fonte = "fn f() {\n    let cru = msg.sender_jid.as_str(); // prefira .last4()\n}\n";
+        assert_eq!(
+            bindings_contaminados(fonte, &["sender_jid"], &[".last4()"]),
+            vec!["cru".to_string()]
+        );
+    }
+
+    /// E cortar comentario nao pode comer um `//` que mora dentro de aspas.
+    #[test]
+    fn barra_dupla_dentro_de_literal_nao_e_comentario() {
+        let fonte = "fn f() {\n    info!(\"https://exemplo\", campo = %blob);\n}\n";
+        let chamadas = textos(fonte);
+        assert_eq!(chamadas.len(), 1, "{chamadas:?}");
+        assert!(parte_arriscada(&chamadas[0]).contains("blob"));
+    }
+
+    /// String crua: dentro dela `\` nao escapa nada.
+    ///
+    /// A fixture termina o conteudo em `\`, que e onde a diferenca aparece: um
+    /// parser que achasse que `\"` escapa pularia a aspa que **fecha** o
+    /// literal e seguiria lendo o resto do arquivo como texto — engolindo, com
+    /// ele, o `warn!` que carrega o segredo. Por isso o teste afirma as duas
+    /// coisas: que sao duas chamadas, e que a segunda foi examinada.
+    #[test]
+    fn string_crua_termina_onde_deve() {
+        let fonte = "fn f() {\n    info!(r#\"caminho C:\\\"#);\n    warn!(campo = %blob);\n}\n";
+        let chamadas = textos(fonte);
+        assert_eq!(
+            chamadas.len(),
+            2,
+            "a string crua tem de fechar em `\"#`: {chamadas:?}"
+        );
+        assert!(parte_arriscada(&chamadas[1]).contains("blob"));
+    }
+
+    /// Macro sem delimitador conhecido: reporta a linha crua em vez de dizer
+    /// "verde" sobre codigo que nao foi lido.
+    #[test]
+    fn macro_sem_delimitador_reporta_a_linha_crua() {
+        let fonte = "fn f() {\n    let m = info!;\n}\n";
+        let chamadas = chamadas_de_log(fonte);
+        assert_eq!(chamadas.len(), 1, "{chamadas:?}");
+        assert!(chamadas[0].1.contains("info!"), "{chamadas:?}");
+    }
+
+    /// A numeracao sobrevive ao apagamento do bloco de teste — o achado tem de
+    /// apontar para a linha que existe no arquivo de verdade.
+    #[test]
+    fn a_linha_reportada_e_a_do_arquivo_original() {
+        let fonte = "#[cfg(test)]\nmod t {\n    fn g() {}\n}\nfn f() {\n    info!(%blob);\n}\n";
+        let chamadas = chamadas_de_log(fonte);
+        assert_eq!(chamadas.len(), 1, "{chamadas:?}");
+        assert_eq!(chamadas[0].0, 6, "a macro esta na linha 6 do fonte");
     }
 
     /// Bloco de teste nao conta: la o segredo e fixture, nao vazamento.
