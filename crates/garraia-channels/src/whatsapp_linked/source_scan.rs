@@ -15,12 +15,33 @@
 //!
 //! # O que estas varreduras NAO alcancam
 //!
-//! `SessionBlob` e `#[serde(transparent)]` no `Serialize`. Um
-//! `serde_json::to_string(&blob)` futuro carrega o valor **cru** sem a palavra
-//! `expose` aparecer em lugar nenhum do fonte — e o unico caminho que nem a
-//! allowlist de [`EXPOSE_ALLOWED`] nem a varredura de macro veem. Fecha-lo e
-//! trabalho de tipo (`Serialize` manual, ou um wrapper), nao de texto; ver
-//! `the_transparent_serialize_is_a_known_and_documented_hole`.
+//! A familia inteira e **qualquer conversao de tipo que produza um `&str`**
+//! sem a palavra `expose` aparecer no fonte. A serializacao transparente e UM
+//! caso dela, e nao o unico — a nota anterior dizia que era, e a auditoria da
+//! rodada 8 desmentiu com dois contraexemplos plantados e medidos:
+//!
+//! 1. **`#[serde(transparent)]`.** Um `serde_json::to_string(&blob)` futuro
+//!    carrega o valor cru. Fecha-lo e trabalho de tipo (`Serialize` manual, ou
+//!    um wrapper), nao de texto; ver
+//!    `the_transparent_serialize_is_a_known_and_documented_hole`.
+//! 2. **`impl Deref<Target = str>`** (ou `AsRef<str>`, `Borrow<str>`,
+//!    `From<SessionBlob> for String`). Com um `Deref`, `let cru: &str = b;`
+//!    seguido de `tracing::info!(valor = %cru, …)` nao tem `expose` nem um
+//!    nome que o [`FORBIDDEN`] reconheca. **Medido: 107/107 verdes.**
+//! 3. **O campo cru com renome**, dentro do proprio `session.rs`:
+//!    `let cru = &self.0;` e depois `%cru`. **Medido: 107/107 verdes** — o
+//!    `.0` do [`FORBIDDEN`] so e consultado DENTRO do bloco da macro, entao o
+//!    controle `%self.0` direto ficava vermelho e o renomeado passava.
+//!
+//! Os casos 2 e 3 estao fechados desde a rodada 8, cada um pela guarda que
+//! cabia: [`session_blob_gains_no_new_str_conversion`] le a DECLARACAO dos
+//! `impl` (o caso 2 nao e um call site, e um tipo), e
+//! [`RAW_FIELD_ALLOWED`] faz com o campo cru o que [`EXPOSE_ALLOWED`] ja fazia
+//! com o metodo (o caso 3). O caso 1 segue aberto, de proposito e por escrito.
+//!
+//! Nenhum dos tres era vazamento vivo: todos exigem codigo novo escrito e
+//! revisado. O que a nota anterior fazia de errado era prometer completude
+//! fora da serializacao, e e a nota que engana quem mexer aqui depois.
 //!
 //! Desde a rodada 5, `SessionBlob::expose()` e `pub(crate)`: o rustc impede de
 //! graca que a crate vizinha chame, e estas varreduras cobrem o que sobra —
@@ -99,6 +120,40 @@ const EXPOSE_ALLOWED: &[(&str, &str)] = &[
         "session.rs",
         "let mut in_out = blob.expose().as_bytes().to_vec();",
     ),
+];
+
+/// **Os unicos usos do campo cru de `SessionBlob` que existem.**
+///
+/// # Por que existe, alem de [`EXPOSE_ALLOWED`]
+///
+/// `expose()` e o caminho com NOME; o campo `.0` e o mesmo `&str` sem nome
+/// nenhum. Dentro de `session.rs` — e so la, porque o campo e privado e o
+/// rustc para o resto da crate — `let cru = &self.0;` seguido de
+/// `tracing::info!(valor = %cru, …)` nao tem `expose`, e o `.0` do
+/// [`FORBIDDEN`] so e consultado DENTRO do bloco da macro, onde ele ja nao
+/// aparece. Medido pela auditoria da rodada 8: **107/107 verdes**, enquanto o
+/// controle `%self.0` direto ficava vermelho. Mesma assimetria que motivou a
+/// regra invertida do `expose`, um nivel abaixo.
+///
+/// # Igualdade, e nao `contains`
+///
+/// A comparacao e sobre a linha normalizada INTEIRA, ao contrario de
+/// [`EXPOSE_ALLOWED`]. Com `contains`, a entrada `&self.0` isentaria
+/// `let cru = &self.0;` — que e exatamente o contraexemplo medido. Uma
+/// allowlist que isenta o caso que ela existe para pegar nao e allowlist.
+///
+/// O preco e um falso positivo conhecido: um literal de ponto flutuante
+/// (`1.0`) ou um `.0` de outra tupla em `session.rs` fica vermelho ate ser
+/// declarado aqui. Hoje sao quatro linhas no arquivo inteiro, e o CI avisa.
+const RAW_FIELD_ALLOWED: &[&str] = &[
+    // O corpo de `expose()`. A linha da declaracao esta em EXPOSE_ALLOWED; o
+    // corpo dela e este `&self.0`, e ele precisa existir.
+    "&self.0",
+    // As duas consultas de tamanho: nao produzem `&str` nenhum.
+    "self.0.is_empty()",
+    "self.0.len()",
+    // O `Drop` que zera o segredo. Tirar esta linha seria pior que loga-la.
+    "self.0.zeroize();",
 ];
 
 /// Padroes que significam "o valor da sessao foi para o log": o `expose()`
@@ -755,6 +810,203 @@ fn every_allowed_expose_call_site_still_exists() {
 producao — allowlist morta nao guarda nada"
         );
     }
+}
+
+/// Usos do campo cru de `SessionBlob` que [`RAW_FIELD_ALLOWED`] nao declara.
+///
+/// So `session.rs` e examinado, e nao por economia: o campo e privado, entao
+/// o rustc ja impede que qualquer outro arquivo o alcance. Mesma divisao de
+/// trabalho do `pub(crate) fn expose`.
+///
+/// Funcao separada do `#[test]` pelo mesmo motivo de
+/// [`exposes_outside_the_allowlist`]: numa arvore limpa nao ha violacao, entao
+/// o caso negativo precisa entrar como TEXTO para distinguir regra viva de
+/// regra ausente.
+fn raw_field_uses_outside_the_allowlist(name: &str, source: &str) -> Vec<String> {
+    if name != "session.rs" {
+        return Vec::new();
+    }
+    let code = without_comments(&production_source(source));
+    let mut out = Vec::new();
+    for (i, raw) in code.lines().enumerate() {
+        let line = normalize(raw);
+        if !line.contains(".0") {
+            continue;
+        }
+        if RAW_FIELD_ALLOWED.contains(&line.as_str()) {
+            continue;
+        }
+        out.push(format!("{name}:{}: {line}", i + 1));
+    }
+    out
+}
+
+/// **O campo cru de `SessionBlob` so pode ser tocado onde a allowlist diz.**
+///
+/// O irmao de [`expose_is_only_called_where_the_allowlist_says`], um nivel
+/// abaixo: `expose()` e o `&str` com nome, `.0` e o mesmo `&str` sem nome.
+#[test]
+fn the_raw_field_is_only_touched_where_the_allowlist_says() {
+    let mut offenders = Vec::new();
+    for (name, source) in SOURCES {
+        offenders.extend(raw_field_uses_outside_the_allowlist(name, source));
+    }
+    assert!(
+        offenders.is_empty(),
+        "campo cru de `SessionBlob` fora da allowlist — a partir dali o valor e \
+um `&str` e a protecao de tipo acabou. Se o uso e legitimo, declare a linha \
+inteira em RAW_FIELD_ALLOWED:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// A regra do campo cru precisa reprovar de verdade.
+///
+/// Sem isto o teste acima e vazio numa arvore limpa — arrancar
+/// [`RAW_FIELD_ALLOWED`] o deixaria verde.
+#[test]
+fn a_raw_field_use_outside_the_allowlist_is_actually_reported() {
+    // **O contraexemplo medido**: o campo renomeado, que nenhuma leitura de
+    // macro alcanca porque `%cru` nao esta no FORBIDDEN.
+    let renomeado = r#"
+impl SessionBlob {
+    fn vaza(&self) {
+        let cru = &self.0;
+        tracing::info!(valor = %cru, "sessao");
+    }
+}
+"#;
+    assert!(
+        !raw_field_uses_outside_the_allowlist("session.rs", renomeado).is_empty(),
+        "`let cru = &self.0;` precisa ser reprovado pelo uso do campo"
+    );
+
+    // E as outras formas da mesma familia.
+    for fonte in [
+        r#"fn f(&self) -> String { self.0.clone() }"#,
+        r#"fn f(&self) -> &str { self.0.as_str() }"#,
+        r#"fn f(&self) { std::fs::write("/tmp/x", &self.0).ok(); }"#,
+    ] {
+        assert!(
+            !raw_field_uses_outside_the_allowlist("session.rs", fonte).is_empty(),
+            "nao reprovado: {fonte}"
+        );
+    }
+
+    // A allowlist precisa de fato isentar o que declara.
+    let permitido = "fn len(&self) -> usize {\n    self.0.len()\n}\n";
+    assert!(
+        raw_field_uses_outside_the_allowlist("session.rs", permitido).is_empty(),
+        "o uso declarado na allowlist nao pode ser reprovado"
+    );
+
+    // Comentario nao e uso.
+    let comentario = "fn f() {\n    // nada de self.0 aqui\n    let x = 1;\n}\n";
+    assert!(
+        raw_field_uses_outside_the_allowlist("session.rs", comentario).is_empty(),
+        "um comentario citando self.0 nao e um uso"
+    );
+}
+
+/// A allowlist do campo cru tem de continuar **descrevendo** a arvore.
+///
+/// Mesmo argumento de [`every_allowed_expose_call_site_still_exists`]: uma
+/// allowlist cujas linhas ja nao casam com nada nao reprova nada.
+#[test]
+fn every_allowed_raw_field_use_still_exists() {
+    let (_, source) = SOURCES
+        .iter()
+        .find(|(n, _)| *n == "session.rs")
+        .unwrap_or_else(|| panic!("session.rs nao esta em SOURCES"));
+    let code = without_comments(&production_source(source));
+    for allowed in RAW_FIELD_ALLOWED {
+        assert!(
+            code.lines().any(|l| normalize(l) == *allowed),
+            "a allowlist declara `{allowed}`, que nao existe mais no fonte de \
+producao de `session.rs` — allowlist morta nao guarda nada"
+        );
+    }
+}
+
+/// **`SessionBlob` nao pode ganhar nenhuma conversao nova para `&str`.**
+///
+/// # Por que uma checagem de DECLARACAO, e nao de call site
+///
+/// A auditoria da rodada 8 plantou um `impl Deref for SessionBlob` com
+/// `type Target = str` e, noutro arquivo, `let cru: &str = b;` seguido de
+/// `tracing::info!(valor = %cru, …)`. Nao ha `expose` e nao ha nome que o
+/// [`FORBIDDEN`] reconheca: **107/107 verdes.** Nenhuma varredura de USO pode
+/// pegar isso, porque a conversao acontece no TIPO, e o call site que a
+/// dispara e `let cru: &str = b;` — indistinguivel de qualquer outro `let`.
+///
+/// Entao a guarda e sobre a linha de declaracao, no mesmo espirito de
+/// [`the_store_exposes_a_single_validating_constructor`], e a regra e
+/// invertida: cada `impl` que mencione `SessionBlob` tem de estar declarado
+/// aqui. Uma lista de proibidos (`Deref`, `AsRef<str>`, `Borrow<str>`,
+/// `From<SessionBlob> for String`) seria a corrida que a lista de macros ja
+/// mostrou nao se ganhar — `Into` vem de graca com `From`, e o proximo trait
+/// util nao esta na lista de ninguem.
+///
+/// Os derives entram pelo mesmo motivo: um `#[derive(Deref)]` de crate
+/// externa produz o mesmo `&str` sem escrever `impl` nenhum.
+#[test]
+fn session_blob_gains_no_new_str_conversion() {
+    const IMPL_ALLOWED: &[&str] = &[
+        "impl SessionBlob {",
+        // Os dois imprimem `<redacted>`; e por isso que eles existem.
+        "impl fmt::Debug for SessionBlob {",
+        "impl fmt::Display for SessionBlob {",
+        // Zera o segredo na saida de escopo.
+        "impl Drop for SessionBlob {",
+    ];
+    const DERIVE_ESPERADO: &str = "#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]";
+
+    let src = without_comments(&production_source(include_str!("session.rs")));
+    let mut offenders = Vec::new();
+    for raw in src.lines() {
+        let line = normalize(raw);
+        if !line.starts_with("impl") || !line.contains("SessionBlob") {
+            continue;
+        }
+        if !IMPL_ALLOWED.contains(&line.as_str()) {
+            offenders.push(line);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "`impl` novo sobre `SessionBlob`. Qualquer conversao para `&str` \
+(`Deref`, `AsRef<str>`, `Borrow<str>`, `From<SessionBlob> for String`) devolve \
+o segredo sem a palavra `expose` aparecer no fonte — foi medido, e passa \
+107/107. Se o `impl` e legitimo, declare-o em IMPL_ALLOWED:\n{}",
+        offenders.join("\n")
+    );
+    // E a guarda nao pode ficar muda se o tipo for renomeado ou sumir.
+    assert!(
+        src.lines().any(|l| normalize(l) == "impl SessionBlob {"),
+        "nenhum `impl SessionBlob` no fonte de producao: a guarda nao mediu nada"
+    );
+
+    // Derive de terceiro (`derive_more::Deref`, `derive_more::AsRef`) produz a
+    // mesma conversao sem escrever `impl`.
+    let derives: Vec<String> = src
+        .lines()
+        .map(normalize)
+        .filter(|l| l.starts_with("#[derive("))
+        .collect();
+    let idx = include_str!("session.rs")
+        .find("pub struct SessionBlob")
+        .expect("SessionBlob precisa existir");
+    let header = &include_str!("session.rs")[idx.saturating_sub(300)..idx];
+    let derive = header
+        .rfind("#[derive(")
+        .map(|i| normalize(header[i..].lines().next().unwrap_or("")))
+        .unwrap_or_default();
+    assert_eq!(
+        derive, DERIVE_ESPERADO,
+        "o derive de `SessionBlob` mudou. Um `#[derive(Deref)]`/`#[derive(AsRef)]` \
+de crate externa da o mesmo `&str` que um `impl` manual daria. Derives vistos \
+no arquivo: {derives:?}"
+    );
 }
 
 /// **Cada macro de log em producao tem de virar exatamente um bloco.**

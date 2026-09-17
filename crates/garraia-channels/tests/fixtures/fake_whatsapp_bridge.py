@@ -105,6 +105,14 @@ SCENARIOS = (
     "auth-then-retry-forever",
     "connect-flap-forever",
     "crash-with-secret",
+    # crash-with-dotted-secret
+    #                 o mesmo, mas com a chave atras de um caminho de
+    #                 propriedade (`creds.noiseKey=`). O ponto do nome vizinho
+    #                 entrava na MESMA sequencia que a chave e isentava as
+    #                 duas: medido, 100% das chaves chegavam inteiras a tela.
+    #                 E a forma que um `throw` de dentro do Baileys, de um
+    #                 modulo de terceiros ou de um template literal produz.
+    "crash-with-dotted-secret",
 )
 
 # Base64 padrao sem `.`/`@`/`-`/`_`, com a forma de uma `noiseKey` do Baileys.
@@ -365,6 +373,21 @@ class Bridge:
             sys.stderr.write(
                 "    at /home/user/.local/share/garraia/bridge/node_modules/"
                 "@whiskeysockets/baileys/lib/index.js:42:7\n"
+            )
+            sys.stderr.flush()
+            return EXIT_FATAL
+
+        if scenario == "crash-with-dotted-secret":
+            # A chave atras de um caminho de propriedade. O `.` do nome
+            # vizinho colava na sequencia da chave e isentava a chave junto.
+            sys.stderr.write(
+                f"Error: failed to persist creds.noiseKey={SECRET_B64} "
+                "at Object.<anonymous>\n"
+            )
+            sys.stderr.write(
+                f"    at state.creds={SECRET_B64} "
+                "(/home/user/.local/share/garraia/bridge/node_modules/"
+                "@whiskeysockets/baileys/lib/index.js:42:7)\n"
             )
             sys.stderr.flush()
             return EXIT_FATAL

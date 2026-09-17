@@ -1512,6 +1512,66 @@ async fn the_error_shown_to_the_user_never_carries_the_bridge_credential() {
     );
 }
 
+/// **O ponto no nome vizinho nao pode isentar a chave — NO CALL SITE.**
+///
+/// `state.creds=<chave>` era UMA sequencia continua (`.` e `=` estavam os dois
+/// dentro dela), o ponto a isentava e a chave chegava inteira a tela em 100%
+/// dos casos medidos. E o mesmo mecanismo do `_auth` do npm, que ja era
+/// tratado, so que aplicado ao `.`.
+///
+/// Como o irmao acima, este teste roda o processo de verdade: neutralizar a
+/// funcao pura sem mexer no call site — ou o contrario — precisa ficar
+/// vermelho aqui.
+#[tokio::test]
+async fn a_dotted_property_path_never_exempts_the_credential_from_redaction() {
+    const SECRET: &str = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0=";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    let err = pair_with(
+        &FixtureLauncher::new("crash-with-dotted-secret", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+        PairOptions {
+            stall_after_secs: 10,
+            final_flush_secs: 3,
+            ..PairOptions::default()
+        },
+    )
+    .await
+    .expect_err("a ponte morreu antes de conectar");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Ultimas linhas do bridge:"),
+        "a cauda do stderr precisa chegar ao usuario: {msg}"
+    );
+    assert!(
+        !msg.contains(SECRET),
+        "o material de credencial atras de um caminho de propriedade chegou a tela CRU:\n{msg}"
+    );
+    // Nenhum pedaco util: meia chave e uma chave vazada pela metade.
+    for janela in SECRET.as_bytes().windows(12) {
+        let pedaco = std::str::from_utf8(janela).expect("ascii");
+        assert!(
+            !msg.contains(pedaco),
+            "sobrou o pedaco {pedaco:?} da chave:\n{msg}"
+        );
+    }
+    assert!(
+        msg.contains("<redigido:"),
+        "a sequencia longa tinha de ter sido redigida: {msg}"
+    );
+    // E o diagnostico em volta continua legivel.
+    assert!(
+        msg.contains("@whiskeysockets/baileys/lib/index.js"),
+        "o caminho do modulo tem de continuar legivel: {msg}"
+    );
+}
+
 /// O **segundo** call site da redacao: a cauda do `npm ci` que falhou.
 ///
 /// Os dois call sites (`stderr_hint` e `npm_ci`) precisam de teste separado —
