@@ -242,7 +242,7 @@ fn strip_line_comment(text: &str) -> &str {
 /// quando uma chave de verdade abre um bloco. Um item que fecha em `;` apaga
 /// exatamente a propria linha.
 ///
-/// # Dois limites conhecidos, ambos na direcao segura
+/// # Tres limites conhecidos, todos na direcao segura
 ///
 /// 1. **So a forma canonica de UMA linha e reconhecida.**
 ///    `#[cfg(all(test, feature = "x"))]` e o atributo quebrado em varias
@@ -256,6 +256,14 @@ fn strip_line_comment(text: &str) -> &str {
 ///    [`production_source_never_drops_a_production_item`] **pega** o caso e
 ///    falha alto, mas acusa o item errado: o que ela reporta e o primeiro
 ///    item de producao engolido, e nao o literal que causou o corte.
+/// 3. **Comentario de BLOCO contendo `//`** no resto da linha do
+///    atributo: `#[cfg(test)] use std::fmt; /* nota // aqui */` faz o
+///    [`strip_line_comment`] devolver `use std::fmt; /* nota`, que nao
+///    termina em `;`, e o item fica pendente. E o padrao de cegueira
+///    original num caso muito mais estreito, e a guarda alargada
+///    (`ITEM_STARTS` com `pub(`, `mod `, `use `, `unsafe `) o pega e
+///    falha alto. Tratar comentario de bloco aqui exigiria um segundo
+///    scanner; o custo nao paga o caso.
 fn production_source(source: &str) -> String {
     const ATTR: &str = "#[cfg(test)]";
     let mut out = String::with_capacity(source.len());
@@ -1228,8 +1236,8 @@ fn production_source_never_drops_a_production_item() {
         // de linha: as tres varreduras cegas e a guarda sem nada a dizer.
         // `mod`/`use`/`unsafe` entram pelo mesmo motivo — qualquer miss
         // residual tem de falhar ALTO, e nao em silencio. Medido sobre a
-        // arvore real: a guarda passou a examinar 292 itens de producao
-        // contra 257, e o maior ganho e em `session.rs` (64 -> 79), que e
+        // arvore real: a guarda passou a examinar 293 itens de producao
+        // contra 258, e o maior ganho e em `session.rs` (64 -> 79), que e
         // exatamente onde mora o `pub(crate) fn expose`.
         "pub(",
         "mod ",

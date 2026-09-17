@@ -98,8 +98,13 @@ pub const DEFAULT_FINAL_FLUSH_SECS: u64 = 60;
 /// caindo para `Reconnecting` e voltando renovava a cada volta
 /// (`connect-flap-forever`).
 ///
-/// O teto duro que sai dai: um `pair` termina em, no pior caso,
-/// `(MAX_QR_ATTEMPTS + 2) * DEFAULT_NO_PROGRESS_AFTER_SECS`.
+/// O teto duro que sai dai: sao no maximo `MAX_QR_ATTEMPTS + 2` recordes
+/// (5 QRs, `Authenticated`, `Connected`), e entre dois recordes cabe no
+/// maximo `N - 1` segundos — senao o prazo ja teria disparado. Somando o
+/// intervalo inicial, o pior caso e `8N - 7`, ou seja abaixo de
+/// `(MAX_QR_ATTEMPTS + 3) * DEFAULT_NO_PROGRESS_AFTER_SECS` (953 s para
+/// N = 120). O que importa e a finitude; o numero exato esta aqui para
+/// quem for dimensionar um prazo externo nao corta-lo antes da hora.
 ///
 /// 120 s e folgado: quatro backoffs no teto da ponte cabem dentro. E um
 /// usuario lento para pegar o celular nao e cortado, porque cada QR novo e
@@ -133,6 +138,16 @@ impl Default for PairOptions {
 /// sem ele os prazos do `serve` eram constantes de 90 s, e um teste que os
 /// exercitasse precisaria de um minuto e meio de relogio real — ou seja,
 /// nenhum teste os exercitava.
+/// **Sem `#[non_exhaustive]`, e a decisao e medida.** A struct ja cresceu
+/// duas vezes e a marca parecia o remedio obvio para nao crescer de novo
+/// quebrando quem esta de fora. Nao serve aqui: os testes de integracao
+/// (`tests/whatsapp_bridge.rs`) sao uma **crate separada**, entao
+/// `non_exhaustive` proibiria a expressao de struct la — e proibe
+/// **inclusive** a forma `..ServeOptions::default()`, que muita gente
+/// supoe ser a escapatoria (E0639: *cannot create non-exhaustive struct
+/// using struct expression*). Medido: a marca derruba os dois sitios de
+/// `whatsapp_bridge.rs`. Quem quiser a garantia tera de dar um builder
+/// antes, e ai o custo deixa de ser uma linha.
 #[derive(Debug, Clone, Copy)]
 pub struct ServeOptions {
     /// Silencio maximo **antes de conectar**, em segundos. Vale para o
@@ -861,8 +876,9 @@ Rode `node --version` a mao para ver se ele responde, e depois \
 ///   cai a cada 0,5 s, o driver seguia rodando aos 25 s.
 /// - **por recorde** (esta): o rank e monotono, entao o numero de renovacoes
 ///   e finito — no maximo [`super::state::MAX_QR_ATTEMPTS`] QRs, mais
-///   `Authenticated`, mais `Connected`. Dai sai o teto duro: um `pair`
-///   termina em, no pior caso, `(MAX_QR_ATTEMPTS + 2) *
+///   `Authenticated`, mais `Connected`. Dai sai o teto duro: com no
+///   maximo `MAX_QR_ATTEMPTS + 2` recordes e `N - 1` segundos entre dois
+///   deles, um `pair` termina abaixo de `(MAX_QR_ATTEMPTS + 3) *
 ///   no_progress_after_secs`. **Nao existe fase, nem ciclo de fases, que
 ///   escape** — e e isso que
 ///   `every_phase_is_bounded_by_the_progress_ratchet` fixa, num `match`
@@ -1524,8 +1540,11 @@ mod tests {
     /// [`progress_rank`], para que classificar errado falhe alto.
     ///
     /// O teto duro que a tabela sustenta: como so `RecordeFinito` renova, e
-    /// como o rank e estritamente crescente, um `pair` nao pode durar mais do
-    /// que `(MAX_QR_ATTEMPTS + 2) * no_progress_after_secs` sem terminar.
+    /// como o rank e estritamente crescente, ha no maximo
+    /// `MAX_QR_ATTEMPTS + 2` recordes — e e isto que esta tabela fixa. O
+    /// tempo que sai dai fica abaixo de `(MAX_QR_ATTEMPTS + 3) *
+    /// no_progress_after_secs`, contando o intervalo inicial e os `N - 1`
+    /// segundos que cabem entre dois recordes.
     #[test]
     fn every_phase_is_bounded_by_the_progress_ratchet() {
         use super::super::state::{Failure, MAX_QR_ATTEMPTS, Phase};

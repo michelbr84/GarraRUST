@@ -53,7 +53,7 @@
   contar aspas, a solucao obvia, quebra tanto `"http://x"` quanto
   `const S: &str = "a // b";` — e a lista de prefixos ganhou `pub(`, `mod`,
   `use` e `unsafe`, de modo que qualquer falha residual apareca alto. A guarda
-  passou a examinar 292 itens de producao contra 257. O buraco era latente: a
+  passou a examinar 293 itens de producao contra 258. O buraco era latente: a
   arvore nao tinha nenhum caso.
 - **A regra invertida do `expose()` deixou de poder sumir em silencio
   (#1238).** Numa arvore sem violacao, "zero achados" nao distingue regra viva

@@ -1074,13 +1074,15 @@ aos 25 s, e o timeout externo nao e o mecanismo",
 /// logo apos o pareamento), e a reconexao nunca fecha — portal cativo que caiu
 /// depois do scan, 443 intermitente.
 ///
-/// O conserto e renovar por **TRANSICAO** em vez de residencia: a fase muda
-/// uma vez, renova uma vez, e dali tem `no_progress_after_secs` inteiros para
-/// virar `Connected`. Tirar `Authenticated` de `is_progress` fecharia ESTE
-/// caso e deixaria o desenho por residencia de pe — ou seja, deixaria o
-/// quinto caminho para a rodada seguinte. Ver
-/// `every_phase_is_bounded_by_transition_tick_or_loop_exit`, que e a prova de
-/// que nao ha quinta fase.
+/// O conserto **daquela rodada** era renovar por transicao em vez de
+/// residencia. Ele fecha ESTE caso — mas nao a classe: medindo, apareceu o
+/// quinto caminho (`connect-flap-forever`), em que cada volta ENTRA em
+/// `Connected` e portanto cada volta e uma transicao para fase de
+/// progresso. Residencia e transicao sao leituras LOCAIS de progresso; o
+/// que fecha a classe e a leitura global, monotona — a catraca de
+/// `progress_rank`. Ver
+/// `every_phase_is_bounded_by_the_progress_ratchet`, que e a prova de que
+/// nenhuma fase, e nenhum ciclo de fases, escapa.
 #[tokio::test]
 async fn authenticated_without_connected_is_not_an_endless_terminal() {
     let dir = tempfile::tempdir().expect("tempdir");
