@@ -786,6 +786,40 @@ impl AgentRuntime {
             .collect()
     }
 
+    /// Ha alguma ferramenta registrada que a **escapatoria de MCP** do
+    /// [`crate::modes::ToolGate`] deixa passar por cima de um whitelist?
+    ///
+    /// # Por que nao e so `source == Mcp`
+    ///
+    /// Quem compensa e o portao, e o portao nao olha a origem: ele olha o
+    /// NOME (`ToolGate::eh_ferramenta_mcp`, `contains("__")`). Perguntar pela
+    /// origem enquanto o portao pergunta pelo nome deixa o acoplamento
+    /// invertido — uma ferramenta **nativa** cujo nome contivesse `__` furaria
+    /// o whitelist sem acender detector nenhum. Hoje nao existe nenhuma; o que
+    /// nao se pode e depender disso. As duas perguntas juntas, entao, e a do
+    /// nome vem da propria funcao que o portao usa, para nao poderem divergir.
+    ///
+    /// # Por que nao `tool_inventory().iter().any(...)`
+    ///
+    /// Porque isto roda em caminho quente — o canal `whatsapp_linked` pergunta
+    /// a cada turno, e a entrada vem de fora da maquina — e o inventario aloca
+    /// duas `String` por ferramenta para responder um booleano. E porque
+    /// `tool_inventory` faz `read().unwrap()`: um `unwrap` de producao que a
+    /// regra 4 proibe. Aqui o lock envenenado e recuperado com `into_inner()`,
+    /// o mesmo que `reter_cancelamento` faz — envenenado significa so "alguem
+    /// entrou em panico segurando o lock", e o `Vec` dentro dele nao tem
+    /// invariante para quebrar.
+    pub fn has_gate_bypassing_tool(&self) -> bool {
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|r| {
+                matches!(r.source, ToolSource::Mcp { .. })
+                    || crate::modes::ToolGate::eh_ferramenta_mcp(r.tool.name())
+            })
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .read()
@@ -4071,6 +4105,46 @@ mod tests {
             .unwrap();
         assert_eq!(mcp.source, "mcp");
         assert_eq!(mcp.server.as_deref(), Some("filesystem"));
+    }
+
+    /// **O detector espelha o predicado do portao, e nao a origem.**
+    ///
+    /// A escapatoria de `ToolGate::permite` que este detector existe para
+    /// compensar decide pelo NOME (`contains("__")`), nao pela origem. Um
+    /// detector que so perguntasse `source == Mcp` deixaria uma ferramenta
+    /// **nativa** com `__` no nome furar o whitelist sem acender nada — hoje
+    /// nao existe nenhuma, e e exatamente por isso que so um teste segura o
+    /// acoplamento no lugar certo.
+    #[test]
+    fn o_detector_de_escapatoria_olha_origem_e_nome() {
+        let rt = AgentRuntime::new();
+        assert!(!rt.has_gate_bypassing_tool(), "runtime vazio nao tem nada");
+
+        rt.register_tool(stub("bash"));
+        assert!(
+            !rt.has_gate_bypassing_tool(),
+            "ferramenta nativa de nome comum nao fura whitelist nenhum"
+        );
+
+        // Nativa, mas com o nome que o `ToolGate` deixa passar.
+        rt.register_tool(stub("servidor__perigosa"));
+        assert!(
+            rt.has_gate_bypassing_tool(),
+            "nativa com `__` no nome passa pela escapatoria do portao — o \
+             detector tem de usar o MESMO predicado, e nao a origem"
+        );
+        assert!(
+            crate::modes::ToolGate::eh_ferramenta_mcp("servidor__perigosa"),
+            "premissa: e este o predicado que o portao usa"
+        );
+
+        // E a origem sozinha tambem basta, sem depender do nome.
+        let rt = AgentRuntime::new();
+        rt.replace_mcp_tools("filesystem", vec![stub("leitura")]);
+        assert!(
+            rt.has_gate_bypassing_tool(),
+            "ferramenta de servidor MCP conta pela origem, mesmo com nome comum"
+        );
     }
 
     /// `register_tool` toma `&self`: o runtime ja esta dentro de um `Arc`

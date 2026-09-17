@@ -23,8 +23,15 @@
   resolve para o perfil `search`, e nao para "sem politica", ate o operador
   subir o nivel com `/mode`. Enquanto a #1264 estiver aberta, esse piso **nao
   cobre ferramenta de servidor MCP** (o `ToolGate` deixa passar qualquer
-  `servidor__tool` pelo whitelist), entao o canal se recusa a subir — e recusa
-  cada turno — enquanto houver servidor MCP registrado. (3) **Guard de injecao
+  `servidor__tool` pelo whitelist), entao o canal se recusa a subir se houver
+  uma registrada no boot e recusa cada turno cuja entrada encontre uma
+  registrada. Nao e invariante continua: entre um turno e o seguinte o
+  inventario pode mudar (o monitor de saude do MCP re-sincroniza a cada 30 s),
+  e o que o controle entrega e a reducao da janela de minutos para o intervalo
+  entre dois turnos. O detector pergunta o MESMO que a escapatoria do
+  `ToolGate` pergunta — origem MCP **ou** `__` no nome —, e nao so a origem,
+  para que uma ferramenta nativa de nome com `__` nao fure o whitelist sem
+  acender nada. (3) **Guard de injecao
   indireta no texto recebido**, aplicado localmente porque a #1243 (que propoe
   generaliza-lo para alem do `web_fetch`) nao mergeou.
   Grupo so responde com opt-in explicito, e mensagem propria (`from_me`) nunca
@@ -36,3 +43,9 @@
   modo de falha — "rode `garra whatsapp link`" sem sessao, "rode `npm ci` em
   <dir>" sem dependencias na ponte. Duas fontes divergentes sobre o mesmo canal
   e o defeito que a #1079 ja custou uma vez.
+  E o desligamento do gateway **cancela o supervisor**: o `cancelar()` existia,
+  estava correto e nao tinha chamador de producao, entao depois do Ctrl+C o
+  processo imprimia "shut down gracefully" com a ponte Node viva e turnos de
+  agente rodando. A rota "o `Sender` cai junto com o `AppState`" nao existe
+  aqui, por um ciclo de `Arc` (o sink do canal detem o estado que detem o
+  cancelamento), e por isso o cancelamento e explicito.

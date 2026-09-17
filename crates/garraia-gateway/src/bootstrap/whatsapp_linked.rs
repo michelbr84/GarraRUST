@@ -566,12 +566,20 @@ pub fn piso_somente_leitura(mut exec: ExecContext, modo_default: &str) -> ExecCo
 /// escapatoria. Um `denied` desses daria a aparencia de piso sem o piso —
 /// exatamente o defeito que esta PR ja pagou tres vezes. Medido, nao adivinhado.
 ///
-/// Entao a decisao e a opcao fail-closed: **o canal nao roda** enquanto houver
-/// ferramenta MCP registrada. E avaliado no boot e **de novo a cada turno**,
-/// porque um servidor registrado pela API depois do boot deixaria a checagem de
-/// boot obsoleta. Quando a #1264 fechar, esta funcao sai.
+/// Entao a decisao e a opcao fail-closed. O que o controle FAZ, dito com
+/// precisao: o canal **se recusa a subir** se houver ferramenta MCP registrada
+/// no boot, e **recusa cada turno** cuja entrada encontre uma registrada. Nao
+/// e uma invariante continua — entre a checagem de um turno e a do seguinte o
+/// inventario pode mudar, e o `spawn_health_monitor_with_runtime` o
+/// re-sincroniza a cada 30 s. E reducao de janela, dos minutos que o canal
+/// ficaria de pe para o intervalo entre dois turnos. Quando a #1264 fechar,
+/// esta funcao sai.
+///
+/// O predicado e o do [`garraia_agents::AgentRuntime::has_gate_bypassing_tool`]
+/// e nao `source == "mcp"`: quem compensa e o `ToolGate`, e ele decide pelo
+/// NOME. Ver o docstring de la.
 pub fn ha_ferramenta_mcp(agents: &garraia_agents::AgentRuntime) -> bool {
-    agents.tool_inventory().iter().any(|t| t.source == "mcp")
+    agents.has_gate_bypassing_tool()
 }
 
 /// Esta mensagem merece um turno do agente?
@@ -834,11 +842,17 @@ pub fn deve_supervisionar(
     if !sessao_existe {
         return Err(NaoSubiu::SemSessao);
     }
-    if !node_presente {
-        return Err(NaoSubiu::SemNode);
-    }
+    // A recusa de seguranca vem ANTES da falta de capacidade, de proposito.
+    // Instalar `node` nao faria o canal subir enquanto houver ferramenta MCP
+    // registrada, entao dizer `SemNode` aqui mandaria o operador consertar a
+    // coisa errada. E, como efeito colateral que vale registrar, e o que
+    // permite ao teste de boot provar esta recusa sem depender de haver `node`
+    // na PATH da maquina que roda o CI.
     if ferramenta_mcp {
         return Err(NaoSubiu::FerramentaMcpRegistrada);
+    }
+    if !node_presente {
+        return Err(NaoSubiu::SemNode);
     }
     Ok(())
 }

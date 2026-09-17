@@ -11,12 +11,44 @@ use super::*;
 // `garraia-channels` (a crate que possui o segredo da sessao) e serve as duas
 // varreduras — esta e a de `whatsapp_linked/source_scan.rs`. Duas copias com
 // qualidade diferente ja deram um falso verde nesta PR.
-use garraia_channels::whatsapp_linked::log_audit;
+use garraia_channels::whatsapp_linked::{SessionBlob, log_audit};
 use garraia_config::ChannelConfig;
 // O `Allowlist` global aparece aqui so como REU: os testes provam que este
 // canal nao o consulta e nao escreve nele. O codigo de producao do canal nao o
 // importa mais.
 use garraia_security::Allowlist;
+
+/// Ferramenta de mentira. Existe so para o inventario do runtime nao ser
+/// vazio: sem nenhuma ferramenta registrada, "o piso barrou `bash`" e uma
+/// afirmacao vazia, porque nao havia `bash` para barrar.
+///
+/// Mora no nivel de cima (e nao dentro de [`ponta_a_ponta`]) porque o teste de
+/// boot que a usa nao precisa de processo e nao pode ser `#[cfg(unix)]`.
+struct ToolDeMentira(&'static str);
+
+#[async_trait::async_trait]
+impl garraia_agents::tools::Tool for ToolDeMentira {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn description(&self) -> &str {
+        "fixture"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+    async fn execute(
+        &self,
+        _context: &garraia_agents::tools::ToolContext,
+        _input: serde_json::Value,
+    ) -> garraia_common::Result<garraia_agents::tools::ToolOutput> {
+        Ok(garraia_agents::tools::ToolOutput {
+            content: "ok".to_string(),
+            is_error: false,
+            requires_confirmation: false,
+        })
+    }
+}
 
 fn msg(texto: Option<&str>) -> InboundMessage {
     InboundMessage {
@@ -481,6 +513,13 @@ fn tabela_do_que_impede_a_supervisao() {
         "com servidor MCP registrado o piso somente-leitura nao cobre as \
          ferramentas dele (#1264) — o canal nao sobe"
     );
+    assert_eq!(
+        deve_supervisionar(&ligado, true, false, true),
+        Err(NaoSubiu::FerramentaMcpRegistrada),
+        "e a recusa de seguranca vem antes da falta de capacidade: instalar \
+         `node` nao faria este canal subir, entao dizer `SemNode` mandaria o \
+         operador consertar a coisa errada"
+    );
     assert_eq!(deve_supervisionar(&ligado, true, true, false), Ok(()));
 }
 
@@ -536,6 +575,64 @@ async fn o_boot_nao_sobe_canal_desligado_nem_canal_sem_sessao() {
     assert!(
         !dir.path().join("whatsapp/default").exists(),
         "a recusa nao pode materializar diretorio de sessao"
+    );
+}
+
+/// **A metade de BOOT do piso que nao cobre MCP (#1264).**
+///
+/// `tabela_do_que_impede_a_supervisao` prova a funcao pura e
+/// `turno_e_recusado_*` prova o portao por turno. Nenhuma das duas prova que o
+/// **boot** consulta o inventario vivo: trocar `ha_ferramenta_mcp(&state.agents)`
+/// por `false` no call-site de `spawn_whatsapp_linked` passava com 38 testes
+/// verdes. O changelog afirma "se recusa a subir — e recusa cada turno"; sem
+/// este teste metade da frase era indefensavel.
+#[tokio::test]
+async fn o_boot_nao_sobe_o_canal_com_ferramenta_mcp_registrada() {
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = AppConfig {
+        data_dir: Some(dir.path().to_path_buf()),
+        channels: [(
+            CONFIG_KEY.to_string(),
+            secao(Some(true), serde_json::json!({})),
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+
+    let agents = AgentRuntime::new();
+    agents.replace_mcp_tools(
+        "servidor",
+        vec![Box::new(ToolDeMentira("servidor__perigosa"))],
+    );
+    let state: SharedState = Arc::new(crate::state::AppState::new(
+        config,
+        Arc::new(agents),
+        ChannelRegistry::new(),
+    ));
+
+    // A sessao tem de existir, senao a recusa seria `SemSessao` e este teste
+    // estaria provando outra coisa.
+    let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
+    let key = SessionKey::resolve(paths.store.dir(), None).expect("chave");
+    paths
+        .store
+        .save(&SessionBlob::new("eyJhIjoxfQ=="), &key)
+        .expect("grava sessao");
+    assert!(paths.store.exists(), "premissa: ha sessao em disco");
+
+    assert_eq!(
+        spawn_whatsapp_linked(&state).err(),
+        Some(NaoSubiu::FerramentaMcpRegistrada),
+        "com ferramenta MCP no inventario o canal nao pode subir — o piso \
+         somente-leitura nao cobre as ferramentas dela (#1264)"
+    );
+    assert!(
+        !state.whatsapp_linked.cancelamento_vivo(),
+        "e canal que nao subiu nao deixa supervisor retido"
     );
 }
 
@@ -638,10 +735,10 @@ mod ponta_a_ponta {
     use super::*;
     use garraia_agents::AgentRuntime;
     use garraia_agents::providers::{ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse};
-    use garraia_agents::tools::{Tool, ToolContext, ToolOutput};
+
     use garraia_channels::ChannelRegistry;
     use garraia_channels::whatsapp_linked::bridge::{BridgeError, BridgeLauncher};
-    use garraia_channels::whatsapp_linked::{SessionBlob, runner::serve};
+    use garraia_channels::whatsapp_linked::runner::serve;
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -700,35 +797,6 @@ mod ponta_a_ponta {
         }
         async fn health_check(&self) -> garraia_common::Result<bool> {
             Ok(true)
-        }
-    }
-
-    /// Ferramenta de mentira. Existe so para o inventario do runtime nao ser
-    /// vazio: sem nenhuma ferramenta registrada, "o piso barrou `bash`" e uma
-    /// afirmacao vazia, porque nao havia `bash` para barrar.
-    struct ToolDeMentira(&'static str);
-
-    #[async_trait::async_trait]
-    impl Tool for ToolDeMentira {
-        fn name(&self) -> &str {
-            self.0
-        }
-        fn description(&self) -> &str {
-            "fixture"
-        }
-        fn input_schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
-        }
-        async fn execute(
-            &self,
-            _context: &ToolContext,
-            _input: serde_json::Value,
-        ) -> garraia_common::Result<ToolOutput> {
-            Ok(ToolOutput {
-                content: "ok".to_string(),
-                is_error: false,
-                requires_confirmation: false,
-            })
         }
     }
 
@@ -1011,8 +1079,23 @@ mod ponta_a_ponta {
     /// fixture esta no `allow` **deste canal** — que e de onde o portao sai
     /// agora, e nao mais do `Allowlist` global.
     async fn sobe_com(roteiro: Roteiro, liberado: bool) -> Cenario {
+        sobe_com_preparo(roteiro, liberado, |_| {}).await
+    }
+
+    /// O mesmo, com um gancho que roda **antes** de `serve` subir.
+    ///
+    /// Existe porque preparar o estado depois que `sobe_com` retorna e uma
+    /// corrida de verdade: a ponte falsa do `serve-push` empurra a mensagem
+    /// assim que o handshake fecha, e se ela ganhar do preparo o teste fica
+    /// vermelho sem nada ter quebrado.
+    async fn sobe_com_preparo(
+        roteiro: Roteiro,
+        liberado: bool,
+        preparo: impl FnOnce(&SharedState),
+    ) -> Cenario {
         let dir = tempfile::tempdir().expect("tempdir");
         let (state, provider) = monta_estado(&dir);
+        preparo(&state);
 
         // O `Allowlist` global fica em modo **aberto** de proposito: e o modo em
         // que `is_allowed` devolve `true` para qualquer um, e ele tem um dono
@@ -1301,13 +1384,19 @@ mod ponta_a_ponta {
     /// servidor com o gateway ja de pe.
     #[tokio::test]
     async fn turno_e_recusado_enquanto_houver_ferramenta_mcp_registrada() {
-        let c = sobe_com(Roteiro::empurra("oi"), true).await;
-        // Registrado com o canal **ja de pe**, que e o que o `admin/mcp.rs`
-        // faz: e por isso que a checagem nao pode viver so no boot.
-        c.state.agents.replace_mcp_tools(
-            "servidor",
-            vec![Box::new(ToolDeMentira("servidor__perigosa"))],
-        );
+        // Registrada ANTES de `serve` subir. A versao anterior registrava
+        // depois de `sobe_com` retornar, e a ponte falsa empurra a mensagem
+        // assim que o handshake fecha: sob contencao de CPU o turno podia rodar
+        // primeiro e o teste ficava vermelho sem nada ter quebrado. Que o
+        // controle continua valendo para servidor registrado com o canal ja de
+        // pe e o que o teste seguinte prova.
+        let c = sobe_com_preparo(Roteiro::empurra("oi"), true, |state| {
+            state.agents.replace_mcp_tools(
+                "servidor",
+                vec![Box::new(ToolDeMentira("servidor__perigosa"))],
+            );
+        })
+        .await;
         assert!(
             ha_ferramenta_mcp(&c.state.agents),
             "premissa: o runtime enxerga a ferramenta MCP"
@@ -1325,6 +1414,41 @@ mod ponta_a_ponta {
         assert!(
             !c.state.sessions.contains_key(&sid_do_peer()),
             "e nenhuma sessao pode nascer do turno recusado"
+        );
+
+        encerra(c).await;
+    }
+
+    /// **E com o canal ja de pe.** `admin/mcp.rs` registra servidor com o
+    /// gateway rodando, e e por isso que a checagem nao pode viver so no boot:
+    /// o detector le o inventario VIVO, e nao um retrato tirado na subida.
+    ///
+    /// Sem asserto de turno aqui de proposito. A ponte falsa nao empurra
+    /// mensagem sob demanda, entao "nenhum turno depois de registrar" so
+    /// poderia ser medido contra uma mensagem que ja estava a caminho — a
+    /// corrida que o teste anterior existe para nao ter. O que esta linha
+    /// prova, e que nada mais prova, e que a resposta muda com o inventario.
+    #[tokio::test]
+    async fn o_detector_le_o_inventario_vivo_com_o_canal_ja_de_pe() {
+        let c = sobe(true).await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "premissa: o canal esta de pe"
+        );
+        assert!(
+            !ha_ferramenta_mcp(&c.state.agents),
+            "premissa: subiu sem ferramenta MCP"
+        );
+
+        c.state.agents.replace_mcp_tools(
+            "servidor",
+            vec![Box::new(ToolDeMentira("servidor__perigosa"))],
+        );
+
+        assert!(
+            ha_ferramenta_mcp(&c.state.agents),
+            "o detector tem de enxergar o servidor registrado depois do boot; \
+             um retrato tirado na subida deixaria o canal rodando sem piso"
         );
 
         encerra(c).await;
