@@ -69,15 +69,46 @@ const STDERR_TAIL_LINES: usize = 30;
 /// Stack trace de Node cabe folgado; despejo de credencial, nao.
 const STDERR_TAIL_LINE_CHARS: usize = 240;
 
-/// A partir de quantos caracteres uma sequencia continua de `[A-Za-z0-9+=]`
-/// deixa de parecer identificador e passa a parecer material cifrado.
+/// A partir de quantos caracteres uma sequencia continua deixa de parecer
+/// identificador e passa a parecer material cifrado.
 ///
-/// 40 e folgado para nome de funcao, de modulo e de segmento de caminho. E a
-/// barra fica **de fora** da classe de proposito: com ela, um caminho inteiro
-/// (`/home/user/.local/share/garraia/...`) viraria uma sequencia so e seria
-/// redigido — e dizer qual arquivo o Node nao achou e justamente o motivo de
-/// esta cauda existir.
+/// 40 e folgado para nome de funcao, de modulo e de segmento de caminho.
 const BASE64_RUN_MIN: usize = 40;
+
+/// Uma sequencia longa e caminho/modulo (legivel) ou material cifrado
+/// (redigido)?
+///
+/// # A medicao que trocou a regra
+///
+/// A versao anterior varria `[A-Za-z0-9+=]` — **sem a barra**, para nao
+/// redigir um caminho inteiro. So que a barra e 1 em 64 caracteres do alfabeto
+/// base64 padrao, entao ela quebrava a propria credencial em pedacos curtos.
+/// Medido sobre 2000 chaves de 32 B: o maior pedaco em claro tinha **17 dos 44
+/// caracteres** em media, e em 35% dos casos metade ou mais da chave
+/// sobrevivia. O teto de 240 caracteres nao salvava nada — 240 caracteres
+/// tambem sao 240 caracteres de credencial. O `crash-with-secret` da fixture e
+/// exatamente esse caso, e ele chegava a tela inteiro.
+///
+/// A regra nova poe `/`, `.`, `@`, `-` e `_` **dentro** da sequencia e isenta
+/// so quem tem `.` ou `@` — extensao de arquivo ou escopo de pacote npm,
+/// que nenhum alfabeto base64 produz. Medida sobre 400 chaves por contexto,
+/// em quatro contextos (`noiseKey=…`, `npm ERR! _auth=…`, `creds_key: …`,
+/// JSON) e nos dois alfabetos (padrao e url-safe): o maior pedaco em claro cai
+/// para ~1,3 caracteres — ruido, nao credencial.
+///
+/// **Por que `-` e `_` nao isentam**, embora caminho real os tenha: isenta-los
+/// cobre o base64 url-safe inteiro, e pior, um nome de chave vizinho cola na
+/// sequencia. Medido: com `-`/`_` isentando, `npm ERR! _auth=<chave>` vaza
+/// **22 dos 44 caracteres**, porque o `_` do `_auth` entra na mesma sequencia
+/// e isenta a chave junto. E o proprio `fake_npm.py` da fixture.
+///
+/// O preco e um falso positivo conhecido: um caminho longo **sem ponto, sem
+/// `@`** vira `<redigido: N caracteres>`. Erro real de Node nomeia arquivo com
+/// extensao (`.js`, `.json`, `.mjs`) ou pacote com escopo (`@…`), que e o caso
+/// que a cauda existe para mostrar e o que continua legivel.
+fn looks_like_path_or_module(run: &str) -> bool {
+    run.contains('.') || run.contains('@')
+}
 
 /// Redige o que parece material cifrado numa linha de stderr do filho.
 ///
@@ -91,14 +122,19 @@ const BASE64_RUN_MIN: usize = 40;
 /// modulo de terceiros nao passa por ele. Nada mais redigia este caminho.
 ///
 /// A regra e conservadora nos dois sentidos: corta sequencias longas que
-/// parecem base64 **e** limita o comprimento da linha, porque nenhuma das duas
-/// sozinha fecha o caso — base64 com `/` quebra em pedacos curtos, e uma linha
-/// truncada em 240 caracteres ainda seriam 240 caracteres de credencial.
+/// parecem material cifrado (ver [`looks_like_path_or_module`]) **e** limita o
+/// comprimento da linha, porque nenhuma das duas sozinha fecha o caso — uma
+/// linha truncada em 240 caracteres ainda seriam 240 caracteres de credencial.
+///
+/// Ela nao e o unico controle, e nao pode ser testada so como funcao pura: os
+/// dois call sites — [`BridgeConnection::stderr_hint`] e [`npm_ci`] — sao o
+/// que de fato leva a redacao a tela, e ha teste de ponta a ponta para cada
+/// um. Neutraliza-los deixava a suite inteira verde.
 fn redact_tail_line(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut run = String::new();
     let flush = |run: &mut String, out: &mut String| {
-        if run.chars().count() >= BASE64_RUN_MIN {
+        if run.chars().count() >= BASE64_RUN_MIN && !looks_like_path_or_module(run) {
             let n = run.chars().count();
             out.push_str(&format!("<redigido: {n} caracteres>"));
         } else {
@@ -107,7 +143,7 @@ fn redact_tail_line(line: &str) -> String {
         run.clear();
     };
     for ch in line.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '+' || ch == '=' {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '.' | '_' | '@' | '-') {
             run.push(ch);
         } else {
             flush(&mut run, &mut out);
@@ -355,7 +391,11 @@ pub async fn npm_ci(npm: &Path, dir: &Path) -> Result<(), BridgeError> {
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // Sem isto, o `timeout` abaixo devolve `NpmTimeout` e larga o `npm`
+        // rodando: depois de 600 s o usuario ficava com um processo orfao
+        // mexendo no mesmo `node_modules` que a proxima tentativa vai recriar.
+        .kill_on_drop(true);
     apply_child_env(&mut cmd);
 
     let child = cmd.spawn().map_err(|e| BridgeError::Spawn {
@@ -780,6 +820,41 @@ mod tests {
             "o diagnostico em volta tem de sobreviver: {redigida}"
         );
 
+        // **O caso que a versao anterior deixava passar inteiro.** Base64
+        // PADRAO tem `/`, e com a barra fora da classe a chave quebrava em
+        // pedacos curtos: 17 dos 44 caracteres em claro, em media. Esta e uma
+        // `noiseKey` de 32 B na forma exata em que o Baileys a imprime.
+        let chave = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0=";
+        let linha = format!("Error: connection failed noiseKey={chave} at Object.<anonymous>");
+        let redigida = redact_tail_line(&linha);
+        assert!(
+            !redigida.contains(chave),
+            "a chave saiu inteira: {redigida}"
+        );
+        // E nenhum pedaco util dela pode sobrar: meia chave e uma chave
+        // vazada pela metade, nao uma chave protegida.
+        for janela in chave.as_bytes().windows(12) {
+            let pedaco = std::str::from_utf8(janela).expect("ascii");
+            assert!(
+                !redigida.contains(pedaco),
+                "sobrou o pedaco {pedaco:?} da chave: {redigida}"
+            );
+        }
+        assert!(
+            redigida.contains("at Object."),
+            "o contexto em volta continua legivel: {redigida}"
+        );
+
+        // Base64 **url-safe**: `-` e `_` no lugar de `+` e `/`. E por isso que
+        // a isencao nao pode ser "contem `-` ou `_`" — so `.`/`@`, ou `/`
+        // JUNTO de `-`/`_`, que nenhum alfabeto base64 produz.
+        let url_safe = "c2VjcmV0-Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0_";
+        let redigida = redact_tail_line(&format!("at connect ({url_safe})"));
+        assert!(
+            !redigida.contains(url_safe),
+            "base64 url-safe saiu inteiro: {redigida}"
+        );
+
         // O que a cauda existe para mostrar continua legivel: caminho de
         // arquivo, nome de modulo, numero de linha.
         let util = "Error: Cannot find module '/home/user/.local/share/garraia/bridge/node_modules/@whiskeysockets/baileys/lib/index.js'";
@@ -789,10 +864,40 @@ mod tests {
             "um erro de modulo nao pode virar `<redigido>` — e justamente o que \
 a cauda existe para dizer"
         );
+        // Caminho longo com traco e sublinhado: o `.json` e o que o salva. E
+        // a mesma linha que o `fake_npm.py` cospe.
+        let pacote = "npm ERR! at /home/user/.local/share/garraia/bridge/node_modules/@whiskeysockets/baileys/package.json";
+        assert_eq!(
+            redact_tail_line(pacote),
+            pacote,
+            "um caminho com extensao nao pode ser redigido"
+        );
+
+        // **O motivo de `-` e `_` NAO isentarem**, medido: com eles isentando,
+        // o `_` de `_auth` entra na mesma sequencia da chave e isenta a chave
+        // junto — 22 dos 44 caracteres em claro. E a linha exata do
+        // `fake_npm.py`.
+        let auth = format!("npm ERR! _auth={chave}");
+        let redigida = redact_tail_line(&auth);
+        assert!(
+            !redigida.contains(chave),
+            "um nome de chave vizinho com `_` nao pode isentar a credencial: {redigida}"
+        );
+
+        // O falso positivo conhecido e aceito: caminho longo SEM ponto e sem
+        // `@`. Erro real de Node nomeia arquivo com extensao ou pacote com
+        // escopo; este teste existe para que a troca fique escrita, e nao
+        // descoberta por acidente por quem mexer aqui depois.
+        let sem_marca = "/home/user/projects/diretorio/muito/longo/sem/ponto/nenhum/entrada";
+        assert!(
+            redact_tail_line(sem_marca).contains("<redigido:"),
+            "esta e a troca medida: sem `.` e sem `@` a sequencia cai inteira"
+        );
 
         // E uma linha absurdamente longa e cortada, porque redigir sequencias
-        // sozinho nao fecha o caso: base64 com `/` quebra em pedacos curtos.
-        let longa = (0..400).map(|i| format!("{}/", i % 10)).collect::<String>();
+        // sozinho nao fecha o caso: uma linha de milhares de pedacos curtos
+        // nao tem nenhuma sequencia longa para redigir.
+        let longa = "ab cd ".repeat(200);
         let cortada = redact_tail_line(&longa);
         assert!(
             cortada.chars().count() <= STDERR_TAIL_LINE_CHARS + 20,

@@ -258,6 +258,17 @@ decidir se confia a propria conta ao GarraIA.
 | `✓ WhatsApp conectado com sucesso.` | `✓ WhatsApp connected successfully.` |
 | `Nenhum QR foi lido. Rode `garra whatsapp` de novo.` | `No QR was scanned. Run `garra whatsapp` again.` |
 
+### O que **nao** esta nas duas linguas
+
+As frases da tabela acima sao as da CLI (`crates/garraia-cli`), que tem `t()`.
+As mensagens de **erro do driver** — `RunError` e `BridgeError`, em
+`garraia-channels` — saem sempre em pt-BR, inclusive com `Lang::En`: a
+`garraia-channels` nao tem i18n, e por isso o prazo estourado, a ponte que
+caiu e a cauda do `npm ci` chegam ao usuario em portugues nos dois idiomas.
+
+E limitacao estrutural conhecida, nao esquecimento. Fecha-la e mapear os
+`RunError` na CLI, onde o `t()` existe — trabalho de outra fatia.
+
 ## Estado da integracao
 
 O comando **vincula e guarda a sessao**. O canal ainda **nao e consumido pelo

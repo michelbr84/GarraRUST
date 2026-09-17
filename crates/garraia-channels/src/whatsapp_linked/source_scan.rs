@@ -12,6 +12,19 @@
 //! redigido — mas `SessionBlob::expose()` existe, e precisa existir, para o
 //! bridge e o store. O que este teste fixa e que ninguem passe o resultado de
 //! `expose()` (ou um `blob`/`session` cru) para uma macro de log.
+//!
+//! # O que estas varreduras NAO alcancam
+//!
+//! `SessionBlob` e `#[serde(transparent)]` no `Serialize`. Um
+//! `serde_json::to_string(&blob)` futuro carrega o valor **cru** sem a palavra
+//! `expose` aparecer em lugar nenhum do fonte — e o unico caminho que nem a
+//! allowlist de [`EXPOSE_ALLOWED`] nem a varredura de macro veem. Fecha-lo e
+//! trabalho de tipo (`Serialize` manual, ou um wrapper), nao de texto; ver
+//! `the_transparent_serialize_is_a_known_and_documented_hole`.
+//!
+//! Desde a rodada 5, `SessionBlob::expose()` e `pub(crate)`: o rustc impede de
+//! graca que a crate vizinha chame, e estas varreduras cobrem o que sobra —
+//! de dentro da propria crate.
 
 const SOURCES: &[(&str, &str)] = &[
     ("mod.rs", include_str!("mod.rs")),
@@ -80,7 +93,7 @@ const LOG_MACROS: &[&str] = &[
 /// palavra continua onde deve, e quem de fato impede a chamada e o rustc.
 const EXPOSE_ALLOWED: &[(&str, &str)] = &[
     // A declaracao. Ela precisa existir: o bridge e o store leem o blob.
-    ("session.rs", "pub fn expose(&self) -> &str {"),
+    ("session.rs", "pub(crate) fn expose(&self) -> &str {"),
     // O unico uso: o que vai para o AES-GCM dentro de `SessionStore::save`.
     (
         "session.rs",
@@ -123,15 +136,68 @@ const FORBIDDEN: &[&str] = &[
 
 /// O fonte com os blocos `#[cfg(test)]` apagados, preservando a numeracao das
 /// linhas (cada linha removida vira uma linha vazia).
+///
+/// # O furo de uma linha que isto fecha
+///
+/// A versao anterior ligava o modo "apaga" no instante em que via
+/// `#[cfg(test)]` e so o desligava na primeira linha que contivesse `}`. Sobre
+/// um item **sem chave** — `#[cfg(test)] mod tests;`, `use …;`, `const …;`,
+/// `static …;` — o `brace_depth` nunca subia, e o modo seguia apagando
+/// **producao** ate topar com uma chave de fechamento qualquer, la adiante.
+/// Como as duas varreduras (a contagem crua de macros e o parser de blocos)
+/// leem este mesmo texto, elas caiam JUNTAS: a coincidencia "verde com bug".
+///
+/// Nao e hipotetico. `mod.rs` ja declara `#[cfg(test)] mod source_scan;` — o
+/// dano e zero **so** porque a declaracao esta na ultima linha do arquivo.
+/// Move-la para o topo, onde declaracoes `mod` convencionalmente ficam,
+/// cegaria `mod.rs` inteiro sem nenhum teste piscar. A auditoria R5 plantou
+/// um `#[cfg(test)] const` seguido de um `tracing::info!` com
+/// `blob.expose()` e teve 99/99 verdes.
+///
+/// A regra nova: o `#[cfg(test)]` fica **pendente**, e so vira modo "apaga"
+/// quando uma chave de verdade abre um bloco. Um item que fecha em `;` apaga
+/// exatamente a propria linha.
 fn production_source(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
+    // Vimos `#[cfg(test)]` e ainda nao sabemos se o item abre bloco.
+    let mut pending = false;
     let mut in_tests = false;
     let mut brace_depth = 0i32;
     for raw in source.lines() {
         let line = raw.trim();
-        if line.starts_with("#[cfg(test)]") {
-            in_tests = true;
+        if !in_tests && !pending && line.starts_with("#[cfg(test)]") {
+            pending = true;
             brace_depth = 0;
+            out.push('\n');
+            continue;
+        }
+        if pending {
+            // Comentario entre o atributo e o item nao decide nada: um
+            // `// veja foo;` nao encerra o item.
+            if line.starts_with("//") {
+                out.push('\n');
+                continue;
+            }
+            let opens = line.matches('{').count() as i32;
+            let closes = line.matches('}').count() as i32;
+            brace_depth += opens - closes;
+            if opens > 0 {
+                // Abriu bloco: se ele continua aberto, o modo "apaga" comeca
+                // aqui; se fechou na mesma linha, o item ja acabou.
+                pending = false;
+                if brace_depth > 0 {
+                    in_tests = true;
+                } else {
+                    brace_depth = 0;
+                }
+            } else if line.ends_with(';') {
+                // Item sem chave (`mod tests;`, `use …;`, `const …;`): apaga
+                // esta linha e SO esta.
+                pending = false;
+                brace_depth = 0;
+            }
+            out.push('\n');
+            continue;
         }
         if in_tests {
             brace_depth += line.matches('{').count() as i32;
@@ -523,6 +589,33 @@ tracing::warn!(sessao = %blob.expose(), "depois");
     );
 }
 
+/// Chamadas de `expose` no codigo de producao que a allowlist nao declara,
+/// ja formatadas para a mensagem de falha.
+///
+/// Funcao separada do `#[test]` pelo mesmo motivo de [`offending_log_blocks`]:
+/// numa arvore limpa nao ha violacao nenhuma, entao um teste que so varre
+/// `SOURCES` nao distingue **regra viva** de **regra ausente** — arrancar a
+/// allowlist inteira o deixava verde. Com a funcao separada, o caso negativo
+/// entra como TEXTO plantado e a mutacao fica vermelha.
+fn exposes_outside_the_allowlist(name: &str, source: &str) -> Vec<String> {
+    let code = without_comments(&production_source(source));
+    let mut out = Vec::new();
+    for (i, raw) in code.lines().enumerate() {
+        let line = normalize(raw);
+        if !line.contains("expose") {
+            continue;
+        }
+        if EXPOSE_ALLOWED
+            .iter()
+            .any(|(f, allowed)| *f == name && line.contains(allowed))
+        {
+            continue;
+        }
+        out.push(format!("{name}:{}: {line}", i + 1));
+    }
+    out
+}
+
 /// **A regra invertida: `expose()` so pode aparecer onde a allowlist diz.**
 ///
 /// A varredura de macro reprova o que conhece; esta reprova tudo o que nao foi
@@ -536,20 +629,7 @@ tracing::warn!(sessao = %blob.expose(), "depois");
 fn expose_is_only_called_where_the_allowlist_says() {
     let mut offenders = Vec::new();
     for (name, source) in SOURCES {
-        let code = without_comments(&production_source(source));
-        for (i, raw) in code.lines().enumerate() {
-            let line = normalize(raw);
-            if !line.contains("expose") {
-                continue;
-            }
-            if EXPOSE_ALLOWED
-                .iter()
-                .any(|(f, allowed)| f == name && line.contains(allowed))
-            {
-                continue;
-            }
-            offenders.push(format!("{name}:{}: {line}", i + 1));
-        }
+        offenders.extend(exposes_outside_the_allowlist(name, source));
     }
     assert!(
         offenders.is_empty(),
@@ -597,9 +677,11 @@ producao — allowlist morta nao guarda nada"
 /// do que se esta consertando aqui.
 #[test]
 fn every_log_macro_in_production_yields_exactly_one_block() {
+    let mut total_esperado = 0usize;
     for (name, source) in SOURCES {
         let code = without_comments(&production_source(source));
         let esperado = count_log_macros(&code);
+        total_esperado += esperado;
         let blocos = log_blocks(source);
         assert_eq!(
             blocos.len(),
@@ -616,6 +698,15 @@ vistos:\n{}",
                 .join("\n")
         );
     }
+    // Sem isto, a comparacao acima degrada para `0 == 0` em toda a tabela se
+    // `count_log_macros` e `log_blocks` pararem de achar qualquer coisa —
+    // exatamente o modo de falha que ela existe para pegar.
+    assert!(
+        total_esperado > 0,
+        "nenhuma macro de log em producao nos {} arquivos: ou o repo mudou muito, \
+ou a contagem crua parou de funcionar e esta comparacao virou `0 == 0`",
+        SOURCES.len()
+    );
 }
 
 /// Um literal de char com aspa dentro nao pode cegar o arquivo inteiro.
@@ -750,27 +841,18 @@ fn session_blob_never_derives_debug() {
 }
 
 /// Nenhum `unwrap()`/`expect()` fora de teste: regra 4 do CLAUDE.md.
+///
+/// Usa [`production_source`] em vez de reimplementar o corte do
+/// `#[cfg(test)]`: a copia que morava aqui tinha o mesmo furo de uma linha —
+/// um item sem chave apagava producao ate a proxima `}` — e uma regra de
+/// seguranca com tres implementacoes e tres oportunidades de errar.
 #[test]
 fn production_code_has_no_unwrap_or_expect() {
     let mut offenders = Vec::new();
     for (name, source) in SOURCES {
-        let mut in_tests = false;
-        let mut brace_depth = 0i32;
-        for (i, raw) in source.lines().enumerate() {
+        for (i, raw) in production_source(source).lines().enumerate() {
             let line = raw.trim();
-            if line.starts_with("#[cfg(test)]") {
-                in_tests = true;
-                brace_depth = 0;
-            }
-            if in_tests {
-                brace_depth += line.matches('{').count() as i32;
-                brace_depth -= line.matches('}').count() as i32;
-                if brace_depth <= 0 && line.contains('}') {
-                    in_tests = false;
-                }
-                continue;
-            }
-            if line.starts_with("//") || line.starts_with("///") || line.starts_with("//!") {
+            if line.starts_with("//") {
                 continue;
             }
             if line.contains(".unwrap()") || line.contains(".expect(") {
@@ -796,4 +878,214 @@ fn the_qr_renderer_never_touches_the_terminal_state() {
             "qr.rs contem {forbidden:?} — nada aqui pode mexer no terminal"
         );
     }
+}
+
+/// **Um `#[cfg(test)]` sobre item sem chave nao pode cegar o arquivo.**
+///
+/// Este e o furo de uma linha que a rodada 5 fechou. `mod.rs:77` ja tem
+/// `#[cfg(test)] mod source_scan;` na arvore — o dano hoje e zero so porque a
+/// declaracao esta na ultima linha do arquivo. As tres varreduras que usam
+/// [`production_source`] (macro de log, `expose` fora da allowlist,
+/// `unwrap`/`expect`) leem o MESMO texto, entao elas ficavam cegas juntas: a
+/// contagem crua e a do parser caiam no mesmo numero e o
+/// `every_log_macro_in_production_yields_exactly_one_block` seguia verde.
+#[test]
+fn a_braceless_cfg_test_item_does_not_blind_the_rest_of_the_file() {
+    // Exatamente a forma que existe em `mod.rs`, seguida de producao que
+    // vaza. O `}` da funcao e o que a versao anterior usava para desligar o
+    // modo "apaga" — tarde demais.
+    let mutacao = r#"
+#[cfg(test)]
+mod tests;
+
+fn vaza(blob: &SessionBlob) {
+    let s = blob.expose();
+    tracing::info!(dado = %s, "vazou a sessao");
+    eprintln!("sessao: {}", blob.expose());
+}
+"#;
+    let producao = production_source(mutacao);
+    assert!(
+        producao.contains("tracing::info!"),
+        "a producao depois de um `#[cfg(test)] mod tests;` foi apagada:\n{producao}"
+    );
+    assert!(
+        !offending_log_blocks("mutacao.rs", &producao).is_empty(),
+        "o log com material de sessao precisa ser reprovado"
+    );
+    assert!(
+        !exposes_outside_the_allowlist("mutacao.rs", mutacao).is_empty(),
+        "o `expose()` fora da allowlist precisa ser reprovado"
+    );
+
+    // As outras formas sem chave da mesma familia.
+    for item in [
+        "use std::fmt;",
+        "const SO_NO_TESTE: u8 = 1;",
+        "static SO_NO_TESTE: u8 = 1;",
+        "type Alias = u8;",
+        // Com chave, mas fechando na mesma linha: tambem acaba ali.
+        "static S: Foo = Foo { a: 1 };",
+    ] {
+        let fonte = format!("#[cfg(test)]\n{item}\n\nfn prod() {{\n    let x = 1;\n}}\n");
+        let producao = production_source(&fonte);
+        assert!(
+            producao.contains("fn prod()"),
+            "`#[cfg(test)] {item}` apagou a producao seguinte:\n{producao}"
+        );
+        assert!(
+            !producao.contains(item),
+            "`{item}` e codigo de teste e precisa sair do texto de producao"
+        );
+    }
+
+    // E o bloco de verdade continua sendo apagado inteiro.
+    let com_bloco =
+        "#[cfg(test)]\nmod tests {\n    fn t() {\n        let x = 1;\n    }\n}\n\nfn prod() {}\n";
+    let producao = production_source(com_bloco);
+    assert!(
+        !producao.contains("fn t()"),
+        "o bloco `#[cfg(test)] mod tests {{ … }}` precisa continuar apagado:\n{producao}"
+    );
+    assert!(
+        producao.contains("fn prod()"),
+        "e o que vem depois dele precisa sobreviver:\n{producao}"
+    );
+
+    // Atributo entre o `#[cfg(test)]` e o item nao pode encerrar o item cedo.
+    let com_atributo =
+        "#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n    fn t() {}\n}\n\nfn prod() {}\n";
+    let producao = production_source(com_atributo);
+    assert!(
+        !producao.contains("fn t()"),
+        "bloco com atributo extra:\n{producao}"
+    );
+    assert!(
+        producao.contains("fn prod()"),
+        "producao depois dele:\n{producao}"
+    );
+}
+
+/// **Nenhum item de topo de arquivo pode desaparecer da producao.**
+///
+/// A asserção barata que faltava: um item no primeiro nivel (coluna 0) e
+/// producao por construcao — o conteudo de um `#[cfg(test)] mod tests { … }`
+/// e indentado. Se [`production_source`] apagar um deles, apagou producao, e
+/// nao importa por qual caminho. Ela e global e nao depende de haver violacao
+/// nenhuma na arvore, que e o que distingue regra viva de regra ausente.
+///
+/// Foi isto que a versao anterior nao tinha: mover `#[cfg(test)] mod
+/// source_scan;` de `mod.rs:77` para o topo do arquivo cegava `mod.rs`
+/// inteiro — incluindo `pub const CONFIG_KEY` — sem nenhum teste piscar.
+#[test]
+fn production_source_never_drops_a_top_level_item() {
+    const ITEM_STARTS: &[&str] = &[
+        "pub ",
+        "impl ",
+        "impl<",
+        "fn ",
+        "async fn ",
+        "struct ",
+        "enum ",
+        "trait ",
+        "const ",
+        "static ",
+        "type ",
+        "macro_rules!",
+    ];
+    for (name, source) in SOURCES {
+        let texto = production_source(source);
+        let producao: Vec<&str> = texto.lines().collect();
+        for (i, raw) in source.lines().enumerate() {
+            // Coluna 0 apenas: o corpo de um `mod tests` e indentado.
+            if raw.starts_with(char::is_whitespace) || raw.is_empty() {
+                continue;
+            }
+            if !ITEM_STARTS.iter().any(|p| raw.starts_with(p)) {
+                continue;
+            }
+            assert_eq!(
+                producao.get(i).copied(),
+                Some(raw),
+                "{name}:{}: `{raw}` e um item de topo de arquivo — producao por \
+construcao — e sumiu do texto varrido. A partir dali nenhuma das tres \
+varreduras deste modulo ve mais nada.",
+                i + 1
+            );
+        }
+    }
+}
+
+/// A regra invertida do `expose` precisa reprovar de verdade.
+///
+/// Sem este teste, `expose_is_only_called_where_the_allowlist_says` e **vazio**:
+/// numa arvore limpa nao ha violacao, entao "zero achados" nao distingue regra
+/// viva de regra ausente — arrancar [`EXPOSE_ALLOWED`] inteira o deixava
+/// verde. Aqui o caso negativo entra como TEXTO, e nao como estado da arvore.
+#[test]
+fn an_expose_outside_the_allowlist_is_actually_reported() {
+    // O caso que justifica a regra invertida existir: o binding renomeado
+    // duas vezes, que nenhuma leitura de macro alcanca.
+    let renomeado = r#"
+fn vaza(blob: &SessionBlob) {
+    let s = blob.expose();
+    let t = s;
+    tracing::info!(dado = %t, "vazou");
+}
+"#;
+    assert!(
+        !exposes_outside_the_allowlist("mutacao.rs", renomeado).is_empty(),
+        "`let s = blob.expose(); let t = s;` precisa ser reprovado pelo call site"
+    );
+
+    // Um `eprintln!` e um `tracing::event!` — as duas macros que a auditoria
+    // R4 plantou e que passaram verdes na varredura de macro.
+    for fonte in [
+        r#"fn f(blob: &SessionBlob) { eprintln!("{}", blob.expose()); }"#,
+        r#"fn f(blob: &SessionBlob) { tracing::event!(Level::INFO, s = %blob.expose()); }"#,
+        r#"#[tracing::instrument(fields(s = %blob.expose()))] fn f() {}"#,
+    ] {
+        assert!(
+            !exposes_outside_the_allowlist("mutacao.rs", fonte).is_empty(),
+            "nao reprovado: {fonte}"
+        );
+    }
+
+    // A allowlist precisa de fato isentar o que declara — se ela parasse de
+    // isentar, `session.rs` ficaria vermelho e ninguem acrescentaria linha
+    // nenhuma conscientemente.
+    let permitido = "fn save(blob: &SessionBlob) {\n    let mut in_out = blob.expose().as_bytes().to_vec();\n}\n";
+    assert!(
+        exposes_outside_the_allowlist("session.rs", permitido).is_empty(),
+        "o call site declarado na allowlist nao pode ser reprovado"
+    );
+    // ...e so para o arquivo declarado: a mesma linha em outro arquivo e
+    // violacao.
+    assert!(
+        !exposes_outside_the_allowlist("runner.rs", permitido).is_empty(),
+        "a allowlist e por arquivo — a mesma linha em `runner.rs` e violacao"
+    );
+
+    // Comentario nao e chamada.
+    let comentario = "fn f() {\n    // nada de blob.expose() aqui\n    let x = 1;\n}\n";
+    assert!(
+        exposes_outside_the_allowlist("ok.rs", comentario).is_empty(),
+        "um comentario citando expose() nao e um call site"
+    );
+}
+
+/// `SessionBlob` e `#[serde(transparent)]`: um `serde_json::to_string(&blob)`
+/// futuro carrega o valor **cru** sem a palavra `expose` aparecer no fonte.
+///
+/// E o unico caminho que nem a allowlist de [`EXPOSE_ALLOWED`] nem a varredura
+/// de macro alcancam — esta nota existe para que quem mexer aqui saiba que a
+/// serializacao e o buraco conhecido, e que fecha-lo e trabalho de tipo
+/// (`Serialize` manual, ou um wrapper), nao de varredura de texto.
+#[test]
+fn the_transparent_serialize_is_a_known_and_documented_hole() {
+    let src = include_str!("session.rs");
+    assert!(
+        src.contains("#[serde(transparent)]"),
+        "se a serializacao transparente saiu, atualize esta nota"
+    );
 }

@@ -7,6 +7,7 @@
 
 use std::process::{Command, Stdio};
 
+use garraia_channels::whatsapp_linked::{DEFAULT_ACCOUNT, SessionBlob, SessionKey, SessionStore};
 use tempfile::tempdir;
 
 fn garra_bin() -> &'static str {
@@ -126,11 +127,21 @@ fn top_level_help_mentions_whatsapp() {
 #[test]
 fn status_announces_an_archived_session_and_logout_removes_it() {
     let dir = tempdir().expect("tempdir");
-    // O `status` decide pelo arquivo existir; conteudo nao importa aqui.
-    let account = dir.path().join("data").join("whatsapp").join("default");
-    std::fs::create_dir_all(&account).expect("mkdir");
+    // O arquivado precisa ser uma sessao DE VERDADE, e nao bytes quaisquer:
+    // desde a rodada 5 o `restore` abre o blob antes de ligar o canal, porque
+    // "restaurado" sem "abre" entregava ao gateway um `enabled` que ele paga
+    // em timeout a cada boot. Sem passphrase, a chave vive em `session.key`
+    // ao lado do ciphertext, e o subprocesso `garra` resolve a mesma.
+    let data_dir = dir.path().join("data");
+    let store = SessionStore::for_data_dir(&data_dir, DEFAULT_ACCOUNT).expect("conta valida");
+    let key = SessionKey::resolve(store.dir(), None).expect("chave");
+    store
+        .save(&SessionBlob::new("eyJhcnF1aXZhZGEiOjF9"), &key)
+        .expect("save");
+    assert!(store.archive().expect("archive"), "havia o que arquivar");
+    let account = data_dir.join("whatsapp").join("default");
     let archived = account.join("session.enc.prev");
-    std::fs::write(&archived, b"credencial-arquivada").expect("write");
+    assert!(archived.is_file(), "o cenario comeca com um arquivado real");
 
     let status = garra(dir.path(), &["whatsapp", "status"]);
     let stdout = String::from_utf8_lossy(&status.stdout);

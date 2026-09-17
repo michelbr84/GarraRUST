@@ -67,9 +67,26 @@ SCENARIOS = (
     "bad-protocol",
     "garbage",
     "oversized",
+    # retry-forever  fala sem parar e nunca progride: `disconnected` com
+    #                 will_retry a cada segundo, nenhum `qr`, nenhum
+    #                 `connected`. E o usuario atras de captive portal, com
+    #                 443 bloqueado ou relogio errado — o caminho mais
+    #                 provavel de "Connecting... para sempre", e o unico em
+    #                 que o watchdog de silencio NAO ajuda: cada fracasso
+    #                 realimenta o relogio dele.
+    # crash-with-secret
+    #                 morre cuspindo material que parece credencial no
+    #                 stderr, para provar que a redacao esta ligada NO CALL
+    #                 SITE e nao so testada como funcao pura.
     "connect-then-hang",
     "silent-start",
+    "retry-forever",
+    "crash-with-secret",
 )
+
+# Base64 padrao de 32 bytes (44 chars, sem `.`/`@`/`-`/`_`): a forma exata de
+# uma `noiseKey` do Baileys. O teste Rust afirma que ela NAO chega a tela.
+SECRET_B64 = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0="
 
 
 def emit(event: dict) -> None:
@@ -269,6 +286,27 @@ class Bridge:
             self.qr()
             self.eof.wait(self.args.hang_secs)
             return EXIT_OK
+
+        if scenario == "retry-forever":
+            # Nunca emite `qr`, nunca `connected`: so tentativa fracassada,
+            # uma por segundo. O watchdog de silencio do driver nunca dispara
+            # porque o relogio dele zera a cada evento.
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.disconnected(428, "network", True, 1000)
+                time.sleep(1)
+            return EXIT_OK
+
+        if scenario == "crash-with-secret":
+            sys.stderr.write(
+                f"Error: connection failed noiseKey={SECRET_B64} at Object.<anonymous>\n"
+            )
+            sys.stderr.write(
+                "    at /home/user/.local/share/garraia/bridge/node_modules/"
+                "@whiskeysockets/baileys/lib/index.js:42:7\n"
+            )
+            sys.stderr.flush()
+            return EXIT_FATAL
 
         self.qr()
         time.sleep(self.args.qr_expires)

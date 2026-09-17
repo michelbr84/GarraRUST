@@ -65,6 +65,28 @@ pub const DEFAULT_STALL_AFTER_SECS: u64 = 90;
 /// sincronizacao final leva e muito menos do que "para sempre".
 pub const DEFAULT_FINAL_FLUSH_SECS: u64 = 60;
 
+/// Teto do "a ponte fala e nunca progride", em segundos.
+///
+/// # Por que o watchdog de silencio nao cobre isto
+///
+/// [`DEFAULT_STALL_AFTER_SECS`] mede **silencio**, e o contador dele zera a
+/// cada evento. Existe um fracasso que nao e silencioso: o bridge que
+/// reconecta sem parar e emite `disconnected{will_retry:true}` + `status` a
+/// cada rodada de backoff — no maximo a cada 30 s, sempre abaixo dos 90 s do
+/// prazo de silencio. E o usuario atras de captive portal, com a porta 443
+/// bloqueada ou com o relogio do sistema errado: a ponte fala, o watchdog
+/// existe, funciona, e **nunca dispara**, porque o proprio fracasso realimenta
+/// o relogio dele.
+///
+/// Este prazo e o outro: ele conta desde o `start` e **nao zera com evento
+/// nenhum**. Ele so e desarmado quando o pareamento de fato progride — um QR
+/// na tela ou uma conexao. Enquanto nao progredir, os dois relogios correm
+/// juntos e este e o que cobre o caso em que o outro e realimentado.
+///
+/// 120 s e folgado: quatro backoffs no teto da ponte, ou seis QRs, cabem
+/// dentro. Um pareamento que chegou a mostrar QR nunca o ve.
+pub const DEFAULT_NO_PROGRESS_AFTER_SECS: u64 = 120;
+
 /// Ajustes de [`pair`]. Existe para o teste poder encurtar os prazos de
 /// silencio sem esperar minutos de relogio real; producao usa o [`Default`].
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +95,8 @@ pub struct PairOptions {
     pub stall_after_secs: u64,
     /// Silencio maximo DEPOIS de conectar.
     pub final_flush_secs: u64,
+    /// Teto do "falou o tempo todo e nunca progrediu". **Nao zera com evento.**
+    pub no_progress_after_secs: u64,
 }
 
 impl Default for PairOptions {
@@ -80,6 +104,7 @@ impl Default for PairOptions {
         Self {
             stall_after_secs: DEFAULT_STALL_AFTER_SECS,
             final_flush_secs: DEFAULT_FINAL_FLUSH_SECS,
+            no_progress_after_secs: DEFAULT_NO_PROGRESS_AFTER_SECS,
         }
     }
 }
@@ -307,6 +332,10 @@ pub async fn pair_with(
     // Segundo do ultimo evento vindo do bridge. Qualquer evento conta como
     // sinal de vida, inclusive `log`.
     let mut last_event_secs: u64 = 0;
+    // O pareamento chegou a progredir alguma vez? **Nao e um relogio e nao
+    // zera**: e o unico jeito de o prazo de `no_progress_after_secs` nao ser
+    // realimentado pelo proprio fracasso que ele existe para cortar.
+    let mut ever_progressed = false;
 
     loop {
         tokio::select! {
@@ -327,6 +356,23 @@ pub async fn pair_with(
             _ = ticker.tick() => {
                 now += 1;
                 let silent_for = now.saturating_sub(last_event_secs);
+                if !ever_progressed && now >= options.no_progress_after_secs {
+                    // A ponte falou o tempo todo e nao chegou a lugar nenhum:
+                    // nem um QR, nem uma conexao. O prazo de silencio acima
+                    // nunca dispararia aqui — cada tentativa fracassada o
+                    // zera. Ver [`DEFAULT_NO_PROGRESS_AFTER_SECS`].
+                    let hint = conn.stderr_hint();
+                    let _ = conn.send(&BridgeCommand::Shutdown).await;
+                    conn.kill().await;
+                    return Err(BridgeError::Protocol(format!(
+                        "o bridge tentou por {}s sem chegar a um QR nem conectar. \
+        Quase sempre e a rede: portal de autenticacao (wi-fi de hotel/aeroporto) ainda \
+        nao aceito, saida para a porta 443 bloqueada, ou o relogio do sistema errado. \
+        Confira a conexao e rode `garra whatsapp` de novo.{hint}",
+                        options.no_progress_after_secs
+                    ))
+                    .into());
+                }
                 if machine.phase() == Phase::Connected {
                     if silent_for >= options.final_flush_secs {
                         // Conectado e mudo: o `session_update` final ou ja
@@ -401,6 +447,22 @@ pub async fn pair_with(
                 {
                     dead_reason_code = reason_code;
                 }
+                // Uma queda que vai ser retentada precisa APARECER. Sem esta
+                // linha o unico caminho de fracasso que a ponte sabe percorrer
+                // sozinha — reconectar para sempre — nao imprime nada, e a
+                // tela fica parada em "conectando ao WhatsApp…" ate o prazo
+                // acima. Uma tela que se move e explica ja nao e o estado que
+                // o dono proibiu.
+                if let BridgeEvent::Disconnected {
+                    ref reason,
+                    will_retry: true,
+                    retry_in_ms,
+                    ..
+                } = event
+                    && *reason != DisconnectReason::LoggedOut
+                {
+                    ui.status(&retry_line(*reason, retry_in_ms));
+                }
                 if matches!(event, BridgeEvent::LoggedOut) {
                     saw_logged_out = true;
                     // Nao apaga nada agora: espera o processo terminar.
@@ -416,7 +478,13 @@ pub async fn pair_with(
                     return Err(BridgeError::Protocol(message.clone()).into());
                 }
 
-                for effect in apply(&mut machine, &event, now) {
+                let effects = apply(&mut machine, &event, now);
+                // Depois de aplicar, e nao antes: e a maquina que sabe se o
+                // evento moveu o pareamento para frente. `|=` de proposito —
+                // um QR que expira volta a fase para tras, mas "ja progrediu
+                // uma vez" nao se desfaz.
+                ever_progressed |= is_progress(machine.phase());
+                for effect in effects {
                     match effect {
                         Effect::ShowQr { attempt } => {
                             if let Some(data) = pending_qr.take() {
@@ -642,6 +710,44 @@ volta, nvm, corepack) baixando versao, ou um stub esperando confirmacao. \
 Rode `node --version` a mao para ver se ele responde, e depois \
 `garra whatsapp` de novo.{hint}"
     ))
+}
+
+/// O pareamento saiu do lugar? E o que desarma o prazo de
+/// [`DEFAULT_NO_PROGRESS_AFTER_SECS`].
+///
+/// "Progredir" e uma coisa so: ou ha um QR na tela para o usuario ler, ou o
+/// servidor aceitou a sessao. Tudo o mais — `status`, `log`, `disconnected`
+/// com retry — e ruido que a ponte produz enquanto nao chega a lugar nenhum,
+/// e e exatamente esse ruido que realimenta o outro relogio.
+fn is_progress(phase: Phase) -> bool {
+    matches!(
+        phase,
+        Phase::QrGenerated { .. }
+            | Phase::WaitingScan { .. }
+            | Phase::Authenticated
+            | Phase::Connected
+    )
+}
+
+/// A linha que o usuario le quando a ponte cai e vai tentar de novo.
+///
+/// Sem motivo e sem prazo isto seria so mais uma linha rolando: o que a torna
+/// util e dizer **o que** falhou e **quando** e a proxima tentativa, porque e
+/// o que permite ao usuario decidir se espera ou se conserta a rede.
+fn retry_line(reason: DisconnectReason, retry_in_ms: Option<u64>) -> String {
+    let motivo = match reason {
+        DisconnectReason::Network => "a rede caiu",
+        DisconnectReason::Timeout => "o servidor nao respondeu a tempo",
+        DisconnectReason::RestartRequired => "o WhatsApp pediu para reiniciar a conexao",
+        DisconnectReason::Replaced => "outro aparelho assumiu a conexao",
+        // `logged_out` nao chega aqui (o chamador filtra) e `unknown` e o
+        // resto: nao invente um motivo que nao se sabe.
+        DisconnectReason::LoggedOut | DisconnectReason::Unknown => "a conexao caiu",
+    };
+    match retry_in_ms {
+        Some(ms) if ms >= 1000 => format!("{motivo} — nova tentativa em {}s", ms / 1000),
+        Some(_) | None => format!("{motivo} — tentando de novo"),
+    }
 }
 
 /// Traduz um evento do bridge em evento da maquina e aplica.
@@ -951,7 +1057,37 @@ async fn serve_once(
                         | BridgeCommand::Read { .. }
                         | BridgeCommand::Typing { .. }
                 ) {
-                    conn.send(&command).await?;
+                    // Sob prazo pelo mesmo motivo do handshake: um filho que
+                    // parou de ler o stdin trava o `write_all` acima do buffer
+                    // do pipe, e aqui nao ha ninguem olhando o terminal. Cair
+                    // no backoff e melhor do que pendurar o canal.
+                    match step_with_deadline(
+                        &mut *cancel,
+                        DEFAULT_STALL_AFTER_SECS,
+                        conn.send(&command),
+                    )
+                    .await
+                    {
+                        Ok(Step::Done(())) => {}
+                        Ok(Step::Cancelled) => {
+                            conn.kill().await;
+                            return Ok(ServeExit::Cancelled);
+                        }
+                        Ok(Step::TimedOut) => {
+                            tracing::warn!(
+                                secs = DEFAULT_STALL_AFTER_SECS,
+                                "o bridge nao aceitou o comando no prazo; reconectando"
+                            );
+                            conn.kill().await;
+                            return Ok(ServeExit::Dropped {
+                                was_connected: saw_connected,
+                            });
+                        }
+                        Err(e) => {
+                            conn.kill().await;
+                            return Err(e.into());
+                        }
+                    }
                 } else {
                     tracing::warn!("comando recusado no canal de saida do WhatsApp vinculado");
                 }
@@ -960,7 +1096,42 @@ async fn serve_once(
                 let Some(event) = event? else {
                     // stdout fechou: o codigo de saida decide se a sessao
                     // morreu ou se foi so uma queda a reconectar.
-                    let code = conn.wait().await?;
+                    //
+                    // Sob prazo pelo mesmo motivo do gemeo no `pair`: um filho
+                    // que fecha o stdout e nao termina prende este `wait` para
+                    // sempre, e aqui o laco ja acabou — nao ha nenhum outro
+                    // relogio, nem Ctrl+C, nem o backoff que esta logo acima.
+                    let code = match step_with_deadline(
+                        &mut *cancel,
+                        DEFAULT_STALL_AFTER_SECS,
+                        conn.wait(),
+                    )
+                    .await
+                    {
+                        Ok(Step::Done(code)) => code,
+                        Ok(Step::Cancelled) => {
+                            conn.kill().await;
+                            return Ok(ServeExit::Cancelled);
+                        }
+                        Ok(Step::TimedOut) => {
+                            // Sem codigo de saida nao da para afirmar que a
+                            // sessao morreu, e apagar material por falta de
+                            // prova seria o erro pior dos dois: trata como
+                            // queda e deixa o backoff decidir.
+                            tracing::warn!(
+                                secs = DEFAULT_STALL_AFTER_SECS,
+                                "o bridge fechou a saida e nao terminou; encerrando a forca"
+                            );
+                            conn.kill().await;
+                            return Ok(ServeExit::Dropped {
+                                was_connected: saw_connected,
+                            });
+                        }
+                        Err(e) => {
+                            conn.kill().await;
+                            return Err(e.into());
+                        }
+                    };
                     return Ok(if super::protocol::session_is_dead(code, dead_reason_code) {
                         ServeExit::SessionDead { reason_code: dead_reason_code }
                     } else if saw_logged_out {

@@ -226,8 +226,8 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(t(
         lang,
-        "Também existem: garra whatsapp status | garra whatsapp logout",
-        "Also available: garra whatsapp status | garra whatsapp logout",
+        "Também existem: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
+        "Also available: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
     ));
     out
 }
@@ -508,6 +508,29 @@ fn restore(ctx: &Context) -> i32 {
             return EX_SOFTWARE;
         }
     }
+    // A ORDEM (blob primeiro, `enabled` depois) so vale se o blob for de fato
+    // utilizavel. `restore_archive` move bytes; ela nao decifra nada. Se a
+    // `session.key` se perdeu ou a passphrase do cofre mudou desde o
+    // arquivamento, dizer "restaurada" e ligar o canal entrega ao gateway
+    // exatamente o `enabled` sem sessao que esta ordem existe para evitar — e
+    // ele paga timeout e retry a cada boot, em silencio.
+    //
+    // O `status` ja faz esta mesma prova (`store.load`); aqui ela custa cinco
+    // linhas e troca sucesso falso por erro que diz o que fazer.
+    let abre = ctx.key().and_then(|key| store.load(&key));
+    if let Err(e) = abre {
+        eprintln!("{e}");
+        eprintln!(
+            "{}",
+            t(
+                ctx.lang,
+                "A sessão foi restaurada mas não abre com a chave atual — o canal NÃO foi ligado. Rode `garra whatsapp` para ler um QR novo.",
+                "The session was restored but does not open with the current key — the channel was NOT enabled. Run `garra whatsapp` to scan a new QR."
+            )
+        );
+        return EX_UNAVAILABLE;
+    }
+
     println!(
         "✓ {}",
         t(ctx.lang, "Sessão restaurada.", "Session restored.")

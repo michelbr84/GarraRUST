@@ -152,8 +152,13 @@ impl SessionBlob {
         Self(raw.into())
     }
 
-    /// Valor cru. So o bridge e o store devem chamar isto.
-    pub fn expose(&self) -> &str {
+    /// Valor cru.
+    ///
+    /// `pub(crate)` e nao `pub`: os dois unicos call sites legitimos estao
+    /// neste arquivo, e o rustc passa a impedir de graca o que a allowlist
+    /// textual de `source_scan.rs` impedia com esforco. A allowlist continua
+    /// valendo para dentro da crate, que e onde o compilador para.
+    pub(crate) fn expose(&self) -> &str {
         &self.0
     }
 
@@ -658,7 +663,17 @@ fn write_tmp_file(tmp: &Path, bytes: &[u8]) -> Result<(), SessionError> {
     if let Err(e) = written {
         // Daqui em diante o arquivo E nosso, e ele ja tem material de sessao:
         // deixa-lo orfao seria o pior dos dois mundos.
-        let _ = shred(tmp);
+        if let Err(limpeza) = shred(tmp) {
+            // Sem `?`: o erro que interessa ao chamador e o da escrita, nao o
+            // da limpeza. Mas engolir isto em silencio deixava um temporario
+            // com material de sessao em disco sem nenhum rastro. O caminho
+            // pode ir para o log; o conteudo, nunca.
+            tracing::warn!(
+                caminho = %tmp.display(),
+                error = %limpeza,
+                "falha ao triturar o temporario da sessao do WhatsApp vinculado"
+            );
+        }
         return Err(SessionError::io(tmp, e));
     }
     // Fora de Unix o `mode` acima nao existe; aperta pelo caminho generico.

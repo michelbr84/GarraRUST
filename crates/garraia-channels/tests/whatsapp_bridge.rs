@@ -384,8 +384,8 @@ async fn a_relink_refused_by_the_server_never_destroys_the_archived_session() {
         "e o guard consegue devolve-lo"
     );
     assert_eq!(
-        store.load(&key).expect("a sessao restaurada abre").expose(),
-        anterior.expose(),
+        store.load(&key).expect("a sessao restaurada abre"),
+        anterior,
         "e o que volta e a MESMA sessao"
     );
 }
@@ -666,6 +666,7 @@ async fn a_bridge_that_connects_and_then_goes_quiet_is_not_waited_on_forever() {
                 // neste cenario e o de flush final.
                 stall_after_secs: 90,
                 final_flush_secs: 3,
+                ..PairOptions::default()
             },
         ),
     )
@@ -890,4 +891,212 @@ async fn serve_stops_and_purges_when_the_account_is_logged_out() {
         .expect_err("logged out");
     assert!(matches!(err, RunError::SessionDead { .. }), "veio {err:?}");
     assert!(!store.exists(), "o material some quando a sessao morre");
+}
+
+/// **"Connecting… para sempre", pelo caminho que o watchdog de silencio nao
+/// alcanca.**
+///
+/// O prazo de silencio da rodada 4 conta desde o ULTIMO evento, e zera a
+/// qualquer um deles — inclusive os que significam "falhei de novo". A ponte
+/// real reconecta sozinha, sem teto, emitindo `disconnected{will_retry:true}`
+/// + `status` a cada rodada de backoff (≤ 30 s, sempre abaixo dos 90 s do
+/// watchdog). Resultado: o watchdog existe, funciona, e nunca dispara, porque
+/// o proprio fracasso o realimenta.
+///
+/// E o usuario sem internet, atras de captive portal, com 443 bloqueado ou com
+/// o relogio errado — nao um caso de laboratorio. A tela parava em duas linhas
+/// e nao andava mais; so o Ctrl+C saia.
+///
+/// As duas metades do conserto estao asseridas aqui, e cada uma sozinha
+/// deixaria metade do problema em pe:
+/// 1. a queda **aparece** na tela, com motivo e prazo;
+/// 2. o "nunca progrediu" tem teto, e o relogio dele **nao zera com evento**.
+#[tokio::test]
+async fn a_bridge_that_retries_forever_is_neither_silent_nor_endless() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    let mut ui = RecordingUi::default();
+
+    let outer = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pair_with(
+            &FixtureLauncher::new("retry-forever", dir.path().to_path_buf()),
+            &store,
+            &key,
+            &mut ui,
+            never_cancelled(),
+            PairOptions {
+                // O prazo de SILENCIO e curto de proposito: mesmo curto, ele
+                // nao dispara, porque a ponte fala a cada segundo. Quem tem de
+                // cortar e o outro.
+                stall_after_secs: 3,
+                final_flush_secs: 3,
+                no_progress_after_secs: 6,
+            },
+        ),
+    )
+    .await
+    .expect("o driver precisa desistir SOZINHO — o timeout externo nao e o mecanismo");
+
+    let err = outer.expect_err("nunca houve QR nem conexao");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sem chegar a um QR nem conectar"),
+        "a mensagem precisa dizer que nao houve progresso: {msg}"
+    );
+    assert!(
+        msg.contains("garra whatsapp"),
+        "e precisa ser acionavel — dizer o que fazer: {msg}"
+    );
+
+    // Metade 1: a tela andou. Sem isso o usuario passa os 6 s (120 s em
+    // producao) olhando exatamente as mesmas duas linhas.
+    let quedas = ui
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("status:") && l.contains("nova tentativa em"))
+        .count();
+    assert!(
+        quedas >= 2,
+        "cada tentativa fracassada tem de aparecer na tela, com motivo e prazo; \
+o usuario viu: {:?}",
+        ui.lines
+    );
+    assert!(
+        ui.lines.iter().any(|l| l.contains("a rede caiu")),
+        "a linha precisa dizer o MOTIVO que a ponte reportou: {:?}",
+        ui.lines
+    );
+
+    assert!(!store.exists(), "nada pode ter sido gravado");
+}
+
+/// O prazo de "nunca progrediu" **nao** pode cortar um pareamento que
+/// progrediu e depois ficou esperando a leitura do QR.
+///
+/// Sem esta metade o conserto acima seria um teto burro sobre o fluxo normal:
+/// um usuario que demora a pegar o celular veria o comando desistir no meio.
+#[tokio::test]
+async fn a_pairing_that_showed_a_qr_is_never_cut_by_the_no_progress_deadline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    let mut ui = RecordingUi::default();
+
+    // O prazo e 1 s — menor que o proprio pareamento. Se ele contasse o
+    // tempo total em vez de "tempo sem progresso", este teste falharia.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pair_with(
+            &FixtureLauncher::new("pair-expire-then-ok", dir.path().to_path_buf()).qr_expires(1.5),
+            &store,
+            &key,
+            &mut ui,
+            never_cancelled(),
+            PairOptions {
+                stall_after_secs: 30,
+                final_flush_secs: 5,
+                no_progress_after_secs: 1,
+            },
+        ),
+    )
+    .await
+    .expect("o pareamento nao pode pendurar")
+    .expect("um pareamento que mostrou QR e conectou nao pode ser cortado pelo prazo");
+
+    assert!(outcome.session_saved);
+    assert!(
+        ui.lines.iter().any(|l| l.starts_with("qr:")),
+        "este cenario existe para mostrar QR: {:?}",
+        ui.lines
+    );
+}
+
+/// **A redacao do stderr esta ligada NO CALL SITE, e nao so testada como
+/// funcao pura.**
+///
+/// `redact_tail_line` tinha teste; `stderr_hint` nao tinha nenhum. Neutralizar
+/// os dois call sites — devolver a linha crua em vez da redigida — deixava
+/// **todos** os testes verdes com a correcao de seguranca inteira desfeita.
+/// Este teste roda o processo de verdade e olha o que chega a tela.
+#[tokio::test]
+async fn the_error_shown_to_the_user_never_carries_the_bridge_credential() {
+    // A mesma constante da fixture: base64 padrao de 32 B, a forma de uma
+    // `noiseKey` do Baileys.
+    const SECRET: &str = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0=";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+
+    let err = pair_with(
+        &FixtureLauncher::new("crash-with-secret", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+        PairOptions {
+            stall_after_secs: 10,
+            final_flush_secs: 3,
+            ..PairOptions::default()
+        },
+    )
+    .await
+    .expect_err("a ponte morreu antes de conectar");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Ultimas linhas do bridge:"),
+        "a cauda do stderr precisa chegar ao usuario — e ela que este teste vigia: {msg}"
+    );
+    assert!(
+        !msg.contains(SECRET),
+        "o material de credencial chegou a tela CRU:\n{msg}"
+    );
+    assert!(
+        msg.contains("<redigido:"),
+        "a sequencia longa tinha de ter sido redigida: {msg}"
+    );
+    // E a redacao nao pode custar o diagnostico: o caminho do modulo que o
+    // Node citou continua legivel, que e o motivo de a cauda existir.
+    assert!(
+        msg.contains("@whiskeysockets/baileys/lib/index.js"),
+        "o caminho do modulo tem de continuar legivel: {msg}"
+    );
+}
+
+/// O **segundo** call site da redacao: a cauda do `npm ci` que falhou.
+///
+/// Os dois call sites (`stderr_hint` e `npm_ci`) precisam de teste separado —
+/// neutralizar so um deixaria o outro verde, que e exatamente o modo de falha
+/// que esta rodada encontrou.
+#[tokio::test]
+async fn a_failed_npm_ci_never_shows_a_credential_from_its_stderr() {
+    const SECRET: &str = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0=";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fake_npm = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("fake_npm.py");
+
+    let err = garraia_channels::whatsapp_linked::bridge::npm_ci(&fake_npm, dir.path())
+        .await
+        .expect_err("o npm falso sai 1");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("npm ERR! code ERESOLVE"),
+        "a cauda precisa chegar ao usuario: {msg}"
+    );
+    assert!(
+        !msg.contains(SECRET),
+        "o `_auth` do npm chegou a tela CRU:\n{msg}"
+    );
+    assert!(
+        msg.contains("<redigido:"),
+        "a sequencia longa tinha de ter sido redigida: {msg}"
+    );
+    assert!(
+        msg.contains("@whiskeysockets/baileys/package.json"),
+        "o caminho tem de continuar legivel: {msg}"
+    );
 }
