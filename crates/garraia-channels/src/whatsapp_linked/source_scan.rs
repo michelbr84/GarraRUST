@@ -33,11 +33,22 @@
 //!    `.0` do [`FORBIDDEN`] so e consultado DENTRO do bloco da macro, entao o
 //!    controle `%self.0` direto ficava vermelho e o renomeado passava.
 //!
-//! Os casos 2 e 3 estao fechados desde a rodada 8, cada um pela guarda que
-//! cabia: [`session_blob_gains_no_new_str_conversion`] le a DECLARACAO dos
-//! `impl` (o caso 2 nao e um call site, e um tipo), e
-//! [`RAW_FIELD_ALLOWED`] faz com o campo cru o que [`EXPOSE_ALLOWED`] ja fazia
-//! com o metodo (o caso 3). O caso 1 segue aberto, de proposito e por escrito.
+//! O caso 3 esta fechado desde a rodada 8: [`RAW_FIELD_ALLOWED`] faz com o
+//! campo cru o que [`EXPOSE_ALLOWED`] ja fazia com o metodo.
+//!
+//! O caso 2 esta fechado **para `impl` escrito a mao**, por
+//! [`session_blob_gains_no_new_str_conversion`], que le a DECLARACAO dos
+//! `impl` (o caso 2 nao e um call site, e um tipo). **Gerado por
+//! `macro_rules!` ele escapa**, e a medicao esta aqui para ninguem ter de
+//! refaze-la: um `macro_rules!` que expanda
+//! `impl AsRef<str> for $t { fn as_ref(&self) -> &str { &self.0 } }`
+//! passa 111/111, porque a linha do `impl` nao contem o texto `SessionBlob`
+//! (que a guarda exige) e o corpo `&self.0` e justamente a entrada legitima
+//! da [`RAW_FIELD_ALLOWED`]. As duas guardas se anulam nesse caso. Fechar
+//! exige exigir que TODO `impl` de `session.rs` esteja numa allowlist —
+//! cinco entradas a mais, e fica para uma fatia propria.
+//!
+//! O caso 1 segue aberto, de proposito e por escrito.
 //!
 //! Nenhum dos tres era vazamento vivo: todos exigem codigo novo escrito e
 //! revisado. O que a nota anterior fazia de errado era prometer completude
@@ -757,7 +768,7 @@ fn exposes_outside_the_allowlist(name: &str, source: &str) -> Vec<String> {
         }
         if EXPOSE_ALLOWED
             .iter()
-            .any(|(f, allowed)| *f == name && line.contains(allowed))
+            .any(|(f, allowed)| *f == name && line == *allowed)
         {
             continue;
         }
