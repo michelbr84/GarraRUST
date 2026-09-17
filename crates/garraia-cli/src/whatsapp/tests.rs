@@ -693,16 +693,31 @@ fn the_menu_without_a_tty_prints_both_options_and_exits_zero() {
     assert_eq!(run(Action::Menu, &ctx, &ScriptedPrompter::default()), 0);
 }
 
+/// Sem terminal, `link` e `cloud` recusam com 69 — e nao gravam nada.
+///
+/// Este teste exigia exit **0**, e era o segundo a codificar o defeito: os
+/// tres comandos respondiam com o texto do menu, que termina mandando rodar
+/// `garra whatsapp link`. O smoke
+/// `link_and_cloud_without_a_tty_refuse_instead_of_repeating_the_menu` prova
+/// no binario que as saidas hoje diferem; aqui a afirmacao e a do exit code
+/// mais a de que a recusa acontece **antes** de qualquer escrita.
 #[test]
-fn link_without_a_tty_also_exits_zero_with_the_hint() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let ctx = ctx_in(&dir, false);
-    assert_eq!(run(Action::Link, &ctx, &ScriptedPrompter::default()), 0);
-    assert!(
-        !ctx.store()
-            .expect("DEFAULT_ACCOUNT e conta valida")
-            .exists()
-    );
+fn link_and_cloud_without_a_tty_refuse_with_69_before_touching_disk() {
+    for acao in [Action::Link, Action::Cloud] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ctx_in(&dir, false);
+        assert_eq!(
+            run(acao, &ctx, &ScriptedPrompter::default()),
+            69,
+            "{acao:?} num pipe tem de sair EX_UNAVAILABLE, nao 0"
+        );
+        assert!(
+            !ctx.store()
+                .expect("DEFAULT_ACCOUNT e conta valida")
+                .exists(),
+            "{acao:?} recusou, entao nao pode ter criado sessao"
+        );
+    }
 }
 
 #[test]
@@ -799,8 +814,8 @@ fn a_relink_that_never_pairs_puts_the_previous_session_back() {
         "e nada pode ter ficado para tras no .prev"
     );
     assert_eq!(
-        store.load(&key).expect("a sessao restaurada abre").expose(),
-        anterior.expose(),
+        store.load(&key).expect("a sessao restaurada abre"),
+        anterior,
         "e tem de ser a MESMA sessao — restaurar um arquivo vazio nao restaura nada"
     );
 
@@ -838,8 +853,8 @@ fn restore_brings_the_archived_session_back_and_enables_the_channel() {
     assert!(store.exists(), "a sessao voltou para session.enc");
     assert!(!store.archive_path().exists(), "e nao ficou copia no .prev");
     assert_eq!(
-        store.load(&key).expect("a restaurada abre").expose(),
-        anterior.expose(),
+        store.load(&key).expect("a restaurada abre"),
+        anterior,
         "e tem de ser a MESMA sessao"
     );
     let config = loader.load().expect("load");
@@ -898,8 +913,8 @@ fn restore_never_clobbers_a_live_session() {
         69
     );
     assert_eq!(
-        store.load(&key).expect("load").expose(),
-        viva.expose(),
+        store.load(&key).expect("load"),
+        viva,
         "a sessao viva nao pode ter sido substituida"
     );
     assert!(
@@ -1097,5 +1112,48 @@ fn declining_the_relink_prompt_never_archives_the_session() {
     assert!(
         !store.archive_path().exists(),
         "responder nao ao re-vincular nao arquiva nada"
+    );
+}
+
+/// **`restore` nao pode ligar o canal sem provar que o blob abre.**
+///
+/// `restore_archive()` move bytes; ela nao decifra nada. Se a `session.key`
+/// se perdeu ou a passphrase do cofre mudou desde o arquivamento, a versao
+/// anterior imprimia "✓ Sessão restaurada", gravava `enabled = true` e saia 0
+/// — entregando ao gateway exatamente o `enabled` sem sessao utilizavel que a
+/// ordem blob→enabled existe para evitar. O gateway paga timeout e retry a
+/// cada boot, e ninguem fica sabendo.
+#[test]
+fn restore_refuses_to_enable_the_channel_when_the_blob_no_longer_opens() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+    let store = ctx.store().expect("DEFAULT_ACCOUNT e conta valida");
+    let key = ctx.key().expect("key");
+    let anterior = garraia_channels::whatsapp_linked::SessionBlob::new("eyJhbnRlcmlvciI6MX0=");
+    store.save(&anterior, &key).expect("save");
+    assert!(store.archive().expect("archive"), "havia o que arquivar");
+
+    // A passphrase do cofre mudou entre o arquivamento e o `restore`. O
+    // ciphertext continua la; a chave que o abre, nao.
+    let outra = Context {
+        vault_passphrase: Some("outra-passphrase-completamente-diferente".into()),
+        ..ctx_in(&dir, true)
+    };
+
+    assert_eq!(
+        super::run(Action::Restore, &outra, &ScriptedPrompter::default()),
+        69,
+        "restaurar um blob que nao abre e EX_UNAVAILABLE, nao sucesso"
+    );
+
+    let config = loader.load().expect("load");
+    assert!(
+        config
+            .channels
+            .get("whatsapp_linked")
+            .is_none_or(|c| c.enabled != Some(true)),
+        "o canal NAO pode ter sido ligado com uma sessao que nao abre"
     );
 }

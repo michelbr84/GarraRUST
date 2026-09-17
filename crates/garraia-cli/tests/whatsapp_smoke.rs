@@ -7,6 +7,7 @@
 
 use std::process::{Command, Stdio};
 
+use garraia_channels::whatsapp_linked::{DEFAULT_ACCOUNT, SessionBlob, SessionKey, SessionStore};
 use tempfile::tempdir;
 
 fn garra_bin() -> &'static str {
@@ -56,14 +57,61 @@ fn whatsapp_without_a_tty_prints_both_options_and_exits_zero() {
     assert!(stdout.contains("Business"), "{stdout}");
 }
 
+/// O `link` e o `cloud` num pipe nao podem repetir o texto do menu.
+///
+/// A versao anterior deste teste exigia exit 0 de `whatsapp link` "para
+/// orientar e nao travar esperando um QR". Travar era de fato o risco certo,
+/// mas o remedio estava errado, e o teste passava **porque** o defeito
+/// existia: os tres comandos imprimiam o MESMO texto, byte a byte, e o texto
+/// termina mandando rodar `garra whatsapp link`. Medido no binario de
+/// verdade: `diff` entre as saidas de `whatsapp`, `whatsapp link` e
+/// `whatsapp cloud` era vazio, e os tres saiam 0.
+///
+/// Ou seja, `ssh servidor 'garra whatsapp link'` — a forma mais provavel de
+/// alguem conectar um GarraIA headless — respondia ao usuario com o comando
+/// que ele tinha acabado de rodar, sem QR, sem erro, e com um exit code
+/// dizendo que tinha dado certo. Ciclo fechado.
+///
+/// O que este teste prende agora: os dois fluxos escolhidos saem 69, dizem o
+/// motivo, ensinam o `ssh -t`, e o texto deles **difere** do texto do menu.
 #[test]
-fn whatsapp_link_without_a_tty_also_exits_zero() {
+fn link_and_cloud_without_a_tty_refuse_instead_of_repeating_the_menu() {
     let dir = tempdir().expect("tempdir");
-    let out = garra(dir.path(), &["whatsapp", "link"]);
+
+    let menu = garra(dir.path(), &["whatsapp"]);
     assert!(
-        out.status.success(),
-        "`link` num pipe precisa orientar e sair 0, nao travar esperando um QR"
+        menu.status.success(),
+        "o menu sem escolha continua saindo 0: ali o hint E a resposta"
     );
+    let menu_out = String::from_utf8_lossy(&menu.stdout).to_string();
+
+    for sub in ["link", "cloud"] {
+        let out = garra(dir.path(), &["whatsapp", sub]);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+        assert_eq!(
+            out.status.code(),
+            Some(69),
+            "`{sub}` num pipe tem de sair 69 (EX_UNAVAILABLE), nao 0:\nstdout:\n{stdout}"
+        );
+
+        // A assercao que mata a mutacao: se alguem voltar os dois bracos para
+        // `non_interactive_hint`, as saidas voltam a ser identicas.
+        assert_ne!(
+            stdout, menu_out,
+            "`{sub}` esta repetindo o texto do menu — o usuario que escolheu \
+             o fluxo recebe de volta o comando que acabou de rodar"
+        );
+        // E o motivo mais a saida, para a mensagem nao ser so uma recusa.
+        assert!(
+            stdout.contains("ssh -t"),
+            "`{sub}` precisa ensinar o `ssh -t`:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("garra whatsapp {sub}")),
+            "a linha do `ssh -t` precisa terminar no proprio subcomando:\n{stdout}"
+        );
+    }
 }
 
 #[test]
@@ -126,11 +174,21 @@ fn top_level_help_mentions_whatsapp() {
 #[test]
 fn status_announces_an_archived_session_and_logout_removes_it() {
     let dir = tempdir().expect("tempdir");
-    // O `status` decide pelo arquivo existir; conteudo nao importa aqui.
-    let account = dir.path().join("data").join("whatsapp").join("default");
-    std::fs::create_dir_all(&account).expect("mkdir");
+    // O arquivado precisa ser uma sessao DE VERDADE, e nao bytes quaisquer:
+    // desde a rodada 5 o `restore` abre o blob antes de ligar o canal, porque
+    // "restaurado" sem "abre" entregava ao gateway um `enabled` que ele paga
+    // em timeout a cada boot. Sem passphrase, a chave vive em `session.key`
+    // ao lado do ciphertext, e o subprocesso `garra` resolve a mesma.
+    let data_dir = dir.path().join("data");
+    let store = SessionStore::for_data_dir(&data_dir, DEFAULT_ACCOUNT).expect("conta valida");
+    let key = SessionKey::resolve(store.dir(), None).expect("chave");
+    store
+        .save(&SessionBlob::new("eyJhcnF1aXZhZGEiOjF9"), &key)
+        .expect("save");
+    assert!(store.archive().expect("archive"), "havia o que arquivar");
+    let account = data_dir.join("whatsapp").join("default");
     let archived = account.join("session.enc.prev");
-    std::fs::write(&archived, b"credencial-arquivada").expect("write");
+    assert!(archived.is_file(), "o cenario comeca com um arquivado real");
 
     let status = garra(dir.path(), &["whatsapp", "status"]);
     let stdout = String::from_utf8_lossy(&status.stdout);
@@ -183,6 +241,69 @@ vinculado:\n{stdout}"
         !archived.exists(),
         "a credencial arquivada tem de sumir:\n{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// **Uma passphrase que so FALTA no ambiente nao pode consumir o arquivado.**
+///
+/// A prova de que o blob abre existia, e rodava DEPOIS de
+/// `restore_archive()`. Bastava rodar `garra whatsapp restore` num shell sem
+/// a passphrase do cofre — a distracao mais comum de quem normalmente a
+/// exporta — para o `.prev` sair do lugar: exit 69, arquivo consumido, e a
+/// mensagem mandando ler um QR novo, conselho que descartaria uma sessao
+/// intacta. Nao sobrava comando que ligasse o canal: um segundo `restore`,
+/// ja com a passphrase, respondia "nao ha arquivada".
+///
+/// O que este teste fixa nao e a mensagem, e o DISCO: o arquivado continua
+/// onde estava, e por isso a segunda tentativa ainda tem o que restaurar.
+#[test]
+fn a_missing_vault_passphrase_never_consumes_the_archived_session() {
+    let dir = tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let store = SessionStore::for_data_dir(&data_dir, DEFAULT_ACCOUNT).expect("conta valida");
+
+    // A sessao arquivada foi cifrada COM passphrase do cofre...
+    let key = SessionKey::resolve(store.dir(), Some("senha-do-cofre")).expect("chave");
+    store
+        .save(&SessionBlob::new("eyJhcnF1aXZhZGEiOjF9"), &key)
+        .expect("save");
+    assert!(store.archive().expect("archive"), "havia o que arquivar");
+
+    let account = data_dir.join("whatsapp").join("default");
+    let archived = account.join("session.enc.prev");
+    assert!(archived.is_file(), "o cenario comeca com um arquivado real");
+
+    // ...e o `restore` roda SEM ela no ambiente (o helper nao a exporta).
+    let out = garra(dir.path(), &["whatsapp", "restore"]);
+    assert_eq!(
+        out.status.code(),
+        Some(69),
+        "restore sem a chave certa precisa recusar:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // **A asserção que importa.** Antes da correcao o `.prev` ja tinha sido
+    // movido para `session.enc` quando a prova falhou.
+    assert!(
+        archived.is_file(),
+        "o arquivado foi CONSUMIDO por uma falha que nao destruiu nada de \
+fato — ele tem de continuar onde estava"
+    );
+    assert!(
+        !account.join("session.enc").exists(),
+        "e nada pode ter chegado ao lugar da sessao viva"
+    );
+
+    // E a mensagem nao pode mandar jogar fora o que ainda serve.
+    let tela = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !tela.contains("QR"),
+        "mandar ler um QR novo aqui descartaria uma sessao intacta:\n{tela}"
     );
 }
 

@@ -489,10 +489,11 @@ pub fn build_router(
             "/api/mcp/marketplace",
             get(crate::mcp_marketplace::marketplace_catalog),
         )
-        .route(
-            "/api/mcp/marketplace/install",
-            post(crate::mcp_marketplace::marketplace_install),
-        )
+        // #1245: `POST /api/mcp/marketplace/install` NAO mora aqui. Ele vive
+        // no sub-router protegido `mcp_marketplace::build_marketplace_install_
+        // routes`, merjado mais abaixo junto com `/api/plugins/*`. Montar de
+        // volta neste grupo aberto reabre o bug: registrar servidor MCP sem
+        // sessao de admin, com `env` e `extra_args` escolhidos pelo chamador.
         .route(
             "/api/mcp/{id}/health",
             get(crate::mcp_marketplace::mcp_server_health),
@@ -562,6 +563,13 @@ pub fn build_router(
             state.clone(),
             admin_store.clone(),
         ))
+        // #1245: mesmo tratamento para o install do marketplace — sessao de
+        // admin + CSRF + `Permission::ManagePlugins`. Merjado aqui, ao lado
+        // das rotas irmas, e antes do `nest` que consome o `admin_store`.
+        .merge(crate::mcp_marketplace::build_marketplace_install_routes(
+            state.clone(),
+            admin_store.clone(),
+        ))
         .nest(
             "/admin",
             admin::routes::build_admin_router(state, admin_store, admin_encryption_key),
@@ -570,6 +578,22 @@ pub fn build_router(
         // de todos os `merge`/`nest` para cobrir tambem o que
         // `build_skill_skin_routes` e `build_plugin_routes` montam sob
         // `/api/`. Com a chave ausente e um passa-direto.
+        //
+        // A igualdade exata do conjunto `/v1/` do gate (`ROTAS_DE_CONVERSA`)
+        // depende de a TABELA DE ROTAS acima e o `is_gated_path` do
+        // `gateway_auth.rs` crescerem juntos. Hoje as duas literalidades se
+        // cancelam: o `matchit` nao casa `/v1/messages/`, `//v1/messages` nem
+        // dot-segment, e o gate tampouco os cobre. Quem registrar uma dessas
+        // variantes aqui — para consertar um 404, ou via wildcard ou alias —
+        // sem acrescenta-la la, reabre a #1240: a rota passa a levar ao
+        // handler e o gate segue dizendo "nao e do conjunto". Travado em
+        // `nenhuma_variante_de_uri_alcanca_o_plano_de_conversa_sem_credencial`.
+        //
+        // (Um `NormalizePathLayer` NAO e o risco aqui, ao contrario do que
+        // parece: `Router::layer` roda DEPOIS do roteamento — e por isso que
+        // rota inexistente sob `/api/` tambem leva 401 —, entao reescrever o
+        // path por dentro nao muda a rota ja escolhida; e por fora do router
+        // ele roda antes do gate, que entao ja ve o caminho canonico.)
         //
         // Cuidado ao mover: em tower, o ultimo `.layer()` e o mais externo,
         // entao a ordem no codigo e o inverso da ordem de execucao. Escrito

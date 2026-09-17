@@ -41,16 +41,19 @@ pub fn run() {
             // Register global hotkeys (Alt+G overlay toggle, Ctrl+Space chat bar)
             hotkey::register_hotkeys(app.handle(), visible)?;
 
-            // Copy default config if not present
-            if let (Ok(resource_dir), Ok(config_dir)) =
-                (app.path().resource_dir(), app.path().app_config_dir())
-            {
-                // Gateway reads from %APPDATA%\garraia\config.yml
-                let config_file = config_dir
-                    .parent()
-                    .unwrap_or(&config_dir)
-                    .join("garraia")
-                    .join("config.yml");
+            // Copy default config if not present.
+            //
+            // #1240: o path vem do `ConfigLoader::default_config_dir()`, o
+            // mesmo resolvedor que o sidecar `garraia start` usa — e o mesmo
+            // que o comando `gateway_api_key` le. Antes daqui este bloco
+            // reimplementava o path a mao (`app_config_dir().parent()/garraia`),
+            // que casa com o do gateway nos tres SOs no caso default mas
+            // ignora `GARRAIA_CONFIG_DIR` e o diretorio legado `~/.garraia`.
+            // Com as duas pontas divergindo, o desktop leria a chave de um
+            // arquivo e o gateway exigiria a do outro — de novo o 401 mudo.
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                let config_file =
+                    garraia_config::ConfigLoader::default_config_dir().join("config.yml");
                 if !config_file.exists() {
                     let src = resource_dir.join("config.default.yml");
                     if src.exists() {
@@ -71,6 +74,7 @@ pub fn run() {
             commands::notify_message,
             commands::hide_chat_bar,
             commands::set_chat_bar_expanded,
+            commands::gateway_api_key,
             commands::check_for_updates,
             commands::install_update,
         ])

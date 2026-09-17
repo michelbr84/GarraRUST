@@ -191,6 +191,7 @@ Rationale:
 8. **Short-lived credentials em cloud**: AWS creds via IAM Role (não long-lived access keys quando possível). Documentado em `docs/storage.md`.
 9. **LocalFs encryption — gate explícito**: `garraia-storage` em backend `local` loga `WARN "LocalFs backend without disk-level encryption attestation; LGPD art. 46 compliance is operator responsibility"` no startup **salvo** quando `GARRAIA_STORAGE_ENCRYPTED_DISK=true` declarar que o operador confirmou dm-crypt/LUKS/FileVault. Não é enforcement (não podemos detectar encrypted disk de forma portável), mas é uma tripwire documentada.
 10. **Presigned URL TTL range [30s, 900s]**: cap MÁXIMO 15 min, mas também cap MÍNIMO 30s para evitar falhas silenciosas de token expirado antes do upload começar. Valores fora do range retornam `Error::TtlOutOfRange`.
+12. **Checksum server-side por parte — SHA-256, e o ambiente não desliga (#1229)**: os dois caminhos de escrita do `S3Compatible` declaram SHA-256 explicitamente, e não apenas calculam um hash local. `put` manda `x-amz-checksum-sha256` do conteúdo inteiro; `put_stream` acima de 16 MiB declara `ChecksumAlgorithm::Sha256` no `create_multipart_upload`, manda `checksum_sha256` em **cada** `upload_part` e repete o valor de cada parte no `complete_multipart_upload` — os três pontos concordam, e o servidor rejeita a parte cujos bytes não batam com o digest declarado. Antes disso o multipart não declarava algoritmo nenhum, o SDK carimbava um CRC32 default por parte e o `complete` mandava só ETags: três pontos discordando sobre o mesmo upload, e nenhum teste exercitava o caminho. O SDK também aceita `AWS_REQUEST_CHECKSUM_CALCULATION` (e o `request_checksum_calculation` do profile) do ambiente, onde `WHEN_REQUIRED` desligaria o checksum que ele carimba sozinho; `S3Compatible::new` **fixa** `WhenSupported` depois de herdar a config do ambiente, então uma variável no deploy não tem como rebaixar a garantia. Vale a nota de escopo: como os checksums que importam são explícitos por operação, o interceptor do SDK já os respeita antes de consultar essa preferência — o pin cobre as operações onde não nomeamos algoritmo e a regressão futura em que alguém remova o `.checksum_sha256(...)`. **O checksum composto do S3 (`<digest>-<n>`) e o ETag do multipart NUNCA são expostos como `etag_sha256`**: esse campo é sempre o SHA-256 do arquivo inteiro, calculado pelo cliente, e é ele que vai para `file_versions.checksum_sha256` (item 4). Verificado em CI contra MinIO real: `GetObjectAttributes` confirma o SHA-256 de cada uma das 3 partes, e um teste negativo manda uma parte com checksum errado e exige que o servidor recuse.
 11. **SSE-KMS rotation policy**: quando SSE-KMS estiver habilitado, recomendação documentada é rotation de 90 dias (alinhado com NIST SP 800-57). Documentado em `docs/storage.md`.
 
 ### Versionamento — regras
@@ -214,6 +215,12 @@ Rationale:
   `kill -9` nem ao shutdown do runtime. Sem a regra de lifecycle, as partes
   desses uploads ficam **faturadas e invisíveis** no `ListObjects`. A regra é
   o único backstop que não depende do processo continuar vivo.
+
+- **Integridade do multipart (#1229):** o mesmo `put_stream` declara SHA-256
+  por parte e o servidor verifica cada uma — ver item 12 da *Security policy*
+  acima. A regra de lifecycle cuida das partes que ficam órfãs; o checksum
+  cuida das partes que chegam corrompidas. São problemas diferentes e ambos
+  precisam de resposta.
 
 ### Cloud provider recommendations (docs, não enforce)
 

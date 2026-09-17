@@ -65,6 +65,53 @@ pub const DEFAULT_STALL_AFTER_SECS: u64 = 90;
 /// sincronizacao final leva e muito menos do que "para sempre".
 pub const DEFAULT_FINAL_FLUSH_SECS: u64 = 60;
 
+/// Teto do "a ponte fala e nunca progride", em segundos.
+///
+/// # Por que o watchdog de silencio nao cobre isto
+///
+/// [`DEFAULT_STALL_AFTER_SECS`] mede **silencio**, e o contador dele zera a
+/// cada evento. Existe um fracasso que nao e silencioso: o bridge que
+/// reconecta sem parar e emite `disconnected{will_retry:true}` + `status` a
+/// cada rodada de backoff — no maximo a cada 30 s, sempre abaixo dos 90 s do
+/// prazo de silencio. E o usuario atras de captive portal, com a porta 443
+/// bloqueada ou com o relogio do sistema errado: a ponte fala, o watchdog
+/// existe, funciona, e **nunca dispara**, porque o proprio fracasso realimenta
+/// o relogio dele.
+///
+/// Este prazo e o outro: ele mede **tempo sem progresso** e **nao zera com
+/// evento nenhum**. Quem o renova e o pareamento chegar mais longe do que ja
+/// esteve (ver [`progress_rank`]), e nao a chegada de um evento. Enquanto o
+/// pareamento nao andar, os dois relogios correm juntos e este e o que cobre
+/// o caso em que o outro e realimentado.
+///
+/// # Tres leituras de "progresso", e por que so a terceira fecha
+///
+/// A primeira versao deste teto era um booleano pegajoso: o primeiro QR o
+/// ligava e nada o desligava, e a rede caindo logo DEPOIS do QR rodava sem
+/// fim (cenario `qr-then-retry-forever`). A segunda o media pela fase atual,
+/// e entao residir numa fase de progresso passou a ser o estacionamento:
+/// [`super::state::Phase::Authenticated`] nao expira por
+/// [`super::state::Machine::tick`] nem sai com `Disconnected`, e o 515
+/// `restart_required` logo apos o scan prendia o comando para sempre
+/// (`auth-then-retry-forever`). A terceira — a de agora — exige **recorde**,
+/// e com isso o numero de renovacoes vira finito: sem monotonia, `Connected`
+/// caindo para `Reconnecting` e voltando renovava a cada volta
+/// (`connect-flap-forever`).
+///
+/// O teto duro que sai dai: sao no maximo `MAX_QR_ATTEMPTS + 2` recordes
+/// (5 QRs, `Authenticated`, `Connected`), e entre dois recordes cabe no
+/// maximo `N - 1` segundos — senao o prazo ja teria disparado. Somando o
+/// intervalo inicial, o pior caso e `8N - 7`, ou seja abaixo de
+/// `(MAX_QR_ATTEMPTS + 3) * DEFAULT_NO_PROGRESS_AFTER_SECS` (953 s para
+/// N = 120). O que importa e a finitude; o numero exato esta aqui para
+/// quem for dimensionar um prazo externo nao corta-lo antes da hora.
+///
+/// 120 s e folgado: quatro backoffs no teto da ponte cabem dentro. E um
+/// usuario lento para pegar o celular nao e cortado, porque cada QR novo e
+/// recorde e o QR expira em 20 s — quem limita esse caso e o teto de
+/// [`super::state::MAX_QR_ATTEMPTS`] QRs, que e o teto certo para ele.
+pub const DEFAULT_NO_PROGRESS_AFTER_SECS: u64 = 120;
+
 /// Ajustes de [`pair`]. Existe para o teste poder encurtar os prazos de
 /// silencio sem esperar minutos de relogio real; producao usa o [`Default`].
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +120,8 @@ pub struct PairOptions {
     pub stall_after_secs: u64,
     /// Silencio maximo DEPOIS de conectar.
     pub final_flush_secs: u64,
+    /// Teto do "falou o tempo todo e nunca progrediu". **Nao zera com evento.**
+    pub no_progress_after_secs: u64,
 }
 
 impl Default for PairOptions {
@@ -80,6 +129,66 @@ impl Default for PairOptions {
         Self {
             stall_after_secs: DEFAULT_STALL_AFTER_SECS,
             final_flush_secs: DEFAULT_FINAL_FLUSH_SECS,
+            no_progress_after_secs: DEFAULT_NO_PROGRESS_AFTER_SECS,
+        }
+    }
+}
+
+/// Ajustes de [`serve`]. Mesmo papel do [`PairOptions`], e pelo mesmo motivo:
+/// sem ele os prazos do `serve` eram constantes de 90 s, e um teste que os
+/// exercitasse precisaria de um minuto e meio de relogio real — ou seja,
+/// nenhum teste os exercitava.
+/// **Sem `#[non_exhaustive]`, e a decisao e medida.** A struct ja cresceu
+/// duas vezes e a marca parecia o remedio obvio para nao crescer de novo
+/// quebrando quem esta de fora. Nao serve aqui: os testes de integracao
+/// (`tests/whatsapp_bridge.rs`) sao uma **crate separada**, entao
+/// `non_exhaustive` proibiria a expressao de struct la — e proibe
+/// **inclusive** a forma `..ServeOptions::default()`, que muita gente
+/// supoe ser a escapatoria (E0639: *cannot create non-exhaustive struct
+/// using struct expression*). Medido: a marca derruba os dois sitios de
+/// `whatsapp_bridge.rs`. Quem quiser a garantia tera de dar um builder
+/// antes, e ai o custo deixa de ser uma linha.
+#[derive(Debug, Clone, Copy)]
+pub struct ServeOptions {
+    /// Silencio maximo **antes de conectar**, em segundos. Vale para o
+    /// handshake, para o `send` do driver e para o laco de eventos.
+    ///
+    /// # Por que so antes de conectar
+    ///
+    /// Depois do `connected` o silencio e o estado NORMAL: uma conta sem
+    /// mensagem nenhuma fica quieta por horas, e cortar por isso derrubaria o
+    /// canal saudavel a cada madrugada. Antes do `connected`, silencio e
+    /// travamento — e e o caso que nao tinha relogio nenhum.
+    pub stall_after_secs: u64,
+
+    /// Tempo maximo que uma execucao da ponte pode passar **falando sem
+    /// nunca conectar**, em segundos.
+    ///
+    /// # Por que o prazo de silencio nao cobre isto
+    ///
+    /// Ele e o gemeo, do lado do daemon, do teto de progresso do [`pair`]:
+    /// `stall_after_secs` conta desde o ULTIMO EVENTO, e uma ponte que
+    /// reconecta sozinha emite `disconnected` + `status` a cada rodada de
+    /// backoff. Cada fracasso realimenta o relogio de silencio, entao ele
+    /// nunca dispara — e o backoff do supervisor, logo acima de
+    /// [`serve_once`], **nunca chega a rodar**. O canal fica preso numa
+    /// execucao que tenta para sempre, sem ninguem olhando um terminal.
+    ///
+    /// Aqui o "progresso" nao precisa da `Machine` (o `serve` nao e dirigido
+    /// por ela): so `connected` conta, e o proprio guarda `if !saw_connected`
+    /// do ticker congela este relogio no instante em que a conexao fecha.
+    /// Depois disso nada mais o arma.
+    ///
+    /// Estourar o prazo **nao e erro**: e uma [`ServeExit::Dropped`], ou
+    /// seja, exatamente o caminho que entrega o caso ao backoff.
+    pub no_progress_after_secs: u64,
+}
+
+impl Default for ServeOptions {
+    fn default() -> Self {
+        Self {
+            stall_after_secs: DEFAULT_STALL_AFTER_SECS,
+            no_progress_after_secs: DEFAULT_NO_PROGRESS_AFTER_SECS,
         }
     }
 }
@@ -127,6 +236,22 @@ pub trait PairUi: Send {
     fn qr(&mut self, data: &str, attempt: u32, max_attempts: u32, previous_expired: bool);
     /// Contador regressivo enquanto esperamos a leitura.
     fn waiting(&mut self, attempt: u32, max_attempts: u32, seconds_left: u64);
+    /// Sinal de vida ANTES de haver QR.
+    ///
+    /// `status` e chamado uma vez, na troca de fase. Sem isto, um handshake
+    /// que demora deixava `→ conectando ao WhatsApp…` parado na tela ate o
+    /// teto de [`DEFAULT_NO_PROGRESS_AFTER_SECS`] — medido com o Baileys real
+    /// contra uma rede que nao alcanca o WhatsApp: a ponte fica **85
+    /// segundos** sem emitir nada. Dois minutos de uma linha estatica sao
+    /// indistinguiveis de um travamento, e "nao e infinito" nao e o mesmo que
+    /// "tem feedback".
+    ///
+    /// `giving_up_in_secs` vai junto de proposito: o usuario precisa saber
+    /// que a espera tem fim, e quando.
+    ///
+    /// Sem implementacao default. Uma UI nova tem de **decidir** o que
+    /// mostrar aqui; herdar silencio em silencio foi exatamente o defeito.
+    fn connecting(&mut self, elapsed_secs: u64, giving_up_in_secs: u64);
     /// O pareamento foi aceito e a sessao esta sincronizando.
     fn authenticated(&mut self);
 }
@@ -139,6 +264,7 @@ impl PairUi for SilentUi {
     fn status(&mut self, _line: &str) {}
     fn qr(&mut self, _d: &str, _a: u32, _m: u32, _p: bool) {}
     fn waiting(&mut self, _a: u32, _m: u32, _s: u64) {}
+    fn connecting(&mut self, _e: u64, _g: u64) {}
     fn authenticated(&mut self) {}
 }
 
@@ -307,6 +433,17 @@ pub async fn pair_with(
     // Segundo do ultimo evento vindo do bridge. Qualquer evento conta como
     // sinal de vida, inclusive `log`.
     let mut last_event_secs: u64 = 0;
+    // Segundo do ultimo AVANCO. Um relogio, e nao um booleano: "ja progrediu
+    // uma vez" deixava um unico QR desarmar o teto para sempre. E renovado
+    // por RECORDE de fase — nao por residencia, nao por transicao. Ver
+    // [`progress_rank`]: e a diferenca entre fechar uma instancia e fechar a
+    // classe.
+    let mut last_progress_secs: u64 = 0;
+    // O mais longe que o pareamento JA chegou (ver [`progress_rank`]). So um
+    // recorde NOVO renova o relogio, e e isso que torna o numero de
+    // renovacoes finito — sem essa monotonia, `Connected` e `Reconnecting`
+    // alternando renovavam para sempre.
+    let mut best_progress: u32 = 0;
 
     loop {
         tokio::select! {
@@ -318,7 +455,7 @@ pub async fn pair_with(
                     machine.on(Event::Stop, now);
                     // Pede saida limpa: `shutdown` fecha o socket SEM deslogar,
                     // entao uma sessao ja valida sobrevive ao cancelamento.
-                    let _ = conn.send(&BridgeCommand::Shutdown).await;
+                    shutdown_politely(&mut conn).await;
                     conn.kill().await;
                     return Err(RunError::Cancelled);
                 }
@@ -327,19 +464,47 @@ pub async fn pair_with(
             _ = ticker.tick() => {
                 now += 1;
                 let silent_for = now.saturating_sub(last_event_secs);
+                // Antes do teste, e por RECORDE: o relogio so volta a zero
+                // quando o pareamento chega mais longe do que ja esteve. Aqui
+                // o que se colhe sao as mudancas que `machine.tick` fez na
+                // volta anterior do laco (expiracao de QR); nenhuma delas e
+                // progresso, e e por isso que um QR expirado nao renova nada.
+                if let Some(rank) = progress_rank(machine.phase())
+                    && rank > best_progress
+                {
+                    best_progress = rank;
+                    last_progress_secs = now;
+                }
+                if now.saturating_sub(last_progress_secs) >= options.no_progress_after_secs {
+                    // A ponte falou o tempo todo e o pareamento nao andou:
+                    // nem um QR na tela, nem uma conexao. O prazo de silencio
+                    // acima nunca dispararia aqui — cada tentativa fracassada
+                    // o zera. Ver [`DEFAULT_NO_PROGRESS_AFTER_SECS`].
+                    let hint = conn.stderr_hint();
+                    shutdown_politely(&mut conn).await;
+                    conn.kill().await;
+                    return Err(BridgeError::Protocol(format!(
+                        "o bridge tentou por {}s sem chegar a um QR nem conectar. \
+        Quase sempre e a rede: portal de autenticacao (wi-fi de hotel/aeroporto) ainda \
+        nao aceito, saida para a porta 443 bloqueada, ou o relogio do sistema errado. \
+        Confira a conexao e rode `garra whatsapp` de novo.{hint}",
+                        options.no_progress_after_secs
+                    ))
+                    .into());
+                }
                 if machine.phase() == Phase::Connected {
                     if silent_for >= options.final_flush_secs {
                         // Conectado e mudo: o `session_update` final ou ja
                         // chegou, ou nao vem mais. Fecha pelo caminho normal
                         // de saida — o que chegou e gravado, e a falta dele
                         // vira erro explicito la embaixo.
-                        let _ = conn.send(&BridgeCommand::Shutdown).await;
+                        shutdown_politely(&mut conn).await;
                         conn.kill().await;
                         break;
                     }
                 } else if silent_for >= options.stall_after_secs {
                     let hint = conn.stderr_hint();
-                    let _ = conn.send(&BridgeCommand::Shutdown).await;
+                    shutdown_politely(&mut conn).await;
                     conn.kill().await;
                     return Err(BridgeError::Protocol(format!(
                         "o bridge parou de responder por {}s sem concluir o pareamento{hint}",
@@ -351,7 +516,7 @@ pub async fn pair_with(
                     match effect {
                         Effect::QrExpired { .. } => previous_expired = true,
                         Effect::Fail(Failure::QrExpired) => {
-                            let _ = conn.send(&BridgeCommand::Shutdown).await;
+                            shutdown_politely(&mut conn).await;
                             conn.kill().await;
                             return Err(RunError::QrExpired);
                         }
@@ -365,6 +530,16 @@ pub async fn pair_with(
                         attempt,
                         super::state::MAX_QR_ATTEMPTS,
                         expires_at_secs.saturating_sub(now),
+                    );
+                } else if machine.phase() != Phase::Connected {
+                    // Toda fase que ainda nao tem QR na tela e nao terminou:
+                    // conectando, validando, reconectando. O relogio e o
+                    // MESMO que decide o teto logo acima, entao a conta que o
+                    // usuario le e a conta que de fato vale.
+                    let parado = now.saturating_sub(last_progress_secs);
+                    ui.connecting(
+                        parado,
+                        options.no_progress_after_secs.saturating_sub(parado),
                     );
                 }
             }
@@ -401,6 +576,22 @@ pub async fn pair_with(
                 {
                     dead_reason_code = reason_code;
                 }
+                // Uma queda que vai ser retentada precisa APARECER. Sem esta
+                // linha o unico caminho de fracasso que a ponte sabe percorrer
+                // sozinha — reconectar para sempre — nao imprime nada, e a
+                // tela fica parada em "conectando ao WhatsApp…" ate o prazo
+                // acima. Uma tela que se move e explica ja nao e o estado que
+                // o dono proibiu.
+                if let BridgeEvent::Disconnected {
+                    ref reason,
+                    will_retry: true,
+                    retry_in_ms,
+                    ..
+                } = event
+                    && *reason != DisconnectReason::LoggedOut
+                {
+                    ui.status(&retry_line(*reason, retry_in_ms));
+                }
                 if matches!(event, BridgeEvent::LoggedOut) {
                     saw_logged_out = true;
                     // Nao apaga nada agora: espera o processo terminar.
@@ -416,7 +607,20 @@ pub async fn pair_with(
                     return Err(BridgeError::Protocol(message.clone()).into());
                 }
 
-                for effect in apply(&mut machine, &event, now) {
+                let effects = apply(&mut machine, &event, now);
+                // Depois de aplicar, e nao antes: e a maquina que sabe se o
+                // evento moveu o pareamento para frente. Aqui e no braco do
+                // ticker pela mesma regra — o relogio segue o RECORDE de
+                // fase — para que um QR de vida curta, que nasca e expire
+                // entre dois ticks, ainda conte como progresso: cada QR novo
+                // e `QrGenerated { attempt: n+1, .. }`, e `n+1` e recorde.
+                if let Some(rank) = progress_rank(machine.phase())
+                    && rank > best_progress
+                {
+                    best_progress = rank;
+                    last_progress_secs = now;
+                }
+                for effect in effects {
                     match effect {
                         Effect::ShowQr { attempt } => {
                             if let Some(data) = pending_qr.take() {
@@ -629,6 +833,36 @@ where
     }
 }
 
+/// Prazo maximo do `shutdown` de cortesia. Ver [`shutdown_politely`].
+///
+/// Meio segundo, e nao dois. O que se espera aqui e um `write_all` + `flush`
+/// de UMA linha curta num pipe saudavel — microssegundos. Os 2 s originais
+/// cobriam o mesmo caso e punham dois segundos de latencia no `Ctrl+C`, que e
+/// justamente o caminho que esta rodada existe para nao deixar preso. Quem
+/// nao respondeu em 500 ms nao vai responder: o `conn.kill()` vem logo
+/// depois, em todos os chamadores.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+
+/// Pede saida limpa ao bridge **sob prazo**, e desiste sem drama.
+///
+/// `shutdown` fecha o socket SEM deslogar, entao uma sessao ja valida
+/// sobrevive — vale a pena tentar. O que nao vale e esperar para sempre:
+/// `conn.send` e `write_all` + `flush` no stdin do filho, e um filho que
+/// parou de ler trava a escrita assim que o buffer do pipe (64 KiB) enche. O
+/// irmao deste caminho, no handshake, ja rodava sob prazo exatamente por
+/// isso.
+///
+/// E aqui e pior do que la, porque **este e o ultimo recurso**: todos os
+/// `send(&Shutdown)` deste modulo acontecem num caminho de desistencia, o do
+/// cancelamento inclusive. Um `Ctrl+C` que fica preso na cortesia e o mesmo
+/// terminal parado que o resto desta rodada existe para fechar.
+///
+/// O `conn.kill()` vem logo depois em todos os chamadores, entao falhar aqui
+/// nao deixa processo para tras.
+async fn shutdown_politely(conn: &mut BridgeConnection) {
+    let _ = tokio::time::timeout(SHUTDOWN_GRACE, conn.send(&BridgeCommand::Shutdown)).await;
+}
+
 /// A mensagem de um prazo estourado no handshake.
 ///
 /// Destravar nao basta: quem le isto precisa saber o que aconteceu e o que
@@ -642,6 +876,109 @@ volta, nvm, corepack) baixando versao, ou um stub esperando confirmacao. \
 Rode `node --version` a mao para ver se ele responde, e depois \
 `garra whatsapp` de novo.{hint}"
     ))
+}
+
+/// Quao longe o pareamento chegou nesta fase, ou `None` quando a fase nao e
+/// avanco nenhum. E o que renova o relogio de
+/// [`DEFAULT_NO_PROGRESS_AFTER_SECS`] — mas so quando bate o RECORDE.
+///
+/// # Chegar mais longe, e nao chegar de novo, e muito menos ficar
+///
+/// A regra do chamador e uma so: renove o relogio quando
+/// `progress_rank(fase) > melhor_rank_ja_visto`. Isso e mais forte do que as
+/// duas leituras que vieram antes, e cada uma delas custou uma rodada:
+///
+/// - **por residencia** ("a fase atual e de progresso"): toda fase de
+///   progresso vira um estacionamento, porque o relogio e renovado a cada
+///   tick enquanto se permanece nela. Bastou uma fase sem teto proprio —
+///   [`Phase::Authenticated`], que `Machine::tick` nao expira e de onde
+///   `Event::Disconnected` nao sai, porque o par nao esta na tabela de
+///   `Machine::on` — para o comando rodar para sempre: escaneou, veio o 515
+///   `restart_required` (o que a ponte real faz logo apos o pareamento) e a
+///   reconexao nunca fechou.
+/// - **por transicao** ("a fase MUDOU para uma de progresso"): fecha a fase
+///   parada, mas nao o CICLO. `Connected` caindo para `Reconnecting` e
+///   voltando renova a cada volta, e o pareamento nunca termina. Medido: com
+///   `stall=4`, `no_progress=5`, `final_flush=3` e uma ponte que conecta e
+///   cai a cada 0,5 s, o driver seguia rodando aos 25 s.
+/// - **por recorde** (esta): o rank e monotono, entao o numero de renovacoes
+///   e finito — no maximo [`super::state::MAX_QR_ATTEMPTS`] QRs, mais
+///   `Authenticated`, mais `Connected`. Dai sai o teto duro: com no
+///   maximo `MAX_QR_ATTEMPTS + 2` recordes e `N - 1` segundos entre dois
+///   deles, um `pair` termina abaixo de `(MAX_QR_ATTEMPTS + 3) *
+///   no_progress_after_secs`. **Nao existe fase, nem ciclo de fases, que
+///   escape** — e e isso que
+///   `every_phase_is_bounded_by_the_progress_ratchet` fixa, num `match`
+///   exaustivo sobre [`Phase`] que nao compila se alguem acrescentar uma
+///   variante sem classificar o teto dela.
+///
+/// # O que nao corta nada legitimo
+///
+/// Cada QR novo e `QrGenerated { attempt: n+1, .. }`, e `n+1` e recorde: o
+/// intervalo entre dois QRs e o proprio prazo de expiracao
+/// ([`super::protocol::DEFAULT_QR_EXPIRY_SECS`], 20 s), muito abaixo dos
+/// 120 s. O usuario lento para pegar o celular segue limitado por
+/// [`super::state::MAX_QR_ATTEMPTS`], que e o teto certo para ele — e nao
+/// por este relogio. `QrGenerated` e `WaitingScan` compartilham o rank de
+/// proposito: sao o MESMO QR, e a leitura do usuario nao recomeca o prazo.
+///
+/// # As fases sem rank
+///
+/// [`Phase::QrRequired`] e a fase em que o QR anterior expirou e o proximo
+/// ainda nao veio: um pareamento PARADO, ainda que a ponte fale sem parar.
+/// [`Phase::Reconnecting`] tem a mesma forma. As terminais
+/// ([`Phase::SessionDead`], [`Phase::Failed`], [`Phase::Stopped`]) nao
+/// precisam de rank porque o driver ja saiu do laco quando chega nelas.
+fn progress_rank(phase: Phase) -> Option<u32> {
+    match phase {
+        // O QR na tela: o rank e a propria tentativa, e ela so cresce
+        // (`Machine::enter_qr` nunca zera `qr_attempts`).
+        Phase::QrGenerated { attempt, .. } | Phase::WaitingScan { attempt, .. } => Some(attempt),
+        // Acima de qualquer QR. Se `attempt` algum dia passasse de
+        // `MAX_QR_ATTEMPTS` — hoje impossivel, `enter_qr` falha antes —, o
+        // efeito seria `Authenticated` deixar de renovar, ou seja, um prazo
+        // MAIS curto. O erro cai do lado seguro.
+        Phase::Authenticated => Some(super::state::MAX_QR_ATTEMPTS.saturating_add(1)),
+        Phase::Connected => Some(super::state::MAX_QR_ATTEMPTS.saturating_add(2)),
+        Phase::NotConnected
+        | Phase::SessionFound
+        | Phase::Validating
+        | Phase::ValidationFailed
+        | Phase::QrRequired
+        | Phase::Reconnecting { .. }
+        | Phase::SessionDead
+        | Phase::Failed(_)
+        | Phase::Stopped => None,
+    }
+}
+
+/// A linha que o usuario le quando a ponte cai e vai tentar de novo.
+///
+/// Sem motivo e sem prazo isto seria so mais uma linha rolando: o que a torna
+/// util e dizer **o que** falhou e **quando** e a proxima tentativa, porque e
+/// o que permite ao usuario decidir se espera ou se conserta a rede.
+fn retry_line(reason: DisconnectReason, retry_in_ms: Option<u64>) -> String {
+    let motivo = match reason {
+        DisconnectReason::Network => "a rede caiu",
+        DisconnectReason::Timeout => "o servidor nao respondeu a tempo",
+        DisconnectReason::RestartRequired => "o WhatsApp pediu para reiniciar a conexao",
+        DisconnectReason::Replaced => "outro aparelho assumiu a conexao",
+        // `logged_out` nao chega aqui (o chamador filtra) e `unknown` e o
+        // resto: nao invente um motivo que nao se sabe.
+        DisconnectReason::LoggedOut | DisconnectReason::Unknown => "a conexao caiu",
+    };
+    match retry_in_ms {
+        // Arredonda para CIMA, e nao trunca. Com `ms / 1000` um backoff de
+        // 1500 ms aparecia como "1s", e o usuario via a linha parada meio
+        // segundo depois do prazo que ela mesma prometeu — pequeno, mas e
+        // exatamente o tipo de desencontro que faz alguem achar que a tela
+        // travou. Para cima, e nao ao mais proximo, porque errar cedo
+        // (prometer 2s e tentar em 1,5s) o usuario nem nota, e errar tarde e
+        // a linha vencida de novo. O backoff desta ponte escala em 1,5x,
+        // entao 1500 ms e um degrau que acontece de verdade.
+        Some(ms) if ms >= 500 => format!("{motivo} — nova tentativa em {}s", ms.div_ceil(1000)),
+        Some(_) | None => format!("{motivo} — tentando de novo"),
+    }
 }
 
 /// Traduz um evento do bridge em evento da maquina e aplica.
@@ -760,9 +1097,35 @@ pub async fn serve(
     store: SessionStore,
     key: SessionKey,
     sink: Arc<dyn InboundSink>,
+    outbound: mpsc::Receiver<BridgeCommand>,
+    cancel: watch::Receiver<bool>,
+    jitter: impl Fn() -> f64 + Send,
+) -> Result<(), RunError> {
+    serve_with(
+        launcher,
+        store,
+        key,
+        sink,
+        outbound,
+        cancel,
+        jitter,
+        ServeOptions::default(),
+    )
+    .await
+}
+
+/// [`serve`] com os prazos injetados. Producao usa o [`Default`]; o teste
+/// encurta-os para exercitar, em segundos, o que de outro modo levaria 90.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_with(
+    launcher: Arc<dyn BridgeLauncher>,
+    store: SessionStore,
+    key: SessionKey,
+    sink: Arc<dyn InboundSink>,
     mut outbound: mpsc::Receiver<BridgeCommand>,
     mut cancel: watch::Receiver<bool>,
     jitter: impl Fn() -> f64 + Send,
+    options: ServeOptions,
 ) -> Result<(), RunError> {
     let mut attempt: u32 = 0;
 
@@ -781,6 +1144,7 @@ pub async fn serve(
             sink.as_ref(),
             &mut outbound,
             &mut cancel,
+            options,
         )
         .await
         {
@@ -856,6 +1220,7 @@ enum ServeExit {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_once(
     launcher: &dyn BridgeLauncher,
     store: &SessionStore,
@@ -863,6 +1228,7 @@ async fn serve_once(
     sink: &dyn InboundSink,
     outbound: &mut mpsc::Receiver<BridgeCommand>,
     cancel: &mut watch::Receiver<bool>,
+    options: ServeOptions,
 ) -> Result<ServeExit, RunError> {
     let blob = store.load(key)?;
     let mut conn = BridgeConnection::spawn(launcher).await?;
@@ -872,7 +1238,7 @@ async fn serve_once(
     // reconexao com backoff que existe logo acima nunca chega a rodar.
     let handshake = step_with_deadline(
         &mut *cancel,
-        DEFAULT_STALL_AFTER_SECS,
+        options.stall_after_secs,
         conn.expect_started(),
     )
     .await;
@@ -885,7 +1251,7 @@ async fn serve_once(
         Ok(Step::TimedOut) => {
             let hint = conn.stderr_hint();
             conn.kill().await;
-            return Err(handshake_timeout("o handshake", DEFAULT_STALL_AFTER_SECS, &hint).into());
+            return Err(handshake_timeout("o handshake", options.stall_after_secs, &hint).into());
         }
         Err(e) => {
             conn.kill().await;
@@ -908,7 +1274,7 @@ async fn serve_once(
         ),
     ] {
         let sent =
-            step_with_deadline(&mut *cancel, DEFAULT_STALL_AFTER_SECS, conn.send(&command)).await;
+            step_with_deadline(&mut *cancel, options.stall_after_secs, conn.send(&command)).await;
         match sent {
             Ok(Step::Done(())) => {}
             Ok(Step::Cancelled) => {
@@ -918,7 +1284,7 @@ async fn serve_once(
             Ok(Step::TimedOut) => {
                 let hint = conn.stderr_hint();
                 conn.kill().await;
-                return Err(handshake_timeout(what, DEFAULT_STALL_AFTER_SECS, &hint).into());
+                return Err(handshake_timeout(what, options.stall_after_secs, &hint).into());
             }
             Err(e) => {
                 conn.kill().await;
@@ -931,14 +1297,64 @@ async fn serve_once(
     let mut dead_reason_code: Option<i64> = None;
     let mut saw_connected = false;
 
+    // O relogio que faltava. `conn.send` e `conn.wait` ganharam prazo antes;
+    // `conn.next_event()` nao tinha nenhum, e uma ponte que diz `started`,
+    // aceita o `start` e emudece **sem fechar o stdout** prendia `serve_once`
+    // para sempre — com o backoff logo acima nunca chegando a rodar. O canal
+    // ficava morto em silencio, sem ninguem olhando um terminal.
+    let mut now: u64 = 0;
+    let mut last_event_secs: u64 = 0;
+    let mut ticker = tokio::time::interval(TICK);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await; // o primeiro tick e imediato
+
     loop {
         tokio::select! {
             biased;
             changed = cancel.changed() => {
                 if changed.is_err() || *cancel.borrow() {
-                    let _ = conn.send(&BridgeCommand::Shutdown).await;
+                    shutdown_politely(&mut conn).await;
                     conn.kill().await;
                     return Ok(ServeExit::Cancelled);
+                }
+            }
+            // `if !saw_connected` NAO e otimizacao: depois do `connected` o
+            // silencio e o estado normal — uma conta sem mensagem nenhuma
+            // fica quieta por horas —, e um prazo aqui derrubaria o canal
+            // saudavel toda madrugada. Antes do `connected`, silencio e
+            // travamento.
+            //
+            // O que fica sem dono e "conectou e emudeceu": o `pair` tem o
+            // `final_flush_secs` para isso, o `serve` nao tem equivalente, e
+            // um relogio de silencio aqui seria cura pior que a doenca. O
+            // conserto e prova de vida NO PROTOCOLO (ping/pong ou `presence`
+            // periodico), que mexe nos dois lados e esta fora do escopo desta
+            // PR — rastreado em
+            // https://github.com/michelbr84/GarraRUST/issues/1275.
+            _ = ticker.tick(), if !saw_connected => {
+                now += 1;
+                if now.saturating_sub(last_event_secs) >= options.stall_after_secs {
+                    tracing::warn!(
+                        secs = options.stall_after_secs,
+                        "o bridge subiu e emudeceu sem conectar; reconectando"
+                    );
+                    shutdown_politely(&mut conn).await;
+                    conn.kill().await;
+                    return Ok(ServeExit::Dropped { was_connected: false });
+                }
+                // O outro relogio, e nao o mesmo: este conta desde o INICIO
+                // desta execucao e nao zera com evento nenhum. Como o braco
+                // so roda enquanto `!saw_connected`, `now` e literalmente
+                // "segundos falando sem conectar". Ver
+                // [`ServeOptions::no_progress_after_secs`].
+                if now >= options.no_progress_after_secs {
+                    tracing::warn!(
+                        secs = options.no_progress_after_secs,
+                        "o bridge falou o tempo todo e nunca conectou; reconectando"
+                    );
+                    shutdown_politely(&mut conn).await;
+                    conn.kill().await;
+                    return Ok(ServeExit::Dropped { was_connected: false });
                 }
             }
             Some(command) = outbound.recv() => {
@@ -951,16 +1367,82 @@ async fn serve_once(
                         | BridgeCommand::Read { .. }
                         | BridgeCommand::Typing { .. }
                 ) {
-                    conn.send(&command).await?;
+                    // Sob prazo pelo mesmo motivo do handshake: um filho que
+                    // parou de ler o stdin trava o `write_all` acima do buffer
+                    // do pipe, e aqui nao ha ninguem olhando o terminal. Cair
+                    // no backoff e melhor do que pendurar o canal.
+                    match step_with_deadline(
+                        &mut *cancel,
+                        options.stall_after_secs,
+                        conn.send(&command),
+                    )
+                    .await
+                    {
+                        Ok(Step::Done(())) => {}
+                        Ok(Step::Cancelled) => {
+                            conn.kill().await;
+                            return Ok(ServeExit::Cancelled);
+                        }
+                        Ok(Step::TimedOut) => {
+                            tracing::warn!(
+                                secs = options.stall_after_secs,
+                                "o bridge nao aceitou o comando no prazo; reconectando"
+                            );
+                            conn.kill().await;
+                            return Ok(ServeExit::Dropped {
+                                was_connected: saw_connected,
+                            });
+                        }
+                        Err(e) => {
+                            conn.kill().await;
+                            return Err(e.into());
+                        }
+                    }
                 } else {
                     tracing::warn!("comando recusado no canal de saida do WhatsApp vinculado");
                 }
             }
             event = conn.next_event() => {
+                last_event_secs = now;
                 let Some(event) = event? else {
                     // stdout fechou: o codigo de saida decide se a sessao
                     // morreu ou se foi so uma queda a reconectar.
-                    let code = conn.wait().await?;
+                    //
+                    // Sob prazo pelo mesmo motivo do gemeo no `pair`: um filho
+                    // que fecha o stdout e nao termina prende este `wait` para
+                    // sempre, e aqui o laco ja acabou — nao ha nenhum outro
+                    // relogio, nem Ctrl+C, nem o backoff que esta logo acima.
+                    let code = match step_with_deadline(
+                        &mut *cancel,
+                        options.stall_after_secs,
+                        conn.wait(),
+                    )
+                    .await
+                    {
+                        Ok(Step::Done(code)) => code,
+                        Ok(Step::Cancelled) => {
+                            conn.kill().await;
+                            return Ok(ServeExit::Cancelled);
+                        }
+                        Ok(Step::TimedOut) => {
+                            // Sem codigo de saida nao da para afirmar que a
+                            // sessao morreu, e apagar material por falta de
+                            // prova seria o erro pior dos dois: trata como
+                            // queda e deixa o backoff decidir.
+                            tracing::warn!(
+                                secs = options.stall_after_secs,
+                                "o bridge fechou a saida e nao terminou; encerrando a forca"
+                            );
+                            conn.kill().await;
+                            return Ok(ServeExit::Dropped {
+                                was_connected: saw_connected,
+                            });
+                        }
+                        Err(e) => {
+                            conn.kill().await;
+                            return Err(e.into());
+                        }
+                    };
                     return Ok(if super::protocol::session_is_dead(code, dead_reason_code) {
                         ServeExit::SessionDead { reason_code: dead_reason_code }
                     } else if saw_logged_out {
@@ -998,6 +1480,36 @@ async fn serve_once(
 mod tests {
     use super::*;
 
+    /// A linha que o usuario le quando a ponte cai — e o prazo que ela
+    /// promete.
+    ///
+    /// `ms / 1000` truncava: 1500 ms viravam "1s", e meio segundo depois a
+    /// linha ja estava vencida na tela. Num comando cujo defeito recorrente e
+    /// "a tela nao anda", uma linha que promete errado e do mesmo genero.
+    #[test]
+    fn the_retry_line_never_promises_a_deadline_that_already_passed() {
+        for (ms, esperado) in [(1000, "1s"), (1500, "2s"), (2000, "2s"), (2500, "3s")] {
+            let linha = retry_line(DisconnectReason::Network, Some(ms));
+            assert!(
+                linha.ends_with(&format!("em {esperado}")),
+                "{ms} ms deviam virar `{esperado}`, e viraram: {linha}"
+            );
+        }
+        // Abaixo de meio segundo nao ha prazo que valha a pena imprimir.
+        for ms in [None, Some(0), Some(200)] {
+            let linha = retry_line(DisconnectReason::Network, ms);
+            assert!(
+                linha.ends_with("tentando de novo"),
+                "sem prazo util a linha nao pode inventar um: {linha}"
+            );
+        }
+        // E o motivo continua sendo o que a ponte reportou.
+        assert!(
+            retry_line(DisconnectReason::Timeout, Some(1000)).starts_with("o servidor"),
+            "o motivo nao pode ser trocado pelo generico"
+        );
+    }
+
     /// O contador de tentativas do `serve`, e o que ele significa para o
     /// atraso real. A segunda asserção e a que importa: zerar o contador so
     /// vale se o ATRASO voltar ao primeiro degrau.
@@ -1021,5 +1533,152 @@ mod tests {
 
         // E o contador nunca estoura: `serve` roda por meses.
         assert_eq!(next_attempt(u32::MAX, false), u32::MAX);
+    }
+
+    /// Como cada fase de [`Phase`] deixa de ser um estacionamento.
+    ///
+    /// E a classificacao exigida pela revisao R4: cada variante ou (a) so
+    /// pode ser alcancada um numero finito de vezes e portanto renova o
+    /// relogio um numero finito de vezes, ou (b) expira por
+    /// [`super::super::state::Machine::tick`], ou (c) ja esta fora do laco.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Teto {
+        /// (a) Renova o relogio de progresso, mas so **uma vez por recorde**,
+        /// e ha no maximo `MAX_QR_ATTEMPTS + 2` recordes.
+        RecordeFinito,
+        /// (a) Nunca renova o relogio de progresso: enquanto se esta aqui, o
+        /// prazo corre ate vencer.
+        NaoRenova,
+        /// (c) O driver ja saiu do laco quando a maquina chega aqui.
+        ForaDoLaco,
+    }
+
+    /// **A prova de que nao existe uma quinta fase.**
+    ///
+    /// As quatro rodadas anteriores fecharam INSTANCIAS: o handshake sem
+    /// prazo, o retry sem voz nem teto, o QR unico que desarmava o booleano,
+    /// e o `Authenticated` sem saida. Cada conserto empurrava o mesmo sintoma
+    /// — *nem avanca nem termina* — uma fase adiante. Este teste fecha a
+    /// CLASSE.
+    ///
+    /// Ele e um `match` exaustivo sobre [`Phase`] de proposito, e nao uma
+    /// lista em comentario: acrescentar uma variante sem dizer qual e o teto
+    /// dela **nao compila**. A tabela tambem e cruzada com
+    /// [`progress_rank`], para que classificar errado falhe alto.
+    ///
+    /// O teto duro que a tabela sustenta: como so `RecordeFinito` renova, e
+    /// como o rank e estritamente crescente, ha no maximo
+    /// `MAX_QR_ATTEMPTS + 2` recordes — e e isto que esta tabela fixa. O
+    /// tempo que sai dai fica abaixo de `(MAX_QR_ATTEMPTS + 3) *
+    /// no_progress_after_secs`, contando o intervalo inicial e os `N - 1`
+    /// segundos que cabem entre dois recordes.
+    #[test]
+    fn every_phase_is_bounded_by_the_progress_ratchet() {
+        use super::super::state::{Failure, MAX_QR_ATTEMPTS, Phase};
+
+        fn teto(phase: Phase) -> Teto {
+            match phase {
+                // (a) O rank e a tentativa do QR, e `enter_qr` para em
+                // `MAX_QR_ATTEMPTS`: no maximo 5 recordes. Alem disso (b),
+                // `Machine::tick` expira as duas em `expires_at_secs`.
+                Phase::QrGenerated { .. } | Phase::WaitingScan { .. } => Teto::RecordeFinito,
+                // (a) Um recorde cada, e nunca mais. Foi a residencia em
+                // `Authenticated` que segurou a rodada 6, e o ciclo
+                // `Connected` <-> `Reconnecting` que a transicao nao pegou.
+                Phase::Authenticated | Phase::Connected => Teto::RecordeFinito,
+                // (a) Sem rank: o prazo corre ate vencer. `QrRequired` e o QR
+                // que expirou e nao voltou; `Reconnecting` e a queda que nao
+                // fecha; as tres primeiras sao o handshake, ja coberto
+                // tambem pelo prazo de silencio.
+                Phase::NotConnected
+                | Phase::SessionFound
+                | Phase::Validating
+                | Phase::ValidationFailed
+                | Phase::QrRequired
+                | Phase::Reconnecting { .. } => Teto::NaoRenova,
+                // (c) O driver retorna antes de voltar ao `select!`:
+                // `Effect::PurgeSession`/`Effect::Fail` para as duas
+                // primeiras, o braco de cancelamento para `Stopped`.
+                Phase::SessionDead | Phase::Failed(_) | Phase::Stopped => Teto::ForaDoLaco,
+            }
+        }
+
+        // Uma instancia de CADA variante. O `match` acima e que garante a
+        // exaustao; esta lista existe para cruzar a classificacao com
+        // `progress_rank` de verdade, e nao no papel.
+        let todas = [
+            Phase::NotConnected,
+            Phase::SessionFound,
+            Phase::Validating,
+            Phase::ValidationFailed,
+            Phase::QrRequired,
+            Phase::QrGenerated {
+                attempt: 1,
+                expires_at_secs: 20,
+            },
+            Phase::WaitingScan {
+                attempt: 1,
+                expires_at_secs: 20,
+            },
+            Phase::Authenticated,
+            Phase::Connected,
+            Phase::Reconnecting {
+                attempt: 1,
+                retry_at_secs: 1,
+            },
+            Phase::SessionDead,
+            Phase::Failed(Failure::QrExpired),
+            Phase::Stopped,
+        ];
+
+        for phase in todas {
+            let tem_rank = progress_rank(phase).is_some();
+            let esperado = teto(phase) == Teto::RecordeFinito;
+            assert_eq!(
+                tem_rank, esperado,
+                "{phase:?}: a tabela de tetos e `progress_rank` discordam. \
+Uma fase so pode renovar o relogio de progresso se o teto dela for \
+`RecordeFinito`; qualquer outra combinacao e um estacionamento novo."
+            );
+        }
+
+        // O recorde e limitado, e e dai que sai o teto duro do comando. Sem
+        // esta asserção `RecordeFinito` seria so um nome.
+        let maior = todas
+            .iter()
+            .filter_map(|p| progress_rank(*p))
+            .max()
+            .expect("ha fases de progresso");
+        assert!(
+            maior <= MAX_QR_ATTEMPTS + 2,
+            "o rank maximo e {maior}, acima do teto de recordes que o prazo duro \
+do `pair` supoe"
+        );
+
+        // E os ranks respeitam a ordem do pareamento: QR < autenticado <
+        // conectado. Trocar a ordem deixaria `Connected` sem renovar depois
+        // de `Authenticated`, encurtando o prazo em silencio.
+        let qr = progress_rank(Phase::QrGenerated {
+            attempt: MAX_QR_ATTEMPTS,
+            expires_at_secs: 0,
+        })
+        .expect("QR tem rank");
+        let auth = progress_rank(Phase::Authenticated).expect("autenticado tem rank");
+        let conn = progress_rank(Phase::Connected).expect("conectado tem rank");
+        assert!(qr < auth && auth < conn, "{qr} < {auth} < {conn}");
+
+        // O mesmo QR nao pode renovar duas vezes: `QrGenerated` e
+        // `WaitingScan` da MESMA tentativa compartilham o rank de proposito.
+        assert_eq!(
+            progress_rank(Phase::QrGenerated {
+                attempt: 2,
+                expires_at_secs: 0
+            }),
+            progress_rank(Phase::WaitingScan {
+                attempt: 2,
+                expires_at_secs: 0
+            }),
+            "ler o QR nao e progredir alem de te-lo na tela"
+        );
     }
 }

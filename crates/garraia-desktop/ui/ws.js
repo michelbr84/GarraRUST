@@ -20,15 +20,46 @@
 (function () {
   // Porta 3888 é o default do config (resources/config.default.yml); o
   // gateway sobe como sidecar em localhost via src-tauri/src/gateway.rs.
-  const WS_URL = 'ws://localhost:3888/ws/parrot';
+  const WS_BASE = 'ws://localhost:3888/ws/parrot';
+
+  // #1240: com `gateway.api_key` configurada, o handshake do /ws/parrot exige
+  // a credencial (crates/garraia-gateway/src/parrot_ws.rs). `new WebSocket()`
+  // não permite mandar header nenhum, então o token vai pela query string —
+  // exatamente o formato que o Web Console já usa em webchat.html:
+  // `?token=${encodeURIComponent(...)}`.
+  //
+  // A chave sai do MESMO config.yml que o gateway lê, via comando Tauri
+  // `gateway_api_key` (src-tauri/src/commands.rs), que por sua vez usa o
+  // `garraia_config::ConfigLoader` — o resolvedor de path do próprio gateway.
+  // Fora do Tauri (ou sem chave configurada) o fallback é a URL nua, que é o
+  // comportamento de sempre numa instalação sem `api_key`.
+  //
+  // O `invoke` é resolvido na hora da chamada, não no load: ws.js é o
+  // primeiro script das duas janelas, e capturar `window.__TAURI__` cedo
+  // demais congelaria `undefined` para sempre — o desktop voltaria a conectar
+  // sem chave, que é exatamente a falha muda que esta correção fecha.
+  function invoke(cmd) {
+    const fn = window.__TAURI__?.core?.invoke;
+    return fn ? fn(cmd) : Promise.resolve(null);
+  }
+
+  async function urlDoSocket() {
+    let chave = '';
+    try { chave = (await invoke('gateway_api_key')) || ''; } catch (_) {}
+    return chave ? `${WS_BASE}?token=${encodeURIComponent(chave)}` : WS_BASE;
+  }
 
   function connect(handlers) {
     const h = handlers || {};
     let ws = null;
     let reconnectDelay = 2000;
 
-    function open() {
-      try { ws = new WebSocket(WS_URL); } catch (_) { scheduleReconnect(); return; }
+    async function open() {
+      // A chave é relida a cada tentativa: quem configurar `gateway.api_key`
+      // com o app já aberto reconecta sozinho, sem reiniciar o desktop.
+      let url = WS_BASE;
+      try { url = await urlDoSocket(); } catch (_) {}
+      try { ws = new WebSocket(url); } catch (_) { scheduleReconnect(); return; }
       ws.onopen = () => { reconnectDelay = 2000; h.onOpen?.(); };
       ws.onmessage = ev => {
         try {

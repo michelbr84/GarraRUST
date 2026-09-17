@@ -55,3 +55,15 @@ f8374996ecd2fcb7b6acadace7be464bffe4d6d7:crates/garraia-security/src/redaction.r
 # (commit 1d71ff07, #1074): o cabecalho `{"alg":"RS256","typ":"JWT"}` do teste
 # `rs256_sem_kid_e_recusado`. Corrigido junto, pelo mesmo `jwks::jwt_de_teste`.
 1d71ff07c6bccbce79193b4ef14bb89552c64533:crates/garraia-channels/src/teams/auth.rs:generic-api-key:289
+
+# -----------------------------------------------------------------------
+# Fixture SINTETICO de teste, nunca foi segredo (#1225, PR #1235).
+# O teste `comando_para_log_redige_segredo_e_trunca` precisa de uma string
+# com forma de credencial para provar que `redact_secrets` a remove do log.
+# A primeira versao usava `Authorization: Bearer sk-ant-api03-...`, que casa
+# com a regra `curl-auth-header`. O fixture ja foi trocado por `ghp_` + 36 `X`
+# (coberto pelo allowlist `XXXXX+` do .gitleaks.toml) no commit 99a05b27, mas
+# o gitleaks varre os COMMITS do range da PR, nao a arvore final — entao o
+# 6b1ab9a continua sendo reportado. Sem rewrite de historico, pela politica
+# deste arquivo. O valor nunca existiu fora do teste.
+6b1ab9a0e8782a03f531e26390b7c9e619736826:crates/garraia-agents/src/tools/bash_tool.rs:curl-auth-header:794

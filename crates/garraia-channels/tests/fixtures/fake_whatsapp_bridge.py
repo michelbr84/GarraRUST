@@ -81,10 +81,67 @@ SCENARIOS = (
     "bad-protocol",
     "garbage",
     "oversized",
+    # quiet-before-qr emite `connecting` e emudece por `--hang-secs` ANTES do
+    #                 primeiro QR, que so entao sai. E a forma medida do
+    #                 Baileys real (7.0.0-rc14) contra uma rede que nao
+    #                 alcanca o WhatsApp: `status connecting` aos 2 s e nada
+    #                 mais por 85 s. Nenhum outro cenario cobre silencio
+    #                 PRE-QR: o `hang` emite o QR antes de emudecer, e o
+    #                 `retry-forever` fala o tempo todo.
+    "quiet-before-qr",
+    # retry-forever  fala sem parar e nunca progride: `disconnected` com
+    #                 will_retry a cada segundo, nenhum `qr`, nenhum
+    #                 `connected`. E o usuario atras de captive portal, com
+    #                 443 bloqueado ou relogio errado — o caminho mais
+    #                 provavel de "Connecting... para sempre", e o unico em
+    #                 que o watchdog de silencio NAO ajuda: cada fracasso
+    #                 realimenta o relogio dele.
+    # crash-with-secret
+    #                 morre cuspindo material que parece credencial no
+    #                 stderr, para provar que a redacao esta ligada NO CALL
+    #                 SITE e nao so testada como funcao pura.
+    # qr-then-retry-forever
+    #                 emite UM `qr` e depois SO `disconnected` com retry, uma
+    #                 vez por segundo: nunca um segundo `qr`, nunca
+    #                 `connected`. E a rede caindo logo DEPOIS de o QR
+    #                 aparecer, e e o unico cenario em que os tres tetos do
+    #                 driver ficam desarmados ao mesmo tempo — o de silencio
+    #                 porque cada `disconnected` o realimenta, o de QR porque
+    #                 a maquina estaciona em `QrRequired` (onde `tick` nao tem
+    #                 mais nada a expirar) e o de "nunca progrediu" porque
+    #                 aquele unico QR o desarmava para sempre.
+    # auth-then-retry-forever
+    #                 emite `qr`, depois `authenticated`, e dali em diante SO
+    #                 `disconnected(515, restart_required, will_retry)`, uma
+    #                 vez por segundo — nunca `connected`. E o caminho REAL do
+    #                 WhatsApp: o 515 logo apos o pareamento e o que a propria
+    #                 ponte faz, e aqui a reconexao nunca fecha (portal cativo
+    #                 que caiu depois do scan, 443 intermitente). `Phase::
+    #                 Authenticated` nao expira por `tick` e nao sai com
+    #                 `Disconnected`, entao um relogio de progresso renovado
+    #                 por RESIDENCIA nunca vence.
     "connect-then-hang",
     "silent-start",
+    "retry-forever",
+    "qr-then-retry-forever",
+    "auth-then-retry-forever",
+    "connect-flap-forever",
+    "crash-with-secret",
+    # crash-with-dotted-secret
+    #                 o mesmo, mas com a chave atras de um caminho de
+    #                 propriedade (`creds.noiseKey=`). O ponto do nome vizinho
+    #                 entrava na MESMA sequencia que a chave e isentava as
+    #                 duas: medido, 100% das chaves chegavam inteiras a tela.
+    #                 E a forma que um `throw` de dentro do Baileys, de um
+    #                 modulo de terceiros ou de um template literal produz.
+    "crash-with-dotted-secret",
 )
 
+# Base64 padrao sem `.`/`@`/`-`/`_`, com a forma de uma `noiseKey` do Baileys.
+# O literal tem 45 caracteres e decodifica 33 bytes -- e uma imitacao, e nao
+# uma chave de 32 B de verdade; o que o teste Rust afirma e que ela NAO chega
+# a tela, e para isso basta passar dos 40 caracteres de BASE64_RUN_MIN.
+SECRET_B64 = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0="
 
 def emit(event: dict) -> None:
     sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
@@ -279,10 +336,92 @@ class Bridge:
             emit({"type": "logged_out"})
             return EXIT_LOGGED_OUT
 
+        if scenario == "quiet-before-qr":
+            # Silencio TOTAL: nem `log`, nem `status`. Qualquer evento
+            # realimentaria o relogio de silencio do runner e o teste deixaria
+            # de medir o que quer.
+            self.eof.wait(self.args.hang_secs)
+            self.qr()
+            self.connected()
+            self.session_update()
+            return EXIT_OK
+
         if scenario == "hang":
             self.qr()
             self.eof.wait(self.args.hang_secs)
             return EXIT_OK
+
+        if scenario == "qr-then-retry-forever":
+            # UM QR, e depois so fracasso. O QR faz o pareamento progredir
+            # exatamente uma vez; dali em diante nada mais anda.
+            self.qr()
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.disconnected(428, "network", True, 1000)
+                time.sleep(1)
+            return EXIT_OK
+
+        if scenario == "connect-flap-forever":
+            # Conecta DE VERDADE e cai, sem parar, sem nunca fechar o stdout.
+            self.qr()
+            emit({"type": "authenticated"})
+            self.status("authenticated")
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.connected()
+                time.sleep(0.5)
+                self.disconnected(428, "network", True, 500)
+                time.sleep(0.5)
+            return EXIT_OK
+
+        if scenario == "auth-then-retry-forever":
+            # O usuario escaneou: `authenticated` chega e a fase ANDA. O que
+            # nao chega nunca e o `connected`. O 515 e o comportamento real
+            # logo apos o pareamento.
+            self.qr()
+            emit({"type": "authenticated"})
+            self.status("authenticated")
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.disconnected(515, "restart_required", True, 1000)
+                time.sleep(1)
+            return EXIT_OK
+
+        if scenario == "retry-forever":
+            # Nunca emite `qr`, nunca `connected`: so tentativa fracassada,
+            # uma por segundo. O watchdog de silencio do driver nunca dispara
+            # porque o relogio dele zera a cada evento.
+            deadline = time.monotonic() + self.args.hang_secs
+            while time.monotonic() < deadline:
+                self.disconnected(428, "network", True, 1000)
+                time.sleep(1)
+            return EXIT_OK
+
+        if scenario == "crash-with-secret":
+            sys.stderr.write(
+                f"Error: connection failed noiseKey={SECRET_B64} at Object.<anonymous>\n"
+            )
+            sys.stderr.write(
+                "    at /home/user/.local/share/garraia/bridge/node_modules/"
+                "@whiskeysockets/baileys/lib/index.js:42:7\n"
+            )
+            sys.stderr.flush()
+            return EXIT_FATAL
+
+        if scenario == "crash-with-dotted-secret":
+            # A chave atras de um caminho de propriedade. O `.` do nome
+            # vizinho colava na sequencia da chave e isentava a chave junto.
+            sys.stderr.write(
+                f"Error: failed to persist creds.noiseKey={SECRET_B64} "
+                "at Object.<anonymous>\n"
+            )
+            sys.stderr.write(
+                f"    at state.creds={SECRET_B64} "
+                "(/home/user/.local/share/garraia/bridge/node_modules/"
+                "@whiskeysockets/baileys/lib/index.js:42:7)\n"
+            )
+            sys.stderr.flush()
+            return EXIT_FATAL
 
         self.qr()
         time.sleep(self.args.qr_expires)

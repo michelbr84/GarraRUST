@@ -3580,6 +3580,7 @@ dependencies = [
 name = "garraia-desktop"
 version = "0.4.2"
 dependencies = [
+ "garraia-config",
  "serde",
  "serde_json",
  "tauri",
@@ -3844,6 +3845,7 @@ dependencies = [
  "hmac 0.12.1",
  "reqwest 0.12.28",
  "serde",
+ "serial_test",
  "sha2 0.10.9",
  "subtle",
  "tempfile",

@@ -3,6 +3,7 @@ name = "garraia"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "GarraIA CLI - Personal AI assistant platform"
 
 [[bin]]

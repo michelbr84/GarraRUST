@@ -69,6 +69,38 @@ pub async fn notify_message(
     Ok(())
 }
 
+// ── Credencial do gateway ───────────────────────────────────────────────────
+
+/// A `gateway.api_key` configurada, para o handshake do `/ws/parrot`.
+///
+/// #1240 (achado da revisao do PR #1251): o gate de credencial do
+/// `/ws/parrot` (`crates/garraia-gateway/src/parrot_ws.rs`) fechou a rota
+/// para cliente sem `Origin`, mas o `ui/ws.js` conectava numa URL constante,
+/// sem token nenhum. Com a chave configurada — o caso comum desde que o
+/// #1252 passou a gera-la sozinha em bind exposto — o handshake levava 401 e
+/// o `ws.js` entrava em reconexao infinita: overlay e Chat Bar morriam em
+/// silencio.
+///
+/// A chave vem do **mesmo** `config.yml` que o gateway le: o
+/// `ConfigLoader::new()` e o resolvedor de path canonico (honra
+/// `GARRAIA_CONFIG_DIR`, prefere o XDG e cai no legado `~/.garraia`), o mesmo
+/// que o sidecar `garraia start` usa. Reimplementar o path aqui e como as
+/// duas pontas passam a discordar de qual arquivo vale.
+///
+/// Devolve `None` quando nao ha chave — e o `ws.js` conecta na URL nua, que
+/// e o comportamento historico de uma instalacao sem `api_key`. Nenhum erro
+/// de leitura vira excecao: config ilegivel ou YAML quebrado degrada para
+/// `None`, nunca derruba a webview.
+#[tauri::command]
+pub async fn gateway_api_key() -> Option<String> {
+    let config = garraia_config::ConfigLoader::new().ok()?.load().ok()?;
+    config
+        .gateway
+        .api_key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
+
 // ── Chat-bar window management ──────────────────────────────────────────────
 
 /// Hides the chat bar (called from the chat-bar JS on Escape / ✕) and

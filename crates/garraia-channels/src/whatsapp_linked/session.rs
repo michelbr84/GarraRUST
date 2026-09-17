@@ -152,8 +152,13 @@ impl SessionBlob {
         Self(raw.into())
     }
 
-    /// Valor cru. So o bridge e o store devem chamar isto.
-    pub fn expose(&self) -> &str {
+    /// Valor cru.
+    ///
+    /// `pub(crate)` e nao `pub`: os dois unicos call sites legitimos estao
+    /// neste arquivo, e o rustc passa a impedir de graca o que a allowlist
+    /// textual de `source_scan.rs` impedia com esforco. A allowlist continua
+    /// valendo para dentro da crate, que e onde o compilador para.
+    pub(crate) fn expose(&self) -> &str {
         &self.0
     }
 
@@ -400,8 +405,31 @@ impl SessionStore {
     /// que o chamador trata como "precisa parear de novo" — e nunca como
     /// "arquivo corrompido, apaga tudo".
     pub fn load(&self, key: &SessionKey) -> Result<SessionBlob, SessionError> {
-        let path = self.blob_path();
-        let raw = std::fs::read(&path).map_err(|e| SessionError::io(&path, e))?;
+        self.load_path(&self.blob_path(), key)
+    }
+
+    /// Le e decifra o ARQUIVADO (`session.enc.prev`), **sem move-lo**.
+    ///
+    /// # Por que provar antes de mover
+    ///
+    /// O `garra whatsapp restore` provava o blob depois de chamar
+    /// [`SessionStore::restore_archive`]. Uma passphrase do cofre apenas
+    /// AUSENTE do ambiente — o usuario que normalmente a exporta rodando o
+    /// comando num shell sem ela — bastava para consumir o `.prev`: o
+    /// comando saia 69, o arquivo ja tinha saido do lugar, e a mensagem
+    /// mandava ler um QR novo, conselho que descartaria uma sessao intacta.
+    /// Restaurar de novo, ja com a passphrase, respondia "nao ha arquivada".
+    ///
+    /// Com esta funcao a ordem se inverte e o problema deixa de existir: a
+    /// prova acontece com o arquivo ainda no lugar, e um ambiente incompleto
+    /// vira um erro que nao custa nada. E o mesmo principio do relogio de
+    /// progresso do `runner.rs` — nao destrua estado antes de saber que pode.
+    pub fn load_archive(&self, key: &SessionKey) -> Result<SessionBlob, SessionError> {
+        self.load_path(&self.archive_path(), key)
+    }
+
+    fn load_path(&self, path: &Path, key: &SessionKey) -> Result<SessionBlob, SessionError> {
+        let raw = std::fs::read(path).map_err(|e| SessionError::io(path, e))?;
         let file: EncryptedFile = serde_json::from_slice(&raw)
             .map_err(|e| SessionError::Format(format!("formato de sessao invalido: {e}")))?;
         if file.v != 1 {
@@ -669,7 +697,17 @@ fn write_tmp_file(tmp: &Path, bytes: &[u8]) -> Result<(), SessionError> {
     if let Err(e) = written {
         // Daqui em diante o arquivo E nosso, e ele ja tem material de sessao:
         // deixa-lo orfao seria o pior dos dois mundos.
-        let _ = shred(tmp);
+        if let Err(limpeza) = shred(tmp) {
+            // Sem `?`: o erro que interessa ao chamador e o da escrita, nao o
+            // da limpeza. Mas engolir isto em silencio deixava um temporario
+            // com material de sessao em disco sem nenhum rastro. O caminho
+            // pode ir para o log; o conteudo, nunca.
+            tracing::warn!(
+                caminho = %tmp.display(),
+                error = %limpeza,
+                "falha ao triturar o temporario da sessao do WhatsApp vinculado"
+            );
+        }
         return Err(SessionError::io(tmp, e));
     }
     // Fora de Unix o `mode` acima nao existe; aperta pelo caminho generico.

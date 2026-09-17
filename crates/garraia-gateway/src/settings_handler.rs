@@ -58,7 +58,7 @@ pub enum SettingCategory {
     Experimental,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SettingSource {
     /// Compiled-in default.
@@ -279,6 +279,45 @@ fn settings() -> Vec<SettingSchema> {
             validation: Some("1..=10000"),
             warning: None,
         },
+        // — Security: sandbox por tool (#1222 / #1225) —
+        //
+        // Read-only aqui de proposito. O PATCH desta rota e dry-run (plan
+        // 0121a persiste): uma chave editavel faria a UI dizer "aplicado" para
+        // um controle de contencao que continuaria desligado no proximo boot.
+        // Ate la o registro serve para o operador VER o estado, que era o que
+        // faltava — a #1225 existe porque ninguem conseguia nem ligar nem ver.
+        SettingSchema {
+            id: "security.sandbox_mode",
+            label: "Tool sandbox mode",
+            description: "agent.sandbox.mode — off | all | allowlist. Read-only here; edit garraia.toml.",
+            category: SettingCategory::Security,
+            type_: SettingType::Enum,
+            default: serde_json::json!("off"),
+            editable: false,
+            secret: false,
+            requires_restart: true,
+            choices: Some(vec!["off", "all", "allowlist"]),
+            validation: None,
+            warning: Some(
+                "Only the `bash` tool is wrapped today; run_tests/git_diff/repo_search still spawn on the host. `ssh` is remote execution, not a sandbox. Unix only.",
+            ),
+        },
+        SettingSchema {
+            id: "security.sandbox_backend",
+            label: "Tool sandbox backend",
+            description: "agent.sandbox.backend — docker | podman | ssh. The SSH host is never reported here.",
+            category: SettingCategory::Security,
+            type_: SettingType::String,
+            default: serde_json::Value::Null,
+            editable: false,
+            secret: false,
+            requires_restart: true,
+            choices: None,
+            validation: None,
+            warning: Some(
+                "Empty while the mode is not `off` means every sandboxed command fails closed.",
+            ),
+        },
         // — Appearance —
         SettingSchema {
             id: "appearance.default_theme",
@@ -350,6 +389,51 @@ struct EffectiveValue {
     source: SettingSource,
 }
 
+/// Valor e origem das duas linhas de sandbox (#1225) em
+/// `/api/settings/effective`.
+///
+/// Funcao **pura**, separada do handler de proposito. Duas razoes:
+///
+/// 1. Ela decide o que o operador LE sobre um controle de contencao. Dizer
+///    `Default` para uma secao que ele escreveu — ou `File` para uma que ele
+///    nunca tocou — e a interface mentindo sobre onde o sandbox esta ligado,
+///    que e a classe de bug que a #1225 existe para fechar.
+/// 2. `effective_value_for` so e alcancavel montando um `AppState` inteiro, e
+///    e por isso que este arquivo esta em 0% de cobertura. Extrair a decisao
+///    e o que a torna exercitavel sem subir o mundo.
+///
+/// O `ssh_host` **nunca** sai daqui: nao e segredo, mas nomeia
+/// infraestrutura, e a rota e auth-free. O backend sai so como discriminante.
+fn sandbox_effective(
+    id: &str,
+    sb: &garraia_config::SandboxConfig,
+) -> (serde_json::Value, SettingSource) {
+    use serde_json::{Value, json};
+
+    // Secao ausente => os dois campos estao no default compilado. Reportar
+    // `File` faria a UI afirmar que alguem escolheu `off`.
+    let source = if sb.mode == garraia_config::SandboxMode::Off && sb.backend.is_none() {
+        SettingSource::Default
+    } else {
+        SettingSource::File
+    };
+    let value = if id == "security.sandbox_mode" {
+        json!(match sb.mode {
+            garraia_config::SandboxMode::Off => "off",
+            garraia_config::SandboxMode::All => "all",
+            garraia_config::SandboxMode::Allowlist => "allowlist",
+        })
+    } else {
+        match sb.backend {
+            None => Value::Null,
+            Some(garraia_config::SandboxBackendKind::Docker) => json!("docker"),
+            Some(garraia_config::SandboxBackendKind::Podman) => json!("podman"),
+            Some(garraia_config::SandboxBackendKind::Ssh) => json!("ssh"),
+        }
+    };
+    (value, source)
+}
+
 fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue {
     use serde_json::{Value, json};
     let (value, configured, source) = match s.id {
@@ -382,9 +466,12 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
             // Async access deferred — read the list outside this fn.
             (Value::Null, None, SettingSource::Runtime)
         }
+        // #1241: `is_some()` reportava `configured: true` para um
+        // `api_key: "  "` que deixa o gate de `/api/*` e `/ws` DESLIGADO.
+        // `api_key_configurada` e a mesma regra que o `ApiKeyGate` aplica.
         "secrets.gateway_api_key" => (
             Value::Null,
-            Some(state.config.gateway.api_key.is_some()),
+            Some(state.config.gateway.api_key_configurada()),
             SettingSource::File,
         ),
         "secrets.jwt_secret" => (
@@ -409,6 +496,13 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
             SettingSource::File,
         ),
         "security.rate_limit_rpm" => (json!(120), None, SettingSource::Default),
+        // #1225: so o discriminante. `ssh_host` nao e segredo, mas nomeia
+        // infraestrutura e nao acrescenta nada ao diagnostico — a rota e
+        // auth-free, entao o que nao precisa sair nao sai.
+        "security.sandbox_mode" | "security.sandbox_backend" => {
+            let (value, source) = sandbox_effective(s.id, &state.config.agent.sandbox);
+            (value, None, source)
+        }
         "appearance.default_theme" => (json!("dark"), None, SettingSource::Default),
         "appearance.default_skin" => (json!("garra-blue"), None, SettingSource::Default),
         "experimental.streaming" => (json!(false), None, SettingSource::Default),
@@ -546,4 +640,139 @@ pub async fn patch_handler(
             dry_run: true,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use garraia_config::{SandboxBackendKind, SandboxConfig, SandboxMode};
+
+    const MODO: &str = "security.sandbox_mode";
+    const BACKEND: &str = "security.sandbox_backend";
+
+    /// #1225 S3: secao ausente e config compilada, nao escolha do operador.
+    #[test]
+    fn sandbox_desligado_reporta_default() {
+        let sb = SandboxConfig::default();
+        assert_eq!(sb.mode, SandboxMode::Off);
+        assert!(sb.backend.is_none());
+
+        let (valor, origem) = sandbox_effective(MODO, &sb);
+        assert_eq!(valor, serde_json::json!("off"));
+        assert_eq!(origem, SettingSource::Default);
+
+        let (valor, origem) = sandbox_effective(BACKEND, &sb);
+        assert_eq!(valor, serde_json::Value::Null);
+        assert_eq!(origem, SettingSource::Default);
+    }
+
+    /// Qualquer configuracao explicita vira `File` — inclusive `mode: off`
+    /// com um backend escrito, que e o caso que a condicao composta existe
+    /// para pegar: o operador desligou temporariamente, mas escreveu a secao.
+    #[test]
+    fn sandbox_configurado_reporta_file() {
+        let casos = [
+            SandboxConfig {
+                mode: SandboxMode::All,
+                backend: Some(SandboxBackendKind::Docker),
+                ..SandboxConfig::default()
+            },
+            SandboxConfig {
+                mode: SandboxMode::Allowlist,
+                backend: Some(SandboxBackendKind::Podman),
+                ..SandboxConfig::default()
+            },
+            // `off` COM backend: a secao existe no arquivo.
+            SandboxConfig {
+                mode: SandboxMode::Off,
+                backend: Some(SandboxBackendKind::Ssh),
+                ..SandboxConfig::default()
+            },
+            // `all` SEM backend: config invalida (o check recusa), mas a
+            // origem continua sendo o arquivo — foi alguem que escreveu.
+            SandboxConfig {
+                mode: SandboxMode::All,
+                backend: None,
+                ..SandboxConfig::default()
+            },
+        ];
+        for sb in casos {
+            assert_eq!(
+                sandbox_effective(MODO, &sb).1,
+                SettingSource::File,
+                "sb = {sb:?}"
+            );
+            assert_eq!(
+                sandbox_effective(BACKEND, &sb).1,
+                SettingSource::File,
+                "sb = {sb:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sandbox_mode_e_backend_saem_com_o_nome_certo() {
+        for (modo, esperado) in [
+            (SandboxMode::Off, "off"),
+            (SandboxMode::All, "all"),
+            (SandboxMode::Allowlist, "allowlist"),
+        ] {
+            let sb = SandboxConfig {
+                mode: modo,
+                ..SandboxConfig::default()
+            };
+            assert_eq!(sandbox_effective(MODO, &sb).0, serde_json::json!(esperado));
+        }
+        for (backend, esperado) in [
+            (SandboxBackendKind::Docker, "docker"),
+            (SandboxBackendKind::Podman, "podman"),
+            (SandboxBackendKind::Ssh, "ssh"),
+        ] {
+            let sb = SandboxConfig {
+                mode: SandboxMode::All,
+                backend: Some(backend),
+                ..SandboxConfig::default()
+            };
+            assert_eq!(
+                sandbox_effective(BACKEND, &sb).0,
+                serde_json::json!(esperado)
+            );
+        }
+    }
+
+    /// O `ssh_host` nao pode vazar por esta rota, que e auth-free. Nomear
+    /// infraestrutura nao acrescenta nada ao diagnostico.
+    #[test]
+    fn sandbox_effective_nunca_devolve_o_ssh_host() {
+        let sb = SandboxConfig {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackendKind::Ssh),
+            ssh_host: Some("bastiao-interno.exemplo".into()),
+            image: Some("registry.interno/imagem:1".into()),
+            ..SandboxConfig::default()
+        };
+        for id in [MODO, BACKEND] {
+            let (valor, _) = sandbox_effective(id, &sb);
+            let texto = valor.to_string();
+            assert!(!texto.contains("bastiao-interno"), "vazou host: {texto}");
+            assert!(!texto.contains("registry.interno"), "vazou imagem: {texto}");
+        }
+    }
+
+    /// As duas linhas existem no schema, sao read-only e ficam em Security.
+    /// Read-only importa: o PATCH da rota e dry-run, entao uma chave editavel
+    /// faria a UI dizer "aplicado" para um controle que voltaria desligado.
+    #[test]
+    fn sandbox_aparece_no_schema_como_somente_leitura() {
+        let todas = settings();
+        for id in [MODO, BACKEND] {
+            let row = todas
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("{id} deveria estar no schema"));
+            assert!(!row.editable, "{id} nao pode ser editavel");
+            assert!(!row.secret);
+            assert!(matches!(row.category, SettingCategory::Security));
+        }
+    }
 }

@@ -1430,6 +1430,13 @@ fn main() -> Result<()> {
         let mut config = config;
         config.gateway.host = host;
         config.gateway.port = port;
+        // #1241: o `warn!` equivalente de `serve_plain` nasce morto neste
+        // caminho — depois do fork o tracing aponta para
+        // `~/.garraia/garraia.log`, e `start -d` e o modo que o `install.sh`
+        // recomenda e que uma unit systemd usa. Entao o aviso sai aqui, em
+        // stderr, ANTES do fork, sobre o host ja resolvido acima (que pode
+        // vir de `--host`/`HOST` e portanto nao estar no config em disco).
+        aviso_de_bind_exposto_no_daemon(&config.gateway);
         if is_restart {
             // Don't init tracing here — try_stop_daemon uses println!,
             // and the daemon child will init its own subscriber after fork.
@@ -1441,6 +1448,27 @@ fn main() -> Result<()> {
     // All other commands run inside a tokio runtime.
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
     rt.block_on(async_main(cli, config, config_loader, init_tracing))
+}
+
+/// Imprime em stderr, uma vez, o aviso de bind exposto sem credencial do
+/// `garra start -d` / `restart -d` (#1241).
+///
+/// Reusa o texto de [`garraia_gateway::server::aviso_de_bind_exposto`] para
+/// que o modo daemon e o modo foreground nao possam divergir. Silencioso
+/// quando o host nao resolve: um host invalido ja vai falhar no bind, com
+/// mensagem propria, e este aviso nao e o lugar de reportar isso.
+fn aviso_de_bind_exposto_no_daemon(gateway: &garraia_config::GatewayConfig) {
+    use std::net::ToSocketAddrs;
+
+    let ativa = garraia_gateway::gateway_auth::ApiKeyGate::from_config(gateway).is_enabled();
+    let Ok(mut enderecos) = (gateway.host.as_str(), gateway.port).to_socket_addrs() else {
+        return;
+    };
+    if let Some(bound) = enderecos.next()
+        && let Some(aviso) = garraia_gateway::server::aviso_de_bind_exposto(&bound, ativa)
+    {
+        eprintln!("aviso: {aviso}");
+    }
 }
 
 async fn async_main(

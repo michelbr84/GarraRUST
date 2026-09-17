@@ -431,6 +431,31 @@ pub struct GatewayConfig {
     pub tls_key_path: Option<String>,
 }
 
+impl GatewayConfig {
+    /// A credencial de gateway **normalizada**: `None` quando o campo esta
+    /// ausente, vazio ou so com espaco em branco.
+    ///
+    /// Fonte unica da regra "ha gate de `/api/*` e de `/ws`?" (#1241). Antes
+    /// dela, tres superficies respondiam coisas diferentes para o mesmo
+    /// `api_key: "  "`: o gate (`garraia_gateway::gateway_auth::ApiKeyGate`)
+    /// ficava desligado, enquanto `garra config check` e o
+    /// `GET /api/settings/effective` do Web Console diziam `configured:
+    /// true` — falsa garantia justamente para quem foi consultar o
+    /// diagnostico. Qualquer consumidor novo deve chamar isto em vez de
+    /// `api_key.is_some()`.
+    pub fn api_key_normalizada(&self) -> Option<&str> {
+        self.api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+    }
+
+    /// Acucar para [`Self::api_key_normalizada`] quando so a presenca importa.
+    pub fn api_key_configurada(&self) -> bool {
+        self.api_key_normalizada().is_some()
+    }
+}
+
 fn default_session_ttl_secs() -> i64 {
     86_400
 }
@@ -801,6 +826,19 @@ pub struct AgentConfig {
     /// command, which is the risky tier switched off — not a pattern.
     #[serde(default)]
     pub bash_allowlist: Vec<String>,
+    /// #1244: raizes adicionais que as file tools (`file_read`, `file_write`,
+    /// `list_dir`) podem tocar, alem do `working_dir` da sessao.
+    ///
+    /// Lista vazia (o default) **nao** significa "tudo liberado": significa que
+    /// so o diretorio da sessao autoriza alguma coisa, e uma sessao sem
+    /// `working_dir` nao le nem escreve nada. Fail-closed de proposito — sem
+    /// raiz conhecida nao ha como afirmar que um caminho e seguro.
+    ///
+    /// Caminho que nao existe e descartado com `warn!` no boot. `garra config
+    /// check` avisa quando a lista inclui `/` ou o proprio `$HOME`, que
+    /// devolvem `~/.ssh` e `.env` ao alcance do modelo.
+    #[serde(default)]
+    pub file_roots: Vec<String>,
     /// GAR-227: When true, a short LLM call classifies the user's intent into an agent mode
     /// (code/debug/review/search/architect/ask) when the keyword heuristic is ambiguous.
     /// Requires a working LLM provider. Default: false (opt-in).
@@ -835,6 +873,14 @@ pub struct AgentConfig {
     /// Brave resolve (`llm.brave.api_key`, cofre ou `BRAVE_API_KEY`).
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// #1225: secao `agent.sandbox` — a chave que faltava para o sandbox por
+    /// tool entregue na #1222 ser alcancavel. Ate aqui `SandboxPolicy` so era
+    /// construida pelo `default()` (= `off`) nos tres pontos de producao, e
+    /// `set_sandbox_policy` so era chamado pelos proprios testes: a
+    /// funcionalidade existia, era testada, e nenhum operador conseguia
+    /// liga-la. Ausente => `mode = off` => comportamento identico ao de antes.
+    #[serde(default)]
+    pub sandbox: crate::sandbox::SandboxConfig,
 }
 
 /// Backend da tool `web_search` (#1034).

@@ -25,7 +25,7 @@
 //! |---|---|
 //! | 0 | tudo certo, inclusive o caminho sem TTY |
 //! | 1 | o usuario cancelou (Ctrl+C, resposta "nao") |
-//! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, ou nao ha sessao |
+//! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, nao ha sessao, ou `link`/`cloud` foram chamados sem terminal |
 //! | 70 `EX_SOFTWARE` | erro interno (disco, config ilegivel) |
 
 use std::io::{IsTerminal, Write};
@@ -41,6 +41,9 @@ use garraia_channels::whatsapp_linked::{DEFAULT_ACCOUNT, KeyOrigin, SessionKey, 
 use garraia_config::{ChannelConfig, ConfigLoader};
 
 use crate::wizard::prompts::Prompter;
+
+/// De quantos em quantos segundos o `connecting` pulsa na tela.
+const CONNECTING_PULSE_SECS: u64 = 5;
 
 const EX_UNAVAILABLE: i32 = 69;
 const EX_SOFTWARE: i32 = 70;
@@ -227,8 +230,57 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(t(
         lang,
-        "Também existem: garra whatsapp status | garra whatsapp logout",
-        "Also available: garra whatsapp status | garra whatsapp logout",
+        "Também existem: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
+        "Also available: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
+    ));
+    out
+}
+
+/// O que `link` e `cloud` dizem quando nao ha terminal.
+///
+/// # Por que NAO e o [`non_interactive_hint`]
+///
+/// O hint do menu termina mandando rodar `garra whatsapp link`. Quando o
+/// proprio `link` respondia com esse mesmo texto — byte a byte, e saindo 0 —,
+/// quem estava num pipe recebia como orientacao a repeticao do comando que
+/// acabara de rodar. `ssh servidor 'garra whatsapp link'`, que e como se
+/// conecta um GarraIA headless num VPS, nao tem TTY: o usuario ficava num
+/// ciclo fechado, sem QR, sem erro e com exit 0 dizendo que deu certo.
+///
+/// Quem JA escolheu o fluxo precisa de outra coisa: o motivo (o QR se le
+/// deste terminal, e o consentimento se da nele) e a saida (`ssh -t`). E de
+/// um exit code que nao minta — 69 `EX_UNAVAILABLE`, o mesmo que o `status`
+/// usa para "nao da para fazer isto aqui", e nao 0.
+pub fn needs_a_terminal(lang: Lang, subcomando: &str) -> String {
+    let mut out = String::new();
+    out.push_str(t(
+        lang,
+        "Este fluxo precisa de um terminal de verdade.\n\n",
+        "This flow needs a real terminal.\n\n",
+    ));
+    out.push_str(t(
+        lang,
+        "O QR code é desenhado neste terminal e você confirma o vínculo aqui, \
+         então um pipe, um cron ou um `ssh` sem TTY não conseguem levar o \
+         processo ate o fim.\n\n",
+        "The QR code is drawn in this terminal and you confirm the link here, \
+         so a pipe, a cron job or an `ssh` without a TTY cannot carry the \
+         process through.\n\n",
+    ));
+    out.push_str(&format!(
+        "  {}\n    ssh -t <usuario>@<maquina> garra whatsapp {subcomando}\n",
+        t(
+            lang,
+            "Por ssh, peça um TTY com -t:",
+            "Over ssh, ask for a TTY with -t:"
+        )
+    ));
+    out.push_str(t(
+        lang,
+        "\nNum multiplexador (tmux, screen) ou num terminal local, basta rodar \
+         o comando normalmente.",
+        "\nInside a multiplexer (tmux, screen) or in a local terminal, just run \
+         the command as usual.",
     ));
     out
 }
@@ -524,6 +576,30 @@ fn restore(ctx: &Context) -> i32 {
         return EX_UNAVAILABLE;
     }
 
+    // **A PROVA VEM ANTES DO MOVIMENTO.** Ela ja existia, mas rodava depois
+    // do `restore_archive()`, e entao uma passphrase do cofre apenas AUSENTE
+    // do ambiente consumia o `.prev`: o comando saia 69, o arquivo ja tinha
+    // saido do lugar, e a mensagem mandava ler um QR novo — conselho que
+    // descartaria uma sessao intacta. O blob sobrevivia em `session.enc`, mas
+    // nao sobrava comando que ligasse o canal: um segundo `restore`, ja com a
+    // passphrase, respondia "nao ha arquivada".
+    //
+    // Provar primeiro custa a mesma leitura e devolve o erro com o arquivo
+    // ainda no lugar. Mesmo principio do relogio de progresso do `runner.rs`:
+    // nao destrua estado antes de saber que pode.
+    if let Err(e) = ctx.key().and_then(|key| store.load_archive(&key)) {
+        eprintln!("{e}");
+        eprintln!(
+            "{}",
+            t(
+                ctx.lang,
+                "A sessão arquivada não abre com a chave atual — ela NÃO foi movida e continua onde está. Se a senha do cofre estava só faltando no ambiente, exporte-a e rode de novo.",
+                "The archived session does not open with the current key — it was NOT moved and is still in place. If the vault passphrase was merely missing from the environment, export it and run again."
+            )
+        );
+        return EX_UNAVAILABLE;
+    }
+
     match store.restore_archive() {
         Ok(true) => {}
         // Inalcancavel depois dos dois guards acima, mas `restore_archive` e o
@@ -808,8 +884,8 @@ fn link_with(
 ) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
-        println!("{}", non_interactive_hint(ctx.lang));
-        return 0;
+        println!("{}", needs_a_terminal(ctx.lang, "link"));
+        return EX_UNAVAILABLE;
     }
 
     let store = match ctx.store() {
@@ -1251,6 +1327,7 @@ struct TerminalUi<'a> {
     style: qr::Style,
     /// Ultimo segundo ja impresso, para o contador nao repetir a mesma linha.
     last_countdown: Option<u64>,
+    last_connecting: Option<u64>,
     sink: Box<dyn Write + Send>,
 }
 
@@ -1260,6 +1337,7 @@ impl<'a> TerminalUi<'a> {
             ctx,
             style: qr::Style::for_terminal(ctx.unicode, ctx.interactive, ctx.columns),
             last_countdown: None,
+            last_connecting: None,
             sink: Box::new(std::io::stdout()),
         }
     }
@@ -1277,6 +1355,7 @@ impl PairUi for TerminalUi<'_> {
 
     fn qr(&mut self, data: &str, attempt: u32, max: u32, previous_expired: bool) {
         self.last_countdown = None;
+        self.last_connecting = None;
         if previous_expired {
             // Separador em vez de redesenho: limpar a tela apagaria as
             // instrucoes que o usuario ainda esta lendo.
@@ -1321,7 +1400,32 @@ impl PairUi for TerminalUi<'_> {
         self.say(&line);
     }
 
+    /// Um pulso a cada [`CONNECTING_PULSE_SECS`], nao a cada segundo.
+    ///
+    /// Segundo a segundo seriam ~120 linhas antes de o teto estourar, o que
+    /// num log (pipe, systemd) e ruido puro. De cinco em cinco a linha se
+    /// move o bastante para provar que o processo esta vivo.
+    fn connecting(&mut self, elapsed_secs: u64, giving_up_in_secs: u64) {
+        if elapsed_secs == 0 || !elapsed_secs.is_multiple_of(CONNECTING_PULSE_SECS) {
+            return;
+        }
+        if self.last_connecting == Some(elapsed_secs) {
+            return;
+        }
+        self.last_connecting = Some(elapsed_secs);
+        let line = match self.ctx.lang {
+            Lang::Pt => format!(
+                "   ainda tentando… ({elapsed_secs}s; desisto em {giving_up_in_secs}s e explico o que checar)"
+            ),
+            Lang::En => format!(
+                "   still trying… ({elapsed_secs}s; giving up in {giving_up_in_secs}s with what to check)"
+            ),
+        };
+        self.say(&line);
+    }
+
     fn authenticated(&mut self) {
+        self.last_connecting = None;
         self.say("");
         self.say(t(
             self.ctx.lang,
@@ -1338,8 +1442,8 @@ impl PairUi for TerminalUi<'_> {
 fn cloud(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
-        println!("{}", non_interactive_hint(ctx.lang));
-        return 0;
+        println!("{}", needs_a_terminal(ctx.lang, "cloud"));
+        return EX_UNAVAILABLE;
     }
     let Some(loader) = ctx.loader.as_ref() else {
         eprintln!(

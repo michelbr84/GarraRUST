@@ -21,6 +21,30 @@ paths = [
     '''^ROADMAP\.md$''',
     '''^README\.md$''',
     '''^crates/.*/tests/.*\.rs$''',
+    # Fixtures de teste em Python — o duble do bridge WhatsApp e o do npm
+    # (#1238). Elas PRECISAM conter string com forma de credencial: e o
+    # unico jeito de provar que `redact_tail_line` a remove antes de a
+    # cauda do stderr chegar ao terminal. A regra `.rs` acima nao as
+    # alcanca, e por isso o `Secret Scan` da #1256 acusou `generic-api-key`
+    # em `fake_whatsapp_bridge.py` e `fake_npm.py`.
+    #
+    # O valor e `c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0=`: dois blocos
+    # base64 unidos por `/`, cada metade decodificando para texto legivel
+    # (`secret` e `credential+noiseKeyBASE64=`). A string inteira NAO
+    # decodifica como um blob unico — da `secret` mais lixo binario. A prova
+    # de que nunca foi chave esta no proprio valor, nao numa afirmacao deste
+    # arquivo.
+    #
+    # ESTA REGRA DE PATH E A UNICA ISENCAO, DE PROPOSITO. Uma entrada em
+    # `regexes` com o valor literal foi escrita e depois MEDIDA: com ela
+    # removida e so esta linha no lugar, o gitleaks 8.24.3 sobre o range
+    # exato do CI (`6239ca2^..53c20b4`, 21 commits, 631.57 KB) devolve
+    # `no leaks found`. Ou seja, a regex nao carregava nada — e uma isencao
+    # por VALOR vale em qualquer arquivo, para sempre, enquanto esta vale
+    # so onde a fixture mora. Tirar a fixture de `tests/fixtures/` volta a
+    # acender o scanner, que e o comportamento desejado: forca uma decisao
+    # nova em vez de herdar esta.
+    '''^crates/.*/tests/fixtures/.*\.py$''',
     '''^tests/.*\.(rs|sh|md|ts|js)$''',
     '''^\.github/ISSUE_TEMPLATE/.*''',
     '''^\.github/PULL_REQUEST_TEMPLATE\.md$''',

@@ -234,6 +234,167 @@ o confinava, segue **não roteado**. Guards:
 `post_sessions_accepts_working_dir_inside_the_allowed_root` em
 `tests/projects_test.rs`.
 
+## 5.72. Caminhos de filesystem vindos da tool call do LLM (#1244)
+
+Fechado em 2026-09-16. A §5.7 fechou o caminho que vem do **request HTTP**. O
+que ficou aberto foi o irmão dele: o caminho que vem da **tool call do modelo**.
+
+`file_read`, `file_write` e `list_dir` recebiam o argumento `path` cru,
+expandiam `~` e aceitavam caminho absoluto sem confinamento. O parâmetro
+`allowed_directories` existia no construtor, tinha teste próprio, e os dois
+pontos de registro em produção (`bootstrap/mod.rs` do gateway e `chat.rs` da
+CLI) passavam `None`. Um prompt chegando por Telegram, Discord ou WhatsApp
+mandava o modelo ler `~/.ssh/id_rsa`, `/etc/shadow` ou o próprio `config.yml`
+do gateway — que carrega chave de LLM em claro quando o operador não usa o
+cofre. `list_dir` era o reconhecimento: com ela o modelo achava o alvo antes de
+pedir a leitura.
+
+Combina mal com três coisas que existem: o guard de injeção indireta não cobre
+`file_read` (o conteúdo lido vira instrução), o `sandbox` por tool tem default
+`Off`, e a §5.9 já descreve a rota de chat como identidade não verificada.
+
+**Mitigação**: `garraia_agents::FileJail`, o mesmo "resolve, depois confina" da
+§5.7, com a diferença que a escrita exige. As raízes efetivas de uma chamada
+são a união de `agent.file_roots` (config, vazia por padrão, mais a env
+`GARRAIA_FILE_ROOTS`) com o `working_dir` da sessão. **Conjunto vazio nega
+tudo** — sem raiz conhecida não há como afirmar que um caminho é seguro. No
+gateway isso faz a raiz padrão ser o diretório da sessão e nada mais, e esse
+`working_dir` já passou por `project_root::confine` (§5.7) antes de ser
+gravado. Na CLI o CWD do processo entra como raiz, porque quem roda
+`garra chat` é o dono da máquina no diretório que escolheu.
+
+O alvo de uma escrita normalmente não existe, então `canonicalize` falharia: o
+jail sobe até o **ancestral existente mais próximo**, canonicaliza esse e
+recola a cauda. É o que barra `raiz/link-para-fora/novo.txt` — que uma checagem
+só do `parent` textual deixaria passar, e que é o vetor de escrita equivalente
+ao symlink de leitura.
+
+**E aqui está a parte contraintuitiva, que a primeira versão desta mitigação
+errou e a auditoria R4 pegou: `canonicalize` falhar não quer dizer "não
+existe", quer dizer "não resolve".** Um symlink *pendurado* — cujo alvo não
+existe — falha no `canonicalize` e existe para o `lstat`; e o `open(O_CREAT)`
+de uma escrita **segue** esse link e cria o arquivo no alvo. Com a cauda
+recolada dentro da raiz, o `starts_with` aprovava e o byte caía fora. O vetor
+plausível não passa pelo `bash`: um repositório clonado traz
+`raiz/evil -> ../../../home/u/.ssh/authorized_keys` versionado no git, o CWD é
+raiz na CLI, e uma injeção indireta no README manda escrever em `evil` — que é
+exatamente a tese da #1244. Por isso **todo componente que não canonicaliza
+ainda passa por `symlink_metadata`**: existir para o `lstat` sem resolver é
+recusa, não "cauda inexistente". O caminho é normalizado por `components()`
+antes desse `lstat`, porque com barra final (`raiz/evil/`) o `lstat` segue o
+link por POSIX e o pendurado voltaria a parecer inexistente.
+
+Custo aceito: um pendurado apontando para **dentro** da raiz também é recusado.
+Distinguir exigiria reimplementar resolução de symlink à mão — alvo relativo,
+ciclo, teto de profundidade — e fail-closed sai mais barato que uma segunda
+resolução caseira. O furo também tinha reaberto o oráculo de existência da
+terceira linha da tabela abaixo: link vivo devolvia a frase de recusa, link
+pendurado devolvia `Ok` — e escrevia.
+
+O construtor das três tools passou a **exigir** o jail: `FileReadTool::new(None)`
+não compila mais. Era o ponto exato da falha — um jail opcional é um jail
+esquecido.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **I** Information disclosure | Prompt de canal faz o modelo chamar `file_read {"path": "~/.ssh/id_rsa"}` ou o `config.yml` do gateway. | `FileJail::confine` nas três tools, obrigatório no construtor; testes que pedem a tool ao runtime de `build_agent_runtime`, não ao construtor. | — |
+| **I** Information disclosure | Symlink dentro da raiz apontando para fora (`raiz/atalho → /etc`). | `canonicalize` resolve o link **antes** da comparação, que é por componente (`Path::starts_with`). | — |
+| **I** Information disclosure | Recusa distingue "não existe" de "existe mas está fora", virando oráculo. | Uma única frase para as três recusas, sem caminho e sem raiz. A mensagem útil da #923 fica só para arquivo ausente **dentro** da raiz. | — |
+| **T** Tampering | `file_write` cria arquivo fora da raiz através de um diretório-symlink. | Subida até o ancestral existente + canonicalização dele. | — |
+| **T** Tampering | `file_write` cria arquivo fora da raiz através de um symlink **pendurado** (`raiz/evil → /fora/inexistente`), versionado num repositório clonado. `canonicalize` falha por não resolver — não por não existir — e o `open(O_CREAT)` segue o link. | Cada componente que não canonicaliza passa por `symlink_metadata`: existe para o `lstat` e não resolve ⇒ recusa. Caminho normalizado por `components()` antes do `lstat`, senão a barra final (`raiz/evil/`) faz o `lstat` seguir o link. Três testes: função pura (folha e pai) e `FileWriteTool` ponta a ponta. | Pendurado para **dentro** da raiz também é recusado — fail-closed assumido. |
+| **T** Tampering | Troca de symlink entre o `canonicalize` e o `open` (TOCTOU). | Reduzida: a tool abre o caminho **resolvido**, não o original. | **Residual conhecido, não fechado.** Fechar exige abrir por descritor (`openat2` + `RESOLVE_BENEATH` no Linux), sem equivalente portátil nos três sistemas operacionais. Exige quem tenha escrita dentro da raiz. |
+| **T** Tampering / **I** Information disclosure | **Hardlink** dentro da raiz apontando para o inode de um arquivo de fora (`ln /etc/alvo raiz/inocente.txt`). A escrita atinge o inode de fora; e o backup `.bak` do `file_write` copia o conteúdo de fora **para dentro** da raiz, transformando o escape de escrita em escape de leitura. | **Nenhuma.** Um hardlink não é um ponteiro que se resolve, é um segundo *nome* do mesmo inode: `canonicalize` não tem o que seguir, o caminho resolve para ele mesmo e o `starts_with` aprova. | **Residual conhecido, não fechado — e, ao contrário do symlink, sem defesa possível com esta API.** Exigiria comparar `st_dev`/`st_ino` contra um mapa da raiz, ou recusar todo arquivo com `st_nlink > 1`, o que recusaria também hardlink legítimo dentro da própria raiz. Impacto menor que o do symlink: o git não versiona hardlink, então o vetor "repositório clonado" não serve, e exige quem **já tenha escrita dentro da raiz** — mesma pré-condição do TOCTOU acima. |
+| **E** Elevation of privilege | No caminho MCP (`garra_agent`) quem escreve o `working_dir` é o **modelo**, pelo argumento da tool — e `FileJail::confine` soma o `working_dir` às raízes efetivas. `{"working_dir": "/", "message": "leia /etc/shadow"}` devolveria o disco inteiro às file tools. **Regressão introduzida pela própria #1244**: antes dela o `working_dir` do MCP só ancorava caminho relativo, não era raiz, e `working_dir: "/etc"` batia no jail. | `handle_agent_call` confina o `working_dir` contra as raízes do operador antes de aceitá-lo (`confine(dir, None)` — `None` de propósito: o valor sob validação não pode se autorizar) e responde `invalid_params`. A regra é a mesma endossada no #1255: pode **estreitar** o jail ou ficar dentro dele, nunca alargar. O jail é construído **uma vez por chamada** em `handle_agent_call` e desce por parâmetro até `build_tools`: a instância que valida é a mesma que vai para as file tools, e não há segunda construção a manter em concordância. O que isso fecha, medido por mutação: substituir o parâmetro por um jail próprio em `build_tools` exige descartá-lo, e aí o `unused variable: jail` derruba o `clippy --all-targets -- -D warnings` do CI. Não é impossibilidade de tipo — é uma divergência que o gate não deixa entrar. O gate não alcança a divergência **parcial**: dar um jail mais largo a só uma das duas tools mantém o parâmetro usado e passa limpo (medido). Fechar essa depende do teste de comportamento do wiring, registrado como dívida. A recusa é presa por um teste que chama o handler real; o lado "pode estreitar" chama a função de validação extraída (pelo handler ele rodaria um turno de agente de verdade dentro da suíte unitária). | O ganho de privilégio real era pequeno — ver a nota sobre `bash` em "Não coberto de propósito" —, mas a divergência entre a doc do schema e o código apontava na direção perigosa. |
+| **E** Elevation of privilege | Operador põe `/` ou `$HOME` em `agent.file_roots` e desliga o jail sem perceber. | `garra config check` avisa nos dois casos; `config.hardened.example.yml` diz para não fazer. | Aviso, não erro — a decisão é do operador. |
+| **E** Elevation of privilege | O mesmo por `GARRAIA_FILE_ROOTS=/`, que **soma** raízes às da config e não aparecia em lugar nenhum: o `config check` só lia o YAML e o boot só contava raízes (`roots().len()`). O jail apertado cria pressão operacional exatamente nessa direção. | `config check` valida também a env (campo `env.GARRAIA_FILE_ROOTS`); o `info!` do boot **nomeia** as raízes e um `warn!` sai por raiz que, já resolvida, seja `/` ou o `$HOME`. Comparação depois do `canonicalize`, senão `$HOME/../$USER` passa. | Continua aviso, não erro. |
+
+**Não coberto de propósito** (cada um com o porquê):
+
+- `repo_search` não recebe **caminho** do modelo: ele roda `rg`/`grep` com
+  `current_dir` no `working_dir` da sessão e alvo fixo `.`, e o `file_pattern`
+  vai por `--glob`, que não escapa da raiz da busca. Sem `working_dir` ele cai
+  no CWD do processo — mesma superfície de antes.
+  **Correção de um parágrafo errado desta mesma seção:** a versão anterior
+  concluía daí que `repo_search` era "nem melhor nem pior", e esse raciocínio
+  olhou só o `file_pattern`. O `query` também vai como argumento — literalmente
+  `cmd.arg(query).arg(".")`, **sem nenhum `--` separando opção de operando** —
+  e a auditoria R4 achou ali injeção de flag: um `query` começando com `-` é
+  lido pelo `rg` como opção. É defeito próprio, aberto como **#1266** (P0) e
+  **não** corrigido aqui: misturá-lo ao jail de caminho tornaria as duas
+  correções mais difíceis de revisar.
+- `git_diff` e `code_review` passam `file_path` como pathspec para o `git`, que
+  só enxerga o repositório. Vale registrar um defeito vizinho encontrado aqui e
+  **não corrigido** nesta mudança: `GitDiffTool::run_git_command` não seta
+  `current_dir`, então ignora o `working_dir` da sessão e roda no CWD do
+  processo do gateway. É bug de correção, não de confinamento.
+- `bash` e `run_tests` são a fronteira da #1225 (sandbox por tool) e da §6, não
+  desta. Um `bash` irrestrito lê qualquer arquivo — mas o ponto da #1244 é
+  justamente que o modelo não precisava do `bash`.
+  **Medido, não presumido** (auditoria R4 da #1244, dimensionamento do
+  `working_dir`): com o `BashTool::new(None)` que o `build_tools` do MCP
+  registra e `agent.bash_allowlist` vazia (o padrão), `cat /etc/shadow`,
+  `head -c 32 /etc/passwd`, `ls /etc`, `echo pwned > /tmp/x` e
+  `tee /tmp/y < /etc/hostname` **executam com `requires_confirmation=false` e
+  `is_error=false`** — leitura *e* escrita fora de qualquer raiz, sem
+  confirmação. Nenhum desses programas está na `DENY_LIST`, na `CONFIRM_LIST`
+  nem em `SENSITIVE_PROGRAMS`, e a `bash_allowlist` do operador é uma lista
+  *positiva* (dispensa confirmação, não restringe), então configurá-la não
+  aperta nada. Consequência para quem for dimensionar um achado do jail no
+  caminho MCP: enquanto o mesmo servidor entregar esse `bash`, o ganho de
+  privilégio de furar o jail das file tools é ~nulo em capacidade. O jail
+  continua valendo como defesa em profundidade, pelo dia em que o `bash`
+  apertar — e porque no **gateway** (canal de chat, identidade não verificada
+  da §5.9) é ele que segura, não o `bash`.
+- `garraia-tools` tem uma segunda implementação de `RepoSearchTool`/`ListDirTool`
+  com `root_path`, consumida só por `garraia-runtime::executor`, que o gateway
+  não usa para tools (só `RuntimeSettings`). Fora do alcance do agente hoje;
+  se entrar, entra com jail.
+
+**Dívida registrada, não corrigida aqui** (auditoria R4 da #1244):
+
+- Só o wiring do **gateway** tem teste de comportamento do jail.
+  `chat.rs::register_cli_tools` não tem nenhum, e em `mcp_agent` o que os testes
+  do `working_dir` cobrem é `file_jail()` — que o jail montado chegue às **duas**
+  file tools de `build_tools` (`ListDirTool` é pulada de propósito no caminho
+  MCP; "três" é a contagem do gateway) continua sem teste de comportamento.
+  O que **está** fechado, e por construção e não por disciplina, é a divergência
+  entre a régua que valida e a régua que executa: `build_tools` não constrói
+  jail nenhum, recebe por parâmetro o mesmo que `handle_agent_call` usou para
+  confinar o `working_dir`. Enquanto eram duas chamadas a `file_jail()`, trocar
+  a de `build_tools` por `FileJail::from_roots(["/"])` entregava o disco inteiro
+  às file tools com a suíte inteira verde (medido na revisão da rodada 4: 505 +
+  11 + 1 testes passando, incluindo os três do `working_dir`). Depois do
+  refactor, substituir o parâmetro inteiro por um jail próprio exige descartá-lo,
+  e aí não compila sob o `-D warnings` do CI (`unused variable: jail`) — gate,
+  não sistema de tipos. E o gate **para aí**: medido na passada curta de
+  segurança, trocar o jail de **uma só** das duas tools (`FileReadTool` com
+  `from_roots(["/"])`, `FileWriteTool` com o parâmetro) mantém o parâmetro
+  usado, não gera aviso nenhum, e passa com clippy limpo e 506 testes verdes,
+  com o `file_read` enxergando o disco inteiro. Ou seja: o CI pega a
+  substituição total, não a divergência parcial tool a tool. O que fecharia
+  essa é o teste de comportamento do wiring, que segue como dívida no item
+  acima — não o `#[deny(unused)]` (pega a mesma forma que o CI já pega) nem um
+  newtype `JailValidado`, que só provaria alguma coisa se `FileReadTool::new` e
+  `FileWriteTool::new` passassem a exigi-lo, mudando a API de todos os pontos
+  de registro.
+  Vale registrar o que a mitigação anterior **não** cobria, porque o texto antigo
+  deste bullet já convenceu um auditor do contrário: o construtor **exigir** o
+  `FileJail` (`Default` = zero raízes = nega tudo) transforma "esqueci de passar"
+  de fail-open em fail-closed, e só isso — não dizia nada sobre **passar um jail
+  diferente e mais largo**, que era o modo de falha real aqui.
+  Mas o defeito original da #1244 foi exatamente "ponto de chamada em produção
+  que nenhum teste exercitava", e ele ainda vale para o `chat.rs`.
+- Um symlink **quebrado apontando para dentro da raiz** recebe a mensagem de
+  "fora das raízes". É seguro e está declarado em teste (fail-closed assumido,
+  ver o Gap da linha do pendurado), mas confunde o usuário legítimo: um
+  `node_modules` clonado pela metade produz uma recusa de segurança onde o
+  problema é um link quebrado.
+- As duas varreduras de fonte do boot (que provam que o wiring de produção
+  passa o jail) afirmam só que *a linha existe em algum lugar do arquivo*:
+  mover o laço para uma função privada que ninguém chama as mantém verdes. A
+  alternativa é `build_agent_runtime` expor a contagem de raízes perigosas e o
+  teste asserir o valor.
+
 ## 5.75. Saída de ferramenta escrita no terminal (#995)
 
 O `garra chat` imprime, a cada chamada de ferramenta, uma linha com o que ela
@@ -576,6 +737,90 @@ quando o `config.yml` declara `inherit_env: true` para aquele nome: o
 restart passa `false` explicitamente. É fail-safe na direção certa (o
 restart isola mais, nunca menos), mas é uma diferença silenciosa de
 comportamento entre subir pelo boot e reiniciar pela admin API.
+## 5.13. Sandbox por tool (`agent.sandbox`) — #1222, #1225
+
+O `BashTool` pode envolver o comando num backend em vez de executá-lo direto
+no host. A política mora em `garraia_agents::sandbox::SandboxPolicy`, a
+configuração do operador é a seção `agent.sandbox` (#1225) e a tradução entre
+as duas é `garraia_gateway::bootstrap::sandbox_policy_from` — a mesma função
+nos três pontos de produção (gateway, `garra chat`, `garra mcp-agent`).
+
+Até a #1225 a seção não existia: os três construtores fixavam
+`SandboxPolicy::default()` (= `off`) e `set_sandbox_policy` só era chamado
+pelos próprios testes. A contenção estava escrita, testada e **inalcançável**
+— que é o motivo de esta seção existir antes da matriz.
+
+### O que cada backend garante
+
+| Backend | Rede | Sistema de arquivos | Privilégios | Onde o comando roda | O que **não** cobre |
+|---|---|---|---|---|---|
+| `docker` | `--network none` quando `network_disabled` (default `true`) | Só o `cwd` montado rw quando `mount_workdir` (default `true`) e o diretório existe; o resto é a imagem | `--security-opt no-new-privileges`; **sem** `--user`, `--read-only`, `--cap-drop`, limite de pids/memória | Container efêmero (`--rm`) no host local | Não é hardening completo do container (flags acima ficam para um slice próprio); o daemon do Docker é root, então escape do container é escape para root; o `cwd` montado é rw e é código do projeto |
+| `podman` | igual ao `docker` | igual ao `docker` | igual ao `docker`, mais o rootless do próprio podman quando instalado assim | Container efêmero no host local | Idem, menos a parte do daemon root quando rootless |
+| `ssh` | **nenhuma** — `network_disabled` é **ignorado** | **nenhuma** — `mount_workdir` e `image` são **ignorados** | os do usuário SSH no host remoto | Máquina remota, shell do usuário SSH | **Não é sandbox.** É execução remota: isola o host *local* e nada mais. O comando roda com tudo que aquele usuário pode fazer, inclusive rede |
+
+Três limites valem para os três backends:
+
+- **Só a tool `bash` é envolvida hoje.** `run_tests`, `git_diff`, `code_review`
+  e `repo_search` continuam nascendo no host mesmo com `mode = all` — a
+  policy é consultada dentro do `BashTool` e em nenhum outro lugar.
+  Acompanhamento na #1225 (slices S2/S3) — a issue segue aberta. Quem liga `mode = all` esperando "nada roda no
+  host" está enganado sobre quatro tools.
+- **Unix, e agora dito em voz alta.** No Windows o `BashTool` escolhe
+  `powershell -Command` e receberia uma linha com quoting POSIX
+  (`docker run ... sh -lc '…'`), que o PowerShell não reparseia da mesma
+  forma — o quoting de aspa simples lá é `''`, não `'\''`. Desde a #1225
+  isso não é mais só documentação: `wrap_command` **recusa fail-closed**
+  fora de unix e o `config check` reporta Error, em vez de deixar a
+  contenção parecer ligada.
+- **`elevated` roda no host.** É o escape hatch: a tool listada pula o
+  backend mesmo em `mode = all`. Ele é duplamente gated só quando
+  `agent.tool_confirmation_enabled = true`; sem isso resta apenas a denylist
+  do `safety_gate`, e o `garra config check` avisa.
+
+### Matriz
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **T** Tampering | Tool call do LLM (influenciável por injeção indireta de prompt, #1213) escreve fora do projeto. | Denylist + tier arriscado do `safety_gate` rodam **antes** do sandbox; com `docker`/`podman` o comando só enxerga o `cwd` montado. | `--read-only` no rootfs e mount do `cwd` em `ro` quando a tool for de leitura: slice próprio da #1225. |
+| **I** Information disclosure | Comando lê `~/.ssh`, `.env` do host, ou exfiltra por rede. | `--network none` por default; `#1075 R3` já limpa o env do filho para uma allowlist; fora do mount o container não vê o host. | Com `backend = ssh` **nada disso vale** — a seção acima diz por quê. |
+| **E** Elevation of privilege | Escape do container; `sudo` dentro do comando. | `--security-opt no-new-privileges`. | Sem `--user` o processo é root **dentro** do container, e o daemon do Docker é root **fora**; podman rootless é a recomendação enquanto o hardening não chega. |
+| **E** Elevation of privilege | Operador liga `mode = all` e acredita que o agente perdeu o host. | Quatro tools seguem no host (acima); `config check` e esta seção dizem quais. | Estender a policy às demais tools — tracking na #1225 (slices S2/S3). |
+| **D** Denial of service | Comando consome CPU/memória da máquina inteira dentro do container. | Timeout do próprio `BashTool` + orçamento de tool calls. | Sem `--memory`/`--pids-limit`; mesmo slice de hardening — tracking na #1225 (slices S2/S3). |
+| **R** Repudiation | Não se sabe depois se um comando rodou contido ou no host. | `tracing::info!` "comando executado dentro do sandbox" no caminho envolvido e `tracing::error!` no fail-closed. | Evento de audit dedicado (`agent.tool.sandboxed`) quando o audit de tools existir. |
+| **S** Spoofing | Backend ausente no host faz o comando cair no host em silêncio. | **Fail-closed**: `wrap_command` devolve erro e o `BashTool` recusa o comando; `backend = ssh` sem `ssh_host` também não constrói backend nenhum. | — |
+| **E** Elevation of privilege | **Injeção de opção** por `ssh_host` / `image`: `sh_quote` garante um token, não um *operando*. O host fica antes do `--` em `ssh {host} -- sh -lc …`, então `ssh_host: "-oProxyCommand=…"` é lido como flag e executa no host **local**, já depois do `safety_gate`; `image: "-…"` desloca o posicional do `docker run`. | Valor começando com `-` é recusado em **três** camadas. Duas rodam sempre e são as que garantem a propriedade: `sandbox_policy_from` no boot (backend não é construído / imagem cai no default, com `warn!` que nunca loga o valor) e o próprio `wrap_command` (Err fail-closed, antes do `is_available()`). A terceira é o `garra config check`, que **reporta** Error — comando opt-in, **não** gate de boot: nada no boot do gateway invoca o `run_check`. Nenhum host e nenhuma imagem reais começam com `-`. | Conserto estrutural: montar **argv** em vez de uma linha de shell, eliminando a classe inteira — tracking na #1225 (slices S2/S3), como já recomendado na #1231. |
+| **T** Tampering | Sandbox ligado numa plataforma onde o wrap não tem significado. | `wrap_command` devolve `Err` fail-closed fora de unix, e o `config check` reporta Error em `cfg!(windows)` — em vez de entregar uma linha POSIX ao `powershell -Command`. | — |
+
+### Config mínima
+
+```yaml
+agent:
+  tool_confirmation_enabled: true   # `elevated` sem isto é single-gated
+  sandbox:
+    mode: all                       # off (default) | all | allowlist
+    backend: podman                 # docker | podman | ssh
+    image: debian:bookworm-slim
+    network_disabled: true
+    mount_workdir: true
+    elevated: []                    # tools que rodam NO HOST
+```
+
+O `garra config check` é um relatório que o operador roda (`config_cmd.rs`) ou
+que o `garra doctor` invoca — **não** é um gate de boot, e um gateway com a
+seção inválida sobe. O que ele faz é dar nome ao problema antes de alguém
+esbarrar nele em produção; quem impede o comando de rodar são as camadas 2 e 3
+descritas acima.
+
+Ele reporta Error para `mode != off` sem `backend`, `backend: ssh` sem
+`ssh_host`, `ssh_host` ou `image` começando com `-`, e para a seção ligada fora
+de unix. Avisa (Warning) que `ssh` é execução remota — **sempre**, mesmo com a
+seção coerente —, que `ssh` ignora `network_disabled`/`mount_workdir`, que
+`elevated` sem confirmação humana é escape hatch desacompanhado, que
+`mode: all` com `bash` em `elevated` deixa a seção inerte, que `allowlist` com
+lista vazia sandboxa nada, e nomeia cada entrada de
+`sandboxed_tools`/`elevated` que não é uma tool que o sandbox saiba envolver.
+Nenhum finding ecoa o `ssh_host`; nomes de tool são ecoados de propósito — é o
+ponto do finding.
 
 ---
 
@@ -608,6 +853,7 @@ Agregado das matrizes. Prioridade = (likelihood × impact) dado o estado atual d
 | 6 | Plugin WASM runtime ainda scaffold | Plugins | Baixa (não shipped) | Fase 2.2 |
 | 7 | Storage HMAC integrity + allow-list MIME pendente impl | Storage (future) | Baixa (ADR apenas) | GAR-394 |
 | 8 | Mobile Android `FLAG_SECURE` ausente | Mobile | Baixa | plan futuro |
+| 9 | Sandbox por tool cobre so `bash`; sem hardening de container (`--user`, `--read-only`, `--cap-drop`, limites) | Agents | Média | #1225 (slices S2/S3) |
 
 ---
 
