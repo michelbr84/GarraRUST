@@ -104,6 +104,24 @@ agent:
     # sandboxed_tools: ["bash"]   # usado só quando mode: allowlist
     elevated: []           # tools que ESCAPAM do sandbox e rodam no host
   max_tool_calls: 50
+  # #1244: raízes que as file tools (`file_read`, `file_write`, `list_dir`)
+  # podem tocar, ALÉM do `working_dir` da sessão.
+  #
+  # Lista vazia (o padrão) NÃO é "tudo liberado": é "só o diretório da
+  # sessão", e uma sessão sem `working_dir` não lê nem escreve nada. Esse
+  # fail-closed é o padrão recomendado — deixe a chave de fora se você não
+  # tem um caso concreto.
+  #
+  # NUNCA coloque `/` nem o seu `$HOME` aqui: os dois devolvem `~/.ssh`,
+  # `~/.aws`, qualquer `.env` e este próprio arquivo ao alcance de um prompt
+  # que chegou pelo Telegram. `garra config check` avisa nos dois casos.
+  # A env `GARRAIA_FILE_ROOTS` (formato de PATH) soma às raízes daqui — e
+  # vale a mesma regra: `GARRAIA_FILE_ROOTS=/` desliga o jail tão bem quanto
+  # `file_roots: ["/"]`. O `config check` também valida a env, e o gateway
+  # nomeia as raízes no boot e emite `warn!` para cada uma que seja `/` ou o
+  # `$HOME`.
+  # file_roots:
+  #   - /srv/projetos/notas
 
 # Servidores MCP com política (escopo mínimo + limites + allowlist).
 # Receitas completas: docs/integrations/mcp-capacidades.md

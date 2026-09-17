@@ -70,9 +70,9 @@ pub use quantization::{ModelQuant, auto_select_quant, detect_vram_bytes};
 pub use runtime::{AgentRuntime, resolve_provider_from_model};
 pub use tools::{
     BashTool, CodeReviewTool, DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig,
-    EventTrigger, EventType, FileReadTool, FileWriteTool, ListDirTool, RepoSearchTool,
-    RunTestsTool, ScheduleHeartbeat, ScheduleRecurring, ScheduledTask, TaskStatus, Tool,
-    ToolContext, ToolOutput, TriggerRegistry, WebFetchTool, WebSearchTool, WebhookTrigger,
+    EventTrigger, EventType, FileJail, FileJailDenial, FileReadTool, FileWriteTool, ListDirTool,
+    RepoSearchTool, RunTestsTool, ScheduleHeartbeat, ScheduleRecurring, ScheduledTask, TaskStatus,
+    Tool, ToolContext, ToolOutput, TriggerRegistry, WebFetchTool, WebSearchTool, WebhookTrigger,
 };
 pub use turn_events::{TurnEvent, TurnSink, summarize_tool_input, summarize_tool_output};
 

@@ -826,6 +826,19 @@ pub struct AgentConfig {
     /// command, which is the risky tier switched off — not a pattern.
     #[serde(default)]
     pub bash_allowlist: Vec<String>,
+    /// #1244: raizes adicionais que as file tools (`file_read`, `file_write`,
+    /// `list_dir`) podem tocar, alem do `working_dir` da sessao.
+    ///
+    /// Lista vazia (o default) **nao** significa "tudo liberado": significa que
+    /// so o diretorio da sessao autoriza alguma coisa, e uma sessao sem
+    /// `working_dir` nao le nem escreve nada. Fail-closed de proposito — sem
+    /// raiz conhecida nao ha como afirmar que um caminho e seguro.
+    ///
+    /// Caminho que nao existe e descartado com `warn!` no boot. `garra config
+    /// check` avisa quando a lista inclui `/` ou o proprio `$HOME`, que
+    /// devolvem `~/.ssh` e `.env` ao alcance do modelo.
+    #[serde(default)]
+    pub file_roots: Vec<String>,
     /// GAR-227: When true, a short LLM call classifies the user's intent into an agent mode
     /// (code/debug/review/search/architect/ask) when the keyword heuristic is ambiguous.
     /// Requires a working LLM provider. Default: false (opt-in).
