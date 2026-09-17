@@ -27,6 +27,11 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# #1240 — o desktop precisa da `gateway.api_key` para o handshake do
+# /ws/parrot, e precisa dela do MESMO arquivo que o gateway le. Depender do
+# dono do schema (em vez de parsear o YAML aqui) e o que impede as duas pontas
+# de divergirem sobre qual config.yml vale.
+garraia-config = { workspace = true }
 # tokio::time::sleep no debounce de persistência da chat bar; o runtime em si
 # já é o do Tauri (tauri::async_runtime), esta dep só dá acesso à API.
 tokio = { workspace = true }

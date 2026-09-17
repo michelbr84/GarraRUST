@@ -1,4 +1,5 @@
 pub mod error;
+pub mod fs_perms;
 pub mod handoff;
 pub mod message;
 pub mod metrics;
@@ -9,6 +10,7 @@ pub mod ssrf;
 pub mod types;
 
 pub use error::{Error, Result};
+pub use fs_perms::{create_secret_dir, harden_secret_dir, harden_secret_file};
 pub use handoff::{
     HandoffAction, HandoffActionKind, HandoffError, HandoffState, RedactedString, redact,
 };
