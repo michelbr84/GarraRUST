@@ -88,6 +88,59 @@ jobs:
       - name: Validate .claude/agents/*.md frontmatter
         run: python3 scripts/ci/validate_agent_frontmatter.py
 
+  # Ponte WhatsApp (bridge/whatsapp) — Node/Baileys, fora do workspace Cargo.
+  #
+  # Nao da para parear no CI: nao existe telefone e os servidores do WhatsApp
+  # nao sao alcancaveis do runner. O que da para provar automaticamente e o
+  # contrato: o protocolo NDJSON v1. Por isso o job roda duas coisas.
+  #
+  # 1. `node --test`: framing, round-trip do estado de auth em memoria,
+  #    redacao, mapeamento de motivo de queda, backoff e o fluxo inteiro com o
+  #    `makeWASocket` injetado — nenhum teste abre socket de rede.
+  # 2. A fixture Python (a mesma que os testes Rust de garraia-channels usam
+  #    para rodar sem Node e sem telefone) passando pelo protocol-lint. E o que
+  #    impede a fixture e a ponte real de divergirem em silencio: se a fixture
+  #    mentir, os testes Rust ficam verdes contra um protocolo que nao existe.
+  #
+  # `npm ci` (nao `npm install`) de proposito: o package-lock.json e
+  # versionado e o pin exato do Baileys e parte do contrato reportado em
+  # `started.baileys_version`.
+  whatsapp-bridge:
+    name: WhatsApp bridge (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: bridge/whatsapp
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: bridge/whatsapp/package-lock.json
+
+      - name: Install bridge dependencies
+        run: npm ci
+
+      - name: Run bridge tests
+        run: node --test
+
+      # O handshake tem de sair valido mesmo sem tocar a rede — e este o modo
+      # que o `garra whatsapp status` e o doctor do Rust invocam.
+      - name: Protocol check emits a valid started event
+        run: node bridge.mjs --protocol-check | node scripts/protocol-lint.mjs
+
+      - name: Fake bridge fixture speaks the same protocol
+        run: |
+          python3 ../../crates/garraia-channels/tests/fixtures/fake_whatsapp_bridge.py \
+              --scenario pair-ok --qr-expires 1 | node scripts/protocol-lint.mjs
+
   # Guarda de integridade do ledger de supressoes do CodeQL.
   #
   # O ledger em docs/security/codeql-suppressions.json e chaveado por
@@ -415,6 +468,27 @@ jobs:
         run: |
           cargo clippy -p garraia-channels --features line --all-targets -- -D warnings
           cargo test -p garraia-channels --features line --lib
+
+      - name: Run clippy + tests (whatsapp-linked)
+        # Variacao do mesmo buraco (#1238). Aqui a feature nao esta OFF no
+        # `--workspace`: o `garraia-cli` a liga, e a unificacao de features do
+        # cargo a acende para o workspace inteiro. A cobertura existe, mas por
+        # ACIDENTE — no dia em que alguem tirar `features = ["whatsapp-linked"]`
+        # da dependencia do CLI, ou mover o comando para tras de outra feature,
+        # o canal inteiro sai do CI em silencio, que e exatamente o modo de
+        # falha que os comentarios do `signal` e do `line` acima descrevem.
+        #
+        # Concreto: `apply_child_env` (`env_clear` + allowlist R3) e o unico
+        # controle que impede o filho `node` de herdar `ANTHROPIC_API_KEY`,
+        # `GARRAIA_JWT_SECRET`, a passphrase do cofre e oito vetores de
+        # execucao de codigo (`NODE_OPTIONS`, `LD_PRELOAD`, `NPM_CONFIG_*`).
+        # O teste que o prova morre junto com este step.
+        #
+        # Os testes de integracao entram junto (sem `--lib`): e neles que o
+        # ciclo de vida do processo filho roda contra a fixture Python.
+        run: |
+          cargo clippy -p garraia-channels --features whatsapp-linked --all-targets -- -D warnings
+          cargo test -p garraia-channels --features whatsapp-linked
 
       - name: Run clippy + tests (google_chat, teams, matrix, irc, voice)
         # Fecha o mesmo buraco dos dois steps acima para as cinco features

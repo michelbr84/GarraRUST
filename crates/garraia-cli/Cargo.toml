@@ -14,7 +14,10 @@ path = "src/main.rs"
 garraia-common = { workspace = true }
 garraia-config = { workspace = true }
 garraia-gateway = { workspace = true }
-garraia-channels = { workspace = true }
+# `whatsapp-linked` (#1238, ADR 0023): `garra whatsapp` e o unico consumidor
+# do modulo, e ele e default-on aqui porque o comando precisa existir em toda
+# instalacao — Node so e exigido no momento em que o usuario escolhe a opcao 1.
+garraia-channels = { workspace = true, features = ["whatsapp-linked"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
 # ADR 0020 (epic #1124): registry vazio que alimenta as device tools do
 # `garra chat` — o CLI é interativo, sempre com canal de confirmação.

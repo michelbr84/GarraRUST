@@ -6,6 +6,9 @@
 
 # Node
 node_modules/
+# (redundante com a regra acima, mas explicito: a ponte WhatsApp tem
+# package-lock.json versionado e node_modules NUNCA versionado.)
+bridge/whatsapp/node_modules/
 
 # Binaries (release artifacts — sidecar binaries are already under garraia-desktop/binaries/)
 *.exe
