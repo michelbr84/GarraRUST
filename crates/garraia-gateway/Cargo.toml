@@ -151,6 +151,15 @@ name = "harness_smoke"
 path = "tests/harness_smoke.rs"
 required-features = ["test-helpers"]
 
+# Issue #1242 path 2: the HTTP arm of the boot-failure `pending` registration
+# only exists under `mcp-http`. Declared here so that running this binary
+# without the feature is a Cargo-level error rather than a silent
+# "0 tests, ok" — the exact false green this repo keeps getting bitten by.
+[[test]]
+name = "mcp_boot_pending_allowlist"
+path = "tests/mcp_boot_pending_allowlist.rs"
+required-features = ["mcp-http"]
+
 # Plan 0016 M3-T3: authed /v1/me integration tests. Same gating as
 # harness_smoke — requires the test-helpers feature so
 # `GatewayServer::build_router_for_test` is visible.

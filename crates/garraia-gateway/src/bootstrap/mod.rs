@@ -1710,21 +1710,53 @@ pub async fn build_mcp_tools(
                 // `connections`, so the health monitor could not see it and
                 // only a manual admin restart recovered it. Queue it for the
                 // same backoff-driven retry as a crashed connection.
-                if server_config.transport == "stdio" {
-                    manager
-                        .register_pending_stdio(
-                            name,
-                            &server_config.command,
-                            &server_config.args,
-                            &server_config.env,
-                            timeout_secs,
-                            server_config.allowed_tools.clone(),
-                            memory_limit_mb,
-                            max_restarts,
-                            restart_delay_secs,
-                            server_config.inherit_env,
-                        )
-                        .await;
+                //
+                // Issue #1242: this used to be `if transport == "stdio"`, and
+                // the `allowed_tools` of an HTTP server that failed its boot
+                // handshake therefore survived nowhere — not in
+                // `connections`, not in `pending`, and not in the gateway's
+                // registry type, which has no such field. The first admin
+                // restart of that server reconnected it with no allowlist at
+                // all. Parking it here is what makes the restart handler's
+                // `Manager` branch able to answer for HTTP too.
+                //
+                // `inherit_env` (#1236) travels with the stdio arm only, and
+                // that is not an oversight: HTTP transport spawns no child
+                // process, so there is no environment to inherit or withhold.
+                // `register_pending_http` has no such parameter.
+                match server_config.transport.as_str() {
+                    "stdio" => {
+                        manager
+                            .register_pending_stdio(
+                                name,
+                                &server_config.command,
+                                &server_config.args,
+                                &server_config.env,
+                                timeout_secs,
+                                server_config.allowed_tools.clone(),
+                                memory_limit_mb,
+                                max_restarts,
+                                restart_delay_secs,
+                                server_config.inherit_env,
+                            )
+                            .await;
+                    }
+                    #[cfg(feature = "mcp-http")]
+                    "http" => {
+                        if let Some(url) = &server_config.url {
+                            manager
+                                .register_pending_http(
+                                    name,
+                                    url,
+                                    timeout_secs,
+                                    server_config.allowed_tools.clone(),
+                                    max_restarts,
+                                    restart_delay_secs,
+                                )
+                                .await;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

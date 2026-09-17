@@ -410,7 +410,20 @@ jobs:
         # mas usa `SseStream::from_bytes_stream`, que só existe a partir da
         # 0.2.4), e nada no CI teria pegado. Este step fecha o buraco.
         # `garraia` é o nome do pacote em `crates/garraia-cli/`.
-        run: cargo clippy -p garraia --features mcp-http --all-targets -- -D warnings
+        #
+        # Issue #1242: clippy compila, mas NAO executa. O alvo
+        # `mcp_boot_pending_allowlist` do garraia-gateway declara
+        # `required-features = ["mcp-http"]`, e o `cargo test --workspace` do
+        # job `test` roda com as features default — um alvo com
+        # `required-features` nao satisfeitas e PULADO EM SILENCIO, sem uma
+        # linha no log. O teste que prova que uma falha de boot HTTP nao perde
+        # a allowlist existia e nao rodava em lugar nenhum. A linha de `test`
+        # abaixo e o que o faz rodar; o guard
+        # `scripts/ci/required_features_covered.py` (job `test`) impede que o
+        # proximo alvo assim volte a nascer orfao.
+        run: |
+          cargo clippy -p garraia --features mcp-http --all-targets -- -D warnings
+          cargo test -p garraia-gateway --features mcp-http --test mcp_boot_pending_allowlist
 
       - name: Run clippy + tests (mcp)
         # Buraco vizinho do `mcp-http` acima: `crates/garraia-agents` declara
@@ -700,6 +713,18 @@ jobs:
       # The composite action pre-fetches, verifies and caches it.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
+
+      - name: Guard — every gated test target runs somewhere in CI
+        # Issue #1242. O `cargo test --workspace` do passo seguinte roda com
+        # as features default, e um alvo `[[test]]` cujas `required-features`
+        # nao estao satisfeitas e PULADO EM SILENCIO — sem log, sem "0 tests",
+        # sem aviso. Foi assim que `mcp_boot_pending_allowlist` nasceu escrito
+        # e nunca executado. Este guard le os manifests e as invocacoes de
+        # `cargo test` dos workflows e recusa qualquer alvo gated que nenhum
+        # job execute. Linux-only: e independente de SO e `python3` nem sempre
+        # esta no PATH do runner Windows.
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci/required_features_covered.py
 
       - name: Build workspace
         # See clippy job comment: garraia-desktop is excluded from this

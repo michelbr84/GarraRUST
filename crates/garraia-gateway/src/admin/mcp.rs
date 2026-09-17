@@ -4,6 +4,8 @@
 //! Extracted from `admin/handlers.rs` (lines 2203-2557) without behavior change.
 //! Covers MCP server listing, creation, restart, and deletion.
 
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -199,6 +201,57 @@ pub async fn admin_restart_mcp(
         "admin: restarting MCP server"
     );
 
+    // Issue #1242, path 1: everything the reconnect needs is resolved BEFORE
+    // anything is torn down. `command`/`url` used to be read *after* the
+    // `disconnect` below, and both reads could `return` a 400 from there — at
+    // which point the connection was already gone and the allowlist existed
+    // nowhere but this stack frame, so the NEXT restart resolved `None` and
+    // brought the server back wide open. That is the very fail-open the `Err`
+    // arm parks in `pending`; a validation failure must not be the hole left
+    // open. Reachable in one call: `POST /admin/api/mcp` accepts
+    // `{"url": ..., "transport": "stdio"}` and overwrites a live entry.
+    let reconnect = match transport {
+        McpTransportType::Stdio => match config.command.as_deref() {
+            Some(command) => ReconnectWith::Stdio(command.to_string()),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "stdio transport requires 'command'"})),
+                );
+            }
+        },
+        McpTransportType::StreamableHttp | McpTransportType::Http | McpTransportType::Sse => {
+            match config.url.as_deref() {
+                Some(url) => ReconnectWith::Http(url.to_string()),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": "HTTP transport requires 'url'"})),
+                    );
+                }
+            }
+        }
+    };
+
+    // Issue #1242: capture the GAR-190 allowlist BEFORE tearing the
+    // connection down. `disconnect` drops the `McpConnection` that holds it,
+    // and an empty `allowed_tools` means "allow every discovered tool"
+    // (`is_tool_allowed`), so the answer to "what was the allowlist?" has to
+    // be resolved here, not flattened away.
+    let live_config = state.app_state.current_config();
+    let declared = declared_mcp_servers(&live_config);
+    let (allowed_tools, allowlist_origin) =
+        resolve_allowlist(manager, &declared, &server_name).await;
+    tracing::info!(
+        server = %server_name,
+        origin = ?allowlist_origin,
+        allowed_tools = allowed_tools.len(),
+        "admin: resolved the MCP tool allowlist for the restart"
+    );
+    // `connect`/`connect_http` take the Vec by value; keep a copy so a failed
+    // reconnect can still hand the allowlist to `pending` (see the Err arm).
+    let allowlist_for_pending = allowed_tools.clone();
+
     // Disconnect existing connection (no-op if not connected).
     manager.disconnect(&server_name).await;
     // GAR-293: reset the crash counter so the server gets a fresh restart budget.
@@ -214,18 +267,9 @@ pub async fn admin_restart_mcp(
     let max_restarts = config.max_restarts.unwrap_or(5);
     let restart_delay_secs = config.restart_delay_secs.unwrap_or(5);
 
-    // Reconnect based on transport type.
-    let result = match transport {
-        McpTransportType::Stdio => {
-            let command = match config.command.as_deref() {
-                Some(c) => c.to_string(),
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "stdio transport requires 'command'"})),
-                    );
-                }
-            };
+    // Reconnect with what was resolved before the teardown.
+    let result = match reconnect {
+        ReconnectWith::Stdio(command) => {
             manager
                 .connect(
                     &server_name,
@@ -233,7 +277,7 @@ pub async fn admin_restart_mcp(
                     &config.args,
                     &config.env,
                     config.timeout_secs,
-                    vec![],
+                    allowed_tools,
                     memory_limit_mb,
                     max_restarts,
                     restart_delay_secs,
@@ -255,33 +299,22 @@ pub async fn admin_restart_mcp(
                 .await
         }
         #[cfg(feature = "mcp-http")]
-        McpTransportType::StreamableHttp | McpTransportType::Http | McpTransportType::Sse => {
-            let url = match config.url.as_deref() {
-                Some(u) => u.to_string(),
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "HTTP transport requires 'url'"})),
-                    );
-                }
-            };
+        ReconnectWith::Http(url) => {
             manager
                 .connect_http(
                     &server_name,
                     &url,
                     config.timeout_secs,
-                    vec![],
+                    allowed_tools,
                     max_restarts,
                     restart_delay_secs,
                 )
                 .await
         }
         #[cfg(not(feature = "mcp-http"))]
-        McpTransportType::StreamableHttp | McpTransportType::Http | McpTransportType::Sse => {
-            Err(garraia_common::Error::Mcp(
-                "HTTP/SSE MCP transports require the 'mcp-http' feature".into(),
-            ))
-        }
+        ReconnectWith::Http(_url) => Err(garraia_common::Error::Mcp(
+            "HTTP/SSE MCP transports require the 'mcp-http' feature".into(),
+        )),
     };
 
     match result {
@@ -317,6 +350,28 @@ pub async fn admin_restart_mcp(
         Err(e) => {
             let msg = e.to_string();
             tracing::error!(server = %server_name, error = %msg, "admin: MCP server restart failed");
+
+            // Issue #1242, path 1: `disconnect` above already removed the
+            // connection, so at this point the allowlist we just resolved
+            // exists nowhere but this stack frame. Without the line below the
+            // NEXT restart resolves `None` for a server that *was* restricted
+            // — a failed restart silently unlocking the server on the retry
+            // is the same fail-open this handler exists to close. `pending`
+            // is where the boot path already parks a server that could not
+            // connect, and it gives the health monitor the same backoff-driven
+            // retry a boot failure gets.
+            register_pending_after_failure(
+                manager,
+                &server_name,
+                config,
+                &transport,
+                allowlist_for_pending,
+                memory_limit_mb,
+                max_restarts,
+                restart_delay_secs,
+            )
+            .await;
+
             state
                 .app_state
                 .mcp_registry
@@ -329,6 +384,189 @@ pub async fn admin_restart_mcp(
                 ),
             )
         }
+    }
+}
+
+// ── Issue #1242: allowlist resolution for a restart ──────────────────────────
+
+/// What `admin_restart_mcp` will reconnect with, resolved from the registry
+/// entry *before* `disconnect` runs.
+///
+/// It exists so the two "the registry entry is not usable" answers (stdio
+/// without `command`, HTTP without `url`) are given while the live connection
+/// — and the allowlist it holds — is still intact.
+enum ReconnectWith {
+    Stdio(String),
+    Http(String),
+}
+
+/// Where the GAR-190 allowlist used by a restart came from.
+///
+/// This exists so the answer is *named* in the logs and in the code. The
+/// original defect was `allowed_tools_for(..).unwrap_or_default()`: the
+/// `Option` is load-bearing (its doc comment says so), `None` became
+/// `vec![]`, and `vec![]` is how `is_tool_allowed` spells "allow every
+/// discovered tool". One `unwrap_or_default` therefore turned a hot-reload
+/// into the exact fail-open the allowlist is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllowlistOrigin {
+    /// The manager holds a non-empty list — a live connection, or a `pending`
+    /// entry left by a boot failure or by an earlier failed restart. This is
+    /// what is restricting the server right now, so it wins.
+    Manager,
+    /// Nothing is in force, and the merged declaration (`mcp.json` +
+    /// the `mcp:` section of `config.yml`) names a non-empty `allowed_tools`
+    /// — the same merge the boot path reads.
+    Config,
+    /// Nothing restricts this server anywhere. See `resolve_allowlist`.
+    NeverRestricted,
+}
+
+/// The MCP declarations the **boot path** reads: `mcp.json` merged with the
+/// `mcp:` section of `config.yml`, exactly as `bootstrap::build_mcp_tools`
+/// merges them (`config.yml` wins a name collision).
+///
+/// Reading only `config.mcp` here was a fail-open of its own: `mcp.json`
+/// deserializes into `garraia_config::McpServerConfig`, which *does* carry
+/// `allowed_tools`, and the boot path honours it. An allowlist declared there
+/// was therefore in force at boot and invisible to the restart, which fell
+/// through to `NeverRestricted` and reconnected the server unrestricted.
+///
+/// This reads a file from an async handler. It is a single small file that
+/// the boot path already reads the same way, on an operator-triggered
+/// endpoint, so the block is not worth a `spawn_blocking` hop.
+fn declared_mcp_servers(
+    config: &garraia_config::AppConfig,
+) -> HashMap<String, garraia_config::McpServerConfig> {
+    match garraia_config::ConfigLoader::new() {
+        Ok(loader) => loader.merged_mcp_config(config),
+        Err(e) => {
+            // Fail *narrow*, not open: without the config dir we still know
+            // what `config.yml` declares.
+            tracing::warn!(
+                error = %e,
+                "admin: could not open the config dir to read mcp.json; \
+                 restarting with only the 'mcp:' section of config.yml"
+            );
+            config.mcp.clone()
+        }
+    }
+}
+
+/// Resolve the allowlist to reconnect `server_name` with.
+///
+/// The invariant is precise: **a restart never widens what is in force, and
+/// applies a declared list when nothing is in force.**
+///
+/// 1. A **non-empty** live list from the manager (live connection, or a
+///    `pending` entry left by a boot failure or an earlier failed restart) is
+///    what is actually restricting the server right now. It wins.
+/// 2. Otherwise — `None`, or `Some(vec![])`, which is how `is_tool_allowed`
+///    spells "allow everything" — a non-empty declared list is applied.
+///    `Some(vec![])` means "nobody ever restricted this server", not "the
+///    operator chose not to restrict it": the manager cannot tell those
+///    apart, and the operator's written `allowed_tools` can. Treating the
+///    live empty list as authoritative was a real hole — a server that
+///    happened to connect before the operator declared an allowlist could
+///    never be tightened by a restart.
+/// 3. Only when neither knows of a restriction is the list empty.
+///
+/// What this deliberately does **not** do: apply a declared list that is
+/// narrower than a non-empty live one. Rule 1 keeps the live list, so the
+/// restart still never widens, but that tightening needs a gateway restart.
+/// Picking between two real allowlists is a policy question this handler
+/// should not answer silently.
+async fn resolve_allowlist(
+    manager: &garraia_agents::McpManager,
+    declared: &HashMap<String, garraia_config::McpServerConfig>,
+    server_name: &str,
+) -> (Vec<String>, AllowlistOrigin) {
+    if let Some(live) = manager
+        .allowed_tools_for(server_name)
+        .await
+        .filter(|live| !live.is_empty())
+    {
+        return (live, AllowlistOrigin::Manager);
+    }
+
+    if let Some(entry) = declared.get(server_name)
+        && !entry.allowed_tools.is_empty()
+    {
+        return (entry.allowed_tools.clone(), AllowlistOrigin::Config);
+    }
+
+    // Deliberately empty, and this is NOT the flattened `None` of #1242.
+    // Reaching here means nothing restricts this server: the manager holds no
+    // allowlist (or an empty one) *and* no merged declaration names it. The
+    // servers that live here permanently are the ones created through
+    // `POST /admin/api/mcp`, which cannot carry an allowlist at all today;
+    // refusing to start them would break the documented "create, then
+    // restart to connect" flow without protecting anything.
+    (Vec::new(), AllowlistOrigin::NeverRestricted)
+}
+
+/// Park a server whose restart failed in the manager's `pending` map, with
+/// the allowlist that was in force, so the next restart can still find it.
+#[allow(clippy::too_many_arguments)]
+async fn register_pending_after_failure(
+    manager: &garraia_agents::McpManager,
+    server_name: &str,
+    config: &crate::mcp::McpServerConfig,
+    transport: &crate::mcp::McpTransportType,
+    allowed_tools: Vec<String>,
+    memory_limit_mb: Option<u64>,
+    max_restarts: u32,
+    restart_delay_secs: u64,
+) {
+    use crate::mcp::McpTransportType;
+
+    match transport {
+        McpTransportType::Stdio => {
+            let Some(command) = config.command.as_deref() else {
+                return;
+            };
+            manager
+                .register_pending_stdio(
+                    server_name,
+                    command,
+                    &config.args,
+                    &config.env,
+                    config.timeout_secs,
+                    allowed_tools,
+                    memory_limit_mb,
+                    max_restarts,
+                    restart_delay_secs,
+                    // `false`, e nao e escolha arbitraria do merge com o
+                    // #1236: o restart da admin API ja FORCA isolamento
+                    // (`env_isolation = "forced"`, :197-200), porque o tipo
+                    // do registry nao carrega `inherit_env`. Parkear com
+                    // `true` faria a entrada em `pending` prometer uma
+                    // heranca que o proximo restart nao honraria — e seria
+                    // o valor menos seguro dos dois.
+                    false,
+                )
+                .await;
+        }
+        #[cfg(feature = "mcp-http")]
+        McpTransportType::StreamableHttp | McpTransportType::Http | McpTransportType::Sse => {
+            let Some(url) = config.url.as_deref() else {
+                return;
+            };
+            manager
+                .register_pending_http(
+                    server_name,
+                    url,
+                    config.timeout_secs,
+                    allowed_tools,
+                    max_restarts,
+                    restart_delay_secs,
+                )
+                .await;
+        }
+        // Without `mcp-http` the reconnect could not have been attempted over
+        // HTTP in the first place, so there is nothing to park.
+        #[cfg(not(feature = "mcp-http"))]
+        _ => {}
     }
 }
 
