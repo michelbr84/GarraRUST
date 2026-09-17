@@ -1184,6 +1184,14 @@ pub struct McpServerConfig {
     pub enabled: Option<bool>,
 
     /// Connection timeout in seconds (default: 30)
+    ///
+    /// #1273: deliberately NO `alias = "timeoutSecs"` here. The gateway's
+    /// registry writer emits `timeoutSecs` on every entry with its own
+    /// default (30) even when the operator never chose a timeout; aliasing
+    /// it would silently override `timeouts.mcp.default_secs` at boot for
+    /// exactly those servers. The tuning fields below are only written when
+    /// explicitly set (`skip_serializing_if`), so aliasing them is pure
+    /// round-trip fidelity.
     pub timeout: Option<u64>,
 
     /// GAR-190: Tool allowlist — only these tool names are registered into the agent runtime.
@@ -1202,16 +1210,23 @@ pub struct McpServerConfig {
     /// GAR-293: Maximum virtual-memory limit for the child process (Unix only).
     /// Applied via `setrlimit(RLIMIT_AS)` before exec. No effect on Windows.
     /// Default: `None` (no limit).
+    ///
+    /// `alias = "memoryLimitMb"` (#1273): the gateway's registry writer
+    /// spells this field in camelCase; accepting both spellings is what
+    /// keeps an admin-written file's tuning values alive across a boot.
+    #[serde(alias = "memoryLimitMb")]
     pub memory_limit_mb: Option<u64>,
 
     /// GAR-293: Maximum number of automatic restart attempts after a crash.
     /// When exceeded, the server stays offline until manually restarted via the admin API.
     /// Default: `5`.
+    #[serde(alias = "maxRestarts")]
     pub max_restarts: Option<u32>,
 
     /// GAR-293: Base delay in seconds before the first restart attempt.
     /// Each subsequent attempt doubles the delay (exponential backoff), capped at 300s.
     /// Default: `5`.
+    #[serde(alias = "restartDelaySecs")]
     pub restart_delay_secs: Option<u64>,
 
     /// #1075 (continuação): válvula de escape para o isolamento de ambiente.

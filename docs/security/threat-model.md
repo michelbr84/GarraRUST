@@ -732,11 +732,12 @@ restart não afogue o log justamente quando ele está sendo lido.
 
 A válvula existe só no `config.yml`/`mcp.json`. Servidores criados **ou
 reiniciados** pela admin API conectam sempre com o ambiente isolado, mesmo
-quando o `config.yml` declara `inherit_env: true` para aquele nome: o
-`McpServerConfig` do registro do gateway não carrega o campo e o handler de
-restart passa `false` explicitamente. É fail-safe na direção certa (o
-restart isola mais, nunca menos), mas é uma diferença silenciosa de
-comportamento entre subir pelo boot e reiniciar pela admin API.
+quando o arquivo declara `inherit_env: true` para aquele nome. Desde #1273
+o `McpServerConfig` do registro do gateway carrega o campo (para round-trip
+do arquivo), mas o handler de restart mantém o `false` explícito: a
+divergência deixou de ser falta de informação e é política do reconnect
+pela admin API — o boot honra a declaração, o restart isola mais (nunca
+menos).
 ## 5.13. Sandbox por tool (`agent.sandbox`) — #1222, #1225
 
 O `BashTool` pode envolver o comando num backend em vez de executá-lo direto
