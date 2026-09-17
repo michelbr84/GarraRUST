@@ -40,6 +40,11 @@ pub async fn admin_list_mcp(
                 "args": s.config.args,
                 "url": s.config.url,
                 "timeout_secs": s.config.timeout_secs,
+                // #1273: the allowlist is now carried by the registry type —
+                // exposing it lets the admin surface the GAR-190 restriction
+                // instead of it living only inside the manager.
+                "allowed_tools": s.config.allowed_tools,
+                "inherit_env": s.config.inherit_env,
                 "status": s.status,
                 "tool_count": s.tool_count,
             })
@@ -68,6 +73,15 @@ pub struct CreateMcpRequest {
     pub transport: Option<crate::mcp::McpTransportType>,
     /// Handshake timeout in seconds (default: 30).
     pub timeout_secs: Option<u64>,
+    /// GAR-190: restrict the server to these tool names. Empty/absent = every
+    /// discovered tool is allowed.
+    ///
+    /// #1273: accepted here so an allowlist created through the admin API
+    /// lands in `mcp.json` and is honoured at boot and at restart (Config
+    /// origin) instead of leaving the server permanently in
+    /// `NeverRestricted`.
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
 }
 
 /// POST /admin/api/mcp — add a new MCP server configuration.
@@ -114,6 +128,13 @@ pub async fn admin_create_mcp(
         memory_limit_mb: None,
         max_restarts: None,
         restart_delay_secs: None,
+        allowed_tools: body.allowed_tools,
+        // #1075/#1273: POST-created servers are always env-isolated — same
+        // stance as the admin restart (`env_isolation = "forced"`). The
+        // field exists on the type for round-trip fidelity of hand-written
+        // configs; the admin API deliberately does not accept it.
+        inherit_env: false,
+        enabled: None,
     };
 
     // Add to registry
@@ -194,9 +215,11 @@ pub async fn admin_restart_mcp(
         admin = %admin.username,
         transport = ?transport,
         // #1075: um restart pela admin API reconecta sempre isolado, mesmo
-        // que o `config.yml` peca `inherit_env: true` — o registro nao
-        // carrega o campo. Registrar isso aqui e o que torna a divergencia
-        // diagnosticavel a partir do log, sem plumbing novo.
+        // que o arquivo declare `inherit_env: true`. Desde #1273 o registro
+        // CARREGA o campo, então a divergência deixou de ser falta de
+        // informação e passou a ser política: reconnect pela admin API
+        // nunca entrega o ambiente do gateway ao filho. Registrar isso
+        // aqui é o que torna a política diagnosticável a partir do log.
         env_isolation = "forced",
         "admin: restarting MCP server"
     );
@@ -282,18 +305,14 @@ pub async fn admin_restart_mcp(
                     max_restarts,
                     restart_delay_secs,
                     // #1075 (continuação): um servidor reiniciado pela
-                    // admin API reconecta sempre isolado. O `McpServerConfig`
-                    // do registro (`crate::mcp`) não carrega `inherit_env` —
-                    // a válvula existe só no `config.yml`/`mcp.json` —, então
-                    // não há como honrá-la aqui nem como avisar que ela está
-                    // sendo ignorada: a informação não chega a este handler.
-                    //
-                    // Consequência real, documentada em
-                    // `docs/security/threat-model.md` §5.12: um servidor que
-                    // subiu do `config.yml` com `inherit_env: true` volta SEM
-                    // a herança depois de um restart pela admin API. Fail-safe
-                    // na direção certa (isola mais, nunca menos), mas é uma
-                    // divergência silenciosa entre os dois caminhos.
+                    // admin API reconecta sempre isolado — `inherit_env:
+                    // true` declarado em `config.yml`/`mcp.json` é honrado
+                    // no boot (`build_mcp_tools`) mas não aqui. Desde #1273
+                    // o tipo do registro carrega o campo, de modo que a
+                    // divergência deixou de ser falta de informação e
+                    // passou a ser política fail-safe (isola mais, nunca
+                    // menos): honrar a declaração no restart é mudança de
+                    // stance própria, não parte do arranjo do tipo.
                     false,
                 )
                 .await
@@ -536,13 +555,13 @@ async fn register_pending_after_failure(
                     memory_limit_mb,
                     max_restarts,
                     restart_delay_secs,
-                    // `false`, e nao e escolha arbitraria do merge com o
-                    // #1236: o restart da admin API ja FORCA isolamento
-                    // (`env_isolation = "forced"`, :197-200), porque o tipo
-                    // do registry nao carrega `inherit_env`. Parkear com
-                    // `true` faria a entrada em `pending` prometer uma
-                    // heranca que o proximo restart nao honraria — e seria
-                    // o valor menos seguro dos dois.
+                    // `false`: a política do restart é isolamento forçado
+                    // (`env_isolation = "forced"`, no início do handler).
+                    // Desde #1273 o tipo carrega `inherit_env`, então
+                    // parkar `true` aqui poderia fazer a entrada em
+                    // `pending` prometer uma herança que o próximo restart
+                    // não honraria — parkar `false` parka a promessa que de
+                    // fato é mantida.
                     false,
                 )
                 .await;

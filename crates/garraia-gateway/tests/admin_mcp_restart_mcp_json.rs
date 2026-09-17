@@ -117,6 +117,9 @@ async fn restart_honours_an_allowlist_declared_in_mcp_json() {
                     memory_limit_mb: None,
                     max_restarts: Some(5),
                     restart_delay_secs: Some(1),
+                    allowed_tools: Vec::new(),
+                    inherit_env: false,
+                    enabled: None,
                 },
             )
             .await;

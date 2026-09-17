@@ -76,25 +76,76 @@ pub struct McpServerConfig {
     pub transport: Option<McpTransportType>,
 
     /// Seconds to wait for the initial handshake (default: 30).
-    #[serde(default = "default_timeout_secs")]
+    ///
+    /// `alias = "timeout"` (#1273): the `garraia_config` schema — the boot
+    /// loader's contract — spells this field `timeout`, and hand-written
+    /// `mcp.json` files follow it. Without the alias the registry dropped
+    /// the declared timeout and the next admin write erased it.
+    #[serde(default = "default_timeout_secs", alias = "timeout")]
     pub timeout_secs: u64,
 
     /// GAR-293: Maximum virtual-memory for the child process in MB (Unix only).
     /// `None` = no limit.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// `alias = "memory_limit_mb"` (#1273): accepts the snake_case spelling
+    /// hand-written files use, so the value survives a registry round-trip.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "memory_limit_mb")]
     pub memory_limit_mb: Option<u64>,
 
     /// GAR-293: Maximum automatic restart attempts after a crash. Default: 5.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// `alias = "max_restarts"` (#1273): same snake_case tolerance as above.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "max_restarts")]
     pub max_restarts: Option<u32>,
 
     /// GAR-293: Base backoff delay (seconds) before the first restart. Default: 5.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// `alias = "restart_delay_secs"` (#1273): same snake_case tolerance as above.
+    #[serde(skip_serializing_if = "Option::is_none", alias = "restart_delay_secs")]
     pub restart_delay_secs: Option<u64>,
+
+    /// GAR-190: tool allowlist for this server — only these names reach the
+    /// agent runtime. Empty (or absent) = every discovered tool is allowed.
+    ///
+    /// #1273: this field lives on the type the registry serialises to
+    /// `mcp.json`, so an admin create/delete can no longer erase an allowlist
+    /// declared for the other servers in the file. `rename` pins the
+    /// snake_case spelling `garraia_config::McpServerConfig` — the boot
+    /// loader — has always read, overriding the struct-level camelCase so
+    /// both sides agree on one schema.
+    #[serde(
+        default,
+        rename = "allowed_tools",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub allowed_tools: Vec<String>,
+
+    /// #1075: inherit the gateway's full environment in the child process.
+    /// Default/absent = the child gets the minimal allowlist env.
+    ///
+    /// Carried here only so an admin write round-trips the operator's
+    /// declaration back to disk. Boot honours it via
+    /// `build_mcp_tools`; the admin restart keeps forced isolation
+    /// (`env_isolation = "forced"`) — see the comments in `admin/mcp.rs`.
+    #[serde(default, rename = "inherit_env", skip_serializing_if = "is_false")]
+    pub inherit_env: bool,
+
+    /// Boot-time on/off switch (`garraia_config` schema). `None`/absent =
+    /// enabled. Carried for round-trip fidelity: losing it flipped a
+    /// disabled server back on at the next boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 fn default_timeout_secs() -> u64 {
     30
+}
+
+/// `skip_serializing_if` helper for the `inherit_env` flag (#1273): the
+/// schema default (`false`) is omitted from `mcp.json`, so the file carries
+/// only what differs from the default.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Returns `true` if the env key name suggests a sensitive credential.
@@ -129,6 +180,9 @@ impl Default for McpServerConfig {
             memory_limit_mb: None,
             max_restarts: None,
             restart_delay_secs: None,
+            allowed_tools: Vec::new(),
+            inherit_env: false,
+            enabled: None,
         }
     }
 }

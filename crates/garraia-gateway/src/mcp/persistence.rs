@@ -151,6 +151,9 @@ impl McpPersistenceService {
                 memory_limit_mb: None,
                 max_restarts: None,
                 restart_delay_secs: None,
+                allowed_tools: Vec::new(),
+                inherit_env: false,
+                enabled: None,
             },
         );
 
@@ -448,6 +451,86 @@ mod tests {
         let loaded = svc.load().expect("reload");
         assert_eq!(loaded.mcp_servers.len(), 1);
         assert!(loaded.mcp_servers.contains_key("my-server"));
+    }
+
+    /// Issue #1273 — a sonda do corpo da issue, como teste de regressão: um
+    /// `add_server` + `save_from_registry` não pode apagar o que os OUTROS
+    /// servidores declaram no disco.
+    ///
+    /// O fixture é o arquivo exatamente como o operador (ou o wizard) o
+    /// escreve: chaves snake_case, no schema `garraia_config` que o loader
+    /// de boot lê — allowlist GAR-190, válvula `inherit_env` (#1075),
+    /// chave de boot `enabled` e tuning. Antes de #1273 o tipo do registry
+    /// não carregava nada disso, então o snapshot que `save_from_registry`
+    /// serializa derrubava os campos de TODOS os servidores do arquivo —
+    /// `enabled: false` religando o servidor no próximo boot incluído.
+    ///
+    /// À prova de mutação: remova qualquer campo asserido de
+    /// `McpServerConfig` e o load deixa de capturá-lo, o arquivo reescrito
+    /// fica sem ele e a asserção falla.
+    #[tokio::test]
+    async fn save_from_registry_preserves_declared_fields_of_other_servers() {
+        let fixture = serde_json::json!({
+            "mcpServers": {
+                "keeper": {
+                    "command": "python3",
+                    "args": ["-m", "keeper"],
+                    "transport": "stdio",
+                    "timeout": 10,
+                    "allowed_tools": ["read_file", "write_file"],
+                    "inherit_env": true,
+                    "enabled": false,
+                    "memory_limit_mb": 512,
+                    "max_restarts": 3,
+                    "restart_delay_secs": 2
+                }
+            }
+        });
+        let (_dir, path) =
+            temp_mcp_json(&serde_json::to_string_pretty(&fixture).expect("serialize fixture"));
+        let svc = McpPersistenceService::new(&path);
+
+        let reg = svc.load_registry();
+        // O registry capturou os campos declarados (tolerância de alias).
+        {
+            let keeper = reg.get("keeper").await.expect("keeper loaded");
+            assert_eq!(keeper.config.allowed_tools.len(), 2);
+            assert!(keeper.config.inherit_env);
+            assert_eq!(keeper.config.enabled, Some(false));
+            assert_eq!(keeper.config.memory_limit_mb, Some(512));
+        }
+
+        // A escrita destrutiva que antes os apagava.
+        reg.add_server(
+            "novo",
+            McpServerConfig {
+                command: Some("echo".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        svc.save_from_registry(&reg).await.expect("save");
+
+        // Lê o ARQUIVO cru — a sonda exata do corpo da issue.
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read back"))
+                .expect("parse back");
+        let keeper = &raw["mcpServers"]["keeper"];
+        assert_eq!(
+            keeper["allowed_tools"],
+            serde_json::json!(["read_file", "write_file"]),
+            "a allowlist declarada no disco deve sobreviver a uma escrita de admin dos OUTROS servidores"
+        );
+        assert_eq!(keeper["inherit_env"], serde_json::json!(true));
+        assert_eq!(keeper["enabled"], serde_json::json!(false));
+        // O tuning preserva o valor: o load lê a grafia snake_case via alias
+        // e a gravação usa a grafia canônica do writer (camelCase).
+        assert_eq!(keeper["memoryLimitMb"], serde_json::json!(512));
+        assert_eq!(keeper["maxRestarts"], serde_json::json!(3));
+        assert_eq!(keeper["timeoutSecs"], serde_json::json!(10));
+        // E o recém-chegado está lá, allow-all (sem chave de allowlist).
+        assert!(raw["mcpServers"]["novo"].is_object());
+        assert!(raw["mcpServers"]["novo"]["allowed_tools"].is_null());
     }
 
     /// O default segue provisionando — o opt-out não pode mudar o que o

@@ -161,6 +161,9 @@ impl McpRuntimeRegistry {
                 // as an "unmanaged" entry so it shows up in the admin API.
                 debug!("mcp registry: discovered unmanaged server '{name}' from manager");
                 // We have no static config for it; fabricate a minimal one.
+                // #1273: unmanaged entry — nothing declared to preserve. The
+                // allowlist for these lives in the manager's live connection
+                // state, which `resolve_allowlist` reads first.
                 let config = McpServerConfig {
                     command: None,
                     args: vec![],
@@ -171,6 +174,9 @@ impl McpRuntimeRegistry {
                     memory_limit_mb: None,
                     max_restarts: None,
                     restart_delay_secs: None,
+                    allowed_tools: Vec::new(),
+                    inherit_env: false,
+                    enabled: None,
                 };
                 let mut server = McpServer::stopped(name.clone(), config);
                 if is_connected {
@@ -303,6 +309,34 @@ mod tests {
         assert_eq!(snapshot.mcp_servers.len(), 2);
         assert!(snapshot.mcp_servers.contains_key("alpha"));
         assert!(snapshot.mcp_servers.contains_key("beta"));
+    }
+
+    /// #1273: the snapshot is what `save_from_registry` serialises to
+    /// `mcp.json` — the declared fields must ride along instead of being
+    /// flattened away by the write.
+    #[tokio::test]
+    async fn config_snapshot_preserves_declared_fields() {
+        let mut mcp_servers = std::collections::HashMap::new();
+        mcp_servers.insert(
+            "alpha".to_string(),
+            McpServerConfig {
+                command: Some("npx".into()),
+                allowed_tools: vec!["read_file".into(), "write_file".into()],
+                inherit_env: true,
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        let reg = McpRuntimeRegistry::new(&McpConfig { mcp_servers });
+
+        let snapshot = reg.config_snapshot().await;
+        let alpha = snapshot
+            .mcp_servers
+            .get("alpha")
+            .expect("alpha in snapshot");
+        assert_eq!(alpha.allowed_tools.len(), 2);
+        assert!(alpha.inherit_env);
+        assert_eq!(alpha.enabled, Some(false));
     }
 
     #[tokio::test]
