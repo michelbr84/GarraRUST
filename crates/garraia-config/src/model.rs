@@ -1166,6 +1166,17 @@ fn default_transport() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
+    /// Shell command to run (stdio transport).
+    ///
+    /// #1274: `default` — an HTTP/SSE entry of `mcp.json` has no `command`
+    /// and is legitimate. Requiring it here made `load_mcp_json` silently
+    /// drop such entries, so the operator's `allowed_tools` never reached
+    /// the declared merge the admin restart reads, and a restart reconnected
+    /// the server with every tool exposed. A stdio entry without a command
+    /// is still refused — now explicitly, at the merge boundary (the loader)
+    /// and at the boot arm (bootstrap) — because a defaulted `String` can no
+    /// longer carry that guarantee by type.
+    #[serde(default)]
     pub command: String,
 
     #[serde(default)]

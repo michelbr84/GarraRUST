@@ -1928,11 +1928,18 @@ async fn async_main(
                     for (name, server) in &mcp_configs {
                         let enabled = server.enabled.unwrap_or(true);
                         let status = if enabled { "enabled" } else { "disabled" };
+                        // #1274: an HTTP entry has no `command` (it used to be
+                        // dropped by the loader entirely) — name the `url`
+                        // instead of printing an empty command.
+                        let target = match server.command.as_str() {
+                            "" => server.url.as_deref().unwrap_or("(no command or url)"),
+                            c => c,
+                        };
                         println!(
                             "  {} [{}] {} {:?} (timeout: {}s)",
                             name,
                             status,
-                            server.command,
+                            target,
                             server.args,
                             server.timeout.unwrap_or(30),
                         );
@@ -1943,6 +1950,17 @@ async fn async_main(
                         println!("MCP server '{}' not found in config", name);
                         return Ok(());
                     };
+
+                    // #1274: HTTP entries are visible in the merged config now
+                    // (they used to be dropped by the loader), and `inspect`
+                    // always connects over stdio. Refuse an entry without a
+                    // `command` instead of spawning an empty command.
+                    if server_config.command.trim().is_empty() {
+                        println!(
+                            "MCP server '{name}' has no 'command' — `garra mcp inspect` only supports stdio servers"
+                        );
+                        return Ok(());
+                    }
 
                     println!("Connecting to MCP server '{name}'...");
                     let manager = garraia_agents::McpManager::new();

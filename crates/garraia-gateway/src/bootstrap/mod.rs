@@ -1666,6 +1666,19 @@ pub async fn build_mcp_tools(
 
         let connect_result = match server_config.transport.as_str() {
             "stdio" => {
+                // #1274: `command` is `#[serde(default)]`, so an empty one no
+                // longer fails to deserialize — refuse it here before it
+                // reaches a spawn. This arm also catches a `url`-only entry
+                // whose `transport` was left to its default; the loader keeps
+                // those (an HTTP server declared without the field), so the
+                // entry stays reachable for the admin restart's allowlist
+                // resolution even though it cannot boot as stdio.
+                if server_config.command.trim().is_empty() {
+                    warn!(
+                        "MCP server '{name}' uses stdio transport but no 'command' configured, skipping"
+                    );
+                    continue;
+                }
                 manager
                     .connect(
                         name,

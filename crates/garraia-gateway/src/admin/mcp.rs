@@ -516,11 +516,23 @@ async fn resolve_allowlist(
 
     // Deliberately empty, and this is NOT the flattened `None` of #1242.
     // Reaching here means nothing restricts this server: the manager holds no
-    // allowlist (or an empty one) *and* no merged declaration names it. The
-    // servers that live here permanently are the ones created through
+    // allowlist (or an empty one) *and* no merged declaration names it.
+    //
+    // The servers that live here permanently are the ones created through
     // `POST /admin/api/mcp`, which cannot carry an allowlist at all today;
     // refusing to start them would break the documented "create, then
     // restart to connect" flow without protecting anything.
+    //
+    // #1274: an HTTP entry of `mcp.json` used to land here too — the loader
+    // dropped it for lacking `command`, so the declared merge never saw the
+    // name and a restart reconnected the server with every tool exposed,
+    // discarding the `allowed_tools` the operator had written. The loader now
+    // keeps those entries (`command` is `#[serde(default)]` and a stdio entry
+    // without one is refused loudly instead), so what still reaches this arm
+    // from a file is an entry the loader skipped **with a `warn!`** — never
+    // one it dropped silently. This comment used to name only the
+    // API-created servers; the incomplete claim is what made the #1274 hole
+    // survive three audits.
     (Vec::new(), AllowlistOrigin::NeverRestricted)
 }
 
@@ -702,4 +714,64 @@ pub async fn admin_delete_mcp(
         StatusCode::OK,
         Json(serde_json::json!({"ok": true, "deleted": server_name})),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// #1274: an HTTP entry of `mcp.json` carries an `allowed_tools` the
+    /// operator wrote. The loader used to drop the entry (its `command` was
+    /// required), so `declared_mcp_servers` never saw the name, the restart
+    /// resolution fell through to `NeverRestricted`, and the server came back
+    /// with every tool exposed. This exercises the real composition the
+    /// handler uses — a file on disk through `merged_mcp_config` (the `Ok`
+    /// branch of `declared_mcp_servers`), into `resolve_allowlist` with a
+    /// manager that knows nothing — not a hand-built declaration map.
+    #[tokio::test]
+    async fn restart_resolves_the_allowlist_of_an_http_entry_declared_in_mcp_json() {
+        let dir = tempfile::tempdir().expect("temp config dir");
+        let mcp_json = serde_json::json!({
+            "mcpServers": {
+                "remote": {
+                    "url": "http://127.0.0.1:9/mcp",
+                    "transport": "http",
+                    "allowed_tools": ["read_file"],
+                    "timeout": 10
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join("mcp.json"),
+            serde_json::to_vec_pretty(&mcp_json).expect("serialize mcp.json"),
+        )
+        .expect("write mcp.json");
+
+        // The manager holds nothing: no live connection, no `pending` entry —
+        // the restart must find the allowlist in the declared merge or not at
+        // all.
+        let manager = Arc::new(garraia_agents::McpManager::new());
+        assert!(
+            manager.allowed_tools_for("remote").await.is_none(),
+            "precondition: the manager must not know this server"
+        );
+
+        let loader = garraia_config::ConfigLoader::with_dir(dir.path());
+        let declared = loader.merged_mcp_config(&garraia_config::AppConfig::default());
+        assert!(
+            declared.contains_key("remote"),
+            "the HTTP entry must reach the declared merge — without it the \
+             restart resolution is blind to the name (#1274)"
+        );
+
+        let (allowed_tools, origin) = resolve_allowlist(&manager, &declared, "remote").await;
+        assert_eq!(
+            origin,
+            AllowlistOrigin::Config,
+            "the declared allowlist must win over NeverRestricted, or the \
+             restart reconnects the server unrestricted (#1274)"
+        );
+        assert_eq!(allowed_tools, vec!["read_file".to_string()]);
+    }
 }
