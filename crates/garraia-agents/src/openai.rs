@@ -37,8 +37,14 @@ impl OpenAiProvider {
         let is_openrouter = base_url_str.contains("openrouter.ai");
         // connect_timeout only: responses stream for minutes, but a dead
         // host must fail fast instead of hanging the caller indefinitely.
+        // Redirects are off by default (issue #1248, rule 14): an LLM
+        // endpoint never legitimately 302s to another host, and following
+        // one would bypass the SSRF gate that `add_provider` applies. A
+        // pinned client supplied via `with_client` already has this; the
+        // default covers providers built from config at boot.
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {

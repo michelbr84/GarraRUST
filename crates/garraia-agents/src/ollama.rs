@@ -61,10 +61,19 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(model: Option<String>, base_url: Option<String>) -> Self {
+        // Redirects off by default (issue #1248, rule 14): even a local
+        // Ollama endpoint never legitimately 302s off-host, and following
+        // one would bypass the SSRF gate. A pinned client from
+        // `with_client` already has this; the default covers providers
+        // built from config at boot.
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            client: Client::new(),
+            client,
         }
     }
 
