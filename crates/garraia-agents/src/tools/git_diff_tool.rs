@@ -40,6 +40,73 @@ const SECRET_PATTERNS: &[&str] = &[
     "ghr_",
 ];
 
+/// Argumentos do `git diff`, com valores vindos do modelo **nunca** em
+/// posição de flag (#1269 — mesma classe do #1266, corrigido no PR #1268
+/// para a `repo_search`).
+///
+/// `file_path` e `from_commit`/`to_commit` chegam crus da tool call do
+/// modelo. O PR #1075 põe `--no-ext-diff` na frente do comando, mas isso não
+/// protege: no git, quando a mesma flag aparece mais de uma vez na linha de
+/// comando, **a última vence** — um `file_path` igual a `--ext-diff` reabre a
+/// execução de comando externo via `diff.external` de um `.git/config`
+/// plantado, executando o que o modelo escolher.
+///
+/// Duas defesas, cada uma fechando o seu vetor:
+///
+/// 1. O `file_path` vai **depois** do terminador `--`: tudo depois dele é
+///    pathspec, nunca opção. Uma consulta legítima por um arquivo cujo nome
+///    começa com `-` continua funcionando, buscada literalmente.
+/// 2. O token de range `{from}..{to}` não pode ir depois do `--` (viraria
+///    pathspec e perde a semântica de revisões), então fica antes dele com
+///    validação própria: revisão que começa com `-` põe o token inteiro em
+///    posição de opção — `--output=/tmp/../alvo` escreve o diff em caminho
+///    escolhido pelo modelo, `-O<arquivo>` lê ordem de arquivo plantado.
+///    Revisão legítima não começa com `-` (o git nem consegue invocar uma
+///    assim em posição de revisão), então a recusa é fail-closed e controlada.
+///
+/// É função pura de propósito — o teste afirma a ordem dos argumentos sem
+/// subir processo nenhum, e os testes de execução do runtime provam o efeito.
+///
+/// O contexto de linhas vai colado (`-U{context}`) — o `-U` do git é flag de
+/// argumento opcional que só aceita valor anexado: na forma `-U 3` o `3` sobra
+/// como argumento posicional (revisão) e o git morre com `bad revision '3'`
+/// (verificado no git 2.43). Essa quebra não é inocente aqui: com o diff
+/// morrendo antes de qualquer efeito, um argv injetado passava a ser
+/// indetectável por efeito observável — o teste de mutação do terminador não
+/// conseguia falhar nem sem o `--`.
+fn git_diff_args(
+    file_path: Option<&str>,
+    context_lines: i32,
+    from_commit: Option<&str>,
+    to_commit: Option<&str>,
+) -> std::result::Result<Vec<String>, String> {
+    let mut args: Vec<String> = vec![
+        "diff".to_string(),
+        "--no-ext-diff".to_string(),
+        format!("-U{context_lines}"),
+    ];
+
+    // Se tem range de commits — validado antes de entrar na linha de comando.
+    if let (Some(from), Some(to)) = (from_commit, to_commit) {
+        for revisao in [from, to] {
+            if revisao.starts_with('-') {
+                return Err(format!(
+                    "revisão '{revisao}' recusada: revisões de diff não podem começar com '-'"
+                ));
+            }
+        }
+        args.push(format!("{from}..{to}"));
+    }
+
+    args.push("--".to_string());
+
+    if let Some(path) = file_path {
+        args.push(path.to_string());
+    }
+
+    Ok(args)
+}
+
 /// Ferramenta para executar comandos git de forma segura.
 /// Apenas permite operações de leitura (diff, status, log, branch).
 pub struct GitDiffTool {
@@ -99,6 +166,10 @@ impl GitDiffTool {
     async fn run_git_command(&self, args: &[String]) -> Result<String> {
         let mut cmd = Command::new("git");
         cmd.args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        // #1269 (paridade com o #1266/PR #1268): o filho nunca le a entrada
+        // padrao do gateway — em terminal, pipe e servico o comportamento fica
+        // o mesmo, e o teste de regressao da injecao nao passa por acidente.
+        cmd.stdin(std::process::Stdio::null());
         // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
         // allowlist de env — um .gitconfig plantado com diff.external é
         // execução arbitraria, e não pode carregar segredos do pai junto.
@@ -163,23 +234,10 @@ impl GitDiffTool {
         from_commit: Option<&str>,
         to_commit: Option<&str>,
     ) -> Result<String> {
-        // --no-ext-diff: .git/config plantado (diff.external) não transforma
-        // o git_diff em execução arbitraria (#1075 — auditoria).
-        let mut args: Vec<String> = vec!["diff".to_string(), "--no-ext-diff".to_string()];
-
-        // Adiciona linhas de contexto
-        args.push("-U".to_string());
-        args.push(context_lines.to_string());
-
-        // Se tem range de commits
-        if let (Some(from), Some(to)) = (from_commit, to_commit) {
-            args.push(format!("{}..{}", from, to));
-        }
-
-        // Adiciona file path se especificado
-        if let Some(path) = file_path {
-            args.push(path.to_string());
-        }
+        // #1269: os valores que vêm da tool call do modelo nunca caem em
+        // posição de flag — ver `git_diff_args`.
+        let args = git_diff_args(file_path, context_lines, from_commit, to_commit)
+            .map_err(Error::Agent)?;
 
         // Executa git diff
         let output = self.run_git_command(&args).await?;
@@ -462,5 +520,80 @@ mod tests {
         let result = tool.execute(&ctx, serde_json::json!({})).await;
 
         assert!(result.is_err());
+    }
+
+    /// #1269: file_path adversarial igual a uma flag do git fica DEPOIS do
+    /// `--` — pathspec, nunca opção. O `--no-ext-diff` deixa de ser desfeito
+    /// pela última ocorrência da flag.
+    #[test]
+    fn file_path_adversarial_vai_depois_do_terminador() {
+        let args =
+            git_diff_args(Some("--ext-diff"), 3, None, None).expect("file_path é sempre válido");
+        assert_eq!(
+            args,
+            vec![
+                "diff".to_string(),
+                "--no-ext-diff".to_string(),
+                "-U3".to_string(),
+                "--".to_string(),
+                "--ext-diff".to_string(),
+            ]
+        );
+    }
+
+    /// #1269: range de commits preserva a semântica de revisões (antes do
+    /// `--`) e o file_path, quando junto, fica depois.
+    #[test]
+    fn range_e_file_path_ficam_nos_lados_certos_do_terminador() {
+        let args = git_diff_args(Some("src/main.rs"), 3, Some("abc123"), Some("def456"))
+            .expect("revisões válidas");
+        assert_eq!(
+            args,
+            vec![
+                "diff".to_string(),
+                "--no-ext-diff".to_string(),
+                "-U3".to_string(),
+                "abc123..def456".to_string(),
+                "--".to_string(),
+                "src/main.rs".to_string(),
+            ]
+        );
+    }
+
+    /// #1269 (segundo achado): `from` começando com `-` põe o token inteiro
+    /// em posição de opção — `--output=/tmp/../alvo` escreve o diff onde o
+    /// modelo escolher. Recusa controlada, sem subir o git.
+    #[test]
+    fn from_commit_adversarial_e_recusado() {
+        let err = git_diff_args(None, 3, Some("--output=/tmp/"), Some("alvo"))
+            .expect_err("from começando com '-' é recusado");
+        assert!(
+            err.contains("'--output=/tmp/'"),
+            "mensagem cita a revisão: {err}"
+        );
+    }
+
+    /// #1269: `to` adversarial recebe a mesma recusa.
+    #[test]
+    fn to_commit_adversarial_e_recusado() {
+        let err = git_diff_args(None, 3, Some("abc123"), Some("-O"))
+            .expect_err("to começando com '-' é recusado");
+        assert!(err.contains("'-O'"), "mensagem cita a revisão: {err}");
+    }
+
+    /// Caso sem nada do modelo: o `--` termina a lista de opções e não muda
+    /// a semântica do diff inteiro do working tree.
+    #[test]
+    fn sem_valores_do_modelo_termina_na_posicao_de_pathspec() {
+        let args = git_diff_args(None, 3, None, None).expect("nada a recusar");
+        assert_eq!(
+            args,
+            vec![
+                "diff".to_string(),
+                "--no-ext-diff".to_string(),
+                "-U3".to_string(),
+                "--".to_string(),
+            ]
+        );
     }
 }

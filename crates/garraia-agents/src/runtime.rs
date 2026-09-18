@@ -4234,6 +4234,201 @@ mod tests {
         );
     }
 
+    /// Repositório git com um arquivo rastreado **modificado**. Hoje a tool
+    /// roda o git no CWD do processo (#1258 — bug de corretude separado), e o
+    /// `--output` cria o arquivo mesmo com diff vazio; o repo plantado deixa
+    /// a prova de efeito em pé também quando a tool passar a honrar o
+    /// `working_dir` da sessão. Usado pelo teste de regressão da #1269.
+    #[cfg(not(windows))]
+    fn repo_git_com_arquivo_modificado(repo: &std::path::Path) {
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .expect("git disponível no ambiente de teste");
+            assert!(status.success(), "git {args:?} falhou no setup");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(repo.join("carga.txt"), "conteudo inicial\n").expect("write");
+        run(&["add", "carga.txt"]);
+        run(&[
+            "-c",
+            "user.name=garra-test",
+            "-c",
+            "user.email=garra@test.local",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ]);
+        // Mudança não commitada: é ela que o `git diff` mostra.
+        std::fs::write(repo.join("carga.txt"), "conteudo inicial\nmudanca\n").expect("write");
+    }
+
+    /// #1269 (P1): a `git_diff` **como o runtime a registra** não pode deixar
+    /// o `file_path` do modelo virar flag do git.
+    ///
+    /// No git, quando a mesma flag aparece mais de uma vez, a última vence: o
+    /// argv vulnerável era `["diff", "--no-ext-diff", "-U3", "--ext-diff"]`,
+    /// que com um `.git/config` plantado (`diff.external`) executa comando
+    /// externo escolhido pelo prompt — reproduzido manualmente nesta rodada.
+    /// O registro aqui é o mesmo do boot (`cli::chat`:
+    /// `register_tool(Box::new(GitDiffTool::new(None, None)))`) e a chamada
+    /// passa pelo `find_tool`, que é por onde o loop de tool call do LLM acha
+    /// a tool — não por uma cópia montada no teste.
+    ///
+    /// A carga automatizada é `--output=<caminho>`, a mesma classe de opção
+    /// com efeito observável e determinístico: o git cria o arquivo mesmo
+    /// quando o diff é vazio, então o teste funciona em clone limpo. Tirar o
+    /// `--` do `git_diff_args` deixa este teste vermelho.
+    ///
+    /// E o controle positivo (chamada benigna sem `STDERR:`) guarda contra o
+    /// mascaramento que esta rodada revelou: com o `-U 3` separado que o git
+    /// recusa (`bad revision '3'`), o git morria antes de qualquer efeito
+    /// observável — nem o argv injetado chegava a agir, e a prova do
+    /// terminador não conseguia falhar. O `-U{context}` colado em
+    /// `git_diff_args` é o que mantém a prova viva.
+    ///
+    /// Premissa do ambiente: o CWD do processo de teste é um checkout git
+    /// (sempre é — o repo). A tool ainda roda o git no CWD do processo em vez
+    /// do `working_dir` da sessão; isso é a #1258, bug de corretude separado.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn git_diff_registrada_nao_reabre_ext_diff_pelo_file_path() {
+        use crate::tools::GitDiffTool;
+
+        let dir = std::env::temp_dir().join(format!(
+            "garra-git-diff-1269-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let marcador = dir.join("EXT-WRITO");
+
+        let rt = Arc::new(AgentRuntime::new());
+        rt.register_tool(Box::new(GitDiffTool::new(None, None)));
+        let tool = rt.find_tool("git_diff").expect("tool registrada");
+
+        let ctx = ToolContext {
+            session_id: "test-1269".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: crate::tools::approval::ToolApproval::None,
+            working_dir: Some(dir.to_string_lossy().into_owned()),
+            project_id: None,
+        };
+
+        let saida = tool
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "operation": "diff",
+                    "file_path": format!("--output={}", marcador.display()),
+                }),
+            )
+            .await
+            .expect("a tool devolve saida, nao erro de runtime");
+
+        // Controle positivo: uma chamada benigna com o mesmo registro prova
+        // que o git roda de verdade — nenhum STDERR no caminho de saída. É o
+        // que impede o teste de ficar verde por acidente (ver doc comment).
+        let benigna = tool
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "operation": "diff",
+                    "file_path": "carga.txt",
+                }),
+            )
+            .await
+            .expect("chamada benigna devolve saida, nao erro de runtime");
+
+        let executou = marcador.exists();
+        let conteudo = saida.content.clone();
+        let conteudo_benigno = benigna.content.clone();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            !executou,
+            "o file_path do modelo virou flag e o git escreveu a saida do diff onde ele escolheu: {conteudo}"
+        );
+        // Pathspec "--output=..." casa com nada: diff vazio e controle.
+        assert!(
+            !saida.is_error,
+            "esperava diff vazio bem-comportado, veio erro: {conteudo}"
+        );
+        assert!(
+            !conteudo_benigno.contains("STDERR:"),
+            "a chamada benigna revelou o git quebrado no argv do diff: {conteudo_benigno}"
+        );
+    }
+
+    /// #1269 (segundo achado): `from_commit` começando com `-` põe o token
+    /// `{from}..{to}` inteiro em posição de opção — `--output=<caminho>`
+    /// escreve o diff onde o modelo escolher. A validação fail-closed recusa
+    /// antes de subir o git.
+    ///
+    /// Remover a checagem de `starts_with('-')` do `git_diff_args` deixa este
+    /// teste vermelho: o git executa e o arquivo do modelo aparece.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn git_diff_registrada_nao_deixa_range_do_modelo_virar_flag() {
+        use crate::tools::GitDiffTool;
+
+        let dir = std::env::temp_dir().join(format!(
+            "garra-git-range-1269-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        repo_git_com_arquivo_modificado(&dir);
+
+        // Sem correção: token = "--output={dir}/..marker-escrito" — o git
+        // escreve a saída do diff nesse caminho, escolhido pelo modelo.
+        let marcador = dir.join("..marker-escrito");
+
+        let rt = Arc::new(AgentRuntime::new());
+        rt.register_tool(Box::new(GitDiffTool::new(None, None)));
+        let tool = rt.find_tool("git_diff").expect("tool registrada");
+
+        let ctx = ToolContext {
+            session_id: "test-1269-range".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: crate::tools::approval::ToolApproval::None,
+            working_dir: Some(dir.to_string_lossy().into_owned()),
+            project_id: None,
+        };
+
+        let saida = tool
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "operation": "diff",
+                    "from_commit": format!("--output={}/", dir.display()),
+                    "to_commit": "marker-escrito",
+                }),
+            )
+            .await
+            .expect("a tool devolve saida, nao erro de runtime");
+
+        let escreveu = marcador.exists();
+        let conteudo = saida.content.clone();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            !escreveu,
+            "o from_commit do modelo virou opção e o git escreveu o diff onde ele escolheu: {conteudo}"
+        );
+        assert!(
+            saida.is_error,
+            "esperava recusa controlada da revisão, veio: {conteudo}"
+        );
+    }
+
     /// Test that AgentRuntime can be created with an empty/default config without crashing.
     /// This test verifies the "empty config" scenario is handled safely.
     #[test]
