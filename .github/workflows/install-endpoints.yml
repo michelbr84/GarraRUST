@@ -15,6 +15,22 @@
 # morto. Daí as duas regras do script atual: nenhum comando falível fora de
 # guarda `|| var=$?`, e o código HTTP de cada sonda SEMPRE aparece no log.
 #
+# Terceiro apagão (2026-09-18, run #27): o serving do garraia.org mudou sem
+# nenhum publish novo — sem commit no repo do site desde 2026-09-05 e com o
+# corpo servido byte-idêntico ao de véspera. Dois sintomas juntos: os
+# instaladores passaram a sair como `application/octet-stream` (o irm
+# devolveria byte[] e o `| iex` quebra para o usuário real) e a borda passou
+# a recusar com HTTP 403 o cliente .NET do Invoke-RestMethod vindo de IP de
+# datacenter — o curl do MESMO runner recebe 200 no mesmo minuto, e de IP
+# residencial qualquer User-Agent passa, então o bloqueio não é nem de IP
+# nem de UA: é do fingerprint do cliente .NET. Efeito prático: a sonda irm
+# não consegue MAIS exercitar o cliente de verdade contra o garraia.org
+# a partir de runners. O que segue asserível pelo cliente que a borda
+# aceita é o fato do lado servidor — o Content-Type servido e a assinatura
+# do corpo — e é isso que o fallback curl do passo irm abaixo faz quando
+# leva 403: a asserção do contrato permanece (octet-stream deixa o run
+# vermelho), só a fidelidade do cliente é que degrada, avisada.
+#
 # Por que NÃO é gate de PR: estas asserções falam do estado *implantado*, que
 # um PR não tem como consertar. Um deploy ruim do site travaria todo PR do
 # core. Roda no schedule e sob demanda; a falha vira notificação, não bloqueio.
@@ -219,8 +235,40 @@ jobs:
               }
             } catch {
               $code = try { [int]$_.Exception.Response.StatusCode } catch { 'n/a' }
-              Write-Host "::error ::irm ${url}: HTTP $code — $($_.Exception.Message)"
-              $failures++
+              if ($code -eq 403 -and $url.Contains('garraia.org')) {
+                # A borda do site recusa o cliente .NET de IP de datacenter
+                # (curl no mesmo runner passa; usuário real em IP residencial
+                # passa — ver o terceiro apagão no cabeçalho). O contrato do
+                # lado servidor segue asserido pelo cliente que a borda
+                # aceita: HTTP 200, Content-Type texto (o que o irm precisa
+                # para devolver [string]) e corpo começando com '<#'. Um
+                # octet-stream aqui continua deixando o run vermelho.
+                Write-Host "::warning ::irm ${url}: HTTP 403 — a borda recusa o cliente .NET de datacenter; asserindo o contrato via curl"
+                $probe = (& curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 60 $url 2>$null) -split ' ', 2
+                $http = $probe[0]; $ctype = $probe[1]
+                if ($http -ne '200') {
+                  Write-Host "::error ::irm ${url} (fallback curl): HTTP ${http}"
+                  $failures++
+                } elseif ($ctype -notmatch '^text/') {
+                  Write-Host "::error ::irm ${url} (fallback curl): Content-Type '$ctype' — o irm devolveria byte[], não [string]; 'irm | iex' quebra"
+                  $failures++
+                } else {
+                  $tmp = New-TemporaryFile
+                  & curl -s --max-time 60 -o $tmp $url 2>$null
+                  $raw = Get-Content -Raw -ErrorAction SilentlyContinue $tmp
+                  Remove-Item $tmp -ErrorAction SilentlyContinue
+                  if (-not $raw -or -not $raw.StartsWith('<#')) {
+                    $head = if ($raw) { ($raw.Substring(0, [Math]::Min(80, $raw.Length)) -replace "`r?`n", ' ') } else { '(vazio)' }
+                    Write-Host "::error ::irm ${url} (fallback curl): corpo não começa com '<#' (início: $head)"
+                    $failures++
+                  } else {
+                    Write-Host "OK (fallback curl) — HTTP 200, Content-Type '$ctype', corpo começa com '<#'"
+                  }
+                }
+              } else {
+                Write-Host "::error ::irm ${url}: HTTP $code — $($_.Exception.Message)"
+                $failures++
+              }
             }
             Write-Host '::endgroup::'
           }
