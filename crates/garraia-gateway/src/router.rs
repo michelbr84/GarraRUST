@@ -805,12 +805,12 @@ async fn list_providers(
 }
 
 #[derive(serde::Deserialize)]
-struct AddProviderRequest {
-    provider_type: String,
-    api_key: Option<String>,
-    model: Option<String>,
-    base_url: Option<String>,
-    set_default: Option<bool>,
+pub struct AddProviderRequest {
+    pub provider_type: String,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub set_default: Option<bool>,
 }
 
 /// Fetch policy for a caller-supplied provider `base_url`.
@@ -835,15 +835,22 @@ fn provider_base_url_policy() -> garraia_common::ssrf::UrlPolicy {
     .with_ip_scope(garraia_common::ssrf::IpScope::AllowPrivate)
 }
 
-/// Vet a caller-supplied `base_url`, if one was sent. `Ok(())` when absent —
+/// Vet a caller-supplied `base_url`, if one was sent. `Ok(None)` when absent —
 /// omitting it means "use the provider's built-in default", which is a
-/// compile-time constant and needs no check.
-fn validate_provider_base_url(base_url: Option<&String>) -> Result<(), String> {
+/// compile-time constant and needs no check. `Ok(Some(vetted))` when the URL
+/// passed the SSRF gate; the caller MUST build the provider's HTTP client
+/// from it via [`garraia_common::ssrf::pinned_client`] so the connect cannot
+/// resolve anywhere else (DNS rebinding) or follow a redirect to a blocked
+/// target (redirect laundering). Discarding the [`VettedUrl`] reopens both
+/// windows — see issue #1248 and rule 14 of `CLAUDE.md`.
+fn vet_provider_base_url(
+    base_url: Option<&String>,
+) -> Result<Option<garraia_common::ssrf::VettedUrl>, String> {
     let Some(raw) = base_url else {
-        return Ok(());
+        return Ok(None);
     };
     garraia_common::ssrf::vet_url(raw, &provider_base_url_policy())
-        .map(|_| ())
+        .map(Some)
         .map_err(|e| format!("base_url rejected: {e}"))
 }
 
@@ -870,21 +877,49 @@ fn configured_model_for(config: &garraia_config::AppConfig, provider_type: &str)
 }
 
 /// POST /api/providers — add a new LLM provider at runtime.
-async fn add_provider(
+pub async fn add_provider(
     axum::extract::State(state): axum::extract::State<SharedState>,
     axum::Json(body): axum::Json<AddProviderRequest>,
 ) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
     // SSRF gate, ahead of every provider branch so none can be forgotten.
-    if let Err(message) = validate_provider_base_url(body.base_url.as_ref()) {
-        tracing::warn!(provider_type = %body.provider_type, "{message}");
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({
-                "status": "error",
-                "message": message,
-            })),
-        );
-    }
+    // The VettedUrl is kept (not discarded) so each provider's HTTP client can
+    // be pinned to the resolved addresses with redirects off — closing both the
+    // redirect-laundering and DNS-rebinding windows that an unpinned client
+    // opens (issue #1248, rule 14 of `CLAUDE.md`).
+    let vetted = match vet_provider_base_url(body.base_url.as_ref()) {
+        Ok(v) => v,
+        Err(message) => {
+            tracing::warn!(provider_type = %body.provider_type, "{message}");
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "status": "error",
+                    "message": message,
+                })),
+            );
+        }
+    };
+    // Build the pinned client once; cloned into every provider branch. `None`
+    // means the caller sent no `base_url` and the provider will use its
+    // compile-time default endpoint — a trusted constant that needs no
+    // pinning, only the `redirect::Policy::none()` defense-in-depth every
+    // provider constructor now applies.
+    let pinned_client: Option<reqwest::Client> = match vetted.as_ref() {
+        Some(v) => match garraia_common::ssrf::pinned_client(v, &provider_base_url_policy()) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::error!(provider_type = %body.provider_type, "pinned client build failed: {e}");
+                return (
+                    axum::http::StatusCode::BAD_GATEWAY,
+                    axum::Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("base_url rejected: {e}"),
+                    })),
+                );
+            }
+        },
+        None => None,
+    };
 
     let provider_type = body.provider_type.as_str();
 
@@ -928,6 +963,13 @@ async fn add_provider(
                 body.model.clone(),
                 body.base_url.clone(),
             );
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "openai" => {
@@ -945,6 +987,13 @@ async fn add_provider(
                 body.model.clone(),
                 body.base_url.clone(),
             );
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "openrouter" => {
@@ -975,6 +1024,13 @@ async fn add_provider(
                 .or_else(|| Some(DEFAULT_CLOUD_MODEL.to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("openrouter");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "sansa" => {
@@ -997,6 +1053,13 @@ async fn add_provider(
                 .or_else(|| Some("sansa-auto".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("sansa");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "deepseek" => {
@@ -1019,6 +1082,13 @@ async fn add_provider(
                 .or_else(|| Some("deepseek-chat".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("deepseek");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "mistral" => {
@@ -1041,6 +1111,13 @@ async fn add_provider(
                 .or_else(|| Some("mistral-large-latest".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("mistral");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "gemini" => {
@@ -1062,6 +1139,13 @@ async fn add_provider(
                 .or_else(|| Some("gemini-2.5-flash".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("gemini");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "falcon" => {
@@ -1084,6 +1168,13 @@ async fn add_provider(
                 .or_else(|| Some("tiiuae/falcon-180b-chat".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("falcon");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "jais" => {
@@ -1106,6 +1197,13 @@ async fn add_provider(
                 .or_else(|| Some("jais-adapted-70b-chat".to_string()));
             let provider =
                 garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("jais");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "qwen" => {
@@ -1124,6 +1222,13 @@ async fn add_provider(
             let model = body.model.clone().or_else(|| Some("qwen-plus".to_string()));
             let provider =
                 garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("qwen");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "yi" => {
@@ -1143,6 +1248,13 @@ async fn add_provider(
             let model = body.model.clone().or_else(|| Some("yi-large".to_string()));
             let provider =
                 garraia_agents::OpenAiProvider::new(key.clone(), model, base_url).with_name("yi");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "cohere" => {
@@ -1165,6 +1277,13 @@ async fn add_provider(
                 .or_else(|| Some("command-r-plus".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("cohere");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "minimax" => {
@@ -1187,6 +1306,13 @@ async fn add_provider(
                 .or_else(|| Some("MiniMax-Text-01".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("minimax");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "moonshot" => {
@@ -1209,11 +1335,25 @@ async fn add_provider(
                 .or_else(|| Some("kimi-k2-0711-preview".to_string()));
             let provider = garraia_agents::OpenAiProvider::new(key.clone(), model, base_url)
                 .with_name("moonshot");
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         "ollama" => {
             let provider =
                 garraia_agents::OllamaProvider::new(body.model.clone(), body.base_url.clone());
+            // Pin the provider's HTTP client to the SSRF-vetted addresses
+            // (redirects off) when the caller supplied a `base_url`. `None`
+            // means a compile-time default endpoint — trusted, no pinning.
+            let provider = match pinned_client.as_ref() {
+                Some(c) => provider.with_client(c.clone()),
+                None => provider,
+            };
             state.agents.register_provider(Arc::new(provider));
         }
         other => {
