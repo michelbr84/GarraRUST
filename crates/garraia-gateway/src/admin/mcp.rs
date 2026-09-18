@@ -591,9 +591,21 @@ async fn register_pending_after_failure(
 
 /// DELETE /admin/api/mcp/:id — remove a configured MCP server.
 ///
-/// Removes the server from the in-memory registry, deletes its entry from
-/// `mcp.json`, and purges any associated vault credentials (GAR-291).
-/// Returns 404 if the server is not found.
+/// Tears down the live `McpManager` connection, clears any `pending` entry so
+/// the health monitor cannot resurrect the server, drops the server's tools
+/// from the `AgentRuntime` inventory, removes it from the in-memory registry,
+/// deletes its entry from `mcp.json`, and purges associated vault credentials
+/// (GAR-291).
+///
+/// The manager teardown runs **before** the registry removal: `remove_server`
+/// only touches the registry, while the live connection and the `pending`
+/// resurrect-from-boot-failure path live in the manager. Doing them in the
+/// other order left a deleted server serving tools and, after #1242, coming
+/// back from `pending` with credentials the DELETE had just purged (issue
+/// #1262). Returns 404 if the server is not in the registry — but the manager
+/// teardown still runs, so a second delete after a prior silent failure now
+/// actually clears the orphaned connection instead of 404-ing with the server
+/// still serving.
 pub async fn admin_delete_mcp(
     State(state): State<AdminState>,
     axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
@@ -608,12 +620,57 @@ pub async fn admin_delete_mcp(
         );
     }
 
+    // Issue #1262: tear down the live connection and clear `pending` BEFORE
+    // removing the server from the registry. `remove_server` only touches the
+    // registry — the live connection lives in the `McpManager`, and a server
+    // parked in `pending` is resurrected by the health monitor on its next
+    // `check_and_reconnect` pass. Without these two calls a deleted server
+    // kept serving tools to the agent and, worse, came back from `pending`
+    // with `env` already resolved from vault credentials the DELETE had just
+    // purged — so "delete and revoke" did not revoke. `forget` also drops the
+    // `restart_states` counter so a future `register_pending_*` under the same
+    // name does not inherit a stale backoff budget.
+    //
+    // Teardown first means a persistence failure below can leave the manager
+    // without the server (safe — nothing resurrects), never the registry
+    // without the manager (the dangerous pair that kept the bug alive). If the
+    // manager is not wired there is nothing to tear down; the registry removal
+    // below still proceeds so the API contract (delete removes the entry) is
+    // honored, and the warning makes the missing teardown diagnosable.
+    if let Some(manager) = state.app_state.mcp_manager_arc.as_ref() {
+        manager.disconnect(&server_name).await;
+        manager.forget(&server_name).await;
+        // Drop the deleted server's tools from the AgentRuntime inventory, so
+        // the LLM stops seeing them. `sync_mcp_tools` only refreshes servers
+        // that are still in the manager — a server absent from the manager is
+        // intentionally left alone (a read failure must not strip working
+        // tools), so after `disconnect` it would never be revisited and its
+        // `McpTool` objects would keep pointing at a dead transport until the
+        // next gateway restart. `replace_mcp_tools` with an empty vec is the
+        // explicit removal path: it retains every tool whose source is not
+        // this server and adds none.
+        state
+            .app_state
+            .agents
+            .replace_mcp_tools(&server_name, Vec::new());
+    } else {
+        tracing::warn!(
+            server = %server_name,
+            "admin_delete_mcp: MCP manager not wired — live connection and pending entries cannot be torn down"
+        );
+    }
+
     let removed = state
         .app_state
         .mcp_registry
         .remove_server(&server_name)
         .await;
     if !removed {
+        // The registry never had this name, but the manager teardown above
+        // already cleared any orphaned live/pending state — which, after a
+        // prior delete failed to call `disconnect`, was the only handle the
+        // operator had left (the second delete used to 404 with the server
+        // still serving). Keep the 404 contract for the API surface.
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("MCP server '{}' not found", server_name)})),
