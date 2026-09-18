@@ -642,6 +642,34 @@ impl McpManager {
         }
     }
 
+    /// Issue #1262: fully forget a server so the health monitor cannot
+    /// resurrect it after an admin `DELETE`.
+    ///
+    /// `disconnect` drops the *live* connection, but a server that never
+    /// connected (or whose restart parked it in `pending`) still has an entry
+    /// there — and `check_and_reconnect` turns every `pending` entry into a
+    /// reconnect target. A deleted server whose credentials were already
+    /// purged from the vault would therefore come back from `pending` with the
+    /// **env already resolved from the old vault contents**, making "delete and
+    /// revoke" not revoke. `restart_states` holds the backoff counter that
+    /// gates those retries, so it has to go too — otherwise the next
+    /// `register_pending_*` under the same name inherits a stale budget.
+    ///
+    /// Call this **before** removing the server from the registry, so a
+    /// failure to persist `mcp.json` cannot leave the manager holding a
+    /// resurrectable entry for a name the registry no longer knows.
+    pub async fn forget(&self, name: &str) {
+        let pending = self.pending.write().await.remove(name).is_some();
+        let restart = self.restart_states.write().await.remove(name).is_some();
+        if pending || restart {
+            info!(
+                pending_cleared = pending,
+                restart_state_cleared = restart,
+                "MCP server '{name}' forgotten by admin delete — health monitor will not resurrect it"
+            );
+        }
+    }
+
     /// GAR-190 / issue #1242: the tool allowlist currently in force for `name`.
     ///
     /// The `Option` is load-bearing and must not be flattened at the call
