@@ -147,9 +147,10 @@ impl ConfigLoader {
             }
         };
 
-        // Per-entry deserialization: one malformed server (e.g. a URL-only
-        // entry written by the admin UI, whose schema differs) must not drop
-        // every other server in the file.
+        // Per-entry deserialization: one malformed server (a wrong-typed
+        // field, say) must not drop every other server in the file. Since
+        // #1274 a URL-only entry is NOT malformed — it is an HTTP server and
+        // is kept, with its `allowed_tools`.
         #[derive(serde::Deserialize)]
         struct McpJsonFile {
             #[serde(default, rename = "mcpServers")]
@@ -169,6 +170,19 @@ impl ConfigLoader {
         for (name, value) in raw {
             match serde_json::from_value::<McpServerConfig>(value) {
                 Ok(cfg) => {
+                    // #1274: `command` is `#[serde(default)]` now, so the
+                    // type no longer refuses a stdio entry without one — the
+                    // refusal has to be explicit here, before the merge, or
+                    // a defaulted `String` would flow on toward a spawn. An
+                    // entry with a `url` is legitimate without a command
+                    // (HTTP/SSE); this is the same rule `garra config check`
+                    // reports as an error for the `mcp:` section.
+                    if cfg.command.trim().is_empty() && cfg.url.is_none() {
+                        tracing::warn!(
+                            "mcp.json entry '{name}' has neither 'command' nor 'url', skipping"
+                        );
+                        continue;
+                    }
                     servers.insert(name, cfg);
                 }
                 Err(e) => {
@@ -633,16 +647,24 @@ mod tests {
         let dir = temp_dir("mcp-tolerant");
         fs::create_dir_all(&dir).expect("failed to create temp dir");
 
-        // "broken" lacks the required `command` (e.g. a URL-only entry
-        // written by the gateway admin UI). It must not drop "filesystem".
+        // "broken" has a wrong-typed field. It must not drop "filesystem".
+        // Since #1274 the URL-only entry ("http-only") is NOT invalid — it is
+        // an HTTP server, is kept, and carries its `allowed_tools` into the
+        // declared merge (see load_mcp_json_keeps_http_entry_without_command).
         let mcp_json = r#"{
             "mcpServers": {
                 "filesystem": {
                     "command": "npx",
                     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/root"]
                 },
+                "http-only": {
+                    "url": "http://localhost:9999/mcp",
+                    "transport": "http",
+                    "allowed_tools": ["read_file"]
+                },
                 "broken": {
-                    "url": "http://localhost:9999/mcp"
+                    "command": "npx",
+                    "timeout": "soon"
                 }
             }
         }"#;
@@ -651,9 +673,80 @@ mod tests {
         let loader = ConfigLoader::with_dir(&dir);
         let mcp = loader.load_mcp_json();
 
-        assert_eq!(mcp.len(), 1);
+        assert_eq!(mcp.len(), 2);
         assert_eq!(mcp.get("filesystem").unwrap().command, "npx");
+        assert_eq!(
+            mcp.get("http-only").unwrap().allowed_tools,
+            vec!["read_file".to_string()]
+        );
         assert!(!mcp.contains_key("broken"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// #1274 — the regression that is the reason for the issue. An HTTP entry
+    /// of `mcp.json` has no `command`; the loader used to drop it, so the
+    /// operator's `allowed_tools` never reached the declared merge the admin
+    /// restart reads, and a routine restart click reconnected the server with
+    /// every tool exposed. The entry must survive, allowlist intact.
+    #[test]
+    fn load_mcp_json_keeps_http_entry_without_command() {
+        let dir = temp_dir("mcp-http-entry");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+        // Exactly what an operator writes for a remote MCP server — the
+        // shape from issue #1274.
+        let mcp_json = r#"{
+            "mcpServers": {
+                "remote": {
+                    "url": "https://example.tld/mcp",
+                    "transport": "http",
+                    "allowed_tools": ["read_file"]
+                }
+            }
+        }"#;
+        fs::write(dir.join("mcp.json"), mcp_json).expect("failed to write mcp.json");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        let mcp = loader.load_mcp_json();
+
+        let cfg = mcp.get("remote").expect(
+            "the HTTP entry must survive the loader — without it the declared \
+             merge is blind to the name and a restart reconnects the server \
+             unrestricted (#1274)",
+        );
+        assert!(cfg.command.is_empty());
+        assert_eq!(cfg.url.as_deref(), Some("https://example.tld/mcp"));
+        assert_eq!(cfg.allowed_tools, vec!["read_file".to_string()]);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// #1274 — the other side of the same default. A stdio entry without a
+    /// `command` used to be refused by the type; the refusal must now be the
+    /// explicit check at the merge boundary, not a lost guarantee. It must
+    /// never flow on toward a spawn of an empty command.
+    #[test]
+    fn load_mcp_json_skips_stdio_entry_without_command() {
+        let dir = temp_dir("mcp-stdio-no-command");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+
+        let mcp_json = r#"{
+            "mcpServers": {
+                "half-declared": {
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/root"],
+                    "transport": "stdio",
+                    "allowed_tools": ["read_file"]
+                }
+            }
+        }"#;
+        fs::write(dir.join("mcp.json"), mcp_json).expect("failed to write mcp.json");
+
+        let loader = ConfigLoader::with_dir(&dir);
+        assert!(
+            loader.load_mcp_json().is_empty(),
+            "a stdio entry without 'command' must be refused before the merge"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
