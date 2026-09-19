@@ -73,6 +73,11 @@ SCENARIOS = (
     # oversized       linha acima do teto de 256 KiB
     # connect-then-hang
     #                 conecta, entrega a sessao e emudece SEM fechar o stdout
+    # serve-wedge     conecta, entrega a sessao e nunca mais fala E nunca mais
+    #                 le stdin — o filho fica la ate o pai o matar. E o caso
+    #                 que o keepalive do `serve` existe para colher (issue
+    #                 #1275): sem o ping, nenhuma das tres tetos do driver
+    #                 dispara e o canal morre em silencio para sempre.
     # silent-start    sobe e NUNCA emite `started` — o `node` da PATH que e um
     #                 shim preso antes de rodar o bridge. Todos os outros
     #                 cenarios emitem `started` antes de qualquer coisa, entao
@@ -121,6 +126,7 @@ SCENARIOS = (
     #                 `Disconnected`, entao um relogio de progresso renovado
     #                 por RESIDENCIA nunca vence.
     "connect-then-hang",
+    "serve-wedge",
     "silent-start",
     "retry-forever",
     "qr-then-retry-forever",
@@ -163,6 +169,9 @@ class Bridge:
         self.sent = 0
         self.commands: "queue.Queue[dict]" = queue.Queue()
         self.eof = threading.Event()
+        # #1275: corte do consumo de stdin — simula filho que deixou de ler
+        # os comandos (o driver manda ping e ninguem responde).
+        self.wedge = threading.Event()
 
     # -- saida -------------------------------------------------------------
     def status(self, state: str, detail: str = "") -> None:
@@ -230,6 +239,11 @@ class Bridge:
         de comando (em CI a fixture roda com stdin em /dev/null)."""
         try:
             for raw in sys.stdin.buffer:
+                if self.wedge.is_set():
+                    # #1275: em wedge, para de consumir — os pings do driver
+                    # ficam sem resposta ate o processo morrer.
+                    time.sleep(self.args.hang_secs)
+                    return
                 line = raw.rstrip(b"\r\n")
                 if len(line) > MAX_LINE_BYTES:
                     emit({"type": "error", "code": "protocol", "message": "line too long"})
@@ -461,6 +475,17 @@ class Bridge:
             # `pair` para de contar silencio ao conectar (ele espera o
             # `session_update` final), entao sem o teto de flush final do
             # driver este processo pendura o terminal para sempre.
+            self.eof.wait(self.args.hang_secs)
+            return EXIT_OK
+
+        if scenario == "serve-wedge":
+            # #1275: o pior caso do `serve` — conectou, entregou a sessao e
+            # emudeceu SEM fechar o stdout e SEM morrer. Diferente do
+            # `connect-then-hang`, aqui o processo continua vivo e deixa de
+            # LER o stdin (self.wedge): os relogios cegos do driver nao veem
+            # nada — so o keepalive ping/pong corta. O hang_secs longo mantem
+            # o processo vivo; quem termina a execucao e o driver.
+            self.wedge.set()
             self.eof.wait(self.args.hang_secs)
             return EXIT_OK
 
