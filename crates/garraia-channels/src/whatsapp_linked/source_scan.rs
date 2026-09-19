@@ -36,17 +36,18 @@
 //! O caso 3 esta fechado desde a rodada 8: [`RAW_FIELD_ALLOWED`] faz com o
 //! campo cru o que [`EXPOSE_ALLOWED`] ja fazia com o metodo.
 //!
-//! O caso 2 esta fechado **para `impl` escrito a mao**, por
+//! O caso 2 esta fechado **por
 //! [`session_blob_gains_no_new_str_conversion`], que le a DECLARACAO dos
-//! `impl` (o caso 2 nao e um call site, e um tipo). **Gerado por
-//! `macro_rules!` ele escapa**, e a medicao esta aqui para ninguem ter de
-//! refaze-la: um `macro_rules!` que expanda
-//! `impl AsRef<str> for $t { fn as_ref(&self) -> &str { &self.0 } }`
-//! passa 111/111, porque a linha do `impl` nao contem o texto `SessionBlob`
-//! (que a guarda exige) e o corpo `&self.0` e justamente a entrada legitima
-//! da [`RAW_FIELD_ALLOWED`]. As duas guardas se anulam nesse caso. Fechar
-//! exige exigir que TODO `impl` de `session.rs` esteja numa allowlist —
-//! cinco entradas a mais, e fica para uma fatia propria.
+//! `impl` (o caso 2 nao e um call site, e um tipo) e agora exige que TODO
+//! `impl` de `session.rs` esteja numa allowlist — incluido o que `macro_rules!`
+//! gera. O escape que o `macro_rules!` tinha ficava registrado aqui com a
+//! medicao para ninguem ter de refaze-la: um `macro_rules!` que expanda
+//! `impl AsRef<str> for $t { fn as_ref(&self) -> &str { &self.0 } }` passava
+//! 111/111, porque a linha do `impl` nao continha o texto `SessionBlob`
+//! (que a guarda exigia) e o corpo `&self.0` e justamente a entrada legitima
+//! da [`RAW_FIELD_ALLOWED`]. As duas guardas se anulavam nesse caso; a regra
+//! de todo-impl as reune — a linha do `impl` do macro comeca com `impl`, e
+//! `impl` sem declaracao na allowlist e vermelho agora.
 //!
 //! O caso 1 segue aberto, de proposito e por escrito.
 //!
@@ -943,7 +944,64 @@ producao de `session.rs` — allowlist morta nao guarda nada"
     }
 }
 
-/// **`SessionBlob` nao pode ganhar nenhuma conversao nova para `&str`.**
+/// **Todos os `impl` que `session.rs` pode ter.**
+///
+/// # Por que TODO `impl` do arquivo, e nao so os que citam `SessionBlob`
+///
+/// A regra antiga exigia que a linha do `impl` contivesse o texto
+/// `SessionBlob`. Um `macro_rules!` escapa das duas guardas de uma vez nesse
+/// formato: a linha gerada (`impl ::core::convert::AsRef<str> for $t {`) nao
+/// menciona `SessionBlob`, e o corpo `&self.0` e justamente a entrada
+/// legitima de [`RAW_FIELD_ALLOWED`] — **medido, 111/111 verdes** (issue
+/// #1276). Exigindo que TODO `impl` do arquivo esteja declarado aqui, a
+/// linha gerada pelo macro — que comeca com `impl` — fica vermelha.
+///
+/// A comparação e sobre a linha normalizada e sem indentação: um `impl`
+/// dentro de um `mod` tambem precisa estar aqui, porque indentacao nao
+/// esconde declaracao.
+const IMPL_ALLOWED: &[&str] = &[
+    "impl SessionBlob {",
+    // Os dois imprimem `<redacted>`; e por isso que eles existem.
+    "impl fmt::Debug for SessionBlob {",
+    "impl fmt::Display for SessionBlob {",
+    // Zera o segredo na saida de escopo.
+    "impl Drop for SessionBlob {",
+    // #1276: as cinco entradas novas da regra de todo-impl.
+    "impl KeyOrigin {",
+    "impl fmt::Debug for SessionKey {",
+    "impl SessionKey {",
+    "impl SessionStore {",
+    "impl SessionError {",
+];
+
+/// `impl` no codigo de producao de `session.rs` que a allowlist nao declara.
+///
+/// Funcao separada do `#[test]` pelo mesmo motivo de
+/// [`exposes_outside_the_allowlist`]: numa arvore limpa nao ha violacao nenhuma,
+/// entao o caso negativo entra como TEXTO plantado — foi assim que o escape
+/// por `macro_rules!` deixou de ser hipotetico e virou vermelho.
+///
+/// A indentação e cortada antes da comparacao: um `impl` dentro de um `mod`
+/// e declaracao igual.
+fn impls_outside_the_allowlist(source: &str) -> Vec<String> {
+    let code = without_comments(&production_source(source));
+    let mut out = Vec::new();
+    for raw in code.lines() {
+        let line = normalize(raw);
+        let t = line.trim_start();
+        if !t.starts_with("impl") {
+            continue;
+        }
+        if IMPL_ALLOWED.contains(&t) {
+            continue;
+        }
+        out.push(t.to_string());
+    }
+    out
+}
+
+/// **`SessionBlob` nao pode ganhar nenhuma conversao nova para `&str` — e
+/// nenhum `impl` novo em `session.rs` de modo geral.**
 ///
 /// # Por que uma checagem de DECLARACAO, e nao de call site
 ///
@@ -956,43 +1014,39 @@ producao de `session.rs` — allowlist morta nao guarda nada"
 ///
 /// Entao a guarda e sobre a linha de declaracao, no mesmo espirito de
 /// [`the_store_exposes_a_single_validating_constructor`], e a regra e
-/// invertida: cada `impl` que mencione `SessionBlob` tem de estar declarado
-/// aqui. Uma lista de proibidos (`Deref`, `AsRef<str>`, `Borrow<str>`,
-/// `From<SessionBlob> for String`) seria a corrida que a lista de macros ja
-/// mostrou nao se ganhar — `Into` vem de graca com `From`, e o proximo trait
-/// util nao esta na lista de ninguem.
+/// invertida: TODO `impl` de `session.rs` tem de estar declarado em
+/// [`IMPL_ALLOWED`]. Uma lista de proibidos (`Deref`, `AsRef<str>`,
+/// `Borrow<str>`, `From<SessionBlob> for String`) seria a corrida que a lista
+/// de macros ja mostrou nao se ganhar — `Into` vem de graca com `From`, e o
+/// proximo trait util nao esta na lista de ninguem.
 ///
 /// Os derives entram pelo mesmo motivo: um `#[derive(Deref)]` de crate
 /// externa produz o mesmo `&str` sem escrever `impl` nenhum.
 #[test]
 fn session_blob_gains_no_new_str_conversion() {
-    const IMPL_ALLOWED: &[&str] = &[
-        "impl SessionBlob {",
-        // Os dois imprimem `<redacted>`; e por isso que eles existem.
-        "impl fmt::Debug for SessionBlob {",
-        "impl fmt::Display for SessionBlob {",
-        // Zera o segredo na saida de escopo.
-        "impl Drop for SessionBlob {",
-    ];
     const DERIVE_ESPERADO: &str = "#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]";
 
     let src = without_comments(&production_source(include_str!("session.rs")));
     let mut offenders = Vec::new();
     for raw in src.lines() {
         let line = normalize(raw);
-        if !line.starts_with("impl") || !line.contains("SessionBlob") {
+        let t = line.trim_start();
+        if !t.starts_with("impl") {
             continue;
         }
-        if !IMPL_ALLOWED.contains(&line.as_str()) {
-            offenders.push(line);
+        if !IMPL_ALLOWED.contains(&t) {
+            offenders.push(t.to_string());
         }
     }
     assert!(
         offenders.is_empty(),
-        "`impl` novo sobre `SessionBlob`. Qualquer conversao para `&str` \
+        "`impl` novo sobre `SessionBlob` (ou qualquer `impl` novo em `session.rs`). \
+Qualquer conversao para `&str` \
 (`Deref`, `AsRef<str>`, `Borrow<str>`, `From<SessionBlob> for String`) devolve \
 o segredo sem a palavra `expose` aparecer no fonte — foi medido, e passa \
-107/107. Se o `impl` e legitimo, declare-o em IMPL_ALLOWED:\n{}",
+107/107. Gerado por `macro_rules!` tambem nao passa: a linha do `impl` gerado \
+comeca com `impl` e nao esta na allowlist. Se o `impl` e legitimo, declare-o \
+em IMPL_ALLOWED:\n{}",
         offenders.join("\n")
     );
     // E a guarda nao pode ficar muda se o tipo for renomeado ou sumir.
@@ -1022,6 +1076,98 @@ o segredo sem a palavra `expose` aparecer no fonte — foi medido, e passa \
 de crate externa da o mesmo `&str` que um `impl` manual daria. Derives vistos \
 no arquivo: {derives:?}"
     );
+}
+
+/// **O escape por `macro_rules!` precisa ficar vermelho.**
+///
+/// O ataque medido pela auditoria da rodada 8 entra aqui como TEXTO, no
+/// mesmo padrao de
+/// [`an_expose_outside_the_allowlist_is_actually_reported`]: a arvore limpa
+/// nao tem violacao nenhuma, entao so o caso negativo plantado distingue
+/// regra viva de regra ausente. Antes da regra de todo-impl, este macro
+/// passava **111/111** — a linha do `impl` nao citava `SessionBlob` e o
+/// corpo `&self.0` era a entrada legitima de [`RAW_FIELD_ALLOWED`].
+///
+/// As duas formas de mesmo nome: o `impl` indented dentro de um `mod` e
+/// declaracao igual, e indentacao nao esconde nada.
+#[test]
+fn a_macro_rules_str_conversion_is_reported() {
+    let macro_attack = r#"
+macro_rules! conversao_de_str {
+    ($t:ty) => {
+        impl ::core::convert::AsRef<str> for $t {
+            fn as_ref(&self) -> &str { &self.0 }
+        }
+    };
+}
+conversao_de_str!(SessionBlob);
+"#;
+    assert!(
+        !impls_outside_the_allowlist(macro_attack).is_empty(),
+        "o macro_rules! que expande `impl AsRef<str>` precisa ser reprovado — \
+a linha gerada comeca com `impl` e nao esta na IMPL_ALLOWED"
+    );
+
+    // As formas manuais, que ja eram pegas pela regra antiga e continuam.
+    let manual = r#"
+impl std::ops::Deref for SessionBlob {
+    type Target = str;
+    fn deref(&self) -> &str { &self.0 }
+}
+"#;
+    assert!(
+        !impls_outside_the_allowlist(manual).is_empty(),
+        "`impl Deref` manual continua reprovado"
+    );
+
+    // Indentado dentro de um mod: declaracao igual.
+    let indentado = r#"
+mod aninhado {
+    impl std::convert::AsRef<str> for SessionBlob {
+        fn as_ref(&self) -> &str { &self.0 }
+    }
+}
+"#;
+    assert!(
+        !impls_outside_the_allowlist(indentado).is_empty(),
+        "um `impl` dentro de um `mod` e declaracao igual e precisa ser reprovado"
+    );
+
+    // E a allowlist de fato isenta o que declara: os nove impls reais do
+    // arquivo, todos juntos, nao produzem violacao nenhuma.
+    let reais = [
+        "impl SessionBlob {",
+        "impl fmt::Debug for SessionBlob {",
+        "impl fmt::Display for SessionBlob {",
+        "impl Drop for SessionBlob {",
+        "impl KeyOrigin {",
+        "impl fmt::Debug for SessionKey {",
+        "impl SessionKey {",
+        "impl SessionStore {",
+        "impl SessionError {",
+    ]
+    .join("\n");
+    assert!(
+        impls_outside_the_allowlist(&reais).is_empty(),
+        "os `impl` declarados na IMPL_ALLOWED nao podem ser reprovados"
+    );
+}
+
+/// A allowlist de `impl` tem de continuar **descrevendo** a arvore.
+///
+/// Mesmo argumento de [`every_allowed_expose_call_site_still_exists`]: uma
+/// allowlist cujas linhas ja nao casam com nada reprova o que nao existe —
+/// e o que for criado por baixo dela passa livre.
+#[test]
+fn every_allowed_impl_still_exists() {
+    let code = without_comments(&production_source(include_str!("session.rs")));
+    for allowed in IMPL_ALLOWED {
+        assert!(
+            code.lines().any(|l| normalize(l).trim_start() == *allowed),
+            "a allowlist declara `{allowed}`, que nao existe mais no fonte de \
+producao de `session.rs` — allowlist morta nao guarda nada"
+        );
+    }
 }
 
 /// **Cada macro de log em producao tem de virar exatamente um bloco.**
