@@ -657,6 +657,12 @@ export function createBridge({
         emit({ type: 'logged_out' });
         await shutdown(EXIT_OK, { logout: true });
         return;
+      case 'ping':
+        // Prova de vida (issue #1275): o driver exige resposta dentro do
+        // prazo depois do `connected`. Sem carga — o que importa e que o laco
+        // de stdout respondeu.
+        emit({ type: 'pong' });
+        return;
       case 'shutdown':
         await shutdown(EXIT_OK);
         return;
