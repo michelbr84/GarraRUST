@@ -229,42 +229,93 @@ pub struct AgentRuntime {
     turn_stats: RwLock<crate::turn_stats::TurnStatsRegistry>,
 }
 
-/// Avisa quando o modo whitelist deixou ferramenta MCP passar (#979).
+/// O TEXTO do aviso de ferramenta MCP escondida pelo whitelist (#1264).
 ///
-/// A `ToolPolicy` de `search`, `review`, `architect`, `debug` e `edit` lista so
-/// nomes nativos. Aplicar a whitelist ao pe da letra derrubaria toda integracao
-/// MCP nesses modos, em silencio, entao ferramenta MCP passa — e continua
-/// sujeita ao `denied`. A consequencia e que **um modo somente-leitura nao
-/// restringe ferramenta MCP**.
+/// Separado do `warn!` pelo mesmo motivo de todo estado puro deste repo: o
+/// criterio de aceite 3 da #1264 pede **assercao sobre o aviso**, e nao so
+/// sobre o retorno do portao — e afirmar sobre log emitido num subprocesso
+/// seria capturar tracing, que a arvore nao tem infra pra fazer. O que o
+/// wrapper de log emite e exatamente a linha que esta funcao monta; o teste
+/// dela e a assercao do aviso.
 ///
-/// Isso ja era assim. O que mudou no #979 e quem encontra: `/mode auto` deixou
-/// de ser inerte e passou a aplicar a politica do modo deduzido, entao alguem
-/// que digitou `auto` e escreveu uma pergunta de busca agora acredita estar
-/// somente-leitura. Acreditar numa restricao que nao existe e pior que nao ter
-/// restricao, e a unica coisa honesta a fazer enquanto o whitelist nao entender
-/// servidor MCP e dizer em voz alta que a lacuna esta aberta **neste** turno.
-///
-/// Fica em `warn!` de proposito: quem precisa ver isto e o operador que
-/// conectou o servidor MCP, nao o modelo.
-fn avisar_lacuna_mcp(portao: &crate::modes::ToolGate, tool_defs: &[crate::ToolDefinition]) {
+/// Uma linha por ferramenta escondida, ja com modo e a sintaxe que libera.
+/// Vazia quando nada a avisar: sem whitelist, sem escondida.
+fn mensagens_mcp_fora_da_whitelist(
+    portao: &crate::modes::ToolGate,
+    todas: &[crate::ToolDefinition],
+) -> Vec<String> {
     if !portao.restringe_por_whitelist() {
-        return;
+        return Vec::new();
     }
-    let mcp: Vec<&str> = tool_defs
+    let escondidas: Vec<&str> = todas
         .iter()
         .map(|d| d.name.as_str())
-        .filter(|n| crate::modes::ToolGate::eh_ferramenta_mcp(n))
+        .filter(|n| crate::modes::ToolGate::eh_ferramenta_mcp(n) && !portao.permite(n))
         .collect();
-    if mcp.is_empty() {
-        return;
+    if escondidas.is_empty() {
+        return Vec::new();
     }
-    warn!(
-        modo = portao.nome_do_modo().unwrap_or(""),
-        ferramentas_mcp = ?mcp,
-        "modo restrito nao cobre ferramenta MCP: a whitelist lista so nomes \
-         nativos, entao estas passam. Use `denied` no perfil para barrar uma \
-         especifica."
-    );
+    let modo = portao.nome_do_modo().unwrap_or("");
+    escondidas
+        .iter()
+        .map(|nome| {
+            format!(
+                "modo restrito `{modo}` escondeu a ferramenta MCP `{nome}` nao \
+                 declarada: o modelo nao vai ve-la neste turno. Declare \
+                 `servidor/*` (ou o nome completo `servidor__ferramenta`) na \
+                 `allowed` do perfil para liberar."
+            )
+        })
+        .collect()
+}
+
+/// Emite, em `warn!`, o aviso montado por [`mensagens_mcp_fora_da_whitelist`].
+///
+/// `warn!` de proposito: quem precisa ver isto e o operador que conectou o
+/// servidor MCP, nao o modelo. **Recebe a lista INTEIRA**, antes do filtro do
+/// portao: o aviso e justamente sobre o que o filtro tirou, e uma lista ja
+/// filtrada nao tem mais o que mostrar.
+fn avisar_mcp_fora_da_whitelist(portao: &crate::modes::ToolGate, todas: &[crate::ToolDefinition]) {
+    for mensagem in mensagens_mcp_fora_da_whitelist(portao, todas) {
+        warn!("{mensagem}");
+    }
+}
+
+/// O TEXTO do aviso de whitelist ligada e vazia (#1264), `Some` quando ha
+/// o que avisar.
+///
+/// Mesma divisao de [`mensagens_mcp_fora_da_whitelist`]: o conteudo e puro e
+/// testavel, o `warn!` e o sink fino.
+fn mensagem_whitelist_vazia(portao: &crate::modes::ToolGate) -> Option<String> {
+    if !portao.whitelist_ligada_mas_vazia() {
+        return None;
+    }
+    let modo = portao.nome_do_modo().unwrap_or("");
+    Some(format!(
+        "perfil `{modo}` tem `whitelist_mode` ligado e `allowed` vazia: a \
+         restricao esta ligada e nao restringe nada, toda ferramenta passa. \
+         Popule `allowed` ou desligue `whitelist_mode` (#1264)."
+    ))
+}
+
+/// Avisa quando o perfil ligou `whitelist_mode` e deixou `allowed` vazia (#1264).
+///
+/// Whitelist vazia continua **permitindo tudo** — a opcao (b) da #1264,
+/// escolhida para nao quebrar perfil existente. O que nao pode continuar e o
+/// silencio: o operador ligou a restricao, nao populou a lista e nao recebia
+/// restricao nenhuma nem aviso nenhum.
+///
+/// Este e o aviso do caminho **vivo**, onde o perfil vem de modo customizado
+/// (banco) ou de agent card A2A. O `garra config check` nao pode cobrir esse
+/// perfil: ele le config, e a config nao carrega modos — os customizados vivem
+/// no banco (`get_custom_modes`). Os perfis nativos sao constantes de
+/// compilacao com listas nao-vazias, e o que os segura ali e o teste
+/// `ferramenta_mcp_nao_declarada_e_barrada_por_whitelist`, que os exercita
+/// todos por nome.
+fn avisar_whitelist_vazia(portao: &crate::modes::ToolGate) {
+    if let Some(mensagem) = mensagem_whitelist_vazia(portao) {
+        warn!("{mensagem}");
+    }
 }
 
 /// Injeta o objetivo da sessao no prompt de sistema (#983).
@@ -786,18 +837,29 @@ impl AgentRuntime {
             .collect()
     }
 
-    /// Ha alguma ferramenta registrada que a **escapatoria de MCP** do
-    /// [`crate::modes::ToolGate`] deixa passar por cima de um whitelist?
+    /// Ha alguma ferramenta de servidor MCP registrada no runtime agora?
+    ///
+    /// # A escapatoria que este detector compensava esta fechada (#1264)
+    ///
+    /// Este predicado nasceu porque `ToolGate::permite` isentava do whitelist
+    /// qualquer nome com `"__"`: o canal `whatsapp_linked` nao tinha como
+    /// confiar no piso somente-leitura e passou a **recusar turno** enquanto
+    /// houvesse ferramenta MCP registrada. A #1264 fechou a isencao — o
+    /// whitelist cobre MCP, e permissao agora e declarada (`servidor/*`).
+    ///
+    /// A funcao fica: quem a chama decide se ainda quer a recusa (a decisao de
+    /// remover o controle do canal e da issue de la, com os testes de la). O que
+    /// **nao** vale mais e chamar isto de "ferramenta que fura o portao".
     ///
     /// # Por que nao e so `source == Mcp`
     ///
-    /// Quem compensa e o portao, e o portao nao olha a origem: ele olha o
-    /// NOME (`ToolGate::eh_ferramenta_mcp`, `contains("__")`). Perguntar pela
-    /// origem enquanto o portao pergunta pelo nome deixa o acoplamento
-    /// invertido — uma ferramenta **nativa** cujo nome contivesse `__` furaria
-    /// o whitelist sem acender detector nenhum. Hoje nao existe nenhuma; o que
-    /// nao se pode e depender disso. As duas perguntas juntas, entao, e a do
-    /// nome vem da propria funcao que o portao usa, para nao poderem divergir.
+    /// Porque o portao nao olha a origem: ele olha o NOME
+    /// (`ToolGate::eh_ferramenta_mcp`, `contains("__")`) — e o nome e que
+    /// decide se `servidor/*` cobre a ferramenta. Uma ferramenta **nativa** com
+    /// `__` no nome entra na mesma contabilidade do whitelist, e um detector
+    /// que so perguntasse a origem a perderia de vista. As duas perguntas
+    /// juntas, entao, e a do nome vem da propria funcao que o portao usa, para
+    /// nao poderem divergir.
     ///
     /// # Por que nao `tool_inventory().iter().any(...)`
     ///
@@ -1031,12 +1093,15 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let tool_defs: Vec<_> = self
-            .tool_definitions()
+        let todas_as_tools = self.tool_definitions();
+        // #1264: os avisos leem a lista INTEIRA, antes do filtro do portao — e
+        // sobre o que o filtro tirou que eles falam.
+        avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
+        avisar_whitelist_vazia(&portao);
+        let tool_defs: Vec<_> = todas_as_tools
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
-        avisar_lacuna_mcp(&portao, &tool_defs);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -1317,12 +1382,15 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let tool_defs: Vec<_> = self
-            .tool_definitions()
+        let todas_as_tools = self.tool_definitions();
+        // #1264: os avisos leem a lista INTEIRA, antes do filtro do portao — e
+        // sobre o que o filtro tirou que eles falam.
+        avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
+        avisar_whitelist_vazia(&portao);
+        let tool_defs: Vec<_> = todas_as_tools
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
-        avisar_lacuna_mcp(&portao, &tool_defs);
         let (provider, tools_model_override) =
             self.apply_tools_model_override(provider, String::new(), tool_defs.len());
 
@@ -1791,12 +1859,15 @@ impl AgentRuntime {
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
         let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
-        let tool_defs: Vec<_> = self
-            .tool_definitions()
+        let todas_as_tools = self.tool_definitions();
+        // #1264: os avisos leem a lista INTEIRA, antes do filtro do portao — e
+        // sobre o que o filtro tirou que eles falam.
+        avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
+        avisar_whitelist_vazia(&portao);
+        let tool_defs: Vec<_> = todas_as_tools
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
-        avisar_lacuna_mcp(&portao, &tool_defs);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -4114,12 +4185,11 @@ mod tests {
 
     /// **O detector espelha o predicado do portao, e nao a origem.**
     ///
-    /// A escapatoria de `ToolGate::permite` que este detector existe para
-    /// compensar decide pelo NOME (`contains("__")`), nao pela origem. Um
-    /// detector que so perguntasse `source == Mcp` deixaria uma ferramenta
-    /// **nativa** com `__` no nome furar o whitelist sem acender nada — hoje
-    /// nao existe nenhuma, e e exatamente por isso que so um teste segura o
-    /// acoplamento no lugar certo.
+    /// O portao decide pelo NOME (`contains("__")`, e depois da #1264 e o nome
+    /// que o prefixo `servidor/*` cobre), nao pela origem. Um detector que so
+    /// perguntasse `source == Mcp` perderia de vista uma ferramenta **nativa**
+    /// com `__` no nome — hoje nao existe nenhuma, e e exatamente por isso que
+    /// so um teste segura o acoplamento no lugar certo.
     #[test]
     fn o_detector_de_escapatoria_olha_origem_e_nome() {
         let rt = AgentRuntime::new();
@@ -4128,14 +4198,14 @@ mod tests {
         rt.register_tool(stub("bash"));
         assert!(
             !rt.has_gate_bypassing_tool(),
-            "ferramenta nativa de nome comum nao fura whitelist nenhum"
+            "ferramenta nativa de nome comum nao entra na conta do MCP"
         );
 
-        // Nativa, mas com o nome que o `ToolGate` deixa passar.
+        // Nativa, mas com o nome que o portao le como de servidor MCP.
         rt.register_tool(stub("servidor__perigosa"));
         assert!(
             rt.has_gate_bypassing_tool(),
-            "nativa com `__` no nome passa pela escapatoria do portao — o \
+            "nativa com `__` no nome entra na mesma contabilidade do portao — o \
              detector tem de usar o MESMO predicado, e nao a origem"
         );
         assert!(
@@ -4150,6 +4220,331 @@ mod tests {
             rt.has_gate_bypassing_tool(),
             "ferramenta de servidor MCP conta pela origem, mesmo com nome comum"
         );
+    }
+
+    // ── #1264: o whitelist do modo cobre MCP no caminho do runtime ──────────
+
+    /// Provider que anota o que recebeu e pede a ferramenta MCP pelo nome.
+    ///
+    /// As duas metades do controle sao medidas por ele: `tools` de cada
+    /// `LlmRequest` diz o que o modelo **viu**, e os `ToolResult` que voltam na
+    /// volta seguinte dizem o que o guard de pre-execucao respondeu quando ele
+    /// pediu de todo jeito.
+    struct PedeFerramentaMcp {
+        alvo: &'static str,
+        vistas: std::sync::Mutex<Vec<Vec<String>>>,
+        resultados: std::sync::Mutex<Vec<String>>,
+        voltas: std::sync::atomic::AtomicUsize,
+    }
+
+    impl PedeFerramentaMcp {
+        fn novo(alvo: &'static str) -> Self {
+            Self {
+                alvo,
+                vistas: std::sync::Mutex::new(Vec::new()),
+                resultados: std::sync::Mutex::new(Vec::new()),
+                voltas: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn ferramentas_da_primeira_volta(&self) -> Vec<String> {
+            self.vistas
+                .lock()
+                .expect("lock")
+                .first()
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        fn resultados(&self) -> Vec<String> {
+            self.resultados.lock().expect("lock").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for PedeFerramentaMcp {
+        fn provider_id(&self) -> &str {
+            "pede_ferramenta_mcp"
+        }
+
+        async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+            self.vistas
+                .lock()
+                .expect("lock")
+                .push(request.tools.iter().map(|t| t.name.clone()).collect());
+            for m in &request.messages {
+                if let MessagePart::Parts(blocos) = &m.content {
+                    for b in blocos {
+                        if let ContentBlock::ToolResult { content, .. } = b {
+                            self.resultados.lock().expect("lock").push(content.clone());
+                        }
+                    }
+                }
+            }
+
+            let volta = self
+                .voltas
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let content = if volta == 0 {
+                vec![ContentBlock::ToolUse {
+                    id: "chamada-1".to_string(),
+                    name: self.alvo.to_string(),
+                    input: serde_json::json!({}),
+                }]
+            } else {
+                vec![ContentBlock::Text {
+                    text: "segui sem ela".to_string(),
+                }]
+            };
+            Ok(LlmResponse {
+                content,
+                model: "modelo-de-teste".to_string(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Ferramenta que registra se chegou a rodar.
+    struct ToolQueMarca {
+        nome: &'static str,
+        executou: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Tool for ToolQueMarca {
+        fn name(&self) -> &str {
+            self.nome
+        }
+        fn description(&self) -> &str {
+            "ferramenta de servidor MCP, para o teste do portao"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _c: &ToolContext,
+            _i: serde_json::Value,
+        ) -> garraia_common::Result<ToolOutput> {
+            self.executou
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolOutput::success("rodei"))
+        }
+    }
+
+    /// **#1264 (P1) no caminho de producao.** O turno que o runtime monta tem de
+    /// barrar ferramenta de servidor MCP que o modo whitelist nao declarou.
+    ///
+    /// Nada aqui e montado a mao: o `ExecContext` com `agent_mode` e o que os
+    /// canais passam, `process_message_with_agent_config` e a entrada que o
+    /// gateway e a CLI chamam, e o portao sai de
+    /// `ToolGate::para_o_turno` **dentro** do runtime. As duas camadas do #988
+    /// sao medidas: o filtro da lista (o modelo nao ve) e o guard de
+    /// pre-execucao (pedir pelo nome nao executa).
+    ///
+    /// Antes da #1264 este turno executava `meu-servidor__escreve` no modo
+    /// `search` — um modo que se anuncia somente-leitura.
+    #[tokio::test]
+    async fn o_turno_do_runtime_barra_ferramenta_mcp_nao_declarada() {
+        let rt = AgentRuntime::new();
+        let provider = Arc::new(PedeFerramentaMcp::novo("meu-servidor__escreve"));
+        rt.register_provider(provider.clone());
+
+        let executou = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Registrada como o boot registra: `replace_mcp_tools` e o que o
+        // `McpManager` chama ao sincronizar o servidor.
+        rt.replace_mcp_tools(
+            "meu-servidor",
+            vec![Box::new(ToolQueMarca {
+                nome: "meu-servidor__escreve",
+                executou: Arc::clone(&executou),
+            })],
+        );
+        rt.register_tool(stub("file_read"));
+
+        let exec = ExecContext::with_mode(Some("search".to_string()));
+        let resposta = rt
+            .process_message_with_agent_config(
+                "sessao-1264",
+                "procura o handler de login",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &exec,
+            )
+            .await
+            .expect("o turno tem de terminar, e nao explodir");
+
+        let vistas = provider.ferramentas_da_primeira_volta();
+        assert!(
+            vistas.contains(&"file_read".to_string()),
+            "premissa: o que o modo declara continua na lista; veio {vistas:?}"
+        );
+        assert!(
+            !vistas.contains(&"meu-servidor__escreve".to_string()),
+            "o modelo nao pode ver ferramenta MCP que o modo nao declarou; \
+             veio {vistas:?}"
+        );
+        assert!(
+            !executou.load(std::sync::atomic::Ordering::SeqCst),
+            "a ferramenta MCP RODOU no modo `search` — o guard de \
+             pre-execucao nao barrou o nome que o modelo pediu (#1264)"
+        );
+        let resultados = provider.resultados();
+        assert!(
+            resultados
+                .iter()
+                .any(|r| r.contains("nao e permitida no modo `search`")),
+            "a recusa tem de voltar ao modelo como resultado de ferramenta; \
+             veio {resultados:?}"
+        );
+        assert_eq!(resposta, "segui sem ela");
+    }
+
+    /// E o outro lado: **declarada**, a mesma ferramenta MCP roda.
+    ///
+    /// Sem este teste o fix poderia ser "esconder toda ferramenta MCP", que
+    /// era justamente o medo que sustentava a escapatoria. O perfil vem de
+    /// `ModeProfile::from_custom` — o caminho do modo customizado do operador —
+    /// com a sintaxe declarada `meu-servidor/*`.
+    #[tokio::test]
+    async fn servidor_declarado_com_prefixo_roda_no_turno_do_runtime() {
+        let rt = AgentRuntime::new();
+        let provider = Arc::new(PedeFerramentaMcp::novo("meu-servidor__escreve"));
+        rt.register_provider(provider.clone());
+
+        let executou = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        rt.replace_mcp_tools(
+            "meu-servidor",
+            vec![Box::new(ToolQueMarca {
+                nome: "meu-servidor__escreve",
+                executou: Arc::clone(&executou),
+            })],
+        );
+
+        let perfil = crate::modes::ModeProfile::from_custom(
+            crate::modes::AgentMode::Search,
+            "busca-com-meu-servidor",
+            None,
+            &serde_json::json!({ "allow": ["file_read", "meu-servidor/*"] }),
+            &serde_json::json!({}),
+        );
+        let exec = ExecContext {
+            custom_profile: Some(perfil),
+            ..Default::default()
+        };
+        let resposta = rt
+            .process_message_with_agent_config(
+                "sessao-1264-b",
+                "usa o servidor",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &exec,
+            )
+            .await
+            .expect("turno");
+
+        let vistas = provider.ferramentas_da_primeira_volta();
+        assert!(
+            vistas.contains(&"meu-servidor__escreve".to_string()),
+            "declarar `meu-servidor/*` tem de devolver a ferramenta ao modelo; \
+             veio {vistas:?}"
+        );
+        assert!(
+            executou.load(std::sync::atomic::Ordering::SeqCst),
+            "ferramenta MCP declarada tem de rodar — o fix nao pode ser \
+             'esconder MCP'"
+        );
+        assert_eq!(resposta, "segui sem ela");
+    }
+
+    /// **#1264 criterio 3, a assercao sobre o AVISO.** O que o runtime emite
+    /// para a MCP escondida e a linha montada por
+    /// [`mensagens_mcp_fora_da_whitelist`], e o teste afirma o CONTEUDO dela —
+    /// modo, nome da ferramenta e a sintaxe que libera — porque asserir sobre
+    /// `tracing` capturado seria infra que a arvore nao tem.
+    ///
+    /// **Mutacao que este teste pega**: comente o `avisar_mcp_fora_da_whitelist`
+    /// de qualquer um dos tres caminhos de turno (ou esvazie o builder) e ele
+    /// fica vermelho — o criterio 5 da issue, no aviso em vez do retorno.
+    #[test]
+    fn o_aviso_de_mcp_escondida_nomeia_ferramenta_e_sintaxe() {
+        let g = crate::modes::ToolGate::for_mode_name("search");
+        let todas = vec![crate::ToolDefinition {
+            name: "file_read".to_string(),
+            description: "leitura declarada".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+
+        // Declarada: nada a avisar.
+        assert!(mensagens_mcp_fora_da_whitelist(&g, &todas).is_empty());
+
+        // Nao declarada: o aviso sai, com o nome e o como-liberar.
+        let todas = vec![crate::ToolDefinition {
+            name: "meu-servidor__escreve".to_string(),
+            description: "escreve do terceiro".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let mensagens = mensagens_mcp_fora_da_whitelist(&g, &todas);
+        assert_eq!(mensagens.len(), 1, "uma linha por ferramenta escondida");
+        let m = &mensagens[0];
+        assert!(m.contains("search"), "{m}");
+        assert!(m.contains("meu-servidor__escreve"), "{m}");
+        assert!(m.contains("`servidor/*`"), "{m}");
+
+        // Portao sem politica: nao restringe, nao avisa.
+        assert!(
+            mensagens_mcp_fora_da_whitelist(&crate::modes::ToolGate::sem_politica(), &todas)
+                .is_empty()
+        );
+    }
+
+    /// **#1264 criterio 3, o aviso do caso vazio.** Perfil com whitelist
+    /// ligada e vazia emite o aviso cujo texto pede povoar ou desligar — e
+    /// nao emite nada quando a lista esta populada ou quando nao ha politica.
+    ///
+    /// **Mutacao que este teste pega**: remova `avisar_whitelist_vazia` dos
+    /// caminhos de turno (ou o `Some` do builder) e ele fica vermelho.
+    #[test]
+    fn o_aviso_da_whitelist_vazia_pedir_povoar_ou_desligar() {
+        let perfil = crate::modes::ModeProfile::from_custom(
+            crate::modes::AgentMode::Search,
+            "so-leitura-vazia",
+            None,
+            &serde_json::json!({ "allow": [], "deny": [] }),
+            &serde_json::json!({}),
+        );
+        let exec = ExecContext {
+            custom_profile: Some(perfil),
+            ..Default::default()
+        };
+        let portao = crate::modes::ToolGate::para_o_turno(&exec, "olha os arquivos");
+
+        let mensagem = mensagem_whitelist_vazia(&portao).expect("o aviso sai");
+        assert!(mensagem.contains("so-leitura-vazia"), "{mensagem}");
+        assert!(
+            mensagem.contains("Popule `allowed` ou desligue `whitelist_mode`"),
+            "{mensagem}"
+        );
+
+        // E os casos sem aviso: lista populada, e sem politica nenhum.
+        let g = crate::modes::ToolGate::for_mode_name("search");
+        assert!(mensagem_whitelist_vazia(&g).is_none());
+        assert!(mensagem_whitelist_vazia(&crate::modes::ToolGate::sem_politica()).is_none());
     }
 
     /// `register_tool` toma `&self`: o runtime ja esta dentro de um `Arc`
