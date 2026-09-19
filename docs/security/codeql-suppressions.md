@@ -159,9 +159,72 @@ gh api -X PATCH repos/michelbr84/GarraRUST/code-scanning/alerts/<N> \
 
 A fonte de verdade machine-readable é
 [`docs/security/codeql-suppressions.json`](codeql-suppressions.json) (schema
-version 1.0.0). O script consome o JSON; este `.md` é a versão humana auditável.
+version 1.2.0). O script consome o JSON; este `.md` é a versão humana auditável.
 **Manter ambos sincronizados** — o script tem flag `--check-md` que valida que
 os números de alerta listados em §4 batem com `entries[].alert_number` do JSON.
+
+### Amendment 2026-09-19 — a âncora é o conteúdo, não a linha (issue #1263)
+
+Até aqui a âncora de cada entrada era `(path, line)` e o
+`check-ledger-anchors.py` conferia o `sink_snippet` **naquela** linha. Qualquer
+commit que inserisse ou removesse linhas *acima* do sink derrubava o gate sem
+encostar no statement suprimido. A entrada #113 andou **duas vezes no mesmo
+PR** ([#1252](https://github.com/michelbr84/GarraRUST/pull/1252), `:769` →
+`:826` → `:867`) sem o snippet mudar um byte — dois ciclos completos de uma
+fila de ~110 jobs, para nada. Pior: o caminho mais rápido para ficar verde era
+editar o `sink_snippet` até casar com o que estivesse na linha, ou seja,
+fraudar o registro. Um guard cuja saída mais cômoda é a fraude depende de
+disciplina, não de mecanismo.
+
+Invertido: **o `sink_snippet` é o identificador** e o checker procura por ele no
+arquivo, derivando a linha.
+
+- **1 ocorrência** → é ela. A linha derivada é escrita de volta no `.json` e na
+  coluna `File:line` deste `.md`, e a saída diz `linha derivada X (antes Y)`.
+  Mover `line` não é fraude: é posição derivada, não afirmação de auditoria — é
+  justamente por isso que o script faz isso sozinho, e é por isso que editar
+  `sink_snippet` à mão continua sendo.
+- **0 ocorrências** → **exit 6**, pedindo reauditoria. É o único caso em que o
+  gate *deve* ficar vermelho: o statement suprimido mudou ou sumiu.
+- **2+ ocorrências** → **exit 5**. O snippet não identifica um statement só, e
+  escolher pela posição antiga seria voltar ao problema. A entrada precisa de
+  âncora auxiliar, também de conteúdo:
+
+  ```json
+  "sink_snippet": "if !file_path.is_file() {",
+  "disambiguator": { "kind": "function", "value": "delete_skin" }
+  ```
+
+  `kind` hoje só tem um valor, `function` — o nome da `fn` Rust envolvente,
+  varrida para cima a partir do candidato. Deliberadamente **não** existe um
+  `kind` "n-ésima ocorrência": ordinal reaponta em silêncio no dia em que
+  alguém acrescenta um statement idêntico acima, que é a classe de bug que esta
+  mudança fecha. Se duas ocorrências caírem na mesma `fn`, o gate acusa
+  (exit 5) e pede âncora mais específica em vez de chutar.
+
+  Na migração, **13 das 30 entradas** eram ambíguas (`skills_handler.rs` tem
+  quatro `if !skill_path.exists() {` idênticos; `skins_handler.rs` e
+  `whatsapp/api.rs`, dois cada). A `fn` envolvente da posição auditada foi
+  única em todas as 13. A posição commitada foi confiada **uma vez**, e só
+  aqui: o gate anterior exigia que o snippet casasse byte a byte com aquela
+  linha, então o `line` daquele commit era um ponteiro verificado. Daí em
+  diante manda o conteúdo.
+- **Citações `arquivo:linha` dentro da `justification`** passaram a ser
+  conferidas. Foi só por falta disso que um drift sobreviveu escondido num
+  documento de auditoria de segurança: a justificativa do #113 apontava
+  `cloud_secret` em `:630` (estava em `:824`) e o `eprintln!` do vault em
+  `:643` (estava em `:837`), e nenhum gate teria pego. Caminho ancorado no repo
+  (`crates/...`) que não existe mais, ou linha fora de faixa em arquivo que
+  existe, é **exit 6**; nome de arquivo solto que não resolve sai como
+  **aviso**, porque prosa não é caminho e o script não adivinha. Citação `:NNN`
+  sem arquivo fica fora de escopo de propósito — quase toda ocorrência é
+  histórica ("o sink desceu de `:1380` para `:1653`") e validar história por
+  faixa é tripwire sem valor.
+
+O job do CI roda com `--no-rewrite`: reporta a posição derivada e não escreve
+nada (a árvore do runner é descartada, e "reescrito" ali seria mentira). Quem
+consertar roda o checker **sem** a flag, localmente, e commita o `line`
+atualizado junto com a mudança que o moveu.
 
 ### Wiring em workflow (2026-08-29) — fecha o GAR-491.2
 
