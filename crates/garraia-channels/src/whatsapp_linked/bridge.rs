@@ -789,6 +789,7 @@ fn event_name(ev: &BridgeEvent) -> &'static str {
         BridgeEvent::Sent { .. } => "sent",
         BridgeEvent::Error { .. } => "error",
         BridgeEvent::Log { .. } => "log",
+        BridgeEvent::Pong => "pong",
         BridgeEvent::Unknown => "<desconhecido>",
     }
 }
