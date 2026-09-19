@@ -415,6 +415,7 @@ impl Tool for BashTool {
         // e um `cat` sem argumento nao rouba o que o operador digitou no
         // terminal do `garra chat`. Ate a varredura #1270, `repo_search`,
         // `git_diff` e `code_review` fechavam o stdin e este nao.
+        cmd.stdin(std::process::Stdio::null());
         // #1075 R3: the child runs in the session working_dir when set, and
         // (unix) inherits ONLY the allowlisted variables — the parent
         // process (MCP server / gateway) carries secrets in its env that
