@@ -1522,6 +1522,7 @@ async fn a_serve_bridge_that_talks_without_ever_connecting_falls_into_the_backof
                     // cortar e o outro.
                     stall_after_secs: 10,
                     no_progress_after_secs: 3,
+                    ..ServeOptions::default()
                 },
             )
             .await
@@ -1544,6 +1545,118 @@ ZERO, porque o relogio de silencio e realimentado por cada `disconnected`"
     assert!(
         sink.connections.lock().expect("lock").iter().all(|c| !*c),
         "o cenario `retry-forever` nunca conecta"
+    );
+}
+
+/// **O caso que faltava: conectou e emudeceu (issue #1275).**
+///
+/// O relogio de silencio para de valer no `connected`, com razao: depois dele
+/// o silencio e o estado NORMAL de uma conta sem mensagens — cortar por ele
+/// derrubaria o canal saudavel toda madrugada. Mas uma ponte que conecta,
+/// entrega a sessao e dai em diante nao fala E nao morre — para de ler o
+/// stdin, stdout aberto, processo de pe — fica invisivel para os tres
+/// relogios que existiam: nenhum dispara, o backoff nunca roda, o canal fica
+/// morto em silencio para sempre.
+///
+/// O conserto e prova de vida, nao mais um prazo: depois do `connected` o
+/// driver pergunta (`ping`) a cada `ping_every_secs` e exige resposta —
+/// qualquer evento, inclusive o `error` de um bridge velho que nao conhece o
+/// comando — dentro de `pong_deadline_secs`.
+///
+/// O cenario `serve-wedge` e exatamente isso: conecta, entrega a sessao,
+/// para de falar e para de ler o stdin, mas o processo continua vivo com
+/// `hang_secs` longo — quem termina a execucao e o driver.
+///
+/// A assercao que prova o conserto e o RELANCAMENTO (marcas de `jitter`):
+/// com o keepalive arrancado, a primeira execucao nao termina nunca — o
+/// filho nao morre, nao fecha o stdout, nao fala — e nao existe segunda
+/// execucao: o teste fica com uma marca e fica vermelho.
+#[tokio::test]
+async fn a_serve_bridge_that_wedges_after_connected_is_cut_by_the_keepalive_and_retried() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, key) = store_in(&dir);
+    pair(
+        &FixtureLauncher::new("pair-ok", dir.path().to_path_buf()),
+        &store,
+        &key,
+        &mut SilentUi,
+        never_cancelled(),
+    )
+    .await
+    .expect("pareamento");
+
+    let sink = Arc::new(CollectingSink::default());
+    let (tx, rx) = watch::channel(false);
+    // `hang_secs` longo de proposito: quem corta a execucao tem de ser o
+    // keepalive do driver, nao a morte natural da fixture.
+    let launcher: Arc<dyn BridgeLauncher> = Arc::new(
+        FixtureLauncher::new("serve-wedge", dir.path().to_path_buf())
+            .qr_expires(0.02)
+            .hang_secs(60.0),
+    );
+
+    let jitter_marks: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
+    let (_out_tx, out_rx) = tokio::sync::mpsc::channel(1);
+    let task = {
+        let sink = Arc::clone(&sink);
+        let store = store.clone();
+        let jitter_marks = Arc::clone(&jitter_marks);
+        tokio::spawn(async move {
+            serve_with(
+                launcher,
+                store,
+                key,
+                sink,
+                out_rx,
+                rx,
+                move || {
+                    if let Ok(mut marks) = jitter_marks.lock() {
+                        marks.push(std::time::Instant::now());
+                    }
+                    0.0
+                },
+                ServeOptions {
+                    stall_after_secs: 30,
+                    no_progress_after_secs: 60,
+                    ping_every_secs: 1,
+                    pong_deadline_secs: 3,
+                },
+            )
+            .await
+        })
+    };
+
+    // Uma execucao em wedge termina ~3 s depois do `session_update`; com o
+    // primeiro degrau de backoff em 500 ms e a segunda execucao encaiotando
+    // no mesmo prazo, 8 s cobrem duas voltas com folga.
+    tokio::time::sleep(std::time::Duration::from_millis(8_000)).await;
+    tx.send(true).expect("cancelar");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("o `serve` tem de sair no cancelamento, e nao ficar preso no laco");
+
+    let connects = sink
+        .connections
+        .lock()
+        .expect("lock")
+        .iter()
+        .filter(|c| **c)
+        .count();
+    assert!(
+        connects >= 1,
+        "o filho em wedge chegou a conectar antes de emudecer (viu {connects})"
+    );
+    let marks = jitter_marks.lock().expect("lock").len();
+    assert!(
+        marks >= 2,
+        "uma execucao em wedge so termina quando o keepalive corta; o driver \
+relancou {marks} vez(es) em 8 s — com o keepalive arrancado a primeira \
+execucao nunca termina (o filho vive, mudo, com o stdout aberto) e nao ha \
+segunda execucao"
+    );
+    assert!(
+        store.exists(),
+        "emudecer nao e morte de sessao: a sessao tem de sobreviver ao corte"
     );
 }
 

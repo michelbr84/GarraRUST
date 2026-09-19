@@ -112,6 +112,20 @@ pub const DEFAULT_FINAL_FLUSH_SECS: u64 = 60;
 /// [`super::state::MAX_QR_ATTEMPTS`] QRs, que e o teto certo para ele.
 pub const DEFAULT_NO_PROGRESS_AFTER_SECS: u64 = 120;
 
+/// Intervalo do ping de prova de vida do `serve` pos-`connected` (issue #1275).
+///
+/// 15 s: cedo o bastante para o canal voltar sozinho em segundos, e raro o
+/// bastante para custar uma linha de NDJSON por vez — nada. O telefone nao
+/// sente: o ping existe no stdin do processo, nao na rede.
+pub const DEFAULT_PING_EVERY_SECS: u64 = 15;
+
+/// Silencio maximo pos-`connected` antes de desistir (issue #1275).
+///
+/// 45 s = tres intervalos de ping: tolera dois pings sem resposta — um ping
+/// perdido num pipe demorando nao vira queda — e ainda assim corta antes de
+/// o silencio incomodar quem esta olhando.
+pub const DEFAULT_PONG_DEADLINE_SECS: u64 = 45;
+
 /// Ajustes de [`pair`]. Existe para o teste poder encurtar os prazos de
 /// silencio sem esperar minutos de relogio real; producao usa o [`Default`].
 #[derive(Debug, Clone, Copy)]
@@ -182,6 +196,25 @@ pub struct ServeOptions {
     /// Estourar o prazo **nao e erro**: e uma [`ServeExit::Dropped`], ou
     /// seja, exatamente o caminho que entrega o caso ao backoff.
     pub no_progress_after_secs: u64,
+
+    /// Intervalo do ping de prova de vida **depois de conectar**, em segundos
+    /// (issue #1275). `stall_after_secs` nao vale depois do `connected` porque
+    /// silencio ali e o estado normal de uma conta sem mensagens — e a unica
+    /// forma de distinguir silencio saudavel de filho que parou de falar e de
+    /// ler o stdin e perguntar, com prazo.
+    pub ping_every_secs: u64,
+
+    /// Silencio maximo pos-`connected`, em segundos — a barra que o ping tem
+    /// de limpar. Qualquer evento vindo do bridge renova; o que sobra quando
+    /// vence e um filho que NEM fala NEM le stdin, e o unico caminho de saida
+    /// e o [`ServeExit::Dropped`] com `was_connected: true`.
+    ///
+    /// # Por que nao e um relogio cego
+    ///
+    /// Sem o ping, um prazo de silencio aqui derrubaria o canal saudavel toda
+    /// madrugada. Com ele, o prazo so alcanca quem nao responde a perguntas —
+    /// e o backoff que existe logo acima de [`serve_once`] assume.
+    pub pong_deadline_secs: u64,
 }
 
 impl Default for ServeOptions {
@@ -189,6 +222,8 @@ impl Default for ServeOptions {
         Self {
             stall_after_secs: DEFAULT_STALL_AFTER_SECS,
             no_progress_after_secs: DEFAULT_NO_PROGRESS_AFTER_SECS,
+            ping_every_secs: DEFAULT_PING_EVERY_SECS,
+            pong_deadline_secs: DEFAULT_PONG_DEADLINE_SECS,
         }
     }
 }
@@ -1304,6 +1339,9 @@ async fn serve_once(
     // ficava morto em silencio, sem ninguem olhando um terminal.
     let mut now: u64 = 0;
     let mut last_event_secs: u64 = 0;
+    // Segundo (no mesmo relogio) do ultimo ping mandado. Renovado a cada
+    // ping; a barra que ele tem de limpar e o `pong_deadline_secs`.
+    let mut last_ping_secs: u64 = 0;
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await; // o primeiro tick e imediato
@@ -1318,43 +1356,67 @@ async fn serve_once(
                     return Ok(ServeExit::Cancelled);
                 }
             }
-            // `if !saw_connected` NAO e otimizacao: depois do `connected` o
-            // silencio e o estado normal — uma conta sem mensagem nenhuma
-            // fica quieta por horas —, e um prazo aqui derrubaria o canal
+            // O relogio cego so vale ANTES de conectar: depois do `connected`
+            // o silencio e o estado normal — uma conta sem mensagem nenhuma
+            // fica quieta por horas —, e um prazo cego aqui derrubaria o canal
             // saudavel toda madrugada. Antes do `connected`, silencio e
             // travamento.
             //
-            // O que fica sem dono e "conectou e emudeceu": o `pair` tem o
-            // `final_flush_secs` para isso, o `serve` nao tem equivalente, e
-            // um relogio de silencio aqui seria cura pior que a doenca. O
-            // conserto e prova de vida NO PROTOCOLO (ping/pong ou `presence`
-            // periodico), que mexe nos dois lados e esta fora do escopo desta
-            // PR — rastreado em
-            // https://github.com/michelbr84/GarraRUST/issues/1275.
-            _ = ticker.tick(), if !saw_connected => {
+            // Depois de conectar, quem distingue silencio saudavel de filho
+            // emudecido e o ping de prova de vida: o driver pergunta a cada
+            // `ping_every_secs` e exige resposta — qualquer evento — dentro
+            // de `pong_deadline_secs`. O cenario `serve-wedge` da fixture e
+            // exatamente este caso: conectou, entregou a sessao e nunca mais
+            // falou (issue #1275).
+            _ = ticker.tick() => {
                 now += 1;
-                if now.saturating_sub(last_event_secs) >= options.stall_after_secs {
-                    tracing::warn!(
-                        secs = options.stall_after_secs,
-                        "o bridge subiu e emudeceu sem conectar; reconectando"
-                    );
-                    shutdown_politely(&mut conn).await;
-                    conn.kill().await;
-                    return Ok(ServeExit::Dropped { was_connected: false });
-                }
-                // O outro relogio, e nao o mesmo: este conta desde o INICIO
-                // desta execucao e nao zera com evento nenhum. Como o braco
-                // so roda enquanto `!saw_connected`, `now` e literalmente
-                // "segundos falando sem conectar". Ver
-                // [`ServeOptions::no_progress_after_secs`].
-                if now >= options.no_progress_after_secs {
-                    tracing::warn!(
-                        secs = options.no_progress_after_secs,
-                        "o bridge falou o tempo todo e nunca conectou; reconectando"
-                    );
-                    shutdown_politely(&mut conn).await;
-                    conn.kill().await;
-                    return Ok(ServeExit::Dropped { was_connected: false });
+                if !saw_connected {
+                    if now.saturating_sub(last_event_secs) >= options.stall_after_secs {
+                        tracing::warn!(
+                            secs = options.stall_after_secs,
+                            "o bridge subiu e emudeceu sem conectar; reconectando"
+                        );
+                        shutdown_politely(&mut conn).await;
+                        conn.kill().await;
+                        return Ok(ServeExit::Dropped { was_connected: false });
+                    }
+                    // O outro relogio, e nao o mesmo: este conta desde o INICIO
+                    // desta execucao e nao zera com evento nenhum. Como o braco
+                    // so roda enquanto `!saw_connected`, `now` e literalmente
+                    // "segundos falando sem conectar". Ver
+                    // [`ServeOptions::no_progress_after_secs`].
+                    if now >= options.no_progress_after_secs {
+                        tracing::warn!(
+                            secs = options.no_progress_after_secs,
+                            "o bridge falou o tempo todo e nunca conectou; reconectando"
+                        );
+                        shutdown_politely(&mut conn).await;
+                        conn.kill().await;
+                        return Ok(ServeExit::Dropped { was_connected: false });
+                    }
+                } else {
+                    let silent = now.saturating_sub(last_event_secs);
+                    if silent >= options.pong_deadline_secs {
+                        tracing::warn!(
+                            secs = options.pong_deadline_secs,
+                            "o bridge conectou e emudeceu sem ler o stdin; reconectando"
+                        );
+                        shutdown_politely(&mut conn).await;
+                        conn.kill().await;
+                        return Ok(ServeExit::Dropped { was_connected: true });
+                    }
+                    if now.saturating_sub(last_ping_secs) >= options.ping_every_secs {
+                        last_ping_secs = now;
+                        // A escrita pode bloquear num filho que parou de ler o
+                        // stdin, mas cada ping e uma linha de ~20 bytes e a
+                        // queda vem no proximo tick: o prazo, e nao o send, e
+                        // o detector.
+                        let _ = tokio::time::timeout(
+                            SHUTDOWN_GRACE,
+                            conn.send(&BridgeCommand::Ping),
+                        )
+                        .await;
+                    }
                 }
             }
             Some(command) = outbound.recv() => {
