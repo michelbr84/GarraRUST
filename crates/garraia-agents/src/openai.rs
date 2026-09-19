@@ -9,7 +9,7 @@ use tracing::{debug, info, instrument};
 
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, Usage,
+    StreamEvent, Usage, erro_de_envio,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -364,7 +364,9 @@ impl LlmProvider for OpenAiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("openai request failed: {e}")))?;
+            // #1249: rede caida vira `Error::Transport`, que o runtime trata
+            // como elegivel a fallback na primeira tentativa.
+            .map_err(|e| erro_de_envio("openai request failed", &e))?;
 
         let status = response.status();
 
@@ -531,7 +533,9 @@ impl LlmProvider for OpenAiProvider {
             .json(&body_value)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("openai stream request failed: {e}")))?;
+            // #1249: mesmo tratamento do caminho batch — o braco de streaming
+            // do fallback e separado e ficou de fora do fix anterior.
+            .map_err(|e| erro_de_envio("openai stream request failed", &e))?;
 
         if !response.status().is_success() {
             let status = response.status();

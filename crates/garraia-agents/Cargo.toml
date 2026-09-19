@@ -65,3 +65,9 @@ metrics = { workspace = true }
 tempfile = "3"
 axum = { workspace = true }
 tokio-stream = { workspace = true }
+# #1249: `start_paused` para o teste que conta tentativas ao primario. O
+# caminho 429 dorme 500ms+1s+2s de backoff real; o que o teste afirma e a
+# CONTAGEM, nao o relogio, entao tempo virtual. Mesmo arranjo que
+# garraia-gateway, garraia-auth e garraia-cli ja usam (`full` do tokio nao
+# inclui `test-util`).
+tokio = { workspace = true, features = ["test-util"] }
