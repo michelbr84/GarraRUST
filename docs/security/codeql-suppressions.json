@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/base.json",
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "repo": "michelbr84/GarraRUST",
   "last_updated": "2026-09-17",
   "audit_expiration": "2026-11-28",
@@ -110,6 +110,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 177,
       "sink_snippet": "let content = match std::fs::read_to_string(&skill_path) {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "get_skill"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 162 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::get_skill_rejects_path_traversal.",
@@ -122,6 +126,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 269,
       "sink_snippet": "if let Err(e) = std::fs::write(&skill_path, &content) {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "create_skill"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): create_skill guards body.name via validate_skill_name (path_validation.rs) at line 220 before std::fs::write at this line. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::create_skill_rejects_{path_traversal,empty_name,nul_byte,windows_drive}.",
@@ -134,6 +142,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 344,
       "sink_snippet": "if let Err(e) = std::fs::write(&skill_path, &content) {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "update_skill"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): update_skill double-guards URL name + body.name via validate_skill_name (path_validation.rs) at lines 300/307 before std::fs::write at this line. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::update_skill_rejects_dot_in_name.",
@@ -146,6 +158,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 533,
       "sink_snippet": "let content = match std::fs::read_to_string(&skill_path) {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "export_skill"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 519 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
@@ -158,6 +174,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 590,
       "sink_snippet": "let content = match std::fs::read_to_string(&skill_path) {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "set_skill_triggers"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): set_skill_triggers guards Path(name) via validate_skill_name (path_validation.rs) at line 574 before std::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name.",
@@ -182,6 +202,10 @@
       "path": "crates/garraia-gateway/src/skins_handler.rs",
       "line": 104,
       "sink_snippet": "if !file_path.is_file() {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "get_skin"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 99 before tokio::fs::read_to_string. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::get_skin_with_dot_in_name_returns_400.",
@@ -194,6 +218,10 @@
       "path": "crates/garraia-gateway/src/skins_handler.rs",
       "line": 134,
       "sink_snippet": "if !file_path.is_file() {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "delete_skin"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): delete_skin guards Path(name) via validate_skill_name (path_validation.rs) at line 129 before file_path.is_file() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skins_test.rs::delete_skin_with_backslash_returns_400.",
@@ -206,6 +234,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 167,
       "sink_snippet": "if !skill_path.exists() {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "get_skill"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): get_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 162 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::get_skill_rejects_path_traversal.",
@@ -230,6 +262,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 312,
       "sink_snippet": "if !skill_path.exists() {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "update_skill"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): update_skill double-guards URL name + body.name via validate_skill_name (path_validation.rs) at lines 300/307 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::update_skill_rejects_dot_in_name.",
@@ -242,6 +278,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 523,
       "sink_snippet": "if !skill_path.exists() {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "export_skill"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): export_skill guards Path(name) via validate_skill_name (path_validation.rs) at line 519 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::export_skill_rejects_dot_in_name.",
@@ -254,6 +294,10 @@
       "path": "crates/garraia-gateway/src/skills_handler.rs",
       "line": 579,
       "sink_snippet": "if !skill_path.exists() {",
+      "disambiguator": {
+        "kind": "function",
+        "value": "set_skill_triggers"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "GAR-490 PR A (PR #111, squash 613510d): set_skill_triggers guards Path(name) via validate_skill_name (path_validation.rs) at line 574 before skill_path.exists() check. Charset [A-Za-z0-9-]{1,128} ASCII-only. CodeQL Rust pack does not model the helper as a sanitizer. Regression: tests/skills_test.rs::set_skill_triggers_rejects_dot_in_name.",
@@ -326,6 +370,10 @@
       "path": "crates/garraia-channels/src/whatsapp/api.rs",
       "line": 48,
       "sink_snippet": ".post(format!(\"{GRAPH_API_BASE}/{phone_number_id}/messages\"))",
+      "disambiguator": {
+        "kind": "function",
+        "value": "send_text_message"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "O destino e HTTPS. A URL e `format!(\"{GRAPH_API_BASE}/{phone_number_id}/messages\")` com `const GRAPH_API_BASE: &str = \"https://graph.facebook.com/v21.0\"` (whatsapp/api.rs:5), entao o `.bearer_auth(token)` sai sempre sobre TLS para a Graph API da Meta. O esquema e constante de compilacao e nao ha caminho de config que o altere. CodeQL nao dobra a const dentro do `format!` e por isso trata o esquema como desconhecido.",
@@ -338,6 +386,10 @@
       "path": "crates/garraia-channels/src/whatsapp/api.rs",
       "line": 79,
       "sink_snippet": ".post(format!(\"{GRAPH_API_BASE}/{phone_number_id}/messages\"))",
+      "disambiguator": {
+        "kind": "function",
+        "value": "mark_as_read"
+      },
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
       "justification": "Identico ao #145, no `mark_as_read`: mesma const `GRAPH_API_BASE` HTTPS (whatsapp/api.rs:5), mesmo `.bearer_auth(token)` sobre TLS. Contraste deliberado com os alertas 143/144 do canal Signal, que eram do mesmo rule e **nao** eram falso-positivo — la a URL base vinha da config do operador e admitia `http://` remoto, e foi corrigida em codigo.",

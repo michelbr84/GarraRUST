@@ -180,10 +180,18 @@ jobs:
         run: bash scripts/security/codeql-reapply-dismissals.sh --check-md
 
       # Cada entrada ainda aponta para o statement que a justificativa descreve,
-      # e a coluna File:line do .md casa com o .json (o --check-md acima so
-      # compara os numeros, nao as ancoras).
+      # e a coluna File:line do .md aponta para o mesmo arquivo do .json (o
+      # --check-md acima so compara os numeros, nao as ancoras).
+      #
+      # A ancora e o `sink_snippet` e a linha e DERIVADA dele (#1263), entao
+      # `--no-rewrite`: o job reporta a posicao derivada e nao escreve nada. A
+      # arvore do runner e descartada, e dizer "reescrito" aqui seria mentira.
+      # Quem consertar roda o checker sem a flag, localmente, e commita o
+      # `line` atualizado junto com a mudanca que o moveu. Vermelho aqui
+      # significa uma coisa so: o statement suprimido mudou, sumiu, ou ficou
+      # ambiguo — e ai a supressao precisa de reauditoria humana.
       - name: Ancoras do ledger ainda apontam para seus statements
-        run: python3 scripts/security/check-ledger-anchors.py
+        run: python3 scripts/security/check-ledger-anchors.py --no-rewrite
 
       - name: Testes do checker de ancoras
         run: python3 scripts/security/tests/test_ledger_anchors.py
