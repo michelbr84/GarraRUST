@@ -1252,7 +1252,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 /// `token_env` apontando para env vazia ou inexistente, URL vetada recusada
 /// pelo guard SSRF) nao derruba o processo — o registry segue com os
 /// dispositivos dos adapters que subiram, e cada warn diz o que faltou.
-/// `garra config check` mostra os mesmos erros de config antes do boot.
+/// `garra config check` mostra os mesmos erros de config — comando
+/// **opt-in**: nada no boot do gateway invoca o `run_check`, entao o
+/// diagnostico depende do operador rodar (ver issue #1247).
 ///
 /// Precisa de runtime tokio (spawn dos event loops) — gateway e CLI chamam
 /// de dentro de `run()` async. Sem secao `hardware.*`, retorna antes de
@@ -1597,7 +1599,9 @@ fn sobe_automacoes(config: &AppConfig, bus: Arc<HardwareEventBus>, registry: Arc
     };
 
     // Teto do config, com o default r1 do schema se ausente. `de_texto` so
-    // aceita r0/r1/r2 — o `garra config check` ja recusa R3+ antes do boot.
+    // aceita r0/r1/r2: texto invalido cai no default r1 sem warn. O
+    // `garra config check` (opt-in — nao e gate de boot) reporta Error para
+    // R3+; o default aqui e a camada viva (issue #1247).
     let teto = config
         .automations_risk_ceiling()
         .and_then(TetoRisco::de_texto)
