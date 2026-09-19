@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::loader::ConfigLoader;
-use crate::model::AppConfig;
+use crate::model::{AppConfig, McpServerConfig};
 
 /// Severity of a single validation finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2130,11 +2130,51 @@ fn validate_config_dir(loader: &ConfigLoader) -> Vec<Finding> {
 pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
     let mut findings = validate(config);
     findings.extend(validate_config_dir(loader));
+    // #1237: `vault:` no `env` de um servidor MCP com o cofre indisponivel
+    // (`GARRAIA_VAULT_PASSPHRASE` ausente) — no boot a referencia nao resolve
+    // e o servidor NAO sobe (fail-closed); o check anuncia antes. Sobre a
+    // config MERGEADA (config.yml + mcp.json), que e o que o boot le.
+    let mcp_merged = loader.merged_mcp_config(config);
+    findings.extend(findings_de_vault_sem_cofre(
+        mcp_merged
+            .iter()
+            .map(|(name, server)| (name.as_str(), server)),
+        garraia_security::vault_passphrase_from_env().is_some(),
+    ));
     ConfigCheck {
         source: source_report(loader),
         findings,
-        summary: summarise(config, loader.merged_mcp_config(config).len()),
+        summary: summarise(config, mcp_merged.len()),
     }
+}
+
+/// #1237: findings de `vault:` no `env` de servidor MCP quando o cofre nao
+/// esta aberto. Um warn por referencia, nomeando servidor e chave — nunca o
+/// valor (o valor e a string `vault:...`, mas o caminho mostra a origem).
+fn findings_de_vault_sem_cofre<'a>(
+    servers: impl Iterator<Item = (&'a str, &'a McpServerConfig)>,
+    cofre_disponivel: bool,
+) -> Vec<Finding> {
+    if cofre_disponivel {
+        return Vec::new();
+    }
+    let mut findings = Vec::new();
+    for (name, server) in servers {
+        for (env_key, value) in &server.env {
+            if value.starts_with("vault:") {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    field: format!("mcp.{name}.env.{env_key}"),
+                    message: format!(
+                        "mcp.{name}.env.{env_key} uses a vault: reference but \
+                         GARRAIA_VAULT_PASSPHRASE is not set — the ref will not \
+                         resolve at boot and the server will not start (fail-closed)"
+                    ),
+                });
+            }
+        }
+    }
+    findings
 }
 
 #[cfg(test)]
@@ -3141,6 +3181,74 @@ mod tests {
         assert!(
             !json.contains("supersecret"),
             "summary leaked secret: {json}"
+        );
+    }
+
+    /// #1237: `vault:` no `env` de servidor MCP com o cofre indisponivel —
+    /// um warn por referencia, com o caminho completo; com cofre disponivel,
+    /// nada. Teste do helper PURO (a leitura de env fica no run_check).
+    #[test]
+    fn vault_ref_sem_cofre_no_env_de_servidor_mcp_avisa() {
+        let server = |env: HashMap<String, String>| McpServerConfig {
+            command: "npx".into(),
+            args: vec![],
+            env,
+            transport: "stdio".into(),
+            url: None,
+            enabled: None,
+            timeout: None,
+            allowed_tools: vec![],
+            memory_limit_mb: None,
+            max_restarts: None,
+            restart_delay_secs: None,
+            inherit_env: false,
+        };
+        let cfg = HashMap::from([
+            (
+                "github".to_string(),
+                server(HashMap::from([
+                    (
+                        "GITHUB_TOKEN".to_string(),
+                        "vault:mcp.github.GITHUB_TOKEN".to_string(),
+                    ),
+                    ("PLAIN".to_string(), "cru".to_string()),
+                ])),
+            ),
+            (
+                "outro".to_string(),
+                server(HashMap::from([(
+                    "OUTRO_TOKEN".to_string(),
+                    "vault:mcp.outro.OUTRO_TOKEN".to_string(),
+                )])),
+            ),
+        ]);
+
+        let com_cofre = findings_de_vault_sem_cofre(cfg.iter().map(|(n, s)| (n.as_str(), s)), true);
+        assert!(
+            com_cofre.is_empty(),
+            "com o cofre disponivel nao pode haver finding: {com_cofre:?}"
+        );
+
+        let sem_cofre =
+            findings_de_vault_sem_cofre(cfg.iter().map(|(n, s)| (n.as_str(), s)), false);
+        assert_eq!(sem_cofre.len(), 2, "um warn por referencia: {sem_cofre:?}");
+        assert!(
+            sem_cofre.iter().all(|f| f.severity == Severity::Warning),
+            "o issue pede aviso, nao bloqueio do comando: {sem_cofre:?}"
+        );
+        assert!(
+            sem_cofre
+                .iter()
+                .any(|f| f.field == "mcp.github.env.GITHUB_TOKEN")
+        );
+        assert!(
+            sem_cofre
+                .iter()
+                .any(|f| f.field == "mcp.outro.env.OUTRO_TOKEN")
+        );
+        assert!(
+            sem_cofre.iter().all(|f| f.message.contains("fail-closed")),
+            "o aviso precisa dizer o que acontece no boot: {sem_cofre:?}"
         );
     }
 
