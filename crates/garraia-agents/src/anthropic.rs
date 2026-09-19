@@ -8,7 +8,7 @@ use tracing::{debug, info, instrument};
 
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, Usage,
+    StreamEvent, Usage, erro_de_envio,
 };
 
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250929";
@@ -118,7 +118,9 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("falha na requisição à Anthropic: {e}")))?;
+            // #1249: rede caida e classe propria (`Error::Transport`), nao
+            // mais texto que o runtime tenta reconhecer por casamento.
+            .map_err(|e| erro_de_envio("falha na requisição à Anthropic", &e))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -157,7 +159,8 @@ impl LlmProvider for AnthropicProvider {
             .json(&body_value)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("falha na requisição streaming à Anthropic: {e}")))?;
+            // #1249: idem no braco de streaming.
+            .map_err(|e| erro_de_envio("falha na requisição streaming à Anthropic", &e))?;
 
         if !response.status().is_success() {
             let status = response.status();
