@@ -312,21 +312,27 @@ esquecido.
 
 - `repo_search` não recebe **caminho** do modelo: ele roda `rg`/`grep` com
   `current_dir` no `working_dir` da sessão e alvo fixo `.`, e o `file_pattern`
-  vai por `--glob`, que não escapa da raiz da busca. Sem `working_dir` ele cai
-  no CWD do processo — mesma superfície de antes.
+  vai por `--glob=…` (valor **colado** na opção), que não escapa da raiz da
+  busca. Sem `working_dir` ele cai no CWD do processo — e a resposta nomeia o
+  diretório (paridade do #1258).
   **Correção de um parágrafo errado desta mesma seção:** a versão anterior
   concluía daí que `repo_search` era "nem melhor nem pior", e esse raciocínio
-  olhou só o `file_pattern`. O `query` também vai como argumento — literalmente
+  olhou só o `file_pattern`. O `query` ia como argumento solto — literalmente
   `cmd.arg(query).arg(".")`, **sem nenhum `--` separando opção de operando** —
-  e a auditoria R4 achou ali injeção de flag: um `query` começando com `-` é
-  lido pelo `rg` como opção. É defeito próprio, aberto como **#1266** (P0) e
-  **não** corrigido aqui: misturá-lo ao jail de caminho tornaria as duas
-  correções mais difíceis de revisar.
+  e a auditoria R4 achou ali injeção de flag: um `query` começando com `-` era
+  lido pelo `rg` como opção. Aberto como **#1266** (P0) e corrigido no
+  **PR #1268**: construtores puros de argv, query depois do terminador `--`
+  (nos dois fallbacks), `findstr` embalado em `/C:` (que é o equivalente dele,
+  pois não tem `--`), e teste pela tool que o runtime registra (via
+  `find_tool`).
 - `git_diff` e `code_review` passam `file_path` como pathspec para o `git`, que
-  só enxerga o repositório. Vale registrar um defeito vizinho encontrado aqui e
-  **não corrigido** nesta mudança: `GitDiffTool::run_git_command` não seta
-  `current_dir`, então ignora o `working_dir` da sessão e roda no CWD do
-  processo do gateway. É bug de correção, não de confinamento.
+  só enxerga o repositório. Dois defeitos vizinhos registrados aqui foram
+  corrigidos depois: o **argv** (#1269 — `file_path` depois do `--`; revisão
+  `{from}..{to}` com `-` inicial recusada antes da linha de comando, pois atrás
+  do `--` perde a semântica de revisão; paridade completa no `code_review`) e o
+  **de correção** (#1258 — `run_git_command`/`get_diff` sem `current_dir`
+  respondiam sobre o repositório do CWD do processo do gateway; agora `RepoDir`
+  decide entre `working_dir` da sessão e CWD, e a resposta nomeia o escolhido).
 - `bash` e `run_tests` são a fronteira da #1225 (sandbox por tool) e da §6, não
   desta. Um `bash` irrestrito lê qualquer arquivo — mas o ponto da #1244 é
   justamente que o modelo não precisava do `bash`.
@@ -349,6 +355,23 @@ esquecido.
   com `root_path`, consumida só por `garraia-runtime::executor`, que o gateway
   não usa para tools (só `RuntimeSettings`). Fora do alcance do agente hoje;
   se entrar, entra com jail.
+
+**Varredura sistêmica de argv injection (#1270, 2026-09-19)** — inventário de
+todo `std::process::Command` nas tools, com argumento vindo de campo de tool
+call do modelo, cobrindo o pedido do sign-off do PR #1268:
+
+| Tool | Filho | Dado do modelo | Defesa |
+|---|---|---|---|
+| `repo_search` | `rg` / `grep` / `findstr` | `query`, `file_pattern` | construtores puros; query atrás de `--`, glob colado em `--glob=`, findstr em `/C:` (#1266, PR #1268) |
+| `git_diff` | `git diff` | `file_path`, `{from}..{to}` | pathspec atrás de `--`; revisão com `-` inicial recusada (#1269); `--no-ext-diff` contra `diff.external` (#1075) |
+| `code_review` | `git diff` | `commit_range`, `file_path` | paridade do `git_diff` (#1269) + `--no-ext-diff` (#1075) |
+| `run_tests` | `cargo` / `npm` | `test_name`, `-- crate` | `validate_test_name` (recusa `-` inicial, controle, >200 chars; charset fechado no `-p`) + `--` (#1084) |
+| `bash` | `bash -c` / `powershell -Command` | o comando inteiro | a classe não se aplica — o comando é **um** argv só, nunca posição de flag; contenção é a do sandbox e do jail (#1075, #1225) |
+
+Demais ocorrências de `Command::new` no inventário são fixture `#[cfg(test)]`
+(`repo_dir.rs`), e `crates/garraia-tools/` não monta processo nenhum.
+**Zero achados novos.** Os filhos herdam só a allowlist de env
+(`R3_ENV_ALLOWLIST`) e têm stdin nulo em todas as sites acima.
 
 **Dívida registrada, não corrigida aqui** (auditoria R4 da #1244):
 
