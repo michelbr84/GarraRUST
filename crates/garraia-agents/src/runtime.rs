@@ -4577,11 +4577,12 @@ mod tests {
         );
     }
 
-    /// Repositório git com um arquivo rastreado **modificado**. Hoje a tool
-    /// roda o git no CWD do processo (#1258 — bug de corretude separado), e o
-    /// `--output` cria o arquivo mesmo com diff vazio; o repo plantado deixa
-    /// a prova de efeito em pé também quando a tool passar a honrar o
-    /// `working_dir` da sessão. Usado pelo teste de regressão da #1269.
+    /// Repositório git com um arquivo rastreado **modificado**. O `--output`
+    /// cria o arquivo mesmo com diff vazio, e o repo plantado mantém a prova
+    /// de efeito em pé agora que a tool honra o `working_dir` da sessão
+    /// (#1258): sem ele o git roda num diretório que não é repositório e
+    /// morre antes de qualquer efeito observável. Usado pelos dois testes de
+    /// regressão da #1269.
     #[cfg(not(windows))]
     fn repo_git_com_arquivo_modificado(repo: &std::path::Path) {
         let run = |args: &[&str]| {
@@ -4633,9 +4634,12 @@ mod tests {
     /// terminador não conseguia falhar. O `-U{context}` colado em
     /// `git_diff_args` é o que mantém a prova viva.
     ///
-    /// Premissa do ambiente: o CWD do processo de teste é um checkout git
-    /// (sempre é — o repo). A tool ainda roda o git no CWD do processo em vez
-    /// do `working_dir` da sessão; isso é a #1258, bug de corretude separado.
+    /// Premissa do ambiente (atualizada pela #1258): o git roda no
+    /// `working_dir` da sessão, então o repositório é **plantado no tempdir**
+    /// da sessão em vez de emprestado do CWD do processo de teste. Antes da
+    /// #1258 este teste passava porque a tool ignorava o `working_dir` e caía
+    /// no checkout do próprio GarraRUST — verde por acidente, e por um acidente
+    /// que dependia de onde a suite rodava.
     #[cfg(not(windows))]
     #[tokio::test]
     async fn git_diff_registrada_nao_reabre_ext_diff_pelo_file_path() {
@@ -4648,6 +4652,9 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("tempdir");
+        // #1258: o git desta chamada roda aqui, então é aqui que o
+        // repositório (e o `carga.txt` do controle positivo) tem de existir.
+        repo_git_com_arquivo_modificado(&dir);
         let marcador = dir.join("EXT-WRITO");
 
         let rt = Arc::new(AgentRuntime::new());
