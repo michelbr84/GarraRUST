@@ -57,6 +57,17 @@ Cada modo tem uma política de ferramentas que define:
 - **Required**: Ferramentas obrigatórias
 - **Whitelist Mode**: Se `true`, nega tudo que não está na lista de allowed
 
+A whitelist cobre **ferramenta MCP também** (#1264). Uma ferramenta de
+servidor MCP se chama `servidor__ferramenta`; para liberar um servidor
+inteiro sem listar ferramenta por ferramenta, declare o prefixo na
+`allowed` com a sintaxe `servidor/*` — `meu-servidor/*` cobre
+`meu-servidor__<qualquer nome>`, e só ele. Nome completo na lista
+(`meu-servidor__consulta`) libera só aquela. `denied` vence o prefixo.
+
+Aviso importante: `whitelist_mode: true` com `allowed` vazia **permite
+tudo** — é compatibilidade preservada, não proteção. O runtime emite um
+aviso por turno nesse caso (`#1264`); popule a lista ou desligue a flag.
+
 ### Exemplos de Política
 
 **Search Mode** (read-only):
