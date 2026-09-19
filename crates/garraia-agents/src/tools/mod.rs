@@ -7,6 +7,7 @@ pub mod file_read_tool;
 pub mod file_write_tool;
 pub mod git_diff_tool;
 pub mod list_dir_tool;
+pub mod repo_dir;
 pub mod repo_search_tool;
 pub mod run_tests_tool;
 pub mod schedule;
@@ -22,6 +23,7 @@ pub use file_read_tool::FileReadTool;
 pub use file_write_tool::FileWriteTool;
 pub use git_diff_tool::GitDiffTool;
 pub use list_dir_tool::ListDirTool;
+pub use repo_dir::RepoDir;
 pub use repo_search_tool::RepoSearchTool;
 pub use run_tests_tool::RunTestsTool;
 pub use schedule::{
