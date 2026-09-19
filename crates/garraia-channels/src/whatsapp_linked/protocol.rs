@@ -262,6 +262,9 @@ pub enum BridgeEvent {
         level: LogLevel,
         message: String,
     },
+    /// Resposta do bridge a um [`BridgeCommand::Ping`]. Sem carga: o que ela
+    /// prova e que o laco de stdout do filho esta de pe, nao que algo mudou.
+    Pong,
     /// `type` que esta versao nao conhece. Ignorado pelo driver.
     #[serde(other)]
     Unknown,
@@ -310,6 +313,14 @@ pub enum BridgeCommand {
         on: bool,
     },
     Logout,
+    /// Prova de vida pedida pelo driver. E a resposta —
+    /// [`BridgeEvent::Pong`] ou qualquer outro evento — que renova o relogio
+    /// de silencio pos-`connected` do `serve` (issue #1275): a ponte real pode
+    /// ficar quieta por horas numa conta sem mensagens, e a unica forma de
+    /// distinguir silencio saudavel de filho emudecido e pedir que ele fale.
+    /// Um bridge velho que nao conhece `ping` responde com um evento `error`
+    /// — que tambem prova vida, e por isso serve.
+    Ping,
     /// Fecha o socket **sem** deslogar: a sessao continua valida.
     Shutdown,
 }
@@ -429,6 +440,7 @@ mod tests {
             r#"{"type":"sent","request_id":"r1","id":"MID"}"#,
             r#"{"type":"error","code":"not_connected","message":"socket fechado"}"#,
             r#"{"type":"log","level":"warn","message":"reconectando"}"#,
+            r#"{"type":"pong"}"#,
         ];
         for line in lines {
             round_trip(line);
@@ -501,6 +513,7 @@ mod tests {
                 on: true,
             },
             BridgeCommand::Logout,
+            BridgeCommand::Ping,
             BridgeCommand::Shutdown,
         ];
         for cmd in cmds {
