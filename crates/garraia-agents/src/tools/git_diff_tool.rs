@@ -13,6 +13,7 @@ use garraia_common::{Error, Result};
 use std::time::Duration;
 use tokio::process::Command;
 
+use super::repo_dir::RepoDir;
 use super::{Tool, ToolContext, ToolOutput};
 
 /// Timeout padrão para comandos git (em segundos)
@@ -162,9 +163,18 @@ impl GitDiffTool {
         }
     }
 
-    /// Executa um comando git com timeout
-    async fn run_git_command(&self, args: &[String]) -> Result<String> {
+    /// Executa um comando git com timeout, **no repositório de `repo`**.
+    async fn run_git_command(&self, args: &[String], repo: &RepoDir) -> Result<String> {
         let mut cmd = Command::new("git");
+        // #1258: o git roda no `working_dir` da sessão quando há um. Sem esta
+        // linha ele herdava o CWD do processo do gateway — respondendo sobre
+        // outro repositório, e de forma dependente de como o processo subiu
+        // (`garra start`, systemd com `WorkingDirectory=`, sidecar, container).
+        // Sem `working_dir` o CWD é mantido de propósito, e quem formata a
+        // resposta nomeia o diretório (ver [`RepoDir`]).
+        if let Some(dir) = repo.cwd_do_git() {
+            cmd.current_dir(dir);
+        }
         cmd.args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         // #1269 (paridade com o #1266/PR #1268): o filho nunca le a entrada
         // padrao do gateway — em terminal, pipe e servico o comportamento fica
@@ -226,9 +236,10 @@ impl GitDiffTool {
         }
     }
 
-    /// Obtém o diff do repositório
+    /// Obtém o diff do repositório de `repo`
     async fn get_diff(
         &self,
+        repo: &RepoDir,
         file_path: Option<&str>,
         context_lines: i32,
         from_commit: Option<&str>,
@@ -240,7 +251,7 @@ impl GitDiffTool {
             .map_err(Error::Agent)?;
 
         // Executa git diff
-        let output = self.run_git_command(&args).await?;
+        let output = self.run_git_command(&args, repo).await?;
 
         // Aplica filtros de segurança
         let filtered = self.filter_secrets(&output);
@@ -249,15 +260,15 @@ impl GitDiffTool {
         Ok(limited)
     }
 
-    /// Obtém o status do repositório
-    async fn get_status(&self) -> Result<String> {
+    /// Obtém o status do repositório de `repo`
+    async fn get_status(&self, repo: &RepoDir) -> Result<String> {
         let args: Vec<String> = vec![
             "status".to_string(),
             "--porcelain".to_string(),
             "-b".to_string(),
         ];
 
-        let output = self.run_git_command(&args).await?;
+        let output = self.run_git_command(&args, repo).await?;
 
         // Formata o status de forma mais legível
         let formatted = self.format_status(&output);
@@ -356,15 +367,15 @@ impl Tool for GitDiffTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _context: &ToolContext,
-        input: serde_json::Value,
-    ) -> Result<ToolOutput> {
+    async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
         let operation = input
             .get("operation")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::Agent("parâmetro 'operation' ausente".into()))?;
+
+        // #1258: de qual repositório esta chamada fala. Decidido uma vez, aqui,
+        // e carregado até o `Command` — e até a resposta, que passa a nomeá-lo.
+        let repo = RepoDir::decidir(context.working_dir.as_deref());
 
         match operation {
             "diff" => {
@@ -388,16 +399,16 @@ impl Tool for GitDiffTool {
                 }
 
                 match self
-                    .get_diff(file_path, context_lines, from_commit, to_commit)
+                    .get_diff(&repo, file_path, context_lines, from_commit, to_commit)
                     .await
                 {
-                    Ok(output) => Ok(ToolOutput::success(output)),
-                    Err(e) => Ok(ToolOutput::error(e.to_string())),
+                    Ok(output) => Ok(ToolOutput::success(repo.com_contexto(&output))),
+                    Err(e) => Ok(ToolOutput::error(repo.com_contexto(&e.to_string()))),
                 }
             }
-            "status" => match self.get_status().await {
-                Ok(output) => Ok(ToolOutput::success(output)),
-                Err(e) => Ok(ToolOutput::error(e.to_string())),
+            "status" => match self.get_status(&repo).await {
+                Ok(output) => Ok(ToolOutput::success(repo.com_contexto(&output))),
+                Err(e) => Ok(ToolOutput::error(repo.com_contexto(&e.to_string()))),
             },
             _ => Ok(ToolOutput::error(format!(
                 "operação '{}' não suportada. Use 'diff' ou 'status'",
@@ -410,6 +421,133 @@ impl Tool for GitDiffTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::repo_dir::{contexto_de_teste as ctx, repo_git_temporario};
+
+    // ─── #1258: o git roda no repositório da sessão ────────────────────────
+    //
+    // Os quatro testes abaixo exercitam a tool pelo **caminho do agente**
+    // (`execute` com `ToolContext`), não por `run_git_command`. A issue pede
+    // esse formato de propósito: um teste que afirma a função interna deixa o
+    // ponto de chamada de produção descoberto, e foi assim que o
+    // `current_dir` ausente sobreviveu a duas rodadas de hardening desta
+    // mesma tool (#1075, #1269).
+
+    /// #1258: o `git diff` vem do `working_dir` da sessão.
+    ///
+    /// Dois repositórios temporários, cada um com um arquivo modificado de
+    /// nome único. Cada chamada cita o marcador do **seu** repositório e não o
+    /// do outro — o que só é possível se o `current_dir` daquela chamada valeu.
+    ///
+    /// **Mutação que este teste pega**: comente o `cmd.current_dir(dir)` de
+    /// `run_git_command` e ele fica vermelho. Sem ele o git roda no CWD do
+    /// processo de teste — a própria árvore do GarraRUST, que é outro
+    /// repositório e cujo diff nunca menciona esses marcadores.
+    #[tokio::test]
+    async fn diff_vem_do_working_dir_da_sessao() {
+        let repo_a = repo_git_temporario("alvo-do-repo-a", "ramo-a");
+        let repo_b = repo_git_temporario("alvo-do-repo-b", "ramo-b");
+        let tool = GitDiffTool::new(Some(15), Some(500));
+
+        for (repo, meu, do_outro) in [
+            (&repo_a, "alvo-do-repo-a", "alvo-do-repo-b"),
+            (&repo_b, "alvo-do-repo-b", "alvo-do-repo-a"),
+        ] {
+            let wd = repo.path().to_string_lossy().into_owned();
+            let saida = tool
+                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": "diff"}))
+                .await
+                .expect("execute");
+
+            assert!(!saida.is_error, "{}", saida.content);
+            assert!(
+                saida.content.contains(meu),
+                "o diff tinha de vir de {wd}:\n{}",
+                saida.content
+            );
+            assert!(
+                !saida.content.contains(do_outro),
+                "o diff veio do repositório errado:\n{}",
+                saida.content
+            );
+        }
+    }
+
+    /// #1258: a mesma prova para `operation: "status"`, que passa pelo mesmo
+    /// `run_git_command`. Aqui o marcador é o **nome do ramo**, que não depende
+    /// do estado sujo da árvore de quem roda a suite.
+    #[tokio::test]
+    async fn status_vem_do_working_dir_da_sessao() {
+        let repo = repo_git_temporario("alvo-do-status", "ramo-so-deste-repo");
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        let saida = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({"operation": "status"}))
+            .await
+            .expect("execute");
+
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(
+            saida.content.contains("Branch: ramo-so-deste-repo"),
+            "{}",
+            saida.content
+        );
+        assert_eq!(
+            saida.content.lines().next().unwrap_or_default(),
+            format!("Repositório: {wd} (working_dir da sessão)")
+        );
+    }
+
+    /// #1258, caso 2 — sessão **sem** `working_dir`, que no gateway é o comum
+    /// (um prompt de Telegram não traz projeto). O CWD do processo é mantido,
+    /// como antes, mas a resposta passa a dizer de qual repositório ela falou:
+    /// a resposta errada *silenciosa* era o defeito.
+    #[tokio::test]
+    async fn sem_working_dir_a_resposta_nomeia_o_repositorio_do_cwd() {
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let cwd = std::env::current_dir().expect("CWD do processo de teste");
+
+        for operacao in ["diff", "status"] {
+            let saida = tool
+                .execute(&ctx(None), serde_json::json!({"operation": operacao}))
+                .await
+                .expect("execute");
+
+            let primeira = saida.content.lines().next().unwrap_or_default();
+            assert!(
+                primeira.starts_with("Repositório: "),
+                "{operacao}: {primeira}"
+            );
+            assert!(
+                primeira.contains(&cwd.display().to_string()),
+                "{operacao}: a resposta tem de nomear o CWD do processo: {primeira}"
+            );
+            assert!(
+                primeira.contains("a sessão não tem working_dir"),
+                "{operacao}: {primeira}"
+            );
+        }
+    }
+
+    /// #1258: `working_dir` que não existe falha **nomeando o diretório**, e
+    /// não cai de volta no CWD do processo. Um "No such file or directory" sem
+    /// dizer qual diretório era o diagnóstico impossível que a issue descreve.
+    #[tokio::test]
+    async fn working_dir_inexistente_erra_nomeando_o_diretorio() {
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let inexistente = "/nao/existe/em/lugar/nenhum-1258";
+
+        let saida = tool
+            .execute(
+                &ctx(Some(inexistente)),
+                serde_json::json!({"operation": "diff"}),
+            )
+            .await
+            .expect("execute");
+
+        assert!(saida.is_error, "{}", saida.content);
+        assert!(saida.content.contains(inexistente), "{}", saida.content);
+    }
 
     #[tokio::test]
     async fn test_git_status() {
