@@ -56,6 +56,15 @@ impl CodeReviewTool {
         let mut args = vec!["diff".to_string(), "--no-ext-diff".to_string()];
 
         if let Some(range) = commit_range {
+            // #1269 (paridade com o `git_diff`): o `commit_range` vem do modelo
+            // e é um argumento argv — começando com `-` ele vira flag do git
+            // (`--output=…` escreve arquivo, `-O…`, `--stdin`). Recusado antes
+            // de entrar na linha de comando.
+            if range.starts_with('-') {
+                return Err(format!(
+                    "commit_range '{range}' recusado: revisão não pode começar com '-'"
+                ));
+            }
             args.push(range.to_string());
         }
 
@@ -72,6 +81,10 @@ impl CodeReviewTool {
             cmd.current_dir(dir);
         }
         cmd.args(&args);
+        // #1269 (paridade com o `git_diff`): o filho nunca lê a entrada padrão
+        // do gateway — em terminal, pipe e serviço o comportamento fica
+        // determinado, e não há consumo acidental de stdin.
+        cmd.stdin(std::process::Stdio::null());
         // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
         // allowlist de env do pai.
         #[cfg(unix)]
@@ -368,6 +381,58 @@ mod tests {
         );
         assert!(
             saida.content.contains("a sessão não tem working_dir"),
+            "{}",
+            saida.content
+        );
+    }
+
+    /// #1269 no `code_review` (paridade): o `commit_range` vem do modelo e é
+    /// um argumento argv — começando com `-` viraria flag do git
+    /// (`--output=/tmp/x` escreve arquivo, `-O…`, `--stdin`). Recusado antes
+    /// de entrar na linha de comando, no mesmo formato que o `git_diff` usa.
+    ///
+    /// **Mutação que este teste pega**: tire o `if range.starts_with('-')` de
+    /// `get_diff` e ele fica vermelho.
+    #[tokio::test]
+    async fn commit_range_comecando_com_hifen_e_recusado() {
+        let tool = tool_com_eco();
+
+        for range in ["--output=/tmp/vazou-1258.diff", "-O/tmp/x", "--stdin"] {
+            let saida = tool
+                .execute(&ctx(None), serde_json::json!({"commit_range": range}))
+                .await
+                .expect("execute");
+
+            assert!(saida.is_error, "{range}: {}", saida.content);
+            assert!(
+                saida.content.contains("recusado"),
+                "{range}: {}\n{}",
+                range,
+                saida.content
+            );
+        }
+    }
+
+    /// Controle positivo da recusa: um `commit_range` legítimo — revisão que
+    /// não começa com `-` — passa pela tool, e o diff de verdade chega ao LLM.
+    #[tokio::test]
+    async fn commit_range_valido_ainda_passa() {
+        let repo = repo_git_temporario("alvo-range-valido", "ramo-range-valido");
+        let tool = tool_com_eco();
+        let wd = repo.path().to_string_lossy().into_owned();
+
+        let saida = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({"commit_range": "HEAD"}))
+            .await
+            .expect("execute");
+
+        assert!(
+            !saida.is_error,
+            "`git diff HEAD` num repositório com árvore suja tem de funcionar:\n{}",
+            saida.content
+        );
+        assert!(
+            saida.content.contains("alvo-range-valido"),
             "{}",
             saida.content
         );

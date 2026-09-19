@@ -12,4 +12,8 @@
   qual repositorio ela falou**, porque a resposta errada silenciosa era o defeito real.
   Um `working_dir` que nao existe falha nomeando o diretorio em vez de cair de volta no
   diretorio do processo. Os testes exercitam as tools pelo caminho do agente (`execute` com
-  `ToolContext`) contra dois repositorios temporarios, e nao pela funcao interna.
+  `ToolContext`) contra dois repositorios temporarios, e nao pela funcao interna. No
+  `code_review`, de carona e no espirito do #1269, o `commit_range` (que vem do modelo e e
+  argumento argv) passou a ser recusado quando comeca com `-` (`--output=...` escreveria
+  arquivo, `--stdin` penduraria o filho ate o timeout) e o filho git nao le mais a entrada
+  padrao do gateway.
