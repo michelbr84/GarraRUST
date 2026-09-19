@@ -246,21 +246,47 @@ pub struct ModeProfile {
 /// aceite da #988 pede que o comportamento padrao nao regrida, e o
 /// comportamento padrao de hoje e nao ter politica.
 ///
-/// # Ferramenta MCP nao e barrada por whitelist
+/// # Ferramenta MCP passa pelo whitelist como qualquer outra (#1264)
 ///
-/// Tool de servidor MCP se chama `{servidor}__{tool}`
-/// (`mcp/tool_bridge.rs`). Os whitelists de `search`, `architect`, `debug`,
-/// `review` e `edit` listam so nomes nativos, entao aplicar `whitelist_mode`
-/// ao pe da letra **derrubaria toda integracao MCP** nesses cinco modos, em
-/// silencio — o usuario veria a ferramenta sumir sem mensagem nenhuma.
+/// Tool de servidor MCP se chama `{servidor}__{tool}` (`mcp/tool_bridge.rs`:
+/// `format!("{nome_servidor}__{nome_original}")`). Ate a #1264 qualquer nome
+/// que contivesse esse separador **passava direto** pelo `whitelist_mode`, sem
+/// a lista `allowed` ser consultada: dava para proibir uma ferramenta MCP pelo
+/// nome (`denied` sempre valeu), nunca para dizer "so estas". Um modo
+/// somente-leitura, portanto, nao restringia codigo de terceiro — que e
+/// exatamente o que um servidor MCP e.
 ///
-/// Entao ferramenta MCP passa pelo whitelist e continua sujeita ao `denied`.
+/// Agora restringe. `whitelist_mode` vale para MCP, e a permissao passa a ser
+/// **declarada**:
 ///
-/// **A consequencia precisa ser dita**: um modo somente-leitura nao restringe
-/// ferramenta MCP. Se o operador conectou um servidor MCP que escreve arquivo,
-/// o modo `search` nao o impede. Isso e um limite conhecido desta versao, nao
-/// um descuido — a alternativa era quebrar MCP para todo mundo hoje. Um
-/// whitelist que entenda servidor MCP precisa ser desenhado com o dono.
+/// | entrada em `allowed`   | cobre                                        |
+/// |------------------------|----------------------------------------------|
+/// | `file_read`            | a ferramenta nativa `file_read`              |
+/// | `servidor__consulta`   | aquela ferramenta MCP, e so ela              |
+/// | `servidor/*`           | todo o servidor `servidor` (prefixo `servidor__`) |
+///
+/// A sintaxe declarada `servidor/*` e traduzida para o prefixo interno
+/// `servidor__` ([`ToolGate::prefixo_de_servidor`]), que e o nome que o
+/// `tool_bridge` monta de verdade. O `/` existe na sintaxe declarada porque a
+/// #1264 o pediu e porque `__` num arquivo de config e facil de errar; o
+/// runtime nunca ve `/` em nome de ferramenta (a API da OpenAI/Anthropic
+/// rejeita: `^[a-zA-Z0-9_-]+$`).
+///
+/// **A consequencia precisa ser dita**: um modo whitelist que nao declare
+/// servidor MCP nenhum esconde as ferramentas MCP do modelo. Era esse o medo
+/// que sustentava a escapatoria — "derrubaria toda integracao MCP nesses cinco
+/// modos, em silencio". O silencio e que era o problema, e nao a restricao:
+/// `runtime::avisar_mcp_fora_da_whitelist` avisa, por turno, quais ferramentas
+/// MCP o modo escondeu e como declara-las.
+///
+/// # Whitelist ligada e vazia continua permitindo tudo
+///
+/// `whitelist_mode = true` com `allowed` vazia significa "o perfil nao
+/// restringiu", e nao "nada permitido" — mudar isso quebraria perfil existente
+/// que depende do comportamento atual, e a escolha e do dono (#1264, opcao
+/// (a)). O que mudou e o silencio: [`Self::whitelist_ligada_mas_vazia`] existe
+/// para quem pode avisar (o runtime, por turno; o `garra config check`, no
+/// perfil).
 #[derive(Debug, Clone)]
 pub struct ToolGate {
     /// O perfil que vale neste turno, se algum vale.
@@ -278,6 +304,12 @@ pub struct ToolGate {
 
 /// Separador que o `tool_bridge` usa entre servidor e ferramenta.
 const SEPARADOR_MCP: &str = "__";
+
+/// Sufixo da sintaxe **declarada** de "servidor MCP inteiro" na `allowed`.
+///
+/// `meu-servidor/*` na config vira o prefixo interno `meu-servidor__` — ver
+/// [`ToolGate::prefixo_de_servidor`] e o docblock de [`ToolGate`].
+const CORINGA_DE_SERVIDOR: &str = "/*";
 
 impl ToolGate {
     /// O portao aberto: nenhuma politica, tudo permitido.
@@ -371,19 +403,52 @@ impl ToolGate {
 
     /// O modo em vigor restringe por whitelist?
     ///
-    /// Serve para o chamador perceber a lacuna do MCP: um modo whitelist se
-    /// anuncia somente-leitura e **nao** cobre ferramenta de servidor MCP (ver
-    /// o docblock do tipo). Quem monta a lista de ferramentas sabe se sobrou
-    /// alguma MCP, e so ele pode avisar.
+    /// Depois da #1264 isso vale para ferramenta MCP tambem, e por isso quem
+    /// monta a lista de ferramentas continua tendo o que dizer: as MCP nao
+    /// declaradas **somem** da lista que o modelo ve, e sumir em silencio era o
+    /// defeito que sustentava a escapatoria antiga. Ver
+    /// `runtime::avisar_mcp_fora_da_whitelist`.
     pub fn restringe_por_whitelist(&self) -> bool {
         self.profile
             .as_ref()
             .is_some_and(|p| p.tool_policy.whitelist_mode && !p.tool_policy.allowed.is_empty())
     }
 
+    /// O perfil ligou `whitelist_mode` e deixou `allowed` vazia?
+    ///
+    /// Isso **permite tudo** (ver o docblock do tipo), que e a opcao (b) da
+    /// #1264: compatibilidade preservada. Ligar o controle e nao ser protegido
+    /// e pior do que nao ligar, porque o operador acredita que ligou — entao
+    /// este predicado existe para que alguem possa avisar. Ele nao muda
+    /// decisao nenhuma.
+    pub fn whitelist_ligada_mas_vazia(&self) -> bool {
+        self.profile
+            .as_ref()
+            .is_some_and(|p| p.tool_policy.whitelist_mode && p.tool_policy.allowed.is_empty())
+    }
+
     /// A ferramenta e de servidor MCP?
     pub fn eh_ferramenta_mcp(tool_name: &str) -> bool {
         tool_name.contains(SEPARADOR_MCP)
+    }
+
+    /// A traducao da sintaxe **declarada** para a **interna** (#1264).
+    ///
+    /// `meu-servidor/*` — o que o operador escreve na `allowed` — vira
+    /// `meu-servidor__`, que e o prefixo do nome que o `tool_bridge` monta
+    /// (`format!("{nome_servidor}__{nome_original}")`). Qualquer outra entrada
+    /// devolve `None`: e nome exato, e nao prefixo.
+    ///
+    /// Publica porque a traducao precisa de um unico lugar. Documentacao, UI de
+    /// modo e teste nao podem reinventar o `"__"` cada um por conta.
+    pub fn prefixo_de_servidor(entrada: &str) -> Option<String> {
+        let servidor = entrada.strip_suffix(CORINGA_DE_SERVIDOR)?;
+        if servidor.is_empty() {
+            // `"/*"` nu nao e "todos os servidores": um coringa global chegaria
+            // por engano de digitacao, e nao por decisao de ninguem.
+            return None;
+        }
+        Some(format!("{servidor}{SEPARADOR_MCP}"))
     }
 
     /// O `system_prompt_template` do modo em vigor, se houver (#986).
@@ -437,21 +502,24 @@ impl ToolGate {
             return true;
         };
 
-        // `denied` vale sempre, inclusive para MCP.
+        // `denied` vale sempre, inclusive para MCP — e vence tudo, prefixo
+        // declarado incluso.
         if p.denied.iter().any(|t| t == tool_name) {
             return false;
         }
 
         if p.whitelist_mode {
             // Whitelist vazia nao quer dizer "nada permitido" — quer dizer que
-            // o perfil nao restringiu.
+            // o perfil nao restringiu. Ver o docblock do tipo: quem avisa que a
+            // restricao esta ligada e nao restringe nada e
+            // `whitelist_ligada_mas_vazia`.
             if p.allowed.is_empty() {
                 return true;
             }
-            if tool_name.contains(SEPARADOR_MCP) {
-                return true;
-            }
-            return p.allowed.iter().any(|t| t == tool_name);
+            // #1264: ferramenta MCP passa por aqui como qualquer outra. Nao ha
+            // mais o `contains(SEPARADOR_MCP) -> true` que isentava todo nome
+            // de servidor MCP da lista.
+            return p.allowed.iter().any(|e| entrada_cobre(e, tool_name));
         }
 
         true
@@ -471,6 +539,25 @@ impl ToolGate {
             "A ferramenta `{tool_name}` nao e permitida no modo `{modo}`. \
              Siga sem ela, ou peca ao usuario para trocar de modo."
         )
+    }
+}
+
+/// Uma entrada de `allowed` cobre este nome de ferramenta? (#1264)
+///
+/// Duas formas, e so duas:
+///
+/// - **nome exato** — `file_read` cobre `file_read`; `servidor__consulta` cobre
+///   aquela ferramenta MCP, e nenhuma outra;
+/// - **prefixo de servidor** — `servidor/*` cobre `servidor__<qualquer coisa>`,
+///   pela traducao de [`ToolGate::prefixo_de_servidor`].
+///
+/// O prefixo exige que sobre nome de ferramenta depois dele (`len >`): o nome
+/// nu `servidor__`, sem ferramenta nenhuma, nao e uma ferramenta que alguem
+/// declarou.
+fn entrada_cobre(entrada: &str, tool_name: &str) -> bool {
+    match ToolGate::prefixo_de_servidor(entrada) {
+        Some(prefixo) => tool_name.len() > prefixo.len() && tool_name.starts_with(&prefixo),
+        None => entrada == tool_name,
     }
 }
 
@@ -1347,18 +1434,23 @@ mod tests {
         assert!(g.permite("bash"));
     }
 
-    /// Ferramenta MCP passa pelo whitelist.
+    /// **Ferramenta MCP nao declarada e barrada pelo whitelist (#1264).**
     ///
-    /// Os whitelists listam so nomes nativos; aplicar ao pe da letra
-    /// derrubaria toda integracao MCP em cinco dos nove modos, em silencio.
+    /// Este teste afirmava o oposto ate a #1264 — "Ferramenta MCP passa pelo
+    /// whitelist" —, porque `permite` isentava todo nome com `"__"`. A isencao
+    /// era o fail-open: modo somente-leitura nao restringia codigo de terceiro.
+    /// Os cinco modos aqui sao os nativos com `whitelist_mode` e lista de
+    /// leitura, e nenhum declara servidor MCP nenhum.
     #[test]
-    fn ferramenta_mcp_nao_e_barrada_por_whitelist() {
+    fn ferramenta_mcp_nao_declarada_e_barrada_por_whitelist() {
         for modo in ["search", "architect", "debug", "review", "edit"] {
             let g = ToolGate::for_mode_name(modo);
             assert!(
-                g.permite("meu_servidor__consulta"),
-                "{modo} barrou ferramenta MCP"
+                !g.permite("meu_servidor__consulta"),
+                "{modo} deixou passar ferramenta MCP que ninguem declarou"
             );
+            // A whitelist do modo continua valendo para o que ela lista.
+            assert!(g.permite("file_read"), "{modo} barrou a leitura nativa");
         }
     }
 
@@ -1483,21 +1575,19 @@ mod tests {
         );
     }
 
-    /// O portao sabe dizer quando a lacuna do MCP esta aberta (#979).
+    /// O portao sabe dizer quando restringe por whitelist (#979, #1264).
     ///
-    /// A auditoria apontou que ativar politica para `auto` torna essa lacuna
-    /// materialmente relevante: quem digitou `auto` e escreveu uma pergunta de
-    /// busca passa a acreditar que esta somente-leitura, e ferramenta MCP de
-    /// escrita continua passando. O portao nao consegue fechar a lacuna sem
-    /// derrubar toda integracao MCP nesses modos — mas consegue dizer que ela
-    /// esta aberta, e quem monta a lista de ferramentas avisa.
+    /// O predicado alimenta o aviso do runtime. Ate a #1264 ele anunciava uma
+    /// **lacuna** (MCP passava por cima da lista); agora anuncia o contrario —
+    /// que a lista vale, MCP incluso, e portanto que pode ter escondido
+    /// ferramenta MCP do modelo.
     #[test]
-    fn o_portao_reconhece_a_lacuna_do_mcp() {
+    fn o_portao_reconhece_que_restringe_por_whitelist() {
         let search = ToolGate::for_mode_name("search");
         assert!(search.restringe_por_whitelist());
         assert!(
-            search.permite("servidor__escreve_arquivo"),
-            "a lacuna existe: ferramenta MCP passa pela whitelist"
+            !search.permite("servidor__escreve_arquivo"),
+            "a lacuna do #1264 esta fechada: MCP nao declarada nao passa"
         );
 
         // `denied` continua valendo para MCP — e a alavanca do operador.
@@ -1519,6 +1609,185 @@ mod tests {
 
         assert!(ToolGate::eh_ferramenta_mcp("servidor__tool"));
         assert!(!ToolGate::eh_ferramenta_mcp("file_write"));
+    }
+
+    // ── #1264: o whitelist cobre ferramenta MCP ─────────────────────────────
+
+    /// O perfil de um modo customizado, montado pelo caminho de **producao**.
+    ///
+    /// `ModeProfile::from_custom` e a funcao que o gateway chama para
+    /// transformar o JSON que o operador salvou (`custom_modes.
+    /// tool_policy_overrides`) em perfil — `state.rs` e `api.rs`. O `ExecContext
+    /// { custom_profile }` que sai daqui e o mesmo que chega ao runtime, e
+    /// `ToolGate::para_o_turno` e o construtor que o runtime usa em cada um dos
+    /// tres caminhos de turno (`runtime.rs`). Nada de `ToolPolicy` montada a
+    /// mao: a sintaxe entra como o operador a escreve.
+    fn portao_do_operador(overrides: serde_json::Value) -> ToolGate {
+        let perfil = ModeProfile::from_custom(
+            AgentMode::Search,
+            "so-leitura",
+            None,
+            &overrides,
+            &serde_json::json!({}),
+        );
+        let exec = crate::exec_context::ExecContext {
+            custom_profile: Some(perfil),
+            ..Default::default()
+        };
+        ToolGate::para_o_turno(&exec, "da uma olhada nos arquivos")
+    }
+
+    /// **O fail-open da #1264, criterio 1.** Perfil com `whitelist_mode` e
+    /// `allowed = ["read_file"]` tem de recusar ferramenta de servidor MCP.
+    ///
+    /// Antes da correcao `permite` devolvia `true` para qualquer nome que
+    /// contivesse `"__"`, sem consultar a lista. Este e o teste que a mutacao
+    /// do criterio 5 derruba: apagar a checagem nova deixa a primeira asercao
+    /// vermelha.
+    #[test]
+    fn whitelist_recusa_ferramenta_mcp_nao_declarada() {
+        let g = portao_do_operador(serde_json::json!({ "allow": ["read_file"] }));
+
+        // O nome REAL que o `tool_bridge` monta: `{servidor}__{ferramenta}`.
+        assert!(
+            !g.permite("servidor__qualquer_ferramenta"),
+            "ferramenta MCP nao listada passou pela whitelist (#1264)"
+        );
+        // E a grafia declarada da issue, que nao e nome de ferramenta nenhum no
+        // runtime (a API rejeita `/`) — tambem nao pode virar permissao.
+        assert!(!g.permite("servidor/qualquer_ferramenta"));
+
+        // O que o operador declarou continua valendo.
+        assert!(g.permite("read_file"), "a lista declarada tem de passar");
+        assert!(
+            !g.permite("file_write"),
+            "o que nao esta na lista, nao passa"
+        );
+    }
+
+    /// **Criterio 2.** `allowed = ["meu-servidor/*"]` libera o servidor inteiro
+    /// — e so ele.
+    ///
+    /// A sintaxe declarada usa `/`; o nome que o runtime monta usa `__`. A
+    /// traducao e de [`ToolGate::prefixo_de_servidor`], e esta afirmada aqui nos
+    /// dois lados: a entrada como o operador a escreve, o nome como o
+    /// `tool_bridge` o monta.
+    #[test]
+    fn prefixo_declarado_libera_o_servidor_inteiro() {
+        let g = portao_do_operador(serde_json::json!({ "allow": ["meu-servidor/*"] }));
+
+        assert!(
+            g.permite("meu-servidor__x"),
+            "o prefixo declarado tem de cobrir as ferramentas do servidor"
+        );
+        assert!(g.permite("meu-servidor__escreve_arquivo"));
+        assert!(
+            !g.permite("outro-servidor__y"),
+            "prefixo de um servidor nao pode liberar outro"
+        );
+        assert!(
+            !g.permite("meu-servidor-extra__x"),
+            "o prefixo para no separador: nome de servidor que so COMECA igual \
+             nao e o mesmo servidor"
+        );
+        assert!(
+            !g.permite("meu-servidor__"),
+            "nome nu, sem ferramenta depois do separador, nao e ferramenta"
+        );
+        assert!(
+            !g.permite("file_write"),
+            "declarar um servidor MCP nao abre as nativas"
+        );
+    }
+
+    /// A traducao da sintaxe **declarada** para a **interna**, dita sozinha.
+    #[test]
+    fn traducao_da_sintaxe_declarada_para_o_prefixo_interno() {
+        assert_eq!(
+            ToolGate::prefixo_de_servidor("meu-servidor/*").as_deref(),
+            Some("meu-servidor__"),
+            "`servidor/*` na config vira o prefixo `servidor__` do runtime"
+        );
+
+        // E o prefixo casa o nome que o `mcp/tool_bridge.rs` monta.
+        let nome_do_runtime = format!("{}{}{}", "meu-servidor", SEPARADOR_MCP, "consulta");
+        assert_eq!(nome_do_runtime, "meu-servidor__consulta");
+        assert!(entrada_cobre("meu-servidor/*", &nome_do_runtime));
+
+        // Nome exato nao e prefixo.
+        assert_eq!(ToolGate::prefixo_de_servidor("read_file"), None);
+        assert_eq!(ToolGate::prefixo_de_servidor("servidor__consulta"), None);
+        // E `/*` nu nao e coringa global: viria de erro de digitacao.
+        assert_eq!(ToolGate::prefixo_de_servidor("/*"), None);
+        assert!(!entrada_cobre("/*", "servidor__x"));
+    }
+
+    /// Ferramenta MCP declarada pelo nome completo tambem passa — a permissao
+    /// fina, para quem nao quer o servidor inteiro.
+    #[test]
+    fn nome_completo_de_ferramenta_mcp_pode_ser_declarado() {
+        let g = portao_do_operador(serde_json::json!({
+            "allow": ["read_file", "meu-servidor__consulta"]
+        }));
+        assert!(g.permite("meu-servidor__consulta"));
+        assert!(
+            !g.permite("meu-servidor__escreve"),
+            "declarar UMA ferramenta do servidor nao declara as outras"
+        );
+    }
+
+    /// **Criterio 4, regressao.** `denied` vence tudo, prefixo declarado
+    /// incluso — era a unica protecao que ja funcionava para MCP.
+    #[test]
+    fn denied_vence_o_prefixo_declarado() {
+        let g = portao_do_operador(serde_json::json!({
+            "allow": ["meu-servidor/*"],
+            "deny": ["meu-servidor__perigosa"]
+        }));
+        assert!(
+            !g.permite("meu-servidor__perigosa"),
+            "`denied` tem de vencer o prefixo que libera o servidor"
+        );
+        assert!(
+            g.permite("meu-servidor__inofensiva"),
+            "e o resto do servidor continua liberado"
+        );
+    }
+
+    /// **Criterio 3, metade do portao.** Whitelist ligada e vazia continua
+    /// permitindo tudo (opcao (b): compatibilidade), e passa a se anunciar.
+    ///
+    /// A outra metade do aviso — o TEXTO emitido — vive em
+    /// `runtime::mensagem_whitelist_vazia`, que e o que o runtime usa por turno;
+    /// os modos customizados vivem no banco e nao na config, entao o `garra
+    /// config check` nao os ve.
+    #[test]
+    fn whitelist_vazia_permite_tudo_mas_se_anuncia() {
+        // `deny: []` porque o perfil base (`search`) nega `file_write` pela
+        // **outra** lista, e aqui o que esta em teste e so a whitelist vazia.
+        let g = portao_do_operador(serde_json::json!({ "allow": [], "deny": [] }));
+
+        assert!(
+            g.permite("file_write"),
+            "opcao (b) da #1264: o comportamento nao muda sem decisao do dono"
+        );
+        assert!(g.permite("servidor__qualquer"));
+        assert!(
+            g.whitelist_ligada_mas_vazia(),
+            "o silencio e que acabou: o perfil tem de se anunciar"
+        );
+        assert!(
+            !g.restringe_por_whitelist(),
+            "whitelist vazia nao restringe, e o aviso do runtime nao pode \
+             confundir os dois casos"
+        );
+
+        // Com a lista populada, nada a anunciar.
+        let g = portao_do_operador(serde_json::json!({ "allow": ["read_file"] }));
+        assert!(!g.whitelist_ligada_mas_vazia());
+        assert!(g.restringe_por_whitelist());
+        // E sem politica nenhuma tambem nao ha o que anunciar.
+        assert!(!ToolGate::sem_politica().whitelist_ligada_mas_vazia());
     }
 
     // ── Modos customizados (#986) ───────────────────────────────────────────
