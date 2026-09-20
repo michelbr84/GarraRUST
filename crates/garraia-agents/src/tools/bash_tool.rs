@@ -410,6 +410,12 @@ impl Tool for BashTool {
 
         let mut cmd = Command::new(shell);
         cmd.arg(arg).arg(comando);
+        // #1270 (paridade do #1269): o filho nunca le a entrada padrao do
+        // gateway — em terminal, pipe e servico o comportamento fica o mesmo,
+        // e um `cat` sem argumento nao rouba o que o operador digitou no
+        // terminal do `garra chat`. Ate a varredura #1270, `repo_search`,
+        // `git_diff` e `code_review` fechavam o stdin e este nao.
+        cmd.stdin(std::process::Stdio::null());
         // #1075 R3: the child runs in the session working_dir when set, and
         // (unix) inherits ONLY the allowlisted variables — the parent
         // process (MCP server / gateway) carries secrets in its env that
@@ -1029,6 +1035,23 @@ mod tests {
             output.content
         );
         assert!(output.content.contains("PATH_OK=sim"), "{}", output.content);
+    }
+
+    /// #1270 (paridade do #1269): o filho do bash nao herda o stdin do
+    /// gateway — um `cat` sem argumento nao pode roubar o que o operador
+    /// digitou no terminal do `garra chat`. O `Command` nasce dentro da
+    /// tool, entao o guard varre o fonte — o mesmo padrao do `spinner.rs`
+    /// para invariantes invisiveis a testes de comportamento.
+    ///
+    /// **Mutacao que este teste pega**: comente a chamada de stdin null no
+    /// execute e ele fica vermelho.
+    #[test]
+    fn stdin_do_filho_bash_e_fechado() {
+        let fonte = include_str!("bash_tool.rs");
+        assert!(
+            fonte.contains("cmd.stdin(std::process::Stdio::null());"),
+            "o bash tool deve fechar o stdin do filho (paridade #1269)"
+        );
     }
 
     #[cfg(unix)]
