@@ -277,10 +277,18 @@ impl Tool for WebSearchTool {
         _context: &ToolContext,
         input: serde_json::Value,
     ) -> Result<ToolOutput> {
-        let query = input
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'query' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — a mensagem nomeia o schema e pede o reenvio.
+        let query = match input.get("query").and_then(|v| v.as_str()) {
+            Some(q) => q,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "web_search",
+                    r#"{"query": string}"#,
+                    "query",
+                ));
+            }
+        };
 
         let count = input
             .get("count")
@@ -320,8 +328,9 @@ mod tests {
         }
     }
 
+    /// #1296: query ausente é observação soft (`Ok` + `is_error`), não `Err`.
     #[test]
-    fn retorna_erro_quando_query_ausente() {
+    fn query_ausente_e_observacao_soft() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         for tool in [
             WebSearchTool::new("test-key".into()),
@@ -329,8 +338,16 @@ mod tests {
                 base_url: "http://127.0.0.1:8081".into(),
             }),
         ] {
-            let result = rt.block_on(tool.execute(&contexto_teste(), serde_json::json!({})));
-            assert!(result.is_err(), "{}", tool.backend_name());
+            let output = rt
+                .block_on(tool.execute(&contexto_teste(), serde_json::json!({})))
+                .expect("parâmetro ausente é soft-error, não Err");
+            assert!(output.is_error, "{}", tool.backend_name());
+            assert!(
+                output.content.contains("'query'"),
+                "{}: {}",
+                tool.backend_name(),
+                output.content
+            );
         }
     }
 

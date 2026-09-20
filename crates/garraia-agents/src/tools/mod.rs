@@ -136,6 +136,32 @@ impl ToolOutput {
     }
 }
 
+/// #1296: erro de entrada que o modelo consegue corrigir no mesmo turno.
+///
+/// Volta como `Ok(ToolOutput { is_error: true })` — observação de tool — e
+/// NUNCA como `Err(Error::Agent(...))`. O dispatch do runtime até converte
+/// `Err` em `ToolOutput::error(e.to_string())`, mas aí a mensagem sai com o
+/// prefixo `agent error:` (enganoso — quem errou foi a chamada, não o
+/// agente) e sem orientação de schema; e em caminhos sem amortecimento
+/// (orquestrador falha o step, um futuro call site pode falhar o turno) um
+/// erro de forma recuperável vira abort. A regra: `Err` só para falha
+/// ambiental real (IO, permissão, jail); entrada malformada é observação.
+pub(crate) fn parametro_ausente(tool: &str, schema: &str, faltando: &str) -> ToolOutput {
+    ToolOutput::error(format!(
+        "parâmetro '{faltando}' ausente — {tool} requer {schema}. \
+         Reenvie a chamada com o parâmetro preenchido."
+    ))
+}
+
+/// Variante do [`parametro_ausente`] para argumentos em que a presença E o
+/// tipo podem errar (`as_i64`/`as_str` sobre um JSON de outra forma).
+pub(crate) fn argumento_invalido(tool: &str, schema: &str, faltando: &str) -> ToolOutput {
+    ToolOutput::error(format!(
+        "argumento '{faltando}' ausente ou inválido — {tool} requer {schema}. \
+         Reenvie a chamada com o argumento correto."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::ToolOutput;
