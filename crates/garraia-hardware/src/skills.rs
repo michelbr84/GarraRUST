@@ -33,6 +33,7 @@
 //! capability read-only intacta (ver [`CatalogoDeSkills::capability_efetiva`]).
 
 use crate::capability::Capability;
+use crate::registry::{ElevadorDeRisco, FonteDeSinonimos};
 use crate::risk::RiskClass;
 use garraia_skills::{SkillDefinition, SkillKind, SkillScanner};
 use std::path::{Path, PathBuf};
@@ -271,6 +272,34 @@ fn entidade_crua(device_id: &str) -> &str {
     device_id.split_once(':').map_or(device_id, |(_, e)| e)
 }
 
+/// #1250: o catálogo como elevador na fronteira do registro — a composição
+/// `max(adapter, skill)` do ADR 0020, aplicada por quem conhece os
+/// manifestos. O method call resolve para o método **inerente** de mesmo
+/// nome (inherent tem prioridade sobre trait).
+impl ElevadorDeRisco for CatalogoDeSkills {
+    fn capability_efetiva(&self, device_id: &str, cap: &Capability) -> Capability {
+        CatalogoDeSkills::capability_efetiva(self, device_id, cap)
+    }
+}
+
+/// #1250: o catálogo como fonte de aliases — o `device_list` mostra os
+/// sinônimos pt/en que os presets declaram, para o agente ligar "luz da
+/// sala" (o que o usuário diz) a `ha:light.sala_teto` (o que o gate vê).
+/// Ordenado e sem duplicata: presets de skills diferentes podem repetir
+/// sinônimo, e a descoberta é a mesma lista para todos.
+impl FonteDeSinonimos for CatalogoDeSkills {
+    fn sinonimos_de(&self, device_id: &str) -> Vec<String> {
+        let mut achados: Vec<String> = self
+            .presets_de(device_id)
+            .into_iter()
+            .flat_map(|p| p.sinonimos.iter().cloned())
+            .collect();
+        achados.sort();
+        achados.dedup();
+        achados
+    }
+}
+
 /// Converte um `SkillDefinition` de hardware no tipo do domínio. Devolve
 /// `None` (com `warn`) quando o manifesto passou pela validação de forma mas
 /// não tem bloco `provides` — defesa em profundidade contra um chamador que
@@ -433,6 +462,25 @@ Corpo do skill.
         // Termo desconhecido e termo vazio não resolvem nada.
         assert!(catalogo.resolver("geladeira").is_empty());
         assert!(catalogo.resolver("   ").is_empty());
+    }
+
+    /// A fonte de aliases sobre um catálogo real: os sinônimos dos presets
+    /// ativáveis saem para o id namespaceado, ordenados e sem duplicata;
+    /// device sem preset devolve vazio (linha de aliases some da descoberta).
+    #[test]
+    fn sinonimos_de_vem_dos_presets_ativaveis() {
+        let catalogo = CatalogoDeSkills::de_definicoes(&[definicao(HA)]);
+        assert_eq!(
+            catalogo.sinonimos_de("ha:light.sala_teto"),
+            vec!["living room light".to_string(), "luz da sala".to_string()],
+            "ordenado (fonte de descoberta determinística)"
+        );
+        // Segundo preset também sai; device sem preset não produz nada.
+        assert_eq!(
+            catalogo.sinonimos_de("ha:lock.porta_frente"),
+            vec!["front door".to_string(), "porta da frente".to_string()]
+        );
+        assert!(catalogo.sinonimos_de("mqtt:outro").is_empty());
     }
 
     /// Substring não casa: "luz" não pode virar "escolha uma das luzes".
