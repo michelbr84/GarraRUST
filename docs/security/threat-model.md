@@ -142,7 +142,7 @@ não-confiável) nestas superfícies:
 |---|---|---|
 | `web_fetch` | #1213 | corpo HTTP é conteúdo de terceiro |
 | resultado de tool MCP (`McpTool::execute`) | #1243 (fatia 1) | o servidor MCP é tipicamente um `npx` de terceiro; payload hostil entrava cru, e sem teto de tamanho era vetor de exaustão de contexto (cap 256 KiB com marca visível, alinhado ao `MAX_CONNECTOR_FRAME_BYTES`) |
-| `file_read` | **pendência** — #1243 fatia 2 | conteúdo de arquivo lido a pedido do modelo vira instrução |
+| `file_read` | #1243 (fatia 2) | o conteúdo de arquivo lido a pedido do modelo é texto de quem controla o arquivo; entra emoldurado quando suspeito, com a origem nomeada, e código-fonte limpo segue byte a byte |
 | `device_read`/`device_list` | **pendência** — #1243 fatia 3 | quem está no barramento escreve o nome/estado do dispositivo |
 
 ---
