@@ -78,10 +78,18 @@ impl Tool for FileReadTool {
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
-        let path_str = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'path' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — a mensagem nomeia o schema e pede o reenvio.
+        let path_str = match input.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "file_read",
+                    r#"{"path": string}"#,
+                    "path",
+                ));
+            }
+        };
 
         let resolved = self.resolve(context, path_str)?;
         let confined = self.confine(context, &resolved.path)?;
@@ -194,11 +202,18 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// #1296: parâmetro ausente é observação soft (`Ok` + `is_error`), não
+    /// `Err` — o turno sobrevive e o modelo reenvia a chamada corrigida.
     #[tokio::test]
-    async fn retorna_erro_se_parametro_ausente() {
+    async fn parametro_ausente_e_observacao_soft() {
         let tool = FileReadTool::new(FileJail::sessions_only());
-        let result = tool.execute(&ctx_with(None), serde_json::json!({})).await;
-        assert!(result.is_err());
+        let output = tool
+            .execute(&ctx_with(None), serde_json::json!({}))
+            .await
+            .expect("parâmetro ausente é soft-error, não Err");
+        assert!(output.is_error);
+        assert!(output.content.contains("'path'"), "{}", output.content);
+        assert!(output.content.contains("Reenvie"), "{}", output.content);
     }
 
     // ─── issue #923 ────────────────────────────────────────────────────────

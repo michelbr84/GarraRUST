@@ -83,10 +83,18 @@ impl Tool for WebFetchTool {
         _context: &ToolContext,
         input: serde_json::Value,
     ) -> Result<ToolOutput> {
-        let url = input
-            .get("url")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'url' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — a mensagem nomeia o schema e pede o reenvio.
+        let url = match input.get("url").and_then(|v| v.as_str()) {
+            Some(u) => u,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "web_fetch",
+                    r#"{"url": string}"#,
+                    "url",
+                ));
+            }
+        };
 
         if self.esta_bloqueado(url) {
             return Ok(ToolOutput::error("domínio bloqueado".to_string()));
@@ -191,8 +199,9 @@ mod tests {
         assert!(!tool.esta_bloqueado("https://good.com/path"));
     }
 
+    /// #1296: url ausente é observação soft (`Ok` + `is_error`), não `Err`.
     #[test]
-    fn retorna_erro_quando_url_ausente() {
+    fn url_ausente_e_observacao_soft() {
         let tool = WebFetchTool::new(None);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let ctx = ToolContext {
@@ -203,7 +212,11 @@ mod tests {
             working_dir: None,
             project_id: None,
         };
-        let result = rt.block_on(tool.execute(&ctx, serde_json::json!({})));
-        assert!(result.is_err());
+        let output = rt
+            .block_on(tool.execute(&ctx, serde_json::json!({})))
+            .expect("parâmetro ausente é soft-error, não Err");
+        assert!(output.is_error);
+        assert!(output.content.contains("'url'"), "{}", output.content);
+        assert!(output.content.contains("Reenvie"), "{}", output.content);
     }
 }

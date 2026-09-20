@@ -35,7 +35,7 @@
 //! `CapabilityDesconhecida` não é queda de conexão — quem sabe é o adapter.
 
 use async_trait::async_trait;
-use garraia_common::{Error, Result};
+use garraia_common::Result;
 use garraia_hardware::{
     DeviceRegistry, DeviceStateStore, ExecutionDecision, FonteDeSinonimos, HardwareGate, RiskClass,
 };
@@ -241,14 +241,28 @@ impl Tool for DeviceReadTool {
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
-        let device_id = input
-            .get("device")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'device' ausente".into()))?;
-        let capability = input
-            .get("capability")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'capability' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — a mensagem nomeia o schema e pede o reenvio.
+        let device_id = match input.get("device").and_then(|v| v.as_str()) {
+            Some(d) => d,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "device_read",
+                    r#"{"device": string, "capability": string}"#,
+                    "device",
+                ));
+            }
+        };
+        let capability = match input.get("capability").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "device_read",
+                    r#"{"device": string, "capability": string}"#,
+                    "capability",
+                ));
+            }
+        };
 
         let Some(device) = self.config.registry.get(device_id) else {
             return Ok(erro_desconhecido(device_id));
@@ -357,14 +371,28 @@ impl Tool for DeviceExecuteTool {
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
-        let device_id = input
-            .get("device")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'device' ausente".into()))?;
-        let capability = input
-            .get("capability")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'capability' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — a mensagem nomeia o schema e pede o reenvio.
+        let device_id = match input.get("device").and_then(|v| v.as_str()) {
+            Some(d) => d,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "device_execute",
+                    r#"{"device": string, "capability": string, "args"?: object}"#,
+                    "device",
+                ));
+            }
+        };
+        let capability = match input.get("capability").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "device_execute",
+                    r#"{"device": string, "capability": string, "args"?: object}"#,
+                    "capability",
+                ));
+            }
+        };
         let args = input
             .get("args")
             .cloned()
@@ -978,16 +1006,27 @@ mod tests {
         assert!(output.content.contains("device_read"), "{}", output.content);
     }
 
-    /// Parâmetro ausente é erro de entrada, não pânico.
+    /// #1296: parâmetro ausente é observação soft (`Ok` + `is_error`), não
+    /// pânico nem `Err` — vale para as duas tools que exigem device/capability.
     #[tokio::test]
-    async fn execute_sem_parametros_e_erro() {
+    async fn sem_parametros_e_observacao_soft() {
         let reg = registry();
-        let tool = DeviceExecuteTool::new(config(&reg));
-        let saida = tool
+
+        let execute = DeviceExecuteTool::new(config(&reg));
+        let saida = execute
             .execute(&ctx(ToolApproval::None), json!({}))
             .await
-            .expect_err("sem 'device' é erro de entrada");
-        assert!(saida.to_string().contains("device"), "{}", saida);
+            .expect("parâmetro ausente é soft-error, não Err");
+        assert!(saida.is_error);
+        assert!(saida.content.contains("'device'"), "{}", saida.content);
+
+        let read = DeviceReadTool::new(config(&reg));
+        let saida = read
+            .execute(&ctx(ToolApproval::None), json!({"device": "qualquer"}))
+            .await
+            .expect("parâmetro ausente é soft-error, não Err");
+        assert!(saida.is_error);
+        assert!(saida.content.contains("'capability'"), "{}", saida.content);
     }
 
     /// E2E do aceite da #1129: as três tools aparecem no inventário do
