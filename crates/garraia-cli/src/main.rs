@@ -252,7 +252,12 @@ enum Commands {
         /// Reopen a persisted session, loading its history before the first
         /// turn. Implies persistence for the turns that follow, so the
         /// resumed conversation keeps growing in the same session (#1088).
-        #[arg(long, value_name = "SESSION_ID")]
+        ///
+        /// With no value (or the value `latest`), picks the session with the
+        /// most recent activity on this CLI instead of requiring the id —
+        /// after a crash/timeout, the interrupted turn IS the target
+        /// (#1300).
+        #[arg(long, value_name = "SESSION_ID", num_args = 0..=1, default_missing_value = "latest")]
         resume: Option<String>,
     },
 
@@ -2658,6 +2663,34 @@ mod tests {
             Commands::Chat { model, yes, .. } => {
                 assert_eq!(model.as_deref(), Some("qwen3.8"));
                 assert!(!yes);
+            }
+            _ => panic!("expected the Chat subcommand"),
+        }
+    }
+
+    /// #1300: `--resume` sem valor (e `--resume latest`) vira o alvo da
+    /// ultima atividade, e o id explicito continua sendo adotado como veio.
+    #[test]
+    fn resume_sem_valor_vira_latest_e_com_valor_mantem_o_id() {
+        let cli = Cli::try_parse_from(["garra", "chat", "--resume"]).expect("bare --resume");
+        match cli.command {
+            Commands::Chat { resume, .. } => {
+                assert_eq!(resume.as_deref(), Some("latest"), "bare --resume");
+            }
+            _ => panic!("expected the Chat subcommand"),
+        }
+        let cli =
+            Cli::try_parse_from(["garra", "chat", "--resume", "latest"]).expect("latest valor");
+        match cli.command {
+            Commands::Chat { resume, .. } => {
+                assert_eq!(resume.as_deref(), Some("latest"));
+            }
+            _ => panic!("expected the Chat subcommand"),
+        }
+        let cli = Cli::try_parse_from(["garra", "chat", "--resume", "cli-abc"]).expect("id");
+        match cli.command {
+            Commands::Chat { resume, .. } => {
+                assert_eq!(resume.as_deref(), Some("cli-abc"));
             }
             _ => panic!("expected the Chat subcommand"),
         }

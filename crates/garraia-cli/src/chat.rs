@@ -48,6 +48,10 @@ const COMANDOS: &[(&str, &str)] = &[
     ("/tool", "Saidas de ferramenta guardadas nesta sessao"),
     ("/tool <n>", "A saida inteira de uma chamada"),
     ("/history", "Historico da conversa"),
+    (
+        "/resume [id]",
+        "Retomar a sessao mais recente (ou um id) — o alvo e sempre a ultima atividade",
+    ),
     ("/logs", "Onde fica o log, e como segui-lo"),
     ("/models", "Modelos que este provider lista"),
     ("/model <nome>", "Trocar de modelo sem reiniciar"),
@@ -305,17 +309,20 @@ fn open_chat_store(
 }
 
 /// Grava um turno (pergunta + resposta) no store.
-///
 /// `direction` segue o vocabulario que o gateway ja usa em `persist_turn` —
 /// `"user"` e `"assistant"` —, porque e o que `load_history` e a hidratacao
 /// do gateway leem de volta. Nada de schema novo: sao as duas mesmas
 /// chamadas, so que feitas pelo CLI.
-fn append_turn(
-    store: &SessionStore,
-    session_id: &str,
-    user_text: &str,
-    assistant_text: &str,
-) -> Result<()> {
+///
+/// #1300: a gravacao e fracionada, nao atomica de proposito. A pergunta
+/// grava ANTES do turno rodar (`persist_user_turn`) e a resposta/marcador
+/// grava no fim (`persist_assistant_turn`). Um crash duro no meio deixa a
+/// pergunta sola no banco — e exatamente isso que o `--resume latest`
+/// seguinte recupera. O `append_turn` de antes gravava o par so DEPOIS do
+/// turno completo, entao timeout, Ctrl+C, provider caindo ou kill -9
+/// apagavam o turno do ponto de vista do resume: a sessao restaurada
+/// terminava na pergunta anterior, e o trabalho recente sumia.
+fn persist_user_turn(store: &SessionStore, session_id: &str, user_text: &str) -> Result<()> {
     store.upsert_session(
         session_id,
         "cli",
@@ -323,10 +330,62 @@ fn append_turn(
         &serde_json::json!({ "origem": "garra chat" }),
     )?;
     let meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
-    let agora = chrono::Utc::now();
-    store.append_message(session_id, "user", user_text, agora, &meta)?;
-    store.append_message(session_id, "assistant", assistant_text, agora, &meta)?;
+    store.append_message(session_id, "user", user_text, chrono::Utc::now(), &meta)?;
     Ok(())
+}
+
+/// Grava o lado do assistant: resposta completa ou o marcador de
+/// interrupcao de `marcador_de_interrupcao`. A sessao ja existe — o
+/// `persist_user_turn` do mesmo turno a criou.
+fn persist_assistant_turn(
+    store: &SessionStore,
+    session_id: &str,
+    assistant_text: &str,
+) -> Result<()> {
+    let meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
+    store.append_message(
+        session_id,
+        "assistant",
+        assistant_text,
+        chrono::Utc::now(),
+        &meta,
+    )?;
+    Ok(())
+}
+
+/// O que o fim de um turno diz de si, para o historico hidratado contar a
+/// verdade. Timeout, Ctrl+C e erro gravam um marcador como mensagem do
+/// assistant; so o turno completo fica sem nada. O `--resume` seguinte
+/// hidrata o marcador como texto normal — o modelo retomado ve que a ultima
+/// resposta NAO aconteceu, em vez de ler uma conversa que termina em
+/// resposta inventada pela ausencia.
+fn marcador_de_interrupcao<T, E>(outcome: &TurnOutcome<T, E>) -> Option<&'static str> {
+    match outcome {
+        TurnOutcome::TimedOut => Some("[turno interrompido: timeout]"),
+        TurnOutcome::Cancelled => Some("[turno interrompido: cancelado]"),
+        TurnOutcome::Done(Err(_)) => Some("[turno interrompido: erro]"),
+        TurnOutcome::Done(Ok(_)) => None,
+    }
+}
+
+/// Decide o id inicial da sessao. Id explicito do `--resume` vence;
+/// `latest` (o valor quando a flag vem sem argumento) cai para o alvo do
+/// banco (`latest_session_id`); sem alvo, o id novo entra com a marca de
+/// "comecou nova" para o chamador avisar — primeiro uso com `--resume` e
+/// boot legitimo, nao erro.
+fn id_inicial_da_sessao(
+    resume: Option<&str>,
+    latest: Option<String>,
+    novo: String,
+) -> (String, bool) {
+    match resume {
+        Some("latest") => match latest {
+            Some(id) => (id, false),
+            None => (novo, true),
+        },
+        Some(id) => (id.to_string(), false),
+        None => (novo, true),
+    }
 }
 
 /// Le o historico gravado de uma sessao, em ordem cronologica.
@@ -1395,13 +1454,25 @@ pub async fn run_chat(
     // `--resume` fica `None` — nenhum banco aberto, nenhum arquivo criado —
     // e o chat segue vivendo apenas na memoria, como sempre viveu.
     let store = open_chat_store(&config, persist, resume.as_deref())?;
+    // Um renderer para a sessao inteira; cada turno o rearma com a animacao
+    // daquele turno (#942). O rotulo `Garra` e a ordem de escrita passam a ser
+    // responsabilidade dele — ver ADR 0017.
+    let mut renderer = TerminalRenderer::new(caps, None);
     // Retomar e adotar o id que veio da linha de comando; comecar do zero e
     // sortear um. Nos dois casos o id aparece na tela (abaixo) justamente
     // para poder ser digitado de volta no `--resume`.
-    let session_id = match resume.as_deref() {
-        Some(id) => id.to_string(),
-        None => format!("cli-{}", uuid::Uuid::new_v4()),
-    };
+    //
+    // #1300: `--resume` sem valor (ou `--resume latest`) aponta para a
+    // ultima atividade do canal CLI — o turno interrompido de minutos atras,
+    // nao uma sessao antiga qualquer. Sem alvo, comeca nova e avisa abaixo.
+    let (mut session_id, comecou_nova) = id_inicial_da_sessao(
+        resume.as_deref(),
+        store
+            .as_ref()
+            .and_then(|s| s.latest_session_id("cli").ok())
+            .flatten(),
+        format!("cli-{}", uuid::Uuid::new_v4()),
+    );
     // Ja vem cheio quando ha `--resume`; a carga acontece abaixo, depois do
     // renderer existir, para a contagem sair pela mesma moldura das outras
     // mensagens da sessao.
@@ -1412,10 +1483,6 @@ pub async fn run_chat(
     // Semente do indicador de atividade: roda a mensagem de abertura a
     // cada turno, para dois envios seguidos não começarem com a mesma frase.
     let mut turn_index: usize = 0;
-    // Um renderer para a sessao inteira; cada turno o rearma com a animacao
-    // daquele turno (#942). O rotulo `Garra` e a ordem de escrita passam a ser
-    // responsabilidade dele — ver ADR 0017.
-    let mut renderer = TerminalRenderer::new(caps, None);
 
     // Aviso e carga da persistencia (#1088). Fica aqui, e nao junto da
     // abertura do store, porque a contagem de turnos recuperados sai pela
@@ -1423,7 +1490,17 @@ pub async fn run_chat(
     // que ignoraria `NO_COLOR` e pipe.
     if let Some(ref store) = store {
         let db = config.resolved_data_dir().join(SESSIONS_DB);
-        if resume.is_some() {
+        if resume.is_some() && comecou_nova {
+            // `--resume latest` sem alvo: primeiro uso (ou banco limpo) e
+            // boot legitimo — avisa e segue, sem derrubar o programa.
+            renderer.handle(
+                UiEvent::Warning(&format!(
+                    "Nenhuma sessao anterior encontrada em {} — comecando sessao nova: {session_id}",
+                    db.display()
+                )),
+                &mut io::stdout(),
+            );
+        } else if resume.is_some() {
             let carregadas = load_history(store, &session_id, RESUME_LIMIT)?;
             // Cada turno comeca com uma pergunta. Contar `user` e mais
             // honesto que `len / 2` quando a hidratacao do gateway deixou
@@ -1865,6 +1942,107 @@ pub async fn run_chat(
                 );
                 continue;
             }
+            // #1300: `/resume` retoma a SESSAO MAIS RECENTE — que, com a
+            // persistencia adiantada da pergunta, e o turno interrompido de
+            // minutos atras, nao uma sessao antiga. Com id, retoma esse id.
+            _ if input == "/resume" || input.starts_with("/resume ") => {
+                let Some(s) = store.as_ref() else {
+                    renderer.handle(
+                        UiEvent::Warning(
+                            "Sem persistencia nesta sessao: /resume precisa do banco de sessoes.",
+                        ),
+                        &mut io::stdout(),
+                    );
+                    renderer.handle(
+                        UiEvent::Hint("Reinicie com: garraia chat --resume  (ou --resume <id>)"),
+                        &mut io::stdout(),
+                    );
+                    continue;
+                };
+                let arg = input["/resume".len()..].trim();
+                let alvo = if arg.is_empty() {
+                    match s.latest_session_id("cli") {
+                        Ok(alvo) => alvo,
+                        Err(e) => {
+                            renderer.handle(
+                                UiEvent::Warning(&format!(
+                                    "Nao consegui achar a ultima sessao ({e}). Estado mantido."
+                                )),
+                                &mut io::stdout(),
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    Some(arg.to_string())
+                };
+                let Some(alvo) = alvo else {
+                    renderer.handle(
+                        UiEvent::Warning(
+                            "Nenhuma sessao anterior encontrada no banco desta sessao.",
+                        ),
+                        &mut io::stdout(),
+                    );
+                    continue;
+                };
+                if alvo == session_id {
+                    renderer.handle(
+                        UiEvent::Hint(&format!("Ja esta na sessao {alvo}.")),
+                        &mut io::stdout(),
+                    );
+                    continue;
+                }
+                match load_history(s, &alvo, RESUME_LIMIT) {
+                    Err(e) => renderer.handle(
+                        UiEvent::Warning(&format!(
+                            "Nao consegui carregar {alvo} ({e}). Estado mantido."
+                        )),
+                        &mut io::stdout(),
+                    ),
+                    Ok(carregadas) if carregadas.is_empty() => renderer.handle(
+                        UiEvent::Warning(&format!(
+                            "A sessao {alvo} nao tem historico. Estado mantido: {session_id}."
+                        )),
+                        &mut io::stdout(),
+                    ),
+                    Ok(carregadas) => {
+                        let turnos = carregadas
+                            .iter()
+                            .filter(|m| matches!(m.role, ChatRole::User))
+                            .count();
+                        // O fim da conversa hidratada diz se o ultimo turno
+                        // acabou interrompido — o resumo que a issue pede:
+                        // o que ficou pendente e por que parou.
+                        let interrompido = carregadas.last().and_then(|m| match &m.content {
+                            MessagePart::Text(t) if t.starts_with("[turno interrompido: ") => Some(
+                                t.trim_start_matches("[turno interrompido: ")
+                                    .trim_end_matches(']')
+                                    .to_string(),
+                            ),
+                            _ => None,
+                        });
+                        history = carregadas;
+                        session_id = alvo.clone();
+                        turn_index = turnos;
+                        renderer.handle(
+                            UiEvent::Hint(&format!(
+                                "Retomando {alvo}: {turnos} turno(s) recuperado(s)."
+                            )),
+                            &mut io::stdout(),
+                        );
+                        if let Some(motivo) = interrompido {
+                            renderer.handle(
+                                UiEvent::Warning(&format!(
+                                    "O ultimo turno desta sessao terminou interrompido ({motivo}); \
+                                     a pergunta dele esta no fim do historico."
+                                )),
+                                &mut io::stdout(),
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
             _ if input.starts_with("/model ") => {
                 let new_model = input[7..].trim();
                 if new_model.is_empty() {
@@ -1967,6 +2145,21 @@ pub async fn run_chat(
         // `stream_turn`, que o escreve junto do primeiro token. O indicador de
         // atividade ocupa esta linha enquanto o modelo pensa, e limpá-la
         // apagaria o rótulo se ele já estivesse na tela.
+        //
+        // #1300: a pergunta grava AGORA, antes do turno — não depois. Era o
+        // centro do bug do `/resume`: só o turno COMPLETO tocava o disco,
+        // então timeout, Ctrl+C, provider caindo ou um kill no meio deixavam
+        // a sessão restaurada terminando na pergunta anterior. Falha de
+        // gravação avisa e o turno segue — persistência não pode derrubar a
+        // conversa (#1088).
+        if let Some(ref store) = store
+            && let Err(e) = persist_user_turn(store, &session_id, &input)
+        {
+            renderer.handle(
+                UiEvent::Warning(&format!("Pergunta nao gravada: {e}")),
+                &mut io::stdout(),
+            );
+        }
         renderer.begin_turn(caps.spinner(turn_index));
         turn_index = turn_index.wrapping_add(1);
 
@@ -2016,6 +2209,20 @@ pub async fn run_chat(
         .await;
         turn_active.store(false, std::sync::atomic::Ordering::SeqCst);
 
+        // #1300: os tres fins inacabados gravam o marcador de interrupcao
+        // como mensagem do assistant, antes do cartao na tela. O
+        // `--resume` seguinte hidrata pergunta + marcador — o alvo do
+        // resume e a sessao desta conversa, nao uma antiga qualquer.
+        if let Some(ref store) = store
+            && let Some(marcador) = marcador_de_interrupcao(&outcome)
+            && let Err(e) = persist_assistant_turn(store, &session_id, marcador)
+        {
+            renderer.handle(
+                UiEvent::Warning(&format!("Marcador de interrupcao nao gravado: {e}")),
+                &mut stdout,
+            );
+        }
+
         match outcome {
             TurnOutcome::TimedOut => {
                 let cartao = ErrorCard::timeout_local(timeout_secs);
@@ -2040,14 +2247,16 @@ pub async fn run_chat(
                 println!();
 
                 // #1088: gravar e opcional e nao pode derrubar a conversa —
-                // disco cheio ou banco travado avisa e segue. Tambem nao e
-                // o caso de `save_session_summary`: sem um resumidor no CLI
-                // (ele mora no gateway) nao ha resumo honesto para gravar.
+                // disco cheio ou banco travado avisa e segue. A pergunta ja
+                // foi gravada no inicio do turno (#1300); aqui entra so o
+                // lado do assistant. Tambem nao e o caso de
+                // `save_session_summary`: sem um resumidor no CLI (ele mora
+                // no gateway) nao ha resumo honesto para gravar.
                 if let Some(ref store) = store
-                    && let Err(e) = append_turn(store, &session_id, &input, &full_response)
+                    && let Err(e) = persist_assistant_turn(store, &session_id, &full_response)
                 {
                     renderer.handle(
-                        UiEvent::Warning(&format!("Turno nao gravado: {e}")),
+                        UiEvent::Warning(&format!("Resposta nao gravada: {e}")),
                         &mut stdout,
                     );
                 }
@@ -3401,8 +3610,10 @@ mod persist_tests {
     #[test]
     fn dois_turnos_voltam_em_ordem() {
         let store = SessionStore::in_memory().expect("store em memoria");
-        append_turn(&store, "cli-teste", "oi", "ola").expect("turno 1");
-        append_turn(&store, "cli-teste", "tudo bem?", "tudo").expect("turno 2");
+        persist_user_turn(&store, "cli-teste", "oi").expect("pergunta 1");
+        persist_assistant_turn(&store, "cli-teste", "ola").expect("resposta 1");
+        persist_user_turn(&store, "cli-teste", "tudo bem?").expect("pergunta 2");
+        persist_assistant_turn(&store, "cli-teste", "tudo").expect("resposta 2");
 
         let historico = load_history(&store, "cli-teste", RESUME_LIMIT).expect("carrega");
         assert_eq!(historico.len(), 4, "dois turnos sao quatro mensagens");
@@ -3420,11 +3631,13 @@ mod persist_tests {
         assert!(historico.is_empty());
     }
 
-    /// `append_turn` grava pergunta e resposta com o MESMO `Utc::now()`.
-    /// A ordem entre elas nao pode depender do timestamp: `load_recent_messages`
-    /// ordena por `rowid` (ordem de insercao), e e isso que mantem o turno
-    /// deterministico. Aqui o teste força o pior caso — todas as mensagens
-    /// da sessao com timestamp identico — e prende a ordem de insercao.
+    /// `persist_user_turn` grava a pergunta com o `Utc::now()` do inicio do
+    /// turno e `persist_assistant_turn` com o do fim — timestamps sempre
+    /// diferentes. A ordem entre elas nao pode depender do timestamp de
+    /// qualquer forma: `load_recent_messages` ordena por `rowid` (ordem de
+    /// insercao), e e isso que mantem o turno deterministico. Aqui o teste
+    /// força o pior caso — todas as mensagens da sessao com timestamp
+    /// identico — e prende a ordem de insercao.
     #[test]
     fn timestamps_iguais_mantem_ordem_de_insercao() {
         let store = SessionStore::in_memory().expect("store em memoria");
@@ -3454,5 +3667,94 @@ mod persist_tests {
             vec!["primeiro", "segundo", "terceiro"],
             "timestamp identico nao pode reordenar a sessao"
         );
+    }
+
+    // ── #1300: /resume volta ao ultimo turno interrompido ──────────────────
+
+    /// Os tres fins inacabados ganham marcador; o sucesso nao.
+    #[test]
+    fn marcador_de_interrupcao_cobre_os_tres_fins_inacabados() {
+        use garraia_common::Error;
+        assert_eq!(
+            marcador_de_interrupcao(&TurnOutcome::<String, Error>::TimedOut),
+            Some("[turno interrompido: timeout]")
+        );
+        assert_eq!(
+            marcador_de_interrupcao(&TurnOutcome::<String, Error>::Cancelled),
+            Some("[turno interrompido: cancelado]")
+        );
+        assert_eq!(
+            marcador_de_interrupcao(&TurnOutcome::<String, Error>::Done(Err(Error::Agent(
+                "provider caiu".into()
+            )))),
+            Some("[turno interrompido: erro]")
+        );
+        assert_eq!(
+            marcador_de_interrupcao(&TurnOutcome::<String, Error>::Done(Ok(
+                "resposta completa".into()
+            ))),
+            None,
+            "turno completo nao tem o que marcar"
+        );
+    }
+
+    /// Persistencia fracionada (#1300): a pergunta grava ANTES do turno, o
+    /// marcador grava depois — e um crash duro no meio deixa a pergunta sola
+    /// no banco, que e exatamente o que o `--resume` seguinte recupera.
+    #[test]
+    fn persistencia_fracionada_sobrevive_a_crash_no_meio_do_turno() {
+        let store = SessionStore::in_memory().expect("store em memoria");
+
+        // O turno comecou: a pergunta ja esta no disco.
+        persist_user_turn(&store, "cli-crash", "ajuda no SOUL.md").expect("user persistido");
+        // ...crash duro aqui (kill -9, pcao de luz): NADA mais roda. A
+        // sessao seguinte com `--resume latest` acha a pergunta.
+        let msgs = store
+            .load_recent_messages("cli-crash", 10)
+            .expect("carrega apos crash");
+        assert_eq!(msgs.len(), 1, "so a pergunta existe");
+        assert_eq!(msgs[0].content, "ajuda no SOUL.md");
+
+        // Em vez do crash, o turno acabou em timeout: o marcador entra como
+        // mensagem do assistant e o historico hidratado conta a verdade.
+        let marcador =
+            marcador_de_interrupcao(&TurnOutcome::<String, garraia_common::Error>::TimedOut)
+                .expect("timeout tem marcador");
+        persist_assistant_turn(&store, "cli-crash", marcador).expect("marcador persistido");
+        let msgs = store
+            .load_recent_messages("cli-crash", 10)
+            .expect("carrega apos marcador");
+        let conteudos: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            conteudos,
+            vec!["ajuda no SOUL.md", "[turno interrompido: timeout]"],
+            "o resume hidrata pergunta + marcador, na ordem em que aconteceram"
+        );
+    }
+
+    /// `--resume latest` resolve para a sessao mais ativa do canal CLI. A
+    /// ordem no banco mora em `latest_session_id` (garraia-db, testado la);
+    /// aqui a decisao de boot do CLI: id explicito vence, `latest` cai para
+    /// o alvo do banco, e sem alvo a sessao comeca nova (com aviso) em vez
+    /// de derrubar o programa — primeiro uso com `--resume` e legitimo.
+    #[test]
+    fn id_inicial_da_sessao_resolve_latest_com_fallback_para_nova() {
+        // Id explicito: vence sempre, nao toca no banco.
+        let (id, nova) = id_inicial_da_sessao(Some("cli-xyz"), None, "cli-fresh".into());
+        assert_eq!(id, "cli-xyz");
+        assert!(!nova);
+        // `latest` com alvo no banco: o alvo.
+        let (id, nova) =
+            id_inicial_da_sessao(Some("latest"), Some("cli-alvo".into()), "cli-fresh".into());
+        assert_eq!(id, "cli-alvo");
+        assert!(!nova);
+        // `latest` sem alvo (banco vazio / canal errado): sessao nova.
+        let (id, nova) = id_inicial_da_sessao(Some("latest"), None, "cli-fresh".into());
+        assert_eq!(id, "cli-fresh");
+        assert!(nova, "banco vazio nao e erro de boot");
+        // Sem --resume: sessao nova (comportamento #1088 preservado).
+        let (id, nova) = id_inicial_da_sessao(None, Some("cli-alvo".into()), "cli-fresh".into());
+        assert_eq!(id, "cli-fresh");
+        assert!(nova);
     }
 }
