@@ -9,7 +9,7 @@ use tracing::{debug, info, instrument};
 
 use crate::providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, Usage, erro_de_envio,
+    StreamEvent, Usage, ValidacaoDeModelo, erro_de_envio,
 };
 
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -83,13 +83,11 @@ impl OpenAiProvider {
         format!("{}/v1/chat/completions", base)
     }
 
-    /// List models available from OpenRouter API
-    /// Returns a curated list of popular models to avoid overwhelming the UI
-    async fn list_models(&self) -> Result<Vec<String>> {
-        if !self.is_openrouter {
-            return Ok(Vec::new());
-        }
-
+    /// Catálogo COMPLETO do OpenRouter (`GET /models`), sem o filtro de
+    /// populares — é contra esta lista que uma rota se valida (#1298): a
+    /// curada de `/models` anuncia só os populares e esconderia namespaces
+    /// válidos como `z-ai/...` (o default da ADR 0022 vive fora dela).
+    async fn catalogo_openrouter(&self) -> Result<Vec<String>> {
         let base = self.base_url.trim_end_matches('/');
         let url = format!("{}/models", base);
 
@@ -137,35 +135,22 @@ impl OpenAiProvider {
             .await
             .map_err(|e| Error::Agent(format!("failed to parse models response: {e}")))?;
 
-        let all_models: Vec<String> = models_response.data.into_iter().map(|m| m.id).collect();
+        Ok(models_response.data.into_iter().map(|m| m.id).collect())
+    }
+
+    /// List models available from OpenRouter API
+    /// Returns a curated list of popular models to avoid overwhelming the UI
+    async fn list_models(&self) -> Result<Vec<String>> {
+        if !self.is_openrouter {
+            return Ok(Vec::new());
+        }
+
+        let all_models = self.catalogo_openrouter().await?;
 
         tracing::info!("OpenRouter total models: {}", all_models.len());
 
         // Return popular models for UI display
-        let popular_models = vec![
-            "openai/gpt-4o".to_string(),
-            "openai/gpt-4o-mini".to_string(),
-            "openai/gpt-4".to_string(),
-            "openai/gpt-3.5-turbo".to_string(),
-            "anthropic/claude-sonnet-4.5".to_string(),
-            "anthropic/claude-opus-4.5".to_string(),
-            "anthropic/claude-haiku-4.5".to_string(),
-            "google/gemini-2.5-pro".to_string(),
-            "google/gemini-2.5-flash".to_string(),
-            "meta-llama/llama-3.1-70b-instruct".to_string(),
-            "meta-llama/llama-3.3-70b-instruct".to_string(),
-            "deepseek/deepseek-r1".to_string(),
-            "mistralai/mistral-large".to_string(),
-            "qwen/qwen-plus".to_string(),
-            "moonshotai/kimi-k2".to_string(),
-            "openrouter/auto".to_string(),
-        ];
-
-        // Filter to only include models that exist in the available models
-        let models: Vec<String> = popular_models
-            .into_iter()
-            .filter(|m| all_models.contains(m))
-            .collect();
+        let models = curada_do_catalogo(&all_models);
 
         tracing::info!("OpenRouter popular models count: {}", models.len());
 
@@ -646,6 +631,21 @@ impl LlmProvider for OpenAiProvider {
             Ok(Vec::new())
         }
     }
+
+    /// #1298: valida contra o catálogo COMPLETO do OpenRouter. A curada de
+    /// `/models` esconde namespaces válidos — o default `z-ai/glm-5.3-flash`
+    /// da ADR 0022 não está nela — e não pode ser o gate do `/model`.
+    async fn validar_modelo(&self, model: &str) -> Result<ValidacaoDeModelo> {
+        if !self.is_openrouter {
+            return Ok(ValidacaoDeModelo::SemListagem);
+        }
+        let completa = self.catalogo_openrouter().await?;
+        Ok(classificar_no_catalogo(
+            &curada_do_catalogo(&completa),
+            &completa,
+            model,
+        ))
+    }
 }
 
 // --- OpenAI Wire Types (private) ---
@@ -962,6 +962,57 @@ fn from_openai_response(response: OpenAiResponse) -> LlmResponse {
     }
 }
 
+/// Os populares anunciados na lista curada de `/models` (#1298).
+fn modelos_populares() -> Vec<&'static str> {
+    vec![
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "openai/gpt-4",
+        "openai/gpt-3.5-turbo",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-opus-4.5",
+        "anthropic/claude-haiku-4.5",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.5-flash",
+        "meta-llama/llama-3.1-70b-instruct",
+        "meta-llama/llama-3.3-70b-instruct",
+        "deepseek/deepseek-r1",
+        "mistralai/mistral-large",
+        "qwen/qwen-plus",
+        "moonshotai/kimi-k2",
+        "openrouter/auto",
+    ]
+}
+
+/// Os populares que o catálogo completo confirma — a lista curada que
+/// `available_models` anuncia.
+fn curada_do_catalogo(completa: &[String]) -> Vec<String> {
+    modelos_populares()
+        .into_iter()
+        .filter(|m| completa.iter().any(|c| c.as_str() == *m))
+        .map(str::to_string)
+        .collect()
+}
+
+/// #1298: classificação pura do identificador contra os dois níveis de
+/// catálogo — a regra que o `validar_modelo` do OpenRouter aplica. O modelo
+/// pode estar nos dois (anunciado), só no completo (rota válida com nome não
+/// anunciado) ou em nenhum (recusa).
+fn classificar_no_catalogo(
+    curada: &[String],
+    completa: &[String],
+    model: &str,
+) -> ValidacaoDeModelo {
+    if !completa.iter().any(|m| m == model) {
+        return ValidacaoDeModelo::Ausente;
+    }
+    if curada.iter().any(|m| m == model) {
+        ValidacaoDeModelo::Listado
+    } else {
+        ValidacaoDeModelo::ListadoForaDaCurada
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,5 +1303,33 @@ mod tests {
                 .unwrap_or("");
             assert!(!msg.is_empty(), "error message should not be empty");
         }
+    }
+
+    /// #1298: classificação do `/model` contra os dois níveis de catálogo do
+    /// OpenRouter — a lista curada de `/models` anuncia só os populares, e o
+    /// próprio default da ADR 0022 (`z-ai/glm-5.3-flash`) vive fora dela.
+    /// Namespace de terceiro servido pelo OpenRouter é rota VÁLIDA com nome
+    /// não anunciado, não erro.
+    #[test]
+    fn classificar_no_catalogo_distingue_curada_de_completa() {
+        let curada = vec!["openai/gpt-4o".to_string()];
+        let completa = vec![
+            "openai/gpt-4o".to_string(),
+            "z-ai/glm-5.3-flash".to_string(),
+        ];
+        assert_eq!(
+            classificar_no_catalogo(&curada, &completa, "openai/gpt-4o"),
+            ValidacaoDeModelo::Listado
+        );
+        // Namespace de terceiro via OpenRouter: rota válida, fora da curada.
+        assert_eq!(
+            classificar_no_catalogo(&curada, &completa, "z-ai/glm-5.3-flash"),
+            ValidacaoDeModelo::ListadoForaDaCurada
+        );
+        // Nem no catálogo completo: recusa transacional.
+        assert_eq!(
+            classificar_no_catalogo(&curada, &completa, "vendor/inexistente"),
+            ValidacaoDeModelo::Ausente
+        );
     }
 }
