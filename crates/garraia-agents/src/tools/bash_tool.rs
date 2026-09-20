@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use garraia_common::{Error, Result, safety_gate};
+use garraia_common::{Result, safety_gate};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -285,10 +285,18 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
-        let comando = input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'command' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — `Err` aqui vira `agent error:` sem orientação de schema.
+        let comando = match input.get("command").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "bash",
+                    r#"{"command": string}"#,
+                    "command",
+                ));
+            }
+        };
 
         // GAR-236: Security check - deny list (hard block, never executes)
         if self.is_dangerous(comando) {
@@ -565,8 +573,11 @@ mod tests {
         assert!(output.is_error);
     }
 
+    /// #1296: comando ausente é observação soft (`Ok` + `is_error`) — o
+    /// modelo recebe a orientação de schema e reenvia a chamada no mesmo
+    /// turno; nunca `Err`, que em caminhos sem amortecimento mata o passo.
     #[tokio::test]
-    async fn retorna_erro_se_faltar_comando() {
+    async fn comando_ausente_e_observacao_soft() {
         let tool = BashTool::new(None);
 
         let ctx = ToolContext {
@@ -578,9 +589,14 @@ mod tests {
             project_id: None,
         };
 
-        let result = tool.execute(&ctx, serde_json::json!({})).await;
+        let output = tool
+            .execute(&ctx, serde_json::json!({}))
+            .await
+            .expect("parâmetro ausente é soft-error, não Err");
 
-        assert!(result.is_err());
+        assert!(output.is_error);
+        assert!(output.content.contains("'command'"), "{}", output.content);
+        assert!(output.content.contains("Reenvie"), "{}", output.content);
     }
 
     #[test]

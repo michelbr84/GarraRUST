@@ -318,13 +318,29 @@ impl Tool for ScheduleHeartbeat {
             ));
         }
 
-        let delay = args["delay_seconds"].as_i64().ok_or_else(|| {
-            Error::Agent("argumento 'delay_seconds' ausente ou inválido".to_string())
-        })?;
+        // #1296: argumento ausente ou de tipo errado é observação soft, não
+        // erro do turno — a mensagem nomeia o schema e pede o reenvio.
+        let delay = match args["delay_seconds"].as_i64() {
+            Some(d) => d,
+            None => {
+                return Ok(super::argumento_invalido(
+                    "schedule_heartbeat",
+                    r#"{"delay_seconds": integer, "reason": string}"#,
+                    "delay_seconds",
+                ));
+            }
+        };
 
-        let reason = args["reason"]
-            .as_str()
-            .ok_or_else(|| Error::Agent("argumento 'reason' ausente ou inválido".to_string()))?;
+        let reason = match args["reason"].as_str() {
+            Some(r) => r,
+            None => {
+                return Ok(super::argumento_invalido(
+                    "schedule_heartbeat",
+                    r#"{"delay_seconds": integer, "reason": string}"#,
+                    "reason",
+                ));
+            }
+        };
 
         if delay <= 0 {
             return Err(Error::Agent("delay_seconds deve ser positivo".to_string()));
@@ -422,12 +438,28 @@ impl Tool for ScheduleRecurring {
             ));
         }
 
-        let cron_expr = args["cron_expr"]
-            .as_str()
-            .ok_or_else(|| Error::Agent("argumento 'cron_expr' ausente ou inválido".to_string()))?;
-        let reason = args["reason"]
-            .as_str()
-            .ok_or_else(|| Error::Agent("argumento 'reason' ausente ou inválido".to_string()))?;
+        // #1296: argumento ausente ou de tipo errado é observação soft, não
+        // erro do turno.
+        let cron_expr = match args["cron_expr"].as_str() {
+            Some(c) => c,
+            None => {
+                return Ok(super::argumento_invalido(
+                    "schedule_recurring",
+                    r#"{"cron_expr": string, "reason": string}"#,
+                    "cron_expr",
+                ));
+            }
+        };
+        let reason = match args["reason"].as_str() {
+            Some(r) => r,
+            None => {
+                return Ok(super::argumento_invalido(
+                    "schedule_recurring",
+                    r#"{"cron_expr": string, "reason": string}"#,
+                    "reason",
+                ));
+            }
+        };
         let timezone = args["timezone"].as_str();
         let max_runs = args["max_runs"].as_i64();
 
@@ -531,6 +563,77 @@ mod tests {
 
         assert!(err.is_err());
         assert!(err.unwrap_err().to_string().contains("positivo"));
+    }
+
+    /// #1296: argumento ausente é observação soft (`Ok` + `is_error`), não
+    /// `Err` — a mensagem nomeia o schema e o modelo reenvia no mesmo turno.
+    #[tokio::test]
+    async fn delay_seconds_ausente_e_observacao_soft() {
+        let store = setup_store("sess-1").await;
+        let tool = ScheduleHeartbeat::new(store);
+
+        let output = tool
+            .execute(
+                &contexto_teste("sess-1"),
+                serde_json::json!({ "reason": "qualquer" }),
+            )
+            .await
+            .expect("argumento ausente é soft-error, não Err");
+        assert!(output.is_error);
+        assert!(
+            output.content.contains("'delay_seconds'"),
+            "{}",
+            output.content
+        );
+
+        // Tipo errado (string no lugar de integer) cai na mesma observação.
+        let output = tool
+            .execute(
+                &contexto_teste("sess-1"),
+                serde_json::json!({ "delay_seconds": "logo", "reason": "qualquer" }),
+            )
+            .await
+            .expect("argumento inválido é soft-error, não Err");
+        assert!(output.is_error);
+        assert!(
+            output.content.contains("'delay_seconds'"),
+            "{}",
+            output.content
+        );
+    }
+
+    /// #1296: idem para `reason` ausente.
+    #[tokio::test]
+    async fn reason_ausente_e_observacao_soft() {
+        let store = setup_store("sess-1").await;
+        let tool = ScheduleHeartbeat::new(store);
+
+        let output = tool
+            .execute(
+                &contexto_teste("sess-1"),
+                serde_json::json!({ "delay_seconds": 60 }),
+            )
+            .await
+            .expect("argumento ausente é soft-error, não Err");
+        assert!(output.is_error);
+        assert!(output.content.contains("'reason'"), "{}", output.content);
+    }
+
+    /// #1296: idem para `cron_expr` ausente no agendamento recorrente.
+    #[tokio::test]
+    async fn cron_expr_ausente_e_observacao_soft() {
+        let store = setup_store("sess-1").await;
+        let tool = ScheduleRecurring::new(store);
+
+        let output = tool
+            .execute(
+                &contexto_teste("sess-1"),
+                serde_json::json!({ "reason": "qualquer" }),
+            )
+            .await
+            .expect("argumento ausente é soft-error, não Err");
+        assert!(output.is_error);
+        assert!(output.content.contains("'cron_expr'"), "{}", output.content);
     }
 
     #[tokio::test]

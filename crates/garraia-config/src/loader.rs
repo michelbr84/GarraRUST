@@ -232,6 +232,13 @@ impl ConfigLoader {
     /// The file is written with mode `0600` on Unix — `llm.*.api_key` and
     /// `gateway.api_key` live in here, so a umask-default `0644` would leave
     /// provider credentials world-readable.
+    ///
+    /// On Windows there is **no** equivalent hardening today: the file lands
+    /// with whatever ACL the parent directory grants by default (typically
+    /// readable by every process of the same user, and by administrators).
+    /// That gap is tracked in #1253 — until a Windows ACL path exists, treat
+    /// the on-disk `config.yml` as unprotected on Windows and prefer env-only
+    /// secrets (`AuthConfig::from_env`) there.
     pub fn save(&self, config: &AppConfig) -> Result<()> {
         let yaml_path = self.config_dir.join("config.yml");
 
@@ -444,7 +451,11 @@ fn escreve_tmp(tmp: &Path, bytes: &[u8]) -> Result<()> {
 /// the credential vault, and `std::fs::write` alone leaves the file at whatever
 /// the process umask allows (commonly `0644`).
 ///
-/// No-op on non-Unix targets, where the parent directory ACL governs access.
+/// No-op on non-Unix targets — on Windows the file keeps whatever ACL the
+/// parent directory grants by default, which is **not** an access
+/// restriction: any process of the same user reads it. That gap is tracked
+/// in #1253; until a Windows ACL path exists, Unix-only is the honest
+/// description of what this function guarantees.
 ///
 /// A politica em si mora em [`garraia_common::fs_perms`] desde o
 /// `whatsapp_linked`: `garraia-channels` precisa das mesmas regras (0600 em
