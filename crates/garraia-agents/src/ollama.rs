@@ -8,7 +8,7 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::providers::{
-    ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart, Usage,
+    ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart, Usage, erro_de_envio,
 };
 
 /// Default Ollama tag for GarraIA. `qwen3.8:latest` resolves to
@@ -224,7 +224,10 @@ impl OllamaProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("ollama request failed: {e}")))?;
+            // #1249: Ollama desligado (o caso mais comum do projeto) agora
+            // e `Error::Transport`, entao um primario local caido cai para
+            // o fallback de nuvem na primeira tentativa.
+            .map_err(|e| erro_de_envio("ollama request failed", &e))?;
 
         if !res.status().is_success() {
             return Err(Error::Agent(format!(
@@ -502,7 +505,10 @@ impl LlmProvider for OllamaProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("ollama request failed: {e}")))?;
+            // #1249: Ollama desligado (o caso mais comum do projeto) agora
+            // e `Error::Transport`, entao um primario local caido cai para
+            // o fallback de nuvem na primeira tentativa.
+            .map_err(|e| erro_de_envio("ollama request failed", &e))?;
 
         if !res.status().is_success() {
             return Err(Error::Agent(format!(
