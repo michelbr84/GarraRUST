@@ -72,6 +72,15 @@ metrics_token_ttl_hint_secs = 0
 Both forms are equivalent. The file is never required — when absent the
 defaults above apply automatically (all four fields are `#[serde(default)]`).
 
+> **File permissions are Unix-only.** `config.yml` can also carry
+> `llm.*.api_key` and `gateway.api_key`; on Unix the writer clamps the mode to
+> `0600` (and creates it `0600` from birth, see `write_atomic_secret`). On
+> Windows **no equivalent hardening exists today** — the file inherits the
+> default ACL of its directory, which lets any process of the same user (and
+> administrators) read it. The gap is tracked in #1253; on Windows, prefer
+> env-only secrets (`GARRAIA_JWT_SECRET`, provider keys via environment or the
+> credential vault) over an on-disk `config.yml`.
+
 ---
 
 ## 3. Environment variables
@@ -353,8 +362,9 @@ secret (§3.2.1, issue #824). Two consequences worth knowing:
   (previously this partial state passed `config check` clean).
 - **Warning** (network section, field `gateway.host`) when the config
   file binds `0.0.0.0`/`::` with no `gateway.api_key` or TLS disabled.
-  Note `garra start --host` / the `HOST` env var can override the file
-  value at runtime — the finding reflects the file, not the live process.
+  The finding reflects the **file**, which is a different value from the
+  live bind: `garra start` never reads these keys (see §5.1) — the boot
+  warning from #1252 is what covers the resolved address.
 - **Warning** when the env secret is set **and** `[auth]` overrides are
   present — non-secret overrides apply but secrets remain env-only.
 - **Warning** (deprecation) whenever the mixed-case
@@ -366,6 +376,46 @@ secret (§3.2.1, issue #824). Two consequences worth knowing:
 
 The JSON output of `config check --json` never contains secret values —
 only presence flags (plan 0035 SEC-M-02).
+
+### 5.1 The gateway bind address — what `config check` sees vs what `start` binds
+
+The host and port the gateway actually binds come from the **command
+line**, in this order:
+
+1. explicit `--host` / `--port` flags, then
+2. the `HOST` / `PORT` environment variables (clap `env = "..."` — how
+   RunPod / container runtimes inject theirs, GAR-603), then
+3. the clap built-in defaults `127.0.0.1` : `3888`.
+
+**The `gateway.host` / `gateway.port` keys in `config.yml` / `config.toml`
+do not feed `garra start` / `garra restart`.** `Commands::Start` overwrites
+`config.gateway.host` / `config.gateway.port` unconditionally right after
+`ConfigLoader::load()` (`crates/garraia-cli/src/main.rs`), and because both
+clap args always carry a value (flag, env, or built-in default), the file
+value never survives. Measured on v0.4.2: a `config.yml` with
+`gateway.host: 0.0.0.0` and `port: 3977` still binds `127.0.0.1:3888`,
+while `HOST=…` changes the banner and the bind.
+
+Consequences:
+
+- `garra config check` and `garra doctor` evaluate the **file** value, so
+  the network warning is about a setting that does not govern the live
+  bind in either direction: a file pinning `127.0.0.1` says nothing about
+  a later `garra start --host 0.0.0.0`, and a file pinning `0.0.0.0` does
+  not actually expose anything by itself.
+- What covers the gap today is the **boot warning** from #1252 — in
+  foreground, and on stderr before the fork in `-d` mode — emitted about
+  the *resolved* address when it is non-loopback without a gateway API
+  key.
+- The dedicated `/metrics` listener is stricter by precedent: it refuses
+  to start on a non-loopback bind with no auth configured
+  (`metrics_exporter.rs`).
+
+Issue #1261 tracks the owner decision on reconciling this (resolve the
+same precedence inside `config check`, or fail closed on non-loopback
+binds without auth). Until that lands: **bind deliberately** — pass
+`--host`/`HOST` (and `--port`/`PORT`) explicitly, and treat the config
+file's `gateway.host`/`gateway.port` as not-read-by-start.
 
 ---
 

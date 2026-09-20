@@ -368,10 +368,18 @@ impl Tool for GitDiffTool {
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
-        let operation = input
-            .get("operation")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'operation' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — o valor desconhecido já era soft; a ausência agora também.
+        let operation = match input.get("operation").and_then(|v| v.as_str()) {
+            Some(op) => op,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "git_diff",
+                    r#"{"operation": "diff" | "status"}"#,
+                    "operation",
+                ));
+            }
+        };
 
         // #1258: de qual repositório esta chamada fala. Decidido uma vez, aqui,
         // e carregado até o `Command` — e até a resposta, que passa a nomeá-lo.
@@ -642,6 +650,8 @@ mod tests {
         assert!(output.is_error);
     }
 
+    /// #1296: operação ausente é observação soft (`Ok` + `is_error`), não
+    /// `Err` — a mensagem nomeia o parâmetro e o schema esperado.
     #[tokio::test]
     async fn test_missing_operation() {
         let tool = GitDiffTool::new(Some(10), Some(100));
@@ -655,9 +665,13 @@ mod tests {
             project_id: None,
         };
 
-        let result = tool.execute(&ctx, serde_json::json!({})).await;
+        let output = tool
+            .execute(&ctx, serde_json::json!({}))
+            .await
+            .expect("parâmetro ausente é soft-error, não Err");
 
-        assert!(result.is_err());
+        assert!(output.is_error);
+        assert!(output.content.contains("'operation'"), "{}", output.content);
     }
 
     /// #1269: file_path adversarial igual a uma flag do git fica DEPOIS do
