@@ -248,7 +248,7 @@ Indicadores: ✅ estável · 🟡 parcial/experimental · 🔵 planejado · ❌ 
 | Aspecto | GarraIA | Hermes | OpenClaw |
 |---|---|---|---|
 | Credenciais | ✅ vault AES-256-GCM → argon2 | ✅ vault + auth.json + redact | ✅ mapa de credenciais + secret scanning |
-| Prompt injection | ✅ guard ~20 padrões em web_fetch/MCP/review | 🟡 env filtering, wrapping não confirmado | ✅ wrapping de conteúdo não-confiável |
+| Prompt injection | 🟡 guard ~20 padrões em web_fetch + tool MCP (#1243 fatia 1); `file_read` e saída de device_read pendentes (fatias 2/3) | 🟡 env filtering, wrapping não confirmado | ✅ wrapping de conteúdo não-confiável |
 | Shell control | ✅ budget + gates | ✅ allowlist + approvals + YOLO explícito | ✅ policy pré-model-call + elevated duplamente gated |
 | Sandbox | 🟡 WASM; ADR 0019 planejado | 🟡 | ✅ 5 backends |
 | Auditoria/threat model | ✅ audit-log, RLS testada, LGPD/GDPR | 🟡 logs + métricas MCP | ✅ MITRE ATLAS público + security audit auto-fix |
