@@ -786,6 +786,40 @@ impl SessionStore {
         Ok(count)
     }
 
+    /// #1300: o alvo do `--resume` sem id — a sessao do canal cuja ultima
+    /// mensagem e a mais recente.
+    ///
+    /// E a mensagem que ordena, nao `sessions.updated_at`: o upsert so roda
+    /// no momento da gravacao do turno e `datetime('now')` tem resolucao de
+    /// segundo — duas sessoes escritas no mesmo segundo empatariam, e a
+    /// pergunta sola do turno interrompido (que grava cedo, ver o CLI)
+    /// precisaria vencer justamente nesse empate. O `timestamp` da mensagem
+    /// e RFC3339 com microssegundos e ordena lexicograficamente.
+    ///
+    /// `None` = nenhuma mensagem no canal; quem chama decide o fallback.
+    pub fn latest_session_id(&self, channel_id: &str) -> Result<Option<String>> {
+        let id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT m.session_id
+                 FROM messages m
+                 JOIN sessions s ON s.id = m.session_id
+                 WHERE s.channel_id = ?1
+                 ORDER BY m.timestamp DESC
+                 LIMIT 1",
+                params![channel_id],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(Error::Database(format!(
+                    "failed to find latest session: {other}"
+                ))),
+            })?;
+        Ok(id)
+    }
+
     /// Schedule a task for future execution.
     pub fn schedule_task(
         &self,
@@ -3199,5 +3233,79 @@ mod tests {
         // Idempotent: a second pass must not double-hash.
         store.run_migrations().expect("re-migration should succeed");
         assert_eq!(stored_token_value(&store, session_id), stored);
+    }
+
+    /// #1300: `latest_session_id` e o alvo do `--resume` sem id — a sessao
+    /// cuja ultima mensagem e a mais recente, e nao a sessao criada por
+    /// ultimo. O repro da issue e exatamente a diferenca: o turno
+    /// interrompido grava a pergunta numa sessao JA existente, e a sessao
+    /// nova de um CLI posterior (ou de outro canal) nunca pode vence-la.
+    #[test]
+    fn latest_session_id_e_a_da_mensagem_mais_recente_do_canal() {
+        let store = SessionStore::in_memory().expect("store em memoria");
+        let meta = serde_json::json!({ "channel_id": "cli", "user_id": "local" });
+        store
+            .upsert_session("cli-antiga", "cli", "local", &serde_json::json!({}))
+            .expect("upsert antiga");
+        store
+            .upsert_session("cli-nova", "cli", "local", &serde_json::json!({}))
+            .expect("upsert nova");
+        // Timestamps explicitos e crescentes: o teste nao pode depender da
+        // resolucao do relogio — so da ordem das mensagens.
+        let t1 = chrono::DateTime::parse_from_rfc3339("2026-09-20T12:00:00Z")
+            .expect("t1")
+            .with_timezone(&chrono::Utc);
+        let t2 = chrono::DateTime::parse_from_rfc3339("2026-09-20T12:01:00Z")
+            .expect("t2")
+            .with_timezone(&chrono::Utc);
+        let t3 = chrono::DateTime::parse_from_rfc3339("2026-09-20T12:02:00Z")
+            .expect("t3")
+            .with_timezone(&chrono::Utc);
+
+        store
+            .append_message("cli-antiga", "user", "velha", t1, &meta)
+            .expect("msg antiga");
+        store
+            .append_message("cli-nova", "user", "nova", t2, &meta)
+            .expect("msg nova");
+        assert_eq!(
+            store.latest_session_id("cli").expect("latest"),
+            Some("cli-nova".to_string()),
+            "a sessao com a mensagem mais recente vence, nao a criada por ultimo"
+        );
+
+        // O turno interrompido grava so a pergunta (persistencia adiantada) —
+        // e isso ja basta para a antiga voltar a ser o alvo do resume.
+        store
+            .append_message("cli-antiga", "user", "interrompida", t3, &meta)
+            .expect("msg interrompida");
+        assert_eq!(
+            store.latest_session_id("cli").expect("latest"),
+            Some("cli-antiga".to_string()),
+            "a pergunta solta do turno interrompido e atividade recente"
+        );
+
+        // Mensagem de OUTRO canal nao disputa o alvo do CLI.
+        store
+            .upsert_session("tg-1", "telegram", "u1", &serde_json::json!({}))
+            .expect("upsert telegram");
+        let t4 = chrono::DateTime::parse_from_rfc3339("2026-09-20T12:03:00Z")
+            .expect("t4")
+            .with_timezone(&chrono::Utc);
+        store
+            .append_message("tg-1", "user", "do telegram", t4, &meta)
+            .expect("msg telegram");
+        assert_eq!(
+            store.latest_session_id("cli").expect("latest"),
+            Some("cli-antiga".to_string()),
+            "canal e isolado: telegram nao rouba o resume do CLI"
+        );
+
+        // Canal sem nenhuma mensagem: nada a retomar.
+        assert_eq!(
+            store.latest_session_id("canal-fantasma").expect("latest"),
+            None,
+            "canal sem sessao nenhuma nao tem alvo"
+        );
     }
 }
