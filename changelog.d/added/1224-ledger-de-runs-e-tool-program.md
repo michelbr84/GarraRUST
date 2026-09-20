@@ -10,10 +10,11 @@
   com isso por um `RunLedger`, cujo default e um `NoopLedger` de custo zero —
   quem nao injeta o adapter nao paga nada.
   O que **nao** mudou, e vale dizer com todas as letras: o run continua sem
-  sobreviver ao processo, e nesta fatia nem `mark_interrupted_runs()` roda na
-  subida nem `AgentCoordinator::spawn_agent` tem chamador de producao — CLI e
-  gateway ainda nao gravam run nenhum, entao `agent_runs` fica vazia ate a
-  #1227 decidir onde plugar o escritor real. O que existe aqui e o
+  sobreviver ao processo, e nesta fatia `AgentCoordinator::spawn_agent` segue
+  sem chamador de producao — a fatia original entregou CLI e gateway sem
+  gravar run nenhum. O primeiro escritor real do ledger (scheduler de
+  heartbeats gravando cada execucao e a subida do gateway/CLI marcando runs
+  interrompidos) entra pela #1227. O que existe aqui e o
   schema + a auditoria funcionando, prontos para o chamador. Retomar um run
   interrompido, e ligar o ledger a um caminho de producao, e a #1227.
   Os snippets gravados sao truncados em 500 caracteres de proposito: o ledger e
