@@ -90,6 +90,12 @@ e sai 69. O teto e do GarraIA, nao da ponte: a ponte reconectaria para sempre.
 
 `<data_dir>` e o `data_dir` da config, ou `~/.config/garraia/data` por padrao.
 
+**Os modos `0600`/`0700` acima valem em Unix.** No Windows hoje nao ha
+equivalente: nenhum hardening de ACL e aplicado a esses arquivos, que herdam
+as permissoes default do diretorio — qualquer processo do mesmo usuario le.
+O gap esta registrado na #1253; no Windows, a linha "outro usuario" da tabela
+abaixo **nao** se aplica.
+
 **`session.enc.prev` tambem e uma credencial viva.** Ele nasce quando voce
 responde "sim" ao re-vincular. Por isso `garra whatsapp status` o reporta mesmo
 quando nao ha sessao ativa, e `garra whatsapp logout` o apaga — sem isso, os
@@ -120,7 +126,8 @@ nao precisa do seu telefone. Trate-o como senha.
 |---|---|---|
 | Backup / snapshot de container vazado | protegido: a chave nunca toca o disco | **nao protegido**: a chave vai junto |
 | Disco roubado com a maquina desligada | protegido | **nao protegido** |
-| Outro usuario do sistema (UID diferente) | protegido pelo modo 0600/0700 | protegido pelo modo 0600/0700 |
+| Outro usuario do sistema (UID diferente, Unix) | protegido pelo modo 0600/0700 | protegido pelo modo 0600/0700 |
+| Outro processo do mesmo usuario (Windows) | **nao protegido** — sem ACL restrita (#1253) | **nao protegido** |
 | Root, ou seu proprio usuario | nao protegido | nao protegido |
 
 Por isso o aviso aparece **na tela de consentimento**, antes de a pessoa
