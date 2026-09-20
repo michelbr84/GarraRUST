@@ -141,8 +141,12 @@ garraia start
    a `nohup ollama serve >> ~/.garraia/ollama.log 2>&1 &` start, with
    the PID stamped at `~/.garraia/ollama.pid`.
 4. Write `gateway.host: 0.0.0.0` and `port: 3888` (or the value of
-   `PORT` when set) into `~/.config/garraia/config.yml` so the gateway
-   binds to the pod's public interface from the first run.
+   `PORT` when set) into `~/.config/garraia/config.yml` as a record of
+   intent. Note the actual bind does not come from these keys:
+   `garra start` binds from `HOST`/`PORT` env (which RunPod LB
+   Serverless sets — GAR-603) or explicit `--host`/`--port` flags
+   (#1261, [auth-config.md
+   §5.1](auth-config.md#51-the-gateway-bind-address--what-config-check-sees-vs-what-start-binds)).
 5. Skip TTS/STT auto-install but write the endpoint defaults
    (`http://127.0.0.1:7860` for Chatterbox, `http://127.0.0.1:9090` for
    faster-whisper) and print the matching `pip install` commands.
