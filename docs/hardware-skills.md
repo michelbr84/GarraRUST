@@ -131,6 +131,12 @@ entra nele é vocabulário e topologia, não credencial.
 
 ## Como usar do código
 
+Em runtime o catálogo é aplicado por um wiring só —
+`spawn_hardware_adapters` no `bootstrap` do gateway (a CLI a chama
+também): ele carrega o catálogo do **mesmo** dir de skills que o scanner
+de instruções usa, avisa os inertes e injeta o elevador no registry
+**antes** de subir qualquer adapter.
+
 ```rust
 use garraia_hardware::skills::CatalogoDeSkills;
 
@@ -141,9 +147,18 @@ for skill in catalogo.inertes() {
                    "skill de hardware inerte: transporte nao suportado");
 }
 
-// No caminho do gate, antes de decidir a execucao:
-let cap = catalogo.capability_efetiva(device_id, &cap_do_adapter);
+registry.com_elevador(catalogo.clone());           // risco efetivo na visao
+// ... e a mesma Arc entra como fonte de aliases no `DeviceToolsConfig`
+// das device tools — o `device_list` mostra `aliases: ...` por device.
 ```
+
+O registro embrulha o device num decorator cuja visão de capabilities é
+a efetiva: leitura continua R0 (invariante de `Capability`), ação recebe
+o máximo entre adapter e preset, e os caminhos de `read`/`execute` passam
+por dentro. Fail-closed: sem skills dir (ou catálogo vazio, ou erro de
+leitura) nada muda — risco no teto do adapter, descoberta sem aliases —
+e, como o elevador só sobe risco (`max`), um catálogo parcial (skill cujo
+parse falhou não entra) nunca abaixa risco nenhum.
 
 A feature `skills` do `garraia-hardware` é OFF por default, como os adapters:
 quem não empacota integração como skill não paga o parser de manifesto.

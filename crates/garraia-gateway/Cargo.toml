@@ -24,7 +24,7 @@ garraia-agents = { workspace = true, features = ["mcp"] }
 # `hardware.home_assistant`) e se o motor arma (`hardware.automations`) —
 # rumqttc e cliente Rust puro, sem runtime C; o HA vai por REST + WebSocket
 # atrás do guard SSRF.
-garraia-hardware = { workspace = true, features = ["mqtt", "home-assistant", "automations"] }
+garraia-hardware = { workspace = true, features = ["mqtt", "home-assistant", "automations", "skills"] }
 garraia-runtime = { workspace = true }
 garraia-db = { workspace = true }
 garraia-security = { workspace = true }

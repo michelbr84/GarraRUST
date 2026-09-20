@@ -235,13 +235,20 @@ fn register_cli_tools(
     // com canal de confirmação (R3/R4 pedem "sim" na própria conversa). O
     // registry nasce vazio; com `hardware.mqtt` configurado, o adapter sobe
     // pela MESMA função do gateway (fonte única do wiring — resolução de
-    // senha, client id e store de presença idênticos, inclusive os warns).
+    // senha, client id, store de presença e catálogo de skills (#1250)
+    // idênticos, inclusive os warns).
     // Sem adapter, `device_list` lista nada (#1128 liga o boot via config).
     let device_registry = Arc::new(DeviceRegistry::new());
-    let device_state = spawn_hardware_adapters(config, device_registry.clone());
-    let device_config = Arc::new(match device_state {
-        Some(state) => DeviceToolsConfig::new(device_registry).com_estado(state),
-        None => DeviceToolsConfig::new(device_registry),
+    let boot = spawn_hardware_adapters(config, device_registry.clone());
+    let device_config = Arc::new({
+        let mut cfg = DeviceToolsConfig::new(device_registry);
+        if let Some(state) = boot.state {
+            cfg = cfg.com_estado(state);
+        }
+        if let Some(fonte) = boot.sinonimos {
+            cfg = cfg.com_sinonimos(fonte);
+        }
+        cfg
     });
     runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));

@@ -37,7 +37,7 @@
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use garraia_hardware::{
-    DeviceRegistry, DeviceStateStore, ExecutionDecision, HardwareGate, RiskClass,
+    DeviceRegistry, DeviceStateStore, ExecutionDecision, FonteDeSinonimos, HardwareGate, RiskClass,
 };
 use std::sync::Arc;
 
@@ -84,25 +84,37 @@ fn blindar_bus(texto: String) -> Result<ToolOutput> {
 }
 
 /// Contexto compartilhado das tools de hardware: o registry é obrigatório
-/// (as tools existem para vê-lo), o store de presença é opcional.
+/// (as tools existem para vê-lo), o store de presença e a fonte de aliases
+/// (#1250) são opcionais — sem fonte, o `device_list` não mostra a linha de
+/// aliases, e nada mais muda.
 pub struct DeviceToolsConfig {
     pub registry: Arc<DeviceRegistry>,
     pub state: Option<Arc<DeviceStateStore>>,
+    pub sinonimos: Option<Arc<dyn FonteDeSinonimos>>,
 }
 
 impl DeviceToolsConfig {
-    /// Sem store de presença — a descoberta lista o que o registry tem,
-    /// sem anotar online/offline.
+    /// Sem store de presença nem fonte de aliases — a descoberta lista o que
+    /// o registry tem, sem anotar online/offline nem apelidos.
     pub fn new(registry: Arc<DeviceRegistry>) -> Self {
         Self {
             registry,
             state: None,
+            sinonimos: None,
         }
     }
 
     /// Com store de presença (o caminho do gateway, que abre o SQLite).
     pub fn com_estado(mut self, state: Arc<DeviceStateStore>) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    /// #1250: com fonte de aliases — o catálogo de skills, injetado como
+    /// trait feature-free para que a camada de tools não dependa do feature
+    /// `skills` da crate de hardware.
+    pub fn com_sinonimos(mut self, fonte: Arc<dyn FonteDeSinonimos>) -> Self {
+        self.sinonimos = Some(fonte);
         self
     }
 }
@@ -177,6 +189,15 @@ impl Tool for DeviceListTool {
                         cap.name, cap.risk, tipo
                     )),
                     None => linhas.push(format!("  {} [{}, {}]", cap.name, cap.risk, tipo)),
+                }
+            }
+            // #1250: os apelidos que os presets de skills declaram — é o que
+            // liga o termo do usuário ("luz da sala") ao id que o gate vê.
+            // Vazio = sem fonte injetada ou sem preset: a linha não existe.
+            if let Some(fonte) = &self.config.sinonimos {
+                let apelidos = fonte.sinonimos_de(&d.id);
+                if !apelidos.is_empty() {
+                    linhas.push(format!("  aliases: {}", apelidos.join(", ")));
                 }
             }
         }
@@ -593,6 +614,58 @@ mod tests {
         assert!(
             output.content.contains("lampada-sala (offline)"),
             "{}",
+            output.content
+        );
+    }
+
+    /// #1250: a fonte injetada aparece como linha `aliases:` no device de
+    /// quem tem preset — e sem fonte (ou sem apelido) a linha não existe,
+    /// comportamento de sempre.
+    #[tokio::test]
+    async fn lista_mostra_aliases_da_fonte_injetada() {
+        struct FonteFalsa;
+
+        impl FonteDeSinonimos for FonteFalsa {
+            fn sinonimos_de(&self, device_id: &str) -> Vec<String> {
+                if device_id == "sensor-sala" {
+                    vec!["temperatura da sala".into()]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+
+        let reg = registry();
+        let com_fonte =
+            Arc::new(DeviceToolsConfig::new(reg.clone()).com_sinonimos(Arc::new(FonteFalsa)));
+        let output = DeviceListTool::new(com_fonte)
+            .execute(&ctx(ToolApproval::None), json!({}))
+            .await
+            .expect("executa");
+        assert!(
+            output.content.contains("  aliases: temperatura da sala"),
+            "{}",
+            output.content
+        );
+        assert!(
+            output
+                .content
+                .lines()
+                .filter(|l| l.contains("aliases:"))
+                .count()
+                == 1,
+            "só o sensor tem apelido: {}",
+            output.content
+        );
+
+        let sem_fonte = DeviceListTool::new(config(&reg));
+        let output = sem_fonte
+            .execute(&ctx(ToolApproval::None), json!({}))
+            .await
+            .expect("executa");
+        assert!(
+            !output.content.contains("aliases:"),
+            "sem fonte, linha de aliases não existe: {}",
             output.content
         );
     }

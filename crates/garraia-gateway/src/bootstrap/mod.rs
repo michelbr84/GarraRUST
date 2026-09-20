@@ -15,8 +15,9 @@ use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
 use garraia_hardware::automations::{EngineConfig, TetoRisco};
 use garraia_hardware::{
-    AutomationEngine, AutomationStore, DeviceRegistry, DeviceStateStore, HaAdapterConfig,
-    HaAdapterManager, HardwareEventBus, MqttAdapterConfig, MqttAdapterManager, carregar_automacoes,
+    AutomationEngine, AutomationStore, CatalogoDeSkills, DeviceRegistry, DeviceStateStore,
+    FonteDeSinonimos, HaAdapterConfig, HaAdapterManager, HardwareEventBus, MqttAdapterConfig,
+    MqttAdapterManager, carregar_automacoes,
 };
 use tracing::{info, warn};
 
@@ -769,10 +770,16 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // / `/api/states`), presenca no store compartilhado e eventos de estado.
     // Sem secao, o registry segue vazio: fail-closed, o estado default do
     // deploy.
-    let device_state = spawn_hardware_adapters(config, device_registry.clone());
-    let device_config = Arc::new(match device_state {
-        Some(state) => DeviceToolsConfig::new(device_registry).com_estado(state),
-        None => DeviceToolsConfig::new(device_registry),
+    let boot = spawn_hardware_adapters(config, device_registry.clone());
+    let device_config = Arc::new({
+        let mut cfg = DeviceToolsConfig::new(device_registry);
+        if let Some(state) = boot.state {
+            cfg = cfg.com_estado(state);
+        }
+        if let Some(fonte) = boot.sinonimos {
+            cfg = cfg.com_sinonimos(fonte);
+        }
+        cfg
     });
     runtime.register_tool(Box::new(DeviceListTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
@@ -1229,20 +1236,43 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     runtime
 }
 
+/// O que o boot de hardware produziu (#1250): o store de presenca e a fonte
+/// de aliases. Cada campo `None` significa "nao nasceu", com o warn
+/// respectivo no log — e sem aliases/sem store o `device_list` e o gate
+/// seguem funcionando, so mais pobres.
+pub struct HardwareBoot {
+    /// Presenca online/offline, compartilhada entre os adapters.
+    pub state: Option<Arc<DeviceStateStore>>,
+    /// Os apelidos que os presets de skills declaram (#1250) — injetada no
+    /// `DeviceToolsConfig` para o `device_list` mostrar `aliases: ...`.
+    pub sinonimos: Option<Arc<dyn FonteDeSinonimos>>,
+}
+
 /// Sobe os adapters de hardware configurados (#1126 MQTT, #1127 Home
 /// Assistant) quando houver secao `hardware.mqtt` ou
 /// `hardware.home_assistant` no config.
 ///
 /// Chamado pelo gateway **e** pela CLI (`garra chat`) — e a fonte unica do
-/// wiring: resolucao de segredos, caminho do store de presenca e o fato de
-/// gateway e CLI abrirem o MESMO store moram aqui, nao em copias que
-/// divergem. A CLI chama via
+/// wiring: resolucao de segredos, caminho do store de presenca, o fato de
+/// gateway e CLI abrirem o MESMO store e a carga do catalogo de skills
+/// (#1250) moram aqui, nao em copias que divergem. A CLI chama via
 /// `garraia_gateway::bootstrap::spawn_hardware_adapters`.
+///
+/// #1250: antes dos adapters subirem, o catalogo de skills e carregado do
+/// MESMO dir de skills que o scanner de skills de instrucao usa
+/// (`ConfigLoader::default_config_dir()/skills`) — uma fonte so — e injeta
+/// no registry o elevador `max(adapter, skill)`: um skill so SOBE o risco de
+/// uma capability, nunca baixa. Fail-closed nos dois sentidos que podem dar
+/// errado: catalogo ausente ou vazio nao muda nada (risco fica no teto do
+/// adapter, sem aliases), e erro de leitura/parse e warn — o skills dir
+/// corrompido nao derruba o boot nem classifica nada de errado. Skills com
+/// transporte fora da lista fechada sao carregados inertes e ganham um
+/// `warn!` aqui, uma vez por boot.
 ///
 /// O store de presenca abre **uma vez**, compartilhado entre adapters: os
 /// dois alimentam a mesma fonte de online/offline que as tools de device
-/// mostram. `None` quando nao ha nenhuma secao de hardware no config, ou
-/// quando o store nao abre (nenhum adapter sobe sem presenca).
+/// mostram. `state = None` quando nao ha nenhuma secao de hardware no
+/// config, ou quando o store nao abre (nenhum adapter sobe sem presenca).
 ///
 /// O barramento de eventos (#1128) nasce aqui e os adapters publicam nele
 /// o que veem; o motor de automacoes assina quando `hardware.automations`
@@ -1261,10 +1291,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 /// Precisa de runtime tokio (spawn dos event loops) — gateway e CLI chamam
 /// de dentro de `run()` async. Sem secao `hardware.*`, retorna antes de
 /// tocar tokio, seguro para testes.
-pub fn spawn_hardware_adapters(
-    config: &AppConfig,
-    registry: Arc<DeviceRegistry>,
-) -> Option<Arc<DeviceStateStore>> {
+pub fn spawn_hardware_adapters(config: &AppConfig, registry: Arc<DeviceRegistry>) -> HardwareBoot {
     if config.hardware.mqtt.is_none() && config.hardware.home_assistant.is_none() {
         if config.hardware.automations.is_some() {
             warn!(
@@ -1272,7 +1299,10 @@ pub fn spawn_hardware_adapters(
                  o motor nao sobe porque nenhum evento chegaria ao barramento"
             );
         }
-        return None;
+        return HardwareBoot {
+            state: None,
+            sinonimos: None,
+        };
     }
 
     // Presenca no mesmo padrao do memory.db: fonte unica da resolucao em
@@ -1287,7 +1317,10 @@ pub fn spawn_hardware_adapters(
             "hardware: nao consegui criar {} ({e}); nenhum adapter de hardware sobe",
             parent.display()
         );
-        return None;
+        return HardwareBoot {
+            state: None,
+            sinonimos: None,
+        };
     }
     let state = match DeviceStateStore::abrir_em(&state_path) {
         Ok(store) => Arc::new(store),
@@ -1296,7 +1329,10 @@ pub fn spawn_hardware_adapters(
                 "hardware: nao abri o store de presenca em {} ({e}); nenhum adapter de hardware sobe",
                 state_path.display()
             );
-            return None;
+            return HardwareBoot {
+                state: None,
+                sinonimos: None,
+            };
         }
     };
 
@@ -1304,6 +1340,11 @@ pub fn spawn_hardware_adapters(
     // de automacoes assina. Publicar sem assinante custa zero (o canal
     // descarta), entao ele existe sempre que ha hardware no ar.
     let bus = Arc::new(HardwareEventBus::nova());
+
+    // #1250: o catalogo de skills ANTES dos adapters — a descoberta deles
+    // e assincrona, e o elevador precisa ja estar no registry quando o
+    // primeiro dispositivo chegar.
+    let sinonimos = carregar_e_aplicar_catalogo(&skills_dir_do_config(), &registry);
 
     // Cada adapter decide sozinho se sobe e explica o que faltou. O
     // operador pode ter os dois, um so, ou nenhum — o registry soma.
@@ -1315,7 +1356,55 @@ pub fn spawn_hardware_adapters(
     // de quantos adapters subiram — cada falha anterior ja teve o seu warn.
     sobe_automacoes(config, bus, registry);
 
-    algum_no_ar.then_some(state)
+    HardwareBoot {
+        state: algum_no_ar.then_some(state),
+        sinonimos,
+    }
+}
+
+/// O dir de skills — a mesma resolucao que o bloco "Skills" do boot usa
+/// para o scanner de instrucoes, uma fonte so (#1250).
+fn skills_dir_do_config() -> std::path::PathBuf {
+    garraia_config::ConfigLoader::default_config_dir().join("skills")
+}
+
+/// #1250: carrega o catalogo de skills de hardware e injeta o elevador de
+/// risco no registry. Devolve a fonte de aliases para o `device_list`.
+///
+/// Fail-closed: dir ausente ou catalogo vazio devolve `None` sem tocar no
+/// registry (risco fica no teto do adapter, descoberta sem aliases); erro
+/// de leitura/parse e `warn` + `None` — um skills dir corrompido nao derruba
+/// o boot e nunca classifica nada de errado. Como o elevador so sobe risco
+/// (`max`), um catalogo parcial — o skill cujo parse falhou simplesmente nao
+/// entra — nao abaixa risco nenhum: a direcao errada nao existe.
+fn carregar_e_aplicar_catalogo(
+    skills_dir: &std::path::Path,
+    registry: &Arc<DeviceRegistry>,
+) -> Option<Arc<dyn FonteDeSinonimos>> {
+    let catalogo = match CatalogoDeSkills::carregar(skills_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                "hardware: catalogo de skills de hardware indisponivel em {} ({e}); \
+                 risco efetivo fica no teto do adapter e sem aliases",
+                skills_dir.display()
+            );
+            return None;
+        }
+    };
+    if catalogo.is_empty() {
+        return None;
+    }
+    for inerte in catalogo.inertes() {
+        warn!(
+            skill = %inerte.nome,
+            transporte = %inerte.transporte_declarado,
+            "hardware: skill de hardware inerte — transporte fora da lista fechada do core"
+        );
+    }
+    let catalogo = Arc::new(catalogo);
+    registry.com_elevador(catalogo.clone());
+    Some(catalogo)
 }
 
 /// Traduz a secao `agent.sandbox` (#1225) para a `SandboxPolicy` que o
@@ -2792,5 +2881,98 @@ mod tests {
         let p = sandbox_policy_from(&config.agent.sandbox);
         assert!(p.requires_sandbox("bash"));
         assert!(!p.requires_sandbox("run_tests"));
+    }
+
+    /// #1250: com um skills dir populado, o helper injeta o elevador no
+    /// registry — um device `mqtt:lampada-teste` (power R1 do adapter)
+    /// entra como R3 na descoberta, leitura continua R0 — e devolve a fonte
+    /// de aliases que o `device_list` vai mostrar.
+    #[test]
+    fn catalogo_de_skills_sobe_o_risco_e_expoe_aliases() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("hardware")).expect("dir");
+        std::fs::write(
+            tmp.path().join("hardware").join("SKILL.md"),
+            r#"---
+name: lampada-teste-skill
+description: Preset de teste
+kind: hardware-preset
+provides:
+  transport: mqtt
+  presets:
+    - entity: lampada-teste
+      capability: power
+      risk: r3
+      synonyms: ["lampada de teste"]
+---
+
+Corpo do skill de teste.
+"#,
+        )
+        .expect("write");
+
+        let reg = Arc::new(DeviceRegistry::new());
+        let fonte = carregar_e_aplicar_catalogo(tmp.path(), &reg).expect("fonte injetada");
+
+        reg.register(Arc::new(garraia_hardware::MockDevice::new(
+            "mqtt:lampada-teste",
+            vec![
+                garraia_hardware::Capability::leitura("estado", None),
+                garraia_hardware::Capability::acao("power", garraia_hardware::RiskClass::R1, None)
+                    .expect("R1"),
+            ],
+        )));
+        let lista = reg.list();
+        let power = lista[0]
+            .capabilities
+            .iter()
+            .find(|c| c.name == "power")
+            .expect("power");
+        assert_eq!(
+            power.risk,
+            garraia_hardware::RiskClass::R3,
+            "preset sobe a acao"
+        );
+        let estado = lista[0]
+            .capabilities
+            .iter()
+            .find(|c| c.name == "estado")
+            .expect("estado");
+        assert_eq!(
+            estado.risk,
+            garraia_hardware::RiskClass::R0,
+            "leitura continua R0"
+        );
+
+        assert_eq!(
+            fonte.sinonimos_de("mqtt:lampada-teste"),
+            vec!["lampada de teste".to_string()]
+        );
+        assert!(fonte.sinonimos_de("mqtt:outra").is_empty());
+    }
+
+    /// Fail-closed: skills dir inexistente nao injeta elevador e nao cria
+    /// fonte — devices entram com o risco do adapter, descoberta sem
+    /// aliases, boot segue.
+    #[test]
+    fn skills_dir_ausente_nao_muda_nada() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("skills-nao-existe");
+
+        let reg = Arc::new(DeviceRegistry::new());
+        assert!(carregar_e_aplicar_catalogo(&dir, &reg).is_none());
+
+        reg.register(Arc::new(garraia_hardware::MockDevice::lampada_sala()));
+        let lista = reg.list();
+        let power = lista[0]
+            .capabilities
+            .iter()
+            .find(|c| c.name == "power")
+            .expect("power");
+        assert_eq!(
+            power.risk,
+            garraia_hardware::RiskClass::R1,
+            "risco do adapter intacto"
+        );
     }
 }

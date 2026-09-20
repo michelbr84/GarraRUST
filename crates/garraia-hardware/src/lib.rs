@@ -98,7 +98,7 @@ pub use device::{Device, DeviceSummary};
 pub use error::HardwareError;
 pub use events::{EstadoObservado, HardwareEvent, HardwareEventBus, StateChanged};
 pub use gate::HardwareGate;
-pub use registry::DeviceRegistry;
+pub use registry::{DeviceRegistry, FonteDeSinonimos};
 pub use risk::{ExecutionDecision, RiskClass};
 pub use state::DeviceStateStore;
 
