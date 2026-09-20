@@ -346,7 +346,7 @@ mod tests {
             .find(|c| c.name == "power")
             .expect("power");
         assert_eq!(power.risk, RiskClass::R3, "ação sobe para R3");
-        assert_eq!(power.read_only, false);
+        assert!(!power.read_only);
 
         let humidity = lista[0]
             .capabilities
