@@ -21,6 +21,8 @@ use garraia_hardware::{
 };
 use tracing::{info, warn};
 
+use crate::mcp::persistence::resolver_env_com_vault;
+
 mod channels;
 mod config;
 mod discord;
@@ -1726,7 +1728,7 @@ pub async fn build_mcp_tools(
         }
     };
 
-    let mcp_configs = loader.merged_mcp_config(config);
+    let mut mcp_configs = loader.merged_mcp_config(config);
     if mcp_configs.is_empty() {
         // Explicit log: "nothing configured" used to be indistinguishable
         // from "config file in another directory was silently ignored".
@@ -1742,7 +1744,14 @@ pub async fn build_mcp_tools(
     let mut all_tools: Vec<Box<dyn Tool>> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
 
-    for (name, server_config) in &mcp_configs {
+    // #1237: o cofre que o boot usa para resolver `vault:` no `env` de
+    // servidor MCP — o MESMO caminho que o `McpPersistenceService` usa para
+    // o registry (GAR-291). `vault_passphrase_from_env` é lido a cada
+    // `try_vault_get`, então um cofre fechado (passphrase ausente) também
+    // falha aqui, fechado.
+    let vault_path = default_vault_path();
+
+    for (name, server_config) in mcp_configs.iter_mut() {
         let enabled = server_config.enabled.unwrap_or(true);
         if !enabled {
             info!("MCP server '{name}' is disabled, skipping");
@@ -1771,6 +1780,33 @@ pub async fn build_mcp_tools(
                         "MCP server '{name}' uses stdio transport but no 'command' configured, skipping"
                     );
                     continue;
+                }
+                // #1237: `vault:` no `env` de um servidor declarado em
+                // config.yml/mcp.json chegava ao filho como a STRING LITERAL —
+                // a resolução de `vault:` vivia só no registry (GAR-291).
+                // Aqui é fail-closed: ref que não resolve (cofre ausente,
+                // `GARRAIA_VAULT_PASSPHRASE` sem set, chave inexistente) impede
+                // o servidor de subir. Sem pending de propósito: o pending
+                // guardaria o env literal e um retry bem-sucedido entregaria
+                // a string crua ao filho.
+                if let Some(vp) = vault_path.as_deref() {
+                    let nao_resolvidos = resolver_env_com_vault(&mut server_config.env, vp);
+                    if !nao_resolvidos.is_empty() {
+                        for (env_key, vk) in &nao_resolvidos {
+                            warn!(
+                                "MCP server '{name}': env '{env_key}' has unresolvable \
+                                 vault ref 'vault:{vk}' — vault missing or \
+                                 GARRAIA_VAULT_PASSPHRASE not set; server will not start"
+                            );
+                        }
+                        failures.push((
+                            name.clone(),
+                            "unresolvable vault: ref in env — vault missing or \
+                             GARRAIA_VAULT_PASSPHRASE not set"
+                                .to_string(),
+                        ));
+                        continue;
+                    }
                 }
                 manager
                     .connect(

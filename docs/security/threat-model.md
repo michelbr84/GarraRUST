@@ -132,6 +132,19 @@ Componente: `crates/garraia-agents/src/providers/*.rs` (OpenAI, OpenRouter, Anth
 | **D** Denial of service | Provider rate-limit retorna 429 em cascade; provider down. | `AgentRuntime` retry com backoff; provider fallback (Ollama quando OpenAI down). | Circuit breaker per provider; budget de tokens/minuto por grupo. |
 | **E** Elevation of privilege | Tool call response cria comando privileged em host; prompt injection via user input faz agent ignorar system prompt. | Tool whitelist + input sanitization em tool arguments; system prompt não-user-influenced. | Structured output enforcement (JSON schema) + adversarial prompt testing (plan futuro). |
 
+**Guard de injeção indireta — mapa de cobertura (#1213, #1243)**: o conteúdo
+de terceiro que entra no contexto do modelo passa por
+`garraia_security::sanitize_indirect` (remove caracteres invisíveis e devolve
+o relatório; suspeito chega precedido do `warning_banner` de dado
+não-confiável) nestas superfícies:
+
+| Superfície | Coberto desde | Por quê |
+|---|---|---|
+| `web_fetch` | #1213 | corpo HTTP é conteúdo de terceiro |
+| resultado de tool MCP (`McpTool::execute`) | #1243 (fatia 1) | o servidor MCP é tipicamente um `npx` de terceiro; payload hostil entrava cru, e sem teto de tamanho era vetor de exaustão de contexto (cap 256 KiB com marca visível, alinhado ao `MAX_CONNECTOR_FRAME_BYTES`) |
+| `file_read` | #1243 (fatia 2) | o conteúdo de arquivo lido a pedido do modelo é texto de quem controla o arquivo; entra emoldurado quando suspeito, com a origem nomeada, e código-fonte limpo segue byte a byte |
+| `device_read`/`device_list` | #1243 (fatia 3) | id, `friendly_name`/`state` do Home Assistant e payload de MQTT/serial são escritos por quem está no barramento; leitura é R0 sem confirmação humana — entra emoldurado quando suspeito, com a origem nomeada (moldura na tool, ADR 0020) |
+
 ---
 
 ## 5.6. SSRF — toda requisição outbound com URL de origem remota
@@ -312,21 +325,27 @@ esquecido.
 
 - `repo_search` não recebe **caminho** do modelo: ele roda `rg`/`grep` com
   `current_dir` no `working_dir` da sessão e alvo fixo `.`, e o `file_pattern`
-  vai por `--glob`, que não escapa da raiz da busca. Sem `working_dir` ele cai
-  no CWD do processo — mesma superfície de antes.
+  vai por `--glob=…` (valor **colado** na opção), que não escapa da raiz da
+  busca. Sem `working_dir` ele cai no CWD do processo — e a resposta nomeia o
+  diretório (paridade do #1258).
   **Correção de um parágrafo errado desta mesma seção:** a versão anterior
   concluía daí que `repo_search` era "nem melhor nem pior", e esse raciocínio
-  olhou só o `file_pattern`. O `query` também vai como argumento — literalmente
+  olhou só o `file_pattern`. O `query` ia como argumento solto — literalmente
   `cmd.arg(query).arg(".")`, **sem nenhum `--` separando opção de operando** —
-  e a auditoria R4 achou ali injeção de flag: um `query` começando com `-` é
-  lido pelo `rg` como opção. É defeito próprio, aberto como **#1266** (P0) e
-  **não** corrigido aqui: misturá-lo ao jail de caminho tornaria as duas
-  correções mais difíceis de revisar.
+  e a auditoria R4 achou ali injeção de flag: um `query` começando com `-` era
+  lido pelo `rg` como opção. Aberto como **#1266** (P0) e corrigido no
+  **PR #1268**: construtores puros de argv, query depois do terminador `--`
+  (nos dois fallbacks), `findstr` embalado em `/C:` (que é o equivalente dele,
+  pois não tem `--`), e teste pela tool que o runtime registra (via
+  `find_tool`).
 - `git_diff` e `code_review` passam `file_path` como pathspec para o `git`, que
-  só enxerga o repositório. Vale registrar um defeito vizinho encontrado aqui e
-  **não corrigido** nesta mudança: `GitDiffTool::run_git_command` não seta
-  `current_dir`, então ignora o `working_dir` da sessão e roda no CWD do
-  processo do gateway. É bug de correção, não de confinamento.
+  só enxerga o repositório. Dois defeitos vizinhos registrados aqui foram
+  corrigidos depois: o **argv** (#1269 — `file_path` depois do `--`; revisão
+  `{from}..{to}` com `-` inicial recusada antes da linha de comando, pois atrás
+  do `--` perde a semântica de revisão; paridade completa no `code_review`) e o
+  **de correção** (#1258 — `run_git_command`/`get_diff` sem `current_dir`
+  respondiam sobre o repositório do CWD do processo do gateway; agora `RepoDir`
+  decide entre `working_dir` da sessão e CWD, e a resposta nomeia o escolhido).
 - `bash` e `run_tests` são a fronteira da #1225 (sandbox por tool) e da §6, não
   desta. Um `bash` irrestrito lê qualquer arquivo — mas o ponto da #1244 é
   justamente que o modelo não precisava do `bash`.
@@ -349,6 +368,23 @@ esquecido.
   com `root_path`, consumida só por `garraia-runtime::executor`, que o gateway
   não usa para tools (só `RuntimeSettings`). Fora do alcance do agente hoje;
   se entrar, entra com jail.
+
+**Varredura sistêmica de argv injection (#1270, 2026-09-19)** — inventário de
+todo `std::process::Command` nas tools, com argumento vindo de campo de tool
+call do modelo, cobrindo o pedido do sign-off do PR #1268:
+
+| Tool | Filho | Dado do modelo | Defesa |
+|---|---|---|---|
+| `repo_search` | `rg` / `grep` / `findstr` | `query`, `file_pattern` | construtores puros; query atrás de `--`, glob colado em `--glob=`, findstr em `/C:` (#1266, PR #1268) |
+| `git_diff` | `git diff` | `file_path`, `{from}..{to}` | pathspec atrás de `--`; revisão com `-` inicial recusada (#1269); `--no-ext-diff` contra `diff.external` (#1075) |
+| `code_review` | `git diff` | `commit_range`, `file_path` | paridade do `git_diff` (#1269) + `--no-ext-diff` (#1075) |
+| `run_tests` | `cargo` / `npm` | `test_name`, `-- crate` | `validate_test_name` (recusa `-` inicial, controle, >200 chars; charset fechado no `-p`) + `--` (#1084) |
+| `bash` | `bash -c` / `powershell -Command` | o comando inteiro | a classe não se aplica — o comando é **um** argv só, nunca posição de flag; contenção é a do sandbox e do jail (#1075, #1225) |
+
+Demais ocorrências de `Command::new` no inventário são fixture `#[cfg(test)]`
+(`repo_dir.rs`), e `crates/garraia-tools/` não monta processo nenhum.
+**Zero achados novos.** Os filhos herdam só a allowlist de env
+(`R3_ENV_ALLOWLIST`) e têm stdin nulo em todas as sites acima.
 
 **Dívida registrada, não corrigida aqui** (auditoria R4 da #1244):
 
@@ -722,7 +758,7 @@ ficam separadas para que afrouxar uma não afrouxe a outra.
 | STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
 |---|---|---|---|
 | **I** Information disclosure | Um servidor MCP de terceiro (`npx`) lê `std::env` no `main()` e exfiltra o JWT secret e as chaves de provider do dono na primeira execução. Não precisa de tool call, prompt injection nem rede do agente — basta ser spawnado. | `cmd.env_clear()` + allowlist + mapa `env` explícito do servidor. Nenhum nome com `key`/`token`/`secret`/`password`/`passphrase` pode entrar na allowlist (teste de unidade é o gate). | Residual: o filho roda com o **mesmo UID** do gateway e pode ler `/proc/<pid>/environ` do pai. Sandbox real do processo MCP segue no #1225; os limites atuais (`setrlimit`, PDEATHSIG) são limites de recurso, não confinamento. |
-| **E** Elevation of privilege | Servidor MCP usa uma credencial do gateway (ex.: `DATABASE_URL` do Postgres de workspace) para agir fora do escopo que o operador lhe deu. | A credencial não chega mais ao filho por herança. O que ele recebe é o que o operador declarou em `env` — auditável por servidor. Guardar esse valor no cofre (`vault:mcp.<server>.<KEY>`) só funciona pelo caminho `mcp.json` + admin API; no `config.yml` o valor é literal. | **#1237**: resolver `vault:` também no boot do `config.yml` — hoje a referência chega ao filho como string. |
+| **E** Elevation of privilege | Servidor MCP usa uma credencial do gateway (ex.: `DATABASE_URL` do Postgres de workspace) para agir fora do escopo que o operador lhe deu. | A credencial não chega mais ao filho por herança. O que ele recebe é o que o operador declarou em `env` — auditável por servidor — e `vault:` nele resolve no boot e no registry (GAR-291, #1237): referência que não resolve é fail-closed (servidor não sobe, aviso sem o valor). | Residual: o cofre é leitura do ambiente do processo do gateway (`GARRAIA_VAULT_PASSPHRASE`); sandbox real do processo MCP segue no #1225. |
 | **D** Denial of service | Um servidor legado que dependia de variável herdada (`HTTP_PROXY`/`HTTPS_PROXY` corporativo, `NODE_OPTIONS`, `npm_config_*`) para de subir após a atualização. Bundles de CA (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`) estão na allowlist porque são caminhos; as variáveis de proxy não, porque a URL pode embutir credencial. | Válvula de escape por servidor `inherit_env: true`, que restaura a herança completa e emite `warn!` nomeando o servidor a cada conexão. Padrão `false`. | O caminho certo é migrar a variável para o mapa `env` do servidor; `inherit_env` é destravamento temporário, não configuração de regime. |
 
 O `warn!` de `inherit_env` leva apenas o **nome** do servidor — nunca nome

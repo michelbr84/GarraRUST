@@ -101,16 +101,16 @@ timeouts:
 #     command: npx
 #     args: ["-y", "my-mcp-server"]
 #     env:
-#       GITHUB_TOKEN: "ghp_..."
+#       GITHUB_TOKEN: "vault:mcp.meu-servidor.GITHUB_TOKEN"
 #     # inherit_env: true   <- válvula de escape: devolve o ambiente INTEIRO
 #     #                        do gateway (segredos inclusive) ao filho.
 #     #                        Padrão false; emite warn! na conexão.
 #
-# Atenção: referências `vault:<chave>` em `env` NÃO são resolvidas no
-# config.yml. Elas só funcionam para servidores gerenciados via mcp.json +
-# admin API, que passam pelo McpPersistenceService. No config.yml o valor é
-# usado literalmente, então um "vault:..." aqui chega ao filho como a string
-# "vault:...". Issue #1237.
+# Referências `vault:<chave>` em `env` são resolvidas no boot (#1237): o
+# valor cifrado do cofre é entregue ao filho, em config.yml e mcp.json.
+# O cofre precisa estar aberto (GARRAIA_VAULT_PASSPHRASE definida) e a
+# referência precisa existir no cofre — referência que não resolve impede o
+# servidor de subir (fail-closed, aviso nomeando servidor e chave).
 
 # GAR-261: Configuração de glob e ignore para ferramentas de busca de arquivos
 fs:

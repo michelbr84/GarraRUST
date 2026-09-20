@@ -57,19 +57,19 @@ mcp:
     command: npx
     args: ["-y", "algum-server"]
     env:
-      GITHUB_TOKEN: "ghp_..."
+      GITHUB_TOKEN: "vault:mcp.servidor-legado.GITHUB_TOKEN"
     # inherit_env: true   # NÃO faça isto sem entender o que entrega
 ```
 
-> **`vault:` não vale no `config.yml`.** A resolução de referências
-> `vault:<chave>` acontece no `McpPersistenceService::load_registry`, que
-> serve os servidores gerenciados por `mcp.json` + admin API. O caminho de
-> boot do `config.yml` (`ConfigLoader::merged_mcp_config`) copia o mapa `env`
-> como está, então um `vault:mcp.foo.BAR` escrito ali chega ao processo filho
-> literalmente, como a string `"vault:mcp.foo.BAR"` — não como o segredo.
-> Para um servidor declarado no `config.yml`, use o valor literal; para
-> guardar o segredo no cofre, declare o servidor via `mcp.json`/admin API.
-> Fechar essa assimetria e a issue #1237.
+> **`vault:` vale no `config.yml` e no `mcp.json`.** O boot do gateway
+> resolve referências `vault:<chave>` no mapa `env` antes de lançar o
+> processo filho (#1237) — a mesma resolução do registry (GAR-291). A
+> referência precisa apontar para uma entrada do cofre
+> (`vault:mcp.<servidor>.<VARIAVEL>`) e o cofre precisa estar aberto
+> (`GARRAIA_VAULT_PASSPHRASE` definida): referência que não resolve é
+> **fail-closed** — o servidor não sobe, com aviso nomeando o servidor e a
+> chave, nunca o valor. `garra config check` avisa quando há `vault:` no
+> `env` com o cofre indisponível.
 
 `inherit_env` só existe no `config.yml`/`mcp.json`. Servidores criados **ou
 reiniciados** pela admin API conectam sempre isolados, mesmo que o

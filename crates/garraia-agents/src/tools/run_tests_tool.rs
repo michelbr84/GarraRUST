@@ -376,6 +376,14 @@ impl Tool for RunTestsTool {
             }
         }
 
+        // #1270 (paridade do #1269): o filho de teste nunca le a entrada
+        // padrao do gateway — em terminal, pipe e servico o comportamento fica
+        // o mesmo, e um binario de teste que le stdin nao rouba o que o
+        // operador digitou no terminal do `garra chat`. Ate a varredura
+        // #1270, `repo_search`, `git_diff` e `code_review` fechavam o stdin
+        // e este nao.
+        cmd.stdin(std::process::Stdio::null());
+
         // Execute with timeout
         let result = tokio::time::timeout(self.timeout, cmd.output()).await;
 
@@ -436,6 +444,23 @@ mod tests {
         // Current dir should have Cargo.toml
         let framework = RunTestsTool::detect_framework(Path::new("."));
         assert_eq!(framework, TestFramework::Cargo);
+    }
+
+    /// #1270 (paridade do #1269): o filho de teste nao herda o stdin do
+    /// gateway — em terminal, pipe e servico o comportamento fica o mesmo.
+    /// O `Command` nasce dentro da tool, entao o guard varre o fonte — o
+    /// mesmo padrao do `spinner.rs` para invariantes invisiveis a testes
+    /// de comportamento.
+    ///
+    /// **Mutacao que este teste pega**: comente a chamada de stdin null no
+    /// execute e ele fica vermelho.
+    #[test]
+    fn stdin_do_filho_de_teste_e_fechado() {
+        let fonte = include_str!("run_tests_tool.rs");
+        assert!(
+            fonte.contains("cmd.stdin(std::process::Stdio::null());"),
+            "run_tests deve fechar o stdin do filho (paridade #1269)"
+        );
     }
 
     #[test]
