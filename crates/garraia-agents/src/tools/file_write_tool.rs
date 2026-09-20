@@ -71,15 +71,29 @@ impl Tool for FileWriteTool {
     }
 
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput> {
-        let path_str = input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'path' ausente".into()))?;
+        // #1296: entrada malformada do modelo é observação soft, não erro do
+        // turno — a mensagem nomeia o schema e pede o reenvio.
+        let path_str = match input.get("path").and_then(|v| v.as_str()) {
+            Some(p) => p,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "file_write",
+                    r#"{"path": string, "content": string}"#,
+                    "path",
+                ));
+            }
+        };
 
-        let content = input
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::Agent("parâmetro 'content' ausente".into()))?;
+        let content = match input.get("content").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return Ok(super::parametro_ausente(
+                    "file_write",
+                    r#"{"path": string, "content": string}"#,
+                    "content",
+                ));
+            }
+        };
 
         // Validate UTF-8 (content from JSON is always valid UTF-8, but log it for clarity)
         if content.is_empty() {
@@ -238,16 +252,29 @@ mod tests {
         );
     }
 
+    /// #1296: parâmetros ausentes são observação soft (`Ok` + `is_error`),
+    /// não `Err` — cada caso nomeia o parâmetro que faltou.
     #[tokio::test]
-    async fn retorna_erro_se_parametros_ausentes() {
+    async fn parametros_ausentes_sao_observacao_soft() {
         let tool = FileWriteTool::new(FileJail::sessions_only());
         let ctx = ctx_with(None);
 
-        assert!(tool.execute(&ctx, serde_json::json!({})).await.is_err());
+        let sem_tudo = tool
+            .execute(&ctx, serde_json::json!({}))
+            .await
+            .expect("parâmetro ausente é soft-error, não Err");
+        assert!(sem_tudo.is_error);
+        assert!(sem_tudo.content.contains("'path'"), "{}", sem_tudo.content);
+
+        let sem_conteudo = tool
+            .execute(&ctx, serde_json::json!({"path": "/tmp/test"}))
+            .await
+            .expect("parâmetro ausente é soft-error, não Err");
+        assert!(sem_conteudo.is_error);
         assert!(
-            tool.execute(&ctx, serde_json::json!({"path": "/tmp/test"}))
-                .await
-                .is_err()
+            sem_conteudo.content.contains("'content'"),
+            "{}",
+            sem_conteudo.content
         );
     }
 
