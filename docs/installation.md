@@ -323,8 +323,13 @@ This wizard will (plan 0126):
 - Configure the Telegram channel as before.
 - Store API keys and bot tokens in the encrypted vault.
 - Pick server-friendly defaults: `gateway.host: 0.0.0.0` when running
-  as root or inside a RunPod pod; `127.0.0.1` otherwise. `PORT` env
-  var (Runpod LB Serverless) is honored.
+  as root or inside a RunPod pod; `127.0.0.1` otherwise. Note these
+  file keys are a record of intent only — `garra start` binds from
+  `--host`/`HOST` and `--port`/`PORT` (env included), never from
+  `gateway.host`/`gateway.port` (#1261, [auth-config.md
+  §5.1](auth-config.md#51-the-gateway-bind-address--what-config-check-sees-vs-what-start-binds));
+  on RunPod LB Serverless the platform's `HOST`/`PORT` env vars are what
+  take effect.
 
 Skip toggles:
 
