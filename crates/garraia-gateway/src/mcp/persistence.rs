@@ -10,6 +10,7 @@
 //! resolved by [`garraia_config::ConfigLoader::default_config_dir`]
 //! (usually `~/.garraia/` or `$XDG_CONFIG_HOME/garraia/`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
@@ -22,6 +23,35 @@ const VAULT_REF_PREFIX: &str = "vault:";
 /// Returns the vault key used to store `env_key` for `server_name`.
 fn vault_key(server_name: &str, env_key: &str) -> String {
     format!("mcp.{server_name}.{env_key}")
+}
+
+/// Resolve `vault:` refs em um mapa `env`, reescrevendo cada referência pelo
+/// valor do cofre. Valores sem o prefixo ficam como estão.
+///
+/// Devolve as referências (`env_key`, `ref`) que **não** resolveram; a
+/// política de cada caminho é do chamador:
+///
+/// - **Boot** (`build_mcp_tools`, #1237): fechado — qualquer ref não
+///   resolvida impede o servidor de subir. O caminho de registry pode
+///   tolerar o literal porque a admin API mostra a config para depurar; o
+///   boot não pode: o literal iria direto para o processo filho como valor
+///   da variável, e um retry do `pending` (#1242) entregaria o literal de
+///   novo — por isso a porta fecha antes de qualquer spawn.
+/// - **Registry** (admin API, GAR-291): tolerante — avisa e deixa o literal.
+pub(crate) fn resolver_env_com_vault(
+    env: &mut HashMap<String, String>,
+    vault_path: &Path,
+) -> Vec<(String, String)> {
+    let mut nao_resolvidos = Vec::new();
+    for (env_key, env_val) in env.iter_mut() {
+        if let Some(vk) = env_val.strip_prefix(VAULT_REF_PREFIX) {
+            match garraia_security::try_vault_get(vault_path, vk) {
+                Some(resolved) => *env_val = resolved,
+                None => nao_resolvidos.push((env_key.clone(), vk.to_string())),
+            }
+        }
+    }
+    nao_resolvidos
 }
 
 /// Loads and saves `mcp.json`, and builds [`McpRuntimeRegistry`] from it.
@@ -255,7 +285,9 @@ impl McpPersistenceService {
     ///
     /// Values that are already plaintext (no prefix) are left untouched.
     /// Unresolvable `vault:` refs emit a warning and remain as-is so the
-    /// server config is still visible for debugging.
+    /// server config is still visible for debugging — this is the registry
+    /// path, tolerant by design; the boot path is fail-closed (see
+    /// [`resolver_env_com_vault`] and #1237).
     fn resolve_vault_refs(&self, config: &mut McpConfig) {
         let vault_path = match &self.vault_path {
             Some(p) => p.as_path(),
@@ -263,18 +295,13 @@ impl McpPersistenceService {
         };
 
         for (server_name, server_cfg) in config.mcp_servers.iter_mut() {
-            for (env_key, env_val) in server_cfg.env.iter_mut() {
-                if let Some(vk) = env_val.strip_prefix(VAULT_REF_PREFIX) {
-                    match garraia_security::try_vault_get(vault_path, vk) {
-                        Some(resolved) => *env_val = resolved,
-                        None => warn!(
-                            server = %server_name,
-                            env_key = %env_key,
-                            vault_ref = %vk,
-                            "mcp: vault ref unresolvable — vault missing or GARRAIA_VAULT_PASSPHRASE not set"
-                        ),
-                    }
-                }
+            for (env_key, vk) in resolver_env_com_vault(&mut server_cfg.env, vault_path) {
+                warn!(
+                    server = %server_name,
+                    env_key = %env_key,
+                    vault_ref = %vk,
+                    "mcp: vault ref unresolvable — vault missing or GARRAIA_VAULT_PASSPHRASE not set"
+                );
             }
         }
     }
@@ -349,6 +376,36 @@ impl McpPersistenceService {
 mod tests {
     use super::*;
     use crate::mcp::{McpServerConfig, McpStatus};
+
+    /// #1237: valores plaintext passam inteiros; toda `vault:` de um mapa
+    /// com cofre INEXISTENTE volta como não resolvida — sem ler passphrase
+    /// (o vault nem existe), então o teste não depende de ambiente.
+    #[test]
+    fn resolver_env_com_vault_sem_cofre_deixa_plaintext_e_lista_refs() {
+        let mut env = HashMap::from([
+            ("PLAIN".to_string(), "valor-cru".to_string()),
+            ("REF_A".to_string(), "vault:mcp.ok.A".to_string()),
+            ("REF_B".to_string(), "vault:mcp.ok.B".to_string()),
+            ("JA_RESOLVIDO".to_string(), "token-ja-literal".to_string()),
+        ]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nao_resolvidos =
+            resolver_env_com_vault(&mut env, dir.path().join("vault.json").as_path());
+        assert_eq!(env["PLAIN"], "valor-cru", "plaintext não pode ser tocado");
+        assert_eq!(
+            env["JA_RESOLVIDO"], "token-ja-literal",
+            "valor sem prefixo não pode ser tocado"
+        );
+        assert!(
+            nao_resolvidos.contains(&("REF_A".to_string(), "mcp.ok.A".to_string())),
+            "ref sem cofre precisa voltar como não resolvida: {nao_resolvidos:?}"
+        );
+        assert!(
+            nao_resolvidos.contains(&("REF_B".to_string(), "mcp.ok.B".to_string())),
+            "ref sem cofre precisa voltar como não resolvida: {nao_resolvidos:?}"
+        );
+        assert_eq!(nao_resolvidos.len(), 2);
+    }
 
     fn temp_mcp_json(content: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
