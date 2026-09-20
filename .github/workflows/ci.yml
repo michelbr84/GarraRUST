@@ -759,6 +759,26 @@ jobs:
           fi
         shell: bash
 
+      - name: Compile cfg(windows) code under the mcp feature
+        # Issue #1253. O job `mcp` (ubuntu) roda clippy+test com
+        # `--features mcp`, mas o `#[cfg(windows)]` la dentro — o wrapper
+        # `cmd /c` do manager.rs que resolve npx/uvx/.cmd no CreateProcess —
+        # nao compila em plataforma NENHUMA: o `--no-run` deste job matrix
+        # compila so as features default. A saída barata e este step no
+        # runner Windows, onde a toolchain MSVC nativa ja existe. O caminho
+        # alternativo (cross mingw a partir do ubuntu) foi descartado com
+        # medição: `cargo check --target x86_64-pc-windows-msvc` leva 8m30s
+        # e falha no build script do `ring` sem toolchain C do alvo, e o
+        # container de desenvolvimento nao tem root para instalar
+        # gcc-mingw-w64. check, nao test: o alvo aqui e COMPILAR o codigo
+        # cfg(windows); rodar a suite mcp inteira no Windows fica para
+        # quando houver evidencia de que os testes de spawn de filho passam
+        # la (o padrao do #1236 — injecao — cobre a semantica em qualquer
+        # plataforma).
+        if: runner.os == 'Windows'
+        run: cargo check -p garraia-agents --features mcp --all-targets
+        shell: bash
+
   # Integração garraia-auth com test-support (plan 0354).
   #
   # Os 15 binários de teste de integração do garraia-auth (extractor, matriz
