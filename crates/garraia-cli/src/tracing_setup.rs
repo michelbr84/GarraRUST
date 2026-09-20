@@ -11,7 +11,9 @@
 //!   incidente, então não perde nada.
 //! - **stderr**: WARN+ por default (erro visível, ruído não); `--verbose`
 //!   mostra o INFO operacional (provider, modelo, tools); `--debug` mostra o
-//!   mesmo que o arquivo.
+//!   mesmo que o arquivo. No REPL interativo (`garra chat`) o degrau de
+//!   baixo é o Quiet (#1301): nem WARN cru compete com o renderer, porque a
+//!   falha de turno já vira `ErrorCard` — os detalhes ficam no arquivo.
 //!
 //! `RUST_LOG` setado e válido vence os dois lados, como sempre venceu — quem
 //! exporta `RUST_LOG=garraia_agents=trace` está depurando e espera ver o
@@ -33,6 +35,11 @@ use tracing_subscriber::layer::SubscriberExt;
 pub(crate) enum ConsoleMode {
     /// Default: só WARN+ chega ao terminal.
     Normal,
+    /// REPL interativo (#1301): nem WARN cru chega ao stderr. As falhas que
+    /// importam já viram `ErrorCard`/`UiEvent` no renderer, e o arquivo
+    /// continua recebendo tudo — "detalhes completos ficam em log/debug".
+    /// `RUST_LOG` explícito e `--verbose`/`--debug` vencem, como sempre.
+    Quiet,
     /// `--verbose`: INFO operacional conciso (provider, modelo, tools).
     Verbose,
     /// `--debug`: o console espelha o arquivo.
@@ -47,6 +54,18 @@ pub(crate) fn console_mode(debug: bool, verbose: bool) -> ConsoleMode {
         ConsoleMode::Verbose
     } else {
         ConsoleMode::Normal
+    }
+}
+
+/// O mesmo escalonamento de [`console_mode`], mas o degrau de baixo é o
+/// Quiet do REPL (#1301) em vez do Normal.
+pub(crate) fn repl_console_mode(debug: bool, verbose: bool) -> ConsoleMode {
+    if debug {
+        ConsoleMode::Debug
+    } else if verbose {
+        ConsoleMode::Verbose
+    } else {
+        ConsoleMode::Quiet
     }
 }
 
@@ -70,6 +89,7 @@ pub(crate) fn filter_directives(
         ConsoleMode::Debug => file_level,
         ConsoleMode::Verbose => "info",
         ConsoleMode::Normal => "warn",
+        ConsoleMode::Quiet => "off",
     };
     (file_level.to_string(), stderr_level.to_string())
 }
@@ -249,6 +269,39 @@ mod tests {
         assert_eq!(console_mode(true, true), ConsoleMode::Debug);
         assert_eq!(console_mode(false, true), ConsoleMode::Verbose);
         assert_eq!(console_mode(false, false), ConsoleMode::Normal);
+    }
+
+    /// #1301: no REPL interativo, tracing cru (WARN incluído) não compete
+    /// com o renderer — as emissões de `runtime.rs`/`openai.rs`/
+    /// `provider_resilience.rs` modeladas aqui pelos probes já viram
+    /// `ErrorCard`/`UiEvent` quando importam. O arquivo continua recebendo
+    /// tudo: "os detalhes completos ficam em log/debug".
+    #[test]
+    fn quiet_mode_keeps_the_repl_stderr_silent_but_the_file_full() {
+        let (file, stderr) = capture(None, "info", ConsoleMode::Quiet);
+        assert!(file.contains("info-probe"));
+        assert!(file.contains("warn-probe"));
+        assert!(
+            !stderr.contains("warn-probe"),
+            "REPL stderr must stay free of raw tracing: {stderr:?}"
+        );
+        assert!(!stderr.contains("info-probe"));
+
+        let (file_dirs, stderr_dirs) = filter_directives(None, "info", ConsoleMode::Quiet);
+        assert_eq!(file_dirs, "info");
+        assert_eq!(stderr_dirs, "off");
+    }
+
+    /// O escape hatch de GAR-138 vale também no REPL: `RUST_LOG` explícito é
+    /// pedido de depuração e vence o Quiet.
+    #[test]
+    fn rust_log_still_wins_both_sinks_in_quiet_mode() {
+        let (file, stderr) = capture(Some("trace"), "info", ConsoleMode::Quiet);
+        assert!(file.contains("debug-probe"));
+        assert!(
+            stderr.contains("debug-probe"),
+            "RUST_LOG explicit overrides Quiet: {stderr:?}"
+        );
     }
 
     #[test]
