@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
-use garraia_common::Result;
+use garraia_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// Trait para integrações com provedores de LLM (Anthropic, OpenAI, Ollama, etc.).
@@ -136,4 +136,105 @@ pub enum StreamEvent {
     },
     /// Indica que o streaming foi concluído.
     MessageStop,
+}
+
+// ── #1249: classificacao de falha de envio ───────────────────────────────────
+
+/// `true` quando o `reqwest::Error` diz que a requisicao **nao chegou a ter
+/// resposta**: conexao recusada, DNS que nao resolve, timeout, falha ao
+/// enviar.
+///
+/// Fora de proposito:
+/// - `is_builder()` — URL/cliente mal formado e bug de configuracao nosso, e
+///   tentar outro provider esconderia o bug;
+/// - `is_status()` — ja houve resposta, e a politica dela (429/5xx com
+///   backoff) e a de sempre;
+/// - `is_body()` / `is_decode()` — a conexao existiu e quebrou no meio do
+///   corpo, caso do #1176, tratado no consumidor do stream.
+///
+/// A leitura e feita aqui, onde o tipo do `reqwest` ainda existe. Depois do
+/// `format!` sobra texto, e texto de erro de dependencia muda de versao para
+/// versao — era exatamente esse o defeito que a issue descreve.
+pub(crate) fn falha_de_transporte(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout() || e.is_request()
+}
+
+/// Erro de envio de requisicao a um provider, com a **classe** preservada.
+///
+/// `contexto` e o prefixo que o provider ja usava ("openai request failed"),
+/// mantido palavra por palavra: o cartao de erro da CLI classifica pela frase
+/// interna do `reqwest`, e nao pelo prefixo do enum.
+pub(crate) fn erro_de_envio(contexto: &str, e: &reqwest::Error) -> Error {
+    let msg = format!("{contexto}: {e}");
+    if falha_de_transporte(e) {
+        Error::Transport(msg)
+    } else {
+        Error::Agent(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Porta fechada em loopback: o unico erro de rede que um teste pode
+    /// provocar sem depender de rede de verdade.
+    async fn erro_de_conexao_recusada() -> reqwest::Error {
+        // Abre e fecha para descobrir uma porta que ninguem esta servindo.
+        let porta = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efemero");
+            l.local_addr().expect("addr").port()
+        };
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{porta}/"))
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+            .expect_err("ninguem esta escutando nessa porta")
+    }
+
+    #[tokio::test]
+    async fn conexao_recusada_e_transporte() {
+        let e = erro_de_conexao_recusada().await;
+        assert!(
+            falha_de_transporte(&e),
+            "connect/timeout tem de ser transporte; veio: {e}"
+        );
+        assert!(
+            matches!(
+                erro_de_envio("openai request failed", &e),
+                Error::Transport(_)
+            ),
+            "a classe precisa sobreviver ao format!"
+        );
+    }
+
+    #[test]
+    fn url_invalida_nao_e_transporte() {
+        // `is_builder()`: nada saiu da maquina, e cair para outro provider
+        // esconderia um bug de configuracao nosso.
+        let e = reqwest::Client::new()
+            .get("http://[::1")
+            .build()
+            .expect_err("url invalida");
+        assert!(!falha_de_transporte(&e), "builder nao e transporte: {e}");
+        assert!(matches!(
+            erro_de_envio("openai request failed", &e),
+            Error::Agent(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mensagem_do_provider_sobrevive_inteira() {
+        let e = erro_de_conexao_recusada().await;
+        let texto = erro_de_envio("ollama request failed", &e).to_string();
+        assert!(
+            texto.contains("ollama request failed"),
+            "o prefixo do provider fica; veio: {texto}"
+        );
+        assert!(
+            texto.starts_with("transport error: "),
+            "e o prefixo da classe entra na frente; veio: {texto}"
+        );
+    }
 }
