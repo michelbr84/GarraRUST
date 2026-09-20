@@ -72,6 +72,15 @@ metrics_token_ttl_hint_secs = 0
 Both forms are equivalent. The file is never required — when absent the
 defaults above apply automatically (all four fields are `#[serde(default)]`).
 
+> **File permissions are Unix-only.** `config.yml` can also carry
+> `llm.*.api_key` and `gateway.api_key`; on Unix the writer clamps the mode to
+> `0600` (and creates it `0600` from birth, see `write_atomic_secret`). On
+> Windows **no equivalent hardening exists today** — the file inherits the
+> default ACL of its directory, which lets any process of the same user (and
+> administrators) read it. The gap is tracked in #1253; on Windows, prefer
+> env-only secrets (`GARRAIA_JWT_SECRET`, provider keys via environment or the
+> credential vault) over an on-disk `config.yml`.
+
 ---
 
 ## 3. Environment variables
