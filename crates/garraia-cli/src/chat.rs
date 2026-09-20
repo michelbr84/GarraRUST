@@ -3684,6 +3684,8 @@ mod persist_tests {
         let alvo = concat!("log_interrupted", "_runs(&store)");
         let copias = src.matches(alvo).count();
         assert_eq!(copias, 1, "esperava 1 chamada de subida, achei {copias}");
+    }
+
     // ── #1300: /resume volta ao ultimo turno interrompido ──────────────────
 
     /// Os tres fins inacabados ganham marcador; o sucesso nao.
