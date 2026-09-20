@@ -132,6 +132,19 @@ Componente: `crates/garraia-agents/src/providers/*.rs` (OpenAI, OpenRouter, Anth
 | **D** Denial of service | Provider rate-limit retorna 429 em cascade; provider down. | `AgentRuntime` retry com backoff; provider fallback (Ollama quando OpenAI down). | Circuit breaker per provider; budget de tokens/minuto por grupo. |
 | **E** Elevation of privilege | Tool call response cria comando privileged em host; prompt injection via user input faz agent ignorar system prompt. | Tool whitelist + input sanitization em tool arguments; system prompt não-user-influenced. | Structured output enforcement (JSON schema) + adversarial prompt testing (plan futuro). |
 
+**Guard de injeção indireta — mapa de cobertura (#1213, #1243)**: o conteúdo
+de terceiro que entra no contexto do modelo passa por
+`garraia_security::sanitize_indirect` (remove caracteres invisíveis e devolve
+o relatório; suspeito chega precedido do `warning_banner` de dado
+não-confiável) nestas superfícies:
+
+| Superfície | Coberto desde | Por quê |
+|---|---|---|
+| `web_fetch` | #1213 | corpo HTTP é conteúdo de terceiro |
+| resultado de tool MCP (`McpTool::execute`) | #1243 (fatia 1) | o servidor MCP é tipicamente um `npx` de terceiro; payload hostil entrava cru, e sem teto de tamanho era vetor de exaustão de contexto (cap 256 KiB com marca visível, alinhado ao `MAX_CONNECTOR_FRAME_BYTES`) |
+| `file_read` | #1243 (fatia 2) | o conteúdo de arquivo lido a pedido do modelo é texto de quem controla o arquivo; entra emoldurado quando suspeito, com a origem nomeada, e código-fonte limpo segue byte a byte |
+| `device_read`/`device_list` | #1243 (fatia 3) | id, `friendly_name`/`state` do Home Assistant e payload de MQTT/serial são escritos por quem está no barramento; leitura é R0 sem confirmação humana — entra emoldurado quando suspeito, com a origem nomeada (moldura na tool, ADR 0020) |
+
 ---
 
 ## 5.6. SSRF — toda requisição outbound com URL de origem remota

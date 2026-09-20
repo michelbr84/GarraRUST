@@ -8,7 +8,7 @@ use serde_json::Value;
 use tracing::{debug, info, warn};
 
 use crate::providers::{
-    ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart, Usage,
+    ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart, Usage, erro_de_envio,
 };
 
 const DEFAULT_BASE_URL: &str = "http://localhost:8080";
@@ -279,7 +279,9 @@ impl LlamaCppProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("llama.cpp request failed: {e}")))?;
+            // #1249: servidor local fora do ar e `Error::Transport` —
+            // mesma classe do Ollama desligado.
+            .map_err(|e| erro_de_envio("llama.cpp request failed", &e))?;
 
         if !res.status().is_success() {
             let status = res.status();
@@ -419,7 +421,9 @@ impl LlmProvider for LlamaCppProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Agent(format!("llama.cpp request failed: {e}")))?;
+            // #1249: servidor local fora do ar e `Error::Transport` —
+            // mesma classe do Ollama desligado.
+            .map_err(|e| erro_de_envio("llama.cpp request failed", &e))?;
 
         if !res.status().is_success() {
             let status = res.status();
