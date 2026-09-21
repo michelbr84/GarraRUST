@@ -5170,7 +5170,18 @@ mod tests {
                 executou: Arc::clone(&executou),
             }));
 
-            let perfil = crate::modes::ModeProfile::from_mode(modo);
+            // Achado de revisao (provado por mutacao): sem isto, nos
+            // perfis whitelist o `tool_program` e barrado no TOPO
+            // (`permite("tool_program")` ja da false) e o gate POR PASSO
+            // nunca chega a ser exercido — o teste passaria ate sem ele.
+            // Liberar `tool_program` aqui forca o programa a entrar no
+            // loop de passos em todo modo, e e so ai que a propriedade da
+            // issue ("nao alcanca o que o modo negaria") fica provada.
+            let mut perfil = crate::modes::ModeProfile::from_mode(modo);
+            perfil
+                .tool_policy
+                .allowed
+                .push(TOOL_PROGRAM_NAME.to_string());
             let esperado = crate::modes::ToolGate::from_profile(&perfil)
                 .permite("sonda-nunca-em-allowlist-nenhuma");
 
@@ -5430,7 +5441,23 @@ mod tests {
 
         assert_eq!(resposta, "concluido");
         let resultados = provider.resultados();
-        assert!(resultados[0].contains("teto agregado"), "{resultados:?}");
+        let corpo: serde_json::Value = serde_json::from_str(&resultados[0]).expect("json");
+        assert!(
+            corpo["motivo"]
+                .as_str()
+                .is_some_and(|m| m.contains("teto agregado")),
+            "{corpo}"
+        );
+        // F-2 (achado de auditoria): o estouro do teto agregado nao pode
+        // levar junto o relatorio dos passos ja executados — sem isto o
+        // teste passaria mesmo com a versao antiga (`tokio::time::timeout`
+        // envolvendo o future inteiro), que descartava `executados`.
+        assert_eq!(
+            corpo["steps"].as_array().expect("steps").len(),
+            5,
+            "{corpo}"
+        );
+        assert_eq!(corpo["parou_no_passo"], 5, "{corpo}");
     }
 
     /// Programa mal formado (sem `steps`) e erro legivel, nao panico nem
