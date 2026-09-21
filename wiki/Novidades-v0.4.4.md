@@ -93,6 +93,11 @@ loop.
 
 ## Outras correções
 
+- **Aprovação de comando só vale para o pedido que pausou o turno** (#1339).
+  Uma página lida pelo `web_fetch`, um arquivo ou um resultado MCP que trouxesse
+  a cópia de um marcador de confirmação verdadeiro podia competir com o pedido
+  real, e o seu "ok" cobria o comando errado. Agora só o próprio pedido carrega
+  marcador válido no histórico.
 - **`config check` e o bind** (#1261): o check julga o bind pelo que o
   `garraia start` usa (env `HOST`/`PORT`, senão `127.0.0.1:3888`) e aponta
   `gateway.host`/`gateway.port` do arquivo como chaves que o start não lê. As

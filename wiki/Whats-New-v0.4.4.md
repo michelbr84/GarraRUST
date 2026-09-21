@@ -90,6 +90,11 @@ already did, and a one-step program no longer slips past the loop detector.
 
 ## Other fixes
 
+- **Command approval only covers the request that paused the turn** (#1339).
+  A page read by `web_fetch`, a file, or an MCP result that carried a copy of a
+  real confirmation marker could compete with the actual request, and your
+  "ok" covered the wrong command. Now only the request itself carries a valid
+  marker in the history.
 - **`config check` and the bind** (#1261): the check judges the bind by what
   `garraia start` uses (`HOST`/`PORT` env, else `127.0.0.1:3888`) and flags the
   file's `gateway.host`/`gateway.port` as keys `start` does not read. The

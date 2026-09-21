@@ -27,7 +27,8 @@ curtos para a próxima sessão autônoma.
 - **`tool_program`** (#1226 S-B): entrou por #1336 (merge da automação, sem
   revisão); revisão pós-merge em três lentes achou 11 pontos, todos fechados em
   #1337, que também fechou o **#1339** (aprovação GAR-187 amarrada ao pedido
-  que pausou o turno).
+  que pausou o turno: saída comum de tool, recusa do gate e resposta do provider
+  não carregam mais marcador aprovável). Cada correção provada por mutação.
 - **`config check` e o bind** (#1261): #1325 (merge da automação) caía no
   valor do arquivo; #1335 corrigiu para o default do clap. A #1261 foi
   **reaberta**: fechou por `Closes` sem registrar as decisões R5 do dono.
@@ -41,6 +42,7 @@ curtos para a próxima sessão autônoma.
 | #1261 | R5 do dono: opção 2 (recusar bind exposto sem credencial) e destino das chaves `gateway.host`/`gateway.port` do arquivo. Consequência registrada: configs do wizard com `host: 0.0.0.0` passam a sair 2 no `config check --strict`. |
 | #1326 (`garra runs list`, #1227 s4) | Adiada: sanitizar controle de terminal em `goal`/`id`, redigir `error_snippet`, alerta CodeQL #175, e ack do dono na #1227 sobre o gate de design. |
 | #1226 | S-C: docs de `tool_program` entregues em #1337; falta a decisão explícita de não pôr `tool_program` no `allowed` de `search`/`architect`. S-D e resto da S-E seguem. |
+| #1340 | Dimensão temporal da aprovação (pré-existente): um "ok" tardio ainda aprova um pedido já recusado dentro da janela de 6 mensagens. Muda a semântica de retomada da GAR-187 em todos os canais — fatia própria. |
 | #1225, #1227, #1228, #1247, #1254, #1272, #1295 | Inalterados desde a v0.4.3 (ver seção abaixo). |
 
 ### Processo
