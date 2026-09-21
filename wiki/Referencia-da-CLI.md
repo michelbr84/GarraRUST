@@ -19,8 +19,8 @@ O binário `garraia` (alias `garra`) concentra toda a operação. Fonte: [`crate
 
 | Comando | O que faz |
 |---|---|
-| `garra chat` | REPL interativo local-first (`--provider`, `--model`, `--endpoint`, `--timeout`). `--persist` grava a conversa em `sessions.db`; `--resume [id\|latest]` retoma uma sessão (sem valor, a mais recente — #1300). Comandos do REPL: `/mode`, `/model` (transacional, #1298), `/resume`, `/status`, `/tools`, `/logs`, `/contexto` |
-| `garra ask "<pergunta>"` | Pergunta única, LLM-only, sem tools e sem ANSI; `--json` emite o envelope `garra.ask.v1`; timeout vira exit 124 — [docs/cli-ask.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/cli-ask.md) |
+| `garra chat` | REPL interativo local-first (`--provider`, `--model`, `--url`, `--timeout-secs`, `--yes`). `--persist` grava a conversa em `sessions.db`; `--resume [id\|latest]` retoma uma sessão (sem valor, a mais recente — #1300). Comandos do REPL: `/status`, `/context` (alias `/contexto`), `/tools`, `/tool <n>`, `/history`, `/resume`, `/logs`, `/models`, `/model <nome>` (transacional, #1298) |
+| `garra ask "<pergunta>"` | Pergunta única, LLM-only, sem tools e sem ANSI; `--json` emite o envelope `garra.ask.v1`; `--timeout-secs` estourado vira exit 124 — [docs/cli-ask.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/cli-ask.md) |
 | `garra mcp-server` | Expõe `garra_ask` como servidor MCP stdio (Claude Desktop/Code); stdout é só JSON-RPC — [docs/cli-mcp-server.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/cli-mcp-server.md) |
 | `garra max-power [--goal …] [--mode new\|existing\|auto]` | Modo agent-advanced nativo (ADR 0011): menu de pipeline ou roteamento por objetivo |
 
