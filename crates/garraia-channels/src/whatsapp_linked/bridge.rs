@@ -134,6 +134,10 @@ const BASE64_RUN_MIN: usize = 40;
 /// segmento e basta a chave conter uma barra para a combinacao se formar.
 /// Esta fechada.
 ///
+/// `%` e `\` tambem ficam de fora — `100%` e o caminho do Windows dependem
+/// disso —, mas as CODIFICACOES `%2B`/`%2F`/`%3D` e `\/` nao quebram o
+/// segmento: quem decide isso e [`segment_unit`], desde a #1276.
+///
 /// # O preco, medido
 ///
 /// Um segmento longo **sem `.` e sem `@`** vira `<redigido: N caracteres>`,
@@ -157,6 +161,66 @@ fn is_run_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '_' | '-')
 }
 
+/// Os tres caracteres do base64 padrao que uma URL nao aceita crus — `+`, `/`
+/// e `=` — na forma percent-encoded. Comparados sem distinguir caixa.
+const PERCENT_ENCODED_BASE64: &[&[u8; 2]] = &[b"2B", b"2F", b"3D"];
+
+/// Uma unidade de segmento no comeco de `rest`: quantos bytes ela ocupa no
+/// texto. `None` quando o que vem a seguir e separador.
+///
+/// Alem do caractere solto que [`is_run_char`] aceita, duas CODIFICACOES de um
+/// caractere base64 contam como um caractere so — e e o comprimento
+/// decodificado que [`redact_tail_line`] compara com [`BASE64_RUN_MIN`] e
+/// escreve no marcador:
+///
+/// - `%2B`, `%2F` e `%3D` (qualquer caixa), o percent-encoding de `+`, `/` e
+///   `=`. E a forma em que uma chave aparece na URL de um `FetchError` do
+///   undici: `https://mmg.whatsapp.net/v/t62.7118-24/<chave>?ccb=11-4`.
+/// - `\/`, a barra escapada de um `JSON.stringify`.
+///
+/// # A medicao que criou esta funcao (#1276, item 2)
+///
+/// `%` e `\` nao sao caracteres de segmento e nao podem virar: `%` separa
+/// `100%` de qualquer coisa e `\` e o separador de caminho do Windows. So que
+/// eles caiam no MEIO da credencial codificada — `%2F` no lugar de cada `/`,
+/// `%3D` no lugar do `=` final — e cada ocorrencia quebrava a sequencia em
+/// pedacos curtos demais para o teto de 40. Medido sobre chaves aleatorias de
+/// 32 B na linha do `FetchError`: **62,9%** das chaves percent-encoded e
+/// **40,8%** das chaves com `\/` chegavam INTEIRAS a tela — bastava um
+/// url-decode (ou um unescape) do texto ja redigido para remonta-las. O corpus
+/// de `encoded_credentials_in_a_fetch_error_url_are_never_recoverable`
+/// reproduz a medicao (61,0% e 37,6% sobre 500 chaves com semente fixa) e
+/// exige zero.
+///
+/// As saidas obvias foram medidas na issue e descartadas: mexer em
+/// [`BASE64_RUN_MIN`] nao muda a fracao, porque o problema e onde o segmento
+/// QUEBRA e nao o tamanho dele; exigir mistura de classes de caractere deixa
+/// 0,07% das chaves em claro. O conserto e o tokenizador enxergar a
+/// codificacao: `%2F` e UM caractere do segmento, e nao tres, e um segmento
+/// abaixo do teto sai como entrou — codificado, sem decodificar nada. Um `%`
+/// seguido de qualquer outra coisa (`%20`, `%25`, `100%`, fim de linha) e um
+/// `\` seguido de qualquer coisa que nao `/` continuam separadores.
+///
+/// O preco novo e pequeno e da mesma natureza do que ja se paga: um segmento
+/// de URL percent-encoded com 40+ caracteres decodificados e sem `.` vira
+/// `<redigido>`. `@whiskeysockets%2Fbaileys` tem 23 e continua legivel.
+fn segment_unit(rest: &str) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    match *bytes.first()? {
+        b'%' => bytes
+            .get(1..3)
+            .filter(|hex| {
+                PERCENT_ENCODED_BASE64
+                    .iter()
+                    .any(|enc| hex.eq_ignore_ascii_case(&enc[..]))
+            })
+            .map(|_| 3),
+        b'\\' => (bytes.get(1) == Some(&b'/')).then_some(2),
+        c if c.is_ascii() && is_run_char(char::from(c)) => Some(1),
+        _ => None,
+    }
+}
+
 /// Redige o que parece material cifrado numa linha de stderr do filho.
 ///
 /// # Por que existe
@@ -169,10 +233,21 @@ fn is_run_char(ch: char) -> bool {
 /// modulo de terceiros nao passa por ele. Nada mais redigia este caminho.
 ///
 /// A regra e conservadora nos dois sentidos: corta **cada segmento** longo
-/// demais para ser nome (ver [`is_run_char`], que decide onde um segmento
-/// comeca e acaba) **e** limita o comprimento da linha, porque nenhuma das
-/// duas sozinha fecha o caso — uma linha truncada em 240 caracteres ainda
-/// seriam 240 caracteres de credencial.
+/// demais para ser nome **e** limita o comprimento da linha, porque nenhuma
+/// das duas sozinha fecha o caso — uma linha truncada em 240 caracteres ainda
+/// seriam 240 caracteres de credencial. Onde um segmento comeca e acaba e
+/// decisao de [`is_run_char`] (o caractere solto) e de [`segment_unit`] (as
+/// codificacoes `%2B`/`%2F`/`%3D` e `\/`, que contam como um caractere); o que
+/// se compara com [`BASE64_RUN_MIN`] e o que vai no marcador e o comprimento
+/// DECODIFICADO do segmento, e um segmento curto sai como entrou, sem
+/// decodificar.
+///
+/// # O que fica de fora, por escrito
+///
+/// Credencial com menos de [`BASE64_RUN_MIN`] caracteres decodificados nao e
+/// redigida. E o limite declarado da regra, e nao um residual a fechar: uma
+/// chave de 32 B tem 43 ou 44, e baixar o teto passa a redigir nome de funcao,
+/// de modulo e de segmento de caminho — o que a cauda existe para mostrar.
 ///
 /// Ela nao e o unico controle, e nao pode ser testada so como funcao pura: os
 /// dois call sites — [`BridgeConnection::stderr_hint`] e [`npm_ci`] — sao o
@@ -180,25 +255,37 @@ fn is_run_char(ch: char) -> bool {
 /// um. Neutraliza-los deixava a suite inteira verde.
 fn redact_tail_line(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
-    let mut run = String::new();
-    let flush = |run: &mut String, out: &mut String| {
-        let n = run.chars().count();
-        if n >= BASE64_RUN_MIN {
-            out.push_str(&format!("<redigido: {n} caracteres>"));
+    // Segmento em curso: onde comeca (indice de byte em `line`) e quantos
+    // caracteres DECODIFICADOS ja tem. E esse segundo numero, e nao o tamanho
+    // do texto, que se compara com o teto e que vai para o marcador.
+    let mut run: Option<(usize, usize)> = None;
+    let flush = |run: &mut Option<(usize, usize)>, end: usize, out: &mut String| {
+        let Some((start, decoded)) = run.take() else {
+            return;
+        };
+        if decoded >= BASE64_RUN_MIN {
+            out.push_str(&format!("<redigido: {decoded} caracteres>"));
         } else {
-            out.push_str(run);
+            out.push_str(&line[start..end]);
         }
-        run.clear();
     };
-    for ch in line.chars() {
-        if is_run_char(ch) {
-            run.push(ch);
+
+    // Anda por bytes, mas so para em fronteira de caractere: cada unidade que
+    // `segment_unit` devolve e ASCII inteira (1, 2 ou 3 bytes) e o separador
+    // avanca o tamanho UTF-8 do proprio caractere.
+    let mut i = 0;
+    while let Some(ch) = line[i..].chars().next() {
+        if let Some(width) = segment_unit(&line[i..]) {
+            let (_, decoded) = run.get_or_insert((i, 0));
+            *decoded += 1;
+            i += width;
         } else {
-            flush(&mut run, &mut out);
+            flush(&mut run, i, &mut out);
             out.push(ch);
+            i += ch.len_utf8();
         }
     }
-    flush(&mut run, &mut out);
+    flush(&mut run, line.len(), &mut out);
 
     if out.chars().count() > STDERR_TAIL_LINE_CHARS {
         let cut: String = out.chars().take(STDERR_TAIL_LINE_CHARS).collect();
@@ -1030,6 +1117,250 @@ mod tests {
             cortada.chars().count()
         );
         assert!(cortada.contains("truncada"), "e precisa dizer que truncou");
+    }
+
+    /// PRNG deterministico para o corpus sintetico: xorshift64*, semente fixa.
+    ///
+    /// Sem dependencia nova e sem aleatoriedade entre execucoes — o teste mede
+    /// sempre as MESMAS chaves, entao um numero que mude e mudanca na redacao,
+    /// nao no sorteio.
+    struct Xorshift64Star(u64);
+
+    impl Xorshift64Star {
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        /// 32 bytes aleatorios: o tamanho de uma `noiseKey` do Baileys.
+        fn key_32(&mut self) -> [u8; 32] {
+            let mut out = [0u8; 32];
+            for chunk in out.chunks_mut(8) {
+                let word = self.next_u64().to_le_bytes();
+                chunk.copy_from_slice(&word[..chunk.len()]);
+            }
+            out
+        }
+    }
+
+    /// O que `decodeURIComponent` devolve para a linha do corpus: so `+`, `/`
+    /// e `=` sao percent-encoded nela, nas duas caixas.
+    fn url_decode(s: &str) -> String {
+        s.replace("%2B", "+")
+            .replace("%2b", "+")
+            .replace("%2F", "/")
+            .replace("%2f", "/")
+            .replace("%3D", "=")
+            .replace("%3d", "=")
+    }
+
+    /// O que `JSON.parse` faz com a barra escapada.
+    fn unescape_json_slashes(s: &str) -> String {
+        s.replace("\\/", "/")
+    }
+
+    /// **Item 2 da #1276, reproduzido como corpus.** A chave inteira chegava a
+    /// tela em 62,9% dos casos quando vinha percent-encoded (`%2B`/`%2F`/`%3D`,
+    /// a forma da URL de um `FetchError` do undici) e em 40,8% quando vinha com
+    /// a barra escapada (`\/`, a forma de um `JSON.stringify`), porque `%` e
+    /// `\` quebravam o segmento em pedacos curtos demais para o teto — e
+    /// bastava url-decode ou unescape do texto ja redigido para remontar a
+    /// chave. Aqui a medicao e refeita sobre um corpus deterministico e o
+    /// numero exigido e ZERO, nas duas codificacoes; base64 padrao e url-safe
+    /// entram como regressao e tem de seguir 100% redigidos.
+    #[test]
+    fn encoded_credentials_in_a_fetch_error_url_are_never_recoverable() {
+        use base64::Engine;
+
+        const CHAVES: usize = 500;
+
+        // A linha que o undici produz quando o download de midia do WhatsApp
+        // falha; a chave e o segmento de caminho.
+        fn linha(forma: &str) -> String {
+            format!(
+                "FetchError: request to https://mmg.whatsapp.net/v/t62.7118-24/{forma}?ccb=11-4 failed"
+            )
+        }
+
+        struct Variante {
+            nome: &'static str,
+            /// Do base64 padrao para a forma em que a chave aparece na linha.
+            codifica: fn(&str) -> String,
+            /// O que quem le a tela faria para remontar a chave.
+            decodifica: fn(&str) -> String,
+        }
+        let variantes = [
+            Variante {
+                nome: "base64 padrao",
+                codifica: str::to_owned,
+                decodifica: str::to_owned,
+            },
+            Variante {
+                nome: "percent-encoded, hex maiusculo",
+                codifica: |k| {
+                    k.replace('+', "%2B")
+                        .replace('/', "%2F")
+                        .replace('=', "%3D")
+                },
+                decodifica: url_decode,
+            },
+            Variante {
+                nome: "percent-encoded, hex minusculo",
+                codifica: |k| {
+                    k.replace('+', "%2b")
+                        .replace('/', "%2f")
+                        .replace('=', "%3d")
+                },
+                decodifica: url_decode,
+            },
+            Variante {
+                nome: "barra escapada como \\/",
+                codifica: |k| k.replace('/', "\\/"),
+                decodifica: unescape_json_slashes,
+            },
+            Variante {
+                nome: "base64 url-safe",
+                codifica: |k| k.trim_end_matches('=').replace('+', "-").replace('/', "_"),
+                decodifica: str::to_owned,
+            },
+        ];
+
+        let mut rng = Xorshift64Star(0x1276_C0DE_D00D_0001);
+        let chaves: Vec<String> = (0..CHAVES)
+            .map(|_| base64::engine::general_purpose::STANDARD.encode(rng.key_32()))
+            .collect();
+        // O corpus precisa exercitar o caso: chave sem `+` nem `/` nao muda de
+        // forma ao ser codificada e ja era redigida antes. Esperado ~75% com
+        // pelo menos um dos dois (1 - (62/64)^43).
+        let com_marca = chaves.iter().filter(|k| k.contains(['+', '/'])).count();
+        assert!(
+            com_marca * 10 >= CHAVES * 6,
+            "corpus fraco: so {com_marca}/{CHAVES} chaves tem `+` ou `/`"
+        );
+
+        let mut falhas = Vec::new();
+        for v in &variantes {
+            let mut recuperaveis = 0usize;
+            let mut sem_marcador = 0usize;
+            for chave in &chaves {
+                let forma = (v.codifica)(chave);
+                let redigida = redact_tail_line(&linha(&forma));
+                if !redigida.contains("<redigido:") {
+                    sem_marcador += 1;
+                }
+                if (v.decodifica)(&redigida).contains(&(v.decodifica)(&forma)) {
+                    recuperaveis += 1;
+                }
+            }
+            if recuperaveis > 0 || sem_marcador > 0 {
+                falhas.push(format!(
+                    "{}: {recuperaveis}/{CHAVES} chaves ({:.1}%) recuperaveis por inteiro \
+apos decodificar a tela; {sem_marcador} linhas sem marcador",
+                    v.nome,
+                    100.0 * recuperaveis as f64 / CHAVES as f64
+                ));
+            }
+        }
+        assert!(
+            falhas.is_empty(),
+            "a medicao da #1276 ainda reproduz:\n{}",
+            falhas.join("\n")
+        );
+    }
+
+    /// As duas codificacoes que a #1276 mediu contam como UM caractere do
+    /// segmento, o `N` do marcador e o comprimento DECODIFICADO, e tudo o mais
+    /// que comeca com `%` ou `\` continua separando — `100%`, `%20`, `\n`, o
+    /// caminho do Windows.
+    #[test]
+    fn percent_encoded_and_escaped_base64_count_as_one_char_each() {
+        // A mesma imitacao de `noiseKey` da fixture: 45 caracteres, com uma `/`
+        // no meio e o `=` final — os dois lugares em que as codificacoes tocam
+        // uma chave real com mais frequencia (o `+` entra pelo corpus).
+        let chave = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0=";
+        assert_eq!(chave.len(), 45);
+        assert_eq!(chave.matches(['/', '=']).count(), 2);
+
+        // As quatro formas da mesma chave caem no MESMO marcador, com o N
+        // decodificado (45) e nao o tamanho do texto (49 ou 46). Os parenteses
+        // isolam a chave: com `noiseKey=` colado o N seria 54, porque o nome
+        // vizinho entra no segmento — e esse e o comportamento documentado.
+        let pct = chave
+            .replace('+', "%2B")
+            .replace('/', "%2F")
+            .replace('=', "%3D");
+        let pct_min = chave
+            .replace('+', "%2b")
+            .replace('/', "%2f")
+            .replace('=', "%3d");
+        let esc = chave.replace('/', "\\/");
+        assert_eq!(pct.len(), 49);
+        assert_eq!(esc.len(), 46);
+        for forma in [chave.to_owned(), pct, pct_min, esc] {
+            assert_eq!(
+                redact_tail_line(&format!("at connect ({forma})")),
+                "at connect (<redigido: 45 caracteres>)",
+                "forma: {forma}"
+            );
+        }
+
+        // Abaixo do teto a linha sai VERBATIM — a codificacao e preservada, nao
+        // decodificada. 39 caracteres decodificados: um a menos que o teto,
+        // isolados por parenteses (com `id=` colado seriam 42 e cairiam).
+        let curta = &chave[..39];
+        let curta_pct = curta.replace('/', "%2F");
+        assert!(
+            curta_pct.contains("%2F"),
+            "o recorte precisa ter a barra codificada: {curta_pct}"
+        );
+        for forma in [curta_pct, curta.replace('/', "\\/")] {
+            let linha = format!("id ({forma}) ok");
+            assert_eq!(redact_tail_line(&linha), linha);
+        }
+
+        // `%` ou `\` seguidos de qualquer outra coisa continuam separadores:
+        // dois segmentos de 30 nao viram um de 60...
+        let a = "a".repeat(30);
+        let x = "x".repeat(30);
+        for sep in [
+            "%20", "%25", "%zz", "%2G", "%", "%2", "\\n", "\\\\", "\\", "\\x2F",
+        ] {
+            let linha = format!("{a}{sep}{x}");
+            assert_eq!(redact_tail_line(&linha), linha, "separador {sep:?}");
+        }
+        // ... e as codificacoes de base64 unem: os mesmos 30+30 viram 61.
+        for uniao in ["%2B", "%2F", "%3D", "%2b", "%2f", "%3d", "\\/"] {
+            assert_eq!(
+                redact_tail_line(&format!("{a}{uniao}{x}")),
+                "<redigido: 61 caracteres>",
+                "uniao {uniao:?}"
+            );
+        }
+
+        // Fim de linha no meio de uma codificacao possivel: nem une, nem entra
+        // em panico.
+        for cauda in ["%", "%2", "%3", "\\"] {
+            let linha = format!("{a}{cauda}");
+            assert_eq!(redact_tail_line(&linha), linha);
+        }
+
+        // Texto fora do ASCII em volta de `%` e `\`: o tokenizador anda por
+        // bytes e nao pode cortar um caractere pela metade.
+        let acentos = "conexão falhou: 100%é \\ção %2Fé %é2F fim";
+        assert_eq!(redact_tail_line(acentos), acentos);
+
+        // O preco NAO subiu para o que a cauda existe para mostrar: o caminho
+        // do Windows (`\` seguido de letra separa, como sempre separou) e o
+        // pacote com escopo percent-encoded na URL do registry.
+        let win = r"Error: Cannot find module 'C:\Users\michel\AppData\Roaming\garraia\bridge\node_modules\@whiskeysockets\baileys\lib\index.js'";
+        assert_eq!(redact_tail_line(win), win);
+        let registry =
+            "npm ERR! 404 Not Found - GET https://registry.npmjs.org/@whiskeysockets%2Fbaileys";
+        assert_eq!(redact_tail_line(registry), registry);
     }
 
     struct FakeAssets<'a>(&'a [Asset]);
