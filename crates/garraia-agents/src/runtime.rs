@@ -372,6 +372,36 @@ fn com_objetivo(system: Option<String>, goal: Option<&str>) -> Option<String> {
     }
 }
 
+/// O desfecho de uma chamada de tool, no unico ponto de despacho (#1226 S-A).
+///
+/// As quatro copias do loop de turno recebem um destes desfechos e tratam so
+/// a parte que e delas (empilhar resultado, pausar o turno, falhar com
+/// erro) — o orcamento, o gate do modo, os eventos, o timeout, a execucao e
+/// a deteccao de confirmacao vivem todos em [`AgentRuntime::
+/// dispatch_tool_call`].
+#[derive(Debug)]
+enum DispatchOutcome {
+    /// A tool rodou e nao pediu confirmacao: o `ToolResult` pronto para
+    /// entrar na lista do turno.
+    Result(ContentBlock),
+
+    /// O gate do modo negou (#988): o `ToolResult` de recusa, tambem pronto
+    /// para a lista — o modelo le e segue sem a ferramenta. Nao e erro do
+    /// turno de proposito.
+    Denied(ContentBlock),
+
+    /// A tool pede confirmacao humana (GAR-187): o resultado entra na lista
+    /// e o turno pausa, devolvendo `prompt` a quem chama.
+    Paused {
+        tool_result: ContentBlock,
+        prompt: String,
+    },
+
+    /// O `ExecutionBudget` detectou loop por assinatura: o turno inteiro
+    /// falha. Quem chama converte em `Error::Agent`.
+    BudgetExceeded { tool_name: String },
+}
+
 impl AgentRuntime {
     pub fn new() -> Self {
         Self {
@@ -1262,6 +1292,7 @@ impl AgentRuntime {
             });
 
             let mut tool_results = Vec::new();
+            let mut confirmation_response: Option<String> = None;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     let context = crate::tools::ToolContext {
@@ -1273,68 +1304,25 @@ impl AgentRuntime {
                         project_id: None,
                     };
 
-                    // registra chamada com payload para detecção de loop por assinatura
-                    budget.registrar_chamada(name, input);
-
-                    // detecta loop
-                    if budget.detectar_loop_ferramenta() {
-                        return Err(Error::Agent(format!("tool loop detected: {}", name)));
-                    }
-
-                    // executa com timeout
-                    // #988: o guard de seguranca. O filtro na montagem tira a
-                    // ferramenta da lista que o modelo ve, mas o modelo pode
-                    // pedir um nome que nunca esteve la — o criterio de aceite
-                    // e "nenhuma ferramenta proibida e executada, **mesmo que
-                    // solicitada pelo LLM**". A recusa volta como saida de
-                    // ferramenta, e nao como erro do turno: o modelo le, e
-                    // segue sem ela.
-                    if !portao.permite(name) {
-                        // O nome vem do portao, e nao do `exec`: com `auto`
-                        // escolhido, quem barrou foi o modo **deduzido**, e
-                        // dizer "nao e permitida no modo `auto`" nao explica
-                        // nada a quem le.
-                        let modo = portao.nome_do_modo().unwrap_or("");
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: crate::modes::ToolGate::recusa(name, modo),
-                        });
-                        continue;
-                    }
-
-                    let output = match self.find_tool(name) {
-                        Some(tool) => {
-                            match timeout(budget.timeout(), tool.execute(&context, input.clone()))
-                                .await
-                            {
-                                Ok(result) => {
-                                    result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
-                                }
-                                Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
-                            }
+                    match self
+                        .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
+                        .await
+                    {
+                        DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                            tool_results.push(bloco);
                         }
-                        None => ToolOutput::error(format!("unknown tool: {}", name)),
-                    };
-                    info!("tool '{}' result: is_error={}", name, output.is_error);
-
-                    // GAR-187: pause agent loop if tool requires user confirmation
-                    if output.requires_confirmation {
-                        tracing::info!(session = %session_id, "agent paused: awaiting user confirmation");
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: output.content.clone(),
-                        });
-                        messages.push(ChatMessage {
-                            role: ChatRole::User,
-                            content: MessagePart::Parts(tool_results),
-                        });
-                        return Ok(output.content);
+                        DispatchOutcome::Paused {
+                            tool_result,
+                            prompt,
+                        } => {
+                            tool_results.push(tool_result);
+                            confirmation_response = Some(prompt);
+                            break;
+                        }
+                        DispatchOutcome::BudgetExceeded { tool_name } => {
+                            return Err(Error::Agent(format!("tool loop detected: {}", tool_name)));
+                        }
                     }
-
-                    tool_results.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: output.content,
-                    });
                 }
             }
 
@@ -1342,6 +1330,11 @@ impl AgentRuntime {
                 role: ChatRole::User,
                 content: MessagePart::Parts(tool_results),
             });
+
+            // GAR-187: if a confirmation was requested, return the prompt immediately
+            if let Some(confirmation_msg) = confirmation_response {
+                return Ok(confirmation_msg);
+            }
         }
     }
 
@@ -1565,64 +1558,25 @@ impl AgentRuntime {
                         project_id: None,
                     };
 
-                    // registra chamada com payload para detecção de loop por assinatura
-                    budget.registrar_chamada(name, input);
-
-                    // detecta loop
-                    if budget.detectar_loop_ferramenta() {
-                        return Err(Error::Agent(format!("tool loop detected: {}", name)));
-                    }
-
-                    // executa com timeout
-                    // #988: o guard de seguranca. O filtro na montagem tira a
-                    // ferramenta da lista que o modelo ve, mas o modelo pode
-                    // pedir um nome que nunca esteve la — o criterio de aceite
-                    // e "nenhuma ferramenta proibida e executada, **mesmo que
-                    // solicitada pelo LLM**". A recusa volta como saida de
-                    // ferramenta, e nao como erro do turno: o modelo le, e
-                    // segue sem ela.
-                    if !portao.permite(name) {
-                        // O nome vem do portao, e nao do `exec`: com `auto`
-                        // escolhido, quem barrou foi o modo **deduzido**, e
-                        // dizer "nao e permitida no modo `auto`" nao explica
-                        // nada a quem le.
-                        let modo = portao.nome_do_modo().unwrap_or("");
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: crate::modes::ToolGate::recusa(name, modo),
-                        });
-                        continue;
-                    }
-
-                    let output = match self.find_tool(name) {
-                        Some(tool) => {
-                            match timeout(budget.timeout(), tool.execute(&context, input.clone()))
-                                .await
-                            {
-                                Ok(result) => {
-                                    result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
-                                }
-                                Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
-                            }
+                    match self
+                        .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
+                        .await
+                    {
+                        DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                            tool_results.push(bloco);
                         }
-                        None => ToolOutput::error(format!("unknown tool: {}", name)),
-                    };
-
-                    // GAR-187: pause agent loop if tool requires user confirmation
-                    if output.requires_confirmation {
-                        tracing::info!(session = %session_id, "agent paused: awaiting user confirmation");
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: output.content.clone(),
-                        });
-                        confirmation_response = Some(output.content);
-                        break;
+                        DispatchOutcome::Paused {
+                            tool_result,
+                            prompt,
+                        } => {
+                            tool_results.push(tool_result);
+                            confirmation_response = Some(prompt);
+                            break;
+                        }
+                        DispatchOutcome::BudgetExceeded { tool_name } => {
+                            return Err(Error::Agent(format!("tool loop detected: {}", tool_name)));
+                        }
                     }
-
-                    tool_results.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: output.content,
-                    });
                 }
             }
 
@@ -2208,86 +2162,36 @@ impl AgentRuntime {
                             project_id: None,
                         };
 
-                        // registra chamada com payload para detecção de loop por assinatura
-                        budget.registrar_chamada(name, &input);
-
-                        // detecta loop
-                        if budget.detectar_loop_ferramenta() {
-                            return Err(Error::Agent(format!("tool loop detected: {}", name)));
-                        }
-
-                        // #937: este e o caminho de streaming nativo; o de
-                        // fallback tem a instrumentacao equivalente logo
-                        // adiante. Os dois precisam dela — o Ollama, provedor
-                        // padrao do projeto, nao implementa `stream_complete`
-                        // e cai justamente no outro.
-                        if sink.wants_tool_events() {
-                            sink.tool_started(name, summarize_tool_input(name, &input))
-                                .await;
-                        }
-                        let iniciado_em = std::time::Instant::now();
-
-                        // executa com timeout
-                        // #988: o guard de seguranca. O filtro na montagem tira a
-                        // ferramenta da lista que o modelo ve, mas o modelo pode
-                        // pedir um nome que nunca esteve la — o criterio de aceite
-                        // e "nenhuma ferramenta proibida e executada, **mesmo que
-                        // solicitada pelo LLM**". A recusa volta como saida de
-                        // ferramenta, e nao como erro do turno: o modelo le, e
-                        // segue sem ela.
-                        if !portao.permite(name) {
-                            // O nome vem do portao, e nao do `exec`: com `auto`
-                            // escolhido, quem barrou foi o modo **deduzido**, e
-                            // dizer "nao e permitida no modo `auto`" nao explica
-                            // nada a quem le.
-                            let modo = portao.nome_do_modo().unwrap_or("");
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: crate::modes::ToolGate::recusa(name, modo),
-                            });
-                            continue;
-                        }
-
-                        let output = match self.find_tool(name) {
-                            Some(tool) => {
-                                match timeout(budget.timeout(), tool.execute(&context, input)).await
-                                {
-                                    Ok(result) => {
-                                        result.unwrap_or_else(|e| ToolOutput::error(e.to_string()))
-                                    }
-                                    Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
-                                }
-                            }
-                            None => ToolOutput::error(format!("unknown tool: {}", name)),
-                        };
-
-                        if sink.wants_tool_events() {
-                            let ok = !output.is_error;
-                            sink.tool_finished(
+                        match self
+                            .dispatch_tool_call(
+                                &portao,
+                                &mut budget,
+                                Some(&sink),
+                                &context,
+                                id,
                                 name,
-                                iniciado_em.elapsed(),
-                                ok,
-                                summarize_tool_output(&output.content, ok),
-                                capture_tool_output(&output.content),
+                                &input,
                             )
-                            .await;
+                            .await
+                        {
+                            DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                                tool_results.push(bloco);
+                            }
+                            DispatchOutcome::Paused {
+                                tool_result,
+                                prompt,
+                            } => {
+                                tool_results.push(tool_result);
+                                confirmation_response = Some(prompt);
+                                break;
+                            }
+                            DispatchOutcome::BudgetExceeded { tool_name } => {
+                                return Err(Error::Agent(format!(
+                                    "tool loop detected: {}",
+                                    tool_name
+                                )));
+                            }
                         }
-
-                        // GAR-187: pause agent loop if tool requires user confirmation
-                        if output.requires_confirmation {
-                            tracing::info!(session = %session_id, "agent paused (streaming): awaiting user confirmation");
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: output.content.clone(),
-                            });
-                            confirmation_response = Some(output.content);
-                            break;
-                        }
-
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: output.content,
-                        });
                     }
 
                     messages.push(ChatMessage {
@@ -2412,89 +2316,36 @@ impl AgentRuntime {
                                 project_id: None,
                             };
 
-                            // registra chamada com payload para detecção de loop por assinatura
-                            budget.registrar_chamada(name, input);
-
-                            // detecta loop
-                            if budget.detectar_loop_ferramenta() {
-                                return Err(Error::Agent(format!("tool loop detected: {}", name)));
-                            }
-
-                            // #937: o resumo do input so e montado quando alguem
-                            // vai desenha-lo. `summarize_tool_input` ja redige
-                            // segredo na origem.
-                            if sink.wants_tool_events() {
-                                sink.tool_started(name, summarize_tool_input(name, input))
-                                    .await;
-                            }
-                            let iniciado_em = std::time::Instant::now();
-
-                            // executa com timeout
-                            // #988: o guard de seguranca. O filtro na montagem tira a
-                            // ferramenta da lista que o modelo ve, mas o modelo pode
-                            // pedir um nome que nunca esteve la — o criterio de aceite
-                            // e "nenhuma ferramenta proibida e executada, **mesmo que
-                            // solicitada pelo LLM**". A recusa volta como saida de
-                            // ferramenta, e nao como erro do turno: o modelo le, e
-                            // segue sem ela.
-                            if !portao.permite(name) {
-                                // O nome vem do portao, e nao do `exec`: com `auto`
-                                // escolhido, quem barrou foi o modo **deduzido**, e
-                                // dizer "nao e permitida no modo `auto`" nao explica
-                                // nada a quem le.
-                                let modo = portao.nome_do_modo().unwrap_or("");
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: crate::modes::ToolGate::recusa(name, modo),
-                                });
-                                continue;
-                            }
-
-                            let output = match self.find_tool(name) {
-                                Some(tool) => {
-                                    match timeout(
-                                        budget.timeout(),
-                                        tool.execute(&context, input.clone()),
-                                    )
-                                    .await
-                                    {
-                                        Ok(result) => result
-                                            .unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                                        Err(_) => {
-                                            ToolOutput::error(format!("tool timeout: {}", name))
-                                        }
-                                    }
-                                }
-                                None => ToolOutput::error(format!("unknown tool: {}", name)),
-                            };
-
-                            if sink.wants_tool_events() {
-                                let ok = !output.is_error;
-                                sink.tool_finished(
+                            match self
+                                .dispatch_tool_call(
+                                    &portao,
+                                    &mut budget,
+                                    Some(&sink),
+                                    &context,
+                                    id,
                                     name,
-                                    iniciado_em.elapsed(),
-                                    ok,
-                                    summarize_tool_output(&output.content, ok),
-                                    capture_tool_output(&output.content),
+                                    input,
                                 )
-                                .await;
+                                .await
+                            {
+                                DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                                    tool_results.push(bloco);
+                                }
+                                DispatchOutcome::Paused {
+                                    tool_result,
+                                    prompt,
+                                } => {
+                                    tool_results.push(tool_result);
+                                    confirmation_response = Some(prompt);
+                                    break;
+                                }
+                                DispatchOutcome::BudgetExceeded { tool_name } => {
+                                    return Err(Error::Agent(format!(
+                                        "tool loop detected: {}",
+                                        tool_name
+                                    )));
+                                }
                             }
-
-                            // GAR-187: pause if tool requires user confirmation
-                            if output.requires_confirmation {
-                                tracing::info!(session = %session_id, "agent paused (streaming fallback): awaiting user confirmation");
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: output.content.clone(),
-                                });
-                                confirmation_response = Some(output.content);
-                                break;
-                            }
-
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: output.content,
-                            });
                         }
                     }
 
@@ -2512,6 +2363,115 @@ impl AgentRuntime {
                 }
             }
         }
+    }
+
+    /// O unico ponto de despacho de tool do `AgentRuntime` (#1226 S-A).
+    ///
+    /// Tudo que as quatro copias do loop de turno faziam inline ao executar
+    /// uma tool vive aqui, sempre na mesma ordem: orcamento
+    /// (`registrar_chamada` + deteccao de loop por assinatura), evento de
+    /// inicio (#937), gate do modo (#988), execucao com timeout, log e
+    /// evento de fim, e deteccao de confirmacao humana (GAR-187). O
+    /// desfecho volta como [`DispatchOutcome`] e quem chama trata so o
+    /// controle do turno. Um caminho novo de despacho chama daqui — o teste
+    /// `despacho_de_tool_tem_um_unico_ponto_de_gate` reprova copia que
+    /// consulte o gate por conta propria.
+    ///
+    /// `sink` e `None` nos caminhos sem canal de eventos (os dois
+    /// nao-streaming), que nao emitem `tool_started`/`tool_finished` —
+    /// exatamente como antes da extracao. Nos caminhos com sink, uma tool
+    /// negada pelo gate emite o inicio sem o fim: e o comportamento que as
+    /// copias de streaming ja tinham, preservado tal qual.
+    async fn dispatch_tool_call(
+        &self,
+        portao: &crate::modes::ToolGate,
+        budget: &mut ExecutionBudget,
+        sink: Option<&TurnSink>,
+        context: &ToolContext,
+        id: &str,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> DispatchOutcome {
+        // registra chamada com payload para detecção de loop por assinatura
+        budget.registrar_chamada(name, input);
+
+        // detecta loop
+        if budget.detectar_loop_ferramenta() {
+            return DispatchOutcome::BudgetExceeded {
+                tool_name: name.to_string(),
+            };
+        }
+
+        // #937: o resumo do input so e montado quando alguem vai desenha-lo.
+        // `summarize_tool_input` ja redige segredo na origem.
+        if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+            sink.tool_started(name, summarize_tool_input(name, input))
+                .await;
+        }
+        let iniciado_em = std::time::Instant::now();
+
+        // executa com timeout
+        // #988: o guard de seguranca. O filtro na montagem tira a
+        // ferramenta da lista que o modelo ve, mas o modelo pode
+        // pedir um nome que nunca esteve la — o criterio de aceite
+        // e "nenhuma ferramenta proibida e executada, **mesmo que
+        // solicitada pelo LLM**". A recusa volta como saida de
+        // ferramenta, e nao como erro do turno: o modelo le, e
+        // segue sem ela.
+        if !portao.permite(name) {
+            // O nome vem do portao, e nao do `exec`: com `auto`
+            // escolhido, quem barrou foi o modo **deduzido**, e
+            // dizer "nao e permitida no modo `auto`" nao explica
+            // nada a quem le.
+            let modo = portao.nome_do_modo().unwrap_or("");
+            return DispatchOutcome::Denied(ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: crate::modes::ToolGate::recusa(name, modo),
+            });
+        }
+
+        let output = match self.find_tool(name) {
+            Some(tool) => {
+                match timeout(budget.timeout(), tool.execute(context, input.clone())).await {
+                    Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                    Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
+                }
+            }
+            None => ToolOutput::error(format!("unknown tool: {}", name)),
+        };
+        info!("tool '{}' result: is_error={}", name, output.is_error);
+
+        if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+            let ok = !output.is_error;
+            sink.tool_finished(
+                name,
+                iniciado_em.elapsed(),
+                ok,
+                summarize_tool_output(&output.content, ok),
+                capture_tool_output(&output.content),
+            )
+            .await;
+        }
+
+        // GAR-187: pause agent loop if tool requires user confirmation
+        if output.requires_confirmation {
+            tracing::info!(
+                session = %context.session_id,
+                "agent paused: awaiting user confirmation"
+            );
+            return DispatchOutcome::Paused {
+                tool_result: ContentBlock::ToolResult {
+                    tool_use_id: id.to_string(),
+                    content: output.content.clone(),
+                },
+                prompt: output.content,
+            };
+        }
+
+        DispatchOutcome::Result(ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: output.content,
+        })
     }
 
     // ── GAR-210: Retry + fallback helpers ────────────────────────────────────
@@ -4222,6 +4182,26 @@ mod tests {
         let portao = ToolGate::from_exec(&ExecContext::default());
         assert!(portao.permite("file_write"));
         assert!(portao.permite("bash"));
+    }
+
+    /// #1226 S-A: um unico ponto de despacho de tool no `AgentRuntime`.
+    ///
+    /// O gate do modo tinha quatro copias do mesmo `if` — uma por copia do
+    /// loop de turno — e qualquer caminho novo de despacho reabria o risco de
+    /// bypass que motivou o #988. O criterio de aceite da issue e mecanico: a
+    /// chamada do gate sobre o `name` do bloco `ToolUse` aparece **exatamente
+    /// uma vez**, dentro da `dispatch_tool_call`. Este teste fixa esse numero
+    /// na varredura do propio fonte; uma copia nova que esqueca o despacho
+    /// unico reprova aqui.
+    ///
+    /// O literal do alvo e montado com `concat!` para a varredura nao casar
+    /// com o propio teste, que mora no mesmo arquivo.
+    #[test]
+    fn despacho_de_tool_tem_um_unico_ponto_de_gate() {
+        let src = include_str!("runtime.rs");
+        let alvo = concat!("portao.permite", "(name)");
+        let copias = src.matches(alvo).count();
+        assert_eq!(copias, 1, "esperava 1 ponto de despacho, achei {copias}");
     }
 
     /// O `working_dir` do #980 chega ao `ToolContext`.
