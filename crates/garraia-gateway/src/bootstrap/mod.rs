@@ -77,7 +77,8 @@ pub use whatsapp_linked::{
 /// anuncio de boot. Puro; consumido pelo autoprovisionamento do MCP, pelo
 /// canal `whatsapp_linked` e pelas superficies de diagnostico.
 pub use execution::{
-    PoliticaDeExecucao, anunciar_no_boot, politica_de_execucao, raizes_do_mcp_filesystem,
+    PoliticaDeExecucao, RaizesDoMcpFilesystem, anunciar_no_boot, politica_de_execucao,
+    raizes_do_mcp_filesystem,
 };
 
 /// #1050: o canal Google Chat. Canal push, como o WhatsApp — o `Vec<Arc<_>>`

@@ -125,6 +125,21 @@ fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
     t(lang, pt, en).replace("{bin}", &crate::binario::nome())
 }
 
+/// A instrucao pos-link (ADR 0024, teste 8): `garraia start` quando o
+/// executavel se chama `garraia`, `garra start` quando `garra`. Recebe o nome
+/// em vez de le-lo para o teste unitario poder fixar os dois — a linha so e
+/// alcancavel de verdade depois de um QR lido.
+fn instrucao_pos_link(lang: Lang, bin: &str) -> String {
+    match lang {
+        Lang::Pt => {
+            format!("GarraIA está pronto para receber mensagens (inicie o gateway: `{bin} start`)")
+        }
+        Lang::En => {
+            format!("GarraIA is ready to receive messages (start the gateway: `{bin} start`)")
+        }
+    }
+}
+
 /// Cabecalho do comando.
 pub const HEADER: &str = "WhatsApp — GarraIA";
 
@@ -465,36 +480,22 @@ fn print_execution_profile(ctx: &Context) {
     println!("{}", execution_profile_line(ctx.lang, &config));
 }
 
-/// O modo que um dono recebe em conversa 1:1 quando `default_mode` nao esta
-/// explicito: `code` em `isolated-pod`, `search` em `standard` (tabela "O que
-/// cada perfil significa" do ADR 0024).
-fn owner_floor(config: &garraia_config::AppConfig) -> String {
-    let explicito = config
-        .channels
-        .get(CONFIG_KEY)
-        .and_then(|ch| ch.settings.get("default_mode"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|m| !m.is_empty());
-    match explicito {
-        Some(m) => m.to_string(),
-        None if config.execution.perfil().is_isolated_pod() => "code".to_string(),
-        None => "search".to_string(),
-    }
-}
-
 /// A linha do perfil, pura para o teste montar o `AppConfig` a mao.
+///
+/// O piso do dono e a contagem de donos vem do MESMO leitor que o gateway e
+/// o `/api/diagnostics` usam (`whatsapp_linked_settings` +
+/// `modo_padrao_efetivo`): secao com `type` que nao e `whatsapp_linked` e
+/// zero donos, entradas vazias ou nao-string sao descartadas, e o default do
+/// piso por perfil vem de uma constante so. Antes a CLI reimplementava a
+/// regra (contagem crua do array, `"code"`/`"search"` literais) e podia
+/// dizer `donos: 3` para uma config em que o gateway honra um — o operador
+/// confiava poder a um dono que nao existia (review C3/C8/C13/F-5 da #1329).
 fn execution_profile_line(lang: Lang, config: &garraia_config::AppConfig) -> String {
     let perfil = config.execution.perfil();
     let origem = config.execution.origem();
-    let donos = config
-        .channels
-        .get(CONFIG_KEY)
-        .and_then(|ch| ch.settings.get("owners"))
-        .and_then(serde_json::Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    let piso = owner_floor(config);
+    let settings = garraia_gateway::bootstrap::whatsapp_linked_settings(config);
+    let donos = settings.owners.len();
+    let piso = settings.modo_padrao_efetivo(perfil);
     match lang {
         Lang::Pt => format!(
             "Perfil de execução: {perfil} (fonte {origem}) — piso do dono: {piso} · donos: {donos}"
@@ -1187,11 +1188,7 @@ fn link_paired(
             }
             println!(
                 "✓ {}",
-                tb(
-                    ctx.lang,
-                    "GarraIA está pronto para receber mensagens (inicie o gateway: `{bin} start`)",
-                    "GarraIA is ready to receive messages (start the gateway: `{bin} start`)"
-                )
+                instrucao_pos_link(ctx.lang, &crate::binario::nome())
             );
             0
         }

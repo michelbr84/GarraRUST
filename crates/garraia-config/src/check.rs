@@ -216,10 +216,21 @@ fn source_report(loader: &ConfigLoader) -> SourceReport {
     }
 }
 
+/// O resultado da leitura de `GARRAIA_EXECUTION_PROFILE`, lido UMA vez por
+/// `run_check` e injetado em `validate_com_env`/`summarise_com_env` — para o
+/// nucleo do check ser puro e os testes cobrirem o valor invalido sem por um
+/// valor invalido na env de verdade (review C7 da #1329).
+type PerfilDaEnv =
+    Result<Option<crate::execution::ExecutionProfile>, crate::execution::ExecutionProfileError>;
+
 /// `mcp_servers_count` comes from the caller so it can reflect the merged
 /// view (config.yml `mcp:` + mcp.json) — counting only `config.mcp` reported
 /// 0 even when mcp.json had working servers.
-fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
+fn summarise_com_env(
+    config: &AppConfig,
+    mcp_servers_count: usize,
+    env: &PerfilDaEnv,
+) -> ConfigSummary {
     let mut llm_providers: Vec<String> = config.llm.keys().cloned().collect();
     llm_providers.sort();
 
@@ -244,7 +255,7 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
 
     let (execution_profile, execution_profile_source) =
-        perfil_efetivo_para_o_check(&config.execution);
+        perfil_efetivo_para_o_check(&config.execution, env);
 
     ConfigSummary {
         gateway_host: config.gateway.host.clone(),
@@ -267,25 +278,34 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
 
 /// O perfil efetivo e a origem, como o `config check` os reporta.
 ///
-/// Le a env por conta propria porque o check pode receber um `AppConfig`
-/// vindo de `load_sem_env` (e o caminho que deixa um valor invalido virar
-/// Finding em vez de exit 65). Com env valida a resposta e a mesma que
+/// Recebe a env ja lida porque o check recebe um `AppConfig` vindo de
+/// `load_para_o_check` (o caminho que deixa um valor invalido virar Finding
+/// em vez de exit 65). Com env valida a resposta e a mesma que
 /// `ConfigLoader::load` teria dado; com env invalida — que
 /// `validate_execution` reporta como `Error` — o sumario mostra o que o
 /// arquivo diz, que e o que o loader usaria sem a env.
 fn perfil_efetivo_para_o_check(
     execution: &crate::execution::ExecutionConfig,
+    env: &PerfilDaEnv,
 ) -> (
     crate::execution::ExecutionProfile,
     crate::execution::ProfileSource,
 ) {
-    match crate::execution::perfil_do_env() {
-        Ok(Some(p)) => (p, crate::execution::ProfileSource::Env),
+    match env {
+        Ok(Some(p)) => (*p, crate::execution::ProfileSource::Env),
         _ => (execution.perfil(), execution.origem()),
     }
 }
 
+/// [`validate_com_env`] sem env — o que os testes deste modulo chamam. Pura:
+/// nenhum teste daqui depende do ambiente do desenvolvedor nem precisa de
+/// lock para ler `GARRAIA_EXECUTION_PROFILE`.
+#[cfg(test)]
 fn validate(config: &AppConfig) -> Vec<Finding> {
+    validate_com_env(config, &Ok(None))
+}
+
+fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
     let mut findings: Vec<Finding> = Vec::new();
     let push_err = |findings: &mut Vec<Finding>, field: &str, message: String| {
         findings.push(Finding {
@@ -710,14 +730,11 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // worse than one that is off, because the operator stops watching.
     validate_sandbox(&config.agent, &mut findings, &push_err, &push_warn);
 
-    // execution (ADR 0024 / #1329): env invalida e Error (o gateway nao
-    // sobe); `pod_root` e `owners` fora de `isolated-pod` sao Warning, porque
-    // sao config que o operador acha que faz algo e nao faz.
-    findings.extend(validate_execution(
-        &config.execution,
-        crate::execution::perfil_do_env(),
-        &config.channels,
-    ));
+    // execution (ADR 0024 / #1329): env ou arquivo invalido e Error (o
+    // gateway nao sobe); `pod_root` e `owners` fora de `isolated-pod` sao
+    // Warning, porque sao config que o operador acha que faz algo e nao faz.
+    findings.extend(validate_execution(&config.execution, env, &config.channels));
+    validate_whatsapp_linked_identidades(&config.channels, &mut findings, &push_warn);
 
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
@@ -2209,14 +2226,39 @@ fn validate_config_dir_inner(dir: &std::path::Path, env_explicitly_set: bool) ->
 /// mesmo `CONFIG_KEY` que o gateway le em `settings_from_config`.
 const WHATSAPP_LINKED_TYPE: &str = "whatsapp_linked";
 
+/// Quantas entradas de uma lista de identidades (`owners`, `allow`) contam
+/// como declaradas: strings nao vazias apos `trim`. E o filtro minimo que o
+/// gateway aplica (`identidades_da_secao` descarta nao-string e vazio antes
+/// de normalizar); esta crate nao depende do gateway, entao espelha so essa
+/// parte — um `owners: [5511999998888]` sem aspas (inteiro em YAML) conta
+/// zero aqui como conta zero la (review C3/F-5 da #1329).
+fn identidades_declaradas(section: &crate::model::ChannelConfig, chave: &str) -> usize {
+    section
+        .settings
+        .get(chave)
+        .and_then(serde_json::Value::as_array)
+        .map(|itens| {
+            itens
+                .iter()
+                .filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// Nucleo puro do check da secao `execution` (ADR 0024 / #1329).
 ///
 /// Recebe o resultado da leitura da env em vez de le-la, para o teste poder
-/// cobrir os quatro achados sem `set_var`. Tres regras:
+/// cobrir os achados sem `set_var`. Quatro regras:
 ///
 /// - env invalida e **Error** em `execution.profile`: o `ConfigLoader::load`
 ///   recusa a mesma env e o gateway nao sobe (fail-closed, nunca `standard`
 ///   em silencio). O check diz isso antes do boot.
+/// - valor invalido de `execution.profile` no **arquivo** e o mesmo
+///   **Error**: o serde recusa o arquivo e o gateway nao sobe;
+///   `ConfigLoader::load_para_o_check` carrega o resto e marca o valor
+///   (`perfil_invalido_no_arquivo`) para o relatorio existir (exit 2, nao
+///   exit 65 "corrija a sintaxe").
 /// - `pod_root` so tem efeito em `isolated-pod`; declarado em `standard`, ou
 ///   relativo, e **Warning** — a raiz do MCP `filesystem` continua sendo
 ///   `agent.file_roots` / `<data_dir>/workspace`, e um caminho relativo
@@ -2231,17 +2273,25 @@ const WHATSAPP_LINKED_TYPE: &str = "whatsapp_linked";
 /// precisa.
 fn validate_execution(
     execution: &crate::execution::ExecutionConfig,
-    env: Result<
-        Option<crate::execution::ExecutionProfile>,
-        crate::execution::ExecutionProfileError,
-    >,
+    env: &PerfilDaEnv,
     channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
 ) -> Vec<Finding> {
     use crate::execution::PROFILE_ENV;
 
     let mut findings = Vec::new();
+    if let Some(e) = execution.perfil_invalido_no_arquivo() {
+        findings.push(Finding {
+            severity: Severity::Error,
+            field: "execution.profile".into(),
+            message: format!(
+                "{e} (value in the config file; the file spelling is exact, lowercase); \
+                 the gateway refuses to boot with this value (fail-closed) — fix or remove \
+                 execution.profile"
+            ),
+        });
+    }
     let perfil = match env {
-        Ok(Some(p)) => p,
+        Ok(Some(p)) => *p,
         Ok(None) => execution.perfil(),
         Err(e) => {
             findings.push(Finding {
@@ -2294,12 +2344,7 @@ fn validate_execution(
             let Some(ch) = channels.get(name) else {
                 continue;
             };
-            let donos = ch
-                .settings
-                .get("owners")
-                .and_then(serde_json::Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0);
+            let donos = identidades_declaradas(ch, "owners");
             if donos == 0 {
                 continue;
             }
@@ -2320,6 +2365,72 @@ fn validate_execution(
     findings
 }
 
+/// O sufixo de JID que uma identidade de `owners`/`allow` nao pode ter.
+///
+/// O canal identifica um remetente com numero pelos DIGITOS
+/// (`identidade_do_remetente` normaliza `sender_phone`), e so cai no JID cru
+/// quando o remetente e `@lid` (sem numero). Uma entrada
+/// `<digitos>@s.whatsapp.net` contem `@`, entao a normalizacao a mantem
+/// verbatim — e ela nunca casa com ninguem: o remetente com numero chega
+/// como digitos, e o `@lid` chega com outro sufixo. Fail-closed, mas em
+/// silencio (o turno so loga `perfil=padrao`), e e por isso que o check
+/// avisa (F-4 da auditoria da #1329).
+const SUFIXO_JID_DE_NUMERO: &str = "@s.whatsapp.net";
+
+/// Avisa quando `channels.<whatsapp_linked>.owners`/`allow` tem entradas na
+/// forma `<digitos>@s.whatsapp.net`, em qualquer perfil. So a contagem sai
+/// na mensagem — nunca a identidade.
+fn validate_whatsapp_linked_identidades(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    let mut nomes: Vec<&String> = channels
+        .iter()
+        .filter(|(_, ch)| ch.channel_type == WHATSAPP_LINKED_TYPE)
+        .map(|(name, _)| name)
+        .collect();
+    nomes.sort();
+    for name in nomes {
+        let Some(ch) = channels.get(name) else {
+            continue;
+        };
+        for chave in ["owners", "allow"] {
+            let em_forma_de_jid = ch
+                .settings
+                .get(chave)
+                .and_then(serde_json::Value::as_array)
+                .map(|itens| {
+                    itens
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .filter(|s| {
+                            s.trim()
+                                .to_ascii_lowercase()
+                                .ends_with(SUFIXO_JID_DE_NUMERO)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            if em_forma_de_jid == 0 {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}.{chave}"),
+                format!(
+                    "channels.{name}.{chave} has {em_forma_de_jid} entr{} in the \
+                     `<digits>{SUFIXO_JID_DE_NUMERO}` JID form; the gateway matches a sender \
+                     that has a phone number by its DIGITS, so such an entry never matches \
+                     anyone (fail-closed, silently) — write the digits only (e.g. \
+                     5511999998888), or the `@lid` JID for a sender without a number",
+                    if em_forma_de_jid == 1 { "y" } else { "ies" }
+                ),
+            );
+        }
+    }
+}
+
 /// Thin wrapper that reads the process env to drive
 /// [`validate_config_dir_inner`].
 fn validate_config_dir(loader: &ConfigLoader) -> Vec<Finding> {
@@ -2328,8 +2439,14 @@ fn validate_config_dir(loader: &ConfigLoader) -> Vec<Finding> {
 }
 
 /// Run the full validation + reporting pipeline.
+///
+/// `config` e o que `ConfigLoader::load_para_o_check` devolveu (o arquivo
+/// sem a env aplicada, com um `execution.profile` invalido marcado em vez de
+/// recusado); a env `GARRAIA_EXECUTION_PROFILE` e lida aqui, uma vez, e
+/// injetada no nucleo puro.
 pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
-    let mut findings = validate(config);
+    let env = crate::execution::perfil_do_env();
+    let mut findings = validate_com_env(config, &env);
     findings.extend(validate_config_dir(loader));
     // #1237: `vault:` no `env` de um servidor MCP com o cofre indisponivel
     // (`GARRAIA_VAULT_PASSPHRASE` ausente) — no boot a referencia nao resolve
@@ -2345,7 +2462,7 @@ pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
     ConfigCheck {
         source: source_report(loader),
         findings,
-        summary: summarise(config, mcp_merged.len()),
+        summary: summarise_com_env(config, mcp_merged.len(), &env),
     }
 }
 
@@ -3507,7 +3624,7 @@ mod tests {
                 extra: HashMap::new(),
             },
         );
-        let summary = summarise(&cfg, cfg.mcp.len());
+        let summary = summarise_com_env(&cfg, cfg.mcp.len(), &Ok(None));
         assert!(summary.gateway_api_key_set);
         assert_eq!(summary.llm_providers, vec!["openrouter".to_string()]);
         assert_eq!(
@@ -5464,7 +5581,7 @@ mod tests {
     #[test]
     fn execution_env_invalida_e_error() {
         let err = "pod".parse::<ExecutionProfile>().expect_err("invalido");
-        let achados = validate_execution(&execucao(None, None), Err(err), &HashMap::new());
+        let achados = validate_execution(&execucao(None, None), &Err(err), &HashMap::new());
         assert_eq!(achados.len(), 1, "{achados:?}");
         assert_eq!(achados[0].severity, Severity::Error);
         assert_eq!(achados[0].field, "execution.profile");
@@ -5481,7 +5598,7 @@ mod tests {
 
         // O gemeo: env valida ou ausente nao produz achado nenhum.
         for env in [Ok(None), Ok(Some(ExecutionProfile::IsolatedPod))] {
-            let achados = validate_execution(&execucao(None, None), env, &HashMap::new());
+            let achados = validate_execution(&execucao(None, None), &env, &HashMap::new());
             assert!(achados.is_empty(), "{achados:?}");
         }
     }
@@ -5491,7 +5608,7 @@ mod tests {
     fn execution_pod_root_em_standard_avisa() {
         let achados = validate_execution(
             &execucao(None, Some("/workspace")),
-            Ok(None),
+            &Ok(None),
             &HashMap::new(),
         );
         assert_eq!(achados.len(), 1, "{achados:?}");
@@ -5507,13 +5624,13 @@ mod tests {
         // absoluto e limpo.
         let por_arquivo = validate_execution(
             &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
-            Ok(None),
+            &Ok(None),
             &HashMap::new(),
         );
         assert!(por_arquivo.is_empty(), "{por_arquivo:?}");
         let por_env = validate_execution(
             &execucao(None, Some("/workspace")),
-            Ok(Some(ExecutionProfile::IsolatedPod)),
+            &Ok(Some(ExecutionProfile::IsolatedPod)),
             &HashMap::new(),
         );
         assert!(por_env.is_empty(), "{por_env:?}");
@@ -5525,7 +5642,7 @@ mod tests {
     fn execution_env_standard_vence_arquivo_isolated_pod() {
         let achados = validate_execution(
             &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
-            Ok(Some(ExecutionProfile::Standard)),
+            &Ok(Some(ExecutionProfile::Standard)),
             &HashMap::new(),
         );
         assert_eq!(achados.len(), 1, "{achados:?}");
@@ -5541,7 +5658,7 @@ mod tests {
     fn execution_pod_root_relativo_avisa() {
         let achados = validate_execution(
             &execucao(Some(ExecutionProfile::IsolatedPod), Some("workspace")),
-            Ok(None),
+            &Ok(None),
             &HashMap::new(),
         );
         assert_eq!(achados.len(), 1, "{achados:?}");
@@ -5559,7 +5676,7 @@ mod tests {
     #[test]
     fn execution_owners_em_standard_avisa_sem_ecoar_identidades() {
         let canais = canal_linked_com_owners(serde_json::json!(["5511999998888", "abc@lid"]));
-        let achados = validate_execution(&execucao(None, None), Ok(None), &canais);
+        let achados = validate_execution(&execucao(None, None), &Ok(None), &canais);
         assert_eq!(achados.len(), 1, "{achados:?}");
         assert_eq!(achados[0].severity, Severity::Warning);
         assert_eq!(achados[0].field, "channels.whatsapp_linked.owners");
@@ -5588,13 +5705,13 @@ mod tests {
         // standard tambem; outro tipo de canal com `owners` nao e deste check.
         let limpo = validate_execution(
             &execucao(Some(ExecutionProfile::IsolatedPod), None),
-            Ok(None),
+            &Ok(None),
             &canais,
         );
         assert!(limpo.is_empty(), "{limpo:?}");
         let vazio = validate_execution(
             &execucao(None, None),
-            Ok(None),
+            &Ok(None),
             &canal_linked_com_owners(serde_json::json!([])),
         );
         assert!(vazio.is_empty(), "{vazio:?}");
@@ -5602,55 +5719,50 @@ mod tests {
         if let Some(ch) = outro.get_mut("whatsapp_linked") {
             ch.channel_type = "whatsapp".to_string();
         }
-        let outro_tipo = validate_execution(&execucao(None, None), Ok(None), &outro);
+        let outro_tipo = validate_execution(&execucao(None, None), &Ok(None), &outro);
         assert!(outro_tipo.is_empty(), "{outro_tipo:?}");
     }
 
-    /// O caminho de producao: `validate` e `summarise` **leem** a env.
+    /// O caminho de producao com a env injetada: `validate_com_env` e
+    /// `summarise_com_env` recebem o que `run_check` leu UMA vez. Nenhum
+    /// valor invalido entra em `GARRAIA_EXECUTION_PROFILE` de verdade neste
+    /// binario (review C7): `validate` e `load` sao lidos sem lock por outros
+    /// testes, e um Error/Err em transito os derrubaria. A leitura real da
+    /// env e provada em `execution::tests::perfil_do_env_le_o_ambiente_de_verdade`
+    /// (valores validos) e pelo smoke da CLI, num subprocesso.
     #[test]
-    fn validate_e_summarise_leem_a_env_do_perfil() {
-        let _guard = crate::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let anterior = std::env::var_os(PROFILE_ENV);
-
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe { std::env::set_var(PROFILE_ENV, "not-a-profile") };
-        let erros: Vec<_> = validate(&AppConfig::default())
+    fn validate_e_summarise_usam_a_env_injetada() {
+        let invalida: PerfilDaEnv = Err("not-a-profile"
+            .parse::<ExecutionProfile>()
+            .expect_err("invalido"));
+        let erros: Vec<_> = validate_com_env(&AppConfig::default(), &invalida)
             .into_iter()
             .filter(|f| f.field == "execution.profile")
             .collect();
-        // Com env invalida o sumario mostra o que o arquivo diz.
-        let sumario_invalido = summarise(&AppConfig::default(), 0);
-
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe { std::env::set_var(PROFILE_ENV, "isolated-pod") };
-        let sumario_env = summarise(&AppConfig::default(), 0);
-        let limpo: Vec<_> = validate(&AppConfig::default())
-            .into_iter()
-            .filter(|f| f.field == "execution.profile")
-            .collect();
-
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe { std::env::remove_var(PROFILE_ENV) };
-        let sumario_default = summarise(&AppConfig::default(), 0);
-
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe {
-            match anterior {
-                Some(v) => std::env::set_var(PROFILE_ENV, v),
-                None => std::env::remove_var(PROFILE_ENV),
-            }
-        }
-
         assert_eq!(erros.len(), 1, "{erros:?}");
         assert_eq!(erros[0].severity, Severity::Error);
+        assert!(
+            erros[0].message.contains(PROFILE_ENV),
+            "{}",
+            erros[0].message
+        );
         assert!(!erros[0].message.contains("standard em silencio"));
-        assert!(limpo.is_empty(), "{limpo:?}");
+        // Com env invalida o sumario mostra o que o arquivo diz.
+        let sumario_invalido = summarise_com_env(&AppConfig::default(), 0, &invalida);
         assert_eq!(sumario_invalido.execution_profile, "standard");
         assert_eq!(sumario_invalido.execution_profile_source, "default");
+
+        let env: PerfilDaEnv = Ok(Some(ExecutionProfile::IsolatedPod));
+        let limpo: Vec<_> = validate_com_env(&AppConfig::default(), &env)
+            .into_iter()
+            .filter(|f| f.field == "execution.profile")
+            .collect();
+        assert!(limpo.is_empty(), "{limpo:?}");
+        let sumario_env = summarise_com_env(&AppConfig::default(), 0, &env);
         assert_eq!(sumario_env.execution_profile, "isolated-pod");
         assert_eq!(sumario_env.execution_profile_source, "env");
+
+        let sumario_default = summarise_com_env(&AppConfig::default(), 0, &Ok(None));
         assert_eq!(sumario_default.execution_profile, "standard");
         assert_eq!(sumario_default.execution_profile_source, "default");
     }
@@ -5658,31 +5770,169 @@ mod tests {
     /// Sem env, o sumario reflete o arquivo (e a origem `file`).
     #[test]
     fn summarise_reporta_perfil_do_arquivo() {
-        let _guard = crate::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let anterior = std::env::var_os(PROFILE_ENV);
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe { std::env::remove_var(PROFILE_ENV) };
-
         let config = AppConfig {
             execution: execucao(Some(ExecutionProfile::IsolatedPod), None),
             ..AppConfig::default()
         };
-        let sumario = summarise(&config, 0);
-
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe {
-            if let Some(v) = anterior {
-                std::env::set_var(PROFILE_ENV, v);
-            }
-        }
-
+        let sumario = summarise_com_env(&config, 0, &Ok(None));
         assert_eq!(sumario.execution_profile, "isolated-pod");
         assert_eq!(
             sumario.execution_profile_source,
             ProfileSource::File.as_str()
         );
+    }
+
+    /// Valor invalido de `execution.profile` no ARQUIVO (marcado por
+    /// `load_para_o_check`) e o mesmo Error que a env invalida — nomeando o
+    /// valor e dizendo que o gateway nao sobe (review C10).
+    #[test]
+    fn execution_perfil_invalido_no_arquivo_e_error() {
+        let dir = temp_dir("check-perfil-invalido-no-arquivo");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(
+            dir.join("config.yml"),
+            "execution:\n  profile: isolated_pod\n",
+        )
+        .expect("failed to write config");
+        let loader = ConfigLoader::with_dir(&dir);
+        let config = loader.load_para_o_check().expect("o check carrega");
+
+        let achados = validate_execution(&config.execution, &Ok(None), &HashMap::new());
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Error);
+        assert_eq!(achados[0].field, "execution.profile");
+        assert!(
+            achados[0].message.contains("\"isolated_pod\""),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            achados[0].message.contains("config file"),
+            "{}",
+            achados[0].message
+        );
+
+        // O pipeline inteiro: `run_check` tem o Error e o sumario mostra o
+        // default (o arquivo, sem o valor recusado, nao declara perfil).
+        let check = run_check(&loader, &config);
+        assert!(check.has_errors(), "{:?}", check.findings);
+        assert!(
+            check
+                .findings
+                .iter()
+                .any(|f| f.field == "execution.profile" && f.severity == Severity::Error)
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A contagem de `owners` conta o que o gateway conta: strings nao vazias
+    /// apos trim. Um inteiro YAML sem aspas, `""` e `"  "` nao sao donos em
+    /// lugar nenhum — e o check nao pode dizer que sao (review C3/F-5).
+    #[test]
+    fn execution_owners_conta_so_strings_nao_vazias() {
+        let canais = canal_linked_com_owners(serde_json::json!([
+            "",
+            "   ",
+            5511999998888_u64,
+            true,
+            serde_json::Value::Null,
+            "5511999998888"
+        ]));
+        let achados = validate_execution(&execucao(None, None), &Ok(None), &canais);
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert!(
+            achados[0].message.contains("1 identity"),
+            "{}",
+            achados[0].message
+        );
+
+        // So lixo: zero donos, nenhum aviso.
+        let so_lixo = canal_linked_com_owners(serde_json::json!(["", 42, null]));
+        let achados = validate_execution(&execucao(None, None), &Ok(None), &so_lixo);
+        assert!(achados.is_empty(), "{achados:?}");
+    }
+
+    /// F-4 da auditoria: `<digitos>@s.whatsapp.net` em `owners`/`allow` nunca
+    /// casa com um remetente (o canal compara digitos), e o check avisa —
+    /// com a contagem, nunca a identidade — em qualquer perfil.
+    #[test]
+    fn identidade_em_forma_de_jid_de_numero_avisa_sem_ecoar() {
+        let mut settings = HashMap::new();
+        settings.insert(
+            "owners".to_string(),
+            serde_json::json!(["5521977776666@s.whatsapp.net", "5521977776666"]),
+        );
+        settings.insert(
+            "allow".to_string(),
+            serde_json::json!([" 5531966665555@S.WHATSAPP.NET ", "abc@lid"]),
+        );
+        let canais = HashMap::from([(
+            "whatsapp_linked".to_string(),
+            ChannelConfig {
+                channel_type: "whatsapp_linked".to_string(),
+                enabled: Some(true),
+                settings,
+            },
+        )]);
+        let config = AppConfig {
+            channels: canais.clone(),
+            execution: execucao(Some(ExecutionProfile::IsolatedPod), None),
+            ..AppConfig::default()
+        };
+        let avisos: Vec<_> = validate(&config)
+            .into_iter()
+            .filter(|f| f.message.contains("@s.whatsapp.net"))
+            .collect();
+        assert_eq!(avisos.len(), 2, "{avisos:?}");
+        for aviso in &avisos {
+            assert_eq!(aviso.severity, Severity::Warning);
+            assert!(
+                aviso.field == "channels.whatsapp_linked.owners"
+                    || aviso.field == "channels.whatsapp_linked.allow",
+                "{}",
+                aviso.field
+            );
+            assert!(aviso.message.contains("1 entry"), "{}", aviso.message);
+            assert!(
+                !aviso.message.contains("5521977776666")
+                    && !aviso.message.contains("5531966665555"),
+                "identidade vazou: {}",
+                aviso.message
+            );
+        }
+
+        // Gemeo: digitos e `@lid` nao avisam; outro tipo de canal tambem nao.
+        let mut limpo = canais.clone();
+        if let Some(ch) = limpo.get_mut("whatsapp_linked") {
+            ch.settings.insert(
+                "owners".to_string(),
+                serde_json::json!(["5521977776666", "abc@lid"]),
+            );
+            ch.settings.remove("allow");
+        }
+        let mut findings = Vec::new();
+        validate_whatsapp_linked_identidades(&limpo, &mut findings, &|f, campo, msg| {
+            f.push(Finding {
+                severity: Severity::Warning,
+                field: campo.to_owned(),
+                message: msg,
+            })
+        });
+        assert!(findings.is_empty(), "{findings:?}");
+
+        let mut outro = canais;
+        if let Some(ch) = outro.get_mut("whatsapp_linked") {
+            ch.channel_type = "whatsapp".to_string();
+        }
+        let mut findings = Vec::new();
+        validate_whatsapp_linked_identidades(&outro, &mut findings, &|f, campo, msg| {
+            f.push(Finding {
+                severity: Severity::Warning,
+                field: campo.to_owned(),
+                message: msg,
+            })
+        });
+        assert!(findings.is_empty(), "{findings:?}");
     }
 
     #[test]

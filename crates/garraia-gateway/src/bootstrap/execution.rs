@@ -56,17 +56,58 @@ pub fn politica_de_execucao(config: &AppConfig) -> PoliticaDeExecucao {
     }
 }
 
+/// As raizes que o MCP `filesystem` autoprovisionado recebe — e de onde
+/// vieram, porque o provisionamento trata as duas origens de modo diferente.
+///
+/// `Workspace` e o default `<data_dir>/workspace`, um diretorio do proprio
+/// Garra que o primeiro boot **cria** (ele nao existe ainda). `Declaradas`
+/// sao caminhos que o operador escreveu (`agent.file_roots` em `standard`,
+/// `execution.pod_root` em `isolated-pod`): o provisionamento **nao os
+/// cria** — um `pod_root` com typo, ou relativo, viraria um diretorio novo
+/// no host (ou no cwd de quem subiu o processo) por efeito colateral do
+/// boot (F-3 da auditoria da #1329). Raiz declarada que nao existe e "nao
+/// provisiona", com aviso.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RaizesDoMcpFilesystem {
+    /// `<data_dir>/workspace`: a unica raiz que o provisionamento cria.
+    Workspace(PathBuf),
+    /// `agent.file_roots` ou `execution.pod_root`, como declarados. Nunca
+    /// vazio quando sai de [`raizes_do_mcp_filesystem`].
+    Declaradas(Vec<PathBuf>),
+}
+
+impl RaizesDoMcpFilesystem {
+    /// Os caminhos, na ordem em que viram argumentos do servidor.
+    pub fn caminhos(&self) -> &[PathBuf] {
+        match self {
+            Self::Workspace(raiz) => std::slice::from_ref(raiz),
+            Self::Declaradas(raizes) => raizes,
+        }
+    }
+}
+
 /// As raizes que o MCP `filesystem` autoprovisionado recebe, por perfil.
 ///
-/// - `standard`: `agent.file_roots` quando nao esta vazio (o mesmo jail das
-///   file tools nativas, #1244); senao `<data_dir>/workspace`.
+/// - `standard`: `agent.file_roots` quando nao esta vazio; senao
+///   `<data_dir>/workspace`.
 /// - `isolated-pod`: `execution.pod_root` quando declarado; senao o mesmo
 ///   `<data_dir>/workspace`.
 ///
+/// So a **config** entra aqui. O jail das file tools nativas (#1244) e mais
+/// largo — `FileJail::from_config_roots` soma a env `GARRAIA_FILE_ROOTS`, e
+/// cada chamada soma o `working_dir` da sessao — e nada disso chega ao
+/// servidor MCP nem ao diagnostico `mcp.filesystem_root`, que compara contra
+/// estas raizes declaradas (ADR 0024, tabela "O que cada perfil significa").
+/// E deliberado: a raiz do MCP e a mais estreita das duas, e uma
+/// `GARRAIA_FILE_ROOTS=/` no ambiente nao pode calar o aviso sobre um
+/// `mcp.json` legado apontando para `$HOME`.
+///
 /// **Nunca** `$HOME` — era o `$HOME` implicito que a #1329 apontou como o
-/// contorno do jail. Pura: nao toca o disco; quem chama cria o diretorio.
-pub fn raizes_do_mcp_filesystem(config: &AppConfig) -> Vec<PathBuf> {
-    let workspace = || vec![config.resolved_data_dir().join("workspace")];
+/// contorno do jail. Pura: nao toca o disco; quem provisiona cria (so) o
+/// workspace.
+pub fn raizes_do_mcp_filesystem(config: &AppConfig) -> RaizesDoMcpFilesystem {
+    let workspace =
+        || RaizesDoMcpFilesystem::Workspace(config.resolved_data_dir().join("workspace"));
     match config.execution.perfil() {
         ExecutionProfile::Standard => {
             let declaradas: Vec<PathBuf> = config
@@ -80,11 +121,11 @@ pub fn raizes_do_mcp_filesystem(config: &AppConfig) -> Vec<PathBuf> {
             if declaradas.is_empty() {
                 workspace()
             } else {
-                declaradas
+                RaizesDoMcpFilesystem::Declaradas(declaradas)
             }
         }
         ExecutionProfile::IsolatedPod => match config.execution.pod_root() {
-            Some(root) => vec![root.to_path_buf()],
+            Some(root) => RaizesDoMcpFilesystem::Declaradas(vec![root.to_path_buf()]),
             None => workspace(),
         },
     }
@@ -187,7 +228,14 @@ mod tests {
     #[test]
     fn standard_sem_file_roots_usa_o_workspace_do_data_dir() {
         let raizes = raizes_do_mcp_filesystem(&config(None, None, &[], Some("/tmp/garra-data")));
-        assert_eq!(raizes, vec![PathBuf::from("/tmp/garra-data/workspace")]);
+        assert_eq!(
+            raizes,
+            RaizesDoMcpFilesystem::Workspace(PathBuf::from("/tmp/garra-data/workspace"))
+        );
+        assert_eq!(
+            raizes.caminhos(),
+            &[PathBuf::from("/tmp/garra-data/workspace")]
+        );
 
         // `pod_root` declarado em standard e ignorado (o check avisa).
         let raizes = raizes_do_mcp_filesystem(&config(
@@ -196,12 +244,16 @@ mod tests {
             &[],
             Some("/tmp/garra-data"),
         ));
-        assert_eq!(raizes, vec![PathBuf::from("/tmp/garra-data/workspace")]);
+        assert_eq!(
+            raizes,
+            RaizesDoMcpFilesystem::Workspace(PathBuf::from("/tmp/garra-data/workspace"))
+        );
     }
 
-    /// `standard` com `agent.file_roots`: o mesmo jail das file tools nativas.
+    /// `standard` com `agent.file_roots`: as raizes declaradas na config —
+    /// e so elas (a env `GARRAIA_FILE_ROOTS` do jail nativo nao entra).
     #[test]
-    fn standard_com_file_roots_usa_as_raizes_do_jail() {
+    fn standard_com_file_roots_usa_as_raizes_declaradas() {
         let raizes = raizes_do_mcp_filesystem(&config(
             Some(ExecutionProfile::Standard),
             None,
@@ -210,7 +262,14 @@ mod tests {
         ));
         assert_eq!(
             raizes,
-            vec![PathBuf::from("/srv/projeto"), PathBuf::from("/srv/outro")]
+            RaizesDoMcpFilesystem::Declaradas(vec![
+                PathBuf::from("/srv/projeto"),
+                PathBuf::from("/srv/outro")
+            ])
+        );
+        assert_eq!(
+            raizes.caminhos(),
+            &[PathBuf::from("/srv/projeto"), PathBuf::from("/srv/outro")]
         );
     }
 
@@ -224,7 +283,10 @@ mod tests {
             &["/srv/projeto"],
             Some("/tmp/garra-data"),
         ));
-        assert_eq!(raizes, vec![PathBuf::from("/workspace")]);
+        assert_eq!(
+            raizes,
+            RaizesDoMcpFilesystem::Declaradas(vec![PathBuf::from("/workspace")])
+        );
     }
 
     /// `isolated-pod` sem `pod_root`: o workspace do Garra — a fronteira
@@ -237,7 +299,10 @@ mod tests {
             &["/srv/projeto"],
             Some("/tmp/garra-data"),
         ));
-        assert_eq!(raizes, vec![PathBuf::from("/tmp/garra-data/workspace")]);
+        assert_eq!(
+            raizes,
+            RaizesDoMcpFilesystem::Workspace(PathBuf::from("/tmp/garra-data/workspace"))
+        );
     }
 
     /// Sem `data_dir` a raiz cai em `<config_dir>/data/workspace` — e em
@@ -250,12 +315,20 @@ mod tests {
             .expect("HOME no ambiente de teste");
         for profile in [None, Some(ExecutionProfile::IsolatedPod)] {
             let raizes = raizes_do_mcp_filesystem(&config(profile, None, &[], None));
-            assert_eq!(raizes.len(), 1, "{raizes:?}");
-            assert_ne!(raizes[0], home, "{profile:?}: $HOME nunca e raiz implicita");
+            let caminhos = raizes.caminhos();
+            assert_eq!(caminhos.len(), 1, "{raizes:?}");
+            assert_ne!(
+                caminhos[0], home,
+                "{profile:?}: $HOME nunca e raiz implicita"
+            );
             assert!(
-                raizes[0].ends_with("workspace"),
+                caminhos[0].ends_with("workspace"),
                 "{profile:?}: {}",
-                raizes[0].display()
+                caminhos[0].display()
+            );
+            assert!(
+                matches!(raizes, RaizesDoMcpFilesystem::Workspace(_)),
+                "{profile:?}: sem declaracao a raiz e o workspace, o unico que o boot cria"
             );
         }
     }

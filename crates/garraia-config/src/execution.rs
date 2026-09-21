@@ -128,6 +128,23 @@ impl fmt::Display for ExecutionProfileError {
 
 impl std::error::Error for ExecutionProfileError {}
 
+/// O que o **arquivo** aceita em `execution.profile`: exatamente as grafias
+/// de [`ExecutionProfile::VALORES_ACEITOS`], como o serde do enum faz
+/// (`isolated_pod`, `Standard` e `pod` sao recusados). A env e mais frouxa
+/// (`FromStr` ignora caixa); o arquivo nao — e esta funcao existe para o
+/// `ConfigLoader` classificar um valor que o serde ja recusou, sem
+/// reimplementar a regra.
+pub(crate) fn perfil_do_arquivo_estrito(
+    valor: &str,
+) -> Result<ExecutionProfile, ExecutionProfileError> {
+    if !ExecutionProfile::VALORES_ACEITOS.contains(&valor) {
+        return Err(ExecutionProfileError {
+            valor: valor.to_string(),
+        });
+    }
+    valor.parse()
+}
+
 /// De onde veio o perfil efetivo — para `config check`, `/api/diagnostics`
 /// e o log de boot dizerem "isolated-pod (fonte: env)" em vez de so o valor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +195,13 @@ pub struct ExecutionConfig {
     /// para o disco — ver o docblock do modulo.
     #[serde(skip)]
     do_env: Option<ExecutionProfile>,
+    /// O valor que o **arquivo** declarou em `execution.profile` e que o
+    /// serde recusou. So o `ConfigLoader::load_para_o_check` preenche isto,
+    /// para o `config check` reportar o valor como Finding `Error` (exit 2)
+    /// em vez de um exit 65 "o arquivo nao parseia". `load` nunca produz
+    /// uma secao assim: o gateway continua recusando o boot.
+    #[serde(skip)]
+    invalido_no_arquivo: Option<ExecutionProfileError>,
 }
 
 impl ExecutionConfig {
@@ -189,7 +213,22 @@ impl ExecutionConfig {
             profile,
             pod_root,
             do_env: None,
+            invalido_no_arquivo: None,
         }
+    }
+
+    /// O valor invalido que o arquivo declarou em `execution.profile`, se o
+    /// loader do `config check` o encontrou. `None` em toda config que o
+    /// gateway carrega.
+    pub fn perfil_invalido_no_arquivo(&self) -> Option<&ExecutionProfileError> {
+        self.invalido_no_arquivo.as_ref()
+    }
+
+    /// Marca a secao com o valor de `execution.profile` que o serde recusou.
+    /// Restrito a crate: so o `ConfigLoader::load_para_o_check` tem motivo
+    /// para chamar.
+    pub(crate) fn marcar_perfil_invalido_no_arquivo(&mut self, err: ExecutionProfileError) {
+        self.invalido_no_arquivo = Some(err);
     }
 
     /// O perfil efetivo: env (se aplicada) > arquivo > `standard`.
@@ -217,7 +256,18 @@ impl ExecutionConfig {
     /// muda nada; env invalida e `Err` — e o chamador (o `ConfigLoader`)
     /// transforma isso em erro de carga.
     pub fn aplicar_env(&mut self) -> Result<(), ExecutionProfileError> {
-        if let Some(perfil) = perfil_do_env()? {
+        self.aplicar_valor_da_env(std::env::var(PROFILE_ENV).ok().as_deref())
+    }
+
+    /// [`Self::aplicar_env`] com o valor da env ja lido — a parte pura.
+    ///
+    /// E o que os testes exercitam com o valor invalido: nenhum teste desta
+    /// crate poe um valor invalido em [`PROFILE_ENV`] de verdade, porque
+    /// `ConfigLoader::load` e `validate` leem a env no mesmo binario de teste
+    /// sem lock, e uma env invalida em transito faria qualquer `load()`
+    /// paralelo falhar (#1329, review C7).
+    pub fn aplicar_valor_da_env(&mut self, raw: Option<&str>) -> Result<(), ExecutionProfileError> {
+        if let Some(perfil) = perfil_de_valor(raw)? {
             self.do_env = Some(perfil);
         }
         Ok(())
@@ -235,10 +285,19 @@ impl ExecutionConfig {
 /// Le [`PROFILE_ENV`]: ausente ou vazia => `Ok(None)`; valida => `Ok(Some)`;
 /// qualquer outra coisa => `Err` com o valor ofensor.
 pub fn perfil_do_env() -> Result<Option<ExecutionProfile>, ExecutionProfileError> {
-    match std::env::var(PROFILE_ENV) {
-        Ok(raw) if raw.trim().is_empty() => Ok(None),
-        Ok(raw) => raw.parse().map(Some),
-        Err(_) => Ok(None),
+    perfil_de_valor(std::env::var(PROFILE_ENV).ok().as_deref())
+}
+
+/// [`perfil_do_env`] com o valor ja lido: `None` ou em branco => `Ok(None)`;
+/// valido => `Ok(Some)`; qualquer outra coisa => `Err` com o valor ofensor.
+/// Pura — e a que os testes usam para o caso invalido.
+pub fn perfil_de_valor(
+    raw: Option<&str>,
+) -> Result<Option<ExecutionProfile>, ExecutionProfileError> {
+    match raw {
+        None => Ok(None),
+        Some(raw) if raw.trim().is_empty() => Ok(None),
+        Some(raw) => raw.parse().map(Some),
     }
 }
 
@@ -352,77 +411,140 @@ mod tests {
         assert!(!yaml.contains("do_env"), "{yaml}");
     }
 
-    fn com_env<T>(valor: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = crate::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let anterior = std::env::var_os(PROFILE_ENV);
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe {
-            match valor {
-                Some(v) => std::env::set_var(PROFILE_ENV, v),
-                None => std::env::remove_var(PROFILE_ENV),
-            }
-        }
-        let r = f();
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe {
-            match anterior {
-                Some(v) => std::env::set_var(PROFILE_ENV, v),
-                None => std::env::remove_var(PROFILE_ENV),
-            }
-        }
-        r
-    }
-
-    /// Precedencia real, lendo o ambiente: env > arquivo > default.
+    /// Precedencia, com o valor da env injetado: env > arquivo > default.
     #[test]
     fn aplicar_env_da_precedencia_a_env_sobre_o_arquivo() {
-        com_env(Some("isolated-pod"), || {
-            let mut cfg = ExecutionConfig {
-                profile: Some(ExecutionProfile::Standard),
-                ..Default::default()
-            };
-            cfg.aplicar_env().expect("env valida");
-            assert_eq!(cfg.perfil(), ExecutionProfile::IsolatedPod);
-            assert_eq!(cfg.origem(), ProfileSource::Env);
-            assert_eq!(cfg.profile, Some(ExecutionProfile::Standard));
-        });
-        com_env(None, || {
-            let mut cfg = ExecutionConfig {
-                profile: Some(ExecutionProfile::IsolatedPod),
-                ..Default::default()
-            };
-            cfg.aplicar_env().expect("sem env");
-            assert_eq!(cfg.perfil(), ExecutionProfile::IsolatedPod);
-            assert_eq!(cfg.origem(), ProfileSource::File);
-            assert_eq!(perfil_do_env(), Ok(None));
-        });
+        let mut cfg = ExecutionConfig {
+            profile: Some(ExecutionProfile::Standard),
+            ..Default::default()
+        };
+        cfg.aplicar_valor_da_env(Some("isolated-pod"))
+            .expect("env valida");
+        assert_eq!(cfg.perfil(), ExecutionProfile::IsolatedPod);
+        assert_eq!(cfg.origem(), ProfileSource::Env);
+        assert_eq!(cfg.profile, Some(ExecutionProfile::Standard));
+
+        let mut cfg = ExecutionConfig {
+            profile: Some(ExecutionProfile::IsolatedPod),
+            ..Default::default()
+        };
+        cfg.aplicar_valor_da_env(None).expect("sem env");
+        assert_eq!(cfg.perfil(), ExecutionProfile::IsolatedPod);
+        assert_eq!(cfg.origem(), ProfileSource::File);
+        assert_eq!(perfil_de_valor(None), Ok(None));
+
         // Env presente mas vazia conta como ausente — e o que um
         // `env GARRAIA_EXECUTION_PROFILE= garraia start` produz.
-        com_env(Some("   "), || {
-            let mut cfg = ExecutionConfig::default();
-            cfg.aplicar_env().expect("env vazia e ausente");
-            assert_eq!(cfg.origem(), ProfileSource::Default);
-        });
+        let mut cfg = ExecutionConfig::default();
+        cfg.aplicar_valor_da_env(Some("   "))
+            .expect("env vazia e ausente");
+        assert_eq!(cfg.origem(), ProfileSource::Default);
+        assert_eq!(perfil_de_valor(Some("   ")), Ok(None));
     }
 
     /// Env invalida e `Err`, com o valor e a env na mensagem — e a secao
     /// fica como estava (o loader descarta tudo, mas a funcao nao pode ter
-    /// meio-aplicado nada).
+    /// meio-aplicado nada). Provado com o valor injetado: um valor invalido
+    /// NUNCA entra em `GARRAIA_EXECUTION_PROFILE` de verdade dentro deste
+    /// binario de teste (ver `aplicar_valor_da_env`).
     #[test]
     fn env_invalida_e_erro_e_nao_cai_em_standard() {
-        com_env(Some("pod"), || {
-            let mut cfg = ExecutionConfig {
-                profile: Some(ExecutionProfile::IsolatedPod),
-                ..Default::default()
-            };
-            let err = cfg.aplicar_env().expect_err("env invalida");
-            assert_eq!(err.valor(), "pod");
-            assert!(err.to_string().contains(PROFILE_ENV));
-            assert_eq!(cfg.origem(), ProfileSource::File);
-            assert!(perfil_do_env().is_err());
-        });
+        let mut cfg = ExecutionConfig {
+            profile: Some(ExecutionProfile::IsolatedPod),
+            ..Default::default()
+        };
+        let err = cfg
+            .aplicar_valor_da_env(Some("pod"))
+            .expect_err("env invalida");
+        assert_eq!(err.valor(), "pod");
+        assert!(err.to_string().contains(PROFILE_ENV));
+        assert_eq!(cfg.origem(), ProfileSource::File);
+        assert_eq!(cfg.perfil(), ExecutionProfile::IsolatedPod);
+        assert!(perfil_de_valor(Some("pod")).is_err());
+        assert!(perfil_de_valor(Some("isolated_pod")).is_err());
+    }
+
+    /// O arquivo e estrito: so as grafias que o serde do enum aceita. A env
+    /// e frouxa de caixa (`FromStr`), o arquivo nao.
+    #[test]
+    fn o_arquivo_so_aceita_as_grafias_exatas() {
+        assert_eq!(
+            perfil_do_arquivo_estrito("isolated-pod"),
+            Ok(ExecutionProfile::IsolatedPod)
+        );
+        assert_eq!(
+            perfil_do_arquivo_estrito("standard"),
+            Ok(ExecutionProfile::Standard)
+        );
+        for ruim in ["Standard", "Isolated-Pod", "isolated_pod", "pod", ""] {
+            let err = perfil_do_arquivo_estrito(ruim).expect_err(ruim);
+            assert_eq!(err.valor(), ruim);
+        }
+    }
+
+    /// A marca de "valor invalido no arquivo" nao muda o perfil efetivo (o
+    /// check reporta o Error; o gateway nunca ve uma secao assim) e nao vai
+    /// para o disco.
+    #[test]
+    fn perfil_invalido_no_arquivo_e_so_uma_marca_para_o_check() {
+        let mut cfg = ExecutionConfig::default();
+        assert!(cfg.perfil_invalido_no_arquivo().is_none());
+        let err = perfil_do_arquivo_estrito("nao-e-perfil").expect_err("invalido");
+        cfg.marcar_perfil_invalido_no_arquivo(err);
+        assert_eq!(
+            cfg.perfil_invalido_no_arquivo().map(|e| e.valor()),
+            Some("nao-e-perfil")
+        );
+        assert_eq!(cfg.perfil(), ExecutionProfile::Standard);
+        assert_eq!(cfg.origem(), ProfileSource::Default);
+        let yaml = serde_yaml::to_string(&cfg).expect("serializa");
+        assert!(!yaml.contains("nao-e-perfil"), "{yaml}");
+        assert!(!yaml.contains("invalido"), "{yaml}");
+    }
+
+    /// O UNICO teste da crate que toca `GARRAIA_EXECUTION_PROFILE` de
+    /// verdade — e so com valores validos ou em branco. `ConfigLoader::load`
+    /// e o `config check` leem esta env sem lock em outros testes do mesmo
+    /// binario; um valor invalido em transito derrubaria qualquer um deles
+    /// (review C7 da #1329). O caminho invalido e provado por
+    /// `env_invalida_e_erro_e_nao_cai_em_standard` (puro) e pelo smoke da
+    /// CLI, que roda `garra config check` num subprocesso.
+    #[test]
+    fn perfil_do_env_le_o_ambiente_de_verdade() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct Restaura(Option<std::ffi::OsString>);
+        impl Drop for Restaura {
+            fn drop(&mut self) {
+                // SAFETY: ENV_TEST_LOCK held for the whole test.
+                unsafe {
+                    match self.0.take() {
+                        Some(v) => std::env::set_var(PROFILE_ENV, v),
+                        None => std::env::remove_var(PROFILE_ENV),
+                    }
+                }
+            }
+        }
+        let _restaura = Restaura(std::env::var_os(PROFILE_ENV));
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(PROFILE_ENV, "isolated-pod") };
+        assert_eq!(perfil_do_env(), Ok(Some(ExecutionProfile::IsolatedPod)));
+        let mut cfg = ExecutionConfig::default();
+        cfg.aplicar_env().expect("env valida");
+        assert_eq!(cfg.origem(), ProfileSource::Env);
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(PROFILE_ENV, "   ") };
+        assert_eq!(perfil_do_env(), Ok(None));
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::remove_var(PROFILE_ENV) };
+        assert_eq!(perfil_do_env(), Ok(None));
+        let mut cfg = ExecutionConfig::default();
+        cfg.aplicar_env().expect("sem env");
+        assert_eq!(cfg.origem(), ProfileSource::Default);
     }
 
     /// ADR 0024, driver 1: o perfil e explicito, nunca inferido. Verificado
