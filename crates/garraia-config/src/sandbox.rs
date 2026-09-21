@@ -72,7 +72,10 @@ pub const TOOLS_SANDBOXAVEIS: &[&str] = &["bash"];
 /// qualquer `mode`, inclusive `all` (#1225 S2). E a outra metade do espelho
 /// acima: `TOOLS_SANDBOXAVEIS` diz o que a secao alcanca, esta diz o que ela
 /// NAO alcanca, e o `config check` repete as duas ao operador num Warning
-/// incondicional quando `mode != off`.
+/// quando uma destas aparece em `sandboxed_tools`/`elevated` — a config
+/// mostrando que ele leu `mode = all` como "tudo". So entao: `--strict`
+/// promove Warning a exit 2, e a secao recomendada (all + docker) tem de sair
+/// com exit 0; o aviso para todo mundo e o `warn!` da subida.
 ///
 /// Espelho de `garraia_agents::sandbox::HOST_ONLY_SPAWNING_TOOLS`, pelo mesmo
 /// motivo (a aresta `config -> agents` custa mais que uma lista) e com a

@@ -1914,6 +1914,7 @@ fn validate_sandbox(
     // (`Bash`, ` bash`) looks identical to a working entry in the file.
     // Names are compared trimmed; case is NOT normalised, because the tool
     // registry is case-sensitive and pretending otherwise would be a lie.
+    let cobertas = TOOLS_SANDBOXAVEIS.join("`, `");
     for (campo, entradas) in [
         ("agent.sandbox.sandboxed_tools", &sb.sandboxed_tools),
         ("agent.sandbox.elevated", &sb.elevated),
@@ -1921,6 +1922,31 @@ fn validate_sandbox(
         for entrada in entradas {
             let nome = entrada.trim();
             if TOOLS_SANDBOXAVEIS.contains(&nome) {
+                continue;
+            }
+            // #1225 S2: the entry is a real tool that spawns on the host
+            // WITHOUT consulting the policy. Not a typo: the operator read
+            // `mode = all` as "everything" and listed one. Same severity (the
+            // entry is a no-op), honest message — and only here, when the
+            // config SHOWS the misunderstanding. A coherent section gets no
+            // Warning: `--strict` promotes Warning to exit 2, and the only
+            // way to clear an unconditional notice would be `mode = off`,
+            // i.e. pressure toward the less secure state. The notice every
+            // operator reads once is the startup `warn!`, not this finding.
+            if TOOLS_SO_NO_HOST.contains(&nome) {
+                push_warn(
+                    findings,
+                    campo,
+                    format!(
+                        "{campo} entry {nome:?} runs on the HOST whatever agent.sandbox.mode is: \
+                         it never consults the sandbox policy (only `{cobertas}` does — see \
+                         #1225), so the entry has no effect. Next step: remove it and read \
+                         `mode = all` as containment for `{cobertas}` only; if {} must not touch \
+                         this host, contain the gateway process itself (container/VM) until \
+                         #1225 routes them through the sandbox.",
+                        TOOLS_SO_NO_HOST.join("/")
+                    ),
+                );
                 continue;
             }
             push_warn(
@@ -1934,24 +1960,6 @@ fn validate_sandbox(
             );
         }
     }
-
-    // #1225 S2: `mode != off` reads as "nothing runs on the host", and that
-    // is true for exactly one tool. The other spawners never consult the
-    // policy; routing them is the structural half of the slice, still open.
-    // Unconditional, like the ssh notice: the operator reads it once, even
-    // with a perfectly coherent section.
-    push_warn(
-        findings,
-        "agent.sandbox.mode",
-        format!(
-            "agent.sandbox.mode = all/allowlist covers only `{}`; {} still run on the HOST \
-             whatever the mode — see #1225. Next step: read `mode = all` as containment for \
-             `bash` only; if those tools must not touch this host, contain the gateway process \
-             itself (container/VM) until #1225 routes them through the sandbox.",
-            TOOLS_SANDBOXAVEIS.join("`, `"),
-            TOOLS_SO_NO_HOST.join("/")
-        ),
-    );
 }
 
 /// #1127: a URL do HA precisa de esquema http/https e host — é ela que o
@@ -2923,25 +2931,18 @@ mod tests {
                 "agent.sandbox.image",
                 Severity::Error,
             ),
-            // S2: `mode` ligado cobre so `bash`; o aviso de cobertura e
-            // incondicional, como o do ssh.
+            // S2: uma tool que spawna no host listada em `elevated` e a config
+            // mostrando que o operador leu `mode = all` como "tudo" — Warning
+            // no campo da entrada, e so quando listada (a secao coerente fica
+            // verde sob `--strict`). O caso `sandboxed_tools` e o F4 abaixo.
             (
-                "mode=all cobre so bash e diz quem fica no host",
+                "tool so-no-host em elevated com mode=all e mal-entendido",
                 |c| {
                     c.agent.sandbox.mode = SandboxMode::All;
                     c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                    c.agent.sandbox.elevated = vec!["code_review".into()];
                 },
-                "agent.sandbox.mode",
-                Severity::Warning,
-            ),
-            (
-                "mode=allowlist cobre so bash e diz quem fica no host",
-                |c| {
-                    c.agent.sandbox.mode = SandboxMode::Allowlist;
-                    c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-                    c.agent.sandbox.sandboxed_tools = vec!["bash".into()];
-                },
-                "agent.sandbox.mode",
+                "agent.sandbox.elevated",
                 Severity::Warning,
             ),
             // F3: `all` com a unica tool sandboxavel em `elevated` == `off`.
@@ -3038,24 +3039,20 @@ mod tests {
             "mode=off nao deve reclamar de nada: {findings:?}"
         );
 
-        // Docker completo, sem elevated: limpo — fora o aviso de cobertura
-        // (#1225 S2), incondicional como o do ssh: `mode = all` cobre so
-        // `bash`, e o operador le isso uma vez.
+        // Docker completo, sem elevated: limpo. Inclusive sem o aviso de
+        // cobertura do #1225 S2 — ele so sai quando a config MOSTRA o
+        // mal-entendido (tool so-no-host em `sandboxed_tools`/`elevated`),
+        // porque `--strict` promove Warning a exit 2 e a secao recomendada
+        // (mode=all + docker) tem de sair com exit 0.
         let mut cfg = AppConfig::default();
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
         let findings = validate(&cfg);
-        let cobertura =
-            |f: &Finding| f.field == "agent.sandbox.mode" && f.severity == Severity::Warning;
         assert!(
             !findings
                 .iter()
-                .any(|f| f.field.starts_with("agent.sandbox") && !cobertura(f)),
+                .any(|f| f.field.starts_with("agent.sandbox")),
             "findings = {findings:?}"
-        );
-        assert!(
-            findings.iter().any(cobertura),
-            "o aviso de cobertura e incondicional com mode != off: {findings:?}"
         );
 
         // SSH com os dois flags desligados: o operador reconheceu que eles
@@ -3121,50 +3118,83 @@ mod tests {
         );
     }
 
-    /// #1225 S2: `mode` ligado cobre so `bash`, e o finding nomeia as tools
-    /// que ficam no host — para o operador nao ler `mode = all` como "nada
-    /// roda no host". Some com `off`, como o resto da secao.
+    /// #1225 S2: uma tool de `TOOLS_SO_NO_HOST` em `sandboxed_tools` ou
+    /// `elevated` e a config MOSTRANDO que o operador leu `mode = all` como
+    /// "tudo". O finding nomeia a tool, diz que ela roda no HOST com qualquer
+    /// `mode`, nomeia o que o sandbox cobre e da o proximo passo. So quando
+    /// listada: a secao coerente nao ganha Warning, para `--strict` continuar
+    /// alcancavel com o sandbox ligado. Some com `off`, como o resto da secao.
     #[test]
-    fn agent_sandbox_mode_ligado_diz_quais_tools_ficam_no_host() {
+    fn agent_sandbox_tool_so_no_host_listada_e_dita_com_proximo_passo() {
         use crate::sandbox::{
             SandboxBackendKind, SandboxMode, TOOLS_SANDBOXAVEIS, TOOLS_SO_NO_HOST,
         };
 
+        type Lista = fn(&mut AppConfig, String);
+        let campos: [(&str, Lista); 2] = [
+            ("agent.sandbox.sandboxed_tools", |c, t| {
+                c.agent.sandbox.sandboxed_tools.push(t)
+            }),
+            ("agent.sandbox.elevated", |c, t| {
+                c.agent.sandbox.elevated.push(t)
+            }),
+        ];
+
         for modo in [SandboxMode::All, SandboxMode::Allowlist] {
-            let mut cfg = AppConfig::default();
-            cfg.agent.sandbox.mode = modo;
-            cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-            cfg.agent.sandbox.sandboxed_tools = vec!["bash".into()];
-            let findings = validate(&cfg);
-            let cobertura = findings
-                .iter()
-                .find(|f| f.field == "agent.sandbox.mode" && f.severity == Severity::Warning)
-                .unwrap_or_else(|| {
-                    panic!("{modo:?}: esperava o aviso de cobertura; findings = {findings:?}")
-                });
-            for tool in TOOLS_SANDBOXAVEIS.iter().chain(TOOLS_SO_NO_HOST) {
-                assert!(
-                    cobertura.message.contains(*tool),
-                    "{modo:?}: `{tool}` nao foi nomeada: {}",
-                    cobertura.message
-                );
+            for (campo, lista) in campos {
+                for tool in TOOLS_SO_NO_HOST {
+                    let mut cfg = AppConfig::default();
+                    cfg.agent.sandbox.mode = modo;
+                    cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                    cfg.agent.sandbox.sandboxed_tools = vec!["bash".into()];
+                    lista(&mut cfg, (*tool).to_string());
+                    let findings = validate(&cfg);
+                    let f = findings
+                        .iter()
+                        .find(|f| f.field == campo && f.message.contains(*tool))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{modo:?}/{campo}: esperava finding nomeando `{tool}`: \
+                                 {findings:?}"
+                            )
+                        });
+                    assert_eq!(f.severity, Severity::Warning);
+                    assert!(f.message.contains("HOST"), "message = {}", f.message);
+                    assert!(f.message.contains("#1225"), "message = {}", f.message);
+                    assert!(
+                        f.message.contains("Next step"),
+                        "o finding tem de dizer o que fazer: {}",
+                        f.message
+                    );
+                    for coberta in TOOLS_SANDBOXAVEIS {
+                        assert!(
+                            f.message.contains(*coberta),
+                            "`{coberta}` (coberta) nao foi nomeada: {}",
+                            f.message
+                        );
+                    }
+                }
             }
-            assert!(
-                cobertura.message.contains("#1225"),
-                "message = {}",
-                cobertura.message
-            );
-            assert!(
-                cobertura.message.contains("Next step"),
-                "o finding tem de dizer o que fazer: {}",
-                cobertura.message
-            );
         }
 
-        // `off`: a secao inteira esta inerte, inclusive este aviso.
-        let findings = validate(&AppConfig::default());
+        // Secao coerente: nada sobre cobertura — `--strict` sai com exit 0.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.mode = SandboxMode::All;
+        cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+        let findings = validate(&cfg);
         assert!(
-            !findings.iter().any(|f| f.field == "agent.sandbox.mode"),
+            !findings.iter().any(|f| f.message.contains("#1225")),
+            "secao coerente nao pode ganhar o aviso de cobertura: {findings:?}"
+        );
+
+        // `off`: a secao inteira esta inerte, inclusive este aviso.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.elevated = vec!["run_tests".into()];
+        let findings = validate(&cfg);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.sandbox")),
             "mode=off nao pode avisar sobre cobertura: {findings:?}"
         );
     }

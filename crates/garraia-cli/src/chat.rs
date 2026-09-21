@@ -18,7 +18,9 @@ use garraia_agents::{
 };
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
-use garraia_gateway::bootstrap::{sandbox_policy_from, spawn_hardware_adapters};
+use garraia_gateway::bootstrap::{
+    avisa_cobertura_do_sandbox, sandbox_policy_from, spawn_hardware_adapters,
+};
 use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
@@ -260,6 +262,10 @@ fn register_cli_tools(
     // continua fora do jail de proposito — ver #1272.
     let mut bash_tool = BashTool::new_with_confirmation(Some(30)).with_allowlist(bash_allowlist);
     bash_tool.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
+    // #1225 S2: uma vez por processo — `register_cli_tools` roda uma vez na
+    // subida do `garra chat`. Fora de `sandbox_policy_from` porque no MCP a
+    // policy e reconstruida por chamada.
+    avisa_cobertura_do_sandbox(&config.agent.sandbox);
     runtime.register_tool(Box::new(bash_tool));
     runtime.register_tool(Box::new(GitDiffTool::new(None, None)));
     runtime.register_tool(Box::new(ListDirTool::new(file_jail, None)));

@@ -155,8 +155,12 @@ pub enum SandboxMode {
 /// host com qualquer `mode`, inclusive `all` (#1225 S2).
 ///
 /// A lista existe para ser dita em voz alta em três lugares que o operador
-/// vê: o docstring de [`SandboxMode`], o `warn!` de `sandbox_policy_from` na
-/// subida do gateway/CLI, e o finding Warning do `garra config check`. Ela é
+/// vê: o docstring de [`SandboxMode`]; o `warn!` de
+/// `garraia_gateway::bootstrap::avisa_cobertura_do_sandbox`, uma vez por
+/// processo na subida do gateway, do `garra chat` e do `garra mcp-server`
+/// (com a tool `garra_agent` ligada — e não a cada chamada dela); e o Warning
+/// do `garra config check` quando uma destas aparece em `sandboxed_tools`/
+/// `elevated` (só então: a seção coerente fica verde sob `--strict`). Ela é
 /// presa por um teste que varre `src/tools/`: toda tool com `Command::new`
 /// em código de produção tem de estar aqui OU chamar `sandbox.wrap_command(`,
 /// e nada aqui pode ter passado a chamar. Quando a metade estrutural da S2

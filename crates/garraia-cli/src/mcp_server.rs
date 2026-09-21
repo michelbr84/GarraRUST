@@ -622,6 +622,11 @@ pub async fn run_mcp_server(config: AppConfig) -> Result<()> {
             "garra_agent tool ENABLED (opt-in GARRAIA_MCP_ENABLE_TOOLS): full-agent surface \
              with shell/file/git/web tools; bash is full-auto with only the safety_gate denylist"
         );
+        // #1225 S2: uma vez por processo, AQUI e nao em `mcp_agent::build_tools`
+        // — aquele roda a cada chamada de `garra_agent`, e `sandbox_policy_from`
+        // junto com ele. Gated na tool: sem `garra_agent` nenhuma tool spawna
+        // neste processo e o aviso seria ruido sobre nada.
+        garraia_gateway::bootstrap::avisa_cobertura_do_sandbox(&config.agent.sandbox);
     }
     let handler = GarraToolHandler::with_policy(Arc::new(config), policy);
     let (stdin, stdout) = rmcp::transport::io::stdio();
@@ -640,6 +645,32 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    /// #1225 S2: o aviso de cobertura do sandbox e por PROCESSO e sai na
+    /// subida do `garra mcp-server` (em `run_mcp_server`, sob `tools_enabled`).
+    /// Ele nao pode morar em `mcp_agent`: `build_tools` roda a cada chamada da
+    /// tool `garra_agent`, e um `warn!` la sairia por chamada em stderr e no
+    /// `garraia.log`. Varre o fonte porque `garraia-cli` nao tem `tracing-test`
+    /// e um dev-dep novo por uma linha nao se paga.
+    #[test]
+    fn aviso_de_cobertura_do_sandbox_sai_na_subida_e_nunca_por_chamada() {
+        let nome = "avisa_cobertura_do_sandbox";
+        let mcp_agent = include_str!("mcp_agent.rs");
+        assert!(
+            !mcp_agent.contains(nome),
+            "mcp_agent.rs roda por chamada de `garra_agent`; o aviso por processo mora em \
+             run_mcp_server"
+        );
+        let chamada = format!("{nome}(&config.agent.sandbox)");
+        let chamadas = include_str!("mcp_server.rs")
+            .lines()
+            .filter(|l| l.contains(&chamada))
+            .count();
+        assert_eq!(
+            chamadas, 1,
+            "run_mcp_server chama {nome} exatamente uma vez"
+        );
+    }
 
     // ─── Tool descriptor ──────────────────────────────────────────────
 

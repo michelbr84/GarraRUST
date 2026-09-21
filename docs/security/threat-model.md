@@ -780,7 +780,8 @@ O `BashTool` pode envolver o comando num backend em vez de executá-lo direto
 no host. A política mora em `garraia_agents::sandbox::SandboxPolicy`, a
 configuração do operador é a seção `agent.sandbox` (#1225) e a tradução entre
 as duas é `garraia_gateway::bootstrap::sandbox_policy_from` — a mesma função
-nos três pontos de produção (gateway, `garra chat`, `garra mcp-agent`).
+nos três pontos de produção (gateway, `garra chat`, `garra mcp-server` — tool
+`garra_agent`).
 
 Até a #1225 a seção não existia: os três construtores fixavam
 `SandboxPolicy::default()` (= `off`) e `set_sandbox_policy` só era chamado
@@ -794,7 +795,7 @@ pelos próprios testes. A contenção estava escrita, testada e **inalcançável
 | `docker` | `--network none` quando `network_disabled` (default `true`) | Só o `cwd` montado rw quando `mount_workdir` (default `true`) e o diretório existe; o resto é a imagem | `--security-opt no-new-privileges`; **sem** `--user`, `--read-only`, `--cap-drop`, limite de pids/memória | Container efêmero (`--rm`) no host local | Não é hardening completo do container (flags acima ficam para um slice próprio); o daemon do Docker é root, então escape do container é escape para root; o `cwd` montado é rw e é código do projeto |
 | `podman` | igual ao `docker` | igual ao `docker` | igual ao `docker`, mais o rootless do próprio podman quando instalado assim | Container efêmero no host local | Idem, menos a parte do daemon root quando rootless |
 | `ssh` | **nenhuma** — `network_disabled` é **ignorado** | **nenhuma** — `mount_workdir` e `image` são **ignorados** | os do usuário SSH no host remoto | Máquina remota, shell do usuário SSH | **Não é sandbox.** É execução remota: isola o host *local* e nada mais. O comando roda com tudo que aquele usuário pode fazer, inclusive rede |
-| *qualquer* | — | — | — | Só a tool **`bash`** passa pelo backend (`TOOLS_SANDBOXAVEIS`) | **Tools cobertas: `bash`. No host, mesmo com `mode = all`:** `run_tests`, `git_diff`, `code_review`, `repo_search` — `HOST_ONLY_SPAWNING_TOOLS` em `garraia-agents/src/sandbox.rs`, presa por teste que varre `src/tools/`. O gateway/CLI avisa uma vez na subida e o `config check` reporta Warning sempre que `mode != off` (#1225 S2) |
+| *qualquer* | — | — | — | Só a tool **`bash`** passa pelo backend (`TOOLS_SANDBOXAVEIS`) | **Tools cobertas: `bash`. No host, mesmo com `mode = all`:** `run_tests`, `git_diff`, `code_review`, `repo_search` — `HOST_ONLY_SPAWNING_TOOLS` em `garraia-agents/src/sandbox.rs`, presa por teste que varre `src/tools/`. Dito uma vez **por processo** na subida (`avisa_cobertura_do_sandbox`: gateway, `garra chat`, `garra mcp-server` com `garra_agent` ligado — não por chamada) e como Warning do `config check` **quando uma delas é listada** em `sandboxed_tools`/`elevated`; a seção coerente fica verde sob `--strict` (#1225 S2) |
 
 Três limites valem para os três backends:
 
@@ -804,8 +805,9 @@ Três limites valem para os três backends:
   Acompanhamento na #1225 (slices S2/S3) — a issue segue aberta. Quem liga `mode = all` esperando "nada roda no
   host" está enganado sobre quatro tools. Desde a S2 (parte segura) a lista
   das quatro é a constante `HOST_ONLY_SPAWNING_TOOLS` (presa por teste de
-  varredura), dita em `warn!` na subida e como Warning incondicional do
-  `config check`; roteá-las pelo sandbox continua na issue.
+  varredura), dita em `warn!` uma vez por processo na subida e como Warning do
+  `config check` quando uma delas é listada em `sandboxed_tools`/`elevated`;
+  roteá-las pelo sandbox continua na issue.
 - **Unix, e agora dito em voz alta.** No Windows o `BashTool` escolhe
   `powershell -Command` e receberia uma linha com quoting POSIX
   (`docker run ... sh -lc '…'`), que o PowerShell não reparseia da mesma
@@ -858,10 +860,11 @@ de unix. Avisa (Warning) que `ssh` é execução remota — **sempre**, mesmo co
 seção coerente —, que `ssh` ignora `network_disabled`/`mount_workdir`, que
 `elevated` sem confirmação humana é escape hatch desacompanhado, que
 `mode: all` com `bash` em `elevated` deixa a seção inerte, que `allowlist` com
-lista vazia sandboxa nada, que `mode != off` cobre só `bash` e nomeia as quatro
-tools que seguem no host (**sempre**, como o aviso do `ssh` — #1225 S2), e
-nomeia cada entrada de `sandboxed_tools`/`elevated` que não é uma tool que o
-sandbox saiba envolver.
+lista vazia sandboxa nada, que uma tool de `HOST_ONLY_SPAWNING_TOOLS` listada
+em `sandboxed_tools`/`elevated` roda no host com qualquer `mode` (só quando
+listada — a seção coerente fica verde sob `--strict`; #1225 S2), e nomeia cada
+entrada de `sandboxed_tools`/`elevated` que não é uma tool que o sandbox saiba
+envolver.
 Nenhum finding ecoa o `ssh_host`; nomes de tool são ecoados de propósito — é o
 ponto do finding.
 

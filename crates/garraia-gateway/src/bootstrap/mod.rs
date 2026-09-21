@@ -704,6 +704,10 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // camada adicional, nao substituta do safety gate. Secao ausente =>
     // `SandboxPolicy::default()` (Off) => comportamento identico ao de antes.
     bash_tool.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
+    // #1225 S2: uma vez por processo — `build_agent_runtime` roda uma vez na
+    // subida do gateway (`server.rs`). Fora de `sandbox_policy_from` porque no
+    // MCP a policy e reconstruida por chamada.
+    avisa_cobertura_do_sandbox(&config.agent.sandbox);
     runtime.register_tool(Box::new(bash_tool));
     // #1244: as file tools do gateway recebem um jail obrigatorio. As raizes
     // sao `agent.file_roots` (vazio por padrao) mais o `working_dir` da
@@ -1461,18 +1465,12 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
     // da `SandboxPolicy` construida no fim. Gate dos dois `warn!` abaixo: com a
     // secao desligada o `validate_sandbox` retorna cedo e nao diz nada, e as
     // duas camadas nao podem discordar sobre o mesmo estado.
+    //
+    // O aviso de cobertura (#1225 S2) NAO mora aqui de proposito: no `garra
+    // mcp-server` esta funcao roda a cada chamada da tool `garra_agent`
+    // (`mcp_agent::build_tools`), e um aviso por processo nao pode depender
+    // de quantas vezes a policy e construida — ver `avisa_cobertura_do_sandbox`.
     let sandbox_ativo = mode != SandboxMode::Off;
-    if sandbox_ativo {
-        // #1225 S2: dito uma vez na subida porque `mode != off` se le como
-        // "nada roda no host", e isso vale para uma tool. Nomes de tool nao
-        // sao segredo e nenhum valor de config entra na linha.
-        warn!(
-            cobertas = %garraia_config::sandbox::TOOLS_SANDBOXAVEIS.join(", "),
-            no_host = %HOST_ONLY_SPAWNING_TOOLS.join(", "),
-            "agent.sandbox: o sandbox envolve so as tools em `cobertas`; as de `no_host` \
-             continuam spawnando no host com mode != off (#1225)"
-        );
-    }
 
     let backend = match cfg.backend {
         None => None,
@@ -1528,6 +1526,36 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
         mount_workdir: cfg.mount_workdir,
         network_disabled: cfg.network_disabled,
     }
+}
+
+/// #1225 S2: diz, **uma vez por processo**, o que `agent.sandbox.mode != off`
+/// cobre e o que fica no host — porque `mode = all` se le como "nada roda no
+/// host", e isso vale para exatamente uma tool
+/// (`garraia_config::sandbox::TOOLS_SANDBOXAVEIS`); as de
+/// [`HOST_ONLY_SPAWNING_TOOLS`] nunca consultam a policy.
+///
+/// Separada de [`sandbox_policy_from`] de proposito. A policy e construida
+/// onde o `BashTool` nasce, e no `garra mcp-server` isso acontece **a cada
+/// chamada** da tool `garra_agent` (`mcp_agent::build_tools`, via
+/// `handle_agent_call`): um `warn!` dentro da conversao sairia por chamada,
+/// em stderr e no `garraia.log`, nao por subida. Quem chama esta funcao e
+/// cada ponto de subida, uma vez: `build_agent_runtime` (gateway),
+/// `chat::register_cli_tools` (`garra chat`) e `mcp_server::run_mcp_server`
+/// (so com a tool `garra_agent` ligada — sem ela nenhuma tool spawna naquele
+/// processo e o aviso seria ruido sobre nada).
+///
+/// Nomes de tool nao sao segredo e nenhum valor de config entra na linha.
+/// Com `mode = off` nao diz nada, como o resto da secao.
+pub fn avisa_cobertura_do_sandbox(cfg: &garraia_config::SandboxConfig) {
+    if cfg.mode == garraia_config::SandboxMode::Off {
+        return;
+    }
+    warn!(
+        cobertas = %garraia_config::sandbox::TOOLS_SANDBOXAVEIS.join(", "),
+        no_host = %HOST_ONLY_SPAWNING_TOOLS.join(", "),
+        "agent.sandbox: o sandbox envolve so as tools em `cobertas`; as de `no_host` \
+         continuam spawnando no host com mode != off (#1225)"
+    );
 }
 
 /// Nomes de tool trimados, sem entradas vazias.
@@ -2755,20 +2783,32 @@ mod tests {
 
     /// #1225 S2: quem liga o sandbox le, uma vez na subida, quais tools
     /// ficam de fora — e quem deixa `off` nao le nada, porque a secao inteira
-    /// esta inerte.
+    /// esta inerte. O aviso sai de `avisa_cobertura_do_sandbox`, e **nao** de
+    /// `sandbox_policy_from`: no `garra mcp-server` a policy e reconstruida a
+    /// cada chamada da tool `garra_agent`, e "uma vez por processo" nao pode
+    /// depender de quantas vezes a conversao roda.
     #[tracing_test::traced_test]
     #[test]
     fn sandbox_ligado_avisa_na_subida_quais_tools_ficam_no_host() {
-        let _ = sandbox_policy_from(&AppConfig::default().agent.sandbox);
+        let mut ligado = AppConfig::default();
+        ligado.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        ligado.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+
+        // A conversao e muda sobre cobertura, mesmo com o sandbox ligado.
+        let _ = sandbox_policy_from(&ligado.agent.sandbox);
+        assert!(
+            !logs_contain("continuam spawnando no host"),
+            "`sandbox_policy_from` nao pode avisar cobertura: no MCP roda por chamada"
+        );
+
+        // `off`: a secao inteira esta inerte, inclusive o aviso.
+        avisa_cobertura_do_sandbox(&AppConfig::default().agent.sandbox);
         assert!(
             !logs_contain("continuam spawnando no host"),
             "mode=off nao pode avisar sobre cobertura"
         );
 
-        let mut config = AppConfig::default();
-        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
-        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
-        let _ = sandbox_policy_from(&config.agent.sandbox);
+        avisa_cobertura_do_sandbox(&ligado.agent.sandbox);
         assert!(
             logs_contain("continuam spawnando no host"),
             "o aviso de cobertura nao saiu na subida"
