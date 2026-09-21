@@ -86,6 +86,70 @@ aviso por turno nesse caso (`#1264`); popule a lista ou desligue a flag.
 }
 ```
 
+### `tool_program` (#1226)
+
+`tool_program` é uma ferramenta **intrínseca** do runtime: o modelo manda
+uma lista de passos (`{"steps": [{"tool": "...", "args": {...}, "as": "..."}]}`)
+e o runtime os executa em sequência, no mesmo turno, sem voltar ao LLM entre
+um passo e outro. Ela não é registrada como as outras: aparece na lista que o
+modelo vê sempre que existe ao menos uma ferramenta real registrada, e passa
+pelo mesmo filtro do modo.
+
+**Quais modos nativos a expõem.** Os perfis que não usam whitelist: `auto`,
+`code` e `ask` (e a sessão sem modo escolhido). Os perfis com whitelist
+(`search`, `architect`, `debug`, `orchestrator`, `review`, `edit`) não a
+listam em `allowed`, então não a expõem. Com `/mode auto`, vale o perfil do
+modo que a heurística escolher para a mensagem — e, se ela não classificar,
+o portão aberto, que expõe. O teste
+`tool_program_exposto_so_nos_perfis_nativos_sem_whitelist` fixa essa tabela —
+mudar a exposição de um modo nativo tem de ser decisão deliberada.
+
+**Como liberar ou negar num perfil customizado.** Pelo nome, como qualquer
+ferramenta. Num perfil com whitelist, liste `tool_program` em `allowed`; em
+qualquer perfil, `denied: ["tool_program"]` a desliga (e vence tudo):
+
+```json
+{
+  "allowed": ["tool_program", "file_read", "repo_search"],
+  "whitelist_mode": true
+}
+```
+
+Liberar `tool_program` **não** libera nenhuma outra ferramenta. O que vale
+dentro do programa é o mesmo que vale fora dele:
+
+- **Gate por passo.** Cada passo passa pelo mesmo `ToolGate` do modo (o
+  despacho é recursivo, com um único ponto de consulta ao portão no fonte).
+  Um passo negado encerra o programa ali — a resposta traz os passos já
+  executados e `parou_no_passo` — e os seguintes não rodam. No `ask`, um
+  programa não alcança `bash`, `file_write` nem `device_execute`.
+- **Orçamento.** Um programa de N passos custa **1 + N** chamadas contra
+  `max_per_turn`/`max_per_task`: o envelope mais uma por passo. Esgotar só o
+  teto do turno para o programa com o relatório parcial (o loop segue na
+  próxima volta, como seguiria com chamadas avulsas); esgotar a tarefa aborta
+  a conversa.
+- **Detecção de loop.** Os passos entram na janela de assinaturas; o envelope,
+  não. Três passos idênticos em sequência — no mesmo programa ou em programas
+  de um passo repetidos volta após volta — abortam a conversa, como três
+  chamadas avulsas idênticas.
+- **Confirmação humana (GAR-187).** Um passo que pede confirmação pausa o
+  programa. O humano lê só o pedido daquele passo, nunca a saída dos passos
+  anteriores; o modelo recebe o pedido mais o relatório parcial (passos
+  executados, `parou_no_passo` e as variáveis salvas em `vars`). Depois do
+  "sim", o modelo reenvia só os passos a partir do pausado, e a aprovação
+  cobre só aquele pedido.
+- **Eventos.** Cada passo emite o seu `tool_started`/`tool_finished` dentro
+  do par do próprio programa; todo início tem o seu fim, inclusive o de um
+  passo negado.
+- **Variáveis.** `as` guarda a saída de um passo, que tem de ser um número
+  inteiro (senão o passo falha); `"$nome"` num passo seguinte vira esse
+  número. Um `"$nome"` sem valor faz o passo falhar antes de rodar — nunca
+  chega à ferramenta como texto.
+
+**Limites.** No máximo 16 passos (`MAX_PROGRAM_STEPS`); teto agregado de 120 s
+(`PROGRAM_AGGREGATE_TIMEOUT_SECS`), checado entre passos e somado ao timeout
+por passo; `tool_program` dentro de `tool_program` é recusado.
+
 ## API de Modos
 
 ### Headers HTTP
