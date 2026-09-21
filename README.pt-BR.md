@@ -806,6 +806,30 @@ O GarraIA foi desenvolvido para os requisitos de segurança de agentes de IA que
 - **Sandbox WASM** - Plugin opcional em sandbox via runtime WebAssembly com acesso controlado ao host (compile com `--features plugins`).
 - **Binding apenas em localhost** - Gateway faz bind em `127.0.0.1` por padrão, não em `0.0.0.0`.
 
+### Perfis de execução
+
+Tudo acima é o perfil `standard` — a postura para máquina compartilhada.
+Para um **pod descartável** (RunPod, Docker) que existe justamente para dar
+autonomia plena ao agente, declare isso — o perfil nunca é inferido de
+marcadores de container, e valor inválido recusa o boot:
+
+```yaml
+execution:
+  profile: isolated-pod      # ou GARRAIA_EXECUTION_PROFILE=isolated-pod (vence)
+  pod_root: /workspace       # opcional, absoluto; raiz do MCP filesystem
+channels:
+  whatsapp_linked:
+    owners: ["5511999998888"]   # só dono declarado, só em conversa 1:1
+```
+
+**Poder total dentro do pod isolado; nenhum acesso implícito fora do pod.**
+O dono do WhatsApp recebe o piso `code` (`bash`, `file_write`, tools MCP);
+grupo e contato só pareado nunca herdam; o gate de comando arriscado do
+`bash` e o jail de arquivos continuam ligados; volume do host, socket do
+Docker e segredos do host **não** são isolados pelo perfil. Guia:
+[docs/execution-profiles.md](docs/execution-profiles.md),
+[ADR 0024](docs/adr/0024-perfis-de-execucao-isolated-pod.md).
+
 ### Arquitetura Local e Sob Controle do Usuário
 
 O GarraIA foi projetado para funcionar 100% no seu computador:

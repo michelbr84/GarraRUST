@@ -915,6 +915,60 @@ instalação padrão. A recusa saiu; **o controle vivo é o portão, por nome**.
 
 ---
 
+## 5.15. Perfil `isolated-pod` — poder total dentro do pod, nada implícito fora (#1329)
+
+Decisão: [ADR 0024](../adr/0024-perfis-de-execucao-isolated-pod.md). Guia do
+operador: [`../execution-profiles.md`](../execution-profiles.md).
+
+Tudo até aqui assume **uma** postura: o Garra roda numa máquina que ele não
+controla e é ele quem separa o agente do resto (§5.72 jail, §5.13 sandbox,
+§5.14 piso do canal). A #1329 expôs o cenário oposto: o operador instala o
+Garra num pod/container **descartável** justamente para dar ao agente
+autonomia plena, e ali a postura de fábrica atrapalha (o piso `search` nega
+o `filesystem__write_file` que o operador quer) enquanto o `filesystem`
+autoprovisionado em `$HOME` — dentro do pod, o pod inteiro; numa máquina
+compartilhada, o contorno do jail — não sabe em qual dos dois está.
+
+**Fronteira.** Em `isolated-pod` a fronteira de segurança é o **pod**, não o
+Garra. O perfil libera *ferramentas* (piso `code` para o dono do WhatsApp em
+1:1; raiz do MCP `filesystem` em `execution.pod_root`); ele **não** desliga
+*proteções* (jail das file tools nativas, gate de comando arriscado do
+`bash`, `agent.sandbox`, `/mode` explícito) e **não** cria isolamento
+nenhum.
+
+**Premissas de confiança que o operador assume ao ligar o perfil:**
+
+1. O processo roda num container/pod **descartável**: sem volume do host,
+   sem socket do Docker/Podman, sem `--privileged`, sem `--pid=host` nem
+   `--network=host`, sem mounts não declarados, sem segredos do host no
+   ambiente. O Garra não verifica nada disso — não pode.
+2. Quem está em `channels.whatsapp_linked.owners` é o próprio operador (ou
+   alguém com o mesmo nível de confiança), e a identidade que o Baileys
+   autentica para esse JID é dele.
+3. O que o agente puder destruir dentro do pod é aceitável perder.
+
+**O que o gate ainda impõe, mesmo em `isolated-pod`:**
+
+| STRIDE | Cenário concreto | Mitigação | Gap / Planejada |
+|---|---|---|---|
+| **E** Elevation of privilege (inferência) | Container com socket do Docker montado ou `--pid=host` "parece" pod isolado; uma autodetecção (`/.dockerenv`, `/proc/1/cgroup`, `KUBERNETES_SERVICE_HOST`) liberaria poder total num host real. | O perfil **nunca é inferido**: só `execution.profile` (arquivo) ou `GARRAIA_EXECUTION_PROFILE` (env, vence o arquivo), resolvidos uma vez no `ConfigLoader` com a origem registrada. Dois testes varrem o fonte (`garraia-config::execution` e `garraia-gateway::bootstrap::execution`) e reprovam os literais de detecção. Sem config e sem env = `standard`. | — |
+| **E** Elevation of privilege (valor inválido) | Typo no manifest do pod (`isolated_pod`, `pod`) e o processo cai em `standard` em silêncio — ou pior, em portão aberto. | Valor inválido é **erro de carga**: o gateway não sobe; `config check` reporta `Error` em `execution.profile` (exit 2) com a env e os valores aceitos na mensagem. | — |
+| **T** Tampering (persistência) | `garra config set` / `garra whatsapp link` fazem load-modify-save com a env presente; copiar a env para `profile` promoveria um override efêmero a config persistida — tirar a env deixaria o arquivo dizendo `isolated-pod`. | A env vive num campo `#[serde(skip)]` privado; `perfil()`/`origem()` a preferem, `save` nunca a grava. | — |
+| **S** Spoofing (identidade do dono) | Remetente forja o número do dono; contato pareado por código de 6 dígitos se passa por dono; dono manda de um grupo e o grupo herda o poder. | Identidade vem do JID que o Baileys autentica; normalização (`normalizar_identidade`: dígitos, ou JID `@lid` cru) e comparação byte a byte contra `owners`. Pareamento **nunca** confere o perfil completo (credencial fraca, memória do processo). Grupo **nunca** herda: `perfil_do_turno` devolve `Padrao` para `is_group`, para admitido-não-dono e para identidade desconhecida (fail-closed). `from_me` continua fora. Testes gêmeos: cada positivo tem o negativo (tirar de `owners`, voltar para `standard`, mandar do grupo) para que remover a autorização **quebre** a suíte. | "Note to self" (`from_me`) não é suportado nesta fatia. |
+| **E** Elevation of privilege (`owners` fora do perfil) | Operador lista `owners` em `standard` esperando poder. | `owners` fora de `isolated-pod` é `Warning` no `config check` ("só tem efeito em isolated-pod") e nunca muda o piso — todo admitido fica em `default_mode`. | — |
+| **T** Tampering (comando destrutivo no pod) | Dono, ou uma página via `web_fetch`, induz `rm -rf /` dentro do pod. | O gate de comando arriscado do `bash` continua ligado nos dois perfis; sem canal de confirmação é fail-closed. `agent.bash_allowlist` alarga por escolha do operador. Jail das file tools nativas (`agent.file_roots` ∪ `working_dir`) inalterado — `execution.pod_root` muda só a raiz do MCP `filesystem`. | O pod é descartável por premissa; o que o gate protege é o operador de um acidente, não o host de um ataque. |
+| **I** Information disclosure (raiz implícita) | `filesystem` autoprovisionado em `$HOME` numa máquina compartilhada. | `$HOME` nunca é raiz em nenhum perfil: `standard` → `agent.file_roots` ou `<data_dir>/workspace`; `isolated-pod` → `execution.pod_root` ou o mesmo workspace. Raiz logada no provisionamento; check `mcp.filesystem_root` no `/api/diagnostics`. | `mcp.json` anterior à v0.4.4 mantém o `$HOME` (nunca reescrito): o diagnóstico avisa em `standard` com o passo para corrigir; não há migração automática. |
+| **R** Repudiation | Perfil ligado fora de um pod, e ninguém percebe. | `WARN` único no boot (origem, `pod_root`, o que foi liberado, o que NÃO é isolado, como reverter); `Warning` **permanente** em `/api/diagnostics` (`execution.profile`, com origem, piso do dono, número de donos, raiz do MCP e `next_step`); linha read-only `security.execution_profile` em `/api/settings/effective`; linha em `garra whatsapp status`; perfil e origem no sumário do `config check`; cada turno do WhatsApp loga `phone_last4` + `perfil` + piso (nunca JID, telefone, `push_name` ou texto). | — |
+
+**Residual aceito:** o perfil é uma declaração, e o Garra a honra sem poder
+verificá-la. Um operador que liga `isolated-pod` num host compartilhado dá ao
+dono do WhatsApp `bash` e `file_write` nesse host, dentro do jail e do gate de
+comando — que são proteção contra acidente, não contra um dono hostil. A
+mitigação é a soma das superfícies de observação acima e o nome
+autoexplicativo do perfil.
+
+---
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.

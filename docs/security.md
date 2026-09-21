@@ -197,6 +197,22 @@ Features:
 - Resource constraints
 - Filesystem access control
 
+### Execution Profiles
+
+Everything above describes the `standard` execution profile — the posture
+for a shared machine. A second profile, `isolated-pod` (`execution.profile`
+or `GARRAIA_EXECUTION_PROFILE`), declares that the process runs in a
+disposable pod: the WhatsApp owner in a 1:1 chat gets the `code` floor
+(`bash`, `file_write`, MCP tools, subagents) and the auto-provisioned
+`filesystem` MCP server is rooted at `execution.pod_root`. The rule is
+**full power inside the isolated pod; no implicit access outside the pod**:
+the profile is never inferred from container markers, an invalid value
+refuses to boot, groups and paired-only contacts never inherit it, and the
+bash risky-command gate and file jail stay on. It does not isolate a mounted
+host filesystem, the Docker socket, `--privileged` or host secrets — see
+[`execution-profiles.md`](execution-profiles.md) and
+[ADR 0024](adr/0024-perfis-de-execucao-isolated-pod.md).
+
 ## Best Practices
 
 ### 1. Use Environment Variables

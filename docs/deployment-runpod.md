@@ -162,6 +162,54 @@ init` today):
 - `GARRAIA_SKIP_INIT=1` / `GARRAIA_SKIP_START=1` — installer-only
   (PR-B).
 
+## Execution profile: full power inside a disposable pod
+
+By default the gateway runs in the `standard` execution profile — the
+posture for a shared machine: fail-closed `ToolGate` floor per mode, native
+file-tool jail, `search` floor on personal WhatsApp. A fresh RunPod GPU pod
+is the opposite case: it exists so the agent can read and write files, run
+shell, install packages and use MCP servers without any risk outside the
+pod. Declare that explicitly with the `isolated-pod` profile
+([ADR 0024](adr/0024-perfis-de-execucao-isolated-pod.md), full guide in
+[`execution-profiles.md`](execution-profiles.md)):
+
+```bash
+# Either in the pod's environment (wins over the file)…
+export GARRAIA_EXECUTION_PROFILE=isolated-pod
+garraia start
+```
+
+```yaml
+# …or in ~/.config/garraia/config.yml inside the pod
+execution:
+  profile: isolated-pod
+  pod_root: /workspace          # optional; MCP filesystem root, absolute
+agent:
+  file_roots: ["/workspace"]    # native file tools see the pod too
+channels:
+  whatsapp_linked:
+    type: whatsapp_linked
+    enabled: true
+    owners: ["5511999998888"]   # only declared owners get the `code` floor, 1:1 only
+```
+
+What changes: the WhatsApp **owner** (declared in `owners`, in a 1:1 chat)
+gets the `code` floor — `bash`, `file_write`, subagents and every registered
+MCP tool — instead of `search`; the auto-provisioned `filesystem` MCP server
+is rooted at `execution.pod_root` (else `<data_dir>/workspace`, never
+`$HOME`). Groups and paired-only contacts stay on `default_mode`. The bash
+risky-command gate, the file jail and `agent.sandbox` stay on.
+
+> **Warning.** The profile is a declaration, not an isolation mechanism. The
+> gateway logs one `WARN` at boot and keeps a permanent `Warning` on the
+> `execution.profile` check of `GET /api/diagnostics`. It does **not**
+> isolate a mounted host filesystem, the Docker/Podman socket, `--privileged`,
+> `--pid=host`, `--network=host`, undeclared mounts or host secrets in the
+> environment. If any of those apply to your container, it is not an isolated
+> pod — keep `standard`. The profile is never inferred from `/.dockerenv` or
+> cgroups; an invalid value refuses to boot. Revert with
+> `execution.profile: standard` or by unsetting the env var.
+
 ## Future work
 
 `PORT_HEALTH` currently must equal `PORT` because `/ping` is served from
