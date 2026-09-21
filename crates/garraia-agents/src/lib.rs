@@ -64,7 +64,7 @@ pub use persona::{
 pub use provider_resilience::{CircuitBreaker, FallbackConfig, ResilienceManager, RetryPolicy};
 pub use providers::{
     ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
-    StreamEvent, ToolDefinition,
+    StreamEvent, ToolDefinition, ValidacaoDeModelo,
 };
 pub use quantization::{ModelQuant, auto_select_quant, detect_vram_bytes};
 pub use runtime::{AgentRuntime, resolve_provider_from_model};

@@ -13,7 +13,7 @@ use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, CodeReviewTool,
     DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, FileJail, FileReadTool,
     FileWriteTool, ListDirTool, LlamaCppProvider, LlmProvider, MessagePart, OllamaProvider,
-    OpenAiProvider, RepoSearchTool, RunTestsTool, WebFetchTool, WebSearchTool,
+    OpenAiProvider, RepoSearchTool, RunTestsTool, ValidacaoDeModelo, WebFetchTool, WebSearchTool,
     normalize_ollama_tag, tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
@@ -30,6 +30,38 @@ use crate::ui::{TerminalRenderer, UiEvent};
 use garraia_agents::TurnEvent;
 
 use std::path::Path;
+
+// ── #1298: /model transacional ──────────────────────────────────────────────
+
+/// O que o REPL faz com o resultado de `validar_modelo` antes de tocar o
+/// estado do `/model`. A troca só acontece nos efeitos `Aplicar*` — `Ausente`
+/// recusa com o estado anterior intacto, e a política inteira fica numa
+/// função pura para o teste fixar sem precisar de provider de verdade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EfeitoTrocaDeModelo {
+    /// Listado na curada: aplica como troca validada.
+    Aplicar,
+    /// Fora da curada mas no catálogo completo: aplica, e a confirmação diz
+    /// de onde o nome veio — o `/models` não vai listá-lo, e isso não é bug.
+    AplicarComNotaDeCatalogo,
+    /// O catálogo real não tem o modelo: recusa e mantém provider/model.
+    RecusarEManterEstado,
+    /// Provider sem catálogo (ex.: Anthropic): aplica, mas nunca como
+    /// sucesso validado — a confirmação carrega a ressalva.
+    AplicarSemValidacao,
+}
+
+/// Política pura do `/model` (#1298): cada `ValidacaoDeModelo` tem um único
+/// efeito. Falha de validação (o `Err` do provider) não passa por aqui — o
+/// handler a trata como recusa fail-closed antes de chegar à política.
+fn efeito_da_validacao(v: &ValidacaoDeModelo) -> EfeitoTrocaDeModelo {
+    match v {
+        ValidacaoDeModelo::Listado => EfeitoTrocaDeModelo::Aplicar,
+        ValidacaoDeModelo::ListadoForaDaCurada => EfeitoTrocaDeModelo::AplicarComNotaDeCatalogo,
+        ValidacaoDeModelo::Ausente => EfeitoTrocaDeModelo::RecusarEManterEstado,
+        ValidacaoDeModelo::SemListagem => EfeitoTrocaDeModelo::AplicarSemValidacao,
+    }
+}
 
 /// ANSI color helpers
 const GREEN: &str = "\x1b[32m";
@@ -2060,36 +2092,99 @@ pub async fn run_chat(
                 } else {
                     new_model.to_string()
                 };
-                // Advisory only: an unknown name is not fatal (the provider
-                // may serve models it does not list), but silently talking to
-                // a nonexistent model is a bad surprise.
-                if let Some(p) = runtime.default_provider()
-                    && let Ok(models) = p.available_models().await
-                    && !models.is_empty()
-                    && !models.contains(&resolved)
-                {
-                    // Migrado do `println!` com cor incondicional para o
-                    // renderer (#941): assim este aviso respeita `NO_COLOR` e
-                    // pipe como o resto da interface, que era exatamente a
-                    // divida que o plano de migracao da ADR 0017 registra.
-                    renderer.handle(
-                        UiEvent::Warning(&format!(
-                            "'{resolved}' nao aparece em /models deste provider."
-                        )),
-                        &mut io::stdout(),
-                    );
+                // #1298: a troca é transacional. Valida contra o catálogo
+                // REAL do provider (`validar_modelo`, não a lista curada que
+                // o ADR 0022 já provou insuficiente — `z-ai/glm-5.3-flash`
+                // vive fora dela) ANTES de tocar o estado. Qualquer falha —
+                // modelo ausente, provider indisponível, erro de rede — recusa
+                // fail-closed e deixa o estado anterior intacto.
+                let efeito = match runtime.default_provider() {
+                    Some(p) => match p.validar_modelo(&resolved).await {
+                        Ok(v) => efeito_da_validacao(&v),
+                        Err(e) => {
+                            renderer.handle(
+                                UiEvent::Warning(&format!(
+                                    "Nao consegui validar '{resolved}' no provider {provider_name}: {e}. Estado mantido."
+                                )),
+                                &mut io::stdout(),
+                            );
+                            renderer.handle(
+                                UiEvent::Hint("Tente de novo, ou use /models para ver o que o provider lista."),
+                                &mut io::stdout(),
+                            );
+                            continue;
+                        }
+                    },
+                    None => {
+                        renderer.handle(
+                            UiEvent::Warning(&format!(
+                                "Sem provider ativo para validar '{resolved}'. Estado mantido: provider {provider_name}, model {model_name}."
+                            )),
+                            &mut io::stdout(),
+                        );
+                        continue;
+                    }
+                };
+                let nota_de_catalogo = "  (encontrado no catalogo completo do OpenRouter, fora da lista curada de /models)";
+                let ressalva_sem_listagem =
+                    "  (provider nao expoe catalogo — troca aplicada sem validacao)";
+                match efeito {
+                    EfeitoTrocaDeModelo::RecusarEManterEstado => {
+                        renderer.handle(
+                            UiEvent::Warning(&format!(
+                                "'{resolved}' nao existe no catalogo de {provider_name}. Estado mantido: provider {provider_name}, model {model_name}."
+                            )),
+                            &mut io::stdout(),
+                        );
+                        renderer.handle(
+                            UiEvent::Hint(
+                                "Tente: /models para ver os nomes que este provider anuncia.",
+                            ),
+                            &mut io::stdout(),
+                        );
+                    }
+                    EfeitoTrocaDeModelo::Aplicar => {
+                        model_name = resolved;
+                        renderer.handle(
+                            UiEvent::Hint(&format!("Modelo alterado para: {model_name}")),
+                            &mut io::stdout(),
+                        );
+                        renderer.handle(
+                            UiEvent::Hint(&format!(
+                                "  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model)"
+                            )),
+                            &mut io::stdout(),
+                        );
+                    }
+                    EfeitoTrocaDeModelo::AplicarComNotaDeCatalogo => {
+                        model_name = resolved;
+                        renderer.handle(
+                            UiEvent::Hint(&format!("Modelo alterado para: {model_name}")),
+                            &mut io::stdout(),
+                        );
+                        renderer.handle(UiEvent::Hint(nota_de_catalogo), &mut io::stdout());
+                        renderer.handle(
+                            UiEvent::Hint(&format!(
+                                "  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model)"
+                            )),
+                            &mut io::stdout(),
+                        );
+                    }
+                    EfeitoTrocaDeModelo::AplicarSemValidacao => {
+                        model_name = resolved;
+                        renderer.handle(
+                            UiEvent::Hint(&format!("Modelo alterado para: {model_name}")),
+                            &mut io::stdout(),
+                        );
+                        renderer.handle(UiEvent::Hint(ressalva_sem_listagem), &mut io::stdout());
+                        renderer.handle(
+                            UiEvent::Hint(&format!(
+                                "  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model)"
+                            )),
+                            &mut io::stdout(),
+                        );
+                    }
                 }
-                model_name = resolved;
-                renderer.handle(
-                    UiEvent::Hint(&format!("Modelo alterado para: {model_name}")),
-                    &mut io::stdout(),
-                );
-                renderer.handle(
-                    UiEvent::Hint(&format!(
-                        "  (o provider continua {provider_name} — para trocar, reinicie com --provider ou --model)"
-                    )),
-                    &mut io::stdout(),
-                );
                 continue;
             }
             "/models" => {
@@ -3684,6 +3779,35 @@ mod persist_tests {
         let alvo = concat!("log_interrupted", "_runs(&store)");
         let copias = src.matches(alvo).count();
         assert_eq!(copias, 1, "esperava 1 chamada de subida, achei {copias}");
+    }
+
+    // ── #1298: /model transacional ─────────────────────────────────────────
+
+    /// O `/model` só toca o estado depois da validação: `Ausente` recusa e
+    /// mantém provider/model anteriores; rota válida fora da lista curada
+    /// aplica com confirmação explícita; sem listagem aplica com ressalva.
+    #[test]
+    fn model_transacional_recusa_ausente_e_explicita_indireta() {
+        assert_eq!(
+            efeito_da_validacao(&ValidacaoDeModelo::Listado),
+            EfeitoTrocaDeModelo::Aplicar
+        );
+        // Namespace de terceiro servido via OpenRouter (`z-ai/...` fora da
+        // curada): troca SIM, com a confirmação dizendo de onde veio.
+        assert_eq!(
+            efeito_da_validacao(&ValidacaoDeModelo::ListadoForaDaCurada),
+            EfeitoTrocaDeModelo::AplicarComNotaDeCatalogo
+        );
+        // Modelo que o catálogo real não tem: o estado anterior fica intacto.
+        assert_eq!(
+            efeito_da_validacao(&ValidacaoDeModelo::Ausente),
+            EfeitoTrocaDeModelo::RecusarEManterEstado
+        );
+        // Provider sem catálogo: aplica, mas nunca como sucesso validado.
+        assert_eq!(
+            efeito_da_validacao(&ValidacaoDeModelo::SemListagem),
+            EfeitoTrocaDeModelo::AplicarSemValidacao
+        );
     }
 
     // ── #1300: /resume volta ao ultimo turno interrompido ──────────────────
