@@ -252,6 +252,12 @@ Atualize com `garra update` ou apague {dir} para reinstalar o bridge."
     /// O processo terminou.
     #[error("o bridge encerrou (codigo {code:?})")]
     Exited { code: Option<i32> },
+
+    /// Nome de asset que nao e um unico segmento simples de arquivo —
+    /// recusado pela allowlist de [`validar_nome_de_asset`] antes de
+    /// qualquer escrita em disco (alerta CodeQL 174, path-injection).
+    #[error("nome de asset invalido: {0:?}")]
+    AssetName(String),
 }
 
 impl BridgeError {
@@ -386,12 +392,48 @@ pub enum Materialized {
     Written,
 }
 
+/// Accept-list de nome de asset: um unico segmento simples de arquivo.
+///
+/// `/`, `\`, `..`, `.` sozinho, NUL, espaco e Unicode fora de `[A-Za-z0-9._-]`
+/// saem todos pela recusa — o que fecha traversal, absoluto e subdiretorio de
+/// uma vez, no padrao do `validate_account` da sessao (`session.rs`). O teto
+/// de 255 bytes e o limite de nome de arquivo dos filesystems de sempre.
+///
+/// Por que validacao e nao supressao: o alerta 174 aponta para o sink de
+/// [`materialize`], e o trait `BridgeAssets` existe para aceitar futuras
+/// fontes de bridge — o sink tem de ser seguro para QUALQUER implementacao,
+/// nao apenas para a de hoje.
+fn validar_nome_de_asset(name: &str) -> Result<(), BridgeError> {
+    let simples = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.len() <= 255
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    if simples {
+        Ok(())
+    } else {
+        Err(BridgeError::AssetName(name.to_string()))
+    }
+}
+
 /// Escreve os assets em `dir` quando faltam ou quando o hash embutido mudou.
 ///
 /// O carimbo (`.garraia-bridge-sha256`) e o que evita reescrever e reinstalar a
 /// cada execucao — e o que garante que uma CLI atualizada substitui um bridge
 /// velho, em vez de conviver com ele em silencio.
 pub fn materialize(dir: &Path, assets: &dyn BridgeAssets) -> Result<Materialized, BridgeError> {
+    // Alerta CodeQL 174 (path-injection): o sink `dir.join(file.name)` esta
+    // logo abaixo, e o trait `BridgeAssets` e publico justamente para um dia
+    // servir a um bridge vindo de fora do binario. A unica impl de hoje embute
+    // os nomes com `include_str!`, mas o sink valida por si: todos os nomes
+    // passam pela allowlist ANTES de qualquer efeito colateral — nenhum byte
+    // toca o disco enquanto um nome nao passar.
+    for file in assets.files() {
+        validar_nome_de_asset(file.name)?;
+    }
+
     let digest = assets_digest(assets);
     let stamp = dir.join(STAMP_FILE);
 
@@ -990,8 +1032,8 @@ mod tests {
         assert!(cortada.contains("truncada"), "e precisa dizer que truncou");
     }
 
-    struct FakeAssets(&'static [Asset]);
-    impl BridgeAssets for FakeAssets {
+    struct FakeAssets<'a>(&'a [Asset]);
+    impl BridgeAssets for FakeAssets<'_> {
         fn files(&self) -> &[Asset] {
             self.0
         }
@@ -1056,6 +1098,41 @@ mod tests {
             materialize(&target, &FakeAssets(A)).expect("second"),
             Materialized::UpToDate
         );
+    }
+
+    #[test]
+    fn materialize_recusa_nome_de_asset_que_escapa_do_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+
+        // Cada nome tenta uma saida diferente do diretorio de destino:
+        // traversal relativa, path absoluto, separador do Windows, componente
+        // inteiro `..`, subdiretorio que `join` nao achatou o bastante e o
+        // NUL que nenhum nome de arquivo honesto carrega. (alerta 174)
+        const MALICIOSOS: &[&str] = &[
+            "../escapou",
+            "/etc/passwd",
+            "a\\b",
+            "..",
+            "sub/dir.mjs",
+            "nul\0x",
+        ];
+
+        for &name in MALICIOSOS {
+            let assets = [Asset {
+                name,
+                contents: "conteudo\n",
+            }];
+            let res = materialize(&target, &FakeAssets(&assets));
+            assert!(
+                matches!(res, Err(BridgeError::AssetName(_))),
+                "nome {name:?} tem de ser recusado com AssetName, veio {res:?}"
+            );
+        }
+
+        // Nada pode ter sido criado antes da recusa: a validacao vem antes de
+        // qualquer efeito colateral, entao o dir de destino nem nasce.
+        assert!(!target.exists(), "o dir nao pode nascer sem nomes validos");
     }
 
     #[test]
