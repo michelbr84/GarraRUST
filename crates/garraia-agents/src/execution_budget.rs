@@ -23,6 +23,25 @@ fn calcular_hash_args(payload: &Value) -> u64 {
     hasher.finish()
 }
 
+/// Serializa o payload repetido, redige segredo e trunca, para o erro de
+/// loop diagnosticar sem virar um dump gigante — o erro vai para o LLM da
+/// próxima tentativa e para o log, e precisa caber nos dois sem vazar nada.
+///
+/// A ordem é a mesma de `turn_events::sanear`: redigir **antes** de
+/// truncar, senão o corte pode partir uma chave ao meio e o prefixo passa
+/// pelo regex sem casar. Controle de terminal não entra aqui porque
+/// `Value::to_string()` já escapa o `ESC` como texto (`\u001b`).
+fn resumo_truncado(payload: &Value) -> String {
+    const TETO_CHARS: usize = 200;
+    let texto = garraia_security::redact_secrets(&payload.to_string());
+    if texto.chars().count() <= TETO_CHARS {
+        return texto;
+    }
+    let mut corte: String = texto.chars().take(TETO_CHARS).collect();
+    corte.push_str("...");
+    corte
+}
+
 /// Orçamento de execução para controlar chamadas de ferramentas no runtime do agente.
 /// Evita loops infinitos, mas permite tarefas legítimas de longa duração.
 ///
@@ -236,6 +255,24 @@ impl ExecutionBudget {
         self.historico_assinaturas
             .iter()
             .all(|sig| sig.nome == primeira.nome && sig.hash_args == primeira.hash_args)
+    }
+
+    /// #1295: mensagem de erro diagnosticável para o loop detectado — nome
+    /// da ferramenta, contagem da janela e o input repetido, redigido e
+    /// truncado.
+    ///
+    /// Pré-condição: `detectar_loop_ferramenta()` acabou de devolver `true`
+    /// para a chamada `input_atual`. A janela está cheia de assinaturas
+    /// idênticas por construção, então o input da chamada atual **é** o
+    /// input repetido — e o tamanho da janela é o número de chamadas iguais
+    /// em sequência que disparou o corte.
+    pub fn mensagem_de_loop(&self, tool_name: &str, input_atual: &Value) -> String {
+        format!(
+            "tool loop detected: {} ({} chamadas identicas em sequencia); input repetido: {}",
+            tool_name,
+            self.historico_assinaturas.len(),
+            resumo_truncado(input_atual),
+        )
     }
 
     /// Retorna a duração de timeout configurada para execução de ferramentas.
@@ -520,5 +557,62 @@ mod tests {
 
         // Janela agora é [ls, ls, ls] — loop detectado
         assert!(budget.detectar_loop_ferramenta());
+    }
+
+    // ─── #1295: o erro de loop tem de ser diagnosticavel ─────────────────
+
+    /// A mensagem leva o que quem le precisa para corrigir: qual tool, quantas
+    /// voltas identicas e O QUE estava repetindo.
+    #[test]
+    fn mensagem_de_loop_traz_nome_contagem_e_input() {
+        let mut budget = ExecutionBudget::padrao();
+        let input = json!({"caminho": "/tmp/alvo-repetido"});
+        for _ in 0..3 {
+            budget.registrar_chamada("eco", &input);
+        }
+        assert!(budget.detectar_loop_ferramenta(), "pre-condicao do teste");
+
+        let msg = budget.mensagem_de_loop("eco", &input);
+        assert!(msg.starts_with("tool loop detected: eco"), "{msg}");
+        assert!(msg.contains("3 chamadas identicas em sequencia"), "{msg}");
+        assert!(msg.contains("/tmp/alvo-repetido"), "{msg}");
+    }
+
+    /// Input grande nao vira dump: corta em 200 chars e marca o corte.
+    #[test]
+    fn resumo_truncado_corta_em_200_chars_e_marca_o_corte() {
+        let curto = json!({"k": "v"});
+        assert_eq!(super::resumo_truncado(&curto), curto.to_string());
+
+        let longo = json!({"texto": "x".repeat(500)});
+        let resumo = super::resumo_truncado(&longo);
+        assert!(resumo.ends_with("..."), "{resumo}");
+        assert_eq!(resumo.chars().count(), 203, "200 do payload + os 3 pontos");
+        // Corte por caractere, nao por byte: nao pode partir UTF-8 ao meio.
+        let multibyte = json!({"texto": "ção".repeat(200)});
+        let resumo = super::resumo_truncado(&multibyte);
+        assert_eq!(resumo.chars().count(), 203);
+    }
+
+    /// O erro vai para o log e para o LLM: segredo no input nao pode sair
+    /// inteiro em nenhum dos dois. Redige ANTES de truncar, para o corte nao
+    /// deixar um prefixo de chave passar pelo regex.
+    #[test]
+    fn mensagem_de_loop_redige_segredo_do_input() {
+        let chave = format!("sk-ant-api03-{}", "a".repeat(40));
+        let mut budget = ExecutionBudget::padrao();
+        let input = json!({"authorization": chave.clone(), "url": "https://x"});
+        for _ in 0..3 {
+            budget.registrar_chamada("web_fetch", &input);
+        }
+
+        let msg = budget.mensagem_de_loop("web_fetch", &input);
+        assert!(!msg.contains(&chave), "segredo sobreviveu: {msg}");
+        assert!(msg.contains("[REDACTED]"), "{msg}");
+
+        // Mesmo com a chave posicionada bem onde o corte de 200 cairia.
+        let input = json!({"pad": "p".repeat(190), "authorization": chave.clone()});
+        let msg = budget.mensagem_de_loop("web_fetch", &input);
+        assert!(!msg.contains(&chave[..30]), "prefixo da chave vazou: {msg}");
     }
 }
