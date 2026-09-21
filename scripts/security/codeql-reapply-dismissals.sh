@@ -174,13 +174,23 @@ while IFS= read -r entry; do
 
   cur_rule=$(echo "$current" | jq -r '.rule.id // ""')
   cur_path=$(echo "$current" | jq -r '.most_recent_instance.location.path // ""')
-  cur_line=$(echo "$current" | jq -r '.most_recent_instance.location.start_line // 0')
+  cur_start=$(echo "$current" | jq -r '.most_recent_instance.location.start_line // 0')
+  cur_end=$(echo "$current"   | jq -r '.most_recent_instance.location.end_line // 0')
   cur_state=$(echo "$current" | jq -r '.state // ""')
   cur_reason=$(echo "$current" | jq -r '.dismissed_reason // ""')
 
   # Fail-closed validation: rule_id, path, and line MUST match the ledger.
   # Anything else means the alert mutated since the ledger entry was authored
   # and a human needs to re-audit.
+  #
+  # `line` no ledger ancora a linha do SINK, derivada do codigo pelo
+  # check-ledger-anchors.py (que a reescreve sozinho). Num statement
+  # multi-linha o CodeQL reporta o span inteiro: start_line no comeco do
+  # statement e end_line no fim — o alerta 173 (cleartext-logging) e o caso
+  # real, start 1105 e sink 1107 no mesmo `println!` de tres argumentos.
+  # A comparacao legitima e CONTENCAO do span, nao igualdade com o start;
+  # rule_id e path continuam casando exatamente, e o content anchor (o
+  # snippet) continua sendo juridico do checker.
   mismatch=0
   if [[ "$cur_rule" != "$rule" ]]; then
     echo "  FAIL: rule_id mismatch — ledger=$rule, current=$cur_rule"
@@ -190,8 +200,8 @@ while IFS= read -r entry; do
     echo "  FAIL: path mismatch — ledger=$path, current=$cur_path"
     mismatch=1
   fi
-  if [[ "$cur_line" != "$line" ]]; then
-    echo "  FAIL: line mismatch — ledger=$line, current=$cur_line"
+  if ! awk "BEGIN{exit !($line >= $cur_start && $line <= $cur_end)}"; then
+    echo "  FAIL: line fora do span do statement — ledger=$line, alerta=[$cur_start,$cur_end]"
     mismatch=1
   fi
   if [[ $mismatch -eq 1 ]]; then
