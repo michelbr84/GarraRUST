@@ -31,20 +31,25 @@ jobs:
   bola-gate:
     name: Security Gate (BOLA & Tenant Isolation)
     runs-on: ubuntu-latest
-    # 25 -> 30 em 2026-08-29. O teto de 25 estava em cima da duracao real: em
-    # tres execucoes no mesmo dia o job levou 25.2 min (cancelled), 17.1 min
-    # (ok) e 25.4 min (cancelled). A variacao vem de quanto do `target/`
-    # restaurado sobrevive — um PR que toca crate de baixo nivel (garraia-common,
-    # garraia-security) invalida quase o workspace inteiro e cai na ponta alta.
+    # Orcamento em dois niveis (2026-09-21, #1332):
     #
-    # Isto NAO afrouxa o gate: `continue-on-error` segue proibido e nenhum teste
-    # foi pulado. Um job que estoura o timeout nao entrega sinal NENHUM — dar
-    # orcamento e o oposto de mascarar. 30 min e o valor que todo job do ci.yml
-    # ja usa (linhas 288, 359, 558, 698); este era o unico fora do padrao.
+    # - O gate exige que os TESTES caibam em 25 min: `timeout-minutes` no step
+    #   `Run Gateway Authz & Multi-Tenant Tests`, abaixo. E esse o numero que
+    #   diz se um teste novo ficou lento demais. Se ele estourar, root-causar
+    #   (teste lento? build frio?) em vez de subir o numero.
+    # - O teto do job (45) e so um guarda contra infra travada (runner, Postgres,
+    #   cache). Ele fica separado do orcamento dos testes porque o timeout do
+    #   JOB tambem mata os post-steps: em 2026-09-21 tres runs (35565881095 e
+    #   35607778653 attempts 1 e 2) terminaram `cancelled` com os testes ja
+    #   verdes, porque o `Post Cache` de `target/` levava ~8 min e cruzava os
+    #   30. Um check obrigatorio que cai DEPOIS de os testes passarem nao
+    #   entrega sinal nenhum e ainda custa um re-run manual.
     #
-    # Se voltar a chegar perto de 30, o problema deixou de ser orcamento: root-
-    # causar (cache frio? teste novo lento?) em vez de subir o numero de novo.
-    timeout-minutes: 30
+    # Historico: 25 -> 30 em 2026-08-29 (job em 25.2/17.1/25.4 min no mesmo
+    # dia, variando com quanto do `target/` restaurado sobrevivia a um PR que
+    # toca crate de baixo nivel). Isto NAO afrouxa o gate: `continue-on-error`
+    # segue proibido e nenhum teste foi pulado.
+    timeout-minutes: 45
 
     services:
       postgres:
@@ -65,19 +70,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      # Este é o único job que restaura `target/` do cache (o ci.yml cacheia
-      # só `~/.cargo/registry`), e o runner ubuntu-latest tem ~14 GB livres.
-      # Desde a v0.3.4 o OpenSSL é vendored (`native-tls/vendored`, ver
-      # Cargo.toml raiz), então o openssl-src compila o OpenSSL dentro de
-      # `target/` e engorda o cache: o primeiro run com a mudança passou e
-      # salvou o cache maior, e os dois seguintes morreram ~4 min dentro do
-      # `cargo test` — sem logs, sem post-steps, assinatura de runner morto
-      # por disco. Mesmo bloco (e mesma causa) do job `coverage` do ci.yml,
-      # que documenta o `No space left on device` verificado no PR #90.
-      # Inline `rm -rf` em vez de action externa para manter a superfície de
-      # supply-chain em zero, igual ao ci.yml. O `docker image prune` não
-      # toca a imagem do serviço postgres: ela está em uso por um container
-      # rodando, e o docker não remove imagem referenciada.
+      # Desde a v0.3.4 o OpenSSL e vendored (`native-tls/vendored`, ver
+      # Cargo.toml raiz), entao o openssl-src compila o OpenSSL dentro de
+      # `target/` e o build frio deste job e grande; o runner ubuntu-latest tem
+      # ~14 GB livres e ja morreu ~4 min dentro do `cargo test` — sem logs, sem
+      # post-steps, assinatura de runner morto por disco. Mesmo bloco (e mesma
+      # causa) do job `coverage` do ci.yml, que documenta o `No space left on
+      # device` verificado no PR #90.
+      # Inline `rm -rf` em vez de action externa para manter a superficie de
+      # supply-chain em zero, igual ao ci.yml. O `docker image prune` nao
+      # toca a imagem do servico postgres: ela esta em uso por um container
+      # rodando, e o docker nao remove imagem referenciada.
       - name: Free up disk space (GHA runner default ~14 GB → ~26 GB)
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -90,19 +93,28 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry & build target
+      # So o registry do cargo, NAO `target/` (#1332). O `target/` deste job
+      # tem varios GiB (OpenSSL vendored + workspace inteiro) e, com o limite
+      # de 10 GiB de cache do repositorio disputado por outros jobs, a entrada
+      # era evictada antes do proximo run que a usaria: em todo run medido o
+      # restore durava 1 s (miss) e o save ~8 min. Pagavamos o save sempre e
+      # nunca recebiamos o hit. Sem `target/` o build continua frio (como ja
+      # era) e o save cai para segundos. Chave propria (`-registry-`) para nao
+      # restaurar por prefixo uma entrada antiga com `target/` dentro.
+      - name: Cache cargo registry
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-bola-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-bola-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-bola-
+            ${{ runner.os }}-cargo-bola-registry-
 
       - name: Run Gateway Authz & Multi-Tenant Tests
+        # Orcamento do gate. Ver o comentario do `timeout-minutes` do job.
+        timeout-minutes: 25
         env:
           GARRAIA_TEST_DATABASE_URL: postgres://postgres:postgrespassword@localhost:5432/garraia_workspace_test
         run: |
