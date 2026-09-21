@@ -24,7 +24,9 @@
 //!    mundo. Ver [`admitir`].
 //! 2. **Ferramentas somente-leitura por padrao.** Sessao sem modo escolhido
 //!    resolve para o perfil `search` (whitelist de leitura), e nao para "sem
-//!    politica". Ver [`piso_somente_leitura`].
+//!    politica". `default_mode` so aceita modo **nativo** e diferente de
+//!    `auto`: nome desconhecido nao vira portao aberto — o canal nao sobe.
+//!    Ver [`piso_somente_leitura`] e [`modo_padrao`].
 //! 3. **Guard de injecao indireta no texto recebido.** A issue #1243 propoe
 //!    generalizar o guard que hoje so cobre `web_fetch`; ela **nao mergeou**,
 //!    entao ele e aplicado localmente aqui. Ver [`preparar_entrada`].
@@ -42,6 +44,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use garraia_agents::ChatMessage;
 use garraia_agents::exec_context::ExecContext;
+use garraia_agents::modes::{AgentMode, ToolGate};
 use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, LinkHealth, classify};
 use garraia_channels::whatsapp_linked::{
     BridgeCommand, DEFAULT_ACCOUNT, InboundMessage, Jid, NodeLauncher, RunError, SessionError,
@@ -264,6 +267,11 @@ pub struct LinkedSettings {
     /// grupo da familia do operador e um incidente, nao um recurso.
     pub reply_in_groups: bool,
     /// Modo que vale quando a sessao nao escolheu nenhum.
+    ///
+    /// Vem **cru** da config: `settings_from_config` e pura e nao decide nada.
+    /// Quem valida e [`modo_padrao`] — na subida, por [`deve_supervisionar`]
+    /// (recusa com [`NaoSubiu::ModoPadraoInvalido`]), e no turno, por
+    /// [`piso_somente_leitura`] (cai para [`DEFAULT_MODE`]).
     pub default_mode: String,
 }
 
@@ -515,6 +523,37 @@ pub fn preparar_entrada(cru: &str) -> Entrada {
     Entrada::Entregar { texto }
 }
 
+/// O modo que `channels.whatsapp_linked.default_mode` pode nomear.
+///
+/// So modo **nativo**, e nao `auto`. Os dois limites existem porque o nome vai
+/// virar `ToolGate` sem ninguem no meio:
+///
+/// - `ToolGate::for_mode_name` trata nome desconhecido como **portao aberto**
+///   ("recusar tudo porque alguem digitou errado seria pior que ignorar o
+///   modo"). E o default certo para a CLI, onde quem digita e o dono da
+///   maquina, e o errado aqui: `default_mode = "pesquisa"` — um typo — daria
+///   `bash`, `file_write` e toda ferramenta MCP registrada a quem manda
+///   mensagem para o numero do operador. Modo **customizado** (#986) cai no
+///   mesmo caso: o perfil dele mora no banco e e resolvido so para o modo que
+///   a *sessao* escolheu (`AppState::exec_context_for_inner`), nunca para o
+///   piso do canal — para o portao, o nome de um modo customizado aqui e um
+///   nome desconhecido. Quem quiser um customizado neste canal o escolhe com
+///   `/mode` na sessao, que e escolha explicita e resolve o perfil.
+/// - `auto` deixa o **texto da mensagem** escolher o perfil
+///   (`ToolGate::para_o_turno` → `classify_heuristic`), `code` incluso, e cai
+///   em portao aberto quando a heuristica nao classifica. Num canal em que o
+///   texto vem de um estranho, isso e deixar o estranho escolher a politica.
+///
+/// `None` e recusa: na subida vira [`NaoSubiu::ModoPadraoInvalido`]; no turno,
+/// [`piso_somente_leitura`] cai para [`DEFAULT_MODE`]. Os dois lados, para que
+/// nenhum call-site que pule `deve_supervisionar` monte um portao aberto.
+pub fn modo_padrao(nome: &str) -> Option<AgentMode> {
+    match AgentMode::from_str(nome.trim()) {
+        Some(AgentMode::Auto) | None => None,
+        Some(modo) => Some(modo),
+    }
+}
+
 /// Aplica o piso somente-leitura do canal.
 ///
 /// `ExecContext` sem modo significa **sem politica de ferramenta** (ver o
@@ -522,64 +561,130 @@ pub fn preparar_entrada(cru: &str) -> Entrada {
 /// incluso. Isso e o default certo para a CLI, onde quem digita e o dono da
 /// maquina, e o errado aqui. Escolha explicita do usuario (`/mode`) continua
 /// vencendo — e assim que o operador "sobe o nivel".
+///
+/// O nome que entra no `ExecContext` e o `as_str()` do modo validado por
+/// [`modo_padrao`], nunca a string da config: `ToolGate::for_mode_name`, que e
+/// quem le esse campo no turno, trata nome desconhecido como portao aberto, e
+/// o piso nao pode ser a porta para isso. Nome que nao valida cai em
+/// [`DEFAULT_MODE`] — [`deve_supervisionar`] ja recusou a subida nesse caso,
+/// entao chegar aqui e um call-site que a pulou, e ainda assim nao abre nada.
 pub fn piso_somente_leitura(mut exec: ExecContext, modo_default: &str) -> ExecContext {
     if exec.agent_mode.is_none() && exec.custom_profile.is_none() {
-        exec.agent_mode = Some(modo_default.to_string());
+        exec.agent_mode = Some(match modo_padrao(modo_default) {
+            Some(modo) => modo.as_str().to_string(),
+            None => {
+                warn!(
+                    "whatsapp_linked: `default_mode` nao e um modo nativo deste canal; \
+                     o piso do turno e `{DEFAULT_MODE}`"
+                );
+                DEFAULT_MODE.to_string()
+            }
+        });
     }
     exec
 }
 
-/// Ha ferramenta de servidor MCP registrada no runtime **agora**?
+/// Servidores MCP cujas ferramentas o portao de um perfil **libera**.
 ///
-/// # Por que este canal recusa rodar enquanto houver uma
+/// # O que isto substitui (#1327)
 ///
-/// O piso [`piso_somente_leitura`] escolhe o perfil `search`, que e
-/// `whitelist_mode`. Mas `ToolGate::permite` tem uma escapatoria explicita e
-/// documentada (`modes.rs`, secao "Ferramenta MCP nao e barrada por
-/// whitelist"): nome que contenha `SEPARADOR_MCP` (`"__"`) passa pelo whitelist
-/// incondicionalmente — a alternativa, quando aquilo foi escrito, era quebrar
-/// MCP em cinco dos nove modos. E a #1264, que fecharia isso, esta aberta.
+/// Ate a #1327 este canal se recusava a subir — e recusava cada turno —
+/// enquanto houvesse qualquer ferramenta de servidor MCP registrada. A recusa
+/// nasceu para a #1264, quando `ToolGate::permite` isentava do whitelist todo
+/// nome com `__`; a #1288 fechou a isencao, e desde entao ferramenta MCP so
+/// passa por um perfil com whitelist quando a `allowed` a declara
+/// (`servidor/*` ou o nome completo). O piso [`piso_somente_leitura`] escolhe
+/// o `search`, que nao declara servidor nenhum: `filesystem__write_file` e
+/// negada por nome, como `bash`. A recusa ficou sem funcao — e, como toda
+/// instalacao nova ganha o servidor `filesystem` no primeiro boot, ela fazia o
+/// canal nunca subir em instalacao padrao.
 ///
-/// O encadeamento fecha na configuracao default desta PR: `web_fetch` **esta**
-/// na whitelist do `search`, entao uma pagina buscada pelo agente pode injetar
-/// instrucao, o agente pode chamar uma ferramenta MCP, e o piso nao existe para
-/// ela. Com #1245 e #1260 o caminho ate execucao arbitraria nao tem degrau
-/// faltando — e a mensagem que dispara tudo vem de qualquer pessoa que conheca
-/// o numero pessoal do operador.
+/// # O que fica: aviso, nao recusa
 ///
-/// ## Por que nao montar um `denied` com os nomes MCP conhecidos
+/// `default_mode` so aceita modo nativo ([`modo_padrao`]), entao o portao em
+/// exame na subida e sempre o de um perfil nativo — e, dos nativos, os que tem
+/// whitelist nao declaram servidor MCP nenhum. O aviso so tem o que dizer
+/// quando o operador escolheu um perfil **sem** whitelist (`ask`, `code`), em
+/// que passa tudo que o `denied` nao nomeia — ferramenta MCP inclusa. Isso e
+/// **escolha declarada** — o `default_mode` e do operador —, entao o canal
+/// avisa em vez de recusar: [`spawn_whatsapp_linked`] emite um `warn!` na
+/// subida listando o que esta funcao devolve, com o motivo
+/// ([`motivo_da_liberacao`]). Com o `search` a lista e vazia.
 ///
-/// Era a saida mais barata (`denied` vale sempre, inclusive para MCP), e ela
-/// nao fecha o buraco. `ToolPolicy::denied` e uma lista de nomes com
-/// comparacao exata, ou seja, um **instantaneo**; e o inventario e vivo:
+/// A funcao em si e generica sobre qualquer `ToolGate` — `permite()` tambem
+/// devolve `true` com `whitelist_mode` ligado e `allowed` vazia
+/// (`ToolGate::whitelist_ligada_mas_vazia`) e para o que `servidor/*` declara
+/// —, mas esses dois portoes so existem em perfil customizado, que nao chega
+/// aqui: modo customizado nao serve de `default_mode` (ver [`modo_padrao`]).
 ///
-/// - `McpManager::spawn_health_monitor_with_runtime` chama
-///   `AgentRuntime::sync_mcp_tools` a cada **30 s** (`mcp/manager.rs`), e um
-///   turno de agente com varias chamadas de ferramenta dura mais que isso;
-/// - `admin/mcp.rs` re-sincroniza a inventario quando um servidor e adicionado
-///   pela API, a qualquer momento;
-/// - `AgentRuntime::tool_definitions()` e lido **uma vez** por turno e o guard
-///   de pre-execucao (`runtime.rs`) usa o mesmo `ToolGate` do inicio do turno.
+/// Devolve nomes de **servidor**, ordenados e sem repeticao: e o que o
+/// operador reconhece no `mcp.json`, e nao carrega argumento nem segredo.
+pub fn mcp_liberadas_pelo_perfil(
+    gate: &ToolGate,
+    inventario: &[garraia_agents::runtime::ToolInventoryEntry],
+) -> Vec<String> {
+    let mut servidores: Vec<String> = inventario
+        .iter()
+        .filter(|t| t.source == "mcp" && gate.permite(&t.name))
+        .map(|t| {
+            t.server
+                .clone()
+                .unwrap_or_else(|| "<servidor desconhecido>".to_string())
+        })
+        .collect();
+    servidores.sort();
+    servidores.dedup();
+    servidores
+}
+
+/// Por que um portao deixou ferramenta MCP passar — o pedaco do aviso de
+/// [`avisar_drift_de_mcp`] que precisa ser verdade.
 ///
-/// Ou seja, o instantaneo fica velho pela duracao inteira de um turno, e uma
-/// ferramenta que aparece nessa janela nao esta no `denied` e passa pela
-/// escapatoria. Um `denied` desses daria a aparencia de piso sem o piso —
-/// exatamente o defeito que esta PR ja pagou tres vezes. Medido, nao adivinhado.
+/// A primeira versao do aviso dizia "e o `allowed` declarado" para todo caso,
+/// e o unico caso alcancavel pelo `default_mode` — perfil nativo sem whitelist
+/// — nao tem `allowed` nenhuma. Sao quatro formas de um `ToolGate` liberar
+/// MCP, e o texto diz qual foi:
 ///
-/// Entao a decisao e a opcao fail-closed. O que o controle FAZ, dito com
-/// precisao: o canal **se recusa a subir** se houver ferramenta MCP registrada
-/// no boot, e **recusa cada turno** cuja entrada encontre uma registrada. Nao
-/// e uma invariante continua — entre a checagem de um turno e a do seguinte o
-/// inventario pode mudar, e o `spawn_health_monitor_with_runtime` o
-/// re-sincroniza a cada 30 s. E reducao de janela, dos minutos que o canal
-/// ficaria de pe para o intervalo entre dois turnos. Quando a #1264 fechar,
-/// esta funcao sai.
+/// | portao                                   | alcancavel por `default_mode`? |
+/// |------------------------------------------|--------------------------------|
+/// | sem perfil (`sem_politica`)              | nao — [`modo_padrao`] recusa   |
+/// | whitelist ligada com `allowed` vazia     | nao — so em perfil customizado |
+/// | whitelist com `servidor/*` declarado     | nao — so em perfil customizado |
+/// | perfil sem whitelist (`ask`, `code`)     | **sim**                        |
+pub fn motivo_da_liberacao(gate: &ToolGate) -> &'static str {
+    if gate.nome_do_modo().is_none() {
+        "nao ha perfil nenhum em vigor: portao aberto"
+    } else if gate.whitelist_ligada_mas_vazia() {
+        "o perfil liga `whitelist_mode` com `allowed` vazia, o que permite tudo"
+    } else if gate.restringe_por_whitelist() {
+        "a `allowed` do perfil declara esses servidores (`servidor/*` ou nome completo)"
+    } else {
+        "o perfil nao tem whitelist de ferramenta, entao passa tudo que o `denied` nao nomeia"
+    }
+}
+
+/// O `warn!` de [`mcp_liberadas_pelo_perfil`], uma vez por subida do canal.
 ///
-/// O predicado e o do [`garraia_agents::AgentRuntime::has_gate_bypassing_tool`]
-/// e nao `source == "mcp"`: quem compensa e o `ToolGate`, e ele decide pelo
-/// NOME. Ver o docstring de la.
-pub fn ha_ferramenta_mcp(agents: &garraia_agents::AgentRuntime) -> bool {
-    agents.has_gate_bypassing_tool()
+/// Recebe o modo **ja validado** por [`modo_padrao`], e nao a string da
+/// config: e a assinatura que impede este aviso de examinar um portao que o
+/// turno nao monta. O portao e `ToolGate::for_mode_name(<nome do modo>)` — o
+/// mesmo caminho que [`piso_somente_leitura`] + `ToolGate::para_o_turno`
+/// percorrem no turno de uma sessao sem modo escolhido —, e com o modo
+/// validado ele e sempre o de um perfil nativo, nunca `sem_politica()`.
+fn avisar_drift_de_mcp(modo: AgentMode, agents: &garraia_agents::AgentRuntime) {
+    let nome = modo.as_str();
+    let gate = ToolGate::for_mode_name(nome);
+    let liberadas = mcp_liberadas_pelo_perfil(&gate, &agents.tool_inventory());
+    if liberadas.is_empty() {
+        return;
+    }
+    let motivo = motivo_da_liberacao(&gate);
+    let servidores = liberadas.join(", ");
+    warn!(
+        "whatsapp_linked: o perfil `{nome}` (`channels.whatsapp_linked.default_mode`) libera \
+         ferramentas MCP dos servidores {servidores} a quem manda mensagem para este numero \
+         — {motivo}; use `search` para um piso somente-leitura, ou confirme que e intencional"
+    );
 }
 
 /// Esta mensagem merece um turno do agente?
@@ -714,23 +819,10 @@ impl GatewaySink {
             return;
         };
 
-        // Reavaliado por turno, e nao so no boot: o `admin/mcp.rs` registra
-        // servidor com o gateway ja de pe. Ver [`ha_ferramenta_mcp`].
-        if ha_ferramenta_mcp(&state.agents) {
-            warn!(
-                phone_last4 = %last4,
-                "whatsapp_linked: ha ferramenta MCP registrada e o piso somente-leitura nao a cobre (#1264); turno recusado"
-            );
-            Self::responder(
-                &outbound,
-                &msg.chat_jid,
-                "Este canal esta indisponivel enquanto houver servidor MCP conectado neste GarraIA."
-                    .to_string(),
-            )
-            .await;
-            return;
-        }
-
+        // Nao ha checagem de inventario MCP aqui desde a #1327: o piso abaixo
+        // (`piso_somente_leitura` → perfil `search`) nega ferramenta MCP por
+        // nome dentro do proprio `ToolGate`, a cada turno, contra o inventario
+        // vivo. Ver [`mcp_liberadas_pelo_perfil`].
         let sid = session_id(&msg);
         state
             .hydrate_session_history(&sid, Some(CONFIG_KEY), Some(&remetente))
@@ -816,45 +908,88 @@ impl InboundSink for GatewaySink {
 // ---------------------------------------------------------------------------
 
 /// Por que o supervisor nao subiu. Serve ao log e ao teste.
+///
+/// O `Display` de cada variante diz a **acao**, nao o nome: e o que sai no
+/// `warn!` do boot (#1327). Ate la o log dizia `canal nao subiu
+/// (FerramentaMcpRegistrada)` em `INFO`, e o operador ficava com "tudo
+/// vinculado" no `status` e um canal mudo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NaoSubiu {
     /// `channels.whatsapp_linked.enabled` nao e `true`.
     Desabilitado,
-    /// Nao ha `session.enc`: `garra whatsapp link` ainda nao rodou.
+    /// `channels.whatsapp_linked.default_mode` nao nomeia um modo nativo, ou
+    /// nomeia `auto`. Ver [`modo_padrao`]: subir assim seria subir com o
+    /// portao de ferramenta aberto a quem manda mensagem.
+    ModoPadraoInvalido {
+        /// O valor como veio da config. E config do operador, nao PII, e e o
+        /// que ele precisa ver para achar o typo no arquivo.
+        modo: String,
+    },
+    /// Nao ha `session.enc` legivel: `garra whatsapp link` ainda nao rodou,
+    /// ou a chave da sessao nao abre.
     SemSessao,
     /// `node` nao esta na PATH.
     SemNode,
-    /// Ha servidor MCP registrado e o piso somente-leitura nao cobre as
-    /// ferramentas dele (#1264). Ver [`ha_ferramenta_mcp`].
-    FerramentaMcpRegistrada,
 }
 
-/// Decide se ha o que supervisionar. Pura o bastante para ter teste proprio.
+impl std::fmt::Display for NaoSubiu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Desabilitado => f.write_str(
+                "canal desligado na config (`channels.whatsapp_linked.enabled = false`)",
+            ),
+            Self::ModoPadraoInvalido { modo } => write!(
+                f,
+                "`channels.whatsapp_linked.default_mode` = `{modo}` nao e um modo nativo deste \
+                 canal (e `auto` nao vale aqui): use `search`, outro modo nativo, ou remova a chave"
+            ),
+            Self::SemSessao => f.write_str(
+                "nao ha sessao vinculada legivel neste data dir: rode `garra whatsapp link`",
+            ),
+            Self::SemNode => f.write_str(
+                "`node` nao encontrado: instale Node.js 20+ e garanta `node` na PATH do gateway",
+            ),
+        }
+    }
+}
+
+/// Decide se ha o que supervisionar — e devolve o modo que vai valer como
+/// piso. Pura o bastante para ter teste proprio.
+///
+/// A ordem e a da acao que o operador tem de tomar: ligar antes de corrigir o
+/// `default_mode` (as duas chaves estao na mesma secao da config), corrigir a
+/// config antes de vincular, vincular antes de instalar `node` (o proprio
+/// `garra whatsapp link` exige `node`). O inventario de ferramentas MCP
+/// **nao** e entrada desta decisao desde a #1327 — ver
+/// [`mcp_liberadas_pelo_perfil`].
+///
+/// # Por que o modo e validado AQUI, e nao so no turno
+///
+/// [`piso_somente_leitura`] ja cai para [`DEFAULT_MODE`] quando o nome nao
+/// resolve, entao o turno nunca roda com portao aberto. Mas `default_mode` que
+/// nao vale e config errada, e config errada que "funciona" e a especie de
+/// defeito que a #1327 nasceu para tirar do log: o operador escreve `code` com
+/// typo, o canal sobe em `search` e ele passa a tarde perguntando por que o
+/// agente nao escreve arquivo. Recusar a subida, com a frase de acao no
+/// `Display`, e o que faz o erro aparecer onde foi cometido.
 pub fn deve_supervisionar(
     settings: &LinkedSettings,
     sessao_existe: bool,
     node_presente: bool,
-    ferramenta_mcp: bool,
-) -> Result<(), NaoSubiu> {
+) -> Result<AgentMode, NaoSubiu> {
     if !settings.enabled {
         return Err(NaoSubiu::Desabilitado);
     }
+    let modo = modo_padrao(&settings.default_mode).ok_or_else(|| NaoSubiu::ModoPadraoInvalido {
+        modo: settings.default_mode.clone(),
+    })?;
     if !sessao_existe {
         return Err(NaoSubiu::SemSessao);
-    }
-    // A recusa de seguranca vem ANTES da falta de capacidade, de proposito.
-    // Instalar `node` nao faria o canal subir enquanto houver ferramenta MCP
-    // registrada, entao dizer `SemNode` aqui mandaria o operador consertar a
-    // coisa errada. E, como efeito colateral que vale registrar, e o que
-    // permite ao teste de boot provar esta recusa sem depender de haver `node`
-    // na PATH da maquina que roda o CI.
-    if ferramenta_mcp {
-        return Err(NaoSubiu::FerramentaMcpRegistrada);
     }
     if !node_presente {
         return Err(NaoSubiu::SemNode);
     }
-    Ok(())
+    Ok(modo)
 }
 
 /// Sobe o canal, quando ha o que subir.
@@ -885,12 +1020,11 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     let paths = LinkedPaths::from_config(&state.config).map_err(|_| NaoSubiu::SemSessao)?;
     let node = bridge::find_executable("node");
 
-    deve_supervisionar(
-        &settings,
-        paths.store.exists(),
-        node.is_some(),
-        ha_ferramenta_mcp(&state.agents),
-    )?;
+    let modo = deve_supervisionar(&settings, paths.store.exists(), node.is_some())?;
+    // Depois de decidir que sobe, e antes de subir: o aviso de drift (#1327),
+    // sobre o modo que `deve_supervisionar` acabou de validar. Aviso, nao
+    // recusa — ver `mcp_liberadas_pelo_perfil`.
+    avisar_drift_de_mcp(modo, &state.agents);
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
     // compilador nao sabe disso, e um `unwrap()` em producao e proibido.
     let Some(node) = node else {

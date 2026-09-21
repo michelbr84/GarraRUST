@@ -66,7 +66,7 @@ pub use whatsapp::build_whatsapp_channels;
 /// modelo de ameaca proprio, porque a mensagem vem de qualquer pessoa que
 /// conheca o numero pessoal do operador.
 pub use whatsapp_linked::{
-    CONFIG_KEY as WHATSAPP_LINKED_CONFIG_KEY, LinkedPaths, WhatsAppLinkedRuntime,
+    CONFIG_KEY as WHATSAPP_LINKED_CONFIG_KEY, LinkedPaths, NaoSubiu, WhatsAppLinkedRuntime,
     health as whatsapp_linked_health, spawn_whatsapp_linked,
 };
 
