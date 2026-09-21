@@ -20,16 +20,21 @@
   Os snippets gravados sao truncados em 500 caracteres de proposito: o ledger e
   auditoria, nao armazenamento de conversa.
 
-- **`ToolRegistry::execute_program` — primeiro passo do Code Mode (#1224).** Um
-  pipeline de N tools custava N inferencias, porque o modelo voltava ao loop
-  entre cada passo. Agora ele pode escrever um programa JSON
-  (`steps: [{tool, args, as}]`) que o runtime executa inteiro num turno so.
+- **`ToolRegistry::execute_program` — prototipo do Code Mode em `garraia-tools`
+  (#1224).** Um pipeline de N tools custava N inferencias, porque o modelo
+  voltava ao loop entre cada passo. A funcao recebe um programa JSON
+  (`steps: [{tool, args, as}]`) e executa os passos em sequencia, sem voltar
+  ao modelo entre eles.
   A substituicao de variaveis e deliberadamente tudo-ou-nada: um arg **e** a
   variavel ou nao e, sem interpolacao dentro de string maior — nada de injecao
   de prefixo. Falha em qualquer passo encerra o programa com o indice do passo,
   e o orcamento de `max_steps` (16 por default) impede que um programa vire
   loop.
-  Nesta fatia a funcao ainda nao tem chamador: o wrapper no runtime e a
-  exposicao no schema de tools do CLI e do gateway sao a #1226 — que precisa
-  fazer cada passo passar pelo mesmo `ToolGate` do loop normal antes de tornar
-  o caminho alcancavel.
+  O que ela **nao** e, com todas as letras: nao e o runtime executando nada.
+  Ela vive em `garraia-tools`, crate da qual o `AgentRuntime` (em
+  `garraia-agents`) nao depende; nao consulta o `ToolGate` dos modos; e nao
+  tem nenhum chamador fora dos proprios testes da crate. A `tool_program`
+  intrinseca do `AgentRuntime`, com gate por passo, e a #1226 (S-B) — e e la
+  que o caminho se torna alcancavel. Ate entao a funcao fica marcada
+  `#[deprecated]` (#1226 S-E), para que ninguem a ligue ao loop por fora do
+  gate.
