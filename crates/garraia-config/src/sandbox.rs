@@ -101,7 +101,11 @@ pub enum SandboxBackendKind {
     /// `podman run --rm ...` — precisa do binario `podman` (rootless).
     Podman,
     /// `ssh <ssh_host> -- ...`. **Nao e sandbox**: e execucao remota, que
-    /// isola o host local e nada mais. O `config check` avisa sobre isso.
+    /// isola o host local e nada mais. O `config check` avisa sobre isso
+    /// sempre, e reporta **Error** enquanto `network_disabled` ou
+    /// `mount_workdir` estiverem `true` (os defaults): o ssh nao consegue
+    /// honrar nenhuma das duas, e o runtime recusa cada comando fail-closed
+    /// ate o operador escrever `false` explicito nas duas (#1225 S3).
     Ssh,
 }
 
@@ -111,8 +115,12 @@ pub enum SandboxBackendKind {
 /// — nenhum botao aqui promete algo que a policy nao saiba honrar. Duas
 /// ressalvas que o `config check` repete ao operador:
 ///
-/// - `network_disabled` e `mount_workdir` so valem para `docker`/`podman`; o
-///   ramo `ssh` os ignora em silencio.
+/// - `network_disabled` e `mount_workdir` so valem para `docker`/`podman`. O
+///   ramo `ssh` nao tem como honra-las, e por isso a policy com `ssh` e
+///   **recusada** (fail-closed, em todo comando) enquanto qualquer uma das
+///   duas estiver `true` — que e o default. Escrever `false` nas duas e o
+///   reconhecimento explicito de que `ssh` e execucao remota SEM isolamento
+///   de rede/mount (#1225 S3, ADR 0019).
 /// - `elevated` e escape hatch: a tool listada roda **no host**, fora do
 ///   backend. Sem `tool_confirmation_enabled` ela roda sem pedir nada.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,9 +148,13 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub elevated: Vec<String>,
     /// Monta o diretorio de trabalho dentro do container (rw) e usa como cwd.
+    /// Com `backend = ssh` PRECISA ser `false` explicito — o ssh nao monta
+    /// nada, e a policy e recusada enquanto isto estiver `true` (#1225 S3).
     #[serde(default = "default_true")]
     pub mount_workdir: bool,
-    /// Rede do container desligada. Default `true`.
+    /// Rede do container desligada. Default `true`. Com `backend = ssh`
+    /// PRECISA ser `false` explicito — nao ha `--network none` num ssh, e a
+    /// policy e recusada enquanto isto estiver `true` (#1225 S3).
     #[serde(default = "default_true")]
     pub network_disabled: bool,
 }
