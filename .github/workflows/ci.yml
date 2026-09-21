@@ -611,6 +611,33 @@ jobs:
           cargo clippy -p garraia-storage --features storage-s3 --all-targets -- -D warnings
           cargo test -p garraia-storage --features storage-s3 -- --nocapture
 
+      # #1225 S4: o sandbox por tool (`agent.sandbox`, backend docker) so
+      # tinha testes sobre a STRING que `wrap_command` monta — nenhum subia um
+      # container. Os dois steps abaixo rodam o teste de integracao contra o
+      # Docker real do runner, pela mesma razao de existir do step de
+      # storage-s3 acima: um verde que nunca tocou o backend nao prova nada.
+      - name: Pre-pull debian:bookworm-slim for sandbox_docker
+        # Mesmo racional do pre-pull do MinIO: se o registry parar de servir a
+        # imagem default da policy, a falha aparece AQUI, com o erro do
+        # registry no log, em vez de virar um timeout opaco dentro do teste.
+        # O teste em si continua pronto para o pull implicito (timeout 120 s)
+        # — este step e diagnostico, nao dependencia.
+        timeout-minutes: 5
+        run: docker pull debian:bookworm-slim
+
+      - name: Run sandbox Docker integration test (garraia-agents)
+        # tests/sandbox_docker.rs: `echo` de dentro do container (`/.dockerenv`
+        # presente), `getent hosts` falha com `--network none` e resolve no
+        # controle com rede, e o cwd do host aparece via `mount_workdir` e
+        # some sem ele. GARRAIA_REQUIRE_DOCKER="1" transforma em falha o skip
+        # que o teste faria sem daemon, para que o verde prove que o container
+        # rodou. `--nocapture` deixa a saida do container visivel se algo der
+        # errado. Sem `continue-on-error`: e gate.
+        timeout-minutes: 10
+        env:
+          GARRAIA_REQUIRE_DOCKER: "1"
+        run: cargo test -p garraia-agents --test sandbox_docker -- --nocapture
+
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
   # with clippy. Now invokes the `cargo-deny-action` default `command: check`,
