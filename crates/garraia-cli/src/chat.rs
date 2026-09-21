@@ -305,6 +305,10 @@ fn open_chat_store(
     let path = data_dir.join(SESSIONS_DB);
     let store = SessionStore::open(&path)
         .with_context(|| format!("nao foi possivel abrir {}", path.display()))?;
+    // #1227 (slice 1): abrir o banco tambem e uma subida — runs `running`
+    // de uma queda anterior viram `interrupted` com ids no log (nunca
+    // `goal`), igual ao gateway.
+    garraia_db::agent_runs::log_interrupted_runs(&store);
     Ok(Some(store))
 }
 
@@ -3667,6 +3671,19 @@ mod persist_tests {
             vec!["primeiro", "segundo", "terceiro"],
             "timestamp identico nao pode reordenar a sessao"
         );
+    }
+
+    /// #1227 (slice 1): abrir o `sessions.db` no CLI tambem e uma subida —
+    /// runs `running` de uma queda anterior viram `interrupted` aqui, do
+    /// mesmo jeito que no gateway. Se a chamada sair, o CLI reabre o banco
+    /// do gateway e engole a trilha. O scan usa `concat!` para o proprio
+    /// teste nao casar consigo mesmo.
+    #[test]
+    fn abertura_do_store_marca_runs_interrompidos() {
+        let src = include_str!("chat.rs");
+        let alvo = concat!("log_interrupted", "_runs(&store)");
+        let copias = src.matches(alvo).count();
+        assert_eq!(copias, 1, "esperava 1 chamada de subida, achei {copias}");
     }
 
     // ── #1300: /resume volta ao ultimo turno interrompido ──────────────────

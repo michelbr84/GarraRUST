@@ -352,6 +352,10 @@ impl GatewayServer {
         let sessions_db = data_dir.join("sessions.db");
         match SessionStore::open(&sessions_db) {
             Ok(store) => {
+                // #1227 (slice 1): runs `running` deixados por uma queda
+                // viram `interrupted` aqui, com ids no log — nunca `goal`
+                // (PII). Falha e fail-soft: nao pode impedir a subida.
+                garraia_db::agent_runs::log_interrupted_runs(&store);
                 let store = Arc::new(Mutex::new(store));
                 state.set_session_store(Arc::clone(&store));
                 // GAR-201: Create ChatSessionManager from the same store for multi-channel session resolution
@@ -1329,6 +1333,63 @@ async fn execute_scheduled_task(
     store_mutex: &Arc<Mutex<SessionStore>>,
     task: &garraia_db::ScheduledTask,
 ) -> Result<()> {
+    // #1227 (slice 1): o scheduler e o primeiro produtor real do ledger —
+    // cada execucao deixa uma linha em `agent_runs` com `session_id`
+    // preenchido e desfecho terminal; uma queda no meio vira `interrupted`
+    // na subida seguinte (`log_interrupted_runs`). Falha do ledger e
+    // fail-soft: nunca impede a tarefa nem muda o fluxo de retry.
+    let run_id = ledger_inicia_run_agendado(store_mutex, task).await;
+    let resultado = execute_scheduled_task_inner(state, store_mutex, task).await;
+    ledger_fecha_run_agendado(store_mutex, &run_id, &resultado).await;
+    resultado.map(|_| ())
+}
+
+/// Abre a linha do run (`running`) para uma execucao de tarefa agendada.
+/// `mode = "heartbeat"` nomeia o produtor; `goal` e o payload da tarefa
+/// (a coluna guarda, o log nunca). Devolve o `run_id` mesmo se a gravacao
+/// falhar — o fecho do run tambem e fail-soft.
+async fn ledger_inicia_run_agendado(
+    store_mutex: &Arc<Mutex<SessionStore>>,
+    task: &garraia_db::ScheduledTask,
+) -> String {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let store = store_mutex.lock().await;
+    if let Err(e) = store.start_agent_run(
+        &run_id,
+        Some(&task.session_id),
+        &task.payload,
+        Some("heartbeat"),
+    ) {
+        tracing::warn!(erro = %e, "run ledger: falhou ao abrir run da tarefa agendada");
+    }
+    run_id
+}
+
+/// Fecha a linha do run com desfecho terminal: `done` com snippet da
+/// resposta, ou `error` com o snippet do erro. O ramo de retry do
+/// `run_scheduler` continua dono da politica de reexecucao — aqui so fica
+/// a trilha.
+async fn ledger_fecha_run_agendado(
+    store_mutex: &Arc<Mutex<SessionStore>>,
+    run_id: &str,
+    resultado: &Result<String>,
+) {
+    let (status, result_snippet, error_snippet) = match resultado {
+        Ok(texto) => (garraia_db::RunStatus::Done, Some(texto.as_str()), None),
+        Err(e) => (garraia_db::RunStatus::Error, None, Some(e.to_string())),
+    };
+    let store = store_mutex.lock().await;
+    if let Err(e) = store.finish_agent_run(run_id, status, result_snippet, error_snippet.as_deref())
+    {
+        tracing::warn!(erro = %e, "run ledger: falhou ao fechar run da tarefa agendada");
+    }
+}
+
+async fn execute_scheduled_task_inner(
+    state: &AppState,
+    store_mutex: &Arc<Mutex<SessionStore>>,
+    task: &garraia_db::ScheduledTask,
+) -> Result<String> {
     let channel_type = &task.channel_id;
 
     let message = Message {
@@ -1464,7 +1525,7 @@ async fn execute_scheduled_task(
         }
     }
 
-    Ok(())
+    Ok(response_text)
 }
 
 /// Plan 0044 (GAR-395 slice 2): construct the ObjectStore backend +
@@ -2068,5 +2129,85 @@ mod tests {
     #[test]
     fn default_config_boots() {
         assert!(refuse_inert_auth_flag(&AppConfig::default()).is_ok());
+    }
+
+    /// #1227 (slice 1): a subida do gateway tem de marcar runs `running`
+    /// deixados por uma queda — a chamada vive no bloco `Ok(store)` do
+    /// `SessionStore::open`. Se alguém a remover, a tabela volta a acumular
+    /// `running` eterno e o restart perde a trilha de auditoria. O scan usa
+    /// `concat!` para o próprio teste não casar consigo mesmo.
+    #[test]
+    fn subida_do_store_marca_runs_interrompidos() {
+        let src = include_str!("server.rs");
+        let alvo = concat!("log_interrupted", "_runs(&store)");
+        let copias = src.matches(alvo).count();
+        assert_eq!(copias, 1, "esperava 1 chamada de subida, achei {copias}");
+    }
+
+    fn tarefa_fixura() -> garraia_db::ScheduledTask {
+        garraia_db::ScheduledTask {
+            id: "task-1".to_string(),
+            session_id: "sess-1".to_string(),
+            channel_id: "telegram".to_string(),
+            user_id: "user-1".to_string(),
+            execute_at: chrono::Utc::now(),
+            payload: "verificar o build".to_string(),
+            session_metadata: serde_json::json!({}),
+            cron_expr: None,
+            timezone: None,
+            run_count: 0,
+            max_runs: None,
+            attempts: 0,
+        }
+    }
+
+    /// #1227 (slice 1): cada execucao agendada deixa uma linha em
+    /// `agent_runs` com `session_id` preenchido e desfecho terminal — a
+    /// queda no meio vira `interrupted` no restart seguinte, em vez de sumir.
+    #[tokio::test]
+    async fn run_agendado_grava_linha_terminal_com_sessao() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(
+            SessionStore::open(&tmp.path().join("sessions.db")).unwrap(),
+        ));
+        let task = tarefa_fixura();
+
+        let run_id = ledger_inicia_run_agendado(&store, &task).await;
+        ledger_fecha_run_agendado(&store, &run_id, &Ok("resposta do heartbeat".to_string())).await;
+
+        let runs = store.lock().await.list_recent_agent_runs(10).unwrap();
+        assert_eq!(runs.len(), 1, "uma execucao, uma linha");
+        assert_eq!(runs[0].status, garraia_db::RunStatus::Done);
+        assert_eq!(runs[0].session_id.as_deref(), Some("sess-1"));
+        assert_eq!(
+            runs[0].result_snippet.as_deref(),
+            Some("resposta do heartbeat")
+        );
+    }
+
+    /// Falha da execucao fecha o run com `error` e snippet do erro — nunca
+    /// fica `running` para sempre esperando o restart.
+    #[tokio::test]
+    async fn run_agendado_com_erro_fecha_com_status_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(
+            SessionStore::open(&tmp.path().join("sessions.db")).unwrap(),
+        ));
+        let task = tarefa_fixura();
+
+        let run_id = ledger_inicia_run_agendado(&store, &task).await;
+        ledger_fecha_run_agendado(
+            &store,
+            &run_id,
+            &Err(garraia_common::Error::Agent("boom".to_string())),
+        )
+        .await;
+
+        let runs = store.lock().await.list_recent_agent_runs(10).unwrap();
+        assert_eq!(runs[0].status, garraia_db::RunStatus::Error);
+        assert!(
+            runs[0].error_snippet.as_deref().unwrap().contains("boom"),
+            "snippet de erro presente"
+        );
     }
 }

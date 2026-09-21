@@ -215,6 +215,31 @@ impl SessionStore {
     }
 }
 
+/// Hook de subida (gateway e CLI, #1227 slice 1): converte runs `running`
+/// de uma execucao anterior em `interrupted` e loga o resultado. Um lugar
+/// so para a regra de log — o log carrega ids, nunca `goal` (PII) — e uma
+/// falha aqui nao pode impedir a subida: devolve 0 e avisa. Devolve quantos
+/// runs foram marcados (0 na subida limpa).
+pub fn log_interrupted_runs(store: &SessionStore) -> usize {
+    match store.mark_interrupted_runs() {
+        Ok(runs) => {
+            if !runs.is_empty() {
+                let ids: Vec<&str> = runs.iter().map(|r| r.id.as_str()).collect();
+                tracing::warn!(
+                    count = runs.len(),
+                    ids = %ids.join(","),
+                    "runs `running` de execucao anterior viraram `interrupted`"
+                );
+            }
+            runs.len()
+        }
+        Err(e) => {
+            tracing::warn!(erro = %e, "falhou ao marcar runs interrompidos na subida");
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +291,27 @@ mod tests {
             .unwrap();
         let rows = st.list_recent_agent_runs(10).unwrap();
         assert_eq!(rows[0].goal.chars().count(), SNIPPET_MAX);
+    }
+
+    /// #1227 (slice 1): o hook de subida marca so o que ficou `running`,
+    /// deixa status terminal em tudo e e idempotente — segunda subida nao
+    /// tem nada a marcar.
+    #[test]
+    fn log_interrupted_runs_marca_e_conta() {
+        let st = store();
+        st.start_agent_run("vivo", None, "tarefa viva", None)
+            .unwrap();
+        st.start_agent_run("pronto", None, "tarefa pronta", None)
+            .unwrap();
+        st.finish_agent_run("pronto", RunStatus::Done, None, None)
+            .unwrap();
+
+        assert_eq!(super::log_interrupted_runs(&st), 1);
+        let rows = st.list_recent_agent_runs(10).unwrap();
+        assert!(rows.iter().all(|r| r.status != RunStatus::Running));
+
+        // Segunda subida: nada pendente.
+        assert_eq!(super::log_interrupted_runs(&st), 0);
     }
 
     #[test]
