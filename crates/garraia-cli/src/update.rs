@@ -315,13 +315,43 @@ pub fn check_for_update_notice() -> Option<String> {
     let current = current_version();
     let latest = strip_v(&cache.latest_version);
 
-    if latest != current {
+    if release_is_newer(current, latest) {
         Some(format!(
             "Update available: v{current} -> v{latest}  —  run `garraia update`"
         ))
     } else {
         None
     }
+}
+
+/// `latest` e uma release **mais nova** que `current`? (#1320)
+///
+/// A comparacao antiga era `latest != current`: qualquer binario a frente da
+/// ultima release publicada — build de um branch de release, RC, ou a janela
+/// entre o merge do bump e o tag — recebia um convite para REBAIXAR
+/// (`v0.4.3 -> v0.4.2`). Aqui as duas versoes sao lidas como `X.Y.Z` e so
+/// `latest > current` anuncia update. Sufixo de pre-release (`0.5.0-rc1`) ou
+/// texto que nao parseia caem no comportamento antigo (desigualdade), para o
+/// aviso nunca sumir por causa de um formato inesperado — o que e conservador
+/// no sentido certo: em caso de duvida, avisa.
+fn release_is_newer(current: &str, latest: &str) -> bool {
+    match (parse_release(current), parse_release(latest)) {
+        (Some(cur), Some(lat)) => lat > cur,
+        _ => latest != current,
+    }
+}
+
+/// `X.Y.Z` -> `(X, Y, Z)`; `None` para qualquer outra forma (pre-release,
+/// build metadata, campos a mais ou a menos, nao-numerico).
+fn parse_release(v: &str) -> Option<(u64, u64, u64)> {
+    let mut it = v.trim().split('.');
+    let x = it.next()?.parse::<u64>().ok()?;
+    let y = it.next()?.parse::<u64>().ok()?;
+    let z = it.next()?.parse::<u64>().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((x, y, z))
 }
 
 /// Spawn a background version check that updates the cache file.
@@ -438,5 +468,43 @@ mod tests {
         // teste aponta direto para o mapa em asset_name_for.
         let name = platform_asset_name().unwrap();
         assert!(name.starts_with("garraia-"));
+    }
+}
+
+#[cfg(test)]
+mod update_notice_tests {
+    use super::{parse_release, release_is_newer};
+
+    /// #1320: a release publicada mais ANTIGA que o binario nao e update.
+    #[test]
+    fn binario_a_frente_da_release_nao_recebe_convite_para_rebaixar() {
+        assert!(!release_is_newer("0.4.3", "0.4.2"));
+        assert!(!release_is_newer("0.5.0", "0.4.9"));
+        assert!(!release_is_newer("1.0.0", "0.99.99"));
+    }
+
+    #[test]
+    fn release_mais_nova_anuncia_e_igual_nao() {
+        assert!(release_is_newer("0.4.2", "0.4.3"));
+        assert!(release_is_newer("0.4.9", "0.5.0"));
+        assert!(
+            release_is_newer("0.4.3", "0.4.10"),
+            "comparacao numerica, nao lexica"
+        );
+        assert!(!release_is_newer("0.4.3", "0.4.3"));
+    }
+
+    /// Formato que nao e `X.Y.Z` cai na desigualdade de antes: em caso de
+    /// duvida o aviso continua saindo, nunca somindo.
+    #[test]
+    fn forma_inesperada_cai_na_desigualdade_conservadora() {
+        assert!(release_is_newer("0.4.3", "0.5.0-rc1"));
+        assert!(release_is_newer("0.4.3-dev", "0.4.3"));
+        assert!(!release_is_newer("0.4.3-dev", "0.4.3-dev"));
+        assert_eq!(parse_release("0.4.3"), Some((0, 4, 3)));
+        assert_eq!(parse_release("0.4"), None);
+        assert_eq!(parse_release("0.4.3.1"), None);
+        assert_eq!(parse_release("0.4.x"), None);
+        assert_eq!(parse_release("0.5.0-rc1"), None);
     }
 }
