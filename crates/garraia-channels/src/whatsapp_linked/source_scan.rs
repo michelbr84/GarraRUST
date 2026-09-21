@@ -1880,3 +1880,92 @@ fn the_transparent_serialize_is_a_known_and_documented_hole() {
         "se a serializacao transparente saiu, atualize esta nota"
     );
 }
+
+/// Todo diretorio FORA de `crates/` que um `include_str!`/`include_bytes!` de
+/// codigo de producao alcanca tem de estar copiado no Dockerfile — senao o
+/// `cargo build` do estagio builder falha com "couldn't read", como o Deploy
+/// do tag v0.4.3 falhou por `bridge/whatsapp/`. O CI de PR nunca constroi a
+/// imagem (o `deploy.yml` so roda em tag), entao a regra vive aqui, onde roda
+/// em todo PR. Varre `crates/*/src/**/*.rs` lido do disco para uma crate nova
+/// entrar na conta sem ninguem lembrar de uma tabela.
+#[test]
+fn dockerfile_copies_every_dir_that_include_str_escapes_to() {
+    use std::path::{Path, PathBuf};
+
+    fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rs_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let crates = repo.join("crates");
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&crates).expect("crates/ existe") {
+        let src = entry.expect("entrada legivel").path().join("src");
+        rs_files(&src, &mut files);
+    }
+    assert!(!files.is_empty(), "nenhum .rs em {}", crates.display());
+
+    let mut escapadas: Vec<String> = Vec::new();
+    for file in &files {
+        let fonte = std::fs::read_to_string(file).expect("fonte legivel");
+        // So codigo de producao: o que vem antes do primeiro `#[cfg(test)]`.
+        let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte.as_str());
+        for macro_ in ["include_str!(\"", "include_bytes!(\""] {
+            for (i, _) in producao.match_indices(macro_) {
+                let resto = &producao[i + macro_.len()..];
+                let literal = resto.split('"').next().unwrap_or("");
+                // Cada `../` sobe um nivel a partir do diretorio do arquivo;
+                // o arquivo esta em `crates/<crate>/src/<...>`, entao subir
+                // pelo menos (profundidade do diretorio) niveis sai do repo
+                // de `crates/`.
+                let profundidade = file
+                    .strip_prefix(&repo)
+                    .expect("dentro do repo")
+                    .components()
+                    .count()
+                    - 1;
+                let sobe = literal.matches("../").count();
+                if sobe >= profundidade {
+                    let alvo = literal.trim_start_matches("../");
+                    let topo = alvo.split('/').next().unwrap_or("").to_string();
+                    if !topo.is_empty() && !escapadas.contains(&topo) {
+                        escapadas.push(topo);
+                    }
+                }
+            }
+        }
+    }
+    escapadas.sort();
+    assert!(
+        escapadas.contains(&"bridge".to_string()),
+        "o bridge WhatsApp e o caso conhecido; se sumiu, este teste perdeu o alvo: {escapadas:?}"
+    );
+
+    let dockerfile = std::fs::read_to_string(repo.join("Dockerfile")).expect("Dockerfile na raiz");
+    let dockerignore = std::fs::read_to_string(repo.join(".dockerignore")).unwrap_or_default();
+    for dir in &escapadas {
+        let copia = format!("COPY {dir}/ {dir}/");
+        assert!(
+            dockerfile.lines().any(|l| l.trim() == copia),
+            "include_str! de producao alcanca `{dir}/` fora de crates/, mas o Dockerfile nao tem \
+             `{copia}` — o estagio builder falharia com \"couldn't read\" (foi o Deploy da v0.4.3)"
+        );
+        assert!(
+            !dockerignore
+                .lines()
+                .map(str::trim)
+                .any(|l| l == format!("{dir}/") || l == dir.as_str() || l == format!("/{dir}/")),
+            "`.dockerignore` exclui `{dir}/`, que o Dockerfile precisa copiar"
+        );
+    }
+}
