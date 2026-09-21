@@ -885,6 +885,31 @@ envolver.
 Nenhum finding ecoa o `ssh_host`; nomes de tool são ecoados de propósito — é o
 ponto do finding.
 
+## 5.14. WhatsApp pessoal (`whatsapp_linked`) — piso de ferramenta por nome (#1327)
+
+O canal `whatsapp_linked` recebe mensagem de **qualquer pessoa que conheça o
+número pessoal do operador**, por um socket que a própria conta abriu
+(`crates/garraia-gateway/src/bootstrap/whatsapp_linked.rs`). É a maior
+superfície de injeção de prompt do projeto, e o que separa um remetente do
+host são duas camadas que não se substituem: a allowlist do canal (quem
+entra — fail-closed, sem `AllowlistMode::Open`) e o `ToolGate` do modo (o
+que pode fazer). Sessão sem modo escolhido cai no perfil `search`
+(`piso_somente_leitura`), e não em "sem política".
+
+Até a #1327 havia uma terceira camada: o canal recusava subir — e recusava
+cada turno — enquanto houvesse **qualquer** ferramenta de servidor MCP
+registrada no runtime. Ela nasceu para a #1264, quando `ToolGate::permite`
+isentava do whitelist todo nome com `__`; a #1288 fechou a isenção, e a
+recusa ficou sem função — mas continuou ligada, e como toda instalação nova
+ganha o servidor `filesystem` no primeiro boot, o canal nunca subia em
+instalação padrão. A recusa saiu; **o controle vivo é o portão, por nome**.
+
+| STRIDE | Cenário concreto | Mitigação atual | Gap / Planejada |
+|---|---|---|---|
+| **E** Elevation of privilege | Remetente admitido — ou uma página buscada por `web_fetch`, que está na whitelist do `search` — induz o modelo a chamar `filesystem__write_file` do servidor MCP provisionado por padrão. | O `ToolGate` do perfil `search` nega a ferramenta **por nome**, em cada turno, contra o inventário vivo (`ToolGate::para_o_turno`): ferramenta MCP não declarada em `allowed` não entra na lista que o modelo vê, e o guard de pré-execução a recusa se ele a pedir mesmo assim. `denied` (`file_write`, `bash`, `device_execute`) vence tudo, prefixo declarado incluso. Testes: `o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao` (portão montado como o turno monta) e `turno_roda_com_ferramenta_mcp_registrada_e_o_modelo_nao_a_ve` (fiação inteira, ponte falsa). | — |
+| **T** Tampering (configuração) | Operador customiza o perfil padrão do canal com `allowed: ["filesystem/*"]`, ou com `allowed` vazia — que, com `whitelist_mode` ligado, **permite tudo** (opção (b) da #1264) — e o servidor MCP fica exposto a quem manda mensagem. | Não é recusa: `allowed` é decisão declarada do operador. Na subida do canal, `mcp_liberadas_pelo_perfil` monta o portão do perfil padrão e emite **um** `warn!` nomeando os servidores liberados — nunca argumento nem segredo de ferramenta. | O aviso sai na subida; um servidor registrado depois pela admin API, sob um perfil já permissivo, não o reemite. |
+| **R** Repudiation | Canal ligado que não sobe, sem que o operador saiba por quê — o sintoma da #1327 era `INFO … (FerramentaMcpRegistrada)`, com `garra whatsapp status` dizendo "vinculado". | Qualquer `NaoSubiu` diferente de `Desabilitado` sai em `WARN` com a **ação** (`Display`: ligar na config, `garra whatsapp link`, instalar Node.js 20+ e garantir `node` na PATH). `unknown channel type: whatsapp_linked` deixou de ser emitido para a seção que a própria CLI escreve. | `garra whatsapp status` e o check `whatsapp.linked` ainda não distinguem "vinculado" de "canal de pé". |
+
 ---
 
 ## 6. Mobile apps (`apps/garraia-mobile`)

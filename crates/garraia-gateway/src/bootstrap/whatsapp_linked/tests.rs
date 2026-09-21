@@ -561,6 +561,17 @@ fn midia_e_texto_vazio_nao_geram_turno() {
 // Supervisao
 // ---------------------------------------------------------------------------
 
+/// As tres condicoes de subida, e a ordem em que sao reportadas:
+/// `Desabilitado` > `SemSessao` > `SemNode`. A ordem importa porque cada
+/// motivo vira uma frase de acao no log (`Display`), e a acao certa e a da
+/// primeira coisa que falta — ligar o canal antes de vincular, vincular antes
+/// de instalar `node`.
+///
+/// Ate a #1327 havia uma quarta entrada, `FerramentaMcpRegistrada`, que
+/// recusava a subida com qualquer servidor MCP registrado. Ela saiu porque o
+/// piso `search` nega ferramenta MCP por nome desde a #1288 (ver
+/// `o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao`) — e o
+/// inventario de ferramentas deixou de ser entrada desta decisao.
 #[test]
 fn tabela_do_que_impede_a_supervisao() {
     let ligado = LinkedSettings {
@@ -570,31 +581,121 @@ fn tabela_do_que_impede_a_supervisao() {
     let desligado = LinkedSettings::default();
 
     assert_eq!(
-        deve_supervisionar(&desligado, true, true, false),
+        deve_supervisionar(&desligado, true, true),
         Err(NaoSubiu::Desabilitado)
     );
     assert_eq!(
-        deve_supervisionar(&ligado, false, true, false),
+        deve_supervisionar(&desligado, false, false),
+        Err(NaoSubiu::Desabilitado),
+        "desligado vence tudo: nao ha o que consertar num canal que o operador nao ligou"
+    );
+    assert_eq!(
+        deve_supervisionar(&ligado, false, true),
         Err(NaoSubiu::SemSessao)
     );
     assert_eq!(
-        deve_supervisionar(&ligado, true, false, false),
+        deve_supervisionar(&ligado, false, false),
+        Err(NaoSubiu::SemSessao),
+        "sem sessao vem antes de sem node: `garra whatsapp link` e o proximo passo, \
+         e ele proprio exige o `node`"
+    );
+    assert_eq!(
+        deve_supervisionar(&ligado, true, false),
         Err(NaoSubiu::SemNode)
     );
-    assert_eq!(
-        deve_supervisionar(&ligado, true, true, true),
-        Err(NaoSubiu::FerramentaMcpRegistrada),
-        "com servidor MCP registrado o piso somente-leitura nao cobre as \
-         ferramentas dele (#1264) — o canal nao sobe"
+    assert_eq!(deve_supervisionar(&ligado, true, true), Ok(()));
+}
+
+/// Cada motivo de nao subir sai no log com a ACAO, nao com o nome do enum
+/// (#1327). O sintoma da issue foi exatamente um `INFO ... (FerramentaMcpRegistrada)`
+/// que ninguem sabia o que fazer com.
+#[test]
+fn cada_motivo_de_nao_subir_diz_o_que_fazer() {
+    let desabilitado = NaoSubiu::Desabilitado.to_string();
+    assert!(
+        desabilitado.contains("channels.whatsapp_linked.enabled = false"),
+        "{desabilitado}"
     );
-    assert_eq!(
-        deve_supervisionar(&ligado, true, false, true),
-        Err(NaoSubiu::FerramentaMcpRegistrada),
-        "e a recusa de seguranca vem antes da falta de capacidade: instalar \
-         `node` nao faria este canal subir, entao dizer `SemNode` mandaria o \
-         operador consertar a coisa errada"
+
+    let sem_sessao = NaoSubiu::SemSessao.to_string();
+    assert!(sem_sessao.contains("garra whatsapp link"), "{sem_sessao}");
+
+    let sem_node = NaoSubiu::SemNode.to_string();
+    assert!(sem_node.contains("Node.js 20+"), "{sem_node}");
+    assert!(sem_node.contains("PATH"), "{sem_node}");
+}
+
+/// **O aviso de drift (#1327), a decisao pura.**
+///
+/// A recusa por MCP saiu; o que fica e um `warn!` na subida quando o portao
+/// do perfil padrao do canal LIBERA alguma ferramenta MCP registrada. Com o
+/// `search` nativo isso e vazio — nenhum servidor declarado. Com um perfil que
+/// declara `servidor/*`, ou com `allowed` vazia (que permite tudo, ver
+/// `ToolGate::whitelist_ligada_mas_vazia`), a lista vem preenchida e o
+/// operador le no log que aquele servidor esta exposto a quem manda mensagem.
+///
+/// Devolve **servidores**, deduplicados: e o que o operador reconhece no
+/// `mcp.json`, e nunca carrega argumento nem segredo de ferramenta.
+#[test]
+fn mcp_liberadas_pelo_perfil_e_vazia_no_search_e_lista_o_servidor_declarado() {
+    use garraia_agents::AgentRuntime;
+    use garraia_agents::modes::{AgentMode, ModeProfile, ToolGate};
+
+    let agents = AgentRuntime::new();
+    agents.register_tool(Box::new(ToolDeMentira("file_read")));
+    agents.replace_mcp_tools(
+        "filesystem",
+        vec![
+            Box::new(ToolDeMentira("filesystem__read_file")),
+            Box::new(ToolDeMentira("filesystem__write_file")),
+        ],
     );
-    assert_eq!(deve_supervisionar(&ligado, true, true, false), Ok(()));
+    agents.replace_mcp_tools(
+        "github",
+        vec![Box::new(ToolDeMentira("github__create_issue"))],
+    );
+    let inventario = agents.tool_inventory();
+
+    // O piso do canal: nada liberado, nada a avisar.
+    let search = ToolGate::for_mode_name(DEFAULT_MODE);
+    assert!(
+        mcp_liberadas_pelo_perfil(&search, &inventario).is_empty(),
+        "o `search` nativo nao declara servidor nenhum"
+    );
+
+    // Perfil que declara UM servidor: so ele aparece, uma vez.
+    let perfil = ModeProfile::from_custom(
+        AgentMode::Search,
+        "search",
+        None,
+        &serde_json::json!({ "allow": ["file_read", "filesystem/*"] }),
+        &serde_json::json!({}),
+    );
+    let declarado = ToolGate::from_profile(&perfil);
+    assert_eq!(
+        mcp_liberadas_pelo_perfil(&declarado, &inventario),
+        vec!["filesystem".to_string()],
+        "duas ferramentas do mesmo servidor viram UMA entrada; `github` nao foi declarado"
+    );
+
+    // Whitelist ligada e vazia permite tudo — e o drift que a issue nomeia.
+    let vazia = ModeProfile::from_custom(
+        AgentMode::Search,
+        "search",
+        None,
+        &serde_json::json!({ "allow": [] }),
+        &serde_json::json!({}),
+    );
+    let aberta = ToolGate::from_profile(&vazia);
+    assert_eq!(
+        mcp_liberadas_pelo_perfil(&aberta, &inventario),
+        vec!["filesystem".to_string(), "github".to_string()],
+        "ordenado e sem repeticao, para o log ser legivel"
+    );
+
+    // Ferramenta nativa nunca entra na lista, mesmo liberada.
+    assert!(search.permite("file_read"));
+    assert!(!mcp_liberadas_pelo_perfil(&search, &inventario).contains(&"file_read".to_string()));
 }
 
 /// `spawn_whatsapp_linked` e o call-site de `settings_from_config` e de
@@ -652,16 +753,28 @@ async fn o_boot_nao_sobe_canal_desligado_nem_canal_sem_sessao() {
     );
 }
 
-/// **A metade de BOOT do piso que nao cobre MCP (#1264).**
+/// **O boot nao olha mais o inventario MCP para decidir (#1327).**
 ///
-/// `tabela_do_que_impede_a_supervisao` prova a funcao pura e
-/// `turno_e_recusado_*` prova o portao por turno. Nenhuma das duas prova que o
-/// **boot** consulta o inventario vivo: trocar `ha_ferramenta_mcp(&state.agents)`
-/// por `false` no call-site de `spawn_whatsapp_linked` passava com 38 testes
-/// verdes. O changelog afirma "se recusa a subir — e recusa cada turno"; sem
-/// este teste metade da frase era indefensavel.
+/// Ate aqui este teste afirmava o contrario — que com ferramenta MCP
+/// registrada o canal recusava subir. Era o sintoma da issue: toda instalacao
+/// nova tem o servidor `filesystem` provisionado no primeiro boot, entao
+/// "instalacao padrao + `garra whatsapp link`" nunca subia. O que decide a
+/// subida agora sao so as tres condicoes de `deve_supervisionar`, e este
+/// teste prova isso no call-site de boot: com sessao em disco e ferramenta
+/// MCP registrada, o resultado e exatamente o que a presenca de `node` na
+/// PATH desta maquina determina — `Ok(())` com ela, `SemNode` sem ela — e
+/// nunca uma terceira coisa.
+///
+/// # Por que o cancelamento vem logo depois, e por que isso e deterministico
+///
+/// Quando ha `node`, o boot retem um supervisor de verdade, que vai tentar
+/// `node bridge.mjs` num diretorio vazio. O `#[tokio::test]` e single-thread:
+/// a task que `supervisionar` spawnou so roda quando este teste ceder, e a
+/// primeira coisa que `serve_with` faz e ler `cancel`. Cancelar aqui, ANTES
+/// do primeiro `.await`, garante que o supervisor encontre `true` e devolva
+/// `Ok(())` sem spawnar processo nenhum.
 #[tokio::test]
-async fn o_boot_nao_sobe_o_canal_com_ferramenta_mcp_registrada() {
+async fn o_boot_nao_recusa_por_ferramenta_mcp_registrada() {
     use garraia_agents::AgentRuntime;
     use garraia_channels::ChannelRegistry;
 
@@ -678,9 +791,10 @@ async fn o_boot_nao_sobe_o_canal_com_ferramenta_mcp_registrada() {
     };
 
     let agents = AgentRuntime::new();
+    // O servidor que toda instalacao nova tem, com uma ferramenta de escrita.
     agents.replace_mcp_tools(
-        "servidor",
-        vec![Box::new(ToolDeMentira("servidor__perigosa"))],
+        "filesystem",
+        vec![Box::new(ToolDeMentira("filesystem__write_file"))],
     );
     let state: SharedState = Arc::new(crate::state::AppState::new(
         config,
@@ -688,7 +802,7 @@ async fn o_boot_nao_sobe_o_canal_com_ferramenta_mcp_registrada() {
         ChannelRegistry::new(),
     ));
 
-    // A sessao tem de existir, senao a recusa seria `SemSessao` e este teste
+    // A sessao tem de existir, senao o motivo seria `SemSessao` e este teste
     // estaria provando outra coisa.
     let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
     let key = SessionKey::resolve(paths.store.dir(), None).expect("chave");
@@ -698,16 +812,32 @@ async fn o_boot_nao_sobe_o_canal_com_ferramenta_mcp_registrada() {
         .expect("grava sessao");
     assert!(paths.store.exists(), "premissa: ha sessao em disco");
 
-    assert_eq!(
-        spawn_whatsapp_linked(&state).err(),
-        Some(NaoSubiu::FerramentaMcpRegistrada),
-        "com ferramenta MCP no inventario o canal nao pode subir — o piso \
-         somente-leitura nao cobre as ferramentas dela (#1264)"
-    );
-    assert!(
-        !state.whatsapp_linked.cancelamento_vivo(),
-        "e canal que nao subiu nao deixa supervisor retido"
-    );
+    let node_presente = bridge::find_executable("node").is_some();
+    let resultado = spawn_whatsapp_linked(&state);
+    // Sem `.await` entre a subida e o cancelamento — ver o docblock.
+    let havia_supervisor = state.whatsapp_linked.cancelar();
+
+    if node_presente {
+        assert_eq!(
+            resultado,
+            Ok(()),
+            "com sessao e `node`, ferramenta MCP registrada NAO impede a subida (#1327)"
+        );
+        assert!(
+            havia_supervisor,
+            "e canal que subiu deixa o supervisor retido no AppState"
+        );
+    } else {
+        assert_eq!(
+            resultado,
+            Err(NaoSubiu::SemNode),
+            "sem `node` o unico motivo e a falta dele — nunca o inventario MCP"
+        );
+        assert!(
+            !havia_supervisor,
+            "canal que nao subiu nao deixa supervisor retido"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,21 +1598,22 @@ mod ponta_a_ponta {
         encerra(c).await;
     }
 
-    /// **O piso que nao cobre MCP (#1264).** Com servidor MCP registrado, o
-    /// `ToolGate` deixa passar qualquer `servidor__tool` pelo whitelist — e
-    /// `web_fetch` esta no perfil `search` que este canal escolheu como piso,
-    /// entao pagina buscada injeta instrucao e a ferramenta MCP roda sem piso.
+    /// **O canal SOBE com servidor MCP registrado, e o modelo nao ve a
+    /// ferramenta dele (#1327).**
     ///
-    /// Reavaliado por turno, e nao so no boot, porque o `admin/mcp.rs` registra
-    /// servidor com o gateway ja de pe.
+    /// Ate a #1327 este teste afirmava o contrario: turno recusado enquanto
+    /// houvesse ferramenta MCP no inventario. A recusa compensava uma isencao
+    /// do `ToolGate` que a #1288 fechou; sem a isencao, o piso `search` nega a
+    /// ferramenta MCP por nome como nega `bash`. O que este teste prova, com a
+    /// fiacao inteira de pe (ponte falsa → sink → runtime → provider), e que
+    /// a mensagem chega ao modelo E que `servidor__perigosa` nao esta na lista
+    /// que o modelo recebe — a mesma observacao que
+    /// `a_mensagem_chega_ao_agente_*` faz para `bash` e `file_write`.
+    ///
+    /// Registrada ANTES de `serve` subir, pelo mesmo motivo de sempre: a ponte
+    /// falsa empurra a mensagem assim que o handshake fecha.
     #[tokio::test]
-    async fn turno_e_recusado_enquanto_houver_ferramenta_mcp_registrada() {
-        // Registrada ANTES de `serve` subir. A versao anterior registrava
-        // depois de `sobe_com` retornar, e a ponte falsa empurra a mensagem
-        // assim que o handshake fecha: sob contencao de CPU o turno podia rodar
-        // primeiro e o teste ficava vermelho sem nada ter quebrado. Que o
-        // controle continua valendo para servidor registrado com o canal ja de
-        // pe e o que o teste seguinte prova.
+    async fn turno_roda_com_ferramenta_mcp_registrada_e_o_modelo_nao_a_ve() {
         let c = sobe_com_preparo(Roteiro::empurra("oi"), true, |state| {
             state.agents.replace_mcp_tools(
                 "servidor",
@@ -1491,7 +1622,11 @@ mod ponta_a_ponta {
         })
         .await;
         assert!(
-            ha_ferramenta_mcp(&c.state.agents),
+            c.state
+                .agents
+                .tool_inventory()
+                .iter()
+                .any(|t| t.source == "mcp" && t.name == "servidor__perigosa"),
             "premissa: o runtime enxerga a ferramenta MCP"
         );
 
@@ -1500,48 +1635,27 @@ mod ponta_a_ponta {
             "a mensagem precisa chegar para o teste ter o que provar"
         );
         assert!(
-            !ate(|| !turnos(&c.provider).is_empty()).await,
-            "nada pode chegar ao modelo enquanto o piso nao cobre MCP (#1264): {:?}",
+            ate(|| !turnos(&c.provider).is_empty()).await,
+            "com a recusa removida, a mensagem tem de chegar ao modelo: {:?}",
             turnos(&c.provider)
         );
+        let t = turnos(&c.provider);
         assert!(
-            !c.state.sessions.contains_key(&sid_do_peer()),
-            "e nenhuma sessao pode nascer do turno recusado"
+            t[0].ferramentas.iter().any(|f| f == "file_read"),
+            "leitura nativa continua chegando: {:?}",
+            t[0].ferramentas
         );
-
-        encerra(c).await;
-    }
-
-    /// **E com o canal ja de pe.** `admin/mcp.rs` registra servidor com o
-    /// gateway rodando, e e por isso que a checagem nao pode viver so no boot:
-    /// o detector le o inventario VIVO, e nao um retrato tirado na subida.
-    ///
-    /// Sem asserto de turno aqui de proposito. A ponte falsa nao empurra
-    /// mensagem sob demanda, entao "nenhum turno depois de registrar" so
-    /// poderia ser medido contra uma mensagem que ja estava a caminho — a
-    /// corrida que o teste anterior existe para nao ter. O que esta linha
-    /// prova, e que nada mais prova, e que a resposta muda com o inventario.
-    #[tokio::test]
-    async fn o_detector_le_o_inventario_vivo_com_o_canal_ja_de_pe() {
-        let c = sobe(true).await;
+        for escondida in ["servidor__perigosa", "bash", "file_write"] {
+            assert!(
+                !t[0].ferramentas.iter().any(|f| f == escondida),
+                "`{escondida}` nao pode ser oferecida ao modelo neste canal — o piso \
+                 `search` a nega por nome: {:?}",
+                t[0].ferramentas
+            );
+        }
         assert!(
-            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
-            "premissa: o canal esta de pe"
-        );
-        assert!(
-            !ha_ferramenta_mcp(&c.state.agents),
-            "premissa: subiu sem ferramenta MCP"
-        );
-
-        c.state.agents.replace_mcp_tools(
-            "servidor",
-            vec![Box::new(ToolDeMentira("servidor__perigosa"))],
-        );
-
-        assert!(
-            ha_ferramenta_mcp(&c.state.agents),
-            "o detector tem de enxergar o servidor registrado depois do boot; \
-             um retrato tirado na subida deixaria o canal rodando sem piso"
+            c.state.sessions.contains_key(&sid_do_peer()),
+            "e o turno roda sob a sessao deste canal"
         );
 
         encerra(c).await;

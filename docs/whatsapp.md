@@ -169,6 +169,47 @@ Detalhes do que e feito:
 - **JIDs e conteudo de mensagem** tambem nao vao para log: `Jid` imprime so os 4
   ultimos digitos e `InboundMessage` imprime forma, nunca texto.
 
+### Ferramentas e servidores MCP
+
+Quem manda mensagem para o numero vinculado e, para o agente, um remetente
+**nao autenticado**: a allowlist do canal decide quem entra, e o que ele pode
+fazer depois de entrar e decidido pelo `ToolGate` do modo — por **nome de
+ferramenta**, em cada turno, contra o inventario vivo do runtime. Sao duas
+camadas, e nenhuma substitui a outra.
+
+- **O piso e o perfil `search`.** Sessao que nao escolheu modo (`/mode`)
+  resolve para `search`, e nao para "sem politica de ferramenta":
+  `whitelist_mode` ligado, `allowed` so de leitura (`file_read`, `repo_search`,
+  `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`) e
+  `denied` para `file_write`, `bash` e `device_execute`.
+  `channels.whatsapp_linked.default_mode` troca o perfil padrao; a escolha
+  explicita do usuario continua vencendo.
+- **Ferramenta MCP passa pelo mesmo portao.** Um servidor MCP registrado — o
+  `filesystem` que toda instalacao nova ganha no primeiro boot, por exemplo —
+  expoe ferramentas com nome `servidor__ferramenta`, e o whitelist as trata
+  como qualquer outra: `filesystem__write_file` nao esta na `allowed` do
+  `search`, entao e negada por nome, como `bash`, e o modelo nem a ve na
+  lista. **Nao ha recusa de subida por "existe servidor MCP"**: ela existiu
+  (ate a #1327) para compensar uma isencao do portao que a #1288 fechou, e o
+  efeito que sobrou era o canal nunca subir em instalacao padrao.
+- **`allowed: ["servidor/*"]` e uma decisao sobre este canal.** E a unica
+  forma de uma ferramenta MCP chegar a um perfil com whitelist: `servidor/*`
+  libera o servidor inteiro (leitura **e** escrita), `servidor__ferramenta`
+  libera uma so. Num perfil que e o padrao de um canal exposto ao mundo, isso
+  quer dizer "quem estiver na allowlist do WhatsApp pode acionar esse servidor".
+  E `allowed` **vazia** com `whitelist_mode` ligado permite tudo — e o
+  comportamento preservado da #1264, e vale aqui tambem.
+- **O aviso de drift.** Na subida do canal o gateway monta o portao do perfil
+  padrao e percorre o inventario MCP. Se o portao libera alguma ferramenta,
+  sai **um** `WARN` nomeando os servidores (nunca argumento nem segredo):
+
+  ```text
+  WARN whatsapp_linked: o perfil `search` libera ferramentas MCP (filesystem) para remetentes do WhatsApp — e o `allowed` declarado; confirme que e intencional
+  ```
+
+  E aviso, nao recusa: o `allowed` e do operador. Se nao foi intencional,
+  tire o `servidor/*` do perfil (ou o perfil customizado) e reinicie o gateway.
+
 ### `logout`
 
 `garra whatsapp logout` sobrescreve e remove `session.enc`, `session.enc.prev`,
@@ -228,6 +269,8 @@ Como o filho e contido:
 | **`o bridge esta sem dependencias instaladas`** | Rode `npm ci` no diretorio que a mensagem cita, ou apague o diretorio e rode `garra whatsapp` de novo. |
 | **`Esta sessão não vale mais`** / `status` diz nao vinculado | A sessao morreu (401/403/419) e o comando imprime o codigo cru do WhatsApp. Rode `garra whatsapp` de novo e leia um QR novo. |
 | **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garra whatsapp` de novo. |
+| **`whatsapp_linked: canal nao subiu — …`** no log do gateway | A frase depois do travessao e a acao: ligar `channels.whatsapp_linked.enabled`, rodar `garra whatsapp link`, ou instalar Node.js 20+ e garantir `node` na PATH **do processo do gateway** (um servico systemd nao herda a PATH do seu shell). Canal desligado de proposito sai em `INFO`, nao aqui. |
+| **`o perfil `search` libera ferramentas MCP (…)`** no log do gateway | Aviso de drift, nao erro: o perfil padrao do canal declara `servidor/*` (ou tem `allowed` vazia) e esta expondo aquele servidor MCP a quem manda mensagem. Veja "Ferramentas e servidores MCP" acima. |
 | **Mensagem sobre outro aparelho ter assumido** | Alguem conectou o mesmo numero em outro lugar. A sessao gravada **continua valendo**; rode `garra start` de novo. |
 | **Conta bloqueada pelo WhatsApp** | Nao ha o que o GarraIA faca. Foi o risco avisado na tela de consentimento. Use a Cloud API. |
 
@@ -306,9 +349,13 @@ E limitacao estrutural conhecida, nao esquecimento. Fecha-la e mapear os
 
 ## Estado da integracao
 
-O comando **vincula e guarda a sessao**. O canal ainda **nao e consumido pelo
-gateway**: receber e responder mensagens entra no slice seguinte, que liga o
-canal pull `whatsapp_linked`, os `channel_gates` (allowlist + pairing) e o check
-`whatsapp.linked` em `/api/diagnostics`.
+O comando **vincula e guarda a sessao**, e o gateway **consome o canal**: o
+canal pull `whatsapp_linked` (`bootstrap/whatsapp_linked.rs`) sobe no boot
+quando `channels.whatsapp_linked.enabled = true`, ha `session.enc` legivel e
+`node` na PATH — e qualquer outro motivo de nao subir sai em `WARN` com a acao
+(ver Troubleshooting). Quem entra e decidido pelo `allow` do canal mais o
+pareamento; o que pode fazer, pela secao "Ferramentas e servidores MCP". O
+check `whatsapp.linked` em `/api/diagnostics` e o `/api/channels` leem o mesmo
+estado do supervisor.
 
 Decisao e alternativas avaliadas: [ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md).
