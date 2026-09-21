@@ -33,7 +33,18 @@ and `garra` (a relative symlink to it) in the install directory --
 CLI's own hints works as written. A pre-existing `garra` that is a regular file
 (say, a from-source build you copied by hand) is left untouched with a warning;
 a stale symlink is repointed. `garra update` keeps working through the alias:
-it replaces the one binary the link resolves to.
+it resolves the link first and replaces `garraia`, the one binary it points
+at, so the two names never drift apart.
+
+> **macOS, upgrading from v0.4.3 or older:** run `garraia update` (not
+> `garra update`) once. Those binaries took the path macOS hands them
+> (`_NSGetExecutablePath`, which may be the link itself) and wrote the new
+> version over `garra`, leaving `garraia` behind; from the first version that
+> resolves the link onward, either name is fine. If it already happened
+> (`garra` is a regular file and `garraia --version` is older), delete `garra`
+> and rerun the installer. Linux and Termux were never affected
+> (`/proc/self/exe` is kernel-resolved), nor is Windows (`garra.cmd` runs
+> `garraia.exe` directly).
 
 The same script (auto-synced) is published through alternative channels —
 the release CDN is the most robust against per-IP rate limits (**HTTP 429**

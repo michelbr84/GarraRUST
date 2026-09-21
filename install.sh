@@ -458,10 +458,16 @@ install_needs_sudo() {
 # legitimate; only the installer left the user without the one every document
 # uses. Fix the reality, not the 113 strings.
 #
-# A symlink, not a copy: `garra update` swaps the file `current_exe()`
-# resolves to, and a second copy would drift away from the first on the next
-# update. RELATIVE (`garraia`, not `${INSTALL_DIR}/garraia`) so the pair
-# survives the directory being moved or $HOME being mounted elsewhere.
+# A symlink, not a copy: `garra update` resolves the link first (update.rs
+# canonicalizes `current_exe()` -- on macOS `_NSGetExecutablePath` may hand
+# back the link itself, not the file; Linux reads `/proc/self/exe`, which the
+# kernel already resolves) and swaps the one binary it points at, so the pair
+# cannot drift; a second copy would drift away from the first on the next
+# update. Binaries that predate that canonicalization (v0.4.3 and older) wrote
+# the new version over the link on macOS -- docs/installation.md tells those
+# users to run `garraia update` once. RELATIVE (`garraia`, not
+# `${INSTALL_DIR}/garraia`) so the pair survives the directory being moved or
+# $HOME being mounted elsewhere.
 #
 # Decision table -- mirrored one-for-one by Install-GarraAlias in install.ps1:
 #   absent                  -> create the link
