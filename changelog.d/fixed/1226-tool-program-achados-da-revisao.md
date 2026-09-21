@@ -16,3 +16,9 @@
   novos cobrem o modo `ask` nativo com a lista `denied`, quais perfis nativos
   expoem `tool_program`, a retomada apos aprovacao e o equilibrio dos eventos
   no streaming; `docs/src/modes.md` e o threat model documentam a superficie.
+  Na revisao de seguranca do proprio conserto, dois ajustes: um programa
+  que para antes de despachar qualquer passo (mal formado, mais de 16
+  passos, `$var` indefinida no passo 0) volta a cair no detector de loop na
+  terceira repeticao, e o relatorio parcial de uma pausa neutraliza qualquer
+  `[CONFIRM_REQUIRED:` vindo de saida de passo, entao a aprovacao nao
+  depende mais de o marcador verdadeiro vir primeiro.
