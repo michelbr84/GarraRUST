@@ -71,8 +71,8 @@ pub struct ToolInventoryEntry {
 /// Devolve [`ToolApproval::Granted`] com a impressao digital do pedido
 /// quando as duas condicoes valem:
 ///
-/// 1. Uma mensagem recente carrega um marcador `[CONFIRM_REQUIRED:<hex>]`
-///    **vindo de um resultado de ferramenta**, e
+/// 1. A ultima mensagem do lado do usuario carrega um marcador
+///    `[CONFIRM_REQUIRED:<hex>]` **vindo de um resultado de ferramenta**, e
 /// 2. `user_text` e uma palavra de aprovacao ("sim", "yes", "confirmar", …).
 ///
 /// Duas mudancas em relacao a versao GAR-187, e as duas fecham buraco:
@@ -92,6 +92,21 @@ pub struct ToolInventoryEntry {
 /// Le so as ultimas 6 mensagens, e a MAIS RECENTE ganha: se dois pedidos
 /// ficaram pendentes, o "ok" responde ao ultimo, que e o que o usuario
 /// acabou de ler.
+///
+/// **Sem mensagem humana no meio (#1340).** A janela de 6 mensagens dizia
+/// so "recente", e o pedido mais novo dela valia mesmo que o humano ja
+/// tivesse respondido e a conversa tivesse seguido. A sequencia: o turno 1
+/// pausa pedindo X; o humano diz "nao"; o modelo pergunta outra coisa em
+/// texto; um "ok" mais tarde — resposta a essa outra pergunta — aprovava X.
+///
+/// Agora o historico tem de TERMINAR no resultado pausado, com no maximo a
+/// narracao do assistente depois dele — que e a forma da retomada GAR-187 em
+/// todo canal: `[… , ToolResult(pausa), texto do assistente com o pedido]`.
+/// So a primeira mensagem do lado do usuario, de tras para frente, e
+/// consultada: se ela for mensagem humana (ou nao carregar resultado de
+/// ferramenta), nao ha pedido pendente, e se ela for um resultado sem
+/// marcador o "ok" tambem nao alcanca nenhum pedido mais antigo — aquele o
+/// humano ja respondeu. A janela de 6 continua valendo por cima disso.
 fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> ToolApproval {
     let text = user_text.trim().to_lowercase();
     let approval_words = [
@@ -116,10 +131,11 @@ fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> Too
             continue;
         }
         // So `MessagePart::Parts` carrega resultado de ferramenta.
-        // `MessagePart::Text` e mensagem de usuario ou narracao do
-        // assistente: nenhuma das duas cria pedido de confirmacao.
+        // `MessagePart::Text` no lado do usuario e MENSAGEM HUMANA — e #1340:
+        // ela FECHA a janela em vez de ser pulada. O humano ja falou depois do
+        // pedido, entao o "ok" de agora responde a outra coisa.
         let MessagePart::Parts(parts) = &msg.content else {
-            continue;
+            return ToolApproval::None;
         };
         // #1339: dentro da mensagem tambem vale "o mais recente ganha". Numa
         // volta com chamadas paralelas o pedido pausado e o ultimo resultado
@@ -132,6 +148,11 @@ fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> Too
                 return ToolApproval::Granted(fp.as_str().to_string());
             }
         }
+        // #1340: esta era a ULTIMA mensagem do lado do usuario e ela nao e um
+        // pedido pausado — ou e mensagem humana em blocos (texto, imagem), ou
+        // e resultado de ferramenta sem marcador. Nos dois casos a busca para
+        // aqui: um pedido mais antigo ja teve a sua vez de ser respondido.
+        return ToolApproval::None;
     }
     ToolApproval::None
 }
@@ -8133,6 +8154,131 @@ mod tests {
             let ap = detect_confirmation_approval(&h, "sim");
             assert!(ap.covers("bash", "df -h"));
             assert!(!ap.covers("bash", "ls -la"));
+        }
+
+        /// A narracao do assistente depois do pedido: a forma exata da
+        /// retomada GAR-187 em todo canal. O pedido pausado e a ultima
+        /// mensagem do lado do usuario, o texto do assistente vem depois, e o
+        /// "ok" do humano aprova. #1340 nao pode quebrar isso.
+        #[test]
+        fn ok_logo_depois_do_pedido_aprova_apesar_da_narracao_do_assistente() {
+            let pedido = ApprovalFingerprint::of("bash", "rm -r /tmp/x");
+            let h = vec![
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text("limpa a /tmp/x".into()),
+                },
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Parts(vec![ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "cmd": "rm -r /tmp/x" }),
+                    }]),
+                },
+                pedido_de("bash", "rm -r /tmp/x"),
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text(format!(
+                        "{} confirme para executar",
+                        pedido.marker()
+                    )),
+                },
+            ];
+            let ap = detect_confirmation_approval(&h, "ok");
+            assert!(ap.covers("bash", "rm -r /tmp/x"), "{ap:?}");
+        }
+
+        /// O BUG da #1340. O turno 1 pausou pedindo `rm -rf`; o humano disse
+        /// "nao"; o modelo perguntou outra coisa em texto; o "ok" de agora
+        /// responde a ESSA pergunta. Ele nao pode executar o que o humano
+        /// acabou de recusar, mesmo com o pedido ainda dentro da janela de 6.
+        #[test]
+        fn ok_depois_de_recusa_humana_nao_aprova_o_pedido_pausado() {
+            let pedido = ApprovalFingerprint::of("bash", "rm -rf /tmp/zona");
+            let h = vec![
+                pedido_de("bash", "rm -rf /tmp/zona"),
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text(format!(
+                        "{} confirme para executar",
+                        pedido.marker()
+                    )),
+                },
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text("nao".into()),
+                },
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text(
+                        "Entendido, nao apago nada. Quer que eu liste o diretorio?".into(),
+                    ),
+                },
+            ];
+            assert_eq!(
+                detect_confirmation_approval(&h, "ok"),
+                ToolApproval::None,
+                "o ok responde a pergunta do assistente, nao ao pedido ja recusado"
+            );
+        }
+
+        /// #1340, a mesma barreira pela outra forma de `MessagePart`: uma
+        /// mensagem humana em blocos (texto, imagem) tambem e mensagem humana.
+        #[test]
+        fn mensagem_humana_em_blocos_tambem_encerra_o_pedido_pendente() {
+            let h = vec![
+                pedido_de("bash", "rm -rf /tmp/zona"),
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Parts(vec![
+                        ContentBlock::Text {
+                            text: "deixa isso, olha esta captura".into(),
+                        },
+                        ContentBlock::Image {
+                            url: "https://exemplo.invalid/a.png".into(),
+                        },
+                    ]),
+                },
+            ];
+            assert_eq!(detect_confirmation_approval(&h, "ok"), ToolApproval::None);
+        }
+
+        /// #1340, e a mesma barreira sem depender da mensagem humana estar no
+        /// historico. No caminho compativel com a OpenAI o historico vem do
+        /// CORPO do request, e o turno humano que abriu a volta seguinte pode
+        /// simplesmente nao estar ali. A invariante e direta: a ultima
+        /// mensagem do lado do usuario tem de SER o pedido pausado. Um
+        /// resultado de ferramenta posterior, sem marcador, encerra o pedido.
+        #[test]
+        fn pedido_pendente_nao_sobrevive_a_resultado_de_tool_posterior() {
+            let h = vec![
+                pedido_de("bash", "rm -rf /tmp/zona"),
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text("Confirma o apagamento?".into()),
+                },
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Parts(vec![ContentBlock::ToolUse {
+                        id: "t2".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "cmd": "ls /tmp/zona" }),
+                    }]),
+                },
+                ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Parts(vec![ContentBlock::ToolResult {
+                        tool_use_id: "t2".into(),
+                        content: "total 0".into(),
+                    }]),
+                },
+                ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text("A pasta esta vazia. Apago mesmo assim?".into()),
+                },
+            ];
+            assert_eq!(detect_confirmation_approval(&h, "sim"), ToolApproval::None);
         }
 
         /// Pedido velho demais nao vale: a janela e de 6 mensagens.
