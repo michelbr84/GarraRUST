@@ -155,16 +155,19 @@ pub struct AgentCoordinator {
     /// Maximum concurrent agents
     max_concurrent: usize,
     /// Ledger durável de runs (P1 gap analysis 2026-09-15). Default no-op;
-    /// gateway/CLI injetam o adapter sobre `SessionStore::agent_runs`.
+    /// o wiring de produção (subida do gateway/CLI chamando
+    /// `mark_interrupted_runs`, scheduler gravando run) é a #1227 — hoje
+    /// nenhum caminho de produção injeta o adapter.
     ledger: Arc<dyn RunLedger>,
 }
 
 /// Ledger durável de runs de sub-agentes.
 ///
 /// `RunId` é gerado pelo chamador (uuid) e devolvido no `on_start` para o
-/// `on_finish`. Implementação padrão: no-op. O gateway/CLI injetam o adapter
-/// sobre a tabela `agent_runs` (`garraia-db`), que também audita runs
-/// `interrupted` no restart.
+/// `on_finish`. Implementação padrão: no-op. O adapter sobre a tabela
+/// `agent_runs` (`garraia-db`, `DbRunLedger`) existe e é testado, mas ainda
+/// não tem chamador de produção — o wiring na subida do gateway/CLI (que
+/// audita runs `interrupted` no restart) é a #1227.
 pub trait RunLedger: Send + Sync {
     fn on_start(&self, goal: &str, mode: Option<&str>, session_id: Option<&str>) -> String;
     fn on_finish(
@@ -194,7 +197,7 @@ impl RunLedger for NoopLedger {
 }
 
 /// Adapter sobre a tabela `agent_runs` do `SessionStore` (garraia-db).
-/// Injetado pelo gateway/CLI via `with_ledger`.
+/// Sem chamador de produção hoje; o wiring via `with_ledger` é a #1227.
 pub struct DbRunLedger {
     store: Arc<std::sync::Mutex<garraia_db::SessionStore>>,
 }
