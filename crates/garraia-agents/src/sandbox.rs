@@ -9,10 +9,16 @@
 //!   não configurar nada continua com o comportamento atual (GAR-236/497,
 //!   execution budget etc. continuam valendo — sandbox é camada adicional,
 //!   não substituto do safety gate).
-//! - OpenShell e Crabbox **não estão implementados** — não há variante de
-//!   `SandboxBackend` para eles e nenhuma entrega prometida; o assunto está
-//!   registrado na #1225 (issue de tracking, slices S2/S3). Backends que
-//!   existem: Docker, Podman e SSH.
+//! - **Os backends suportados são exatamente os três de [`SandboxBackend`]**:
+//!   `Docker`, `Podman` e `Ssh`. Não há outro — `backend: None` não é um
+//!   quarto modo: com `mode != off` e backend ausente, `wrap_command`
+//!   recusa fail-closed em vez de rodar no host.
+//! - OpenShell e Crabbox foram avaliados (#1225 S6): não estão implementados
+//!   e não há variante de `SandboxBackend` para eles hoje. Fechar a fatia
+//!   como won't-do é a recomendação registrada em #1225, mas a decisão
+//!   final é do dono — ver a issue antes de assumir um lado ou outro. Quem
+//!   precisa de isolamento diferente do que Docker/Podman dão deve tratar
+//!   isso como requisito novo.
 //! - **SSH só com reconhecimento explícito** (#1225 S3, ADR 0019): o ramo
 //!   `ssh` não tem como honrar `network_disabled` nem `mount_workdir`, e os
 //!   defaults das duas são `true`. Em vez de ignorá-las em silêncio,
