@@ -743,9 +743,15 @@ jobs:
             exit 0
           fi
 
-          cd "${RUNNER_TEMP}"
-          curl -fsSL --retry 5 --retry-delay 2 -o runtime-aarch64 "${APPIMAGE_RUNTIME_AARCH64_URL}"
-          echo "${APPIMAGE_RUNTIME_AARCH64_SHA256}  runtime-aarch64" | sha256sum -c -
+          # Sem `cd`: os caminhos abaixo (`artifacts/`, `packaging/`, `crates/`,
+          # `stage/`) sao relativos ao workspace, e um `cd "${RUNNER_TEMP}"` aqui
+          # fazia o `cp` seguinte falhar com "cannot stat artifacts/..." — o que
+          # derrubou o job na v0.4.3, a primeira release em que o binario
+          # aarch64 existiu para chegar ate esta linha (antes o `exit 0` acima
+          # escondia o bug). O runtime baixa direto no caminho absoluto e o
+          # checksum e conferido la, sem mudar de diretorio.
+          curl -fsSL --retry 5 --retry-delay 2 -o "${RUNNER_TEMP}/runtime-aarch64" "${APPIMAGE_RUNTIME_AARCH64_URL}"
+          echo "${APPIMAGE_RUNTIME_AARCH64_SHA256}  ${RUNNER_TEMP}/runtime-aarch64" | sha256sum -c -
 
           appdir="${RUNNER_TEMP}/garraia-aarch64.AppDir"
           rm -rf "$appdir"
