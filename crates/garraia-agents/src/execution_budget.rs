@@ -269,7 +269,14 @@ impl ExecutionBudget {
     /// para controle de orçamento e detecção de loop por assinatura.
     pub fn registrar_chamada(&mut self, tool_name: &str, payload: &Value) {
         self.registrar_contagem();
+        self.registrar_assinatura(tool_name, payload);
+    }
 
+    /// So a metade de assinatura de [`Self::registrar_chamada`]: entra na
+    /// janela de loop sem contar contra o orcamento (#1226, revisao do
+    /// #1337). Usado quando um `tool_program` ja contado pelo envelope nao
+    /// despachou passo nenhum — o orcamento segue 1 + N.
+    pub fn registrar_assinatura(&mut self, tool_name: &str, payload: &Value) {
         let assinatura = AssinaturaFerramenta {
             nome: tool_name.to_string(),
             hash_args: calcular_hash_args(payload),
@@ -481,6 +488,20 @@ mod tests {
     /// #1226 (achado de revisao): `registrar_contagem` gasta orcamento mas
     /// nao entra na janela — tres X intercalados com contagens puras ainda
     /// sao tres X colados, e o detector dispara.
+    #[test]
+    fn registrar_assinatura_entra_na_janela_sem_gastar_orcamento() {
+        // #1226 (revisao do #1337): o `tool_program` que nao despacha passo
+        // nenhum entra na janela so pela assinatura — o envelope ja foi
+        // contado, e o orcamento continua 1 + N.
+        let mut b = ExecutionBudget::padrao();
+        let x = serde_json::json!({ "steps": "mal formado" });
+        for _ in 0..JANELA_LOOP {
+            b.registrar_assinatura("tool_program", &x);
+        }
+        assert_eq!(b.chamadas_na_tarefa(), 0, "assinatura nao conta chamada");
+        assert!(b.detectar_loop_ferramenta(), "mas a janela enche e corta");
+    }
+
     #[test]
     fn registrar_contagem_gasta_orcamento_sem_entrar_na_janela() {
         let mut budget = ExecutionBudget::padrao();

@@ -8,5 +8,6 @@
   autorizou nada (a impressao digital e HMAC com chave por processo), mas a
   copia de um verdadeiro autorizaria. Agora toda saida que nao e pedido de
   confirmacao tem o prefixo do marcador neutralizado no ponto unico de
-  despacho, antes de entrar no historico, e dentro de uma mensagem o
-  resultado mais novo ganha. Tres testes, provados por mutacao.
+  despacho, antes de entrar no historico — inclusive a recusa do gate, que
+  repete o nome da tool como o modelo mandou —, e dentro de uma mensagem o
+  resultado mais novo ganha. Testes provados por mutacao.
