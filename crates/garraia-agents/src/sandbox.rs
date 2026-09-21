@@ -150,11 +150,39 @@ pub enum SandboxMode {
     /// Comportamento atual: tudo roda no host (default).
     #[default]
     Off,
-    /// Toda tool shell-listada roda no sandbox.
+    /// Toda tool que **consulta a policy** roda no sandbox — hoje, só a
+    /// `bash` (o `BashTool` é o único lugar que chama `wrap_command`). As
+    /// demais tools que spawnam processo — [`HOST_ONLY_SPAWNING_TOOLS`] —
+    /// continuam nascendo no host mesmo neste modo; roteá-las é a metade
+    /// estrutural da #1225 S2, ainda aberta.
     All,
-    /// Apenas as tools listadas em `sandboxed_tools` rodam no sandbox.
+    /// Apenas as tools listadas em `sandboxed_tools` rodam no sandbox — e
+    /// só as que consultam a policy (hoje `bash`) conseguem honrar a lista.
+    /// Listar uma de [`HOST_ONLY_SPAWNING_TOOLS`] aqui não tem efeito: ela
+    /// roda no host, e o `garra config check` diz isso.
     Allowlist,
 }
+
+/// Tools que spawnam processo **sem consultar a `SandboxPolicy`** — rodam no
+/// host com qualquer `mode`, inclusive `all` (#1225 S2).
+///
+/// A lista existe para ser dita em voz alta em três lugares que o operador
+/// vê: o docstring de [`SandboxMode`]; o `warn!` de
+/// `garraia_gateway::bootstrap::avisa_cobertura_do_sandbox`, uma vez por
+/// processo na subida do gateway, do `garra chat` e do `garra mcp-server`
+/// (com a tool `garra_agent` ligada — e não a cada chamada dela); e o Warning
+/// do `garra config check` quando uma destas aparece em `sandboxed_tools`/
+/// `elevated` (só então: a seção coerente fica verde sob `--strict`). Ela é
+/// presa por um teste que varre `src/tools/`: toda tool com `Command::new`
+/// em código de produção tem de estar aqui OU chamar `sandbox.wrap_command(`,
+/// e nada aqui pode ter passado a chamar. Quando a metade estrutural da S2
+/// rotear uma delas pelo sandbox, o teste obriga a tirá-la daqui — e é isso
+/// que impede a documentação de continuar prometendo o contrário do código.
+///
+/// Espelho em `garraia_config::sandbox::TOOLS_SO_NO_HOST`, com o mesmo
+/// motivo e a mesma tranca (teste no gateway) de `TOOLS_SANDBOXAVEIS`.
+pub const HOST_ONLY_SPAWNING_TOOLS: &[&str] =
+    &["run_tests", "git_diff", "code_review", "repo_search"];
 
 /// Política de sandbox, resolvida por tool antes da execução.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,6 +446,89 @@ mod tests {
         assert!(p.requires_sandbox("bash"));
         assert!(!p.requires_sandbox("web_fetch"));
         assert!(p.is_elevated("web_fetch"));
+    }
+
+    /// #1225 S2: [`HOST_ONLY_SPAWNING_TOOLS`] e uma afirmacao sobre o codigo
+    /// ("estas tools spawnam sem consultar a policy"), e afirmacao sobre
+    /// codigo se prova varrendo o codigo — no idioma do `bash_tool.rs` e do
+    /// `desktop-core/src/detect.rs`. Le o diretorio em vez de `include_str!`
+    /// por arquivo para uma tool NOVA que spawne entrar na conta sem que
+    /// ninguem lembre de acrescenta-la a uma tabela.
+    ///
+    /// Duas direcoes, as duas com dano: um nome a mais aqui faz o aviso da
+    /// subida e o `config check` dizerem que uma tool contida roda no host;
+    /// um a menos faz `mode = all` prometer contencao que nao existe — o
+    /// defeito original da #1225.
+    #[test]
+    fn host_only_spawning_tools_espelha_quem_spawna_sem_consultar_a_policy() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools");
+        let mut fontes: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("src/tools existe no repo")
+            .map(|e| e.expect("entrada legivel").path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "rs"))
+            .collect();
+        fontes.sort();
+        assert!(!fontes.is_empty(), "nenhum .rs em {}", dir.display());
+
+        let mut no_host: Vec<String> = Vec::new();
+        let mut consultam: Vec<String> = Vec::new();
+        for caminho in &fontes {
+            let fonte = std::fs::read_to_string(caminho).expect("fonte legivel");
+            // So a metade de producao: fixtures de teste spawnam `git` para
+            // montar repositorio, e isso nao e a tool spawnando.
+            let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte.as_str());
+            if !producao.contains("Command::new(") {
+                continue;
+            }
+            let nome = nome_registrado(producao).unwrap_or_else(|| {
+                panic!(
+                    "{} spawna processo em codigo de producao mas nao registra `fn name` — se e \
+                     helper, o spawn pertence a tool que o chama; se e tool, ensine este teste \
+                     a ler o nome",
+                    caminho.display()
+                )
+            });
+            if producao.contains("sandbox.wrap_command(") {
+                consultam.push(nome.to_string());
+            } else {
+                no_host.push(nome.to_string());
+            }
+        }
+        no_host.sort_unstable();
+
+        let mut declaradas: Vec<String> = HOST_ONLY_SPAWNING_TOOLS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        declaradas.sort_unstable();
+        assert_eq!(
+            no_host, declaradas,
+            "HOST_ONLY_SPAWNING_TOOLS ({declaradas:?}) divergiu das tools que spawnam sem \
+             consultar a policy ({no_host:?}). Atualize a const, o docstring de SandboxMode e \
+             `garraia_config::sandbox::TOOLS_SO_NO_HOST` — senao o aviso da subida e o `config \
+             check` passam a mentir para o operador."
+        );
+        // Contraprova: a divisao em duas listas nao esta passando por acaso —
+        // alguem consulta a policy, e ninguem esta nas duas ao mesmo tempo.
+        assert!(
+            !consultam.is_empty(),
+            "nenhuma tool chama `sandbox.wrap_command(` — o teste perdeu o BashTool"
+        );
+        for nome in &consultam {
+            assert!(
+                !HOST_ONLY_SPAWNING_TOOLS.contains(&nome.as_str()),
+                "`{nome}` consulta a policy E esta em HOST_ONLY_SPAWNING_TOOLS"
+            );
+        }
+    }
+
+    /// O nome que a tool registra: o literal logo apos `fn name(&self) -> &… {`.
+    fn nome_registrado(producao: &str) -> Option<&str> {
+        let inicio = producao.find("fn name(&self) -> &")?;
+        let resto = &producao[inicio..];
+        let corpo = resto[resto.find('{')? + 1..].trim_start();
+        let literal = corpo.strip_prefix('"')?;
+        literal.find('"').map(|fim| &literal[..fim])
     }
 
     #[test]
