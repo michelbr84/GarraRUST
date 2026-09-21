@@ -157,7 +157,12 @@ impl SessionStore {
                     last_run_at TEXT,
                     run_count INTEGER NOT NULL DEFAULT 0,
                     max_runs INTEGER,
-                    attempts INTEGER NOT NULL DEFAULT 0
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    -- #1227 (slice 2): lease do scheduler. `running` so vale
+                    -- enquanto `lease_until` nao passou; depois disso a linha
+                    -- e devolvida a `pending` na subida ou no tick seguinte.
+                    lease_until TEXT,
+                    leased_by TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_tasks_execute_at
@@ -315,6 +320,36 @@ impl SessionStore {
             let _ = self.conn.execute_batch(stmt);
         }
 
+        // #1227 (slice 2): lease do scheduler, forward-only. Guardado por
+        // `PRAGMA table_info` em vez de engolir o erro do ALTER: assim uma
+        // falha real (disco cheio, tabela travada) sobe como erro em vez de
+        // virar coluna ausente descoberta so no primeiro `claim_due_tasks`.
+        // O indice vem DEPOIS do ALTER de proposito — num store antigo as
+        // colunas ainda nao existem quando o `CREATE TABLE IF NOT EXISTS`
+        // acima roda, e um `CREATE INDEX` la dentro abortaria o batch todo.
+        for (column, ddl) in [
+            (
+                "lease_until",
+                "ALTER TABLE scheduled_tasks ADD COLUMN lease_until TEXT;",
+            ),
+            (
+                "leased_by",
+                "ALTER TABLE scheduled_tasks ADD COLUMN leased_by TEXT;",
+            ),
+        ] {
+            if !self.column_exists("scheduled_tasks", column)? {
+                self.conn.execute_batch(ddl).map_err(|e| {
+                    Error::Database(format!("migration failed: scheduled_tasks.{column}: {e}"))
+                })?;
+            }
+        }
+        self.conn
+            .execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_lease
+                    ON scheduled_tasks(lease_until) WHERE status = 'running';",
+            )
+            .map_err(|e| Error::Database(format!("migration failed: idx_tasks_lease: {e}")))?;
+
         // Phase 2.1: add project_id column to sessions (nullable FK)
         let _ = self.conn.execute_batch(
             "ALTER TABLE sessions ADD COLUMN project_id TEXT REFERENCES projects(id);",
@@ -369,6 +404,22 @@ impl SessionStore {
         }
 
         Ok(())
+    }
+
+    /// Se `table` ja tem a coluna `column` — guarda dos `ALTER TABLE ADD
+    /// COLUMN` forward-only. Usa a funcao-tabela `pragma_table_info(?)`
+    /// (SQLite >= 3.16) para o nome da tabela entrar como bind e nao como
+    /// texto interpolado no SQL (regra 5 do CLAUDE.md).
+    fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+                params![table, column],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::Database(format!("pragma_table_info({table}): {e}")))?;
+        Ok(count > 0)
     }
 
     pub fn connection(&self) -> &Connection {
@@ -845,15 +896,21 @@ impl SessionStore {
         Ok(task_id)
     }
 
-    /// Poll for pending tasks that are due for execution.
+    /// Poll for pending tasks that are due for execution — **read-only**.
     ///
     /// Uses [`DEFAULT_POLL_LIMIT`]; see [`Self::poll_due_tasks_limit`] when a
     /// caller needs to drain a bigger backlog (e.g. after downtime).
+    ///
+    /// The gateway scheduler does **not** use this: it goes through
+    /// [`Self::claim_due_tasks`], which flips the row to `running` under a
+    /// lease so a crash mid-turn cannot make the next tick re-execute the
+    /// same task in silence (#1227 slice 2). This stays for tests, tooling
+    /// and any caller that only wants to *look* at what is due.
     pub fn poll_due_tasks(&self) -> Result<Vec<ScheduledTask>> {
         self.poll_due_tasks_limit(DEFAULT_POLL_LIMIT)
     }
 
-    /// Poll at most `limit` due tasks.
+    /// Poll at most `limit` due tasks (read-only; see [`Self::poll_due_tasks`]).
     pub fn poll_due_tasks_limit(&self, limit: i64) -> Result<Vec<ScheduledTask>> {
         let mut stmt = self
             .conn
@@ -869,25 +926,7 @@ impl SessionStore {
             .map_err(|e| Error::Database(format!("failed to prepare poll query: {e}")))?;
 
         let rows = stmt
-            .query_map(params![limit], |row| {
-                let execute_at_raw: String = row.get(4)?;
-                let metadata_raw: String = row.get(6)?;
-                Ok(ScheduledTask {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    channel_id: row.get(2)?,
-                    user_id: row.get(3)?,
-                    execute_at: parse_timestamp(&execute_at_raw),
-                    payload: row.get(5)?,
-                    session_metadata: serde_json::from_str(&metadata_raw)
-                        .unwrap_or(serde_json::Value::Null),
-                    cron_expr: row.get(7)?,
-                    timezone: row.get(8)?,
-                    run_count: row.get(9)?,
-                    max_runs: row.get(10)?,
-                    attempts: row.get(11)?,
-                })
-            })
+            .query_map(params![limit], Self::task_from_row)
             .map_err(|e| Error::Database(format!("failed to poll tasks: {e}")))?;
 
         let mut tasks = Vec::new();
@@ -897,22 +936,177 @@ impl SessionStore {
         Ok(tasks)
     }
 
-    /// Mark a scheduled task as completed.
+    /// Row shape shared by `poll_due_tasks_limit`, `claim_due_tasks` and
+    /// `recover_expired_leases`: the 12-column projection of
+    /// `scheduled_tasks t JOIN sessions s`, in this exact order.
+    fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduledTask> {
+        let execute_at_raw: String = row.get(4)?;
+        let metadata_raw: String = row.get(6)?;
+        Ok(ScheduledTask {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            channel_id: row.get(2)?,
+            user_id: row.get(3)?,
+            execute_at: parse_timestamp(&execute_at_raw),
+            payload: row.get(5)?,
+            session_metadata: serde_json::from_str(&metadata_raw)
+                .unwrap_or(serde_json::Value::Null),
+            cron_expr: row.get(7)?,
+            timezone: row.get(8)?,
+            run_count: row.get(9)?,
+            max_runs: row.get(10)?,
+            attempts: row.get(11)?,
+        })
+    }
+
+    /// Claim up to `limit` due tasks for `owner` (#1227 slice 2).
+    ///
+    /// One transaction (`BEGIN IMMEDIATE`) selects the due `pending` rows and
+    /// flips each one to `status = 'running'` with `lease_until = now +
+    /// lease_secs` and `leased_by = owner`. Only the rows **this** call
+    /// actually flipped are returned: the `UPDATE` is guarded by `AND status
+    /// = 'pending'` and the row is kept only when `changes() == 1`, so two
+    /// schedulers racing over the same file cannot both walk away with the
+    /// same task. A crash after the claim leaves the row `running`; it comes
+    /// back to `pending` through [`Self::recover_expired_leases`] once the
+    /// lease has passed — explicitly, with a log line, never in silence.
+    ///
+    /// `lease_secs` is clamped to at least 1 so a zero/negative value cannot
+    /// mint an already-expired lease.
+    pub fn claim_due_tasks(
+        &self,
+        limit: i64,
+        lease_secs: i64,
+        owner: &str,
+    ) -> Result<Vec<ScheduledTask>> {
+        // SQLite clock on both sides (set here, compared in the recovery
+        // query) so the lease does not depend on the host clock agreeing
+        // with itself across two code paths.
+        let lease_modifier = format!("+{} seconds", lease_secs.max(1));
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| Error::Database(format!("failed to begin claim transaction: {e}")))?;
+
+        let due: Vec<ScheduledTask> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
+                            s.metadata, t.cron_expr, t.timezone, t.run_count, t.max_runs,
+                            t.attempts
+                     FROM scheduled_tasks t
+                     JOIN sessions s ON t.session_id = s.id
+                     WHERE t.status = 'pending' AND datetime(t.execute_at) <= datetime('now')
+                     ORDER BY t.execute_at ASC
+                     LIMIT ?1",
+                )
+                .map_err(|e| Error::Database(format!("failed to prepare claim query: {e}")))?;
+            let rows = stmt
+                .query_map(params![limit], Self::task_from_row)
+                .map_err(|e| Error::Database(format!("failed to select due tasks: {e}")))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(format!("failed to read due task row: {e}")))?
+        };
+
+        let mut claimed = Vec::with_capacity(due.len());
+        for task in due {
+            let changed = tx
+                .execute(
+                    "UPDATE scheduled_tasks
+                     SET status = 'running',
+                         lease_until = datetime('now', ?2),
+                         leased_by = ?3
+                     WHERE id = ?1 AND status = 'pending'",
+                    params![task.id, lease_modifier, owner],
+                )
+                .map_err(|e| Error::Database(format!("failed to claim task: {e}")))?;
+            if changed == 1 {
+                claimed.push(task);
+            }
+        }
+
+        tx.commit()
+            .map_err(|e| Error::Database(format!("failed to commit claim: {e}")))?;
+        Ok(claimed)
+    }
+
+    /// Put `running` tasks whose lease has expired back to `pending` and
+    /// return them so the caller can **log** the re-poll (#1227 slice 2).
+    ///
+    /// A `running` row with `lease_until IS NULL` is treated as expired too:
+    /// nothing legitimate produces it (every claim sets a lease), so leaving
+    /// it alone would park the task forever. `attempts` is left untouched —
+    /// a crash is not a failed attempt of the task itself; the retry budget
+    /// belongs to [`Self::retry_or_fail_task`].
+    pub fn recover_expired_leases(&self) -> Result<Vec<ScheduledTask>> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| Error::Database(format!("failed to begin recovery transaction: {e}")))?;
+
+        let expired: Vec<ScheduledTask> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT t.id, t.session_id, s.channel_id, t.user_id, t.execute_at, t.payload,
+                            s.metadata, t.cron_expr, t.timezone, t.run_count, t.max_runs,
+                            t.attempts
+                     FROM scheduled_tasks t
+                     JOIN sessions s ON t.session_id = s.id
+                     WHERE t.status = 'running'
+                       AND (t.lease_until IS NULL
+                            OR datetime(t.lease_until) < datetime('now'))
+                     ORDER BY t.execute_at ASC",
+                )
+                .map_err(|e| Error::Database(format!("failed to prepare recovery query: {e}")))?;
+            let rows = stmt
+                .query_map([], Self::task_from_row)
+                .map_err(|e| Error::Database(format!("failed to select expired leases: {e}")))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| Error::Database(format!("failed to read expired lease row: {e}")))?
+        };
+
+        let mut recovered = Vec::with_capacity(expired.len());
+        for task in expired {
+            let changed = tx
+                .execute(
+                    "UPDATE scheduled_tasks
+                     SET status = 'pending', lease_until = NULL, leased_by = NULL
+                     WHERE id = ?1 AND status = 'running'",
+                    params![task.id],
+                )
+                .map_err(|e| Error::Database(format!("failed to release expired lease: {e}")))?;
+            if changed == 1 {
+                recovered.push(task);
+            }
+        }
+
+        tx.commit()
+            .map_err(|e| Error::Database(format!("failed to commit lease recovery: {e}")))?;
+        Ok(recovered)
+    }
+
+    /// Mark a scheduled task as completed (and drop its lease).
     pub fn complete_task(&self, task_id: &str) -> Result<()> {
         self.conn
             .execute(
-                "UPDATE scheduled_tasks SET status = 'completed' WHERE id = ?1",
+                "UPDATE scheduled_tasks
+                 SET status = 'completed', lease_until = NULL, leased_by = NULL
+                 WHERE id = ?1",
                 params![task_id],
             )
             .map_err(|e| Error::Database(format!("failed to complete task: {e}")))?;
         Ok(())
     }
 
-    /// Mark a scheduled task as failed so it won't be retried.
+    /// Mark a scheduled task as failed so it won't be retried (and drop its lease).
     pub fn fail_task(&self, task_id: &str) -> Result<()> {
         self.conn
             .execute(
-                "UPDATE scheduled_tasks SET status = 'failed' WHERE id = ?1",
+                "UPDATE scheduled_tasks
+                 SET status = 'failed', lease_until = NULL, leased_by = NULL
+                 WHERE id = ?1",
                 params![task_id],
             )
             .map_err(|e| Error::Database(format!("failed to mark task as failed: {e}")))?;
@@ -976,7 +1170,8 @@ impl SessionStore {
             self.conn
                 .execute(
                     "UPDATE scheduled_tasks
-                     SET status = 'completed', run_count = ?2, last_run_at = ?3, attempts = 0
+                     SET status = 'completed', run_count = ?2, last_run_at = ?3, attempts = 0,
+                         lease_until = NULL, leased_by = NULL
                      WHERE id = ?1",
                     params![task.id, runs, now.to_rfc3339()],
                 )
@@ -990,7 +1185,7 @@ impl SessionStore {
             .execute(
                 "UPDATE scheduled_tasks
                  SET execute_at = ?2, last_run_at = ?3, run_count = ?4, attempts = 0,
-                     status = 'pending'
+                     status = 'pending', lease_until = NULL, leased_by = NULL
                  WHERE id = ?1",
                 params![task.id, next.to_rfc3339(), now.to_rfc3339(), runs],
             )
@@ -1013,9 +1208,15 @@ impl SessionStore {
         if attempts < max_attempts {
             let delay = crate::recurrence::retry_delay_secs(attempts as u32);
             let retry_at = now + chrono::Duration::seconds(delay);
+            // The row is `running` under a lease while the turn executes
+            // (#1227 slice 2); a retry has to hand it back to `pending` or
+            // the next tick would never see it.
             self.conn
                 .execute(
-                    "UPDATE scheduled_tasks SET execute_at = ?2, attempts = ?3 WHERE id = ?1",
+                    "UPDATE scheduled_tasks
+                     SET execute_at = ?2, attempts = ?3,
+                         status = 'pending', lease_until = NULL, leased_by = NULL
+                     WHERE id = ?1",
                     params![task.id, retry_at.to_rfc3339(), attempts],
                 )
                 .map_err(|e| Error::Database(format!("failed to schedule retry: {e}")))?;
@@ -1030,7 +1231,9 @@ impl SessionStore {
             self.conn
                 .execute(
                     "UPDATE scheduled_tasks
-                     SET execute_at = ?2, attempts = 0, last_run_at = ?3 WHERE id = ?1",
+                     SET execute_at = ?2, attempts = 0, last_run_at = ?3,
+                         status = 'pending', lease_until = NULL, leased_by = NULL
+                     WHERE id = ?1",
                     params![task.id, next.to_rfc3339(), now.to_rfc3339()],
                 )
                 .map_err(|e| Error::Database(format!("failed to skip occurrence: {e}")))?;
@@ -1619,6 +1822,34 @@ impl ScheduledTask {
     }
 }
 
+/// Re-poll explicito apos queda (#1227 slice 2): devolve a `pending` toda
+/// tarefa `running` cuja lease expirou e loga `warn!` com id, `attempts` e
+/// `execute_at` — nunca `payload` (PII). Um lugar so para a regra de log,
+/// chamado na subida do gateway (ao lado de `log_interrupted_runs`) e no
+/// inicio de cada tick do scheduler. Fail-soft: uma falha aqui nao pode
+/// impedir a subida nem o tick — devolve 0 e avisa. Devolve quantas tarefas
+/// voltaram a `pending`.
+pub fn log_recovered_leases(store: &SessionStore) -> usize {
+    match store.recover_expired_leases() {
+        Ok(tasks) => {
+            for task in &tasks {
+                tracing::warn!(
+                    task = %task.id,
+                    attempts = task.attempts,
+                    execute_at = %task.execute_at.to_rfc3339(),
+                    recurring = task.is_recurring(),
+                    "tarefa agendada ficou `running` alem da lease — voltou a `pending` e sera reexecutada"
+                );
+            }
+            tasks.len()
+        }
+        Err(e) => {
+            tracing::warn!(erro = %e, "falhou ao recuperar leases expiradas do scheduler");
+            0
+        }
+    }
+}
+
 // ── GAR-202: Session token CRUD ───────────────────────────────────────────────
 
 /// Generate a cryptographically random URL-safe base64 token (256 bits).
@@ -2038,6 +2269,355 @@ mod tests {
 
         let due_after = store.poll_due_tasks().unwrap();
         assert_eq!(due_after.len(), 0);
+    }
+
+    // ── #1227 (slice 2): lease pending → running ─────────────────────
+
+    /// `(status, lease_until, leased_by)` de uma tarefa, direto da tabela.
+    fn lease_row(store: &SessionStore, task_id: &str) -> (String, Option<String>, Option<String>) {
+        store
+            .conn
+            .query_row(
+                "SELECT status, lease_until, leased_by FROM scheduled_tasks WHERE id = ?1",
+                params![task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("task row must exist")
+    }
+
+    /// Agenda uma tarefa ja vencida numa sessao `s1`/`u1`.
+    fn due_task(store: &SessionStore, payload: &str) -> String {
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        store
+            .schedule_task(
+                "s1",
+                "u1",
+                chrono::Utc::now() - Duration::minutes(1),
+                payload,
+            )
+            .unwrap()
+    }
+
+    /// Forca a lease de `task_id` para o passado, simulando o tempo passando
+    /// depois de uma queda no meio do turno.
+    fn expire_lease(store: &SessionStore, task_id: &str) {
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET lease_until = datetime('now', '-1 seconds')
+                 WHERE id = ?1",
+                params![task_id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn claim_e_exclusivo_e_tira_a_tarefa_do_poll() {
+        let store = SessionStore::in_memory().unwrap();
+        let task_id = due_task(&store, "check logs");
+
+        let first = store.claim_due_tasks(10, 600, "owner-a").unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id, task_id);
+        assert_eq!(first[0].channel_id, "web", "JOIN com sessions preservado");
+
+        // Segundo claim (outro dono, mesmo tick ou outro processo) nao leva nada.
+        let second = store.claim_due_tasks(10, 600, "owner-b").unwrap();
+        assert!(
+            second.is_empty(),
+            "a mesma tarefa nao pode ser reivindicada duas vezes"
+        );
+
+        // Enquanto `running`, nem o poll read-only a ve.
+        assert!(store.poll_due_tasks().unwrap().is_empty());
+
+        let (status, lease_until, leased_by) = lease_row(&store, &task_id);
+        assert_eq!(status, "running");
+        assert!(lease_until.is_some(), "claim tem de gravar lease_until");
+        assert_eq!(leased_by.as_deref(), Some("owner-a"));
+    }
+
+    #[test]
+    fn claim_respeita_o_limite() {
+        let store = SessionStore::in_memory().unwrap();
+        due_task(&store, "a");
+        due_task(&store, "b");
+        due_task(&store, "c");
+
+        assert_eq!(store.claim_due_tasks(2, 600, "o").unwrap().len(), 2);
+        assert_eq!(store.claim_due_tasks(2, 600, "o").unwrap().len(), 1);
+        assert!(store.claim_due_tasks(2, 600, "o").unwrap().is_empty());
+    }
+
+    #[test]
+    fn claim_nao_leva_tarefa_futura() {
+        let store = SessionStore::in_memory().unwrap();
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        store
+            .schedule_task(
+                "s1",
+                "u1",
+                chrono::Utc::now() + Duration::minutes(10),
+                "future",
+            )
+            .unwrap();
+
+        assert!(store.claim_due_tasks(10, 600, "o").unwrap().is_empty());
+    }
+
+    #[test]
+    fn lease_expirada_volta_a_pending_e_e_listada() {
+        let store = SessionStore::in_memory().unwrap();
+        let task_id = due_task(&store, "check logs");
+        let claimed = store.claim_due_tasks(10, 600, "owner-a").unwrap();
+        assert_eq!(claimed.len(), 1);
+
+        // Lease viva: nada a recuperar, e ninguem mais reivindica.
+        assert!(store.recover_expired_leases().unwrap().is_empty());
+        assert!(
+            store
+                .claim_due_tasks(10, 600, "owner-b")
+                .unwrap()
+                .is_empty()
+        );
+
+        // O processo caiu; o tempo passou.
+        expire_lease(&store, &task_id);
+
+        let recovered = store.recover_expired_leases().unwrap();
+        assert_eq!(
+            recovered.len(),
+            1,
+            "a tarefa tem de ser DEVOLVIDA para o log"
+        );
+        assert_eq!(recovered[0].id, task_id);
+        assert_eq!(
+            recovered[0].attempts, 0,
+            "queda nao consome o orcamento de retry"
+        );
+
+        let (status, lease_until, leased_by) = lease_row(&store, &task_id);
+        assert_eq!(status, "pending");
+        assert!(lease_until.is_none());
+        assert!(leased_by.is_none());
+
+        // Re-poll explicito: o proximo claim a leva de novo, e a recuperacao
+        // nao a lista uma segunda vez.
+        assert!(store.recover_expired_leases().unwrap().is_empty());
+        let again = store.claim_due_tasks(10, 600, "owner-b").unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].id, task_id);
+        assert_eq!(
+            lease_row(&store, &task_id).2.as_deref(),
+            Some("owner-b"),
+            "o novo dono fica registrado"
+        );
+    }
+
+    #[test]
+    fn running_sem_lease_e_tratado_como_expirado() {
+        let store = SessionStore::in_memory().unwrap();
+        let task_id = due_task(&store, "orfa");
+        // Nada legitimo produz isso; se aparecer, nao pode ficar parado.
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET status = 'running', lease_until = NULL WHERE id = ?1",
+                params![task_id],
+            )
+            .unwrap();
+
+        let recovered = store.recover_expired_leases().unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(lease_row(&store, &task_id).0, "pending");
+    }
+
+    #[test]
+    fn complete_e_fail_limpam_a_lease() {
+        let store = SessionStore::in_memory().unwrap();
+        let done_id = due_task(&store, "done");
+        let failed_id = due_task(&store, "failed");
+        assert_eq!(store.claim_due_tasks(10, 600, "o").unwrap().len(), 2);
+
+        store.complete_task(&done_id).unwrap();
+        assert_eq!(
+            lease_row(&store, &done_id),
+            ("completed".to_string(), None, None)
+        );
+
+        store.fail_task(&failed_id).unwrap();
+        assert_eq!(
+            lease_row(&store, &failed_id),
+            ("failed".to_string(), None, None)
+        );
+
+        // Terminal e terminal: mesmo com a lease "expirada" nada volta.
+        assert!(store.recover_expired_leases().unwrap().is_empty());
+        assert!(store.claim_due_tasks(10, 600, "o").unwrap().is_empty());
+    }
+
+    #[test]
+    fn retry_devolve_a_pending_sem_lease() {
+        let store = SessionStore::in_memory().unwrap();
+        let task_id = due_task(&store, "flaky");
+        let task = store.claim_due_tasks(10, 600, "o").unwrap().remove(0);
+
+        let retry_at = store
+            .retry_or_fail_task(&task, 3, chrono::Utc::now())
+            .unwrap()
+            .expect("first failure schedules a retry");
+        assert!(retry_at > chrono::Utc::now());
+
+        let (status, lease_until, leased_by) = lease_row(&store, &task_id);
+        assert_eq!(status, "pending", "sem isso o tick seguinte nunca a veria");
+        assert!(lease_until.is_none());
+        assert!(leased_by.is_none());
+        // Ainda nao vencida (backoff), entao nao e reivindicada agora.
+        assert!(store.claim_due_tasks(10, 600, "o").unwrap().is_empty());
+    }
+
+    #[test]
+    fn retry_esgotado_falha_e_limpa_a_lease() {
+        let store = SessionStore::in_memory().unwrap();
+        let task_id = due_task(&store, "hopeless");
+        let task = store.claim_due_tasks(10, 600, "o").unwrap().remove(0);
+
+        // max_attempts = 1: a primeira falha ja e a ultima.
+        let next = store
+            .retry_or_fail_task(&task, 1, chrono::Utc::now())
+            .unwrap();
+        assert!(next.is_none());
+        assert_eq!(
+            lease_row(&store, &task_id),
+            ("failed".to_string(), None, None)
+        );
+    }
+
+    #[test]
+    fn recorrente_reagendada_volta_a_pending_sem_lease() {
+        let store = SessionStore::in_memory().unwrap();
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        let (task_id, _) = store
+            .schedule_recurring_task("s1", "u1", "*/5 * * * *", Some("UTC"), "ping", None)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET execute_at = ?2 WHERE id = ?1",
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+
+        let task = store.claim_due_tasks(10, 600, "o").unwrap().remove(0);
+        assert_eq!(lease_row(&store, &task_id).0, "running");
+
+        let next = store
+            .complete_recurring_run(&task, chrono::Utc::now())
+            .unwrap()
+            .expect("no max_runs: keeps going");
+        assert!(next > chrono::Utc::now());
+
+        let (status, lease_until, leased_by) = lease_row(&store, &task_id);
+        assert_eq!(status, "pending");
+        assert!(lease_until.is_none());
+        assert!(leased_by.is_none());
+        // Proxima ocorrencia esta no futuro: nem recuperada nem reivindicada.
+        assert!(store.recover_expired_leases().unwrap().is_empty());
+        assert!(store.claim_due_tasks(10, 600, "o").unwrap().is_empty());
+        assert_eq!(store.count_recurring_tasks_for_session("s1").unwrap(), 1);
+    }
+
+    #[test]
+    fn recorrente_que_pula_ocorrencia_volta_a_pending_sem_lease() {
+        let store = SessionStore::in_memory().unwrap();
+        store
+            .upsert_session("s1", "web", "u1", &serde_json::json!({}))
+            .unwrap();
+        let (task_id, _) = store
+            .schedule_recurring_task("s1", "u1", "*/5 * * * *", Some("UTC"), "ping", None)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE scheduled_tasks SET execute_at = ?2 WHERE id = ?1",
+                params![
+                    task_id,
+                    (chrono::Utc::now() - Duration::minutes(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+        let task = store.claim_due_tasks(10, 600, "o").unwrap().remove(0);
+
+        // Orcamento esgotado numa recorrente: pula a ocorrencia, mantem o cron.
+        let next = store
+            .retry_or_fail_task(&task, 1, chrono::Utc::now())
+            .unwrap()
+            .expect("recurring task skips the occurrence instead of dying");
+        assert!(next > chrono::Utc::now());
+        assert_eq!(
+            lease_row(&store, &task_id),
+            ("pending".to_string(), None, None)
+        );
+    }
+
+    #[test]
+    fn claim_com_lease_nao_positiva_ainda_e_lease_viva() {
+        let store = SessionStore::in_memory().unwrap();
+        let task_id = due_task(&store, "zero");
+        // 0 e negativo sao clampados para 1 s: a lease nunca nasce expirada.
+        assert_eq!(store.claim_due_tasks(10, 0, "o").unwrap().len(), 1);
+        assert!(store.recover_expired_leases().unwrap().is_empty());
+        assert_eq!(lease_row(&store, &task_id).0, "running");
+    }
+
+    /// Migration forward-only: um store criado ANTES das colunas de lease
+    /// ganha `lease_until`/`leased_by` no `run_migrations`, e rodar de novo
+    /// e no-op (idempotente).
+    #[test]
+    fn migracao_adiciona_colunas_de_lease_em_store_antigo() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE scheduled_tasks (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                execute_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        let store = SessionStore { conn };
+        assert!(
+            !store
+                .column_exists("scheduled_tasks", "lease_until")
+                .unwrap()
+        );
+
+        store.run_migrations().unwrap();
+        assert!(
+            store
+                .column_exists("scheduled_tasks", "lease_until")
+                .unwrap()
+        );
+        assert!(store.column_exists("scheduled_tasks", "leased_by").unwrap());
+
+        // Segunda passada nao pode falhar com "duplicate column".
+        store.run_migrations().unwrap();
+
+        // E o store antigo funciona de ponta a ponta com o claim.
+        let task_id = due_task(&store, "legacy");
+        assert_eq!(store.claim_due_tasks(10, 600, "o").unwrap()[0].id, task_id);
     }
 
     // ── Recurrence ───────────────────────────────────────────────────
