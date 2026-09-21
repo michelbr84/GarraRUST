@@ -31,7 +31,7 @@ O binário `garraia` (alias `garra`) concentra toda a operação. Fonte: [`crate
 | `garra channel list` · `channel status <nome>` | Canais de chat configurados |
 | `garra whatsapp` | Menu de duas opções: WhatsApp pessoal por QR ou Business pela Cloud API (#1238, ADR 0023). Sem TTY imprime as opções e sai 0 |
 | `garra whatsapp link` | Vincula o WhatsApp pessoal lendo um QR code no terminal — precisa de Node.js 20+ (exit 69 sem Node ou QR não lido) |
-| `garra whatsapp cloud` | Configura um WhatsApp Business pela Cloud API oficial da Meta |
+| `garra whatsapp cloud` | Configura um WhatsApp Business pela Cloud API oficial da Meta (exit 69 sem terminal) |
 | `garra whatsapp status` | Diz se há WhatsApp pessoal vinculado, onde a sessão está e se ela abre |
 | `garra whatsapp logout` | Desvincula e apaga a sessão deste aparelho |
 | `garra whatsapp restore` | Traz de volta a sessão arquivada (`session.enc.prev`) por um re-vínculo que não terminou; nunca passa por cima de sessão em uso |

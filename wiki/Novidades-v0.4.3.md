@@ -32,8 +32,8 @@ garra whatsapp
 | Comando | O que faz | Exit code |
 |---|---|---|
 | `garra whatsapp` | menu de duas opções | 0, ou 1 se cancelado |
-| `garra whatsapp link` | vincula por QR | 0 · 1 cancelado · 69 sem Node / QR não lido · 70 erro interno |
-| `garra whatsapp cloud` | wizard da Cloud API | 0 · 1 cancelado · 70 erro interno |
+| `garra whatsapp link` | vincula por QR | 0 · 1 cancelado · 69 sem Node, sem terminal ou QR não lido · 70 erro interno |
+| `garra whatsapp cloud` | wizard da Cloud API | 0 · 1 cancelado · 69 sem terminal · 70 erro interno |
 | `garra whatsapp status` | diz se há vínculo e se a sessão abre | 0 vinculado · 69 não vinculado ou ilegível |
 | `garra whatsapp logout` | apaga a sessão e desliga o canal | 0 · 1 cancelado |
 | `garra whatsapp restore` | devolve o `session.enc.prev` ao lugar | 0 · 69 nada arquivado ou sessão em uso · 70 erro interno |
@@ -109,7 +109,6 @@ medido sobre 2000 chaves com vazamento residual de ~1,3 caractere (#1238,
 #1276). O nome da conta recusa `con`, `prn`, `aux`, `nul`, `com1`–`com9`,
 `lpt1`–`lpt9`, que não podem virar diretório no Windows.
 
-<!-- wave2 -->
 - A redação do stderr também cobre base64 **percent-encoded** e com a barra
   escapada como `\/`, formas que um `throw` de biblioteca ou um JSON serializado
   produzem (#1276).
@@ -160,16 +159,14 @@ virava **opção** do `ssh`/`docker` em vez de argumento — recusado em três
 camadas, sem nunca logar o valor (#1225). O comando sandboxado passa por
 `redact_secrets` e truncagem antes de ir ao log, em `debug!`.
 
-<!-- wave2 -->
 - `backend: ssh` com `network_disabled` ou `mount_workdir` ligados passa a ser
   **recusado fail-closed**: como o ssh ignora os dois, a config tem de dizer
   `false` explicitamente para o operador reconhecer que não há contenção
   (#1225 S3).
-<!-- wave2 -->
-- `mode: all` declara na subida e no `config check` que cobre só `bash`, e
-  lista `run_tests`, `git_diff`, `code_review` e `repo_search` como host-only
-  (#1225 S2).
-<!-- wave2 -->
+- `mode: all` avisa na subida — uma vez por ponto de entrada: gateway, `garra
+  chat` e `garra mcp-server` — que cobre só `bash`; `run_tests`, `git_diff`,
+  `code_review` e `repo_search` são host-only, e o `config check` aponta quando a
+  config lista uma delas em `sandboxed_tools`/`elevated` (#1225 S2).
 - Teste de integração com Docker real prova o `--network none` no CI Linux
   (#1225 S4).
 
@@ -306,7 +303,6 @@ pré-selecionar os ~18 GB de download local. **Quem fixou
   `agent.auto_router_llm_enabled` está ligada (default **off**), a sessão não
   tem modo e há texto; modo deduzido **não** concede tool nenhuma.
 
-<!-- wave2 -->
 - **O erro do loop detector diz o que repetiu**: a tool, a contagem dentro da
   janela e o input repetido, truncado (#1295).
 
@@ -328,9 +324,9 @@ pré-selecionar os ~18 GB de download local. **Quem fixou
   só a chamada de extração de fatos por turno sem desligar a memória
   semântica (#1221).
 
-<!-- wave2 -->
-- **Editor de linha com rustyline**: setas, histórico persistente (`0600` em
-  `~/.garraia/history`), Ctrl+D encerra; pipe e CI continuam no `read_line`
+- **Editor de linha com rustyline**: setas e edição na linha; histórico em disco
+  **só com `--persist`/`--resume`** (`0600` em `~/.garraia/history`; sem as
+  flags fica em memória), Ctrl+D encerra; pipe e CI continuam no `read_line`
   (#1297).
 
 ### Runtime: ledger de runs e despacho único
@@ -350,10 +346,8 @@ pré-selecionar os ~18 GB de download local. **Quem fixou
   só, substituição de variáveis tudo-ou-nada, `max_steps` 16 (#1224). Ainda
   sem chamador de produção.
 
-<!-- wave2 -->
 - O scheduler **reivindica tarefas com lease** (`pending → running`), e o
   re-poll após queda é explícito e logado (#1227 S2).
-<!-- wave2 -->
 - `DbRunLedger` aceita o `Mutex` tokio do gateway; `SubAgentConfig.session_id`
   (#1227 S3).
 
@@ -400,19 +394,17 @@ pré-selecionar os ~18 GB de download local. **Quem fixou
 - **`garra config check` é comando opt-in, não gate de boot** — as prosas que
   afirmavam o contrário foram corrigidas (#1247), e a cláusula de idle do
   `validate_session_token` foi por bind, não `format!`.
-- Docs: precedência real do bind (`--host`/`HOST` > env > default; as chaves
+- Docs: precedência real do bind (`--host` > `HOST` > default `127.0.0.1:3888`; as chaves
   `gateway.host`/`gateway.port` do arquivo **não** alimentam o `garra start`)
   (#1261); providers de TTS reais em `docs/voice.md` (#1246); testes de PDF e
   de magic bytes do `garraia-media` voltam a rodar (#1208, #1209).
 
-<!-- wave2 -->
 - **Quality Ratchet reporta o delta contra o merge-base da PR** (sinal
   distinguível) e avisa quando o baseline tem mais de 90 dias; o baseline
   **não** foi re-congelado (#1254).
 
 ### Deprecated
 
-<!-- wave2 -->
 - `ToolRegistry::execute_program` em `garraia-tools` marcada `deprecated`; o
   fragmento do #1224 foi corrigido (#1226 S-E).
 
@@ -432,7 +424,6 @@ uma seção é nova:
 
 - **`agent.sandbox` é novo e default `off`** — seção ausente reproduz byte a
   byte o comportamento anterior.
-<!-- wave2 -->
 - Quem já ligou `backend: ssh` tem de declarar `network_disabled: false` e
   `mount_workdir: false` explicitamente, senão a config é recusada (#1225 S3).
 - **`gateway.allowed_origins` vazio passou a significar "nenhuma origem

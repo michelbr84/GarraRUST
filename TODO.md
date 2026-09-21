@@ -5,12 +5,88 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-15 (America/New_York)
+**Atualizado:** 2026-09-21 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-21 — release v0.4.3: WhatsApp pessoal, faixa de segurança, dois trens de merge
+
+Estado de partida (2026-09-20, 22:25): 14 issues, 9 PRs (1 draft), 2 alertas
+CodeQL (#173 falso-positivo com entrada no ledger, #174 real), 0 Dependabot,
+0 secret scanning, `main` verde em v0.4.2 + 81 commits.
+
+- **PR #1314 fechado como superseded**: os 15 arquivos de `bridge/whatsapp/`
+  já estavam em `main` (#1256/#1265) e `main` estava à frente do branch.
+- **Trem 1 (#1317)**: as 8 PRs abertas (#1305 #1307 #1309 #1311 #1312 #1313
+  #1315 #1316) revisadas uma a uma e mergeadas com merge commit num único
+  branch — cada SHA de cabeça fica alcançável de `main`, e o GitHub marca a PR
+  como merged. Conflito único (#1313 × #1305 em `chat.rs`) resolvido mantendo
+  os dois blocos; alerta CodeQL 115 reancorado pelo conteúdo (1703). O #1309
+  entrou em `main` por **auto-merge** (squash) enquanto o trem estava na fila:
+  `origin/main` foi mergeado nos trens e o auto-merge desligado nas outras 7.
+- **Trem 2 (#1318)**: 10 correções implementadas em worktrees isoladas e
+  revisadas por três lentes independentes (correção, segurança/fail-closed,
+  testes + regras), com 4 rodadas de fix antes de entrar — #1295 item 2
+  (diagnóstico do loop via `summarize_tool_input`, nunca o JSON cru), #1297
+  (rustyline; histórico em disco só com `--persist`/`--resume`), #1276 item 2
+  (redação de base64 percent-encoded e `\/`), #1254 (delta vs merge-base;
+  `.quality/baseline.json` intocado), #1227 s2 (lease do scheduler) e s3
+  (`DbRunLedger` sobre o Mutex tokio), #1225 S2 (cobertura honesta do
+  sandbox) / S3 (`ssh` fail-closed) / S4 (smoke com Docker real no CI),
+  #1226 S-E (`execute_program` deprecated). Validação local: 87 suítes,
+  2791 testes, 0 falhas; Docker 5/5.
+- **Docs**: wiki `Novidades-v0.4.3` + `Whats-New-v0.4.3`; README/README.pt-BR
+  (24 crates, WhatsApp pessoal entregue), SECURITY.md (32 tabelas FORCE RLS),
+  Dockerfile (label de versão morto removido), `docs/architecture.md` (24
+  crates), comparação Hermes/OpenClaw, Referência da CLI completa, MSRV 1.95
+  na wiki, SOUL.md com o snapshot rotulado.
+- **Segurança & quality**: #174 corrigido em código (allowlist de nome de
+  asset, #1315); #173 é falso-positivo com entrada no ledger — o #1316 corrige
+  a comparação por span e o dismissal é aplicado pelo
+  `codeql-apply-dismissals.yml` depois do merge.
+- **v0.4.3 cortada** a partir de `main` com 89 fragmentos de changelog
+  agregados por `assemble.py --write`; `pubspec.yaml` sobe junto (0.4.3+7).
+  Tag `v0.4.3` empurrado por `git push` a partir da máquina local — o
+  `send-pack` cortado da v0.4.2 era do proxy das sessões cloud.
+
+### Issues fechadas nesta rodada
+
+#1301 (#1307), #1298 (#1305), #1297 (#1318).
+
+### Issues que ficam abertas — cada uma com bloqueio nomeado
+
+| Issue | Entregue | O que falta e quem decide |
+|---|---|---|
+| #1225 | S1–S4 | S2 estrutural (rotear `run_tests`/`git_diff`/`code_review`/`repo_search` pelo sandbox) e S5 — R4, fatia própria; S6 (OpenShell/Crabbox) é decisão do dono |
+| #1226 | S-A, S-E | S-B (`tool_program` intrínseca, R4 com security-auditor) é feature nova — fora da janela de release; S-C/S-D dependem dela |
+| #1227 | s0–s3 | s4+ (`garra runs list`, retenção, API, resume) aguardam a decisão de design registrada na issue |
+| #1228 | relatos de dogfood | processo — o dono fecha quando o relato bastar |
+| #1247 | caminho 1 (docs) | caminhos 2/3 (gate de boot) — decisão do dono; a própria issue propõe o 2 para a v0.4.4 |
+| #1254 | critério 3 (sinal distinguível) | re-baseline é R5 — dono |
+| #1261 | caminho 3 (docs) | fail-closed no bind e destino das chaves mortas do arquivo — R5 |
+| #1272 | doc honesta + sandbox wired | default do `agent.sandbox` no MCP e jail do `bash` — R4/R5 |
+| #1276 | itens 1 e 2 | re-medir contra sessão WhatsApp real pareada — gate manual |
+| #1295 | item 2 | item 1 (warn-once) muda a semântica do guarda — dono |
+| #1299 | #1304, #1305 | detecção antes da chamada exige a preferência `provider.only` da conta, que a API do OpenRouter não expõe |
+
+### Lições operacionais desta rodada
+
+- **Auto-merge ligado numa PR + checks estritos = squash em série competindo
+  com qualquer trem.** Verificar `autoMergeRequest` no início da rodada e
+  desligar nas PRs que vão entrar por trem.
+- **Trem de merge com merge commits** faz o GitHub marcar cada PR carregada
+  como merged; oito ciclos de CI em série viraram um.
+- **Worktree do Workflow nasce em `main`, não no HEAD corrente**: passar o SHA
+  base por `args` e mandar o agente fazer `checkout -b` explícito; conferir
+  `merge-base` antes de montar o trem.
+- **Revisão adversarial em três lentes pagou**: pegou `signal-hook` OFF
+  instalando um segundo handler de SIGINT no rustyline (o oposto do que o
+  comentário afirmava), dump de input cru no erro do loop, um Warning
+  incondicional que quebrava `config check --strict` e um `warn!` por chamada
+  no caminho do `garra mcp-server`.
 
 ## Concluído em 2026-09-15 — repo zerado (só `main`): M1 do desktop, Dependabot, épico #1181 fechado
 
