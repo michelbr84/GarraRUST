@@ -7,8 +7,10 @@
     on purpose: when you change one, change the other.
 
     Downloads the published CLI binary for this platform, verifies it against
-    the release's SHA256SUMS, installs it as `garraia.exe`, puts it on the user
-    PATH, then chains into `garraia init` and `garraia start`.
+    the release's SHA256SUMS, installs it as `garraia.exe`, drops a `garra.cmd`
+    shim next to it so the short name the docs use works too (issue #1328),
+    puts the directory on the user PATH, then chains into `garraia init` and
+    `garraia start`.
 
 .EXAMPLE
     irm https://garraia.org/install.ps1 | iex
@@ -71,9 +73,12 @@ param(
 # them automatically when the function returns.
 
 $script:Repo = 'michelbr84/GarraRUST'
-# The installed command is `garraia`, while `cargo build` produces `garra`.
-# The drift is intentional and documented in README.md; install.sh:57 makes the
-# same choice via BINARY="garraia".
+# The installed binary is `garraia.exe` (the frozen release asset name, rule 15),
+# while `cargo build` produces `garra` -- the name every hint in the CLI, the
+# wiki and the README uses. Both names work after an install: Install-GarraAlias
+# drops a `garra.cmd` shim next to the binary, the Windows half of the
+# `garra -> garraia` symlink install.sh leaves (issue #1328). install.sh makes
+# the same split via BINARY="garraia" / ALIAS="garra".
 #
 # DELIBERATE PARITY GAP (CLAUDE.md rule 16). install.sh has two more install
 # steps with no counterpart here, both Android-only MCP wrappers dropped next
@@ -91,6 +96,7 @@ $script:Repo = 'michelbr84/GarraRUST'
 # no preload mechanism in the exec path, no Android loader to call directly,
 # and no $PREFIX sandbox. Nothing to mirror -- not an omission.
 $script:Binary = 'garraia'
+$script:Alias = 'garra'
 $script:UserAgent = 'garraia-install-ps1'
 
 # Abort the install with a message.
@@ -552,6 +558,72 @@ function Register-GarraiaPath {
     }
 }
 
+# Issue #1328. Leaves `garra.cmd` next to `garraia.exe` -- the Windows half of
+# install_garra_alias in install.sh, which drops a `garra -> garraia` symlink.
+#
+# Why a .cmd shim rather than a symlink or a copy: a symlink on Windows needs
+# administrator rights or Developer Mode, which a one-liner install must not
+# assume; a copy would leave two binaries that `garra update` -- which swaps
+# only the file it is running from -- lets drift apart. cmd.exe expands `%~dp0`
+# to the directory of the .cmd itself (trailing backslash included), so the
+# shim keeps working after the folder is moved, and the quotes protect a path
+# with spaces such as Program Files. `%*` forwards every argument untouched.
+# CRLF line endings because cmd.exe is the interpreter. ASCII, no BOM: cmd.exe
+# would echo a UTF-8 BOM as garbage before `@echo off` takes effect.
+#
+# Decision table, mirroring install.sh one-for-one:
+#   nothing there                    -> write the shim   (sh: create the link)
+#   garra.cmd that is ours           -> rewrite it       (sh: repoint the link)
+#   garra.cmd with foreign content,  -> keep it and warn (sh: real file, keep)
+#     or any garra.exe
+# "Ours" means the file already dispatches to %~dp0garraia.exe, whatever its
+# exact shape -- that is how an older shim of this installer gets normalized to
+# the current template. A garra.exe is never touched: PATHEXT resolves .exe
+# before .cmd, so a shim beside it would be dead weight, and the file is most
+# likely a from-source build the user copied by hand.
+#
+# Every failure is a warning, never a throw: the binary is already in place and
+# usable as `garraia`, and a missing alias must not undo an install.
+function Install-GarraAlias {
+    param([Parameter(Mandatory)][string]$Directory)
+
+    $shimPath = Join-Path $Directory "$script:Alias.cmd"
+    $exePath = Join-Path $Directory "$script:Alias.exe"
+    $binaryPath = Join-Path $Directory "$script:Binary.exe"
+    $dispatch = "%~dp0$script:Binary.exe"
+    $shim = "@echo off`r`n`"$dispatch`" %*`r`n"
+
+    $foreign = $null
+    if (Test-Path -LiteralPath $exePath -PathType Leaf) {
+        $foreign = $exePath
+    } elseif (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+        try {
+            $existing = Get-Content -LiteralPath $shimPath -Raw -ErrorAction Stop
+        } catch {
+            Write-Host "warning: could not create the 'garra' alias at $shimPath; 'garraia' still works."
+            return
+        }
+        if (-not ($existing -match [regex]::Escape($dispatch))) { $foreign = $shimPath }
+    }
+
+    if ($foreign) {
+        Write-Host "warning: $foreign already exists and was not created by this installer - left untouched."
+        Write-Host "  The installed binary is $binaryPath; use 'garraia' or replace 'garra' yourself."
+        return
+    }
+
+    $verb = if (Test-Path -LiteralPath $shimPath -PathType Leaf) { 'Repointed alias' } else { 'Alias' }
+
+    try {
+        Set-Content -LiteralPath $shimPath -Value $shim -Encoding Ascii -NoNewline -ErrorAction Stop
+    } catch {
+        Write-Host "warning: could not create the 'garra' alias at $shimPath; 'garraia' still works."
+        return
+    }
+
+    Write-Host "$verb $shimPath -> $script:Binary.exe"
+}
+
 function Install-Binary {
     param(
         [Parameter(Mandatory)][string]$SourcePath,
@@ -604,6 +676,11 @@ function Install-Binary {
 
     Write-Host ''
     Write-Host "GarraIA $Version installed to $installPath" -ForegroundColor Green
+
+    # Same directory, same privileges: whatever let Copy-Item land garraia.exe
+    # is what the shim gets. Mirrors install_garra_alias sharing
+    # install_needs_sudo with install_binary in install.sh.
+    Install-GarraAlias -Directory $installDir
     return $installPath
 }
 
@@ -612,6 +689,7 @@ function Write-NextStepsLegacy {
     Write-Host 'Next steps:'
     Write-Host '  garraia init    # interactive setup wizard'
     Write-Host '  garraia start   # start the gateway'
+    Write-Host "  'garra' is an alias for 'garraia' - either name works."
 }
 
 # Is there a human at a console to answer the wizard?
