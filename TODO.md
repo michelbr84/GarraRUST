@@ -50,7 +50,23 @@ CodeQL (#173 falso-positivo com entrada no ledger, #174 real), 0 Dependabot,
 - **v0.4.3 cortada** a partir de `main` com 89 fragmentos de changelog
   agregados por `assemble.py --write`; `pubspec.yaml` sobe junto (0.4.3+7).
   Tag `v0.4.3` empurrado por `git push` a partir da máquina local — o
-  `send-pack` cortado da v0.4.2 era do proxy das sessões cloud.
+  `send-pack` cortado da v0.4.2 era do proxy das sessões cloud — para o
+  merge commit `05537bd`; `release.yml` e `deploy.yml` dispararam pelo push.
+- **Automação da release, o que saiu e o que não saiu.** A GitHub Release
+  publicou 43 assets (os 7 binários crus com `.sha256`, archives, MSI/NSIS,
+  desktop `.deb`/AppImage, APK, `install.sh`/`install.ps1`, `SHA256SUMS`;
+  corpo vindo da prosa do CHANGELOG). Duas falhas, ambas corrigidas para a
+  frente no PR #1323: (a) o **Deploy** (imagem ghcr) caiu no builder porque o
+  Dockerfile não copiava `bridge/` e o `garraia-channels` embute o bridge
+  WhatsApp com `include_str!` — a imagem `v0.4.3` foi republicada por
+  `workflow_dispatch` do branch `release/v0.4.3-docker` (= `05537bd` + só os
+  dois commits de fix), sem mover o tag; (b) o job **`package-linux`** caiu no
+  passo do AppImage aarch64 (`cd "$RUNNER_TEMP"` antes de caminhos relativos —
+  a primeira release com o binário ARM64 presente expôs o bug), e por isso a
+  v0.4.3 **saiu sem** `garraia-linux-x86_64.{deb,rpm,AppImage}`. Não se
+  redisparou o `release.yml`: o `softprops/action-gh-release@v3` sobrescreve
+  assets de mesmo nome e os binários crus têm de ficar byte-idênticos (regra
+  15). Best-effort por política (`docs/releasing.md`); volta na próxima.
 
 ### Issues fechadas nesta rodada
 
