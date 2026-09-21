@@ -4,6 +4,7 @@
 // git blame on a 1.9kloc file — inner allow at module scope.
 #![allow(clippy::items_after_test_module)]
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
@@ -403,6 +404,157 @@ enum DispatchOutcome {
     /// nome da tool, contagem da janela e o input repetido, para que as
     /// quatro copias do loop nao tenham cada uma o seu texto de erro.
     BudgetExceeded { mensagem: String },
+}
+
+/// #1226 S-B: o nome intrinseco de `tool_program`. Nao e uma `Tool`
+/// registrada em `self.tools` — `dispatch_tool_call` intercepta este nome
+/// antes de `find_tool`, e `AgentRuntime::executar_tool_program` e quem
+/// resolve cada passo, sempre pelo `find_tool` real e pelo mesmo
+/// `dispatch_tool_call`.
+const TOOL_PROGRAM_NAME: &str = "tool_program";
+
+/// Teto de passos de um `tool_program` (#1226 S-B, criterio da issue).
+const MAX_PROGRAM_STEPS: usize = 16;
+
+/// Teto agregado do `tool_program` inteiro, **alem** do timeout por passo
+/// que `budget.timeout()` ja aplica em cada `dispatch_tool_call` (#1226
+/// S-B). Sem isto, um programa de `MAX_PROGRAM_STEPS` passos herdaria so o
+/// produto `passos * timeout_por_passo` como teto implicito — este valor e
+/// um limite explicito e independente, defesa em profundidade contra um
+/// perfil com `GARRA_TOOL_TIMEOUT_SECS` generoso.
+///
+/// 120s, e nao um numero maior: sob o orcamento padrao (10 chamadas por
+/// turno — #979, o modo nunca levanta este teto) um `tool_program` cabe no
+/// maximo 9 passos internos por turno de qualquer forma, entao um teto
+/// agregado maior que `9 * tool_timeout_secs` nunca dispararia sob config
+/// padrao, virando defesa morta. 120s ainda e generoso para o caso comum
+/// (passos rapidos, sem LLM aninhado) e aperta de verdade quando o operador
+/// sobe `GARRA_TOOL_TIMEOUT_SECS`.
+const PROGRAM_AGGREGATE_TIMEOUT_SECS: u64 = 120;
+
+/// A definicao que o modelo ve na lista de `tools` do `LlmRequest` — o
+/// unico lugar onde `tool_program` se torna alcancavel. Nao vem de
+/// `self.tools` (nao e uma `Tool` registrada): `AgentRuntime::
+/// tool_definitions` a anexa incondicionalmente, e o MESMO filtro
+/// `portao.permite(&d.name)` que ja roda nos tres pontos de montagem do
+/// turno decide se o modelo chega a ve-la.
+fn definicao_tool_program() -> ToolDefinition {
+    ToolDefinition {
+        name: TOOL_PROGRAM_NAME.to_string(),
+        description: format!(
+            "Executa uma sequencia de ate {MAX_PROGRAM_STEPS} chamadas de ferramenta em \
+             um unico turno, sem voltar ao modelo entre passos. Cada passo passa pelo \
+             mesmo portao de seguranca do modo atual — um passo negado encerra o \
+             programa. Use `as` para nomear a saida de um passo quando ela for um numero \
+             inteiro, e `\"$nome\"` no `args` de um passo seguinte para reusa-la (so \
+             valores inteiros sao substituidos)."
+        ),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_PROGRAM_STEPS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {
+                                "type": "string",
+                                "description": "Nome da ferramenta a executar neste passo."
+                            },
+                            "args": {
+                                "description": "Entrada da ferramenta. Um valor string igual \
+                                    a \"$nome\" e substituido pelo inteiro salvo com esse \
+                                    nome por um passo anterior."
+                            },
+                            "as": {
+                                "type": "string",
+                                "description": "Nome de variavel para guardar a saida deste \
+                                    passo, so quando ela for um numero inteiro."
+                            }
+                        },
+                        "required": ["tool"]
+                    }
+                }
+            },
+            "required": ["steps"]
+        }),
+    }
+}
+
+/// Um passo interpretado de `tool_program.steps` (#1226 S-B).
+struct PassoDoPrograma {
+    tool: String,
+    args: serde_json::Value,
+    salvar_como: Option<String>,
+}
+
+/// Le `{"steps": [...]}` do input de `tool_program`. Erro de forma (sem
+/// `steps`, passo sem `tool`) volta como texto simples — quem chama envolve
+/// em `Ok(ToolOutput::error(..))`, nunca aborta o turno: e um programa mal
+/// formado, nao um orcamento estourado.
+fn interpretar_passos_do_programa(
+    input: &serde_json::Value,
+) -> std::result::Result<Vec<PassoDoPrograma>, String> {
+    let steps = input
+        .get("steps")
+        .and_then(|s| s.as_array())
+        .ok_or_else(|| "tool_program precisa de `steps: []`".to_string())?;
+    if steps.is_empty() {
+        return Err("tool_program precisa de ao menos um passo em `steps`".to_string());
+    }
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, passo)| {
+            let tool = passo
+                .get("tool")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| format!("passo {i}: falta `tool`"))?
+                .to_string();
+            let args = passo
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let salvar_como = passo.get("as").and_then(|a| a.as_str()).map(str::to_string);
+            Ok(PassoDoPrograma {
+                tool,
+                args,
+                salvar_como,
+            })
+        })
+        .collect()
+}
+
+/// Substitui, recursivamente, todo valor string exatamente igual a `"$nome"`
+/// pelo inteiro salvo sob `nome` (#1226 S-B). Substituicao **so de valor
+/// inteiro**, de proposito: ao contrario do prototipo descontinuado de
+/// `garraia-tools` (que reusava qualquer string, na integra), aqui o valor
+/// substituido sai como `serde_json::Value::Number`, nunca como texto — um
+/// passo nao consegue injetar conteudo arbitrario de outro passo num campo
+/// sensivel (caminho, comando) via `$var`, so um numero.
+fn substituir_vars_inteiras(valor: &mut serde_json::Value, vars: &HashMap<String, i64>) {
+    match valor {
+        serde_json::Value::String(s) => {
+            if let Some(nome) = s.strip_prefix('$')
+                && let Some(&n) = vars.get(nome)
+            {
+                *valor = serde_json::json!(n);
+            }
+        }
+        serde_json::Value::Array(itens) => {
+            for item in itens {
+                substituir_vars_inteiras(item, vars);
+            }
+        }
+        serde_json::Value::Object(mapa) => {
+            for v in mapa.values_mut() {
+                substituir_vars_inteiras(v, vars);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl AgentRuntime {
@@ -907,7 +1059,8 @@ impl AgentRuntime {
     }
 
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools
+        let mut defs: Vec<ToolDefinition> = self
+            .tools
             .read()
             .unwrap()
             .iter()
@@ -916,7 +1069,11 @@ impl AgentRuntime {
                 description: r.tool.description().to_string(),
                 input_schema: r.tool.input_schema(),
             })
-            .collect()
+            .collect();
+        // #1226 S-B: intrinseca, nunca registrada em `self.tools` — ver
+        // `definicao_tool_program`.
+        defs.push(definicao_tool_program());
+        defs
     }
 
     /// A tool registrada com este nome, se houver.
@@ -2387,14 +2544,32 @@ impl AgentRuntime {
             });
         }
 
-        let output = match self.find_tool(name) {
-            Some(tool) => {
-                match timeout(budget.timeout(), tool.execute(context, input.clone())).await {
-                    Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                    Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
-                }
+        let output = if name == TOOL_PROGRAM_NAME {
+            // #1226 S-B: teto agregado, alem do timeout por passo que cada
+            // `dispatch_tool_call` recursivo ja aplica dentro de
+            // `executar_tool_program`.
+            match timeout(
+                std::time::Duration::from_secs(PROGRAM_AGGREGATE_TIMEOUT_SECS),
+                self.executar_tool_program(portao, budget, sink, context, id, input),
+            )
+            .await
+            {
+                Ok(Ok(saida)) => saida,
+                Ok(Err(mensagem)) => return DispatchOutcome::BudgetExceeded { mensagem },
+                Err(_elapsed) => ToolOutput::error(format!(
+                    "tool_program excedeu o teto agregado de {PROGRAM_AGGREGATE_TIMEOUT_SECS}s"
+                )),
             }
-            None => ToolOutput::error(format!("unknown tool: {}", name)),
+        } else {
+            match self.find_tool(name) {
+                Some(tool) => {
+                    match timeout(budget.timeout(), tool.execute(context, input.clone())).await {
+                        Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
+                        Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
+                    }
+                }
+                None => ToolOutput::error(format!("unknown tool: {}", name)),
+            }
         };
         info!("tool '{}' result: is_error={}", name, output.is_error);
 
@@ -2429,6 +2604,144 @@ impl AgentRuntime {
             tool_use_id: id.to_string(),
             content: output.content,
         })
+    }
+
+    /// #1226 S-B: intrinseca de `tool_program`, interceptada dentro de
+    /// [`AgentRuntime::dispatch_tool_call`] — nao e uma `Tool` registrada em
+    /// `self.tools`.
+    ///
+    /// Cada passo resolve pelo mesmo `find_tool` e passa pelo mesmo
+    /// `dispatch_tool_call` do loop normal (chamada recursiva — o teste
+    /// `despacho_de_tool_tem_um_unico_ponto_de_gate` cobra que a consulta
+    /// ao portao continue existindo num unico lugar no fonte): um programa
+    /// nao alcanca ferramenta que o loop normal negaria no mesmo `ExecContext`,
+    /// nem pula o orcamento por passo, nem a deteccao de loop, nem os
+    /// eventos de tool.
+    ///
+    /// `Err` sai daqui so quando o **orcamento** estoura (mesma classe de
+    /// falha que ja aborta o turno inteiro no loop principal: chamada
+    /// `dispatch_tool_call` que detectou loop, ou `pode_chamar_ferramenta`
+    /// que voltou falso no meio do programa). Qualquer outro desfecho —
+    /// passo negado pelo gate, passo que pede confirmacao humana, passo com
+    /// erro, programa mal formado, aninhamento de `tool_program` — volta
+    /// como `Ok(ToolOutput)`, para o modelo ler e seguir: nao e motivo para
+    /// abortar o turno.
+    async fn executar_tool_program(
+        &self,
+        portao: &crate::modes::ToolGate,
+        budget: &mut ExecutionBudget,
+        sink: Option<&TurnSink>,
+        context: &ToolContext,
+        id: &str,
+        input: &serde_json::Value,
+    ) -> std::result::Result<ToolOutput, String> {
+        let passos = match interpretar_passos_do_programa(input) {
+            Ok(p) => p,
+            Err(e) => return Ok(ToolOutput::error(e)),
+        };
+        if passos.len() > MAX_PROGRAM_STEPS {
+            return Ok(ToolOutput::error(format!(
+                "tool_program com {} passos excede o orcamento de {MAX_PROGRAM_STEPS}",
+                passos.len()
+            )));
+        }
+
+        let mut vars: HashMap<String, i64> = HashMap::new();
+        let mut executados = Vec::with_capacity(passos.len());
+
+        for (i, passo) in passos.iter().enumerate() {
+            // Recusa de aninhamento: o passo nunca chega a um segundo
+            // `dispatch_tool_call` para `tool_program` (o guard e aqui, nao
+            // so no runtime da recursao).
+            if passo.tool == TOOL_PROGRAM_NAME {
+                return Ok(ToolOutput::error(format!(
+                    "passo {i}: tool_program nao pode chamar tool_program \
+                     (aninhamento recusado)"
+                )));
+            }
+            if !budget.pode_chamar_ferramenta() {
+                return Err(format!(
+                    "execution budget exceeded no passo {i} do tool_program: {}",
+                    budget.status()
+                ));
+            }
+
+            let mut args = passo.args.clone();
+            substituir_vars_inteiras(&mut args, &vars);
+            let step_id = format!("{id}#{i}");
+
+            // Box::pin: dispatch_tool_call <-> executar_tool_program e
+            // recursao mutua de async fn — sem o box o compilador nao
+            // consegue calcular um tamanho finito para o par de futures.
+            let desfecho = Box::pin(self.dispatch_tool_call(
+                portao,
+                budget,
+                sink,
+                context,
+                &step_id,
+                &passo.tool,
+                &args,
+            ))
+            .await;
+
+            match desfecho {
+                DispatchOutcome::Result(ContentBlock::ToolResult { content, .. }) => {
+                    if let Some(nome_var) = &passo.salvar_como
+                        && let Ok(n) = content.trim().parse::<i64>()
+                    {
+                        vars.insert(nome_var.clone(), n);
+                    }
+                    executados.push(serde_json::json!({
+                        "step": i,
+                        "tool": passo.tool,
+                        "ok": true,
+                        "output": content,
+                    }));
+                }
+                DispatchOutcome::Denied(ContentBlock::ToolResult { content, .. }) => {
+                    executados.push(serde_json::json!({
+                        "step": i,
+                        "tool": passo.tool,
+                        "ok": false,
+                        "denied": content,
+                    }));
+                    return Ok(ToolOutput::error(
+                        serde_json::json!({
+                            "steps": executados,
+                            "parou_no_passo": i,
+                            "motivo": "negado pelo gate do modo",
+                        })
+                        .to_string(),
+                    ));
+                }
+                DispatchOutcome::Paused { prompt, .. } => {
+                    return Ok(ToolOutput::confirmation_request(
+                        serde_json::json!({
+                            "steps": executados,
+                            "pausado_no_passo": i,
+                            "prompt": prompt,
+                        })
+                        .to_string(),
+                    ));
+                }
+                DispatchOutcome::BudgetExceeded { mensagem } => {
+                    return Err(mensagem);
+                }
+                DispatchOutcome::Result(_) | DispatchOutcome::Denied(_) => {
+                    // `dispatch_tool_call` so constroi `ToolResult` para
+                    // estas duas variantes; nunca deveria acontecer, mas o
+                    // repo nao usa `unwrap`/`unreachable!` em codigo de
+                    // producao — vira erro de passo, nao panico.
+                    return Ok(ToolOutput::error(format!(
+                        "passo {i}: resposta inesperada do despacho de ferramenta"
+                    )));
+                }
+            }
+        }
+
+        Ok(ToolOutput::success(
+            serde_json::json!({ "steps": executados }).to_string(),
+        ))
     }
 
     // ── GAR-210: Retry + fallback helpers ────────────────────────────────────
@@ -4248,7 +4561,551 @@ mod tests {
         assert_eq!(copias, 1, "esperava 1 ponto de despacho, achei {copias}");
     }
 
-    /// O `working_dir` do #980 chega ao `ToolContext`.
+    // ── #1226 S-B: tool_program intrinseca, gate por passo ──────────────────
+
+    /// Eco de inteiro: devolve o campo `n` tal qual, para testar
+    /// encadeamento de `$var` (so valor inteiro sobrevive a substituicao).
+    struct EcoInteiroTool;
+
+    #[async_trait]
+    impl Tool for EcoInteiroTool {
+        fn name(&self) -> &str {
+            "eco_inteiro"
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _c: &ToolContext,
+            i: serde_json::Value,
+        ) -> garraia_common::Result<ToolOutput> {
+            let texto = match i.get("n") {
+                Some(v) => v.to_string(),
+                None => i.to_string(),
+            };
+            Ok(ToolOutput::success(texto))
+        }
+    }
+
+    /// Sempre pede confirmacao humana (GAR-187), para testar a pausa de um
+    /// passo de `tool_program`.
+    struct ToolQuePedeConfirmacao;
+
+    #[async_trait]
+    impl Tool for ToolQuePedeConfirmacao {
+        fn name(&self) -> &str {
+            "precisa_confirmar"
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _c: &ToolContext,
+            _i: serde_json::Value,
+        ) -> garraia_common::Result<ToolOutput> {
+            Ok(ToolOutput::confirmation_request("confirme a acao perigosa"))
+        }
+    }
+
+    /// Dorme o tanto pedido em `segundos`, para testar o teto agregado sem
+    /// depender de relogio real (`#[tokio::test(start_paused = true)]`).
+    struct FerramentaLenta;
+
+    #[async_trait]
+    impl Tool for FerramentaLenta {
+        fn name(&self) -> &str {
+            "lenta"
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _c: &ToolContext,
+            i: serde_json::Value,
+        ) -> garraia_common::Result<ToolOutput> {
+            let segundos = i.get("segundos").and_then(|v| v.as_u64()).unwrap_or(1);
+            tokio::time::sleep(std::time::Duration::from_secs(segundos)).await;
+            Ok(ToolOutput::success("feito"))
+        }
+    }
+
+    /// Provider que, na primeira volta, pede `tool_program` com o programa
+    /// dado; na segunda, encerra com texto. Registra cada `ToolResult` que
+    /// recebeu de volta, para inspecionar o que o `tool_program` devolveu.
+    struct RodaPrograma {
+        programa: serde_json::Value,
+        resultados: std::sync::Mutex<Vec<String>>,
+        voltas: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RodaPrograma {
+        fn novo(programa: serde_json::Value) -> Self {
+            Self {
+                programa,
+                resultados: std::sync::Mutex::new(Vec::new()),
+                voltas: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn resultados(&self) -> Vec<String> {
+            self.resultados.lock().expect("lock").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for RodaPrograma {
+        fn provider_id(&self) -> &str {
+            "roda_programa"
+        }
+
+        async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+            for m in &request.messages {
+                if let MessagePart::Parts(blocos) = &m.content {
+                    for b in blocos {
+                        if let ContentBlock::ToolResult { content, .. } = b {
+                            self.resultados.lock().expect("lock").push(content.clone());
+                        }
+                    }
+                }
+            }
+
+            let volta = self
+                .voltas
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let content = if volta == 0 {
+                vec![ContentBlock::ToolUse {
+                    id: "programa-1".to_string(),
+                    name: TOOL_PROGRAM_NAME.to_string(),
+                    input: self.programa.clone(),
+                }]
+            } else {
+                vec![ContentBlock::Text {
+                    text: "concluido".to_string(),
+                }]
+            };
+            Ok(LlmResponse {
+                content,
+                model: "modelo-de-teste".to_string(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// O modelo ve `tool_program` na lista de tools, e o schema exige
+    /// `steps`.
+    #[test]
+    fn tool_program_aparece_nas_definicoes_do_runtime() {
+        let rt = AgentRuntime::new();
+        let defs = rt.tool_definitions();
+        let def = defs
+            .iter()
+            .find(|d| d.name == TOOL_PROGRAM_NAME)
+            .expect("tool_program tem de estar nas definicoes");
+        assert_eq!(def.input_schema["required"], serde_json::json!(["steps"]));
+    }
+
+    /// Criterio de aceite da #1226 S-B: um pedido multi-tool resolve num
+    /// unico turno, passo 2 recebe o inteiro que o passo 1 guardou via `as`
+    /// e `$meio` — substituido como NUMERO, nunca como texto.
+    #[tokio::test]
+    async fn tool_program_executa_passos_em_sequencia_com_substituicao_de_var() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+
+        let programa = serde_json::json!({
+            "steps": [
+                { "tool": "eco_inteiro", "args": { "n": 41 }, "as": "meio" },
+                { "tool": "eco_inteiro", "args": { "n": "$meio" } }
+            ]
+        });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        let resposta = rt
+            .process_message_with_agent_config(
+                "sessao-tp-1",
+                "roda o programa",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("o turno tem de terminar");
+
+        assert_eq!(resposta, "concluido");
+        let resultados = provider.resultados();
+        assert_eq!(
+            resultados.len(),
+            1,
+            "um so ToolResult: o do tool_program agregado, nao um por passo"
+        );
+        let corpo: serde_json::Value = serde_json::from_str(&resultados[0]).expect("json");
+        let passos = corpo["steps"].as_array().expect("steps");
+        assert_eq!(passos.len(), 2);
+        assert_eq!(passos[0]["output"], "41");
+        assert_eq!(
+            passos[1]["output"], "41",
+            "passo 2 recebeu o inteiro do passo 1 via $meio, nao o texto \"$meio\": {corpo}"
+        );
+    }
+
+    /// "so valor inteiro": saida que nao parseia como inteiro nao vira
+    /// variavel, e o passo seguinte recebe o literal `"$nome"` sem
+    /// substituicao (a mesma regra do prototipo descontinuado para
+    /// substituicao parcial).
+    #[tokio::test]
+    async fn tool_program_nao_substitui_saida_que_nao_e_inteiro() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+
+        let programa = serde_json::json!({
+            "steps": [
+                { "tool": "eco_inteiro", "args": { "n": "texto" }, "as": "v" },
+                { "tool": "eco_inteiro", "args": { "n": "$v" } }
+            ]
+        });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        rt.process_message_with_agent_config(
+            "sessao-tp-2",
+            "roda",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &ExecContext::default(),
+        )
+        .await
+        .expect("turno");
+
+        let resultados = provider.resultados();
+        let corpo: serde_json::Value = serde_json::from_str(&resultados[0]).expect("json");
+        assert_eq!(
+            corpo["steps"][1]["output"], "\"$v\"",
+            "sem inteiro para substituir, o literal segue intacto: {corpo}"
+        );
+    }
+
+    /// Nucleo da #1226 S-B: um passo negado pelo gate do modo encerra o
+    /// programa, e os passos seguintes **nao rodam** — o mesmo portao do
+    /// loop normal, so que por passo.
+    #[tokio::test]
+    async fn tool_program_para_no_passo_negado_pelo_modo_e_nao_roda_o_resto() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+        let executou_negada = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        rt.register_tool(Box::new(ToolQueMarca {
+            nome: "negada",
+            executou: Arc::clone(&executou_negada),
+        }));
+
+        let perfil = crate::modes::ModeProfile::from_custom(
+            crate::modes::AgentMode::Search,
+            "so-eco",
+            None,
+            &serde_json::json!({ "allow": ["tool_program", "eco_inteiro"] }),
+            &serde_json::json!({}),
+        );
+        let exec = ExecContext {
+            custom_profile: Some(perfil),
+            ..Default::default()
+        };
+
+        let programa = serde_json::json!({
+            "steps": [
+                { "tool": "eco_inteiro", "args": { "n": 1 } },
+                { "tool": "negada", "args": {} },
+                { "tool": "eco_inteiro", "args": { "n": 2 } }
+            ]
+        });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        rt.process_message_with_agent_config(
+            "sessao-tp-3",
+            "roda",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &exec,
+        )
+        .await
+        .expect("turno");
+
+        assert!(
+            !executou_negada.load(std::sync::atomic::Ordering::SeqCst),
+            "ferramenta fora da whitelist rodou dentro do tool_program"
+        );
+        let resultados = provider.resultados();
+        let corpo: serde_json::Value = serde_json::from_str(&resultados[0]).expect("json");
+        let passos = corpo["steps"].as_array().expect("steps");
+        assert_eq!(
+            passos.len(),
+            2,
+            "passo 0 (sucesso) e passo 1 (a recusa) entram no relatorio; o \
+             passo 2 nao roda e nao aparece: {corpo}"
+        );
+        assert_eq!(passos[0]["ok"], true);
+        assert_eq!(passos[1]["ok"], false);
+        assert!(
+            passos[1]["denied"]
+                .as_str()
+                .is_some_and(|s| s.contains("nao e permitida no modo")),
+            "{corpo}"
+        );
+        assert_eq!(corpo["parou_no_passo"], 1);
+    }
+
+    /// `tool_program` nao pode chamar `tool_program` — aninhamento recusado
+    /// no passo, sem tentar um segundo despacho recursivo.
+    #[tokio::test]
+    async fn tool_program_recusa_chamar_a_si_mesmo() {
+        let rt = AgentRuntime::new();
+        let programa = serde_json::json!({
+            "steps": [ { "tool": "tool_program", "args": { "steps": [] } } ]
+        });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        rt.process_message_with_agent_config(
+            "sessao-tp-4",
+            "roda",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &ExecContext::default(),
+        )
+        .await
+        .expect("turno");
+
+        let resultados = provider.resultados();
+        assert!(
+            resultados[0].contains("aninhamento recusado"),
+            "{resultados:?}"
+        );
+    }
+
+    /// Orcamento de passos do programa: mais que `MAX_PROGRAM_STEPS` e
+    /// erro do `tool_program`, nao do turno.
+    #[tokio::test]
+    async fn tool_program_recusa_mais_passos_que_o_orcamento() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+        let passos: Vec<_> = (0..(MAX_PROGRAM_STEPS + 1))
+            .map(|i| serde_json::json!({ "tool": "eco_inteiro", "args": { "n": i } }))
+            .collect();
+        let programa = serde_json::json!({ "steps": passos });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        rt.process_message_with_agent_config(
+            "sessao-tp-5",
+            "roda",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &ExecContext::default(),
+        )
+        .await
+        .expect("turno: programa mal formado nao aborta");
+
+        let resultados = provider.resultados();
+        assert!(
+            resultados[0].contains("excede o orcamento"),
+            "{resultados:?}"
+        );
+    }
+
+    /// Orcamento **por passo** dentro do proprio programa: o turno inteiro
+    /// tem teto de 10 chamadas (#979, o modo nunca levanta), e um
+    /// `tool_program` de 16 passos nao pode contornar isso so porque nao
+    /// volta ao modelo entre passos.
+    #[tokio::test]
+    async fn tool_program_respeita_o_orcamento_de_chamadas_do_turno() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+        let passos: Vec<_> = (0..MAX_PROGRAM_STEPS)
+            .map(|i| serde_json::json!({ "tool": "eco_inteiro", "args": { "n": i } }))
+            .collect();
+        let programa = serde_json::json!({ "steps": passos });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        let erro = rt
+            .process_message_with_agent_config(
+                "sessao-tp-6",
+                "roda",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+            .expect_err("16 passos + a chamada do proprio tool_program estouram o teto de 10");
+
+        let msg = erro.to_string();
+        assert!(msg.contains("execution budget exceeded"), "{msg}");
+        assert!(msg.contains("tool_program"), "{msg}");
+    }
+
+    /// Um passo que pede confirmacao humana (GAR-187) pausa o turno — o
+    /// `prompt` sobe ate quem chamou o turno, como qualquer outra tool.
+    #[tokio::test]
+    async fn tool_program_pausa_no_passo_que_pede_confirmacao() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+        rt.register_tool(Box::new(ToolQuePedeConfirmacao));
+
+        let programa = serde_json::json!({
+            "steps": [
+                { "tool": "eco_inteiro", "args": { "n": 7 } },
+                { "tool": "precisa_confirmar", "args": {} },
+                { "tool": "eco_inteiro", "args": { "n": 99 } }
+            ]
+        });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        let resposta = rt
+            .process_message_with_agent_config(
+                "sessao-tp-7",
+                "roda",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("turno pausado nao e erro");
+
+        assert!(
+            resposta.contains("confirme a acao perigosa"),
+            "o prompt do passo pausado tem de subir: {resposta}"
+        );
+        assert_eq!(
+            provider.voltas.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "o turno pausou: nunca houve uma segunda volta ao modelo"
+        );
+    }
+
+    /// Teto agregado (alem do timeout por passo): 6 passos de 25s cada
+    /// somam 150s de trabalho, acima do teto agregado (120s) mas cada
+    /// passo, sozinho, fica abaixo do timeout por passo (30s padrao) — e
+    /// abaixo do teto de 10 chamadas por turno. Relogio virtual
+    /// (`start_paused`): nenhum segundo de parede real e gasto.
+    #[tokio::test(start_paused = true)]
+    async fn tool_program_respeita_o_teto_agregado_alem_do_timeout_por_passo() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(FerramentaLenta));
+
+        // `passo: i` varia o input so para nao disparar a deteccao de loop
+        // (#1295, 3 chamadas com a MESMA assinatura); nao muda a duracao.
+        let passos: Vec<_> = (0..6)
+            .map(|i| serde_json::json!({ "tool": "lenta", "args": { "segundos": 25, "passo": i } }))
+            .collect();
+        let programa = serde_json::json!({ "steps": passos });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        let resposta = rt
+            .process_message_with_agent_config(
+                "sessao-tp-8",
+                "roda",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+            .expect("teto agregado e erro de ferramenta, nao aborta o turno");
+
+        assert_eq!(resposta, "concluido");
+        let resultados = provider.resultados();
+        assert!(resultados[0].contains("teto agregado"), "{resultados:?}");
+    }
+
+    /// Programa mal formado (sem `steps`) e erro legivel, nao panico nem
+    /// abort do turno.
+    #[tokio::test]
+    async fn tool_program_sem_steps_e_erro_legivel() {
+        let rt = AgentRuntime::new();
+        let provider = Arc::new(RodaPrograma::novo(serde_json::json!({})));
+        rt.register_provider(provider.clone());
+
+        rt.process_message_with_agent_config(
+            "sessao-tp-9",
+            "roda",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &ExecContext::default(),
+        )
+        .await
+        .expect("turno");
+
+        let resultados = provider.resultados();
+        assert!(
+            resultados[0].contains("precisa de `steps"),
+            "{resultados:?}"
+        );
+    }
+
+    /// O working_dir do #980 chega ao `ToolContext`.
     #[test]
     fn o_working_dir_chega_ao_contexto_de_ferramenta() {
         use crate::exec_context::ExecContext;
