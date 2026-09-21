@@ -3268,7 +3268,10 @@ mod tests {
     /// tool (nome + input identicos). Nao precisa de tool registrada — o
     /// `registrar_chamada` acontece antes do portao, dentro da
     /// `dispatch_tool_call`, entao a janela de 3 enche e o detector corta na
-    /// terceira.
+    /// terceira. O nome e `file_read` porque o erro so mostra o campo
+    /// allow-listed da ferramenta (`path`, no caso), e o teste quer ver o
+    /// valor chegar ponta a ponta; tool sem caso no `summarize_tool_input`
+    /// mostra so as chaves, e isso e coberto no `execution_budget`.
     struct EmLoop;
 
     #[async_trait::async_trait]
@@ -3281,8 +3284,8 @@ mod tests {
             Ok(LlmResponse {
                 content: vec![ContentBlock::ToolUse {
                     id: "t-loop".to_string(),
-                    name: "eco".to_string(),
-                    input: serde_json::json!({ "caminho": "/tmp/alvo-repetido" }),
+                    name: "file_read".to_string(),
+                    input: serde_json::json!({ "path": "/tmp/alvo-repetido" }),
                 }],
                 model: "m".to_string(),
                 stop_reason: None,
@@ -3298,10 +3301,10 @@ mod tests {
                 Ok(StreamEvent::ToolUseStart {
                     index: 0,
                     id: "t-loop".to_string(),
-                    name: "eco".to_string(),
+                    name: "file_read".to_string(),
                 }),
                 Ok(StreamEvent::InputJsonDelta(
-                    "{\"caminho\":\"/tmp/alvo-repetido\"}".to_string(),
+                    "{\"path\":\"/tmp/alvo-repetido\"}".to_string(),
                 )),
                 Ok(StreamEvent::ContentBlockStop { index: 0 }),
                 Ok(StreamEvent::MessageStop),
@@ -3314,13 +3317,13 @@ mod tests {
     }
 
     /// #1295: o erro do detector de loop nao pode ser seco. Quem le o erro
-    /// volta a ser o LLM (no proximo turno) ou o humano no log — "tool loop
-    /// detected: eco" nao diz quantas voltas deram nem O QUE estava
-    /// repetindo, e sem o payload repetido nao ha como o modelo corrigir.
-    /// O diagnostico minimo: nome da tool, a contagem da janela (3) e o
-    /// input repetido, truncado. Passa pelo despacho unico do #1311: a
-    /// mensagem nasce na `dispatch_tool_call` e as copias do loop so a
-    /// devolvem.
+    /// e o humano no log, no ledger de runs ou no cartao da CLI — "tool loop
+    /// detected: file_read" nao diz quantas voltas deram nem O QUE estava
+    /// repetindo, e sem isso nao ha como corrigir. O diagnostico minimo:
+    /// nome da tool, a contagem da janela (3) e o campo allow-listed do input
+    /// repetido, redigido e truncado pelo mesmo `summarize_tool_input` da
+    /// #937. Passa pelo despacho unico do #1311: a mensagem nasce na
+    /// `dispatch_tool_call` e as copias do loop so a devolvem.
     #[tokio::test]
     async fn loop_detectado_traz_input_repetido_no_erro() {
         let runtime = AgentRuntime::new();
@@ -3335,7 +3338,7 @@ mod tests {
         .expect_err("loop de tool identica tem de virar erro");
         let msg = erro.to_string();
         assert!(
-            msg.contains("eco"),
+            msg.contains("file_read"),
             "o erro precisa nomear a tool em loop; veio: {msg}"
         );
         assert!(
@@ -3343,8 +3346,8 @@ mod tests {
             "o erro precisa dizer a contagem da janela; veio: {msg}"
         );
         assert!(
-            msg.contains("alvo-repetido"),
-            "o erro precisa mostrar o input repetido (truncado); veio: {msg}"
+            msg.contains("input repetido: /tmp/alvo-repetido"),
+            "o erro precisa mostrar o campo allow-listed do input repetido; veio: {msg}"
         );
     }
 
