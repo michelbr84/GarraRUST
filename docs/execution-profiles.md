@@ -77,8 +77,11 @@ secao) e remova a env `GARRAIA_EXECUTION_PROFILE`; reinicie o gateway.
 
 ## O que "poder total dentro do pod" libera
 
-Para o **dono** do WhatsApp pessoal (ver abaixo) em conversa 1:1, e para
-qualquer sessao que nao escolheu modo, o piso passa de `search` para `code`:
+Para o **dono** do WhatsApp pessoal (ver abaixo) em conversa 1:1 — e so
+para ele, numa sessao que nao escolheu `/mode` — o piso passa de `search` para
+`code`. Todo o resto continua no piso de `standard`: remetente admitido que nao
+e dono, contato so pareado, qualquer mensagem de grupo, e os outros canais (o
+perfil nao muda o piso deles). No turno do dono:
 o `ToolGate` do modo `code` nao tem whitelist, entao passa `file_read`,
 `file_write`, `bash`, `run_tests`, toda ferramenta de servidor MCP registrado
 (`filesystem__write_file` inclusa) e subagentes. E o mesmo `ToolGate` de
@@ -158,19 +161,23 @@ em qual dos dois estava. A partir da v0.4.4:
 
 | Perfil | Raiz |
 |---|---|
-| `standard` | `agent.file_roots` (as mesmas raizes do jail nativo), ou `<data_dir>/workspace` se vazio |
+| `standard` | `agent.file_roots` da config, ou `<data_dir>/workspace` se vazio. A env `GARRAIA_FILE_ROOTS` e o `working_dir` da sessao, que o jail nativo tambem soma, **nao** entram aqui |
 | `isolated-pod` | `execution.pod_root`, ou `<data_dir>/workspace` se ausente |
 
 A raiz efetiva e logada no provisionamento e aparece no check
-`mcp.filesystem_root` do `/api/diagnostics`.
+`mcp.filesystem_root` do `/api/diagnostics`. No primeiro boot so o
+`<data_dir>/workspace` default e criado; uma raiz **declarada**
+(`agent.file_roots`, `execution.pod_root`) tem de existir — se nao existe, o
+autoprovisionamento nao acontece (um `warn!` diz qual raiz faltou) e nada e
+criado em lugar dela, nunca um diretorio mais largo.
 
 **Instalacao anterior a v0.4.4.** O `mcp.json` ja gravado **nunca e
 reescrito** (a unica porta do autoprovisionamento e "arquivo ausente"), entao
 o `$HOME` fica la. Em `standard`, o diagnostico avisa (`mcp.filesystem_root`
-= `Warning`: o `filesystem` persistido aponta para fora do jail) com o passo
+= `Warning`: o `filesystem` persistido aponta para fora das raizes declaradas) com o passo
 para corrigir. Para corrigir: edite `<config_dir>/mcp.json` e troque o ultimo
-argumento do `filesystem` por um diretorio dentro do jail (uma das
-`agent.file_roots`, ou `<data_dir>/workspace`); reinicie o gateway. Em
+argumento do `filesystem` por um diretorio dentro das raizes declaradas (uma
+das `agent.file_roots`, ou `<data_dir>/workspace`); reinicie o gateway. Em
 `isolated-pod` o check e `Ok` — o pod e a fronteira.
 
 `GARRAIA_DISABLE_MCP_AUTOPROVISION=1` continua desligando o provisionamento
@@ -182,7 +189,7 @@ por completo.
 |---|---|
 | Log de boot | `standard`: `INFO execution profile = standard (fonte: …)`. `isolated-pod`: um `WARN` unico com origem, `pod_root`, o que foi liberado, a lista do que nao e isolado e como reverter. |
 | `garra config check` | `execution profile  : isolated-pod (source: env)` no sumario; `Error` em valor invalido; `Warning` para `execution.pod_root` fora de `isolated-pod` ou relativo, e para `channels.whatsapp_linked.owners` fora de `isolated-pod` (so a contagem, nunca as identidades). |
-| `GET /api/diagnostics` | Check `execution.profile`: `Ok` em `standard`; em `isolated-pod` **`Warning`** com origem, piso do dono, numero de donos, raiz do MCP e `next_step` ("confirme que este processo roda num pod isolado; para reverter: `execution.profile = standard`"). Check `mcp.filesystem_root`: `Warning` em `standard` quando o `filesystem` persistido aponta para fora do jail; `Ok` em `isolated-pod`. |
+| `GET /api/diagnostics` | Check `execution.profile`: `Ok` em `standard`; em `isolated-pod` **`Warning`** com origem, piso do dono, numero de donos, raiz do MCP e `next_step` ("confirme que este processo roda num pod isolado; para reverter: `execution.profile = standard`"). Check `mcp.filesystem_root` (le o `mcp.json` e a secao `mcp:` do `config.yml`, que vence): `Warning` em `standard` quando o `filesystem` aponta para fora das raizes declaradas (`agent.file_roots` / `<data_dir>/workspace`); `Ok` em `isolated-pod`. Caminhos dentro do data dir aparecem como `<data_dir>/…`. |
 | `GET /api/settings/effective` | Linha read-only `security.execution_profile` (valor + origem), no molde de `security.sandbox_mode`. |
 | `garra whatsapp status` | Linha com o perfil, o piso do dono e a contagem de donos. |
 | Log por turno do WhatsApp | `phone_last4` + `perfil` (`completo` \| `padrao`) + modo do piso. |
@@ -227,15 +234,15 @@ e `curl -s localhost:3888/api/diagnostics` traz `execution.profile` como
 | Sintoma | Causa provavel / o que fazer |
 |---|---|
 | `isolated-pod` ativo, mas o WhatsApp continua em `search` | (a) `owners` vazio — o perfil completo e so para identidade declarada; o diagnostico diz "0 donos". (b) A mensagem veio de **grupo** — grupo nunca herda. (c) `default_mode` explicito na config — em `isolated-pod` ele vale para o dono tambem; remova a chave para o default `code`. (d) A sessao escolheu `/mode search` — escolha explicita vence o piso. |
-| Gateway nao sobe: `perfil de execucao invalido "…"` | `GARRAIA_EXECUTION_PROFILE` ou `execution.profile` com valor fora de `standard` \| `isolated-pod` (typo, caixa nao importa). Corrija ou remova; e fail-closed de proposito. `garra config check` mostra o mesmo `Error`. |
+| Gateway nao sobe | `GARRAIA_EXECUTION_PROFILE` fora de `standard` \| `isolated-pod` (a env ignora caixa; o log diz `perfil de execucao invalido "…"`), ou `execution.profile` no arquivo fora dessas duas grafias exatas (o arquivo diferencia caixa; o log traz o erro do parser, `unknown variant …`). Corrija ou remova; e fail-closed de proposito. `garra config check` reporta os dois casos como `Error` em `execution.profile` (exit 2). |
 | `config check`: `channels.whatsapp_linked.owners lists N identities but the effective execution profile is standard` | `owners` sem `isolated-pod` nao confere poder nenhum. Ou ligue o perfil (se este processo roda num pod isolado), ou remova `owners`. |
 | `config check`: `execution.pod_root (…) is set but the effective profile is standard` | `pod_root` so vale em `isolated-pod`; a raiz do MCP `filesystem` segue `agent.file_roots` / `<data_dir>/workspace`. |
 | `config check`: `execution.pod_root (…) is not an absolute path` | Use um caminho absoluto pod-local (`/workspace`). |
-| `/api/diagnostics`: `mcp.filesystem_root` = `Warning` em `standard` | `mcp.json` anterior a v0.4.4 com `$HOME` como raiz. Edite o ultimo argumento do `filesystem` para dentro do jail e reinicie. |
+| `/api/diagnostics`: `mcp.filesystem_root` = `Warning` em `standard` | `mcp.json` anterior a v0.4.4 com `$HOME` como raiz (ou uma entrada `filesystem` em `mcp:` do `config.yml`, que vence o `mcp.json`). Troque o ultimo argumento do `filesystem` por um diretorio dentro das raizes declaradas (`agent.file_roots` ou `<data_dir>/workspace`) e reinicie. |
 | `/api/diagnostics`: `execution.profile` = `Warning` e eu nao queria `isolated-pod` | Veja a origem no proprio check: `env` → remova `GARRAIA_EXECUTION_PROFILE` do ambiente do processo (manifest do pod, unit do systemd); `file` → `execution.profile: standard`. Reinicie. |
 | `file_write` do dono e negado mesmo em `isolated-pod` | Nao e o `ToolGate`: e o **jail** das file tools nativas (`agent.file_roots`), que continua valendo. Declare a raiz do pod la tambem. Para o `filesystem__write_file` (MCP) a raiz e `execution.pod_root`. |
 | `bash` recusa `rm -rf …` no pod | Gate de comando arriscado, fail-closed sem canal de confirmacao. Deliberado: o perfil libera ferramentas, nao desliga protecoes. `agent.bash_allowlist` alarga. |
-| A instrucao pos-link diz `garraia start` e eu uso `garra` | A CLI usa o nome do executavel em execucao (`current_exe()`, fallback `garraia`). Os dois nomes sao o mesmo binario (`garra` e symlink/shim). |
+| A instrucao diz `garraia …` e eu uso `garra` | Toda instrucao do WhatsApp (pos-link, `whatsapp status`, `next_step` do `/api/diagnostics`, log do gateway) nomeia o executavel em execucao (`current_exe()`; so `garra` ou `garraia` sao aceitos, qualquer outro nome cai em `garraia`). Os dois nomes sao o mesmo binario (`garra` e symlink/shim). |
 
 ## Veja tambem
 

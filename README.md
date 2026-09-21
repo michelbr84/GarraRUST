@@ -562,6 +562,8 @@ execution:
   pod_root: /workspace       # optional, absolute; MCP filesystem root
 channels:
   whatsapp_linked:
+    type: whatsapp_linked
+    enabled: true
     owners: ["5511999998888"]   # only declared owners, only in 1:1 chats
 ```
 

@@ -115,6 +115,8 @@ execution:
   pod_root: /workspace        # opcional; raiz do MCP filesystem, absoluta
 channels:
   whatsapp_linked:
+    type: whatsapp_linked
+    enabled: true
     owners: ["5511999998888"] # só dono declarado recebe o piso `code`, e só em 1:1
 ```
 

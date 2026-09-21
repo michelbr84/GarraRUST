@@ -18,7 +18,7 @@
   `standard` usa `agent.file_roots` ou `<data_dir>/workspace`; em
   `isolated-pod` usa `execution.pod_root` ou o mesmo workspace; um `mcp.json`
   anterior nunca e reescrito, e o diagnostico avisa quando ele ainda aponta
-  para fora do jail. O jail das file tools nativas, o gate de comando
+  para fora das raizes declaradas. O jail das file tools nativas, o gate de comando
   arriscado do `bash` e `agent.sandbox` continuam ligados: o perfil libera
   ferramentas, nao desliga protecoes. Observabilidade: `WARN` unico no boot
   em `isolated-pod` (o que foi liberado, o que o perfil NAO isola, como
