@@ -133,6 +133,11 @@ Desde plan 0127 (PR-B, 2026-05-14) o instalador encadeia automaticamente:
 2. `garraia init </dev/tty` (o wizard do plan 0126 — detecção de GPU/Ollama, prompts opcionais para instalar Qwen3-14B GGUF, geração de `config.yml` server-friendly),
 3. `garraia start </dev/tty` em foreground.
 
+O instalador deixa dois nomes no PATH: `garraia` (o asset da release) e o alias
+`garra` (symlink relativo para ele) — os comandos `garra …` deste README e os
+hints da própria CLI funcionam como estão; o build do fonte produz `garra`
+direto.
+
 **Toggles** (env vars, todos opt-out):
 - `GARRAIA_SKIP_INIT=1` — pula o wizard.
 - `GARRAIA_SKIP_START=1` — pula o `garraia start` final.
@@ -170,7 +175,8 @@ irm https://garraia.org/install.ps1 | iex
 
 Irmão Windows do `install.sh`, em paridade de comportamento: detecta a
 plataforma, resolve a última release, verifica o download contra o `SHA256SUMS`,
-instala `garraia.exe` em `%LOCALAPPDATA%\Programs\GarraIA`, registra no PATH do
+instala `garraia.exe` em `%LOCALAPPDATA%\Programs\GarraIA` junto com o shim
+`garra.cmd` (para `garra` também funcionar), registra o diretório no PATH do
 usuário e encadeia `init` + `start`. Não exige privilégio de administrador.
 
 > Mesmos canais alternativos do `install.sh`:

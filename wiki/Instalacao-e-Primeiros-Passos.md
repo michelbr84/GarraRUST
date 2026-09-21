@@ -8,6 +8,8 @@ curl -fsSL https://garraia.org/install.sh | sh
 
 O script baixa o binário da release mais recente (verificado por SHA-256 via `SHA256SUMS`), roda `garra init` (wizard de provedor LLM + cofre criptografado de credenciais) e `garra start`.
 
+Ele deixa dois nomes no PATH: `garraia` (o asset da release) e o alias `garra` (symlink para ele) — os dois valem, e os comandos `garra …` desta wiki funcionam como estão.
+
 Variáveis úteis do instalador:
 
 | Variável | Efeito |
@@ -64,7 +66,8 @@ irm https://garraia.org/install.ps1 | iex
 ```
 
 Irmão Windows do `install.sh`: verifica o SHA-256, instala `garraia.exe` em
-`%LOCALAPPDATA%\Programs\GarraIA`, registra no PATH do usuário e encadeia
+`%LOCALAPPDATA%\Programs\GarraIA` junto com o shim `garra.cmd` (para `garra`
+também funcionar), registra o diretório no PATH do usuário e encadeia
 `init` + `start`. Sem privilégio de administrador.
 
 Para passar flags — `irm | iex` não recebe argumentos:

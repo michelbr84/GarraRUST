@@ -120,9 +120,11 @@ Mirrors of the same script: GitHub release CDN
 track `main`).
 
 The installer downloads the binary for your platform, verifies it against
-the release's `SHA256SUMS`, then chains into init and start. Note: the
-installer names the binary `garraia`, while a cargo build produces
-`garra` — the commands are otherwise identical.
+the release's `SHA256SUMS`, then chains into init and start. It leaves two
+names on your PATH: `garraia` (the release asset) and the alias `garra` (a
+relative symlink to it), so the `garra …` commands used throughout this
+README and in the CLI's own hints work as written; a cargo build produces
+`garra` directly.
 
 Flags (usable through the pipe with `sh -s --`) and their equivalent env
 toggles: `--skip-setup` (`GARRAIA_SKIP_INIT=1` + `GARRAIA_SKIP_START=1`),
@@ -185,9 +187,10 @@ irm https://garraia.org/install.ps1 | iex
 
 The Windows sibling of `install.sh`, at behavioral parity with it: detects the
 platform, resolves the latest release, verifies the download against
-`SHA256SUMS`, installs `garraia.exe` under `%LOCALAPPDATA%\Programs\GarraIA`,
-puts it on your user PATH, then chains into init and start. No administrator
-rights needed.
+`SHA256SUMS`, installs `garraia.exe` under `%LOCALAPPDATA%\Programs\GarraIA`
+together with a `garra.cmd` shim (so `garra` works too), puts the directory on
+your user PATH, then chains into init and start. No administrator rights
+needed.
 
 Mirrors (same script, auto-synced): `raw.githubusercontent.com`, jsDelivr, and
 the GitHub release CDN
