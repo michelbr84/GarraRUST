@@ -1694,24 +1694,27 @@ impl SessionStore {
         token: &str,
         idle_timeout_secs: i64,
     ) -> Result<Option<String>> {
-        let idle_clause = if idle_timeout_secs > 0 {
-            format!("AND datetime(last_active, '+{idle_timeout_secs} seconds') > datetime('now')")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT session_id FROM session_tokens
-             WHERE token = ?1
-               AND expires_at > datetime('now')
-               {idle_clause}
-             LIMIT 1"
-        );
+        // SQL estatico (regra 5, nota lateral da #1247): o timeout entra por
+        // bind ?2 e a comparacao desliga a clausula idle quando ?2 <= 0.
+        // `'+' || ?2 || ' seconds'` monta o modificador do datetime com o
+        // inteiro coercido a texto pelo proprio SQLite.
         let mut stmt = self
             .conn
-            .prepare(&sql)
+            .prepare(
+                "SELECT session_id FROM session_tokens
+                 WHERE token = ?1
+                   AND expires_at > datetime('now')
+                   AND (?2 <= 0
+                        OR datetime(last_active, '+' || ?2 || ' seconds')
+                           > datetime('now'))
+                 LIMIT 1",
+            )
             .map_err(|e| Error::Database(format!("validate_session_token prepare: {e}")))?;
         let session_id: Option<String> = stmt
-            .query_row(params![hash_session_token(token)], |row| row.get(0))
+            .query_row(
+                params![hash_session_token(token), idle_timeout_secs],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(|e| Error::Database(format!("validate_session_token: {e}")))?;
         Ok(session_id)
@@ -1905,6 +1908,23 @@ mod tests {
     use super::SessionStore;
     use chrono::Duration;
     use rusqlite::params;
+
+    /// Regra 5 do CLAUDE.md: SQL e estatico, valor de dado vai por bind.
+    /// `validate_session_token` interpolava `idle_timeout_secs` via `format!`
+    /// (nota lateral da auditoria da #1247); a clausula idle agora vive no
+    /// SQL estatico com bind ?2. Esta varredura impede o padrao de voltar
+    /// neste arquivo.
+    #[test]
+    fn sql_e_estatico_em_session_store() {
+        let src = include_str!("session_store.rs");
+        // concat! evita que o proprio literal da assercao case com a
+        // varredura (include_str! inclui o modulo de testes).
+        let proibido = concat!("let sql = format", "!(");
+        assert!(
+            !src.contains(proibido),
+            "regra 5: montar SQL via format! e vedado — SQL estatico + params! (#1247)"
+        );
+    }
 
     #[test]
     fn upsert_and_load_recent_messages_round_trip() {
@@ -3129,6 +3149,43 @@ mod tests {
                 .validate_session_token("not-a-real-token", 0)
                 .expect("validation should succeed"),
             None,
+        );
+    }
+
+    #[test]
+    fn session_token_honors_positive_idle_timeout_via_bind() {
+        // #1247: a clausula idle agora e estatica com bind ?2 — este teste
+        // exerce os dois lados dela: token recem-tocado valida com timeout
+        // positivo; last_active atrasado alem do timeout nao valida mais.
+        let session_id = "tok-session-idle";
+        let store = store_with_session(session_id);
+        let token = store
+            .create_session_token(session_id, "web", 3600, None, None)
+            .expect("token creation should succeed");
+
+        assert_eq!(
+            store
+                .validate_session_token(&token, 300)
+                .expect("validation should succeed"),
+            Some(session_id.to_string()),
+            "fresh token must validate under a positive idle timeout",
+        );
+
+        store
+            .connection()
+            .execute(
+                "UPDATE session_tokens
+                 SET last_active = datetime('now', '-600 seconds')
+                 WHERE session_id = ?1",
+                params![session_id],
+            )
+            .expect("backdating last_active should succeed");
+        assert_eq!(
+            store
+                .validate_session_token(&token, 300)
+                .expect("validation should succeed"),
+            None,
+            "token idle beyond the timeout must stop validating",
         );
     }
 

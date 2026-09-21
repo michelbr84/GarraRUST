@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/base.json",
   "schema_version": "1.2.0",
   "repo": "michelbr84/GarraRUST",
-  "last_updated": "2026-09-17",
+  "last_updated": "2026-09-20",
   "audit_expiration": "2026-11-28",
   "policy": "no-bulk-suppression",
   "linear_owner": "GAR-491",
@@ -344,13 +344,17 @@
       "alert_number": 115,
       "rule_id": "rust/cleartext-storage-database",
       "path": "crates/garraia-db/src/session_store.rs",
-      "line": 1677,
+      "line": 1669,
       "disposition": "dismissed-false-positive",
       "dismissed_reason": "false_positive",
-      "justification": "Falso-positivo. A ancora e o `.prepare(&sql)` de `validate_session_token`; o unico valor ligado a essa query esta duas linhas abaixo, em `session_store.rs:1680`: `params![hash_session_token(token)]`. Ou seja, o que chega ao banco e um hash, nunca o token. `hash_session_token` (session_store.rs:1612) e SHA-256 hex de mao unica. O lado da escrita declara o invariante em session_store.rs:1634 (\"Only the hash is persisted; the raw token goes to the caller and is never written to disk\") e ha migracao que reescreve tokens legados em claro, detectando-os por `length(token) <> 64 OR token GLOB '*[^0-9a-f]*'` (session_store.rs:347). CodeQL marca `token: &str` como credencial e ve o parametro fluindo para a query, sem modelar que `hash_session_token` e transformacao irreversivel. **Reancorada 2026-09-06 (PR #1007):** o sink desceu de :1380 para :1653 acumulando o trabalho de modos: distincao entre modo escolhido e deduzido (#988), merge de metadado no upsert (#1008) e escopo de usuario para modo customizado (#986) — 273 linhas acima no total. Mesmo statement, mesma funcao `validate_session_token`, mesmo `sink_snippet`; so a ancora e as linhas citadas mudaram. **Reancorada 2026-09-09 (PR #1114):** o sink desceu de :1653 para :1674 porque o patch de metadado nao-objeto na criacao de sessao (#1102) inseriu 21 linhas em `SessionStore`, todas acima deste ponto. Mesmo statement, mesma funcao, mesmo `sink_snippet`. **Reancorada 2026-09-15 (PR #1224):** o sink desceu de :1674 para :1677 porque a migration da tabela agent_runs (ledger duravel de runs, P1 do gap analysis) inseriu 3 linhas no inicio de run_migrations. Mesmo statement, mesma funcao validate_session_token, mesmo sink_snippet.",
+      "justification": "Falso-positivo. A ancora e o `.prepare(&sql)` de `validate_session_token`; o unico valor ligado a essa query esta duas linhas abaixo, em `session_store.rs:1680`: `params![hash_session_token(token)]`. Ou seja, o que chega ao banco e um hash, nunca o token. `hash_session_token` (session_store.rs:1612) e SHA-256 hex de mao unica. O lado da escrita declara o invariante em session_store.rs:1634 (\"Only the hash is persisted; the raw token goes to the caller and is never written to disk\") e ha migracao que reescreve tokens legados em claro, detectando-os por `length(token) <> 64 OR token GLOB '*[^0-9a-f]*'` (session_store.rs:347). CodeQL marca `token: &str` como credencial e ve o parametro fluindo para a query, sem modelar que `hash_session_token` e transformacao irreversivel. **Reancorada 2026-09-06 (PR #1007):** o sink desceu de :1380 para :1653 acumulando o trabalho de modos: distincao entre modo escolhido e deduzido (#988), merge de metadado no upsert (#1008) e escopo de usuario para modo customizado (#986) — 273 linhas acima no total. Mesmo statement, mesma funcao `validate_session_token`, mesmo `sink_snippet`; so a ancora e as linhas citadas mudaram. **Reancorada 2026-09-09 (PR #1114):** o sink desceu de :1653 para :1674 porque o patch de metadado nao-objeto na criacao de sessao (#1102) inseriu 21 linhas em `SessionStore`, todas acima deste ponto. Mesmo statement, mesma funcao, mesmo `sink_snippet`. **Reancorada 2026-09-15 (PR #1224):** o sink desceu de :1674 para :1677 porque a migration da tabela agent_runs (ledger duravel de runs, P1 do gap analysis) inseriu 3 linhas no inicio de run_migrations. Mesmo statement, mesma funcao validate_session_token, mesmo sink_snippet. **Reancorada 2026-09-20 (PR #1309):** o sink subiu de :1677 para :1669 e o `sink_snippet` mudou de `.prepare(&sql)` para `.prepare(` porque a nota lateral da #1247 reescreveu a query: o SQL montado por `format!` virou literal estatico, com o timeout idle entrando por bind ?2 (a clausula idle desliga quando ?2 <= 0). Mesmo statement, mesma funcao `validate_session_token`, mesmo invariante — o que chega ao banco segue sendo so o hash, agora em `session_store.rs:1681` (`params![hash_session_token(token), idle_timeout_secs]`). A mudanca e de higiene de SQL (regra 5) e reduz a superficie que o alerta cobre: nao ha mais SQL dinamico neste caminho. O `disambiguator` passa a ser necessario porque o snippet `.prepare(` nao e mais unico no arquivo (era: `.prepare(&sql)` so existia neste caminho, ultimo SQL dinamico da #1247).",
       "gar_ref": "GAR-491",
       "ledger_md_anchor": "alert-115",
-      "sink_snippet": ".prepare(&sql)"
+      "sink_snippet": ".prepare(",
+      "disambiguator": {
+        "kind": "function",
+        "value": "validate_session_token"
+      }
     },
     {
       "alert_number": 144,
