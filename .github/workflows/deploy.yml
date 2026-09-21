@@ -11,6 +11,11 @@ on:
         required: false
         default: 'latest'
         type: string
+      latest:
+        description: 'Also move the `latest` tag to this build (dispatch only; a tag push never moves it)'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -38,6 +43,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Dispatch manual com `tag=vX.Y.Z` produz o MESMO conjunto de tags que o
+      # push do tag (`X.Y.Z`, `X.Y`) — antes so saia o raw `vX.Y.Z`, e o
+      # docs/releasing.md registrava a falta das derivadas semver como
+      # limitacao. O input entra por `env:`, nunca interpolado em `run:`.
+      - name: Derive semver tags from the dispatch input
+        id: ver
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          semver=""; majmin=""
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            semver="${TAG#v}"
+            majmin="${semver%.*}"
+          fi
+          echo "semver=$semver" >> "$GITHUB_OUTPUT"
+          echo "majmin=$majmin" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -62,6 +86,9 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.ver.outputs.semver }},enable=${{ steps.ver.outputs.semver != '' }}
+            type=raw,value=${{ steps.ver.outputs.majmin }},enable=${{ steps.ver.outputs.majmin != '' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.latest == true }}
 
       - name: Build and push
         uses: docker/build-push-action@v7

@@ -49,6 +49,14 @@ RUN cargo chef cook --release --recipe-path recipe.json --bin garra
 # Copy full source and build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+# `garraia-channels` embute o bridge WhatsApp em tempo de compilacao
+# (`include_str!("../../../../bridge/whatsapp/...")`, ADR 0023). Sem este COPY o
+# `cargo build` abaixo falha com "couldn't read .../bridge/whatsapp/bridge.mjs" —
+# foi o que derrubou o Deploy do tag v0.4.3. O teste
+# `dockerfile_copies_every_dir_that_include_str_escapes_to` (garraia-channels)
+# prende a regra: todo diretorio fora de crates/ que um include_str! alcanca tem
+# de estar copiado aqui.
+COPY bridge/ bridge/
 
 RUN cargo build --release --package garraia \
     && strip target/release/garra
