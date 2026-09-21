@@ -47,7 +47,7 @@ sucesso (#1238).
 
 ```text
 garra whatsapp link / gateway (serve)
-     |  NDJSON v1 por stdio · ping/pong · env_clear + allowlist · PDEATHSIG · RLIMIT_AS
+     |  NDJSON v1 por stdio · ping/pong · env_clear + allowlist · PDEATHSIG · Drop mata o filho
 bridge/whatsapp/bridge.mjs   Node + Baileys 7.0.0-rc14, STATELESS — nunca escreve no disco
      |
 WhatsApp Web (dispositivo vinculado)
@@ -453,6 +453,9 @@ uma seção é nova:
   `code_review` e `repo_search` seguem no host. `backend: ssh` não é sandbox.
   No Windows o sandbox falha fechado.
 - A ponte WhatsApp exige **Node.js 20+ e `npm`** no host; a Cloud API não.
+- A ponte **não tem teto de memória**: `RLIMIT_AS`, que o MCP aplica, derruba
+  o V8 do Node já no boot (ele reserva vários GiB de memória virtual), então a
+  contenção é ambiente limpo, PDEATHSIG e `Drop`.
 - O WhatsApp pessoal é **uma conta só** (`default`).
 - O pareamento com aparelho real é validação **manual** — o CI cobre
   protocolo, máquina de estados, store cifrado e ciclo de vida do filho contra

@@ -47,7 +47,7 @@ of a false success (#1238).
 
 ```text
 garra whatsapp link / gateway (serve)
-     |  NDJSON v1 over stdio · ping/pong · env_clear + allowlist · PDEATHSIG · RLIMIT_AS
+     |  NDJSON v1 over stdio · ping/pong · env_clear + allowlist · PDEATHSIG · Drop kills the child
 bridge/whatsapp/bridge.mjs   Node + Baileys 7.0.0-rc14, STATELESS — never writes to disk
      |
 WhatsApp Web (linked device)
@@ -464,6 +464,9 @@ is new:
   a sandbox. On Windows the sandbox fails closed.
 - The WhatsApp bridge requires **Node.js 20+ and `npm`** on the host; the
   Cloud API does not.
+- The bridge has **no memory ceiling**: `RLIMIT_AS`, which MCP applies, kills
+  Node's V8 right at boot (it reserves several GiB of virtual memory), so
+  containment is the clean environment, PDEATHSIG and `Drop`.
 - Personal WhatsApp is **one account only** (`default`).
 - Pairing with a real device is **manual** validation — CI covers the
   protocol, the state machine, the encrypted store and the child lifecycle
