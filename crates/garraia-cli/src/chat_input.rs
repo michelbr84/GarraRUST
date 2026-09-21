@@ -21,20 +21,42 @@
 //! # Dono unico do SIGINT
 //!
 //! O REPL tem um unico handler de sinal, o vigia em `run_chat`. Este modulo
-//! nao registra nenhum — a feature `signal-hook` do rustyline fica desligada
-//! de proposito. Em raw mode o terminal deixa de gerar SIGINT no Ctrl+C
-//! (`ISIG` desligado) e a tecla chega ao editor, que a devolve como
-//! [`Leitura::Interrompida`]; quem chama decide, e o `run_chat` faz o que
-//! sempre fez com Ctrl+C no prompt ocioso: encerra com 130. Durante o turno o
-//! terminal esta em modo canonico (o `readline` ja devolveu), o Ctrl+C vira
-//! SIGINT e o vigia cancela o turno, como antes.
+//! nao registra nenhum — e isso depende da feature `signal-hook` do rustyline
+//! estar **ligada** (ha teste varrendo o `Cargo.toml` do workspace). Sem ela
+//! o rustyline instala um `sigaction(SIGINT)` proprio a cada `readline` e
+//! restaura o anterior ao sair, disputando o sinal com o vigia: um `kill
+//! -INT` no prompt nunca chegaria ao tokio, e se o `sigaction` do rustyline
+//! vencesse a corrida do primeiro prompt, o restore no fim daquele `readline`
+//! desengancharia o handler do tokio pelo resto do processo. Com a feature, o
+//! rustyline so registra SIGWINCH, pelo `signal-hook-registry` que o proprio
+//! tokio usa (encadeia, nao substitui).
+//!
+//! Em raw mode o terminal deixa de gerar SIGINT no Ctrl+C (`ISIG` desligado)
+//! e a tecla chega ao editor, que a devolve como [`Leitura::Interrompida`];
+//! quem chama decide, e o `run_chat` faz o que sempre fez com Ctrl+C no
+//! prompt ocioso: encerra com 130. Um SIGINT externo (`kill -INT`) com o
+//! editor em raw mode vai ao vigia, que devolve o terminal fotografado antes
+//! de sair com 130. Durante o turno o terminal esta em modo canonico (o
+//! `readline` ja devolveu), o Ctrl+C vira SIGINT e o vigia cancela o turno,
+//! como antes.
+//!
+//! # Prompt com cor
+//!
+//! O rustyline so desenha o prompt estilizado quando ha um `Helper`: e o
+//! `Highlighter` dele que recebe `prompt.styled()`, e sem helper o renderer
+//! escreve `prompt.raw()`. `DefaultEditor::with_config` nasce sem helper, por
+//! isso [`abrir_editor`] liga o `()` — todos os defaults, e o unico efeito e o
+//! prompt verde aparecer.
 //!
 //! # Historico
 //!
-//! Persistido em `garraia_dir()/history` (nunca `~/.garra`), criado com `0600`
-//! no Unix porque o que se digita num chat pode ser sensivel. Falha ao
-//! carregar ou gravar e **fail-soft**: vira aviso pela mesma moldura do
-//! renderer e o REPL segue sem historico persistente.
+//! Em memoria durante a sessao, sempre. Em disco **so** quando a sessao e
+//! persistida (`--persist`/`--resume`): o contrato do `--persist` (#1088) e
+//! "sem ele nada e escrito", e o que se digita num chat e tao sensivel quanto
+//! a resposta. Quando gravado, mora em `garraia_dir()/history` (nunca
+//! `~/.garra`), criado com `0600` no Unix. Falha ao carregar ou gravar e
+//! **fail-soft**: vira aviso pela mesma moldura do renderer e o REPL segue
+//! sem historico persistente.
 
 use std::fs::OpenOptions;
 use std::io::{self, BufRead as _, Write as _};
@@ -88,9 +110,10 @@ enum Fonte {
         /// Em `Box` porque o editor pesa centenas de bytes e o outro braco,
         /// dezesseis — e o `Fonte` vive dentro do futuro do `run_chat`.
         editor: Box<rustyline::DefaultEditor>,
-        /// `None` quando o arquivo nao pode ser preparado, carregado ou
-        /// gravado: o historico segue em memoria e o disco nao e tentado de
-        /// novo, para nao avisar a cada linha.
+        /// `None` quando a sessao nao e persistida (#1088) ou quando o
+        /// arquivo nao pode ser preparado, carregado ou gravado: o historico
+        /// segue em memoria e o disco nao e tentado de novo, para nao avisar
+        /// a cada linha.
         historico: Option<PathBuf>,
     },
     Plano(io::StdinLock<'static>),
@@ -106,9 +129,11 @@ pub(crate) struct LeitorDeLinha {
 
 impl LeitorDeLinha {
     /// Constroi a fonte. `usar_editor` vem de [`editor_de_linha_cabe`];
-    /// `historico` vem de [`caminho_do_historico`]. Nunca falha: sem editor,
-    /// sem arquivo ou sem permissao, o resultado e um aviso e o caminho plano.
-    pub(crate) fn abrir(usar_editor: bool, historico: PathBuf) -> Self {
+    /// `historico` e `Some(`[`caminho_do_historico`]`)` so quando a sessao e
+    /// persistida (#1088) — com `None` as setas funcionam igual, mas o
+    /// historico morre com o processo. Nunca falha: sem editor, sem arquivo
+    /// ou sem permissao, o resultado e um aviso e o caminho plano.
+    pub(crate) fn abrir(usar_editor: bool, historico: Option<PathBuf>) -> Self {
         let mut avisos = Vec::new();
         let fonte = if usar_editor {
             abrir_editor(historico, &mut avisos)
@@ -130,9 +155,10 @@ impl LeitorDeLinha {
     }
 
     /// Le uma linha. `prompt_cru` e `prompt_estilizado` sao o mesmo texto com
-    /// e sem cor: o editor desenha o segundo e mede o primeiro (escape nao
-    /// ocupa coluna). O caminho plano imprime o estilizado, como o loop
-    /// antigo fazia.
+    /// e sem cor: o editor desenha o segundo — pelo helper `()` ligado em
+    /// [`abrir_editor`]; sem helper o rustyline desenharia o cru — e mede o
+    /// primeiro (escape nao ocupa coluna). O caminho plano imprime o
+    /// estilizado, como o loop antigo fazia.
     ///
     /// `Err` e um erro de I/O de verdade — o mesmo que o `read_line` antigo
     /// propagava com `?` — e nao Ctrl+C nem Ctrl+D, que sao [`Leitura`].
@@ -148,6 +174,10 @@ impl LeitorDeLinha {
                     }
                     Err(ReadlineError::Interrupted) => Ok(Leitura::Interrompida),
                     Err(ReadlineError::Eof) => Ok(Leitura::Fim),
+                    // `ReadlineError::Signal(_)` nao chega aqui: com a feature
+                    // `signal-hook` o unico sinal que o rustyline ve e SIGWINCH,
+                    // e ele o trata por dentro (redesenha). O que sobra e I/O
+                    // de verdade.
                     Err(e) => Err(io::Error::other(e)),
                 }
             }
@@ -168,7 +198,7 @@ impl LeitorDeLinha {
     }
 }
 
-fn abrir_editor(historico: PathBuf, avisos: &mut Vec<String>) -> Fonte {
+fn abrir_editor(historico: Option<PathBuf>, avisos: &mut Vec<String>) -> Fonte {
     let mut editor = match rustyline::DefaultEditor::with_config(configuracao()) {
         Ok(editor) => editor,
         Err(e) => {
@@ -181,27 +211,38 @@ fn abrir_editor(historico: PathBuf, avisos: &mut Vec<String>) -> Fonte {
             return Fonte::Plano(io::stdin().lock());
         }
     };
-    let historico = match preparar_arquivo_de_historico(&historico) {
-        Ok(()) => match editor.load_history(&historico) {
-            Ok(()) => Some(historico),
-            // Arquivo que nao carrega nao recebe gravacao: sobrescrever o que
-            // nao se conseguiu ler seria apagar o historico do usuario.
-            Err(e) => {
-                avisos.push(format!(
-                    "Historico do chat em {} nao carregado ({e}); a sessao segue sem ele.",
-                    historico.display()
-                ));
-                None
-            }
-        },
-        Err(e) => {
-            avisos.push(format!(
-                "Historico do chat em {} indisponivel ({e}); a sessao segue sem ele.",
-                historico.display()
-            ));
-            None
-        }
-    };
+    // Sem helper o rustyline desenha `prompt.raw()` e o estilizado que `ler`
+    // passa e dado morto: `PosixRenderer::refresh_line` so chama
+    // `highlight_prompt(prompt.styled())` quando ha um `Highlighter`, e
+    // `with_config` nasce com `helper: None`. O `()` implementa `Helper` com
+    // todos os defaults (`highlight_prompt` devolve o prompt como veio), entao
+    // o unico efeito e o prompt verde aparecer; a medida do cursor continua
+    // sendo `prompt.raw()`. Ha teste.
+    editor.set_helper(Some(()));
+    let historico =
+        historico.and_then(
+            |historico| match preparar_arquivo_de_historico(&historico) {
+                Ok(()) => match editor.load_history(&historico) {
+                    Ok(()) => Some(historico),
+                    // Arquivo que nao carrega nao recebe gravacao: sobrescrever o que
+                    // nao se conseguiu ler seria apagar o historico do usuario.
+                    Err(e) => {
+                        avisos.push(format!(
+                            "Historico do chat em {} nao carregado ({e}); a sessao segue sem ele.",
+                            historico.display()
+                        ));
+                        None
+                    }
+                },
+                Err(e) => {
+                    avisos.push(format!(
+                        "Historico do chat em {} indisponivel ({e}); a sessao segue sem ele.",
+                        historico.display()
+                    ));
+                    None
+                }
+            },
+        );
     Fonte::Editor {
         editor: Box::new(editor),
         historico,
@@ -396,9 +437,69 @@ mod tests {
     /// caminho de todo teste de integracao que canaliza stdin.
     #[test]
     fn caminho_plano_nao_constroi_editor_nem_avisa() {
-        let mut leitor = LeitorDeLinha::abrir(false, PathBuf::from("irrelevante"));
+        let mut leitor = LeitorDeLinha::abrir(false, Some(PathBuf::from("irrelevante")));
         assert!(!leitor.com_editor());
         assert!(leitor.drenar_avisos().is_empty());
+    }
+
+    /// `DefaultEditor::with_config` nasce sem helper, e sem helper o
+    /// rustyline desenha `prompt.raw()` — o prompt verde de
+    /// `Style::user_prompt` nunca apareceria. O `()` ligado em `abrir_editor`
+    /// e o que faz o `Highlighter` receber `prompt.styled()`.
+    #[test]
+    fn editor_tem_helper_para_o_prompt_estilizado_aparecer() {
+        let leitor = LeitorDeLinha::abrir(true, None);
+        let Fonte::Editor { editor, .. } = &leitor.fonte else {
+            panic!("esperava a fonte com editor");
+        };
+        assert!(
+            editor.helper().is_some(),
+            "sem helper o rustyline ignora o prompt estilizado e desenha o cru"
+        );
+    }
+
+    /// Sem `--persist`/`--resume` nada vai ao disco (#1088): o editor abre, as
+    /// setas funcionam sobre o historico em memoria, e nao ha arquivo nem
+    /// aviso — `historico: None` e o que desliga a gravacao em
+    /// `guardar_no_historico`.
+    #[test]
+    fn sem_persistencia_o_historico_fica_so_em_memoria() {
+        use rustyline::history::History as _;
+
+        let mut leitor = LeitorDeLinha::abrir(true, None);
+        assert!(leitor.com_editor(), "{:?}", leitor.drenar_avisos());
+        assert!(leitor.drenar_avisos().is_empty());
+        let Fonte::Editor { editor, historico } = &mut leitor.fonte else {
+            panic!("esperava a fonte com editor");
+        };
+        assert!(
+            historico.is_none(),
+            "sem persistencia nao ha arquivo de historico"
+        );
+
+        guardar_no_historico(editor, historico, "primeira pergunta", &mut leitor.avisos);
+        assert_eq!(editor.history().len(), 1, "as setas continuam funcionando");
+        assert!(historico.is_none());
+        assert!(leitor.avisos.is_empty(), "{:?}", leitor.avisos);
+    }
+
+    /// O invariante do docblock ("este modulo nao registra handler de
+    /// sinal") so vale com a feature `signal-hook` do rustyline ligada: sem
+    /// ela o rustyline instala `sigaction(SIGINT)` a cada `readline` e
+    /// restaura o anterior ao sair, disputando o sinal com o vigia do
+    /// `run_chat`. A feature e declarada no `Cargo.toml` do workspace, entao
+    /// e ele que o teste varre.
+    #[test]
+    fn rustyline_entra_com_a_feature_signal_hook() {
+        let manifesto = include_str!("../../../Cargo.toml");
+        let linha = manifesto
+            .lines()
+            .find(|l| l.trim_start().starts_with("rustyline ="))
+            .expect("rustyline declarado no Cargo.toml do workspace");
+        assert!(
+            linha.contains("\"signal-hook\""),
+            "rustyline sem `signal-hook` instala um segundo handler de SIGINT: {linha}"
+        );
     }
 
     /// Historico que nao pode existir (o "diretorio" e um arquivo) vira um
@@ -409,7 +510,7 @@ mod tests {
         let nao_e_dir = tmp.path().join("nao-e-dir");
         std::fs::write(&nao_e_dir, b"x").expect("write");
 
-        let mut leitor = LeitorDeLinha::abrir(true, nao_e_dir.join("history"));
+        let mut leitor = LeitorDeLinha::abrir(true, Some(nao_e_dir.join("history")));
         // O editor em si abre mesmo sem terminal (`Behavior::Stdio` so olha
         // os descritores); o que falha e o arquivo.
         assert!(leitor.com_editor(), "{:?}", leitor.drenar_avisos());
@@ -431,7 +532,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let caminho = caminho_do_historico(tmp.path());
 
-        let mut leitor = LeitorDeLinha::abrir(true, caminho.clone());
+        let mut leitor = LeitorDeLinha::abrir(true, Some(caminho.clone()));
         assert!(leitor.drenar_avisos().is_empty());
         let Fonte::Editor { editor, historico } = &mut leitor.fonte else {
             panic!("esperava a fonte com editor");

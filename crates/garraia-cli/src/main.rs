@@ -246,7 +246,9 @@ enum Commands {
         /// `<data_dir>/sessions.db` and the session id is printed on start,
         /// so `--resume` can pick the conversation up later. Off by
         /// default: without it nothing is written, and no database is even
-        /// opened (#1088).
+        /// opened (#1088). The REPL's line history (arrow keys) follows the
+        /// same switch: written to `<garraia_dir>/history` only in this
+        /// mode, kept in memory otherwise (#1297).
         #[arg(long)]
         persist: bool,
 

@@ -1620,10 +1620,15 @@ pub async fn run_chat(
             io::stderr().is_terminal(),
         )
     };
-    let mut leitor = crate::chat_input::LeitorDeLinha::abrir(
-        usar_editor,
-        crate::chat_input::caminho_do_historico(&crate::garraia_dir()),
-    );
+    // Historico em disco so quando a sessao e persistida (#1088): sem
+    // `--persist`/`--resume` nada e escrito, e o que se digita e tao sensivel
+    // quanto a resposta. `store.is_some()` e exatamente esse criterio. As
+    // setas funcionam do mesmo jeito; o historico so nao sobrevive ao
+    // processo.
+    let historico = store
+        .is_some()
+        .then(|| crate::chat_input::caminho_do_historico(&crate::garraia_dir()));
+    let mut leitor = crate::chat_input::LeitorDeLinha::abrir(usar_editor, historico);
     // Historico que nao abre e aviso, nao erro: o chat vale mais que as setas.
     for aviso in leitor.drenar_avisos() {
         renderer.handle(UiEvent::Warning(&aviso), &mut io::stdout());
@@ -1645,17 +1650,20 @@ pub async fn run_chat(
     //   - durante o turno  -> cancela o turno e devolve o prompt;
     //   - ocioso no prompt -> encerra a sessão, como sempre encerrou.
     //
-    // O editor de linha (#1297) nao muda quem e o dono — ele nao registra
-    // handler nenhum —, muda por onde o Ctrl+C do teclado chega quando o
-    // prompt esta ocioso: em raw mode o terminal nao gera SIGINT (`ISIG`
-    // desligado), a tecla vira `Leitura::Interrompida` no loop abaixo, e o
-    // loop encerra com o mesmo 130 de sempre. Durante o turno o terminal ja
-    // voltou ao modo canonico, o Ctrl+C vira SIGINT e cai aqui, no
-    // cancelamento. O braco "ocioso" desta task continua valendo para o
-    // caminho sem editor e para um SIGINT externo (`kill -INT`) com o editor
-    // ligado — e nesse ultimo caso o terminal pode estar em raw mode, cujo
-    // guard de restauracao o `exit` pularia, deixando o shell do usuario sem
-    // eco. Por isso a fotografia dos atributos, devolvida antes de sair.
+    // O editor de linha (#1297) nao muda quem e o dono — o rustyline entra
+    // com a feature `signal-hook`, e e ELA que o impede de instalar o proprio
+    // `sigaction(SIGINT)` a cada `readline` (sem ela haveria um segundo
+    // handler disputando com este, e um `kill -INT` no prompt nunca chegaria
+    // aqui) —, muda por onde o Ctrl+C do teclado chega quando o prompt esta
+    // ocioso: em raw mode o terminal nao gera SIGINT (`ISIG` desligado), a
+    // tecla vira `Leitura::Interrompida` no loop abaixo, e o loop encerra com
+    // o mesmo 130 de sempre. Durante o turno o terminal ja voltou ao modo
+    // canonico, o Ctrl+C vira SIGINT e cai aqui, no cancelamento. O braco
+    // "ocioso" desta task continua valendo para o caminho sem editor e para
+    // um SIGINT externo (`kill -INT`) com o editor ligado — e nesse ultimo
+    // caso o terminal esta em raw mode, cujo guard de restauracao o `exit`
+    // pularia, deixando o shell do usuario sem eco. Por isso a fotografia dos
+    // atributos, devolvida antes de sair.
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
     let turn_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Uma so fonte para a despedida, usada aqui e no `/exit`. Com cor quando
