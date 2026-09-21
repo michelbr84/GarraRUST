@@ -1148,8 +1148,13 @@ impl std::fmt::Display for NaoSubiu {
                 "`channels.whatsapp_linked.default_mode` = `{modo}` nao e um modo nativo deste \
                  canal (e `auto` nao vale aqui): use `search`, outro modo nativo, ou remova a chave"
             ),
-            Self::SemSessao => f.write_str(
-                "nao ha sessao vinculada legivel neste data dir: rode `garra whatsapp link`",
+            // O gateway e o mesmo executavel que o operador chama: o passo
+            // nomeia `garra` ou `garraia` conforme o que esta rodando, nunca
+            // um alias que pode nao existir na maquina (#1329).
+            Self::SemSessao => write!(
+                f,
+                "nao ha sessao vinculada legivel neste data dir: rode `{} whatsapp link`",
+                garraia_common::executavel::nome()
             ),
             Self::SemNode => f.write_str(
                 "`node` nao encontrado: instale Node.js 20+ e garanta `node` na PATH do gateway",

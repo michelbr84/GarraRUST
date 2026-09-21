@@ -1119,7 +1119,13 @@ fn cada_motivo_de_nao_subir_diz_o_que_fazer() {
     );
 
     let sem_sessao = NaoSubiu::SemSessao.to_string();
-    assert!(sem_sessao.contains("garra whatsapp link"), "{sem_sessao}");
+    // No harness o executavel cai no nome canonico; o alias fixo `garra`
+    // nunca aparece quando quem roda e `garraia` (#1329).
+    assert!(
+        sem_sessao.contains("`garraia whatsapp link`"),
+        "{sem_sessao}"
+    );
+    assert!(!sem_sessao.contains("`garra whatsapp"), "{sem_sessao}");
 
     let sem_node = NaoSubiu::SemNode.to_string();
     assert!(sem_node.contains("Node.js 20+"), "{sem_node}");

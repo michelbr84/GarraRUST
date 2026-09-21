@@ -1,4 +1,5 @@
 pub mod error;
+pub mod executavel;
 pub mod fs_perms;
 pub mod handoff;
 pub mod message;

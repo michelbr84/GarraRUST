@@ -1218,9 +1218,10 @@ pub fn aviso_de_bind_exposto(bound: &std::net::SocketAddr, api_key_ativa: bool) 
          gateway configurada: todo o /api/* (sessoes, memoria, providers, \
          logs, diagnosticos) E o /ws (o canal do agente, com as tools de \
          arquivo e de dispositivo) respondem a qualquer um que alcance esta \
-         porta. Corrija rodando `garra init` ou definindo `gateway.api_key` \
+         porta. Corrija rodando `{bin} init` ou definindo `gateway.api_key` \
          no config.yml e reiniciando; para ouvir so localmente, use \
-         `--host 127.0.0.1`."
+         `--host 127.0.0.1`.",
+        bin = garraia_common::executavel::nome()
     ))
 }
 
@@ -1928,7 +1929,7 @@ mod tests {
             "o aviso tem que nomear o /ws, nao so o /api/*: {aviso}"
         );
         assert!(
-            aviso.contains("garra init") && aviso.contains("127.0.0.1"),
+            aviso.contains("garraia init") && aviso.contains("127.0.0.1"),
             "o aviso nomeia as duas correcoes: {aviso}"
         );
     }

@@ -706,7 +706,7 @@ pub async fn run_backup(
         config.memory_db_path().display(),
         config.memory_db_path().display()
     );
-    println!("  4. suba de novo    (`garra start`)");
+    println!("  4. suba de novo    (`{} start`)", crate::binario::nome());
     println!("     O passo 3 e o que costuma ser esquecido: um `-wal` antigo ao lado");
     println!("     de um banco restaurado reintroduz o que voce acabou de descartar.");
     println!("     E o gateway TEM de estar parado antes dele — apagar o `-wal` com");

@@ -513,8 +513,8 @@ fn execution_profile_line(lang: Lang, config: &garraia_config::AppConfig) -> Str
 /// exatamente assim que o `whats-app` sobreviveu a 599 testes verdes.
 fn print_next_step(ctx: &Context, saude: LinkHealth, bridge_dir: &std::path::Path) {
     let passo = match ctx.lang {
-        Lang::Pt => saude.next_step(bridge_dir),
-        Lang::En => saude.next_step_en(bridge_dir),
+        Lang::Pt => saude.next_step(bridge_dir, &crate::binario::nome()),
+        Lang::En => saude.next_step_en(bridge_dir, &crate::binario::nome()),
     };
     if let Some(passo) = passo {
         println!("{passo}");

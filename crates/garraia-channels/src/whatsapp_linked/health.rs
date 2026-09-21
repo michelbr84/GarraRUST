@@ -131,33 +131,35 @@ impl LinkHealth {
     /// Sempre um **comando que o usuario pode colar**, com o caminho real
     /// interpolado: "rode `npm ci`" sem dizer onde e o tipo de conselho que
     /// manda a pessoa procurar.
-    pub fn next_step(self, bridge_dir: &Path) -> Option<String> {
+    ///
+    /// `bin` e o nome do executavel que o usuario tem na maquina
+    /// (`garraia_common::executavel::nome()` no chamador): o passo nunca pode
+    /// mandar rodar um binario que nao existe (#1329).
+    pub fn next_step(self, bridge_dir: &Path, bin: &str) -> Option<String> {
         match self {
-            LinkHealth::NotLinked => Some("rode `garra whatsapp link`".to_string()),
+            LinkHealth::NotLinked => Some(format!("rode `{bin} whatsapp link`")),
             LinkHealth::MissingDependencies => {
                 Some(format!("rode `npm ci` em {}", bridge_dir.display()))
             }
-            LinkHealth::BridgeDown => Some(
+            LinkHealth::BridgeDown => Some(format!(
                 "a ponte nao esta de pe: confira se `node` 20+ esta na PATH e \
-veja o log do gateway; `garra whatsapp status` confirma a sessao"
-                    .to_string(),
-            ),
+veja o log do gateway; `{bin} whatsapp status` confirma a sessao"
+            )),
             LinkHealth::Connected | LinkHealth::Linked => None,
         }
     }
 
     /// Mesmo passo em ingles, para a metade em ingles da CLI.
-    pub fn next_step_en(self, bridge_dir: &Path) -> Option<String> {
+    pub fn next_step_en(self, bridge_dir: &Path, bin: &str) -> Option<String> {
         match self {
-            LinkHealth::NotLinked => Some("run `garra whatsapp link`".to_string()),
+            LinkHealth::NotLinked => Some(format!("run `{bin} whatsapp link`")),
             LinkHealth::MissingDependencies => {
                 Some(format!("run `npm ci` in {}", bridge_dir.display()))
             }
-            LinkHealth::BridgeDown => Some(
+            LinkHealth::BridgeDown => Some(format!(
                 "the bridge is not up: check that `node` 20+ is on PATH and \
-read the gateway log; `garra whatsapp status` confirms the session"
-                    .to_string(),
-            ),
+read the gateway log; `{bin} whatsapp status` confirms the session"
+            )),
             LinkHealth::Connected | LinkHealth::Linked => None,
         }
     }
@@ -269,16 +271,19 @@ mod tests {
             LinkHealth::BridgeDown,
         ] {
             let pt = h
-                .next_step(&dir)
+                .next_step(&dir, "garraia")
                 .unwrap_or_else(|| panic!("{h:?} sem passo"));
             let en = h
-                .next_step_en(&dir)
+                .next_step_en(&dir, "garraia")
                 .unwrap_or_else(|| panic!("{h:?} sem passo em ingles"));
             assert!(!pt.trim().is_empty() && !en.trim().is_empty());
         }
         for h in [LinkHealth::Connected, LinkHealth::Linked] {
-            assert!(h.next_step(&dir).is_none(), "{h:?} nao tem o que consertar");
-            assert!(h.next_step_en(&dir).is_none());
+            assert!(
+                h.next_step(&dir, "garraia").is_none(),
+                "{h:?} nao tem o que consertar"
+            );
+            assert!(h.next_step_en(&dir, "garraia").is_none());
         }
     }
 
@@ -288,7 +293,7 @@ mod tests {
     fn o_passo_do_npm_ci_cita_o_diretorio_real() {
         let dir = PathBuf::from("/home/ana/.garraia/data/whatsapp/bridge");
         let passo = LinkHealth::MissingDependencies
-            .next_step(&dir)
+            .next_step(&dir, "garraia")
             .expect("passo");
         assert!(passo.contains("npm ci"), "{passo}");
         assert!(
@@ -297,14 +302,32 @@ mod tests {
         );
     }
 
-    /// O passo de "nao vinculado" cita o comando que existe. `garra whatsapp`
-    /// abre o menu; `garra whatsapp link` e o que pareia.
+    /// O passo de "nao vinculado" cita o comando que existe. `<bin> whatsapp`
+    /// abre o menu; `<bin> whatsapp link` e o que pareia.
     #[test]
     fn o_passo_de_nao_vinculado_cita_o_comando_de_link() {
         let passo = LinkHealth::NotLinked
-            .next_step(Path::new("/x"))
+            .next_step(Path::new("/x"), "garraia")
             .expect("passo");
-        assert!(passo.contains("garra whatsapp link"), "{passo}");
+        assert!(passo.contains("garraia whatsapp link"), "{passo}");
+    }
+
+    /// #1329: o passo nomeia o binario que o chamador passou, nos dois
+    /// idiomas e nos dois estados que citam comando — nunca um `garra` fixo,
+    /// que nao existe numa maquina que so tem `garraia`.
+    #[test]
+    fn o_passo_nomeia_o_binario_que_esta_na_maquina() {
+        let dir = Path::new("/x");
+        for h in [LinkHealth::NotLinked, LinkHealth::BridgeDown] {
+            for bin in ["garraia", "garra"] {
+                let pt = h.next_step(dir, bin).expect("passo");
+                let en = h.next_step_en(dir, bin).expect("step");
+                assert!(pt.contains(&format!("`{bin} whatsapp ")), "{pt}");
+                assert!(en.contains(&format!("`{bin} whatsapp ")), "{en}");
+            }
+            let so_garraia = h.next_step(dir, "garraia").expect("passo");
+            assert!(!so_garraia.contains("`garra whatsapp"), "{so_garraia}");
+        }
     }
 
     #[test]

@@ -414,7 +414,7 @@ fn whatsapp_linked_check(
         label: "WhatsApp (dispositivo vinculado)",
         status,
         detail,
-        next_step: saude.next_step(&bridge_dir),
+        next_step: saude.next_step(&bridge_dir, &garraia_common::executavel::nome()),
     }
 }
 
@@ -1004,9 +1004,11 @@ mod tests {
     fn nao_vinculado_e_skipped_com_o_comando_de_link() {
         let c = wa(LinkHealth::NotLinked);
         assert!(matches!(c.status, CheckStatus::Skipped));
+        // No harness o executavel e `garraia_gateway-<hash>`, que cai no
+        // nome canonico: o passo cita `garraia`, nunca o alias fixo (#1329).
         assert_eq!(
             c.next_step.as_deref(),
-            Some("rode `garra whatsapp link`"),
+            Some("rode `garraia whatsapp link`"),
             "sem sessao o passo e vincular"
         );
     }
@@ -1079,7 +1081,7 @@ mod tests {
         );
         assert_eq!(
             linha.next_step.as_deref(),
-            Some("rode `garra whatsapp link`")
+            Some("rode `garraia whatsapp link`")
         );
     }
 
