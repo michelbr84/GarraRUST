@@ -255,7 +255,7 @@ jobs:
         run: shellcheck tests/install_sh/fixtures/garraia-stub.sh
 
       - name: Run shellcheck on installer unit tests
-        run: shellcheck tests/install_sh/checksum_format.sh tests/install_sh/resolve_version.sh tests/install_sh/documented_urls.sh tests/install_sh/detect_platform.sh
+        run: shellcheck tests/install_sh/checksum_format.sh tests/install_sh/resolve_version.sh tests/install_sh/documented_urls.sh tests/install_sh/detect_platform.sh tests/install_sh/garra_alias.sh
 
       - name: Syntax-check the bash test runners
         run: |
@@ -264,6 +264,7 @@ jobs:
           bash -n tests/install_sh/parse_args.sh
           bash -n tests/install_sh/documented_urls.sh
           bash -n tests/install_sh/detect_platform.sh
+          bash -n tests/install_sh/garra_alias.sh
 
       - name: Execute installer bootstrap_phase tests
         run: bash tests/install_sh/bootstrap_phase.sh
@@ -298,6 +299,12 @@ jobs:
       # installer baixaria o asset glibc e morreria no loader.
       - name: Execute installer detect-platform tests
         run: bash tests/install_sh/detect_platform.sh
+
+      # Alias `garra` ao lado de `garraia` (#1328): a CLI, a wiki e o README
+      # mandam rodar `garra start`, e ate aqui so o build do fonte tinha esse
+      # nome. Cobre criar, reapontar, preservar arquivo real e o ramo sudo.
+      - name: Execute installer garra-alias tests
+        run: bash tests/install_sh/garra_alias.sh
 
   # `install.ps1` is the Windows sibling of `install.sh` and the `irm | iex`
   # entry point, so it gets the same treatment: a blocking lint plus unit tests
@@ -368,6 +375,12 @@ jobs:
 
       - name: Execute installer platform tests
         run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/platform.ps1
+
+      # Espelha tests/install_sh/garra_alias.sh (#1328, CLAUDE.md 16): o shim
+      # garra.cmd no lugar do symlink. Os casos que executam o shim so rodam
+      # na perna windows-latest, onde ha um cmd.exe para servir de garraia.exe.
+      - name: Execute installer garra-alias tests
+        run: ${{ matrix.exe }} -NoProfile -ExecutionPolicy Bypass -File tests/install_ps1/garra_alias.ps1
 
   # Lint with clippy (strict — bloqueante desde plan 0049 / GAR-429)
   clippy:

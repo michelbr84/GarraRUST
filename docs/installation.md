@@ -26,6 +26,15 @@ curl -fsSL https://garraia.org/install.sh | sh
 > `build-linux-x86_64` runner in `.github/workflows/release.yml` and
 > `MIN_GLIBC` in `install.sh`.
 
+**Two names, one binary.** The installer leaves `garraia` (the release asset)
+and `garra` (a relative symlink to it) in the install directory --
+`~/.local/bin` when that is on your PATH, otherwise `/usr/local/bin`, and
+`$PREFIX/bin` on Termux -- so every `garra ...` command in these docs and in the
+CLI's own hints works as written. A pre-existing `garra` that is a regular file
+(say, a from-source build you copied by hand) is left untouched with a warning;
+a stale symlink is repointed. `garra update` keeps working through the alias:
+it replaces the one binary the link resolves to.
+
 The same script (auto-synced) is published through alternative channels —
 the release CDN is the most robust against per-IP rate limits (**HTTP 429**
 is common on cloud pods whose egress IP is shared by many users):
@@ -47,9 +56,12 @@ irm https://garraia.org/install.ps1 | iex
 
 `install.ps1` is the Windows sibling of `install.sh` and behaves the same way:
 it detects the platform, resolves the latest release, downloads the binary,
-verifies it against the release's `SHA256SUMS`, installs it as `garraia.exe`,
-adds it to your **user** PATH, and then chains into `garraia init` and
-`garraia start`. It never needs administrator rights.
+verifies it against the release's `SHA256SUMS`, installs it as `garraia.exe`
+next to a `garra.cmd` shim (`"%~dp0garraia.exe" %*` -- so `garra` works too,
+and keeps working if you move the folder), adds the directory to your **user**
+PATH, and then chains into `garraia init` and `garraia start`. It never needs
+administrator rights. A pre-existing `garra.exe`, or a `garra.cmd` the installer
+did not write, is left untouched with a warning.
 
 Same mirrors as the shell installer:
 
@@ -470,7 +482,8 @@ chmod +x garraia-linux-x86_64.AppImage
 ./garraia-linux-x86_64.AppImage --version
 ```
 
-Both packages install `/usr/bin/garraia` plus `LICENSE`/`README.md` under
+Both packages install `/usr/bin/garraia`, the `/usr/bin/garra` symlink to it
+(the short name the docs use), plus `LICENSE`/`README.md` under
 `/usr/share/doc/garraia/`. aarch64 variants (`garraia-linux-aarch64.deb` /
 `.rpm`) exist whenever the best-effort aarch64 binary was built.
 

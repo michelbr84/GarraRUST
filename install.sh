@@ -49,6 +49,12 @@
 # with no shim and no LD_PRELOAD at all. It shares the rule 16 waiver above:
 # both wrappers are Termux exec-path workarounds with no Windows analogue.
 #
+# On every platform the installer also leaves $INSTALL_DIR/garra, a relative
+# symlink to `garraia` (issue #1328). The CLI's own hints, the wiki and the
+# README quick start all say `garra ...` -- the `[[bin]]` name a cargo build
+# produces -- while the published asset is `garraia`. Both names work after
+# an install. install.ps1 mirrors this with a `garra.cmd` shim (rule 16).
+#
 #   GARRAIA_SKIP_INIT=1     Skip the auto-run of `garraia init`.
 #   GARRAIA_SKIP_START=1    Skip the auto-run of `garraia start`.
 #                           Both set together → installer prints next-steps
@@ -77,6 +83,10 @@ set -eu
 
 REPO="michelbr84/GarraRUST"
 BINARY="garraia"
+# The short name: what a cargo build produces and what every `garra ...` hint
+# in the CLI, the wiki and the README refers to. Installed as a symlink to
+# ${BINARY}, never as a second copy (see install_garra_alias).
+ALIAS="garra"
 
 # Every GitHub fetch goes through this wrapper. curl treats HTTP 408/429/5xx
 # as transient under --retry (curl >= 7.66), which matters on cloud pods:
@@ -413,7 +423,7 @@ install_binary() {
     mkdir -p "${INSTALL_DIR}"
     INSTALL_PATH="${INSTALL_DIR}/${BINARY}"
 
-    if [ "${INSTALL_DIR}" = "/usr/local/bin" ] && [ "$(id -u)" -ne 0 ]; then
+    if install_needs_sudo; then
         echo "Installing to ${INSTALL_DIR} (requires sudo to copy ${ARTIFACT} → ${INSTALL_PATH})..."
         sudo cp "${GARRAIA_TMPDIR}/${ARTIFACT}" "${INSTALL_PATH}"
         sudo chmod +x "${INSTALL_PATH}"
@@ -425,8 +435,74 @@ install_binary() {
     echo ""
     echo "GarraIA ${VERSION} installed to ${INSTALL_PATH}"
 
+    install_garra_alias
     install_termux_mcp_wrapper
     install_termux_mcp_linker_wrapper
+}
+
+# Does writing into ${INSTALL_DIR} need sudo? Only /usr/local/bin as a
+# non-root user. Shared by install_binary and install_garra_alias so the
+# binary and its alias can never disagree about privileges: a directory that
+# needed sudo for the copy needs it for the link too.
+install_needs_sudo() {
+    [ "${INSTALL_DIR}" = "/usr/local/bin" ] && [ "$(id -u)" -ne 0 ]
+}
+
+# Issue #1328. Leaves ${INSTALL_DIR}/garra -> garraia next to the binary.
+#
+# Why: the CLI prints ~113 hints of the form "run `garra start`", the wiki's
+# first steps say `garra init`, and the README quick start uses `garra` too --
+# that is the `[[bin]]` name a cargo build produces. The published asset, and
+# therefore ${INSTALL_PATH}, is `garraia` (rule 15: the raw asset names are
+# frozen because `garra update` resolves them by exact name). Both names are
+# legitimate; only the installer left the user without the one every document
+# uses. Fix the reality, not the 113 strings.
+#
+# A symlink, not a copy: `garra update` swaps the file `current_exe()`
+# resolves to, and a second copy would drift away from the first on the next
+# update. RELATIVE (`garraia`, not `${INSTALL_DIR}/garraia`) so the pair
+# survives the directory being moved or $HOME being mounted elsewhere.
+#
+# Decision table -- mirrored one-for-one by Install-GarraAlias in install.ps1:
+#   absent                  -> create the link
+#   symlink (any target)    -> repoint it at garraia (a stale alias from an
+#                              older layout, or a hand-made absolute one)
+#   regular file / other    -> keep it and warn. A real file named `garra` is
+#                              most likely a from-source build the user copied
+#                              by hand; clobbering it would destroy their work.
+#
+# Every failure here is a warning, never an abort: the binary is already in
+# place and usable as `garraia`, and a missing alias must not undo an install.
+install_garra_alias() {
+    alias_path="${INSTALL_DIR}/${ALIAS}"
+
+    # `-e` follows symlinks, so a dangling link fails it and falls through to
+    # the `ln -sfn` below, which replaces it; only a real file gets protected.
+    if [ -e "${alias_path}" ] && [ ! -L "${alias_path}" ]; then
+        warn "${alias_path} already exists and was not created by this installer - left untouched."
+        warn "  The installed binary is ${INSTALL_PATH}; use 'garraia' or replace 'garra' yourself."
+        return 0
+    fi
+
+    if [ -L "${alias_path}" ]; then
+        alias_verb="Repointed alias"
+    else
+        alias_verb="Alias"
+    fi
+
+    # `-n` treats an existing link as the thing to replace even when it points
+    # at a directory (GNU, BSD/macOS and Termux coreutils all accept it).
+    if install_needs_sudo; then
+        if ! sudo ln -sfn "${BINARY}" "${alias_path}"; then
+            warn "could not create the 'garra' alias at ${alias_path}; 'garraia' still works."
+            return 0
+        fi
+    elif ! ln -sfn "${BINARY}" "${alias_path}"; then
+        warn "could not create the 'garra' alias at ${alias_path}; 'garraia' still works."
+        return 0
+    fi
+
+    echo "${alias_verb} ${alias_path} -> ${BINARY}"
 }
 
 # Android-only (issue #909). Writes $INSTALL_DIR/garra-mcp-server.
@@ -571,6 +647,7 @@ print_next_steps_legacy() {
     echo "Next steps:"
     echo "  garraia init    # interactive setup wizard"
     echo "  garraia start   # start the gateway"
+    echo "  'garra' is an alias for 'garraia' - either name works."
     print_termux_notice
 }
 
@@ -596,6 +673,12 @@ print_termux_notice() {
 error() {
     echo "error: $1" >&2
     exit 1
+}
+
+# Non-fatal counterpart of error(): report and carry on. Used where the
+# install already succeeded and only a nicety failed (the `garra` alias).
+warn() {
+    echo "warning: $1" >&2
 }
 
 # Printed when a GitHub fetch fails even after curl's retries. On shared
