@@ -47,9 +47,37 @@ python3 scripts/quality/compare.py --mode enforce \
 # Propor novo baseline (gera .proposed.json — NÃO commita automaticamente):
 python3 scripts/quality/freeze-baseline.py current-metrics.json
 
+# Sinal por PR (#1254): coletar tambem o merge-base e passar --base.
+# Cada linha ganha a coluna `Δ nesta PR` e o relatorio abre com o veredito
+# "Sem regressao nova nesta PR" / "REGRESSAO NOVA nesta PR: ...". O exit code
+# NAO muda (report-only sempre 0; enforce so olha o baseline).
+GARRAIA_REPO_ROOT=/caminho/do/worktree-do-merge-base \
+    bash scripts/quality/collect-metrics.sh > base-metrics.json
+python3 scripts/quality/compare.py --mode report-only \
+    .quality/baseline.json current-metrics.json --base base-metrics.json
+
 # Rodar testes dos parsers:
 python3 -m pytest scripts/quality/tests/
 ```
+
+## Sinal por PR e baseline defasado (#1254)
+
+O comparador confronta o `current` com **dois** pontos de referência:
+
+| Referência | Pergunta que responde | Efeito no exit code |
+|---|---|---|
+| `.quality/baseline.json` | "estamos melhores que o estado aceito?" | decide `enforce` |
+| `--base` (merge-base da PR) | "**esta PR** piorou algo?" | nenhum — só sinal |
+
+Sem `--base` (ex.: `push` em `main`) o relatório é byte-idêntico ao histórico.
+Com `--base`, a seção de regressões passa a se chamar
+`vs baseline (<frozenAt>) — ver #1254` e cada regressão diz se é
+`nova nesta PR` ou `pre-existente no merge-base`.
+
+Se `frozenAt` do baseline estiver a mais de **90 dias** de `collected_at` do
+`current`, entra a linha WARN `baseline_age_days`. O cálculo usa só os dois
+campos (ISO-8601 UTC), nunca o relógio — mesma entrada, mesmo relatório.
+Re-baseline continua sendo decisão do dono via `freeze-baseline.py`.
 
 ## Métricas trackedas (PR-1)
 
