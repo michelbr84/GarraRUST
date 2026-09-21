@@ -420,38 +420,17 @@ fn whatsapp_linked_check(
 
 // ─── ADR 0024 (#1329): perfil de execucao e raiz do MCP filesystem ──────────
 
-/// O modo que vale para todo remetente admitido no `whatsapp_linked` quando a
-/// secao nao declara `default_mode`. Espelha `bootstrap::whatsapp_linked::
-/// DEFAULT_MODE` (`search`), que e privado daquele modulo; aqui e so o que o
-/// diagnostico ECOA, nao o que decide.
-const WHATSAPP_PISO_PADRAO: &str = "search";
-
 /// O que o `execution.profile` reporta sobre o canal `whatsapp_linked`: o
-/// piso (`default_mode`, ou o default) e a CONTAGEM de `owners`. Nunca as
-/// identidades — a rota e auth-free. Puro.
-fn piso_e_donos_do_whatsapp(config: &garraia_config::AppConfig) -> (String, usize) {
-    let Some(secao) = config
-        .channels
-        .get(crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY)
-        .filter(|s| s.channel_type == crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY)
-    else {
-        return (WHATSAPP_PISO_PADRAO.to_string(), 0);
-    };
-    let piso = secao
-        .settings
-        .get("default_mode")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(WHATSAPP_PISO_PADRAO)
-        .to_string();
-    let donos = secao
-        .settings
-        .get("owners")
-        .and_then(serde_json::Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    (piso, donos)
+/// piso do DONO nesse perfil (`default_mode` explicito, senao o default do
+/// perfil — `search` em `standard`, `code` em `isolated-pod`, a mesma regra
+/// que `LinkedSettings::modo_padrao_efetivo` aplica no turno) e a CONTAGEM de
+/// `owners`. Nunca as identidades — a rota e auth-free. Puro.
+fn piso_e_donos_do_whatsapp(
+    config: &garraia_config::AppConfig,
+    perfil: garraia_config::ExecutionProfile,
+) -> (String, usize) {
+    let settings = crate::bootstrap::whatsapp_linked_settings(config);
+    (settings.modo_padrao_efetivo(perfil), settings.owners.len())
 }
 
 fn lista_de_caminhos(raizes: &[std::path::PathBuf]) -> String {
@@ -644,7 +623,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     // admin API gravou desde entao — sem I/O de disco por request.
     let politica = crate::bootstrap::politica_de_execucao(&state.config);
     let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&state.config);
-    let (piso_whatsapp, donos) = piso_e_donos_do_whatsapp(&state.config);
+    let (piso_whatsapp, donos) = piso_e_donos_do_whatsapp(&state.config, politica.perfil);
     checks.push(execution_profile_check(
         &politica,
         &piso_whatsapp,
@@ -1101,15 +1080,21 @@ mod tests {
         assert!(passo.contains("pod"), "{passo}");
     }
 
-    /// Piso e contagem de donos vem da secao `channels.whatsapp_linked`; as
+    /// Piso e contagem de donos vem da secao `channels.whatsapp_linked`; o
+    /// piso default segue o perfil (`search`/`code`) como no turno; as
     /// identidades NUNCA saem — a rota e auth-free.
     #[test]
     fn piso_e_donos_saem_da_secao_sem_as_identidades() {
         let mut config = garraia_config::AppConfig::default();
         assert_eq!(
-            piso_e_donos_do_whatsapp(&config),
+            piso_e_donos_do_whatsapp(&config, ExecutionProfile::Standard),
             ("search".to_string(), 0),
-            "sem secao: piso default e zero donos"
+            "sem secao, standard: piso search e zero donos"
+        );
+        assert_eq!(
+            piso_e_donos_do_whatsapp(&config, ExecutionProfile::IsolatedPod),
+            ("code".to_string(), 0),
+            "sem secao, isolated-pod: o dono teria piso code (mas ha zero donos)"
         );
 
         config.channels.insert(
@@ -1118,16 +1103,19 @@ mod tests {
                 channel_type: "whatsapp_linked".into(),
                 enabled: Some(true),
                 settings: std::collections::HashMap::from([
-                    ("default_mode".to_string(), serde_json::json!(" code ")),
+                    ("default_mode".to_string(), serde_json::json!(" search ")),
                     (
                         "owners".to_string(),
-                        serde_json::json!(["5511999998888", "abc@lid"]),
+                        serde_json::json!(["+55 11 99999-8888", "abc@lid"]),
                     ),
                 ]),
             },
         );
-        let (piso, donos) = piso_e_donos_do_whatsapp(&config);
-        assert_eq!(piso, "code", "default_mode e aparado");
+        let (piso, donos) = piso_e_donos_do_whatsapp(&config, ExecutionProfile::IsolatedPod);
+        assert_eq!(
+            piso, "search",
+            "default_mode explicito vence o default do perfil"
+        );
         assert_eq!(donos, 2);
 
         let c = execution_profile_check(
@@ -1137,7 +1125,7 @@ mod tests {
             &[],
         );
         let json = serde_json::to_string(&c).expect("serializa");
-        for proibido in ["5511999998888", "abc@lid", "@lid"] {
+        for proibido in ["5511999998888", "99999-8888", "abc@lid", "@lid"] {
             assert!(!json.contains(proibido), "vazou {proibido:?}: {json}");
         }
 
@@ -1145,7 +1133,10 @@ mod tests {
         if let Some(ch) = config.channels.get_mut("whatsapp_linked") {
             ch.channel_type = "whatsapp".into();
         }
-        assert_eq!(piso_e_donos_do_whatsapp(&config), ("search".to_string(), 0));
+        assert_eq!(
+            piso_e_donos_do_whatsapp(&config, ExecutionProfile::Standard),
+            ("search".to_string(), 0)
+        );
     }
 
     /// Sem entrada `filesystem` nao ha o que comparar: `skipped`.

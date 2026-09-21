@@ -68,7 +68,8 @@ pub use whatsapp::build_whatsapp_channels;
 /// conheca o numero pessoal do operador.
 pub use whatsapp_linked::{
     CONFIG_KEY as WHATSAPP_LINKED_CONFIG_KEY, LinkedPaths, NaoSubiu, WhatsAppLinkedRuntime,
-    health as whatsapp_linked_health, spawn_whatsapp_linked,
+    health as whatsapp_linked_health, settings_from_config as whatsapp_linked_settings,
+    spawn_whatsapp_linked,
 };
 
 /// ADR 0024 (#1329): a politica derivada de `execution.profile` — perfil e
