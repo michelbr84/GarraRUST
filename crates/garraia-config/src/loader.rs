@@ -55,7 +55,32 @@ impl ConfigLoader {
         &self.config_dir
     }
 
+    /// Le o arquivo de config (ou os defaults) **e** aplica a env por cima.
+    ///
+    /// ADR 0024 (#1329): `GARRAIA_EXECUTION_PROFILE` vence `execution.profile`
+    /// e e resolvida aqui, uma vez, com a origem registrada. Valor invalido
+    /// e erro de carga — o gateway nao sobe — em vez de cair em `standard`
+    /// em silencio. E o unico lugar que aplica a env: `AppConfig::default()`
+    /// nunca a le, para os fluxos de teste baseados em `Default` nao
+    /// dependerem do ambiente.
     pub fn load(&self) -> Result<AppConfig> {
+        let mut config = self.load_sem_env()?;
+        config
+            .execution
+            .aplicar_env()
+            .map_err(|e| Error::Config(e.to_string()))?;
+        Ok(config)
+    }
+
+    /// [`Self::load`] sem aplicar `GARRAIA_EXECUTION_PROFILE`.
+    ///
+    /// Para o `garra config check`: um valor invalido na env tem de virar
+    /// **Finding** de severidade `Error` no relatorio (com o sumario, as
+    /// outras findings e o exit code 2), nao um exit 65 "arquivo nao parseia"
+    /// — o arquivo parseia; o que esta errado e o ambiente. O check le a env
+    /// por conta propria (`validate_execution`). Todo outro chamador quer
+    /// `load`.
+    pub fn load_sem_env(&self) -> Result<AppConfig> {
         self.warn_if_legacy_dir_shadowed();
         let yaml_path = self.config_dir.join("config.yml");
         let toml_path = self.config_dir.join("config.toml");
@@ -102,6 +127,70 @@ impl ConfigLoader {
             info!("no config file found, using defaults");
             Ok(AppConfig::default())
         }
+    }
+
+    /// [`Self::load_sem_env`] para o `garra config check`, que tolera **um**
+    /// defeito a mais: `execution.profile` com valor fora de
+    /// `standard` | `isolated-pod` no arquivo.
+    ///
+    /// ADR 0024: valor invalido no arquivo e erro de carga — `load` recusa e
+    /// o gateway nao sobe — e o `config check` reporta `Error` em
+    /// `execution.profile` (exit 2). So que o serde recusa o valor como erro
+    /// de parse do arquivo inteiro, e ai o check nunca chegava ao relatorio:
+    /// era exit 65 "o arquivo nao parseia; corrija a sintaxe", que manda o
+    /// operador procurar um erro de YAML que nao existe. Aqui, quando o
+    /// arquivo nao carrega, o valor de `execution.profile` e lido cru; se
+    /// ele e a unica coisa errada, a config e carregada sem ele e marcada
+    /// com o valor recusado (`ExecutionConfig::perfil_invalido_no_arquivo`),
+    /// que `validate_execution` transforma no `Error`. Qualquer outro erro
+    /// de parse continua sendo o erro original.
+    ///
+    /// Nunca e o caminho do boot: a marca so nasce aqui.
+    pub fn load_para_o_check(&self) -> Result<AppConfig> {
+        let erro = match self.load_sem_env() {
+            Ok(config) => return Ok(config),
+            Err(e) => e,
+        };
+        match self.recarregar_sem_o_perfil_invalido() {
+            Some(config) => Ok(config),
+            None => Err(erro),
+        }
+    }
+
+    /// A metade crua de [`Self::load_para_o_check`]: `Some` so quando
+    /// `execution.profile` e uma string que o arquivo nao aceita E o resto
+    /// do arquivo carrega sem ela.
+    fn recarregar_sem_o_perfil_invalido(&self) -> Option<AppConfig> {
+        let yaml_path = self.config_dir.join("config.yml");
+        let toml_path = self.config_dir.join("config.toml");
+
+        let (mut config, valor) = if yaml_path.exists() {
+            let contents = std::fs::read_to_string(&yaml_path).ok()?;
+            let mut valor: serde_yaml::Value = serde_yaml::from_str(&contents).ok()?;
+            let perfil = valor
+                .get_mut("execution")?
+                .as_mapping_mut()?
+                .remove("profile")?;
+            let cru = perfil.as_str()?.to_string();
+            let config: AppConfig = serde_yaml::from_value(valor).ok()?;
+            (config, cru)
+        } else if toml_path.exists() {
+            let contents = std::fs::read_to_string(&toml_path).ok()?;
+            let mut valor: toml::Value = toml::from_str(&contents).ok()?;
+            let perfil = valor
+                .get_mut("execution")?
+                .as_table_mut()?
+                .remove("profile")?;
+            let cru = perfil.as_str()?.to_string();
+            let config: AppConfig = valor.try_into().ok()?;
+            (config, cru)
+        } else {
+            return None;
+        };
+
+        let err = crate::execution::perfil_do_arquivo_estrito(&valor).err()?;
+        config.execution.marcar_perfil_invalido_no_arquivo(err);
+        Some(config)
     }
 
     /// Warn when config files exist in the legacy `~/.garraia` dir while the
@@ -526,6 +615,148 @@ mod tests {
             mode & 0o777
         );
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// ADR 0024 (#1329): `load` aplica `GARRAIA_EXECUTION_PROFILE` por cima
+    /// do arquivo (env vence). `load_sem_env` ignora a env de proposito, para
+    /// o `config check` poder reportar o mesmo valor como Finding.
+    ///
+    /// So valores VALIDOS entram na env aqui: `load()` e lido sem lock por
+    /// outros testes deste binario, e um valor invalido em transito faria
+    /// qualquer um deles falhar (review C7). O caminho invalido e provado
+    /// puro em `execution::tests` e num subprocesso pelo smoke da CLI.
+    #[test]
+    fn load_aplica_a_env_do_perfil() {
+        use crate::execution::{ExecutionProfile, PROFILE_ENV, ProfileSource};
+
+        let dir = temp_dir("execution-env");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("config.yml"), "execution:\n  profile: standard\n")
+            .expect("failed to write config");
+        let loader = ConfigLoader::with_dir(&dir);
+
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct Restaura(Option<std::ffi::OsString>);
+        impl Drop for Restaura {
+            fn drop(&mut self) {
+                // SAFETY: ENV_TEST_LOCK held for the whole test.
+                unsafe {
+                    match self.0.take() {
+                        Some(v) => std::env::set_var(PROFILE_ENV, v),
+                        None => std::env::remove_var(PROFILE_ENV),
+                    }
+                }
+            }
+        }
+        let _restaura = Restaura(std::env::var_os(PROFILE_ENV));
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(PROFILE_ENV, "isolated-pod") };
+        let com_env = loader.load();
+        let sem_env = loader.load_sem_env();
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::remove_var(PROFILE_ENV) };
+        let sem_nada = loader.load();
+        let _ = fs::remove_dir_all(dir);
+
+        let com_env = com_env.expect("env valida carrega");
+        assert_eq!(com_env.execution.perfil(), ExecutionProfile::IsolatedPod);
+        assert_eq!(com_env.execution.origem(), ProfileSource::Env);
+        // O arquivo continua dizendo `standard`: um `save` nao promove a env.
+        assert_eq!(com_env.execution.profile, Some(ExecutionProfile::Standard));
+
+        let sem_env = sem_env.expect("load_sem_env ignora a env");
+        assert_eq!(sem_env.execution.perfil(), ExecutionProfile::Standard);
+        assert_eq!(sem_env.execution.origem(), ProfileSource::File);
+
+        let sem_nada = sem_nada.expect("sem env carrega");
+        assert_eq!(sem_nada.execution.origem(), ProfileSource::File);
+    }
+
+    /// ADR 0024: valor invalido de `execution.profile` NO ARQUIVO e erro de
+    /// carga (`load` e `load_sem_env` recusam; o gateway nao sobe), mas o
+    /// `config check` precisa chegar ao relatorio para dizer `Error` em
+    /// `execution.profile` (review C10). `load_para_o_check` carrega o resto
+    /// e marca o valor recusado; qualquer OUTRO erro de parse continua sendo
+    /// erro.
+    #[test]
+    fn load_para_o_check_tolera_so_o_perfil_invalido_no_arquivo() {
+        use crate::execution::{ExecutionProfile, ProfileSource};
+
+        for (arquivo, conteudo) in [
+            (
+                "config.yml",
+                "gateway:\n  port: 4000\nexecution:\n  profile: isolated_pod\n  pod_root: /workspace\n",
+            ),
+            (
+                "config.toml",
+                "[gateway]\nport = 4000\n\n[execution]\nprofile = \"isolated_pod\"\npod_root = \"/workspace\"\n",
+            ),
+        ] {
+            let dir = temp_dir("execution-invalid-file");
+            fs::create_dir_all(&dir).expect("failed to create temp dir");
+            fs::write(dir.join(arquivo), conteudo).expect("failed to write config");
+            let loader = ConfigLoader::with_dir(&dir);
+
+            assert!(
+                loader.load_sem_env().is_err(),
+                "{arquivo}: o arquivo e recusado"
+            );
+
+            let config = loader
+                .load_para_o_check()
+                .unwrap_or_else(|e| panic!("{arquivo}: o check carrega o resto: {e}"));
+            assert_eq!(
+                config.gateway.port, 4000,
+                "{arquivo}: o resto do arquivo vale"
+            );
+            assert_eq!(
+                config.execution.pod_root().map(|p| p.display().to_string()),
+                Some("/workspace".to_string()),
+                "{arquivo}"
+            );
+            let err = config
+                .execution
+                .perfil_invalido_no_arquivo()
+                .unwrap_or_else(|| panic!("{arquivo}: o valor recusado fica marcado"));
+            assert_eq!(err.valor(), "isolated_pod", "{arquivo}");
+            // Sem o valor invalido a secao e o default — e o Error do check
+            // e quem conta a historia, nao um `standard` em silencio no boot
+            // (que nunca chega a este objeto).
+            assert_eq!(config.execution.perfil(), ExecutionProfile::Standard);
+            assert_eq!(config.execution.origem(), ProfileSource::Default);
+            let _ = fs::remove_dir_all(dir);
+        }
+
+        // Valor valido no arquivo: `load_para_o_check` == `load_sem_env`.
+        let dir = temp_dir("execution-valid-file");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(
+            dir.join("config.yml"),
+            "execution:\n  profile: isolated-pod\n",
+        )
+        .expect("failed to write config");
+        let loader = ConfigLoader::with_dir(&dir);
+        let config = loader.load_para_o_check().expect("carrega");
+        assert!(config.execution.perfil_invalido_no_arquivo().is_none());
+        assert_eq!(config.execution.perfil(), ExecutionProfile::IsolatedPod);
+        let _ = fs::remove_dir_all(dir);
+
+        // Outro erro de parse (aqui: `gateway.port` nao numerico) junto com
+        // o perfil invalido: o erro original e devolvido, nao mascarado.
+        let dir = temp_dir("execution-other-error");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(
+            dir.join("config.yml"),
+            "gateway:\n  port: nao-e-porta\nexecution:\n  profile: isolated_pod\n",
+        )
+        .expect("failed to write config");
+        let loader = ConfigLoader::with_dir(&dir);
+        assert!(loader.load_para_o_check().is_err());
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -108,7 +108,10 @@ fn print_missing_deck_hint() {
     eprintln!("Instale com:");
     eprintln!("  curl -fsSL {AGENTDECK_INSTALL_URL} | bash");
     eprintln!();
-    eprintln!("Depois rode `garra agents setup` de novo.");
+    eprintln!(
+        "Depois rode `{} agents setup` de novo.",
+        crate::binario::nome()
+    );
     eprintln!();
     eprintln!("Nota: NÃO use `npm install -g agentdeck` — esse nome no npm é de");
     eprintln!("outro projeto, sem relação com o AgentDeck que este comando usa.");

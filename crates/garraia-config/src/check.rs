@@ -94,6 +94,11 @@ pub struct ConfigSummary {
     pub embeddings_providers: Vec<String>,
     pub mcp_servers_count: usize,
     pub log_level: Option<String>,
+    /// ADR 0024 (#1329): perfil de execucao efetivo (`standard` |
+    /// `isolated-pod`), com a env `GARRAIA_EXECUTION_PROFILE` aplicada.
+    pub execution_profile: String,
+    /// De onde o perfil veio: `default` | `file` | `env`.
+    pub execution_profile_source: String,
 }
 
 impl ConfigCheck {
@@ -132,6 +137,9 @@ const KNOWN_GARRAIA_ENV_VARS: &[&str] = &[
     "GARRAIA_APP_DATABASE_URL",
     "GARRAIA_CONFIG_DIR",
     "GARRAIA_DATA_DIR",
+    // ADR 0024 (#1329): vence `execution.profile`; valor invalido e erro de
+    // carga no gateway e `Error` aqui (`validate_execution`).
+    "GARRAIA_EXECUTION_PROFILE",
     "GARRAIA_JWT_SECRET",
     "GARRAIA_LOGIN_DATABASE_URL",
     "GARRAIA_LOG_FORMAT",
@@ -208,10 +216,21 @@ fn source_report(loader: &ConfigLoader) -> SourceReport {
     }
 }
 
+/// O resultado da leitura de `GARRAIA_EXECUTION_PROFILE`, lido UMA vez por
+/// `run_check` e injetado em `validate_com_env`/`summarise_com_env` — para o
+/// nucleo do check ser puro e os testes cobrirem o valor invalido sem por um
+/// valor invalido na env de verdade (review C7 da #1329).
+type PerfilDaEnv =
+    Result<Option<crate::execution::ExecutionProfile>, crate::execution::ExecutionProfileError>;
+
 /// `mcp_servers_count` comes from the caller so it can reflect the merged
 /// view (config.yml `mcp:` + mcp.json) — counting only `config.mcp` reported
 /// 0 even when mcp.json had working servers.
-fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
+fn summarise_com_env(
+    config: &AppConfig,
+    mcp_servers_count: usize,
+    env: &PerfilDaEnv,
+) -> ConfigSummary {
     let mut llm_providers: Vec<String> = config.llm.keys().cloned().collect();
     llm_providers.sort();
 
@@ -235,6 +254,9 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
 
+    let (execution_profile, execution_profile_source) =
+        perfil_efetivo_para_o_check(&config.execution, env);
+
     ConfigSummary {
         gateway_host: config.gateway.host.clone(),
         gateway_port: config.gateway.port,
@@ -249,10 +271,41 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
         embeddings_providers,
         mcp_servers_count,
         log_level: config.log_level.clone(),
+        execution_profile: execution_profile.as_str().to_string(),
+        execution_profile_source: execution_profile_source.as_str().to_string(),
     }
 }
 
+/// O perfil efetivo e a origem, como o `config check` os reporta.
+///
+/// Recebe a env ja lida porque o check recebe um `AppConfig` vindo de
+/// `load_para_o_check` (o caminho que deixa um valor invalido virar Finding
+/// em vez de exit 65). Com env valida a resposta e a mesma que
+/// `ConfigLoader::load` teria dado; com env invalida — que
+/// `validate_execution` reporta como `Error` — o sumario mostra o que o
+/// arquivo diz, que e o que o loader usaria sem a env.
+fn perfil_efetivo_para_o_check(
+    execution: &crate::execution::ExecutionConfig,
+    env: &PerfilDaEnv,
+) -> (
+    crate::execution::ExecutionProfile,
+    crate::execution::ProfileSource,
+) {
+    match env {
+        Ok(Some(p)) => (*p, crate::execution::ProfileSource::Env),
+        _ => (execution.perfil(), execution.origem()),
+    }
+}
+
+/// [`validate_com_env`] sem env — o que os testes deste modulo chamam. Pura:
+/// nenhum teste daqui depende do ambiente do desenvolvedor nem precisa de
+/// lock para ler `GARRAIA_EXECUTION_PROFILE`.
+#[cfg(test)]
 fn validate(config: &AppConfig) -> Vec<Finding> {
+    validate_com_env(config, &Ok(None))
+}
+
+fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
     let mut findings: Vec<Finding> = Vec::new();
     let push_err = |findings: &mut Vec<Finding>, field: &str, message: String| {
         findings.push(Finding {
@@ -348,26 +401,26 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         _ => {}
     }
 
-    // Bind exposure: 0.0.0.0/:: listens on every interface, and the bulk of
-    // the /api/* + /ws surface has no credential gate of its own, so only
-    // an api_key + TLS deployment (or network topology) protects it.
+    // Bind exposure: a non-loopback bind puts /api/* + /ws on the network,
+    // and the bulk of that surface has no credential gate of its own, so
+    // only an api_key + TLS deployment (or network topology) protects it.
     //
     // #1261: este achado olhava SO para o arquivo, e o arquivo nao e o que
     // manda. `garra start` recebe `--host`/`--port` do clap com
-    // `env = "HOST"`/`env = "PORT"`, e o `main.rs` sobrescreve
-    // `config.gateway.host`/`port` com esses valores depois de carregar a
-    // config. Entao `HOST=0.0.0.0` com um arquivo em `127.0.0.1` passava
-    // calado — falsa garantia exatamente para quem foi consultar o
-    // diagnostico antes de expor a porta. O que a env diz, `config check`
-    // consegue ver (mesmo processo); a flag, nao — e o texto do achado
-    // agora diz isso em vez de fingir autoridade sobre o bind real.
+    // `env = "HOST"`/`env = "PORT"` e `default_value`, e o `main.rs`
+    // sobrescreve `config.gateway.host`/`port` com esses valores depois de
+    // carregar a config — sem condicao, porque o arg do clap SEMPRE traz um
+    // valor (flag, env ou default). `gateway.host`/`gateway.port` do arquivo
+    // nunca chegam ao socket. Entao a precedencia que o check resolve e a
+    // real, env > default do clap, e o arquivo entra so como achado a parte
+    // (chave morta), nunca como fallback do veredito de exposicao. O que a
+    // env diz, `config check` consegue ver (mesmo processo); a flag, nao —
+    // e o texto do achado diz isso em vez de fingir autoridade sobre o
+    // bind real.
     let bind = bind_efetivo(
-        &config.gateway.host,
-        config.gateway.port,
         env_nao_vazia(HOST_ENV).as_deref(),
         env_nao_vazia(PORT_ENV).as_deref(),
     );
-    let bind_all_interfaces = host_expoe_todas_as_interfaces(&bind.host);
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
     // #1241: `is_some()` mentia aqui. An empty or whitespace-only `api_key`
@@ -375,37 +428,94 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // stayed silent about a wide-open `/api/*` + `/ws`. Both surfaces now ask
     // `GatewayConfig::api_key_configurada`, the single source of that rule.
     let api_key_configurada = config.gateway.api_key_configurada();
-    if bind_all_interfaces && (!api_key_configurada || !tls_enabled) {
-        let mut unguarded: Vec<&str> = Vec::new();
-        if !api_key_configurada {
-            unguarded.push("gateway.api_key is not set");
-        }
-        if !tls_enabled {
-            unguarded.push("TLS is disabled");
-        }
+    let mut unguarded: Vec<&str> = Vec::new();
+    if !api_key_configurada {
+        unguarded.push("gateway.api_key is not set");
+    }
+    if !tls_enabled {
+        unguarded.push("TLS is disabled");
+    }
+    if !unguarded.is_empty() {
         let origem = match bind.host_source {
-            FonteDoBind::Arquivo => format!("gateway.host=`{}` (config file)", bind.host),
             FonteDoBind::Env => format!(
-                "{HOST_ENV}=`{}` (env var, which overrides gateway.host=`{}` from the config \
-                 file at `garra start`)",
-                bind.host, config.gateway.host
+                "{HOST_ENV}=`{}` (env var, which overrides the clap default `{HOST_DEFAULT}` \
+                 at `garra start`)",
+                bind.host
             ),
+            FonteDoBind::DefaultDoClap => format!("host `{}` (clap default)", bind.host),
         };
         let porta = match bind.port_source {
-            FonteDoBind::Arquivo => format!("port {}", bind.port),
             FonteDoBind::Env => format!("port {} (from {PORT_ENV})", bind.port),
+            FonteDoBind::DefaultDoClap => format!("port {} (clap default)", bind.port),
         };
+        let ressalva = format!(
+            "Caveat: this check sees this process's {HOST_ENV}/{PORT_ENV} env vars and the \
+             clap defaults, but NOT a `--host`/`--port` flag passed to `garra start` later — \
+             a flag still wins over both, so it can change the real bind after this check \
+             passes; and `garra restart` ignores {HOST_ENV}/{PORT_ENV} altogether, taking \
+             only its own flags or the defaults"
+        );
+        let desprotegido = unguarded.join(" and ");
+        match exposicao_do_host(&bind.host) {
+            ExposicaoDoHost::Loopback => {}
+            alcance @ (ExposicaoDoHost::TodasAsInterfaces | ExposicaoDoHost::NaoLoopback) => {
+                let alcance = if alcance == ExposicaoDoHost::TodasAsInterfaces {
+                    "listens on every interface"
+                } else {
+                    "is not a loopback address, so the gateway is reachable from the network"
+                };
+                push_warn(
+                    &mut findings,
+                    "gateway.host",
+                    format!(
+                        "{origem} {alcance} while {desprotegido} — make sure a firewall or \
+                         TLS-terminating reverse proxy protects {porta}, or switch to \
+                         {HOST_DEFAULT}. {ressalva}"
+                    ),
+                );
+            }
+            ExposicaoDoHost::Indeterminada => push_warn(
+                &mut findings,
+                "gateway.host",
+                format!(
+                    "{origem} is a hostname, not an IP literal, so this check cannot tell \
+                     whether {porta} lands on loopback or on a network-facing address while \
+                     {desprotegido} — `garra start` resolves it at bind time and only warns \
+                     then. Prefer an IP literal. {ressalva}"
+                ),
+            ),
+        }
+    }
+
+    // As chaves do arquivo que o start nao le. Quando diferem do bind
+    // efetivo, quem as escreveu acredita numa coisa que nao acontece — nos
+    // dois sentidos: um `0.0.0.0` que nao expoe nada e um `127.0.0.1` que
+    // nao protege de `HOST=0.0.0.0`. Achado a parte, com a palavra exata
+    // ("not read"), nunca "binds all interfaces" sobre um valor morto.
+    if config.gateway.host.trim() != bind.host.trim() {
         push_warn(
             &mut findings,
             "gateway.host",
             format!(
-                "{origem} binds all interfaces while {} — make sure a firewall or \
-                 TLS-terminating reverse proxy protects {porta}, or switch to 127.0.0.1. \
-                 Caveat: this check sees the config file and this process's \
-                 {HOST_ENV}/{PORT_ENV} env vars, but NOT a `--host`/`--port` flag passed to \
-                 `garra start` later — a flag still wins over both, so it can change the \
-                 real bind after this check passes",
-                unguarded.join(" and "),
+                "gateway.host=`{}` in the config file is not read by `garra start` (it binds \
+                 {HOST_DEFAULT}:{PORT_DEFAULT} unless {HOST_ENV}/{PORT_ENV} or `--host`/`--port` \
+                 are set; this check resolved host `{}`) — set {HOST_ENV} or pass `--host` if \
+                 you meant it; see docs/auth-config.md section 5.1",
+                config.gateway.host, bind.host
+            ),
+        );
+    }
+    // `port: 0` ja e Error acima; repetir como chave morta so faria eco.
+    if config.gateway.port != 0 && config.gateway.port != bind.port {
+        push_warn(
+            &mut findings,
+            "gateway.port",
+            format!(
+                "gateway.port=`{}` in the config file is not read by `garra start` (it binds \
+                 {HOST_DEFAULT}:{PORT_DEFAULT} unless {HOST_ENV}/{PORT_ENV} or `--host`/`--port` \
+                 are set; this check resolved port {}) — set {PORT_ENV} or pass `--port` if \
+                 you meant it; see docs/auth-config.md section 5.1",
+                config.gateway.port, bind.port
             ),
         );
     }
@@ -700,6 +810,12 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // worse than one that is off, because the operator stops watching.
     validate_sandbox(&config.agent, &mut findings, &push_err, &push_warn);
 
+    // execution (ADR 0024 / #1329): env ou arquivo invalido e Error (o
+    // gateway nao sobe); `pod_root` e `owners` fora de `isolated-pod` sao
+    // Warning, porque sao config que o operador acha que faz algo e nao faz.
+    findings.extend(validate_execution(&config.execution, env, &config.channels));
+    validate_whatsapp_linked_identidades(&config.channels, &mut findings, &push_warn);
+
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
     validate_auth(&config.auth, &mut findings, &push_err, &push_warn);
@@ -790,14 +906,30 @@ const HOST_ENV: &str = "HOST";
 /// A env irma de [`HOST_ENV`], lida por `--port`.
 const PORT_ENV: &str = "PORT";
 
+/// O `default_value` do clap para `--host` — o que `garra start` sobe
+/// quando nem flag nem [`HOST_ENV`] dizem nada. NUNCA `gateway.host` do
+/// arquivo: o arg do clap sempre traz um valor, e o `main.rs` escreve esse
+/// valor por cima da config carregada (#1261).
+///
+/// Espelho de `crates/garraia-cli/src/main.rs` (`Commands::Start`,
+/// `#[arg(long, env = "HOST", default_value = "127.0.0.1")]`). O teste
+/// `defaults_do_clap_espelham_o_main_da_cli` le aquele fonte e prende os
+/// dois literais a estas constantes, para que nao divirjam em silencio.
+const HOST_DEFAULT: &str = "127.0.0.1";
+
+/// O `default_value` irmao para `--port`
+/// (`#[arg(long, env = "PORT", default_value = "3888")]`).
+const PORT_DEFAULT: u16 = 3888;
+
 /// De onde veio o valor que um `garra start` sem flags usaria de fato.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FonteDoBind {
-    /// `gateway.host` / `gateway.port` do arquivo de config.
-    Arquivo,
     /// A env [`HOST_ENV`] / [`PORT_ENV`], que o clap resolve antes do
     /// default e que o `main.rs` escreve por cima do arquivo.
     Env,
+    /// O `default_value` do clap ([`HOST_DEFAULT`] / [`PORT_DEFAULT`]):
+    /// sem env, e isto que sobe — nao o arquivo.
+    DefaultDoClap,
 }
 
 /// O par host/porta que `config check` consegue afirmar, com a origem de
@@ -810,29 +942,25 @@ struct BindEfetivo {
     port_source: FonteDoBind,
 }
 
-/// Funcao pura: dado o arquivo e as envs, qual bind `config check` pode
-/// afirmar (#1261).
+/// Funcao pura: dadas as envs, qual bind `config check` pode afirmar
+/// (#1261). Mesma precedencia do clap em `garra start`: env, senao o
+/// `default_value`. O arquivo nao entra — o `main.rs` o sobrescreve sempre.
 ///
 /// Ela nao ve — e nao pode ver — a flag `--host`/`--port` de um `garra
 /// start` futuro, que roda em outro processo. Por isso o achado que a
 /// consome diz a limitacao em voz alta em vez de passar com falsa
 /// confianca.
 ///
-/// Uma `PORT` que nao e um `u16` cai de volta no arquivo: o clap recusaria
-/// esse valor no `start`, entao nao ha bind nenhum para reportar.
-fn bind_efetivo(
-    host_do_arquivo: &str,
-    porta_do_arquivo: u16,
-    host_da_env: Option<&str>,
-    porta_da_env: Option<&str>,
-) -> BindEfetivo {
+/// Uma `PORT` que nao e um `u16` cai no default: o clap recusaria esse
+/// valor no `start`, entao nao ha bind nenhum para reportar.
+fn bind_efetivo(host_da_env: Option<&str>, porta_da_env: Option<&str>) -> BindEfetivo {
     let (host, host_source) = match host_da_env {
         Some(h) => (h.to_string(), FonteDoBind::Env),
-        None => (host_do_arquivo.to_string(), FonteDoBind::Arquivo),
+        None => (HOST_DEFAULT.to_string(), FonteDoBind::DefaultDoClap),
     };
     let (port, port_source) = match porta_da_env.and_then(|p| p.parse::<u16>().ok()) {
         Some(p) => (p, FonteDoBind::Env),
-        None => (porta_do_arquivo, FonteDoBind::Arquivo),
+        None => (PORT_DEFAULT, FonteDoBind::DefaultDoClap),
     };
     BindEfetivo {
         host,
@@ -842,18 +970,49 @@ fn bind_efetivo(
     }
 }
 
-/// Um host que escuta em toda interface, nas grafias que o `SocketAddr`
-/// aceita.
-fn host_expoe_todas_as_interfaces(host: &str) -> bool {
-    matches!(host.trim(), "0.0.0.0" | "::" | "[::]")
+/// O que um host diz sobre alcance de rede, pelo mesmo criterio do gateway
+/// (`server.rs` avisa quando `bound.ip()` nao e loopback).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExposicaoDoHost {
+    /// `127.0.0.0/8`, `::1` ou o nome `localhost`: so a propria maquina.
+    Loopback,
+    /// Endereco nao especificado (`0.0.0.0`, `::` e grafias equivalentes):
+    /// toda interface.
+    TodasAsInterfaces,
+    /// Um IP concreto fora do loopback (LAN, publico): alcancavel da rede.
+    NaoLoopback,
+    /// Nao e um literal de IP — um hostname que so o bind resolve; o check
+    /// nao consegue julgar.
+    Indeterminada,
+}
+
+/// Classifica o host como o gateway classificaria o socket que abriu.
+/// Aceita a grafia com colchetes (`[::]`) que o `SocketAddr` aceita.
+fn exposicao_do_host(host: &str) -> ExposicaoDoHost {
+    let h = host.trim();
+    let h = h
+        .strip_prefix('[')
+        .and_then(|resto| resto.strip_suffix(']'))
+        .unwrap_or(h);
+    // `localhost` e o unico nome que vale a pena conhecer: resolve para
+    // loopback em qualquer maquina sa, e e o que muita gente escreve.
+    if h.eq_ignore_ascii_case("localhost") {
+        return ExposicaoDoHost::Loopback;
+    }
+    match h.parse::<std::net::IpAddr>() {
+        Ok(ip) if ip.is_loopback() => ExposicaoDoHost::Loopback,
+        Ok(ip) if ip.is_unspecified() => ExposicaoDoHost::TodasAsInterfaces,
+        Ok(_) => ExposicaoDoHost::NaoLoopback,
+        Err(_) => ExposicaoDoHost::Indeterminada,
+    }
 }
 
 /// O valor de uma env so quando ele diz alguma coisa: vazia ou so espaco
 /// conta como ausente, como no resto deste modulo. Diferenca benigna do
-/// clap real: `HOST="  "` aqui vira "ausente" (cai para o arquivo), mas um
-/// `garra start` de verdade passaria isso adiante e falharia no parse do
-/// `SocketAddr` — nunca produz um falso "nao exposto", so um "nao vi nada
-/// de errado" onde o start real teria erro de config.
+/// clap real: `HOST="  "` aqui vira "ausente" (cai para o default do clap),
+/// mas um `garra start` de verdade passaria isso adiante e falharia no
+/// parse do `SocketAddr` — nunca produz um falso "nao exposto", so um "nao
+/// vi nada de errado" onde o start real teria erro de config.
 fn env_nao_vazia(nome: &str) -> Option<String> {
     std::env::var(nome)
         .ok()
@@ -2266,6 +2425,216 @@ fn validate_config_dir_inner(dir: &std::path::Path, env_explicitly_set: bool) ->
     findings
 }
 
+/// A chave de `channels` do canal `whatsapp_linked` (ADR 0023). Escrita por
+/// extenso porque `garraia-config` nao depende de `garraia-channels`; e o
+/// mesmo `CONFIG_KEY` que o gateway le em `settings_from_config`.
+const WHATSAPP_LINKED_TYPE: &str = "whatsapp_linked";
+
+/// Quantas entradas de uma lista de identidades (`owners`, `allow`) contam
+/// como declaradas: strings nao vazias apos `trim`. E o filtro minimo que o
+/// gateway aplica (`identidades_da_secao` descarta nao-string e vazio antes
+/// de normalizar); esta crate nao depende do gateway, entao espelha so essa
+/// parte — um `owners: [5511999998888]` sem aspas (inteiro em YAML) conta
+/// zero aqui como conta zero la (review C3/F-5 da #1329).
+fn identidades_declaradas(section: &crate::model::ChannelConfig, chave: &str) -> usize {
+    section
+        .settings
+        .get(chave)
+        .and_then(serde_json::Value::as_array)
+        .map(|itens| {
+            itens
+                .iter()
+                .filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Nucleo puro do check da secao `execution` (ADR 0024 / #1329).
+///
+/// Recebe o resultado da leitura da env em vez de le-la, para o teste poder
+/// cobrir os achados sem `set_var`. Quatro regras:
+///
+/// - env invalida e **Error** em `execution.profile`: o `ConfigLoader::load`
+///   recusa a mesma env e o gateway nao sobe (fail-closed, nunca `standard`
+///   em silencio). O check diz isso antes do boot.
+/// - valor invalido de `execution.profile` no **arquivo** e o mesmo
+///   **Error**: o serde recusa o arquivo e o gateway nao sobe;
+///   `ConfigLoader::load_para_o_check` carrega o resto e marca o valor
+///   (`perfil_invalido_no_arquivo`) para o relatorio existir (exit 2, nao
+///   exit 65 "corrija a sintaxe").
+/// - `pod_root` so tem efeito em `isolated-pod`; declarado em `standard`, ou
+///   relativo, e **Warning** — a raiz do MCP `filesystem` continua sendo
+///   `agent.file_roots` / `<data_dir>/workspace`, e um caminho relativo
+///   depende do cwd de quem subiu o processo.
+/// - `channels.whatsapp_linked.owners` preenchido em `standard` e
+///   **Warning**: `owners` so confere o perfil completo em `isolated-pod`;
+///   fora dele e uma lista que nao libera nada, e o operador precisa saber
+///   que nao liberou.
+///
+/// Nada aqui e segredo: o perfil, a origem e o caminho sao ecoados; as
+/// identidades em `owners` NAO — so a contagem, que e o que a mensagem
+/// precisa.
+fn validate_execution(
+    execution: &crate::execution::ExecutionConfig,
+    env: &PerfilDaEnv,
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+) -> Vec<Finding> {
+    use crate::execution::PROFILE_ENV;
+
+    let mut findings = Vec::new();
+    if let Some(e) = execution.perfil_invalido_no_arquivo() {
+        findings.push(Finding {
+            severity: Severity::Error,
+            field: "execution.profile".into(),
+            message: format!(
+                "{e} (value in the config file; the file spelling is exact, lowercase); \
+                 the gateway refuses to boot with this value (fail-closed) — fix or remove \
+                 execution.profile"
+            ),
+        });
+    }
+    let perfil = match env {
+        Ok(Some(p)) => *p,
+        Ok(None) => execution.perfil(),
+        Err(e) => {
+            findings.push(Finding {
+                severity: Severity::Error,
+                field: "execution.profile".into(),
+                message: format!(
+                    "{e}; the gateway refuses to boot with this value (fail-closed) — fix or \
+                     unset {PROFILE_ENV}"
+                ),
+            });
+            execution.perfil()
+        }
+    };
+
+    if let Some(root) = execution.pod_root() {
+        if !perfil.is_isolated_pod() {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: "execution.pod_root".into(),
+                message: format!(
+                    "execution.pod_root ({}) is set but the effective profile is `{perfil}`; \
+                     pod_root so vale em isolated-pod — it is ignored now, and the MCP \
+                     filesystem root stays agent.file_roots / <data_dir>/workspace",
+                    root.display()
+                ),
+            });
+        }
+        if !root.is_absolute() {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: "execution.pod_root".into(),
+                message: format!(
+                    "execution.pod_root ({}) is not an absolute path; it would resolve \
+                     against the working directory of whoever started the process. Use an \
+                     absolute pod-local path (e.g. /workspace)",
+                    root.display()
+                ),
+            });
+        }
+    }
+
+    if !perfil.is_isolated_pod() {
+        let mut nomes: Vec<&String> = channels
+            .iter()
+            .filter(|(_, ch)| ch.channel_type == WHATSAPP_LINKED_TYPE)
+            .map(|(name, _)| name)
+            .collect();
+        nomes.sort();
+        for name in nomes {
+            let Some(ch) = channels.get(name) else {
+                continue;
+            };
+            let donos = identidades_declaradas(ch, "owners");
+            if donos == 0 {
+                continue;
+            }
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: format!("channels.{name}.owners"),
+                message: format!(
+                    "channels.{name}.owners lists {donos} identit{} but the effective \
+                     execution profile is `{perfil}`; owners so tem efeito em isolated-pod — \
+                     in `standard` nobody gets the full profile and every admitted sender \
+                     stays on default_mode",
+                    if donos == 1 { "y" } else { "ies" }
+                ),
+            });
+        }
+    }
+
+    findings
+}
+
+/// O sufixo de JID que uma identidade de `owners`/`allow` nao pode ter.
+///
+/// O canal identifica um remetente com numero pelos DIGITOS
+/// (`identidade_do_remetente` normaliza `sender_phone`), e so cai no JID cru
+/// quando o remetente e `@lid` (sem numero). Uma entrada
+/// `<digitos>@s.whatsapp.net` contem `@`, entao a normalizacao a mantem
+/// verbatim — e ela nunca casa com ninguem: o remetente com numero chega
+/// como digitos, e o `@lid` chega com outro sufixo. Fail-closed, mas em
+/// silencio (o turno so loga `perfil=padrao`), e e por isso que o check
+/// avisa (F-4 da auditoria da #1329).
+const SUFIXO_JID_DE_NUMERO: &str = "@s.whatsapp.net";
+
+/// Avisa quando `channels.<whatsapp_linked>.owners`/`allow` tem entradas na
+/// forma `<digitos>@s.whatsapp.net`, em qualquer perfil. So a contagem sai
+/// na mensagem — nunca a identidade.
+fn validate_whatsapp_linked_identidades(
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+    findings: &mut Vec<Finding>,
+    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    let mut nomes: Vec<&String> = channels
+        .iter()
+        .filter(|(_, ch)| ch.channel_type == WHATSAPP_LINKED_TYPE)
+        .map(|(name, _)| name)
+        .collect();
+    nomes.sort();
+    for name in nomes {
+        let Some(ch) = channels.get(name) else {
+            continue;
+        };
+        for chave in ["owners", "allow"] {
+            let em_forma_de_jid = ch
+                .settings
+                .get(chave)
+                .and_then(serde_json::Value::as_array)
+                .map(|itens| {
+                    itens
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .filter(|s| {
+                            s.trim()
+                                .to_ascii_lowercase()
+                                .ends_with(SUFIXO_JID_DE_NUMERO)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            if em_forma_de_jid == 0 {
+                continue;
+            }
+            push_warn(
+                findings,
+                &format!("channels.{name}.{chave}"),
+                format!(
+                    "channels.{name}.{chave} has {em_forma_de_jid} entr{} in the \
+                     `<digits>{SUFIXO_JID_DE_NUMERO}` JID form; the gateway matches a sender \
+                     that has a phone number by its DIGITS, so such an entry never matches \
+                     anyone (fail-closed, silently) — write the digits only (e.g. \
+                     5511999998888), or the `@lid` JID for a sender without a number",
+                    if em_forma_de_jid == 1 { "y" } else { "ies" }
+                ),
+            );
+        }
+    }
+}
+
 /// Thin wrapper that reads the process env to drive
 /// [`validate_config_dir_inner`].
 fn validate_config_dir(loader: &ConfigLoader) -> Vec<Finding> {
@@ -2274,8 +2643,14 @@ fn validate_config_dir(loader: &ConfigLoader) -> Vec<Finding> {
 }
 
 /// Run the full validation + reporting pipeline.
+///
+/// `config` e o que `ConfigLoader::load_para_o_check` devolveu (o arquivo
+/// sem a env aplicada, com um `execution.profile` invalido marcado em vez de
+/// recusado); a env `GARRAIA_EXECUTION_PROFILE` e lida aqui, uma vez, e
+/// injetada no nucleo puro.
 pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
-    let mut findings = validate(config);
+    let env = crate::execution::perfil_do_env();
+    let mut findings = validate_com_env(config, &env);
     findings.extend(validate_config_dir(loader));
     // #1237: `vault:` no `env` de um servidor MCP com o cofre indisponivel
     // (`GARRAIA_VAULT_PASSPHRASE` ausente) — no boot a referencia nao resolve
@@ -2291,7 +2666,7 @@ pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
     ConfigCheck {
         source: source_report(loader),
         findings,
-        summary: summarise(config, mcp_merged.len()),
+        summary: summarise_com_env(config, mcp_merged.len(), &env),
     }
 }
 
@@ -3453,7 +3828,7 @@ mod tests {
                 extra: HashMap::new(),
             },
         );
-        let summary = summarise(&cfg, cfg.mcp.len());
+        let summary = summarise_com_env(&cfg, cfg.mcp.len(), &Ok(None));
         assert!(summary.gateway_api_key_set);
         assert_eq!(summary.llm_providers, vec!["openrouter".to_string()]);
         assert_eq!(
@@ -4536,15 +4911,51 @@ mod tests {
 
     // ── Bind-exposure finding (gateway.host) ───────────────────────────────
 
+    /// Devolve `HOST`/`PORT` ao estado anterior no `Drop`, para que um
+    /// `panic!` dentro do `validate` sob teste nao vaze `HOST=0.0.0.0`
+    /// para os testes vizinhos.
+    struct RestauraBindEnv {
+        antes: (Option<std::ffi::OsString>, Option<std::ffi::OsString>),
+    }
+
+    impl RestauraBindEnv {
+        /// Chamar so com o `ENV_TEST_LOCK` do crate seguro — e mante-lo
+        /// ate depois do drop.
+        fn capturar() -> Self {
+            Self {
+                antes: (std::env::var_os("HOST"), std::env::var_os("PORT")),
+            }
+        }
+    }
+
+    impl Drop for RestauraBindEnv {
+        fn drop(&mut self) {
+            // SAFETY: construida so sob o `ENV_TEST_LOCK`, que o chamador
+            // segura ate depois deste drop (declarada depois do guard).
+            unsafe {
+                match self.antes.0.take() {
+                    Some(v) => std::env::set_var("HOST", v),
+                    None => std::env::remove_var("HOST"),
+                }
+                match self.antes.1.take() {
+                    Some(v) => std::env::set_var("PORT", v),
+                    None => std::env::remove_var("PORT"),
+                }
+            }
+        }
+    }
+
     /// Roda `f` com `HOST`/`PORT` exatamente no estado pedido e devolve o
-    /// ambiente como estava. Sob o `ENV_TEST_LOCK` do crate porque, desde
-    /// o #1261, `validate` LE essas duas envs — um teste de bind que nao
-    /// as fixa passa a depender do ambiente de quem roda.
+    /// ambiente como estava — mesmo se `f` entrar em panic. Sob o
+    /// `ENV_TEST_LOCK` do crate porque, desde o #1261, `validate` LE essas
+    /// duas envs — um teste de bind que nao as fixa passa a depender do
+    /// ambiente de quem roda.
     fn com_bind_env<T>(host: Option<&str>, port: Option<&str>, f: impl FnOnce() -> T) -> T {
         let _guard = crate::ENV_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let antes = (std::env::var_os("HOST"), std::env::var_os("PORT"));
+        // Declarado DEPOIS do guard: cai antes dele, ainda sob o lock.
+        let _restaura = RestauraBindEnv::capturar();
         // SAFETY: ENV_TEST_LOCK held.
         unsafe {
             match host {
@@ -4556,62 +4967,126 @@ mod tests {
                 None => std::env::remove_var("PORT"),
             }
         }
-        let saida = f();
-        // SAFETY: ENV_TEST_LOCK held.
-        unsafe {
-            match antes.0 {
-                Some(v) => std::env::set_var("HOST", v),
-                None => std::env::remove_var("HOST"),
-            }
-            match antes.1 {
-                Some(v) => std::env::set_var("PORT", v),
-                None => std::env::remove_var("PORT"),
-            }
-        }
-        saida
+        f()
     }
 
-    #[test]
-    fn bind_all_interfaces_without_credentials_warns() {
-        let mut cfg = AppConfig::default();
-        cfg.gateway.host = "0.0.0.0".into();
-        let findings = com_bind_env(None, None, || validate(&cfg));
-        let hit = findings
+    /// O achado de exposicao de rede. Mora em `gateway.host` como o de
+    /// chave morta, entao e a mensagem que os distingue.
+    fn achado_de_exposicao(findings: &[Finding]) -> Option<&Finding> {
+        findings
             .iter()
-            .find(|f| f.field == "gateway.host")
-            .expect("0.0.0.0 with no api_key and no TLS must warn");
-        assert!(matches!(hit.severity, Severity::Warning));
-        assert!(hit.message.contains("gateway.api_key is not set"));
-        assert!(hit.message.contains("TLS is disabled"));
-        assert!(
-            hit.message.contains("(config file)"),
-            "sem env, o achado tem de dizer que julgou o arquivo, nao a env: {hit:?}"
+            .find(|f| f.field == "gateway.host" && f.message.contains("make sure a firewall"))
+    }
+
+    /// O achado de chave do arquivo que o start nao le, por campo.
+    fn achado_de_chave_morta<'a>(findings: &'a [Finding], campo: &str) -> Option<&'a Finding> {
+        findings
+            .iter()
+            .find(|f| f.field == campo && f.message.contains("not read by `garra start`"))
+    }
+
+    /// O achado de hostname que o check nao consegue julgar.
+    fn achado_de_hostname(findings: &[Finding]) -> Option<&Finding> {
+        findings
+            .iter()
+            .find(|f| f.field == "gateway.host" && f.message.contains("cannot tell"))
+    }
+
+    /// O guard devolve o ambiente mesmo quando o corpo entra em panic —
+    /// senao um teste quebrado vazaria `HOST=0.0.0.0` para os vizinhos.
+    #[test]
+    fn restaura_bind_env_devolve_o_ambiente_mesmo_com_panic() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _ambiente = RestauraBindEnv::capturar();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            std::env::set_var("HOST", "antes");
+            std::env::set_var("PORT", "1111");
+        }
+        let resultado = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _restaura = RestauraBindEnv::capturar();
+            // SAFETY: ENV_TEST_LOCK held.
+            unsafe {
+                std::env::set_var("HOST", "0.0.0.0");
+                std::env::remove_var("PORT");
+            }
+            panic!("corpo do teste quebrou");
+        }));
+        assert!(resultado.is_err(), "o panic tem de propagar");
+        assert_eq!(
+            std::env::var_os("HOST").as_deref(),
+            Some(std::ffi::OsStr::new("antes")),
+            "HOST tem de voltar ao valor de antes do panic"
+        );
+        assert_eq!(
+            std::env::var_os("PORT").as_deref(),
+            Some(std::ffi::OsStr::new("1111")),
+            "PORT removida dentro do corpo tem de ser reposta"
         );
     }
 
+    /// Um arquivo em `0.0.0.0` sem env NAO expoe nada: o start nem le a
+    /// chave. O que o check diz e exatamente isso — chave morta — e nunca
+    /// mais "binds all interfaces" sobre um valor que nao sobe.
     #[test]
-    fn bind_all_interfaces_ipv6_warns() {
+    fn arquivo_em_todas_as_interfaces_sem_env_e_chave_morta_nao_exposicao() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.host = "0.0.0.0".into();
+        let findings = com_bind_env(None, None, || validate(&cfg));
+        assert!(
+            achado_de_exposicao(&findings).is_none(),
+            "sem HOST, o bind e o default do clap (loopback): {findings:?}"
+        );
+        let hit = achado_de_chave_morta(&findings, "gateway.host").unwrap_or_else(|| {
+            panic!("o 0.0.0.0 do arquivo tem de ser reportado como nao lido: {findings:?}")
+        });
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(
+            hit.message.contains("gateway.host=`0.0.0.0`")
+                && hit.message.contains("127.0.0.1:3888"),
+            "o achado nomeia a chave morta e o que sobe de fato: {hit:?}"
+        );
+        assert!(
+            !hit.message.contains("binds all interfaces") && !hit.message.contains("(config file)"),
+            "nada de fingir exposicao sobre um valor morto: {hit:?}"
+        );
+    }
+
+    /// Idem para as grafias IPv6 do "toda interface" no arquivo.
+    #[test]
+    fn arquivo_em_ipv6_todas_as_interfaces_sem_env_e_chave_morta() {
         for host in ["::", "[::]"] {
             let mut cfg = AppConfig::default();
             cfg.gateway.host = host.into();
             let findings = com_bind_env(None, None, || validate(&cfg));
             assert!(
-                findings.iter().any(|f| f.field == "gateway.host"),
-                "{host} bind must fire the exposure warning: {findings:?}"
+                achado_de_exposicao(&findings).is_none(),
+                "{host} no arquivo nao sobe, logo nao expoe: {findings:?}"
+            );
+            assert!(
+                achado_de_chave_morta(&findings, "gateway.host").is_some(),
+                "{host} no arquivo tem de virar achado de chave morta: {findings:?}"
             );
         }
     }
 
     #[test]
     fn bind_loopback_does_not_warn_about_exposure() {
-        // AppConfig::default() binds 127.0.0.1.
+        // AppConfig::default() binds 127.0.0.1:3888 — igual ao default do
+        // clap, entao nem chave morta ha para reportar.
         let findings = com_bind_env(None, None, || validate(&AppConfig::default()));
         assert!(
-            !findings.iter().any(|f| f.field == "gateway.host"),
-            "loopback bind must not fire the exposure warning: {findings:?}"
+            !findings
+                .iter()
+                .any(|f| f.field == "gateway.host" || f.field == "gateway.port"),
+            "loopback bind must not fire any bind finding: {findings:?}"
         );
     }
 
+    /// api_key + TLS cobrem o bind aberto — e com o arquivo igual a env,
+    /// nem chave morta ha.
     #[test]
     fn bind_all_interfaces_with_api_key_and_tls_does_not_warn() {
         let mut cfg = AppConfig::default();
@@ -4619,51 +5094,99 @@ mod tests {
         cfg.gateway.api_key = Some("test-gateway-bearer".into());
         cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
         cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
-        let findings = com_bind_env(None, None, || validate(&cfg));
+        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
         assert!(
             !findings.iter().any(|f| f.field == "gateway.host"),
-            "api_key + TLS on 0.0.0.0 must not warn: {findings:?}"
+            "api_key + TLS on HOST=0.0.0.0 must not warn: {findings:?}"
         );
     }
 
-    // ── #1261: o bind que vale e o efetivo, nao o do arquivo ──────────────
+    // ── #1261: o bind que vale e o efetivo — env, senao default do clap ───
 
-    /// A funcao pura: sem env, manda o arquivo.
+    /// A funcao pura: sem env, manda o default do clap — nunca o arquivo,
+    /// que nem entra na assinatura.
     #[test]
-    fn bind_efetivo_sem_env_usa_o_arquivo() {
-        let bind = bind_efetivo("127.0.0.1", 3888, None, None);
-        assert_eq!(bind.host, "127.0.0.1");
-        assert_eq!(bind.port, 3888);
-        assert_eq!(bind.host_source, FonteDoBind::Arquivo);
-        assert_eq!(bind.port_source, FonteDoBind::Arquivo);
+    fn bind_efetivo_sem_env_usa_o_default_do_clap() {
+        let bind = bind_efetivo(None, None);
+        assert_eq!(bind.host, HOST_DEFAULT);
+        assert_eq!(bind.port, PORT_DEFAULT);
+        assert_eq!(bind.host_source, FonteDoBind::DefaultDoClap);
+        assert_eq!(bind.port_source, FonteDoBind::DefaultDoClap);
     }
 
     /// Com env, manda a env — e cada metade tem origem propria.
     #[test]
-    fn bind_efetivo_com_env_vence_o_arquivo() {
-        let bind = bind_efetivo("127.0.0.1", 3888, Some("0.0.0.0"), None);
+    fn bind_efetivo_com_env_vence_o_default() {
+        let bind = bind_efetivo(Some("0.0.0.0"), None);
         assert_eq!(bind.host, "0.0.0.0");
         assert_eq!(bind.host_source, FonteDoBind::Env);
-        assert_eq!(
-            bind.port, 3888,
-            "sem PORT, a porta segue sendo a do arquivo"
-        );
-        assert_eq!(bind.port_source, FonteDoBind::Arquivo);
+        assert_eq!(bind.port, PORT_DEFAULT, "sem PORT, a porta e a do clap");
+        assert_eq!(bind.port_source, FonteDoBind::DefaultDoClap);
 
-        let bind = bind_efetivo("127.0.0.1", 3888, None, Some("4000"));
+        let bind = bind_efetivo(None, Some("4000"));
         assert_eq!(bind.port, 4000);
         assert_eq!(bind.port_source, FonteDoBind::Env);
-        assert_eq!(bind.host_source, FonteDoBind::Arquivo);
+        assert_eq!(bind.host, HOST_DEFAULT);
+        assert_eq!(bind.host_source, FonteDoBind::DefaultDoClap);
     }
 
-    /// `PORT` que o clap recusaria nao vira bind nenhum — cai no arquivo.
+    /// `PORT` que o clap recusaria nao vira bind nenhum — cai no default.
     #[test]
     fn bind_efetivo_ignora_porta_invalida() {
         for invalida in ["", "nao-e-numero", "70000", "-1"] {
-            let bind = bind_efetivo("127.0.0.1", 3888, None, Some(invalida));
-            assert_eq!(bind.port, 3888, "PORT={invalida:?}");
-            assert_eq!(bind.port_source, FonteDoBind::Arquivo, "PORT={invalida:?}");
+            let bind = bind_efetivo(None, Some(invalida));
+            assert_eq!(bind.port, PORT_DEFAULT, "PORT={invalida:?}");
+            assert_eq!(
+                bind.port_source,
+                FonteDoBind::DefaultDoClap,
+                "PORT={invalida:?}"
+            );
         }
+    }
+
+    /// As constantes espelhadas nao podem divergir do `default_value` que
+    /// o clap aplica em `Commands::Start` — este teste le o fonte da CLI.
+    /// E prende tambem a ressalva sobre `garra restart`: se ele passar a
+    /// ler `HOST`/`PORT`, o texto do achado e docs/auth-config.md 5.1
+    /// precisam mudar junto.
+    #[test]
+    fn defaults_do_clap_espelham_o_main_da_cli() {
+        let fonte = include_str!("../../garraia-cli/src/main.rs");
+        let variante = |nome: &str| -> &str {
+            let inicio = fonte
+                .find(nome)
+                .unwrap_or_else(|| panic!("`{nome}` precisa existir em main.rs"));
+            let fim = fonte[inicio..]
+                .find("\n    },")
+                .map_or(fonte.len(), |n| inicio + n);
+            &fonte[inicio..fim]
+        };
+
+        let start = variante("Start {");
+        let host = format!("env = \"{HOST_ENV}\", default_value = \"{HOST_DEFAULT}\"");
+        let port = format!("env = \"{PORT_ENV}\", default_value = \"{PORT_DEFAULT}\"");
+        assert!(
+            start.contains(&host),
+            "`Commands::Start` precisa declarar `{host}` — se o default mudou, \
+             atualize HOST_DEFAULT em check.rs"
+        );
+        assert!(
+            start.contains(&port),
+            "`Commands::Start` precisa declarar `{port}` — se o default mudou, \
+             atualize PORT_DEFAULT em check.rs"
+        );
+        assert!(
+            fonte.contains("default_value = \"127.0.0.1\"")
+                && fonte.contains("default_value = \"3888\""),
+            "os literais do clap sumiram do main.rs"
+        );
+
+        let restart = variante("Restart {");
+        assert!(
+            !restart.contains("env = \"HOST\"") && !restart.contains("env = \"PORT\""),
+            "`garra restart` passou a ler HOST/PORT: atualize a ressalva do achado de bind \
+             e docs/auth-config.md secao 5.1"
+        );
     }
 
     /// O caso que o #1261 relata: arquivo seguro, `HOST=0.0.0.0`, e o
@@ -4676,9 +5199,7 @@ mod tests {
         let cfg = AppConfig::default();
         assert_eq!(cfg.gateway.host, "127.0.0.1", "premissa do teste");
         let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
-        let hit = findings
-            .iter()
-            .find(|f| f.field == "gateway.host")
+        let hit = achado_de_exposicao(&findings)
             .unwrap_or_else(|| panic!("HOST=0.0.0.0 abre o gateway e tem de avisar: {findings:?}"));
         assert!(matches!(hit.severity, Severity::Warning));
         assert!(
@@ -4686,54 +5207,64 @@ mod tests {
             "o achado tem de nomear a env como origem: {hit:?}"
         );
         assert!(
-            hit.message.contains("127.0.0.1"),
-            "e dizer qual valor do arquivo ficou para tras: {hit:?}"
+            hit.message.contains("clap default `127.0.0.1`"),
+            "e dizer que a env cobriu o default do clap, nao o arquivo: {hit:?}"
+        );
+        assert!(
+            !hit.message.contains("from the config file"),
+            "o start nunca le o arquivo; o achado nao pode dizer o contrario: {hit:?}"
+        );
+        assert!(
+            achado_de_chave_morta(&findings, "gateway.host").is_some(),
+            "o 127.0.0.1 do arquivo que a env cobriu e chave morta: {findings:?}"
         );
     }
 
     /// E a volta: um arquivo em `0.0.0.0` que a env cobre com loopback nao
-    /// e mais reportado como exposto, porque nao e isso que sobe.
+    /// e reportado como exposto, porque nao e isso que sobe — mas a chave
+    /// morta e dita.
     #[test]
     fn host_env_em_loopback_cala_o_aviso_do_arquivo() {
         let mut cfg = AppConfig::default();
         cfg.gateway.host = "0.0.0.0".into();
         let findings = com_bind_env(Some("127.0.0.1"), None, || validate(&cfg));
         assert!(
-            !findings.iter().any(|f| f.field == "gateway.host"),
+            achado_de_exposicao(&findings).is_none(),
             "HOST=127.0.0.1 e o bind real; o 0.0.0.0 do arquivo nunca chega la: {findings:?}"
+        );
+        assert!(
+            achado_de_chave_morta(&findings, "gateway.host").is_some(),
+            "e o arquivo e reportado como nao lido: {findings:?}"
         );
     }
 
-    /// `HOST=""` (ou so espaco) nao e uma escolha de bind — continua
-    /// valendo o arquivo.
+    /// `HOST=""` (ou so espaco) nao e uma escolha de bind — vale o default
+    /// do clap, e o arquivo continua sendo so chave morta.
     #[test]
     fn host_env_em_branco_nao_conta_como_escolha() {
         let mut cfg = AppConfig::default();
         cfg.gateway.host = "0.0.0.0".into();
         for branco in ["", "   "] {
             let findings = com_bind_env(Some(branco), None, || validate(&cfg));
-            let hit = findings
-                .iter()
-                .find(|f| f.field == "gateway.host")
-                .unwrap_or_else(|| panic!("HOST={branco:?}: {findings:?}"));
             assert!(
-                hit.message.contains("(config file)"),
-                "HOST em branco nao vira origem: {hit:?}"
+                achado_de_exposicao(&findings).is_none(),
+                "HOST={branco:?} nao vira origem de bind: {findings:?}"
+            );
+            assert!(
+                achado_de_chave_morta(&findings, "gateway.host").is_some(),
+                "HOST={branco:?}: o 0.0.0.0 do arquivo segue morto: {findings:?}"
             );
         }
     }
 
     /// A porta do achado tambem e a efetiva, e o texto nao pode fingir
-    /// autoridade sobre a flag de `garra start`, que roda noutro processo.
+    /// autoridade sobre a flag de `garra start` (outro processo) nem
+    /// esconder que `garra restart` ignora as envs.
     #[test]
     fn achado_de_bind_usa_a_porta_efetiva_e_admite_a_flag() {
-        let mut cfg = AppConfig::default();
-        cfg.gateway.host = "0.0.0.0".into();
-        let findings = com_bind_env(None, Some("4000"), || validate(&cfg));
-        let hit = findings
-            .iter()
-            .find(|f| f.field == "gateway.host")
-            .unwrap_or_else(|| panic!("{findings:?}"));
+        let cfg = AppConfig::default();
+        let findings = com_bind_env(Some("0.0.0.0"), Some("4000"), || validate(&cfg));
+        let hit = achado_de_exposicao(&findings).unwrap_or_else(|| panic!("{findings:?}"));
         assert!(
             hit.message.contains("port 4000 (from PORT)"),
             "PORT=4000 e a porta que sobe, e o achado diz de onde veio: {hit:?}"
@@ -4741,6 +5272,153 @@ mod tests {
         assert!(
             hit.message.contains("--host"),
             "o achado tem de admitir que a flag ainda vence: {hit:?}"
+        );
+        assert!(
+            hit.message.contains("`garra restart` ignores HOST/PORT"),
+            "e que o restart nem le as envs: {hit:?}"
+        );
+        assert!(
+            achado_de_chave_morta(&findings, "gateway.port").is_some(),
+            "o 3888 do arquivo, coberto por PORT=4000, e chave morta: {findings:?}"
+        );
+    }
+
+    /// Chave morta e por metade: host e porta do arquivo sao reportados
+    /// separadamente, e so quando diferem do que sobe.
+    #[test]
+    fn chave_morta_do_arquivo_e_reportada_por_metade() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.host = "0.0.0.0".into();
+        cfg.gateway.port = 3977;
+
+        let findings = com_bind_env(None, None, || validate(&cfg));
+        let host = achado_de_chave_morta(&findings, "gateway.host")
+            .unwrap_or_else(|| panic!("host morto: {findings:?}"));
+        assert!(matches!(host.severity, Severity::Warning));
+        let port = achado_de_chave_morta(&findings, "gateway.port")
+            .unwrap_or_else(|| panic!("porta morta: {findings:?}"));
+        assert!(matches!(port.severity, Severity::Warning));
+        assert!(
+            port.message.contains("gateway.port=`3977`")
+                && port.message.contains("resolved port 3888"),
+            "a porta morta nomeia o valor do arquivo e o que sobe: {port:?}"
+        );
+
+        // Env igual ao arquivo: o que sobe coincide, nada a reportar.
+        let findings = com_bind_env(Some("0.0.0.0"), Some("3977"), || validate(&cfg));
+        assert!(
+            achado_de_chave_morta(&findings, "gateway.host").is_none()
+                && achado_de_chave_morta(&findings, "gateway.port").is_none(),
+            "arquivo igual a env nao e chave morta: {findings:?}"
+        );
+    }
+
+    /// `port: 0` ja e Error; nao ganha um segundo achado como chave morta.
+    #[test]
+    fn porta_zero_no_arquivo_nao_duplica_como_chave_morta() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.port = 0;
+        let findings = com_bind_env(None, None, || validate(&cfg));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.field == "gateway.port" && matches!(f.severity, Severity::Error)),
+            "port 0 continua Error: {findings:?}"
+        );
+        assert!(
+            achado_de_chave_morta(&findings, "gateway.port").is_none(),
+            "e nao vira eco como chave morta: {findings:?}"
+        );
+    }
+
+    /// O classificador segue o criterio do gateway (`is_loopback()`), com
+    /// as grafias que o `SocketAddr` aceita e o nome `localhost`.
+    #[test]
+    fn exposicao_do_host_classifica_como_o_gateway() {
+        use ExposicaoDoHost::*;
+        let casos = [
+            ("127.0.0.1", Loopback),
+            ("127.0.0.2", Loopback),
+            ("::1", Loopback),
+            ("[::1]", Loopback),
+            ("localhost", Loopback),
+            ("LOCALHOST", Loopback),
+            ("  127.0.0.1  ", Loopback),
+            ("0.0.0.0", TodasAsInterfaces),
+            ("::", TodasAsInterfaces),
+            ("[::]", TodasAsInterfaces),
+            ("::0", TodasAsInterfaces),
+            ("0:0:0:0:0:0:0:0", TodasAsInterfaces),
+            ("192.168.1.5", NaoLoopback),
+            ("10.0.0.7", NaoLoopback),
+            ("2001:db8::1", NaoLoopback),
+            ("gateway.internal", Indeterminada),
+            ("meu-host", Indeterminada),
+        ];
+        for (host, esperado) in casos {
+            assert_eq!(exposicao_do_host(host), esperado, "host={host:?}");
+        }
+    }
+
+    /// Toda grafia de "toda interface" e todo IP fora do loopback avisam
+    /// pela env; loopback e `localhost` calam; hostname vira achado
+    /// proprio, porque o check nao consegue julgar.
+    #[test]
+    fn host_env_nao_loopback_avisa_e_hostname_e_indeterminado() {
+        let cfg = AppConfig::default();
+        for host in ["::", "[::]", "::0", "0:0:0:0:0:0:0:0", "0.0.0.0"] {
+            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            let hit = achado_de_exposicao(&findings)
+                .unwrap_or_else(|| panic!("HOST={host}: {findings:?}"));
+            assert!(
+                hit.message.contains("listens on every interface"),
+                "HOST={host}: {hit:?}"
+            );
+        }
+        for host in ["192.168.1.5", "10.0.0.7", "2001:db8::1"] {
+            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            let hit = achado_de_exposicao(&findings)
+                .unwrap_or_else(|| panic!("HOST={host}: {findings:?}"));
+            assert!(
+                hit.message.contains("not a loopback address"),
+                "HOST={host}: {hit:?}"
+            );
+        }
+        for host in ["127.0.0.1", "127.0.0.2", "::1", "[::1]", "localhost"] {
+            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            assert!(
+                achado_de_exposicao(&findings).is_none() && achado_de_hostname(&findings).is_none(),
+                "HOST={host} e loopback e nao pode avisar: {findings:?}"
+            );
+        }
+        for host in ["gateway.internal", "meu-host"] {
+            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            assert!(
+                achado_de_exposicao(&findings).is_none(),
+                "HOST={host}: o check nao sabe se e loopback, nao pode afirmar exposicao: {findings:?}"
+            );
+            let hit = achado_de_hostname(&findings).unwrap_or_else(|| {
+                panic!("HOST={host} tem de virar achado de indeterminado: {findings:?}")
+            });
+            assert!(matches!(hit.severity, Severity::Warning));
+            assert!(
+                hit.message.contains(&format!("HOST=`{host}`")),
+                "o achado nomeia o hostname: {hit:?}"
+            );
+        }
+    }
+
+    /// Com api_key + TLS, nem o hostname indeterminado precisa avisar.
+    #[test]
+    fn hostname_indeterminado_cala_com_api_key_e_tls() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.api_key = Some("test-gateway-bearer".into());
+        cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
+        cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
+        let findings = com_bind_env(Some("gateway.internal"), None, || validate(&cfg));
+        assert!(
+            achado_de_hostname(&findings).is_none(),
+            "credencial + TLS cobrem qualquer bind: {findings:?}"
         );
     }
 
@@ -4756,10 +5434,9 @@ mod tests {
             cfg.gateway.api_key = valor.clone();
             cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
             cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
-            let findings = validate(&cfg);
-            let f = findings
-                .iter()
-                .find(|f| f.field == "gateway.host")
+            // Desde o #1261 o bind que expoe e o da env, nao o do arquivo.
+            let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+            let f = achado_de_exposicao(&findings)
                 .unwrap_or_else(|| panic!("com {valor:?} o gate esta desligado: {findings:?}"));
             assert!(
                 f.message.contains("gateway.api_key is not set"),
@@ -5538,5 +6215,394 @@ mod tests {
     fn teams_desabilitado_nao_avisa() {
         let msgs = mensagens_de_teams(&cfg_teams(Some(false), serde_json::json!({})));
         assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
+
+    // ── ADR 0024 / #1329: secao `execution` ───────────────────────────────
+
+    use crate::execution::{ExecutionConfig, ExecutionProfile, PROFILE_ENV, ProfileSource};
+    use crate::model::ChannelConfig;
+
+    fn execucao(profile: Option<ExecutionProfile>, pod_root: Option<&str>) -> ExecutionConfig {
+        ExecutionConfig::new(profile, pod_root.map(PathBuf::from))
+    }
+
+    fn canal_linked_com_owners(owners: serde_json::Value) -> HashMap<String, ChannelConfig> {
+        let mut settings = HashMap::new();
+        settings.insert("owners".to_string(), owners);
+        HashMap::from([(
+            "whatsapp_linked".to_string(),
+            ChannelConfig {
+                channel_type: "whatsapp_linked".to_string(),
+                enabled: Some(true),
+                settings,
+            },
+        )])
+    }
+
+    /// Env invalida e Error — o mesmo valor derruba `ConfigLoader::load`, e
+    /// o check tem de dizer isso antes do boot, nomeando a env.
+    #[test]
+    fn execution_env_invalida_e_error() {
+        let err = "pod".parse::<ExecutionProfile>().expect_err("invalido");
+        let achados = validate_execution(&execucao(None, None), &Err(err), &HashMap::new());
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Error);
+        assert_eq!(achados[0].field, "execution.profile");
+        assert!(
+            achados[0].message.contains(PROFILE_ENV),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            achados[0].message.contains("\"pod\""),
+            "{}",
+            achados[0].message
+        );
+
+        // O gemeo: env valida ou ausente nao produz achado nenhum.
+        for env in [Ok(None), Ok(Some(ExecutionProfile::IsolatedPod))] {
+            let achados = validate_execution(&execucao(None, None), &env, &HashMap::new());
+            assert!(achados.is_empty(), "{achados:?}");
+        }
+    }
+
+    /// `pod_root` declarado com perfil `standard` e Warning: nao faz nada.
+    #[test]
+    fn execution_pod_root_em_standard_avisa() {
+        let achados = validate_execution(
+            &execucao(None, Some("/workspace")),
+            &Ok(None),
+            &HashMap::new(),
+        );
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Warning);
+        assert_eq!(achados[0].field, "execution.pod_root");
+        assert!(
+            achados[0].message.contains("isolated-pod"),
+            "{}",
+            achados[0].message
+        );
+
+        // O gemeo: em isolated-pod (por arquivo ou por env) o mesmo pod_root
+        // absoluto e limpo.
+        let por_arquivo = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
+            &Ok(None),
+            &HashMap::new(),
+        );
+        assert!(por_arquivo.is_empty(), "{por_arquivo:?}");
+        let por_env = validate_execution(
+            &execucao(None, Some("/workspace")),
+            &Ok(Some(ExecutionProfile::IsolatedPod)),
+            &HashMap::new(),
+        );
+        assert!(por_env.is_empty(), "{por_env:?}");
+    }
+
+    /// A env vence o arquivo tambem no check: arquivo `isolated-pod` +
+    /// env `standard` => o pod_root avisa como em standard.
+    #[test]
+    fn execution_env_standard_vence_arquivo_isolated_pod() {
+        let achados = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
+            &Ok(Some(ExecutionProfile::Standard)),
+            &HashMap::new(),
+        );
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].field, "execution.pod_root");
+        assert!(
+            achados[0].message.contains("`standard`"),
+            "{}",
+            achados[0].message
+        );
+    }
+
+    #[test]
+    fn execution_pod_root_relativo_avisa() {
+        let achados = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some("workspace")),
+            &Ok(None),
+            &HashMap::new(),
+        );
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Warning);
+        assert_eq!(achados[0].field, "execution.pod_root");
+        assert!(
+            achados[0].message.contains("absolute"),
+            "{}",
+            achados[0].message
+        );
+    }
+
+    /// `owners` preenchido em `standard` e Warning; em `isolated-pod` nao.
+    /// A mensagem traz a contagem, nunca as identidades.
+    #[test]
+    fn execution_owners_em_standard_avisa_sem_ecoar_identidades() {
+        let canais = canal_linked_com_owners(serde_json::json!(["5511999998888", "abc@lid"]));
+        let achados = validate_execution(&execucao(None, None), &Ok(None), &canais);
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Warning);
+        assert_eq!(achados[0].field, "channels.whatsapp_linked.owners");
+        assert!(
+            achados[0].message.contains("2 identities"),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            achados[0].message.contains("isolated-pod"),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            !achados[0].message.contains("5511999998888"),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            !achados[0].message.contains("abc@lid"),
+            "{}",
+            achados[0].message
+        );
+
+        // Gemeos: isolated-pod com os mesmos owners e limpo; owners vazio em
+        // standard tambem; outro tipo de canal com `owners` nao e deste check.
+        let limpo = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), None),
+            &Ok(None),
+            &canais,
+        );
+        assert!(limpo.is_empty(), "{limpo:?}");
+        let vazio = validate_execution(
+            &execucao(None, None),
+            &Ok(None),
+            &canal_linked_com_owners(serde_json::json!([])),
+        );
+        assert!(vazio.is_empty(), "{vazio:?}");
+        let mut outro = canal_linked_com_owners(serde_json::json!(["1"]));
+        if let Some(ch) = outro.get_mut("whatsapp_linked") {
+            ch.channel_type = "whatsapp".to_string();
+        }
+        let outro_tipo = validate_execution(&execucao(None, None), &Ok(None), &outro);
+        assert!(outro_tipo.is_empty(), "{outro_tipo:?}");
+    }
+
+    /// O caminho de producao com a env injetada: `validate_com_env` e
+    /// `summarise_com_env` recebem o que `run_check` leu UMA vez. Nenhum
+    /// valor invalido entra em `GARRAIA_EXECUTION_PROFILE` de verdade neste
+    /// binario (review C7): `validate` e `load` sao lidos sem lock por outros
+    /// testes, e um Error/Err em transito os derrubaria. A leitura real da
+    /// env e provada em `execution::tests::perfil_do_env_le_o_ambiente_de_verdade`
+    /// (valores validos) e pelo smoke da CLI, num subprocesso.
+    #[test]
+    fn validate_e_summarise_usam_a_env_injetada() {
+        let invalida: PerfilDaEnv = Err("not-a-profile"
+            .parse::<ExecutionProfile>()
+            .expect_err("invalido"));
+        let erros: Vec<_> = validate_com_env(&AppConfig::default(), &invalida)
+            .into_iter()
+            .filter(|f| f.field == "execution.profile")
+            .collect();
+        assert_eq!(erros.len(), 1, "{erros:?}");
+        assert_eq!(erros[0].severity, Severity::Error);
+        assert!(
+            erros[0].message.contains(PROFILE_ENV),
+            "{}",
+            erros[0].message
+        );
+        assert!(!erros[0].message.contains("standard em silencio"));
+        // Com env invalida o sumario mostra o que o arquivo diz.
+        let sumario_invalido = summarise_com_env(&AppConfig::default(), 0, &invalida);
+        assert_eq!(sumario_invalido.execution_profile, "standard");
+        assert_eq!(sumario_invalido.execution_profile_source, "default");
+
+        let env: PerfilDaEnv = Ok(Some(ExecutionProfile::IsolatedPod));
+        let limpo: Vec<_> = validate_com_env(&AppConfig::default(), &env)
+            .into_iter()
+            .filter(|f| f.field == "execution.profile")
+            .collect();
+        assert!(limpo.is_empty(), "{limpo:?}");
+        let sumario_env = summarise_com_env(&AppConfig::default(), 0, &env);
+        assert_eq!(sumario_env.execution_profile, "isolated-pod");
+        assert_eq!(sumario_env.execution_profile_source, "env");
+
+        let sumario_default = summarise_com_env(&AppConfig::default(), 0, &Ok(None));
+        assert_eq!(sumario_default.execution_profile, "standard");
+        assert_eq!(sumario_default.execution_profile_source, "default");
+    }
+
+    /// Sem env, o sumario reflete o arquivo (e a origem `file`).
+    #[test]
+    fn summarise_reporta_perfil_do_arquivo() {
+        let config = AppConfig {
+            execution: execucao(Some(ExecutionProfile::IsolatedPod), None),
+            ..AppConfig::default()
+        };
+        let sumario = summarise_com_env(&config, 0, &Ok(None));
+        assert_eq!(sumario.execution_profile, "isolated-pod");
+        assert_eq!(
+            sumario.execution_profile_source,
+            ProfileSource::File.as_str()
+        );
+    }
+
+    /// Valor invalido de `execution.profile` no ARQUIVO (marcado por
+    /// `load_para_o_check`) e o mesmo Error que a env invalida — nomeando o
+    /// valor e dizendo que o gateway nao sobe (review C10).
+    #[test]
+    fn execution_perfil_invalido_no_arquivo_e_error() {
+        let dir = temp_dir("check-perfil-invalido-no-arquivo");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(
+            dir.join("config.yml"),
+            "execution:\n  profile: isolated_pod\n",
+        )
+        .expect("failed to write config");
+        let loader = ConfigLoader::with_dir(&dir);
+        let config = loader.load_para_o_check().expect("o check carrega");
+
+        let achados = validate_execution(&config.execution, &Ok(None), &HashMap::new());
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Error);
+        assert_eq!(achados[0].field, "execution.profile");
+        assert!(
+            achados[0].message.contains("\"isolated_pod\""),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            achados[0].message.contains("config file"),
+            "{}",
+            achados[0].message
+        );
+
+        // O pipeline inteiro: `run_check` tem o Error e o sumario mostra o
+        // default (o arquivo, sem o valor recusado, nao declara perfil).
+        let check = run_check(&loader, &config);
+        assert!(check.has_errors(), "{:?}", check.findings);
+        assert!(
+            check
+                .findings
+                .iter()
+                .any(|f| f.field == "execution.profile" && f.severity == Severity::Error)
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A contagem de `owners` conta o que o gateway conta: strings nao vazias
+    /// apos trim. Um inteiro YAML sem aspas, `""` e `"  "` nao sao donos em
+    /// lugar nenhum — e o check nao pode dizer que sao (review C3/F-5).
+    #[test]
+    fn execution_owners_conta_so_strings_nao_vazias() {
+        let canais = canal_linked_com_owners(serde_json::json!([
+            "",
+            "   ",
+            5511999998888_u64,
+            true,
+            serde_json::Value::Null,
+            "5511999998888"
+        ]));
+        let achados = validate_execution(&execucao(None, None), &Ok(None), &canais);
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert!(
+            achados[0].message.contains("1 identity"),
+            "{}",
+            achados[0].message
+        );
+
+        // So lixo: zero donos, nenhum aviso.
+        let so_lixo = canal_linked_com_owners(serde_json::json!(["", 42, null]));
+        let achados = validate_execution(&execucao(None, None), &Ok(None), &so_lixo);
+        assert!(achados.is_empty(), "{achados:?}");
+    }
+
+    /// F-4 da auditoria: `<digitos>@s.whatsapp.net` em `owners`/`allow` nunca
+    /// casa com um remetente (o canal compara digitos), e o check avisa —
+    /// com a contagem, nunca a identidade — em qualquer perfil.
+    #[test]
+    fn identidade_em_forma_de_jid_de_numero_avisa_sem_ecoar() {
+        let mut settings = HashMap::new();
+        settings.insert(
+            "owners".to_string(),
+            serde_json::json!(["5521977776666@s.whatsapp.net", "5521977776666"]),
+        );
+        settings.insert(
+            "allow".to_string(),
+            serde_json::json!([" 5531966665555@S.WHATSAPP.NET ", "abc@lid"]),
+        );
+        let canais = HashMap::from([(
+            "whatsapp_linked".to_string(),
+            ChannelConfig {
+                channel_type: "whatsapp_linked".to_string(),
+                enabled: Some(true),
+                settings,
+            },
+        )]);
+        let config = AppConfig {
+            channels: canais.clone(),
+            execution: execucao(Some(ExecutionProfile::IsolatedPod), None),
+            ..AppConfig::default()
+        };
+        let avisos: Vec<_> = validate(&config)
+            .into_iter()
+            .filter(|f| f.message.contains("@s.whatsapp.net"))
+            .collect();
+        assert_eq!(avisos.len(), 2, "{avisos:?}");
+        for aviso in &avisos {
+            assert_eq!(aviso.severity, Severity::Warning);
+            assert!(
+                aviso.field == "channels.whatsapp_linked.owners"
+                    || aviso.field == "channels.whatsapp_linked.allow",
+                "{}",
+                aviso.field
+            );
+            assert!(aviso.message.contains("1 entry"), "{}", aviso.message);
+            assert!(
+                !aviso.message.contains("5521977776666")
+                    && !aviso.message.contains("5531966665555"),
+                "identidade vazou: {}",
+                aviso.message
+            );
+        }
+
+        // Gemeo: digitos e `@lid` nao avisam; outro tipo de canal tambem nao.
+        let mut limpo = canais.clone();
+        if let Some(ch) = limpo.get_mut("whatsapp_linked") {
+            ch.settings.insert(
+                "owners".to_string(),
+                serde_json::json!(["5521977776666", "abc@lid"]),
+            );
+            ch.settings.remove("allow");
+        }
+        let mut findings = Vec::new();
+        validate_whatsapp_linked_identidades(&limpo, &mut findings, &|f, campo, msg| {
+            f.push(Finding {
+                severity: Severity::Warning,
+                field: campo.to_owned(),
+                message: msg,
+            })
+        });
+        assert!(findings.is_empty(), "{findings:?}");
+
+        let mut outro = canais;
+        if let Some(ch) = outro.get_mut("whatsapp_linked") {
+            ch.channel_type = "whatsapp".to_string();
+        }
+        let mut findings = Vec::new();
+        validate_whatsapp_linked_identidades(&outro, &mut findings, &|f, campo, msg| {
+            f.push(Finding {
+                severity: Severity::Warning,
+                field: campo.to_owned(),
+                message: msg,
+            })
+        });
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn execution_profile_env_e_conhecida_pelo_check() {
+        assert!(
+            KNOWN_GARRAIA_ENV_VARS.contains(&PROFILE_ENV),
+            "{PROFILE_ENV} precisa estar em KNOWN_GARRAIA_ENV_VARS ou fica invisivel ao check"
+        );
     }
 }

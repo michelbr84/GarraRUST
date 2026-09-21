@@ -77,6 +77,41 @@ mcp:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"]
 ```
 
+#### Auto-provisioned root
+
+On the very first boot, when `<config_dir>/mcp.json` does not exist yet, the
+gateway writes one with a `filesystem` server. The directory it is rooted at
+depends on the **execution profile** (ADR 0024, #1329;
+[`execution-profiles.md`](execution-profiles.md)):
+
+| `execution.profile` | Root passed to `server-filesystem` |
+|---|---|
+| `standard` (default) | `agent.file_roots` from the config when set; otherwise `<data_dir>/workspace`. `GARRAIA_FILE_ROOTS` and the session `working_dir`, which the native file-tool jail (#1244) also adds, are **not** used here |
+| `isolated-pod` | `execution.pod_root` when set; otherwise `<data_dir>/workspace` |
+
+`$HOME` is **never** an implicit root in either profile. The effective root
+is logged at provisioning time and reported by the `mcp.filesystem_root`
+check of `GET /api/diagnostics`. On first boot only the default
+`<data_dir>/workspace` is created; a **declared** root (`agent.file_roots`,
+`execution.pod_root`) must already exist — if it does not, provisioning is
+skipped with a `warn!` naming the missing root, and nothing wider is created
+in its place.
+
+An existing `mcp.json` is **never rewritten** — the only gate is "file
+absent". Installations provisioned before v0.4.4 therefore keep the old
+`$HOME` root; in `standard` the diagnostic flags it as `Warning` (the
+`filesystem` entry points outside the declared roots). The check reads both
+`mcp.json` and the `mcp:` section of `config.yml`, which wins, the same merge
+the gateway uses to spawn servers. To fix it, change the last `args` entry of
+`filesystem` to a directory inside the declared roots (one of
+`agent.file_roots`, or `<data_dir>/workspace`) and restart the gateway. Set `GARRAIA_DISABLE_MCP_AUTOPROVISION=1` to skip provisioning
+entirely.
+
+Which tools of that server the model may call is decided per turn by the
+mode's `ToolGate`, by tool name (`filesystem__write_file`), never by the
+server's existence — see [`whatsapp.md`](whatsapp.md#ferramentas-e-servidores-mcp)
+for the channel floor.
+
 ### GitHub
 
 ```yaml

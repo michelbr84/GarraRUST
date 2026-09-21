@@ -114,6 +114,32 @@ fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
     }
 }
 
+/// [`t`] para frases que citam um comando: `{bin}` vira o nome do executavel
+/// em execucao (`garra` ou `garraia`, ver [`crate::binario`]).
+///
+/// Um literal `garra start` numa instalacao que so tem `garraia` — Docker,
+/// `cargo install`, `install.sh` sem o alias — manda o usuario rodar um
+/// comando que nao existe. A instrucao tem de nomear o binario que esta na
+/// maquina, e um teste varre este arquivo atras do literal antigo.
+fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
+    t(lang, pt, en).replace("{bin}", &crate::binario::nome())
+}
+
+/// A instrucao pos-link (ADR 0024, teste 8): `garraia start` quando o
+/// executavel se chama `garraia`, `garra start` quando `garra`. Recebe o nome
+/// em vez de le-lo para o teste unitario poder fixar os dois — a linha so e
+/// alcancavel de verdade depois de um QR lido.
+fn instrucao_pos_link(lang: Lang, bin: &str) -> String {
+    match lang {
+        Lang::Pt => {
+            format!("GarraIA está pronto para receber mensagens (inicie o gateway: `{bin} start`)")
+        }
+        Lang::En => {
+            format!("GarraIA is ready to receive messages (start the gateway: `{bin} start`)")
+        }
+    }
+}
+
 /// Cabecalho do comando.
 pub const HEADER: &str = "WhatsApp — GarraIA";
 
@@ -214,6 +240,7 @@ fn print_header(ctx: &Context) {
 /// Texto impresso quando nao ha terminal. Publico para o teste de smoke
 /// afirmar a frase exata sem duplicar o literal.
 pub fn non_interactive_hint(lang: Lang) -> String {
+    let bin = crate::binario::nome();
     let mut out = String::new();
     out.push_str(t(
         lang,
@@ -221,17 +248,17 @@ pub fn non_interactive_hint(lang: Lang) -> String {
         "Non-interactive environment detected. Pick one of the two options and run the command:\n\n",
     ));
     out.push_str(&format!(
-        "  1) {}\n     garra whatsapp link\n\n",
+        "  1) {}\n     {bin} whatsapp link\n\n",
         t(lang, MENU_1_PT, MENU_1_EN)
     ));
     out.push_str(&format!(
-        "  2) {}\n     garra whatsapp cloud\n\n",
+        "  2) {}\n     {bin} whatsapp cloud\n\n",
         t(lang, MENU_2_PT, MENU_2_EN)
     ));
-    out.push_str(t(
+    out.push_str(&tb(
         lang,
-        "Também existem: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
-        "Also available: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
+        "Também existem: {bin} whatsapp status | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Also available: {bin} whatsapp status | {bin} whatsapp restore | {bin} whatsapp logout",
     ));
     out
 }
@@ -267,8 +294,9 @@ pub fn needs_a_terminal(lang: Lang, subcomando: &str) -> String {
          so a pipe, a cron job or an `ssh` without a TTY cannot carry the \
          process through.\n\n",
     ));
+    let bin = crate::binario::nome();
     out.push_str(&format!(
-        "  {}\n    ssh -t <usuario>@<maquina> garra whatsapp {subcomando}\n",
+        "  {}\n    ssh -t <usuario>@<maquina> {bin} whatsapp {subcomando}\n",
         t(
             lang,
             "Por ssh, peça um TTY com -t:",
@@ -354,6 +382,7 @@ fn status(ctx: &Context) -> i32 {
         t(ctx.lang, "Sessão:", "Session:"),
         store.blob_path().display()
     );
+    print_execution_profile(ctx);
     print_archive_warning(ctx, &store);
 
     match ctx.key() {
@@ -385,10 +414,10 @@ fn status(ctx: &Context) -> i32 {
                     );
                     println!(
                         "{}",
-                        t(
+                        tb(
                             ctx.lang,
-                            "Rode `garra whatsapp` para vincular de novo.",
-                            "Run `garra whatsapp` to link again."
+                            "Rode `{bin} whatsapp` para vincular de novo.",
+                            "Run `{bin} whatsapp` to link again."
                         )
                     );
                     return EX_UNAVAILABLE;
@@ -436,6 +465,47 @@ fn status(ctx: &Context) -> i32 {
     0
 }
 
+/// Uma linha com o perfil de execucao (ADR 0024, #1329), quando a config abre.
+///
+/// `status` funciona sem config (e antes do `garra init`), entao a linha e
+/// um extra: se o loader nao existe ou o arquivo nao carrega, nada e impresso
+/// e o exit code segue o do vinculo. O que a linha diz e o que o operador
+/// precisa conferir antes de confiar poder total a um dono: o perfil, de onde
+/// ele veio, o piso que um dono recebe em conversa 1:1 e quantos donos ha —
+/// a contagem, nunca as identidades.
+fn print_execution_profile(ctx: &Context) {
+    let Some(config) = ctx.loader.as_ref().and_then(|l| l.load().ok()) else {
+        return;
+    };
+    println!("{}", execution_profile_line(ctx.lang, &config));
+}
+
+/// A linha do perfil, pura para o teste montar o `AppConfig` a mao.
+///
+/// O piso do dono e a contagem de donos vem do MESMO leitor que o gateway e
+/// o `/api/diagnostics` usam (`whatsapp_linked_settings` +
+/// `modo_padrao_efetivo`): secao com `type` que nao e `whatsapp_linked` e
+/// zero donos, entradas vazias ou nao-string sao descartadas, e o default do
+/// piso por perfil vem de uma constante so. Antes a CLI reimplementava a
+/// regra (contagem crua do array, `"code"`/`"search"` literais) e podia
+/// dizer `donos: 3` para uma config em que o gateway honra um — o operador
+/// confiava poder a um dono que nao existia (review C3/C8/C13/F-5 da #1329).
+fn execution_profile_line(lang: Lang, config: &garraia_config::AppConfig) -> String {
+    let perfil = config.execution.perfil();
+    let origem = config.execution.origem();
+    let settings = garraia_gateway::bootstrap::whatsapp_linked_settings(config);
+    let donos = settings.owners.len();
+    let piso = settings.modo_padrao_efetivo(perfil);
+    match lang {
+        Lang::Pt => format!(
+            "Perfil de execução: {perfil} (fonte {origem}) — piso do dono: {piso} · donos: {donos}"
+        ),
+        Lang::En => format!(
+            "Execution profile: {perfil} (source {origem}) — owner floor: {piso} · owners: {donos}"
+        ),
+    }
+}
+
 /// Imprime o proximo passo da mesma fonte que o `/api/diagnostics` usa.
 ///
 /// Sem isto haveria duas listas de "o que fazer agora" — uma na CLI, outra no
@@ -443,8 +513,8 @@ fn status(ctx: &Context) -> i32 {
 /// exatamente assim que o `whats-app` sobreviveu a 599 testes verdes.
 fn print_next_step(ctx: &Context, saude: LinkHealth, bridge_dir: &std::path::Path) {
     let passo = match ctx.lang {
-        Lang::Pt => saude.next_step(bridge_dir),
-        Lang::En => saude.next_step_en(bridge_dir),
+        Lang::Pt => saude.next_step(bridge_dir, &crate::binario::nome()),
+        Lang::En => saude.next_step_en(bridge_dir, &crate::binario::nome()),
     };
     if let Some(passo) = passo {
         println!("{passo}");
@@ -491,28 +561,28 @@ fn print_archive_warning(ctx: &Context, store: &SessionStore) {
         // faz, e prometer isso seria mentira. Ver o docstring dela.
         println!(
             "  {}",
-            t(
+            tb(
                 ctx.lang,
-                "Há uma sessão em uso, então ela não será substituída. Para descartar a arquivada: garra whatsapp logout",
-                "A session is in use, so it will not be replaced. To discard the archived one: garra whatsapp logout"
+                "Há uma sessão em uso, então ela não será substituída. Para descartar a arquivada: {bin} whatsapp logout",
+                "A session is in use, so it will not be replaced. To discard the archived one: {bin} whatsapp logout"
             )
         );
         return;
     }
     println!(
         "  {}",
-        t(
+        tb(
             ctx.lang,
-            "Para voltar a usá-la: garra whatsapp restore",
-            "To use it again: garra whatsapp restore"
+            "Para voltar a usá-la: {bin} whatsapp restore",
+            "To use it again: {bin} whatsapp restore"
         )
     );
     println!(
         "  {}",
-        t(
+        tb(
             ctx.lang,
-            "Para apagá-la: garra whatsapp logout",
-            "To delete it: garra whatsapp logout"
+            "Para apagá-la: {bin} whatsapp logout",
+            "To delete it: {bin} whatsapp logout"
         )
     );
 }
@@ -567,10 +637,10 @@ fn restore(ctx: &Context) -> i32 {
         );
         println!(
             "{}",
-            t(
+            tb(
                 ctx.lang,
-                "Se quiser descartar a arquivada: garra whatsapp logout",
-                "To discard the archived one: garra whatsapp logout"
+                "Se quiser descartar a arquivada: {bin} whatsapp logout",
+                "To discard the archived one: {bin} whatsapp logout"
             )
         );
         return EX_UNAVAILABLE;
@@ -635,10 +705,10 @@ fn restore(ctx: &Context) -> i32 {
     }
     println!(
         "{}",
-        t(
+        tb(
             ctx.lang,
-            "Ela só volta a valer se o WhatsApp ainda aceitar este aparelho — rode `garra whatsapp status` e, se não aceitar, `garra whatsapp` para ler um QR novo.",
-            "It only works again if WhatsApp still accepts this device — run `garra whatsapp status`, and if it does not, run `garra whatsapp` to scan a new QR."
+            "Ela só volta a valer se o WhatsApp ainda aceitar este aparelho — rode `{bin} whatsapp status` e, se não aceitar, `{bin} whatsapp` para ler um QR novo.",
+            "It only works again if WhatsApp still accepts this device — run `{bin} whatsapp status`, and if it does not, run `{bin} whatsapp` to scan a new QR."
         )
     );
     0
@@ -843,10 +913,10 @@ impl Drop for ArchiveGuard<'_> {
             // continuava la.
             Ok(false) if archived && !live => self.out.warn(&format!(
                 "! {}",
-                t(
+                tb(
                     lang,
-                    "A sessão anterior não pôde ser restaurada — o vínculo antigo foi perdido. Rode `garra whatsapp` e leia um QR novo.",
-                    "The previous session could not be restored — the old link is gone. Run `garra whatsapp` and scan a new QR."
+                    "A sessão anterior não pôde ser restaurada — o vínculo antigo foi perdido. Rode `{bin} whatsapp` e leia um QR novo.",
+                    "The previous session could not be restored — the old link is gone. Run `{bin} whatsapp` and scan a new QR."
                 )
             )),
             Ok(false) => {}
@@ -1118,11 +1188,7 @@ fn link_paired(
             }
             println!(
                 "✓ {}",
-                t(
-                    ctx.lang,
-                    "GarraIA está pronto para receber mensagens (inicie o gateway: `garra start`)",
-                    "GarraIA is ready to receive messages (start the gateway: `garra start`)"
-                )
+                instrucao_pos_link(ctx.lang, &crate::binario::nome())
             );
             0
         }
@@ -1135,10 +1201,10 @@ fn link_paired(
             println!();
             println!(
                 "{}",
-                t(
+                tb(
                     ctx.lang,
-                    "Nenhum QR foi lido. Rode `garra whatsapp` de novo.",
-                    "No QR was scanned. Run `garra whatsapp` again."
+                    "Nenhum QR foi lido. Rode `{bin} whatsapp` de novo.",
+                    "No QR was scanned. Run `{bin} whatsapp` again."
                 )
             );
             EX_UNAVAILABLE
@@ -1147,10 +1213,10 @@ fn link_paired(
             println!();
             println!(
                 "{}",
-                t(
+                tb(
                     ctx.lang,
-                    "Esta sessão não vale mais. Rode `garra whatsapp` de novo e leia um QR novo.",
-                    "This session is no longer valid. Run `garra whatsapp` again and scan a new QR."
+                    "Esta sessão não vale mais. Rode `{bin} whatsapp` de novo e leia um QR novo.",
+                    "This session is no longer valid. Run `{bin} whatsapp` again and scan a new QR."
                 )
             );
             // O codigo cru do Baileys e o que distingue "voce removeu o
@@ -1303,12 +1369,12 @@ path does; the rest of GarraIA does not)."
     eprintln!();
     eprintln!(
         "{}",
-        t(
+        tb(
             ctx.lang,
             "Sem Node, a opção 2 (WhatsApp Business / Cloud API) funciona: \
-garra whatsapp cloud",
+{bin} whatsapp cloud",
             "Without Node, option 2 (WhatsApp Business / Cloud API) works: \
-garra whatsapp cloud"
+{bin} whatsapp cloud"
         )
     );
 }
@@ -1448,10 +1514,10 @@ fn cloud(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     let Some(loader) = ctx.loader.as_ref() else {
         eprintln!(
             "{}",
-            t(
+            tb(
                 ctx.lang,
-                "Não consegui abrir a config. Rode `garra init` primeiro.",
-                "Could not open the config. Run `garra init` first."
+                "Não consegui abrir a config. Rode `{bin} init` primeiro.",
+                "Could not open the config. Run `{bin} init` first."
             )
         );
         return EX_SOFTWARE;

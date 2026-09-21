@@ -318,6 +318,44 @@ fn settings() -> Vec<SettingSchema> {
                 "Empty while the mode is not `off` means every sandboxed command fails closed. `ssh` also fails closed until agent.sandbox.network_disabled and agent.sandbox.mount_workdir are an explicit false.",
             ),
         },
+        // — Security: perfil de execucao (ADR 0024 / #1329) —
+        //
+        // Read-only pelo mesmo motivo do sandbox: o PATCH e dry-run, e um
+        // perfil "aplicado" que voltasse a `standard` no proximo boot — ou
+        // pior, um `isolated-pod` que a UI dissesse aplicado fora de um pod —
+        // e exatamente a mentira que a linha existe para evitar. A origem
+        // (`default` | `file` | `env`) e a informacao: o operador ve DE ONDE
+        // veio o perfil que esta valendo.
+        SettingSchema {
+            id: "security.execution_profile",
+            label: "Execution profile",
+            description: "execution.profile — standard | isolated-pod (env GARRAIA_EXECUTION_PROFILE wins). Read-only here; edit config.yml or the env.",
+            category: SettingCategory::Security,
+            type_: SettingType::Enum,
+            default: serde_json::json!("standard"),
+            editable: false,
+            secret: false,
+            requires_restart: true,
+            choices: Some(vec!["standard", "isolated-pod"]),
+            validation: None,
+            warning: Some(
+                "`isolated-pod` gives the WhatsApp owner full power inside this process: the pod is the security boundary, not Garra. The profile does not isolate anything by itself.",
+            ),
+        },
+        SettingSchema {
+            id: "security.execution_pod_root",
+            label: "Execution pod root",
+            description: "execution.pod_root — MCP filesystem root in isolated-pod. Null = <data_dir>/workspace. Ignored in standard.",
+            category: SettingCategory::Security,
+            type_: SettingType::String,
+            default: serde_json::Value::Null,
+            editable: false,
+            secret: false,
+            requires_restart: true,
+            choices: None,
+            validation: Some("absolute pod-local path"),
+            warning: None,
+        },
         // — Appearance —
         SettingSchema {
             id: "appearance.default_theme",
@@ -434,6 +472,39 @@ fn sandbox_effective(
     (value, source)
 }
 
+/// Valor e origem das duas linhas do perfil de execucao (ADR 0024 / #1329)
+/// em `/api/settings/effective`. Pura, pelas mesmas razoes de
+/// [`sandbox_effective`].
+///
+/// O perfil e `ExecutionConfig::perfil()` (env ja aplicada pelo loader) e a
+/// origem e `origem()` mapeada 1:1 — `Env` quando `GARRAIA_EXECUTION_PROFILE`
+/// venceu, `File` quando veio do arquivo, `Default` quando ninguem escolheu.
+/// `pod_root` so existe no arquivo, entao `File` quando declarado e
+/// `Default` (com `null`) quando nao.
+fn execution_effective(
+    id: &str,
+    ex: &garraia_config::ExecutionConfig,
+) -> (serde_json::Value, SettingSource) {
+    use serde_json::{Value, json};
+
+    if id == "security.execution_profile" {
+        let source = match ex.origem() {
+            garraia_config::ProfileSource::Default => SettingSource::Default,
+            garraia_config::ProfileSource::File => SettingSource::File,
+            garraia_config::ProfileSource::Env => SettingSource::Env,
+        };
+        (json!(ex.perfil().as_str()), source)
+    } else {
+        match ex.pod_root() {
+            Some(root) => (
+                Value::String(root.display().to_string()),
+                SettingSource::File,
+            ),
+            None => (Value::Null, SettingSource::Default),
+        }
+    }
+}
+
 fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue {
     use serde_json::{Value, json};
     let (value, configured, source) = match s.id {
@@ -501,6 +572,11 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
         // auth-free, entao o que nao precisa sair nao sai.
         "security.sandbox_mode" | "security.sandbox_backend" => {
             let (value, source) = sandbox_effective(s.id, &state.config.agent.sandbox);
+            (value, None, source)
+        }
+        // ADR 0024 (#1329): perfil efetivo com a origem real.
+        "security.execution_profile" | "security.execution_pod_root" => {
+            let (value, source) = execution_effective(s.id, &state.config.execution);
             (value, None, source)
         }
         "appearance.default_theme" => (json!("dark"), None, SettingSource::Default),
@@ -757,6 +833,88 @@ mod tests {
             assert!(!texto.contains("bastiao-interno"), "vazou host: {texto}");
             assert!(!texto.contains("registry.interno"), "vazou imagem: {texto}");
         }
+    }
+
+    // ─── ADR 0024 (#1329): perfil de execucao ─────────────────────────────
+
+    use garraia_config::{ExecutionConfig, ExecutionProfile};
+
+    const PERFIL: &str = "security.execution_profile";
+    const POD_ROOT: &str = "security.execution_pod_root";
+
+    /// Secao ausente: `standard` vindo do default compilado, `pod_root` nulo.
+    #[test]
+    fn execution_ausente_reporta_standard_default() {
+        let ex = ExecutionConfig::default();
+        assert_eq!(
+            execution_effective(PERFIL, &ex),
+            (serde_json::json!("standard"), SettingSource::Default)
+        );
+        assert_eq!(
+            execution_effective(POD_ROOT, &ex),
+            (serde_json::Value::Null, SettingSource::Default)
+        );
+    }
+
+    /// Perfil escrito no arquivo e `File` — inclusive `standard` explicito,
+    /// que e escolha do operador e nao o default.
+    #[test]
+    fn execution_no_arquivo_reporta_file() {
+        for (perfil, esperado) in [
+            (ExecutionProfile::Standard, "standard"),
+            (ExecutionProfile::IsolatedPod, "isolated-pod"),
+        ] {
+            let ex = ExecutionConfig::new(Some(perfil), Some("/workspace".into()));
+            assert_eq!(
+                execution_effective(PERFIL, &ex),
+                (serde_json::json!(esperado), SettingSource::File)
+            );
+            assert_eq!(
+                execution_effective(POD_ROOT, &ex),
+                (serde_json::json!("/workspace"), SettingSource::File)
+            );
+        }
+    }
+
+    /// A env vence o arquivo e a origem diz isso — e o que distingue "alguem
+    /// exportou GARRAIA_EXECUTION_PROFILE neste shell" de "esta no config".
+    #[test]
+    fn execution_da_env_reporta_env_e_vence_o_arquivo() {
+        let ex = ExecutionConfig::new(Some(ExecutionProfile::Standard), None)
+            .com_env_aplicada(ExecutionProfile::IsolatedPod);
+        assert_eq!(
+            execution_effective(PERFIL, &ex),
+            (serde_json::json!("isolated-pod"), SettingSource::Env)
+        );
+        // `pod_root` nao vem da env: continua nulo/default.
+        assert_eq!(
+            execution_effective(POD_ROOT, &ex),
+            (serde_json::Value::Null, SettingSource::Default)
+        );
+    }
+
+    /// As duas linhas existem no schema, sao read-only, ficam em Security e
+    /// as escolhas do perfil sao exatamente as que a config aceita.
+    #[test]
+    fn execution_aparece_no_schema_como_somente_leitura() {
+        let todas = settings();
+        for id in [PERFIL, POD_ROOT] {
+            let row = todas
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("{id} deveria estar no schema"));
+            assert!(!row.editable, "{id} nao pode ser editavel");
+            assert!(!row.secret);
+            assert!(row.requires_restart, "{id} so muda no boot");
+            assert!(matches!(row.category, SettingCategory::Security));
+        }
+        let perfil = todas.iter().find(|s| s.id == PERFIL).expect("perfil");
+        assert_eq!(
+            perfil.choices.as_deref(),
+            Some(ExecutionProfile::VALORES_ACEITOS),
+            "as escolhas espelham a config"
+        );
+        assert_eq!(perfil.default, serde_json::json!("standard"));
     }
 
     /// As duas linhas existem no schema, sao read-only e ficam em Security.

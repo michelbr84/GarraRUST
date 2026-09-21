@@ -103,14 +103,18 @@ pub fn about_text(style: crate::ui::Style) -> String {
         "  {dim}Tudo local: conversas, memoria, config e credenciais.{reset}\n"
     ));
     out.push('\n');
-    out.push_str(&format!("  {bold}garra{reset}          conversar\n"));
-    out.push_str(&format!("  {bold}garra start{reset}    subir o gateway\n"));
+    // O nome que o usuario tem na maquina (`garra` ou `garraia`), alinhado
+    // em coluna fixa para o desenho nao entortar com o nome mais longo.
+    let bin = crate::binario::nome();
+    out.push_str(&format!("  {bold}{bin:<14}{reset} conversar\n"));
+    let start = format!("{bin} start");
+    out.push_str(&format!("  {bold}{start:<14}{reset} subir o gateway\n"));
+    let doctor = format!("{bin} doctor");
     out.push_str(&format!(
-        "  {bold}garra doctor{reset}   diagnosticar a instalacao\n"
+        "  {bold}{doctor:<14}{reset} diagnosticar a instalacao\n"
     ));
-    out.push_str(&format!(
-        "  {bold}garra --help{reset}   todos os comandos\n"
-    ));
+    let help = format!("{bin} --help");
+    out.push_str(&format!("  {bold}{help:<14}{reset} todos os comandos\n"));
     out.push('\n');
     out
 }

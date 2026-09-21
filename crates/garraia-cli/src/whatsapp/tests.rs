@@ -110,11 +110,236 @@ fn the_instructions_name_the_exact_menu_path_on_the_phone() {
 
 #[test]
 fn the_non_interactive_hint_names_both_commands() {
+    // O nome do executavel vem de `binario::nome()` (#1329): no harness e o
+    // canonico `garraia`; num alias instalado seria `garra`.
+    let bin = crate::binario::nome();
     for lang in [Lang::Pt, Lang::En] {
         let hint = non_interactive_hint(lang);
-        assert!(hint.contains("garra whatsapp link"), "{hint}");
-        assert!(hint.contains("garra whatsapp cloud"), "{hint}");
+        assert!(hint.contains(&format!("{bin} whatsapp link")), "{hint}");
+        assert!(hint.contains(&format!("{bin} whatsapp cloud")), "{hint}");
     }
+}
+
+/// #1329: a instrucao pos-link dizia `garra start` como literal, e quem so
+/// tem o `garraia` (Docker, `cargo install`, instalacao sem o alias) recebia
+/// um comando inexistente. Nenhuma frase deste comando pode voltar a fixar o
+/// nome — ele sai de [`crate::binario::nome`] via `{bin}`.
+#[test]
+fn nenhuma_instrucao_fixa_o_nome_do_executavel() {
+    let fonte = include_str!("../whatsapp.rs");
+    // Os testes vivem neste arquivo, nao no `whatsapp.rs`, mas o corte
+    // continua aqui por simetria com `desktop.rs::a_cli_nao_encosta_em_tauri`.
+    let ate_o_teste = fonte
+        .split("fn nenhuma_instrucao_fixa_o_nome_do_executavel")
+        .next()
+        .unwrap_or(fonte);
+    let corpo: String = ate_o_teste
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for proibido in ["`garra start`", "garra whatsapp", "`garra init`"] {
+        assert!(
+            !corpo.contains(proibido),
+            "`{proibido}` voltou como literal em whatsapp.rs — use `{{bin}}` com `tb()`"
+        );
+    }
+    // E o mecanismo que substitui o literal continua em uso.
+    assert!(
+        corpo.contains("{bin} start"),
+        "a instrucao pos-link usa {{bin}}"
+    );
+    assert!(
+        corpo.contains("{bin} whatsapp"),
+        "as demais instrucoes usam {{bin}}"
+    );
+    // Review C9: `{bin}` so faz sentido dentro de `tb(` (que substitui) ou
+    // de um `format!` com `bin` no escopo. Um `{bin}` cujo ultimo abridor
+    // de chamada e um `t(` cru seria impresso literalmente — e a suite
+    // continuaria verde, porque o literal `{bin} start` continua no fonte.
+    let mut de = 0;
+    while let Some(i) = corpo[de..].find("{bin}") {
+        let ate = de + i;
+        let antes = &corpo[..ate];
+        // O proprio `tb()` e quem faz o `.replace("{bin}", ...)` — nao e uma
+        // frase impressa.
+        if antes.ends_with(".replace(\"") {
+            de = ate + "{bin}".len();
+            continue;
+        }
+        let ultimo_tb = antes.rfind("tb(");
+        let ultimo_format = antes.rfind("format!(");
+        let ultimo_t_cru = antes
+            .rfind(" t(")
+            .or_else(|| antes.rfind("(t("))
+            .or_else(|| antes.rfind("\tt("));
+        let substitui = ultimo_tb.max(ultimo_format);
+        assert!(
+            substitui.is_some_and(|s| ultimo_t_cru.is_none_or(|t| s > t)),
+            "um `{{bin}}` em whatsapp.rs esta dentro de um `t(` cru (byte {ate}); use `tb()` ou `format!`"
+        );
+        de = ate + "{bin}".len();
+    }
+}
+
+/// ADR 0024, teste 8: a instrucao pos-link diz `garraia start` quando o
+/// executavel se chama `garraia` e `garra start` quando `garra` — provado
+/// na linha RENDERIZADA, nao so na presenca do literal `{bin}` no fonte
+/// (review C9).
+#[test]
+fn a_instrucao_pos_link_nomeia_o_executavel_que_rodou() {
+    for (bin, esperado) in [("garraia", "`garraia start`"), ("garra", "`garra start`")] {
+        for lang in [Lang::Pt, Lang::En] {
+            let linha = instrucao_pos_link(lang, bin);
+            assert!(linha.contains(esperado), "{bin}/{lang:?}: {linha}");
+            assert!(!linha.contains("{bin}"), "{linha}");
+            assert!(!linha.contains("{}"), "{linha}");
+        }
+    }
+    // E o nome real que a CLI passa e um dos dois — no harness, `garraia`.
+    let real = instrucao_pos_link(Lang::Pt, &crate::binario::nome());
+    assert!(
+        real.contains("`garraia start`") || real.contains("`garra start`"),
+        "{real}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Perfil de execucao no `status` (ADR 0024, #1329)
+// ---------------------------------------------------------------------------
+
+fn config_com_linked(
+    profile: Option<garraia_config::ExecutionProfile>,
+    settings: serde_json::Value,
+) -> garraia_config::AppConfig {
+    let mut channels = std::collections::HashMap::new();
+    let settings = settings
+        .as_object()
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+    channels.insert(
+        CONFIG_KEY.to_string(),
+        ChannelConfig {
+            channel_type: CONFIG_KEY.to_string(),
+            enabled: Some(true),
+            settings,
+        },
+    );
+    garraia_config::AppConfig {
+        channels,
+        execution: garraia_config::ExecutionConfig::new(profile, None),
+        ..Default::default()
+    }
+}
+
+/// Em `standard` o piso e `search` e a origem e `default`; a linha existe
+/// nas duas linguas e conta os donos sem lista-los.
+#[test]
+fn a_linha_do_perfil_em_standard_diz_search_e_conta_donos() {
+    let config = config_com_linked(
+        None,
+        serde_json::json!({ "owners": ["5511999998888", "abc@lid"] }),
+    );
+    let pt = execution_profile_line(Lang::Pt, &config);
+    assert!(pt.contains("standard"), "{pt}");
+    assert!(pt.contains("fonte default"), "{pt}");
+    assert!(pt.contains("piso do dono: search"), "{pt}");
+    assert!(pt.contains("donos: 2"), "{pt}");
+    assert!(
+        !pt.contains("5511999998888"),
+        "identidades nunca aparecem: {pt}"
+    );
+    assert!(!pt.contains("@lid"), "identidades nunca aparecem: {pt}");
+
+    let en = execution_profile_line(Lang::En, &config);
+    assert!(en.contains("Execution profile: standard"), "{en}");
+    assert!(en.contains("owner floor: search"), "{en}");
+    assert!(en.contains("owners: 2"), "{en}");
+}
+
+/// A contagem e a do GATEWAY (review C3/C8/F-5): entradas vazias,
+/// nao-string e sem digito nao sao donos em lugar nenhum, entao a CLI nao
+/// pode dizer que sao. `["", "  ", 123, "x", "5511999998888"]` e UM dono.
+#[test]
+fn a_linha_do_perfil_conta_donos_como_o_gateway() {
+    let config = config_com_linked(
+        Some(garraia_config::ExecutionProfile::IsolatedPod),
+        serde_json::json!({ "owners": ["", "  ", 123, "x", "5511999998888"] }),
+    );
+    let pt = execution_profile_line(Lang::Pt, &config);
+    assert!(pt.contains("donos: 1"), "{pt}");
+
+    // Formatacao de numero e normalizada como no `allow`: um dono, nao dois.
+    let config = config_com_linked(None, serde_json::json!({ "owners": ["+55 11 99999-8888"] }));
+    assert!(execution_profile_line(Lang::Pt, &config).contains("donos: 1"));
+}
+
+/// Review C13: uma secao `whatsapp_linked` cuja `type` NAO e
+/// `whatsapp_linked` nao e este canal — o gateway a ignora (zero donos,
+/// nunca sobe), e a CLI tem de dizer o mesmo, nao `donos: 2` / `piso: code`.
+#[test]
+fn a_linha_do_perfil_ignora_secao_com_type_de_outro_canal() {
+    let mut config = config_com_linked(
+        Some(garraia_config::ExecutionProfile::IsolatedPod),
+        serde_json::json!({ "owners": ["5511999998888", "5511888880000"], "default_mode": "code" }),
+    );
+    if let Some(ch) = config.channels.get_mut(CONFIG_KEY) {
+        ch.channel_type = "whatsapp".to_string();
+    }
+    let pt = execution_profile_line(Lang::Pt, &config);
+    assert!(pt.contains("donos: 0"), "{pt}");
+    // Sem a secao, o piso e o default do perfil (`code` em isolated-pod),
+    // porque o `default_mode` explicito da secao estranha tambem nao conta.
+    assert!(pt.contains("piso do dono: code"), "{pt}");
+}
+
+/// Em `isolated-pod` (vindo do arquivo) o piso default do dono sobe para
+/// `code`; um `default_mode` explicito vence nos dois perfis.
+#[test]
+fn a_linha_do_perfil_em_isolated_pod_diz_code_salvo_default_mode_explicito() {
+    use garraia_config::ExecutionProfile;
+
+    let pod = config_com_linked(Some(ExecutionProfile::IsolatedPod), serde_json::json!({}));
+    let pt = execution_profile_line(Lang::Pt, &pod);
+    assert!(pt.contains("isolated-pod (fonte file)"), "{pt}");
+    assert!(pt.contains("piso do dono: code"), "{pt}");
+    assert!(pt.contains("donos: 0"), "{pt}");
+
+    let explicito = config_com_linked(
+        Some(ExecutionProfile::IsolatedPod),
+        serde_json::json!({ "default_mode": "search", "owners": ["5511999998888"] }),
+    );
+    let pt = execution_profile_line(Lang::Pt, &explicito);
+    assert!(pt.contains("piso do dono: search"), "{pt}");
+    assert!(pt.contains("donos: 1"), "{pt}");
+
+    // O gemeo: `default_mode` explicito em standard tambem vence.
+    let std_code = config_com_linked(None, serde_json::json!({ "default_mode": "code" }));
+    assert!(execution_profile_line(Lang::Pt, &std_code).contains("piso do dono: code"));
+}
+
+/// A env aplicada pelo loader aparece como origem `env`.
+#[test]
+fn a_linha_do_perfil_mostra_a_origem_env() {
+    use garraia_config::{ExecutionConfig, ExecutionProfile};
+    let mut config = config_com_linked(None, serde_json::json!({}));
+    config.execution =
+        ExecutionConfig::new(None, None).com_env_aplicada(ExecutionProfile::IsolatedPod);
+    let en = execution_profile_line(Lang::En, &config);
+    assert!(en.contains("isolated-pod (source env)"), "{en}");
+    assert!(en.contains("owner floor: code"), "{en}");
+}
+
+/// Sem config carregavel o `status` nao imprime a linha e nao muda de exit
+/// code — a linha e um extra, nunca uma condicao.
+#[test]
+fn status_sem_config_nao_imprime_perfil_nem_falha() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let mut ctx = ctx_in(&dir, false);
+    ctx.loader = None;
+    print_execution_profile(&ctx);
+    // Sem sessao o `status` sai 69 exatamente como antes, com ou sem loader.
+    assert_eq!(run(Action::Status, &ctx, &ScriptedPrompter::default()), 69);
 }
 
 // ---------------------------------------------------------------------------
@@ -932,12 +1157,13 @@ fn the_archive_warning_offers_the_way_back() {
         .find("fn print_archive_warning")
         .expect("print_archive_warning precisa existir");
     let corpo = &fonte[i..i + 3000];
+    // `{bin}` e o executavel em execucao (#1329); o subcomando e o que importa.
     assert!(
-        corpo.contains("garra whatsapp restore"),
+        corpo.contains("{bin} whatsapp restore"),
         "o aviso precisa nomear o comando que devolve a sessao"
     );
     assert!(
-        corpo.contains("garra whatsapp logout"),
+        corpo.contains("{bin} whatsapp logout"),
         "e continuar oferecendo o descarte"
     );
 }
@@ -1008,7 +1234,7 @@ fn the_guard_says_so_when_the_archived_session_vanished() {
         warn[0]
     );
     assert!(
-        warn[0].contains("garra whatsapp"),
+        warn[0].contains(&format!("{} whatsapp", crate::binario::nome())),
         "e precisa ouvir o que fazer a seguir: {:?}",
         warn[0]
     );

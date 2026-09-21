@@ -57,6 +57,39 @@ fn whatsapp_without_a_tty_prints_both_options_and_exits_zero() {
     assert!(stdout.contains("Business"), "{stdout}");
 }
 
+/// #1329: a instrucao nomeia o executavel que rodou, nao um literal.
+///
+/// O teste acima roda o bin `garra` e ve `garra whatsapp link`; este copia o
+/// mesmo binario para um diretorio limpo com o nome `garraia` — o unico que
+/// existe numa imagem Docker, num `cargo install` ou num `install.sh` sem o
+/// alias — e tem de ver `garraia whatsapp link`. Os dois juntos sao a prova
+/// de que o nome vem de `current_exe()`, e nao de um literal. E copia, nao
+/// symlink: `current_exe()` resolve o link e devolveria `garra` de novo.
+#[test]
+fn the_hint_names_the_binary_that_actually_ran() {
+    let dir = tempdir().expect("tempdir");
+    let garraia = dir.path().join("garraia");
+    std::fs::copy(garra_bin(), &garraia).expect("copiar o binario como `garraia`");
+    let out = Command::new(&garraia)
+        .arg("whatsapp")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("GARRAIA_CONFIG_DIR", dir.path())
+        .env("HOME", dir.path())
+        .env("GARRAIA_LANG", "pt_BR.UTF-8")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn garraia");
+    assert!(out.status.success(), "exit {:?}", out.status.code());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("garraia whatsapp link"), "{stdout}");
+    assert!(
+        !stdout.contains("garra whatsapp link"),
+        "o alias nao pode aparecer quando quem rodou foi o `garraia`:\n{stdout}"
+    );
+}
+
 /// O `link` e o `cloud` num pipe nao podem repetir o texto do menu.
 ///
 /// A versao anterior deste teste exigia exit 0 de `whatsapp link` "para
