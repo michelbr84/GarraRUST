@@ -101,7 +101,7 @@ run_in_library() {
         set +e
         # Invoked indirectly by install_garra_alias / install_binary when
         # install_needs_sudo is true; records the command line, runs nothing.
-        # shellcheck disable=SC2329
+        # shellcheck disable=SC2317,SC2329
         sudo() { printf 'sudo %s\n' "$*" >>"${sandbox}/sudo.log"; }
         INSTALL_DIR="${install_dir}"
         # Read by the sourced functions (warning text, wrappers), not here.
