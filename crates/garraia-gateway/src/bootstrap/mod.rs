@@ -9,7 +9,9 @@ use garraia_agents::{
     RepoSearchTool, ResilientEmbeddingProvider, RunTestsTool, WebFetchTool, WebSearchTool,
 };
 // #1225: a policy de sandbox por tool, construida a partir de `agent.sandbox`.
-use garraia_agents::sandbox::{SandboxBackend, SandboxMode, SandboxPolicy};
+use garraia_agents::sandbox::{
+    HOST_ONLY_SPAWNING_TOOLS, SandboxBackend, SandboxMode, SandboxPolicy,
+};
 use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
@@ -1460,6 +1462,17 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
     // secao desligada o `validate_sandbox` retorna cedo e nao diz nada, e as
     // duas camadas nao podem discordar sobre o mesmo estado.
     let sandbox_ativo = mode != SandboxMode::Off;
+    if sandbox_ativo {
+        // #1225 S2: dito uma vez na subida porque `mode != off` se le como
+        // "nada roda no host", e isso vale para uma tool. Nomes de tool nao
+        // sao segredo e nenhum valor de config entra na linha.
+        warn!(
+            cobertas = %garraia_config::sandbox::TOOLS_SANDBOXAVEIS.join(", "),
+            no_host = %HOST_ONLY_SPAWNING_TOOLS.join(", "),
+            "agent.sandbox: o sandbox envolve so as tools em `cobertas`; as de `no_host` \
+             continuam spawnando no host com mode != off (#1225)"
+        );
+    }
 
     let backend = match cfg.backend {
         None => None,
@@ -2715,6 +2728,57 @@ mod tests {
              `crates/garraia-config/src/sandbox.rs` — senao o `garra config check` passa a \
              dar conselho falso ao operador sobre `sandboxed_tools`/`elevated`."
         );
+    }
+
+    /// #1225 S2: a outra metade do espelho. `TOOLS_SO_NO_HOST` e a copia, em
+    /// `garraia-config`, de `HOST_ONLY_SPAWNING_TOOLS` — que por sua vez e
+    /// presa ao codigo por um teste de varredura em `garraia-agents`. Esta
+    /// crate e a unica que ve as duas, entao e aqui que a copia e conferida.
+    #[test]
+    fn tools_so_no_host_espelha_host_only_spawning_tools() {
+        let mut agents: Vec<&str> = HOST_ONLY_SPAWNING_TOOLS.to_vec();
+        agents.sort_unstable();
+        let mut config: Vec<&str> = garraia_config::sandbox::TOOLS_SO_NO_HOST.to_vec();
+        config.sort_unstable();
+        assert_eq!(
+            config, agents,
+            "garraia_config::TOOLS_SO_NO_HOST divergiu de \
+             garraia_agents::sandbox::HOST_ONLY_SPAWNING_TOOLS — o `config check` passaria a \
+             nomear tools erradas ao operador"
+        );
+        // E as duas listas da config sao disjuntas: uma tool nao pode ser
+        // "envolvida" e "so no host" ao mesmo tempo.
+        for t in garraia_config::sandbox::TOOLS_SANDBOXAVEIS {
+            assert!(!config.contains(t), "`{t}` esta nas duas listas");
+        }
+    }
+
+    /// #1225 S2: quem liga o sandbox le, uma vez na subida, quais tools
+    /// ficam de fora — e quem deixa `off` nao le nada, porque a secao inteira
+    /// esta inerte.
+    #[tracing_test::traced_test]
+    #[test]
+    fn sandbox_ligado_avisa_na_subida_quais_tools_ficam_no_host() {
+        let _ = sandbox_policy_from(&AppConfig::default().agent.sandbox);
+        assert!(
+            !logs_contain("continuam spawnando no host"),
+            "mode=off nao pode avisar sobre cobertura"
+        );
+
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+        let _ = sandbox_policy_from(&config.agent.sandbox);
+        assert!(
+            logs_contain("continuam spawnando no host"),
+            "o aviso de cobertura nao saiu na subida"
+        );
+        for tool in HOST_ONLY_SPAWNING_TOOLS {
+            assert!(
+                logs_contain(tool),
+                "`{tool}` nao foi nomeada no aviso da subida"
+            );
+        }
     }
 
     #[test]

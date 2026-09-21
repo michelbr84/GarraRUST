@@ -1757,7 +1757,9 @@ fn validate_sandbox(
     push_err: &impl Fn(&mut Vec<Finding>, &str, String),
     push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
 ) {
-    use crate::sandbox::{SandboxBackendKind, SandboxMode, TOOLS_SANDBOXAVEIS, parece_opcao};
+    use crate::sandbox::{
+        SandboxBackendKind, SandboxMode, TOOLS_SANDBOXAVEIS, TOOLS_SO_NO_HOST, parece_opcao,
+    };
     let sb = &agent.sandbox;
     if sb.mode == SandboxMode::Off {
         // `off` is the default and the whole section is inert; flagging the
@@ -1932,6 +1934,24 @@ fn validate_sandbox(
             );
         }
     }
+
+    // #1225 S2: `mode != off` reads as "nothing runs on the host", and that
+    // is true for exactly one tool. The other spawners never consult the
+    // policy; routing them is the structural half of the slice, still open.
+    // Unconditional, like the ssh notice: the operator reads it once, even
+    // with a perfectly coherent section.
+    push_warn(
+        findings,
+        "agent.sandbox.mode",
+        format!(
+            "agent.sandbox.mode = all/allowlist covers only `{}`; {} still run on the HOST \
+             whatever the mode — see #1225. Next step: read `mode = all` as containment for \
+             `bash` only; if those tools must not touch this host, contain the gateway process \
+             itself (container/VM) until #1225 routes them through the sandbox.",
+            TOOLS_SANDBOXAVEIS.join("`, `"),
+            TOOLS_SO_NO_HOST.join("/")
+        ),
+    );
 }
 
 /// #1127: a URL do HA precisa de esquema http/https e host — é ela que o
@@ -2903,6 +2923,27 @@ mod tests {
                 "agent.sandbox.image",
                 Severity::Error,
             ),
+            // S2: `mode` ligado cobre so `bash`; o aviso de cobertura e
+            // incondicional, como o do ssh.
+            (
+                "mode=all cobre so bash e diz quem fica no host",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                },
+                "agent.sandbox.mode",
+                Severity::Warning,
+            ),
+            (
+                "mode=allowlist cobre so bash e diz quem fica no host",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::Allowlist;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                    c.agent.sandbox.sandboxed_tools = vec!["bash".into()];
+                },
+                "agent.sandbox.mode",
+                Severity::Warning,
+            ),
             // F3: `all` com a unica tool sandboxavel em `elevated` == `off`.
             (
                 "mode=all com bash elevado nao sandboxa nada",
@@ -2997,16 +3038,24 @@ mod tests {
             "mode=off nao deve reclamar de nada: {findings:?}"
         );
 
-        // Docker completo, sem elevated: limpo.
+        // Docker completo, sem elevated: limpo — fora o aviso de cobertura
+        // (#1225 S2), incondicional como o do ssh: `mode = all` cobre so
+        // `bash`, e o operador le isso uma vez.
         let mut cfg = AppConfig::default();
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
         let findings = validate(&cfg);
+        let cobertura =
+            |f: &Finding| f.field == "agent.sandbox.mode" && f.severity == Severity::Warning;
         assert!(
             !findings
                 .iter()
-                .any(|f| f.field.starts_with("agent.sandbox")),
+                .any(|f| f.field.starts_with("agent.sandbox") && !cobertura(f)),
             "findings = {findings:?}"
+        );
+        assert!(
+            findings.iter().any(cobertura),
+            "o aviso de cobertura e incondicional com mode != off: {findings:?}"
         );
 
         // SSH com os dois flags desligados: o operador reconheceu que eles
@@ -3069,6 +3118,54 @@ mod tests {
                 .iter()
                 .any(|f| f.message.contains("tool_confirmation_enabled=false")),
             "findings = {findings:?}"
+        );
+    }
+
+    /// #1225 S2: `mode` ligado cobre so `bash`, e o finding nomeia as tools
+    /// que ficam no host — para o operador nao ler `mode = all` como "nada
+    /// roda no host". Some com `off`, como o resto da secao.
+    #[test]
+    fn agent_sandbox_mode_ligado_diz_quais_tools_ficam_no_host() {
+        use crate::sandbox::{
+            SandboxBackendKind, SandboxMode, TOOLS_SANDBOXAVEIS, TOOLS_SO_NO_HOST,
+        };
+
+        for modo in [SandboxMode::All, SandboxMode::Allowlist] {
+            let mut cfg = AppConfig::default();
+            cfg.agent.sandbox.mode = modo;
+            cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+            cfg.agent.sandbox.sandboxed_tools = vec!["bash".into()];
+            let findings = validate(&cfg);
+            let cobertura = findings
+                .iter()
+                .find(|f| f.field == "agent.sandbox.mode" && f.severity == Severity::Warning)
+                .unwrap_or_else(|| {
+                    panic!("{modo:?}: esperava o aviso de cobertura; findings = {findings:?}")
+                });
+            for tool in TOOLS_SANDBOXAVEIS.iter().chain(TOOLS_SO_NO_HOST) {
+                assert!(
+                    cobertura.message.contains(*tool),
+                    "{modo:?}: `{tool}` nao foi nomeada: {}",
+                    cobertura.message
+                );
+            }
+            assert!(
+                cobertura.message.contains("#1225"),
+                "message = {}",
+                cobertura.message
+            );
+            assert!(
+                cobertura.message.contains("Next step"),
+                "o finding tem de dizer o que fazer: {}",
+                cobertura.message
+            );
+        }
+
+        // `off`: a secao inteira esta inerte, inclusive este aviso.
+        let findings = validate(&AppConfig::default());
+        assert!(
+            !findings.iter().any(|f| f.field == "agent.sandbox.mode"),
+            "mode=off nao pode avisar sobre cobertura: {findings:?}"
         );
     }
 
