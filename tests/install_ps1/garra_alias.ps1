@@ -50,8 +50,12 @@ function Get-ShimText {
 function Invoke-Alias {
     param([string]$Directory)
     # 6>&1 folds the Write-Host stream into the output so the messages can be
+    # asserted on. -Width 4096: Windows PowerShell's Out-String wraps at the
+    # console width, and the warnings carry a temp path long enough to be
+    # split across lines - the phrase then never matches (windows-latest,
+    # PR #1331). pwsh on Linux does not wrap, which is why it passed there.
     # asserted on; the function itself returns nothing on the success stream.
-    return (Install-GarraAlias -Directory $Directory 6>&1 | Out-String)
+    return (Install-GarraAlias -Directory $Directory 6>&1 | Out-String -Width 4096)
 }
 
 # Runs `garra.cmd <args>` and returns its stdout. Only meaningful on Windows,
@@ -62,7 +66,7 @@ function Invoke-Shim {
     # No 2>&1: with $ErrorActionPreference = 'Stop' (set by the harness) a
     # redirected native stderr line becomes a terminating NativeCommandError on
     # Windows PowerShell 5.1, and echo never writes to stderr anyway.
-    return (& $ShimPath /c echo $Marker second-arg | Out-String)
+    return (& $ShimPath /c echo $Marker second-arg | Out-String -Width 4096)
 }
 
 $sandboxes = @()
