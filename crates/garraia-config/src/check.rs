@@ -1847,18 +1847,33 @@ fn validate_sandbox(
                 .to_string(),
         );
 
-        // The SSH branch of `wrap_command` builds `ssh <host> -- sh -lc ...`
-        // and consumes neither flag. Leaving them at their defaults reads as
-        // "network off, workdir mounted" and neither is true.
-        if sb.network_disabled || sb.mount_workdir {
-            push_warn(
-                findings,
-                "agent.sandbox.network_disabled",
-                "agent.sandbox.backend=ssh ignores agent.sandbox.network_disabled and \
-                 agent.sandbox.mount_workdir (and agent.sandbox.image). Set them to false so the \
-                 config stops claiming containment it does not provide."
-                    .to_string(),
-            );
+        // #1225 S3 (ADR 0019): the SSH branch of `wrap_command` builds
+        // `ssh <host> -- sh -lc ...` and has no way to honor either flag —
+        // there is no `--network none` and no mount in an ssh session. Both
+        // default to `true`, so a bare `backend: ssh` reads as "network off,
+        // workdir contained" and neither is true. The runtime refuses every
+        // sandboxed command fail-closed until both are an explicit `false`
+        // (the operator's acknowledgement that ssh is remote execution
+        // WITHOUT network/mount isolation), so this is an Error, one per key
+        // that is on, naming the key and the action.
+        for (ligada, chave) in [
+            (sb.network_disabled, "agent.sandbox.network_disabled"),
+            (sb.mount_workdir, "agent.sandbox.mount_workdir"),
+        ] {
+            if ligada {
+                push_err(
+                    findings,
+                    chave,
+                    format!(
+                        "{chave}=true cannot be honored by agent.sandbox.backend=ssh: ssh is \
+                         remote execution with no network or mount isolation, so every \
+                         sandboxed command fails closed until you acknowledge that explicitly \
+                         with agent.sandbox.network_disabled=false and \
+                         agent.sandbox.mount_workdir=false (or switch to docker/podman for \
+                         real containment)."
+                    ),
+                );
+            }
         }
     }
 
@@ -2857,15 +2872,52 @@ mod tests {
                 "agent.sandbox.ssh_host",
                 Severity::Error,
             ),
+            // S3: ssh nao consegue honrar as duas flags, e os defaults sao
+            // `true` — entao `backend: ssh` "so com host" e Error nas duas
+            // chaves, ate o operador escrever `false` explicito.
             (
-                "ssh ignora network_disabled/mount_workdir",
+                "ssh com network_disabled no default e Error na chave",
                 |c| {
                     c.agent.sandbox.mode = SandboxMode::All;
                     c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
                     c.agent.sandbox.ssh_host = Some("box".into());
                 },
                 "agent.sandbox.network_disabled",
-                Severity::Warning,
+                Severity::Error,
+            ),
+            (
+                "ssh com mount_workdir no default e Error na chave",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("box".into());
+                },
+                "agent.sandbox.mount_workdir",
+                Severity::Error,
+            ),
+            // Reconhecimento pela metade nao basta: cada chave ligada e o seu
+            // proprio Error, para o finding nomear exatamente o que falta.
+            (
+                "ssh so com mount_workdir=false ainda e Error em network_disabled",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("box".into());
+                    c.agent.sandbox.mount_workdir = false;
+                },
+                "agent.sandbox.network_disabled",
+                Severity::Error,
+            ),
+            (
+                "ssh so com network_disabled=false ainda e Error em mount_workdir",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("box".into());
+                    c.agent.sandbox.network_disabled = false;
+                },
+                "agent.sandbox.mount_workdir",
+                Severity::Error,
             ),
             // I1: o aviso de "ssh nao e contencao" e incondicional — vale
             // mesmo com os dois flags ja desligados pelo operador.
@@ -3010,9 +3062,9 @@ mod tests {
         );
 
         // SSH com os dois flags desligados: o operador reconheceu que eles
-        // nao valem, entao o aviso dos flags some. O aviso de que SSH NAO e
-        // contencao fica — incondicional de proposito (I1), porque a palavra
-        // "sandbox" na chave promete o que este backend nao faz.
+        // nao valem, entao o Error das flags (S3) some. O aviso de que SSH
+        // NAO e contencao fica — incondicional de proposito (I1), porque a
+        // palavra "sandbox" na chave promete o que este backend nao faz.
         let mut cfg = AppConfig::default();
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
@@ -3023,8 +3075,9 @@ mod tests {
         assert!(
             !findings
                 .iter()
-                .any(|f| f.field == "agent.sandbox.network_disabled"),
-            "com os flags desligados o aviso dos flags some: {findings:?}"
+                .any(|f| f.field == "agent.sandbox.network_disabled"
+                    || f.field == "agent.sandbox.mount_workdir"),
+            "com os flags desligados o Error das flags some: {findings:?}"
         );
         assert!(
             !findings

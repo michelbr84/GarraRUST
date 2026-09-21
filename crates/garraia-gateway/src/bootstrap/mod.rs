@@ -1443,6 +1443,14 @@ fn carregar_e_aplicar_catalogo(
 /// - Nomes em `sandboxed_tools`/`elevated` sao trimados. A comparacao na
 ///   policy e exata, entao `" bash"` no YAML seria um no-op silencioso.
 ///   Maiusculas NAO sao normalizadas: o registry de tools e case-sensitive.
+/// - `backend = ssh` com `network_disabled` ou `mount_workdir` em `true`
+///   (os defaults) e uma policy que o backend **nao consegue honrar**
+///   (#1225 S3, ADR 0019). A conversao NAO desliga as flags nem rebaixa o
+///   modo: passa tudo intacto e e o `wrap_command` — ponto unico por onde
+///   gateway, `garra chat` e `garra mcp-agent` passam — que recusa cada
+///   comando fail-closed ate o operador escrever `false` nas duas. Aqui so
+///   fica o `warn!` de boot, para o problema ter nome antes do primeiro
+///   comando recusado.
 ///
 /// Com a secao ausente (`mode = off`, o default), devolve exatamente
 /// `SandboxPolicy::default()`: zero mudanca de comportamento.
@@ -1456,7 +1464,7 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
         CfgMode::Allowlist => SandboxMode::Allowlist,
     };
     // Decidido aqui, e nao no ponto de uso, porque `mode` e movido para dentro
-    // da `SandboxPolicy` construida no fim. Gate dos dois `warn!` abaixo: com a
+    // da `SandboxPolicy` construida no fim. Gate dos `warn!` abaixo: com a
     // secao desligada o `validate_sandbox` retorna cedo e nao diz nada, e as
     // duas camadas nao podem discordar sobre o mesmo estado.
     let sandbox_ativo = mode != SandboxMode::Off;
@@ -1491,7 +1499,7 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
     };
 
     let padrao = SandboxPolicy::default();
-    SandboxPolicy {
+    let policy = SandboxPolicy {
         mode,
         sandboxed_tools: nomes_de_tool(&cfg.sandboxed_tools),
         backend,
@@ -1514,7 +1522,24 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
         elevated: nomes_de_tool(&cfg.elevated),
         mount_workdir: cfg.mount_workdir,
         network_disabled: cfg.network_disabled,
+    };
+
+    // #1225 S3: mesmo predicado que o `wrap_command` usa para recusar. Aqui
+    // ele so da nome ao problema no boot; a recusa por comando fica na policy,
+    // que e o ponto que roda sempre — inclusive para policies montadas sem
+    // passar por esta funcao. O host nao entra no log.
+    if sandbox_ativo {
+        let nao_honradas = policy.chaves_que_ssh_nao_honra();
+        if !nao_honradas.is_empty() {
+            warn!(
+                chaves = ?nao_honradas,
+                "agent.sandbox.backend=ssh com isolamento que o ssh nao consegue honrar: todo \
+                 comando sandboxado falha fechado ate as chaves estarem explicitamente em false \
+                 (veja `garra config check`)"
+            );
+        }
     }
+    policy
 }
 
 /// Nomes de tool trimados, sem entradas vazias.
@@ -2784,6 +2809,78 @@ mod tests {
             .wrap_command("bash", "echo nunca", "/tmp")
             .expect_err("sem backend o comando tem de ser recusado");
         assert!(err.to_string().contains("nenhum backend"), "err = {err}");
+    }
+
+    /// #1225 S3: `backend = ssh` com `network_disabled`/`mount_workdir` no
+    /// default (`true`) atravessa a conversao intacto e e o `wrap_command`
+    /// que recusa — o ponto unico por onde gateway, `garra chat` e
+    /// `garra mcp-agent` passam. Nada aqui rebaixa a policy nem desliga as
+    /// flags por conta propria: quem reconhece que ssh nao isola e o
+    /// operador, com `false` explicito.
+    #[test]
+    fn sandbox_ssh_com_flags_no_default_e_recusado_no_wrap() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Ssh);
+        config.agent.sandbox.ssh_host = Some("box.interno".into());
+        let p = sandbox_policy_from(&config.agent.sandbox);
+        assert_eq!(
+            p.backend,
+            Some(SandboxBackend::Ssh("box.interno".into())),
+            "o backend E construido: a recusa e por comando, nao por boot"
+        );
+        assert!(
+            p.network_disabled && p.mount_workdir,
+            "a conversao nao mexe nas flags por conta propria"
+        );
+        let err = p
+            .wrap_command("bash", "echo nunca", "/tmp")
+            .expect_err("ssh + defaults tem de ser recusado");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("agent.sandbox.network_disabled"),
+            "msg = {msg}"
+        );
+        assert!(msg.contains("agent.sandbox.mount_workdir"), "msg = {msg}");
+        assert!(!msg.contains("box.interno"), "vazou o host: {msg}");
+        assert!(
+            !msg.contains("não encontrado no host"),
+            "o erro de backend ausente mascarou o de policy: {msg}"
+        );
+    }
+
+    /// O reconhecimento explicito destrava: com as duas em `false` a recusa
+    /// da S3 nao dispara. O que sobra depende do host (cliente ssh instalado
+    /// ou nao) e os dois desfechos legitimos sao assertados — o que NAO pode
+    /// acontecer e o erro de "nao consegue honrar".
+    #[test]
+    fn sandbox_ssh_com_flags_em_false_explicito_passa_pela_recusa_da_s3() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Ssh);
+        config.agent.sandbox.ssh_host = Some("box.interno".into());
+        config.agent.sandbox.network_disabled = false;
+        config.agent.sandbox.mount_workdir = false;
+        let p = sandbox_policy_from(&config.agent.sandbox);
+        assert!(p.chaves_que_ssh_nao_honra().is_empty());
+        match p.wrap_command("bash", "echo oi", "/tmp") {
+            Ok(Some(linha)) => assert!(
+                linha.starts_with("ssh 'box.interno' -- sh -lc "),
+                "linha = {linha}"
+            ),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("não encontrado no host"),
+                    "erro inesperado: {msg}"
+                );
+                assert!(
+                    !msg.contains("nao consegue honrar"),
+                    "reconhecimento explicito ignorado: {msg}"
+                );
+            }
+            Ok(None) => panic!("mode = all deveria sandboxar `bash`"),
+        }
     }
 
     /// `image` vazia cai no default da policy — nunca vira uma imagem vazia
