@@ -248,11 +248,27 @@ impl ExecutionBudget {
         self.current_turn_calls < self.max_per_turn && self.current_task_calls < self.max_per_task
     }
 
+    /// Conta uma chamada contra o orcamento do turno e da tarefa **sem**
+    /// entrar na janela de deteccao de loop (#1226, achado de revisao).
+    ///
+    /// Existe para o envelope `tool_program`: ele gasta orcamento como
+    /// qualquer chamada, mas cada passo dele volta pelo despacho e registra a
+    /// propria assinatura. Se o envelope tambem entrasse na janela, um modelo
+    /// preso repetindo `tool_program{steps:[X]}` a cada volta deixaria a
+    /// janela alternando `[tp, X, tp]` / `[X, tp, X]`, e o corte de
+    /// [`JANELA_LOOP`] chamadas identicas nunca dispararia — sobraria so o
+    /// teto da tarefa, ~25 repeticoes em vez de 3. Fora da janela, os passos
+    /// ficam colados um no outro e a terceira repeticao de X corta como corta
+    /// fora do programa.
+    pub fn registrar_contagem(&mut self) {
+        self.current_turn_calls += 1;
+        self.current_task_calls += 1;
+    }
+
     /// Registra uma chamada de ferramenta com seu payload,
     /// para controle de orçamento e detecção de loop por assinatura.
     pub fn registrar_chamada(&mut self, tool_name: &str, payload: &Value) {
-        self.current_turn_calls += 1;
-        self.current_task_calls += 1;
+        self.registrar_contagem();
 
         let assinatura = AssinaturaFerramenta {
             nome: tool_name.to_string(),
@@ -460,6 +476,25 @@ mod tests {
         budget.registrar_chamada("bash", &json!({"command": "ls"}));
         assert_eq!(budget.current_turn_calls, 1);
         assert_eq!(budget.current_task_calls, 1);
+    }
+
+    /// #1226 (achado de revisao): `registrar_contagem` gasta orcamento mas
+    /// nao entra na janela — tres X intercalados com contagens puras ainda
+    /// sao tres X colados, e o detector dispara.
+    #[test]
+    fn registrar_contagem_gasta_orcamento_sem_entrar_na_janela() {
+        let mut budget = ExecutionBudget::padrao();
+        let x = json!({"command": "cargo check"});
+        for _ in 0..3 {
+            budget.registrar_contagem();
+            budget.registrar_chamada("bash", &x);
+        }
+        assert_eq!(budget.current_turn_calls, 6, "o envelope conta no turno");
+        assert_eq!(budget.current_task_calls, 6, "e na tarefa");
+        assert!(
+            budget.detectar_loop_ferramenta(),
+            "a contagem pura nao pode separar as tres assinaturas iguais"
+        );
     }
 
     #[test]
