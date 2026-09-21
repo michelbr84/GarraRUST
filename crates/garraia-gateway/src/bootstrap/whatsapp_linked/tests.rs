@@ -444,6 +444,80 @@ fn o_modo_default_do_canal_e_de_verdade_somente_leitura() {
     }
 }
 
+/// **A premissa da #1327: o piso cobre ferramenta MCP por NOME.**
+///
+/// Este e o teste que substituiu a recusa `FerramentaMcpRegistrada`. A recusa
+/// nasceu quando `ToolGate::permite` isentava do whitelist qualquer nome com
+/// `__`; a #1288 fechou a isencao, e desde entao ferramenta MCP so passa pelo
+/// whitelist quando `allowed` a declara (`servidor/*` ou nome completo). Se
+/// este teste reprovar, a recusa tem de voltar — e o bug e no portao.
+///
+/// O portao e montado **exatamente** como o `turno` monta o seu:
+/// `piso_somente_leitura` sobre um `ExecContext` sem modo, e depois
+/// `ToolGate::para_o_turno`, que e o que `process_message_with_agent_config`
+/// chama por dentro. O texto e neutro de proposito: `search` nao e `auto`,
+/// entao a heuristica do roteador nao entra — se um dia o piso virar `auto`,
+/// e este teste que vai dizer.
+#[test]
+fn o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao() {
+    use garraia_agents::AgentRuntime;
+    use garraia_agents::modes::ToolGate;
+
+    let agents = AgentRuntime::new();
+    for nome in ["file_read", "file_write"] {
+        agents.register_tool(Box::new(ToolDeMentira(nome)));
+    }
+    // O servidor que TODA instalacao nova tem
+    // (`McpPersistenceService::provision_filesystem_if_missing`), com os nomes
+    // que o `tool_bridge` monta.
+    agents.replace_mcp_tools(
+        "filesystem",
+        vec![
+            Box::new(ToolDeMentira("filesystem__read_file")),
+            Box::new(ToolDeMentira("filesystem__write_file")),
+        ],
+    );
+
+    let exec = piso_somente_leitura(ExecContext::default(), DEFAULT_MODE);
+    let gate = ToolGate::para_o_turno(&exec, "oi");
+
+    // Toda ferramenta de origem MCP do inventario VIVO e negada — por nome,
+    // porque nenhuma esta declarada na `allowed` do `search`.
+    let mcp: Vec<String> = agents
+        .tool_inventory()
+        .into_iter()
+        .filter(|t| t.source == "mcp")
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(
+        mcp.len(),
+        2,
+        "premissa: as duas ferramentas MCP estao registradas"
+    );
+    for nome in &mcp {
+        assert!(
+            !gate.permite(nome),
+            "`{nome}` nao esta declarada na `allowed` do `search`, entao o portao a nega"
+        );
+    }
+    assert!(!gate.permite("filesystem__write_file"));
+    assert!(
+        !gate.permite("filesystem__read_file"),
+        "leitura MCP tambem: o piso nao distingue leitura de escrita, quem libera e a `allowed`"
+    );
+
+    // E o resto do perfil continua valendo: leitura nativa passa, escrita e
+    // `denied`.
+    assert!(
+        gate.permite("file_read"),
+        "`file_read` esta na `allowed` do `search`"
+    );
+    assert!(
+        !gate.permite("file_write"),
+        "`file_write` esta no `denied` do `search`"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Filtro de mensagem
 // ---------------------------------------------------------------------------
