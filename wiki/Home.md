@@ -23,6 +23,10 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.4.3 — Novidades](Novidades-v0.4.3)** · **[What's New in v0.4.3 (English)](Whats-New-v0.4.3)**
+  — WhatsApp pessoal por dispositivo vinculado (`garra whatsapp` + QR),
+  sandbox por tool `agent.sandbox`, cinco fail-opens do MCP fechados e um
+  LLM padrão só.
 - **[v0.4.2 — Novidades](Novidades-v0.4.2)** · **[What's New in v0.4.2 (English)](Whats-New-v0.4.2)**
   — o Garra saiu da tela: MQTT, Home Assistant, serial/USB e GPIO sob um
   modelo de risco R0-R5, streaming no app, e o canal do `/proc` fechado.

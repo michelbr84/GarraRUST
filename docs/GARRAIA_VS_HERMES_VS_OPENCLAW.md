@@ -250,7 +250,7 @@ Indicadores: ✅ estável · 🟡 parcial/experimental · 🔵 planejado · ❌ 
 | Credenciais | ✅ vault AES-256-GCM → argon2 | ✅ vault + auth.json + redact | ✅ mapa de credenciais + secret scanning |
 | Prompt injection | 🟡 guard ~20 padrões em web_fetch, tool MCP, file_read e device_read/device_list (#1213, #1243 fatias 1-3) | 🟡 env filtering, wrapping não confirmado | ✅ wrapping de conteúdo não-confiável |
 | Shell control | ✅ budget + gates | ✅ allowlist + approvals + YOLO explícito | ✅ policy pré-model-call + elevated duplamente gated |
-| Sandbox | 🟡 WASM; ADR 0019 planejado | 🟡 | ✅ 5 backends |
+| Sandbox | 🟡 WASM para plugins + sandbox por tool `agent.sandbox` (backends docker/podman/ssh, default off; hoje envolve só `bash`, ssh é execução remota) — ADR 0019 | 🟡 | ✅ 5 backends |
 | Auditoria/threat model | ✅ audit-log, RLS testada, LGPD/GDPR | 🟡 logs + métricas MCP | ✅ MITRE ATLAS público + security audit auto-fix |
 | Rate limiting | ✅ (incl. SSE per-user) | ❓ | ✅ |
 
@@ -272,7 +272,7 @@ Indicadores: ✅ estável · 🟡 parcial/experimental · 🔵 planejado · ❌ 
 | Gmail | 🟡 (via canais/MCP) | ✅ (canal email) | ✅ (trigger IMAP) |
 | Telegram/Discord/Slack | ✅ nativos | ✅ nativos | ✅ nativos |
 | WhatsApp Business (Cloud API) | ✅ nativo (webhook + HMAC) | ✅ (`hermes whatsapp-cloud`) | ❓ |
-| WhatsApp pessoal (dispositivo vinculado, QR) | 🔵 planejado ([ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md), v0.4.3) | ✅ (Baileys) | ✅ (Baileys) |
+| WhatsApp pessoal (dispositivo vinculado, QR) | ✅ (v0.4.3, `garra whatsapp`, bridge Node/Baileys por stdio — [ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md)) | ✅ (Baileys) | ✅ (Baileys) |
 | n8n | 🟡 via gateway/webhook | 🟡 via webhook/cron | 🟡 via webhook |
 | Home Assistant | ✅ adapter nativo | ✅ canal | ❌ nativo não encontrado |
 | Browser | ✅ web_fetch/search | ✅ 8 modos de browser | ✅ controle real |

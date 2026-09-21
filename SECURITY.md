@@ -38,7 +38,7 @@ GarraIA is built with security as a core requirement:
   upgrade path for legacy hashes (transactional under `FOR NO KEY UPDATE`)
 * JWT HS256 access tokens with explicit algorithm-confusion guards; opaque refresh
   tokens fingerprinted with a separate HMAC-SHA256 secret
-* Multi-tenant isolation in `garraia-workspace`: 22 tables under FORCE RLS, plus
+* Multi-tenant isolation in `garraia-workspace`: 32 tables under FORCE RLS, plus
   dedicated `garraia_login` / `garraia_signup` Postgres roles fronted by typed
   `LoginPool` / `SignupPool` newtypes (raw `PgPool` access forbidden in auth paths)
 * Authentication required by default on the WebSocket gateway and the REST `/v1/*`
@@ -60,6 +60,9 @@ GarraIA is built with security as a core requirement:
 * garraia-workspace crate (multi-tenant Postgres + pgvector schema, FORCE RLS, BYPASSRLS roles)
 * garraia-storage crate (object storage trait, LocalFs / S3-compatible backends, tus 1.0)
 * garraia-cli crate `migrate workspace` flow (SQLite → Postgres user/identity hash reassembly)
+* garraia-channels crate `whatsapp_linked` module and the Node/Baileys bridge in `bridge/whatsapp/`
+  (encrypted session store, stdio protocol, stderr redaction, child-process supervision)
+* garraia-hardware crate (R0-R5 risk gate, skill risk elevation) and the `device_*` tools in garraia-agents
 * install.sh and the self-update mechanism
 * Prompt injection or sandbox escape in the agent runtime
 * Credential leakage in any channel (Telegram, Discord, Slack, WhatsApp, iMessage)

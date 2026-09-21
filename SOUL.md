@@ -1,7 +1,7 @@
 ---
 soul_version: 1
 created: 2026-09-04
-last_reviewed: 2026-09-04
+last_reviewed: 2026-09-21
 language: pt-BR
 ---
 
@@ -225,7 +225,9 @@ Antes de uma decisão que molda o produto, pergunte: **isto cabe na alma acima?*
   de commits é Michel mais agentes de IA, com uma outra contribuidora humana), então leia
   "nós" como ele e quem aparecer.
 - **Estado do repositório:** `main` em `384e3ef`, v0.3.6, 22 crates, 993 commits desde
-  2026-02-22.
+  2026-02-22. *(Snapshot da redação de 2026-09-04, preservado como registro histórico — o
+  estado vivo do repositório não pertence a este documento. Em 2026-09-21, no corte da
+  v0.4.3: 24 crates, 23 ADRs, cerca de 1.470 commits.)*
 - **Tirado do código, não de uma pessoa:** o princípio *Publicar onde a gente perde*
   (marcado como candidato), os detalhes de personalidade vindos da
   [ADR 0012](docs/adr/0012-garra-persona.md), as promessas sobre telemetria e chamadas de
@@ -252,3 +254,13 @@ fica guardado aqui, na íntegra, com a data e o motivo. A História de Origem é
 — um projeto pode mudar de ideia, mas não pode fingir que nunca pensou diferente.
 
 _Vazio na versão 1._
+
+**2026-09-21 — Rótulo de data no snapshot de estado do repositório.** A linha de estado em
+"Como Este Documento Foi Escrito" congelava os números da redação original (v0.3.6, 22
+crates, 993 commits) sem rótulo de data, o que fazia o documento envelhecer como se os
+números fossem atuais. A emenda rotula o snapshot original como registro histórico e
+acrescenta a leitura do dia do corte da v0.4.3 (24 crates, 23 ADRs, cerca de 1.470
+commits), junto com a nota de que estado vivo do repositório não pertence a este
+documento. Motivo: a promessa de verdade deste documento vale mais que a utilidade de um
+número corrente; números correntes ficam no README e no CHANGELOG. Nada do texto original
+foi apagado.

@@ -1,6 +1,6 @@
 # Architecture Overview
 
-GarraIA is built as a Rust workspace with 14 specialized crates, each responsible for a specific domain.
+GarraIA is built as a Rust workspace with 24 crates, each responsible for a specific domain.
 
 ## Workspace Structure
 
@@ -18,7 +18,17 @@ crates/
 ├── garraia-plugins/     # WASM plugin sandbox
 ├── garraia-media/        # PDF/image processing
 ├── garraia-security/     # Credential vault + auth
-├── garraia-skills/       # Skill parser + installer
+├── garraia-skills/       # Skill parser + installer (instruction / hardware-adapter / hardware-preset)
+├── garraia-auth/         # IdentityProvider, RBAC, Argon2id, JWT + refresh tokens
+├── garraia-workspace/    # Postgres 16 + pgvector multi-tenant schema (FORCE RLS)
+├── garraia-storage/      # ObjectStore trait: LocalFs + S3-compatible (tus 1.0 uploads)
+├── garraia-embeddings/   # EmbeddingProvider / VectorStore traits (ADR 0018 proposed)
+├── garraia-learning/     # Self-improving operations manual (ADR 0010)
+├── garraia-hardware/     # Physical devices: Device trait, R0-R5 risk gate, adapters
+├── garraia-telemetry/    # OpenTelemetry + Prometheus (feature-gated)
+├── garraia-glob/         # Glob / ignore matching
+├── garraia-desktop-core/ # Tauri-free core of the Desktop Control Center (ADR 0021)
+├── garraia-desktop/      # Tauri v2 shell (tray, parrot overlay, Chat Bar) — outside CI gates
 └── garraia-common/       # Shared types + errors
 ```
 

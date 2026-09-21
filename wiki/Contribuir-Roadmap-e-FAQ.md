@@ -2,7 +2,7 @@
 
 ## Contribuir
 
-Guia completo: [CONTRIBUTING.md](https://github.com/michelbr84/GarraRUST/blob/main/CONTRIBUTING.md) — pré-requisitos (Rust 1.94+, FFmpeg 6.x, Node 20+), setup, convenções (Conventional Commits) e processo de PR. Antes de abrir PR, rode `garra verify` (fmt + clippy + test + gitleaks). Issues para começar: [good first issue](https://github.com/michelbr84/GarraRUST/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22). Decisões arquiteturais exigem [ADR](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/README.md) antes do código.
+Guia completo: [CONTRIBUTING.md](https://github.com/michelbr84/GarraRUST/blob/main/CONTRIBUTING.md) — pré-requisitos (Rust 1.95+, FFmpeg 6.x, Node 20+), setup, convenções (Conventional Commits) e processo de PR. Antes de abrir PR, rode `garra verify` (fmt + clippy + test + gitleaks). Issues para começar: [good first issue](https://github.com/michelbr84/GarraRUST/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22). Decisões arquiteturais exigem [ADR](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/README.md) antes do código.
 
 ## Roadmap AAA (7 fases)
 

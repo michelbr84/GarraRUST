@@ -87,8 +87,8 @@ LABEL org.opencontainers.image.title="GarraIA Gateway" \
       org.opencontainers.image.description="Multi-channel, multi-provider LLM orchestration gateway" \
       org.opencontainers.image.vendor="michelbr84" \
       org.opencontainers.image.source="https://github.com/michelbr84/GarraRUST" \
-      org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.version="0.3.0"
+      org.opencontainers.image.licenses="MIT"
+# org.opencontainers.image.version is set by docker/metadata-action in deploy.yml (labels: steps.meta.outputs.labels), never hardcoded here.
 
 # Install only essential runtime deps
 RUN apt-get update && apt-get install -y --no-install-recommends \

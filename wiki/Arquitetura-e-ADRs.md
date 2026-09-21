@@ -2,14 +2,14 @@
 
 ## Visão geral
 
-- [Architecture Overview](https://github.com/michelbr84/GarraRUST/blob/main/docs/architecture.md) — estrutura do workspace (23 crates), fluxo do runtime, pipeline de voz, multi-agente, memória, segurança, hot-reload
+- [Architecture Overview](https://github.com/michelbr84/GarraRUST/blob/main/docs/architecture.md) — estrutura do workspace (24 crates), fluxo do runtime, pipeline de voz, multi-agente, memória, segurança, hot-reload
 - [A plataforma de hardware](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardware.md) — camadas core → `garraia-hardware` → adapter/skill → device, modelo de risco R0-R5, motor de automações · [Hardware skills](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardware-skills.md)
 - [Referência da API REST do gateway](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/api-reference.md) · [OpenAPI da API mobile](https://github.com/michelbr84/GarraRUST/blob/main/docs/mobile-api-v1.yaml)
 - [Sistema de memória](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/memory.md) · [Benchmarks](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/benchmarks.md)
 
 ## ADRs — Architectural Decision Records
 
-Decisões irreversíveis são registradas antes de implementar ([índice](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/README.md)). São 20 ADRs; todas **accepted**, exceto a 0018, ainda **proposed**:
+Decisões irreversíveis são registradas antes de implementar ([índice](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/README.md)). São 23 ADRs; todas **accepted**, exceto a 0018, ainda **proposed**:
 
 | # | Decisão | Data |
 |---|---|---|
@@ -33,3 +33,6 @@ Decisões irreversíveis são registradas antes de implementar ([índice](https:
 | [0018](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0018-crate-garraia-embeddings.md) | O que fazer com o crate `garraia-embeddings` — **proposed** | 2026-09-07 |
 | [0019](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0019-process-hardening-and-sandbox.md) | Confinamento das tools — `PR_SET_DUMPABLE` agora, Landlock depois | 2026-09-09 |
 | [0020](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0020-crate-garraia-hardware.md) | Crate `garraia-hardware` — abstração de dispositivos físicos | 2026-09-11 |
+| [0021](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0021-garraia-desktop-control-center.md) | GarraIA Desktop — Control Center (`garraia desktop`) | 2026-09-14 |
+| [0022](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0022-default-llm-identity.md) | `z-ai/glm-5.3-flash` via OpenRouter como LLM padrão; local como segunda opção | 2026-09-13 |
+| [0023](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0023-whatsapp-dispositivo-vinculado.md) | WhatsApp pessoal por dispositivo vinculado (`garra whatsapp`) — bridge Node/Baileys por stdio + sessão cifrada | 2026-09-16 |

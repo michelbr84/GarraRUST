@@ -21,7 +21,7 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
 4. `CHANGELOG.md`: mover o conteúdo de `## [Unreleased]` para uma nova seção
    `## [X.Y.Z] - AAAA-MM-DD` (data narrativa em horário da Flórida,
    ver CLAUDE.md §Convenção de datas). `[Unreleased]` volta vazio.
-5. Abrir PR, aguardar CI verde (4 checks obrigatórios da ruleset) e mergear.
+5. Abrir PR, aguardar CI verde (6 checks obrigatórios da ruleset: Format Check, Clippy Linting, Test ubuntu e windows, Security Gate, Auth Integration) e mergear.
 
 ## 2. Tag
 

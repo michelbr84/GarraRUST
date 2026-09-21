@@ -1,1 +1,0 @@
-- CodeQL: `codeql-reapply-dismissals.sh` compara a linha do ledger contra o span do statement no alerta (start..end) em vez de exigir igualdade com o start_line, porque statements multi-linha (o `println!` do alerta 173) separam o inicio do statement da linha do sink ancorada; rule_id e path continuam casando exatamente.
