@@ -356,6 +356,10 @@ impl GatewayServer {
                 // viram `interrupted` aqui, com ids no log — nunca `goal`
                 // (PII). Falha e fail-soft: nao pode impedir a subida.
                 garraia_db::agent_runs::log_interrupted_runs(&store);
+                // #1227 (slice 2): tarefas agendadas que a queda deixou
+                // `running` voltam a `pending` aqui, com id + attempts no
+                // log — nunca `payload` (PII). Idem fail-soft.
+                garraia_db::log_recovered_leases(&store);
                 let store = Arc::new(Mutex::new(store));
                 state.set_session_store(Arc::clone(&store));
                 // GAR-201: Create ChatSessionManager from the same store for multi-channel session resolution
@@ -805,10 +809,15 @@ impl GatewayServer {
         // Start background scheduler loop
         let scheduler_state = Arc::clone(&state);
         tokio::spawn(async move {
+            // #1227 (slice 2): identidade deste processo nas leases
+            // (`scheduled_tasks.leased_by`). Gerada uma vez por subida, so
+            // para diagnostico — quem reivindicou a tarefa que ficou
+            // `running` depois de uma queda.
+            let scheduler_owner = uuid::Uuid::new_v4().to_string();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                if let Err(e) = run_scheduler(&scheduler_state).await {
+                if let Err(e) = run_scheduler(&scheduler_state, &scheduler_owner).await {
                     tracing::error!("Scheduler error: {e}");
                 }
             }
@@ -1286,7 +1295,22 @@ async fn shutdown_signal() {
 /// How many times one occurrence is retried before being given up on.
 const MAX_TASK_ATTEMPTS: i64 = 3;
 
-async fn run_scheduler(state: &AppState) -> Result<()> {
+/// #1227 (slice 2): por quanto tempo uma tarefa reivindicada fica `running`
+/// antes de a queda do processo ser assumida e a linha voltar a `pending`.
+///
+/// Nao ha constante de timeout do turno no runtime hoje (o `process_heartbeat`
+/// espera o provider ate o fim); 600 s e o teto pratico de um turno com tools
+/// dobrado, para que uma execucao lenta mas viva nunca seja reivindicada de
+/// novo por outro tick enquanto ainda corre. Quando o runtime ganhar um
+/// timeout de turno, este valor deve virar 2x ele — e a origem fica aqui.
+const SCHEDULER_LEASE_SECS: i64 = 600;
+
+/// Um tick do scheduler: recupera leases expiradas (explicito, logado),
+/// reivindica as tarefas vencidas para `owner` e executa cada uma.
+///
+/// `owner` e a identidade deste processo (uuid gerado uma vez na subida);
+/// vai para `scheduled_tasks.leased_by` so para diagnostico.
+async fn run_scheduler(state: &AppState, owner: &str) -> Result<()> {
     let store_mutex = match &state.session_store {
         Some(s) => s,
         None => return Ok(()),
@@ -1294,7 +1318,15 @@ async fn run_scheduler(state: &AppState) -> Result<()> {
 
     let tasks = {
         let store = store_mutex.lock().await;
-        store.poll_due_tasks()?
+        // Queda no meio do tick anterior deixou `running` sem dono vivo:
+        // volta a `pending` AQUI, com log, e e reivindicada logo abaixo no
+        // mesmo tick — o re-poll deixa de ser silencioso.
+        garraia_db::log_recovered_leases(&store);
+        store.claim_due_tasks(
+            garraia_db::session_store::DEFAULT_POLL_LIMIT,
+            SCHEDULER_LEASE_SECS,
+            owner,
+        )?
     };
 
     if tasks.is_empty() {
@@ -2142,6 +2174,56 @@ mod tests {
         let alvo = concat!("log_interrupted", "_runs(&store)");
         let copias = src.matches(alvo).count();
         assert_eq!(copias, 1, "esperava 1 chamada de subida, achei {copias}");
+    }
+
+    /// #1227 (slice 2): o scheduler tem de REIVINDICAR as tarefas vencidas
+    /// (`claim_due_tasks`, que as poe em `running` sob lease), nunca so
+    /// ler (`poll_due_tasks`). Com o poll, uma queda no meio do turno
+    /// deixava a linha `pending` e o tick seguinte reexecutava em silencio
+    /// — mensagem de sistema duplicada. O scan recorta o corpo de
+    /// `run_scheduler` e usa `concat!` para nao casar consigo mesmo.
+    #[test]
+    fn scheduler_reivindica_em_vez_de_pollar() {
+        let src = include_str!("server.rs");
+        let assinatura = concat!("async fn run_", "scheduler(");
+        let inicio = src
+            .find(assinatura)
+            .expect("run_scheduler tem de existir em server.rs");
+        let resto = &src[inicio..];
+        let fim = resto
+            .find("\n}\n")
+            .expect("run_scheduler tem de fechar em coluna zero");
+        let corpo = &resto[..fim];
+
+        assert!(
+            corpo.contains(concat!("claim_due", "_tasks(")),
+            "run_scheduler deve reivindicar via claim_due_tasks (#1227 slice 2)"
+        );
+        assert!(
+            !corpo.contains(concat!("poll_due", "_tasks")),
+            "run_scheduler nao pode voltar ao poll read-only — reexecucao silenciosa apos queda"
+        );
+        assert!(
+            corpo.contains(concat!("log_recovered", "_leases(&store)")),
+            "cada tick deve recuperar leases expiradas antes de reivindicar"
+        );
+    }
+
+    /// #1227 (slice 2): a recuperacao de leases roda em DOIS lugares — na
+    /// subida (bloco `Ok(store)` do `SessionStore::open`, ao lado de
+    /// `log_interrupted_runs`) e no inicio de cada tick. Sem a subida, uma
+    /// tarefa que caiu com lease longa espera ate 10 min para ser vista;
+    /// sem o tick, uma queda de OUTRO processo sobre o mesmo arquivo nunca
+    /// e vista.
+    #[test]
+    fn leases_expiradas_sao_recuperadas_na_subida_e_no_tick() {
+        let src = include_str!("server.rs");
+        let alvo = concat!("log_recovered", "_leases(&store)");
+        let copias = src.matches(alvo).count();
+        assert_eq!(
+            copias, 2,
+            "esperava 2 chamadas (subida + tick), achei {copias}"
+        );
     }
 
     fn tarefa_fixura() -> garraia_db::ScheduledTask {
