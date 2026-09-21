@@ -930,9 +930,17 @@ impl GatewayServer {
         // (`WhatsAppLinkedRuntime::reter_cancelamento`). Ele ja morreu aqui uma
         // vez, solto no fim deste braco do `match`, e o canal inteiro morria
         // com ele em ~0,1 s a cada boot.
+        //
+        // Desligado e o caso comum e sai em `info!`. Qualquer OUTRO motivo e um
+        // canal que o operador ligou e que nao subiu: `warn!`, com a frase de
+        // acao do `Display` (#1327) — o nome do enum em `info!` foi o que
+        // deixou o sintoma da issue invisivel.
         match crate::bootstrap::spawn_whatsapp_linked(&state) {
             Ok(()) => info!("whatsapp_linked: canal supervisionado"),
-            Err(motivo) => info!("whatsapp_linked: canal nao subiu ({motivo:?})"),
+            Err(crate::bootstrap::NaoSubiu::Desabilitado) => {
+                info!("whatsapp_linked: canal desligado, nada a supervisionar")
+            }
+            Err(motivo) => warn!("whatsapp_linked: canal nao subiu — {motivo}"),
         }
 
         // Build WhatsApp channels (webhook-driven — no persistent connection)

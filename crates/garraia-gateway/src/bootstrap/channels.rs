@@ -1,5 +1,5 @@
 use garraia_config::AppConfig;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Build configured channels that can be initialized before state is wrapped in Arc.
 ///
@@ -38,6 +38,15 @@ pub async fn build_channels(config: &AppConfig) -> garraia_channels::ChannelRegi
             "imessage" => {
                 // iMessage channels need SharedState for callbacks, so they are started later.
                 info!("imessage channel {name} will be started after state initialization");
+            }
+            "whatsapp_linked" => {
+                // Canal PULL com supervisao propria (`bootstrap::whatsapp_linked`):
+                // nao entra no `ChannelRegistry`. Antes da #1327 caia no `other`
+                // e o boot avisava "unknown channel type" para uma secao que a
+                // propria CLI escreveu — ruido que apontava para a config errada.
+                debug!(
+                    "whatsapp_linked channel {name} e supervisionado por bootstrap::whatsapp_linked; nada a fazer aqui"
+                );
             }
             other => {
                 warn!("unknown channel type: {other} for channel {name}, skipping");

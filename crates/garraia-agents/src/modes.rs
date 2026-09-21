@@ -1736,6 +1736,31 @@ mod tests {
         );
     }
 
+    /// **#1327, o caminho DECLARADO.** `allowed: ["filesystem/*"]` libera as
+    /// ferramentas do servidor `filesystem` — e e SO assim que uma ferramenta
+    /// MCP chega a um perfil com whitelist. E o que o aviso de drift do canal
+    /// `whatsapp_linked` detecta: um perfil padrao do canal que declare
+    /// `servidor/*` esta, por decisao do operador, expondo aquele servidor a
+    /// remetentes do WhatsApp.
+    #[test]
+    fn servidor_declarado_com_coringa_libera_a_ferramenta_mcp() {
+        let g = portao_do_operador(serde_json::json!({ "allow": ["filesystem/*"] }));
+        assert!(g.permite("filesystem__read_file"));
+        assert!(
+            g.permite("filesystem__write_file"),
+            "o coringa libera o servidor INTEIRO — leitura e escrita"
+        );
+        assert!(
+            !g.permite("outro__read_file"),
+            "e nao libera servidor que nao foi declarado"
+        );
+
+        // Sem a declaracao, o `search` nativo nega pelo nome — o piso do canal.
+        let g = ToolGate::for_mode_name("search");
+        assert!(!g.permite("filesystem__read_file"));
+        assert!(!g.permite("filesystem__write_file"));
+    }
+
     /// **Criterio 4, regressao.** `denied` vence tudo, prefixo declarado
     /// incluso — era a unica protecao que ja funcionava para MCP.
     #[test]

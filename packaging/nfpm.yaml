@@ -45,6 +45,17 @@ contents:
     file_info:
       mode: 0755
 
+  # Alias `garra` (#1328): o nome que a CLI, a wiki e o README usam nos
+  # exemplos e o do `[[bin]]` do Cargo; o pacote instala o asset `garraia`
+  # (regra 15). Os dois valem — `garra` e um symlink para `garraia`, o mesmo
+  # que o install.sh deixa em ~/.local/bin e o install.ps1 espelha com
+  # garra.cmd. Sintaxe do nfpm para symlink: `src` e o ALVO do link, `dst`
+  # e o caminho do proprio link (equivale a `ln -s /usr/bin/garraia
+  # /usr/bin/garra`).
+  - src: /usr/bin/garraia
+    dst: /usr/bin/garra
+    type: symlink
+
   # MIT exige que o aviso viaje com redistribuições; um pacote é uma
   # redistribuição. SEM `type: doc` de propósito: esse tipo é exclusivo do
   # RPM ("ignored by other packagers" — nfpm files.go), e com ele o .deb da

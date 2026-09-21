@@ -92,6 +92,36 @@ async fn fetch_latest_release(client: &reqwest::Client) -> Result<GitHubRelease>
         .context("failed to parse GitHub release response")
 }
 
+/// O binario instalado: o que `update` troca, `rollback` restaura e a varredura
+/// do #1030 exclui como "o proprio". E `std::env::current_exe()` RESOLVIDO ate
+/// o arquivo real — e esta e a unica chamada dele neste modulo (um teste varre
+/// o fonte).
+///
+/// #1328: os instaladores deixam `garra` como symlink para `garraia`. No
+/// Linux/Termux `current_exe()` le `/proc/self/exe`, que o kernel devolve ja
+/// resolvido, e no Windows o shim `garra.cmd` executa `garraia.exe` direto —
+/// nos dois o link nunca chega aqui. No macOS, porem, o valor vem de
+/// `_NSGetExecutablePath`, que a dyld(3) documenta como "may be a symbolic
+/// link and not the real file": sem resolver, `garra update` gravaria o
+/// binario novo POR CIMA DO LINK — `garra` vira arquivo real na versao nova,
+/// `garraia` fica na antiga, e o instalador, ao reencontrar um arquivo real,
+/// se recusa a tocar nele. O par que o link existe para manter unido se
+/// separa de vez. Canonizar aqui fecha isso em todo SO; no Windows o unico
+/// efeito colateral e cosmetico (`\\?\C:\...` nas mensagens), e todas as
+/// operacoes de arquivo abaixo aceitam essa forma.
+fn installed_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot determine current executable path")?;
+    resolve_exe_path(exe)
+}
+
+/// A metade pura de `installed_exe`: segue symlinks ate o arquivo real, para
+/// que `.old`, `.new` e o `rename` final caiam AO LADO DO BINARIO, nunca do
+/// alias. Separada para o teste montar `garra -> garraia` num tempdir.
+fn resolve_exe_path(exe: PathBuf) -> Result<PathBuf> {
+    fs::canonicalize(&exe)
+        .with_context(|| format!("cannot resolve current executable path {}", exe.display()))
+}
+
 /// Run `garraia update`. Returns Ok(true) if an update was applied.
 pub async fn run_update(yes: bool) -> Result<bool> {
     let client = reqwest::Client::new();
@@ -202,9 +232,8 @@ pub async fn run_update(yes: bool) -> Result<bool> {
     }
     println!(" ok");
 
-    // Locate current binary
-    let current_exe =
-        std::env::current_exe().context("cannot determine current executable path")?;
+    // Locate current binary -- resolved past the `garra` alias, see installed_exe.
+    let current_exe = installed_exe()?;
     let backup_path = current_exe.with_extension("old");
 
     // Write new binary to temp file
@@ -270,8 +299,7 @@ pub async fn run_update(yes: bool) -> Result<bool> {
 
 /// Run `garraia update --check-binaries`: so a varredura do PATH, sem rede.
 pub async fn run_check_binaries() -> Result<()> {
-    let current_exe =
-        std::env::current_exe().context("cannot determine current executable path")?;
+    let current_exe = installed_exe()?;
     match report_other_binaries(&current_exe, current_version()).await {
         Some(report) => println!("{report}"),
         None => println!(
@@ -285,8 +313,7 @@ pub async fn run_check_binaries() -> Result<()> {
 
 /// Run `garraia rollback`.
 pub fn run_rollback() -> Result<()> {
-    let current_exe =
-        std::env::current_exe().context("cannot determine current executable path")?;
+    let current_exe = installed_exe()?;
     let backup_path = current_exe.with_extension("old");
 
     if !backup_path.exists() {
@@ -506,5 +533,62 @@ mod update_notice_tests {
         assert_eq!(parse_release("0.4.3.1"), None);
         assert_eq!(parse_release("0.4.x"), None);
         assert_eq!(parse_release("0.5.0-rc1"), None);
+    }
+}
+
+#[cfg(test)]
+mod installed_exe_tests {
+    use super::resolve_exe_path;
+
+    /// #1328: o instalador deixa `garra -> garraia`. Rodando pelo alias, o
+    /// update tem de trocar `garraia`, e `.old`/`.new` tem de nascer ao lado
+    /// dele — nunca do link. (No Linux o kernel ja resolve `/proc/self/exe`;
+    /// no macOS `_NSGetExecutablePath` pode devolver o link, e e por isso que
+    /// a resolucao e explicita e fica testada aqui, onde a suite roda.)
+    #[cfg(unix)]
+    #[test]
+    fn alias_symlink_resolve_para_o_binario_real() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("garraia");
+        std::fs::write(&real, b"#!/bin/sh\n").unwrap();
+        let alias = dir.path().join("garra");
+        std::os::unix::fs::symlink("garraia", &alias).unwrap();
+
+        let resolved = resolve_exe_path(alias).unwrap();
+        assert_eq!(resolved, std::fs::canonicalize(&real).unwrap());
+        assert_eq!(
+            resolved.with_extension("old").file_name().unwrap(),
+            "garraia.old",
+            "o backup fica ao lado do binario, nao do alias"
+        );
+        assert_ne!(resolved.file_name().unwrap(), "garra");
+    }
+
+    /// Um caminho que nao resolve e erro com o caminho na mensagem — o update
+    /// para ANTES de gravar um `.new` em lugar nenhum.
+    #[test]
+    fn caminho_que_nao_resolve_e_erro_nomeado() {
+        let dir = tempfile::tempdir().unwrap();
+        let ghost = dir.path().join("garra-que-nao-existe");
+        let err = resolve_exe_path(ghost).unwrap_err();
+        assert!(err.to_string().contains("garra-que-nao-existe"), "{err}");
+    }
+
+    /// Varre o fonte: `std::env::current_exe()` so pode aparecer dentro de
+    /// `installed_exe`, que canoniza. Uma segunda chamada crua em qualquer
+    /// caminho de escrita reabre a deriva `garra`/`garraia` no macOS.
+    #[test]
+    fn current_exe_cru_so_dentro_de_installed_exe() {
+        let source = include_str!("update.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let calls = production
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains("std::env::current_exe()"))
+            .count();
+        assert_eq!(
+            calls, 1,
+            "update.rs deve chamar std::env::current_exe() exatamente uma vez, em installed_exe()"
+        );
     }
 }
