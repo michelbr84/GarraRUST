@@ -7,7 +7,10 @@
   veredito `Sem regressao nova nesta PR` ou `REGRESSAO NOVA nesta PR: <metrica>
   <delta>`, listando so o que piorou dentro da propria PR; a comparacao contra
   o baseline continua, rotulada `vs baseline (<data>) — ver #1254`, e cada
-  regressao dela diz se e nova ou pre-existente no merge-base. O
+  regressao dela diz se e nova, pre-existente no merge-base ou nao mensuravel
+  la (metrica nao coletada no base — a cobertura no CI, cujo `lcov.info` so
+  existe no checkout da PR); nesse terceiro caso o veredito e ⚠️, nao ✅,
+  porque o relatorio nao afirma pre-existencia do que nunca mediu. O
   `quality-ratchet.yml` coleta as metricas do `pull_request.base.sha` num
   worktree separado (`GARRAIA_REPO_ROOT=/tmp/base`, com os parsers da propria
   PR) e passa `--base` so em `pull_request`; em `push` para `main` o relatorio

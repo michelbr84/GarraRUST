@@ -72,7 +72,11 @@ O comparador confronta o `current` com **dois** pontos de referência:
 Sem `--base` (ex.: `push` em `main`) o relatório é byte-idêntico ao histórico.
 Com `--base`, a seção de regressões passa a se chamar
 `vs baseline (<frozenAt>) — ver #1254` e cada regressão diz se é
-`nova nesta PR` ou `pre-existente no merge-base`.
+`nova nesta PR`, `pre-existente no merge-base` ou `nao mensuravel no
+merge-base` (métrica não coletada no base — o caso da cobertura no CI, cujo
+`lcov.info` só existe no checkout da PR, nunca em `/tmp/base`). No terceiro
+caso o veredito desce de ✅ para ⚠️ `Sem regressao nova mensuravel`: o
+relatório não afirma que uma regressão é pré-existente quando nunca a mediu lá.
 
 Se `frozenAt` do baseline estiver a mais de **90 dias** de `collected_at` do
 `current`, entra a linha WARN `baseline_age_days`. O cálculo usa só os dois

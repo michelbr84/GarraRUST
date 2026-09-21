@@ -27,6 +27,15 @@ Per-PR signal (#1254):
                           still always 0 and enforce still looks at the
                           baseline only. Without `--base` the report is
                           byte-identical to the historical one.
+                          Each regression vs baseline is tagged with what the
+                          merge-base says about it: `nova nesta PR` (worse than
+                          the base), `pre-existente no merge-base` (same value
+                          at the base) or `nao mensuravel no merge-base` (the
+                          metric was not collected at the base — coverage in
+                          CI, where lcov.info only exists for the head
+                          checkout). The third state turns the verdict from ✅
+                          into ⚠️: the report never claims a regression is
+                          pre-existing when it was never measured there.
 
 Stale baseline (#1254, criterio 3):
     When `frozenAt` (baseline) is more than BASELINE_MAX_AGE_DAYS before
@@ -359,7 +368,13 @@ def is_number(value: Any) -> bool:
 
 
 def pr_deltas(rows_vs_base: list[dict]) -> dict[str, dict]:
-    """metric -> {delta, worsened, base, current} from the rows measured vs the merge-base.
+    """metric -> {delta, measurable, worsened, base, current} vs the merge-base rows.
+
+    `measurable` is whether both sides are numbers. When the metric was not
+    collected at the merge-base (coverage in CI: lcov.info is downloaded into
+    the head checkout only, never under /tmp/base) `delta` is None and NOTHING
+    can be said about what this PR did to it — neither "nova" nor
+    "pre-existente". `unmeasurable_regressions` turns that into a ⚠️.
 
     `worsened` reuses the row status (same rules as the baseline comparison)
     but additionally requires the value to have actually moved: an
@@ -371,14 +386,16 @@ def pr_deltas(rows_vs_base: list[dict]) -> dict[str, dict]:
     for row in rows_vs_base:
         base_value = row.get("baseline")
         current_value = row.get("current")
+        measurable = is_number(base_value) and is_number(current_value)
         delta: int | float | None = None
-        if is_number(base_value) and is_number(current_value):
+        if measurable:
             delta = current_value - base_value
             if isinstance(delta, float):
                 delta = round(delta, 2)
         worsened = row["status"] == "REGRESSION" and (delta is None or delta != 0)
         out[row["metric"]] = {
             "delta": delta,
+            "measurable": measurable,
             "worsened": worsened,
             "base": base_value,
             "current": current_value,
@@ -394,8 +411,42 @@ def fmt_delta(delta: int | float | None) -> str:
     return f"{delta:+}"
 
 
-def render_pr_verdict(pr: dict[str, dict], base: dict) -> list[str]:
+UNMEASURABLE_TAG = "nao mensuravel no merge-base: metrica nao coletada no base"
+
+
+def unmeasurable_regressions(rows: list[dict], pr: dict[str, dict]) -> list[str]:
+    """Metrics that regressed vs baseline but have no computable `Δ nesta PR`.
+
+    The CI shape for coverage: lcov.info is downloaded into the head checkout
+    only, so the merge-base worktree reports `not_collected_this_run` and the
+    row is a REGRESSION vs baseline with `n/a` vs base. It is neither `nova`
+    nor `pre-existente` — the report has to say it cannot tell. A metric the
+    fail-closed path already flagged `worsened` is not repeated here; a
+    regression with no `pr` entry at all counts as unmeasurable (fail-closed).
+    """
+    out: list[str] = []
+    for row in rows:
+        if row["status"] != "REGRESSION":
+            continue
+        info = pr.get(row["metric"])
+        if info is None or (not info["measurable"] and not info["worsened"]):
+            out.append(row["metric"])
+    return out
+
+
+def render_unmeasurable_note(unmeasurable: list[str]) -> str:
+    listed = ", ".join(f"`{m}`" for m in unmeasurable)
+    return (
+        f"{listed}: regrediu vs baseline mas nao pode ser comparada ao merge-base "
+        "(metrica nao coletada la) — pode ou nao ser desta PR."
+    )
+
+
+def render_pr_verdict(
+    pr: dict[str, dict], base: dict, unmeasurable: list[str] | None = None
+) -> list[str]:
     worsened = [(metric, info) for metric, info in pr.items() if info["worsened"]]
+    unmeasurable = unmeasurable or []
     base_sha = str(base.get("git_sha", "unknown"))[:12]
     out: list[str] = []
     if worsened:
@@ -404,8 +455,16 @@ def render_pr_verdict(pr: dict[str, dict], base: dict) -> list[str]:
             for metric, info in worsened
         ]
         out.append(f"> ## ❌ REGRESSAO NOVA nesta PR: {', '.join(parts)}")
+    elif unmeasurable:
+        # Nothing measurable got worse, but a regression vs baseline could not
+        # be attributed either way. Not a ✅: the reader must not read it as
+        # "pre-existing".
+        out.append("> ## ⚠️ Sem regressao nova mensuravel nesta PR")
     else:
         out.append("> ## ✅ Sem regressao nova nesta PR")
+    if unmeasurable:
+        out.append(">")
+        out.append(f"> ⚠️ {render_unmeasurable_note(unmeasurable)}")
     out.append(">")
     out.append(
         f"> `Δ nesta PR` = current − merge-base `{base_sha}` (metricas coletadas em "
@@ -426,6 +485,8 @@ def render_markdown(
 ) -> str:
     with_base = base is not None and pr is not None
     frozen_date = str(baseline.get("frozenAt", "unknown"))[:10]
+    new_in_pr = [m for m, info in (pr or {}).items() if info["worsened"]]
+    unmeasurable = unmeasurable_regressions(rows, pr) if with_base else []
 
     out: list[str] = []
     out.append("# Quality Ratchet Report")
@@ -433,7 +494,7 @@ def render_markdown(
     out.append(f"<!-- quality-ratchet-comment -->")
     out.append("")
     if with_base:
-        out.extend(render_pr_verdict(pr, base))
+        out.extend(render_pr_verdict(pr, base, unmeasurable))
         out.append("")
     out.append(f"**Mode:** `{mode}`")
     out.append(f"**Baseline frozen:** {baseline.get('frozenAt', 'unknown')}")
@@ -470,7 +531,6 @@ def render_markdown(
 
     regressions = [r for r in rows if r["status"] == "REGRESSION"]
     warns = [r for r in rows if r["status"] == "WARN"]
-    new_in_pr = [m for m, info in (pr or {}).items() if info["worsened"]]
 
     if regressions:
         if with_base:
@@ -488,7 +548,12 @@ def render_markdown(
             if with_base:
                 info = pr.get(r["metric"])
                 delta_cell = fmt_delta(info["delta"]) if info is not None else "n/a"
-                tag = "nova nesta PR" if r["metric"] in new_in_pr else "pre-existente no merge-base"
+                if r["metric"] in new_in_pr:
+                    tag = "nova nesta PR"
+                elif r["metric"] in unmeasurable:
+                    tag = UNMEASURABLE_TAG
+                else:
+                    tag = "pre-existente no merge-base"
                 out.append(f"- **Δ nesta PR:** {delta_cell} ({tag})")
             out.append(f"- **Fix:**      {r.get('fix', '(no fix hint)')}")
             out.append("")
@@ -522,6 +587,25 @@ def render_markdown(
             "Veja `.claude/commands/quality-babysit.md` (auto-loop até N=5) — "
             "em PR-1 o modo é manual-only."
         )
+        if unmeasurable:
+            out.append("")
+            out.append(f"⚠️ {render_unmeasurable_note(unmeasurable)}")
+    elif with_base and unmeasurable:
+        # `unmeasurable` is a subset of `regressions`, so there IS a regression
+        # vs baseline — just not one this report can attribute to the PR.
+        preexisting = [r["metric"] for r in regressions if r["metric"] not in unmeasurable]
+        line = (
+            "Nenhuma regressão nova **mensurável** nesta PR. "
+            f"{render_unmeasurable_note(unmeasurable)} Confira essa métrica no que "
+            "VOCÊ mudou antes de assumir que é pré-existente."
+        )
+        if preexisting:
+            listed = ", ".join(f"`{m}`" for m in preexisting)
+            line += (
+                f" As demais ({listed}) já existiam no merge-base e não são desta PR — "
+                f"re-baseline é decisão do dono, ver {STALE_BASELINE_ISSUE}."
+            )
+        out.append(line)
     elif with_base and regressions:
         out.append(
             "Nenhuma regressão nova nesta PR. As regressões listadas em "

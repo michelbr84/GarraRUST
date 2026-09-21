@@ -300,6 +300,87 @@ def test_base_metric_not_collected_at_base_yields_na_delta(tmp_path):
     assert "| `coverage_pct` | 50.0 | 50.0 | n/a | ✅ PASS |" in text
 
 
+def test_base_regression_not_collected_at_base_is_not_called_preexisting(tmp_path):
+    """The CI shape for coverage: lcov.info exists for the head, never at /tmp/base.
+
+    baseline 50.0, current 45.0 (REGRESSION vs baseline), merge-base not
+    collected. The report cannot know whether the drop happened in this PR, so
+    it must neither call it `pre-existente` nor open with the plain ✅ verdict.
+    """
+    cur = _current_equal_to_baseline()
+    cur["coverage"] = {"coverage_pct": 45.0, "status": "present"}
+    base = _base_equal_to_baseline()
+    base["coverage"] = {"coverage_pct": None, "status": "not_collected_this_run",
+                        "reason": "lcov_missing"}
+    b, c, r, p = _write(tmp_path, _baseline(), cur, base)
+
+    out = _run(b, c, "report-only", r, p)
+    assert out.returncode == 0
+    text = r.read_text(encoding="utf-8")
+    # What it must NOT claim.
+    assert "pre-existente no merge-base" not in text
+    assert "já existiam no merge-base" not in text
+    assert "> ## ✅ Sem regressao nova nesta PR" not in text
+    assert "REGRESSAO NOVA" not in text
+    # What it says instead: the third, honest state.
+    assert "> ## ⚠️ Sem regressao nova mensuravel nesta PR" in text
+    assert ("> ⚠️ `coverage_pct`: regrediu vs baseline mas nao pode ser comparada "
+            "ao merge-base (metrica nao coletada la) — pode ou nao ser desta PR.") in text
+    assert "| `coverage_pct` | 50.0 | 45.0 | n/a | ❌ REGRESSION |" in text
+    assert ("- **Δ nesta PR:** n/a (nao mensuravel no merge-base: metrica nao "
+            "coletada no base)") in text
+    assert "Nenhuma regressão nova **mensurável** nesta PR." in text
+    assert "Confira essa métrica no que VOCÊ mudou" in text
+
+    # Exit code still decided by the baseline only.
+    out_en = _run(b, c, "enforce", r, p)
+    assert out_en.returncode == 1
+
+
+def test_base_unmeasurable_and_preexisting_are_tagged_differently(tmp_path):
+    """Mixed: files_over_700 36 → 36 (measurable, pre-existing) + coverage not at base."""
+    cur = _current_equal_to_baseline()
+    cur["files_over_700"] = 36
+    cur["coverage"] = {"coverage_pct": 45.0, "status": "present"}
+    base = _base_equal_to_baseline()
+    base["files_over_700"] = 36
+    base["coverage"] = {"coverage_pct": None, "status": "not_collected_this_run",
+                        "reason": "lcov_missing"}
+    b, c, r, p = _write(tmp_path, _baseline(), cur, base)
+
+    _run(b, c, "report-only", r, p)
+    text = r.read_text(encoding="utf-8")
+    assert "> ## ⚠️ Sem regressao nova mensuravel nesta PR" in text
+    assert "> ## ✅ Sem regressao nova nesta PR" not in text
+    # Per-metric tags stay distinct.
+    assert "- **Δ nesta PR:** 0 (pre-existente no merge-base)" in text
+    assert ("- **Δ nesta PR:** n/a (nao mensuravel no merge-base: metrica nao "
+            "coletada no base)") in text
+    # Next step: "já existiam" is claimed ONLY for the measurable one.
+    assert "As demais (`files_over_700`) já existiam no merge-base" in text
+    assert "`coverage_pct`) já existiam" not in text
+
+
+def test_base_new_regression_plus_unmeasurable_keeps_red_verdict_and_notes(tmp_path):
+    """A real new regression is still the headline; the unmeasurable one is noted, not hidden."""
+    cur = _current_equal_to_baseline()
+    cur["files_over_700"] = 36
+    cur["coverage"] = {"coverage_pct": 45.0, "status": "present"}
+    base = _base_equal_to_baseline()
+    base["coverage"] = {"coverage_pct": None, "status": "not_collected_this_run",
+                        "reason": "lcov_missing"}
+    b, c, r, p = _write(tmp_path, _baseline(), cur, base)
+
+    _run(b, c, "report-only", r, p)
+    text = r.read_text(encoding="utf-8")
+    assert "> ## ❌ REGRESSAO NOVA nesta PR: files_over_700 +2 (34 → 36)" in text
+    assert "> ⚠️ `coverage_pct`: regrediu vs baseline mas nao pode ser comparada" in text
+    assert "Sem regressao nova" not in text
+    assert "pre-existente no merge-base" not in text
+    assert "Resolva primeiro o que piorou **nesta PR** (`files_over_700`)" in text
+    assert "⚠️ `coverage_pct`: regrediu vs baseline" in text
+
+
 # --- #1254 (B): baseline defasado --------------------------------------------
 
 
