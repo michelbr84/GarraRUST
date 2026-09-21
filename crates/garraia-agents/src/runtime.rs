@@ -134,6 +134,13 @@ fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> Too
 /// classificador: ela tem classe propria (`is_transport_error`).
 fn is_retryable_error(err: &Error) -> bool {
     let msg = err.to_string().to_lowercase();
+    // #1299: roteamento impossível (`No allowed providers are available`) é
+    // determinístico — a interseção modelo × provider.only não muda por
+    // repetição. A assinatura vale MAIS que o número de status: mesmo que o
+    // corpo um dia carregue um "status=503" no meio do texto, não há retry.
+    if msg.contains("no allowed providers are available") {
+        return false;
+    }
     msg.contains("429")
         || msg.contains("rate limit")
         || msg.contains("rate_limit")
@@ -2872,6 +2879,29 @@ impl Default for AgentRuntime {
 mod tests {
     use super::select_learned_facts;
     use crate::memory_extractor::StructuredFact;
+    use garraia_common::Error;
+
+    /// #1299: roteamento impossível não entra em retry/backoff — nem na
+    /// forma classificada, nem no erro cru, nem se o texto carregar um
+    /// número de status retryável no meio.
+    #[test]
+    fn erro_de_roteamento_openrouter_nao_e_retryable() {
+        let classificado = "agent error: O modelo 'deepseek/deepseek-v4-flash-20260731' \
+             não pode ser servido por nenhum provider permitido pela preferência \
+             `provider.only` em vigor — erro de configuração de roteamento \
+             (não-transitório; não será retriado). No allowed providers are available";
+        assert!(!is_retryable_error(&Error::Agent(classificado.into())));
+
+        let cru = "openai API error: status=404 Not Found, \
+                   body=No allowed providers are available for the selected model.";
+        assert!(!is_retryable_error(&Error::Agent(cru.into())));
+
+        let com_status_retryavel = "openai API error: status=503, \
+             body=No allowed providers are available for the selected model.";
+        assert!(!is_retryable_error(&Error::Agent(
+            com_status_retryavel.into()
+        )));
+    }
 
     fn fato(tipo: &str, key: &str, value: &str, confidence: f32) -> StructuredFact {
         StructuredFact {
