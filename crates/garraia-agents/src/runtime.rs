@@ -383,8 +383,14 @@ fn com_objetivo(system: Option<String>, goal: Option<&str>) -> Option<String> {
 #[derive(Debug)]
 enum DispatchOutcome {
     /// A tool rodou e nao pediu confirmacao: o `ToolResult` pronto para
-    /// entrar na lista do turno.
-    Result(ContentBlock),
+    /// entrar na lista do turno. `is_error` e o `ToolOutput::is_error` da
+    /// execucao — as quatro copias do loop normal o ignoram (uma tool que
+    /// falhou ainda entra na lista, e o modelo decide o que fazer), mas
+    /// `AgentRuntime::executar_tool_program` (#1226 S-B) precisa dele: sem
+    /// isto, um passo que falhou (tool desconhecida, timeout, erro da
+    /// propria tool) virava `"ok": true` no relatorio do programa, e os
+    /// passos seguintes rodavam sobre uma dependencia quebrada.
+    Result(ContentBlock, bool),
 
     /// O gate do modo negou (#988): o `ToolResult` de recusa, tambem pronto
     /// para a lista — o modelo le e segue sem a ferramenta. Nao e erro do
@@ -421,7 +427,11 @@ const MAX_PROGRAM_STEPS: usize = 16;
 /// S-B). Sem isto, um programa de `MAX_PROGRAM_STEPS` passos herdaria so o
 /// produto `passos * timeout_por_passo` como teto implicito — este valor e
 /// um limite explicito e independente, defesa em profundidade contra um
-/// perfil com `GARRA_TOOL_TIMEOUT_SECS` generoso.
+/// perfil com `GARRA_TOOL_TIMEOUT_SECS` generoso. Checado a cada passo
+/// (`inicio.elapsed()` em `executar_tool_program`), nao envolvendo o loop
+/// inteiro num `tokio::time::timeout` — achado de auditoria F-2: a versao
+/// que envolvia o future derrubava o relatorio dos passos ja executados
+/// junto com o estouro.
 ///
 /// 120s, e nao um numero maior: sob o orcamento padrao (10 chamadas por
 /// turno — #979, o modo nunca levanta este teto) um `tool_program` cabe no
@@ -435,19 +445,27 @@ const PROGRAM_AGGREGATE_TIMEOUT_SECS: u64 = 120;
 /// A definicao que o modelo ve na lista de `tools` do `LlmRequest` — o
 /// unico lugar onde `tool_program` se torna alcancavel. Nao vem de
 /// `self.tools` (nao e uma `Tool` registrada): `AgentRuntime::
-/// tool_definitions` a anexa incondicionalmente, e o MESMO filtro
-/// `portao.permite(&d.name)` que ja roda nos tres pontos de montagem do
-/// turno decide se o modelo chega a ve-la.
+/// tool_definitions` so a anexa quando ha ao menos uma tool real registrada
+/// (achado de revisao — anexar sempre fazia um runtime sem tool nenhuma
+/// deixar de bater no `tool_count == 0` de `apply_tools_model_override`), e
+/// o MESMO filtro `portao.permite(&d.name)` que ja roda nos tres pontos de
+/// montagem do turno decide se o modelo chega a ve-la.
 fn definicao_tool_program() -> ToolDefinition {
     ToolDefinition {
         name: TOOL_PROGRAM_NAME.to_string(),
         description: format!(
             "Executa uma sequencia de ate {MAX_PROGRAM_STEPS} chamadas de ferramenta em \
              um unico turno, sem voltar ao modelo entre passos. Cada passo passa pelo \
-             mesmo portao de seguranca do modo atual — um passo negado encerra o \
-             programa. Use `as` para nomear a saida de um passo quando ela for um numero \
-             inteiro, e `\"$nome\"` no `args` de um passo seguinte para reusa-la (so \
-             valores inteiros sao substituidos)."
+             mesmo portao de seguranca do modo atual. Um passo negado, um passo que \
+             falha, ou o orcamento do turno se esgotando no meio, encerram o programa \
+             ali — a resposta traz os passos ja executados e o indice de onde parou; \
+             se foi por orcamento, os passos restantes cabem num tool_program novo no \
+             proximo turno. Use `as` para nomear a saida de um passo quando ela for um \
+             numero inteiro, e `\"$nome\"` no `args` de um passo seguinte para reusa-la \
+             (so valores inteiros sao substituidos). Se um passo pedir confirmacao \
+             humana, o programa pausa ali: apos a aprovacao, reenvie so os passos a \
+             partir do indice pausado, nunca o programa inteiro (os anteriores ja \
+             rodaram)."
         ),
         input_schema: serde_json::json!({
             "type": "object",
@@ -513,10 +531,11 @@ fn interpretar_passos_do_programa(
                 .and_then(|t| t.as_str())
                 .ok_or_else(|| format!("passo {i}: falta `tool`"))?
                 .to_string();
-            let args = passo
-                .get("args")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
+            // Achado de revisao (sugestao): `args` ausente vira objeto
+            // vazio, nao `null` — a maioria das tools desserializa o
+            // input com `serde_json::from_value`, e `{}` casa com structs
+            // de campos todos-opcionais onde `null` so daria erro.
+            let args = passo.get("args").cloned().unwrap_or(serde_json::json!({}));
             let salvar_como = passo.get("as").and_then(|a| a.as_str()).map(str::to_string);
             Ok(PassoDoPrograma {
                 tool,
@@ -1071,8 +1090,14 @@ impl AgentRuntime {
             })
             .collect();
         // #1226 S-B: intrinseca, nunca registrada em `self.tools` — ver
-        // `definicao_tool_program`.
-        defs.push(definicao_tool_program());
+        // `definicao_tool_program`. So aparece quando ha ao menos uma tool
+        // real pra um programa executar (achado de revisao: anexar sempre
+        // fazia `tool_count` nunca ser 0, e um runtime sem tool nenhuma
+        // passava a acionar `apply_tools_model_override` do mesmo jeito que
+        // um runtime com tools de verdade).
+        if !defs.is_empty() {
+            defs.push(definicao_tool_program());
+        }
         defs
     }
 
@@ -1428,7 +1453,7 @@ impl AgentRuntime {
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
                         .await
                     {
-                        DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                        DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
                             tool_results.push(bloco);
                         }
                         DispatchOutcome::Paused {
@@ -1682,7 +1707,7 @@ impl AgentRuntime {
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
                         .await
                     {
-                        DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                        DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
                             tool_results.push(bloco);
                         }
                         DispatchOutcome::Paused {
@@ -2294,7 +2319,7 @@ impl AgentRuntime {
                             )
                             .await
                         {
-                            DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                            DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
                                 tool_results.push(bloco);
                             }
                             DispatchOutcome::Paused {
@@ -2445,7 +2470,8 @@ impl AgentRuntime {
                                 )
                                 .await
                             {
-                                DispatchOutcome::Result(bloco) | DispatchOutcome::Denied(bloco) => {
+                                DispatchOutcome::Result(bloco, _)
+                                | DispatchOutcome::Denied(bloco) => {
                                     tool_results.push(bloco);
                                 }
                                 DispatchOutcome::Paused {
@@ -2545,20 +2571,29 @@ impl AgentRuntime {
         }
 
         let output = if name == TOOL_PROGRAM_NAME {
-            // #1226 S-B: teto agregado, alem do timeout por passo que cada
-            // `dispatch_tool_call` recursivo ja aplica dentro de
-            // `executar_tool_program`.
-            match timeout(
-                std::time::Duration::from_secs(PROGRAM_AGGREGATE_TIMEOUT_SECS),
-                self.executar_tool_program(portao, budget, sink, context, id, input),
-            )
-            .await
+            match self
+                .executar_tool_program(portao, budget, sink, context, id, input)
+                .await
             {
-                Ok(Ok(saida)) => saida,
-                Ok(Err(mensagem)) => return DispatchOutcome::BudgetExceeded { mensagem },
-                Err(_elapsed) => ToolOutput::error(format!(
-                    "tool_program excedeu o teto agregado de {PROGRAM_AGGREGATE_TIMEOUT_SECS}s"
-                )),
+                Ok(saida) => saida,
+                Err(mensagem) => {
+                    // Achado de auditoria (F-4, #1226 S-B): sem isto o
+                    // `tool_started` de cima ficava sem o `tool_finished`
+                    // correspondente — a UI de streaming herdava um
+                    // spinner pendurado quando o orcamento estourava
+                    // dentro do programa.
+                    if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+                        sink.tool_finished(
+                            name,
+                            iniciado_em.elapsed(),
+                            false,
+                            "orcamento do turno esgotado".to_string(),
+                            String::new(),
+                        )
+                        .await;
+                    }
+                    return DispatchOutcome::BudgetExceeded { mensagem };
+                }
             }
         } else {
             match self.find_tool(name) {
@@ -2600,10 +2635,13 @@ impl AgentRuntime {
             };
         }
 
-        DispatchOutcome::Result(ContentBlock::ToolResult {
-            tool_use_id: id.to_string(),
-            content: output.content,
-        })
+        DispatchOutcome::Result(
+            ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: output.content,
+            },
+            output.is_error,
+        )
     }
 
     /// #1226 S-B: intrinseca de `tool_program`, interceptada dentro de
@@ -2618,14 +2656,18 @@ impl AgentRuntime {
     /// nem pula o orcamento por passo, nem a deteccao de loop, nem os
     /// eventos de tool.
     ///
-    /// `Err` sai daqui so quando o **orcamento** estoura (mesma classe de
-    /// falha que ja aborta o turno inteiro no loop principal: chamada
-    /// `dispatch_tool_call` que detectou loop, ou `pode_chamar_ferramenta`
-    /// que voltou falso no meio do programa). Qualquer outro desfecho —
-    /// passo negado pelo gate, passo que pede confirmacao humana, passo com
-    /// erro, programa mal formado, aninhamento de `tool_program` — volta
-    /// como `Ok(ToolOutput)`, para o modelo ler e seguir: nao e motivo para
-    /// abortar o turno.
+    /// `Err` sai daqui so quando o orcamento da **tarefa** (nao so do turno)
+    /// estoura, ou quando a deteccao de loop por assinatura dispara num
+    /// passo — as duas classes que ja abortam o turno inteiro no loop
+    /// principal. Estourar so o teto do **turno** (#979: `atingiu_limite_
+    /// turno`, com folga na tarefa) e diferente: o loop principal, nesse
+    /// caso, so reseta o contador e continua — abortar o turno aqui seria
+    /// o `tool_program` se sair PIOR do que as mesmas chamadas feitas uma a
+    /// uma pelo modelo (achado de revisao). Entao esse caso, como qualquer
+    /// outra parada no meio (passo negado, passo com erro, passo que pede
+    /// confirmacao, programa mal formado, aninhamento) volta `Ok(ToolOutput)`
+    /// com o relatorio parcial, para o modelo ler e continuar no proximo
+    /// turno — nao e motivo para abortar a conversa.
     async fn executar_tool_program(
         &self,
         portao: &crate::modes::ToolGate,
@@ -2648,18 +2690,63 @@ impl AgentRuntime {
 
         let mut vars: HashMap<String, i64> = HashMap::new();
         let mut executados = Vec::with_capacity(passos.len());
+        // Teto agregado (#1226 S-B, achado de auditoria F-2): checado a
+        // cada passo com o relogio do tokio (respeita `start_paused` nos
+        // testes), nao envolvendo o loop inteiro num `tokio::time::timeout`
+        // — a versao antiga derrubava o future no estouro e levava
+        // `executados` junto, informando so "excedeu o teto" sem dizer
+        // quantos passos ja tinham rodado (e ja tido efeito colateral).
+        let inicio = tokio::time::Instant::now();
 
         for (i, passo) in passos.iter().enumerate() {
             // Recusa de aninhamento: o passo nunca chega a um segundo
-            // `dispatch_tool_call` para `tool_program` (o guard e aqui, nao
-            // so no runtime da recursao).
+            // `dispatch_tool_call` para `tool_program` — este `if` e a
+            // UNICA defesa (nao ha um segundo guard dentro da recursao).
             if passo.tool == TOOL_PROGRAM_NAME {
-                return Ok(ToolOutput::error(format!(
-                    "passo {i}: tool_program nao pode chamar tool_program \
-                     (aninhamento recusado)"
-                )));
+                executados.push(serde_json::json!({
+                    "step": i, "tool": passo.tool, "ok": false,
+                    "erro": "aninhamento recusado",
+                }));
+                return Ok(ToolOutput::error(
+                    serde_json::json!({
+                        "steps": executados,
+                        "parou_no_passo": i,
+                        "motivo": "tool_program nao pode chamar tool_program \
+                                   (aninhamento recusado)",
+                    })
+                    .to_string(),
+                ));
+            }
+            if inicio.elapsed() >= std::time::Duration::from_secs(PROGRAM_AGGREGATE_TIMEOUT_SECS) {
+                return Ok(ToolOutput::error(
+                    serde_json::json!({
+                        "steps": executados,
+                        "parou_no_passo": i,
+                        "motivo": format!(
+                            "tool_program excedeu o teto agregado de \
+                             {PROGRAM_AGGREGATE_TIMEOUT_SECS}s"
+                        ),
+                    })
+                    .to_string(),
+                ));
             }
             if !budget.pode_chamar_ferramenta() {
+                // #979: o loop principal, no mesmo caso, so reseta o
+                // contador do turno e segue — nunca aborta so por causa
+                // disto quando a tarefa ainda tem folga. `tool_program` faz
+                // o analogo: para graciosamente, e quem chama (o loop
+                // principal, na proxima rodada) reseta e continua.
+                if budget.atingiu_limite_turno() {
+                    return Ok(ToolOutput::error(
+                        serde_json::json!({
+                            "steps": executados,
+                            "parou_no_passo": i,
+                            "motivo": "orcamento do turno esgotado (a tarefa ainda \
+                                       tem folga); continue no proximo turno",
+                        })
+                        .to_string(),
+                    ));
+                }
                 return Err(format!(
                     "execution budget exceeded no passo {i} do tool_program: {}",
                     budget.status()
@@ -2685,7 +2772,26 @@ impl AgentRuntime {
             .await;
 
             match desfecho {
-                DispatchOutcome::Result(ContentBlock::ToolResult { content, .. }) => {
+                DispatchOutcome::Result(ContentBlock::ToolResult { content, .. }, is_error) => {
+                    if is_error {
+                        // Achado de revisao (bloqueador 1): sem este ramo,
+                        // um passo que falhou (tool desconhecida, timeout,
+                        // erro da propria tool) virava "ok": true, e os
+                        // passos seguintes rodavam sobre uma dependencia
+                        // quebrada. Fail-fast, como um passo negado.
+                        executados.push(serde_json::json!({
+                            "step": i, "tool": passo.tool, "ok": false,
+                            "erro": content,
+                        }));
+                        return Ok(ToolOutput::error(
+                            serde_json::json!({
+                                "steps": executados,
+                                "parou_no_passo": i,
+                                "motivo": "a ferramenta do passo falhou",
+                            })
+                            .to_string(),
+                        ));
+                    }
                     if let Some(nome_var) = &passo.salvar_como
                         && let Ok(n) = content.trim().parse::<i64>()
                     {
@@ -2715,26 +2821,45 @@ impl AgentRuntime {
                     ));
                 }
                 DispatchOutcome::Paused { prompt, .. } => {
-                    return Ok(ToolOutput::confirmation_request(
-                        serde_json::json!({
-                            "steps": executados,
-                            "pausado_no_passo": i,
-                            "prompt": prompt,
-                        })
-                        .to_string(),
-                    ));
+                    // Achado de auditoria/revisao (F-1 / importante 1): o
+                    // `prompt` aqui vira a RESPOSTA QUE O HUMANO LE
+                    // (`dispatch_tool_call` devolve `output.content` como
+                    // `Paused::prompt`, e quem chama o turno manda esse
+                    // texto direto pro usuario). Envolver em JSON com a
+                    // saida crua dos passos anteriores colava conteudo de
+                    // ferramenta (arquivo, stdout) na MESMA mensagem em que
+                    // o humano decide aprovar. O prefixo curto (nao-JSON)
+                    // so localiza o passo e diz como retomar sem reexecutar
+                    // os passos ja feitos; o marcador `[CONFIRM_REQUIRED:…]`
+                    // que `ApprovalFingerprint::from_marker` procura
+                    // continua intacto dentro de `prompt` (busca e por
+                    // substring).
+                    let total = passos.len();
+                    return Ok(ToolOutput::confirmation_request(format!(
+                        "[tool_program pausado no passo {i} de {total}; ao \
+                         confirmar, reenvie so os passos a partir do {i}] {prompt}"
+                    )));
                 }
                 DispatchOutcome::BudgetExceeded { mensagem } => {
                     return Err(mensagem);
                 }
-                DispatchOutcome::Result(_) | DispatchOutcome::Denied(_) => {
+                DispatchOutcome::Result(_, _) | DispatchOutcome::Denied(_) => {
                     // `dispatch_tool_call` so constroi `ToolResult` para
                     // estas duas variantes; nunca deveria acontecer, mas o
                     // repo nao usa `unwrap`/`unreachable!` em codigo de
                     // producao — vira erro de passo, nao panico.
-                    return Ok(ToolOutput::error(format!(
-                        "passo {i}: resposta inesperada do despacho de ferramenta"
-                    )));
+                    executados.push(serde_json::json!({
+                        "step": i, "tool": passo.tool, "ok": false,
+                        "erro": "resposta inesperada do despacho de ferramenta",
+                    }));
+                    return Ok(ToolOutput::error(
+                        serde_json::json!({
+                            "steps": executados,
+                            "parou_no_passo": i,
+                            "motivo": "resposta inesperada do despacho de ferramenta",
+                        })
+                        .to_string(),
+                    ));
                 }
             }
         }
@@ -4713,12 +4838,23 @@ mod tests {
     #[test]
     fn tool_program_aparece_nas_definicoes_do_runtime() {
         let rt = AgentRuntime::new();
+        rt.register_tool(stub("bash"));
         let defs = rt.tool_definitions();
         let def = defs
             .iter()
             .find(|d| d.name == TOOL_PROGRAM_NAME)
-            .expect("tool_program tem de estar nas definicoes");
+            .expect("tool_program tem de estar nas definicoes, ao lado de uma tool real");
         assert_eq!(def.input_schema["required"], serde_json::json!(["steps"]));
+    }
+
+    /// Achado de revisao (F-5 / importante 7): runtime sem nenhuma tool
+    /// registrada nao ganha `tool_program` de graca — nao ha nada pra um
+    /// programa executar, e o `tool_count == 0` de
+    /// `apply_tools_model_override` precisa continuar valendo 0.
+    #[test]
+    fn tool_program_nao_aparece_sem_nenhuma_tool_registrada() {
+        let rt = AgentRuntime::new();
+        assert!(rt.tool_definitions().is_empty());
     }
 
     /// Criterio de aceite da #1226 S-B: um pedido multi-tool resolve num
@@ -4919,6 +5055,142 @@ mod tests {
         );
     }
 
+    /// Achado de revisao (bloqueador 1): um passo que FALHA (tool nao
+    /// registrada, timeout, erro da propria tool) tem de encerrar o
+    /// programa como `"ok": false`, nao seguir como se tivesse dado certo.
+    /// Sem o fix, o passo 1 (que depende do resultado do passo 0) rodava
+    /// sobre uma dependencia quebrada.
+    #[tokio::test]
+    async fn tool_program_para_no_passo_que_falha_e_nao_finge_sucesso() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+
+        let programa = serde_json::json!({
+            "steps": [
+                { "tool": "tool-nao-registrada", "args": {} },
+                { "tool": "eco_inteiro", "args": { "n": 5 } }
+            ]
+        });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        rt.process_message_with_agent_config(
+            "sessao-tp-erro",
+            "roda",
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &ExecContext::default(),
+        )
+        .await
+        .expect("turno");
+
+        let resultados = provider.resultados();
+        let corpo: serde_json::Value = serde_json::from_str(&resultados[0]).expect("json");
+        let passos = corpo["steps"].as_array().expect("steps");
+        assert_eq!(
+            passos.len(),
+            1,
+            "o passo 1 nao pode rodar depois de um passo 0 que falhou: {corpo}"
+        );
+        assert_eq!(passos[0]["ok"], false, "{corpo}");
+        assert_eq!(corpo["parou_no_passo"], 0);
+    }
+
+    /// A deteccao de loop por assinatura (JANELA_LOOP=3) vale DENTRO de um
+    /// `tool_program` como vale no loop normal: 3 passos identicos (mesma
+    /// tool, mesmos args) abortam a conversa inteira, nao viram resultado
+    /// parcial silencioso.
+    #[tokio::test]
+    async fn tool_program_aborta_a_conversa_em_loop_de_passos_identicos() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+
+        let passo = serde_json::json!({ "tool": "eco_inteiro", "args": { "n": 1 } });
+        let programa = serde_json::json!({ "steps": [passo.clone(), passo.clone(), passo] });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        let erro = rt
+            .process_message_with_agent_config(
+                "sessao-tp-loop",
+                "roda",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+            .expect_err("3 passos identicos e loop, mesmo dentro do programa");
+
+        assert!(erro.to_string().contains("tool loop detected"), "{erro}");
+    }
+
+    /// Criterio de aceite da issue (S-B, texto literal): "programa nao
+    /// alcanca tool que o loop normal negaria no mesmo `ExecContext`
+    /// (table-driven sobre todos os perfis)". Para cada modo nativo,
+    /// compara o portao DIRETO (`ToolGate::from_profile`, sem passar por
+    /// `tool_program`) contra o que o `tool_program` de fato conseguiu
+    /// executar — os dois tem de bater, nos dois sentidos: nem o programa
+    /// alcanca o que o modo negaria, nem o modo bloqueia o que ele
+    /// permitiria.
+    #[tokio::test]
+    async fn tool_program_bate_com_o_gate_direto_em_todos_os_perfis_nativos() {
+        for modo in crate::modes::AgentMode::all_modes() {
+            let rt = AgentRuntime::new();
+            let executou = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            rt.register_tool(Box::new(ToolQueMarca {
+                nome: "sonda-nunca-em-allowlist-nenhuma",
+                executou: Arc::clone(&executou),
+            }));
+
+            let perfil = crate::modes::ModeProfile::from_mode(modo);
+            let esperado = crate::modes::ToolGate::from_profile(&perfil)
+                .permite("sonda-nunca-em-allowlist-nenhuma");
+
+            let exec = ExecContext {
+                custom_profile: Some(perfil),
+                ..Default::default()
+            };
+            let programa = serde_json::json!({
+                "steps": [ { "tool": "sonda-nunca-em-allowlist-nenhuma", "args": {} } ]
+            });
+            let provider = Arc::new(RodaPrograma::novo(programa));
+            rt.register_provider(provider.clone());
+
+            rt.process_message_with_agent_config(
+                &format!("sessao-modo-{}", modo.as_str()),
+                "roda",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &exec,
+            )
+            .await
+            .expect("turno");
+
+            assert_eq!(
+                executou.load(std::sync::atomic::Ordering::SeqCst),
+                esperado,
+                "modo {modo:?}: tool_program executou={} mas o gate direto \
+                 permite={esperado}",
+                executou.load(std::sync::atomic::Ordering::SeqCst),
+            );
+        }
+    }
+
     /// Orcamento de passos do programa: mais que `MAX_PROGRAM_STEPS` e
     /// erro do `tool_program`, nao do turno.
     #[tokio::test]
@@ -4969,7 +5241,13 @@ mod tests {
         let provider = Arc::new(RodaPrograma::novo(programa));
         rt.register_provider(provider.clone());
 
-        let erro = rt
+        // Achado de revisao (bloqueador 2): estourar so o teto do TURNO
+        // (10, com a tarefa — 50 — ainda com folga) nao pode abortar a
+        // conversa. O loop principal, no mesmo caso, so reseta o contador;
+        // `tool_program` para graciosamente e devolve o relatorio parcial,
+        // e o loop principal segue no proximo turno (aqui, a segunda volta
+        // do provider, que encerra com texto).
+        let resposta = rt
             .process_message_with_agent_config(
                 "sessao-tp-6",
                 "roda",
@@ -4983,7 +5261,69 @@ mod tests {
                 &ExecContext::default(),
             )
             .await
-            .expect_err("16 passos + a chamada do proprio tool_program estouram o teto de 10");
+            .expect("orcamento de TURNO (com folga na tarefa) nao aborta a conversa");
+
+        assert_eq!(resposta, "concluido");
+        let resultados = provider.resultados();
+        let corpo: serde_json::Value = serde_json::from_str(&resultados[0]).expect("json");
+        let passos_executados = corpo["steps"].as_array().expect("steps");
+        assert_eq!(
+            passos_executados.len(),
+            9,
+            "1 (tool_program) + 9 passos = 10 = max_per_turn; o 10o passo para: {corpo}"
+        );
+        assert!(
+            corpo["motivo"]
+                .as_str()
+                .is_some_and(|m| m.contains("orcamento do turno")),
+            "{corpo}"
+        );
+    }
+
+    /// O outro lado do achado acima: quando e a TAREFA que esgota (nao so
+    /// o turno), o `tool_program` aborta a conversa — mesma classe de erro
+    /// que o loop principal ja usa nesse caso. Perfil customizado com
+    /// `max_tool_loops = 5` faz `max_per_turn == max_per_task == 5`
+    /// (`com_limites_do_modo`), entao os dois esgotam juntos e
+    /// `atingiu_limite_turno` (que exige folga na tarefa) fica falso.
+    #[tokio::test]
+    async fn tool_program_aborta_a_conversa_quando_a_tarefa_esgota() {
+        let rt = AgentRuntime::new();
+        rt.register_tool(Box::new(EcoInteiroTool));
+
+        let mut perfil = crate::modes::ModeProfile::from_mode(crate::modes::AgentMode::Code);
+        perfil.limits = crate::modes::ModeLimits {
+            max_tool_loops: 5,
+            timeout_secs: 30,
+            max_turns: 10,
+        };
+        let exec = ExecContext {
+            custom_profile: Some(perfil),
+            ..Default::default()
+        };
+
+        let passos: Vec<_> = (0..6)
+            .map(|i| serde_json::json!({ "tool": "eco_inteiro", "args": { "n": i } }))
+            .collect();
+        let programa = serde_json::json!({ "steps": passos });
+        let provider = Arc::new(RodaPrograma::novo(programa));
+        rt.register_provider(provider.clone());
+
+        let erro = rt
+            .process_message_with_agent_config(
+                "sessao-tp-6b",
+                "roda",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &exec,
+            )
+            .await
+            .expect_err("tarefa (nao so turno) esgotada tem de abortar a conversa");
 
         let msg = erro.to_string();
         assert!(msg.contains("execution budget exceeded"), "{msg}");
