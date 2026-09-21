@@ -6,6 +6,356 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-21
+
+Release que faz o WhatsApp pessoal funcionar numa instalacao nova e da ao
+operador de pod um jeito explicito de entregar poder total ao agente. Na v0.4.3
+o canal `whatsapp_linked` recusava subir sempre que existisse qualquer
+ferramenta MCP registrada — e toda instalacao nova ganha o servidor
+`filesystem` no primeiro boot —, entao "instalar + `garra whatsapp link`" nunca
+chegava a responder. A recusa, obsoleta desde a #1288, saiu (#1327): o piso
+`search` do canal continua negando ferramenta MCP por nome a cada turno, contra
+o inventario vivo. Os instaladores passam a criar o alias `garra` ao lado de
+`garraia` (#1328), e toda instrucao do fluxo do WhatsApp nomeia o executavel que
+esta rodando, nunca um binario que nao existe na maquina.
+
+O centro da release e o ADR 0024: perfis de execucao `standard` e
+`isolated-pod`, com a regra "poder total dentro do pod isolado; nenhum acesso
+implicito fora do pod". `standard` e o de sempre e continua o default.
+`isolated-pod` so liga por escolha do operador — `execution.profile` no
+`config.yml` ou `GARRAIA_EXECUTION_PROFILE`, nunca por deteccao de container —,
+avisa no boot o que libera e o que NAO isola, e aparece no `config check`, no
+`/api/diagnostics`, no `/api/settings/effective` e no `garraia whatsapp status`.
+Dentro dele o dono declarado do WhatsApp (`channels.whatsapp_linked.owners`),
+em conversa 1:1, ganha o piso `code` — `bash`, `file_write`, subagentes e toda
+ferramenta MCP —, enquanto contato so pareado, admitido que nao e dono e
+qualquer grupo continuam no piso de `standard`. O MCP `filesystem`
+autoprovisionado deixa de nascer em `$HOME` nos dois perfis: vai para
+`agent.file_roots` ou `<data_dir>/workspace` em `standard` e para
+`execution.pod_root` em `isolated-pod`, e o diagnostico aponta a raiz antiga de
+instalacoes anteriores. O gate de comando arriscado do `bash`, o jail das file
+tools e o sandbox continuam ligados nos dois: o perfil libera ferramentas, nao
+desliga protecoes. A implementacao passou por auditoria de seguranca R4 e por
+revisao adversarial em quatro lentes, com todos os achados corrigidos antes do
+merge.
+
+Tambem entra o `tool_program` intrinseco do `AgentRuntime` (#1226 S-B): o modelo
+manda um programa de ate 16 passos e o runtime executa sem voltar ao LLM entre
+eles, com cada passo pelo mesmo despacho, o mesmo `ToolGate`, o mesmo orcamento
+e a mesma pausa de confirmacao do loop normal. A revisao pos-merge fechou onze
+achados antes da release — entre eles, variavel `$nome` nao resolvida agora
+falha o passo em vez de chegar a ferramenta como texto, a pausa para
+confirmacao devolve ao modelo o que os passos anteriores ja fizeram, e um
+programa de um passo so nao escapa mais do detector de loop. Na mesma rodada a
+aprovacao de comando (GAR-187) passou a valer so para o pedido que pausou o
+turno (#1339): saida comum de tool, recusa do gate e resposta do provider nao
+carregam mais marcador de confirmacao aprovavel. O `config check`
+passa a julgar o bind pelo que o `garra start` de fato usa (env, senao o
+default do clap `127.0.0.1:3888`) e a apontar `gateway.host`/`gateway.port`
+do arquivo como chaves que o start nao le (#1261, cujas decisoes de
+comportamento seguem com o dono). Na infraestrutura, o Security Gate deixou de
+cair no timeout depois de os testes passarem (#1332), a imagem Docker volta a
+construir com o bridge do WhatsApp, o AppImage aarch64 da release volta a ser
+empacotado e o aviso de atualizacao deixou de anunciar versao mais velha.
+
+### Added
+- **`tool_program` intrinseco no `AgentRuntime`, com gate por passo (#1226 S-B).**
+  O modelo pode encadear ate 16 chamadas de ferramenta num unico turno, sem
+  voltar para o LLM entre passos — mas nao e um caminho paralelo: cada passo
+  resolve pelo mesmo `find_tool` e passa pelo mesmo `dispatch_tool_call` do
+  loop normal (recursivo, ainda um unico ponto de consulta ao `ToolGate` no
+  fonte), entao um programa nunca alcanca ferramenta que o modo negaria fora
+  dele, nem pula o orcamento por passo, a deteccao de loop ou os eventos de
+  tool — validado table-driven contra os nove perfis nativos. Passo negado
+  pelo gate, passo que falha, ou o orcamento do turno se esgotando no meio
+  (com a tarefa ainda com folga — o mesmo caso em que o loop normal so
+  reseta o contador) encerram o programa ali, com os passos ja executados
+  no relatorio; so a tarefa esgotando de verdade, ou um loop de passos
+  identicos, abortam a conversa. `tool_program` chamando `tool_program` e
+  recusado (sem aninhamento). `"$var"` encadeia a saida de um passo para o
+  proximo, mas so quando ela e um numero inteiro — substituicao vira
+  `Number`, nunca texto bruto, ao contrario do prototipo `ToolRegistry::
+  execute_program` (`garraia-tools`, `#[deprecated]` desde a #1226 S-E) que
+  reusava qualquer string na integra. Um passo que pede confirmacao humana
+  pausa o programa e devolve so o prompt daquele passo ao usuario (nunca a
+  saida dos passos anteriores, que ficaria colada ao pedido de aprovacao).
+  Teto agregado de 120s, checado a cada passo (sobrevive ao estouro com o
+  relatorio parcial intacto), alem do timeout por passo, contra um perfil
+  com `GARRA_TOOL_TIMEOUT_SECS` generoso.
+- **Perfil de execucao e raiz do MCP `filesystem` visiveis no console (ADR
+  0024, #1329).** `GET /api/diagnostics` ganha duas linhas: `execution.profile`
+  (`ok` em `standard` com a fonte; `warning` permanente em `isolated-pod`
+  dizendo a fonte, o piso do WhatsApp pessoal, a CONTAGEM de `owners` — nunca
+  as identidades — e a raiz do MCP, com o passo de reversao pelos dois
+  caminhos) e `mcp.filesystem_root` (`skipped` sem servidor `filesystem`;
+  em `standard`, `warning` nomeando a primeira raiz persistida fora de
+  `agent.file_roots` / `<data_dir>/workspace`, comparada canonicamente
+  quando os diretorios existem; `ok` em `isolated-pod`, onde o pod e a
+  fronteira). `GET /api/settings/{schema,effective}` ganha as linhas
+  read-only `security.execution_profile` (`standard` | `isolated-pod`, com a
+  origem real `default` | `file` | `env`) e `security.execution_pod_root`.
+- **Perfil de execucao `standard` | `isolated-pod` (ADR 0024, #1329) — secao
+  `execution` e politica de boot.** Nova secao `execution` em `config.yml`
+  (`profile: standard | isolated-pod`, `pod_root` opcional) e a env
+  `GARRAIA_EXECUTION_PROFILE`, que vence o arquivo e e resolvida uma vez pelo
+  `ConfigLoader` com a origem registrada (`default` | `file` | `env`). Secao
+  ausente = `standard` = comportamento de hoje. Valor invalido (arquivo ou
+  env) e erro de carga: o gateway nao sobe, e `garra config check` reporta
+  `Error` em `execution.profile` (exit 2) em vez de cair em `standard` em
+  silencio. A env nunca e promovida ao arquivo por um `save`. O `config check`
+  mostra perfil e origem no sumario e avisa quando `execution.pod_root` esta
+  em `standard` ou e relativo, e quando `channels.whatsapp_linked.owners`
+  esta preenchido fora de `isolated-pod` (so a contagem, nunca as
+  identidades). O gateway ganha `bootstrap::execution` — politica pura com a
+  raiz do MCP `filesystem` por perfil (`agent.file_roots` ou
+  `<data_dir>/workspace` em `standard`; `execution.pod_root` ou o mesmo
+  workspace em `isolated-pod`; **nunca** `$HOME`) e o anuncio de boot
+  (`info!` em `standard`; `warn!` unico em `isolated-pod` dizendo o que foi
+  liberado, o que o perfil NAO isola e como reverter). Nenhum codigo le
+  marcador de container para decidir o perfil; dois testes varrem o fonte e
+  proibem esses literais.
+- **Perfil de execucao isolated-pod: poder total dentro do pod, nada implicito
+  fora (#1329, ADR 0024).** O Garra passa a ter dois perfis de execucao.
+  `standard` (default, secao ausente) e a postura de hoje para maquina
+  compartilhada. `isolated-pod` e a declaracao explicita do operador de que o
+  processo roda num pod/container descartavel — e o pod, nao o Garra, e a
+  fronteira de seguranca. Liga-se por `execution.profile: isolated-pod` no
+  `config.yml` ou pela env `GARRAIA_EXECUTION_PROFILE`, que vence o arquivo e
+  nunca e gravada nele; valor invalido recusa o boot em vez de cair em
+  `standard` em silencio. Nenhum codigo le `/.dockerenv`, cgroup ou env de
+  runtime de container para decidir o perfil — testes varrem o fonte.
+  No WhatsApp pessoal, a nova chave `channels.whatsapp_linked.owners`
+  (mesma normalizacao de `allow`) declara o dono: em `isolated-pod`, e so em
+  conversa 1:1, ele recebe o piso `code` (`bash`, `file_write`, subagentes e
+  toda tool MCP) em vez de `search`; grupo, contato so pareado e identidade
+  desconhecida continuam no piso `standard`, e `owners` fora de
+  `isolated-pod` e apenas um `Warning` no `config check`. O MCP `filesystem`
+  autoprovisionado deixa de nascer em `$HOME` em qualquer perfil: em
+  `standard` usa `agent.file_roots` ou `<data_dir>/workspace`; em
+  `isolated-pod` usa `execution.pod_root` ou o mesmo workspace; um `mcp.json`
+  anterior nunca e reescrito, e o diagnostico avisa quando ele ainda aponta
+  para fora das raizes declaradas. O jail das file tools nativas, o gate de comando
+  arriscado do `bash` e `agent.sandbox` continuam ligados: o perfil libera
+  ferramentas, nao desliga protecoes. Observabilidade: `WARN` unico no boot
+  em `isolated-pod` (o que foi liberado, o que o perfil NAO isola, como
+  reverter); checks `execution.profile` e `mcp.filesystem_root` em
+  `/api/diagnostics`; linha read-only `security.execution_profile` em
+  `/api/settings/effective`; perfil, piso do dono e contagem de donos em
+  `garra whatsapp status`; perfil e origem no sumario do `config check`;
+  cada turno do WhatsApp loga `phone_last4` + perfil + piso. A instrucao
+  pos-link do `garra whatsapp` usa o nome do executavel em execucao
+  (`garraia` ou `garra`). Guia: `docs/execution-profiles.md`.
+
+### Changed
+- **A doc do sandbox por tool nao insinua mais que OpenShell/Crabbox estao
+  chegando (#1225).** O comentario de modulo de `garraia-agents::sandbox`
+  remetia a fatia S6 a issue de tracking como assunto em aberto, o que lia
+  como entrega pendente. O texto agora nomeia os tres backends que existem
+  de fato (`Docker`, `Podman`, `Ssh`) e deixa claro que fechar OpenShell e
+  Crabbox como won't-do e a recomendacao registrada em #1225 — a decisao
+  final continua sendo do dono. Tambem corrige a descricao de
+  `backend: None`: com sandbox obrigatorio, o comando e recusado
+  fail-closed, nao roda no host como um quarto modo implicito. Mudanca so
+  de documentacao, sem efeito em comportamento.
+
+### Fixed
+- **`tool_program` fecha os achados da revisao pos-merge (#1226).** O
+  envelope continua contando no orcamento, mas saiu da janela de deteccao de
+  loop: repetir o mesmo passo em programas de um passo so, volta apos volta,
+  alternava a janela entre `tool_program` e o passo e o corte de 3 chamadas
+  identicas nunca vinha (sobrava so o teto da tarefa, ~25 repeticoes). Um
+  `"$nome"` sem valor agora falha o passo antes do despacho, com
+  `parou_no_passo` e o nome da variavel, em vez de chegar a ferramenta como o
+  texto `"$nome"` (que o `bash` expandiria como variavel de ambiente); e um
+  passo com `as` cuja saida nao e inteiro falha ali, em vez de sair
+  `"ok": true` sem criar a variavel. Na pausa por confirmacao humana, o
+  `ToolResult` do modelo passa a levar o relatorio parcial (passos ja
+  executados, `parou_no_passo`, `vars`) depois do pedido, e o texto do humano
+  continua so com o pedido do passo; o primeiro marcador do conteudo e sempre
+  o do pedido. Um passo negado pelo gate fecha o proprio `tool_started` com um
+  `tool_finished` (antes ficava aberto dentro do par do programa). Testes
+  novos cobrem o modo `ask` nativo com a lista `denied`, quais perfis nativos
+  expoem `tool_program`, a retomada apos aprovacao e o equilibrio dos eventos
+  no streaming; `docs/src/modes.md` e o threat model documentam a superficie.
+  Na revisao de seguranca do proprio conserto, dois ajustes: um programa
+  que para antes de despachar qualquer passo (mal formado, mais de 16
+  passos, `$var` indefinida no passo 0) volta a cair no detector de loop na
+  terceira repeticao, e o relatorio parcial de uma pausa neutraliza qualquer
+  `[CONFIRM_REQUIRED:` vindo de saida de passo, entao a aprovacao nao
+  depende mais de o marcador verdadeiro vir primeiro.
+- **`config check` resolve o bind como o `garra start`: env, senao o default do clap —
+  nunca o arquivo (#1261).** A #1325 fazia o achado de exposicao cair em
+  `gateway.host`/`gateway.port` do arquivo quando `HOST`/`PORT` nao estavam na env, mas
+  o `start` nunca le essas chaves: o arg do clap sempre traz um valor (flag, env ou
+  `127.0.0.1:3888`) e o `main.rs` escreve por cima da config carregada. Resultado: um
+  `0.0.0.0` no arquivo ainda virava "binds all interfaces" sobre um valor morto, e o
+  texto com env dizia que ela "sobrescreve o arquivo" — falso. Agora o veredito de
+  exposicao usa env > default do clap (constantes espelhadas de `main.rs`, presas por
+  um teste que le aquele fonte), julga qualquer IP fora do loopback como o gateway faz
+  (nao so `0.0.0.0`/`::`) e avisa a parte quando um hostname nao da para julgar; as
+  chaves do arquivo que diferem do bind efetivo viram um aviso proprio, "not read by
+  `garra start`", em vez de fingir exposicao; e a ressalva do achado passa a dizer que
+  `garra restart` ignora `HOST`/`PORT`. Sem mudanca de comportamento de boot.
+  `docs/auth-config.md` 5.1 descreve o estado pos-#1325 e aponta a #1261 (reaberta)
+  para as decisoes R5 que seguem em aberto.
+- **`config check` deixa de opinar sobre um bind que nunca sobe (#1261).** O achado de
+  exposicao lia so `gateway.host` do arquivo, mas `garra start` sobrescreve host e porta
+  com `--host`/`--port` do clap, que por sua vez leem as envs `HOST`/`PORT`. Resultado:
+  um arquivo em `127.0.0.1` com `HOST=0.0.0.0` passava calado — falsa garantia para quem
+  consultou o diagnostico antes de expor a porta — e um `0.0.0.0` no arquivo que a env
+  cobria virava aviso sobre valor morto. Agora o check avalia o bind efetivo que ele
+  consegue ver (env vence arquivo), nomeia a origem de cada metade e admite no proprio
+  texto o que nao ve: a flag de um `garra start` futuro, que roda noutro processo. Sem
+  mudanca de comportamento de boot — so do que o relatorio afirma.
+- O aviso `Update available` deixou de disparar para binario MAIS NOVO que a
+  ultima release publicada (`v0.4.3 -> v0.4.2`): a comparacao passa a ser
+  numerica em `X.Y.Z` e so anuncia quando a release e maior; forma
+  inesperada (pre-release, sufixo) cai na desigualdade de antes, para o aviso
+  nunca sumir por formato (#1320).
+- **Instaladores passam a deixar o alias `garra` ao lado de `garraia` (#1328).**
+  A CLI imprime "rode `garra start`", a wiki manda `garra init` e o README usa
+  `garra` no quick start — o nome do `[[bin]]` do Cargo — mas o `install.sh`
+  instalava so `garraia` (o asset da release, congelado pela regra 15) e o
+  `install.ps1` so `garraia.exe`; num pod novo nenhum `garra` existia. Agora
+  o `install.sh` cria `garra` como symlink RELATIVO para `garraia` no mesmo
+  diretorio (Termux incluso, e pelo mesmo ramo `sudo` do binario), o
+  `install.ps1` grava o shim `garra.cmd` (`"%~dp0garraia.exe" %*`, sobrevive a
+  mover a pasta) e os pacotes `.deb`/`.rpm` trazem `/usr/bin/garra ->
+  garraia`. Link e shim, nunca copia: o `garra update` continua trocando um
+  unico binario — e, para isso valer tambem no macOS, o `update.rs` passa a
+  canonizar `current_exe()` antes de gravar (`_NSGetExecutablePath` pode
+  devolver o proprio link; no Linux `/proc/self/exe` ja vem resolvido e no
+  Windows o shim executa `garraia.exe` direto). `rollback` e
+  `--check-binaries` seguem o mesmo caminho. Em macOS, um binario v0.4.3 ou
+  anterior ainda grava por cima do link: rode `garraia update` uma vez para
+  cruzar essa versao. Um `garra` pre-existente que nao seja do instalador (arquivo
+  real, `garra.exe`, ou `garra.cmd` de outro conteudo) e preservado com aviso;
+  symlink obsoleto e reapontado; falha ao criar o alias e aviso, nunca aborta a
+  instalacao. Testes espelhados em `tests/install_sh/garra_alias.sh` e
+  `tests/install_ps1/garra_alias.ps1`.
+- **A CLI nomeia o executavel que esta na maquina, nao o alias (#1329).** A
+  instrucao pos-link do `whatsapp` mandava rodar `garra start` como literal, e
+  quem so tem o `garraia` (Docker, `cargo install`, `install.sh` sem o alias)
+  recebia um comando inexistente. Novo helper `binario::nome()` resolve
+  `garra`/`garraia` a partir do proprio executavel (qualquer outro nome cai em
+  `garraia`), e `whatsapp`, `desktop`, `logs` e o `about` passam a usa-lo. Um
+  teste varre `whatsapp.rs` e proibe o literal voltar.
+- **`garraia whatsapp status` mostra o perfil de execucao (ADR 0024, #1329).**
+  Depois do bloco "Vinculado", uma linha bilingue diz o perfil (`standard` |
+  `isolated-pod`), a origem (`default` | `file` | `env`), o piso que um dono
+  recebe em conversa 1:1 (`default_mode` explicito, senao `search` em
+  `standard` e `code` em `isolated-pod`) e a contagem de `owners` — nunca as
+  identidades. Sem config carregavel a linha nao aparece e o exit code nao muda.
+- **Security Gate deixa de cair no timeout depois dos testes passarem (#1332).**
+  O check obrigatorio `Security Gate (BOLA & Tenant Isolation)` terminava
+  `cancelled` com os testes ja verdes: o orcamento de 30 min era do JOB, e o
+  `Post Cache` de `target/` (~8 min, porque a entrada era evictada do cache do
+  repositorio antes de cada run e o restore sempre dava miss) cruzava o teto.
+  Tres runs so em 2026-09-21, cada um custando um re-run manual. Agora o
+  orcamento que o gate exige (25 min) fica no step dos testes, o teto do job
+  (45) so guarda contra infra travada, e o job cacheia so o registry do cargo:
+  o build continua frio, como ja era, e o save cai para segundos. Nenhum teste
+  pulado, sem `continue-on-error`.
+- Imagem Docker: o estagio builder passa a copiar `bridge/` — o
+  `garraia-channels` embute o bridge WhatsApp com `include_str!` e o `cargo
+  build` dentro da imagem falhava com "couldn't read bridge/whatsapp/..."
+  (foi o que derrubou o Deploy do tag v0.4.3). Um teste em `garraia-channels`
+  prende a regra: todo diretorio fora de `crates/` que um `include_str!` de
+  producao alcanca tem de estar no Dockerfile. O `deploy.yml` disparado a mao
+  com `tag=vX.Y.Z` passa a produzir tambem as tags `X.Y.Z` e `X.Y`, e ganha o
+  input `latest` para mover a tag `latest` so quando pedido.
+- `release.yml`: o passo do AppImage aarch64 fazia `cd "$RUNNER_TEMP"` e
+  depois usava caminhos relativos ao workspace (`artifacts/`, `packaging/`,
+  `stage/`), entao so passava quando o binario aarch64 NAO existia; na v0.4.3
+  — primeira release com o binario ARM64 presente — o `cp` falhou e o job
+  `package-linux` caiu antes de publicar os `.deb`/`.rpm`/AppImage x86_64.
+  O runtime agora baixa por caminho absoluto, sem mudar de diretorio.
+
+### Security
+- **WhatsApp pessoal volta a subir em instalacao padrao: a recusa por servidor
+  MCP saiu (#1327).** O canal `whatsapp_linked` recusava subir — e recusava
+  cada turno — enquanto houvesse qualquer ferramenta de servidor MCP
+  registrada. A recusa compensava uma isencao do `ToolGate` que a #1288
+  fechou; como toda instalacao nova ganha o servidor `filesystem` no primeiro
+  boot, "instalacao padrao + `garra whatsapp link`" nunca subia. O piso que
+  fica e o `ToolGate` do perfil `search`, que nega ferramenta MCP por nome
+  (`filesystem__write_file` como `bash`) em cada turno, contra o inventario
+  vivo — um teste monta o portao exatamente como o turno monta e prova isso
+  antes da remocao. `channels.whatsapp_linked.default_mode` passa a aceitar
+  so modo nativo e diferente de `auto`: `ToolGate::for_mode_name` trata nome
+  desconhecido como portao ABERTO, entao um typo (ou o nome de um modo
+  customizado, que nunca e resolvido para o piso do canal) daria `bash` e
+  toda ferramenta MCP a quem manda mensagem — e a recusa por MCP mascarava
+  isso em instalacao padrao. Agora o canal nao sobe (`ModoPadraoInvalido`,
+  com a acao e o valor no log) e, por defesa em profundidade, o piso do turno
+  cai em `search` quando o nome nao resolve. Na subida, o gateway avisa
+  (`WARN`, uma vez) quando o perfil padrao do canal LIBERA algum servidor MCP
+  — o que, com `default_mode` restrito a nativos, so acontece num perfil sem
+  whitelist (`ask`, `code`) — dizendo o motivo, porque isso e escolha
+  declarada do operador, nao erro. Qualquer motivo de nao subir alem de
+  "desligado" sai em `WARN` com a acao (`rode garra whatsapp link`, `instale
+  Node.js 20+`, `use search ou remova a chave`), e o boot deixa de avisar
+  `unknown channel type: whatsapp_linked` para a secao que a propria CLI
+  escreve. `AgentRuntime::has_gate_bypassing_tool` foi
+  removida (sem chamador). Docs: `docs/whatsapp.md` ("Ferramentas e
+  servidores MCP") e `docs/security/threat-model.md` §5.14.
+- **O MCP `filesystem` autoprovisionado deixa de nascer com `$HOME` como raiz
+  (ADR 0024, #1329).** `McpPersistenceService::provision_filesystem_if_missing`
+  nao le mais `HOME`/`USERPROFILE` nem cai em `.`: as raizes chegam de fora,
+  de `bootstrap::raizes_do_mcp_filesystem` — `agent.file_roots` ou
+  `<data_dir>/workspace` em `standard`, `execution.pod_root` ou o mesmo
+  workspace em `isolated-pod` — e TODAS entram como argumentos finais de
+  `@modelcontextprotocol/server-filesystem`. So o `<data_dir>/workspace`
+  default e criado; raiz declarada (`agent.file_roots`, `execution.pod_root`)
+  tem de existir, senao o provisionamento nao acontece. Era o contorno do
+  jail: as file tools nativas ficavam presas em `agent.file_roots` enquanto
+  `filesystem__read_file` lia a home inteira.
+  Fail-closed: lista vazia, raiz declarada inexistente ou workspace que nao
+  da para criar e "nao provisiona" com aviso, nunca fallback. O opt-out
+  `GARRAIA_DISABLE_MCP_AUTOPROVISION` e a regra "arquivo existente nunca e
+  tocado" seguem iguais — instalacoes anteriores continuam com o `mcp.json`
+  que ja tem, e e o `/api/diagnostics`
+  que agora aponta a raiz legada fora das raizes declaradas (lendo o
+  `mcp.json` e a secao `mcp:` do `config.yml`, que vence).
+- **WhatsApp pessoal: o dono declarado ganha o perfil completo dentro de um
+  pod isolado, e mais ninguem (ADR 0024, #1329).** Nova chave
+  `channels.whatsapp_linked.owners` (mesma normalizacao do `allow`; quem esta
+  la e admitido como se estivesse no `allow`). O perfil do turno e uma funcao
+  pura avaliada depois da admissao e antes do `ExecContext`: `completo` so
+  quando `execution.profile = isolated-pod` **e** a conversa e 1:1 **e** o
+  remetente esta em `owners` — e ai o piso e `code` (sem whitelist:
+  filesystem, `bash`, servidores MCP, subagentes), salvo `default_mode`
+  declarado. Todo o resto — remetente admitido que nao e dono, dono falando
+  por grupo, contato so pareado por codigo, `owners` num processo em
+  `standard` — fica exatamente onde esta hoje (`search`). `default_mode`
+  passa a ser opcional na struct: ausente, o default depende do perfil
+  (`search` em `standard`, `code` para o dono em `isolated-pod`), e a
+  validacao na subida (`ModoPadraoInvalido`) continua identica nos dois
+  perfis. Cada turno loga `phone_last4` + `perfil` (`completo` | `padrao`)
+  + o modo do piso, nunca JID, telefone ou texto. O aviso de drift de MCP na
+  subida passa a falar por perfil: em `isolated-pod` com dono ele diz que a
+  liberacao e decisao de perfil, nao erro; sem dono, avisa que o perfil nao
+  muda nada neste canal. Provado com a fiacao real (ponte falsa, sink,
+  runtime, dispatch de ferramenta): o dono no pod invoca
+  `filesystem__write_file` e a ferramenta executa; tirar o dono de `owners`,
+  voltar o perfil para `standard` ou mandar do grupo deixa a ferramenta sem
+  rodar e a resposta ainda sai. Uma varredura de fonte garante que a recusa
+  antiga por servidor MCP nao volta e que o canal nao le marcador de
+  container para decidir nada.
+- **Aprovacao de comando so vale para o pedido que pausou o turno (#1339).**
+  A deteccao do "ok" do humano (GAR-187) aceitava o marcador
+  `[CONFIRM_REQUIRED:...]` de qualquer resultado de tool recente, e dentro de
+  uma mesma mensagem lia os resultados do mais antigo para o mais novo.
+  Uma tool comum que devolvesse a copia de um marcador verdadeiro (pagina
+  lida pelo `web_fetch`, arquivo, resultado MCP) podia vencer o pedido de
+  verdade, e o "ok" cobria o comando errado. Marcador forjado nunca
+  autorizou nada (a impressao digital e HMAC com chave por processo), mas a
+  copia de um verdadeiro autorizaria. Agora toda saida que nao e pedido de
+  confirmacao tem o prefixo do marcador neutralizado no ponto unico de
+  despacho, antes de entrar no historico — inclusive a recusa do gate, que
+  repete o nome da tool como o modelo mandou —, e dentro de uma mensagem o
+  resultado mais novo ganha. Testes provados por mutacao.
+
 ## [0.4.3] - 2026-09-21
 
 Release em que o Garra entrou no WhatsApp pessoal. Ate aqui o canal WhatsApp
