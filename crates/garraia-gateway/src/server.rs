@@ -205,7 +205,13 @@ impl GatewayServer {
         // happen only inside AppState::new (below), i.e. after build_mcp_tools
         // had already read an absent file — so the very first boot always
         // came up with zero MCP tools.
-        crate::mcp::McpPersistenceService::with_default_path().provision_filesystem_if_missing();
+        //
+        // ADR 0024 (#1329): as raizes vem da politica de execucao (nunca
+        // `$HOME`) — `agent.file_roots` / `<data_dir>/workspace` em
+        // `standard`, `execution.pod_root` em `isolated-pod`.
+        crate::mcp::McpPersistenceService::with_default_path().provision_filesystem_if_missing(
+            &crate::bootstrap::raizes_do_mcp_filesystem(&self.config),
+        );
 
         // Connect MCP servers, then let the runtime pull their tools from the
         // manager. Issue #924: the boot path used to register the flat

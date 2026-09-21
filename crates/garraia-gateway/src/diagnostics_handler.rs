@@ -418,6 +418,173 @@ fn whatsapp_linked_check(
     }
 }
 
+// ─── ADR 0024 (#1329): perfil de execucao e raiz do MCP filesystem ──────────
+
+/// O modo que vale para todo remetente admitido no `whatsapp_linked` quando a
+/// secao nao declara `default_mode`. Espelha `bootstrap::whatsapp_linked::
+/// DEFAULT_MODE` (`search`), que e privado daquele modulo; aqui e so o que o
+/// diagnostico ECOA, nao o que decide.
+const WHATSAPP_PISO_PADRAO: &str = "search";
+
+/// O que o `execution.profile` reporta sobre o canal `whatsapp_linked`: o
+/// piso (`default_mode`, ou o default) e a CONTAGEM de `owners`. Nunca as
+/// identidades — a rota e auth-free. Puro.
+fn piso_e_donos_do_whatsapp(config: &garraia_config::AppConfig) -> (String, usize) {
+    let Some(secao) = config
+        .channels
+        .get(crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY)
+        .filter(|s| s.channel_type == crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY)
+    else {
+        return (WHATSAPP_PISO_PADRAO.to_string(), 0);
+    };
+    let piso = secao
+        .settings
+        .get("default_mode")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(WHATSAPP_PISO_PADRAO)
+        .to_string();
+    let donos = secao
+        .settings
+        .get("owners")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    (piso, donos)
+}
+
+fn lista_de_caminhos(raizes: &[std::path::PathBuf]) -> String {
+    if raizes.is_empty() {
+        return "(nenhuma)".to_string();
+    }
+    raizes
+        .iter()
+        .map(|r| r.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A linha `execution.profile`. `standard` e `ok`; `isolated-pod` e SEMPRE
+/// `warning`, porque o risco numero um do ADR 0024 e o operador ligar o
+/// perfil fora de um pod — e o console e o lugar onde ele ve isso sem ler o
+/// log de boot. O detalhe diz o que foi liberado (piso do WhatsApp, quantos
+/// donos, quais raizes) e o passo diz como reverter. Puro.
+fn execution_profile_check(
+    politica: &crate::bootstrap::PoliticaDeExecucao,
+    piso_whatsapp: &str,
+    donos: usize,
+    raizes_mcp: &[std::path::PathBuf],
+) -> DiagnosticCheck {
+    let (status, detail, next_step) = if politica.is_isolated_pod() {
+        (
+            CheckStatus::Warning,
+            format!(
+                "isolated-pod (fonte: {}; piso do WhatsApp pessoal: {piso_whatsapp}; \
+                 owners com perfil completo: {donos}; raiz do MCP filesystem: {})",
+                politica.origem,
+                lista_de_caminhos(raizes_mcp)
+            ),
+            Some(
+                "confirme que este processo roda num pod/container isolado; para reverter: \
+                 execution.profile = standard (ou remova GARRAIA_EXECUTION_PROFILE)"
+                    .to_string(),
+            ),
+        )
+    } else {
+        (
+            CheckStatus::Ok,
+            format!("standard (seguro por padrao; fonte: {})", politica.origem),
+            None,
+        )
+    };
+    DiagnosticCheck {
+        id: "execution.profile",
+        label: "Perfil de execucao",
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// `raiz` esta dentro de `permitida`? Canonico quando os dois existem (um
+/// symlink `~/ws -> /` nao pode passar por lexico); lexico como fallback,
+/// porque um diretorio ainda nao criado nao canonicaliza e isso nao pode
+/// virar "fora do jail" nem "dentro" por acidente — compara-se o que ha.
+fn dentro_de(raiz: &std::path::Path, permitida: &std::path::Path) -> bool {
+    match (raiz.canonicalize(), permitida.canonicalize()) {
+        (Ok(a), Ok(b)) => a.starts_with(&b),
+        _ => raiz.starts_with(permitida),
+    }
+}
+
+const MCP_ROOT_NEXT_STEP: &str = "edite mcp.json (ou GARRAIA_DISABLE_MCP_AUTOPROVISION=1 + remova \
+                                  o servidor) para apontar o filesystem para uma raiz dentro do \
+                                  jail; ou declare execution.profile = isolated-pod se este \
+                                  processo roda num pod";
+
+/// A linha `mcp.filesystem_root`: a raiz que o servidor `filesystem`
+/// persistido declara, contra o jail do perfil. Sem entrada => `skipped`.
+/// Em `isolated-pod` qualquer raiz pod-local e `ok` por declaracao (o pod e
+/// a fronteira). Em `standard` toda raiz precisa estar dentro de uma das
+/// `permitidas` (`agent.file_roots` ou `<data_dir>/workspace`); a primeira
+/// fora vira `warning` nomeando-a — e a entrada legada com `$HOME` que
+/// instalacoes anteriores a #1329 ainda carregam. Puro.
+fn mcp_filesystem_root_check(
+    perfil_isolado: bool,
+    persistidas: Option<&[std::path::PathBuf]>,
+    permitidas: &[std::path::PathBuf],
+) -> DiagnosticCheck {
+    let (status, detail, next_step) = match persistidas {
+        None => (
+            CheckStatus::Skipped,
+            "nenhum servidor `filesystem` em mcp.json".to_string(),
+            None,
+        ),
+        Some(raizes) if perfil_isolado => (
+            CheckStatus::Ok,
+            format!(
+                "{} (isolated-pod: o pod e a fronteira)",
+                lista_de_caminhos(raizes)
+            ),
+            None,
+        ),
+        Some([]) => (
+            CheckStatus::Warning,
+            "o servidor `filesystem` nao declara nenhuma raiz".to_string(),
+            Some(MCP_ROOT_NEXT_STEP.to_string()),
+        ),
+        Some(raizes) => {
+            let fora = raizes
+                .iter()
+                .find(|r| !permitidas.iter().any(|p| dentro_de(r, p)));
+            match fora {
+                Some(raiz) => (
+                    CheckStatus::Warning,
+                    format!(
+                        "{} esta fora do jail ({})",
+                        raiz.display(),
+                        lista_de_caminhos(permitidas)
+                    ),
+                    Some(MCP_ROOT_NEXT_STEP.to_string()),
+                ),
+                None => (
+                    CheckStatus::Ok,
+                    format!("{} (dentro do jail)", lista_de_caminhos(raizes)),
+                    None,
+                ),
+            }
+        }
+    };
+    DiagnosticCheck {
+        id: "mcp.filesystem_root",
+        label: "MCP filesystem (raiz)",
+        status,
+        detail,
+        next_step,
+    }
+}
+
 /// GET /api/diagnostics — full diagnostic report.
 pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<DiagnosticsReport> {
     let mut checks: Vec<DiagnosticCheck> = Vec::new();
@@ -470,6 +637,28 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
             Some("Run `garraia init` to scaffold ~/.garraia.".to_string())
         },
     });
+
+    // 3b. ADR 0024 (#1329): perfil de execucao e raiz do MCP `filesystem`.
+    // A politica e pura (config ja carregada); as raizes persistidas vem do
+    // registry em memoria, que e o mcp.json carregado no boot mais o que a
+    // admin API gravou desde entao — sem I/O de disco por request.
+    let politica = crate::bootstrap::politica_de_execucao(&state.config);
+    let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&state.config);
+    let (piso_whatsapp, donos) = piso_e_donos_do_whatsapp(&state.config);
+    checks.push(execution_profile_check(
+        &politica,
+        &piso_whatsapp,
+        donos,
+        &raizes_mcp,
+    ));
+    let persistidas = crate::mcp::persistence::raizes_do_filesystem_persistido(
+        &state.mcp_registry.config_snapshot().await,
+    );
+    checks.push(mcp_filesystem_root_check(
+        politica.is_isolated_pod(),
+        persistidas.as_deref(),
+        &raizes_mcp,
+    ));
 
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
@@ -853,6 +1042,266 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ─── ADR 0024 (#1329): perfil de execucao + raiz do MCP filesystem ────
+
+    use crate::bootstrap::PoliticaDeExecucao;
+    use garraia_config::{ExecutionProfile, ProfileSource};
+    use std::path::PathBuf;
+
+    fn politica(perfil: ExecutionProfile, origem: ProfileSource) -> PoliticaDeExecucao {
+        PoliticaDeExecucao {
+            perfil,
+            origem,
+            pod_root: None,
+        }
+    }
+
+    /// `standard` e `ok`, cita a fonte e nao tem o que consertar.
+    #[test]
+    fn perfil_standard_e_ok_com_a_fonte() {
+        for origem in [
+            ProfileSource::Default,
+            ProfileSource::File,
+            ProfileSource::Env,
+        ] {
+            let c = execution_profile_check(
+                &politica(ExecutionProfile::Standard, origem),
+                "search",
+                0,
+                &[PathBuf::from("/tmp/ws")],
+            );
+            assert_eq!(c.id, "execution.profile");
+            assert!(matches!(c.status, CheckStatus::Ok), "{origem}");
+            assert!(c.detail.contains("standard"), "{}", c.detail);
+            assert!(c.detail.contains(origem.as_str()), "{}", c.detail);
+            assert!(c.next_step.is_none());
+        }
+    }
+
+    /// `isolated-pod` e SEMPRE `warning`: o risco do ADR e o perfil ligado
+    /// fora de um pod. O detalhe diz o que foi liberado (piso, contagem de
+    /// donos, raiz) e o passo diz como reverter pelos dois caminhos.
+    #[test]
+    fn perfil_isolated_pod_e_warning_com_o_que_foi_liberado_e_como_reverter() {
+        let c = execution_profile_check(
+            &politica(ExecutionProfile::IsolatedPod, ProfileSource::Env),
+            "code",
+            2,
+            &[PathBuf::from("/workspace")],
+        );
+        assert!(matches!(c.status, CheckStatus::Warning));
+        for esperado in ["isolated-pod", "env", "code", "2", "/workspace"] {
+            assert!(c.detail.contains(esperado), "{esperado:?} em {}", c.detail);
+        }
+        let passo = c.next_step.expect("isolated-pod precisa de passo");
+        assert!(passo.contains("execution.profile = standard"), "{passo}");
+        assert!(passo.contains("GARRAIA_EXECUTION_PROFILE"), "{passo}");
+        assert!(passo.contains("pod"), "{passo}");
+    }
+
+    /// Piso e contagem de donos vem da secao `channels.whatsapp_linked`; as
+    /// identidades NUNCA saem — a rota e auth-free.
+    #[test]
+    fn piso_e_donos_saem_da_secao_sem_as_identidades() {
+        let mut config = garraia_config::AppConfig::default();
+        assert_eq!(
+            piso_e_donos_do_whatsapp(&config),
+            ("search".to_string(), 0),
+            "sem secao: piso default e zero donos"
+        );
+
+        config.channels.insert(
+            "whatsapp_linked".into(),
+            garraia_config::ChannelConfig {
+                channel_type: "whatsapp_linked".into(),
+                enabled: Some(true),
+                settings: std::collections::HashMap::from([
+                    ("default_mode".to_string(), serde_json::json!(" code ")),
+                    (
+                        "owners".to_string(),
+                        serde_json::json!(["5511999998888", "abc@lid"]),
+                    ),
+                ]),
+            },
+        );
+        let (piso, donos) = piso_e_donos_do_whatsapp(&config);
+        assert_eq!(piso, "code", "default_mode e aparado");
+        assert_eq!(donos, 2);
+
+        let c = execution_profile_check(
+            &politica(ExecutionProfile::IsolatedPod, ProfileSource::File),
+            &piso,
+            donos,
+            &[],
+        );
+        let json = serde_json::to_string(&c).expect("serializa");
+        for proibido in ["5511999998888", "abc@lid", "@lid"] {
+            assert!(!json.contains(proibido), "vazou {proibido:?}: {json}");
+        }
+
+        // Secao com `type` de outro canal nao e este canal.
+        if let Some(ch) = config.channels.get_mut("whatsapp_linked") {
+            ch.channel_type = "whatsapp".into();
+        }
+        assert_eq!(piso_e_donos_do_whatsapp(&config), ("search".to_string(), 0));
+    }
+
+    /// Sem entrada `filesystem` nao ha o que comparar: `skipped`.
+    #[test]
+    fn mcp_root_sem_entrada_e_skipped() {
+        let c = mcp_filesystem_root_check(false, None, &[PathBuf::from("/tmp/ws")]);
+        assert_eq!(c.id, "mcp.filesystem_root");
+        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert!(c.next_step.is_none());
+    }
+
+    /// O caso que a #1329 apontou: instalacao anterior com `$HOME` como raiz
+    /// em `standard` — fora do jail, `warning`, nomeando a raiz e os dois
+    /// caminhos de saida.
+    #[test]
+    fn mcp_root_fora_do_jail_em_standard_e_warning_nomeando_a_raiz() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jail = dir.path().join("workspace");
+        std::fs::create_dir_all(&jail).expect("mkdir");
+        let home = dir.path().join("home-legada");
+        std::fs::create_dir_all(&home).expect("mkdir");
+
+        let c = mcp_filesystem_root_check(
+            false,
+            Some(std::slice::from_ref(&home)),
+            std::slice::from_ref(&jail),
+        );
+        assert!(matches!(c.status, CheckStatus::Warning));
+        assert!(
+            c.detail.contains(&home.display().to_string()),
+            "o detalhe nomeia a raiz ofensora: {}",
+            c.detail
+        );
+        let passo = c.next_step.expect("warning precisa de passo");
+        assert!(passo.contains("mcp.json"), "{passo}");
+        assert!(
+            passo.contains("GARRAIA_DISABLE_MCP_AUTOPROVISION=1"),
+            "{passo}"
+        );
+        assert!(passo.contains("isolated-pod"), "{passo}");
+
+        // Uma raiz dentro e outra fora: a fora e a que aparece.
+        let dentro = jail.join("sub");
+        std::fs::create_dir_all(&dentro).expect("mkdir");
+        let c = mcp_filesystem_root_check(false, Some(&[dentro, home.clone()]), &[jail]);
+        assert!(matches!(c.status, CheckStatus::Warning));
+        assert!(
+            c.detail.contains(&home.display().to_string()),
+            "{}",
+            c.detail
+        );
+    }
+
+    /// Raiz dentro do jail (igual ou subdiretorio, em qualquer das
+    /// permitidas) e `ok` — inclusive quando o diretorio ainda nao existe,
+    /// que e o fallback lexico.
+    #[test]
+    fn mcp_root_dentro_do_jail_em_standard_e_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).expect("mkdir");
+        let outra = PathBuf::from("/srv/nao-existe/projeto");
+
+        for raiz in [ws.clone(), ws.join("sub"), outra.join("fundo")] {
+            let c = mcp_filesystem_root_check(
+                false,
+                Some(std::slice::from_ref(&raiz)),
+                &[ws.clone(), outra.clone()],
+            );
+            assert!(
+                matches!(c.status, CheckStatus::Ok),
+                "{} deveria estar dentro: {}",
+                raiz.display(),
+                c.detail
+            );
+            assert!(c.next_step.is_none());
+        }
+    }
+
+    /// Symlink que sai do jail nao passa por comparacao lexica: canonico
+    /// quando os dois lados existem.
+    #[cfg(unix)]
+    #[test]
+    fn mcp_root_symlink_para_fora_do_jail_e_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jail = dir.path().join("workspace");
+        std::fs::create_dir_all(&jail).expect("mkdir");
+        let fora = dir.path().join("fora");
+        std::fs::create_dir_all(&fora).expect("mkdir");
+        let link = jail.join("atalho");
+        std::os::unix::fs::symlink(&fora, &link).expect("symlink");
+
+        let c = mcp_filesystem_root_check(false, Some(&[link]), &[jail]);
+        assert!(
+            matches!(c.status, CheckStatus::Warning),
+            "symlink para fora nao e 'dentro': {}",
+            c.detail
+        );
+    }
+
+    /// Em `isolated-pod` o pod e a fronteira: qualquer raiz e `ok`, e uma
+    /// entrada sem raiz em `standard` e `warning`.
+    #[test]
+    fn mcp_root_em_isolated_pod_e_ok_e_entrada_vazia_em_standard_e_warning() {
+        let c = mcp_filesystem_root_check(
+            true,
+            Some(&[PathBuf::from("/")]),
+            &[PathBuf::from("/workspace")],
+        );
+        assert!(matches!(c.status, CheckStatus::Ok), "{}", c.detail);
+        assert!(c.detail.contains("isolated-pod"), "{}", c.detail);
+
+        let c = mcp_filesystem_root_check(false, Some(&[]), &[PathBuf::from("/workspace")]);
+        assert!(matches!(c.status, CheckStatus::Warning), "{}", c.detail);
+        assert!(c.next_step.is_some());
+    }
+
+    /// **A fiacao.** As duas linhas precisam estar no relatorio de verdade;
+    /// sem este teste apagar os `checks.push` deixaria os puros verdes.
+    #[tokio::test]
+    async fn o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
+            config,
+            std::sync::Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let perfil = report
+            .checks
+            .iter()
+            .find(|c| c.id == "execution.profile")
+            .expect("linha `execution.profile`");
+        assert!(matches!(perfil.status, CheckStatus::Ok), "{:?}", perfil);
+        assert!(perfil.detail.contains("standard"), "{}", perfil.detail);
+
+        let raiz = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp.filesystem_root")
+            .expect("linha `mcp.filesystem_root`");
+        // O que a linha diz depende do mcp.json da maquina (ausente,
+        // provisionado agora dentro do jail, ou legado com `$HOME`); o
+        // contrato aqui e a presenca e o status nunca ser `error`.
+        assert!(
+            !matches!(raiz.status, CheckStatus::Error),
+            "raiz fora do jail e aviso, nao erro: {raiz:?}"
+        );
     }
 
     /// #1098: com o modo voz desligado nao ha servidor para alcancar, e isso
