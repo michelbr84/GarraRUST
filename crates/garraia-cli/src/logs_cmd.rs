@@ -73,14 +73,15 @@ pub fn caminho_do_log(dir: &Path) -> PathBuf {
 /// issue pede "helpful message", e a mensagem util diz **onde** ele estaria e
 /// **o que** o cria.
 fn ausente(caminho: &Path, out: &mut impl Write) -> Result<()> {
+    let bin = crate::binario::nome();
     writeln!(out, "Nenhum log ainda em {}", caminho.display())?;
     writeln!(
         out,
-        "O arquivo aparece quando algo roda: `garra start` e o caso comum."
+        "O arquivo aparece quando algo roda: `{bin} start` e o caso comum."
     )?;
     writeln!(
         out,
-        "Para mais detalhe no arquivo: RUST_LOG=debug garra start"
+        "Para mais detalhe no arquivo: RUST_LOG=debug {bin} start"
     )?;
     Ok(())
 }
@@ -212,7 +213,10 @@ mod tests {
 
         assert!(s.contains("Nenhum log ainda"), "saiu: {s:?}");
         assert!(s.contains("garraia.log"), "diz onde estaria: {s:?}");
-        assert!(s.contains("garra start"), "diz o que o cria: {s:?}");
+        // O nome vem do executavel em execucao (#1329): no harness e o
+        // canonico `garraia`, num alias instalado seria `garra`.
+        let start = format!("{} start", crate::binario::nome());
+        assert!(s.contains(&start), "diz o que o cria: {s:?}");
     }
 
     #[test]

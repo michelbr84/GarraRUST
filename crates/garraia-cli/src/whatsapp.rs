@@ -114,6 +114,17 @@ fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
     }
 }
 
+/// [`t`] para frases que citam um comando: `{bin}` vira o nome do executavel
+/// em execucao (`garra` ou `garraia`, ver [`crate::binario`]).
+///
+/// Um literal `garra start` numa instalacao que so tem `garraia` — Docker,
+/// `cargo install`, `install.sh` sem o alias — manda o usuario rodar um
+/// comando que nao existe. A instrucao tem de nomear o binario que esta na
+/// maquina, e um teste varre este arquivo atras do literal antigo.
+fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
+    t(lang, pt, en).replace("{bin}", &crate::binario::nome())
+}
+
 /// Cabecalho do comando.
 pub const HEADER: &str = "WhatsApp — GarraIA";
 
@@ -214,6 +225,7 @@ fn print_header(ctx: &Context) {
 /// Texto impresso quando nao ha terminal. Publico para o teste de smoke
 /// afirmar a frase exata sem duplicar o literal.
 pub fn non_interactive_hint(lang: Lang) -> String {
+    let bin = crate::binario::nome();
     let mut out = String::new();
     out.push_str(t(
         lang,
@@ -221,17 +233,17 @@ pub fn non_interactive_hint(lang: Lang) -> String {
         "Non-interactive environment detected. Pick one of the two options and run the command:\n\n",
     ));
     out.push_str(&format!(
-        "  1) {}\n     garra whatsapp link\n\n",
+        "  1) {}\n     {bin} whatsapp link\n\n",
         t(lang, MENU_1_PT, MENU_1_EN)
     ));
     out.push_str(&format!(
-        "  2) {}\n     garra whatsapp cloud\n\n",
+        "  2) {}\n     {bin} whatsapp cloud\n\n",
         t(lang, MENU_2_PT, MENU_2_EN)
     ));
-    out.push_str(t(
+    out.push_str(&tb(
         lang,
-        "Também existem: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
-        "Also available: garra whatsapp status | garra whatsapp restore | garra whatsapp logout",
+        "Também existem: {bin} whatsapp status | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Also available: {bin} whatsapp status | {bin} whatsapp restore | {bin} whatsapp logout",
     ));
     out
 }
@@ -267,8 +279,9 @@ pub fn needs_a_terminal(lang: Lang, subcomando: &str) -> String {
          so a pipe, a cron job or an `ssh` without a TTY cannot carry the \
          process through.\n\n",
     ));
+    let bin = crate::binario::nome();
     out.push_str(&format!(
-        "  {}\n    ssh -t <usuario>@<maquina> garra whatsapp {subcomando}\n",
+        "  {}\n    ssh -t <usuario>@<maquina> {bin} whatsapp {subcomando}\n",
         t(
             lang,
             "Por ssh, peça um TTY com -t:",
@@ -354,6 +367,7 @@ fn status(ctx: &Context) -> i32 {
         t(ctx.lang, "Sessão:", "Session:"),
         store.blob_path().display()
     );
+    print_execution_profile(ctx);
     print_archive_warning(ctx, &store);
 
     match ctx.key() {
@@ -385,10 +399,10 @@ fn status(ctx: &Context) -> i32 {
                     );
                     println!(
                         "{}",
-                        t(
+                        tb(
                             ctx.lang,
-                            "Rode `garra whatsapp` para vincular de novo.",
-                            "Run `garra whatsapp` to link again."
+                            "Rode `{bin} whatsapp` para vincular de novo.",
+                            "Run `{bin} whatsapp` to link again."
                         )
                     );
                     return EX_UNAVAILABLE;
@@ -434,6 +448,61 @@ fn status(ctx: &Context) -> i32 {
         )
     );
     0
+}
+
+/// Uma linha com o perfil de execucao (ADR 0024, #1329), quando a config abre.
+///
+/// `status` funciona sem config (e antes do `garra init`), entao a linha e
+/// um extra: se o loader nao existe ou o arquivo nao carrega, nada e impresso
+/// e o exit code segue o do vinculo. O que a linha diz e o que o operador
+/// precisa conferir antes de confiar poder total a um dono: o perfil, de onde
+/// ele veio, o piso que um dono recebe em conversa 1:1 e quantos donos ha —
+/// a contagem, nunca as identidades.
+fn print_execution_profile(ctx: &Context) {
+    let Some(config) = ctx.loader.as_ref().and_then(|l| l.load().ok()) else {
+        return;
+    };
+    println!("{}", execution_profile_line(ctx.lang, &config));
+}
+
+/// O modo que um dono recebe em conversa 1:1 quando `default_mode` nao esta
+/// explicito: `code` em `isolated-pod`, `search` em `standard` (tabela "O que
+/// cada perfil significa" do ADR 0024).
+fn owner_floor(config: &garraia_config::AppConfig) -> String {
+    let explicito = config
+        .channels
+        .get(CONFIG_KEY)
+        .and_then(|ch| ch.settings.get("default_mode"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty());
+    match explicito {
+        Some(m) => m.to_string(),
+        None if config.execution.perfil().is_isolated_pod() => "code".to_string(),
+        None => "search".to_string(),
+    }
+}
+
+/// A linha do perfil, pura para o teste montar o `AppConfig` a mao.
+fn execution_profile_line(lang: Lang, config: &garraia_config::AppConfig) -> String {
+    let perfil = config.execution.perfil();
+    let origem = config.execution.origem();
+    let donos = config
+        .channels
+        .get(CONFIG_KEY)
+        .and_then(|ch| ch.settings.get("owners"))
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let piso = owner_floor(config);
+    match lang {
+        Lang::Pt => format!(
+            "Perfil de execução: {perfil} (fonte {origem}) — piso do dono: {piso} · donos: {donos}"
+        ),
+        Lang::En => format!(
+            "Execution profile: {perfil} (source {origem}) — owner floor: {piso} · owners: {donos}"
+        ),
+    }
 }
 
 /// Imprime o proximo passo da mesma fonte que o `/api/diagnostics` usa.
@@ -491,28 +560,28 @@ fn print_archive_warning(ctx: &Context, store: &SessionStore) {
         // faz, e prometer isso seria mentira. Ver o docstring dela.
         println!(
             "  {}",
-            t(
+            tb(
                 ctx.lang,
-                "Há uma sessão em uso, então ela não será substituída. Para descartar a arquivada: garra whatsapp logout",
-                "A session is in use, so it will not be replaced. To discard the archived one: garra whatsapp logout"
+                "Há uma sessão em uso, então ela não será substituída. Para descartar a arquivada: {bin} whatsapp logout",
+                "A session is in use, so it will not be replaced. To discard the archived one: {bin} whatsapp logout"
             )
         );
         return;
     }
     println!(
         "  {}",
-        t(
+        tb(
             ctx.lang,
-            "Para voltar a usá-la: garra whatsapp restore",
-            "To use it again: garra whatsapp restore"
+            "Para voltar a usá-la: {bin} whatsapp restore",
+            "To use it again: {bin} whatsapp restore"
         )
     );
     println!(
         "  {}",
-        t(
+        tb(
             ctx.lang,
-            "Para apagá-la: garra whatsapp logout",
-            "To delete it: garra whatsapp logout"
+            "Para apagá-la: {bin} whatsapp logout",
+            "To delete it: {bin} whatsapp logout"
         )
     );
 }
@@ -567,10 +636,10 @@ fn restore(ctx: &Context) -> i32 {
         );
         println!(
             "{}",
-            t(
+            tb(
                 ctx.lang,
-                "Se quiser descartar a arquivada: garra whatsapp logout",
-                "To discard the archived one: garra whatsapp logout"
+                "Se quiser descartar a arquivada: {bin} whatsapp logout",
+                "To discard the archived one: {bin} whatsapp logout"
             )
         );
         return EX_UNAVAILABLE;
@@ -635,10 +704,10 @@ fn restore(ctx: &Context) -> i32 {
     }
     println!(
         "{}",
-        t(
+        tb(
             ctx.lang,
-            "Ela só volta a valer se o WhatsApp ainda aceitar este aparelho — rode `garra whatsapp status` e, se não aceitar, `garra whatsapp` para ler um QR novo.",
-            "It only works again if WhatsApp still accepts this device — run `garra whatsapp status`, and if it does not, run `garra whatsapp` to scan a new QR."
+            "Ela só volta a valer se o WhatsApp ainda aceitar este aparelho — rode `{bin} whatsapp status` e, se não aceitar, `{bin} whatsapp` para ler um QR novo.",
+            "It only works again if WhatsApp still accepts this device — run `{bin} whatsapp status`, and if it does not, run `{bin} whatsapp` to scan a new QR."
         )
     );
     0
@@ -843,10 +912,10 @@ impl Drop for ArchiveGuard<'_> {
             // continuava la.
             Ok(false) if archived && !live => self.out.warn(&format!(
                 "! {}",
-                t(
+                tb(
                     lang,
-                    "A sessão anterior não pôde ser restaurada — o vínculo antigo foi perdido. Rode `garra whatsapp` e leia um QR novo.",
-                    "The previous session could not be restored — the old link is gone. Run `garra whatsapp` and scan a new QR."
+                    "A sessão anterior não pôde ser restaurada — o vínculo antigo foi perdido. Rode `{bin} whatsapp` e leia um QR novo.",
+                    "The previous session could not be restored — the old link is gone. Run `{bin} whatsapp` and scan a new QR."
                 )
             )),
             Ok(false) => {}
@@ -1118,10 +1187,10 @@ fn link_paired(
             }
             println!(
                 "✓ {}",
-                t(
+                tb(
                     ctx.lang,
-                    "GarraIA está pronto para receber mensagens (inicie o gateway: `garra start`)",
-                    "GarraIA is ready to receive messages (start the gateway: `garra start`)"
+                    "GarraIA está pronto para receber mensagens (inicie o gateway: `{bin} start`)",
+                    "GarraIA is ready to receive messages (start the gateway: `{bin} start`)"
                 )
             );
             0
@@ -1135,10 +1204,10 @@ fn link_paired(
             println!();
             println!(
                 "{}",
-                t(
+                tb(
                     ctx.lang,
-                    "Nenhum QR foi lido. Rode `garra whatsapp` de novo.",
-                    "No QR was scanned. Run `garra whatsapp` again."
+                    "Nenhum QR foi lido. Rode `{bin} whatsapp` de novo.",
+                    "No QR was scanned. Run `{bin} whatsapp` again."
                 )
             );
             EX_UNAVAILABLE
@@ -1147,10 +1216,10 @@ fn link_paired(
             println!();
             println!(
                 "{}",
-                t(
+                tb(
                     ctx.lang,
-                    "Esta sessão não vale mais. Rode `garra whatsapp` de novo e leia um QR novo.",
-                    "This session is no longer valid. Run `garra whatsapp` again and scan a new QR."
+                    "Esta sessão não vale mais. Rode `{bin} whatsapp` de novo e leia um QR novo.",
+                    "This session is no longer valid. Run `{bin} whatsapp` again and scan a new QR."
                 )
             );
             // O codigo cru do Baileys e o que distingue "voce removeu o
@@ -1303,12 +1372,12 @@ path does; the rest of GarraIA does not)."
     eprintln!();
     eprintln!(
         "{}",
-        t(
+        tb(
             ctx.lang,
             "Sem Node, a opção 2 (WhatsApp Business / Cloud API) funciona: \
-garra whatsapp cloud",
+{bin} whatsapp cloud",
             "Without Node, option 2 (WhatsApp Business / Cloud API) works: \
-garra whatsapp cloud"
+{bin} whatsapp cloud"
         )
     );
 }
@@ -1448,10 +1517,10 @@ fn cloud(ctx: &Context, prompter: &dyn Prompter) -> i32 {
     let Some(loader) = ctx.loader.as_ref() else {
         eprintln!(
             "{}",
-            t(
+            tb(
                 ctx.lang,
-                "Não consegui abrir a config. Rode `garra init` primeiro.",
-                "Could not open the config. Run `garra init` first."
+                "Não consegui abrir a config. Rode `{bin} init` primeiro.",
+                "Could not open the config. Run `{bin} init` first."
             )
         );
         return EX_SOFTWARE;

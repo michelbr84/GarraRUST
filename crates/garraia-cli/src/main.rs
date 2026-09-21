@@ -2,6 +2,7 @@ mod admin_cmd;
 mod agents;
 mod ask;
 mod banner;
+mod binario;
 mod capability_prompt;
 mod chat;
 mod chat_input;
