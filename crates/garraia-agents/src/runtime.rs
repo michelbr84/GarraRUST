@@ -398,8 +398,11 @@ enum DispatchOutcome {
     },
 
     /// O `ExecutionBudget` detectou loop por assinatura: o turno inteiro
-    /// falha. Quem chama converte em `Error::Agent`.
-    BudgetExceeded { tool_name: String },
+    /// falha. Quem chama converte em `Error::Agent` tal qual — a mensagem
+    /// ja vem pronta de [`ExecutionBudget::mensagem_de_loop`] (#1295), com
+    /// nome da tool, contagem da janela e o input repetido, para que as
+    /// quatro copias do loop nao tenham cada uma o seu texto de erro.
+    BudgetExceeded { mensagem: String },
 }
 
 impl AgentRuntime {
@@ -1319,8 +1322,8 @@ impl AgentRuntime {
                             confirmation_response = Some(prompt);
                             break;
                         }
-                        DispatchOutcome::BudgetExceeded { tool_name } => {
-                            return Err(Error::Agent(format!("tool loop detected: {}", tool_name)));
+                        DispatchOutcome::BudgetExceeded { mensagem } => {
+                            return Err(Error::Agent(mensagem));
                         }
                     }
                 }
@@ -1573,8 +1576,8 @@ impl AgentRuntime {
                             confirmation_response = Some(prompt);
                             break;
                         }
-                        DispatchOutcome::BudgetExceeded { tool_name } => {
-                            return Err(Error::Agent(format!("tool loop detected: {}", tool_name)));
+                        DispatchOutcome::BudgetExceeded { mensagem } => {
+                            return Err(Error::Agent(mensagem));
                         }
                     }
                 }
@@ -2185,11 +2188,8 @@ impl AgentRuntime {
                                 confirmation_response = Some(prompt);
                                 break;
                             }
-                            DispatchOutcome::BudgetExceeded { tool_name } => {
-                                return Err(Error::Agent(format!(
-                                    "tool loop detected: {}",
-                                    tool_name
-                                )));
+                            DispatchOutcome::BudgetExceeded { mensagem } => {
+                                return Err(Error::Agent(mensagem));
                             }
                         }
                     }
@@ -2339,11 +2339,8 @@ impl AgentRuntime {
                                     confirmation_response = Some(prompt);
                                     break;
                                 }
-                                DispatchOutcome::BudgetExceeded { tool_name } => {
-                                    return Err(Error::Agent(format!(
-                                        "tool loop detected: {}",
-                                        tool_name
-                                    )));
+                                DispatchOutcome::BudgetExceeded { mensagem } => {
+                                    return Err(Error::Agent(mensagem));
                                 }
                             }
                         }
@@ -2395,10 +2392,10 @@ impl AgentRuntime {
         // registra chamada com payload para detecção de loop por assinatura
         budget.registrar_chamada(name, input);
 
-        // detecta loop
+        // detecta loop (#1295: o erro carrega o diagnostico do input repetido)
         if budget.detectar_loop_ferramenta() {
             return DispatchOutcome::BudgetExceeded {
-                tool_name: name.to_string(),
+                mensagem: budget.mensagem_de_loop(name, input),
             };
         }
 
@@ -3264,6 +3261,93 @@ mod tests {
         assert!(
             erro.to_string().contains("turno vazio"),
             "o erro precisa nomear a causa; veio: {erro}"
+        );
+    }
+
+    /// Provider preso no mesmo golpe: toda volta devolve a MESMA chamada de
+    /// tool (nome + input identicos). Nao precisa de tool registrada — o
+    /// `registrar_chamada` acontece antes do portao, dentro da
+    /// `dispatch_tool_call`, entao a janela de 3 enche e o detector corta na
+    /// terceira. O nome e `file_read` porque o erro so mostra o campo
+    /// allow-listed da ferramenta (`path`, no caso), e o teste quer ver o
+    /// valor chegar ponta a ponta; tool sem caso no `summarize_tool_input`
+    /// mostra so as chaves, e isso e coberto no `execution_budget`.
+    struct EmLoop;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for EmLoop {
+        fn provider_id(&self) -> &str {
+            "em_loop"
+        }
+
+        async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+            Ok(LlmResponse {
+                content: vec![ContentBlock::ToolUse {
+                    id: "t-loop".to_string(),
+                    name: "file_read".to_string(),
+                    input: serde_json::json!({ "path": "/tmp/alvo-repetido" }),
+                }],
+                model: "m".to_string(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+
+        async fn stream_complete(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(StreamEvent::ToolUseStart {
+                    index: 0,
+                    id: "t-loop".to_string(),
+                    name: "file_read".to_string(),
+                }),
+                Ok(StreamEvent::InputJsonDelta(
+                    "{\"path\":\"/tmp/alvo-repetido\"}".to_string(),
+                )),
+                Ok(StreamEvent::ContentBlockStop { index: 0 }),
+                Ok(StreamEvent::MessageStop),
+            ])))
+        }
+
+        async fn health_check(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// #1295: o erro do detector de loop nao pode ser seco. Quem le o erro
+    /// e o humano no log, no ledger de runs ou no cartao da CLI — "tool loop
+    /// detected: file_read" nao diz quantas voltas deram nem O QUE estava
+    /// repetindo, e sem isso nao ha como corrigir. O diagnostico minimo:
+    /// nome da tool, a contagem da janela (3) e o campo allow-listed do input
+    /// repetido, redigido e truncado pelo mesmo `summarize_tool_input` da
+    /// #937. Passa pelo despacho unico do #1311: a mensagem nasce na
+    /// `dispatch_tool_call` e as copias do loop so a devolvem.
+    #[tokio::test]
+    async fn loop_detectado_traz_input_repetido_no_erro() {
+        let runtime = AgentRuntime::new();
+        runtime.register_provider(std::sync::Arc::new(EmLoop));
+
+        let erro = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            turno_de_streaming(&runtime, "sessao-1295-a"),
+        )
+        .await
+        .expect("sem giro infinito: a janela de 3 corta")
+        .expect_err("loop de tool identica tem de virar erro");
+        let msg = erro.to_string();
+        assert!(
+            msg.contains("file_read"),
+            "o erro precisa nomear a tool em loop; veio: {msg}"
+        );
+        assert!(
+            msg.contains("3 chamadas"),
+            "o erro precisa dizer a contagem da janela; veio: {msg}"
+        );
+        assert!(
+            msg.contains("input repetido: /tmp/alvo-repetido"),
+            "o erro precisa mostrar o campo allow-listed do input repetido; veio: {msg}"
         );
     }
 

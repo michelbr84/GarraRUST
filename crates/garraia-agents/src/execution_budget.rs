@@ -23,6 +23,55 @@ fn calcular_hash_args(payload: &Value) -> u64 {
     hasher.finish()
 }
 
+/// O trecho do input repetido que entra no erro de loop (#1295).
+///
+/// **Nao** e o payload serializado. O erro vira `error_snippet` no ledger
+/// de runs (`finish_agent_run`), cartao de erro na CLI e linha de log —
+/// despejar o JSON inteiro confiando so no `redact_secrets` vazaria
+/// exatamente o que o regex nao reconhece: `{"password": "hunter2"}` nao
+/// tem prefixo nem forma de chave de API, e passaria inteiro para os tres.
+/// A regra e a mesma do `summarize_tool_input` (#937), e pela mesma razao:
+/// so o campo allow-listed da ferramenta, ja redigido e truncado; ferramenta
+/// sem caso proprio nao mostra valor nenhum, ate alguem dizer qual campo
+/// dela e o interessante.
+///
+/// Quando a ferramenta nao tem caso, o que ainda diz **o que** repetiu sem
+/// despejar valor sao os nomes das chaves e o tamanho serializado:
+/// `objeto com chaves [password, query] (41 bytes)` deixa claro que a mesma
+/// consulta voltou tres vezes, e nao mostra a consulta. As chaves saem em
+/// ordem lexica para a mensagem nao depender de `preserve_order` do
+/// `serde_json`, e passam pelo mesmo `sanear` — chave e nome de campo do
+/// schema, mas o JSON vem do modelo, e custa nada fechar o canto.
+fn resumo_do_input(tool_name: &str, payload: &Value) -> String {
+    let resumo = crate::turn_events::summarize_tool_input(tool_name, payload);
+    if !resumo.is_empty() {
+        return resumo;
+    }
+    let tamanho = payload.to_string().len();
+    match payload {
+        Value::Object(mapa) => {
+            let mut chaves: Vec<&str> = mapa.keys().map(String::as_str).collect();
+            chaves.sort_unstable();
+            let lista = crate::turn_events::sanear(&chaves.join(", "));
+            format!("objeto com chaves [{lista}] ({tamanho} bytes)")
+        }
+        outro => format!("{} ({tamanho} bytes)", tipo_json(outro)),
+    }
+}
+
+/// Nome do tipo JSON, para o fallback de [`resumo_do_input`] quando o input
+/// nem objeto e — o modelo pode mandar uma string ou um array como input.
+fn tipo_json(valor: &Value) -> &'static str {
+    match valor {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 /// Orçamento de execução para controlar chamadas de ferramentas no runtime do agente.
 /// Evita loops infinitos, mas permite tarefas legítimas de longa duração.
 ///
@@ -236,6 +285,25 @@ impl ExecutionBudget {
         self.historico_assinaturas
             .iter()
             .all(|sig| sig.nome == primeira.nome && sig.hash_args == primeira.hash_args)
+    }
+
+    /// #1295: mensagem de erro diagnosticável para o loop detectado — nome
+    /// da ferramenta, contagem da janela e o trecho do input repetido que
+    /// [`resumo_do_input`] deixa sair (campo allow-listed da ferramenta, ou
+    /// so a forma do objeto quando ela nao tem caso).
+    ///
+    /// Pré-condição: `detectar_loop_ferramenta()` acabou de devolver `true`
+    /// para a chamada `input_atual`. A janela está cheia de assinaturas
+    /// idênticas por construção, então o input da chamada atual **é** o
+    /// input repetido — e o tamanho da janela é o número de chamadas iguais
+    /// em sequência que disparou o corte.
+    pub fn mensagem_de_loop(&self, tool_name: &str, input_atual: &Value) -> String {
+        format!(
+            "tool loop detected: {} ({} chamadas identicas em sequencia); input repetido: {}",
+            tool_name,
+            self.historico_assinaturas.len(),
+            resumo_do_input(tool_name, input_atual),
+        )
     }
 
     /// Retorna a duração de timeout configurada para execução de ferramentas.
@@ -520,5 +588,119 @@ mod tests {
 
         // Janela agora é [ls, ls, ls] — loop detectado
         assert!(budget.detectar_loop_ferramenta());
+    }
+
+    // ─── #1295: o erro de loop tem de ser diagnosticavel ─────────────────
+
+    /// A mensagem leva o que quem le precisa para corrigir: qual tool, quantas
+    /// voltas identicas e O QUE estava repetindo — para ferramenta com caso
+    /// no `summarize_tool_input`, o campo allow-listed dela (o `path` do
+    /// `file_read`, que a #937 mostra inteiro de proposito).
+    #[test]
+    fn mensagem_de_loop_traz_nome_contagem_e_input() {
+        let mut budget = ExecutionBudget::padrao();
+        let input = json!({"path": "/tmp/alvo-repetido"});
+        for _ in 0..3 {
+            budget.registrar_chamada("file_read", &input);
+        }
+        assert!(budget.detectar_loop_ferramenta(), "pre-condicao do teste");
+
+        let msg = budget.mensagem_de_loop("file_read", &input);
+        assert!(msg.starts_with("tool loop detected: file_read"), "{msg}");
+        assert!(msg.contains("3 chamadas identicas em sequencia"), "{msg}");
+        assert!(msg.contains("input repetido: /tmp/alvo-repetido"), "{msg}");
+    }
+
+    /// Achado de revisao: despejar o input inteiro confiando so no regex
+    /// vazaria segredo sem formato. `{"password": "hunter2"}` nao tem
+    /// prefixo de chave de API e passaria inteiro para o ledger de runs, o
+    /// cartao da CLI e o log — onde na base o erro era so o nome da tool.
+    /// Ferramenta sem caso proprio mostra a FORMA do input (chaves + tamanho)
+    /// e nenhum valor.
+    #[test]
+    fn mensagem_de_loop_nao_despeja_input_de_tool_sem_resumo() {
+        let mut budget = ExecutionBudget::padrao();
+        let input = json!({"password": "hunter2", "query": "select 1"});
+        for _ in 0..3 {
+            budget.registrar_chamada("db_query", &input);
+        }
+
+        let msg = budget.mensagem_de_loop("db_query", &input);
+        assert!(!msg.contains("hunter2"), "senha sem formato vazou: {msg}");
+        assert!(!msg.contains("select 1"), "valor de campo vazou: {msg}");
+        assert!(
+            msg.contains("objeto com chaves [password, query]"),
+            "a forma do input tem de aparecer, para dizer O QUE repetiu: {msg}"
+        );
+        let tamanho = input.to_string().len();
+        assert!(msg.contains(&format!("({tamanho} bytes)")), "{msg}");
+
+        // Ferramenta conhecida, campo nao allow-listed: o `url` do
+        // `web_fetch` sai, o `password` ao lado nao.
+        let input = json!({"url": "https://x", "password": "hunter2"});
+        let msg = budget.mensagem_de_loop("web_fetch", &input);
+        assert!(msg.contains("https://x"), "{msg}");
+        assert!(
+            !msg.contains("hunter2"),
+            "campo fora da allow-list vazou: {msg}"
+        );
+    }
+
+    /// Input que nem objeto e (string, array) tambem nao sai: so o tipo e o
+    /// tamanho.
+    #[test]
+    fn resumo_do_input_sem_objeto_mostra_so_tipo_e_tamanho() {
+        assert_eq!(
+            super::resumo_do_input("eco", &json!("segredo em texto puro")),
+            "string (23 bytes)"
+        );
+        assert_eq!(
+            super::resumo_do_input("eco", &json!(["a", "b"])),
+            "array (9 bytes)"
+        );
+        assert_eq!(
+            super::resumo_do_input("eco", &json!({})),
+            "objeto com chaves [] (2 bytes)"
+        );
+    }
+
+    /// Input grande nao vira dump: o campo allow-listed sai pelo `sanear` do
+    /// `turn_events`, que trunca em 72 chars sem partir UTF-8 ao meio.
+    #[test]
+    fn resumo_do_input_trunca_o_campo_allow_listed() {
+        let longo = json!({"command": "x".repeat(500)});
+        let resumo = super::resumo_do_input("bash", &longo);
+        assert!(resumo.ends_with('…'), "{resumo}");
+        assert!(resumo.chars().count() <= 72, "{}", resumo.chars().count());
+
+        let multibyte = json!({"command": "ção".repeat(200)});
+        let resumo = super::resumo_do_input("bash", &multibyte);
+        assert!(resumo.chars().count() <= 72, "{}", resumo.chars().count());
+        assert!(resumo.starts_with("ção"), "{resumo}");
+    }
+
+    /// O erro vai para o log, o ledger e a CLI: segredo COM formato no campo
+    /// allow-listed sai redigido, e a redacao vem antes do corte — o corte
+    /// nao pode deixar um prefixo de chave passar pelo regex.
+    #[test]
+    fn mensagem_de_loop_redige_segredo_do_input() {
+        let chave = format!("sk-ant-api03-{}", "a".repeat(40));
+        let mut budget = ExecutionBudget::padrao();
+        let input =
+            json!({"command": format!("curl -H 'Authorization: Bearer {chave}' https://x")});
+        for _ in 0..3 {
+            budget.registrar_chamada("bash", &input);
+        }
+
+        let msg = budget.mensagem_de_loop("bash", &input);
+        assert!(!msg.contains(&chave), "segredo sobreviveu: {msg}");
+        assert!(msg.contains("[REDACTED]"), "{msg}");
+
+        // Mesmo com a chave comecando antes do corte de 72 e terminando
+        // depois: truncar primeiro deixaria 50 chars dela passarem crus.
+        let input = json!({"command": format!("{} {chave}", "p".repeat(20))});
+        let msg = budget.mensagem_de_loop("bash", &input);
+        assert!(!msg.contains(&chave[..30]), "prefixo da chave vazou: {msg}");
+        assert!(msg.contains("[REDACTED]"), "{msg}");
     }
 }

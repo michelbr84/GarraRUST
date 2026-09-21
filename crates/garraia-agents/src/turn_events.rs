@@ -410,7 +410,10 @@ fn campo(input: &serde_json::Value, chave: &str) -> Option<String> {
 /// Truncar antes de redigir poderia cortar uma chave ao meio e deixar o
 /// prefixo passar pelo regex sem casar. E truncar antes de tirar os controles
 /// poderia deixar meia sequencia passar pela mesma razao.
-fn sanear(texto: &str) -> String {
+///
+/// `pub(crate)` porque o erro de loop do `ExecutionBudget` (#1295) passa a
+/// lista de chaves do input por aqui — mesma politica, um so lugar.
+pub(crate) fn sanear(texto: &str) -> String {
     let redigido = garraia_security::redact_secrets(texto.trim());
     let sem_controle = sanear_controles(&redigido, false);
     truncar(&sem_controle, SUMMARY_MAX_CHARS)
