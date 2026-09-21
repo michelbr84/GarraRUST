@@ -560,7 +560,9 @@ nothing about auth:
 
 ```bash
 garraia config check --strict   # expect exit 0 — exits 2 if this shell exports
-                                # HOST=0.0.0.0 without gateway.api_key (see §5.1)
+                                # HOST=0.0.0.0 without gateway.api_key AND without
+                                # in-process TLS, i.e. the §7.6 layout with TLS at
+                                # the reverse proxy (see §5.1)
 # journal/log: "garraia-auth wired (login + signup pools + jwt)"
 curl -si -X POST http://127.0.0.1:3888/v1/auth/signup \
   -H 'Content-Type: application/json' \
