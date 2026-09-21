@@ -351,12 +351,23 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // Bind exposure: 0.0.0.0/:: listens on every interface, and the bulk of
     // the /api/* + /ws surface has no credential gate of its own, so only
     // an api_key + TLS deployment (or network topology) protects it.
-    // `garra start --host` / the HOST env var overwrite this file value at
-    // runtime, so this reflects the config file, not necessarily the live
-    // process.
-    let bind_all_interfaces = config.gateway.host == "0.0.0.0"
-        || config.gateway.host == "::"
-        || config.gateway.host == "[::]";
+    //
+    // #1261: este achado olhava SO para o arquivo, e o arquivo nao e o que
+    // manda. `garra start` recebe `--host`/`--port` do clap com
+    // `env = "HOST"`/`env = "PORT"`, e o `main.rs` sobrescreve
+    // `config.gateway.host`/`port` com esses valores depois de carregar a
+    // config. Entao `HOST=0.0.0.0` com um arquivo em `127.0.0.1` passava
+    // calado — falsa garantia exatamente para quem foi consultar o
+    // diagnostico antes de expor a porta. O que a env diz, `config check`
+    // consegue ver (mesmo processo); a flag, nao — e o texto do achado
+    // agora diz isso em vez de fingir autoridade sobre o bind real.
+    let bind = bind_efetivo(
+        &config.gateway.host,
+        config.gateway.port,
+        env_nao_vazia(HOST_ENV).as_deref(),
+        env_nao_vazia(PORT_ENV).as_deref(),
+    );
+    let bind_all_interfaces = host_expoe_todas_as_interfaces(&bind.host);
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
     // #1241: `is_some()` mentia aqui. An empty or whitespace-only `api_key`
@@ -372,17 +383,29 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
         if !tls_enabled {
             unguarded.push("TLS is disabled");
         }
+        let origem = match bind.host_source {
+            FonteDoBind::Arquivo => format!("gateway.host=`{}` (config file)", bind.host),
+            FonteDoBind::Env => format!(
+                "{HOST_ENV}=`{}` (env var, which overrides gateway.host=`{}` from the config \
+                 file at `garra start`)",
+                bind.host, config.gateway.host
+            ),
+        };
+        let porta = match bind.port_source {
+            FonteDoBind::Arquivo => format!("port {}", bind.port),
+            FonteDoBind::Env => format!("port {} (from {PORT_ENV})", bind.port),
+        };
         push_warn(
             &mut findings,
             "gateway.host",
             format!(
-                "gateway.host=`{}` binds all interfaces while {} — make sure a firewall or \
-                 TLS-terminating reverse proxy protects port {}, or switch to 127.0.0.1. \
-                 Note: `garra start --host` / the HOST env var can override this file value \
-                 at runtime",
-                config.gateway.host,
+                "{origem} binds all interfaces while {} — make sure a firewall or \
+                 TLS-terminating reverse proxy protects {porta}, or switch to 127.0.0.1. \
+                 Caveat: this check sees the config file and this process's \
+                 {HOST_ENV}/{PORT_ENV} env vars, but NOT a `--host`/`--port` flag passed to \
+                 `garra start` later — a flag still wins over both, so it can change the \
+                 real bind after this check passes",
                 unguarded.join(" and "),
-                config.gateway.port
             ),
         );
     }
@@ -755,6 +778,87 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     ));
 
     findings
+}
+
+/// A env que o clap le em `--host` (`crates/garraia-cli/src/main.rs`,
+/// `#[arg(long, env = "HOST", default_value = "127.0.0.1")]`).
+///
+/// Escrita aqui por extenso porque `garraia-config` nao depende de
+/// `garraia-cli` — e e a CLI que decide o bind real.
+const HOST_ENV: &str = "HOST";
+
+/// A env irma de [`HOST_ENV`], lida por `--port`.
+const PORT_ENV: &str = "PORT";
+
+/// De onde veio o valor que um `garra start` sem flags usaria de fato.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FonteDoBind {
+    /// `gateway.host` / `gateway.port` do arquivo de config.
+    Arquivo,
+    /// A env [`HOST_ENV`] / [`PORT_ENV`], que o clap resolve antes do
+    /// default e que o `main.rs` escreve por cima do arquivo.
+    Env,
+}
+
+/// O par host/porta que `config check` consegue afirmar, com a origem de
+/// cada metade.
+#[derive(Debug, Clone)]
+struct BindEfetivo {
+    host: String,
+    host_source: FonteDoBind,
+    port: u16,
+    port_source: FonteDoBind,
+}
+
+/// Funcao pura: dado o arquivo e as envs, qual bind `config check` pode
+/// afirmar (#1261).
+///
+/// Ela nao ve — e nao pode ver — a flag `--host`/`--port` de um `garra
+/// start` futuro, que roda em outro processo. Por isso o achado que a
+/// consome diz a limitacao em voz alta em vez de passar com falsa
+/// confianca.
+///
+/// Uma `PORT` que nao e um `u16` cai de volta no arquivo: o clap recusaria
+/// esse valor no `start`, entao nao ha bind nenhum para reportar.
+fn bind_efetivo(
+    host_do_arquivo: &str,
+    porta_do_arquivo: u16,
+    host_da_env: Option<&str>,
+    porta_da_env: Option<&str>,
+) -> BindEfetivo {
+    let (host, host_source) = match host_da_env {
+        Some(h) => (h.to_string(), FonteDoBind::Env),
+        None => (host_do_arquivo.to_string(), FonteDoBind::Arquivo),
+    };
+    let (port, port_source) = match porta_da_env.and_then(|p| p.parse::<u16>().ok()) {
+        Some(p) => (p, FonteDoBind::Env),
+        None => (porta_do_arquivo, FonteDoBind::Arquivo),
+    };
+    BindEfetivo {
+        host,
+        host_source,
+        port,
+        port_source,
+    }
+}
+
+/// Um host que escuta em toda interface, nas grafias que o `SocketAddr`
+/// aceita.
+fn host_expoe_todas_as_interfaces(host: &str) -> bool {
+    matches!(host.trim(), "0.0.0.0" | "::" | "[::]")
+}
+
+/// O valor de uma env so quando ele diz alguma coisa: vazia ou so espaco
+/// conta como ausente, como no resto deste modulo. Diferenca benigna do
+/// clap real: `HOST="  "` aqui vira "ausente" (cai para o arquivo), mas um
+/// `garra start` de verdade passaria isso adiante e falharia no parse do
+/// `SocketAddr` — nunca produz um falso "nao exposto", so um "nao vi nada
+/// de errado" onde o start real teria erro de config.
+fn env_nao_vazia(nome: &str) -> Option<String> {
+    std::env::var(nome)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// O `$HOME` do processo, para [`validate_file_roots`]. Separado para o teste
@@ -4432,11 +4536,46 @@ mod tests {
 
     // ── Bind-exposure finding (gateway.host) ───────────────────────────────
 
+    /// Roda `f` com `HOST`/`PORT` exatamente no estado pedido e devolve o
+    /// ambiente como estava. Sob o `ENV_TEST_LOCK` do crate porque, desde
+    /// o #1261, `validate` LE essas duas envs — um teste de bind que nao
+    /// as fixa passa a depender do ambiente de quem roda.
+    fn com_bind_env<T>(host: Option<&str>, port: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let antes = (std::env::var_os("HOST"), std::env::var_os("PORT"));
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            match host {
+                Some(v) => std::env::set_var("HOST", v),
+                None => std::env::remove_var("HOST"),
+            }
+            match port {
+                Some(v) => std::env::set_var("PORT", v),
+                None => std::env::remove_var("PORT"),
+            }
+        }
+        let saida = f();
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            match antes.0 {
+                Some(v) => std::env::set_var("HOST", v),
+                None => std::env::remove_var("HOST"),
+            }
+            match antes.1 {
+                Some(v) => std::env::set_var("PORT", v),
+                None => std::env::remove_var("PORT"),
+            }
+        }
+        saida
+    }
+
     #[test]
     fn bind_all_interfaces_without_credentials_warns() {
         let mut cfg = AppConfig::default();
         cfg.gateway.host = "0.0.0.0".into();
-        let findings = validate(&cfg);
+        let findings = com_bind_env(None, None, || validate(&cfg));
         let hit = findings
             .iter()
             .find(|f| f.field == "gateway.host")
@@ -4444,6 +4583,10 @@ mod tests {
         assert!(matches!(hit.severity, Severity::Warning));
         assert!(hit.message.contains("gateway.api_key is not set"));
         assert!(hit.message.contains("TLS is disabled"));
+        assert!(
+            hit.message.contains("(config file)"),
+            "sem env, o achado tem de dizer que julgou o arquivo, nao a env: {hit:?}"
+        );
     }
 
     #[test]
@@ -4451,7 +4594,7 @@ mod tests {
         for host in ["::", "[::]"] {
             let mut cfg = AppConfig::default();
             cfg.gateway.host = host.into();
-            let findings = validate(&cfg);
+            let findings = com_bind_env(None, None, || validate(&cfg));
             assert!(
                 findings.iter().any(|f| f.field == "gateway.host"),
                 "{host} bind must fire the exposure warning: {findings:?}"
@@ -4462,7 +4605,7 @@ mod tests {
     #[test]
     fn bind_loopback_does_not_warn_about_exposure() {
         // AppConfig::default() binds 127.0.0.1.
-        let findings = validate(&AppConfig::default());
+        let findings = com_bind_env(None, None, || validate(&AppConfig::default()));
         assert!(
             !findings.iter().any(|f| f.field == "gateway.host"),
             "loopback bind must not fire the exposure warning: {findings:?}"
@@ -4476,10 +4619,128 @@ mod tests {
         cfg.gateway.api_key = Some("test-gateway-bearer".into());
         cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
         cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
-        let findings = validate(&cfg);
+        let findings = com_bind_env(None, None, || validate(&cfg));
         assert!(
             !findings.iter().any(|f| f.field == "gateway.host"),
             "api_key + TLS on 0.0.0.0 must not warn: {findings:?}"
+        );
+    }
+
+    // ── #1261: o bind que vale e o efetivo, nao o do arquivo ──────────────
+
+    /// A funcao pura: sem env, manda o arquivo.
+    #[test]
+    fn bind_efetivo_sem_env_usa_o_arquivo() {
+        let bind = bind_efetivo("127.0.0.1", 3888, None, None);
+        assert_eq!(bind.host, "127.0.0.1");
+        assert_eq!(bind.port, 3888);
+        assert_eq!(bind.host_source, FonteDoBind::Arquivo);
+        assert_eq!(bind.port_source, FonteDoBind::Arquivo);
+    }
+
+    /// Com env, manda a env — e cada metade tem origem propria.
+    #[test]
+    fn bind_efetivo_com_env_vence_o_arquivo() {
+        let bind = bind_efetivo("127.0.0.1", 3888, Some("0.0.0.0"), None);
+        assert_eq!(bind.host, "0.0.0.0");
+        assert_eq!(bind.host_source, FonteDoBind::Env);
+        assert_eq!(
+            bind.port, 3888,
+            "sem PORT, a porta segue sendo a do arquivo"
+        );
+        assert_eq!(bind.port_source, FonteDoBind::Arquivo);
+
+        let bind = bind_efetivo("127.0.0.1", 3888, None, Some("4000"));
+        assert_eq!(bind.port, 4000);
+        assert_eq!(bind.port_source, FonteDoBind::Env);
+        assert_eq!(bind.host_source, FonteDoBind::Arquivo);
+    }
+
+    /// `PORT` que o clap recusaria nao vira bind nenhum — cai no arquivo.
+    #[test]
+    fn bind_efetivo_ignora_porta_invalida() {
+        for invalida in ["", "nao-e-numero", "70000", "-1"] {
+            let bind = bind_efetivo("127.0.0.1", 3888, None, Some(invalida));
+            assert_eq!(bind.port, 3888, "PORT={invalida:?}");
+            assert_eq!(bind.port_source, FonteDoBind::Arquivo, "PORT={invalida:?}");
+        }
+    }
+
+    /// O caso que o #1261 relata: arquivo seguro, `HOST=0.0.0.0`, e o
+    /// `config check` passando calado enquanto o gateway sobe aberto.
+    ///
+    /// Este e o teste de regressao: quem voltar a ler so
+    /// `config.gateway.host` derruba ele.
+    #[test]
+    fn host_env_expoe_o_bind_mesmo_com_arquivo_em_loopback() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.gateway.host, "127.0.0.1", "premissa do teste");
+        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "gateway.host")
+            .unwrap_or_else(|| panic!("HOST=0.0.0.0 abre o gateway e tem de avisar: {findings:?}"));
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(
+            hit.message.contains("HOST=`0.0.0.0`"),
+            "o achado tem de nomear a env como origem: {hit:?}"
+        );
+        assert!(
+            hit.message.contains("127.0.0.1"),
+            "e dizer qual valor do arquivo ficou para tras: {hit:?}"
+        );
+    }
+
+    /// E a volta: um arquivo em `0.0.0.0` que a env cobre com loopback nao
+    /// e mais reportado como exposto, porque nao e isso que sobe.
+    #[test]
+    fn host_env_em_loopback_cala_o_aviso_do_arquivo() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.host = "0.0.0.0".into();
+        let findings = com_bind_env(Some("127.0.0.1"), None, || validate(&cfg));
+        assert!(
+            !findings.iter().any(|f| f.field == "gateway.host"),
+            "HOST=127.0.0.1 e o bind real; o 0.0.0.0 do arquivo nunca chega la: {findings:?}"
+        );
+    }
+
+    /// `HOST=""` (ou so espaco) nao e uma escolha de bind — continua
+    /// valendo o arquivo.
+    #[test]
+    fn host_env_em_branco_nao_conta_como_escolha() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.host = "0.0.0.0".into();
+        for branco in ["", "   "] {
+            let findings = com_bind_env(Some(branco), None, || validate(&cfg));
+            let hit = findings
+                .iter()
+                .find(|f| f.field == "gateway.host")
+                .unwrap_or_else(|| panic!("HOST={branco:?}: {findings:?}"));
+            assert!(
+                hit.message.contains("(config file)"),
+                "HOST em branco nao vira origem: {hit:?}"
+            );
+        }
+    }
+
+    /// A porta do achado tambem e a efetiva, e o texto nao pode fingir
+    /// autoridade sobre a flag de `garra start`, que roda noutro processo.
+    #[test]
+    fn achado_de_bind_usa_a_porta_efetiva_e_admite_a_flag() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.host = "0.0.0.0".into();
+        let findings = com_bind_env(None, Some("4000"), || validate(&cfg));
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "gateway.host")
+            .unwrap_or_else(|| panic!("{findings:?}"));
+        assert!(
+            hit.message.contains("port 4000 (from PORT)"),
+            "PORT=4000 e a porta que sobe, e o achado diz de onde veio: {hit:?}"
+        );
+        assert!(
+            hit.message.contains("--host"),
+            "o achado tem de admitir que a flag ainda vence: {hit:?}"
         );
     }
 
