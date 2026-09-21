@@ -9,7 +9,9 @@ use garraia_agents::{
     RepoSearchTool, ResilientEmbeddingProvider, RunTestsTool, WebFetchTool, WebSearchTool,
 };
 // #1225: a policy de sandbox por tool, construida a partir de `agent.sandbox`.
-use garraia_agents::sandbox::{SandboxBackend, SandboxMode, SandboxPolicy};
+use garraia_agents::sandbox::{
+    HOST_ONLY_SPAWNING_TOOLS, SandboxBackend, SandboxMode, SandboxPolicy,
+};
 use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 use garraia_config::{AppConfig, provider_key_env};
 use garraia_db::MemoryStore;
@@ -702,6 +704,10 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // camada adicional, nao substituta do safety gate. Secao ausente =>
     // `SandboxPolicy::default()` (Off) => comportamento identico ao de antes.
     bash_tool.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
+    // #1225 S2: uma vez por processo — `build_agent_runtime` roda uma vez na
+    // subida do gateway (`server.rs`). Fora de `sandbox_policy_from` porque no
+    // MCP a policy e reconstruida por chamada.
+    avisa_cobertura_do_sandbox(&config.agent.sandbox);
     runtime.register_tool(Box::new(bash_tool));
     // #1244: as file tools do gateway recebem um jail obrigatorio. As raizes
     // sao `agent.file_roots` (vazio por padrao) mais o `working_dir` da
@@ -1443,6 +1449,14 @@ fn carregar_e_aplicar_catalogo(
 /// - Nomes em `sandboxed_tools`/`elevated` sao trimados. A comparacao na
 ///   policy e exata, entao `" bash"` no YAML seria um no-op silencioso.
 ///   Maiusculas NAO sao normalizadas: o registry de tools e case-sensitive.
+/// - `backend = ssh` com `network_disabled` ou `mount_workdir` em `true`
+///   (os defaults) e uma policy que o backend **nao consegue honrar**
+///   (#1225 S3, ADR 0019). A conversao NAO desliga as flags nem rebaixa o
+///   modo: passa tudo intacto e e o `wrap_command` — ponto unico por onde
+///   gateway, `garra chat` e `garra mcp-agent` passam — que recusa cada
+///   comando fail-closed ate o operador escrever `false` nas duas. Aqui so
+///   fica o `warn!` de boot, para o problema ter nome antes do primeiro
+///   comando recusado.
 ///
 /// Com a secao ausente (`mode = off`, o default), devolve exatamente
 /// `SandboxPolicy::default()`: zero mudanca de comportamento.
@@ -1456,9 +1470,14 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
         CfgMode::Allowlist => SandboxMode::Allowlist,
     };
     // Decidido aqui, e nao no ponto de uso, porque `mode` e movido para dentro
-    // da `SandboxPolicy` construida no fim. Gate dos dois `warn!` abaixo: com a
+    // da `SandboxPolicy` construida no fim. Gate dos `warn!` abaixo: com a
     // secao desligada o `validate_sandbox` retorna cedo e nao diz nada, e as
     // duas camadas nao podem discordar sobre o mesmo estado.
+    //
+    // O aviso de cobertura (#1225 S2) NAO mora aqui de proposito: no `garra
+    // mcp-server` esta funcao roda a cada chamada da tool `garra_agent`
+    // (`mcp_agent::build_tools`), e um aviso por processo nao pode depender
+    // de quantas vezes a policy e construida — ver `avisa_cobertura_do_sandbox`.
     let sandbox_ativo = mode != SandboxMode::Off;
 
     let backend = match cfg.backend {
@@ -1491,7 +1510,7 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
     };
 
     let padrao = SandboxPolicy::default();
-    SandboxPolicy {
+    let policy = SandboxPolicy {
         mode,
         sandboxed_tools: nomes_de_tool(&cfg.sandboxed_tools),
         backend,
@@ -1514,7 +1533,54 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
         elevated: nomes_de_tool(&cfg.elevated),
         mount_workdir: cfg.mount_workdir,
         network_disabled: cfg.network_disabled,
+    };
+
+    // #1225 S3: mesmo predicado que o `wrap_command` usa para recusar. Aqui
+    // ele so da nome ao problema no boot; a recusa por comando fica na policy,
+    // que e o ponto que roda sempre — inclusive para policies montadas sem
+    // passar por esta funcao. O host nao entra no log.
+    if sandbox_ativo {
+        let nao_honradas = policy.chaves_que_ssh_nao_honra();
+        if !nao_honradas.is_empty() {
+            warn!(
+                chaves = ?nao_honradas,
+                "agent.sandbox.backend=ssh com isolamento que o ssh nao consegue honrar: todo \
+                 comando sandboxado falha fechado ate as chaves estarem explicitamente em false \
+                 (veja `garra config check`)"
+            );
+        }
     }
+    policy
+}
+
+/// #1225 S2: diz, **uma vez por processo**, o que `agent.sandbox.mode != off`
+/// cobre e o que fica no host — porque `mode = all` se le como "nada roda no
+/// host", e isso vale para exatamente uma tool
+/// (`garraia_config::sandbox::TOOLS_SANDBOXAVEIS`); as de
+/// [`HOST_ONLY_SPAWNING_TOOLS`] nunca consultam a policy.
+///
+/// Separada de [`sandbox_policy_from`] de proposito. A policy e construida
+/// onde o `BashTool` nasce, e no `garra mcp-server` isso acontece **a cada
+/// chamada** da tool `garra_agent` (`mcp_agent::build_tools`, via
+/// `handle_agent_call`): um `warn!` dentro da conversao sairia por chamada,
+/// em stderr e no `garraia.log`, nao por subida. Quem chama esta funcao e
+/// cada ponto de subida, uma vez: `build_agent_runtime` (gateway),
+/// `chat::register_cli_tools` (`garra chat`) e `mcp_server::run_mcp_server`
+/// (so com a tool `garra_agent` ligada — sem ela nenhuma tool spawna naquele
+/// processo e o aviso seria ruido sobre nada).
+///
+/// Nomes de tool nao sao segredo e nenhum valor de config entra na linha.
+/// Com `mode = off` nao diz nada, como o resto da secao.
+pub fn avisa_cobertura_do_sandbox(cfg: &garraia_config::SandboxConfig) {
+    if cfg.mode == garraia_config::SandboxMode::Off {
+        return;
+    }
+    warn!(
+        cobertas = %garraia_config::sandbox::TOOLS_SANDBOXAVEIS.join(", "),
+        no_host = %HOST_ONLY_SPAWNING_TOOLS.join(", "),
+        "agent.sandbox: o sandbox envolve so as tools em `cobertas`; as de `no_host` \
+         continuam spawnando no host com mode != off (#1225)"
+    );
 }
 
 /// Nomes de tool trimados, sem entradas vazias.
@@ -2717,6 +2783,69 @@ mod tests {
         );
     }
 
+    /// #1225 S2: a outra metade do espelho. `TOOLS_SO_NO_HOST` e a copia, em
+    /// `garraia-config`, de `HOST_ONLY_SPAWNING_TOOLS` — que por sua vez e
+    /// presa ao codigo por um teste de varredura em `garraia-agents`. Esta
+    /// crate e a unica que ve as duas, entao e aqui que a copia e conferida.
+    #[test]
+    fn tools_so_no_host_espelha_host_only_spawning_tools() {
+        let mut agents: Vec<&str> = HOST_ONLY_SPAWNING_TOOLS.to_vec();
+        agents.sort_unstable();
+        let mut config: Vec<&str> = garraia_config::sandbox::TOOLS_SO_NO_HOST.to_vec();
+        config.sort_unstable();
+        assert_eq!(
+            config, agents,
+            "garraia_config::TOOLS_SO_NO_HOST divergiu de \
+             garraia_agents::sandbox::HOST_ONLY_SPAWNING_TOOLS — o `config check` passaria a \
+             nomear tools erradas ao operador"
+        );
+        // E as duas listas da config sao disjuntas: uma tool nao pode ser
+        // "envolvida" e "so no host" ao mesmo tempo.
+        for t in garraia_config::sandbox::TOOLS_SANDBOXAVEIS {
+            assert!(!config.contains(t), "`{t}` esta nas duas listas");
+        }
+    }
+
+    /// #1225 S2: quem liga o sandbox le, uma vez na subida, quais tools
+    /// ficam de fora — e quem deixa `off` nao le nada, porque a secao inteira
+    /// esta inerte. O aviso sai de `avisa_cobertura_do_sandbox`, e **nao** de
+    /// `sandbox_policy_from`: no `garra mcp-server` a policy e reconstruida a
+    /// cada chamada da tool `garra_agent`, e "uma vez por processo" nao pode
+    /// depender de quantas vezes a conversao roda.
+    #[tracing_test::traced_test]
+    #[test]
+    fn sandbox_ligado_avisa_na_subida_quais_tools_ficam_no_host() {
+        let mut ligado = AppConfig::default();
+        ligado.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        ligado.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+
+        // A conversao e muda sobre cobertura, mesmo com o sandbox ligado.
+        let _ = sandbox_policy_from(&ligado.agent.sandbox);
+        assert!(
+            !logs_contain("continuam spawnando no host"),
+            "`sandbox_policy_from` nao pode avisar cobertura: no MCP roda por chamada"
+        );
+
+        // `off`: a secao inteira esta inerte, inclusive o aviso.
+        avisa_cobertura_do_sandbox(&AppConfig::default().agent.sandbox);
+        assert!(
+            !logs_contain("continuam spawnando no host"),
+            "mode=off nao pode avisar sobre cobertura"
+        );
+
+        avisa_cobertura_do_sandbox(&ligado.agent.sandbox);
+        assert!(
+            logs_contain("continuam spawnando no host"),
+            "o aviso de cobertura nao saiu na subida"
+        );
+        for tool in HOST_ONLY_SPAWNING_TOOLS {
+            assert!(
+                logs_contain(tool),
+                "`{tool}` nao foi nomeada no aviso da subida"
+            );
+        }
+    }
+
     #[test]
     fn sandbox_secao_ausente_e_identica_ao_default_da_policy() {
         let config = AppConfig::default();
@@ -2784,6 +2913,78 @@ mod tests {
             .wrap_command("bash", "echo nunca", "/tmp")
             .expect_err("sem backend o comando tem de ser recusado");
         assert!(err.to_string().contains("nenhum backend"), "err = {err}");
+    }
+
+    /// #1225 S3: `backend = ssh` com `network_disabled`/`mount_workdir` no
+    /// default (`true`) atravessa a conversao intacto e e o `wrap_command`
+    /// que recusa — o ponto unico por onde gateway, `garra chat` e
+    /// `garra mcp-agent` passam. Nada aqui rebaixa a policy nem desliga as
+    /// flags por conta propria: quem reconhece que ssh nao isola e o
+    /// operador, com `false` explicito.
+    #[test]
+    fn sandbox_ssh_com_flags_no_default_e_recusado_no_wrap() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Ssh);
+        config.agent.sandbox.ssh_host = Some("box.interno".into());
+        let p = sandbox_policy_from(&config.agent.sandbox);
+        assert_eq!(
+            p.backend,
+            Some(SandboxBackend::Ssh("box.interno".into())),
+            "o backend E construido: a recusa e por comando, nao por boot"
+        );
+        assert!(
+            p.network_disabled && p.mount_workdir,
+            "a conversao nao mexe nas flags por conta propria"
+        );
+        let err = p
+            .wrap_command("bash", "echo nunca", "/tmp")
+            .expect_err("ssh + defaults tem de ser recusado");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("agent.sandbox.network_disabled"),
+            "msg = {msg}"
+        );
+        assert!(msg.contains("agent.sandbox.mount_workdir"), "msg = {msg}");
+        assert!(!msg.contains("box.interno"), "vazou o host: {msg}");
+        assert!(
+            !msg.contains("não encontrado no host"),
+            "o erro de backend ausente mascarou o de policy: {msg}"
+        );
+    }
+
+    /// O reconhecimento explicito destrava: com as duas em `false` a recusa
+    /// da S3 nao dispara. O que sobra depende do host (cliente ssh instalado
+    /// ou nao) e os dois desfechos legitimos sao assertados — o que NAO pode
+    /// acontecer e o erro de "nao consegue honrar".
+    #[test]
+    fn sandbox_ssh_com_flags_em_false_explicito_passa_pela_recusa_da_s3() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Ssh);
+        config.agent.sandbox.ssh_host = Some("box.interno".into());
+        config.agent.sandbox.network_disabled = false;
+        config.agent.sandbox.mount_workdir = false;
+        let p = sandbox_policy_from(&config.agent.sandbox);
+        assert!(p.chaves_que_ssh_nao_honra().is_empty());
+        match p.wrap_command("bash", "echo oi", "/tmp") {
+            Ok(Some(linha)) => assert!(
+                linha.starts_with("ssh 'box.interno' -- sh -lc "),
+                "linha = {linha}"
+            ),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("não encontrado no host"),
+                    "erro inesperado: {msg}"
+                );
+                assert!(
+                    !msg.contains("nao consegue honrar"),
+                    "reconhecimento explicito ignorado: {msg}"
+                );
+            }
+            Ok(None) => panic!("mode = all deveria sandboxar `bash`"),
+        }
     }
 
     /// `image` vazia cai no default da policy — nunca vira uma imagem vazia

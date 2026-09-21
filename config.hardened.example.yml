@@ -85,21 +85,26 @@ agent:
   #     `code_review` e `repo_search` continuam nascendo no host mesmo com
   #     `mode: all`. Tracking na #1225 (slices S2/S3).
   #   - `backend: ssh` NÃO é sandbox: é execução remota. Ele isola o host
-  #     local e nada mais, e ignora `network_disabled` e `mount_workdir`.
+  #     local e nada mais, e NÃO consegue honrar `network_disabled` nem
+  #     `mount_workdir` — por isso, com `ssh`, as duas PRECISAM estar em
+  #     `false` explícito (o default é `true`), senão todo comando é recusado
+  #     fail-closed (#1225 S3). O `false` é o seu reconhecimento de que não há
+  #     isolamento de rede nem de mount ali.
   #   - Na prática é unix. No Windows o bash tool usa `powershell -Command`,
   #     que não reparseia o quoting POSIX do wrap.
   #   - `elevated` é escape hatch: a tool listada roda NO HOST. Só é
   #     duplamente gated com `tool_confirmation_enabled: true`.
-  # `garra config check` reporta Error para `mode != off` sem `backend` e para
-  # `backend: ssh` sem `ssh_host` — mas ele e um relatorio que voce roda, nao um
+  # `garra config check` reporta Error para `mode != off` sem `backend`, para
+  # `backend: ssh` sem `ssh_host` e para `backend: ssh` com `network_disabled`
+  # ou `mount_workdir` em `true` — mas ele e um relatorio que voce roda, nao um
   # gate de boot: o gateway sobe mesmo assim (e a recusa real acontece na hora
   # de montar a policy e no wrap de cada comando, as duas fail-closed).
   sandbox:
     mode: all              # off (default) | all | allowlist
     backend: podman        # docker | podman | ssh — rootless é o preferido
     image: debian:bookworm-slim
-    network_disabled: true # ignorado por `backend: ssh`
-    mount_workdir: true    # ignorado por `backend: ssh`
+    network_disabled: true # com `backend: ssh` PRECISA ser false (senão recusa)
+    mount_workdir: true    # com `backend: ssh` PRECISA ser false (senão recusa)
     # ssh_host: bastiao.interno   # obrigatório quando backend: ssh
     # sandboxed_tools: ["bash"]   # usado só quando mode: allowlist
     elevated: []           # tools que ESCAPAM do sandbox e rodam no host

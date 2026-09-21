@@ -48,18 +48,33 @@ impl ToolRegistry {
         }
     }
 
-    /// Programmatic tool calling (P1 do gap analysis 2026-09-15, slice 1 —
-    /// o "Code Mode" do Garra): executa um **programa de tools** em JSON num
-    /// único turno, sem voltar ao modelo entre passos.
+    /// Protótipo de programmatic tool calling (P1 do gap analysis
+    /// 2026-09-15, slice 1, #1224): executa um **programa de tools** em JSON
+    /// em sequência, sem voltar ao modelo entre passos.
+    ///
+    /// **Deprecated desde a #1226 S-E — não use em código novo.** Esta função
+    /// vive em `garraia-tools`, crate da qual o `AgentRuntime`
+    /// (`garraia-agents`) não depende; ela não consulta o `ToolGate` dos
+    /// modos e não tem nenhum chamador fora dos testes desta crate. Ou seja:
+    /// nada aqui é "o runtime executando" coisa alguma. A `tool_program`
+    /// intrínseca do `AgentRuntime`, com gate por passo, é a #1226 S-B — é lá
+    /// que o caminho se torna alcançável. O `since` do atributo é a versão do
+    /// trem de release GarraIA (0.4.3), não a desta crate (0.1.0).
     ///
     /// Formato: `{ "steps": [ { "tool": "repo_search", "args": {...},
     /// "as": "achados" }, ... ] }`. Substituição: qualquer valor string do
     /// `args` com `"$nome_var"` recebe o output textual do passo anterior
     /// (na íntegra — sem interpolação parcial, sem injeção de prefixo).
     ///
-    /// Fail-fast: o primeiro passo que falha encerra o programa; passos já
-    /// executados ficam no resultado parcial. Orçamento: `max_steps` limita
-    /// o tamanho do programa (default 16) — programa não é loop infinito.
+    /// Fail-fast: o primeiro passo que falha encerra o programa com `Err`
+    /// carregando o índice do passo; não há resultado parcial — os passos já
+    /// executados são descartados. Orçamento: `max_steps` limita o tamanho do
+    /// programa (default 16) — programa não é loop infinito.
+    #[deprecated(
+        since = "0.4.3",
+        note = "prototipo sem chamador e sem ToolGate; a tool_program intrinseca do \
+                AgentRuntime e a #1226 S-B"
+    )]
     pub async fn execute_program(
         &self,
         ctx: &ToolContext,
@@ -398,6 +413,10 @@ mod tests {
     }
 
     #[tokio::test]
+    // `execute_program` esta `#[deprecated]` (#1226 S-E) mas continua no
+    // fonte; este e o unico lugar que a exercita, e o allow e o que mantem
+    // `clippy --all-targets -- -D warnings` verde sem apagar a cobertura.
+    #[allow(deprecated)]
     async fn registry_registra_e_busca() {
         // ── Programmatic tool calling (P1 gap analysis 2026-09-15) ──────
 

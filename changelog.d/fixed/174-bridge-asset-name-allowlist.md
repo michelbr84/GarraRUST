@@ -1,0 +1,1 @@
+- Bridge WhatsApp: `materialize` agora valida o nome de cada asset contra uma accept-list de unico segmento de arquivo antes de qualquer escrita em disco, fechando o path-injection apontado pelo CodeQL (alerta 174) para qualquer implementacao futura de `BridgeAssets` — nomes como `../escapou`, path absoluto, separador de Windows e NUL viram `BridgeError::AssetName`.

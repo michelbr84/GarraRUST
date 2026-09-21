@@ -780,7 +780,8 @@ O `BashTool` pode envolver o comando num backend em vez de executá-lo direto
 no host. A política mora em `garraia_agents::sandbox::SandboxPolicy`, a
 configuração do operador é a seção `agent.sandbox` (#1225) e a tradução entre
 as duas é `garraia_gateway::bootstrap::sandbox_policy_from` — a mesma função
-nos três pontos de produção (gateway, `garra chat`, `garra mcp-agent`).
+nos três pontos de produção (gateway, `garra chat`, `garra mcp-server` — tool
+`garra_agent`).
 
 Até a #1225 a seção não existia: os três construtores fixavam
 `SandboxPolicy::default()` (= `off`) e `set_sandbox_policy` só era chamado
@@ -793,7 +794,8 @@ pelos próprios testes. A contenção estava escrita, testada e **inalcançável
 |---|---|---|---|---|---|
 | `docker` | `--network none` quando `network_disabled` (default `true`) | Só o `cwd` montado rw quando `mount_workdir` (default `true`) e o diretório existe; o resto é a imagem | `--security-opt no-new-privileges`; **sem** `--user`, `--read-only`, `--cap-drop`, limite de pids/memória | Container efêmero (`--rm`) no host local | Não é hardening completo do container (flags acima ficam para um slice próprio); o daemon do Docker é root, então escape do container é escape para root; o `cwd` montado é rw e é código do projeto |
 | `podman` | igual ao `docker` | igual ao `docker` | igual ao `docker`, mais o rootless do próprio podman quando instalado assim | Container efêmero no host local | Idem, menos a parte do daemon root quando rootless |
-| `ssh` | **nenhuma** — `network_disabled` é **ignorado** | **nenhuma** — `mount_workdir` e `image` são **ignorados** | os do usuário SSH no host remoto | Máquina remota, shell do usuário SSH | **Não é sandbox.** É execução remota: isola o host *local* e nada mais. O comando roda com tudo que aquele usuário pode fazer, inclusive rede |
+| `ssh` | **nenhuma** — e a policy é **recusada** (fail-closed, em todo comando) enquanto `network_disabled = true`, que é o default | **nenhuma** — idem enquanto `mount_workdir = true`; `image` é ignorado | os do usuário SSH no host remoto | Máquina remota, shell do usuário SSH | **Não é sandbox.** É execução remota: isola o host *local* e nada mais. O comando roda com tudo que aquele usuário pode fazer, inclusive rede. Só passa com `network_disabled = false` **e** `mount_workdir = false` explícitos — o reconhecimento do operador (#1225 S3, ADR 0019) |
+| *qualquer* | — | — | — | Só a tool **`bash`** passa pelo backend (`TOOLS_SANDBOXAVEIS`) | **Tools cobertas: `bash`. No host, mesmo com `mode = all`:** `run_tests`, `git_diff`, `code_review`, `repo_search` — `HOST_ONLY_SPAWNING_TOOLS` em `garraia-agents/src/sandbox.rs`, presa por teste que varre `src/tools/`. Dito uma vez **por processo** na subida (`avisa_cobertura_do_sandbox`: gateway, `garra chat`, `garra mcp-server` com `garra_agent` ligado — não por chamada) e como Warning do `config check` **quando uma delas é listada** em `sandboxed_tools`/`elevated`; a seção coerente fica verde sob `--strict` (#1225 S2) |
 
 Três limites valem para os três backends:
 
@@ -801,7 +803,11 @@ Três limites valem para os três backends:
   e `repo_search` continuam nascendo no host mesmo com `mode = all` — a
   policy é consultada dentro do `BashTool` e em nenhum outro lugar.
   Acompanhamento na #1225 (slices S2/S3) — a issue segue aberta. Quem liga `mode = all` esperando "nada roda no
-  host" está enganado sobre quatro tools.
+  host" está enganado sobre quatro tools. Desde a S2 (parte segura) a lista
+  das quatro é a constante `HOST_ONLY_SPAWNING_TOOLS` (presa por teste de
+  varredura), dita em `warn!` uma vez por processo na subida e como Warning do
+  `config check` quando uma delas é listada em `sandboxed_tools`/`elevated`;
+  roteá-las pelo sandbox continua na issue.
 - **Unix, e agora dito em voz alta.** No Windows o `BashTool` escolhe
   `powershell -Command` e receberia uma linha com quoting POSIX
   (`docker run ... sh -lc '…'`), que o PowerShell não reparseia da mesma
@@ -827,6 +833,7 @@ Três limites valem para os três backends:
 | **S** Spoofing | Backend ausente no host faz o comando cair no host em silêncio. | **Fail-closed**: `wrap_command` devolve erro e o `BashTool` recusa o comando; `backend = ssh` sem `ssh_host` também não constrói backend nenhum. | — |
 | **E** Elevation of privilege | **Injeção de opção** por `ssh_host` / `image`: `sh_quote` garante um token, não um *operando*. O host fica antes do `--` em `ssh {host} -- sh -lc …`, então `ssh_host: "-oProxyCommand=…"` é lido como flag e executa no host **local**, já depois do `safety_gate`; `image: "-…"` desloca o posicional do `docker run`. | Valor começando com `-` é recusado em **três** camadas. Duas rodam sempre e são as que garantem a propriedade: `sandbox_policy_from` no boot (backend não é construído / imagem cai no default, com `warn!` que nunca loga o valor) e o próprio `wrap_command` (Err fail-closed, antes do `is_available()`). A terceira é o `garra config check`, que **reporta** Error — comando opt-in, **não** gate de boot: nada no boot do gateway invoca o `run_check`. Nenhum host e nenhuma imagem reais começam com `-`. | Conserto estrutural: montar **argv** em vez de uma linha de shell, eliminando a classe inteira — tracking na #1225 (slices S2/S3), como já recomendado na #1231. |
 | **T** Tampering | Sandbox ligado numa plataforma onde o wrap não tem significado. | `wrap_command` devolve `Err` fail-closed fora de unix, e o `config check` reporta Error em `cfg!(windows)` — em vez de entregar uma linha POSIX ao `powershell -Command`. | — |
+| **S** Spoofing | Operador escreve `backend: ssh` + `ssh_host` e mais nada, e a config **lê** como rede desligada e workdir contido (`network_disabled`/`mount_workdir` têm default `true`) — quando o ramo `ssh` não tem `--network none` nem mount e, até a S3, **ignorava** as duas em silêncio. | **Fail-closed** (#1225 S3, ADR 0019): `SandboxPolicy::chaves_que_ssh_nao_honra` lista o que está ligado e o ssh não honra, e `wrap_command` recusa cada comando enquanto a lista não for vazia — antes do `is_available()`, para o erro de "ssh não instalado" não mascarar este. É o ponto único por onde gateway, `garra chat` e `garra mcp-agent` passam; `sandbox_policy_from` **não** desliga as flags nem rebaixa o modo, só emite `warn!` no boot (sem o host). O `config check` reporta **Error** por chave ligada, nomeando a chave e a ação. Destrava-se só com `network_disabled = false` **e** `mount_workdir = false` explícitos: o `false` é o reconhecimento de que ssh é execução remota sem isolamento de rede/mount. A superfície `agent.sandbox` não saiu em release antes disto, então não há migração. | Se um dia o ssh passar a honrar alguma das duas (ex.: `-o` de túnel/`sshfs`), é o predicado que encolhe — nunca o ramo que cresce em silêncio. |
 
 ### Config mínima
 
@@ -842,6 +849,20 @@ agent:
     elevated: []                    # tools que rodam NO HOST
 ```
 
+E a única forma de `ssh` passar (#1225 S3) — as duas flags em `false`
+**explícito**, porque o ssh não honra nenhuma delas e o default `true` é
+recusado:
+
+```yaml
+agent:
+  sandbox:
+    mode: all
+    backend: ssh                    # execução REMOTA, não contenção
+    ssh_host: bastiao.interno
+    network_disabled: false         # reconhecimento: ssh não desliga rede
+    mount_workdir: false            # reconhecimento: ssh não monta nada
+```
+
 O `garra config check` é um relatório que o operador roda (`config_cmd.rs`) ou
 que o `garra doctor` invoca — **não** é um gate de boot, e um gateway com a
 seção inválida sobe. O que ele faz é dar nome ao problema antes de alguém
@@ -849,13 +870,18 @@ esbarrar nele em produção; quem impede o comando de rodar são as camadas 2 e 
 descritas acima.
 
 Ele reporta Error para `mode != off` sem `backend`, `backend: ssh` sem
-`ssh_host`, `ssh_host` ou `image` começando com `-`, e para a seção ligada fora
-de unix. Avisa (Warning) que `ssh` é execução remota — **sempre**, mesmo com a
-seção coerente —, que `ssh` ignora `network_disabled`/`mount_workdir`, que
+`ssh_host`, `backend: ssh` com `network_disabled` ou `mount_workdir` em `true`
+(um Error por chave ligada, nomeando a chave e o `false` explícito que a
+destrava — #1225 S3), `ssh_host` ou `image` começando com `-`, e para a seção
+ligada fora de unix. Avisa (Warning) que `ssh` é execução remota — **sempre**,
+mesmo com a seção coerente —, que
 `elevated` sem confirmação humana é escape hatch desacompanhado, que
 `mode: all` com `bash` em `elevated` deixa a seção inerte, que `allowlist` com
-lista vazia sandboxa nada, e nomeia cada entrada de
-`sandboxed_tools`/`elevated` que não é uma tool que o sandbox saiba envolver.
+lista vazia sandboxa nada, que uma tool de `HOST_ONLY_SPAWNING_TOOLS` listada
+em `sandboxed_tools`/`elevated` roda no host com qualquer `mode` (só quando
+listada — a seção coerente fica verde sob `--strict`; #1225 S2), e nomeia cada
+entrada de `sandboxed_tools`/`elevated` que não é uma tool que o sandbox saiba
+envolver.
 Nenhum finding ecoa o `ssh_host`; nomes de tool são ecoados de propósito — é o
 ponto do finding.
 

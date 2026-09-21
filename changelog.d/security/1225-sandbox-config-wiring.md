@@ -14,8 +14,9 @@
   `sandboxed_tools`, `elevated`, `mount_workdir`, `network_disabled`), lida
   nos tres pontos de producao pela MESMA funcao
   (`garraia_gateway::bootstrap::sandbox_policy_from`), como ja acontece com
-  os adapters de hardware: gateway, `garra chat` e `garra mcp-agent` nao podem
-  discordar sobre onde um comando roda. O caminho MCP e o que mais ganha —
+  os adapters de hardware: gateway, `garra chat` e `garra mcp-server` (tool
+  `garra_agent`) nao podem discordar sobre onde um comando roda. O caminho MCP
+  e o que mais ganha —
   la nao existe canal de confirmacao humana, entao o sandbox e a unica camada
   que pode conter o que passa do tier arriscado.
   Secao ausente continua sendo `mode: off`: zero mudanca de comportamento

@@ -8,6 +8,7 @@
 //! - `parallel_execute`: Run agents concurrently via tokio::spawn
 //! - `pipeline_execute`: Chain agents (output A -> input B)
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
@@ -116,6 +117,10 @@ pub struct SubAgentConfig {
     pub temperature: Option<f64>,
     /// Timeout in seconds
     pub timeout_secs: u64,
+    /// Sessão (`sessions.id` do `SessionStore`) à qual o run pertence, gravada
+    /// em `agent_runs.session_id` pelo ledger (#1227 slice 3). `None` para run
+    /// avulso — antes o campo não existia e todo run nascia sem sessão.
+    pub session_id: Option<String>,
 }
 
 impl SubAgentConfig {
@@ -128,6 +133,7 @@ impl SubAgentConfig {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             timeout_secs: 60,
+            session_id: None,
         }
     }
 
@@ -140,6 +146,12 @@ impl SubAgentConfig {
     /// Set timeout
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
+        self
+    }
+
+    /// Associa o run a uma sessão; o ledger grava o id em `agent_runs.session_id`.
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
         self
     }
 }
@@ -155,19 +167,34 @@ pub struct AgentCoordinator {
     /// Maximum concurrent agents
     max_concurrent: usize,
     /// Ledger durável de runs (P1 gap analysis 2026-09-15). Default no-op;
-    /// gateway/CLI injetam o adapter sobre `SessionStore::agent_runs`.
+    /// o wiring de produção (subida do gateway/CLI chamando
+    /// `mark_interrupted_runs`, scheduler gravando run) é a #1227 — hoje
+    /// nenhum caminho de produção injeta o adapter, embora `DbRunLedger` já
+    /// aceite o `Arc<tokio::sync::Mutex<SessionStore>>` do `AppState`.
     ledger: Arc<dyn RunLedger>,
 }
 
 /// Ledger durável de runs de sub-agentes.
 ///
 /// `RunId` é gerado pelo chamador (uuid) e devolvido no `on_start` para o
-/// `on_finish`. Implementação padrão: no-op. O gateway/CLI injetam o adapter
-/// sobre a tabela `agent_runs` (`garraia-db`), que também audita runs
-/// `interrupted` no restart.
+/// `on_finish`. Implementação padrão: no-op. O adapter sobre a tabela
+/// `agent_runs` (`garraia-db`, `DbRunLedger`) existe, é testado e aceita o
+/// `Arc<tokio::sync::Mutex<SessionStore>>` que o gateway já guarda em
+/// `AppState`, mas ainda não tem chamador de produção — o wiring na subida
+/// do gateway/CLI (que audita runs `interrupted` no restart) é a #1227.
+///
+/// O trait usa [`async_trait`] — exceção documentada à regra "AFIT nativo"
+/// (CLAUDE.md §Rust), pela mesma razão de `garraia_storage::ObjectStore`: é
+/// consumido como `dyn RunLedger` (`AgentCoordinator::ledger`), e AFIT + `dyn`
+/// não fecham em Rust stable. Os métodos precisam ser `async` porque o adapter
+/// real faz `.lock().await` no mutex do tokio; um `std::sync::Mutex` aqui
+/// obrigaria o gateway a manter um segundo store só para o ledger.
+#[async_trait]
 pub trait RunLedger: Send + Sync {
-    fn on_start(&self, goal: &str, mode: Option<&str>, session_id: Option<&str>) -> String;
-    fn on_finish(
+    /// Grava o início do run e devolve o `run_id` a ser passado ao `on_finish`.
+    async fn on_start(&self, goal: &str, mode: Option<&str>, session_id: Option<&str>) -> String;
+    /// Fecha o run com status terminal (`done`/`error`/`cancelled`).
+    async fn on_finish(
         &self,
         run_id: &str,
         status: garraia_db::RunStatus,
@@ -179,11 +206,17 @@ pub trait RunLedger: Send + Sync {
 /// Sem ledger (default): comportamento atual, zero custo.
 pub struct NoopLedger;
 
+#[async_trait]
 impl RunLedger for NoopLedger {
-    fn on_start(&self, _goal: &str, _mode: Option<&str>, _session_id: Option<&str>) -> String {
+    async fn on_start(
+        &self,
+        _goal: &str,
+        _mode: Option<&str>,
+        _session_id: Option<&str>,
+    ) -> String {
         String::new()
     }
-    fn on_finish(
+    async fn on_finish(
         &self,
         _run_id: &str,
         _status: garraia_db::RunStatus,
@@ -194,37 +227,56 @@ impl RunLedger for NoopLedger {
 }
 
 /// Adapter sobre a tabela `agent_runs` do `SessionStore` (garraia-db).
-/// Injetado pelo gateway/CLI via `with_ledger`.
+///
+/// Recebe o mesmo `Arc<tokio::sync::Mutex<SessionStore>>` que o gateway guarda
+/// em `AppState::session_store` (#1227 slice 3) — antes exigia
+/// `std::sync::Mutex`, tipo incompatível, e o wiring era impossível. Continua
+/// sem chamador de produção: nenhum caminho do gateway/CLI constrói um
+/// `AgentCoordinator` hoje, então `with_ledger` só é chamado em teste. O
+/// wiring na subida segue sendo a #1227.
+///
+/// Falha de I/O no SQLite vira aviso no log e não derruba o run — o ledger é
+/// auditoria a posteriori, não pré-condição de execução (comportamento
+/// herdado da #1224, inalterado aqui).
 pub struct DbRunLedger {
-    store: Arc<std::sync::Mutex<garraia_db::SessionStore>>,
+    store: Arc<tokio::sync::Mutex<garraia_db::SessionStore>>,
 }
 
 impl DbRunLedger {
-    pub fn new(store: Arc<std::sync::Mutex<garraia_db::SessionStore>>) -> Self {
+    pub fn new(store: Arc<tokio::sync::Mutex<garraia_db::SessionStore>>) -> Self {
         Self { store }
     }
 }
 
+#[async_trait]
 impl RunLedger for DbRunLedger {
-    fn on_start(&self, goal: &str, mode: Option<&str>, session_id: Option<&str>) -> String {
+    async fn on_start(&self, goal: &str, mode: Option<&str>, session_id: Option<&str>) -> String {
         let run_id = uuid::Uuid::new_v4().to_string();
-        if let Ok(store) = self.store.lock()
-            && let Err(e) = store.start_agent_run(&run_id, session_id, goal, mode)
-        {
+        // O guard morre no fim do statement: o mutex do gateway não fica
+        // segurado enquanto se loga.
+        let started = self
+            .store
+            .lock()
+            .await
+            .start_agent_run(&run_id, session_id, goal, mode);
+        if let Err(e) = started {
             tracing::warn!(erro = %e, "run ledger: falhou ao gravar início do run");
         }
         run_id
     }
-    fn on_finish(
+    async fn on_finish(
         &self,
         run_id: &str,
         status: garraia_db::RunStatus,
         result_snippet: Option<&str>,
         error_snippet: Option<&str>,
     ) {
-        if let Ok(store) = self.store.lock()
-            && let Err(e) = store.finish_agent_run(run_id, status, result_snippet, error_snippet)
-        {
+        let finished =
+            self.store
+                .lock()
+                .await
+                .finish_agent_run(run_id, status, result_snippet, error_snippet);
+        if let Err(e) = finished {
             tracing::warn!(erro = %e, "run ledger: falhou ao fechar o run");
         }
     }
@@ -274,8 +326,15 @@ impl AgentCoordinator {
         let ledger = Arc::clone(&self.ledger);
 
         let join_handle = tokio::spawn(async move {
-            // Ledger: todo run nasce auditado; fim grava status terminal.
-            let run_id = ledger.on_start(&config.task, Some(config.mode.as_str()), None);
+            // Ledger: todo run nasce auditado; fim grava status terminal. A
+            // sessão vem do config (#1227 slice 3) — antes era sempre `None`.
+            let run_id = ledger
+                .on_start(
+                    &config.task,
+                    Some(config.mode.as_str()),
+                    config.session_id.as_deref(),
+                )
+                .await;
             let outcome: AgentResult = async {
                 let start = std::time::Instant::now();
 
@@ -406,12 +465,14 @@ impl AgentCoordinator {
             } else {
                 garraia_db::RunStatus::Error
             };
-            ledger.on_finish(
-                &run_id,
-                status,
-                (!outcome.output.is_empty()).then_some(outcome.output.as_str()),
-                outcome.error.as_deref(),
-            );
+            ledger
+                .on_finish(
+                    &run_id,
+                    status,
+                    (!outcome.output.is_empty()).then_some(outcome.output.as_str()),
+                    outcome.error.as_deref(),
+                )
+                .await;
             outcome
         });
 
@@ -578,6 +639,10 @@ mod tests {
         assert_eq!(config.mode, AgentMode::Code);
         assert_eq!(config.system_prompt.as_deref(), Some("Custom prompt"));
         assert_eq!(config.timeout_secs, 120);
+        assert_eq!(config.session_id, None, "run avulso nasce sem sessão");
+
+        let config = config.with_session_id("sess-42");
+        assert_eq!(config.session_id.as_deref(), Some("sess-42"));
     }
 
     #[test]
@@ -629,7 +694,9 @@ mod tests {
 mod ledger_tests {
     use super::*;
     use garraia_db::SessionStore;
-    use std::sync::Mutex;
+    // O mesmo tipo que o gateway guarda em `AppState::session_store`: este
+    // módulo é a prova de compilação de que o adapter aceita o mutex do tokio.
+    use tokio::sync::Mutex;
 
     /// Provider fake: responde texto fixo (sem rede).
     struct FakeProvider;
@@ -661,8 +728,14 @@ mod ledger_tests {
         starts: std::sync::atomic::AtomicUsize,
         finishes: std::sync::atomic::AtomicUsize,
     }
+    #[async_trait]
     impl RunLedger for CountingLedger {
-        fn on_start(&self, _goal: &str, _mode: Option<&str>, _session_id: Option<&str>) -> String {
+        async fn on_start(
+            &self,
+            _goal: &str,
+            _mode: Option<&str>,
+            _session_id: Option<&str>,
+        ) -> String {
             self.starts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             format!(
@@ -670,7 +743,7 @@ mod ledger_tests {
                 self.starts.load(std::sync::atomic::Ordering::SeqCst)
             )
         }
-        fn on_finish(
+        async fn on_finish(
             &self,
             _run_id: &str,
             _status: garraia_db::RunStatus,
@@ -701,16 +774,49 @@ mod ledger_tests {
         assert_eq!(ledger.finishes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    /// #1227 slice 3: o adapter aceita o `Arc<tokio::sync::Mutex<SessionStore>>`
+    /// do gateway e grava start + finish com a sessão do `SubAgentConfig`.
     #[tokio::test]
-    async fn db_ledger_grava_no_store_real() {
+    async fn db_ledger_grava_no_store_real_com_session_id() {
+        let store: Arc<Mutex<SessionStore>> =
+            Arc::new(Mutex::new(SessionStore::in_memory().unwrap()));
+        let coord = AgentCoordinator::new(fake_provider(), "m")
+            .with_ledger(Arc::new(DbRunLedger::new(Arc::clone(&store))));
+        let handle = coord.spawn_agent(
+            SubAgentConfig::new("run via db", AgentMode::Ask).with_session_id("sess-1"),
+        );
+        let result = handle.join().await;
+        assert!(result.success, "{:?}", result.error);
+
+        let rows = store.lock().await.list_recent_agent_runs(10).unwrap();
+        assert_eq!(rows.len(), 1, "on_start gravou exatamente uma linha");
+        let row = &rows[0];
+        assert_eq!(row.goal, "run via db");
+        assert_eq!(row.mode.as_deref(), Some("ask"));
+        assert_eq!(
+            row.session_id.as_deref(),
+            Some("sess-1"),
+            "session_id vem do config, não mais None fixo"
+        );
+        // on_finish: status terminal + finished_at preenchido pelo UPDATE.
+        assert_eq!(row.status, garraia_db::RunStatus::Done);
+        assert!(row.finished_at.is_some(), "on_finish fechou o run");
+        assert_eq!(row.result_snippet.as_deref(), Some("feito"));
+    }
+
+    /// Run avulso (sem sessão) continua válido: `session_id` fica NULL.
+    #[tokio::test]
+    async fn db_ledger_run_sem_sessao_grava_null() {
         let store = Arc::new(Mutex::new(SessionStore::in_memory().unwrap()));
         let coord = AgentCoordinator::new(fake_provider(), "m")
             .with_ledger(Arc::new(DbRunLedger::new(Arc::clone(&store))));
-        let handle = coord.spawn_agent(SubAgentConfig::new("run via db", AgentMode::Ask));
-        handle.join().await;
-        let rows = store.lock().unwrap().list_recent_agent_runs(10).unwrap();
+        coord
+            .spawn_agent(SubAgentConfig::new("run avulso", AgentMode::Ask))
+            .join()
+            .await;
+        let rows = store.lock().await.list_recent_agent_runs(10).unwrap();
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_id, None);
         assert_eq!(rows[0].status, garraia_db::RunStatus::Done);
-        assert_eq!(rows[0].goal, "run via db");
     }
 }

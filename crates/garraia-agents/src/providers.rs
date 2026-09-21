@@ -5,6 +5,25 @@ use futures::Stream;
 use garraia_common::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// #1298: resultado da validação de um identificador de modelo contra o
+/// catálogo real do provider — o insumo da decisão transacional do `/model`
+/// no CLI: ou valida e troca, ou não altera o estado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidacaoDeModelo {
+    /// O catálogo completo do provider contém o modelo.
+    Listado,
+    /// O catálogo completo contém, mas a lista curada (`/models`) não
+    /// anuncia — rota válida com nome não anunciado (ex.: namespace de
+    /// terceiro servido pelo OpenRouter, como `z-ai/...`).
+    ListadoForaDaCurada,
+    /// O catálogo foi obtido e NÃO contém o modelo — a troca deve ser
+    /// recusada com o estado anterior intacto.
+    Ausente,
+    /// O provider não expõe catálogo — a validação é impossível por design;
+    /// quem decide a política é o chamador.
+    SemListagem,
+}
+
 /// Trait para integrações com provedores de LLM (Anthropic, OpenAI, Ollama, etc.).
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -35,6 +54,25 @@ pub trait LlmProvider: Send + Sync {
     /// Retorna a lista de modelos disponíveis para este provedor.
     async fn available_models(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// #1298: valida um identificador de modelo contra o catálogo REAL do
+    /// provider — não a lista curada que `available_models` devolve.
+    ///
+    /// O padrão reutiliza `available_models`: lista vazia vira `SemListagem`
+    /// (provider que não expõe catálogo), modelo presente vira `Listado` e
+    /// ausente vira `Ausente`. Só quem tem dois níveis de catálogo (OpenRouter,
+    /// com a curada de populares e a lista completa) precisa sobrescrever.
+    async fn validar_modelo(&self, model: &str) -> Result<ValidacaoDeModelo> {
+        let modelos = self.available_models().await?;
+        if modelos.is_empty() {
+            return Ok(ValidacaoDeModelo::SemListagem);
+        }
+        if modelos.iter().any(|m| m == model) {
+            Ok(ValidacaoDeModelo::Listado)
+        } else {
+            Ok(ValidacaoDeModelo::Ausente)
+        }
     }
 
     /// Verifica se o provedor está disponível e corretamente configurado.

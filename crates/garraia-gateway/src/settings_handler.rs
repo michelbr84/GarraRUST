@@ -315,7 +315,7 @@ fn settings() -> Vec<SettingSchema> {
             choices: None,
             validation: None,
             warning: Some(
-                "Empty while the mode is not `off` means every sandboxed command fails closed.",
+                "Empty while the mode is not `off` means every sandboxed command fails closed. `ssh` also fails closed until agent.sandbox.network_disabled and agent.sandbox.mount_workdir are an explicit false.",
             ),
         },
         // — Appearance —

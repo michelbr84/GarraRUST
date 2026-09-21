@@ -1757,7 +1757,9 @@ fn validate_sandbox(
     push_err: &impl Fn(&mut Vec<Finding>, &str, String),
     push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
 ) {
-    use crate::sandbox::{SandboxBackendKind, SandboxMode, TOOLS_SANDBOXAVEIS, parece_opcao};
+    use crate::sandbox::{
+        SandboxBackendKind, SandboxMode, TOOLS_SANDBOXAVEIS, TOOLS_SO_NO_HOST, parece_opcao,
+    };
     let sb = &agent.sandbox;
     if sb.mode == SandboxMode::Off {
         // `off` is the default and the whole section is inert; flagging the
@@ -1847,18 +1849,33 @@ fn validate_sandbox(
                 .to_string(),
         );
 
-        // The SSH branch of `wrap_command` builds `ssh <host> -- sh -lc ...`
-        // and consumes neither flag. Leaving them at their defaults reads as
-        // "network off, workdir mounted" and neither is true.
-        if sb.network_disabled || sb.mount_workdir {
-            push_warn(
-                findings,
-                "agent.sandbox.network_disabled",
-                "agent.sandbox.backend=ssh ignores agent.sandbox.network_disabled and \
-                 agent.sandbox.mount_workdir (and agent.sandbox.image). Set them to false so the \
-                 config stops claiming containment it does not provide."
-                    .to_string(),
-            );
+        // #1225 S3 (ADR 0019): the SSH branch of `wrap_command` builds
+        // `ssh <host> -- sh -lc ...` and has no way to honor either flag —
+        // there is no `--network none` and no mount in an ssh session. Both
+        // default to `true`, so a bare `backend: ssh` reads as "network off,
+        // workdir contained" and neither is true. The runtime refuses every
+        // sandboxed command fail-closed until both are an explicit `false`
+        // (the operator's acknowledgement that ssh is remote execution
+        // WITHOUT network/mount isolation), so this is an Error, one per key
+        // that is on, naming the key and the action.
+        for (ligada, chave) in [
+            (sb.network_disabled, "agent.sandbox.network_disabled"),
+            (sb.mount_workdir, "agent.sandbox.mount_workdir"),
+        ] {
+            if ligada {
+                push_err(
+                    findings,
+                    chave,
+                    format!(
+                        "{chave}=true cannot be honored by agent.sandbox.backend=ssh: ssh is \
+                         remote execution with no network or mount isolation, so every \
+                         sandboxed command fails closed until you acknowledge that explicitly \
+                         with agent.sandbox.network_disabled=false and \
+                         agent.sandbox.mount_workdir=false (or switch to docker/podman for \
+                         real containment)."
+                    ),
+                );
+            }
         }
     }
 
@@ -1912,6 +1929,7 @@ fn validate_sandbox(
     // (`Bash`, ` bash`) looks identical to a working entry in the file.
     // Names are compared trimmed; case is NOT normalised, because the tool
     // registry is case-sensitive and pretending otherwise would be a lie.
+    let cobertas = TOOLS_SANDBOXAVEIS.join("`, `");
     for (campo, entradas) in [
         ("agent.sandbox.sandboxed_tools", &sb.sandboxed_tools),
         ("agent.sandbox.elevated", &sb.elevated),
@@ -1919,6 +1937,31 @@ fn validate_sandbox(
         for entrada in entradas {
             let nome = entrada.trim();
             if TOOLS_SANDBOXAVEIS.contains(&nome) {
+                continue;
+            }
+            // #1225 S2: the entry is a real tool that spawns on the host
+            // WITHOUT consulting the policy. Not a typo: the operator read
+            // `mode = all` as "everything" and listed one. Same severity (the
+            // entry is a no-op), honest message — and only here, when the
+            // config SHOWS the misunderstanding. A coherent section gets no
+            // Warning: `--strict` promotes Warning to exit 2, and the only
+            // way to clear an unconditional notice would be `mode = off`,
+            // i.e. pressure toward the less secure state. The notice every
+            // operator reads once is the startup `warn!`, not this finding.
+            if TOOLS_SO_NO_HOST.contains(&nome) {
+                push_warn(
+                    findings,
+                    campo,
+                    format!(
+                        "{campo} entry {nome:?} runs on the HOST whatever agent.sandbox.mode is: \
+                         it never consults the sandbox policy (only `{cobertas}` does — see \
+                         #1225), so the entry has no effect. Next step: remove it and read \
+                         `mode = all` as containment for `{cobertas}` only; if {} must not touch \
+                         this host, contain the gateway process itself (container/VM) until \
+                         #1225 routes them through the sandbox.",
+                        TOOLS_SO_NO_HOST.join("/")
+                    ),
+                );
                 continue;
             }
             push_warn(
@@ -2857,15 +2900,52 @@ mod tests {
                 "agent.sandbox.ssh_host",
                 Severity::Error,
             ),
+            // S3: ssh nao consegue honrar as duas flags, e os defaults sao
+            // `true` — entao `backend: ssh` "so com host" e Error nas duas
+            // chaves, ate o operador escrever `false` explicito.
             (
-                "ssh ignora network_disabled/mount_workdir",
+                "ssh com network_disabled no default e Error na chave",
                 |c| {
                     c.agent.sandbox.mode = SandboxMode::All;
                     c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
                     c.agent.sandbox.ssh_host = Some("box".into());
                 },
                 "agent.sandbox.network_disabled",
-                Severity::Warning,
+                Severity::Error,
+            ),
+            (
+                "ssh com mount_workdir no default e Error na chave",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("box".into());
+                },
+                "agent.sandbox.mount_workdir",
+                Severity::Error,
+            ),
+            // Reconhecimento pela metade nao basta: cada chave ligada e o seu
+            // proprio Error, para o finding nomear exatamente o que falta.
+            (
+                "ssh so com mount_workdir=false ainda e Error em network_disabled",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("box".into());
+                    c.agent.sandbox.mount_workdir = false;
+                },
+                "agent.sandbox.network_disabled",
+                Severity::Error,
+            ),
+            (
+                "ssh so com network_disabled=false ainda e Error em mount_workdir",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+                    c.agent.sandbox.ssh_host = Some("box".into());
+                    c.agent.sandbox.network_disabled = false;
+                },
+                "agent.sandbox.mount_workdir",
+                Severity::Error,
             ),
             // I1: o aviso de "ssh nao e contencao" e incondicional — vale
             // mesmo com os dois flags ja desligados pelo operador.
@@ -2902,6 +2982,20 @@ mod tests {
                 },
                 "agent.sandbox.image",
                 Severity::Error,
+            ),
+            // S2: uma tool que spawna no host listada em `elevated` e a config
+            // mostrando que o operador leu `mode = all` como "tudo" — Warning
+            // no campo da entrada, e so quando listada (a secao coerente fica
+            // verde sob `--strict`). O caso `sandboxed_tools` e o F4 abaixo.
+            (
+                "tool so-no-host em elevated com mode=all e mal-entendido",
+                |c| {
+                    c.agent.sandbox.mode = SandboxMode::All;
+                    c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                    c.agent.sandbox.elevated = vec!["code_review".into()];
+                },
+                "agent.sandbox.elevated",
+                Severity::Warning,
             ),
             // F3: `all` com a unica tool sandboxavel em `elevated` == `off`.
             (
@@ -2997,7 +3091,11 @@ mod tests {
             "mode=off nao deve reclamar de nada: {findings:?}"
         );
 
-        // Docker completo, sem elevated: limpo.
+        // Docker completo, sem elevated: limpo. Inclusive sem o aviso de
+        // cobertura do #1225 S2 — ele so sai quando a config MOSTRA o
+        // mal-entendido (tool so-no-host em `sandboxed_tools`/`elevated`),
+        // porque `--strict` promove Warning a exit 2 e a secao recomendada
+        // (mode=all + docker) tem de sair com exit 0.
         let mut cfg = AppConfig::default();
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
@@ -3010,9 +3108,9 @@ mod tests {
         );
 
         // SSH com os dois flags desligados: o operador reconheceu que eles
-        // nao valem, entao o aviso dos flags some. O aviso de que SSH NAO e
-        // contencao fica — incondicional de proposito (I1), porque a palavra
-        // "sandbox" na chave promete o que este backend nao faz.
+        // nao valem, entao o Error das flags (S3) some. O aviso de que SSH
+        // NAO e contencao fica — incondicional de proposito (I1), porque a
+        // palavra "sandbox" na chave promete o que este backend nao faz.
         let mut cfg = AppConfig::default();
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
@@ -3023,8 +3121,9 @@ mod tests {
         assert!(
             !findings
                 .iter()
-                .any(|f| f.field == "agent.sandbox.network_disabled"),
-            "com os flags desligados o aviso dos flags some: {findings:?}"
+                .any(|f| f.field == "agent.sandbox.network_disabled"
+                    || f.field == "agent.sandbox.mount_workdir"),
+            "com os flags desligados o Error das flags some: {findings:?}"
         );
         assert!(
             !findings
@@ -3069,6 +3168,87 @@ mod tests {
                 .iter()
                 .any(|f| f.message.contains("tool_confirmation_enabled=false")),
             "findings = {findings:?}"
+        );
+    }
+
+    /// #1225 S2: uma tool de `TOOLS_SO_NO_HOST` em `sandboxed_tools` ou
+    /// `elevated` e a config MOSTRANDO que o operador leu `mode = all` como
+    /// "tudo". O finding nomeia a tool, diz que ela roda no HOST com qualquer
+    /// `mode`, nomeia o que o sandbox cobre e da o proximo passo. So quando
+    /// listada: a secao coerente nao ganha Warning, para `--strict` continuar
+    /// alcancavel com o sandbox ligado. Some com `off`, como o resto da secao.
+    #[test]
+    fn agent_sandbox_tool_so_no_host_listada_e_dita_com_proximo_passo() {
+        use crate::sandbox::{
+            SandboxBackendKind, SandboxMode, TOOLS_SANDBOXAVEIS, TOOLS_SO_NO_HOST,
+        };
+
+        type Lista = fn(&mut AppConfig, String);
+        let campos: [(&str, Lista); 2] = [
+            ("agent.sandbox.sandboxed_tools", |c, t| {
+                c.agent.sandbox.sandboxed_tools.push(t)
+            }),
+            ("agent.sandbox.elevated", |c, t| {
+                c.agent.sandbox.elevated.push(t)
+            }),
+        ];
+
+        for modo in [SandboxMode::All, SandboxMode::Allowlist] {
+            for (campo, lista) in campos {
+                for tool in TOOLS_SO_NO_HOST {
+                    let mut cfg = AppConfig::default();
+                    cfg.agent.sandbox.mode = modo;
+                    cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+                    cfg.agent.sandbox.sandboxed_tools = vec!["bash".into()];
+                    lista(&mut cfg, (*tool).to_string());
+                    let findings = validate(&cfg);
+                    let f = findings
+                        .iter()
+                        .find(|f| f.field == campo && f.message.contains(*tool))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{modo:?}/{campo}: esperava finding nomeando `{tool}`: \
+                                 {findings:?}"
+                            )
+                        });
+                    assert_eq!(f.severity, Severity::Warning);
+                    assert!(f.message.contains("HOST"), "message = {}", f.message);
+                    assert!(f.message.contains("#1225"), "message = {}", f.message);
+                    assert!(
+                        f.message.contains("Next step"),
+                        "o finding tem de dizer o que fazer: {}",
+                        f.message
+                    );
+                    for coberta in TOOLS_SANDBOXAVEIS {
+                        assert!(
+                            f.message.contains(*coberta),
+                            "`{coberta}` (coberta) nao foi nomeada: {}",
+                            f.message
+                        );
+                    }
+                }
+            }
+        }
+
+        // Secao coerente: nada sobre cobertura — `--strict` sai com exit 0.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.mode = SandboxMode::All;
+        cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.message.contains("#1225")),
+            "secao coerente nao pode ganhar o aviso de cobertura: {findings:?}"
+        );
+
+        // `off`: a secao inteira esta inerte, inclusive este aviso.
+        let mut cfg = AppConfig::default();
+        cfg.agent.sandbox.elevated = vec!["run_tests".into()];
+        let findings = validate(&cfg);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field.starts_with("agent.sandbox")),
+            "mode=off nao pode avisar sobre cobertura: {findings:?}"
         );
     }
 
