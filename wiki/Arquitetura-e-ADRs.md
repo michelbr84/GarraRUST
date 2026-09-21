@@ -9,7 +9,7 @@
 
 ## ADRs — Architectural Decision Records
 
-Decisões irreversíveis são registradas antes de implementar ([índice](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/README.md)). São 23 ADRs; todas **accepted**, exceto a 0018, ainda **proposed**:
+Decisões irreversíveis são registradas antes de implementar ([índice](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/README.md)). São 24 ADRs; todas **accepted**, exceto a 0018, ainda **proposed**:
 
 | # | Decisão | Data |
 |---|---|---|
@@ -36,3 +36,4 @@ Decisões irreversíveis são registradas antes de implementar ([índice](https:
 | [0021](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0021-garraia-desktop-control-center.md) | GarraIA Desktop — Control Center (`garraia desktop`) | 2026-09-14 |
 | [0022](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0022-default-llm-identity.md) | `z-ai/glm-5.3-flash` via OpenRouter como LLM padrão; local como segunda opção | 2026-09-13 |
 | [0023](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0023-whatsapp-dispositivo-vinculado.md) | WhatsApp pessoal por dispositivo vinculado (`garra whatsapp`) — bridge Node/Baileys por stdio + sessão cifrada | 2026-09-16 |
+| [0024](https://github.com/michelbr84/GarraRUST/blob/main/docs/adr/0024-perfis-de-execucao-isolated-pod.md) | Perfis de execução `standard` e `isolated-pod` — poder total dentro do pod, nada implícito fora; dono do WhatsApp por identidade declarada | 2026-09-21 |
