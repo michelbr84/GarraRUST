@@ -370,8 +370,11 @@ fallback on 429/5xx with exponential backoff and a circuit breaker.
 
 Wired end-to-end today: **Telegram** (streaming, MarkdownV2, bot
 commands, pairing), **Discord** (slash commands, sessions), **Slack**
-(Socket Mode), **WhatsApp** (Meta Cloud API webhooks; personal WhatsApp
-by linked device is planned for v0.4.3 —
+(Socket Mode), **WhatsApp** (Meta Cloud API webhooks, and — since v0.4.3 —
+personal WhatsApp by linked device: `garra whatsapp` scans a QR code, keeps
+the session encrypted on disk and runs a Node/Baileys bridge over stdio;
+needs Node.js 20+ and npm on that path only —
+[docs/whatsapp.md](docs/whatsapp.md),
 [ADR 0023](docs/adr/0023-whatsapp-dispositivo-vinculado.md)), **iMessage**
 (macOS, chat.db polling + AppleScript). Also: web chat console, an
 **OpenAI-compatible API** (`/v1/chat/completions`) for VS Code
@@ -600,7 +603,7 @@ WhatsApp, iMessage, voice, embeddings, MCP, timeouts, rate limiting and
 
 ## Architecture
 
-A Rust workspace of **22 crates**, each with a single responsibility:
+A Rust workspace of **24 crates**, each with a single responsibility:
 
 ```text
 crates/
@@ -617,6 +620,8 @@ crates/
 ├── garraia-plugins/    # WASM plugin sandbox (wasmtime)
 ├── garraia-embeddings/ # EmbeddingProvider / VectorStore traits
 ├── garraia-learning/   # Self-improving skills (mining, safety gate, versioning)
+├── garraia-hardware/   # Physical devices: Device trait, R0-R5 risk gate, MQTT/Home Assistant/serial/GPIO adapters
+├── garraia-desktop-core/ # Tauri-free core of the Desktop Control Center (state, detect, supervise, locate)
 └── ...                 # telemetry, media, skills, storage, tools, runtime, common, glob, desktop
 apps/
 └── garraia-mobile/     # Flutter client (Riverpod, go_router) — Garra Cloud Alpha
