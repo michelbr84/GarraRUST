@@ -4,6 +4,7 @@ mod ask;
 mod banner;
 mod capability_prompt;
 mod chat;
+mod chat_input;
 mod cli_args;
 mod config_cmd;
 mod defaults;
@@ -245,7 +246,9 @@ enum Commands {
         /// `<data_dir>/sessions.db` and the session id is printed on start,
         /// so `--resume` can pick the conversation up later. Off by
         /// default: without it nothing is written, and no database is even
-        /// opened (#1088).
+        /// opened (#1088). The REPL's line history (arrow keys) follows the
+        /// same switch: written to `<garraia_dir>/history` only in this
+        /// mode, kept in memory otherwise (#1297).
         #[arg(long)]
         persist: bool,
 
@@ -2225,7 +2228,10 @@ async fn async_main(
             // turn failure itself still surfaces as an ErrorCard, and the
             // full detail stays in garraia.log / --debug / RUST_LOG.
             init_tracing(&effective_level);
-            chat::run_chat(
+            // #1297: Ctrl+C no prompt do editor de linha chega como leitura
+            // interrompida, nao como SIGINT, e o REPL devolve o 130 que o
+            // vigia sempre deu — pelo mesmo caminho que o `ask` ja usa.
+            let code = chat::run_chat(
                 config,
                 provider,
                 model,
@@ -2236,6 +2242,9 @@ async fn async_main(
                 resume,
             )
             .await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         Commands::Ask {
             message,

@@ -5,7 +5,7 @@
 
 use garraia_agents::exec_context::ExecContext;
 use std::future::Future;
-use std::io::{self, BufRead, Write as _};
+use std::io::{self, Write as _};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -1376,6 +1376,11 @@ fn render_turn_event(
 }
 
 /// Run the interactive chat REPL.
+///
+/// Devolve o codigo de saida do processo: `0` para `/exit` e Ctrl+D, `130`
+/// quando o Ctrl+C no prompt chega pelo editor de linha (#1297) — o mesmo
+/// codigo que o vigia de SIGINT sempre deu no caminho sem editor. `Err` fica
+/// para falha de verdade (I/O, provider), como antes.
 pub async fn run_chat(
     config: AppConfig,
     provider_override: Option<String>,
@@ -1385,7 +1390,7 @@ pub async fn run_chat(
     assume_yes: bool,
     persist: bool,
     resume: Option<String>,
-) -> Result<()> {
+) -> Result<i32> {
     // An explicit `--provider` short-circuits detection entirely; otherwise
     // `detect_provider` owns both the provider *and* the model, so the two can
     // no longer disagree (previously `--model` without `--provider` swapped
@@ -1608,6 +1613,35 @@ pub async fn run_chat(
         }
     }
 
+    // De onde vem cada linha (#1297). Editor de linha (setas, historico,
+    // edicao) so quando ha um humano num terminal — stdin, stdout e stderr
+    // —; pipe e CI seguem no `read_line` byte a byte de sempre. A decisao e
+    // uma so, no boot, e o `Capabilities::detect` acima nao serve para ela:
+    // `NO_COLOR` e `TERM=dumb` tiram a cor, nao as setas.
+    let usar_editor = {
+        use std::io::IsTerminal as _;
+        crate::chat_input::editor_de_linha_cabe(
+            io::stdin().is_terminal(),
+            io::stdout().is_terminal(),
+            io::stderr().is_terminal(),
+        )
+    };
+    // Historico em disco so quando a sessao e persistida (#1088): sem
+    // `--persist`/`--resume` nada e escrito, e o que se digita e tao sensivel
+    // quanto a resposta. `store.is_some()` e exatamente esse criterio. As
+    // setas funcionam do mesmo jeito; o historico so nao sobrevive ao
+    // processo.
+    let historico = store
+        .is_some()
+        .then(|| crate::chat_input::caminho_do_historico(&crate::garraia_dir()));
+    let mut leitor = crate::chat_input::LeitorDeLinha::abrir(usar_editor, historico);
+    // Historico que nao abre e aviso, nao erro: o chat vale mais que as setas.
+    for aviso in leitor.drenar_avisos() {
+        renderer.handle(UiEvent::Warning(&aviso), &mut io::stdout());
+    }
+    let prompt_cru = style.user_prompt_plain();
+    let prompt = style.user_prompt();
+
     // Dono único do SIGINT.
     //
     // `tokio::signal::ctrl_c()` instala um handler que substitui o
@@ -1621,6 +1655,21 @@ pub async fn run_chat(
     // Com um dono único os dois casos ficam corretos:
     //   - durante o turno  -> cancela o turno e devolve o prompt;
     //   - ocioso no prompt -> encerra a sessão, como sempre encerrou.
+    //
+    // O editor de linha (#1297) nao muda quem e o dono — o rustyline entra
+    // com a feature `signal-hook`, e e ELA que o impede de instalar o proprio
+    // `sigaction(SIGINT)` a cada `readline` (sem ela haveria um segundo
+    // handler disputando com este, e um `kill -INT` no prompt nunca chegaria
+    // aqui) —, muda por onde o Ctrl+C do teclado chega quando o prompt esta
+    // ocioso: em raw mode o terminal nao gera SIGINT (`ISIG` desligado), a
+    // tecla vira `Leitura::Interrompida` no loop abaixo, e o loop encerra com
+    // o mesmo 130 de sempre. Durante o turno o terminal ja voltou ao modo
+    // canonico, o Ctrl+C vira SIGINT e cai aqui, no cancelamento. O braco
+    // "ocioso" desta task continua valendo para o caminho sem editor e para
+    // um SIGINT externo (`kill -INT`) com o editor ligado — e nesse ultimo
+    // caso o terminal esta em raw mode, cujo guard de restauracao o `exit`
+    // pularia, deixando o shell do usuario sem eco. Por isso a fotografia dos
+    // atributos, devolvida antes de sair.
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
     let turn_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Uma so fonte para a despedida, usada aqui e no `/exit`. Com cor quando
@@ -1634,6 +1683,10 @@ pub async fn run_chat(
         let cancel = std::sync::Arc::clone(&cancel);
         let turn_active = std::sync::Arc::clone(&turn_active);
         let despedida = despedida.clone();
+        let terminal_original = leitor
+            .com_editor()
+            .then(crate::chat_input::fotografar_terminal)
+            .flatten();
         tokio::spawn(async move {
             loop {
                 if tokio::signal::ctrl_c().await.is_err() {
@@ -1647,6 +1700,9 @@ pub async fn run_chat(
                     // A despedida sai pelo estilo detectado: dentro da task
                     // nao ha `&mut renderer`, entao o texto e montado antes e
                     // movido para ca ja pronto (#940).
+                    if let Some(estado) = terminal_original.as_ref() {
+                        crate::chat_input::restaurar_terminal(estado);
+                    }
                     println!("\n{despedida}");
                     let _ = io::stdout().flush();
                     std::process::exit(130);
@@ -1654,19 +1710,28 @@ pub async fn run_chat(
             }
         });
     }
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
 
+    let mut codigo_de_saida = 0;
     loop {
-        // Prompt
-        print!("{}", style.user_prompt());
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        if reader.read_line(&mut input)? == 0 {
-            // EOF (Ctrl+D)
-            println!("\n{despedida}");
-            break;
+        let input = match leitor.ler(&prompt_cru, &prompt)? {
+            crate::chat_input::Leitura::Linha(linha) => linha,
+            crate::chat_input::Leitura::Fim => {
+                // EOF (Ctrl+D) encerra como `/exit`. O leitor ja deixou o
+                // cursor numa linha nova, nos dois caminhos.
+                println!("{despedida}");
+                break;
+            }
+            crate::chat_input::Leitura::Interrompida => {
+                // Ctrl+C no prompt ocioso, entregue pelo editor em raw mode.
+                // Mesmo desfecho do vigia acima: despedida e 130 — so que
+                // pelo `return`, com o terminal ja restaurado pelo editor.
+                println!("{despedida}");
+                codigo_de_saida = 130;
+                break;
+            }
+        };
+        for aviso in leitor.drenar_avisos() {
+            renderer.handle(UiEvent::Warning(&aviso), &mut io::stdout());
         }
 
         let input = input.trim().to_string();
@@ -2398,7 +2463,7 @@ pub async fn run_chat(
         println!();
     }
 
-    Ok(())
+    Ok(codigo_de_saida)
 }
 
 #[cfg(test)]
