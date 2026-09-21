@@ -49,12 +49,24 @@ impl Style {
 
     /// Marcador do input do usuario. Substitui o antigo `voce >`.
     pub fn user_prompt(&self) -> String {
-        let marker = if self.unicode { "❯" } else { ">" };
+        let plain = self.user_prompt_plain();
         if self.color {
+            let marker = plain.trim_end();
             format!("{GREEN}{BOLD}{marker}{RESET} ")
         } else {
-            format!("{marker} ")
+            plain
         }
+    }
+
+    /// O mesmo marcador sem uma sequencia de escape sequer — mesma largura
+    /// visivel que [`Self::user_prompt`], porque cor nao ocupa coluna.
+    ///
+    /// O editor de linha (#1297) precisa das duas versoes: desenha a colorida
+    /// e mede a crua para saber onde o cursor esta. Medir a colorida contaria
+    /// os bytes do escape como colunas, e a edicao sairia deslocada.
+    pub fn user_prompt_plain(&self) -> String {
+        let marker = if self.unicode { "❯" } else { ">" };
+        format!("{marker} ")
     }
 
     /// Rotulo da resposta, escrito uma unica vez imediatamente antes do
@@ -315,6 +327,43 @@ mod tests {
         let plano = Style::PLAIN.user_prompt();
         assert_eq!(plano, "> ");
         assert!(!plano.contains('\x1b'));
+    }
+
+    /// #1297: o editor de linha mede o prompt cru e desenha o colorido, e os
+    /// dois tem de ter a mesma largura visivel — senao o cursor sai do lugar.
+    #[test]
+    fn user_prompt_plain_matches_the_styled_one_without_escapes() {
+        for style in [
+            Style::RICH,
+            Style::PLAIN,
+            Style {
+                unicode: false,
+                color: true,
+            },
+        ] {
+            let cru = style.user_prompt_plain();
+            let estilizado = style.user_prompt();
+            assert!(!cru.contains('\x1b'), "{cru:?}");
+            let visivel: String = strip_ansi(&estilizado);
+            assert_eq!(visivel, cru, "largura visivel diverge para {style:?}");
+        }
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for d in chars.by_ref() {
+                    if d == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
     }
 
     /// O rotulo da resposta vai numa linha propria: resposta de varios

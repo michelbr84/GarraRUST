@@ -59,6 +59,12 @@ sqlite-vec = "0.1"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
+# Editor de linha do REPL do `garra chat` (#1297): setas, historico e edicao.
+# MIT. `default-features = false` deixa de fora `custom-bindings` (radix_trie)
+# e `with-dirs` (home), que o REPL nao usa; a feature `signal-hook` fica
+# desligada de proposito — o REPL tem um unico dono do SIGINT (o vigia em
+# `chat.rs`), e um segundo handler quebraria o cancelamento de turno.
+rustyline = { version = "18", default-features = false, features = ["with-file-history"] }
 
 # Logging / Tracing
 tracing = "0.1"
