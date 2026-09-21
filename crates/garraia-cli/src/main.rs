@@ -1163,6 +1163,25 @@ fn stderr_is_log_channel(command: &Commands) -> bool {
     )
 }
 
+/// Modo de console por subcomando. Os canais de log (#933) espelham o
+/// arquivo; o REPL interativo fica em Quiet (#1301) — nem WARN cru compete
+/// com o renderer, porque a falha de turno já vira `ErrorCard`, e quem
+/// depura pede `--verbose`/`--debug`/`RUST_LOG`; os demais one-shot seguem
+/// em Normal (WARN+ no stderr, stdout limpo).
+fn console_mode_for_command(
+    command: &Commands,
+    debug: bool,
+    verbose: bool,
+) -> tracing_setup::ConsoleMode {
+    if stderr_is_log_channel(command) {
+        tracing_setup::ConsoleMode::Debug
+    } else if matches!(command, Commands::Chat { .. }) {
+        tracing_setup::repl_console_mode(debug, verbose)
+    } else {
+        tracing_setup::console_mode(debug, verbose)
+    }
+}
+
 fn value_taking_flags() -> Vec<String> {
     fn push(out: &mut Vec<String>, arg: &clap::Arg) {
         if !matches!(arg.get_action(), ArgAction::Set | ArgAction::Append) {
@@ -1225,13 +1244,7 @@ fn main() -> Result<()> {
     }
 
     // Init tracing for non-daemon mode (daemon reconfigures after fork)
-    let console = if stderr_is_log_channel(&cli.command) {
-        // Espelha o arquivo, como antes do #933: journald / host MCP leem o
-        // stderr desses subcomandos como log operacional.
-        tracing_setup::ConsoleMode::Debug
-    } else {
-        tracing_setup::console_mode(cli.debug, cli.verbose)
-    };
+    let console = console_mode_for_command(&cli.command, cli.debug, cli.verbose);
     let init_tracing = move |level: &str| {
         let log_dir = garraia_dir();
         std::fs::create_dir_all(&log_dir).unwrap_or_else(|e| {
@@ -2206,6 +2219,11 @@ async fn async_main(
             // nothing in chat mode. Since #933 the file gets everything while
             // stderr stays WARN+ unless --verbose/--debug asks for more — the
             // interactive console no longer competes with INFO records.
+            // Since #1301 the REPL goes further: default is Quiet, so raw
+            // WARN/ERROR lines from provider internals (retry, fallback,
+            // circuit breaker) no longer interleave with the renderer — the
+            // turn failure itself still surfaces as an ErrorCard, and the
+            // full detail stays in garraia.log / --debug / RUST_LOG.
             init_tracing(&effective_level);
             chat::run_chat(
                 config,
@@ -2640,6 +2658,66 @@ mod tests {
                 "-u",
             ],
             "value-taking flag set drifted; update cli_args::tests::FLAGS too"
+        );
+    }
+
+    /// #1301: o REPL interativo (`garra chat`, inclusive via `garra` nu) é a
+    /// única superfície cujo stderr não é canal de log e mesmo assim fica
+    /// silencioso — nem WARN cru compete com o renderer, porque a falha de
+    /// turno já vira `ErrorCard`. `--verbose`/`--debug` continuam valendo.
+    #[test]
+    fn console_mode_for_command_puts_the_repl_on_quiet() {
+        let chat = |args: &[&str]| Cli::try_parse_from(args).expect("chat parses").command;
+        // `garra` nu abre o REPL via a injecao do cli_args — o mesmo caminho
+        // de `bare_model_flag_parses_as_chat`.
+        let argv = cli_args::inject_default_subcommand(
+            ["garra"].iter().map(std::ffi::OsString::from).collect(),
+            &value_taking_flags()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+        let bare = Cli::try_parse_from(argv)
+            .expect("bare garra parses")
+            .command;
+        assert_eq!(
+            console_mode_for_command(&chat(&["garra", "chat"]), false, false),
+            tracing_setup::ConsoleMode::Quiet,
+            "REPL default deve silenciar o stderr de tracing (#1301)"
+        );
+        assert_eq!(
+            console_mode_for_command(&bare, false, false),
+            tracing_setup::ConsoleMode::Quiet,
+            "`garra` nu abre o mesmo REPL"
+        );
+        assert_eq!(
+            console_mode_for_command(&chat(&["garra", "chat"]), false, true),
+            tracing_setup::ConsoleMode::Verbose,
+        );
+        assert_eq!(
+            console_mode_for_command(&chat(&["garra", "chat"]), true, false),
+            tracing_setup::ConsoleMode::Debug,
+        );
+    }
+
+    /// Os canais de log do #933 seguem espelhando o arquivo e os one-shot
+    /// seguem em Normal (WARN+ no stderr, stdout limpo) — o Quiet é só do
+    /// REPL.
+    #[test]
+    fn log_channels_and_one_shot_commands_keep_their_modes() {
+        let start = Cli::try_parse_from(["garra", "start"])
+            .expect("start parses")
+            .command;
+        assert_eq!(
+            console_mode_for_command(&start, false, false),
+            tracing_setup::ConsoleMode::Debug,
+        );
+        let ask = Cli::try_parse_from(["garra", "ask", "oi"])
+            .expect("ask parses")
+            .command;
+        assert_eq!(
+            console_mode_for_command(&ask, false, false),
+            tracing_setup::ConsoleMode::Normal,
         );
     }
 
