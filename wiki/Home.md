@@ -23,6 +23,10 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.4.4 — Novidades](Novidades-v0.4.4)** · **[What's New in v0.4.4 (English)](Whats-New-v0.4.4)**
+  — WhatsApp pessoal funcionando numa instalação nova, perfis de execução
+  `standard` e `isolated-pod` (poder total dentro do pod, nada implícito
+  fora), MCP `filesystem` sem `$HOME` e `tool_program` com gate por passo.
 - **[v0.4.3 — Novidades](Novidades-v0.4.3)** · **[What's New in v0.4.3 (English)](Whats-New-v0.4.3)**
   — WhatsApp pessoal por dispositivo vinculado (`garra whatsapp` + QR),
   sandbox por tool `agent.sandbox`, cinco fail-opens do MCP fechados e um
