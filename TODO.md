@@ -12,6 +12,47 @@ curtos para a próxima sessão autônoma.
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
 
+## Concluído em 2026-09-21 — release v0.4.4: WhatsApp em instalação nova e perfis de execução
+
+- **WhatsApp pessoal numa instalação nova**: a recusa `FerramentaMcpRegistrada`
+  saiu (#1327 via #1330); instaladores criam o alias `garra` e o `update.rs`
+  resolve o symlink no macOS (#1328 via #1331); toda instrução do fluxo nomeia o
+  executável que está rodando (`garraia-common::executavel`).
+- **Perfis de execução** (#1329 via #1338, [ADR 0024](docs/adr/0024-perfis-de-execucao-isolated-pod.md)):
+  `standard` (default) e `isolated-pod` (explícito por `execution.profile` ou
+  `GARRAIA_EXECUTION_PROFILE`, nunca por detecção de container). Dono declarado
+  do WhatsApp (`owners`) ganha o piso `code` só em 1:1; MCP `filesystem` sem
+  `$HOME`. Auditoria `security-auditor` APPROVE (6 minors corrigidos) + revisão
+  adversarial em quatro lentes (15 achados confirmados, todos corrigidos).
+- **`tool_program`** (#1226 S-B): entrou por #1336 (merge da automação, sem
+  revisão); revisão pós-merge em três lentes achou 11 pontos, todos fechados em
+  #1337, que também fechou o **#1339** (aprovação GAR-187 amarrada ao pedido
+  que pausou o turno).
+- **`config check` e o bind** (#1261): #1325 (merge da automação) caía no
+  valor do arquivo; #1335 corrigiu para o default do clap. A #1261 foi
+  **reaberta**: fechou por `Closes` sem registrar as decisões R5 do dono.
+- **CI**: Security Gate com orçamento no step e cache só do registry (#1332 via
+  #1333); Dependabot patch-and-minor (#1334).
+
+### Fica aberto, com bloqueio nomeado
+
+| Item | Bloqueio |
+| --- | --- |
+| #1261 | R5 do dono: opção 2 (recusar bind exposto sem credencial) e destino das chaves `gateway.host`/`gateway.port` do arquivo. Consequência registrada: configs do wizard com `host: 0.0.0.0` passam a sair 2 no `config check --strict`. |
+| #1326 (`garra runs list`, #1227 s4) | Adiada: sanitizar controle de terminal em `goal`/`id`, redigir `error_snippet`, alerta CodeQL #175, e ack do dono na #1227 sobre o gate de design. |
+| #1226 | S-C: docs de `tool_program` entregues em #1337; falta a decisão explícita de não pôr `tool_program` no `allowed` de `search`/`architect`. S-D e resto da S-E seguem. |
+| #1225, #1227, #1228, #1247, #1254, #1272, #1295 | Inalterados desde a v0.4.3 (ver seção abaixo). |
+
+### Processo
+
+- A automação (sessões na conta do dono) mergeou #1324, #1325 e #1336 durante
+  o ciclo, sem revisão; #1325 fechou uma issue com decisão R5 reservada e #1336
+  era R4 com `security-auditor` obrigatório. Regra reforçada nos comentários:
+  issue com "decisão do dono" recebe `Refs`, nunca `Closes`.
+- Disco da máquina local encheu duas vezes com caches de build de agentes
+  (ENOSPC e `Bus error` no linker). Limpeza de `target*` do scratchpad e dos
+  `shared-target-*` de revisões encerradas entra no fim de cada onda.
+
 ## Concluído em 2026-09-21 — release v0.4.3: WhatsApp pessoal, faixa de segurança, dois trens de merge
 
 Estado de partida (2026-09-20, 22:25): 14 issues, 9 PRs (1 draft), 2 alertas
