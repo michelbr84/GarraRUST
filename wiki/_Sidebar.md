@@ -12,6 +12,8 @@
 - [Contribuir, Roadmap e FAQ](Contribuir-Roadmap-e-FAQ)
 
 **Novidades / What's New**
+- [v0.4.3 — Novidades](Novidades-v0.4.3)
+- [v0.4.3 — What's New (EN)](Whats-New-v0.4.3)
 - [v0.4.2 — Novidades](Novidades-v0.4.2)
 - [v0.4.2 — What's New (EN)](Whats-New-v0.4.2)
 - [v0.3.9 — Novidades](Novidades-v0.3.9)

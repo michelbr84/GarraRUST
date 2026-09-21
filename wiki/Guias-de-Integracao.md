@@ -7,6 +7,7 @@
 - [Visão geral dos 11 canais](https://github.com/michelbr84/GarraRUST/blob/main/docs/channels.md)
 - [Conectar bot do Telegram (passo a passo)](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/guides/connect-telegram.md)
 - [iMessage (macOS)](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/channels/imessage.md)
+- [WhatsApp pessoal (dispositivo vinculado, QR): `garra whatsapp`](https://github.com/michelbr84/GarraRUST/blob/main/docs/whatsapp.md) — precisa de Node.js 20+ e npm só nesse caminho; a Cloud API da Meta segue em [docs/channels.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/channels.md)
 
 ## Provedores LLM
 
@@ -46,3 +47,4 @@
 ## Ferramentas do agente
 
 - [Tools embutidas](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/tools.md) · [Modos de execução](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/modes.md) · [Sistema de memória](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/memory.md)
+- [Sandbox por tool (`agent.sandbox`)](https://github.com/michelbr84/GarraRUST/blob/main/docs/security/threat-model.md) — §5.13 do threat model: o que cada backend (`docker`/`podman`/`ssh`) garante e não garante; config de referência em [`config.hardened.example.yml`](https://github.com/michelbr84/GarraRUST/blob/main/config.hardened.example.yml)

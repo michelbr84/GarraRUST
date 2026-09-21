@@ -114,7 +114,7 @@ garra rollback  # volta para a versão anterior
 
 ```bash
 git clone https://github.com/michelbr84/GarraRUST.git && cd GarraRUST
-cargo build --release -p garraia          # requer Rust 1.94+
+cargo build --release -p garraia          # requer Rust 1.95+
 cargo build --release -p garraia --features plugins   # com suporte a plugins WASM
 ```
 

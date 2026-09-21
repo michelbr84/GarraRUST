@@ -342,7 +342,7 @@ cenário — corrigimos a tabela, não o resultado.
 - **Telegram** - respostas streaming, MarkdownV2, comandos do bot, indicadores de digitação, lista de permissões de usuários com códigos de pareamento
 - **Discord** - comandos slash, tratamento de mensagens orientado a eventos, gerenciamento de sessões
 - **Slack** - Socket Mode, respostas streaming, lista de permissões/pareamento
-- **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento (WhatsApp pessoal por dispositivo vinculado, com QR code, está planejado para a v0.4.3 — [ADR 0023](docs/adr/0023-whatsapp-dispositivo-vinculado.md))
+- **WhatsApp** - webhooks da Meta Cloud API, lista de permissões/pareamento; e, desde a v0.4.3, **WhatsApp pessoal por dispositivo vinculado**: `garra whatsapp` lê um QR code, guarda a sessão cifrada em disco e roda uma ponte Node/Baileys por stdio — precisa de Node.js 20+ e npm só nesse caminho ([docs/whatsapp.md](docs/whatsapp.md), [ADR 0023](docs/adr/0023-whatsapp-dispositivo-vinculado.md))
 - **iMessage** - nativo macOS via polling de chat.db, grupos de chat, envio via AppleScript ([guia de configuração](docs/src/channels/imessage.md))
 - **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
 - **Claude Code** - via shim Anthropic-compatible `POST /v1/messages` ([ADR 0014](docs/adr/0014-anthropic-messages-shim.md)); `garra agents setup|status|link|rollback|web` provisiona GarraIA, OpenClaw, Hermes e Claude Code com um mesmo provedor+modelo via AgentDeck
@@ -951,7 +951,7 @@ credentials/
 
 ## Arquitetura
 
-GarraIA é um workspace Rust com **22 crates** de alta qualidade, cada um com responsabilidade única:
+GarraIA é um workspace Rust com **24 crates** de alta qualidade, cada um com responsabilidade única:
 
 ```text
 crates/
@@ -976,6 +976,8 @@ crates/
 ├── garraia-embeddings/ # Traits EmbeddingProvider/VectorStore + DeterministicProvider (Fase 2.1)
 ├── garraia-learning/   # Garra Learning Agent — miner/generator/safety gate/versioning (Fase 1.4)
 ├── garraia-storage/    # ObjectStore: LocalFs + S3 (SSE-S3, HMAC integrity, presigned URLs)
+├── garraia-hardware/   # Dispositivos físicos: trait Device, gate de risco R0-R5, adapters MQTT/Home Assistant/serial/GPIO (ADR 0020)
+├── garraia-desktop-core/ # Núcleo sem Tauri do Desktop Control Center: state, detect, supervise, locate (ADR 0021)
 └── garraia-desktop/    # Assistente desktop Clippy-style (Tauri v2) — overlay do papagaio (Alt+G), Chat Bar (Ctrl+Space), bandeja; MSI/NSIS no Windows e .deb/AppImage no Linux (v0.3.5)
 ```
 
