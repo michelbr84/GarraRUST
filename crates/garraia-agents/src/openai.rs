@@ -319,6 +319,9 @@ impl LlmProvider for OpenAiProvider {
     #[instrument(skip(self, request), fields(model))]
     async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
         let body = self.build_request(request);
+        // Capturado antes de o corpo da resposta sombrear `body` no caminho
+        // de erro (#1299).
+        let modelo = body.model.clone();
 
         tracing::Span::current().record("model", body.model.as_str());
         debug!("openai request: model={}", body.model);
@@ -364,6 +367,14 @@ impl LlmProvider for OpenAiProvider {
                 &body[..body.len().min(500)],
                 self.endpoint()
             );
+            // #1299: roteamento impossível é determinístico — sai classificado
+            // como configuração, com modelo, restrição e recuperação, em vez
+            // de erro cru que o operador não consegue agir.
+            if let Some(e) =
+                erro_de_roteamento_openrouter(self.is_openrouter, status.as_u16(), &body, &modelo)
+            {
+                return Err(e);
+            }
             return Err(Error::Agent(format!(
                 "openai API error: status={status}, body={body}"
             )));
@@ -492,6 +503,9 @@ impl LlmProvider for OpenAiProvider {
         request: &LlmRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let body = self.build_request(request);
+        // Capturado antes de o corpo da resposta sombrear `body` no caminho
+        // de erro (#1299).
+        let modelo = body.model.clone();
 
         tracing::Span::current().record("model", body.model.as_str());
         debug!("openai stream request: model={}", body.model);
@@ -525,6 +539,13 @@ impl LlmProvider for OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            // #1299: mesma classificação do caminho batch — o braço de
+            // streaming não fica com a mensagem pior.
+            if let Some(e) =
+                erro_de_roteamento_openrouter(self.is_openrouter, status.as_u16(), &body, &modelo)
+            {
+                return Err(e);
+            }
             return Err(Error::Agent(format!(
                 "openai API error: status={status}, body={body}"
             )));
@@ -1013,6 +1034,66 @@ fn classificar_no_catalogo(
     }
 }
 
+/// Assinatura do 404 determinístico de roteamento do OpenRouter (#1299): a
+/// preferência `provider.only` em vigor não tem interseção com os providers
+/// que servem o modelo. Repetir não muda nada — não é condição transitória.
+const ASSINATURA_ROTEAMENTO_404: &str = "No allowed providers are available";
+
+/// Trecho do corpo que segue a um marcador, colapsado em uma linha. O corpo
+/// da falha de roteamento delimita os segmentos `Providers serving <model>:`
+/// e `permits only:` com linha em branco — é deles que a mensagem da #1299
+/// tira a restrição efetiva e a lista de providers compatíveis.
+fn segmento_apos(body: &str, marcador: &str) -> Option<String> {
+    let idx = body.find(marcador)? + marcador.len();
+    let resto = &body[idx..];
+    let fim = resto.find("\n\n").unwrap_or(resto.len());
+    Some(
+        resto[..fim]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// #1299: classifica o 404 `No allowed providers are available` do OpenRouter
+/// como erro de configuração de roteamento — não-transitório — e devolve a
+/// mensagem acionável: modelo, restrição efetiva, providers compatíveis e
+/// caminho de recuperação. Qualquer outro caso devolve `None` e segue para o
+/// erro cru.
+///
+/// Política de segurança da issue: o Garra **não** relaxa `provider.only`.
+/// A correção é detectar e explicar; afrouxar a preferência é decisão do
+/// operador. O gate `is_openrouter` evita dar orientação de OpenRouter a um
+/// endpoint compatível qualquer que devolva o mesmo texto.
+fn erro_de_roteamento_openrouter(
+    is_openrouter: bool,
+    status: u16,
+    body: &str,
+    model: &str,
+) -> Option<Error> {
+    if !is_openrouter || status != 404 || !body.contains(ASSINATURA_ROTEAMENTO_404) {
+        return None;
+    }
+    let mut msg = format!(
+        "O modelo '{model}' não pode ser servido por nenhum provider permitido \
+         pela preferência `provider.only` em vigor — erro de configuração de \
+         roteamento (não-transitório; não será retriado)."
+    );
+    if let Some(permitido) = segmento_apos(body, "permits only:") {
+        msg.push_str(&format!("\n\nPermitido atualmente: {permitido}"));
+    }
+    if let Some(compativeis) = segmento_apos(body, &format!("Providers serving {model}:")) {
+        msg.push_str(&format!("\nProviders compatíveis: {compativeis}"));
+    }
+    msg.push_str(
+        "\n\nTente:\n  /model <outro-modelo> — troca o modelo no mesmo turno \
+         (ou escolha um slug sem sufixo `:provider`)\n  ajuste a preferência de \
+         providers (`provider.only`) na sua conta OpenRouter — o Garra não \
+         altera essa preferência por conta própria",
+    );
+    Some(Error::Agent(msg))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1330,6 +1411,66 @@ mod tests {
         assert_eq!(
             classificar_no_catalogo(&curada, &completa, "vendor/inexistente"),
             ValidacaoDeModelo::Ausente
+        );
+    }
+
+    /// Corpo real do 404 observado na #1299: `provider.only` sem interseção
+    /// com os providers que servem o modelo.
+    fn corpo_roteamento_1299() -> String {
+        "No allowed providers are available for the selected model.\n\n\
+         Providers serving deepseek/deepseek-v4-flash-20260731:\n\
+         relace, streamlake, baidu, deepinfra, together, fireworks\n\n\
+         but your request's provider.only preference permits only:\n\
+         open-inference\n\n\
+         failed_routing_step: Filter by Allowed Providers"
+            .to_string()
+    }
+
+    /// #1299: o 404 determinístico de roteamento sai classificado — mensagem
+    /// com modelo, restrição efetiva, providers compatíveis e caminho de
+    /// recuperação, e sem nenhum segredo.
+    #[test]
+    fn roteamento_404_e_classificado_com_orientacao() {
+        let model = "deepseek/deepseek-v4-flash-20260731";
+        let e = erro_de_roteamento_openrouter(true, 404, &corpo_roteamento_1299(), model)
+            .expect("404 de roteamento deve ser classificado");
+        let msg = e.to_string();
+        assert!(msg.contains(model), "{msg}");
+        assert!(msg.contains("não-transitório"), "{msg}");
+        assert!(
+            msg.contains("Permitido atualmente: open-inference"),
+            "{msg}"
+        );
+        assert!(msg.contains("deepinfra"), "{msg}");
+        assert!(msg.contains("/model"), "{msg}");
+        assert!(msg.contains("provider.only"), "{msg}");
+        // O corpo do OpenRouter não carrega credenciais e o trecho repassado
+        // não pode introduzir uma.
+        assert!(!msg.contains("sk-"), "{msg}");
+    }
+
+    /// #1299: nenhum falso positivo — outro 404 (data policy, modelo
+    /// inexistente), a mesma assinatura com status de sucesso e a assinatura
+    /// fora do OpenRouter seguem para o erro cru. Configuração VÁLIDA de
+    /// `provider.only` nunca gera essa assinatura, então não muda de caminho.
+    #[test]
+    fn outros_404_nao_sao_roteamento() {
+        let model = "deepseek/deepseek-v4-flash-20260731";
+        assert!(
+            erro_de_roteamento_openrouter(
+                true,
+                404,
+                "No endpoints found matching your data policy",
+                model
+            )
+            .is_none()
+        );
+        assert!(erro_de_roteamento_openrouter(true, 404, "", model).is_none());
+        assert!(
+            erro_de_roteamento_openrouter(true, 200, &corpo_roteamento_1299(), model).is_none()
+        );
+        assert!(
+            erro_de_roteamento_openrouter(false, 404, &corpo_roteamento_1299(), model).is_none()
         );
     }
 }
