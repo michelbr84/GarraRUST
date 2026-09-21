@@ -549,6 +549,30 @@ the comparison section above for the evidence trail).
   For production, a TLS-terminating reverse proxy in front of the
   loopback bind is the recommended setup.
 
+### Execution profiles
+
+Everything above is the `standard` profile — the posture for a shared
+machine. For a **disposable pod** (RunPod, Docker) that exists precisely so
+the agent can act with full autonomy, declare it — the profile is never
+inferred from container markers, and an invalid value refuses to boot:
+
+```yaml
+execution:
+  profile: isolated-pod      # or GARRAIA_EXECUTION_PROFILE=isolated-pod (wins)
+  pod_root: /workspace       # optional, absolute; MCP filesystem root
+channels:
+  whatsapp_linked:
+    owners: ["5511999998888"]   # only declared owners, only in 1:1 chats
+```
+
+**Full power inside the isolated pod; no implicit access outside the pod.**
+The WhatsApp owner gets the `code` floor (`bash`, `file_write`, MCP tools);
+groups and paired-only contacts never inherit it; the bash risky-command
+gate and file jail stay on; a mounted host filesystem, the Docker socket or
+host secrets are **not** isolated by the profile. Guide:
+[docs/execution-profiles.md](docs/execution-profiles.md),
+[ADR 0024](docs/adr/0024-perfis-de-execucao-isolated-pod.md).
+
 ## Migrating from OpenClaw?
 
 ```bash
