@@ -414,7 +414,231 @@ fn whatsapp_linked_check(
         label: "WhatsApp (dispositivo vinculado)",
         status,
         detail,
-        next_step: saude.next_step(&bridge_dir),
+        next_step: saude.next_step(&bridge_dir, &garraia_common::executavel::nome()),
+    }
+}
+
+// ─── ADR 0024 (#1329): perfil de execucao e raiz do MCP filesystem ──────────
+
+/// O que o `execution.profile` reporta sobre o canal `whatsapp_linked`: o
+/// piso do DONO nesse perfil (`default_mode` explicito, senao o default do
+/// perfil — `search` em `standard`, `code` em `isolated-pod`, a mesma regra
+/// que `LinkedSettings::modo_padrao_efetivo` aplica no turno) e a CONTAGEM de
+/// `owners`. Nunca as identidades — a rota e auth-free. Puro.
+fn piso_e_donos_do_whatsapp(
+    config: &garraia_config::AppConfig,
+    perfil: garraia_config::ExecutionProfile,
+) -> (String, usize) {
+    let settings = crate::bootstrap::whatsapp_linked_settings(config);
+    (settings.modo_padrao_efetivo(perfil), settings.owners.len())
+}
+
+/// Um caminho como o console o mostra: relativo a `<data_dir>` quando esta
+/// dentro dele. A rota e auth-free, e as raizes de politica (o workspace
+/// default, `agent.file_roots`) nao precisam expor o caminho absoluto do
+/// host para o operador entender a linha (F-1 da auditoria da #1329). Uma
+/// raiz **fora** do `data_dir` sai como esta — e o que o operador precisa
+/// ver para consertar.
+fn exibir_raiz(raiz: &std::path::Path, data_dir: &std::path::Path) -> String {
+    match raiz.strip_prefix(data_dir) {
+        Ok(rel) if rel.as_os_str().is_empty() => "<data_dir>".to_string(),
+        Ok(rel) => format!("<data_dir>/{}", rel.display()),
+        Err(_) => raiz.display().to_string(),
+    }
+}
+
+fn lista_de_caminhos(raizes: &[std::path::PathBuf], data_dir: &std::path::Path) -> String {
+    if raizes.is_empty() {
+        return "(nenhuma)".to_string();
+    }
+    raizes
+        .iter()
+        .map(|r| exibir_raiz(r, data_dir))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A linha `execution.profile`. `standard` e `ok`; `isolated-pod` e SEMPRE
+/// `warning`, porque o risco numero um do ADR 0024 e o operador ligar o
+/// perfil fora de um pod — e o console e o lugar onde ele ve isso sem ler o
+/// log de boot. O detalhe diz o que foi liberado (piso do WhatsApp, quantos
+/// donos, quais raizes) e o passo diz como reverter. Puro.
+fn execution_profile_check(
+    politica: &crate::bootstrap::PoliticaDeExecucao,
+    piso_whatsapp: &str,
+    donos: usize,
+    raizes_mcp: &[std::path::PathBuf],
+    data_dir: &std::path::Path,
+) -> DiagnosticCheck {
+    let (status, detail, next_step) = if politica.is_isolated_pod() {
+        (
+            CheckStatus::Warning,
+            format!(
+                "isolated-pod (fonte: {}; piso do WhatsApp pessoal: {piso_whatsapp}; \
+                 owners com perfil completo: {donos}; raiz do MCP filesystem: {})",
+                politica.origem,
+                lista_de_caminhos(raizes_mcp, data_dir)
+            ),
+            Some(
+                "confirme que este processo roda num pod/container isolado; para reverter: \
+                 execution.profile = standard (ou remova GARRAIA_EXECUTION_PROFILE)"
+                    .to_string(),
+            ),
+        )
+    } else {
+        (
+            CheckStatus::Ok,
+            format!("standard (seguro por padrao; fonte: {})", politica.origem),
+            None,
+        )
+    };
+    DiagnosticCheck {
+        id: "execution.profile",
+        label: "Perfil de execucao",
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// `raiz` esta dentro de `permitida`? Cada lado vai para a sua forma
+/// comparavel ([`forma_comparavel`]) e a resposta e um `starts_with` por
+/// componente. Um lado que nao tem forma comparavel (um `..` que escapa da
+/// raiz do filesystem) esta **fora** — nunca "dentro" por acidente.
+fn dentro_de(raiz: &std::path::Path, permitida: &std::path::Path) -> bool {
+    match (forma_comparavel(raiz), forma_comparavel(permitida)) {
+        (Some(a), Some(b)) => a.starts_with(&b),
+        _ => false,
+    }
+}
+
+/// A forma em que dois caminhos podem ser comparados por prefixo.
+///
+/// Primeiro o lexico: `.` some, `..` consome o componente anterior, e um
+/// `..` que passaria da raiz e `None` (review C4 da #1329 — antes o
+/// fallback era um `Path::starts_with` cru, e `/srv/x/../../etc` "comecava
+/// com" `/srv/x` quando `/srv/x` ainda nao existia). Depois o canonico: o
+/// maior prefixo que existe e canonicalizado (um symlink `~/ws -> /` nao
+/// pode passar por lexico) e o resto e reanexado, para um diretorio ainda
+/// nao criado dentro de um `permitida` que existe continuar comparavel.
+fn forma_comparavel(p: &std::path::Path) -> Option<std::path::PathBuf> {
+    let normal = normalizar_lexico(p)?;
+    let mut prefixo = normal.as_path();
+    let mut resto: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if let Ok(canonico) = prefixo.canonicalize() {
+            let mut out = canonico;
+            for comp in resto.iter().rev() {
+                out.push(comp);
+            }
+            return Some(out);
+        }
+        let Some(nome) = prefixo.file_name() else {
+            // Nada do caminho existe (ou e relativo): fica o lexico.
+            return Some(normal.clone());
+        };
+        resto.push(nome);
+        prefixo = prefixo.parent()?;
+    }
+}
+
+/// Normalizacao lexica: sem `.`; `..` consome o componente anterior; `None`
+/// quando um `..` tenta subir alem do que ha (escapa da raiz, ou de um
+/// caminho relativo sem ancestral).
+fn normalizar_lexico(p: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            outro => out.push(outro.as_os_str()),
+        }
+    }
+    Some(out)
+}
+
+const MCP_ROOT_NEXT_STEP: &str = "edite a entrada `filesystem` (em mcp.json, ou em `mcp:` do \
+                                  config.yml, que vence o mcp.json; ou \
+                                  GARRAIA_DISABLE_MCP_AUTOPROVISION=1 + remova o servidor) para \
+                                  apontar para uma raiz dentro de agent.file_roots ou de \
+                                  <data_dir>/workspace; ou declare execution.profile = \
+                                  isolated-pod se este processo roda num pod";
+
+/// A linha `mcp.filesystem_root`: a raiz que o servidor `filesystem`
+/// efetivo declara (`mcp:` do config.yml vence o mcp.json, como no boot),
+/// contra as raizes **declaradas** do perfil. Sem entrada => `skipped`.
+/// Em `isolated-pod` qualquer raiz pod-local e `ok` por declaracao (o pod e
+/// a fronteira). Em `standard` toda raiz precisa estar dentro de uma das
+/// `permitidas` — `agent.file_roots` ou `<data_dir>/workspace`, o mesmo
+/// conjunto que o autoprovisionamento escreve; a env `GARRAIA_FILE_ROOTS` e
+/// o `working_dir` da sessao, que alargam o jail das file tools nativas,
+/// NAO entram aqui de proposito (ver `bootstrap::raizes_do_mcp_filesystem`).
+/// A primeira raiz fora vira `warning` nomeando-a, como esta — e a entrada
+/// legada com `$HOME` que instalacoes anteriores a #1329 ainda carregam.
+/// As raizes permitidas saem relativas a `<data_dir>` quando estao dentro
+/// dele. Puro.
+fn mcp_filesystem_root_check(
+    perfil_isolado: bool,
+    persistidas: Option<&[std::path::PathBuf]>,
+    permitidas: &[std::path::PathBuf],
+    data_dir: &std::path::Path,
+) -> DiagnosticCheck {
+    let (status, detail, next_step) = match persistidas {
+        None => (
+            CheckStatus::Skipped,
+            "nenhum servidor `filesystem` em mcp.json nem em `mcp:` do config.yml".to_string(),
+            None,
+        ),
+        Some(raizes) if perfil_isolado => (
+            CheckStatus::Ok,
+            format!(
+                "{} (isolated-pod: o pod e a fronteira)",
+                lista_de_caminhos(raizes, data_dir)
+            ),
+            None,
+        ),
+        Some([]) => (
+            CheckStatus::Warning,
+            "o servidor `filesystem` nao declara nenhuma raiz".to_string(),
+            Some(MCP_ROOT_NEXT_STEP.to_string()),
+        ),
+        Some(raizes) => {
+            let fora = raizes
+                .iter()
+                .find(|r| !permitidas.iter().any(|p| dentro_de(r, p)));
+            match fora {
+                Some(raiz) => (
+                    CheckStatus::Warning,
+                    format!(
+                        "{} esta fora das raizes declaradas (agent.file_roots / \
+                         <data_dir>/workspace): {}",
+                        raiz.display(),
+                        lista_de_caminhos(permitidas, data_dir)
+                    ),
+                    Some(MCP_ROOT_NEXT_STEP.to_string()),
+                ),
+                None => (
+                    CheckStatus::Ok,
+                    format!(
+                        "{} (dentro das raizes declaradas)",
+                        lista_de_caminhos(raizes, data_dir)
+                    ),
+                    None,
+                ),
+            }
+        }
+    };
+    DiagnosticCheck {
+        id: "mcp.filesystem_root",
+        label: "MCP filesystem (raiz)",
+        status,
+        detail,
+        next_step,
     }
 }
 
@@ -470,6 +694,34 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
             Some("Run `garraia init` to scaffold ~/.garraia.".to_string())
         },
     });
+
+    // 3b. ADR 0024 (#1329): perfil de execucao e raiz do MCP `filesystem`.
+    // A politica e pura (config ja carregada); as raizes persistidas vem do
+    // registry em memoria, que e o mcp.json carregado no boot mais o que a
+    // admin API gravou desde entao — sem I/O de disco por request.
+    let politica = crate::bootstrap::politica_de_execucao(&state.config);
+    let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&state.config);
+    let data_dir = state.config.resolved_data_dir();
+    let (piso_whatsapp, donos) = piso_e_donos_do_whatsapp(&state.config, politica.perfil);
+    checks.push(execution_profile_check(
+        &politica,
+        &piso_whatsapp,
+        donos,
+        raizes_mcp.caminhos(),
+        &data_dir,
+    ));
+    // A entrada efetiva: `mcp:` do config.yml vence o mcp.json, como em
+    // `ConfigLoader::merged_mcp_config` (o que o boot spawna).
+    let persistidas = crate::mcp::persistence::raizes_do_filesystem_efetivo(
+        &state.config.mcp,
+        &state.mcp_registry.config_snapshot().await,
+    );
+    checks.push(mcp_filesystem_root_check(
+        politica.is_isolated_pod(),
+        persistidas.as_deref(),
+        raizes_mcp.caminhos(),
+        &data_dir,
+    ));
 
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
@@ -752,9 +1004,11 @@ mod tests {
     fn nao_vinculado_e_skipped_com_o_comando_de_link() {
         let c = wa(LinkHealth::NotLinked);
         assert!(matches!(c.status, CheckStatus::Skipped));
+        // No harness o executavel e `garraia_gateway-<hash>`, que cai no
+        // nome canonico: o passo cita `garraia`, nunca o alias fixo (#1329).
         assert_eq!(
             c.next_step.as_deref(),
-            Some("rode `garra whatsapp link`"),
+            Some("rode `garraia whatsapp link`"),
             "sem sessao o passo e vincular"
         );
     }
@@ -796,11 +1050,13 @@ mod tests {
     /// todos eles verdes e o `/api/diagnostics` sem a linha — o padrao de
     /// defeito que este repositorio ja viu cinco vezes.
     #[tokio::test]
+    #[serial_test::serial]
     async fn o_relatorio_de_verdade_inclui_a_linha_do_whatsapp() {
         use garraia_agents::AgentRuntime;
         use garraia_channels::ChannelRegistry;
 
         let dir = tempfile::tempdir().expect("tempdir");
+        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
@@ -825,7 +1081,7 @@ mod tests {
         );
         assert_eq!(
             linha.next_step.as_deref(),
-            Some("rode `garra whatsapp link`")
+            Some("rode `garraia whatsapp link`")
         );
     }
 
@@ -852,6 +1108,428 @@ mod tests {
                     "{saude:?} vazou {proibido:?} num corpo auth-free: {json}"
                 );
             }
+        }
+    }
+
+    // ─── ADR 0024 (#1329): perfil de execucao + raiz do MCP filesystem ────
+
+    use crate::bootstrap::PoliticaDeExecucao;
+    use garraia_config::{ExecutionProfile, ProfileSource};
+    use std::path::{Path, PathBuf};
+
+    fn politica(perfil: ExecutionProfile, origem: ProfileSource) -> PoliticaDeExecucao {
+        PoliticaDeExecucao {
+            perfil,
+            origem,
+            pod_root: None,
+        }
+    }
+
+    /// `standard` e `ok`, cita a fonte e nao tem o que consertar.
+    #[test]
+    fn perfil_standard_e_ok_com_a_fonte() {
+        for origem in [
+            ProfileSource::Default,
+            ProfileSource::File,
+            ProfileSource::Env,
+        ] {
+            let c = execution_profile_check(
+                &politica(ExecutionProfile::Standard, origem),
+                "search",
+                0,
+                &[PathBuf::from("/tmp/ws")],
+                Path::new("/tmp/data"),
+            );
+            assert_eq!(c.id, "execution.profile");
+            assert!(matches!(c.status, CheckStatus::Ok), "{origem}");
+            assert!(c.detail.contains("standard"), "{}", c.detail);
+            assert!(c.detail.contains(origem.as_str()), "{}", c.detail);
+            assert!(c.next_step.is_none());
+        }
+    }
+
+    /// `isolated-pod` e SEMPRE `warning`: o risco do ADR e o perfil ligado
+    /// fora de um pod. O detalhe diz o que foi liberado (piso, contagem de
+    /// donos, raiz) e o passo diz como reverter pelos dois caminhos.
+    #[test]
+    fn perfil_isolated_pod_e_warning_com_o_que_foi_liberado_e_como_reverter() {
+        let c = execution_profile_check(
+            &politica(ExecutionProfile::IsolatedPod, ProfileSource::Env),
+            "code",
+            2,
+            &[PathBuf::from("/workspace")],
+            Path::new("/tmp/data"),
+        );
+        assert!(matches!(c.status, CheckStatus::Warning));
+        for esperado in ["isolated-pod", "env", "code", "2", "/workspace"] {
+            assert!(c.detail.contains(esperado), "{esperado:?} em {}", c.detail);
+        }
+
+        // F-1: a raiz de politica dentro do `data_dir` sai relativa — a rota
+        // e auth-free e o caminho absoluto do host nao acrescenta nada.
+        let c = execution_profile_check(
+            &politica(ExecutionProfile::IsolatedPod, ProfileSource::File),
+            "code",
+            1,
+            &[PathBuf::from("/home/ana/.garraia/data/workspace")],
+            Path::new("/home/ana/.garraia/data"),
+        );
+        assert!(c.detail.contains("<data_dir>/workspace"), "{}", c.detail);
+        assert!(!c.detail.contains("/home/ana"), "{}", c.detail);
+        let passo = c.next_step.expect("isolated-pod precisa de passo");
+        assert!(passo.contains("execution.profile = standard"), "{passo}");
+        assert!(passo.contains("GARRAIA_EXECUTION_PROFILE"), "{passo}");
+        assert!(passo.contains("pod"), "{passo}");
+    }
+
+    /// Piso e contagem de donos vem da secao `channels.whatsapp_linked`; o
+    /// piso default segue o perfil (`search`/`code`) como no turno; as
+    /// identidades NUNCA saem — a rota e auth-free.
+    #[test]
+    fn piso_e_donos_saem_da_secao_sem_as_identidades() {
+        let mut config = garraia_config::AppConfig::default();
+        assert_eq!(
+            piso_e_donos_do_whatsapp(&config, ExecutionProfile::Standard),
+            ("search".to_string(), 0),
+            "sem secao, standard: piso search e zero donos"
+        );
+        assert_eq!(
+            piso_e_donos_do_whatsapp(&config, ExecutionProfile::IsolatedPod),
+            ("code".to_string(), 0),
+            "sem secao, isolated-pod: o dono teria piso code (mas ha zero donos)"
+        );
+
+        config.channels.insert(
+            "whatsapp_linked".into(),
+            garraia_config::ChannelConfig {
+                channel_type: "whatsapp_linked".into(),
+                enabled: Some(true),
+                settings: std::collections::HashMap::from([
+                    ("default_mode".to_string(), serde_json::json!(" search ")),
+                    (
+                        "owners".to_string(),
+                        serde_json::json!(["+55 11 99999-8888", "abc@lid"]),
+                    ),
+                ]),
+            },
+        );
+        let (piso, donos) = piso_e_donos_do_whatsapp(&config, ExecutionProfile::IsolatedPod);
+        assert_eq!(
+            piso, "search",
+            "default_mode explicito vence o default do perfil"
+        );
+        assert_eq!(donos, 2);
+
+        let c = execution_profile_check(
+            &politica(ExecutionProfile::IsolatedPod, ProfileSource::File),
+            &piso,
+            donos,
+            &[],
+            Path::new("/tmp/data"),
+        );
+        let json = serde_json::to_string(&c).expect("serializa");
+        for proibido in ["5511999998888", "99999-8888", "abc@lid", "@lid"] {
+            assert!(!json.contains(proibido), "vazou {proibido:?}: {json}");
+        }
+
+        // Secao com `type` de outro canal nao e este canal.
+        if let Some(ch) = config.channels.get_mut("whatsapp_linked") {
+            ch.channel_type = "whatsapp".into();
+        }
+        assert_eq!(
+            piso_e_donos_do_whatsapp(&config, ExecutionProfile::Standard),
+            ("search".to_string(), 0)
+        );
+    }
+
+    /// Sem entrada `filesystem` nao ha o que comparar: `skipped`.
+    #[test]
+    fn mcp_root_sem_entrada_e_skipped() {
+        let c = mcp_filesystem_root_check(
+            false,
+            None,
+            &[PathBuf::from("/tmp/ws")],
+            Path::new("/tmp/data"),
+        );
+        assert_eq!(c.id, "mcp.filesystem_root");
+        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert!(c.next_step.is_none());
+    }
+
+    /// O caso que a #1329 apontou: instalacao anterior com `$HOME` como raiz
+    /// em `standard` — fora do jail, `warning`, nomeando a raiz e os dois
+    /// caminhos de saida.
+    #[test]
+    fn mcp_root_fora_do_jail_em_standard_e_warning_nomeando_a_raiz() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jail = dir.path().join("workspace");
+        std::fs::create_dir_all(&jail).expect("mkdir");
+        let home = dir.path().join("home-legada");
+        std::fs::create_dir_all(&home).expect("mkdir");
+
+        let c = mcp_filesystem_root_check(
+            false,
+            Some(std::slice::from_ref(&home)),
+            std::slice::from_ref(&jail),
+            dir.path(),
+        );
+        assert!(matches!(c.status, CheckStatus::Warning));
+        assert!(
+            c.detail.contains(&home.display().to_string()),
+            "o detalhe nomeia a raiz ofensora como esta: {}",
+            c.detail
+        );
+        // C1/C6/C14: o texto nomeia o que foi comparado — as raizes
+        // declaradas — e nao "o jail", que e mais largo (env + working_dir).
+        assert!(
+            c.detail.contains("fora das raizes declaradas"),
+            "{}",
+            c.detail
+        );
+        assert!(!c.detail.contains("jail"), "{}", c.detail);
+        // F-1: a raiz permitida dentro do data_dir sai relativa.
+        assert!(c.detail.contains("<data_dir>/workspace"), "{}", c.detail);
+        let passo = c.next_step.expect("warning precisa de passo");
+        assert!(passo.contains("mcp.json"), "{passo}");
+        assert!(
+            passo.contains("GARRAIA_DISABLE_MCP_AUTOPROVISION=1"),
+            "{passo}"
+        );
+        assert!(passo.contains("isolated-pod"), "{passo}");
+
+        // Uma raiz dentro e outra fora: a fora e a que aparece.
+        let dentro = jail.join("sub");
+        std::fs::create_dir_all(&dentro).expect("mkdir");
+        let c =
+            mcp_filesystem_root_check(false, Some(&[dentro, home.clone()]), &[jail], dir.path());
+        assert!(matches!(c.status, CheckStatus::Warning));
+        assert!(
+            c.detail.contains(&home.display().to_string()),
+            "{}",
+            c.detail
+        );
+    }
+
+    /// Raiz dentro do jail (igual ou subdiretorio, em qualquer das
+    /// permitidas) e `ok` — inclusive quando o diretorio ainda nao existe,
+    /// que e o fallback lexico.
+    #[test]
+    fn mcp_root_dentro_do_jail_em_standard_e_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).expect("mkdir");
+        let outra = PathBuf::from("/srv/nao-existe/projeto");
+
+        for raiz in [ws.clone(), ws.join("sub"), outra.join("fundo")] {
+            let c = mcp_filesystem_root_check(
+                false,
+                Some(std::slice::from_ref(&raiz)),
+                &[ws.clone(), outra.clone()],
+                dir.path(),
+            );
+            assert!(
+                matches!(c.status, CheckStatus::Ok),
+                "{} deveria estar dentro: {}",
+                raiz.display(),
+                c.detail
+            );
+            assert!(c.next_step.is_none());
+        }
+    }
+
+    /// Symlink que sai do jail nao passa por comparacao lexica: canonico
+    /// quando os dois lados existem.
+    #[cfg(unix)]
+    #[test]
+    fn mcp_root_symlink_para_fora_do_jail_e_warning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let jail = dir.path().join("workspace");
+        std::fs::create_dir_all(&jail).expect("mkdir");
+        let fora = dir.path().join("fora");
+        std::fs::create_dir_all(&fora).expect("mkdir");
+        let link = jail.join("atalho");
+        std::os::unix::fs::symlink(&fora, &link).expect("symlink");
+
+        let c = mcp_filesystem_root_check(false, Some(&[link]), &[jail], dir.path());
+        assert!(
+            matches!(c.status, CheckStatus::Warning),
+            "symlink para fora nao e 'dentro': {}",
+            c.detail
+        );
+    }
+
+    /// Em `isolated-pod` o pod e a fronteira: qualquer raiz e `ok`, e uma
+    /// entrada sem raiz em `standard` e `warning`.
+    #[test]
+    fn mcp_root_em_isolated_pod_e_ok_e_entrada_vazia_em_standard_e_warning() {
+        let c = mcp_filesystem_root_check(
+            true,
+            Some(&[PathBuf::from("/")]),
+            &[PathBuf::from("/workspace")],
+            Path::new("/tmp/data"),
+        );
+        assert!(matches!(c.status, CheckStatus::Ok), "{}", c.detail);
+        assert!(c.detail.contains("isolated-pod"), "{}", c.detail);
+
+        let c = mcp_filesystem_root_check(
+            false,
+            Some(&[]),
+            &[PathBuf::from("/workspace")],
+            Path::new("/tmp/data"),
+        );
+        assert!(matches!(c.status, CheckStatus::Warning), "{}", c.detail);
+        assert!(c.next_step.is_some());
+    }
+
+    /// Review C4: o fallback lexico dobra `.`/`..`. `/srv/x/../../etc` nao
+    /// "comeca com" `/srv/x` so porque `/srv/x` ainda nao existe — e um `..`
+    /// que escapa da raiz do filesystem e sempre "fora".
+    #[test]
+    fn mcp_root_com_ponto_ponto_nao_passa_por_lexico() {
+        let permitida = PathBuf::from("/srv/nao-existe-garra-1329");
+        let escapa = permitida.join("..").join("..").join("etc");
+        let c = mcp_filesystem_root_check(
+            false,
+            Some(std::slice::from_ref(&escapa)),
+            std::slice::from_ref(&permitida),
+            Path::new("/tmp/data"),
+        );
+        assert!(
+            matches!(c.status, CheckStatus::Warning),
+            "`..` que sai da permitida e fora: {}",
+            c.detail
+        );
+        assert!(!dentro_de(&escapa, &permitida));
+
+        // `..` que volta para dentro continua dentro; `.` e ignorado.
+        let volta = permitida.join("sub").join("..").join(".").join("outro");
+        assert!(dentro_de(&volta, &permitida));
+        assert_eq!(normalizar_lexico(&volta), Some(permitida.join("outro")));
+
+        // Alem da raiz do filesystem: sem forma comparavel, nunca "dentro".
+        assert_eq!(normalizar_lexico(Path::new("/..")), None);
+        assert!(!dentro_de(Path::new("/srv/../.."), Path::new("/")));
+        // Relativo com `..` na frente tambem nao tem ancestral.
+        assert_eq!(normalizar_lexico(Path::new("../x")), None);
+
+        // Um diretorio ainda nao criado dentro de uma permitida que EXISTE
+        // e comparado pelo canonico do prefixo que existe + o resto.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).expect("mkdir");
+        assert!(dentro_de(&ws.join("ainda-nao").join("existe"), &ws));
+        assert!(!dentro_de(&ws.join("..").join("fora"), &ws));
+    }
+
+    /// F-1: caminhos de politica saem relativos a `<data_dir>` quando estao
+    /// dentro dele; fora dele saem como estao.
+    #[test]
+    fn exibir_raiz_relativiza_so_o_que_esta_no_data_dir() {
+        let data = Path::new("/home/ana/.garraia/data");
+        assert_eq!(
+            exibir_raiz(&data.join("workspace"), data),
+            "<data_dir>/workspace"
+        );
+        assert_eq!(exibir_raiz(data, data), "<data_dir>");
+        assert_eq!(exibir_raiz(Path::new("/srv/projeto"), data), "/srv/projeto");
+        assert_eq!(
+            lista_de_caminhos(&[data.join("workspace"), PathBuf::from("/srv/p")], data),
+            "<data_dir>/workspace, /srv/p"
+        );
+        assert_eq!(lista_de_caminhos(&[], data), "(nenhuma)");
+    }
+
+    /// F-6 da auditoria: `AppState::new` provisiona `mcp.json` em
+    /// `<GARRAIA_CONFIG_DIR>` quando ele nao existe. Um teste que constroi o
+    /// estado sem apontar essa env para um tempdir escreveria um `mcp.json`
+    /// de verdade no config dir do desenvolvedor, apontando para um
+    /// diretorio temporario que ja nao existe. O guard aponta e restaura;
+    /// `#[serial]` e o lock que os testes de `persistence` ja usam para as
+    /// envs de provisionamento.
+    struct ConfigDirDeTeste(Option<std::ffi::OsString>);
+
+    impl ConfigDirDeTeste {
+        fn apontar_para(dir: &Path) -> Self {
+            let anterior = std::env::var_os("GARRAIA_CONFIG_DIR");
+            // SAFETY: teste serializado (`#[serial_test::serial]`).
+            unsafe { std::env::set_var("GARRAIA_CONFIG_DIR", dir) };
+            Self(anterior)
+        }
+    }
+
+    impl Drop for ConfigDirDeTeste {
+        fn drop(&mut self) {
+            // SAFETY: teste serializado.
+            unsafe {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("GARRAIA_CONFIG_DIR", v),
+                    None => std::env::remove_var("GARRAIA_CONFIG_DIR"),
+                }
+            }
+        }
+    }
+
+    fn opt_out_de_provisionamento_ligado() -> bool {
+        std::env::var_os(crate::mcp::McpPersistenceService::DISABLE_AUTOPROVISION_ENV)
+            .is_some_and(|v| !v.is_empty() && v != "0")
+    }
+
+    /// **A fiacao.** As duas linhas precisam estar no relatorio de verdade;
+    /// sem este teste apagar os `checks.push` deixaria os puros verdes.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
+            config,
+            std::sync::Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let perfil = report
+            .checks
+            .iter()
+            .find(|c| c.id == "execution.profile")
+            .expect("linha `execution.profile`");
+        assert!(matches!(perfil.status, CheckStatus::Ok), "{:?}", perfil);
+        assert!(perfil.detail.contains("standard"), "{}", perfil.detail);
+
+        let raiz = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp.filesystem_root")
+            .expect("linha `mcp.filesystem_root`");
+        assert!(
+            !matches!(raiz.status, CheckStatus::Error),
+            "raiz fora das raizes declaradas e aviso, nao erro: {raiz:?}"
+        );
+        // Com o config dir apontado para o tempdir o resultado e
+        // deterministico: ou o opt-out esta ligado (CI) e nao ha entrada, ou
+        // o boot provisionou o workspace default AQUI — nunca no config dir
+        // real — e a raiz esta dentro das declaradas, exibida relativa.
+        if opt_out_de_provisionamento_ligado() {
+            assert!(matches!(raiz.status, CheckStatus::Skipped), "{raiz:?}");
+            assert!(!dir.path().join("mcp.json").exists());
+        } else {
+            assert!(
+                dir.path().join("mcp.json").exists(),
+                "o provisionamento escreve no config dir de teste"
+            );
+            assert!(matches!(raiz.status, CheckStatus::Ok), "{raiz:?}");
+            assert!(
+                raiz.detail.contains("<data_dir>/workspace"),
+                "{}",
+                raiz.detail
+            );
         }
     }
 

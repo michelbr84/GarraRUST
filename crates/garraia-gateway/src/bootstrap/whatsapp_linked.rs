@@ -31,6 +31,17 @@
 //!    generalizar o guard que hoje so cobre `web_fetch`; ela **nao mergeou**,
 //!    entao ele e aplicado localmente aqui. Ver [`preparar_entrada`].
 //!
+//! # O dono num pod isolado (ADR 0024, #1329)
+//!
+//! A unica coisa que afrouxa o piso e uma decisao **explicita** em dois
+//! lugares ao mesmo tempo: `execution.profile = isolated-pod` (o operador
+//! declara que o pod, e nao o Garra, e a fronteira) **e** a identidade do
+//! remetente em `channels.whatsapp_linked.owners`. Com os dois, e so em
+//! conversa 1:1, o piso do turno passa a ser `code` (sem whitelist:
+//! filesystem, `bash`, MCP, subagentes). Grupo nunca herda, contato so
+//! pareado por codigo nunca herda, e `owners` em perfil `standard` nao muda
+//! nada. Ver [`perfil_do_turno`] e [`modo_do_piso`].
+//!
 //! # PII
 //!
 //! `message` e `connected` carregam o JID inteiro de proposito — a allowlist
@@ -50,7 +61,7 @@ use garraia_channels::whatsapp_linked::{
     BridgeCommand, DEFAULT_ACCOUNT, InboundMessage, Jid, NodeLauncher, RunError, SessionError,
     SessionKey, SessionStore, bridge, runner::InboundSink, runner::serve,
 };
-use garraia_config::AppConfig;
+use garraia_config::{AppConfig, ExecutionProfile};
 use garraia_security::{InputValidator, PairingManager};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
@@ -58,6 +69,7 @@ use tracing::{info, warn};
 use crate::state::SharedState;
 
 use super::config::channel_gates;
+use super::execution::politica_de_execucao;
 
 /// Chave da secao de config. Vem do proprio canal para nao existir um segundo
 /// literal capaz de divergir do que a CLI escreve.
@@ -68,7 +80,19 @@ pub const CONFIG_KEY: &str = garraia_channels::whatsapp_linked::CONFIG_KEY;
 /// `search` e o unico perfil nativo com `whitelist_mode: true` e lista de
 /// leitura — `ask` apenas *nega* tres ferramentas e libera o resto, o que num
 /// canal aberto ao mundo e permissivo demais.
+///
+/// E o piso de **todo** remetente em `standard`, e de todo remetente que nao
+/// e dono (ou que fala por grupo) em `isolated-pod`. Ver [`modo_do_piso`].
 pub const DEFAULT_MODE: &str = "search";
+
+/// Modo default do **dono** em conversa 1:1 quando `execution.profile =
+/// isolated-pod` e `default_mode` nao foi declarado (ADR 0024).
+///
+/// `code` e nativo, sem whitelist e sem `denied`: passa filesystem, `bash`,
+/// toda ferramenta MCP e subagente. E o "poder total dentro do pod" da
+/// decisao do dono — e por isso so vale para quem esta em `owners`, em
+/// conversa 1:1, com o perfil declarado. Ver [`perfil_do_turno`].
+pub const DEFAULT_MODE_DO_DONO_NO_POD: &str = "code";
 
 /// Tamanho da fila de saida. Curta de proposito: comando enfileirado com a
 /// ponte caida e descartado (decisao do `runner::serve`), entao acumular aqui
@@ -257,33 +281,71 @@ pub fn health(config: &AppConfig, runtime: &WhatsAppLinkedRuntime) -> (LinkHealt
 // ---------------------------------------------------------------------------
 
 /// Os poucos botoes que este canal tem. Nenhum deles afrouxa a allowlist.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinkedSettings {
     pub enabled: bool,
     /// Identidades que o operador declarou na config. Somam-se a allowlist
     /// global; **nao** a substituem, e nao existe valor que signifique "todos".
     pub allow: Vec<String>,
+    /// Identidades do **dono** (ADR 0024). Mesma normalizacao do `allow`, e
+    /// quem esta aqui e admitido como se estivesse la. O que muda e o piso:
+    /// em `execution.profile = isolated-pod`, e so em conversa 1:1, o dono
+    /// recebe [`Self::modo_padrao_efetivo`] do pod (`code` por default). Em
+    /// `standard` esta lista nao confere poder nenhum — o `config check`
+    /// avisa. Pareamento por codigo **nunca** entra aqui: e credencial fraca
+    /// (memoria do processo, seis digitos), e dono e identidade declarada.
+    pub owners: Vec<String>,
     /// Responder em grupo? Falso por padrao: um agente que responde sozinho no
     /// grupo da familia do operador e um incidente, nao um recurso.
     pub reply_in_groups: bool,
-    /// Modo que vale quando a sessao nao escolheu nenhum.
+    /// Modo que vale quando a sessao nao escolheu nenhum, **como declarado**.
     ///
+    /// `None` quando a chave esta ausente ou em branco — e ai o default
+    /// depende do perfil de execucao (ver [`Self::modo_padrao_efetivo`]).
     /// Vem **cru** da config: `settings_from_config` e pura e nao decide nada.
     /// Quem valida e [`modo_padrao`] — na subida, por [`deve_supervisionar`]
     /// (recusa com [`NaoSubiu::ModoPadraoInvalido`]), e no turno, por
     /// [`piso_somente_leitura`] (cai para [`DEFAULT_MODE`]).
-    pub default_mode: String,
+    pub default_mode: Option<String>,
 }
 
-impl Default for LinkedSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            allow: Vec::new(),
-            reply_in_groups: false,
-            default_mode: DEFAULT_MODE.to_string(),
+impl LinkedSettings {
+    /// O `default_mode` que vale para um dado perfil de execucao: o valor
+    /// declarado, se houver; senao [`DEFAULT_MODE`] em `standard` e
+    /// [`DEFAULT_MODE_DO_DONO_NO_POD`] em `isolated-pod`.
+    ///
+    /// E o unico lugar em que o perfil de execucao vira nome de modo. O
+    /// chamador escolhe o perfil que **cabe ao remetente** — e nao o do
+    /// processo — via [`modo_do_piso`]: remetente que nao e dono, ou fala por
+    /// grupo, recebe o valor de `standard` mesmo num pod.
+    pub fn modo_padrao_efetivo(&self, perfil: ExecutionProfile) -> String {
+        match &self.default_mode {
+            Some(declarado) => declarado.clone(),
+            None => match perfil {
+                ExecutionProfile::Standard => DEFAULT_MODE,
+                ExecutionProfile::IsolatedPod => DEFAULT_MODE_DO_DONO_NO_POD,
+            }
+            .to_string(),
         }
     }
+}
+
+/// Le uma lista de identidades da secao (`allow`, `owners`): cada item por
+/// [`normalizar_identidade`], vazios descartados, chave ausente = vazia.
+fn identidades_da_secao(section: &garraia_config::ChannelConfig, chave: &str) -> Vec<String> {
+    section
+        .settings
+        .get(chave)
+        .and_then(|v| v.as_array())
+        .map(|itens| {
+            itens
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(normalizar_identidade)
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Le `channels.whatsapp_linked`. Pura: recebe o `AppConfig`, devolve a struct.
@@ -296,19 +358,6 @@ pub fn settings_from_config(config: &AppConfig) -> LinkedSettings {
     if section.channel_type != CONFIG_KEY {
         return LinkedSettings::default();
     }
-    let allow = section
-        .settings
-        .get("allow")
-        .and_then(|v| v.as_array())
-        .map(|itens| {
-            itens
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(normalizar_identidade)
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
     LinkedSettings {
         // `enabled` ausente significa **desligado** neste canal, ao contrario
         // do default do `build_channels` (`unwrap_or(true)`): a secao so
@@ -316,7 +365,8 @@ pub fn settings_from_config(config: &AppConfig) -> LinkedSettings {
         // DEPOIS de a sessao existir. Um `true` implicito ligaria a supervisao
         // numa maquina onde o pareamento foi abortado no meio.
         enabled: section.enabled == Some(true),
-        allow,
+        allow: identidades_da_secao(section, "allow"),
+        owners: identidades_da_secao(section, "owners"),
         reply_in_groups: section
             .settings
             .get("reply_in_groups")
@@ -327,8 +377,7 @@ pub fn settings_from_config(config: &AppConfig) -> LinkedSettings {
             .get("default_mode")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_MODE.to_string()),
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -420,9 +469,18 @@ pub struct PortaoDoCanal {
 
 impl PortaoDoCanal {
     /// O portao que a config descreve. Lista vazia significa **ninguem**.
+    ///
+    /// `owners` entra como `allow` (ADR 0024): dono e admitido sem precisar
+    /// se listar duas vezes. O que `owners` confere **alem** da admissao nao
+    /// mora aqui — e por turno, em [`perfil_do_turno`].
     pub fn from_settings(settings: &LinkedSettings) -> Self {
         Self {
-            da_config: settings.allow.iter().cloned().collect(),
+            da_config: settings
+                .allow
+                .iter()
+                .chain(settings.owners.iter())
+                .cloned()
+                .collect(),
             pareados: std::collections::HashSet::new(),
         }
     }
@@ -584,6 +642,73 @@ pub fn piso_somente_leitura(mut exec: ExecContext, modo_default: &str) -> ExecCo
     exec
 }
 
+/// O perfil efetivo de **um turno** (ADR 0024).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerfilDoTurno {
+    /// Dono declarado, em conversa 1:1, num processo em `isolated-pod`: o
+    /// piso e o do pod ([`DEFAULT_MODE_DO_DONO_NO_POD`] salvo `default_mode`).
+    Completo,
+    /// Todo o resto: o piso de `standard` ([`DEFAULT_MODE`] salvo
+    /// `default_mode`).
+    Padrao,
+}
+
+impl PerfilDoTurno {
+    /// `completo` | `padrao` — o que vai para o log do turno.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completo => "completo",
+            Self::Padrao => "padrao",
+        }
+    }
+}
+
+/// Decide o perfil do turno. Pura, e avaliada **depois** de [`admitir`] e
+/// **antes** de montar o `ExecContext`.
+///
+/// Sao tres condicoes, todas obrigatorias, e nenhuma delas e inferida:
+///
+/// 1. `execution.profile = isolated-pod` — o operador declarou que o pod e a
+///    fronteira. Em `standard`, `owners` nao muda nada (o `config check`
+///    avisa).
+/// 2. Conversa **1:1**. Mensagem de grupo carrega o JID do participante, mas
+///    quem le a resposta e o grupo inteiro; poder total nunca e herdado por
+///    grupo, nem quando o participante e o dono.
+/// 3. O remetente esta em `owners`, byte a byte apos
+///    [`normalizar_identidade`]. Contato so pareado por codigo nao esta —
+///    `pareados` e memoria do processo, nao identidade declarada.
+///
+/// Qualquer duvida cai em [`PerfilDoTurno::Padrao`], que e o comportamento
+/// de hoje.
+pub fn perfil_do_turno(
+    perfil: ExecutionProfile,
+    settings: &LinkedSettings,
+    remetente: &str,
+    is_group: bool,
+) -> PerfilDoTurno {
+    if perfil.is_isolated_pod() && !is_group && settings.owners.iter().any(|d| d == remetente) {
+        PerfilDoTurno::Completo
+    } else {
+        PerfilDoTurno::Padrao
+    }
+}
+
+/// O nome do modo que vale como piso para um perfil de turno.
+///
+/// `Completo` recebe o `default_mode` efetivo do pod; `Padrao` recebe o de
+/// `standard` — **mesmo num processo em `isolated-pod`**. E assim que
+/// remetente admitido que nao e dono, e qualquer mensagem de grupo, ficam
+/// exatamente onde estao hoje (`search`, salvo `default_mode` declarado). O
+/// perfil de execucao do processo nao entra aqui de proposito: ele ja foi
+/// consumido por [`perfil_do_turno`], e um `Completo` so existe em
+/// `isolated-pod`.
+pub fn modo_do_piso(perfil_turno: PerfilDoTurno, settings: &LinkedSettings) -> String {
+    match perfil_turno {
+        PerfilDoTurno::Completo => settings.modo_padrao_efetivo(ExecutionProfile::IsolatedPod),
+        PerfilDoTurno::Padrao => settings.modo_padrao_efetivo(ExecutionProfile::Standard),
+    }
+}
+
 /// Servidores MCP cujas ferramentas o portao de um perfil **libera**.
 ///
 /// # O que isto substitui (#1327)
@@ -671,10 +796,73 @@ pub fn motivo_da_liberacao(gate: &ToolGate) -> &'static str {
 /// mesmo caminho que [`piso_somente_leitura`] + `ToolGate::para_o_turno`
 /// percorrem no turno de uma sessao sem modo escolhido —, e com o modo
 /// validado ele e sempre o de um perfil nativo, nunca `sem_politica()`.
-fn avisar_drift_de_mcp(modo: AgentMode, agents: &garraia_agents::AgentRuntime) {
+///
+/// # Por perfil de execucao (ADR 0024)
+///
+/// - `standard`: `modo` e o piso de todo remetente. Liberar MCP aqui e
+///   escolha declarada do operador no `default_mode`: avisa e diz como
+///   voltar ao `search`.
+/// - `isolated-pod` **sem** dono em `owners`: o perfil nao muda nada neste
+///   canal — o aviso diz isso, e examina o piso que de fato vale para todo
+///   mundo (o de `standard`).
+/// - `isolated-pod` **com** dono: `modo` e o piso do dono em 1:1. Liberar
+///   MCP e o que o perfil existe para fazer, entao o texto diz "decisao de
+///   perfil", nao "confirme que e intencional" — e lembra que nao-dono e
+///   grupo continuam no piso de `standard`.
+fn avisar_drift_de_mcp(
+    modo: AgentMode,
+    perfil: ExecutionProfile,
+    settings: &LinkedSettings,
+    agents: &garraia_agents::AgentRuntime,
+) {
+    let inventario = agents.tool_inventory();
+    match perfil {
+        ExecutionProfile::Standard => avisar_escolha_do_operador(modo, &inventario),
+        ExecutionProfile::IsolatedPod if settings.owners.is_empty() => {
+            let piso = settings.modo_padrao_efetivo(ExecutionProfile::Standard);
+            warn!(
+                "whatsapp_linked: execution.profile = isolated-pod, mas \
+                 `channels.whatsapp_linked.owners` esta vazio — o perfil nao muda nada neste \
+                 canal: todo remetente admitido fica no piso `{piso}`. Declare a identidade do \
+                 dono em `owners` para o perfil completo valer em conversa 1:1 (ADR 0024)"
+            );
+            // O piso que vale para todo mundo e o de `standard`; se ele
+            // libera MCP, e o `default_mode` declarado, e o aviso e o mesmo.
+            if let Some(modo) = modo_padrao(&piso) {
+                avisar_escolha_do_operador(modo, &inventario);
+            }
+        }
+        ExecutionProfile::IsolatedPod => {
+            let nome = modo.as_str();
+            let gate = ToolGate::for_mode_name(nome);
+            let liberadas = mcp_liberadas_pelo_perfil(&gate, &inventario);
+            if liberadas.is_empty() {
+                return;
+            }
+            let motivo = motivo_da_liberacao(&gate);
+            let servidores = liberadas.join(", ");
+            let donos = settings.owners.len();
+            let piso_padrao = settings.modo_padrao_efetivo(ExecutionProfile::Standard);
+            warn!(
+                "whatsapp_linked: perfil isolated-pod — o dono em conversa 1:1 ({donos} \
+                 declarado(s) em `channels.whatsapp_linked.owners`) recebe o piso `{nome}`, que \
+                 libera ferramentas MCP dos servidores {servidores} ({motivo}). E decisao de \
+                 perfil (ADR 0024), nao erro: o pod e a fronteira. Remetente admitido que nao e \
+                 dono e mensagem de grupo ficam no piso `{piso_padrao}`"
+            );
+        }
+    }
+}
+
+/// O aviso de drift do perfil `standard`: liberar MCP no piso de todo
+/// remetente e escolha do operador, e o texto diz como voltar atras.
+fn avisar_escolha_do_operador(
+    modo: AgentMode,
+    inventario: &[garraia_agents::runtime::ToolInventoryEntry],
+) {
     let nome = modo.as_str();
     let gate = ToolGate::for_mode_name(nome);
-    let liberadas = mcp_liberadas_pelo_perfil(&gate, &agents.tool_inventory());
+    let liberadas = mcp_liberadas_pelo_perfil(&gate, inventario);
     if liberadas.is_empty() {
         return;
     }
@@ -819,10 +1007,26 @@ impl GatewaySink {
             return;
         };
 
-        // Nao ha checagem de inventario MCP aqui desde a #1327: o piso abaixo
-        // (`piso_somente_leitura` → perfil `search`) nega ferramenta MCP por
-        // nome dentro do proprio `ToolGate`, a cada turno, contra o inventario
-        // vivo. Ver [`mcp_liberadas_pelo_perfil`].
+        // O perfil do turno (ADR 0024): DEPOIS de admitir, ANTES do
+        // `ExecContext`. Puro sobre o que ja esta na mao — perfil do processo,
+        // `owners`, identidade normalizada e `is_group`. O que sai daqui e so
+        // um NOME de modo; quem o aplica e `piso_somente_leitura`, e quem o
+        // faz valer contra o inventario vivo e o `ToolGate` do runtime, a
+        // cada turno — ferramenta MCP inclusa (ver `mcp_liberadas_pelo_perfil`).
+        let politica = politica_de_execucao(&state.config);
+        let perfil_turno = perfil_do_turno(politica.perfil, &settings, &remetente, msg.is_group);
+        let modo_do_piso = modo_do_piso(perfil_turno, &settings);
+        // O que vai ao log e o nome VALIDADO do piso (o `as_str()` do modo), e
+        // nao a string da config; o fallback e o mesmo de `piso_somente_leitura`.
+        let etiqueta = perfil_turno.as_str();
+        let piso = modo_padrao(&modo_do_piso).map_or(DEFAULT_MODE, |m| m.as_str());
+        info!(
+            phone_last4 = %last4,
+            perfil = etiqueta,
+            modo = piso,
+            "whatsapp_linked: turno admitido"
+        );
+
         let sid = session_id(&msg);
         state
             .hydrate_session_history(&sid, Some(CONFIG_KEY), Some(&remetente))
@@ -833,7 +1037,7 @@ impl GatewaySink {
             state
                 .exec_context_for_msg(&sid, Some(&remetente), Some(&texto))
                 .await,
-            &settings.default_mode,
+            &modo_do_piso,
         );
 
         let resposta = state
@@ -910,9 +1114,10 @@ impl InboundSink for GatewaySink {
 /// Por que o supervisor nao subiu. Serve ao log e ao teste.
 ///
 /// O `Display` de cada variante diz a **acao**, nao o nome: e o que sai no
-/// `warn!` do boot (#1327). Ate la o log dizia `canal nao subiu
-/// (FerramentaMcpRegistrada)` em `INFO`, e o operador ficava com "tudo
-/// vinculado" no `status` e um canal mudo.
+/// `warn!` do boot (#1327). Ate la o log dizia `canal nao subiu (<nome da
+/// variante da recusa por servidor MCP>)` em `INFO`, e o operador ficava com
+/// "tudo vinculado" no `status` e um canal mudo. Aquela variante nao existe
+/// mais (#1327, #1330) e um teste varre este arquivo para ela nao voltar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NaoSubiu {
     /// `channels.whatsapp_linked.enabled` nao e `true`.
@@ -943,8 +1148,13 @@ impl std::fmt::Display for NaoSubiu {
                 "`channels.whatsapp_linked.default_mode` = `{modo}` nao e um modo nativo deste \
                  canal (e `auto` nao vale aqui): use `search`, outro modo nativo, ou remova a chave"
             ),
-            Self::SemSessao => f.write_str(
-                "nao ha sessao vinculada legivel neste data dir: rode `garra whatsapp link`",
+            // O gateway e o mesmo executavel que o operador chama: o passo
+            // nomeia `garra` ou `garraia` conforme o que esta rodando, nunca
+            // um alias que pode nao existir na maquina (#1329).
+            Self::SemSessao => write!(
+                f,
+                "nao ha sessao vinculada legivel neste data dir: rode `{} whatsapp link`",
+                garraia_common::executavel::nome()
             ),
             Self::SemNode => f.write_str(
                 "`node` nao encontrado: instale Node.js 20+ e garanta `node` na PATH do gateway",
@@ -972,16 +1182,30 @@ impl std::fmt::Display for NaoSubiu {
 /// typo, o canal sobe em `search` e ele passa a tarde perguntando por que o
 /// agente nao escreve arquivo. Recusar a subida, com a frase de acao no
 /// `Display`, e o que faz o erro aparecer onde foi cometido.
+///
+/// # O que "o modo que vai valer como piso" significa por perfil (ADR 0024)
+///
+/// O que se valida e o `default_mode` **efetivo** para o perfil de execucao
+/// do processo ([`LinkedSettings::modo_padrao_efetivo`]): o valor declarado,
+/// se houver, ou o default do perfil. Em `standard` esse e o piso de todo
+/// remetente. Em `isolated-pod` e o piso do **dono em 1:1** — o mais alto que
+/// este canal pode aplicar nesta subida —, e e sobre ele que o aviso de drift
+/// fala; nao-dono e grupo ficam em [`DEFAULT_MODE`] (ou no valor declarado,
+/// que e a mesma string e portanto a mesma validacao). Os dois defaults sao
+/// literais nativos, entao a unica coisa que pode falhar aqui e um valor
+/// declarado — o mesmo que falharia hoje.
 pub fn deve_supervisionar(
     settings: &LinkedSettings,
+    perfil: ExecutionProfile,
     sessao_existe: bool,
     node_presente: bool,
 ) -> Result<AgentMode, NaoSubiu> {
     if !settings.enabled {
         return Err(NaoSubiu::Desabilitado);
     }
-    let modo = modo_padrao(&settings.default_mode).ok_or_else(|| NaoSubiu::ModoPadraoInvalido {
-        modo: settings.default_mode.clone(),
+    let efetivo = settings.modo_padrao_efetivo(perfil);
+    let modo = modo_padrao(&efetivo).ok_or_else(|| NaoSubiu::ModoPadraoInvalido {
+        modo: efetivo.clone(),
     })?;
     if !sessao_existe {
         return Err(NaoSubiu::SemSessao);
@@ -1019,12 +1243,20 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     let settings = settings_from_config(&state.config);
     let paths = LinkedPaths::from_config(&state.config).map_err(|_| NaoSubiu::SemSessao)?;
     let node = bridge::find_executable("node");
+    // O perfil de execucao ja vem resolvido pelo loader (env > arquivo >
+    // default); aqui ele so escolhe qual `default_mode` efetivo validar.
+    let politica = politica_de_execucao(&state.config);
 
-    let modo = deve_supervisionar(&settings, paths.store.exists(), node.is_some())?;
+    let modo = deve_supervisionar(
+        &settings,
+        politica.perfil,
+        paths.store.exists(),
+        node.is_some(),
+    )?;
     // Depois de decidir que sobe, e antes de subir: o aviso de drift (#1327),
     // sobre o modo que `deve_supervisionar` acabou de validar. Aviso, nao
     // recusa — ver `mcp_liberadas_pelo_perfil`.
-    avisar_drift_de_mcp(modo, &state.agents);
+    avisar_drift_de_mcp(modo, politica.perfil, &settings, &state.agents);
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
     // compilador nao sabe disso, e um `unwrap()` em producao e proibido.
     let Some(node) = node else {

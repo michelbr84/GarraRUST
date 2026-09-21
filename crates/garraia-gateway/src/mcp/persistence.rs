@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use super::{McpConfig, McpRuntimeRegistry, is_sensitive_key};
+use crate::bootstrap::RaizesDoMcpFilesystem;
 
 /// Sentinel prefix for vault-referenced env values in `mcp.json`.
 const VAULT_REF_PREFIX: &str = "vault:";
@@ -106,14 +107,39 @@ impl McpPersistenceService {
     /// [`provision_filesystem_if_missing`](Self::provision_filesystem_if_missing).
     pub const DISABLE_AUTOPROVISION_ENV: &'static str = "GARRAIA_DISABLE_MCP_AUTOPROVISION";
 
+    /// O pacote npm do servidor `filesystem` autoprovisionado. As raizes
+    /// permitidas sao os argumentos **depois** dele — e o que
+    /// [`raizes_do_filesystem_persistido`] le de volta.
+    pub const FILESYSTEM_PACKAGE: &'static str = "@modelcontextprotocol/server-filesystem";
+
     /// Seed `mcp.json` with a Filesystem MCP entry when the file does not exist yet.
     ///
     /// This is a first-run convenience: new installations get local filesystem
     /// access immediately without requiring manual admin-UI configuration.
     /// Existing installations (file already present) are **never** modified.
     ///
-    /// The allowed root is the user's home directory (`$HOME` / `%USERPROFILE%`),
-    /// falling back to the parent of `~/.garraia/` if the env var is absent.
+    /// # As raizes vem de fora (ADR 0024, #1329)
+    ///
+    /// `raizes` sao os diretorios que o servidor recebe como argumentos — todos
+    /// eles, na ordem dada. Quem decide quais sao e
+    /// `crate::bootstrap::raizes_do_mcp_filesystem`, por perfil de execucao:
+    /// `agent.file_roots` ou `<data_dir>/workspace` em `standard`,
+    /// `execution.pod_root` ou o mesmo workspace em `isolated-pod`. Ate a
+    /// #1329 a raiz era `$HOME`/`%USERPROFILE%` resolvido **aqui**, e isso era
+    /// o contorno do jail: as file tools nativas ficavam presas em
+    /// `agent.file_roots` enquanto `filesystem__read_file` lia a home inteira.
+    /// Este metodo nao le mais nenhuma env de diretorio e nao tem fallback:
+    /// lista vazia ou raiz que nao existe (ou nao da para criar) e "nao
+    /// provisiona" com um `warn!`, nunca "provisiona com `$HOME`" nem
+    /// "provisiona com `.`".
+    ///
+    /// So o **workspace** default (`RaizesDoMcpFilesystem::Workspace`) e
+    /// criado com `create_dir_all` antes da escrita — ele e um diretorio do
+    /// proprio Garra e nao existe num primeiro boot, e o `server-filesystem`
+    /// recusa subir com um diretorio inexistente. Raiz **declarada**
+    /// (`agent.file_roots`, `execution.pod_root`) precisa existir: o boot nao
+    /// cria diretorio no host (nem no cwd, no caso de um `pod_root` relativo)
+    /// por efeito colateral de um typo na config (F-3 da auditoria da #1329).
     ///
     /// # Por que existe um opt-out
     ///
@@ -136,7 +162,7 @@ impl McpPersistenceService {
     /// quem sobe o gateway sabendo que não vai exercitar MCP declara isso e o
     /// boot deixa de depender da rede. Não muda nada para o usuário final — o
     /// default segue provisionando.
-    pub fn provision_filesystem_if_missing(&self) {
+    pub fn provision_filesystem_if_missing(&self, raizes: &RaizesDoMcpFilesystem) {
         if std::env::var_os(Self::DISABLE_AUTOPROVISION_ENV)
             .is_some_and(|v| !v.is_empty() && v != "0")
         {
@@ -151,29 +177,52 @@ impl McpPersistenceService {
             return;
         }
 
-        // Resolve the user's home directory in a cross-platform way.
-        let home_dir = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                // Fallback: parent of ~/.garraia/ → ~
-                self.path
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| PathBuf::from("."))
-            });
+        match raizes {
+            RaizesDoMcpFilesystem::Workspace(workspace) => {
+                if let Err(e) = std::fs::create_dir_all(workspace) {
+                    warn!(
+                        "mcp: nao provisionou o servidor filesystem — nao foi possivel criar \
+                         o workspace {}: {e}",
+                        workspace.display()
+                    );
+                    return;
+                }
+            }
+            // Fail-closed: sem raiz declarada nao ha o que provisionar. Um
+            // fallback aqui seria exatamente o `$HOME` que a #1329 removeu.
+            RaizesDoMcpFilesystem::Declaradas(declaradas) if declaradas.is_empty() => {
+                warn!(
+                    "mcp: nao provisionou o servidor filesystem — nenhuma raiz declarada \
+                     (agent.file_roots / execution.pod_root / <data_dir>/workspace)"
+                );
+                return;
+            }
+            RaizesDoMcpFilesystem::Declaradas(declaradas) => {
+                for raiz in declaradas {
+                    if !raiz.is_dir() {
+                        warn!(
+                            "mcp: nao provisionou o servidor filesystem — a raiz declarada {} \
+                             nao existe (agent.file_roots / execution.pod_root); o boot nao \
+                             cria diretorio declarado pelo operador. Crie-a e reinicie, ou \
+                             corrija a config",
+                            raiz.display()
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+        let raizes = raizes.caminhos();
+
+        let mut args = vec!["-y".to_string(), Self::FILESYSTEM_PACKAGE.to_string()];
+        args.extend(raizes.iter().map(|r| r.to_string_lossy().into_owned()));
 
         let mut config = McpConfig::default();
         config.mcp_servers.insert(
             "filesystem".to_string(),
             super::McpServerConfig {
                 command: Some("npx".to_string()),
-                args: vec![
-                    "-y".to_string(),
-                    "@modelcontextprotocol/server-filesystem".to_string(),
-                    home_dir.to_string_lossy().into_owned(),
-                ],
+                args,
                 env: Default::default(),
                 url: None,
                 transport: None,
@@ -187,11 +236,13 @@ impl McpPersistenceService {
             },
         );
 
+        let lista = raizes
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         match self.save(&config) {
-            Ok(()) => info!(
-                "mcp: provisioned default mcp.json with filesystem MCP at {}",
-                home_dir.display()
-            ),
+            Ok(()) => info!("mcp: provisioned default mcp.json with filesystem MCP at [{lista}]"),
             Err(e) => warn!("mcp: failed to provision default mcp.json: {e}"),
         }
     }
@@ -370,12 +421,71 @@ impl McpPersistenceService {
     }
 }
 
+/// As raizes que a entrada `filesystem` persistida declara (ADR 0024, #1329).
+///
+/// `None` quando nao ha entrada `filesystem`; `Some(raizes)` com os
+/// argumentos **depois** de [`McpPersistenceService::FILESYSTEM_PACKAGE`]
+/// (com ou sem versao fixada: `@modelcontextprotocol/server-filesystem@0.6.2`
+/// tambem e o pacote), que e o formato que o autoprovisionamento escreve.
+/// Entrada editada a mao sem o pacote (um binario local, por exemplo) cai no
+/// que sobra depois de tirar as flags `-x`/`--x` e qualquer outro pacote
+/// `@modelcontextprotocol/...`, para o diagnostico ainda ter o que comparar.
+/// Pura: nao le disco; recebe o [`McpConfig`] que o chamador carregou.
+pub fn raizes_do_filesystem_persistido(config: &McpConfig) -> Option<Vec<PathBuf>> {
+    let entrada = config.mcp_servers.get("filesystem")?;
+    Some(raizes_dos_args(&entrada.args))
+}
+
+/// As raizes do `filesystem` que o boot **de fato** usa, olhando as duas
+/// fontes que `ConfigLoader::merged_mcp_config` funde: uma entrada
+/// `filesystem` em `config.yml` (`mcp:`) vence a do `mcp.json`, como no
+/// merge. `None` quando nenhuma das duas a declara.
+///
+/// Sem isto o diagnostico `mcp.filesystem_root` so via o `mcp.json` e
+/// dizia `skipped`/`ok` para um `filesystem` de `config.yml` apontando para
+/// fora das raizes declaradas (F-2 da auditoria da #1329). Puro.
+pub fn raizes_do_filesystem_efetivo(
+    do_config_yml: &HashMap<String, garraia_config::McpServerConfig>,
+    do_mcp_json: &McpConfig,
+) -> Option<Vec<PathBuf>> {
+    match do_config_yml.get("filesystem") {
+        Some(entrada) => Some(raizes_dos_args(&entrada.args)),
+        None => raizes_do_filesystem_persistido(do_mcp_json),
+    }
+}
+
+/// `arg` e o pacote do servidor `filesystem`, nu ou com versao fixada
+/// (`@modelcontextprotocol/server-filesystem@0.6.2`)?
+fn e_o_pacote_do_filesystem(arg: &str) -> bool {
+    arg.strip_prefix(McpPersistenceService::FILESYSTEM_PACKAGE)
+        .is_some_and(|resto| resto.is_empty() || resto.starts_with('@'))
+}
+
+/// Os argumentos que sao raizes: tudo depois do pacote quando ele esta na
+/// lista; senao tudo que nao e flag nem pacote `@modelcontextprotocol/...`.
+fn raizes_dos_args(args: &[String]) -> Vec<PathBuf> {
+    match args.iter().position(|a| e_o_pacote_do_filesystem(a)) {
+        Some(i) => args[i + 1..].iter().map(PathBuf::from).collect(),
+        None => args
+            .iter()
+            .filter(|a| !a.starts_with('-') && !a.starts_with("@modelcontextprotocol/"))
+            .map(PathBuf::from)
+            .collect(),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mcp::{McpServerConfig, McpStatus};
+
+    /// Raiz que os testes de provisao passam: um subdiretorio do tempdir
+    /// que ainda NAO existe, para o `create_dir_all` ser exercitado.
+    fn raiz_de_teste(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().join("workspace")
+    }
 
     /// #1237: valores plaintext passam inteiros; toda `vault:` de um mapa
     /// com cofre INEXISTENTE volta como não resolvida — sem ler passphrase
@@ -591,16 +701,35 @@ mod tests {
     }
 
     /// O default segue provisionando — o opt-out não pode mudar o que o
-    /// usuário final vê num primeiro boot.
+    /// usuário final vê num primeiro boot. E a raiz gravada e a que foi
+    /// PASSADA, com o diretorio criado — nunca `$HOME` (#1329): a env vai
+    /// para um sentinela e o arquivo nao pode conte-lo.
     #[test]
     #[serial_test::serial]
     fn provision_writes_the_filesystem_entry_by_default() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("mcp.json");
-        // SAFETY: teste serializado; ninguém mais lê esta var em paralelo.
-        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+        let raiz = raiz_de_teste(&dir);
+        const SENTINELA: &str = "/sentinela-home-que-nao-pode-aparecer";
+        // SAFETY: teste serializado; ninguém mais lê estas vars em paralelo.
+        let home_antes = std::env::var_os("HOME");
+        unsafe {
+            std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV);
+            std::env::set_var("HOME", SENTINELA);
+            std::env::set_var("USERPROFILE", SENTINELA);
+        }
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing();
+        McpPersistenceService::new(&path)
+            .provision_filesystem_if_missing(&RaizesDoMcpFilesystem::Workspace(raiz.clone()));
+
+        // SAFETY: idem — restaura antes de qualquer asserção.
+        unsafe {
+            match home_antes {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            std::env::remove_var("USERPROFILE");
+        }
 
         let loaded = McpPersistenceService::new(&path).load().expect("load");
         let fs = loaded
@@ -608,6 +737,286 @@ mod tests {
             .get("filesystem")
             .expect("entrada filesystem provisionada");
         assert_eq!(fs.command.as_deref(), Some("npx"));
+        assert_eq!(
+            fs.args,
+            vec![
+                "-y".to_string(),
+                McpPersistenceService::FILESYSTEM_PACKAGE.to_string(),
+                raiz.to_string_lossy().into_owned(),
+            ]
+        );
+        assert!(raiz.is_dir(), "o workspace default e criado pelo boot");
+        let cru = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            !cru.contains(SENTINELA),
+            "`$HOME` nao pode chegar ao mcp.json: {cru}"
+        );
+        assert_eq!(
+            raizes_do_filesystem_persistido(&loaded),
+            Some(vec![raiz]),
+            "o helper le de volta exatamente o que a provisao escreveu"
+        );
+    }
+
+    /// Varias raizes declaradas (`agent.file_roots` com mais de um item)
+    /// entram TODAS, na ordem, como argumentos finais do pacote — desde que
+    /// existam.
+    #[test]
+    #[serial_test::serial]
+    fn provision_writes_every_root_in_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let a = dir.path().join("a");
+        let b = dir.path().join("b").join("profundo");
+        std::fs::create_dir_all(&a).expect("mkdir a");
+        std::fs::create_dir_all(&b).expect("mkdir b");
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+            &RaizesDoMcpFilesystem::Declaradas(vec![a.clone(), b.clone()]),
+        );
+
+        let loaded = McpPersistenceService::new(&path).load().expect("load");
+        assert_eq!(
+            raizes_do_filesystem_persistido(&loaded),
+            Some(vec![a.clone(), b.clone()])
+        );
+    }
+
+    /// F-3 da auditoria: raiz DECLARADA que nao existe e "nao provisiona" —
+    /// e o boot NAO a cria. Um `pod_root` com typo ou relativo nao pode virar
+    /// diretorio novo no host por efeito colateral do primeiro boot.
+    #[test]
+    #[serial_test::serial]
+    fn provision_skips_when_a_declared_root_does_not_exist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let existe = dir.path().join("existe");
+        std::fs::create_dir_all(&existe).expect("mkdir");
+        let nao_existe = dir.path().join("pod-root-com-typo");
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+            &RaizesDoMcpFilesystem::Declaradas(vec![existe, nao_existe.clone()]),
+        );
+
+        assert!(
+            !path.exists(),
+            "raiz declarada inexistente => nao provisiona"
+        );
+        assert!(
+            !nao_existe.exists(),
+            "o boot nunca cria uma raiz declarada pelo operador"
+        );
+    }
+
+    /// Fail-closed: sem raiz, nada e gravado — o fallback para `$HOME` ou
+    /// `.` e o que a #1329 proibiu.
+    #[test]
+    #[serial_test::serial]
+    fn provision_without_roots_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path)
+            .provision_filesystem_if_missing(&RaizesDoMcpFilesystem::Declaradas(vec![]));
+
+        assert!(
+            !path.exists(),
+            "sem raiz nao pode haver mcp.json provisionado"
+        );
+    }
+
+    /// Workspace que nao da para criar (um ARQUIVO no caminho) tambem e
+    /// fail-closed: nada gravado, nenhum fallback.
+    #[test]
+    #[serial_test::serial]
+    fn provision_skips_when_the_workspace_cannot_be_created() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let bloqueio = dir.path().join("arquivo-no-caminho");
+        std::fs::write(&bloqueio, b"x").expect("write");
+        let raiz_impossivel = bloqueio.join("sub");
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path)
+            .provision_filesystem_if_missing(&RaizesDoMcpFilesystem::Workspace(raiz_impossivel));
+
+        assert!(!path.exists(), "workspace impossivel => nao provisiona");
+    }
+
+    /// Arquivo presente nunca e tocado — nem quando as raizes mudam.
+    #[test]
+    #[serial_test::serial]
+    fn provision_never_touches_an_existing_file() {
+        let json = r#"{"mcpServers":{"meu":{"command":"cmd"}}}"#;
+        let (dir, path) = temp_mcp_json(json);
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+            &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+        );
+
+        let cru = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(cru, json, "arquivo existente e intocavel");
+        assert!(
+            !raiz_de_teste(&dir).exists(),
+            "com arquivo presente nem o diretorio e criado"
+        );
+    }
+
+    /// O helper do diagnostico: entrada ausente => `None`; formato
+    /// autoprovisionado => tudo depois do pacote; entrada manual sem o
+    /// pacote => o que nao e flag.
+    #[test]
+    fn raizes_do_filesystem_persistido_le_os_tres_formatos() {
+        assert_eq!(raizes_do_filesystem_persistido(&McpConfig::default()), None);
+
+        let mut cfg = McpConfig::default();
+        cfg.mcp_servers.insert(
+            "filesystem".into(),
+            McpServerConfig {
+                command: Some("npx".into()),
+                args: vec![
+                    "-y".into(),
+                    McpPersistenceService::FILESYSTEM_PACKAGE.into(),
+                    "/srv/a".into(),
+                    "/srv/b".into(),
+                ],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            raizes_do_filesystem_persistido(&cfg),
+            Some(vec![PathBuf::from("/srv/a"), PathBuf::from("/srv/b")])
+        );
+
+        cfg.mcp_servers.insert(
+            "filesystem".into(),
+            McpServerConfig {
+                command: Some("/usr/local/bin/mcp-server-filesystem".into()),
+                args: vec!["--verbose".into(), "/srv/manual".into()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            raizes_do_filesystem_persistido(&cfg),
+            Some(vec![PathBuf::from("/srv/manual")])
+        );
+
+        // Entrada sem nenhuma raiz: `Some(vazio)`, nao `None` — o servidor
+        // existe, so nao declara nada; o diagnostico decide o que dizer.
+        cfg.mcp_servers.insert(
+            "filesystem".into(),
+            McpServerConfig {
+                command: Some("npx".into()),
+                args: vec![
+                    "-y".into(),
+                    McpPersistenceService::FILESYSTEM_PACKAGE.into(),
+                ],
+                ..Default::default()
+            },
+        );
+        assert_eq!(raizes_do_filesystem_persistido(&cfg), Some(vec![]));
+
+        // Pacote com versao fixada (review C2): o spec e o pacote, nao uma
+        // raiz — sem isto `@modelcontextprotocol/server-filesystem@0.6.2`
+        // virava a "primeira raiz fora do jail" no diagnostico.
+        cfg.mcp_servers.insert(
+            "filesystem".into(),
+            McpServerConfig {
+                command: Some("npx".into()),
+                args: vec![
+                    "-y".into(),
+                    format!("{}@0.6.2", McpPersistenceService::FILESYSTEM_PACKAGE),
+                    "/srv/a".into(),
+                ],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            raizes_do_filesystem_persistido(&cfg),
+            Some(vec![PathBuf::from("/srv/a")])
+        );
+        // Um pacote com nome parecido nao e o pacote: `server-filesystem-x`.
+        assert!(!e_o_pacote_do_filesystem(
+            "@modelcontextprotocol/server-filesystem-x"
+        ));
+        assert!(e_o_pacote_do_filesystem(
+            "@modelcontextprotocol/server-filesystem"
+        ));
+
+        // Entrada manual com outro pacote `@modelcontextprotocol/...` e sem o
+        // do filesystem: o pacote nao e raiz.
+        cfg.mcp_servers.insert(
+            "filesystem".into(),
+            McpServerConfig {
+                command: Some("npx".into()),
+                args: vec![
+                    "-y".into(),
+                    "@modelcontextprotocol/server-outro".into(),
+                    "/srv/manual".into(),
+                ],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            raizes_do_filesystem_persistido(&cfg),
+            Some(vec![PathBuf::from("/srv/manual")])
+        );
+    }
+
+    /// F-2 da auditoria: o boot funde `config.yml` (`mcp:`) e `mcp.json`, com
+    /// o `config.yml` vencendo; o diagnostico tem de olhar a mesma fusao.
+    #[test]
+    fn raizes_do_filesystem_efetivo_prefere_o_config_yml() {
+        let mut json = McpConfig::default();
+        json.mcp_servers.insert(
+            "filesystem".into(),
+            McpServerConfig {
+                command: Some("npx".into()),
+                args: vec![
+                    "-y".into(),
+                    McpPersistenceService::FILESYSTEM_PACKAGE.into(),
+                    "/srv/do-json".into(),
+                ],
+                ..Default::default()
+            },
+        );
+
+        // Sem entrada no config.yml: o mcp.json vale.
+        let vazio = HashMap::new();
+        assert_eq!(
+            raizes_do_filesystem_efetivo(&vazio, &json),
+            Some(vec![PathBuf::from("/srv/do-json")])
+        );
+        assert_eq!(
+            raizes_do_filesystem_efetivo(&vazio, &McpConfig::default()),
+            None
+        );
+
+        // Com `filesystem` no config.yml: ele vence, como no merge do boot.
+        let mut yml = HashMap::new();
+        let entrada: garraia_config::McpServerConfig = serde_json::from_value(serde_json::json!({
+            "command": "npx",
+            "args": ["-y", McpPersistenceService::FILESYSTEM_PACKAGE, "/home/legado"],
+        }))
+        .expect("entrada de config.yml");
+        yml.insert("filesystem".to_string(), entrada);
+        assert_eq!(
+            raizes_do_filesystem_efetivo(&yml, &json),
+            Some(vec![PathBuf::from("/home/legado")])
+        );
+        assert_eq!(
+            raizes_do_filesystem_efetivo(&yml, &McpConfig::default()),
+            Some(vec![PathBuf::from("/home/legado")])
+        );
     }
 
     /// Com o opt-out ligado o boot não grava nada — e portanto não spawna
@@ -622,11 +1031,17 @@ mod tests {
         // SAFETY: teste serializado; ninguém mais lê esta var em paralelo.
         unsafe { std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, "1") };
 
-        McpPersistenceService::new(&path).provision_filesystem_if_missing();
+        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+            &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+        );
 
         assert!(
             !path.exists(),
             "opt-out ligado deve deixar o mcp.json inexistente"
+        );
+        assert!(
+            !raiz_de_teste(&dir).exists(),
+            "com opt-out nem o diretorio da raiz e criado"
         );
 
         // SAFETY: idem.
@@ -644,7 +1059,9 @@ mod tests {
             // SAFETY: teste serializado.
             unsafe { std::env::set_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV, value) };
 
-            McpPersistenceService::new(&path).provision_filesystem_if_missing();
+            McpPersistenceService::new(&path).provision_filesystem_if_missing(
+                &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+            );
 
             assert!(
                 path.exists(),

@@ -54,6 +54,14 @@ crates/
                         (validate + audit + dry-run), `/api/diagnostics` (checks com
                         `next_step`; `voice.tts`/`voice.stt` sondam servidores locais
                         com modo voz ligado).
+                        Perfil de execução (ADR 0024, #1329): `bootstrap::execution`
+                        traduz `execution.profile` (`standard` | `isolated-pod`, env
+                        `GARRAIA_EXECUTION_PROFILE` vence, inválido = boot recusado)
+                        em política pura — raiz do MCP `filesystem` por perfil
+                        (nunca `$HOME`) e anúncio de boot; **nunca** inferir de
+                        `/.dockerenv`/cgroup (testes varrem o fonte). Superfícies:
+                        checks `execution.profile` + `mcp.filesystem_root`, linha
+                        `security.execution_profile`; `docs/execution-profiles.md`.
                         Auth: sem fallback de JWT secret hardcoded — `AppState::
                         jwt_signing_secret() -> Result<SecretString, AuthConfigMissing>`
                         e handlers respondem **503 fail-closed** sem secret (plan 0046).
@@ -455,5 +463,5 @@ python3 -m pytest scripts/quality/tests/
 - @imports `TODO.md` (backlog operacional) e `.garra-estado.md` (handoff local, gitignored) para estado da sessão anterior
 - @imports `ROADMAP.md` — plano AAA em 7 fases, fonte de verdade do planejamento
 - @imports `deep-research-report.md` — base arquitetural da Fase 3 (Group Workspace multi-tenant)
-- @imports `docs/adr/` — decisões arquiteturais: 23 ADRs (0001-0023). As 0001-0017, a **0019** (confinamento das tools, #1084), a **0020** (crate `garraia-hardware`, epic #1124 — aceita 2026-09-12, opção A) e a **0021** (Desktop Control Center, epic #1181 — aceita 2026-09-14, opção D: crate `garraia-desktop-core` sem Tauri no CI, casca Tauri fina, abas sobre `/api/*`, aba Agents cliente do AgentDeck) e a **0022** (identidade do LLM padrão — `z-ai/glm-5.3-flash` via OpenRouter, local como segunda opção, #1180 — aceita 2026-09-13) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção. Ver `docs/adr/README.md` para o índice.
+- @imports `docs/adr/` — decisões arquiteturais: 24 ADRs (0001-0024). As 0001-0017, a **0019** (confinamento das tools, #1084), a **0020** (crate `garraia-hardware`, epic #1124 — aceita 2026-09-12, opção A) e a **0021** (Desktop Control Center, epic #1181 — aceita 2026-09-14, opção D: crate `garraia-desktop-core` sem Tauri no CI, casca Tauri fina, abas sobre `/api/*`, aba Agents cliente do AgentDeck), a **0022** (identidade do LLM padrão — `z-ai/glm-5.3-flash` via OpenRouter, local como segunda opção, #1180 — aceita 2026-09-13) e a **0024** (perfis de execução `standard` | `isolated-pod`, #1329 — aceita 2026-09-21: poder total dentro do pod, nada implícito fora; perfil explícito, nunca inferido de container; `docs/execution-profiles.md`) estão **Accepted**; a **0018** (crate `garraia-embeddings`, #949) está **Proposed** — a decisão é do dono, e aceitá-la é o gatilho da remoção. Ver `docs/adr/README.md` para o índice.
 - Tracking: tracker interno (o Linear foi descontinuado em 2026-08-18 — não criar/consultar issues lá; IDs `GAR-xxx` permanecem como registro histórico de entregas)

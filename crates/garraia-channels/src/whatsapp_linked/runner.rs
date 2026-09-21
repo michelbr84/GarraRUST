@@ -522,8 +522,9 @@ pub async fn pair_with(
                         "o bridge tentou por {}s sem chegar a um QR nem conectar. \
         Quase sempre e a rede: portal de autenticacao (wi-fi de hotel/aeroporto) ainda \
         nao aceito, saida para a porta 443 bloqueada, ou o relogio do sistema errado. \
-        Confira a conexao e rode `garra whatsapp` de novo.{hint}",
-                        options.no_progress_after_secs
+        Confira a conexao e rode `{bin} whatsapp` de novo.{hint}",
+                        options.no_progress_after_secs,
+                        bin = garraia_common::executavel::nome()
                     ))
                     .into());
                 }
@@ -733,8 +734,9 @@ pub async fn pair_with(
             conn.kill().await;
             return Err(BridgeError::Protocol(format!(
                 "o bridge fechou a saida mas nao terminou em {}s — foi encerrado a forca. \
-Rode `garra whatsapp` de novo.{hint}",
-                options.stall_after_secs
+Rode `{bin} whatsapp` de novo.{hint}",
+                options.stall_after_secs,
+                bin = garraia_common::executavel::nome()
             ))
             .into());
         }
@@ -909,7 +911,8 @@ fn handshake_timeout(what: &str, secs: u64, hint: &str) -> BridgeError {
 O `node` da PATH pode estar preso antes de rodar o bridge — um shim (asdf, \
 volta, nvm, corepack) baixando versao, ou um stub esperando confirmacao. \
 Rode `node --version` a mao para ver se ele responde, e depois \
-`garra whatsapp` de novo.{hint}"
+`{bin} whatsapp` de novo.{hint}",
+        bin = garraia_common::executavel::nome()
     ))
 }
 

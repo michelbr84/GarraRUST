@@ -322,7 +322,8 @@ pub enum BridgeError {
     /// `started.protocol` diferente do que esta CLI fala.
     #[error(
         "o bridge fala o protocolo {found}, esta versao do GarraIA fala o {PROTOCOL_VERSION}. \
-Atualize com `garra update` ou apague {dir} para reinstalar o bridge."
+Atualize com `{bin} update` ou apague {dir} para reinstalar o bridge.",
+        bin = garraia_common::executavel::nome()
     )]
     ProtocolVersion { found: u32, dir: String },
 

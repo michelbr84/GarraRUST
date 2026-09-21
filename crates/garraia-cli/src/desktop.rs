@@ -78,7 +78,8 @@ fn print_not_installed() {
     eprintln!("Baixe o instalador do desktop em:");
     eprintln!("  https://github.com/michelbr84/GarraRUST/releases/latest");
     eprintln!();
-    eprintln!("A CLI continua funcionando sozinha — `garra chat`, `garra start`.");
+    let bin = crate::binario::nome();
+    eprintln!("A CLI continua funcionando sozinha — `{bin} chat`, `{bin} start`.");
 }
 
 fn print_status(found: Option<&DesktopApp>) {

@@ -16,6 +16,7 @@ Welcome to the GarraIA documentation. GarraIA is a secure, lightweight open-sour
 - [Voice Mode](./voice.md)
 - [Memory System](./memory.md)
 - [Security](./security.md)
+- [Execution profiles: `standard` and `isolated-pod`](./execution-profiles.md) — full power inside a disposable pod, nothing implicit outside (ADR 0024)
 - [Auth configuration](./auth-config.md) — precedence, fail modes, and
   [whether the "no JWT secret" warning matters for a local install](./auth-config.md#41-minimal-local-auth--is-the-503-a-problem)
 - [Gateway Hardening & Execution Tools](./hardening-gateway.md)

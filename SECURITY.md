@@ -50,6 +50,16 @@ GarraIA is built with security as a core requirement:
 * SHA-256 verified self-updates
 * GitHub secret-scanning push protection enabled on this repository
 
+The posture above is the `standard` execution profile. A second, opt-in
+profile — `isolated-pod` (`execution.profile` / `GARRAIA_EXECUTION_PROFILE`,
+[ADR 0024](docs/adr/0024-perfis-de-execucao-isolated-pod.md)) — is for a
+disposable pod the operator controls: full power inside the pod for the
+declared WhatsApp owner in 1:1 chats, no implicit access outside it. It is
+never inferred from container markers, an invalid value refuses to boot, and
+it does not isolate a mounted host filesystem, the Docker socket or host
+secrets. Details and the list of what is **not** isolated:
+[`docs/execution-profiles.md`](docs/execution-profiles.md).
+
 ## Scope
 
 **In scope:**
