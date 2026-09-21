@@ -55,7 +55,32 @@ impl ConfigLoader {
         &self.config_dir
     }
 
+    /// Le o arquivo de config (ou os defaults) **e** aplica a env por cima.
+    ///
+    /// ADR 0024 (#1329): `GARRAIA_EXECUTION_PROFILE` vence `execution.profile`
+    /// e e resolvida aqui, uma vez, com a origem registrada. Valor invalido
+    /// e erro de carga — o gateway nao sobe — em vez de cair em `standard`
+    /// em silencio. E o unico lugar que aplica a env: `AppConfig::default()`
+    /// nunca a le, para os fluxos de teste baseados em `Default` nao
+    /// dependerem do ambiente.
     pub fn load(&self) -> Result<AppConfig> {
+        let mut config = self.load_sem_env()?;
+        config
+            .execution
+            .aplicar_env()
+            .map_err(|e| Error::Config(e.to_string()))?;
+        Ok(config)
+    }
+
+    /// [`Self::load`] sem aplicar `GARRAIA_EXECUTION_PROFILE`.
+    ///
+    /// Para o `garra config check`: um valor invalido na env tem de virar
+    /// **Finding** de severidade `Error` no relatorio (com o sumario, as
+    /// outras findings e o exit code 2), nao um exit 65 "arquivo nao parseia"
+    /// — o arquivo parseia; o que esta errado e o ambiente. O check le a env
+    /// por conta propria (`validate_execution`). Todo outro chamador quer
+    /// `load`.
+    pub fn load_sem_env(&self) -> Result<AppConfig> {
         self.warn_if_legacy_dir_shadowed();
         let yaml_path = self.config_dir.join("config.yml");
         let toml_path = self.config_dir.join("config.toml");
@@ -527,6 +552,68 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    /// ADR 0024 (#1329): `load` aplica `GARRAIA_EXECUTION_PROFILE` por cima
+    /// do arquivo (env vence), e um valor invalido e erro de carga — nunca
+    /// `standard` em silencio. `load_sem_env` ignora a env de proposito, para
+    /// o `config check` poder reportar o mesmo valor como Finding.
+    #[test]
+    fn load_aplica_a_env_do_perfil_e_recusa_valor_invalido() {
+        use crate::execution::{ExecutionProfile, PROFILE_ENV, ProfileSource};
+
+        let dir = temp_dir("execution-env");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("config.yml"), "execution:\n  profile: standard\n")
+            .expect("failed to write config");
+        let loader = ConfigLoader::with_dir(&dir);
+
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let anterior = std::env::var_os(PROFILE_ENV);
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(PROFILE_ENV, "isolated-pod") };
+        let com_env = loader.load();
+        let sem_env = loader.load_sem_env();
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(PROFILE_ENV, "definitely-not-a-profile") };
+        let invalido = loader.load();
+        let invalido_sem_env = loader.load_sem_env();
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::remove_var(PROFILE_ENV) };
+        let sem_nada = loader.load();
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            match anterior {
+                Some(v) => std::env::set_var(PROFILE_ENV, v),
+                None => std::env::remove_var(PROFILE_ENV),
+            }
+        }
+        let _ = fs::remove_dir_all(dir);
+
+        let com_env = com_env.expect("env valida carrega");
+        assert_eq!(com_env.execution.perfil(), ExecutionProfile::IsolatedPod);
+        assert_eq!(com_env.execution.origem(), ProfileSource::Env);
+        // O arquivo continua dizendo `standard`: um `save` nao promove a env.
+        assert_eq!(com_env.execution.profile, Some(ExecutionProfile::Standard));
+
+        let sem_env = sem_env.expect("load_sem_env ignora a env");
+        assert_eq!(sem_env.execution.perfil(), ExecutionProfile::Standard);
+        assert_eq!(sem_env.execution.origem(), ProfileSource::File);
+
+        let err = invalido.expect_err("env invalida e erro de carga");
+        let msg = err.to_string();
+        assert!(msg.contains(PROFILE_ENV), "{msg}");
+        assert!(msg.contains("definitely-not-a-profile"), "{msg}");
+        assert!(invalido_sem_env.is_ok(), "load_sem_env nao le a env");
+
+        let sem_nada = sem_nada.expect("sem env carrega");
+        assert_eq!(sem_nada.execution.origem(), ProfileSource::File);
     }
 
     #[test]

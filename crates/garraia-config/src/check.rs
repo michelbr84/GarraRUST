@@ -94,6 +94,11 @@ pub struct ConfigSummary {
     pub embeddings_providers: Vec<String>,
     pub mcp_servers_count: usize,
     pub log_level: Option<String>,
+    /// ADR 0024 (#1329): perfil de execucao efetivo (`standard` |
+    /// `isolated-pod`), com a env `GARRAIA_EXECUTION_PROFILE` aplicada.
+    pub execution_profile: String,
+    /// De onde o perfil veio: `default` | `file` | `env`.
+    pub execution_profile_source: String,
 }
 
 impl ConfigCheck {
@@ -132,6 +137,9 @@ const KNOWN_GARRAIA_ENV_VARS: &[&str] = &[
     "GARRAIA_APP_DATABASE_URL",
     "GARRAIA_CONFIG_DIR",
     "GARRAIA_DATA_DIR",
+    // ADR 0024 (#1329): vence `execution.profile`; valor invalido e erro de
+    // carga no gateway e `Error` aqui (`validate_execution`).
+    "GARRAIA_EXECUTION_PROFILE",
     "GARRAIA_JWT_SECRET",
     "GARRAIA_LOGIN_DATABASE_URL",
     "GARRAIA_LOG_FORMAT",
@@ -235,6 +243,9 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
 
+    let (execution_profile, execution_profile_source) =
+        perfil_efetivo_para_o_check(&config.execution);
+
     ConfigSummary {
         gateway_host: config.gateway.host.clone(),
         gateway_port: config.gateway.port,
@@ -249,6 +260,28 @@ fn summarise(config: &AppConfig, mcp_servers_count: usize) -> ConfigSummary {
         embeddings_providers,
         mcp_servers_count,
         log_level: config.log_level.clone(),
+        execution_profile: execution_profile.as_str().to_string(),
+        execution_profile_source: execution_profile_source.as_str().to_string(),
+    }
+}
+
+/// O perfil efetivo e a origem, como o `config check` os reporta.
+///
+/// Le a env por conta propria porque o check pode receber um `AppConfig`
+/// vindo de `load_sem_env` (e o caminho que deixa um valor invalido virar
+/// Finding em vez de exit 65). Com env valida a resposta e a mesma que
+/// `ConfigLoader::load` teria dado; com env invalida — que
+/// `validate_execution` reporta como `Error` — o sumario mostra o que o
+/// arquivo diz, que e o que o loader usaria sem a env.
+fn perfil_efetivo_para_o_check(
+    execution: &crate::execution::ExecutionConfig,
+) -> (
+    crate::execution::ExecutionProfile,
+    crate::execution::ProfileSource,
+) {
+    match crate::execution::perfil_do_env() {
+        Ok(Some(p)) => (p, crate::execution::ProfileSource::Env),
+        _ => (execution.perfil(), execution.origem()),
     }
 }
 
@@ -676,6 +709,15 @@ fn validate(config: &AppConfig) -> Vec<Finding> {
     // agent.sandbox (#1225): a containment control that is silently inert is
     // worse than one that is off, because the operator stops watching.
     validate_sandbox(&config.agent, &mut findings, &push_err, &push_warn);
+
+    // execution (ADR 0024 / #1329): env invalida e Error (o gateway nao
+    // sobe); `pod_root` e `owners` fora de `isolated-pod` sao Warning, porque
+    // sao config que o operador acha que faz algo e nao faz.
+    findings.extend(validate_execution(
+        &config.execution,
+        crate::execution::perfil_do_env(),
+        &config.channels,
+    ));
 
     // auth (plan 0046 §5.5): validate the non-secret JWT/refresh/metrics
     // knobs. Secret env vars remain enforced at AuthConfig::from_env.
@@ -2157,6 +2199,122 @@ fn validate_config_dir_inner(dir: &std::path::Path, env_explicitly_set: bool) ->
                 display
             ),
         });
+    }
+
+    findings
+}
+
+/// A chave de `channels` do canal `whatsapp_linked` (ADR 0023). Escrita por
+/// extenso porque `garraia-config` nao depende de `garraia-channels`; e o
+/// mesmo `CONFIG_KEY` que o gateway le em `settings_from_config`.
+const WHATSAPP_LINKED_TYPE: &str = "whatsapp_linked";
+
+/// Nucleo puro do check da secao `execution` (ADR 0024 / #1329).
+///
+/// Recebe o resultado da leitura da env em vez de le-la, para o teste poder
+/// cobrir os quatro achados sem `set_var`. Tres regras:
+///
+/// - env invalida e **Error** em `execution.profile`: o `ConfigLoader::load`
+///   recusa a mesma env e o gateway nao sobe (fail-closed, nunca `standard`
+///   em silencio). O check diz isso antes do boot.
+/// - `pod_root` so tem efeito em `isolated-pod`; declarado em `standard`, ou
+///   relativo, e **Warning** — a raiz do MCP `filesystem` continua sendo
+///   `agent.file_roots` / `<data_dir>/workspace`, e um caminho relativo
+///   depende do cwd de quem subiu o processo.
+/// - `channels.whatsapp_linked.owners` preenchido em `standard` e
+///   **Warning**: `owners` so confere o perfil completo em `isolated-pod`;
+///   fora dele e uma lista que nao libera nada, e o operador precisa saber
+///   que nao liberou.
+///
+/// Nada aqui e segredo: o perfil, a origem e o caminho sao ecoados; as
+/// identidades em `owners` NAO — so a contagem, que e o que a mensagem
+/// precisa.
+fn validate_execution(
+    execution: &crate::execution::ExecutionConfig,
+    env: Result<
+        Option<crate::execution::ExecutionProfile>,
+        crate::execution::ExecutionProfileError,
+    >,
+    channels: &std::collections::HashMap<String, crate::model::ChannelConfig>,
+) -> Vec<Finding> {
+    use crate::execution::PROFILE_ENV;
+
+    let mut findings = Vec::new();
+    let perfil = match env {
+        Ok(Some(p)) => p,
+        Ok(None) => execution.perfil(),
+        Err(e) => {
+            findings.push(Finding {
+                severity: Severity::Error,
+                field: "execution.profile".into(),
+                message: format!(
+                    "{e}; the gateway refuses to boot with this value (fail-closed) — fix or \
+                     unset {PROFILE_ENV}"
+                ),
+            });
+            execution.perfil()
+        }
+    };
+
+    if let Some(root) = execution.pod_root() {
+        if !perfil.is_isolated_pod() {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: "execution.pod_root".into(),
+                message: format!(
+                    "execution.pod_root ({}) is set but the effective profile is `{perfil}`; \
+                     pod_root so vale em isolated-pod — it is ignored now, and the MCP \
+                     filesystem root stays agent.file_roots / <data_dir>/workspace",
+                    root.display()
+                ),
+            });
+        }
+        if !root.is_absolute() {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: "execution.pod_root".into(),
+                message: format!(
+                    "execution.pod_root ({}) is not an absolute path; it would resolve \
+                     against the working directory of whoever started the process. Use an \
+                     absolute pod-local path (e.g. /workspace)",
+                    root.display()
+                ),
+            });
+        }
+    }
+
+    if !perfil.is_isolated_pod() {
+        let mut nomes: Vec<&String> = channels
+            .iter()
+            .filter(|(_, ch)| ch.channel_type == WHATSAPP_LINKED_TYPE)
+            .map(|(name, _)| name)
+            .collect();
+        nomes.sort();
+        for name in nomes {
+            let Some(ch) = channels.get(name) else {
+                continue;
+            };
+            let donos = ch
+                .settings
+                .get("owners")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            if donos == 0 {
+                continue;
+            }
+            findings.push(Finding {
+                severity: Severity::Warning,
+                field: format!("channels.{name}.owners"),
+                message: format!(
+                    "channels.{name}.owners lists {donos} identit{} but the effective \
+                     execution profile is `{perfil}`; owners so tem efeito em isolated-pod — \
+                     in `standard` nobody gets the full profile and every admitted sender \
+                     stays on default_mode",
+                    if donos == 1 { "y" } else { "ies" }
+                ),
+            });
+        }
     }
 
     findings
@@ -5277,5 +5435,261 @@ mod tests {
     fn teams_desabilitado_nao_avisa() {
         let msgs = mensagens_de_teams(&cfg_teams(Some(false), serde_json::json!({})));
         assert!(msgs.is_empty(), "canal desabilitado nao avisa: {msgs:?}");
+    }
+
+    // ── ADR 0024 / #1329: secao `execution` ───────────────────────────────
+
+    use crate::execution::{ExecutionConfig, ExecutionProfile, PROFILE_ENV, ProfileSource};
+    use crate::model::ChannelConfig;
+
+    fn execucao(profile: Option<ExecutionProfile>, pod_root: Option<&str>) -> ExecutionConfig {
+        ExecutionConfig::new(profile, pod_root.map(PathBuf::from))
+    }
+
+    fn canal_linked_com_owners(owners: serde_json::Value) -> HashMap<String, ChannelConfig> {
+        let mut settings = HashMap::new();
+        settings.insert("owners".to_string(), owners);
+        HashMap::from([(
+            "whatsapp_linked".to_string(),
+            ChannelConfig {
+                channel_type: "whatsapp_linked".to_string(),
+                enabled: Some(true),
+                settings,
+            },
+        )])
+    }
+
+    /// Env invalida e Error — o mesmo valor derruba `ConfigLoader::load`, e
+    /// o check tem de dizer isso antes do boot, nomeando a env.
+    #[test]
+    fn execution_env_invalida_e_error() {
+        let err = "pod".parse::<ExecutionProfile>().expect_err("invalido");
+        let achados = validate_execution(&execucao(None, None), Err(err), &HashMap::new());
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Error);
+        assert_eq!(achados[0].field, "execution.profile");
+        assert!(
+            achados[0].message.contains(PROFILE_ENV),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            achados[0].message.contains("\"pod\""),
+            "{}",
+            achados[0].message
+        );
+
+        // O gemeo: env valida ou ausente nao produz achado nenhum.
+        for env in [Ok(None), Ok(Some(ExecutionProfile::IsolatedPod))] {
+            let achados = validate_execution(&execucao(None, None), env, &HashMap::new());
+            assert!(achados.is_empty(), "{achados:?}");
+        }
+    }
+
+    /// `pod_root` declarado com perfil `standard` e Warning: nao faz nada.
+    #[test]
+    fn execution_pod_root_em_standard_avisa() {
+        let achados = validate_execution(
+            &execucao(None, Some("/workspace")),
+            Ok(None),
+            &HashMap::new(),
+        );
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Warning);
+        assert_eq!(achados[0].field, "execution.pod_root");
+        assert!(
+            achados[0].message.contains("isolated-pod"),
+            "{}",
+            achados[0].message
+        );
+
+        // O gemeo: em isolated-pod (por arquivo ou por env) o mesmo pod_root
+        // absoluto e limpo.
+        let por_arquivo = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
+            Ok(None),
+            &HashMap::new(),
+        );
+        assert!(por_arquivo.is_empty(), "{por_arquivo:?}");
+        let por_env = validate_execution(
+            &execucao(None, Some("/workspace")),
+            Ok(Some(ExecutionProfile::IsolatedPod)),
+            &HashMap::new(),
+        );
+        assert!(por_env.is_empty(), "{por_env:?}");
+    }
+
+    /// A env vence o arquivo tambem no check: arquivo `isolated-pod` +
+    /// env `standard` => o pod_root avisa como em standard.
+    #[test]
+    fn execution_env_standard_vence_arquivo_isolated_pod() {
+        let achados = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some("/workspace")),
+            Ok(Some(ExecutionProfile::Standard)),
+            &HashMap::new(),
+        );
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].field, "execution.pod_root");
+        assert!(
+            achados[0].message.contains("`standard`"),
+            "{}",
+            achados[0].message
+        );
+    }
+
+    #[test]
+    fn execution_pod_root_relativo_avisa() {
+        let achados = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), Some("workspace")),
+            Ok(None),
+            &HashMap::new(),
+        );
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Warning);
+        assert_eq!(achados[0].field, "execution.pod_root");
+        assert!(
+            achados[0].message.contains("absolute"),
+            "{}",
+            achados[0].message
+        );
+    }
+
+    /// `owners` preenchido em `standard` e Warning; em `isolated-pod` nao.
+    /// A mensagem traz a contagem, nunca as identidades.
+    #[test]
+    fn execution_owners_em_standard_avisa_sem_ecoar_identidades() {
+        let canais = canal_linked_com_owners(serde_json::json!(["5511999998888", "abc@lid"]));
+        let achados = validate_execution(&execucao(None, None), Ok(None), &canais);
+        assert_eq!(achados.len(), 1, "{achados:?}");
+        assert_eq!(achados[0].severity, Severity::Warning);
+        assert_eq!(achados[0].field, "channels.whatsapp_linked.owners");
+        assert!(
+            achados[0].message.contains("2 identities"),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            achados[0].message.contains("isolated-pod"),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            !achados[0].message.contains("5511999998888"),
+            "{}",
+            achados[0].message
+        );
+        assert!(
+            !achados[0].message.contains("abc@lid"),
+            "{}",
+            achados[0].message
+        );
+
+        // Gemeos: isolated-pod com os mesmos owners e limpo; owners vazio em
+        // standard tambem; outro tipo de canal com `owners` nao e deste check.
+        let limpo = validate_execution(
+            &execucao(Some(ExecutionProfile::IsolatedPod), None),
+            Ok(None),
+            &canais,
+        );
+        assert!(limpo.is_empty(), "{limpo:?}");
+        let vazio = validate_execution(
+            &execucao(None, None),
+            Ok(None),
+            &canal_linked_com_owners(serde_json::json!([])),
+        );
+        assert!(vazio.is_empty(), "{vazio:?}");
+        let mut outro = canal_linked_com_owners(serde_json::json!(["1"]));
+        if let Some(ch) = outro.get_mut("whatsapp_linked") {
+            ch.channel_type = "whatsapp".to_string();
+        }
+        let outro_tipo = validate_execution(&execucao(None, None), Ok(None), &outro);
+        assert!(outro_tipo.is_empty(), "{outro_tipo:?}");
+    }
+
+    /// O caminho de producao: `validate` e `summarise` **leem** a env.
+    #[test]
+    fn validate_e_summarise_leem_a_env_do_perfil() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let anterior = std::env::var_os(PROFILE_ENV);
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(PROFILE_ENV, "not-a-profile") };
+        let erros: Vec<_> = validate(&AppConfig::default())
+            .into_iter()
+            .filter(|f| f.field == "execution.profile")
+            .collect();
+        // Com env invalida o sumario mostra o que o arquivo diz.
+        let sumario_invalido = summarise(&AppConfig::default(), 0);
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(PROFILE_ENV, "isolated-pod") };
+        let sumario_env = summarise(&AppConfig::default(), 0);
+        let limpo: Vec<_> = validate(&AppConfig::default())
+            .into_iter()
+            .filter(|f| f.field == "execution.profile")
+            .collect();
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::remove_var(PROFILE_ENV) };
+        let sumario_default = summarise(&AppConfig::default(), 0);
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            match anterior {
+                Some(v) => std::env::set_var(PROFILE_ENV, v),
+                None => std::env::remove_var(PROFILE_ENV),
+            }
+        }
+
+        assert_eq!(erros.len(), 1, "{erros:?}");
+        assert_eq!(erros[0].severity, Severity::Error);
+        assert!(!erros[0].message.contains("standard em silencio"));
+        assert!(limpo.is_empty(), "{limpo:?}");
+        assert_eq!(sumario_invalido.execution_profile, "standard");
+        assert_eq!(sumario_invalido.execution_profile_source, "default");
+        assert_eq!(sumario_env.execution_profile, "isolated-pod");
+        assert_eq!(sumario_env.execution_profile_source, "env");
+        assert_eq!(sumario_default.execution_profile, "standard");
+        assert_eq!(sumario_default.execution_profile_source, "default");
+    }
+
+    /// Sem env, o sumario reflete o arquivo (e a origem `file`).
+    #[test]
+    fn summarise_reporta_perfil_do_arquivo() {
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let anterior = std::env::var_os(PROFILE_ENV);
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::remove_var(PROFILE_ENV) };
+
+        let config = AppConfig {
+            execution: execucao(Some(ExecutionProfile::IsolatedPod), None),
+            ..AppConfig::default()
+        };
+        let sumario = summarise(&config, 0);
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe {
+            if let Some(v) = anterior {
+                std::env::set_var(PROFILE_ENV, v);
+            }
+        }
+
+        assert_eq!(sumario.execution_profile, "isolated-pod");
+        assert_eq!(
+            sumario.execution_profile_source,
+            ProfileSource::File.as_str()
+        );
+    }
+
+    #[test]
+    fn execution_profile_env_e_conhecida_pelo_check() {
+        assert!(
+            KNOWN_GARRAIA_ENV_VARS.contains(&PROFILE_ENV),
+            "{PROFILE_ENV} precisa estar em KNOWN_GARRAIA_ENV_VARS ou fica invisivel ao check"
+        );
     }
 }

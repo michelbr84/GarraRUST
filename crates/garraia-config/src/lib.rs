@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod check;
 pub mod defaults;
+pub mod execution;
 pub mod loader;
 pub mod model;
 pub mod provider_keys;
@@ -11,6 +12,12 @@ pub use auth::{AuthConfig, AuthConfigError};
 pub use check::{ConfigCheck, ConfigSummary, Finding, Severity, SourceReport, run_check};
 pub use defaults::{
     DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_PROVIDER,
+};
+// ADR 0024 (#1329): a secao `execution` mora em modulo proprio, como
+// `agent.sandbox`; o re-export segue o mesmo caminho.
+pub use execution::{
+    ExecutionConfig, ExecutionProfile, ExecutionProfileError, PROFILE_ENV as EXECUTION_PROFILE_ENV,
+    ProfileSource, perfil_do_env as execution_profile_from_env,
 };
 pub use loader::{ConfigLoader, harden_secret_file};
 pub use model::{

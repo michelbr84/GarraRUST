@@ -28,6 +28,7 @@ use crate::mcp::persistence::resolver_env_com_vault;
 mod channels;
 mod config;
 mod discord;
+mod execution;
 mod google_chat;
 #[cfg(target_os = "macos")]
 mod imessage;
@@ -68,6 +69,14 @@ pub use whatsapp::build_whatsapp_channels;
 pub use whatsapp_linked::{
     CONFIG_KEY as WHATSAPP_LINKED_CONFIG_KEY, LinkedPaths, NaoSubiu, WhatsAppLinkedRuntime,
     health as whatsapp_linked_health, spawn_whatsapp_linked,
+};
+
+/// ADR 0024 (#1329): a politica derivada de `execution.profile` — perfil e
+/// origem resolvidos, raiz do MCP `filesystem` por perfil (nunca `$HOME`) e o
+/// anuncio de boot. Puro; consumido pelo autoprovisionamento do MCP, pelo
+/// canal `whatsapp_linked` e pelas superficies de diagnostico.
+pub use execution::{
+    PoliticaDeExecucao, anunciar_no_boot, politica_de_execucao, raizes_do_mcp_filesystem,
 };
 
 /// #1050: o canal Google Chat. Canal push, como o WhatsApp — o `Vec<Arc<_>>`
@@ -709,6 +718,12 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // MCP a policy e reconstruida por chamada.
     avisa_cobertura_do_sandbox(&config.agent.sandbox);
     runtime.register_tool(Box::new(bash_tool));
+    // ADR 0024 (#1329): o perfil de execucao, ja resolvido pelo loader (env >
+    // arquivo > default), anunciado uma vez por processo ao lado do jail —
+    // sao as duas linhas que dizem ao operador o que o agente alcanca.
+    // `standard` e `info!`; `isolated-pod` e um `warn!` unico com o que foi
+    // liberado, o que NAO e isolado por conta propria e como reverter.
+    anunciar_no_boot(&politica_de_execucao(config));
     // #1244: as file tools do gateway recebem um jail obrigatorio. As raizes
     // sao `agent.file_roots` (vazio por padrao) mais o `working_dir` da
     // sessao, resolvido por chamada. Sem nenhuma das duas, elas negam tudo —
