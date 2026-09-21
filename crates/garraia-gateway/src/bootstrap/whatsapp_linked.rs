@@ -24,7 +24,9 @@
 //!    mundo. Ver [`admitir`].
 //! 2. **Ferramentas somente-leitura por padrao.** Sessao sem modo escolhido
 //!    resolve para o perfil `search` (whitelist de leitura), e nao para "sem
-//!    politica". Ver [`piso_somente_leitura`].
+//!    politica". `default_mode` so aceita modo **nativo** e diferente de
+//!    `auto`: nome desconhecido nao vira portao aberto — o canal nao sobe.
+//!    Ver [`piso_somente_leitura`] e [`modo_padrao`].
 //! 3. **Guard de injecao indireta no texto recebido.** A issue #1243 propoe
 //!    generalizar o guard que hoje so cobre `web_fetch`; ela **nao mergeou**,
 //!    entao ele e aplicado localmente aqui. Ver [`preparar_entrada`].
@@ -42,6 +44,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use garraia_agents::ChatMessage;
 use garraia_agents::exec_context::ExecContext;
+use garraia_agents::modes::{AgentMode, ToolGate};
 use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, LinkHealth, classify};
 use garraia_channels::whatsapp_linked::{
     BridgeCommand, DEFAULT_ACCOUNT, InboundMessage, Jid, NodeLauncher, RunError, SessionError,
@@ -264,6 +267,11 @@ pub struct LinkedSettings {
     /// grupo da familia do operador e um incidente, nao um recurso.
     pub reply_in_groups: bool,
     /// Modo que vale quando a sessao nao escolheu nenhum.
+    ///
+    /// Vem **cru** da config: `settings_from_config` e pura e nao decide nada.
+    /// Quem valida e [`modo_padrao`] — na subida, por [`deve_supervisionar`]
+    /// (recusa com [`NaoSubiu::ModoPadraoInvalido`]), e no turno, por
+    /// [`piso_somente_leitura`] (cai para [`DEFAULT_MODE`]).
     pub default_mode: String,
 }
 
@@ -515,6 +523,37 @@ pub fn preparar_entrada(cru: &str) -> Entrada {
     Entrada::Entregar { texto }
 }
 
+/// O modo que `channels.whatsapp_linked.default_mode` pode nomear.
+///
+/// So modo **nativo**, e nao `auto`. Os dois limites existem porque o nome vai
+/// virar `ToolGate` sem ninguem no meio:
+///
+/// - `ToolGate::for_mode_name` trata nome desconhecido como **portao aberto**
+///   ("recusar tudo porque alguem digitou errado seria pior que ignorar o
+///   modo"). E o default certo para a CLI, onde quem digita e o dono da
+///   maquina, e o errado aqui: `default_mode = "pesquisa"` — um typo — daria
+///   `bash`, `file_write` e toda ferramenta MCP registrada a quem manda
+///   mensagem para o numero do operador. Modo **customizado** (#986) cai no
+///   mesmo caso: o perfil dele mora no banco e e resolvido so para o modo que
+///   a *sessao* escolheu (`AppState::exec_context_for_inner`), nunca para o
+///   piso do canal — para o portao, o nome de um modo customizado aqui e um
+///   nome desconhecido. Quem quiser um customizado neste canal o escolhe com
+///   `/mode` na sessao, que e escolha explicita e resolve o perfil.
+/// - `auto` deixa o **texto da mensagem** escolher o perfil
+///   (`ToolGate::para_o_turno` → `classify_heuristic`), `code` incluso, e cai
+///   em portao aberto quando a heuristica nao classifica. Num canal em que o
+///   texto vem de um estranho, isso e deixar o estranho escolher a politica.
+///
+/// `None` e recusa: na subida vira [`NaoSubiu::ModoPadraoInvalido`]; no turno,
+/// [`piso_somente_leitura`] cai para [`DEFAULT_MODE`]. Os dois lados, para que
+/// nenhum call-site que pule `deve_supervisionar` monte um portao aberto.
+pub fn modo_padrao(nome: &str) -> Option<AgentMode> {
+    match AgentMode::from_str(nome.trim()) {
+        Some(AgentMode::Auto) | None => None,
+        Some(modo) => Some(modo),
+    }
+}
+
 /// Aplica o piso somente-leitura do canal.
 ///
 /// `ExecContext` sem modo significa **sem politica de ferramenta** (ver o
@@ -522,9 +561,25 @@ pub fn preparar_entrada(cru: &str) -> Entrada {
 /// incluso. Isso e o default certo para a CLI, onde quem digita e o dono da
 /// maquina, e o errado aqui. Escolha explicita do usuario (`/mode`) continua
 /// vencendo — e assim que o operador "sobe o nivel".
+///
+/// O nome que entra no `ExecContext` e o `as_str()` do modo validado por
+/// [`modo_padrao`], nunca a string da config: `ToolGate::for_mode_name`, que e
+/// quem le esse campo no turno, trata nome desconhecido como portao aberto, e
+/// o piso nao pode ser a porta para isso. Nome que nao valida cai em
+/// [`DEFAULT_MODE`] — [`deve_supervisionar`] ja recusou a subida nesse caso,
+/// entao chegar aqui e um call-site que a pulou, e ainda assim nao abre nada.
 pub fn piso_somente_leitura(mut exec: ExecContext, modo_default: &str) -> ExecContext {
     if exec.agent_mode.is_none() && exec.custom_profile.is_none() {
-        exec.agent_mode = Some(modo_default.to_string());
+        exec.agent_mode = Some(match modo_padrao(modo_default) {
+            Some(modo) => modo.as_str().to_string(),
+            None => {
+                warn!(
+                    "whatsapp_linked: `default_mode` nao e um modo nativo deste canal; \
+                     o piso do turno e `{DEFAULT_MODE}`"
+                );
+                DEFAULT_MODE.to_string()
+            }
+        });
     }
     exec
 }
@@ -546,18 +601,26 @@ pub fn piso_somente_leitura(mut exec: ExecContext, modo_default: &str) -> ExecCo
 ///
 /// # O que fica: aviso, nao recusa
 ///
-/// `permite()` devolve `true` com `whitelist_mode` ligado e `allowed` vazia
-/// (`ToolGate::whitelist_ligada_mas_vazia`), e devolve `true` para o que
-/// `servidor/*` declara. Um perfil `search` customizado assim expoe as
-/// ferramentas daquele servidor a quem manda mensagem para o numero do
-/// operador. Isso e **escolha declarada** — o `allowed` e do operador —, entao
-/// o canal avisa em vez de recusar: [`spawn_whatsapp_linked`] emite um `warn!`
-/// na subida listando o que esta funcao devolve. Vazio e o esperado.
+/// `default_mode` so aceita modo nativo ([`modo_padrao`]), entao o portao em
+/// exame na subida e sempre o de um perfil nativo — e, dos nativos, os que tem
+/// whitelist nao declaram servidor MCP nenhum. O aviso so tem o que dizer
+/// quando o operador escolheu um perfil **sem** whitelist (`ask`, `code`), em
+/// que passa tudo que o `denied` nao nomeia — ferramenta MCP inclusa. Isso e
+/// **escolha declarada** — o `default_mode` e do operador —, entao o canal
+/// avisa em vez de recusar: [`spawn_whatsapp_linked`] emite um `warn!` na
+/// subida listando o que esta funcao devolve, com o motivo
+/// ([`motivo_da_liberacao`]). Com o `search` a lista e vazia.
+///
+/// A funcao em si e generica sobre qualquer `ToolGate` — `permite()` tambem
+/// devolve `true` com `whitelist_mode` ligado e `allowed` vazia
+/// (`ToolGate::whitelist_ligada_mas_vazia`) e para o que `servidor/*` declara
+/// —, mas esses dois portoes so existem em perfil customizado, que nao chega
+/// aqui: modo customizado nao serve de `default_mode` (ver [`modo_padrao`]).
 ///
 /// Devolve nomes de **servidor**, ordenados e sem repeticao: e o que o
 /// operador reconhece no `mcp.json`, e nao carrega argumento nem segredo.
 pub fn mcp_liberadas_pelo_perfil(
-    gate: &garraia_agents::modes::ToolGate,
+    gate: &ToolGate,
     inventario: &[garraia_agents::runtime::ToolInventoryEntry],
 ) -> Vec<String> {
     let mut servidores: Vec<String> = inventario
@@ -574,24 +637,53 @@ pub fn mcp_liberadas_pelo_perfil(
     servidores
 }
 
+/// Por que um portao deixou ferramenta MCP passar — o pedaco do aviso de
+/// [`avisar_drift_de_mcp`] que precisa ser verdade.
+///
+/// A primeira versao do aviso dizia "e o `allowed` declarado" para todo caso,
+/// e o unico caso alcancavel pelo `default_mode` — perfil nativo sem whitelist
+/// — nao tem `allowed` nenhuma. Sao quatro formas de um `ToolGate` liberar
+/// MCP, e o texto diz qual foi:
+///
+/// | portao                                   | alcancavel por `default_mode`? |
+/// |------------------------------------------|--------------------------------|
+/// | sem perfil (`sem_politica`)              | nao — [`modo_padrao`] recusa   |
+/// | whitelist ligada com `allowed` vazia     | nao — so em perfil customizado |
+/// | whitelist com `servidor/*` declarado     | nao — so em perfil customizado |
+/// | perfil sem whitelist (`ask`, `code`)     | **sim**                        |
+pub fn motivo_da_liberacao(gate: &ToolGate) -> &'static str {
+    if gate.nome_do_modo().is_none() {
+        "nao ha perfil nenhum em vigor: portao aberto"
+    } else if gate.whitelist_ligada_mas_vazia() {
+        "o perfil liga `whitelist_mode` com `allowed` vazia, o que permite tudo"
+    } else if gate.restringe_por_whitelist() {
+        "a `allowed` do perfil declara esses servidores (`servidor/*` ou nome completo)"
+    } else {
+        "o perfil nao tem whitelist de ferramenta, entao passa tudo que o `denied` nao nomeia"
+    }
+}
+
 /// O `warn!` de [`mcp_liberadas_pelo_perfil`], uma vez por subida do canal.
 ///
-/// Monta o portao do perfil **padrao** do canal — o que vale para a sessao
-/// que nao escolheu modo — e nao o de um turno: e a configuracao que esta em
-/// exame, nao uma mensagem. Nome de modo desconhecido vira portao aberto em
-/// `ToolGate::for_mode_name`, e um portao aberto libera todo servidor
-/// registrado; o aviso sai igual, e esta certo em sair.
-fn avisar_drift_de_mcp(settings: &LinkedSettings, agents: &garraia_agents::AgentRuntime) {
-    let gate = garraia_agents::modes::ToolGate::for_mode_name(&settings.default_mode);
+/// Recebe o modo **ja validado** por [`modo_padrao`], e nao a string da
+/// config: e a assinatura que impede este aviso de examinar um portao que o
+/// turno nao monta. O portao e `ToolGate::for_mode_name(<nome do modo>)` — o
+/// mesmo caminho que [`piso_somente_leitura`] + `ToolGate::para_o_turno`
+/// percorrem no turno de uma sessao sem modo escolhido —, e com o modo
+/// validado ele e sempre o de um perfil nativo, nunca `sem_politica()`.
+fn avisar_drift_de_mcp(modo: AgentMode, agents: &garraia_agents::AgentRuntime) {
+    let nome = modo.as_str();
+    let gate = ToolGate::for_mode_name(nome);
     let liberadas = mcp_liberadas_pelo_perfil(&gate, &agents.tool_inventory());
     if liberadas.is_empty() {
         return;
     }
-    let modo = &settings.default_mode;
+    let motivo = motivo_da_liberacao(&gate);
     let servidores = liberadas.join(", ");
     warn!(
-        "whatsapp_linked: o perfil `{modo}` libera ferramentas MCP ({servidores}) para \
-         remetentes do WhatsApp — e o `allowed` declarado; confirme que e intencional"
+        "whatsapp_linked: o perfil `{nome}` (`channels.whatsapp_linked.default_mode`) libera \
+         ferramentas MCP dos servidores {servidores} a quem manda mensagem para este numero \
+         — {motivo}; use `search` para um piso somente-leitura, ou confirme que e intencional"
     );
 }
 
@@ -825,6 +917,14 @@ impl InboundSink for GatewaySink {
 pub enum NaoSubiu {
     /// `channels.whatsapp_linked.enabled` nao e `true`.
     Desabilitado,
+    /// `channels.whatsapp_linked.default_mode` nao nomeia um modo nativo, ou
+    /// nomeia `auto`. Ver [`modo_padrao`]: subir assim seria subir com o
+    /// portao de ferramenta aberto a quem manda mensagem.
+    ModoPadraoInvalido {
+        /// O valor como veio da config. E config do operador, nao PII, e e o
+        /// que ele precisa ver para achar o typo no arquivo.
+        modo: String,
+    },
     /// Nao ha `session.enc` legivel: `garra whatsapp link` ainda nao rodou,
     /// ou a chave da sessao nao abre.
     SemSessao,
@@ -838,6 +938,11 @@ impl std::fmt::Display for NaoSubiu {
             Self::Desabilitado => f.write_str(
                 "canal desligado na config (`channels.whatsapp_linked.enabled = false`)",
             ),
+            Self::ModoPadraoInvalido { modo } => write!(
+                f,
+                "`channels.whatsapp_linked.default_mode` = `{modo}` nao e um modo nativo deste \
+                 canal (e `auto` nao vale aqui): use `search`, outro modo nativo, ou remova a chave"
+            ),
             Self::SemSessao => f.write_str(
                 "nao ha sessao vinculada legivel neste data dir: rode `garra whatsapp link`",
             ),
@@ -848,27 +953,43 @@ impl std::fmt::Display for NaoSubiu {
     }
 }
 
-/// Decide se ha o que supervisionar. Pura o bastante para ter teste proprio.
+/// Decide se ha o que supervisionar — e devolve o modo que vai valer como
+/// piso. Pura o bastante para ter teste proprio.
 ///
-/// A ordem e a da acao que o operador tem de tomar: ligar antes de vincular,
-/// vincular antes de instalar `node` (o proprio `garra whatsapp link` exige
-/// `node`). O inventario de ferramentas MCP **nao** e entrada desta decisao
-/// desde a #1327 — ver [`mcp_liberadas_pelo_perfil`].
+/// A ordem e a da acao que o operador tem de tomar: ligar antes de corrigir o
+/// `default_mode` (as duas chaves estao na mesma secao da config), corrigir a
+/// config antes de vincular, vincular antes de instalar `node` (o proprio
+/// `garra whatsapp link` exige `node`). O inventario de ferramentas MCP
+/// **nao** e entrada desta decisao desde a #1327 — ver
+/// [`mcp_liberadas_pelo_perfil`].
+///
+/// # Por que o modo e validado AQUI, e nao so no turno
+///
+/// [`piso_somente_leitura`] ja cai para [`DEFAULT_MODE`] quando o nome nao
+/// resolve, entao o turno nunca roda com portao aberto. Mas `default_mode` que
+/// nao vale e config errada, e config errada que "funciona" e a especie de
+/// defeito que a #1327 nasceu para tirar do log: o operador escreve `code` com
+/// typo, o canal sobe em `search` e ele passa a tarde perguntando por que o
+/// agente nao escreve arquivo. Recusar a subida, com a frase de acao no
+/// `Display`, e o que faz o erro aparecer onde foi cometido.
 pub fn deve_supervisionar(
     settings: &LinkedSettings,
     sessao_existe: bool,
     node_presente: bool,
-) -> Result<(), NaoSubiu> {
+) -> Result<AgentMode, NaoSubiu> {
     if !settings.enabled {
         return Err(NaoSubiu::Desabilitado);
     }
+    let modo = modo_padrao(&settings.default_mode).ok_or_else(|| NaoSubiu::ModoPadraoInvalido {
+        modo: settings.default_mode.clone(),
+    })?;
     if !sessao_existe {
         return Err(NaoSubiu::SemSessao);
     }
     if !node_presente {
         return Err(NaoSubiu::SemNode);
     }
-    Ok(())
+    Ok(modo)
 }
 
 /// Sobe o canal, quando ha o que subir.
@@ -899,10 +1020,11 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     let paths = LinkedPaths::from_config(&state.config).map_err(|_| NaoSubiu::SemSessao)?;
     let node = bridge::find_executable("node");
 
-    deve_supervisionar(&settings, paths.store.exists(), node.is_some())?;
-    // Depois de decidir que sobe, e antes de subir: o aviso de drift (#1327).
-    // Aviso, nao recusa — ver `mcp_liberadas_pelo_perfil`.
-    avisar_drift_de_mcp(&settings, &state.agents);
+    let modo = deve_supervisionar(&settings, paths.store.exists(), node.is_some())?;
+    // Depois de decidir que sobe, e antes de subir: o aviso de drift (#1327),
+    // sobre o modo que `deve_supervisionar` acabou de validar. Aviso, nao
+    // recusa — ver `mcp_liberadas_pelo_perfil`.
+    avisar_drift_de_mcp(modo, &state.agents);
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
     // compilador nao sabe disso, e um `unwrap()` em producao e proibido.
     let Some(node) = node else {

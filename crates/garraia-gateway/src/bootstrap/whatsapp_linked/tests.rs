@@ -444,6 +444,90 @@ fn o_modo_default_do_canal_e_de_verdade_somente_leitura() {
     }
 }
 
+/// `default_mode` aceita so modo nativo, e nunca `auto`.
+///
+/// O default do canal passa pelo proprio validador (senao `piso_somente_leitura`
+/// cairia num fallback que tambem nao valida); todo nativo menos `auto` passa;
+/// e o que `AgentMode::from_str` nao reconhece — typo, nome de modo
+/// customizado, vazio — nao passa. `auto` nao passa porque deixaria o texto de
+/// um estranho escolher o perfil (`ToolGate::para_o_turno`), e cair em portao
+/// aberto quando a heuristica nao classifica.
+#[test]
+fn default_mode_aceita_so_modo_nativo_e_nunca_auto() {
+    use garraia_agents::modes::AgentMode;
+
+    assert_eq!(
+        modo_padrao(DEFAULT_MODE),
+        Some(AgentMode::Search),
+        "o default do canal tem de passar pelo proprio validador"
+    );
+    for modo in AgentMode::all_modes() {
+        let esperado = if modo == AgentMode::Auto {
+            None
+        } else {
+            Some(modo)
+        };
+        assert_eq!(modo_padrao(modo.as_str()), esperado, "{modo}");
+    }
+    assert_eq!(
+        modo_padrao("SEARCH"),
+        Some(AgentMode::Search),
+        "case-insensitive, como `AgentMode::from_str`"
+    );
+    assert_eq!(
+        modo_padrao(" code "),
+        Some(AgentMode::Code),
+        "espaco nao conta"
+    );
+    for invalido in ["pesquisa", "", "meu-modo", "search/*", "auto", "Auto"] {
+        assert_eq!(modo_padrao(invalido), None, "{invalido:?}");
+    }
+}
+
+/// **O finding da revisao da #1327: `default_mode` desconhecido nao pode virar
+/// portao aberto.**
+///
+/// `ToolGate::for_mode_name` trata nome desconhecido como `sem_politica()` —
+/// certo para a CLI, onde quem digita e o dono da maquina. Se o piso repassasse
+/// a string da config crua, `default_mode = "pesquisa"` (um typo) ou o nome de
+/// um modo customizado — que nunca e resolvido para o piso do canal, so para o
+/// modo que a SESSAO escolheu — daria `bash`, `file_write` e toda ferramenta
+/// MCP registrada a quem manda mensagem para o numero do operador. Antes da
+/// #1327 a recusa por MCP mascarava isso em instalacao padrao; sem ela, expunha
+/// tudo.
+///
+/// O portao e montado como o turno monta: `piso_somente_leitura` +
+/// `ToolGate::para_o_turno`. O texto e um pedido de codigo de proposito: com
+/// `auto` como `default_mode`, a heuristica o classificaria como `code` (que
+/// libera `bash`) — e o piso tem de cair em `search` ANTES de a heuristica ter
+/// vez.
+#[test]
+fn default_mode_desconhecido_nao_vira_portao_aberto_no_turno() {
+    use garraia_agents::modes::ToolGate;
+
+    for invalido in ["pesquisa", "meu-modo-customizado", "auto", ""] {
+        let exec = piso_somente_leitura(ExecContext::default(), invalido);
+        assert_eq!(
+            exec.agent_mode.as_deref(),
+            Some(DEFAULT_MODE),
+            "{invalido:?} cai no default do canal, nao passa cru"
+        );
+        let gate = ToolGate::para_o_turno(&exec, "implementa um script que apaga os logs");
+        assert!(gate.permite("file_read"), "leitura continua passando");
+        for proibida in ["bash", "file_write", "filesystem__write_file"] {
+            assert!(
+                !gate.permite(proibida),
+                "`{proibida}` nao pode passar com `default_mode = {invalido:?}`"
+            );
+        }
+    }
+
+    // Nome valido chega ao runtime normalizado — o `as_str()` do enum, e nao a
+    // grafia da config —, entao `ToolGate::for_mode_name` sempre o reconhece.
+    let exec = piso_somente_leitura(ExecContext::default(), "CODE");
+    assert_eq!(exec.agent_mode.as_deref(), Some("code"));
+}
+
 /// **A premissa da #1327: o piso cobre ferramenta MCP por NOME.**
 ///
 /// Este e o teste que substituiu a recusa `FerramentaMcpRegistrada`. A recusa
@@ -561,24 +645,38 @@ fn midia_e_texto_vazio_nao_geram_turno() {
 // Supervisao
 // ---------------------------------------------------------------------------
 
-/// As tres condicoes de subida, e a ordem em que sao reportadas:
-/// `Desabilitado` > `SemSessao` > `SemNode`. A ordem importa porque cada
-/// motivo vira uma frase de acao no log (`Display`), e a acao certa e a da
-/// primeira coisa que falta — ligar o canal antes de vincular, vincular antes
-/// de instalar `node`.
+/// As quatro condicoes de subida, e a ordem em que sao reportadas:
+/// `Desabilitado` > `ModoPadraoInvalido` > `SemSessao` > `SemNode`. A ordem
+/// importa porque cada motivo vira uma frase de acao no log (`Display`), e a
+/// acao certa e a da primeira coisa que falta — ligar o canal antes de corrigir
+/// a config (as duas chaves estao na mesma secao), corrigir a config antes de
+/// vincular, vincular antes de instalar `node`.
 ///
-/// Ate a #1327 havia uma quarta entrada, `FerramentaMcpRegistrada`, que
-/// recusava a subida com qualquer servidor MCP registrado. Ela saiu porque o
-/// piso `search` nega ferramenta MCP por nome desde a #1288 (ver
+/// Ate a #1327 havia uma entrada `FerramentaMcpRegistrada`, que recusava a
+/// subida com qualquer servidor MCP registrado. Ela saiu porque o piso `search`
+/// nega ferramenta MCP por nome desde a #1288 (ver
 /// `o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao`) — e o
-/// inventario de ferramentas deixou de ser entrada desta decisao.
+/// inventario de ferramentas deixou de ser entrada desta decisao. A revisao da
+/// #1327 trouxe a entrada que faltava: `default_mode` que nao e modo nativo
+/// virava portao ABERTO em `ToolGate::for_mode_name`, e a recusa por MCP era o
+/// que, por acidente, mascarava isso em instalacao padrao.
 #[test]
 fn tabela_do_que_impede_a_supervisao() {
+    use garraia_agents::modes::AgentMode;
+
     let ligado = LinkedSettings {
         enabled: true,
         ..LinkedSettings::default()
     };
     let desligado = LinkedSettings::default();
+    let modo_errado = LinkedSettings {
+        enabled: true,
+        default_mode: "pesquisa".into(),
+        ..LinkedSettings::default()
+    };
+    let recusa_do_modo = NaoSubiu::ModoPadraoInvalido {
+        modo: "pesquisa".into(),
+    };
 
     assert_eq!(
         deve_supervisionar(&desligado, true, true),
@@ -588,6 +686,30 @@ fn tabela_do_que_impede_a_supervisao() {
         deve_supervisionar(&desligado, false, false),
         Err(NaoSubiu::Desabilitado),
         "desligado vence tudo: nao ha o que consertar num canal que o operador nao ligou"
+    );
+    assert_eq!(
+        deve_supervisionar(
+            &LinkedSettings {
+                default_mode: "pesquisa".into(),
+                ..LinkedSettings::default()
+            },
+            true,
+            true
+        ),
+        Err(NaoSubiu::Desabilitado),
+        "desligado vence config errada tambem"
+    );
+    assert_eq!(
+        deve_supervisionar(&modo_errado, false, false),
+        Err(recusa_do_modo.clone()),
+        "config errada vem antes de sessao e node: e o mesmo arquivo que o operador \
+         acabou de editar para ligar o canal"
+    );
+    assert_eq!(
+        deve_supervisionar(&modo_errado, true, true),
+        Err(recusa_do_modo),
+        "com sessao e `node` no lugar, `default_mode` invalido AINDA impede: subir seria \
+         subir com portao aberto"
     );
     assert_eq!(
         deve_supervisionar(&ligado, false, true),
@@ -603,7 +725,24 @@ fn tabela_do_que_impede_a_supervisao() {
         deve_supervisionar(&ligado, true, false),
         Err(NaoSubiu::SemNode)
     );
-    assert_eq!(deve_supervisionar(&ligado, true, true), Ok(()));
+    assert_eq!(
+        deve_supervisionar(&ligado, true, true),
+        Ok(AgentMode::Search),
+        "e quando sobe, devolve o modo validado que vai valer como piso"
+    );
+    assert_eq!(
+        deve_supervisionar(
+            &LinkedSettings {
+                enabled: true,
+                default_mode: "code".into(),
+                ..LinkedSettings::default()
+            },
+            true,
+            true
+        ),
+        Ok(AgentMode::Code),
+        "modo nativo mais permissivo e escolha declarada do operador: sobe (e o drift avisa)"
+    );
 }
 
 /// Cada motivo de nao subir sai no log com a ACAO, nao com o nome do enum
@@ -623,23 +762,52 @@ fn cada_motivo_de_nao_subir_diz_o_que_fazer() {
     let sem_node = NaoSubiu::SemNode.to_string();
     assert!(sem_node.contains("Node.js 20+"), "{sem_node}");
     assert!(sem_node.contains("PATH"), "{sem_node}");
+
+    let modo = NaoSubiu::ModoPadraoInvalido {
+        modo: "pesquisa".into(),
+    }
+    .to_string();
+    assert!(
+        modo.contains("channels.whatsapp_linked.default_mode"),
+        "{modo}"
+    );
+    assert!(
+        modo.contains("`pesquisa`"),
+        "o valor errado aparece: e o que o operador procura no arquivo — {modo}"
+    );
+    assert!(
+        modo.contains("`search`"),
+        "e a acao diz para onde voltar — {modo}"
+    );
+    assert!(
+        modo.contains("`auto`"),
+        "`auto` e modo nativo e mesmo assim nao vale; a frase tem de dizer — {modo}"
+    );
 }
 
-/// **O aviso de drift (#1327), a decisao pura.**
+/// **O aviso de drift (#1327), a decisao pura — sobre o portao que a producao
+/// monta.**
 ///
 /// A recusa por MCP saiu; o que fica e um `warn!` na subida quando o portao
-/// do perfil padrao do canal LIBERA alguma ferramenta MCP registrada. Com o
-/// `search` nativo isso e vazio — nenhum servidor declarado. Com um perfil que
-/// declara `servidor/*`, ou com `allowed` vazia (que permite tudo, ver
-/// `ToolGate::whitelist_ligada_mas_vazia`), a lista vem preenchida e o
-/// operador le no log que aquele servidor esta exposto a quem manda mensagem.
+/// do perfil padrao do canal LIBERA alguma ferramenta MCP registrada. Esse
+/// portao e `ToolGate::for_mode_name(<modo validado>)` — o que
+/// `avisar_drift_de_mcp` monta e o que o turno monta —, e como `default_mode`
+/// so aceita modo nativo, ele e sempre o de um perfil nativo. Dai as duas
+/// metades deste teste: **todo** nativo com whitelist devolve vazio (nenhum
+/// declara `servidor/*`), e um nativo **sem** whitelist (`ask`, `code`) lista
+/// todo servidor registrado, porque nele passa tudo que o `denied` nao nomeia.
+///
+/// A versao anterior deste teste montava `ToolGate::from_profile` de um perfil
+/// customizado com `allowed: ["filesystem/*"]` — um portao que a producao
+/// nunca constroi para o piso do canal, porque perfil customizado so e
+/// resolvido para o modo que a SESSAO escolheu. Provava a funcao, nao o canal.
 ///
 /// Devolve **servidores**, deduplicados: e o que o operador reconhece no
 /// `mcp.json`, e nunca carrega argumento nem segredo de ferramenta.
 #[test]
-fn mcp_liberadas_pelo_perfil_e_vazia_no_search_e_lista_o_servidor_declarado() {
+fn mcp_liberadas_pelo_perfil_e_vazia_nos_nativos_com_whitelist_e_lista_tudo_nos_sem() {
     use garraia_agents::AgentRuntime;
-    use garraia_agents::modes::{AgentMode, ModeProfile, ToolGate};
+    use garraia_agents::modes::{AgentMode, ToolGate};
 
     let agents = AgentRuntime::new();
     agents.register_tool(Box::new(ToolDeMentira("file_read")));
@@ -663,46 +831,87 @@ fn mcp_liberadas_pelo_perfil_e_vazia_no_search_e_lista_o_servidor_declarado() {
         "o `search` nativo nao declara servidor nenhum"
     );
 
-    // Perfil que declara UM servidor: so ele aparece, uma vez.
-    let perfil = ModeProfile::from_custom(
-        AgentMode::Search,
-        "search",
-        None,
-        &serde_json::json!({ "allow": ["file_read", "filesystem/*"] }),
-        &serde_json::json!({}),
-    );
-    let declarado = ToolGate::from_profile(&perfil);
+    // E nenhum outro nativo com whitelist declara: o aviso so tem o que dizer
+    // quando o operador escolheu um perfil sem whitelist.
+    let mut com_whitelist = 0;
+    let mut sem_whitelist = Vec::new();
+    for modo in AgentMode::all_modes() {
+        let Some(modo) = modo_padrao(modo.as_str()) else {
+            continue; // `auto` nao e `default_mode` valido
+        };
+        let gate = ToolGate::for_mode_name(modo.as_str());
+        if gate.restringe_por_whitelist() {
+            com_whitelist += 1;
+            assert!(
+                mcp_liberadas_pelo_perfil(&gate, &inventario).is_empty(),
+                "`{modo}` tem whitelist e nao declara servidor: nada a avisar"
+            );
+        } else {
+            sem_whitelist.push(modo.as_str());
+            assert_eq!(
+                mcp_liberadas_pelo_perfil(&gate, &inventario),
+                vec!["filesystem".to_string(), "github".to_string()],
+                "`{modo}` nao tem whitelist: todo servidor registrado passa — ordenado e \
+                 sem repeticao, para o log ser legivel"
+            );
+            assert!(
+                motivo_da_liberacao(&gate).contains("nao tem whitelist"),
+                "e o motivo no aviso tem de ser esse, nao \"`allowed` declarado\": {}",
+                motivo_da_liberacao(&gate)
+            );
+        }
+    }
+    assert!(com_whitelist > 0, "premissa: ha nativos com whitelist");
     assert_eq!(
-        mcp_liberadas_pelo_perfil(&declarado, &inventario),
-        vec!["filesystem".to_string()],
-        "duas ferramentas do mesmo servidor viram UMA entrada; `github` nao foi declarado"
+        sem_whitelist,
+        vec!["code", "ask"],
+        "os nativos sem whitelist hoje; se a lista mudar, o docs/whatsapp.md muda junto"
     );
 
-    // Whitelist ligada e vazia permite tudo — e o drift que a issue nomeia.
+    // Ferramenta nativa nunca entra na lista, mesmo liberada.
+    let ask = ToolGate::for_mode_name("ask");
+    assert!(ask.permite("file_read"));
+    assert!(!mcp_liberadas_pelo_perfil(&ask, &inventario).contains(&"file_read".to_string()));
+}
+
+/// `motivo_da_liberacao` diz a verdade sobre cada forma de um portao liberar
+/// MCP. So a ultima e alcancavel por `default_mode` (ver a tabela no docblock);
+/// as outras tres existem porque a funcao e publica e generica, e um texto que
+/// mente sobre o portao e pior do que nenhum — foi o finding da revisao.
+#[test]
+fn motivo_da_liberacao_distingue_portao_aberto_de_allowed_declarado() {
+    use garraia_agents::modes::{AgentMode, ModeProfile, ToolGate};
+
+    assert!(motivo_da_liberacao(&ToolGate::sem_politica()).contains("portao aberto"));
+
     let vazia = ModeProfile::from_custom(
         AgentMode::Search,
-        "search",
+        "meu-modo",
         None,
         &serde_json::json!({ "allow": [] }),
         &serde_json::json!({}),
     );
-    let aberta = ToolGate::from_profile(&vazia);
-    assert_eq!(
-        mcp_liberadas_pelo_perfil(&aberta, &inventario),
-        vec!["filesystem".to_string(), "github".to_string()],
-        "ordenado e sem repeticao, para o log ser legivel"
-    );
+    assert!(motivo_da_liberacao(&ToolGate::from_profile(&vazia)).contains("`allowed` vazia"));
 
-    // Ferramenta nativa nunca entra na lista, mesmo liberada.
-    assert!(search.permite("file_read"));
-    assert!(!mcp_liberadas_pelo_perfil(&search, &inventario).contains(&"file_read".to_string()));
+    let declarado = ModeProfile::from_custom(
+        AgentMode::Search,
+        "meu-modo",
+        None,
+        &serde_json::json!({ "allow": ["file_read", "filesystem/*"] }),
+        &serde_json::json!({}),
+    );
+    assert!(motivo_da_liberacao(&ToolGate::from_profile(&declarado)).contains("declara"));
+
+    // O unico alcancavel pelo `default_mode` do canal.
+    assert!(motivo_da_liberacao(&ToolGate::for_mode_name("ask")).contains("nao tem whitelist"));
 }
 
-/// `spawn_whatsapp_linked` e o call-site de `settings_from_config` e de
-/// `LinkedPaths::from_config`. Sem este teste, apagar a leitura da config do
-/// caminho de boot deixaria as duas funcoes puras verdes e o canal mudo.
+/// `spawn_whatsapp_linked` e o call-site de `settings_from_config`, de
+/// `LinkedPaths::from_config` e de `deve_supervisionar`. Sem este teste, apagar
+/// a leitura da config do caminho de boot deixaria as funcoes puras verdes e o
+/// canal mudo — ou, no caso do `default_mode`, de portao aberto.
 #[tokio::test]
-async fn o_boot_nao_sobe_canal_desligado_nem_canal_sem_sessao() {
+async fn o_boot_nao_sobe_canal_desligado_sem_sessao_ou_com_default_mode_invalido() {
     use garraia_agents::AgentRuntime;
     use garraia_channels::ChannelRegistry;
 
@@ -750,6 +959,50 @@ async fn o_boot_nao_sobe_canal_desligado_nem_canal_sem_sessao() {
     assert!(
         !dir.path().join("whatsapp/default").exists(),
         "a recusa nao pode materializar diretorio de sessao"
+    );
+
+    // `default_mode` que nao e modo nativo: recusa NO CALL-SITE DE BOOT, com
+    // o valor na mensagem, e antes de olhar sessao ou `node` — e a mesma
+    // secao da config que o operador acabou de editar. Com um servidor MCP
+    // registrado, porque e exatamente a combinacao que antes da #1327 a recusa
+    // por MCP mascarava e que, sem ela, viraria portao aberto.
+    let config = AppConfig {
+        data_dir: Some(dir.path().to_path_buf()),
+        channels: [(
+            CONFIG_KEY.to_string(),
+            secao(
+                Some(true),
+                serde_json::json!({ "default_mode": "pesquisa" }),
+            ),
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let agents = AgentRuntime::new();
+    agents.replace_mcp_tools(
+        "filesystem",
+        vec![Box::new(ToolDeMentira("filesystem__write_file"))],
+    );
+    let state: SharedState = Arc::new(crate::state::AppState::new(
+        config,
+        Arc::new(agents),
+        ChannelRegistry::new(),
+    ));
+    assert_eq!(
+        spawn_whatsapp_linked(&state).err(),
+        Some(NaoSubiu::ModoPadraoInvalido {
+            modo: "pesquisa".into()
+        }),
+        "`default_mode` desconhecido nao sobe o canal — subir seria subir com portao aberto"
+    );
+    assert!(
+        !state.whatsapp_linked.cancelamento_vivo(),
+        "canal que nao subiu nao deixa supervisor retido"
+    );
+    assert!(
+        !dir.path().join("whatsapp/default").exists(),
+        "e a recusa por config nao materializa diretorio de sessao"
     );
 }
 
