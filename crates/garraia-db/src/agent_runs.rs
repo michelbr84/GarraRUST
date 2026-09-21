@@ -64,6 +64,23 @@ pub struct AgentRunRow {
     pub error_snippet: Option<String>,
 }
 
+/// Le uma linha completa de `agent_runs` na ordem de colunas usada pelas
+/// duas listagens. Uma funcao so para as duas nao divergirem em silencio
+/// quando a projecao mudar.
+fn map_run_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRow> {
+    Ok(AgentRunRow {
+        id: r.get(0)?,
+        session_id: r.get(1)?,
+        goal: r.get(2)?,
+        mode: r.get(3)?,
+        status: RunStatus::from_str(&r.get::<_, String>(4)?),
+        started_at: r.get(5)?,
+        finished_at: r.get(6)?,
+        result_snippet: r.get(7)?,
+        error_snippet: r.get(8)?,
+    })
+}
+
 fn truncate(s: &str) -> String {
     if s.chars().count() <= SNIPPET_MAX {
         s.to_string()
@@ -195,19 +212,34 @@ impl SessionStore {
             )
             .map_err(|e| Error::Database(e.to_string()))?;
         let rows = stmt
-            .query_map(rusqlite::params![limit], |r| {
-                Ok(AgentRunRow {
-                    id: r.get(0)?,
-                    session_id: r.get(1)?,
-                    goal: r.get(2)?,
-                    mode: r.get(3)?,
-                    status: RunStatus::from_str(&r.get::<_, String>(4)?),
-                    started_at: r.get(5)?,
-                    finished_at: r.get(6)?,
-                    result_snippet: r.get(7)?,
-                    error_snippet: r.get(8)?,
-                })
-            })
+            .query_map(rusqlite::params![limit], map_run_row)
+            .map_err(|e| Error::Database(e.to_string()))?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(rows)
+    }
+
+    /// Mesma listagem, restrita a um status (`garra runs list --status`).
+    ///
+    /// O filtro vive no SQL, e nao no chamador: filtrar depois de trazer
+    /// `LIMIT` linhas faria `--status interrupted --limit 50` devolver menos
+    /// de 50 interrompidos so porque runs `done` recentes ocuparam a janela.
+    pub fn list_recent_agent_runs_by_status(
+        &self,
+        status: &RunStatus,
+        limit: u32,
+    ) -> Result<Vec<AgentRunRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, session_id, goal, mode, status, started_at, finished_at,
+                        result_snippet, error_snippet
+                 FROM agent_runs WHERE status = ?1
+                 ORDER BY started_at DESC, id DESC LIMIT ?2",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params![status.as_str(), limit], map_run_row)
             .map_err(|e| Error::Database(e.to_string()))?
             .collect::<std::result::Result<_, _>>()
             .map_err(|e| Error::Database(e.to_string()))?;
@@ -312,6 +344,41 @@ mod tests {
 
         // Segunda subida: nada pendente.
         assert_eq!(super::log_interrupted_runs(&st), 0);
+    }
+
+    /// #1227 (slice 4): o filtro de status e do SQL. Se ele fosse aplicado
+    /// depois do `LIMIT`, pedir 1 `done` com dois runs no banco poderia
+    /// devolver lista vazia — o `LIMIT 1` traria o `interrompido` e o filtro
+    /// o descartaria.
+    #[test]
+    fn filtro_de_status_acontece_antes_do_limite() {
+        let st = store();
+        st.start_agent_run("antigo", None, "tarefa antiga", None)
+            .unwrap();
+        st.finish_agent_run("antigo", RunStatus::Done, Some("ok"), None)
+            .unwrap();
+        st.start_agent_run("recente", None, "tarefa recente", None)
+            .unwrap();
+        super::log_interrupted_runs(&st);
+
+        let dones = st
+            .list_recent_agent_runs_by_status(&RunStatus::Done, 1)
+            .unwrap();
+        assert_eq!(dones.len(), 1, "o filtro perdeu a linha para o LIMIT");
+        assert_eq!(dones[0].id, "antigo");
+
+        let interrompidos = st
+            .list_recent_agent_runs_by_status(&RunStatus::Interrupted, 10)
+            .unwrap();
+        assert_eq!(interrompidos.len(), 1);
+        assert_eq!(interrompidos[0].id, "recente");
+
+        // Status sem nenhuma linha nao e erro: e lista vazia.
+        assert!(
+            st.list_recent_agent_runs_by_status(&RunStatus::Cancelled, 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

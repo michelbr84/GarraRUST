@@ -320,7 +320,10 @@ const RESUME_LIMIT: usize = 100;
 /// O mesmo `sessions.db` que o gateway abre (`server.rs`): quem retoma no
 /// chat uma conversa que comecou num canal encontra as mensagens no lugar
 /// onde elas ja estavam.
-const SESSIONS_DB: &str = "sessions.db";
+///
+/// `pub(crate)` porque o `runs_cmd` (#1227 slice 4) le o ledger do **mesmo**
+/// arquivo: duplicar o nome la abriria espaco para os dois divergirem.
+pub(crate) const SESSIONS_DB: &str = "sessions.db";
 
 /// Abre o `SessionStore` **apenas** quando a sessao vai usa-lo.
 ///
