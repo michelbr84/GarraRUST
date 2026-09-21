@@ -104,6 +104,20 @@ garra ask "resuma este arquivo" # pergunta única, sem chat interativo
 garra status    # verifica se está rodando
 ```
 
+### Instalação num pod descartável (RunPod, Docker)
+
+Se o Garra vai rodar num container **descartável**, criado justamente para dar autonomia plena ao agente, declare o perfil de execução antes de subir — ele nunca é inferido (ADR 0024, v0.4.4):
+
+```bash
+export GARRAIA_EXECUTION_PROFILE=isolated-pod   # vence o config.yml; valor inválido recusa o boot
+garra init
+garra start
+```
+
+Com `isolated-pod` o dono do WhatsApp pessoal (declarado em `channels.whatsapp_linked.owners`, conversa 1:1) recebe o piso `code` e o MCP `filesystem` nasce em `execution.pod_root` (ou `<data_dir>/workspace`). O perfil **não** isola volume do host, socket do Docker, `--privileged` nem segredos do host — se algum desses vale para o seu container, fique em `standard`. Lista completa, exemplo de `config.yml` e troubleshooting: [`docs/execution-profiles.md`](https://github.com/michelbr84/GarraRUST/blob/main/docs/execution-profiles.md) · [Runpod](https://github.com/michelbr84/GarraRUST/blob/main/docs/deployment-runpod.md) · [Docker](https://github.com/michelbr84/GarraRUST/blob/main/docs/deployment.md).
+
+> A instrução impressa ao fim do `garra whatsapp link` ("inicie o gateway: `garraia start`" ou "`garra start`") usa o nome do executável que você está rodando — os dois são o mesmo binário.
+
 ## Atualização e rollback
 
 ```bash

@@ -31,7 +31,14 @@ pub fn run_config_check(json: bool, strict: bool) -> Result<i32> {
     let loader = ConfigLoader::new()?;
     loader.ensure_dirs()?;
 
-    let config = match loader.load() {
+    // ADR 0024 (#1329): `load_para_o_check`, nao `load` — uma
+    // `GARRAIA_EXECUTION_PROFILE` invalida derruba o `load` (o gateway nao
+    // sobe com ela), mas aqui ela tem de virar Finding `Error` no relatorio
+    // (exit 2), nao um exit 65 "o arquivo nao parseia". O `run_check` le a
+    // env por conta propria. O mesmo vale para `execution.profile` invalido
+    // NO ARQUIVO: o serde recusa o arquivo, e o loader do check carrega o
+    // resto com o valor marcado para o relatorio existir.
+    let config = match loader.load_para_o_check() {
         Ok(c) => c,
         Err(e) => {
             let parse_error = truncate_error(format!("{e}"));
@@ -117,6 +124,8 @@ mod tests {
                 embeddings_providers: vec![],
                 mcp_servers_count: 0,
                 log_level: None,
+                execution_profile: "standard".into(),
+                execution_profile_source: "default".into(),
             },
         }
     }
@@ -246,6 +255,10 @@ fn print_human(check: &ConfigCheck, strict: bool) {
     if let Some(lvl) = &check.summary.log_level {
         println!("  log_level          : {lvl}");
     }
+    println!(
+        "  execution profile  : {} (source: {})",
+        check.summary.execution_profile, check.summary.execution_profile_source
+    );
 
     println!();
     println!("Findings");

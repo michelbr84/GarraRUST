@@ -8,6 +8,7 @@
 - [Conectar bot do Telegram (passo a passo)](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/guides/connect-telegram.md)
 - [iMessage (macOS)](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/channels/imessage.md)
 - [WhatsApp pessoal (dispositivo vinculado, QR): `garra whatsapp`](https://github.com/michelbr84/GarraRUST/blob/main/docs/whatsapp.md) — precisa de Node.js 20+ e npm só nesse caminho; a Cloud API da Meta segue em [docs/channels.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/channels.md)
+  - **Quem entra e o que pode fazer**: `channels.whatsapp_linked.allow` decide quem é admitido (piso `default_mode`, default `search`, só leitura); `owners` (v0.4.4, ADR 0024) declara o **dono** — mesma normalização de `allow` (dígitos ou JID `@lid`) — que, **só** com `execution.profile: isolated-pod` e **só** em conversa 1:1, recebe o piso `code` (`bash`, `file_write`, tools MCP). Pareamento por código nunca confere isso; grupo nunca herda; `owners` em `standard` é só um `Warning` no `config check`. Detalhes: [docs/whatsapp.md § Dono e perfil de execução](https://github.com/michelbr84/GarraRUST/blob/main/docs/whatsapp.md) · [docs/execution-profiles.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/execution-profiles.md)
 
 ## Provedores LLM
 

@@ -1033,7 +1033,8 @@ async fn a_bridge_that_retries_forever_is_neither_silent_nor_endless() {
         "a mensagem precisa dizer que nao houve progresso: {msg}"
     );
     assert!(
-        msg.contains("garra whatsapp"),
+        // No harness o executavel cai no nome canonico (#1329).
+        msg.contains("`garraia whatsapp` de novo"),
         "e precisa ser acionavel — dizer o que fazer: {msg}"
     );
 
@@ -1116,7 +1117,8 @@ aos 25 s, e o timeout externo nao e o mecanismo",
         "a mensagem precisa dizer que o pareamento nao andou: {msg}"
     );
     assert!(
-        msg.contains("garra whatsapp"),
+        // No harness o executavel cai no nome canonico (#1329).
+        msg.contains("`garraia whatsapp` de novo"),
         "e precisa dizer o que fazer: {msg}"
     );
 
@@ -1206,7 +1208,8 @@ Phase::Authenticated para sempre, e o timeout externo nao e o mecanismo",
         "a mensagem precisa dizer que o pareamento nao andou: {msg}"
     );
     assert!(
-        msg.contains("garra whatsapp"),
+        // No harness o executavel cai no nome canonico (#1329).
+        msg.contains("`garraia whatsapp` de novo"),
         "e precisa dizer o que fazer: {msg}"
     );
 

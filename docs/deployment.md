@@ -90,6 +90,45 @@ Para personalizar a configuração, você pode:
 * editar esses arquivos diretamente, ou
 * criar seu próprio arquivo de configuração e atualizar o mapeamento de volume no `docker-compose.yml`
 
+### Perfil de execução (`isolated-pod`)
+
+Por padrão o gateway sobe no perfil `standard` — a postura para máquina
+compartilhada: piso `search` no WhatsApp pessoal, jail das file tools, MCP
+`filesystem` no workspace. Se o container é **descartável** e existe
+justamente para dar autonomia plena ao agente, declare isso
+([ADR 0024](adr/0024-perfis-de-execucao-isolated-pod.md); guia completo em
+[`execution-profiles.md`](execution-profiles.md)):
+
+```yaml
+# docker-compose.yml
+services:
+  garraia:
+    environment:
+      GARRAIA_EXECUTION_PROFILE: isolated-pod   # vence o config.yml
+```
+
+ou, no `config.yml` montado no container:
+
+```yaml
+execution:
+  profile: isolated-pod
+  pod_root: /workspace        # opcional; raiz do MCP filesystem, absoluta
+channels:
+  whatsapp_linked:
+    type: whatsapp_linked
+    enabled: true
+    owners: ["5511999998888"] # só dono declarado recebe o piso `code`, e só em 1:1
+```
+
+> **Atenção.** O perfil é uma declaração do operador, não um mecanismo de
+> isolamento: o gateway avisa uma vez no boot (`WARN`) e mantém um `Warning`
+> permanente em `GET /api/diagnostics`, mas **não** isola volume do host
+> montado, socket do Docker (`/var/run/docker.sock`), `--privileged`,
+> `--pid=host`, `network_mode: host`, mounts não declarados nem segredos do
+> host no `environment`. Se qualquer um desses vale para o seu serviço, ele
+> não é um pod isolado — fique em `standard`. Nunca é inferido de
+> `/.dockerenv` ou cgroups; valor inválido recusa o boot.
+
 ---
 
 ## Solução de Problemas

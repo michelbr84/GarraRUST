@@ -229,6 +229,58 @@ camadas, e nenhuma substitui a outra.
   subida; um servidor registrado depois pela admin API, sob um perfil ja
   permissivo, nao o reemite.
 
+### Dono e perfil de execucao (`owners`)
+
+Desde a v0.4.4 (ADR 0024, #1329) o piso acima depende tambem do **perfil de
+execucao** do processo — `execution.profile`, `standard` (default) ou
+`isolated-pod` — e de uma segunda lista na secao do canal:
+
+```yaml
+execution:
+  profile: isolated-pod          # ou GARRAIA_EXECUTION_PROFILE=isolated-pod
+
+channels:
+  whatsapp_linked:
+    type: whatsapp_linked
+    enabled: true
+    allow: ["5511888880000"]     # admitidos: piso `default_mode` (default `search`)
+    owners: ["5511999998888"]    # donos: em isolated-pod, piso `code` em conversa 1:1
+```
+
+- `owners` usa a mesma normalizacao de `allow` (`normalizar_identidade`:
+  digitos, ou JID `@lid` como veio). Quem esta em `owners` e admitido como se
+  estivesse em `allow`.
+- Em **`standard`** `owners` nao muda nada: todo admitido, dono incluso, fica
+  em `default_mode`. O `config check` avisa (`owners so tem efeito em
+  isolated-pod`) — e aviso, nunca poder.
+- Em **`isolated-pod`** o dono em conversa **1:1** recebe o perfil completo:
+  `default_mode` se explicito na config, senao **`code`** — sem whitelist,
+  entao `file_write`, `bash`, subagentes e toda ferramenta MCP registrada
+  (`filesystem__write_file` inclusa). O jail das file tools nativas
+  (`agent.file_roots`) e o gate de comando arriscado do `bash` continuam
+  valendo; o perfil libera ferramentas, nao desliga protecoes.
+- **Pareamento nunca confere o perfil completo.** O codigo de 6 digitos e
+  credencial fraca (memoria do processo, um codigo); so identidade declarada
+  na config e dono.
+- **Grupo nunca herda.** Dono mandando de um grupo, e admitido que nao e dono
+  em qualquer conversa, caem no piso `standard` (`default_mode`).
+- `from_me` continua fora (`deve_responder`): "note to self" nao e caminho
+  suportado.
+- Um `/mode` explicito da sessao continua vencendo o piso, nos dois perfis.
+
+O perfil efetivo do turno e uma funcao pura (`perfil_do_turno`), avaliada
+**depois** de `admitir` e **antes** de montar o `ExecContext`; ela alimenta
+`piso_somente_leitura`. Cada turno loga `phone_last4` + `perfil` (`completo`
+| `padrao`) + o modo do piso — nunca JID, telefone, `push_name` nem texto (a
+varredura `fonte_nao_loga_jid_cru_nem_material_de_sessao` continua valendo).
+`garra whatsapp status` mostra o perfil, o piso do dono e a contagem de
+donos; o check `execution.profile` do `/api/diagnostics` tambem. Sem
+`owners`, `isolated-pod` nao muda nada neste canal — o diagnostico diz
+"0 donos".
+
+Detalhes do perfil, a lista do que ele **nao** isola e o exemplo para pod:
+[`execution-profiles.md`](execution-profiles.md).
+
 ### `logout`
 
 `garra whatsapp logout` sobrescreve e remove `session.enc`, `session.enc.prev`,
@@ -290,6 +342,8 @@ Como o filho e contido:
 | **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garra whatsapp` de novo. |
 | **`whatsapp_linked: canal nao subiu — …`** no log do gateway | A frase depois do travessao e a acao: ligar `channels.whatsapp_linked.enabled`; corrigir `channels.whatsapp_linked.default_mode` para um modo nativo (`search`, `ask`, `code`…; nao `auto`, nao modo customizado, nao typo) ou remover a chave; rodar `garra whatsapp link`; ou instalar Node.js 20+ e garantir `node` na PATH **do processo do gateway** (um servico systemd nao herda a PATH do seu shell). Canal desligado de proposito sai em `INFO`, nao aqui. |
 | **`o perfil `…` (…default_mode) libera ferramentas MCP dos servidores …`** no log do gateway | Aviso de drift, nao erro: o `default_mode` do canal e um perfil nativo sem whitelist (`ask`, `code`) e esta expondo aqueles servidores MCP a quem manda mensagem. O trecho depois do travessao diz por que o portao liberou. Veja "Ferramentas e servidores MCP" acima. |
+| **`execution.profile = isolated-pod` e o WhatsApp continua em `search`** | `owners` vazio (o diagnostico diz "0 donos"); a mensagem veio de grupo (grupo nunca herda); `default_mode` explicito na config (em `isolated-pod` vale para o dono tambem — remova a chave para o default `code`); ou a sessao escolheu `/mode`. Veja "Dono e perfil de execucao" acima e [`execution-profiles.md`](execution-profiles.md). |
+| **`channels.whatsapp_linked.owners lists N identit… but the effective execution profile is standard`** no `config check` | `owners` so tem efeito em `isolated-pod`. Ou ligue o perfil (se este processo roda num pod descartavel), ou remova a chave. |
 | **Mensagem sobre outro aparelho ter assumido** | Alguem conectou o mesmo numero em outro lugar. A sessao gravada **continua valendo**; rode `garra start` de novo. |
 | **Conta bloqueada pelo WhatsApp** | Nao ha o que o GarraIA faca. Foi o risco avisado na tela de consentimento. Use a Cloud API. |
 

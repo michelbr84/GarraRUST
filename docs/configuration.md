@@ -185,6 +185,16 @@ timeouts:
   health:
     default_secs: 5
 
+# Execution profile (ADR 0024, #1329) — see docs/execution-profiles.md.
+# `standard` (default, section absent) is today's posture: ToolGate floor by
+# mode, file-tool jail, `search` floor on personal WhatsApp. `isolated-pod`
+# declares that THIS process runs in a disposable pod: full power inside the
+# pod for the WhatsApp owner in 1:1 chats, MCP filesystem rooted at pod_root.
+# GARRAIA_EXECUTION_PROFILE overrides the file; an invalid value refuses boot.
+execution:
+  profile: standard        # standard | isolated-pod
+  # pod_root: /workspace   # optional, absolute; only meaningful in isolated-pod
+
 # Security
 security:
   vault_password: "your-vault-password"  # Or set GARRAIA_VAULT_PASSWORD env
@@ -215,6 +225,14 @@ llm:
 Supported env var resolution:
 - `${VAR_NAME}` - Uses environment variable
 - Leave empty - Uses `GARRAIA_{PROVIDER}_API_KEY`
+
+Runtime overrides read directly by the loader (not secrets):
+
+| Variable | Overrides | Notes |
+|---|---|---|
+| `GARRAIA_CONFIG_DIR` | config directory | See "Configuration File Location" above. |
+| `GARRAIA_EXECUTION_PROFILE` | `execution.profile` | `standard` \| `isolated-pod`. **Wins over the file**, resolved once at load; `config check` and `/api/diagnostics` report the source (`default` \| `file` \| `env`). Any other value is a load error: the gateway refuses to boot and `config check` reports `Error` (exit 2). Never persisted back to the file by a save. [`execution-profiles.md`](execution-profiles.md). |
+| `GARRAIA_FILE_ROOTS` | adds to `agent.file_roots` | PATH-style list; extra roots for the native file-tool jail (#1244). |
 
 ## Provider / model resolution precedence
 

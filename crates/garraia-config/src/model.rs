@@ -71,6 +71,13 @@ pub struct AppConfig {
     /// de dispositivos segue vazio (fail-closed).
     #[serde(default)]
     pub hardware: HardwareConfig,
+
+    /// ADR 0024 / #1329 — perfil de execucao (`standard` | `isolated-pod`).
+    /// Secao ausente = `standard` = comportamento de hoje. A env
+    /// `GARRAIA_EXECUTION_PROFILE` vence o arquivo e e aplicada pelo
+    /// `ConfigLoader`, nunca por `Default`. Ver [`crate::execution`].
+    #[serde(default)]
+    pub execution: crate::execution::ExecutionConfig,
 }
 
 impl Default for AppConfig {
@@ -93,6 +100,7 @@ impl Default for AppConfig {
             storage: StorageConfig::default(),
             auth: AuthSection::default(),
             hardware: HardwareConfig::default(),
+            execution: crate::execution::ExecutionConfig::default(),
         }
     }
 }
