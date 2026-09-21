@@ -425,13 +425,20 @@ const MAX_PROGRAM_STEPS: usize = 16;
 /// Teto agregado do `tool_program` inteiro, **alem** do timeout por passo
 /// que `budget.timeout()` ja aplica em cada `dispatch_tool_call` (#1226
 /// S-B). Sem isto, um programa de `MAX_PROGRAM_STEPS` passos herdaria so o
-/// produto `passos * timeout_por_passo` como teto implicito — este valor e
-/// um limite explicito e independente, defesa em profundidade contra um
-/// perfil com `GARRA_TOOL_TIMEOUT_SECS` generoso. Checado a cada passo
-/// (`inicio.elapsed()` em `executar_tool_program`), nao envolvendo o loop
-/// inteiro num `tokio::time::timeout` — achado de auditoria F-2: a versao
-/// que envolvia o future derrubava o relatorio dos passos ja executados
-/// junto com o estouro.
+/// produto `passos * timeout_por_passo` como teto implicito. Checado a
+/// cada passo (`inicio.elapsed()` em `executar_tool_program`), nao
+/// envolvendo o loop inteiro num `tokio::time::timeout` — achado de
+/// auditoria F-2: a versao que envolvia o future derrubava o relatorio dos
+/// passos ja executados junto com o estouro.
+///
+/// Por ser checado ENTRE passos (nao dentro de um), o teto real e
+/// `PROGRAM_AGGREGATE_TIMEOUT_SECS + budget.timeout()` no pior caso — um
+/// unico passo em voo no momento do estouro nao e preemptado. Com o
+/// timeout padrao (30s) isso e irrelevante; com `GARRA_TOOL_TIMEOUT_SECS`
+/// configurado bem acima do padrao, o teto limita o **acumulo** entre
+/// passos, nao um passo isolado (reauditado, F-2: aceitavel — quem
+/// configura um timeout de horas por passo ja aceita uma chamada de horas
+/// no loop normal).
 ///
 /// 120s, e nao um numero maior: sob o orcamento padrao (10 chamadas por
 /// turno — #979, o modo nunca levanta este teto) um `tool_program` cabe no
@@ -2580,14 +2587,18 @@ impl AgentRuntime {
                     // Achado de auditoria (F-4, #1226 S-B): sem isto o
                     // `tool_started` de cima ficava sem o `tool_finished`
                     // correspondente — a UI de streaming herdava um
-                    // spinner pendurado quando o orcamento estourava
-                    // dentro do programa.
+                    // spinner pendurado. So se chega aqui quando a TAREFA
+                    // esgotou (o so-turno virou `Ok` gracioso, achado F-3)
+                    // ou quando um passo interno detectou loop — `mensagem`
+                    // ja e o texto de um dos dois (`ExecutionBudget::status`
+                    // ou `mensagem_de_loop`, esta ja redigida), sem valor
+                    // cru do modelo.
                     if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                         sink.tool_finished(
                             name,
                             iniciado_em.elapsed(),
                             false,
-                            "orcamento do turno esgotado".to_string(),
+                            summarize_tool_output(&mensagem, false),
                             String::new(),
                         )
                         .await;
@@ -2620,7 +2631,14 @@ impl AgentRuntime {
             .await;
         }
 
-        // GAR-187: pause agent loop if tool requires user confirmation
+        // GAR-187: pause agent loop if tool requires user confirmation.
+        // Acoplamento fragil com o `is_error` do #1226 S-B, registrado por
+        // auditoria: `ToolOutput::confirmation_request` tambem marca
+        // `is_error: true`, e este check TEM de vir antes de qualquer
+        // lugar que trate `is_error` como falha definitiva (como o passo
+        // de `executar_tool_program`, que para o programa em erro) — senao
+        // uma tool pedindo confirmacao vira "passo falhou" em vez de
+        // pausar. A ordem aqui ja esta certa; nao inverter.
         if output.requires_confirmation {
             tracing::info!(
                 session = %context.session_id,
