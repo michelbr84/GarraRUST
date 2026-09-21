@@ -12,7 +12,7 @@ use super::*;
 // varreduras — esta e a de `whatsapp_linked/source_scan.rs`. Duas copias com
 // qualidade diferente ja deram um falso verde nesta PR.
 use garraia_channels::whatsapp_linked::{SessionBlob, log_audit};
-use garraia_config::ChannelConfig;
+use garraia_config::{ChannelConfig, ExecutionConfig};
 // O `Allowlist` global aparece aqui so como REU: os testes provam que este
 // canal nao o consulta e nao escreve nele. O codigo de producao do canal nao o
 // importa mais.
@@ -98,8 +98,17 @@ fn sem_secao_o_canal_nasce_desligado_e_fechado() {
     let s = settings_from_config(&config_com(None));
     assert!(!s.enabled);
     assert!(s.allow.is_empty(), "allowlist vazia = ninguem");
+    assert!(s.owners.is_empty(), "sem dono declarado");
     assert!(!s.reply_in_groups);
-    assert_eq!(s.default_mode, DEFAULT_MODE);
+    assert_eq!(
+        s.default_mode, None,
+        "chave ausente e `None`: o default depende do perfil de execucao"
+    );
+    assert_eq!(
+        s.modo_padrao_efetivo(ExecutionProfile::Standard),
+        DEFAULT_MODE,
+        "e em `standard` o efetivo e o piso somente-leitura de sempre"
+    );
 }
 
 /// `enabled` ausente e **desligado** aqui, ao contrario do default do
@@ -135,7 +144,81 @@ fn allow_da_config_e_normalizado_para_digitos() {
         "numero vira digitos; JID fica como veio; vazio some"
     );
     assert!(s.reply_in_groups);
-    assert_eq!(s.default_mode, "code");
+    assert_eq!(s.default_mode.as_deref(), Some("code"));
+    // `default_mode` em branco e o mesmo que ausente.
+    let s = settings_from_config(&config_com(Some(secao(
+        Some(true),
+        serde_json::json!({ "default_mode": "   " }),
+    ))));
+    assert_eq!(s.default_mode, None, "em branco = ausente");
+}
+
+/// `owners` (ADR 0024) e lido com a MESMA normalizacao do `allow`: numero
+/// vira digitos, JID `@lid` fica como veio, vazio some. Sem isso, `+55 11
+/// 9...` na config nunca casaria com o `5511...` que
+/// `identidade_do_remetente` produz, e o dono nunca seria dono.
+#[test]
+fn owners_da_config_e_normalizado_como_o_allow() {
+    let s = settings_from_config(&config_com(Some(secao(
+        Some(true),
+        serde_json::json!({
+            "owners": ["+55 11 98888-7777", "abc123@lid", "", "   "],
+            "allow": ["5511999998888"]
+        }),
+    ))));
+    assert_eq!(
+        s.owners,
+        vec!["5511988887777".to_string(), "abc123@lid".to_string()],
+        "numero vira digitos; JID fica como veio; vazio some"
+    );
+    assert_eq!(
+        s.allow,
+        vec!["5511999998888".to_string()],
+        "e `allow` continua separado: dono nao e copiado para la na leitura"
+    );
+
+    // Chave ausente, tipo errado (string em vez de lista) e lista de
+    // nao-strings: tudo vira "sem dono" — nunca um dono acidental.
+    for ruim in [
+        serde_json::json!({}),
+        serde_json::json!({ "owners": "5511988887777" }),
+        serde_json::json!({ "owners": [5511988887777_u64, true, null] }),
+    ] {
+        let s = settings_from_config(&config_com(Some(secao(Some(true), ruim.clone()))));
+        assert!(s.owners.is_empty(), "{ruim}: nao pode nascer dono daqui");
+    }
+}
+
+/// `modo_padrao_efetivo` e o unico lugar em que perfil de execucao vira nome
+/// de modo: declarado vence sempre; ausente e `search` em `standard` e `code`
+/// em `isolated-pod`.
+#[test]
+fn modo_padrao_efetivo_declarado_vence_e_ausente_depende_do_perfil() {
+    let ausente = LinkedSettings::default();
+    assert_eq!(
+        ausente.modo_padrao_efetivo(ExecutionProfile::Standard),
+        DEFAULT_MODE
+    );
+    assert_eq!(
+        ausente.modo_padrao_efetivo(ExecutionProfile::IsolatedPod),
+        DEFAULT_MODE_DO_DONO_NO_POD
+    );
+    assert_ne!(
+        DEFAULT_MODE, DEFAULT_MODE_DO_DONO_NO_POD,
+        "premissa: os dois defaults sao modos diferentes, senao o perfil nao muda nada"
+    );
+
+    let declarado = LinkedSettings {
+        default_mode: Some("ask".into()),
+        ..LinkedSettings::default()
+    };
+    for perfil in [ExecutionProfile::Standard, ExecutionProfile::IsolatedPod] {
+        assert_eq!(
+            declarado.modo_padrao_efetivo(perfil),
+            "ask",
+            "{perfil}: o valor declarado vence o default do perfil"
+        );
+    }
 }
 
 /// Uma secao com `type` diferente nao e este canal, mesmo ocupando a chave.
@@ -354,6 +437,179 @@ fn parear_neste_canal_nao_escreve_na_allowlist_global() {
     // "use" para fazer o teste passar por outro caminho.
     global.add("outro");
     assert!(!portao.libera("outro"), "e o inverso tambem vale");
+}
+
+// ---------------------------------------------------------------------------
+// Dono (ADR 0024)
+// ---------------------------------------------------------------------------
+
+/// Quem esta em `owners` e admitido como se estivesse em `allow` — e tirar
+/// de `owners` tira a admissao, igual ao `allow`.
+#[test]
+fn quem_esta_em_owners_e_admitido_sem_precisar_do_allow() {
+    let com_dono = PortaoDoCanal::from_settings(&LinkedSettings {
+        owners: vec!["5511888880000".into()],
+        ..LinkedSettings::default()
+    });
+    assert!(com_dono.libera("5511888880000"));
+    assert!(!com_dono.libera("5511777770000"), "e mais ninguem");
+
+    let mut portao = com_dono;
+    let mut pair = pairing();
+    assert_eq!(
+        admitir(&mut portao, &mut pair, "5511888880000", "oi"),
+        Admissao::Aceito
+    );
+
+    let sem_dono = PortaoDoCanal::from_settings(&LinkedSettings::default());
+    assert!(
+        !sem_dono.libera("5511888880000"),
+        "o que sai de `owners` sai do portao"
+    );
+}
+
+/// **A tabela do perfil do turno.** Tres condicoes, todas obrigatorias:
+/// `isolated-pod` × conversa 1:1 × remetente em `owners`. Cada linha
+/// positiva tem a negativa ao lado — tirar qualquer condicao cai em `Padrao`.
+#[test]
+fn perfil_do_turno_exige_isolated_pod_conversa_1_a_1_e_dono_declarado() {
+    use ExecutionProfile::{IsolatedPod, Standard};
+    use PerfilDoTurno::{Completo, Padrao};
+
+    const DONO: &str = "5511888880000";
+    const CONTATO: &str = "5511777770000";
+    let settings = LinkedSettings {
+        allow: vec![CONTATO.into()],
+        owners: vec![DONO.into()],
+        ..LinkedSettings::default()
+    };
+
+    // (perfil, remetente, grupo?) → perfil do turno
+    let tabela = [
+        (IsolatedPod, DONO, false, Completo, "a unica linha completa"),
+        (
+            IsolatedPod,
+            DONO,
+            true,
+            Padrao,
+            "dono em grupo: o grupo le a resposta",
+        ),
+        (
+            IsolatedPod,
+            CONTATO,
+            false,
+            Padrao,
+            "admitido pelo allow nao e dono",
+        ),
+        (IsolatedPod, CONTATO, true, Padrao, "contato em grupo"),
+        (
+            Standard,
+            DONO,
+            false,
+            Padrao,
+            "owners em standard nao confere nada",
+        ),
+        (Standard, DONO, true, Padrao, "nem em grupo"),
+        (Standard, CONTATO, false, Padrao, "standard 1:1 = hoje"),
+        (Standard, CONTATO, true, Padrao, "standard grupo = hoje"),
+    ];
+    for (perfil, quem, grupo, esperado, porque) in tabela {
+        assert_eq!(
+            perfil_do_turno(perfil, &settings, quem, grupo),
+            esperado,
+            "{perfil} / {quem} / grupo={grupo}: {porque}"
+        );
+    }
+
+    // Comparacao byte a byte apos normalizacao: um sufixo, um prefixo ou a
+    // grafia com `+` NAO casam — `identidade_do_remetente` ja normalizou.
+    for quase in ["+5511888880000", "55118888800001", "511888880000", ""] {
+        assert_eq!(
+            perfil_do_turno(IsolatedPod, &settings, quase, false),
+            Padrao,
+            "{quase:?} nao e o dono"
+        );
+    }
+
+    // `owners` vazio em isolated-pod: ninguem e dono, o perfil nao muda nada.
+    let sem_dono = LinkedSettings {
+        allow: vec![DONO.into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(perfil_do_turno(IsolatedPod, &sem_dono, DONO, false), Padrao);
+}
+
+/// Pareamento por codigo admite, mas **nunca** faz dono: `owners` e
+/// identidade declarada na config, e o codigo e credencial fraca (memoria do
+/// processo, seis digitos). Este e o teste que fica vermelho se alguem
+/// "promover" o pareado a dono para poupar o operador de editar a config.
+#[test]
+fn parear_por_codigo_admite_mas_nunca_faz_dono() {
+    let settings = LinkedSettings::default();
+    let mut portao = PortaoDoCanal::from_settings(&settings);
+    let mut pair = pairing();
+    let code = pair.generate("whatsapp_linked");
+    assert_eq!(
+        admitir(&mut portao, &mut pair, "5511888880000", &code),
+        Admissao::PareadoAgora
+    );
+    assert!(portao.libera("5511888880000"), "admitido");
+    assert_eq!(
+        perfil_do_turno(
+            ExecutionProfile::IsolatedPod,
+            &settings,
+            "5511888880000",
+            false
+        ),
+        PerfilDoTurno::Padrao,
+        "pareado nao e dono, nem em isolated-pod"
+    );
+}
+
+/// `modo_do_piso`: `Completo` recebe o default do pod, `Padrao` o de
+/// `standard` — e um `default_mode` declarado vale para os dois.
+#[test]
+fn modo_do_piso_do_perfil_padrao_e_o_de_standard_mesmo_no_pod() {
+    let ausente = LinkedSettings::default();
+    assert_eq!(
+        modo_do_piso(PerfilDoTurno::Completo, &ausente),
+        DEFAULT_MODE_DO_DONO_NO_POD
+    );
+    assert_eq!(
+        modo_do_piso(PerfilDoTurno::Padrao, &ausente),
+        DEFAULT_MODE,
+        "nao-dono e grupo ficam onde estao hoje, mesmo com o processo em isolated-pod"
+    );
+
+    let declarado = LinkedSettings {
+        default_mode: Some("ask".into()),
+        ..LinkedSettings::default()
+    };
+    assert_eq!(modo_do_piso(PerfilDoTurno::Completo, &declarado), "ask");
+    assert_eq!(modo_do_piso(PerfilDoTurno::Padrao, &declarado), "ask");
+
+    // E o modo do dono e, de verdade, o que libera o que o `search` nega —
+    // senao o perfil completo seria so um nome.
+    let completo = garraia_agents::modes::ToolGate::from_exec(&piso_somente_leitura(
+        ExecContext::default(),
+        &modo_do_piso(PerfilDoTurno::Completo, &ausente),
+    ));
+    let padrao = garraia_agents::modes::ToolGate::from_exec(&piso_somente_leitura(
+        ExecContext::default(),
+        &modo_do_piso(PerfilDoTurno::Padrao, &ausente),
+    ));
+    for ferramenta in ["bash", "file_write", "filesystem__write_file"] {
+        assert!(
+            completo.permite(ferramenta),
+            "o dono no pod roda `{ferramenta}`"
+        );
+        assert!(
+            !padrao.permite(ferramenta),
+            "o resto nao roda `{ferramenta}`"
+        );
+    }
+    assert_eq!(PerfilDoTurno::Completo.as_str(), "completo");
+    assert_eq!(PerfilDoTurno::Padrao.as_str(), "padrao");
 }
 
 // ---------------------------------------------------------------------------
@@ -664,6 +920,8 @@ fn midia_e_texto_vazio_nao_geram_turno() {
 fn tabela_do_que_impede_a_supervisao() {
     use garraia_agents::modes::AgentMode;
 
+    const STANDARD: ExecutionProfile = ExecutionProfile::Standard;
+
     let ligado = LinkedSettings {
         enabled: true,
         ..LinkedSettings::default()
@@ -671,7 +929,7 @@ fn tabela_do_que_impede_a_supervisao() {
     let desligado = LinkedSettings::default();
     let modo_errado = LinkedSettings {
         enabled: true,
-        default_mode: "pesquisa".into(),
+        default_mode: Some("pesquisa".into()),
         ..LinkedSettings::default()
     };
     let recusa_do_modo = NaoSubiu::ModoPadraoInvalido {
@@ -679,20 +937,21 @@ fn tabela_do_que_impede_a_supervisao() {
     };
 
     assert_eq!(
-        deve_supervisionar(&desligado, true, true),
+        deve_supervisionar(&desligado, STANDARD, true, true),
         Err(NaoSubiu::Desabilitado)
     );
     assert_eq!(
-        deve_supervisionar(&desligado, false, false),
+        deve_supervisionar(&desligado, STANDARD, false, false),
         Err(NaoSubiu::Desabilitado),
         "desligado vence tudo: nao ha o que consertar num canal que o operador nao ligou"
     );
     assert_eq!(
         deve_supervisionar(
             &LinkedSettings {
-                default_mode: "pesquisa".into(),
+                default_mode: Some("pesquisa".into()),
                 ..LinkedSettings::default()
             },
+            STANDARD,
             true,
             true
         ),
@@ -700,33 +959,33 @@ fn tabela_do_que_impede_a_supervisao() {
         "desligado vence config errada tambem"
     );
     assert_eq!(
-        deve_supervisionar(&modo_errado, false, false),
+        deve_supervisionar(&modo_errado, STANDARD, false, false),
         Err(recusa_do_modo.clone()),
         "config errada vem antes de sessao e node: e o mesmo arquivo que o operador \
          acabou de editar para ligar o canal"
     );
     assert_eq!(
-        deve_supervisionar(&modo_errado, true, true),
+        deve_supervisionar(&modo_errado, STANDARD, true, true),
         Err(recusa_do_modo),
         "com sessao e `node` no lugar, `default_mode` invalido AINDA impede: subir seria \
          subir com portao aberto"
     );
     assert_eq!(
-        deve_supervisionar(&ligado, false, true),
+        deve_supervisionar(&ligado, STANDARD, false, true),
         Err(NaoSubiu::SemSessao)
     );
     assert_eq!(
-        deve_supervisionar(&ligado, false, false),
+        deve_supervisionar(&ligado, STANDARD, false, false),
         Err(NaoSubiu::SemSessao),
         "sem sessao vem antes de sem node: `garra whatsapp link` e o proximo passo, \
          e ele proprio exige o `node`"
     );
     assert_eq!(
-        deve_supervisionar(&ligado, true, false),
+        deve_supervisionar(&ligado, STANDARD, true, false),
         Err(NaoSubiu::SemNode)
     );
     assert_eq!(
-        deve_supervisionar(&ligado, true, true),
+        deve_supervisionar(&ligado, STANDARD, true, true),
         Ok(AgentMode::Search),
         "e quando sobe, devolve o modo validado que vai valer como piso"
     );
@@ -734,15 +993,118 @@ fn tabela_do_que_impede_a_supervisao() {
         deve_supervisionar(
             &LinkedSettings {
                 enabled: true,
-                default_mode: "code".into(),
+                default_mode: Some("code".into()),
                 ..LinkedSettings::default()
             },
+            STANDARD,
             true,
             true
         ),
         Ok(AgentMode::Code),
         "modo nativo mais permissivo e escolha declarada do operador: sobe (e o drift avisa)"
     );
+}
+
+/// `deve_supervisionar` em `isolated-pod` (ADR 0024): o `default_mode`
+/// efetivo do pod (`code`) e nativo e passa; um valor declarado invalido
+/// continua recusando exatamente como em `standard` — o perfil libera
+/// ferramenta, nao afrouxa validacao.
+#[test]
+fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
+    use garraia_agents::modes::AgentMode;
+
+    const POD: ExecutionProfile = ExecutionProfile::IsolatedPod;
+
+    let ligado = LinkedSettings {
+        enabled: true,
+        owners: vec!["5511888880000".into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(
+        deve_supervisionar(&ligado, POD, true, true),
+        Ok(AgentMode::Code),
+        "sem `default_mode`, o efetivo do pod e `code` — e ele passa"
+    );
+    assert_eq!(
+        deve_supervisionar(&ligado, ExecutionProfile::Standard, true, true),
+        Ok(AgentMode::Search),
+        "gemeo: os mesmos settings em standard validam `search` — `owners` nao muda o piso la"
+    );
+
+    let declarado = LinkedSettings {
+        default_mode: Some("ask".into()),
+        ..ligado.clone()
+    };
+    assert_eq!(
+        deve_supervisionar(&declarado, POD, true, true),
+        Ok(AgentMode::Ask),
+        "declarado vence o default do pod"
+    );
+
+    for invalido in ["pesquisa", "auto", "meu-modo"] {
+        let errado = LinkedSettings {
+            default_mode: Some(invalido.into()),
+            ..ligado.clone()
+        };
+        assert_eq!(
+            deve_supervisionar(&errado, POD, true, true),
+            Err(NaoSubiu::ModoPadraoInvalido {
+                modo: invalido.into()
+            }),
+            "{invalido:?}: isolated-pod nao afrouxa a validacao do `default_mode`"
+        );
+    }
+
+    // Sem dono, o pod sobe (o aviso de drift diz que o perfil nao muda nada
+    // neste canal); o que impede a subida continua sendo so as tres
+    // condicoes de sempre.
+    let sem_dono = LinkedSettings {
+        enabled: true,
+        ..LinkedSettings::default()
+    };
+    assert!(deve_supervisionar(&sem_dono, POD, true, true).is_ok());
+    assert_eq!(
+        deve_supervisionar(&sem_dono, POD, false, true),
+        Err(NaoSubiu::SemSessao)
+    );
+    assert_eq!(
+        deve_supervisionar(&LinkedSettings::default(), POD, true, true),
+        Err(NaoSubiu::Desabilitado)
+    );
+}
+
+/// O aviso de drift em cada perfil roda sem panic e sem `unwrap` — com e sem
+/// dono, com e sem ferramenta MCP registrada. O conteudo e log, nao
+/// contrato; o que se prende aqui e que nenhum ramo estoura.
+#[test]
+fn avisar_drift_de_mcp_cobre_os_tres_ramos() {
+    use garraia_agents::AgentRuntime;
+    use garraia_agents::modes::AgentMode;
+
+    let agents = AgentRuntime::new();
+    agents.replace_mcp_tools(
+        "filesystem",
+        vec![Box::new(ToolDeMentira("filesystem__write_file"))],
+    );
+    let com_dono = LinkedSettings {
+        enabled: true,
+        owners: vec!["5511888880000".into()],
+        ..LinkedSettings::default()
+    };
+    let sem_dono = LinkedSettings {
+        enabled: true,
+        default_mode: Some("code".into()),
+        ..LinkedSettings::default()
+    };
+    for (modo, perfil, settings) in [
+        (AgentMode::Search, ExecutionProfile::Standard, &com_dono),
+        (AgentMode::Code, ExecutionProfile::Standard, &sem_dono),
+        (AgentMode::Code, ExecutionProfile::IsolatedPod, &com_dono),
+        (AgentMode::Code, ExecutionProfile::IsolatedPod, &sem_dono),
+        (AgentMode::Search, ExecutionProfile::IsolatedPod, &sem_dono),
+    ] {
+        avisar_drift_de_mcp(modo, perfil, settings, &agents);
+    }
 }
 
 /// Cada motivo de nao subir sai no log com a ACAO, nao com o nome do enum
@@ -1028,9 +1390,6 @@ async fn o_boot_nao_sobe_canal_desligado_sem_sessao_ou_com_default_mode_invalido
 /// `Ok(())` sem spawnar processo nenhum.
 #[tokio::test]
 async fn o_boot_nao_recusa_por_ferramenta_mcp_registrada() {
-    use garraia_agents::AgentRuntime;
-    use garraia_channels::ChannelRegistry;
-
     let dir = tempfile::tempdir().expect("tempdir");
     let config = AppConfig {
         data_dir: Some(dir.path().to_path_buf()),
@@ -1042,6 +1401,45 @@ async fn o_boot_nao_recusa_por_ferramenta_mcp_registrada() {
         .collect(),
         ..Default::default()
     };
+    boot_com_mcp_registrado(config).await;
+}
+
+/// **O gemeo em `isolated-pod` (ADR 0024, teste de regressao 3).** Com o
+/// perfil declarado no arquivo, dono em `owners` e o servidor `filesystem`
+/// registrado, o canal sobe exatamente como em `standard`: o perfil muda o
+/// piso do dono, nao as condicoes de subida — e o `default_mode` efetivo
+/// (`code`) e nativo e valida.
+#[tokio::test]
+async fn o_boot_em_isolated_pod_tambem_sobe_com_ferramenta_mcp_registrada() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = AppConfig {
+        data_dir: Some(dir.path().to_path_buf()),
+        execution: ExecutionConfig::new(Some(ExecutionProfile::IsolatedPod), None),
+        channels: [(
+            CONFIG_KEY.to_string(),
+            secao(
+                Some(true),
+                serde_json::json!({ "owners": ["+55 11 88888-0000"] }),
+            ),
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    assert!(
+        settings_from_config(&config).owners == vec!["5511888880000".to_string()],
+        "premissa: ha dono declarado"
+    );
+    boot_com_mcp_registrado(config).await;
+}
+
+/// O corpo comum dos dois testes de boot com MCP registrado. Ver o docblock de
+/// `o_boot_nao_recusa_por_ferramenta_mcp_registrada` para o porque do
+/// cancelamento imediato e sem `.await`. O `TempDir` fica com o chamador,
+/// vivo ate o fim do teste; a `config` ja aponta para ele.
+async fn boot_com_mcp_registrado(config: AppConfig) {
+    use garraia_agents::AgentRuntime;
+    use garraia_channels::ChannelRegistry;
 
     let agents = AgentRuntime::new();
     // O servidor que toda instalacao nova tem, com uma ferramenta de escrita.
@@ -1201,6 +1599,55 @@ fn fonte_nao_loga_jid_cru_nem_material_de_sessao() {
     );
 }
 
+/// ADR 0024, testes de regressao 6 e 7, no fonte do canal:
+///
+/// - a recusa por servidor MCP registrado (#1327) nao volta — o literal da
+///   variante antiga nao existe no codigo (comentario nao conta: a regra e
+///   sobre o que o canal *faz*);
+/// - nenhuma liberacao por deteccao de container — o perfil do turno vem do
+///   `AppConfig`, e este arquivo nao le marcador de runtime nenhum.
+///
+/// O nome da variante e montado por `concat!` para que este proprio teste
+/// nao contenha o literal — ele fica em `tests.rs`, e nao no fonte varrido,
+/// mas a disciplina vale para quem um dia mover a varredura.
+#[test]
+fn fonte_do_canal_nao_tem_a_recusa_por_mcp_nem_deteccao_de_container() {
+    let fonte = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bootstrap/whatsapp_linked.rs"),
+    )
+    .expect("fonte legivel");
+    // Comentario e doc comment fora: a regra e sobre codigo.
+    let codigo: String = fonte
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let recusa_antiga = concat!("FerramentaMcp", "Registrada");
+    assert!(
+        !codigo.contains(recusa_antiga),
+        "a recusa `{recusa_antiga}` saiu na #1327 e nao pode voltar: o piso `search` nega \
+         ferramenta MCP por nome, e o dono em isolated-pod a libera por perfil (ADR 0024)"
+    );
+    for proibido in [
+        "/.dockerenv",
+        "cgroup",
+        "/proc/1",
+        "/proc/self",
+        "KUBERNETES_SERVICE_HOST",
+        "container=",
+    ] {
+        assert!(
+            !codigo.contains(proibido),
+            "whatsapp_linked.rs nao pode conter `{proibido}`: o perfil e declarado, nunca detectado"
+        );
+    }
+    assert!(
+        codigo.contains("politica_de_execucao(&state.config)"),
+        "o perfil do turno tem de sair do AppConfig carregado — e de mais nenhum lugar"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Ponta a ponta contra a ponte falsa
 // ---------------------------------------------------------------------------
@@ -1210,7 +1657,9 @@ fn fonte_nao_loga_jid_cru_nem_material_de_sessao() {
 mod ponta_a_ponta {
     use super::*;
     use garraia_agents::AgentRuntime;
-    use garraia_agents::providers::{ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse};
+    use garraia_agents::providers::{
+        ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+    };
 
     use garraia_channels::ChannelRegistry;
     use garraia_channels::whatsapp_linked::bridge::{BridgeError, BridgeLauncher};
@@ -1235,9 +1684,38 @@ mod ponta_a_ponta {
     /// Proprio, e nao o `EchoProvider` da crate: aquele esta atras da feature
     /// `dev-echo-provider`, que o `cargo test --workspace` do CI **nao** liga —
     /// um teste que so roda com feature extra e um teste que ninguem roda.
+    ///
+    /// # O pedido de ferramenta (ADR 0024)
+    ///
+    /// Com `pedido` preenchido, a **primeira** rodada de modelo devolve um
+    /// `tool_use` com aquele nome e argumento — de proposito sem olhar se a
+    /// ferramenta esta na lista que o modelo viu, porque o criterio de aceite
+    /// do `ToolGate` e "nenhuma ferramenta proibida roda, *mesmo que
+    /// solicitada pelo LLM*" (#988). A rodada seguinte (a que traz o
+    /// `tool_result`, de execucao ou de recusa) responde texto, e o `pedido`
+    /// e consumido: no `serve-echo` a resposta volta como outra mensagem e
+    /// vira outro turno, e esse segundo turno tem de ser so texto para a
+    /// contagem do espiao ser exata.
     #[derive(Debug, Default)]
     struct ProviderDeStub {
         turnos: Mutex<Vec<TurnoObservado>>,
+        pedido: Mutex<Option<(String, serde_json::Value)>>,
+    }
+
+    impl ProviderDeStub {
+        /// Um provider que, na primeira rodada, pede `ferramenta` com `arg`.
+        fn que_pede(ferramenta: &str, arg: serde_json::Value) -> Self {
+            let p = Self::default();
+            p.rearma(ferramenta, arg);
+            p
+        }
+
+        /// Arma (ou rearma, depois de consumido) o pedido de ferramenta.
+        fn rearma(&self, ferramenta: &str, arg: serde_json::Value) {
+            if let Ok(mut p) = self.pedido.lock() {
+                *p = Some((ferramenta.to_string(), arg));
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -1262,19 +1740,81 @@ mod ponta_a_ponta {
                     texto_do_usuario: ultimo.clone(),
                 });
             }
-            Ok(LlmResponse {
-                content: vec![ContentBlock::Text {
+            // Rodada com `tool_result` na ultima mensagem = segunda rodada:
+            // responde texto. Senao, se ha pedido pendente, pede a ferramenta.
+            let e_retorno_de_ferramenta = request.messages.last().is_some_and(|m| {
+                matches!(&m.content, MessagePart::Parts(p)
+                    if p.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
+            });
+            let pedido = if e_retorno_de_ferramenta {
+                None
+            } else {
+                self.pedido.lock().ok().and_then(|mut p| p.take())
+            };
+            let content = match pedido {
+                Some((name, input)) => vec![ContentBlock::ToolUse {
+                    id: "pedido-1".to_string(),
+                    name,
+                    input,
+                }],
+                None => vec![ContentBlock::Text {
                     text: format!("resposta({})", ultimo.len()),
                 }],
+            };
+            let stop_reason = if matches!(content[0], ContentBlock::ToolUse { .. }) {
+                "tool_use"
+            } else {
+                "end_turn"
+            };
+            Ok(LlmResponse {
+                content,
                 model: "stub-1".to_string(),
                 usage: None,
-                stop_reason: Some("end_turn".to_string()),
+                stop_reason: Some(stop_reason.to_string()),
             })
         }
         async fn health_check(&self) -> garraia_common::Result<bool> {
             Ok(true)
         }
     }
+
+    /// Ferramenta MCP de mentira que **conta quantas vezes rodou**. E o
+    /// unico observador direto do que o ADR 0024 promete: "a tool executa"
+    /// para o dono no pod, e para mais ninguem.
+    struct ToolEspia {
+        nome: &'static str,
+        chamadas: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl garraia_agents::tools::Tool for ToolEspia {
+        fn name(&self) -> &str {
+            self.nome
+        }
+        fn description(&self) -> &str {
+            "espiao"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(
+            &self,
+            _context: &garraia_agents::tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> garraia_common::Result<garraia_agents::tools::ToolOutput> {
+            self.chamadas
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(garraia_agents::tools::ToolOutput {
+                content: "escrito".to_string(),
+                is_error: false,
+                requires_confirmation: false,
+            })
+        }
+    }
+
+    /// O nome que o `tool_bridge` monta para a escrita do servidor que toda
+    /// instalacao nova tem — e a ferramenta que a #1329 quer usar no pod.
+    const ESCRITA_MCP: &str = "filesystem__write_file";
 
     /// Como a ponte falsa deve se comportar neste teste.
     #[derive(Debug, Clone)]
@@ -1373,13 +1913,24 @@ mod ponta_a_ponta {
     /// Monta o `AppState` com provider stub, ferramentas nativas de mentira e a
     /// sessao ja gravada no disco temporario.
     fn monta_estado(dir: &tempfile::TempDir) -> (SharedState, Arc<ProviderDeStub>) {
+        monta_estado_com(dir, ExecutionProfile::Standard, ProviderDeStub::default())
+    }
+
+    /// O mesmo, escolhendo o perfil de execucao (no `AppConfig`, **nunca**
+    /// por env: testes correm em paralelo no mesmo processo) e o provider.
+    fn monta_estado_com(
+        dir: &tempfile::TempDir,
+        perfil: ExecutionProfile,
+        provider: ProviderDeStub,
+    ) -> (SharedState, Arc<ProviderDeStub>) {
         let config = AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
+            execution: ExecutionConfig::new(Some(perfil), None),
             ..Default::default()
         };
 
         let agents = AgentRuntime::new();
-        let provider = Arc::new(ProviderDeStub::default());
+        let provider = Arc::new(provider);
         agents.register_provider(Arc::clone(&provider) as Arc<dyn LlmProvider>);
         // Uma de leitura (que o piso `search` permite) e duas que ele proibe.
         for nome in ["file_read", "bash", "file_write"] {
@@ -1569,8 +2120,57 @@ mod ponta_a_ponta {
         liberado: bool,
         preparo: impl FnOnce(&SharedState),
     ) -> Cenario {
+        Montagem {
+            roteiro,
+            liberado,
+            ..Montagem::default()
+        }
+        .sobe(preparo)
+        .await
+    }
+
+    /// Tudo o que um cenario ponta a ponta pode variar (ADR 0024).
+    struct Montagem {
+        roteiro: Roteiro,
+        /// `PEER` no `allow`.
+        liberado: bool,
+        /// `PEER` em `owners`.
+        dono: bool,
+        reply_in_groups: bool,
+        perfil: ExecutionProfile,
+        provider: ProviderDeStub,
+    }
+
+    impl Default for Montagem {
+        fn default() -> Self {
+            Self {
+                roteiro: Roteiro::eco(),
+                liberado: false,
+                dono: false,
+                reply_in_groups: false,
+                perfil: ExecutionProfile::Standard,
+                provider: ProviderDeStub::default(),
+            }
+        }
+    }
+
+    impl Montagem {
+        async fn sobe(self, preparo: impl FnOnce(&SharedState)) -> Cenario {
+            sobe_montagem(self, preparo).await
+        }
+    }
+
+    async fn sobe_montagem(m: Montagem, preparo: impl FnOnce(&SharedState)) -> Cenario {
+        let Montagem {
+            roteiro,
+            liberado,
+            dono,
+            reply_in_groups,
+            perfil,
+            provider,
+        } = m;
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, provider) = monta_estado(&dir);
+        let (state, provider) = monta_estado_com(&dir, perfil, provider);
         preparo(&state);
 
         // O `Allowlist` global fica em modo **aberto** de proposito: e o modo em
@@ -1592,6 +2192,12 @@ mod ponta_a_ponta {
             } else {
                 Vec::new()
             },
+            owners: if dono {
+                vec![PEER.to_string()]
+            } else {
+                Vec::new()
+            },
+            reply_in_groups,
             ..LinkedSettings::default()
         };
 
@@ -1909,6 +2515,293 @@ mod ponta_a_ponta {
         assert!(
             c.state.sessions.contains_key(&sid_do_peer()),
             "e o turno roda sob a sessao deste canal"
+        );
+
+        encerra(c).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // O dono num pod isolado (ADR 0024, testes de regressao 1, 4 e 5)
+    // -----------------------------------------------------------------------
+    //
+    // Os quatro cenarios abaixo usam a MESMA fiacao (ponte falsa → sink →
+    // runtime → provider → dispatch de ferramenta) e variam so o que o ADR
+    // diz que decide: perfil de execucao, `owners`, e conversa 1:1 × grupo.
+    // O provider pede `filesystem__write_file` na primeira rodada em todos
+    // eles, sem olhar a lista que viu — e o espiao conta se ela rodou.
+
+    type Contador = Arc<std::sync::atomic::AtomicUsize>;
+
+    fn contador() -> Contador {
+        Arc::new(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    fn rodou(c: &Contador) -> usize {
+        c.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// O gancho de preparo que registra o espiao como ferramenta do servidor
+    /// `filesystem` — ANTES de `serve` subir, como sempre.
+    fn registra_espia(chamadas: &Contador) -> impl FnOnce(&SharedState) {
+        let chamadas = Arc::clone(chamadas);
+        move |state: &SharedState| {
+            state.agents.replace_mcp_tools(
+                "filesystem",
+                vec![Box::new(ToolEspia {
+                    nome: ESCRITA_MCP,
+                    chamadas,
+                })],
+            );
+        }
+    }
+
+    fn pedido_de_escrita() -> ProviderDeStub {
+        ProviderDeStub::que_pede(
+            ESCRITA_MCP,
+            serde_json::json!({ "path": "nota.txt", "content": "oi" }),
+        )
+    }
+
+    /// A resposta do agente saiu pela ponte: no `serve-echo` a fixture a
+    /// ecoa de volta, entao "chegou uma segunda mensagem" e a prova.
+    async fn resposta_saiu(c: &Cenario) -> bool {
+        ate(|| {
+            recebidas(c).iter().any(|m| {
+                m.text
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("echo: resposta("))
+            })
+        })
+        .await
+    }
+
+    /// **(a) O dono, no pod, escreve — com a fiacao real.** `isolated-pod`
+    /// no `AppConfig`, `PEER` so em `owners` (e NAO em `allow`: dono e
+    /// admitido por ser dono), o modelo pede `filesystem__write_file`, e a
+    /// ferramenta RODA. E a promessa da #1329, e este teste e o unico lugar
+    /// em que ela e observada de ponta a ponta.
+    ///
+    /// Os tres gemeos negativos vem em seguida: tirar o dono de `owners`
+    /// (b), voltar o perfil para `standard` (c) ou mandar do grupo (d) —
+    /// cada um sozinho — deixa o espiao em zero.
+    #[tokio::test]
+    async fn dono_em_isolated_pod_roda_ferramenta_mcp_pela_fiacao_real() {
+        let chamadas = contador();
+        let c = Montagem {
+            dono: true,
+            perfil: ExecutionProfile::IsolatedPod,
+            provider: pedido_de_escrita(),
+            ..Montagem::default()
+        }
+        .sobe(registra_espia(&chamadas))
+        .await;
+        semeia(&c, "escreve a nota").await;
+
+        assert!(
+            resposta_saiu(&c).await,
+            "a resposta tem de sair: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(
+            rodou(&chamadas),
+            1,
+            "o dono em isolated-pod roda a ferramenta MCP de escrita — uma vez, porque o \
+             pedido e consumido na primeira rodada"
+        );
+        let t = turnos(&c.provider);
+        assert!(
+            t.len() >= 2,
+            "duas rodadas: o pedido e a resposta ao resultado"
+        );
+        assert!(
+            t[0].ferramentas.iter().any(|f| f == ESCRITA_MCP),
+            "e o modelo VE a ferramenta: o piso do dono e `code`, sem whitelist: {:?}",
+            t[0].ferramentas
+        );
+        assert!(
+            t[0].ferramentas.iter().any(|f| f == "bash"),
+            "poder total dentro do pod inclui `bash`: {:?}",
+            t[0].ferramentas
+        );
+        assert!(
+            t[1].texto_do_usuario.contains("escrito"),
+            "a segunda rodada recebe o resultado da execucao, nao uma recusa: {:?}",
+            t[1]
+        );
+        assert!(c.state.sessions.contains_key(&sid_do_peer()));
+
+        encerra(c).await;
+    }
+
+    /// **(b) Admitido pelo `allow`, mas nao dono — no mesmo pod.** A unica
+    /// diferenca para (a) e `owners` vazio. O turno roda, a resposta sai, e
+    /// a ferramenta pedida pelo modelo NAO roda: o piso do nao-dono e o de
+    /// `standard` (`search`), que a nega por nome nas duas camadas do
+    /// `ToolGate` — na lista que o modelo ve e no dispatch.
+    #[tokio::test]
+    async fn admitido_sem_ser_dono_em_isolated_pod_nao_roda_ferramenta_mcp() {
+        let chamadas = contador();
+        let c = Montagem {
+            liberado: true,
+            dono: false,
+            perfil: ExecutionProfile::IsolatedPod,
+            provider: pedido_de_escrita(),
+            ..Montagem::default()
+        }
+        .sobe(registra_espia(&chamadas))
+        .await;
+        semeia(&c, "escreve a nota").await;
+
+        assert!(
+            resposta_saiu(&c).await,
+            "a resposta tem de sair: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(
+            rodou(&chamadas),
+            0,
+            "sem estar em `owners`, isolated-pod nao muda nada: a escrita MCP e negada"
+        );
+        let t = turnos(&c.provider);
+        assert!(
+            !t[0].ferramentas.iter().any(|f| f == ESCRITA_MCP),
+            "e o modelo nem a ve: {:?}",
+            t[0].ferramentas
+        );
+        assert!(
+            !t[0].ferramentas.iter().any(|f| f == "bash"),
+            "nem `bash`: {:?}",
+            t[0].ferramentas
+        );
+        assert!(
+            t.len() >= 2 && !t[1].texto_do_usuario.contains("escrito"),
+            "a segunda rodada recebe a RECUSA do portao, nao o resultado do espiao: {:?}",
+            t.get(1)
+        );
+
+        encerra(c).await;
+    }
+
+    /// **(c) Dono declarado, mas o processo esta em `standard`.** `owners`
+    /// sem `isolated-pod` e so admissao: o piso continua `search` e a
+    /// escrita MCP e negada. E o que o `config check` avisa ("owners so tem
+    /// efeito em isolated-pod"), provado onde importa.
+    #[tokio::test]
+    async fn dono_declarado_em_standard_nao_roda_ferramenta_mcp() {
+        let chamadas = contador();
+        let c = Montagem {
+            dono: true,
+            perfil: ExecutionProfile::Standard,
+            provider: pedido_de_escrita(),
+            ..Montagem::default()
+        }
+        .sobe(registra_espia(&chamadas))
+        .await;
+        semeia(&c, "escreve a nota").await;
+
+        assert!(
+            resposta_saiu(&c).await,
+            "o dono e admitido (responde) mesmo em standard: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(
+            rodou(&chamadas),
+            0,
+            "`owners` em standard nao confere poder: a escrita MCP e negada"
+        );
+        assert!(
+            !turnos(&c.provider)[0]
+                .ferramentas
+                .iter()
+                .any(|f| f == ESCRITA_MCP || f == "bash"),
+            "o piso e o de sempre: {:?}",
+            turnos(&c.provider)[0].ferramentas
+        );
+
+        encerra(c).await;
+    }
+
+    /// **(d) O dono, no pod, mas falando por um grupo.** `reply_in_groups`
+    /// ligado, `isolated-pod`, `PEER` em `owners` — e a mensagem vem de um
+    /// JID `@g.us` com `PEER` como participante. O grupo inteiro le a
+    /// resposta, entao o grupo nunca herda o perfil completo: o turno roda
+    /// no piso `search` e a escrita MCP e negada.
+    ///
+    /// A fixture nao empurra mensagem de grupo, entao a mensagem entra pelo
+    /// `InboundSink::deliver` do sink real (o mesmo ponto em que o driver a
+    /// entregaria), com a ponte falsa de pe para a resposta ter por onde
+    /// sair. O eco vem marcado `from_me` para nao virar outro turno. E, para
+    /// a ausencia nao ser vacua, o mesmo caminho entrega em seguida uma
+    /// mensagem 1:1 do dono — e ai a ferramenta roda.
+    #[tokio::test]
+    async fn dono_em_grupo_no_isolated_pod_fica_no_piso_padrao() {
+        let chamadas = contador();
+        let c = Montagem {
+            roteiro: Roteiro::eco().da_propria_conta(),
+            dono: true,
+            reply_in_groups: true,
+            perfil: ExecutionProfile::IsolatedPod,
+            provider: pedido_de_escrita(),
+            ..Montagem::default()
+        }
+        .sobe(registra_espia(&chamadas))
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe para a resposta ter por onde sair"
+        );
+
+        const GRUPO: &str = "120363000000000001@g.us";
+        let mut do_grupo = msg(Some("escreve a nota"));
+        do_grupo.chat_jid = Jid::new(GRUPO);
+        do_grupo.is_group = true;
+        InboundSink::deliver(&*c.espiao, do_grupo);
+
+        assert!(
+            ate(|| !turnos(&c.provider).is_empty()).await,
+            "com `reply_in_groups`, a mensagem do grupo vira turno"
+        );
+        assert!(
+            ate(|| recebidas(&c).iter().any(|m| m.from_me
+                && m.text
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("echo: resposta("))))
+            .await,
+            "e a resposta sai pela ponte: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(
+            rodou(&chamadas),
+            0,
+            "dono em grupo NAO herda o perfil completo: a escrita MCP e negada"
+        );
+        assert!(
+            !turnos(&c.provider)[0]
+                .ferramentas
+                .iter()
+                .any(|f| f == ESCRITA_MCP || f == "bash"),
+            "o modelo ve o piso `search`: {:?}",
+            turnos(&c.provider)[0].ferramentas
+        );
+        assert!(
+            c.state
+                .sessions
+                .contains_key(&format!("whatsapp-linked-{GRUPO}")),
+            "o turno do grupo roda sob a sessao do grupo"
+        );
+
+        // O controle: o mesmo dono, pelo mesmo caminho, em conversa 1:1 —
+        // agora a ferramenta roda. Sem isto, "zero no grupo" passaria tambem
+        // se o caminho de entrega deste teste fosse incapaz de rodar qualquer
+        // ferramenta.
+        c.provider.rearma(
+            ESCRITA_MCP,
+            serde_json::json!({ "path": "nota.txt", "content": "oi" }),
+        );
+        InboundSink::deliver(&*c.espiao, msg(Some("escreve a nota")));
+        assert!(
+            ate(|| rodou(&chamadas) == 1).await,
+            "controle: o mesmo dono em 1:1 roda a ferramenta pelo mesmo caminho"
         );
 
         encerra(c).await;
