@@ -171,7 +171,7 @@ pub struct AgentCoordinator {
     /// O wiring de produção da #1227 já chegou, mas **por fora deste trait**:
     /// a subida do gateway/CLI chama `log_interrupted_runs` (slice 1) e o
     /// scheduler (`execute_scheduled_task`) grava cada execução agendada em
-    /// `agent_runs` com `mode = "heartbeat"` (slice 2), ambos direto no
+    /// `agent_runs` com `mode = "heartbeat"` (slice 1), ambos direto no
     /// `SessionStore`. O que segue sem chamador de produção é **este**
     /// campo: nenhum caminho de gateway/CLI constrói um `AgentCoordinator`
     /// hoje, então `with_ledger` só é exercitado em teste.
@@ -185,7 +185,7 @@ pub struct AgentCoordinator {
 /// `agent_runs` (`garraia-db`, `DbRunLedger`) existe, é testado e aceita o
 /// `Arc<tokio::sync::Mutex<SessionStore>>` que o gateway já guarda em
 /// `AppState`, mas segue sem chamador de produção: a tabela hoje é povoada
-/// pelo scheduler do gateway (#1227 slice 2), que chama
+/// pelo scheduler do gateway (#1227 slice 1), que chama
 /// `start_agent_run`/`finish_agent_run` direto no `SessionStore` sem passar
 /// por este trait.
 ///
@@ -239,7 +239,7 @@ impl RunLedger for NoopLedger {
 /// `std::sync::Mutex`, tipo incompatível, e o wiring era impossível. Continua
 /// sem chamador de produção: nenhum caminho do gateway/CLI constrói um
 /// `AgentCoordinator` hoje, então `with_ledger` só é chamado em teste. Quem
-/// povoa `agent_runs` em produção é o scheduler do gateway (#1227 slice 2),
+/// povoa `agent_runs` em produção é o scheduler do gateway (#1227 slice 1),
 /// por chamada direta ao `SessionStore` — o `garra runs list` (slice 4) lê
 /// exatamente essas linhas.
 ///

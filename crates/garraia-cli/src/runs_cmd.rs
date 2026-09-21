@@ -7,11 +7,15 @@
 //! pede que nada esteja rodando. E o que o torna util justamente depois de
 //! uma queda, quando a pergunta e "o que estava em voo?".
 //!
-//! Ele e **somente leitura**. Em particular, ele nao marca run `running`
-//! orfao como `interrupted`: essa conversao e do hook de subida
-//! (`garraia_db::agent_runs::log_interrupted_runs`, slice 1), que roda no
-//! boot do gateway e na abertura do store pelo `chat`. Uma listagem que
-//! escrevesse mudaria o que ela mesma esta reportando.
+//! **Ele nao cria o arquivo.** Numa instalacao que nunca rodou nada, `garra
+//! runs list` sai 0 dizendo que nao ha ledger e deixa o disco como estava —
+//! ha teste afirmando a ausencia do `sessions.db` depois da listagem. E o
+//! que "somente leitura" quer dizer aqui, em forma falsificavel. Na mesma
+//! linha, ele nao marca run `running` orfao como `interrupted`: essa
+//! conversao e do hook de subida (`garraia_db::agent_runs::
+//! log_interrupted_runs`, slice 1), que roda no boot do gateway e na
+//! abertura do store pelo `chat`. Uma listagem que escrevesse mudaria o que
+//! ela mesma esta reportando.
 //!
 //! # Codigos de saida (sysexits, iguais aos do `garra memory`)
 //!
@@ -21,11 +25,23 @@
 //!
 //! # Sobre conteudo
 //!
-//! `agent_runs.goal` e o payload da tarefa do proprio operador. Ele sai por
-//! `stdout`, no terminal de quem pediu a listagem — e **nunca** por log
-//! estruturado. A regra do projeto (CLAUDE.md §6) e sobre log, e o hook de
-//! subida ja a respeita registrando so ids. Este modulo nao emite uma linha
-//! de log de proposito, e ha teste varrendo o fonte atras de uma.
+//! `agent_runs.goal` **nao** e texto de confianca. Quem grava a coluna e o
+//! `ledger_inicia_run_agendado` do gateway, com o `payload` da tarefa
+//! agendada — e esse payload pode ter nascido de uma tool call de LLM
+//! disparada por qualquer usuario de canal. Como a listagem escreve direto
+//! no terminal do operador, todo campo da saida humana passa por
+//! [`sanitize_control_chars`]: sem isso um `goal` com `\x1b[2K` limparia a
+//! linha, escondendo os runs vizinhos de quem esta justamente investigando
+//! uma queda.
+//!
+//! Esse conteudo sai por `stdout`, no terminal de quem pediu a listagem — e
+//! **nunca** por log estruturado. A regra do projeto (CLAUDE.md §6) e sobre
+//! log, e o hook de subida ja a respeita registrando so ids. Este modulo nao
+//! emite uma linha de log de proposito, e ha teste varrendo o fonte atras de
+//! uma. Os dois trechos de provider (`result_snippet`/`error_snippet`) saem
+//! so no `--json`, e ainda assim redigidos por
+//! `crate::ask::sanitize_provider_error`: corpo de erro de provider ja
+//! chegou com chave de API dentro.
 
 use std::path::{Path, PathBuf};
 
@@ -88,7 +104,10 @@ fn open_store(config: &AppConfig) -> Opened {
 
 fn report_no_store(path: &Path) {
     println!("Nenhum run registrado: {} nao existe.", path.display());
-    println!("O ledger e criado quando o gateway sobe (`garra start`) ou na primeira conversa.");
+    println!(
+        "O ledger e criado quando o gateway sobe (`garra start`) ou quando o `garra chat`\n\
+         roda com `--persist` ou `--resume` — uma conversa sem essas flags nao grava nada."
+    );
 }
 
 /// Le o `--status` do operador.
@@ -133,19 +152,54 @@ pub(crate) fn iso8601_utc(bruto: &str) -> String {
     t.to_string()
 }
 
+/// Troca todo caractere de controle pelo caractere de substituicao Unicode.
+///
+/// A saida humana vai para um terminal, e terminal interpreta o que recebe:
+/// um `\x1b[2K` embutido num `goal` apaga a linha impressa, um `\r` reescreve
+/// por cima da anterior. Como o `goal` pode vir de uma tool call de LLM (ver
+/// o doc do modulo), o campo e dado hostil ate prova em contrario — e a prova
+/// aqui e trocar a classe inteira, nao uma lista de sequencias conhecidas.
+///
+/// Mapeia 1 caractere para 1 caractere, entao nao mexe em contagem nem em
+/// limite de caractere de quem chama.
+pub(crate) fn sanitize_control_chars(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
 /// Corta o texto para caber numa linha, respeitando limites de caractere.
+///
+/// A quebra de linha vira espaco antes da higienizacao: `goal` multilinha e
+/// texto legitimo, e dobra-lo numa linha le melhor que uma fileira de `�`.
+/// O resto dos controles nao tem leitura benigna e cai no sanitizador.
 pub(crate) fn preview(texto: &str, max_chars: usize) -> String {
     let mut out: String = texto.chars().take(max_chars).collect();
     if out.chars().count() < texto.chars().count() {
         out.push('…');
     }
-    out.replace('\n', " ")
+    sanitize_control_chars(&out.replace('\n', " "))
 }
 
 /// Um run em JSON. Contrato estavel de chaves — quem pediu `--json` esta
 /// scriptando. Os dois instantes saem normalizados com `Z`; o `serde` do
 /// `AgentRunRow` devolveria a string crua do SQLite, sem fuso.
+///
+/// Os dois trechos de desfecho passam por `sanitize_provider_error`: o
+/// `error_snippet` guarda corpo de erro de provider, e corpo de erro de
+/// provider ja veio com `sk-or-v1-…` ecoado dentro. Redigir na leitura e
+/// barato e vale mesmo para o ledger local — `--json` existe para ser
+/// canalizado para outro lugar.
+///
+/// Controle de terminal **nao** e tratado aqui de proposito: a RFC 8259
+/// exige que `serde_json` escape C0 (U+0000-U+001F, o que cobre ESC e CR)
+/// como `\u00XX`, entao a saida `--json` nunca carrega esses bytes crus.
+/// C1 (U+0080-U+009F) nao e coberto pela spec e sai como UTF-8 normal, mas
+/// so importa se alguem despejar o JSON cru direto num terminal em vez de
+/// canaliza-lo para `jq` ou um arquivo. Higienizar de novo so criaria um
+/// segundo comportamento para manter.
 pub(crate) fn run_json(run: &AgentRunRow) -> serde_json::Value {
+    let redigir = |s: &String| crate::ask::sanitize_provider_error(s);
     serde_json::json!({
         "id": run.id,
         "session_id": run.session_id,
@@ -154,8 +208,8 @@ pub(crate) fn run_json(run: &AgentRunRow) -> serde_json::Value {
         "goal": run.goal,
         "started_at": iso8601_utc(&run.started_at),
         "finished_at": run.finished_at.as_deref().map(iso8601_utc),
-        "result_snippet": run.result_snippet,
-        "error_snippet": run.error_snippet,
+        "result_snippet": run.result_snippet.as_ref().map(redigir),
+        "error_snippet": run.error_snippet.as_ref().map(redigir),
     })
 }
 
@@ -164,22 +218,30 @@ pub(crate) fn run_json(run: &AgentRunRow) -> serde_json::Value {
 /// O objetivo vai na **segunda** linha, e nao no fim da primeira, porque ele
 /// e truncado: pendurar campo de tamanho fixo depois de um texto cortado
 /// embaralha os dois.
+///
+/// O `session_id` **nao** aparece na saida humana. Ele sai inteiro no
+/// `--json`, que e por onde alguem correlaciona runs com sessoes de verdade;
+/// na linha de terminal ele so ocupava largura e ainda fazia o `println!`
+/// cair no `rust/cleartext-logging` do CodeQL (alerta #175). Tirar o campo
+/// resolve os dois de uma vez, sem mexer no ledger de supressoes.
+///
+/// Todo campo passa por [`sanitize_control_chars`] — `id` e `mode` tambem,
+/// nao so o `goal`: sao colunas do mesmo banco, e um leitor nao deve
+/// precisar saber qual delas o gateway preencheu.
 pub(crate) fn run_line(run: &AgentRunRow) -> String {
     let fim = match &run.finished_at {
         Some(f) => iso8601_utc(f),
         // Largura da coluna do instante, para as linhas nao dancarem.
         None => "—                   ".to_string(),
     };
-    let sessao = run.session_id.as_deref().unwrap_or("—");
-    let modo = run.mode.as_deref().unwrap_or("—");
+    let modo = sanitize_control_chars(run.mode.as_deref().unwrap_or("—"));
     format!(
-        "{:<11}  {}  {}  {:<10}  {}  [sessao {}]\n    {}",
+        "{:<11}  {}  {}  {:<10}  {}\n    {}",
         run.status.as_str(),
         iso8601_utc(&run.started_at),
         fim,
         modo,
-        run.id,
-        sessao,
+        sanitize_control_chars(&run.id),
         preview(&run.goal, GOAL_PREVIEW_CHARS),
     )
 }
@@ -331,6 +393,78 @@ mod tests {
         assert_eq!(preview("coração de leão", 7), "coração…");
         assert_eq!(preview("curto", 40), "curto");
         assert_eq!(preview("uma\nlinha", 40), "uma linha");
+    }
+
+    /// `goal` pode vir de tool call de LLM, e a linha humana vai direto para
+    /// o terminal do operador: nenhum byte de controle pode sobreviver ao
+    /// caminho. O payload de ataque aqui limparia a linha (`\x1b[2K`) e
+    /// voltaria o cursor (`\r`), escondendo os runs vizinhos.
+    #[test]
+    fn controle_de_terminal_nao_sobrevive_a_saida_humana() {
+        let hostil = "\x1b[31mred\r\x1b[2K";
+
+        let limpo = sanitize_control_chars(hostil);
+        assert!(!limpo.contains('\x1b'), "ESC cru sobreviveu: {limpo:?}");
+        assert!(!limpo.contains('\r'), "CR cru sobreviveu: {limpo:?}");
+        assert_eq!(limpo, "\u{FFFD}[31mred\u{FFFD}\u{FFFD}[2K");
+        // Texto legitimo, incluindo acento, atravessa intacto.
+        assert_eq!(sanitize_control_chars("coração"), "coração");
+
+        // E o mesmo vale pela linha inteira, nao so pela funcao solta:
+        // `goal`, `id` e `mode` sao todos campos do banco.
+        let run = AgentRunRow {
+            id: format!("run{hostil}"),
+            session_id: Some("s-1".to_string()),
+            goal: format!("objetivo {hostil}"),
+            mode: Some(format!("modo{hostil}")),
+            status: RunStatus::Done,
+            started_at: "2026-09-21 12:34:56".to_string(),
+            finished_at: None,
+            result_snippet: None,
+            error_snippet: None,
+        };
+        let linha = run_line(&run);
+        assert!(!linha.contains('\x1b'), "ESC cru na linha: {linha:?}");
+        assert!(!linha.contains('\r'), "CR cru na linha: {linha:?}");
+        assert!(linha.contains('\u{FFFD}'), "{linha:?}");
+        // A quebra que separa cabecalho de objetivo continua sendo a unica.
+        assert_eq!(linha.matches('\n').count(), 1, "{linha:?}");
+    }
+
+    /// `error_snippet` guarda corpo de erro de provider, que ja chegou com
+    /// chave de API ecoada dentro. O `--json` e feito para ser canalizado
+    /// para outro lugar, entao a redacao acontece na leitura.
+    #[test]
+    fn json_redige_chave_de_api_nos_trechos_de_provider() {
+        let run = AgentRunRow {
+            id: "run-1".to_string(),
+            session_id: None,
+            goal: "rodar o build".to_string(),
+            mode: None,
+            status: RunStatus::Error,
+            started_at: "2026-09-21 12:34:56".to_string(),
+            finished_at: Some("2026-09-21 12:35:10".to_string()),
+            result_snippet: Some("chave sk-or-v1-abc123def456 no resultado".to_string()),
+            error_snippet: Some("401 from sk-or-v1-abc123def456".to_string()),
+        };
+
+        let texto = serde_json::to_string(&run_json(&run)).expect("serializa");
+        assert!(!texto.contains("abc123def456"), "{texto}");
+        assert!(texto.contains("[REDACTED]"), "{texto}");
+        // Os dois campos, nao so o erro.
+        for chave in ["result_snippet", "error_snippet"] {
+            let v = run_json(&run)[chave].as_str().map(str::to_string);
+            let v = v.unwrap_or_else(|| panic!("`{chave}` e texto"));
+            assert!(v.contains("[REDACTED]"), "{chave}: {v}");
+        }
+
+        // Ausente continua ausente — a redacao nao inventa string vazia.
+        let vazio = AgentRunRow {
+            result_snippet: None,
+            error_snippet: None,
+            ..run
+        };
+        assert!(run_json(&vazio)["error_snippet"].is_null());
     }
 
     /// `AppConfig` minima apontando o `data_dir` para um diretorio de teste.
@@ -531,7 +665,12 @@ mod tests {
         assert!(linha.contains("2026-09-21T12:35:10Z"), "{linha}");
         assert!(linha.contains("heartbeat"), "{linha}");
         assert!(linha.contains("run-1"), "{linha}");
-        assert!(linha.contains("s-1"), "{linha}");
+
+        // O `session_id` saiu da linha humana (CodeQL #175): quem precisa
+        // dele usa `--json`, e e la que o teste de contrato o cobra.
+        assert!(!linha.contains("sessao"), "{linha}");
+        assert!(!linha.contains("s-1"), "{linha}");
+        assert_eq!(run_json(&run)["session_id"], "s-1");
 
         // Run aberto: sem instante de fim, e sem mentir um.
         let aberto = AgentRunRow {
