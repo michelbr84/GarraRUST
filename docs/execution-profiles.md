@@ -119,8 +119,10 @@ humano para confirmar comando. Nelas o `bash`:
 A mesma regra vale para toda tool que executa codigo controlado pelo
 repositorio. Hoje isso e o `run_tests` do gateway: ele roda o `scripts.test`
 do `package.json`, o `build.rs` e o `conftest.py`, que o `file_write`
-consegue escrever. Em `standard` sem sandbox ele nao e registrado; em
-`isolated-pod` explicito roda no host do pod.
+consegue escrever. Em `standard` ele so e registrado quando o sandbox
+docker/podman o cobre (`mode: all` sem ele em `elevated`, ou `allowlist` com
+`run_tests`); sem isso fica de fora. Em `isolated-pod` explicito roda no host
+do pod.
 
 O boot avisa uma vez quando o `bash` fica de fora, o `/api/diagnostics`
 mostra o check `tools.bash` com o passo, e o modelo e avisado no system prompt

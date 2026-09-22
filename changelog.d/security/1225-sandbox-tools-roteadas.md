@@ -6,5 +6,10 @@
   `bash` (sem backend, binario ausente, fora de unix, imagem com `-`, mount
   invalido) e mais uma: `backend: ssh` e recusado para elas, porque o host
   remoto nao tem o diretorio de trabalho. No timeout o container e removido
-  (`rm -f garra-sbx-<uuid>`). O `ssh` + container remoto fica como won't-do:
+  (`rm -f garra-sbx-<uuid>`), e o `bash` sandboxado passa a fazer o mesmo
+  (antes o container dele seguia rodando depois do timeout, com o workdir
+  montado rw). O `working_dir` que o modelo passa ao `run_tests` fica no jail
+  das file tools antes de virar o mount do container, e no gateway o
+  `run_tests` so existe em `standard` quando o sandbox docker/podman o cobre
+  (#1272). O `ssh` + container remoto fica como won't-do:
   `backend: docker` com um `docker context` `ssh://` ja entrega isso.
