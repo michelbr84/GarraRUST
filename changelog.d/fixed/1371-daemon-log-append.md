@@ -1,7 +1,7 @@
 - **`garraia start -d` deixa de apagar o `garraia.log` a cada start e de
-  rasgar a cabeca dele.** O daemon abria o log com `File::create`, que
-  trunca, e sem `O_APPEND`. Com isso cada start do daemon apagava o log da
-  execucao anterior, justo o que se quer ler ao reiniciar depois de uma
+  rasgar a cabeca dele (#1371).** O daemon abria o log com `File::create`,
+  que trunca, e sem `O_APPEND`. Com isso cada start do daemon apagava o log
+  da execucao anterior, justo o que se quer ler ao reiniciar depois de uma
   queda. E esse descritor vira stdout e stderr do daemon pelo `dup2`, entao
   tudo que escrevia cru nele (a mensagem de um panic, um `eprintln!`, um
   filho com o stderr herdado) caia no offset proprio do descritor, que
