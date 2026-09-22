@@ -12,7 +12,9 @@ pub use credentials::{
 };
 pub use pairing::{ClaimLimits, ClaimOutcome, GenerateStatus, PairingManager};
 pub use random::{RandomError, random_bytes};
-pub use redaction::{RedactingMakeWriter, RedactingWriter, redact_secrets};
+pub use redaction::{
+    RedactingMakeWriter, RedactingWriter, mascarar_numeros_longos, redact_secrets,
+};
 pub use validation::InputValidator;
 
 pub mod injection;

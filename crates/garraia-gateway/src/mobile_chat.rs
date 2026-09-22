@@ -155,9 +155,16 @@ pub async fn chat(
             None,           // model: use default
             Some(&persona), // Garra personality system prompt
             None,           // max_tokens: use default
-            &state
-                .exec_context_for_msg(&session_id, Some(&user_id), Some(&req.message))
-                .await,
+            // #1343: quem aprova o pedido pausado e o `sub` do JWT — a mesma
+            // identidade que ja deriva a sessao (`mobile_session_id`).
+            &crate::approval_scope::com_escopo(
+                state
+                    .exec_context_for_msg(&session_id, Some(&user_id), Some(&req.message))
+                    .await,
+                crate::approval_scope::CANAL_MOBILE,
+                &session_id,
+                &user_id,
+            ),
         )
         .await;
 

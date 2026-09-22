@@ -1310,11 +1310,21 @@ impl GatewaySink {
             .await;
         let history: Vec<ChatMessage> = state.session_history(&sid);
         let continuity_key = state.continuity_key();
-        let exec = piso_somente_leitura(
-            state
-                .exec_context_for_msg(&sid, Some(&remetente), Some(&texto))
-                .await,
-            &modo_do_piso,
+        // #1343: o pedido de confirmacao que pausar este turno so pode ser
+        // aprovado pelo MESMO remetente, na mesma conversa. Em grupo a sessao
+        // e do grupo (`session_id` usa o `chat_jid`), e o remetente e quem
+        // falou: o "sim" de outro membro nao aprova e ainda encerra o pedido
+        // (fail-closed). O escopo entra DEPOIS do piso, que nao o toca.
+        let exec = crate::approval_scope::com_escopo(
+            piso_somente_leitura(
+                state
+                    .exec_context_for_msg(&sid, Some(&remetente), Some(&texto))
+                    .await,
+                &modo_do_piso,
+            ),
+            CONFIG_KEY,
+            &sid,
+            &remetente,
         );
 
         let resposta = state

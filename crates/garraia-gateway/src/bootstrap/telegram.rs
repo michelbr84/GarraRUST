@@ -115,9 +115,14 @@ pub fn build_telegram_voice_handler(state: &SharedState) -> Option<OnVoiceFn> {
                         None,
                         None,
                         None,
-                        &state
-                            .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
-                            .await,
+                        &crate::approval_scope::com_escopo(
+                            state
+                                .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
+                                .await,
+                            "telegram",
+                            &session_id,
+                            &user_id,
+                        ),
                     )
                     .await
                     .map_err(|e| {
@@ -319,9 +324,18 @@ pub fn build_telegram_channels(
                                 model_override.as_deref(),
                                 None,
                                 None,
-                                &state
-                                    .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
-                                    .await,
+                                &crate::approval_scope::com_escopo(
+                                    state
+                                        .exec_context_for_msg(
+                                            &session_id,
+                                            Some(&user_id),
+                                            Some(&text),
+                                        )
+                                        .await,
+                                    "telegram",
+                                    &session_id,
+                                    &user_id,
+                                ),
                             )
                             .await
                     } else {
@@ -337,9 +351,18 @@ pub fn build_telegram_channels(
                                 model_override.as_deref(),
                                 None,
                                 None,
-                                &state
-                                    .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
-                                    .await,
+                                &crate::approval_scope::com_escopo(
+                                    state
+                                        .exec_context_for_msg(
+                                            &session_id,
+                                            Some(&user_id),
+                                            Some(&text),
+                                        )
+                                        .await,
+                                    "telegram",
+                                    &session_id,
+                                    &user_id,
+                                ),
                             )
                             .await
                     }

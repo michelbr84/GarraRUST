@@ -16,7 +16,8 @@ impl RedactingWriter<std::io::Stderr> {
 impl<W: std::io::Write> std::io::Write for RedactingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let original = String::from_utf8_lossy(buf);
-        let redacted = redact_secrets(&original);
+        let sem_segredo = redact_secrets(&original);
+        let redacted = mascarar_numeros_longos(&sem_segredo);
         self.inner.write_all(redacted.as_bytes())?;
         Ok(buf.len())
     }
@@ -108,9 +109,170 @@ pub fn redact_secrets(input: &str) -> String {
     PATTERNS.replace_all(input, "[REDACTED]").into_owned()
 }
 
+/// Menor sequencia de digitos que o log trata como identificador de pessoa.
+///
+/// Telefone E.164 tem de 8 a 15 digitos, mas os de 8-9 se confundem com
+/// contagem, porta e tamanho de arquivo; a partir de 10 ja sao celular com DDD
+/// (Brasil), numero com codigo do pais, LID do WhatsApp, id de chat do
+/// Telegram ou snowflake do Discord — todos identificam uma pessoa.
+const DIGITOS_DE_IDENTIFICADOR: usize = 10;
+
+/// A sequencia `inicio..fim` e um grupo de um UUID (`8-4-4-4-12` hexa)? O id
+/// de sessao do Telegram e da web e UUID, e o ultimo grupo sai so com digitos
+/// de vez em quando; mascara-lo esconderia a sessao sem proteger ninguem.
+fn parte_de_uuid(bytes: &[u8], inicio: usize, fim: usize) -> bool {
+    let do_token = |b: u8| b.is_ascii_hexdigit() || b == b'-';
+    let mut a = inicio;
+    while a > 0 && do_token(bytes[a - 1]) {
+        a -= 1;
+    }
+    let mut z = fim;
+    while z < bytes.len() && do_token(bytes[z]) {
+        z += 1;
+    }
+    // O token pode trazer hexa colado antes (`linked-` termina em `ed-`):
+    // procura um UUID de 36 bytes que contenha a sequencia.
+    (a..=inicio).any(|ini| {
+        let fim_uuid = ini + 36;
+        fim_uuid <= z
+            && fim_uuid >= fim
+            && bytes[ini..fim_uuid]
+                .iter()
+                .enumerate()
+                .all(|(k, b)| match k {
+                    8 | 13 | 18 | 23 => *b == b'-',
+                    _ => b.is_ascii_hexdigit(),
+                })
+    })
+}
+
+/// Mascara, no texto que vai para o log, toda sequencia de pelo menos
+/// [`DIGITOS_DE_IDENTIFICADOR`] digitos que nao esteja colada a letra ou a
+/// outro digito, deixando so os 4 ultimos (`…4321`).
+///
+/// Existe porque o id de sessao carrega o remetente em varios canais —
+/// `whatsapp-linked-<jid>`, `whatsapp-<telefone>`, `signal-<telefone>` — e os
+/// spans do `AgentRuntime` gravam `session_id` em todo evento do turno. O canal
+/// `whatsapp_linked` ja so loga `phone_last4` por conta propria, mas o span do
+/// runtime passava o numero inteiro por baixo (achado da revisao da #1343).
+/// Mascarar aqui, no writer, cobre todo call site de uma vez, inclusive os
+/// que ainda nao existem.
+///
+/// "Colada a letra" fica de fora de proposito: um hash hexadecimal
+/// (`a3f1234567890b`) nao e telefone, e mascarar pedaco dele so atrapalharia
+/// quem depura. Um `+` antes do numero entra na mascara. Nao e usado no
+/// `redact_secrets`: la o texto e resultado de ferramenta, onde numero longo e
+/// conteudo legitimo.
+pub fn mascarar_numeros_longos(input: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = input.as_bytes();
+    let mut saida: Option<String> = None;
+    let mut copiado = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let inicio = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let fim = i;
+        let colado_antes = inicio > 0 && bytes[inicio - 1].is_ascii_alphabetic();
+        let colado_depois = fim < bytes.len() && bytes[fim].is_ascii_alphabetic();
+        if fim - inicio < DIGITOS_DE_IDENTIFICADOR
+            || colado_antes
+            || colado_depois
+            || parte_de_uuid(bytes, inicio, fim)
+        {
+            continue;
+        }
+        let corte = if inicio > 0 && bytes[inicio - 1] == b'+' {
+            inicio - 1
+        } else {
+            inicio
+        };
+        let texto = saida.get_or_insert_with(|| String::with_capacity(input.len()));
+        // `corte`, `inicio` e `fim` caem em fronteira de byte ASCII, entao
+        // sao fronteira de char: o fatiamento nao pode entrar num UTF-8.
+        texto.push_str(&input[copiado..corte]);
+        texto.push('\u{2026}');
+        texto.push_str(&input[fim - 4..fim]);
+        copiado = fim;
+    }
+    match saida {
+        None => std::borrow::Cow::Borrowed(input),
+        Some(mut texto) => {
+            texto.push_str(&input[copiado..]);
+            std::borrow::Cow::Owned(texto)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mascara_telefone_jid_e_lid_e_deixa_os_4_ultimos() {
+        let casos = [
+            (
+                "session_id=whatsapp-linked-5511987654321@s.whatsapp.net",
+                "session_id=whatsapp-linked-\u{2026}4321@s.whatsapp.net",
+            ),
+            (
+                "remetente +5511987654321 pediu",
+                "remetente \u{2026}4321 pediu",
+            ),
+            ("lid 123456789012345@lid", "lid \u{2026}2345@lid"),
+            (
+                "5511999990000:1@s.whatsapp.net",
+                "\u{2026}0000:1@s.whatsapp.net",
+            ),
+            ("signal-+5511912345678 e line", "signal-\u{2026}5678 e line"),
+            (
+                "a 5511987654321 e b 5511912345678",
+                "a \u{2026}4321 e b \u{2026}5678",
+            ),
+        ];
+        for (entrada, esperado) in casos {
+            assert_eq!(mascarar_numeros_longos(entrada), esperado, "{entrada}");
+        }
+    }
+
+    #[test]
+    fn numero_curto_hash_e_texto_comum_passam_intactos() {
+        for intacto in [
+            "porta 3888, 200 OK em 123456789 ns",
+            "sha a3f1234567890b e 1234567890abcdef",
+            "2026-09-22T05:44:36.123456789Z",
+            "uuid 550e8400-e29b-41d4-a716-446655440000",
+            "sem numero nenhum",
+            "acentuação e emoji 🦀 sem digito",
+        ] {
+            assert!(
+                matches!(
+                    mascarar_numeros_longos(intacto),
+                    std::borrow::Cow::Borrowed(_)
+                ),
+                "nao devia mexer em: {intacto}"
+            );
+        }
+    }
+
+    #[test]
+    fn writer_mascara_o_numero_e_redige_o_segredo() {
+        use std::io::Write;
+        let mut w = RedactingWriter { inner: Vec::new() };
+        w.write_all(
+            b"INFO process_message{session_id=whatsapp-5511987654321}: chave sk-abcdefghijklmnopqrstuvwxyz\n",
+        )
+        .expect("write");
+        let saida = String::from_utf8(w.inner).expect("utf8");
+        assert!(!saida.contains("5511987654321"), "{saida}");
+        assert!(saida.contains("whatsapp-\u{2026}4321"), "{saida}");
+        assert!(saida.contains("[REDACTED]"), "{saida}");
+    }
 
     /// #937: o redactor passou a ver comando de ferramenta, entao passou a
     /// precisar dos segredos de terceiro que aparecem ali.

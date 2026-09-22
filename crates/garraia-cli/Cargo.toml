@@ -98,6 +98,9 @@ tls = ["garraia-gateway/tls"]
 
 [dev-dependencies]
 tempfile = "3"
+# #1343 — o teste do `garraia chat` implementa um `LlmProvider` e uma `Tool`
+# de roteiro (traits `#[async_trait]`).
+async-trait = { workspace = true }
 testcontainers = "0.27"
 # #936 — os testes do indicador de atividade usam tempo virtual
 # (`start_paused`) para a janela de aparição de ~270ms ser determinística.

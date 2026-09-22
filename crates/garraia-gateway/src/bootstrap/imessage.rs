@@ -100,9 +100,14 @@ pub fn build_imessage_channels(
                     // definido" e a politica de ferramenta nao valia, so no Telegram
                     // valia. Assimetria silenciosa e pior que ausencia: o usuario
                     // acredita na restricao.
-                    let exec = state
-                        .exec_context_for_msg(&session_id, Some(&sender_id), Some(&text))
-                        .await;
+                    let exec = crate::approval_scope::com_escopo(
+                        state
+                            .exec_context_for_msg(&session_id, Some(&sender_id), Some(&text))
+                            .await,
+                        "imessage",
+                        &session_id,
+                        &sender_id,
+                    );
 
                     let response = state
                         .agents

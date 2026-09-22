@@ -366,6 +366,29 @@ fn open_chat_store(
     Ok(Some(store))
 }
 
+/// Quem aprova, no CLI, um pedido de confirmacao pausado (#1343).
+///
+/// O processo e a fronteira de usuario: quem digita no terminal desta
+/// sessao e o mesmo humano que leu o pedido. O remetente e uma constante, e
+/// o escopo fica preso a `session_id` — `/resume` para outra sessao troca o
+/// escopo, e um restart zera o registro (ele vive em memoria no runtime).
+pub(crate) const REMETENTE_CLI: &str = "local-tty";
+
+/// O canal do CLI no registro de aprovacoes pendentes.
+pub(crate) const CANAL_CLI: &str = "cli";
+
+/// O `ExecContext` de um turno do `garraia chat`.
+///
+/// #980: o diretorio do projeto resolve caminho relativo das ferramentas de
+/// arquivo (**nao e sandbox** — ver `ExecContext::working_dir`). #1343: o
+/// escopo de aprovacao faz o "sim" do turno seguinte rodar o pedido pausado,
+/// uma vez.
+fn exec_do_turno(cwd: &str, session_id: &str) -> ExecContext {
+    let mut exec = ExecContext::with_working_dir(Some(cwd.to_string()));
+    exec.approval_scope = garraia_agents::ApprovalScope::new(CANAL_CLI, session_id, REMETENTE_CLI);
+    exec
+}
+
 /// Grava um turno (pergunta + resposta) no store.
 /// `direction` segue o vocabulario que o gateway ja usa em `persist_turn` —
 /// `"user"` e `"assistant"` —, porque e o que `load_history` e a hidratacao
@@ -2369,7 +2392,7 @@ pub async fn run_chat(
         // de texto e nao pagam nada por isto.
         // Ligado a uma variavel porque o `call` e um future que vive alem
         // desta expressao — um temporario seria descartado antes do `await`.
-        let exec = ExecContext::with_working_dir(Some(cwd.clone()));
+        let exec = exec_do_turno(&cwd, &session_clone);
         let call = runtime.process_message_streaming_with_events(
             &session_clone,
             &input,
@@ -4038,5 +4061,175 @@ mod persist_tests {
         let (id, nova) = id_inicial_da_sessao(None, Some("cli-alvo".into()), "cli-fresh".into());
         assert_eq!(id, "cli-fresh");
         assert!(nova);
+    }
+}
+
+#[cfg(test)]
+mod aprovacao_tests {
+    //! #1343 — o `garraia chat` retoma o pedido de confirmacao no turno
+    //! seguinte. O historico do CLI e texto puro (`MessagePart::Text`), entao
+    //! antes do escopo o "sim" nunca aprovava: a ferramenta perguntava de
+    //! novo para sempre.
+
+    use super::*;
+    use garraia_agents::tools::approval::ApprovalFingerprint;
+    use garraia_agents::{
+        ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+        Tool, ToolContext, ToolOutput,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const TOOL: &str = "apaga_arquivo";
+    const ALVO: &str = "/tmp/garraia-1343-cli";
+
+    struct ApagaArquivo(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for ApagaArquivo {
+        fn name(&self) -> &str {
+            TOOL
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            c: &ToolContext,
+            _i: serde_json::Value,
+        ) -> garraia_common::Result<ToolOutput> {
+            if c.approval.covers(TOOL, ALVO) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                return Ok(ToolOutput::success("apagado"));
+            }
+            let m = ApprovalFingerprint::of(TOOL, ALVO).marker();
+            Ok(ToolOutput::confirmation_request(format!(
+                "Confirma apagar {ALVO}? {m}"
+            )))
+        }
+    }
+
+    /// A cada mensagem humana pede a tool; depois do resultado, texto. Sem
+    /// `stream_complete`: o runtime cai no batch, como com provider local.
+    struct Roteiro;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for Roteiro {
+        fn provider_id(&self) -> &str {
+            "roteiro"
+        }
+        async fn complete(&self, r: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+            let humano = matches!(
+                r.messages.last(),
+                Some(ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text(_),
+                })
+            );
+            let content = if humano {
+                vec![ContentBlock::ToolUse {
+                    id: "t".into(),
+                    name: TOOL.into(),
+                    input: serde_json::json!({ "alvo": ALVO }),
+                }]
+            } else {
+                vec![ContentBlock::Text {
+                    text: "feito".into(),
+                }]
+            };
+            Ok(LlmResponse {
+                content,
+                model: "m".into(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Um turno pelo mesmo ponto de entrada do REPL, com o mesmo
+    /// `exec_do_turno`, e o historico crescendo so com texto.
+    async fn turno(
+        rt: &AgentRuntime,
+        sessao: &str,
+        historico: &mut Vec<ChatMessage>,
+        texto: &str,
+    ) -> String {
+        let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
+        let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let exec = exec_do_turno("/tmp", sessao);
+        let r = rt
+            .process_message_streaming_with_events(
+                sessao, texto, historico, tx, None, None, None, None, None, None, &exec,
+            )
+            .await
+            .expect("turno");
+        dreno.await.expect("dreno");
+        historico.push(ChatMessage {
+            role: ChatRole::User,
+            content: MessagePart::Text(texto.to_string()),
+        });
+        historico.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessagePart::Text(r.clone()),
+        });
+        r
+    }
+
+    #[test]
+    fn exec_do_turno_escopa_canal_sessao_e_o_terminal() {
+        let exec = exec_do_turno("/tmp", "sess-1");
+        let escopo = exec.approval_scope.expect("o CLI opta pelo escopo");
+        assert_eq!(escopo.channel(), CANAL_CLI);
+        assert_eq!(escopo.session_id(), "sess-1");
+        assert_eq!(escopo.sender(), REMETENTE_CLI);
+        assert_eq!(exec.working_dir.as_deref(), Some("/tmp"));
+    }
+
+    #[tokio::test]
+    async fn sim_no_turno_seguinte_roda_uma_vez_e_replay_pausa() {
+        let rt = AgentRuntime::new();
+        let vezes = Arc::new(AtomicUsize::new(0));
+        rt.register_tool(Box::new(ApagaArquivo(Arc::clone(&vezes))));
+        rt.register_provider(Arc::new(Roteiro));
+        let mut h = Vec::new();
+
+        let r1 = turno(&rt, "cli-1343", &mut h, "apaga o arquivo").await;
+        assert!(
+            ApprovalFingerprint::from_marker(&r1).is_some(),
+            "pausa: {r1}"
+        );
+        assert_eq!(vezes.load(Ordering::SeqCst), 0);
+
+        let r2 = turno(&rt, "cli-1343", &mut h, "sim").await;
+        assert!(ApprovalFingerprint::from_marker(&r2).is_none(), "{r2}");
+        assert_eq!(vezes.load(Ordering::SeqCst), 1, "roda uma vez");
+
+        let r3 = turno(&rt, "cli-1343", &mut h, "sim").await;
+        assert!(
+            ApprovalFingerprint::from_marker(&r3).is_some(),
+            "replay pausa: {r3}"
+        );
+        assert_eq!(vezes.load(Ordering::SeqCst), 1, "replay nao roda");
+    }
+
+    /// `/resume` para outra sessao troca o escopo: o pedido da sessao
+    /// anterior nao e aprovado pelo "sim" dado na nova.
+    #[tokio::test]
+    async fn sim_em_outra_sessao_nao_aprova() {
+        let rt = AgentRuntime::new();
+        let vezes = Arc::new(AtomicUsize::new(0));
+        rt.register_tool(Box::new(ApagaArquivo(Arc::clone(&vezes))));
+        rt.register_provider(Arc::new(Roteiro));
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+
+        turno(&rt, "cli-a", &mut a, "apaga o arquivo").await;
+        turno(&rt, "cli-b", &mut b, "sim").await;
+        assert_eq!(vezes.load(Ordering::SeqCst), 0);
     }
 }

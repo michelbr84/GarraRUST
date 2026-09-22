@@ -1003,6 +1003,104 @@ comando — que são proteção contra acidente, não contra um dono hostil. A
 mitigação é a soma das superfícies de observação acima e o nome
 autoexplicativo do perfil.
 
+## 5.16. Aprovação retomada entre turnos — quem pode dizer "sim" (#1343)
+
+O fluxo GAR-187 pausa o turno quando uma ferramenta pede confirmação (`bash`
+arriscado com `agent.tool_confirmation_enabled`, `device_execute` R3/R4,
+`run_tests`) e espera o "sim" no turno seguinte. Até a v0.4.4 a aprovação só
+vinha do histórico (`detect_confirmation_approval`), e todo canal de produção
+guarda e reidrata o histórico como texto: o `ToolResult` pausado nunca
+voltava, e a pausa era terminal. Falhava fechado, mas o humano nunca
+conseguia aprovar.
+
+Desde a v0.4.5 o runtime guarda o pedido pausado em memória
+(`garraia_agents::tools::pending_approval::PendingApprovals`), um por
+`(canal, sessão)`, com o remetente que pode aprovar e a impressão digital
+HMAC do pedido — nunca o assunto cru (o comando do `bash` pode ter segredo).
+Um turno só grava e só lê esse registro quando chega com
+`ExecContext::approval_scope`, montado pelo gateway em
+`crates/garraia-gateway/src/approval_scope.rs` e pela CLI em
+`exec_do_turno` (`garraia chat`). Com escopo, o histórico deixa de ser
+consultado para aprovar.
+
+**O remetente é sempre derivado pelo servidor:**
+
+| Caminho | Canal | Remetente |
+|---|---|---|
+| `/ws` (Web Console) | `web` | nonce da conexão WebSocket, gerado no servidor e nunca enviado ao cliente |
+| `/ws/parrot` (desktop) | `parrot` | nonce da conexão |
+| `/v1/chat/completions` | `openai` | dono da allowlist (nunca `X-User-Id`) + SHA-256 dos bytes do `Authorization` recebido (header que não é UTF-8 continua sendo a credencial dele, nunca o anônimo); sem dono, sem escopo |
+| `POST /chat` (mobile) | `mobile` | `sub` do JWT |
+| `bootstrap/<canal>.rs` (11 canais) | nome do canal | id do usuário na plataforma, o mesmo que a allowlist confere |
+| `whatsapp_linked` | `whatsapp_linked` | remetente normalizado; em grupo a sessão é do grupo |
+| `garraia chat` | `cli` | `local-tty` — o processo é a fronteira de usuário |
+
+**Retomar exige a mesma sessão.** Em `/v1/chat/completions` a sessão é a
+`X-Session-Id` do cliente; sem ela, cada request ganha um UUID novo do
+servidor, e o "sim" cai numa sessão sem pedido pendente — a pausa é terminal.
+O cliente que quer aprovar manda a mesma `X-Session-Id` (e o mesmo
+`Authorization`) no pedido e no "sim". Os dois ramos da rota (com
+`"stream": true` e sem stream) montam o mesmo escopo, então pausar num e
+aprovar no outro vale.
+
+**Matriz de recusa.** A coluna "Teste" nomeia o que prende cada linha; onde
+não há teste dedicado, ela diz por quê. `e2e` é
+`crates/garraia-gateway/tests/approval_resume_e2e.rs` (handlers reais sobre
+HTTP/WS); `registro` é `crates/garraia-agents/src/tools/pending_approval.rs`;
+`runtime` é o módulo de testes do #1343 em `crates/garraia-agents/src/runtime.rs`.
+
+| Tentativa | Resultado | Teste |
+|---|---|---|
+| "sim" do mesmo remetente, mesma sessão e canal, dentro de 5 min | aprova **uma vez** o `(ferramenta, assunto)` pausado | e2e `ws_sim_no_turno_seguinte_roda_uma_vez_e_replay_pausa`, `parrot_mesma_conexao_aprova_e_outra_conexao_nao`, `openai_sim_com_a_mesma_credencial_roda_uma_vez`, `openai_stream_sim_com_a_mesma_credencial_roda_uma_vez`, `openai_pausa_num_ramo_e_o_sim_no_outro_aprova`, `mobile_sim_do_mesmo_sub_roda_e_outro_sub_nao_alcanca`, `canal_o_mesmo_usuario_aprova_o_proprio_pedido_uma_vez`; `whatsapp_linked` `dono_no_pod_recebe_o_pedido_e_o_sim_roda_uma_vez`; CLI `chat::aprovacao_tests::sim_no_turno_seguinte_roda_uma_vez_e_replay_pausa`; registro `mesmo_escopo_aprova_uma_vez_so` |
+| Segundo "sim" (replay) | pausa de novo | os mesmos e2e de web, OpenAI (dois ramos) e canal, e o da CLI |
+| Outra conexão WebSocket retomando a mesma sessão sem token | não aprova, e encerra o pedido | e2e `ws_outra_conexao_na_mesma_sessao_nao_aprova`, `parrot_mesma_conexao_aprova_e_outra_conexao_nao` |
+| Outra sessão | não alcança o pedido | e2e `ws_outra_sessao_nao_aprova`; runtime `outra_sessao_e_outro_canal_nao_aprovam`; CLI `sim_em_outra_sessao_nao_aprova` |
+| `X-Session-Id` escolhida pelo cliente apontando para uma sessão de outro canal | não alcança o pedido (o canal é fixado por quem chama, nunca lido da sessão) | e2e `openai_com_session_id_de_outro_canal_nao_consome_o_pedido` |
+| Mesma `X-Session-Id`, outro `Authorization` | não aprova, e encerra o pedido | e2e `openai_outra_credencial_na_mesma_sessao_nao_aprova`, `openai_stream_outra_credencial_na_mesma_sessao_nao_aprova` |
+| `Authorization` que não é UTF-8 (obs-text) contra um cliente sem header | não aprova: o hash é dos bytes, e não cai no remetente anônimo | e2e `openai_authorization_nao_utf8_nao_vira_o_anonimo`; unitário `approval_scope::tests::authorization_nao_utf8_nao_vira_o_anonimo` |
+| `/v1/chat/completions` sem `X-Session-Id` | não retoma: cada request é uma sessão nova | e2e `openai_sem_x_session_id_o_sim_nao_aprova` |
+| Outro membro do grupo | não aprova, e encerra o pedido (fail-closed) | `whatsapp_linked`: `no_grupo_o_sim_de_outro_membro_nao_aprova_o_pedido`, pela ponte falsa. Os 11 canais de `bootstrap/`: **não há teste ponta a ponta por canal** — o e2e `canal_dois_usuarios_na_mesma_sessao_nao_aprovam_o_pedido_um_do_outro` exercita o caminho comum (`com_escopo` + runtime, dois ids na mesma sessão), e `approval_scope_coverage.rs` prende, por arquivo, qual identificador vai como remetente (`REMETENTES`) |
+| "não" (qualquer mensagem que não seja palavra de aprovação) e depois "sim" | não aprova | e2e `ws_nao_depois_sim_nao_aprova`; runtime `recusado_e_depois_sim_nao_aprova`; registro `recusado_depois_sim_nao_aprova` |
+| Registro vencido (TTL 300 s) | não aprova | registro `pedido_vencido_nao_aprova` (relógio injetado; sem e2e, que teria de esperar 5 min) |
+| Marcador copiado ou forjado no histórico, com escopo | ignorado — só o registro conta | runtime `com_escopo_marcador_copiado_no_historico_nao_aprova` |
+| Pedido re-emitido com outro assunto depois do "sim" | `ToolApproval::covers` recusa; a aprovação é gasta | runtime `assunto_diferente_depois_do_sim_nao_roda_e_gasta_a_aprovacao`; registro `aprovacao_nao_cobre_outra_tool_nem_outro_assunto` |
+| Dois "sim" concorrentes no mesmo escopo | exatamente um aprova | registro `dois_sim_concorrentes_dao_uma_aprovacao_so` |
+| Gateway reiniciado com pedido pendente | não aprova | **sem teste**: vale por construção — o registro vive só na memória do processo e a chave do HMAC é aleatória por processo (`approval.rs::marker_key`) |
+
+**Caminhos sem escopo, de propósito** — ali a pausa continua terminal: A2A
+(`a2a.rs`) e OpenClaw (`bootstrap/openclaw.rs`), porque quem fala é outro
+agente; `POST /api/sessions/{id}/messages` (`api.rs`), porque o Web Console é
+auth-free e a sessão vem do path; a resposta do agente no chat do workspace
+(`rest_v1/messages.rs`), one-shot com histórico vazio; a tarefa agendada
+(`process_heartbeat` em `server.rs`), que não tem humano no turno; `garraia
+ask` e o `garra_agent` do `garraia mcp-server`, one-shot e dirigidos por
+agente.
+
+**Guardas de regressão.** `crates/garraia-gateway/tests/approval_scope_coverage.rs`
+varre `src/` atrás de toda chamada a um ponto de entrada do runtime
+(`process_message*` e `process_heartbeat`; nome novo com esse prefixo reprova
+até entrar na lista) e decide **por chamada**: o contexto de execução tem de
+ser exatamente `crate::approval_scope::com_escopo(..)`, inline ou no `let`
+que a chamada enxerga dentro da mesma `fn`, ou a chamada tem de estar em
+`SEM_ESCOPO`, presa por arquivo, `fn` e ponto de entrada, com o motivo. Toda
+chamada a `com_escopo` confere o remetente contra `REMETENTES` (um por
+arquivo) e reprova remetente literal ou igual à sessão. O detector lê o fonte
+sem comentários e sem o conteúdo de literais, apaga os `#[cfg(test)] mod x {
+.. }` inline sem esconder a produção que vem depois deles, e pula o arquivo
+dos `#[cfg(test)] mod x;`. `crates/garraia-cli/tests/approval_scope_oneshot.rs`
+usa o mesmo detector na CLI: toda chamada do `chat.rs` passa por
+`exec_do_turno(..)`, e as de `ask.rs`/`mcp_agent.rs` ficam presas por `fn`.
+Esses guardas são estáticos — provam que o remetente é o identificador
+esperado, não que a plataforma o entrega autenticado.
+
+| STRIDE | Ameaça | Mitigação | Residual |
+|---|---|---|---|
+| **S** Spoofing | Um segundo cliente (outra aba, outro processo) diz "sim" pelo humano que leu o pedido. | Remetente derivado pelo servidor por caminho (tabela acima); remetente diferente não aprova e encerra o pedido. | Em `/v1/chat/completions` sem `Authorization`, dois clientes com a mesma `X-Session-Id` são indistinguíveis (quem manda um header, UTF-8 ou não, é outro remetente) — a rota é auth-free por desenho (§5.9); quem alcança a rota já pode pedir e aprovar a própria ferramenta. No IRC o nick é a única identidade e pode ser tomado sem NickServ — o mesmo limite da allowlist daquele canal. |
+| **T** Tampering | Marcador colado no histórico (mensagem do cliente OpenAI, saída de ferramenta) para forjar a aprovação. | Com escopo, o histórico não é consultado; o registro só é escrito pela pausa de uma ferramenta nativa. | Sem escopo vale a detecção antiga pelo histórico, com as regras das #1226/#1339/#1340. |
+| **I** Information disclosure | O comando pausado (com segredo) ou o remetente (telefone, user id) fica guardado ou vai para log. | Só nome da ferramenta + HMAC são guardados. Os eventos do registro (`aprovacao pendente registrada/encerrada/recusada`) levam só `channel` e `tool`; nunca remetente nem assunto. O `Debug` de `ApprovalScope` e do `ExecContext` que o carrega mostra o remetente só como tamanho (`<redigido: N bytes>`) e a sessão pela mesma máscara do log; o do registro mostra só quantos pedidos há. O hash do `Authorization` só vive no mapa em memória. A sessão entra no log como campo do span `#[instrument]` do turno, e em WhatsApp, Signal e `whatsapp_linked` ela embute o telefone (`whatsapp-{numero}`, `signal-{numero}`, `whatsapp-linked-{jid}`): o `RedactingWriter` de stderr e arquivo passa toda linha por `mascarar_numeros_longos`, que troca sequência de 10+ dígitos não colada a letra por `…` + os 4 últimos. Testes: `debug_nao_mostra_o_remetente` (sessões reais de WhatsApp Cloud e `whatsapp_linked`), `writer_mascara_o_numero_e_redige_o_segredo`, `mascara_telefone_jid_e_lid_e_deixa_os_4_ultimos`. | O `user_id` do LINE (`U` + 32 hexa) não é sequência de dígitos e continua legível no span; número com menos de 10 dígitos também. Saída que não passa pelo `RedactingWriter` (um `println!` fora do tracing) não é mascarada. |
+| **D** Denial of service | Encher o mapa de pedidos. | Teto de 4096 registros; vencidos são varridos em toda escrita e o mais antigo sai quando cheio — o humano dele é perguntado de novo. | — |
+| **E** Elevation of privilege | Um "sim" aprova mais do que o pedido lido, ou duas vezes. | A aprovação cobre só o `(ferramenta, assunto)` do HMAC, é consumida sob um único lock em todo desfecho e dura um turno. | — |
+
 ---
 
 ## 6. Mobile apps (`apps/garraia-mobile`)
