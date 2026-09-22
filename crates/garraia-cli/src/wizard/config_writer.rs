@@ -18,7 +18,10 @@
 //!   `MergeUpdate`.
 //! * `MergeUpdate` — load existing config, patch only the fields the
 //!   wizard owns:
-//!     - `gateway.host`, `gateway.port` — replaced (wizard owns).
+//!     - `gateway.host`, `gateway.port` — **removed** (#1261, decisao B:
+//!       deprecated; `garraia start` never reads them). The wizard stops
+//!       writing them and a re-run of `init` strips them from an existing
+//!       file. The bind is `--host`/`HOST`, never the file.
 //!     - `llm.*` — **adds** missing keys; never replaces an existing
 //!       user-customized provider. One exception: when the operator supplies
 //!       a cleartext OpenRouter key, it is backfilled into pre-existing
@@ -232,6 +235,28 @@ fn gateway_api_key_is_set(api_key: Option<&str>) -> bool {
     !api_key.unwrap_or_default().trim().is_empty()
 }
 
+/// Serializa `cfg` para o `config.yml` **sem** `gateway.host`/`gateway.port`
+/// (#1261, decisao B).
+///
+/// As duas chaves estao deprecadas: `garraia start` liga o socket em flag >
+/// `HOST`/`PORT` > `127.0.0.1:3888` e nunca as le. Todo config que o wizard
+/// escreveu num root/RunPod dizia `0.0.0.0` — um valor morto que fazia o
+/// operador acreditar numa exposicao (ou numa protecao) que nao acontecia, e
+/// que viraria exposicao de verdade no dia em que alguem voltasse a le-lo.
+/// Remover no emissor tambem limpa um arquivo existente num re-run do
+/// `init` (caminho `MergeUpdate`).
+fn yaml_sem_bind(cfg: &AppConfig) -> Result<String> {
+    let mut valor = serde_yaml::to_value(cfg).context("serialize AppConfig")?;
+    if let Some(gateway) = valor
+        .get_mut("gateway")
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    {
+        gateway.remove("host");
+        gateway.remove("port");
+    }
+    serde_yaml::to_string(&valor).context("serialize AppConfig")
+}
+
 /// Marcador que substitui a credencial de gateway em qualquer saida `Debug`.
 const CREDENCIAL_REDIGIDA: &str = "<redacted>";
 
@@ -290,8 +315,8 @@ pub fn build_app_config(outcome: &WizardOutcome) -> AppConfig {
 
     AppConfig {
         gateway: GatewayConfig {
-            host: outcome.host.clone(),
-            port: outcome.port,
+            // #1261: host/port nao sao escritos (ver `yaml_sem_bind`); o
+            // `outcome.host` so decide a credencial abaixo.
             // #1241: `Some` exactly when the bind is not loopback.
             api_key: outcome.gateway_api_key.clone(),
             ..GatewayConfig::default()
@@ -379,8 +404,8 @@ fn backfill_missing_api_key(existing: &mut AppConfig, provider_type: &str, api_k
 /// answer to decide whether to print the key: printing a key that was **not**
 /// written would be worse than printing nothing (#1241).
 pub fn merge_update(existing: &mut AppConfig, outcome: &WizardOutcome) -> bool {
-    existing.gateway.host = outcome.host.clone();
-    existing.gateway.port = outcome.port;
+    // #1261: `gateway.host`/`gateway.port` deixaram de ser do wizard — sao
+    // removidos na serializacao (`yaml_sem_bind`), nao reescritos aqui.
 
     // The one rule that must never regress: an operator who already set
     // `gateway.api_key` and re-runs `garra init` keeps their key. Only an
@@ -520,7 +545,7 @@ pub fn write_config(
         ExistingConfigStrategy::FirstWrite => {
             let cfg = build_app_config(outcome);
             gateway_api_key_written = cfg.gateway.api_key.is_some();
-            let yaml = serde_yaml::to_string(&cfg).context("serialize AppConfig")?;
+            let yaml = yaml_sem_bind(&cfg)?;
             escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
@@ -536,7 +561,7 @@ pub fn write_config(
             }
             let cfg = build_app_config(outcome);
             gateway_api_key_written = cfg.gateway.api_key.is_some();
-            let yaml = serde_yaml::to_string(&cfg).context("serialize AppConfig")?;
+            let yaml = yaml_sem_bind(&cfg)?;
             escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
@@ -548,7 +573,7 @@ pub fn write_config(
             if merge_update(&mut existing, outcome) {
                 gateway_api_key_written = true;
             }
-            let yaml = serde_yaml::to_string(&existing).context("serialize merged AppConfig")?;
+            let yaml = yaml_sem_bind(&existing)?;
             escreve_config_com_permissao_restrita(&config_path, &yaml)
                 .with_context(|| format!("write {}", config_path.display()))?;
         }
@@ -580,6 +605,57 @@ mod tests {
     /// Same fixture parametrized by host, so the gateway-credential tests run
     /// through the very policy `run_wizard` uses (#1241) instead of restating
     /// it.
+    /// #1261: `true` quando a secao `gateway` do YAML traz `host` ou `port`.
+    fn gateway_tem_bind(raw: &str) -> bool {
+        let v: serde_yaml::Value = serde_yaml::from_str(raw).expect("yaml");
+        v.get("gateway")
+            .and_then(serde_yaml::Value::as_mapping)
+            .is_some_and(|g| g.contains_key("host") || g.contains_key("port"))
+    }
+
+    /// Todo caminho de escrita sai sem o bind — inclusive o `Backup` e o
+    /// merge sobre um arquivo que trazia `host: 0.0.0.0`.
+    #[test]
+    fn nenhuma_estrategia_escreve_o_bind_deprecado() {
+        let out = outcome_cloud_only(); // host = "0.0.0.0"
+
+        let dir = tempdir().unwrap();
+        let p = write_config(dir.path(), &out, ExistingConfigStrategy::FirstWrite)
+            .unwrap()
+            .path;
+        assert!(!gateway_tem_bind(&std::fs::read_to_string(&p).unwrap()));
+
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.yml"),
+            "gateway:\n  host: 0.0.0.0\n  port: 3977\n  rate_limit:\n    per_second: 7\n",
+        )
+        .unwrap();
+        let p = write_config(dir.path(), &out, ExistingConfigStrategy::MergeUpdate)
+            .unwrap()
+            .path;
+        let raw = std::fs::read_to_string(&p).unwrap();
+        assert!(!gateway_tem_bind(&raw), "{raw}");
+        let merged: AppConfig = serde_yaml::from_str(&raw).unwrap();
+        assert_eq!(merged.gateway.rate_limit.per_second, 7, "o resto fica");
+        assert!(
+            merged.gateway.api_key.is_some(),
+            "host exposto minta a chave"
+        );
+
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("config.yml"), "gateway:\n  host: 0.0.0.0\n").unwrap();
+        let backup_path = dir.path().join("config.yml.bak-teste");
+        let p = write_config(
+            dir.path(),
+            &out,
+            ExistingConfigStrategy::Backup { backup_path },
+        )
+        .unwrap()
+        .path;
+        assert!(!gateway_tem_bind(&std::fs::read_to_string(&p).unwrap()));
+    }
+
     fn outcome_cloud_only_on_host(host: &str) -> WizardOutcome {
         WizardOutcome {
             host: host.into(),
@@ -1010,8 +1086,10 @@ mod tests {
             .unwrap()
             .path;
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("host: 0.0.0.0"));
-        assert!(raw.contains("port: 3888"));
+        // #1261: o wizard nao escreve mais o bind — chaves deprecadas.
+        assert!(!gateway_tem_bind(&raw), "{raw}");
+        // ...mas o host exposto continua mintando a credencial.
+        assert!(raw.contains("api_key:"), "{raw}");
         assert!(raw.contains("openrouter:"));
         assert!(raw.contains("ollama-qwen3:"));
         assert!(raw.contains("default_provider: ollama-qwen3"));
@@ -1078,7 +1156,7 @@ agent:
         std::fs::write(&path, original).unwrap();
 
         // Wizard is now run with local-first outcome — expect:
-        //  - gateway host/port REPLACED (wizard owns these)
+        //  - gateway host/port REMOVED (#1261: deprecated, never read)
         //  - llm.custom-anthropic PRESERVED
         //  - llm.openrouter ADDED
         //  - llm.ollama-qwen3 ADDED
@@ -1091,7 +1169,12 @@ agent:
         let raw = std::fs::read_to_string(&path).unwrap();
         let merged: AppConfig = serde_yaml::from_str(&raw).unwrap();
 
-        assert_eq!(merged.gateway.host, "0.0.0.0");
+        assert!(
+            !gateway_tem_bind(&raw),
+            "o re-run do init remove as chaves deprecadas: {raw}"
+        );
+        // Sem a chave, o serde cai no default — o mesmo que o start liga.
+        assert_eq!(merged.gateway.host, "127.0.0.1");
         assert_eq!(merged.gateway.port, 3888);
         assert!(merged.llm.contains_key("custom-anthropic"));
         assert!(merged.llm.contains_key("openrouter"));

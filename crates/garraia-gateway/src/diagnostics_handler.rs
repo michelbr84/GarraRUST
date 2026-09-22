@@ -672,7 +672,11 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: if (1..=65535).contains(&port) {
             None
         } else {
-            Some("Set gateway.port in garraia.toml to a value 1..=65535.".to_string())
+            // #1261: `gateway.port` do arquivo esta deprecado e nao e lido.
+            Some(format!(
+                "Start with `{} start --port <1..=65535>` or set the PORT env var.",
+                garraia_common::executavel::nome()
+            ))
         },
     });
 

@@ -709,6 +709,7 @@ de servir o console só por IP/`localhost`.
 | **T** Tampering | O mesmo contra `/ws/parrot` (overlay do desktop): turno completo do agente, com tools, escrevendo na sessão persistente `parrot-desktop`, resposta legível — e sem gate de `api_key`, que só cobre `/api/*`. | `ws_upgrade_permitido` no middleware e no `parrot_ws_handler`, com `ORIGENS_TAURI` para a webview. | Medir o `Origin` real da webview por plataforma (Linux WebKitGTK, Windows WebView2) na próxima release do desktop e confirmar a lista. |
 | **D** Denial of service | Console alcançado por nome DNS não declarado deixa de aceitar mutação e chat de navegador. | Quebra conhecida e deliberada; escotilha por `gateway.allowed_origins`. | — |
 | **D** Denial of service | `allowed_origins: ["*"]` (o reflexo de quem quer o allow-all de volta) derrubaria o gateway no boot. | Entrada ignorada com aviso (`origens_validas`). | Report em `garraia config check` (opt-in — nada no boot chama o `run_check`, issue #1247). |
+| **E** Elevation of privilege | `HOST=0.0.0.0` (ou `--host 0.0.0.0`) sem `gateway.api_key`: o gate de `/api/*` e `/ws` fica desligado e a rede alcanca as tools e o `/api/mcp/marketplace/install`. | #1261: o boot RECUSA (exit 78) bind nao-loopback sem credencial, antes do bind, do fork e do stop do `restart`; decisao sobre o bind resolvido (flag > env > default), TLS nao isenta; credencial por `GARRAIA_GATEWAY_API_KEY` sem editar o arquivo. | Opt-out `gateway.allow_unauthenticated_network_bind` so no arquivo (sem env/flag), com aviso em todo boot. |
 
 ---
 

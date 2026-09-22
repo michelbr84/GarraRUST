@@ -15,11 +15,10 @@ Complementa (não substitui): [docs/security.md](security.md),
 
 ### Perfil A — loopback (default, recomendado)
 
-```yaml
-gateway:
-  host: "127.0.0.1"   # default do binário — só a própria máquina alcança
-  port: 3888
-```
+O bind vem da linha de comando: `--host`/`HOST` e `--port`/`PORT`, senao
+`127.0.0.1:3888` — so a propria maquina alcanca. `gateway.host` e
+`gateway.port` no arquivo estao **deprecados** e nunca foram lidos pelo
+`garraia start` (#1261); nao os escreva.
 
 Com bind em loopback, a superfície de rede é zero para terceiros. Os
 canais de mensageria (Telegram/Discord/…) continuam funcionando — eles
@@ -27,22 +26,24 @@ fazem *egress* para as APIs dos provedores; ninguém precisa alcançar a
 sua porta 3888. **Se você não tem um motivo concreto para expor o
 gateway, este perfil encerra o assunto.**
 
-Atenção: a env var `HOST` sobrescreve o bind (runtimes de container
-costumam setar `HOST=0.0.0.0`). Se o seu gateway apareceu em `0.0.0.0`
-sem você pedir, procure por essa variável no ambiente.
+Atenção: a env var `HOST` define o bind (runtimes de container
+costumam setar `HOST=0.0.0.0`). Desde a v0.4.5 um bind nao-loopback **sem
+credencial de gateway recusa o boot** (#1261) — se o `garraia start` saiu
+com `refusing to start`, procure por essa variavel no ambiente.
 
 ### Perfil B — exposto na rede (`0.0.0.0`) — requisitos mínimos
 
 Um gateway exposto sem autenticação é **execução remota de comandos
-aberta**: qualquer um que alcance a porta usa o tool `bash`. Se precisa
-expor, TODOS os itens abaixo são obrigatórios, não opcionais:
+aberta**: qualquer um que alcance a porta usa o tool `bash`. Por isso,
+desde a v0.4.5, o `garraia start` **recusa** um bind nao-loopback sem
+credencial (#1261; exit 78, com a mensagem de como corrigir). Suba com
+`HOST=0.0.0.0 garraia start` (ou `--host 0.0.0.0`) e TODOS os itens abaixo:
 
 ```yaml
 gateway:
-  host: "0.0.0.0"
-  port: 3888
-  # Valor LITERAL no arquivo (não há interpolação de env no config —
-  # gere com `openssl rand -hex 32` e proteja o arquivo com chmod 0600):
+  # Valor LITERAL no arquivo — ou, sem editar o arquivo, a env
+  # GARRAIA_GATEWAY_API_KEY, que vence o arquivo e nunca e gravada nele.
+  # Gere com `openssl rand -hex 32` e proteja o arquivo com chmod 0600:
   api_key: "<token-forte-aqui>"
   # NÃO adicione `session_tokens_required: true`: o flag NÃO está implementado
   # (nenhuma rota HTTP valida token de sessão hoje) e o gateway RECUSA subir
@@ -177,9 +178,14 @@ Arquivo completo comentado, validado com `garra config check`:
 
 ## Limitações conhecidas (honestas)
 
-1. `gateway.api_key` só aceita valor literal no arquivo — não há
-   interpolação de env no config (a linha `GARRAIA_API_KEY` do
-   `.env.example` é aspiracional; suportá-la de verdade é follow-up).
+1. `gateway.api_key` não tem interpolação de env no arquivo, mas desde a
+   v0.4.5 a env `GARRAIA_GATEWAY_API_KEY` entrega a credencial sem editar o
+   arquivo (vence o arquivo, nunca é gravada nele; #1261). A linha
+   `GARRAIA_API_KEY` do `.env.example` segue sem efeito — o nome lido é
+   `GARRAIA_GATEWAY_API_KEY`.
+   Deploy aberto de proposito atras de proxy que autentica:
+   `gateway.allow_unauthenticated_network_bind: true` (so no arquivo, sem
+   env nem flag; aviso alto em todo boot).
 2. Auth do gateway local: com `gateway.api_key` definido, o gate cobre os
    WebSockets `/ws` e `/ws/parrot` **e** o REST `/api/*` (#1045; o
    `/ws/parrot` desde a auditoria R4 do PR #1251). Sem a chave definida,

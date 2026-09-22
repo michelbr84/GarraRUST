@@ -475,7 +475,9 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
         Ok(config) => {
             let check = garraia_config::run_check(&loader, &config);
             let providers = collect_provider_checks(&config);
-            let gateway = (config.gateway.host.clone(), config.gateway.port);
+            // #1261: o bind que o `start` usa (env > default), nao as
+            // chaves deprecadas do arquivo.
+            let gateway = garraia_config::bind::endereco_do_cliente();
             (Some(check), None, providers, gateway)
         }
         Err(e) => {
@@ -485,10 +487,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
                 None,
                 Some(crate::config_cmd::truncate_error(format!("{e}"))),
                 Vec::new(),
-                (
-                    AppConfig::default().gateway.host,
-                    AppConfig::default().gateway.port,
-                ),
+                garraia_config::bind::endereco_do_cliente(),
             )
         }
     };

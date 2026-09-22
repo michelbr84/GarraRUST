@@ -1,3 +1,4 @@
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -437,6 +438,29 @@ pub struct GatewayConfig {
     /// Path to TLS private key file (PEM).
     #[serde(default)]
     pub tls_key_path: Option<String>,
+
+    /// #1261: opt-out explicito da recusa de boot em bind nao-loopback sem
+    /// credencial de gateway. Para a implantacao que e aberta **de
+    /// proposito**, atras de um proxy que autentica ou de um firewall.
+    ///
+    /// So existe no arquivo, de proposito: nao ha env nem flag, para que a
+    /// mesma injecao de `HOST` que expoe o bind nao consiga tambem desligar a
+    /// guarda. Cada boot com ele ligado sai com aviso alto, e o
+    /// `garraia config check` sempre o reporta como Warning.
+    #[serde(default)]
+    pub allow_unauthenticated_network_bind: bool,
+
+    /// #1261: a credencial vinda de `GARRAIA_GATEWAY_API_KEY`, aplicada por
+    /// [`crate::ConfigLoader::load`].
+    ///
+    /// Campo a parte, e nao escrita por cima de [`Self::api_key`], por um
+    /// motivo concreto: o `load()` alimenta caminhos que **salvam** a config
+    /// de volta (`ConfigLoader::set_channel_enabled`, o wizard, o console). Um
+    /// segredo de env copiado para `api_key` iria parar no `config.yml` na
+    /// primeira dessas escritas. `serde(skip)` garante que ele nunca e lido
+    /// do arquivo nem escrito nele, e o `SecretString` o esconde do `Debug`.
+    #[serde(skip)]
+    pub api_key_env: Option<SecretString>,
 }
 
 impl GatewayConfig {
@@ -451,11 +475,21 @@ impl GatewayConfig {
     /// true` — falsa garantia justamente para quem foi consultar o
     /// diagnostico. Qualquer consumidor novo deve chamar isto em vez de
     /// `api_key.is_some()`.
+    ///
+    /// #1261: `GARRAIA_GATEWAY_API_KEY` (em [`Self::api_key_env`]) vence o
+    /// arquivo, na mesma precedencia env-sobre-arquivo dos outros segredos.
     pub fn api_key_normalizada(&self) -> Option<&str> {
-        self.api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
+        let do_env = self
+            .api_key_env
+            .as_ref()
+            .map(|s| s.expose_secret().trim())
+            .filter(|k| !k.is_empty());
+        do_env.or_else(|| {
+            self.api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+        })
     }
 
     /// Acucar para [`Self::api_key_normalizada`] quando so a presenca importa.
@@ -484,6 +518,8 @@ impl Default for GatewayConfig {
             allowed_origins: Vec::new(),
             tls_cert_path: None,
             tls_key_path: None,
+            allow_unauthenticated_network_bind: false,
+            api_key_env: None,
         }
     }
 }

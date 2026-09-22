@@ -133,8 +133,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf http://localhost:3888/ping || exit 1
 
 ENTRYPOINT ["tini", "--", "garra"]
-# `garra start` honors `PORT` and `HOST` env vars (GAR-603) — Runpod /
-# container runtimes that set them get the right binding without
-# overriding CMD. Explicit `--host 0.0.0.0` here ensures the default
-# `docker run` (no env) still binds to all interfaces.
+# `garraia start` binds flag > `HOST`/`PORT` env > 127.0.0.1:3888 (GAR-603).
+# Note the explicit `--host 0.0.0.0` below is a FLAG, so it wins over a
+# `HOST` env var: to change the host, override CMD. `PORT` still applies.
+#
+# #1261: on this non-loopback bind `garraia start` REFUSES to boot without a
+# gateway credential. Pass one at runtime, never bake it into the image:
+#   docker run -e GARRAIA_GATEWAY_API_KEY="$(openssl rand -hex 32)" ...
+# Without it the container exits 78 with a message that says how to fix it.
 CMD ["start", "--host", "0.0.0.0"]

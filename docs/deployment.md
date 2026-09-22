@@ -16,6 +16,15 @@ cp .env.example .env
 # Edite o arquivo .env com o editor de sua preferência
 ```
 
+> **Credencial obrigatoria (#1261, v0.4.5).** O container liga em `0.0.0.0`
+> e o `garraia start` **recusa subir** num bind nao-loopback sem credencial
+> de gateway (exit 78, com a mensagem de como corrigir). Coloque no `.env`
+> uma linha `GARRAIA_GATEWAY_API_KEY=` seguida de um segredo longo — gere com
+> `openssl rand -hex 32` — e envie-o nos clientes como
+> `Authorization: Bearer <chave>`. `/ping`, `/health` e `/api/health` seguem
+> abertos para healthcheck. Os `docs/deployment/config.*.yml` nao carregam
+> mais `gateway.host`/`gateway.port` (chaves deprecadas, nunca lidas).
+
 ---
 
 ## Exemplo 1: Gateway Local (Provedores em Nuvem)

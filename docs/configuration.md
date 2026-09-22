@@ -233,6 +233,8 @@ Runtime overrides read directly by the loader (not secrets):
 | `GARRAIA_CONFIG_DIR` | config directory | See "Configuration File Location" above. |
 | `GARRAIA_EXECUTION_PROFILE` | `execution.profile` | `standard` \| `isolated-pod`. **Wins over the file**, resolved once at load; `config check` and `/api/diagnostics` report the source (`default` \| `file` \| `env`). Any other value is a load error: the gateway refuses to boot and `config check` reports `Error` (exit 2). Never persisted back to the file by a save. [`execution-profiles.md`](execution-profiles.md). |
 | `GARRAIA_FILE_ROOTS` | adds to `agent.file_roots` | PATH-style list; extra roots for the native file-tool jail (#1244). |
+| `GARRAIA_GATEWAY_API_KEY` | `gateway.api_key` | **Secret.** A non-blank value wins over the file (#1261); blank counts as unset. Applied at load into a field that is never serialized, so a save never writes it to disk. `config check` reports presence only, and warns when it differs from the file key. Required (one or the other) for a non-loopback bind: without a credential `garraia start` refuses to boot (exit 78). |
+| `HOST` / `PORT` | the listener bind | Read by `garraia start` **and** `garraia restart` (flag > env > `127.0.0.1:3888`). `gateway.host` / `gateway.port` in the file are deprecated and never read. |
 
 ## Provider / model resolution precedence
 
