@@ -138,6 +138,14 @@ fn dentro_de_repositorio(dir: &Path) -> bool {
 /// Fail-closed: fora de um turno (teste direto, chamada sem escopo) o bit e
 /// `None` e o caminho NAO sai. Quem ve o caminho e o operador local, para
 /// quem ele e acionavel.
+///
+/// B1 (revisao da onda C): esta funcao ja nasceu correta na direcao segura,
+/// mas o `turno_restrito()` respondia `None` para SEMPRE aqui — o escopo era
+/// aberto so em volta de `garra_status`, e o ramo do operador local era
+/// inalcancavel em producao. Quem garante que a frase acima e verdade e o
+/// `com_restricao_do_turno` no despacho do runtime, provado pelo teste
+/// `bit_do_turno_chega_a_toda_tool_e_nao_so_a_garra_status` — de nivel de
+/// DESPACHO, porque o teste de nivel de funcao nao viu o defeito.
 fn pode_revelar_caminho() -> bool {
     !crate::tools::turn_tools::turno_restrito().unwrap_or(true)
 }
@@ -574,13 +582,23 @@ mod tests {
             "o caminho do host vazou para um turno restrito: {motivo}"
         );
         // Nem o caminho inteiro, nem um pedaco dele que ja localize o host.
-        for parte in fundo.iter().filter(|p| p.len() > 2) {
-            let parte = parte.to_string_lossy();
-            assert!(
-                !motivo.contains(parte.as_ref()),
-                "componente {parte:?} do caminho vazou: {motivo}"
-            );
-        }
+        //
+        // So o componente que ESTE teste criou e que identifica o host: o
+        // nome sorteado do tempdir. Varrer o caminho inteiro arrastaria junto
+        // os componentes do `$TMPDIR` herdado do runner, e um `TMPDIR` que
+        // por acaso contivesse "search" ou "project" derrubaria o teste por
+        // um motivo que nao e o desta issue; os diretorios `a/b/c/d` sao
+        // letras soltas, que casam com qualquer prosa.
+        let nome_do_tempdir = tmp
+            .path()
+            .file_name()
+            .expect("tempdir tem nome")
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            !motivo.contains(&nome_do_tempdir),
+            "o componente {nome_do_tempdir:?} do caminho vazou: {motivo}"
+        );
     }
 
     /// O portao que liga o bit do turno a mensagem, com o fail-closed que o

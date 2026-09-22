@@ -3079,6 +3079,18 @@ impl AgentRuntime {
                             execucao.await
                         }
                     };
+                    // #1380 (revisao da onda C): o BIT do portao vale para
+                    // toda tool, e nao so para `garra_status`. A lista acima
+                    // continua restrita a ela por causa do custo de monta-la;
+                    // um `bool` nao tem esse custo. Sem este escopo, quem
+                    // chamasse `turno_restrito()` de qualquer outra tool lia
+                    // `None` para sempre — foi o que aconteceu com a recusa
+                    // do `repo_search`, cujo ramo de operador local virou
+                    // inalcancavel em producao.
+                    let execucao = crate::tools::turn_tools::com_restricao_do_turno(
+                        portao.restringe_por_whitelist(),
+                        execucao,
+                    );
                     match timeout(budget.timeout(), execucao).await {
                         Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
                         Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
@@ -9855,18 +9867,24 @@ mod tests {
             assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
         }
 
-        /// Uma `garra_status` de mentira que anota o que
-        /// `ferramentas_do_turno` devolveu quando o runtime a executou.
+        /// Uma tool de mentira que anota o que `ferramentas_do_turno` e
+        /// `turno_restrito` devolveram quando o RUNTIME a executou.
+        ///
+        /// O nome e parametro desde a revisao da onda C (#1380): a sonda
+        /// precisa poder se passar por uma tool qualquer, e nao so por
+        /// `garra_status`, justamente para provar que o despacho publica o
+        /// bit do turno para todas.
         type Visto = Option<(Option<Vec<String>>, Option<bool>)>;
 
         struct SondaDeStatus {
             viu: Arc<Mutex<Visto>>,
+            nome: &'static str,
         }
 
         #[async_trait::async_trait]
         impl crate::tools::Tool for SondaDeStatus {
             fn name(&self) -> &str {
-                "garra_status"
+                self.nome
             }
             fn description(&self) -> &str {
                 "sonda"
@@ -9887,8 +9905,8 @@ mod tests {
             }
         }
 
-        /// Pede `garra_status` na primeira volta; responde em texto depois.
-        struct PedeStatus;
+        /// Pede a tool nomeada na primeira volta; responde em texto depois.
+        struct PedeStatus(&'static str);
 
         #[async_trait::async_trait]
         impl LlmProvider for PedeStatus {
@@ -9908,7 +9926,7 @@ mod tests {
                 } else {
                     vec![ContentBlock::ToolUse {
                         id: "t-status".to_string(),
-                        name: "garra_status".to_string(),
+                        name: self.0.to_string(),
                         input: serde_json::json!({}),
                     }]
                 };
@@ -9938,8 +9956,9 @@ mod tests {
                 let viu = Arc::new(Mutex::new(None));
                 rt.register_tool(Box::new(SondaDeStatus {
                     viu: Arc::clone(&viu),
+                    nome: "garra_status",
                 }));
-                rt.register_provider(Arc::new(PedeStatus));
+                rt.register_provider(Arc::new(PedeStatus("garra_status")));
                 let r = rt
                     .process_message_with_agent_config(
                         "s-1347-tools",
@@ -9972,6 +9991,71 @@ mod tests {
             // recebe `false`, nao `None` (esta dentro de um turno).
             let (_, restrito) = visto_em(&ExecContext::default()).await.expect("rodou");
             assert_eq!(restrito, Some(false));
+        }
+
+        /// Regressao do B1 (#1380, revisao da onda C): o bit do turno chega a
+        /// uma tool que NAO e a `garra_status`.
+        ///
+        /// O escopo de `ferramentas_do_turno` e aberto so em volta da
+        /// `garra_status`. Quando a recusa do `repo_search` passou a
+        /// consultar `turno_restrito()`, ela lia `None` em producao para
+        /// sempre — e o teste que existia montava o `task_local` a mao, entao
+        /// provava a funcao e nao o DESPACHO. Este roda a sonda com o nome
+        /// `repo_search` por um turno de verdade
+        /// (`process_message_with_agent_config`) e olha o que ela viu de
+        /// dentro da propria execucao.
+        #[tokio::test]
+        async fn bit_do_turno_chega_a_toda_tool_e_nao_so_a_garra_status() {
+            async fn restrito_visto_por_repo_search(exec: &ExecContext) -> Option<bool> {
+                let rt = AgentRuntime::new();
+                let viu = Arc::new(Mutex::new(None));
+                rt.register_tool(Box::new(SondaDeStatus {
+                    viu: Arc::clone(&viu),
+                    nome: "repo_search",
+                }));
+                rt.register_provider(Arc::new(PedeStatus("repo_search")));
+                let r = rt
+                    .process_message_with_agent_config(
+                        "s-1380-bit",
+                        "procure no repo",
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno");
+                assert_eq!(r, "ok");
+                let visto = viu.lock().expect("lock").clone();
+                let (ferramentas, restrito) = visto.expect("a sonda tem de ter rodado");
+                // A lista continua sendo privilegio da `garra_status`: o
+                // custo de monta-la a cada tool nao se paga.
+                assert_eq!(
+                    ferramentas, None,
+                    "a lista nao deve vazar para outras tools"
+                );
+                restrito
+            }
+
+            // O piso `search` (WhatsApp e afins) libera `repo_search`, e e
+            // exatamente o turno em que o caminho do host nao pode sair.
+            let search = ExecContext::with_mode(Some("search".to_string()));
+            assert_eq!(
+                restrito_visto_por_repo_search(&search).await,
+                Some(true),
+                "sem isto a recusa do repo_search nunca sabe que o turno e restrito"
+            );
+            // E o turno aberto e distinguivel de "fora de turno" (`None`): e
+            // essa diferenca que devolve o caminho ao operador local.
+            assert_eq!(
+                restrito_visto_por_repo_search(&ExecContext::default()).await,
+                Some(false),
+                "o turno aberto tem de ser Some(false), nao None"
+            );
         }
     }
 
