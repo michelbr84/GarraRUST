@@ -61,6 +61,11 @@ const STAMP_FILE: &str = ".garraia-bridge-sha256";
 /// Teto do `npm install`. Rede ruim leva minutos; uma hora e travamento.
 pub const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Quanto [`BridgeConnection::stderr_hint_na_saida`] espera a cauda do
+/// stderr depois que o filho saiu. Folga para uma maquina carregada; o caminho
+/// e de erro, entao os segundos nao custam nada a quem esta tudo bem.
+pub const ESPERA_DA_CAUDA_NA_SAIDA: Duration = Duration::from_secs(2);
+
 /// Quantas linhas de stderr do filho ficam guardadas para o diagnostico.
 const STDERR_TAIL_LINES: usize = 30;
 
@@ -849,9 +854,36 @@ impl BridgeConnection {
             ))),
             None => Err(BridgeError::Protocol(format!(
                 "o bridge fechou sem mandar `started`{}",
-                self.stderr_hint()
+                self.stderr_hint_na_saida().await
             ))),
         }
+    }
+
+    fn guardar_na_cauda(&mut self, line: &str) {
+        if self.tail.len() == STDERR_TAIL_LINES {
+            self.tail.pop_front();
+        }
+        self.tail.push_back(redact_tail_line(line));
+    }
+
+    /// [`Self::stderr_hint`] para quando o filho **ja saiu** (ou fechou o
+    /// stdout): espera a task do stderr chegar ao fim do pipe, com teto de
+    /// [`ESPERA_DA_CAUDA_NA_SAIDA`], antes de montar a cauda.
+    ///
+    /// O `stderr_hint` so drena o que a task ja encaminhou (`try_recv`). Com o
+    /// filho morto, a ultima linha do stderr pode ainda estar no pipe ou na
+    /// task quando o `wait` volta — e o erro saia sem a cauda, exatamente o
+    /// caso em que ela explica o porque. O CI de cobertura (mais lento) pegou
+    /// isso: `a_dotted_property_path_never_exempts_the_credential_from_redaction`
+    /// falhou em `main` com "o bridge encerrou (codigo Some(1)) antes de
+    /// conectar" e nenhuma linha. O teto existe porque um neto pode herdar o
+    /// stderr e segura-lo aberto; ai vale o que chegou ate o prazo.
+    pub async fn stderr_hint_na_saida(&mut self) -> String {
+        let prazo = tokio::time::Instant::now() + ESPERA_DA_CAUDA_NA_SAIDA;
+        while let Ok(Some(line)) = tokio::time::timeout_at(prazo, self.stderr_tail.recv()).await {
+            self.guardar_na_cauda(&line);
+        }
+        self.stderr_hint()
     }
 
     /// Cauda do stderr, ja formatada para mensagem de erro.
@@ -861,10 +893,7 @@ impl BridgeConnection {
     /// segundo caminho por onde ela possa sair sem redacao.
     pub fn stderr_hint(&mut self) -> String {
         while let Ok(line) = self.stderr_tail.try_recv() {
-            if self.tail.len() == STDERR_TAIL_LINES {
-                self.tail.pop_front();
-            }
-            self.tail.push_back(redact_tail_line(&line));
+            self.guardar_na_cauda(&line);
         }
         if self.tail.is_empty() {
             String::new()
@@ -973,6 +1002,65 @@ async fn read_line_capped(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Um `sh -c` no lugar do Node: o bastante para exercitar o pipe.
+    #[cfg(unix)]
+    struct ShLauncher(&'static str);
+
+    #[cfg(unix)]
+    impl BridgeLauncher for ShLauncher {
+        fn command(&self) -> Result<Command, BridgeError> {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(self.0);
+            Ok(cmd)
+        }
+        fn describe(&self) -> String {
+            format!("sh -c {}", self.0)
+        }
+        fn dir(&self) -> PathBuf {
+            std::env::temp_dir()
+        }
+    }
+
+    /// A cauda escrita depois de o filho sair tem de chegar ao erro.
+    ///
+    /// Deterministico de proposito: o `sh` fecha o stdout e sai na hora, e um
+    /// neto, que herdou o stderr, escreve a linha 300 ms DEPOIS. Quando o
+    /// `wait` volta, nada foi encaminhado ainda, entao o `stderr_hint` de
+    /// antes (so `try_recv`) montava o erro sem cauda — a falha que o CI de
+    /// cobertura pegou por corrida em `main`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cauda_que_chega_depois_da_saida_entra_no_erro() {
+        let launcher =
+            ShLauncher("exec 1>&-; (sleep 0.3; echo 'Error: modulo ausente' >&2) & exit 1");
+        let mut conn = BridgeConnection::spawn(&launcher).await.expect("spawn");
+        assert!(conn.next_event().await.expect("leitura").is_none());
+        assert_eq!(conn.wait().await.expect("wait"), Some(1));
+        let hint = conn.stderr_hint_na_saida().await;
+        assert!(
+            hint.contains("Ultimas linhas do bridge:") && hint.contains("modulo ausente"),
+            "a cauda tardia nao chegou: {hint:?}"
+        );
+    }
+
+    /// O teto vale: um neto que segura o stderr aberto nao prende o erro.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn um_neto_que_segura_o_stderr_nao_prende_o_erro() {
+        let launcher = ShLauncher("exec 1>&-; echo 'primeira' >&2; (sleep 30) & exit 1");
+        let mut conn = BridgeConnection::spawn(&launcher).await.expect("spawn");
+        assert!(conn.next_event().await.expect("leitura").is_none());
+        assert_eq!(conn.wait().await.expect("wait"), Some(1));
+        let inicio = std::time::Instant::now();
+        let hint = conn.stderr_hint_na_saida().await;
+        assert!(
+            inicio.elapsed() < ESPERA_DA_CAUDA_NA_SAIDA + Duration::from_secs(1),
+            "esperou alem do teto: {:?}",
+            inicio.elapsed()
+        );
+        assert!(hint.contains("primeira"), "{hint:?}");
+    }
 
     /// A cauda do stderr do Node nao pode carregar credencial para a tela.
     ///
