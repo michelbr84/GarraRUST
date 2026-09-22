@@ -1,0 +1,67 @@
+name: Changelog presence
+
+# #1228 (slice D2): o PR tem de deixar um fragmento em changelog.d/.
+#
+# O job "Changelog fragments" do ci.yml valida o FORMATO do que existe; este
+# workflow cobra a PRESENCA. Separado de proposito: arquivo proprio, sem
+# disputar o ci.yml, e um check com nome proprio para virar required depois.
+#
+# Invariantes:
+#   - `pull_request`, nunca `pull_request_target`: roda com o token read-only
+#     do PR e sem segredo nenhum. Nao le titulo nem corpo do PR.
+#   - `permissions: contents: read`. A lista de arquivos vem do `git diff` do
+#     merge commit (HEAD^1 = ponta da base), nao da API.
+#   - Dado do evento chega ao shell por `env:`, nunca interpolado no `run:`.
+#   - Sem `continue-on-error`. Isencoes: label `no-changelog`, dependabot,
+#     head `release/*`, e eventos que nao sao `pull_request` (merge_group).
+#   - `labeled`/`unlabeled` reexecutam o check: aplicar a label resolve sem
+#     precisar de um push novo.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  presence:
+    name: Changelog presence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # O merge commit e o pai da base bastam para o diff do PR.
+          fetch-depth: 2
+
+      - name: Arquivos que o PR muda
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          git diff --name-status --no-renames HEAD^1 HEAD > changed.txt
+          echo "::group::changed.txt"
+          cat changed.txt
+          echo "::endgroup::"
+
+      - name: O PR deixa um fragmento em changelog.d/
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          args=(--event "$EVENT_NAME" --labels-json "${PR_LABELS:-[]}" \
+            --author "${PR_AUTHOR:-}" --head-ref "${HEAD_REF:-}")
+          if [ -f changed.txt ]; then
+            args+=(--name-status-file changed.txt)
+          fi
+          python3 scripts/changelog/check_presence.py "${args[@]}"

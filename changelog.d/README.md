@@ -44,3 +44,28 @@ python3 scripts/changelog/assemble.py --write    # insere no CHANGELOG.md e apag
 O `--write` é passo do **release** (ver `docs/releasing.md`), não de PR
 individual. Fora do release, os fragmentos ficam acumulando aqui — é o estado
 normal do repositório entre uma versão e outra.
+
+## O PR tem de deixar um fragmento
+
+Desde o #1228 o workflow `Changelog presence`
+(`.github/workflows/changelog-presence.yml`) falha o PR que não adiciona nem
+edita nenhum `changelog.d/<seção>/<nome>.md`. `README.md` não conta, seção
+inventada não conta, e só **apagar** fragmento também não conta.
+
+Isenções:
+
+- label **`no-changelog`** — para mudança que não interessa a quem lê as notas
+  de release (CI, doc interna, refactor sem efeito visível). Aplicar ou tirar
+  a label reexecuta o check, sem precisar de push;
+- PR do `dependabot[bot]`;
+- branch `release/*` (o PR de release apaga os fragmentos ao juntá-los);
+- eventos que não são `pull_request` (`merge_group`, push na `main`).
+
+A decisão mora em `scripts/changelog/check_presence.py` (testes em
+`scripts/changelog/tests/test_check_presence.py`):
+
+```bash
+git diff --name-status --no-renames origin/main... > changed.txt
+python3 scripts/changelog/check_presence.py --event pull_request \
+    --labels-json '[]' --name-status-file changed.txt
+```
