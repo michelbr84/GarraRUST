@@ -3936,6 +3936,9 @@ mod ponta_a_ponta {
                     .bridge_dir,
                 roteiro: Roteiro::empurra(PERGUNTA),
             });
+            // Integracao do trem: a #1373 deu ao supervisor o preparo da
+            // ponte; aqui ela ja esta pronta, como nos testes irmaos.
+            let preparo = preparo_da_ponte::ponte_ja_pronta(&state).await;
             supervisionar(
                 &state,
                 LinkedSettings {
@@ -3946,6 +3949,7 @@ mod ponta_a_ponta {
                 store,
                 key,
                 launcher,
+                preparo,
             );
 
             assert!(
