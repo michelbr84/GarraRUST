@@ -13,6 +13,7 @@ pub mod repo_search_tool;
 pub mod run_tests_tool;
 pub mod schedule;
 pub mod tool_context;
+pub mod turn_tools;
 pub mod web_fetch_tool;
 pub mod web_search_tool;
 

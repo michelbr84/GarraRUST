@@ -67,7 +67,9 @@ pub use providers::{
     StreamEvent, ToolDefinition, ValidacaoDeModelo,
 };
 pub use quantization::{ModelQuant, auto_select_quant, detect_vram_bytes};
-pub use runtime::{AgentRuntime, resolve_provider_from_model};
+pub use runtime::{
+    AgentRuntime, NOTA_GARRA_STATUS_EN, NOTA_GARRA_STATUS_PT, resolve_provider_from_model,
+};
 pub use tools::{
     BashTool, CodeReviewTool, DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig,
     EventTrigger, EventType, FileJail, FileJailDenial, FileReadTool, FileWriteTool, ListDirTool,

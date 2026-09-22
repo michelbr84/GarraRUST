@@ -407,14 +407,27 @@ const GARRA_STATUS_TOOL: &str = "garra_status";
 
 /// A instrucao que manda consultar `garra_status` antes de negar uma
 /// integracao (#1347), em PT.
-const NOTA_GARRA_STATUS_PT: &str = "Antes de dizer que nao tem acesso a um canal, \
-integracao ou ferramenta, chame `garra_status` e responda a partir dele; um canal \
-listado como `active` e um canal em que voce esta conectado.";
+///
+/// Publica de proposito: e o contrato entre a nota e o formato do relatorio
+/// do `garra_status` no gateway, e os testes de la afirmam contra ela. O
+/// relatorio de hoje traz `channels` como lista de nomes; a fatia do gateway
+/// que acrescenta estado por canal usa `status` com `active`/`offline`, e a
+/// nota ja fala dos dois formatos. Ferramentas ficam de fora: a lista de
+/// ferramentas que o modelo recebeu no turno e a fonte de verdade para elas.
+pub const NOTA_GARRA_STATUS_PT: &str = "Antes de dizer que nao tem acesso a um canal \
+ou integracao, chame `garra_status` e responda a partir dele. Um canal presente na \
+lista `channels` do relatorio e um canal em que voce esta conectado; se o canal \
+trouxer um campo `status`, so `active` conta como conectado, e `offline` nao. Um \
+canal ausente da lista pode estar conectado por um caminho que o relatorio ainda \
+nao cobre: nao negue o acesso so por isso.";
 
-/// A mesma instrucao em EN.
-const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a channel, \
-integration or tool, call `garra_status` and answer from it; a channel listed as \
-`active` is a channel you are connected to.";
+/// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
+pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
+channel or integration, call `garra_status` and answer from it. A channel present \
+in the report's `channels` list is a channel you are connected to; if the channel \
+carries a `status` field, only `active` counts as connected, and `offline` does not. \
+A channel missing from the list may still be connected through a path the report \
+does not cover yet: do not deny access on that basis alone.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
 /// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.
@@ -3012,7 +3025,25 @@ impl AgentRuntime {
         } else {
             match self.find_tool(name) {
                 Some(tool) => {
-                    match timeout(budget.timeout(), tool.execute(context, input.clone())).await {
+                    let execucao = tool.execute(context, input.clone());
+                    // #1347 (revisao da onda A): `garra_status` relata as
+                    // ferramentas que ESTE portao libera, e nao todas as
+                    // registradas. So ela recebe a lista: montar a cada
+                    // chamada de outra tool seria custo sem leitor.
+                    let execucao = async {
+                        if name == GARRA_STATUS_TOOL {
+                            let liberadas: Vec<String> = self
+                                .tool_names()
+                                .into_iter()
+                                .filter(|n| portao.permite(n))
+                                .collect();
+                            crate::tools::turn_tools::com_ferramentas_do_turno(liberadas, execucao)
+                                .await
+                        } else {
+                            execucao.await
+                        }
+                    };
+                    match timeout(budget.timeout(), execucao).await {
                         Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
                         Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
                     }
@@ -9226,8 +9257,25 @@ mod tests {
                 Some(NOTA_GARRA_STATUS_EN)
             );
             assert!(NOTA_GARRA_STATUS_PT.contains("`garra_status`"));
-            assert!(NOTA_GARRA_STATUS_PT.contains("`active`"));
             assert!(NOTA_GARRA_STATUS_EN.contains("`garra_status`"));
+        }
+
+        /// Revisao da onda A: a nota descreve o relatorio que existe — a
+        /// lista `channels` — e o `status` com `active`/`offline` que a
+        /// fatia do gateway acrescenta, e nao fala de ferramentas: para elas
+        /// a lista do turno e a fonte, e o relatorio listava tools negadas.
+        #[test]
+        fn nota_casa_com_o_formato_do_relatorio_e_nao_fala_de_ferramenta() {
+            for nota in [NOTA_GARRA_STATUS_PT, NOTA_GARRA_STATUS_EN] {
+                for campo in ["`channels`", "`status`", "`active`", "`offline`"] {
+                    assert!(nota.contains(campo), "{campo} ausente: {nota}");
+                }
+                let minuscula = nota.to_lowercase();
+                assert!(
+                    !minuscula.contains("ferramenta") && !minuscula.contains("tool"),
+                    "{nota}"
+                );
+            }
         }
 
         /// Guarda o `system` e as `tools` da primeira requisicao; responde
@@ -9419,6 +9467,114 @@ mod tests {
             let (system, tools) = primeira_requisicao(Caminho::AgentConfig, true, &nega).await;
             assert!(!tools.iter().any(|t| t == "garra_status"), "{tools:?}");
             assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
+        }
+
+        /// Uma `garra_status` de mentira que anota o que
+        /// `ferramentas_do_turno` devolveu quando o runtime a executou.
+        struct SondaDeStatus {
+            viu: Arc<Mutex<Option<Option<Vec<String>>>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for SondaDeStatus {
+            fn name(&self) -> &str {
+                "garra_status"
+            }
+            fn description(&self) -> &str {
+                "sonda"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn execute(
+                &self,
+                _c: &crate::tools::ToolContext,
+                _i: serde_json::Value,
+            ) -> Result<crate::tools::ToolOutput> {
+                *self.viu.lock().expect("lock") =
+                    Some(crate::tools::turn_tools::ferramentas_do_turno());
+                Ok(crate::tools::ToolOutput::success("{}"))
+            }
+        }
+
+        /// Pede `garra_status` na primeira volta; responde em texto depois.
+        struct PedeStatus;
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeStatus {
+            fn provider_id(&self) -> &str {
+                "pede_status"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let ja_rodou = request.messages.iter().any(|m| {
+                    matches!(&m.content, crate::providers::MessagePart::Parts(p)
+                        if p.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
+                });
+                let content = if ja_rodou {
+                    vec![ContentBlock::Text {
+                        text: "ok".to_string(),
+                    }]
+                } else {
+                    vec![ContentBlock::ToolUse {
+                        id: "t-status".to_string(),
+                        name: "garra_status".to_string(),
+                        input: serde_json::json!({}),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// Revisao da onda A: no piso `search`, `garra_status` recebe so as
+        /// ferramentas que o portao do turno libera — `bash` e `file_write`
+        /// estao registradas mas negadas, e nao podem aparecer.
+        #[tokio::test]
+        async fn garra_status_recebe_so_as_ferramentas_liberadas_no_turno() {
+            let rt = AgentRuntime::new();
+            for nome in ["bash", "file_write", "file_read"] {
+                rt.register_tool(stub(nome));
+            }
+            let viu = Arc::new(Mutex::new(None));
+            rt.register_tool(Box::new(SondaDeStatus {
+                viu: Arc::clone(&viu),
+            }));
+            rt.register_provider(Arc::new(PedeStatus));
+            let search = ExecContext::with_mode(Some("search".to_string()));
+            let r = rt
+                .process_message_with_agent_config(
+                    "s-1347-tools",
+                    "o que voce pode fazer?",
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &search,
+                )
+                .await
+                .expect("turno");
+            assert_eq!(r, "ok");
+            let visto = viu.lock().expect("lock").clone();
+            assert_eq!(
+                visto,
+                Some(Some(vec![
+                    "file_read".to_string(),
+                    "garra_status".to_string()
+                ])),
+                "a tool so ve o que o portao do search libera"
+            );
         }
     }
 

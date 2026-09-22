@@ -45,8 +45,8 @@ impl Tool for GarraStatusTool {
 
     fn description(&self) -> &str {
         "Describes the Garra runtime you are running in: version, uptime, active \
-         provider and model, registered tools, advertised features, connected \
-         channels, and this session's mode and working directory. Use it whenever \
+         provider and model, the tools available in this turn, advertised features, \
+         connected channels, and this session's mode and working directory. Use it whenever \
          the user asks what you are, what you can do, or how you are configured — \
          instead of guessing or saying you cannot inspect yourself. Takes no input."
     }
@@ -74,7 +74,15 @@ impl Tool for GarraStatusTool {
         providers.sort();
         providers.dedup();
 
-        let mut tools = state.agents.tool_names();
+        // #1347 (revisao da onda A): as ferramentas que o portao DESTE turno
+        // libera, publicadas pelo runtime em volta do `execute`. Nos modos
+        // restritos (o piso `search` do WhatsApp) a lista registrada traz
+        // `bash`/`file_write`, que o turno nega, e o modelo e mandado
+        // responder a partir deste relatorio. Fora de um turno do runtime
+        // (teste, chamada direta) nao ha portao a consultar, e vale a lista
+        // registrada, como antes.
+        let mut tools = garraia_agents::tools::turn_tools::ferramentas_do_turno()
+            .unwrap_or_else(|| state.agents.tool_names());
         tools.sort();
 
         let features = feature_flags(&feature_inputs(&state));
@@ -176,6 +184,64 @@ mod tests {
             "{}",
             json["features"]
         );
+    }
+
+    /// Revisao da onda A: dentro de um turno, `tools` e o que o portao do
+    /// turno libera, nao tudo que esta registrado — no piso `search`, `bash`
+    /// e `file_write` ficam de fora.
+    #[tokio::test]
+    async fn dentro_do_turno_relata_so_as_ferramentas_liberadas() {
+        let st = state();
+        st.agents.register_tool(Box::new(GarraStatusTool::new(&st)));
+        let registradas = st.agents.tool_names();
+        let portao = garraia_agents::modes::ToolGate::for_mode_name("search");
+        let liberadas: Vec<String> = ["bash", "file_write", "file_read", "garra_status"]
+            .into_iter()
+            .map(str::to_string)
+            .filter(|n| portao.permite(n))
+            .collect();
+        assert!(registradas.iter().any(|n| n == "garra_status"));
+
+        let tool = GarraStatusTool::new(&st);
+        let ctx = ctx(None);
+        let out = garraia_agents::tools::turn_tools::com_ferramentas_do_turno(
+            liberadas,
+            tool.execute(&ctx, serde_json::json!({})),
+        )
+        .await
+        .expect("executa");
+        let json: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        assert_eq!(
+            json["tools"],
+            serde_json::json!(["file_read", "garra_status"]),
+            "{}",
+            json["tools"]
+        );
+    }
+
+    /// A nota do runtime (#1347) fala do formato deste relatorio: a lista
+    /// `channels`. Quando a fatia do gateway trocar o formato (estado por
+    /// canal em `status`, `active`/`offline`), este teste e a nota mudam
+    /// juntos.
+    #[tokio::test]
+    async fn a_nota_do_runtime_casa_com_o_formato_de_channels() {
+        let st = state();
+        let tool = GarraStatusTool::new(&st);
+        let out = tool
+            .execute(&ctx(None), serde_json::json!({}))
+            .await
+            .expect("executa");
+        let json: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        assert!(json["channels"].is_array(), "{}", json["channels"]);
+        for nota in [
+            garraia_agents::NOTA_GARRA_STATUS_PT,
+            garraia_agents::NOTA_GARRA_STATUS_EN,
+        ] {
+            assert!(nota.contains("`channels`"), "{nota}");
+            assert!(nota.contains("`status`"), "{nota}");
+            assert!(nota.contains("`active`"), "{nota}");
+            assert!(nota.contains("`offline`"), "{nota}");
+        }
     }
 
     /// Nada de segredo: sem provider configurado, `provider`/`model` sao null,
