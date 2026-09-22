@@ -3189,14 +3189,20 @@ mod tests {
         assert!(hit.message.contains("auto-fallback"));
     }
 
+    /// `validate` le HOST/PORT do processo desde a #1261, entao precisa do
+    /// `ENV_TEST_LOCK` e de neutralizar as duas envs — senao um teste vizinho
+    /// que passa por `com_bind_env` pode deixar `HOST=0.0.0.0` visivel aqui
+    /// e produzir um Error de exposicao que nao tem nada a ver com o default.
     #[test]
     fn valid_default_config_has_no_errors() {
-        let cfg = AppConfig::default();
-        let findings = validate(&cfg);
-        assert!(
-            !findings.iter().any(|f| f.severity == Severity::Error),
-            "default config produced errors: {findings:?}"
-        );
+        com_bind_env(None, None, || {
+            let cfg = AppConfig::default();
+            let findings = validate(&cfg);
+            assert!(
+                !findings.iter().any(|f| f.severity == Severity::Error),
+                "default config produced errors: {findings:?}"
+            );
+        });
     }
 
     /// Achado da investigação da #930: o flag não é implementado no gateway
