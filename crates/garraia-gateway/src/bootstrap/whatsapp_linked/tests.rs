@@ -2293,7 +2293,8 @@ mod ponta_a_ponta {
             roteiro: Roteiro::empurra("oi do celular"),
         });
 
-        supervisionar(&state, settings, store, key, launcher);
+        let preparo = preparo_da_ponte::ponte_ja_pronta(&state).await;
+        supervisionar(&state, settings, store, key, launcher, preparo);
 
         assert!(
             state.whatsapp_linked.cancelamento_vivo(),
@@ -2335,6 +2336,7 @@ mod ponta_a_ponta {
                 .bridge_dir,
             roteiro: Roteiro::eco(),
         });
+        let preparo = preparo_da_ponte::ponte_ja_pronta(&state).await;
         supervisionar(
             &state,
             LinkedSettings {
@@ -2344,6 +2346,7 @@ mod ponta_a_ponta {
             store,
             key,
             launcher,
+            preparo,
         );
 
         assert!(
@@ -2360,6 +2363,11 @@ mod ponta_a_ponta {
             "e o slot fica vazio, para um proximo supervisor poder ocupa-lo"
         );
     }
+
+    // W1 (v0.4.5): o boot re-materializa a ponte embutida e roda o `npm ci`
+    // quando os manifestos mudaram. Em arquivo proprio para nao disputar
+    // linhas com o resto desta suite.
+    mod preparo_da_ponte;
 
     // -----------------------------------------------------------------------
     // O circuito da mensagem (sink + gates)
