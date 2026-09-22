@@ -68,8 +68,9 @@ pub const RUN_TESTS: &str = "run_tests";
 pub const TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO: &[&str] = &[BASH, RUN_TESTS];
 
 /// Destas, as que o sandbox sabe envolver hoje. Uma tool fora desta lista
-/// nunca e `Sandbox`: em `standard` ela fica `Desligado`.
-const SANDBOXAVEIS: &[&str] = &[BASH];
+/// nunca e `Sandbox`: em `standard` ela fica `Desligado`. O `run_tests`
+/// entrou com a #1225 S2 (`sandbox_spawn::executar`).
+const SANDBOXAVEIS: &[&str] = &[BASH, RUN_TESTS];
 
 /// Por que a tool ficou fora do registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -439,23 +440,38 @@ mod tests {
     }
 
     /// SANDBOX-1: `run_tests` executa codigo do repositorio (`scripts.test`,
-    /// `build.rs`, `conftest.py`) e segue a mesma regra do `bash`. Ele ainda
-    /// nao passa pelo sandbox, entao em `standard` fica desligado com
-    /// qualquer policy; em `isolated-pod` sem sandbox exigido roda no pod.
+    /// `build.rs`, `conftest.py`) e segue a mesma regra do `bash`: em
+    /// `standard` so dentro de um sandbox docker/podman utilizavel (#1225 S2);
+    /// em `isolated-pod` sem sandbox exigido roda no pod.
     #[test]
     fn run_tests_segue_a_regra_do_bash() {
         assert!(TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO.contains(&RUN_TESTS));
         let docker = policy(SandboxMode::All, Some(SandboxBackend::Docker));
-        for p in [SandboxPolicy::default(), docker.clone()] {
-            let e = decidir_exposicao_de(RUN_TESTS, STD, &p, true, sim);
-            assert!(!e.registra(), "{p:?}: {e:?}");
-        }
+        assert!(
+            !decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim).registra()
+        );
+        assert_eq!(
+            decidir_exposicao_de(RUN_TESTS, STD, &docker, true, sim),
+            ExposicaoDoBash::Sandbox {
+                backend: SandboxBackend::Docker
+            }
+        );
+        // Binario ausente, ou `run_tests` elevado com o bash sandboxado: fora.
+        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &docker, true, nao).registra());
+        let mut elevado = docker.clone();
+        elevado.elevated = vec![RUN_TESTS.into()];
+        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &elevado, true, sim).registra());
+        assert!(decidir_exposicao_do_bash(STD, &elevado, true, sim).registra());
+        // Allowlist so com bash: bash no container, run_tests fora.
+        let mut so_bash = policy(SandboxMode::Allowlist, Some(SandboxBackend::Docker));
+        so_bash.sandboxed_tools = vec!["bash".into()];
+        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &so_bash, true, sim).registra());
         assert_eq!(
             decidir_exposicao_de(RUN_TESTS, POD, &SandboxPolicy::default(), true, sim),
             ExposicaoDoBash::HostDoPod
         );
         // Exigido e impossivel de honrar: desligado tambem no pod.
-        assert!(!decidir_exposicao_de(RUN_TESTS, POD, &docker, true, sim).registra());
+        assert!(!decidir_exposicao_de(RUN_TESTS, POD, &docker, true, nao).registra());
         let d = decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim)
             .descricao_de(RUN_TESTS);
         assert!(d.starts_with("run_tests DESLIGADO"), "{d}");

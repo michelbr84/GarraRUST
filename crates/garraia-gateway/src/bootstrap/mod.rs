@@ -2563,6 +2563,29 @@ mod tests {
         }
     }
 
+    /// #1225 S2 + #1272: em `standard` o `run_tests` volta quando o sandbox
+    /// docker o cobre — se e so se o binario existe. Com o `bash` no sandbox
+    /// e o `run_tests` elevado, ele fica de fora.
+    #[test]
+    fn gateway_em_standard_com_sandbox_so_registra_run_tests_com_backend_real() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+        let tem = |c: &AppConfig| {
+            build_agent_runtime(c)
+                .tool_names()
+                .iter()
+                .any(|n| n == "run_tests")
+        };
+        assert_eq!(
+            tem(&config),
+            cfg!(unix) && SandboxBackend::Docker.is_available(),
+            "run_tests em standard so com docker de verdade"
+        );
+        config.agent.sandbox.elevated = vec!["run_tests".into()];
+        assert!(!tem(&config), "run_tests elevado roda no host: fora");
+    }
+
     /// #1272, gemeo positivo do `run_tests`: `isolated-pod` explicito o
     /// devolve (no host do pod).
     #[test]
