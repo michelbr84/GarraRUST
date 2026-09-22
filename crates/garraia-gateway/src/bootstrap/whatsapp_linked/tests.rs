@@ -2439,6 +2439,9 @@ mod ponta_a_ponta {
         config_viva: Option<watch::Receiver<AppConfig>>,
         /// Identidades a mais no `allow` do boot (um `…@lid`, por exemplo).
         allow_extra: Vec<String>,
+        /// `default_mode` declarado na secao (#1343: o teste de grupo precisa
+        /// de um piso que deixe a ferramenta pausar).
+        default_mode: Option<String>,
     }
 
     impl Default for Montagem {
@@ -2452,6 +2455,7 @@ mod ponta_a_ponta {
                 provider: ProviderDeStub::default(),
                 config_viva: None,
                 allow_extra: Vec::new(),
+                default_mode: None,
             }
         }
     }
@@ -2472,6 +2476,7 @@ mod ponta_a_ponta {
             provider,
             config_viva,
             allow_extra,
+            default_mode,
         } = m;
         let dir = tempfile::tempdir().expect("tempdir");
         let (state, provider) = monta_estado_vivo(&dir, perfil, provider, config_viva);
@@ -2505,7 +2510,7 @@ mod ponta_a_ponta {
                 Vec::new()
             },
             reply_in_groups,
-            ..LinkedSettings::default()
+            default_mode,
         };
 
         let (outbound_tx, outbound_rx) = mpsc::channel(16);
@@ -3355,6 +3360,192 @@ mod ponta_a_ponta {
         // Controle: a mesma pessoa em 1:1 e aceita.
         entrega(&c, "oi").await;
         assert_eq!(turnos_estaveis_em(&c, 1).await, 1);
+
+        encerra(c).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // #1343: aprovacao retomada entre turnos (GAR-187)
+    // -----------------------------------------------------------------------
+
+    const PERIGOSA: &str = "apaga_arquivo";
+    const ALVO_PERIGOSO: &str = "/tmp/garraia-1343-alvo";
+
+    /// Ferramenta que pede confirmacao e conta quantas vezes RODOU (so roda
+    /// quando a aprovacao do turno cobre `(PERIGOSA, ALVO_PERIGOSO)`).
+    struct ToolQuePedeConfirmacao {
+        rodou: Contador,
+    }
+
+    #[async_trait::async_trait]
+    impl garraia_agents::tools::Tool for ToolQuePedeConfirmacao {
+        fn name(&self) -> &str {
+            PERIGOSA
+        }
+        fn description(&self) -> &str {
+            "apaga um arquivo (stub)"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            c: &garraia_agents::tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> garraia_common::Result<garraia_agents::tools::ToolOutput> {
+            if c.approval.covers(PERIGOSA, ALVO_PERIGOSO) {
+                self.rodou.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(garraia_agents::tools::ToolOutput::success("apagado"));
+            }
+            let marcador =
+                garraia_agents::tools::approval::ApprovalFingerprint::of(PERIGOSA, ALVO_PERIGOSO)
+                    .marker();
+            Ok(garraia_agents::tools::ToolOutput::confirmation_request(
+                format!("Confirma apagar {ALVO_PERIGOSO}? Responda sim. {marcador}"),
+            ))
+        }
+    }
+
+    fn registra_perigosa(rodou: &Contador) -> impl FnOnce(&SharedState) {
+        let rodou = Arc::clone(rodou);
+        move |state: &SharedState| {
+            state
+                .agents
+                .register_tool(Box::new(ToolQuePedeConfirmacao { rodou }));
+        }
+    }
+
+    fn pedido_perigoso() -> ProviderDeStub {
+        ProviderDeStub::que_pede(PERIGOSA, serde_json::json!({ "alvo": ALVO_PERIGOSO }))
+    }
+
+    /// Quantos pedidos de confirmacao sairam pela ponte (o eco `from_me` da
+    /// resposta do agente traz o marcador).
+    fn pedidos_que_sairam(c: &Cenario) -> usize {
+        recebidas(c)
+            .iter()
+            .filter(|m| {
+                m.from_me
+                    && m.text.as_deref().is_some_and(|t| {
+                        garraia_agents::tools::approval::ApprovalFingerprint::from_marker(t)
+                            .is_some()
+                    })
+            })
+            .count()
+    }
+
+    /// Entrega `m` pelo sink real com o pedido de ferramenta rearmado (no
+    /// GAR-187 o modelo repete a chamada no turno do "sim"), e espera a
+    /// resposta do agente sair pela ponte.
+    async fn turno_pela_ponte(c: &Cenario, m: InboundMessage) {
+        c.provider
+            .rearma(PERIGOSA, serde_json::json!({ "alvo": ALVO_PERIGOSO }));
+        let antes = respostas(c);
+        InboundSink::deliver(&*c.espiao, m);
+        assert!(
+            ate(|| respostas(c) > antes).await,
+            "a resposta do agente tem de sair pela ponte: {:?}",
+            recebidas(c)
+        );
+    }
+
+    /// **O #1343 pela ponte do WhatsApp.** O dono, num `isolated-pod`, em
+    /// 1:1: o turno pausa e o pedido sai pela ponte; o "sim" seguinte roda a
+    /// ferramenta UMA vez; um segundo "sim" (replay) pausa de novo.
+    #[tokio::test]
+    async fn dono_no_pod_recebe_o_pedido_e_o_sim_roda_uma_vez() {
+        let vezes = contador();
+        let c = Montagem {
+            roteiro: Roteiro::eco().da_propria_conta(),
+            dono: true,
+            perfil: ExecutionProfile::IsolatedPod,
+            provider: pedido_perigoso(),
+            ..Montagem::default()
+        }
+        .sobe(registra_perigosa(&vezes))
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe"
+        );
+
+        turno_pela_ponte(&c, msg(Some("apaga o arquivo"))).await;
+        assert_eq!(
+            pedidos_que_sairam(&c),
+            1,
+            "o pedido saiu: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(rodou(&vezes), 0, "pausou, nao rodou");
+
+        turno_pela_ponte(&c, msg(Some("sim"))).await;
+        assert_eq!(rodou(&vezes), 1, "o sim do mesmo remetente roda — uma vez");
+
+        turno_pela_ponte(&c, msg(Some("sim"))).await;
+        assert_eq!(rodou(&vezes), 1, "replay nao roda de novo");
+        assert_eq!(pedidos_que_sairam(&c), 2, "o replay pausa de novo");
+
+        encerra(c).await;
+    }
+
+    const OUTRO: &str = "5511777770000";
+    const GRUPO_1343: &str = "120363000000000043@g.us";
+
+    fn no_grupo(remetente: &str, texto: &str) -> InboundMessage {
+        let mut m = msg(Some(texto));
+        m.chat_jid = Jid::new(GRUPO_1343);
+        m.sender_jid = Jid::new(format!("{remetente}@s.whatsapp.net"));
+        m.sender_phone = Some(format!("+{remetente}"));
+        m.is_group = true;
+        m
+    }
+
+    /// **Grupo, fail-closed.** `PEER` e `OUTRO` estao no `allow`, o grupo
+    /// responde e o piso deixa a ferramenta pausar. `PEER` recebe o pedido;
+    /// o "sim" de `OUTRO`, no mesmo grupo, nao roda nada — e encerra o
+    /// pedido, entao o "sim" tardio de `PEER` tambem nao roda. O controle no
+    /// fim prova que o caminho roda a ferramenta quando o "sim" e de quem
+    /// recebeu o pedido.
+    #[tokio::test]
+    async fn no_grupo_o_sim_de_outro_membro_nao_aprova_o_pedido() {
+        let vezes = contador();
+        let c = Montagem {
+            roteiro: Roteiro::eco().da_propria_conta(),
+            liberado: true,
+            allow_extra: vec![OUTRO.to_string()],
+            reply_in_groups: true,
+            default_mode: Some("code".to_string()),
+            provider: pedido_perigoso(),
+            ..Montagem::default()
+        }
+        .sobe(registra_perigosa(&vezes))
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe"
+        );
+
+        turno_pela_ponte(&c, no_grupo(PEER, "apaga o arquivo")).await;
+        assert_eq!(pedidos_que_sairam(&c), 1, "{:?}", recebidas(&c));
+
+        turno_pela_ponte(&c, no_grupo(OUTRO, "sim")).await;
+        assert_eq!(rodou(&vezes), 0, "o sim de outro membro nao aprova");
+
+        turno_pela_ponte(&c, no_grupo(PEER, "sim")).await;
+        assert_eq!(
+            rodou(&vezes),
+            0,
+            "o pedido de PEER foi encerrado pelo sim alheio; o pedido novo e de OUTRO"
+        );
+
+        // Controle: agora o pedido pendente e o de PEER (o turno anterior
+        // pausou), e o "sim" dele roda.
+        turno_pela_ponte(&c, no_grupo(PEER, "sim")).await;
+        assert_eq!(
+            rodou(&vezes),
+            1,
+            "controle: o sim de quem recebeu o pedido roda"
+        );
 
         encerra(c).await;
     }
