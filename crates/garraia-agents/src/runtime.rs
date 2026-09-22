@@ -400,6 +400,50 @@ fn com_objetivo(system: Option<String>, goal: Option<&str>) -> Option<String> {
     }
 }
 
+/// O nome da tool de autoinspecao do gateway (#1347). Ela e registrada pelo
+/// `garraia-gateway`; o runtime so precisa do nome para saber se ela esta
+/// entre as oferecidas no turno.
+const GARRA_STATUS_TOOL: &str = "garra_status";
+
+/// A instrucao que manda consultar `garra_status` antes de negar uma
+/// integracao (#1347), em PT.
+const NOTA_GARRA_STATUS_PT: &str = "Antes de dizer que nao tem acesso a um canal, \
+integracao ou ferramenta, chame `garra_status` e responda a partir dele; um canal \
+listado como `active` e um canal em que voce esta conectado.";
+
+/// A mesma instrucao em EN.
+const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a channel, \
+integration or tool, call `garra_status` and answer from it; a channel listed as \
+`active` is a channel you are connected to.";
+
+/// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
+/// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.
+///
+/// O prompt de um modo (`system_prompt_template`) SUBSTITUI a persona, e a
+/// persona era o unico lugar com essa instrucao: no piso `search` do
+/// WhatsApp, o modelo respondia "nao tenho acesso ao WhatsApp" conectado ao
+/// WhatsApp. Aqui a nota entra DEPOIS de qualquer prompt de operador ou de
+/// modo, como o objetivo e a memoria entram — nada e substituido. Sem a tool
+/// na lista (CLI, modo que a nega), nao entra: o modelo nunca e mandado
+/// chamar uma tool que nao tem.
+fn com_nota_de_capacidades(
+    system: Option<String>,
+    tool_defs: &[ToolDefinition],
+    lang: crate::persona::Lang,
+) -> Option<String> {
+    if !tool_defs.iter().any(|d| d.name == GARRA_STATUS_TOOL) {
+        return system;
+    }
+    let nota = match lang {
+        crate::persona::Lang::Pt => NOTA_GARRA_STATUS_PT,
+        crate::persona::Lang::En => NOTA_GARRA_STATUS_EN,
+    };
+    Some(match system {
+        Some(s) => format!("{s}\n\n{nota}"),
+        None => nota.to_string(),
+    })
+}
+
 /// O desfecho de uma chamada de tool, no unico ponto de despacho (#1226 S-A).
 ///
 /// As quatro copias do loop de turno recebem um destes desfechos e tratam so
@@ -1498,6 +1542,9 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        // #1347: depois do filtro, porque a nota so entra quando
+        // `garra_status` esta entre as tools que o modelo vai ver.
+        let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -1755,6 +1802,9 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        // #1347: depois do filtro, porque a nota so entra quando
+        // `garra_status` esta entre as tools que o modelo vai ver.
+        let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
         let (provider, tools_model_override) =
             self.apply_tools_model_override(provider, String::new(), tool_defs.len());
 
@@ -2198,6 +2248,9 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        // #1347: depois do filtro, porque a nota so entra quando
+        // `garra_status` esta entre as tools que o modelo vai ver.
+        let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -9119,6 +9172,253 @@ mod tests {
                 _ => None,
             });
             assert_eq!(fim_da_negada, Some(false), "{eventos:?}");
+        }
+    }
+
+    // ─── #1347: garra_status nos modos restritos + nota no prompt ─────────
+
+    mod nota_garra_status {
+        use super::super::{
+            AgentRuntime, NOTA_GARRA_STATUS_EN, NOTA_GARRA_STATUS_PT, com_nota_de_capacidades,
+        };
+        use super::stub;
+        use crate::exec_context::ExecContext;
+        use crate::persona::Lang;
+        use crate::providers::{
+            ContentBlock, LlmProvider, LlmRequest, LlmResponse, StreamEvent, ToolDefinition,
+        };
+        use futures::Stream;
+        use garraia_common::Result;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+
+        fn def(nome: &str) -> ToolDefinition {
+            ToolDefinition {
+                name: nome.to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+
+        #[test]
+        fn nota_so_entra_com_garra_status_oferecida() {
+            let sem = com_nota_de_capacidades(Some("P".into()), &[def("file_read")], Lang::Pt);
+            assert_eq!(sem.as_deref(), Some("P"));
+            assert_eq!(com_nota_de_capacidades(None, &[], Lang::Pt), None);
+        }
+
+        #[test]
+        fn nota_vai_depois_do_prompt_sem_substituir() {
+            let com = com_nota_de_capacidades(
+                Some("prompt do modo".into()),
+                &[def("file_read"), def("garra_status")],
+                Lang::Pt,
+            )
+            .expect("prompt");
+            assert!(com.starts_with("prompt do modo\n\n"), "{com}");
+            assert!(com.ends_with(NOTA_GARRA_STATUS_PT), "{com}");
+        }
+
+        #[test]
+        fn nota_sem_prompt_e_a_lingua_da_persona() {
+            assert_eq!(
+                com_nota_de_capacidades(None, &[def("garra_status")], Lang::En).as_deref(),
+                Some(NOTA_GARRA_STATUS_EN)
+            );
+            assert!(NOTA_GARRA_STATUS_PT.contains("`garra_status`"));
+            assert!(NOTA_GARRA_STATUS_PT.contains("`active`"));
+            assert!(NOTA_GARRA_STATUS_EN.contains("`garra_status`"));
+        }
+
+        /// Guarda o `system` e as `tools` da primeira requisicao; responde
+        /// em texto (batch e streaming).
+        #[derive(Default)]
+        struct Captura {
+            primeira: Mutex<Option<(Option<String>, Vec<String>)>>,
+        }
+
+        impl Captura {
+            fn anotar(&self, request: &LlmRequest) {
+                let mut p = self.primeira.lock().expect("lock");
+                if p.is_none() {
+                    *p = Some((
+                        request.system.clone(),
+                        request.tools.iter().map(|t| t.name.clone()).collect(),
+                    ));
+                }
+            }
+
+            fn primeira(&self) -> (Option<String>, Vec<String>) {
+                self.primeira
+                    .lock()
+                    .expect("lock")
+                    .clone()
+                    .expect("houve requisicao")
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for Captura {
+            fn provider_id(&self) -> &str {
+                "captura"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                self.anotar(request);
+                Ok(LlmResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "nao sei".to_string(),
+                    }],
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn stream_complete(
+                &self,
+                request: &LlmRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+                self.anotar(request);
+                Ok(Box::pin(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta("nao sei".to_string())),
+                    Ok(StreamEvent::MessageStop),
+                ])))
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum Caminho {
+            AgentConfig,
+            Streaming,
+            Heartbeat,
+        }
+
+        async fn primeira_requisicao(
+            caminho: Caminho,
+            com_tool: bool,
+            exec: &ExecContext,
+        ) -> (Option<String>, Vec<String>) {
+            let rt = AgentRuntime::new();
+            rt.register_tool(stub("file_read"));
+            if com_tool {
+                rt.register_tool(stub("garra_status"));
+            }
+            let provider = Arc::new(Captura::default());
+            rt.register_provider(provider.clone());
+            let texto = "voce tem acesso ao WhatsApp?";
+            match caminho {
+                Caminho::AgentConfig => {
+                    rt.process_message_with_agent_config(
+                        "s-1347",
+                        texto,
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno");
+                }
+                Caminho::Streaming => {
+                    let (tx, mut rx) =
+                        tokio::sync::mpsc::channel::<crate::turn_events::TurnEvent>(64);
+                    let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                    rt.process_message_streaming_with_events(
+                        "s-1347",
+                        texto,
+                        &[],
+                        tx,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno");
+                    dreno.await.expect("dreno");
+                }
+                Caminho::Heartbeat => {
+                    rt.process_heartbeat("s-1347", texto, &[], None, None)
+                        .await
+                        .expect("turno");
+                }
+            }
+            provider.primeira()
+        }
+
+        /// O cenario do relato: piso `search` (o do WhatsApp), pergunta sobre
+        /// acesso. A tool chega ao modelo e o prompt tem o template do modo
+        /// E a nota — nos tres ramos do runtime.
+        #[tokio::test]
+        async fn modo_search_oferece_garra_status_e_a_nota() {
+            let search = ExecContext::with_mode(Some("search".to_string()));
+            for caminho in [Caminho::AgentConfig, Caminho::Streaming] {
+                let (system, tools) = primeira_requisicao(caminho, true, &search).await;
+                assert!(
+                    tools.iter().any(|t| t == "garra_status"),
+                    "{caminho:?}: {tools:?}"
+                );
+                let system = system.expect("prompt");
+                // O ramo de streaming nao aplica o template do modo (so
+                // override > prompt do runtime > persona) — divergencia
+                // anterior a esta mudanca. A nota entra nos dois.
+                if matches!(caminho, Caminho::AgentConfig) {
+                    assert!(system.contains("You are a search assistant"), "{system}");
+                    assert!(system.ends_with(NOTA_GARRA_STATUS_PT), "{system}");
+                }
+                assert!(
+                    system.contains(NOTA_GARRA_STATUS_PT),
+                    "{caminho:?}: {system}"
+                );
+            }
+            // O heartbeat nao escolhe modo: persona + nota.
+            let (system, _) =
+                primeira_requisicao(Caminho::Heartbeat, true, &ExecContext::default()).await;
+            assert!(system.expect("prompt").contains(NOTA_GARRA_STATUS_PT));
+        }
+
+        /// Sem a tool registrada (a CLI), ou com um modo que a nega, nada
+        /// de nota: o modelo nunca e mandado chamar o que nao tem.
+        #[tokio::test]
+        async fn sem_garra_status_oferecida_nao_ha_nota() {
+            let search = ExecContext::with_mode(Some("search".to_string()));
+            for caminho in [Caminho::AgentConfig, Caminho::Streaming] {
+                let (system, tools) = primeira_requisicao(caminho, false, &search).await;
+                assert!(!tools.iter().any(|t| t == "garra_status"));
+                // A persona cita `garra_status` por conta propria; o que
+                // nao pode aparecer e a NOTA.
+                assert!(
+                    !system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT),
+                    "{caminho:?}"
+                );
+            }
+            let (system, _) =
+                primeira_requisicao(Caminho::Heartbeat, false, &ExecContext::default()).await;
+            assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
+
+            let perfil = crate::modes::ModeProfile::from_custom(
+                crate::modes::AgentMode::Search,
+                "sem-status",
+                None,
+                &serde_json::json!({ "deny": ["garra_status"] }),
+                &serde_json::json!({}),
+            );
+            let nega = ExecContext::with_custom_profile("sem-status".to_string(), perfil);
+            let (system, tools) = primeira_requisicao(Caminho::AgentConfig, true, &nega).await;
+            assert!(!tools.iter().any(|t| t == "garra_status"), "{tools:?}");
+            assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
         }
     }
 

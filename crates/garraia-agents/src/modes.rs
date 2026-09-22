@@ -687,6 +687,10 @@ impl ModeProfile {
                     // o sistema de arquivos. Executar (R1+) é a linha abaixo.
                     "device_list".to_string(),
                     "device_read".to_string(),
+                    // #1347: autoinspecao R0 (so le o proprio runtime, sem
+                    // I/O nem rede) — o modelo precisa dela para nao negar
+                    // um canal em que esta conectado.
+                    "garra_status".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
@@ -734,6 +738,10 @@ impl ModeProfile {
                     // que só desenha e analisa.
                     "device_list".to_string(),
                     "device_read".to_string(),
+                    // #1347: autoinspecao R0 (so le o proprio runtime, sem
+                    // I/O nem rede) — o modelo precisa dela para nao negar
+                    // um canal em que esta conectado.
+                    "garra_status".to_string(),
                 ],
                 // #1129: sem escrita no mundo físico também.
                 denied: vec![
@@ -848,6 +856,10 @@ impl ModeProfile {
                     // servidor está a quentar?") — executar não.
                     "device_list".to_string(),
                     "device_read".to_string(),
+                    // #1347: autoinspecao R0 (so le o proprio runtime, sem
+                    // I/O nem rede) — o modelo precisa dela para nao negar
+                    // um canal em que esta conectado.
+                    "garra_status".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
@@ -887,6 +899,10 @@ impl ModeProfile {
                     "repo_search".to_string(),
                     "web_search".to_string(),
                     "web_fetch".to_string(),
+                    // #1347: autoinspecao R0 (so le o proprio runtime, sem
+                    // I/O nem rede) — o modelo precisa dela para nao negar
+                    // um canal em que esta conectado.
+                    "garra_status".to_string(),
                 ],
                 denied: vec![],
                 required: vec![],
@@ -929,6 +945,10 @@ impl ModeProfile {
                     // #1129: revisão pode ler o mundo físico; nunca mexer.
                     "device_list".to_string(),
                     "device_read".to_string(),
+                    // #1347: autoinspecao R0 (so le o proprio runtime, sem
+                    // I/O nem rede) — o modelo precisa dela para nao negar
+                    // um canal em que esta conectado.
+                    "garra_status".to_string(),
                 ],
                 denied: vec![
                     "file_write".to_string(),
@@ -967,6 +987,10 @@ impl ModeProfile {
                     "file_write".to_string(),
                     "search_and_replace".to_string(),
                     "repo_search".to_string(),
+                    // #1347: autoinspecao R0 (so le o proprio runtime, sem
+                    // I/O nem rede) — o modelo precisa dela para nao negar
+                    // um canal em que esta conectado.
+                    "garra_status".to_string(),
                 ],
                 denied: vec![],
                 required: vec![],
@@ -2078,5 +2102,52 @@ mod tests {
         let profile = ModeProfile::from_mode(AgentMode::Search);
         assert_eq!(profile.name, "search");
         assert!(profile.tool_policy.whitelist_mode);
+    }
+
+    /// #1347: `garra_status` (autoinspecao R0) passa em TODO modo nativo
+    /// com whitelist — no piso `search` do WhatsApp o modelo nem recebia a
+    /// tool e negava o canal em que estava conectado. Os modos sem whitelist
+    /// ja a permitiam.
+    #[test]
+    fn garra_status_passa_em_todo_modo_nativo() {
+        let mut com_whitelist = 0;
+        for modo in AgentMode::all_modes() {
+            let perfil = ModeProfile::from_mode(modo);
+            if perfil.tool_policy.whitelist_mode {
+                com_whitelist += 1;
+            }
+            assert!(
+                ToolGate::for_mode_name(modo.as_str()).permite("garra_status"),
+                "modo '{modo}' esconde garra_status (#1347)"
+            );
+        }
+        assert_eq!(
+            com_whitelist, 6,
+            "search, architect, debug, orchestrator, review, edit"
+        );
+    }
+
+    /// `denied` continua vencendo: um modo customizado ainda tira a tool.
+    #[test]
+    fn modo_customizado_ainda_pode_negar_garra_status() {
+        let perfil = ModeProfile::from_custom(
+            AgentMode::Search,
+            "sem-status",
+            None,
+            &serde_json::json!({ "deny": ["garra_status"] }),
+            &serde_json::json!({}),
+        );
+        assert!(!ToolGate::from_profile(&perfil).permite("garra_status"));
+    }
+
+    /// E nada mais entrou na allowlist junto: so `garra_status`.
+    #[test]
+    fn garra_status_nao_libera_outra_tool() {
+        for modo in ["search", "architect", "review"] {
+            let g = ToolGate::for_mode_name(modo);
+            assert!(!g.permite("bash"), "{modo}");
+            assert!(!g.permite("file_write"), "{modo}");
+            assert!(!g.permite("device_execute"), "{modo}");
+        }
     }
 }
