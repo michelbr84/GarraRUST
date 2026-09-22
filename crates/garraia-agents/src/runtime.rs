@@ -19,7 +19,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::context_policy::ContextPolicy;
 use crate::embeddings::EmbeddingProvider;
 use crate::exec_context::ExecContext;
-use crate::execution_budget::ExecutionBudget;
+use crate::execution_budget::{ExecutionBudget, VereditoDeLoop};
 use crate::memory_extractor::LlmMemoryExtractor;
 use crate::provider_resilience::ResilienceManager;
 use crate::providers::{
@@ -438,6 +438,13 @@ enum DispatchOutcome {
         fingerprint: Option<ApprovalFingerprint>,
     },
 
+    /// Primeira deteccao de loop da tarefa (#1295 item 1): a chamada NAO
+    /// rodou, e este `ToolResult` leva a observacao corretiva ao modelo. As
+    /// quatro copias do loop tratam como `Denied` — empilham e seguem —, mas
+    /// e variante propria porque o `tool_program` rotula o passo: um aviso
+    /// de loop nao e "negado pelo gate do modo".
+    LoopWarning(ContentBlock),
+
     /// O `ExecutionBudget` detectou loop por assinatura: o turno inteiro
     /// falha. Quem chama converte em `Error::Agent` tal qual — a mensagem
     /// ja vem pronta de [`ExecutionBudget::mensagem_de_loop`] (#1295), com
@@ -463,6 +470,48 @@ fn neutralizar_marcadores(texto: &str) -> String {
         crate::tools::approval::MARKER_PREFIX,
         "[CONFIRM_REQUIRED(neutralizado):",
     )
+}
+
+/// O que o despacho devolve para uma chamada barrada pelo detector de loop
+/// (#1295), com o par de eventos que a poe no `/tool` da CLI (item 3).
+///
+/// Detectar roda ANTES do `tool_started` do despacho — a chamada nao
+/// executa —, entao sem este par a chamada barrada nao aparecia no
+/// `tool_log` e o `/tool <n>` mostrava so as chamadas identicas anteriores,
+/// sem o veredito. O resumo do input e o `summarize_tool_input` (redigido);
+/// a saida e a mensagem do detector, que ja sai redigida de
+/// `ExecutionBudget::mensagem_de_loop`.
+async fn desfecho_de_loop(
+    sink: Option<&TurnSink>,
+    id: &str,
+    name: &str,
+    input: &serde_json::Value,
+    veredito: VereditoDeLoop,
+) -> DispatchOutcome {
+    let (texto, resumo) = match &veredito {
+        VereditoDeLoop::Avisar(t) => (t, "bloqueada: loop detectado (aviso ao modelo)"),
+        VereditoDeLoop::Abortar(t) => (t, "bloqueada: loop detectado (turno abortado)"),
+    };
+    warn!(tool = %name, "{resumo}");
+    if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+        sink.tool_started(name, summarize_tool_input(name, input))
+            .await;
+        sink.tool_finished(
+            name,
+            std::time::Duration::ZERO,
+            false,
+            resumo.to_string(),
+            capture_tool_output(texto),
+        )
+        .await;
+    }
+    match veredito {
+        VereditoDeLoop::Avisar(aviso) => DispatchOutcome::LoopWarning(ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: neutralizar_marcadores(&aviso),
+        }),
+        VereditoDeLoop::Abortar(mensagem) => DispatchOutcome::BudgetExceeded { mensagem },
+    }
 }
 
 /// #1339: so um pedido de confirmacao pode carregar marcador no historico.
@@ -1594,7 +1643,9 @@ impl AgentRuntime {
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
                         .await
                     {
-                        DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
+                        DispatchOutcome::Result(bloco, _)
+                        | DispatchOutcome::Denied(bloco)
+                        | DispatchOutcome::LoopWarning(bloco) => {
                             tool_results.push(bloco);
                         }
                         DispatchOutcome::Paused {
@@ -1851,7 +1902,9 @@ impl AgentRuntime {
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
                         .await
                     {
-                        DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
+                        DispatchOutcome::Result(bloco, _)
+                        | DispatchOutcome::Denied(bloco)
+                        | DispatchOutcome::LoopWarning(bloco) => {
                             tool_results.push(bloco);
                         }
                         DispatchOutcome::Paused {
@@ -2466,7 +2519,9 @@ impl AgentRuntime {
                             )
                             .await
                         {
-                            DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
+                            DispatchOutcome::Result(bloco, _)
+                            | DispatchOutcome::Denied(bloco)
+                            | DispatchOutcome::LoopWarning(bloco) => {
                                 tool_results.push(bloco);
                             }
                             DispatchOutcome::Paused {
@@ -2621,7 +2676,8 @@ impl AgentRuntime {
                                 .await
                             {
                                 DispatchOutcome::Result(bloco, _)
-                                | DispatchOutcome::Denied(bloco) => {
+                                | DispatchOutcome::Denied(bloco)
+                                | DispatchOutcome::LoopWarning(bloco) => {
                                     tool_results.push(bloco);
                                 }
                                 DispatchOutcome::Paused {
@@ -2762,11 +2818,10 @@ impl AgentRuntime {
             // registra chamada com payload para detecção de loop por assinatura
             budget.registrar_chamada(name, input);
 
-            // detecta loop (#1295: o erro carrega o diagnostico do input repetido)
-            if budget.detectar_loop_ferramenta() {
-                return DispatchOutcome::BudgetExceeded {
-                    mensagem: budget.mensagem_de_loop(name, input),
-                };
+            // detecta loop (#1295: a primeira deteccao da tarefa avisa o
+            // modelo; a seguinte aborta com o diagnostico do input repetido)
+            if let Some(veredito) = budget.veredito_de_loop(name, input) {
+                return desfecho_de_loop(sink, id, name, input, veredito).await;
             }
         }
 
@@ -2843,10 +2898,28 @@ impl AgentRuntime {
                     // So a assinatura: o envelope ja foi contado la em cima
                     // (`registrar_contagem`), e o orcamento continua 1 + N.
                     budget.registrar_assinatura(name, input);
-                    if budget.detectar_loop_ferramenta() {
-                        Err(budget.mensagem_de_loop(name, input))
-                    } else {
-                        Ok(DesfechoDoPrograma::Saida(saida))
+                    match budget.veredito_de_loop(name, input) {
+                        None => Ok(DesfechoDoPrograma::Saida(saida)),
+                        // #1295: o mesmo aviso-uma-vez do loop normal. O
+                        // `tool_started` do envelope ja saiu la em cima, entao
+                        // aqui so o fim, com o rotulo de loop.
+                        Some(VereditoDeLoop::Avisar(aviso)) => {
+                            if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+                                sink.tool_finished(
+                                    name,
+                                    iniciado_em.elapsed(),
+                                    false,
+                                    "bloqueada: loop detectado (aviso ao modelo)".to_string(),
+                                    capture_tool_output(&aviso),
+                                )
+                                .await;
+                            }
+                            return DispatchOutcome::LoopWarning(ContentBlock::ToolResult {
+                                tool_use_id: id.to_string(),
+                                content: neutralizar_marcadores(&aviso),
+                            });
+                        }
+                        Some(VereditoDeLoop::Abortar(mensagem)) => Err(mensagem),
                     }
                 }
                 outro => outro,
@@ -3185,6 +3258,25 @@ impl AgentRuntime {
                         .to_string(),
                     )));
                 }
+                DispatchOutcome::LoopWarning(ContentBlock::ToolResult { content, .. }) => {
+                    // #1295: o passo fechou a janela de loop e NAO rodou. O
+                    // programa para aqui com o aviso, rotulado como loop (nao
+                    // como gate); a proxima repeticao aborta o turno.
+                    executados.push(serde_json::json!({
+                        "step": i,
+                        "tool": passo.tool,
+                        "ok": false,
+                        "loop": content,
+                    }));
+                    return Ok(Saida(ToolOutput::error(
+                        serde_json::json!({
+                            "steps": executados,
+                            "parou_no_passo": i,
+                            "motivo": "loop detectado: aviso corretivo",
+                        })
+                        .to_string(),
+                    )));
+                }
                 DispatchOutcome::Paused { prompt, .. } => {
                     // Achado de auditoria/revisao (F-1 / importante 1): o
                     // texto do humano vira a RESPOSTA QUE ELE LE, na mesma
@@ -3230,7 +3322,9 @@ impl AgentRuntime {
                 DispatchOutcome::BudgetExceeded { mensagem } => {
                     return Err(mensagem);
                 }
-                DispatchOutcome::Result(_, _) | DispatchOutcome::Denied(_) => {
+                DispatchOutcome::Result(_, _)
+                | DispatchOutcome::Denied(_)
+                | DispatchOutcome::LoopWarning(_) => {
                     // `dispatch_tool_call` so constroi `ToolResult` para
                     // estas duas variantes; nunca deveria acontecer, mas o
                     // repo nao usa `unwrap`/`unreachable!` em codigo de
@@ -5823,11 +5917,14 @@ mod tests {
     }
 
     /// A deteccao de loop por assinatura (JANELA_LOOP=3) vale DENTRO de um
-    /// `tool_program` como vale no loop normal: 3 passos identicos (mesma
-    /// tool, mesmos args) abortam a conversa inteira, nao viram resultado
-    /// parcial silencioso.
+    /// `tool_program` como vale no loop normal. Desde o #1295 item 1 a
+    /// primeira deteccao da tarefa avisa em vez de abortar: o terceiro passo
+    /// identico NAO roda, o programa para nele com o motivo rotulado como
+    /// loop (e nao como gate), e o modelo recebe a observacao corretiva. A
+    /// repeticao seguinte aborta — ver
+    /// `tool_program_repetido_entre_voltas_cai_no_detector_de_loop`.
     #[tokio::test]
-    async fn tool_program_aborta_a_conversa_em_loop_de_passos_identicos() {
+    async fn tool_program_avisa_no_loop_de_passos_identicos() {
         let rt = AgentRuntime::new();
         rt.register_tool(Box::new(EcoInteiroTool));
 
@@ -5836,7 +5933,7 @@ mod tests {
         let provider = Arc::new(RodaPrograma::novo(programa));
         rt.register_provider(provider.clone());
 
-        let erro = rt
+        let resposta = rt
             .process_message_with_agent_config(
                 "sessao-tp-loop",
                 "roda",
@@ -5850,9 +5947,26 @@ mod tests {
                 &ExecContext::default(),
             )
             .await
-            .expect_err("3 passos identicos e loop, mesmo dentro do programa");
+            .expect("o primeiro loop da tarefa avisa, nao aborta");
+        assert_eq!(resposta, "concluido");
 
-        assert!(erro.to_string().contains("tool loop detected"), "{erro}");
+        let resultados = provider.resultados();
+        let relatorio = resultados
+            .iter()
+            .find(|r| r.contains("\"steps\""))
+            .expect("o modelo recebeu o relatorio do programa");
+        let corpo: serde_json::Value = serde_json::from_str(relatorio).expect("relatorio e JSON");
+        assert_eq!(
+            corpo["motivo"], "loop detectado: aviso corretivo",
+            "{corpo}"
+        );
+        assert_eq!(corpo["parou_no_passo"], 2, "{corpo}");
+        let passo = &corpo["steps"][2];
+        assert_eq!(passo["ok"], false, "{corpo}");
+        let aviso = passo["loop"].as_str().expect("aviso do loop");
+        assert!(aviso.contains("tool loop detected: eco_inteiro"), "{aviso}");
+        assert!(aviso.contains("NAO foi executada"), "{aviso}");
+        assert!(passo.get("denied").is_none(), "loop nao e gate: {corpo}");
     }
 
     /// Criterio de aceite da issue (S-B, texto literal): "programa nao
@@ -6532,7 +6646,8 @@ mod tests {
     /// repete o MESMO programa de um passo so a cada volta deixava a janela
     /// alternando `[tp, X, tp]` e so parava no teto da tarefa (~25
     /// repeticoes). Agora os passos ficam colados, e a terceira repeticao
-    /// de X corta — antes de rodar — como cortaria fora do programa.
+    /// de X e barrada — antes de rodar — como seria fora do programa: na
+    /// terceira volta o modelo recebe o aviso do #1295, e a quarta aborta.
     #[tokio::test]
     async fn tool_program_repetido_entre_voltas_cai_no_detector_de_loop() {
         let rt = AgentRuntime::new();
@@ -6572,13 +6687,13 @@ mod tests {
         );
         assert_eq!(
             provider.voltas.load(std::sync::atomic::Ordering::SeqCst),
-            3,
-            "corta na terceira volta, e nao no teto da tarefa"
+            4,
+            "avisa na terceira volta e corta na quarta, e nao no teto da tarefa"
         );
         assert_eq!(
             vezes.load(std::sync::atomic::Ordering::SeqCst),
             2,
-            "a terceira repeticao e cortada antes de rodar"
+            "a terceira e a quarta repeticoes sao barradas antes de rodar"
         );
     }
 
@@ -6586,8 +6701,8 @@ mod tests {
     /// programa que para ANTES de despachar qualquer passo nao registrava
     /// nada, e o mesmo programa repetido a cada volta so parava no teto da
     /// tarefa (50 voltas). Sem passo despachado, o envelope entra na janela:
-    /// os tres jeitos de falhar antes do passo 0 cortam na terceira volta, e
-    /// nenhuma tool roda.
+    /// os tres jeitos de falhar antes do passo 0 avisam na terceira volta e
+    /// cortam na quarta (#1295), e nenhuma tool roda.
     #[tokio::test]
     async fn tool_program_que_falha_antes_de_despachar_tambem_cai_no_detector_de_loop() {
         let dezessete: Vec<serde_json::Value> = (0..17)
@@ -6642,8 +6757,8 @@ mod tests {
             );
             assert_eq!(
                 provider.voltas.load(std::sync::atomic::Ordering::SeqCst),
-                3,
-                "{caso}: corta na terceira volta, e nao no teto da tarefa"
+                4,
+                "{caso}: avisa na terceira volta e corta na quarta, e nao no teto da tarefa"
             );
             assert_eq!(
                 vezes.load(std::sync::atomic::Ordering::SeqCst),
@@ -8533,6 +8648,184 @@ mod tests {
             );
             // O registro foi consumido: outro "sim" nao aprova nada.
             assert!(rt.pending_approvals.is_empty());
+        }
+    }
+
+    // ─── #1295 itens 1 e 3: aviso corretivo, depois aborta; /tool ─────────
+
+    mod aviso_de_loop {
+        use super::super::AgentRuntime;
+        use super::{ToolQueConta, inicios_casados_com_fins, turno_de_streaming_com_eventos};
+        use crate::exec_context::ExecContext;
+        use crate::providers::{
+            ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+        };
+        use crate::turn_events::TurnEvent;
+        use garraia_common::Result;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Pede `conta {x:1}` toda volta. Com `muda_apos_aviso`, ao ler o
+        /// aviso do detector no ultimo resultado, responde em texto — o
+        /// modelo que aprendeu com a observacao.
+        struct RepeteConta {
+            voltas: AtomicUsize,
+            muda_apos_aviso: bool,
+            viu_aviso: std::sync::atomic::AtomicBool,
+        }
+
+        impl RepeteConta {
+            fn novo(muda_apos_aviso: bool) -> Arc<Self> {
+                Arc::new(Self {
+                    voltas: AtomicUsize::new(0),
+                    muda_apos_aviso,
+                    viu_aviso: std::sync::atomic::AtomicBool::new(false),
+                })
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for RepeteConta {
+            fn provider_id(&self) -> &str {
+                "repete_conta"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                self.voltas.fetch_add(1, Ordering::SeqCst);
+                let aviso = request.messages.last().is_some_and(|m| {
+                    matches!(m.role, ChatRole::User)
+                        && matches!(&m.content, MessagePart::Parts(p) if p.iter().any(|b|
+                            matches!(b, ContentBlock::ToolResult { content, .. }
+                                if content.contains("NAO foi executada"))))
+                });
+                if aviso {
+                    self.viu_aviso.store(true, Ordering::SeqCst);
+                }
+                let content = if aviso && self.muda_apos_aviso {
+                    vec![ContentBlock::Text {
+                        text: "mudei de abordagem".to_string(),
+                    }]
+                } else {
+                    vec![ContentBlock::ToolUse {
+                        id: "t-conta".to_string(),
+                        name: "conta".to_string(),
+                        input: serde_json::json!({ "x": 1 }),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        fn runtime_com_conta(provider: Arc<RepeteConta>) -> (AgentRuntime, Arc<AtomicUsize>) {
+            let rt = AgentRuntime::new();
+            let vezes = Arc::new(AtomicUsize::new(0));
+            rt.register_tool(Box::new(ToolQueConta {
+                vezes: Arc::clone(&vezes),
+            }));
+            rt.register_provider(provider);
+            (rt, vezes)
+        }
+
+        async fn turno(rt: &AgentRuntime) -> Result<String> {
+            rt.process_message_with_agent_config(
+                "sessao-1295",
+                "conta",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+        }
+
+        /// Item 1: a terceira chamada identica nao roda e vira aviso; a
+        /// quarta aborta com a mensagem do #1318. Execucoes reais: 2, como
+        /// antes do aviso existir.
+        #[tokio::test]
+        async fn terceira_chamada_avisa_quarta_aborta_e_so_duas_rodam() {
+            let provider = RepeteConta::novo(false);
+            let (rt, vezes) = runtime_com_conta(provider.clone());
+
+            let erro = turno(&rt).await.expect_err("repetir apos o aviso aborta");
+            let msg = erro.to_string();
+            assert!(msg.contains("tool loop detected: conta"), "{msg}");
+            assert!(msg.contains("3 chamadas identicas"), "{msg}");
+            assert!(
+                provider.viu_aviso.load(Ordering::SeqCst),
+                "o modelo recebeu a observacao corretiva antes do corte"
+            );
+            assert_eq!(provider.voltas.load(Ordering::SeqCst), 4);
+            assert_eq!(vezes.load(Ordering::SeqCst), 2, "nunca mais de 2 execucoes");
+        }
+
+        /// O modelo que muda de abordagem depois do aviso termina o turno.
+        #[tokio::test]
+        async fn modelo_que_muda_de_abordagem_depois_do_aviso_termina_ok() {
+            let provider = RepeteConta::novo(true);
+            let (rt, vezes) = runtime_com_conta(provider.clone());
+
+            let resposta = turno(&rt).await.expect("o aviso nao aborta");
+            assert_eq!(resposta, "mudei de abordagem");
+            assert_eq!(vezes.load(Ordering::SeqCst), 2);
+            assert_eq!(provider.voltas.load(Ordering::SeqCst), 4);
+        }
+
+        /// Item 3: no streaming, a chamada barrada aparece no `/tool` — um
+        /// par `tool_started`/`tool_finished(success=false)` com o veredito,
+        /// tanto no aviso quanto no aborto. Usa o `EmLoop` (`file_read` com
+        /// o mesmo `path` toda volta, via `stream_complete` de verdade).
+        #[tokio::test]
+        async fn chamada_barrada_por_loop_aparece_nos_eventos_de_tool() {
+            let rt = AgentRuntime::new();
+            rt.register_provider(Arc::new(super::EmLoop));
+            let (resultado, eventos) =
+                turno_de_streaming_com_eventos(&rt, "sessao-1295-eventos", &ExecContext::default())
+                    .await;
+            let erro = resultado.expect_err("aborta na quarta");
+            assert!(erro.to_string().contains("tool loop detected"), "{erro}");
+
+            let iniciados = inicios_casados_com_fins(&eventos);
+            assert_eq!(iniciados.len(), 4, "{eventos:?}");
+
+            let fins: Vec<(&bool, &String, &String)> = eventos
+                .iter()
+                .filter_map(|e| match e {
+                    TurnEvent::ToolFinished {
+                        success,
+                        summary,
+                        output,
+                        ..
+                    } => Some((success, summary, output)),
+                    _ => None,
+                })
+                .collect();
+            let (ok, resumo, saida) = fins[2];
+            assert!(!ok);
+            assert_eq!(resumo, "bloqueada: loop detectado (aviso ao modelo)");
+            assert!(
+                saida.contains("input repetido: /tmp/alvo-repetido"),
+                "{saida}"
+            );
+            let (ok, resumo, saida) = fins[3];
+            assert!(!ok);
+            assert_eq!(resumo, "bloqueada: loop detectado (turno abortado)");
+            assert!(
+                saida.starts_with("tool loop detected: file_read"),
+                "{saida}"
+            );
         }
     }
 
