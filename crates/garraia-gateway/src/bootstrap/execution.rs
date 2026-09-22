@@ -308,6 +308,7 @@ mod tests {
     /// Sem `data_dir` a raiz cai em `<config_dir>/data/workspace` — e em
     /// nenhum perfil ela e o `$HOME` nu.
     #[test]
+    #[serial_test::serial] // le `HOME`, que testes de `persistence` reescrevem
     fn nenhum_perfil_usa_home_como_raiz() {
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))

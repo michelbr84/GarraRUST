@@ -1220,20 +1220,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn o_relatorio_de_verdade_inclui_a_linha_do_whatsapp() {
-        use garraia_agents::AgentRuntime;
-        use garraia_channels::ChannelRegistry;
-
         let dir = tempfile::tempdir().expect("tempdir");
-        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
-            config,
-            std::sync::Arc::new(AgentRuntime::new()),
-            ChannelRegistry::new(),
-        ));
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
 
         let Json(report) = diagnostics_handler(State(state)).await;
         let linha = report
@@ -1607,34 +1599,26 @@ mod tests {
         assert_eq!(lista_de_caminhos(&[], data), "(nenhuma)");
     }
 
-    /// F-6 da auditoria: `AppState::new` provisiona `mcp.json` em
-    /// `<GARRAIA_CONFIG_DIR>` quando ele nao existe. Um teste que constroi o
-    /// estado sem apontar essa env para um tempdir escreveria um `mcp.json`
-    /// de verdade no config dir do desenvolvedor, apontando para um
-    /// diretorio temporario que ja nao existe. O guard aponta e restaura;
-    /// `#[serial]` e o lock que os testes de `persistence` ja usam para as
-    /// envs de provisionamento.
-    struct ConfigDirDeTeste(Option<std::ffi::OsString>);
-
-    impl ConfigDirDeTeste {
-        fn apontar_para(dir: &Path) -> Self {
-            let anterior = std::env::var_os("GARRAIA_CONFIG_DIR");
-            // SAFETY: teste serializado (`#[serial_test::serial]`).
-            unsafe { std::env::set_var("GARRAIA_CONFIG_DIR", dir) };
-            Self(anterior)
-        }
-    }
-
-    impl Drop for ConfigDirDeTeste {
-        fn drop(&mut self) {
-            // SAFETY: teste serializado.
-            unsafe {
-                match self.0.take() {
-                    Some(v) => std::env::set_var("GARRAIA_CONFIG_DIR", v),
-                    None => std::env::remove_var("GARRAIA_CONFIG_DIR"),
-                }
-            }
-        }
+    /// F-6 da auditoria: `AppState::new` provisiona `mcp.json` no config dir
+    /// real quando ele nao existe. Os testes passam o config dir (um tempdir)
+    /// direto, sem mexer em `GARRAIA_CONFIG_DIR`: apontar a env deixava
+    /// qualquer outro teste que montasse um `AppState` em paralelo escrever o
+    /// PROPRIO `mcp.json` no tempdir deste, e a linha `mcp.filesystem_root`
+    /// virava aviso de vez em quando (flake do
+    /// `o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp`). `#[serial]`
+    /// continua: e o lock das envs de provisionamento
+    /// (`GARRAIA_DISABLE_MCP_AUTOPROVISION`, `HOME`) que os testes de
+    /// `persistence` escrevem.
+    fn estado_no_config_dir(
+        config: garraia_config::AppConfig,
+        config_dir: &Path,
+    ) -> crate::state::AppState {
+        crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            config_dir,
+        )
     }
 
     fn opt_out_de_provisionamento_ligado() -> bool {
@@ -1647,20 +1631,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp() {
-        use garraia_agents::AgentRuntime;
-        use garraia_channels::ChannelRegistry;
-
         let dir = tempfile::tempdir().expect("tempdir");
-        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
-            config,
-            std::sync::Arc::new(AgentRuntime::new()),
-            ChannelRegistry::new(),
-        ));
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
 
         let Json(report) = diagnostics_handler(State(state)).await;
         let perfil = report
@@ -2269,9 +2245,6 @@ mod tests_mcp_1346 {
         use garraia_channels::ChannelRegistry;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let anterior = std::env::var_os("GARRAIA_CONFIG_DIR");
-        // SAFETY: teste serializado.
-        unsafe { std::env::set_var("GARRAIA_CONFIG_DIR", dir.path()) };
 
         let mgr = std::sync::Arc::new(McpManager::new());
         let missing = dir
@@ -2301,21 +2274,14 @@ mod tests_mcp_1346 {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let mut state = crate::state::AppState::new(
+        let mut state = crate::state::AppState::with_config_dir(
             config,
             std::sync::Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
+            dir.path(),
         );
         state.mcp_manager_arc = Some(mgr);
         let Json(report) = diagnostics_handler(State(std::sync::Arc::new(state))).await;
-
-        // SAFETY: idem.
-        unsafe {
-            match anterior {
-                Some(v) => std::env::set_var("GARRAIA_CONFIG_DIR", v),
-                None => std::env::remove_var("GARRAIA_CONFIG_DIR"),
-            }
-        }
 
         let servers = report
             .checks

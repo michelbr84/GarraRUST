@@ -2381,10 +2381,9 @@ mod tests_mcp_health_1346 {
     #[tokio::test]
     #[serial_test::serial]
     async fn mcp_health_lista_servidor_pendente_com_causa() {
+        // The config dir is passed in, never via `GARRAIA_CONFIG_DIR`: see
+        // `AppState::with_config_dir` for the race that env caused.
         let dir = tempfile::tempdir().expect("tempdir");
-        let anterior = std::env::var_os("GARRAIA_CONFIG_DIR");
-        // SAFETY: teste serializado.
-        unsafe { std::env::set_var("GARRAIA_CONFIG_DIR", dir.path()) };
 
         let mgr = Arc::new(McpManager::new());
         let mut env = std::collections::HashMap::new();
@@ -2429,23 +2428,16 @@ mod tests_mcp_health_1346 {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let mut state = AppState::new(
+        let mut state = AppState::with_config_dir(
             config,
             Arc::new(AgentRuntime::new()),
             ChannelRegistry::new(),
+            dir.path(),
         );
         state.mcp_manager_arc = Some(mgr);
         let state: SharedState = Arc::new(state);
 
         let axum::Json(body) = mcp_health(axum::extract::State(state)).await;
-
-        // SAFETY: idem.
-        unsafe {
-            match anterior {
-                Some(v) => std::env::set_var("GARRAIA_CONFIG_DIR", v),
-                None => std::env::remove_var("GARRAIA_CONFIG_DIR"),
-            }
-        }
 
         assert_eq!(body["status"], "all_disconnected", "{body}");
         let servers = body["servers"].as_array().expect("servers");
