@@ -388,21 +388,82 @@ async fn parrot_mesma_conexao_aprova_e_outra_conexao_nao() {
 
 // ── API compativel com OpenAI ───────────────────────────────────────────
 
-async fn openai(gw: &Gateway, sessao: &str, bearer: Option<&str>, texto: &str) -> String {
+/// Um turno em `/v1/chat/completions`. `sessao: None` nao manda
+/// `X-Session-Id`; `authorization` vai como header cru (bytes), para o teste
+/// do header que nao e UTF-8. Com `stream`, remonta os deltas do SSE ate o
+/// `[DONE]`.
+async fn openai_turno(
+    gw: &Gateway,
+    sessao: Option<&str>,
+    authorization: Option<&[u8]>,
+    texto: &str,
+    stream: bool,
+) -> String {
     let mut req = reqwest::Client::new()
         .post(format!("http://{}/v1/chat/completions", gw.base))
-        .header("x-session-id", sessao)
-        .json(&json!({"messages": [{"role": "user", "content": texto}]}));
-    if let Some(b) = bearer {
-        req = req.bearer_auth(b);
+        .json(&json!({
+            "messages": [{"role": "user", "content": texto}],
+            "stream": stream,
+        }));
+    if let Some(s) = sessao {
+        req = req.header("x-session-id", s);
     }
-    let resp = req.send().await.expect("post");
+    if let Some(a) = authorization {
+        req = req.header(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_bytes(a).expect("header"),
+        );
+    }
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(20), req.send())
+        .await
+        .expect("resposta a tempo")
+        .expect("post");
     assert!(resp.status().is_success(), "status {}", resp.status());
-    let v: Value = resp.json().await.expect("json");
-    v["choices"][0]["message"]["content"]
-        .as_str()
-        .expect("content")
-        .to_string()
+    if !stream {
+        let v: Value = resp.json().await.expect("json");
+        return v["choices"][0]["message"]["content"]
+            .as_str()
+            .expect("content")
+            .to_string();
+    }
+    let corpo = tokio::time::timeout(std::time::Duration::from_secs(20), resp.text())
+        .await
+        .expect("stream a tempo")
+        .expect("corpo");
+    let mut saida = String::new();
+    let mut fechou = false;
+    for linha in corpo.lines() {
+        let Some(dado) = linha.strip_prefix("data:") else {
+            continue;
+        };
+        let dado = dado.trim();
+        if dado == "[DONE]" {
+            fechou = true;
+            break;
+        }
+        let v: Value = serde_json::from_str(dado).expect("chunk json");
+        if let Some(t) = v["choices"][0]["delta"]["content"].as_str() {
+            saida.push_str(t);
+        }
+    }
+    assert!(fechou, "o SSE terminou sem [DONE]: {corpo}");
+    saida
+}
+
+fn bearer(b: &str) -> Vec<u8> {
+    format!("Bearer {b}").into_bytes()
+}
+
+async fn openai(gw: &Gateway, sessao: &str, cred: Option<&str>, texto: &str) -> String {
+    let auth = cred.map(bearer);
+    openai_turno(gw, Some(sessao), auth.as_deref(), texto, false).await
+}
+
+/// O mesmo turno pelo ramo `"stream": true` (`handle_streaming`), que monta
+/// o proprio escopo dentro do `tokio::spawn`.
+async fn openai_stream(gw: &Gateway, sessao: &str, cred: Option<&str>, texto: &str) -> String {
+    let auth = cred.map(bearer);
+    openai_turno(gw, Some(sessao), auth.as_deref(), texto, true).await
 }
 
 fn com_dono(state: &mut AppState) {
@@ -438,6 +499,106 @@ async fn openai_outra_credencial_na_mesma_sessao_nao_aprova() {
     assert_eq!(gw.rodou(), 0);
     assert!(e_pedido(&openai(&gw, s, Some("cred-a"), "sim").await));
     assert_eq!(gw.rodou(), 0);
+}
+
+/// #1343 A7: o ramo streaming tem o mesmo contrato — "sim" com a mesma
+/// credencial roda uma vez, replay pausa.
+#[tokio::test]
+async fn openai_stream_sim_com_a_mesma_credencial_roda_uma_vez() {
+    let gw = subir(com_dono).await;
+    let s = "sess-openai-stream-a";
+    let r1 = openai_stream(&gw, s, Some("cred-a"), "apaga o arquivo").await;
+    assert!(e_pedido(&r1), "o pedido chega pelo SSE: {r1}");
+    let r2 = openai_stream(&gw, s, Some("cred-a"), "sim").await;
+    assert!(!e_pedido(&r2), "o sim aprovou: {r2}");
+    assert_eq!(gw.rodou(), 1);
+    assert!(e_pedido(
+        &openai_stream(&gw, s, Some("cred-a"), "sim").await
+    ));
+    assert_eq!(gw.rodou(), 1, "replay nao roda");
+}
+
+/// #1343 A7: no streaming, outra credencial na mesma sessao nao aprova — e
+/// encerra o pedido.
+#[tokio::test]
+async fn openai_stream_outra_credencial_na_mesma_sessao_nao_aprova() {
+    let gw = subir(com_dono).await;
+    let s = "sess-openai-stream-b";
+    assert!(e_pedido(
+        &openai_stream(&gw, s, Some("cred-a"), "apaga o arquivo").await
+    ));
+    assert!(e_pedido(
+        &openai_stream(&gw, s, Some("cred-b"), "sim").await
+    ));
+    assert_eq!(gw.rodou(), 0);
+    assert!(e_pedido(
+        &openai_stream(&gw, s, Some("cred-a"), "sim").await
+    ));
+    assert_eq!(gw.rodou(), 0);
+}
+
+/// #1343 A7: os dois ramos montam o MESMO escopo — pausa pelo streaming e
+/// "sim" sem streaming, com a mesma credencial, roda uma vez (e ao
+/// contrario tambem).
+#[tokio::test]
+async fn openai_pausa_num_ramo_e_o_sim_no_outro_aprova() {
+    let gw = subir(com_dono).await;
+    let s = "sess-openai-misto";
+    assert!(e_pedido(
+        &openai_stream(&gw, s, Some("cred-a"), "apaga o arquivo").await
+    ));
+    assert!(!e_pedido(&openai(&gw, s, Some("cred-a"), "sim").await));
+    assert_eq!(gw.rodou(), 1);
+
+    assert!(e_pedido(
+        &openai(&gw, s, Some("cred-a"), "apaga o arquivo").await
+    ));
+    assert!(!e_pedido(
+        &openai_stream(&gw, s, Some("cred-a"), "sim").await
+    ));
+    assert_eq!(gw.rodou(), 2);
+}
+
+/// #1343 A8: sem `X-Session-Id` cada request e uma sessao nova (UUID do
+/// servidor), entao o "sim" nao tem o que retomar — a pausa e terminal.
+/// Quem quer aprovar manda a mesma `X-Session-Id` nos dois requests.
+#[tokio::test]
+async fn openai_sem_x_session_id_o_sim_nao_aprova() {
+    let gw = subir(com_dono).await;
+    let auth = bearer("cred-a");
+    for stream in [false, true] {
+        let r1 = openai_turno(&gw, None, Some(&auth), "apaga o arquivo", stream).await;
+        assert!(e_pedido(&r1), "{r1}");
+        let r2 = openai_turno(&gw, None, Some(&auth), "sim", stream).await;
+        assert!(e_pedido(&r2), "sem sessao estavel o sim nao aprova: {r2}");
+    }
+    assert_eq!(gw.rodou(), 0);
+}
+
+/// #1343 A9: um `Authorization` que nao e UTF-8 (obs-text) continua sendo a
+/// credencial dele. Antes ele caia na identidade de quem nao manda header
+/// nenhum, e um cliente anonimo com a mesma `X-Session-Id` aprovava.
+#[tokio::test]
+async fn openai_authorization_nao_utf8_nao_vira_o_anonimo() {
+    let gw = subir(com_dono).await;
+    let s = "sess-openai-obs-text";
+    let obs = b"Bearer \xff\xfe-cred".to_vec();
+    assert!(e_pedido(
+        &openai_turno(&gw, Some(s), Some(&obs), "apaga o arquivo", false).await
+    ));
+    assert!(e_pedido(
+        &openai_turno(&gw, Some(s), None, "sim", false).await
+    ));
+    assert_eq!(gw.rodou(), 0, "o anonimo nao aprova o pedido do obs-text");
+
+    // E o proprio dono do header obs-text aprova o dele.
+    assert!(e_pedido(
+        &openai_turno(&gw, Some(s), Some(&obs), "apaga o arquivo", false).await
+    ));
+    assert!(!e_pedido(
+        &openai_turno(&gw, Some(s), Some(&obs), "sim", false).await
+    ));
+    assert_eq!(gw.rodou(), 1);
 }
 
 /// Sem dono na allowlist nao ha remetente do servidor: a pausa e terminal.
@@ -518,4 +679,93 @@ async fn mobile_sim_do_mesmo_sub_roda_e_outro_sub_nao_alcanca() {
     assert_eq!(gw.rodou(), 0);
     assert!(!e_pedido(&mobile(&gw, &a, "sim").await));
     assert_eq!(gw.rodou(), 1);
+}
+
+// ── Canais de chat (bootstrap) ──────────────────────────────────────────
+
+/// Um turno de canal pelo MESMO caminho dos 11 `bootstrap/<canal>.rs`:
+/// `crate::approval_scope::com_escopo(exec, canal, sessao, user_id)` e o
+/// runtime. A sessao e da conversa (num grupo, a mesma para todo membro);
+/// o remetente e quem falou. O historico vai vazio: com escopo ele nao
+/// decide aprovacao nenhuma.
+async fn turno_de_canal(rt: &AgentRuntime, sessao: &str, usuario: &str, texto: &str) -> String {
+    let exec = garraia_gateway::approval_scope::com_escopo(
+        garraia_agents::exec_context::ExecContext::default(),
+        "discord",
+        sessao,
+        usuario,
+    );
+    rt.process_message_with_agent_config(
+        sessao,
+        texto,
+        &[],
+        None,
+        Some(usuario),
+        None,
+        None,
+        None,
+        None,
+        &exec,
+    )
+    .await
+    .expect("turno")
+}
+
+fn runtime_de_roteiro() -> (AgentRuntime, Arc<AtomicUsize>) {
+    let rt = AgentRuntime::new();
+    let rodou = Arc::new(AtomicUsize::new(0));
+    rt.register_tool(Box::new(ApagaArquivo {
+        rodou: Arc::clone(&rodou),
+    }));
+    rt.register_provider(Arc::new(Roteiro));
+    (rt, rodou)
+}
+
+/// O gemeo positivo: na conversa do grupo, quem pediu aprova o proprio
+/// pedido, uma vez.
+#[tokio::test]
+async fn canal_o_mesmo_usuario_aprova_o_proprio_pedido_uma_vez() {
+    let (rt, rodou) = runtime_de_roteiro();
+    let g = "discord-grupo-1343";
+    assert!(e_pedido(
+        &turno_de_canal(&rt, g, "user-a", "apaga o arquivo").await
+    ));
+    assert!(!e_pedido(&turno_de_canal(&rt, g, "user-a", "sim").await));
+    assert_eq!(rodou.load(Ordering::SeqCst), 1);
+    assert!(e_pedido(&turno_de_canal(&rt, g, "user-a", "sim").await));
+    assert_eq!(rodou.load(Ordering::SeqCst), 1, "replay nao roda");
+}
+
+/// #1343 A6, o gemeo negativo: dois usuarios na MESMA sessao de canal nao
+/// aprovam o pedido um do outro — e o "sim" do outro encerra o pedido.
+#[tokio::test]
+async fn canal_dois_usuarios_na_mesma_sessao_nao_aprovam_o_pedido_um_do_outro() {
+    let (rt, rodou) = runtime_de_roteiro();
+    let g = "discord-grupo-1343";
+
+    assert!(e_pedido(
+        &turno_de_canal(&rt, g, "user-a", "apaga o arquivo").await
+    ));
+    assert!(e_pedido(&turno_de_canal(&rt, g, "user-b", "sim").await));
+    assert_eq!(
+        rodou.load(Ordering::SeqCst),
+        0,
+        "B nao aprova o pedido de A"
+    );
+    assert!(e_pedido(&turno_de_canal(&rt, g, "user-a", "sim").await));
+    assert_eq!(
+        rodou.load(Ordering::SeqCst),
+        0,
+        "o sim de B encerrou o pedido"
+    );
+
+    assert!(e_pedido(
+        &turno_de_canal(&rt, g, "user-b", "apaga o arquivo").await
+    ));
+    assert!(e_pedido(&turno_de_canal(&rt, g, "user-a", "sim").await));
+    assert_eq!(
+        rodou.load(Ordering::SeqCst),
+        0,
+        "A nao aprova o pedido de B"
+    );
 }
