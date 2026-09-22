@@ -312,39 +312,62 @@ impl GitDiffTool {
 
     /// Formata a saída do git status --porcelain
     fn format_status(&self, output: &str) -> String {
-        let mut result = String::new();
-
-        //获取当前分支
-        for line in output.lines() {
-            if let Some(stripped) = line.strip_prefix("## ") {
-                result.push_str(&format!("Branch: {}\n", stripped));
-                continue;
-            }
-
-            let status = &line[..2];
-            let file = &line[3..];
-
-            let status_desc = match status {
-                " M" => "Modificado",
-                " A" => "Adicionado",
-                " D" => "Deletado",
-                " R" => "Renomeado",
-                " C" => "Copiado",
-                " U" => "Unmerged",
-                "??" => "Não rastreado",
-                "!!" => "Ignorado",
-                _ => "Desconhecido",
-            };
-
-            result.push_str(&format!("{}: {}\n", status_desc, file));
-        }
-
-        if result.is_empty() {
-            result.push_str("Working tree limpo (nenhuma modificação)");
-        }
-
-        result
+        format_status(output)
     }
+}
+
+/// Formata a saida de `git status --porcelain -b` (mais o bloco `STDERR:`
+/// que `run_git_command` anexa). Nunca entra em panico: linha curta, vazia
+/// ou com caractere multibyte no corte sai crua em vez de ser fatiada — o
+/// separador em branco antes do `STDERR:` e o aviso de pull do docker no
+/// sandbox tornavam o `&line[..2]` antigo um panic de rotina (review da
+/// #1225, SANDBOX-7). O que vem depois de `STDERR:` e anexado sem parse.
+fn format_status(output: &str) -> String {
+    let (stdout, stderr) = match output.find("STDERR:\n") {
+        Some(i) if i == 0 || output[..i].ends_with('\n') => (&output[..i], Some(&output[i..])),
+        _ => (output, None),
+    };
+    let mut result = String::new();
+
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(stripped) = line.strip_prefix("## ") {
+            result.push_str(&format!("Branch: {}\n", stripped));
+            continue;
+        }
+
+        let (Some(status), Some(file)) = (line.get(..2), line.get(3..)) else {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        };
+
+        let status_desc = match status {
+            " M" => "Modificado",
+            " A" => "Adicionado",
+            " D" => "Deletado",
+            " R" => "Renomeado",
+            " C" => "Copiado",
+            " U" => "Unmerged",
+            "??" => "Não rastreado",
+            "!!" => "Ignorado",
+            _ => "Desconhecido",
+        };
+
+        result.push_str(&format!("{}: {}\n", status_desc, file));
+    }
+
+    if result.is_empty() {
+        result.push_str("Working tree limpo (nenhuma modificação)");
+    }
+    if let Some(bloco) = stderr {
+        result.push('\n');
+        result.push_str(bloco);
+    }
+
+    result
 }
 
 #[async_trait]
@@ -459,6 +482,48 @@ impl Tool for GitDiffTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review da #1225 (SANDBOX-7): nenhuma entrada derruba o
+    /// `format_status` — linha vazia, curta, multibyte no corte, o bloco
+    /// `STDERR:` que `run_git_command` anexa, e combinacoes geradas.
+    #[test]
+    fn format_status_nao_entra_em_panico_com_linha_curta_ou_estranha() {
+        let pecas = [
+            "",
+            "\n",
+            "a",
+            "ab",
+            "abc",
+            "é",
+            "aé",
+            "éé",
+            "a\u{1F600}b",
+            " M",
+            " M ",
+            "??",
+            "## main",
+            "##",
+            "STDERR:",
+            "STDERR:\n",
+            "x\n\n",
+            "\r\n",
+            " M arquivo.rs",
+        ];
+        for a in pecas {
+            for b in pecas {
+                let entrada = format!("{a}\n{b}");
+                let _ = format_status(&entrada);
+                let _ = format_status(&format!("{a}{b}"));
+            }
+        }
+        // O caso real: stdout com `\n` final + o separador + stderr do docker.
+        let real = "## main\n M a.rs\n\nSTDERR:\nUnable to find image 'x' locally\nab\n";
+        let saida = format_status(real);
+        assert!(saida.contains("Branch: main"), "{saida}");
+        assert!(saida.contains("Modificado: a.rs"), "{saida}");
+        assert!(saida.contains("STDERR:\nUnable to find image"), "{saida}");
+        assert!(!saida.contains("Desconhecido: nable"), "{saida}");
+    }
     use crate::tools::repo_dir::{contexto_de_teste as ctx, repo_git_temporario};
 
     // ─── #1272 S3: config plantada nao executa nada no host ────────────────
