@@ -62,7 +62,12 @@ fn nenhum_fonte_de_producao_do_gateway_executa_ferramenta_mcp() {
 
     let culpados: Vec<String> = arquivos
         .iter()
-        .filter(|(_, fonte)| fonte.codigo.contains(".call_tool("))
+        // Sem o ponto de proposito: pega tanto `mgr.call_tool(...)` quanto a
+        // sintaxe UFCS `McpManager::call_tool(&mgr, ...)`, que a versao
+        // anterior deste guarda deixava passar (revisao de seguranca do
+        // #1386). `Fonte::codigo` ja vem sem comentario, entao a mencao em
+        // doc comment de `src/admin/mcp.rs` nao conta.
+        .filter(|(_, fonte)| fonte.codigo.contains("call_tool("))
         .map(|(arq, _)| arq.clone())
         .collect();
 
