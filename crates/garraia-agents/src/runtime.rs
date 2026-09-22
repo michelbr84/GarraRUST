@@ -2204,11 +2204,21 @@ impl AgentRuntime {
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
         };
 
+        // O portao sai daqui de cima, como no `process_message_with_agent_config`:
+        // o prompt e o `max_tokens` do modo (#986) entram nas resolucoes logo
+        // abaixo. Ate a #1347 (fatia 3) este ramo montava o prompt sem o
+        // template do modo, e o mesmo turno no piso `search` recebia um prompt
+        // no batch e outro no streaming.
+        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
+
         // Plan 0250 (GAR-771): resolve override → config prompt → default
         // persona. An explicit prompt always wins; the persona only fills in
         // when nothing is configured (and not in Neutral mode).
+        // Precedencia identica a do ramo batch: override explicito do
+        // chamador > prompt do modo (#986) > prompt configurado no runtime.
         let explicit_prompt = system_prompt_override
             .map(|s| s.to_string())
+            .or_else(|| portao.system_prompt().map(|s| s.to_string()))
             .or_else(|| self.system_prompt.clone());
         let effective_system_prompt = com_objetivo(
             self.base_system_prompt(explicit_prompt.as_deref()),
@@ -2219,7 +2229,11 @@ impl AgentRuntime {
             .filter(|m| !m.is_empty())
             .map(|m| m.to_string())
             .unwrap_or_default();
-        let effective_max_tokens = max_tokens_override.or(self.max_tokens).unwrap_or(4096);
+        // Mesma precedencia (#986): chamador > runtime > modo > default.
+        let effective_max_tokens = max_tokens_override
+            .or(self.max_tokens)
+            .or_else(|| portao.max_tokens())
+            .unwrap_or(4096);
 
         // Build system message (same as process_message)
         let memory_context = match self
@@ -2251,7 +2265,6 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
         let todas_as_tools = self.tool_definitions();
         // #1264: os avisos leem a lista INTEIRA, antes do filtro do portao — e
         // sobre o que o filtro tirou que eles falam.
@@ -9419,15 +9432,15 @@ mod tests {
                     "{caminho:?}: {tools:?}"
                 );
                 let system = system.expect("prompt");
-                // O ramo de streaming nao aplica o template do modo (so
-                // override > prompt do runtime > persona) — divergencia
-                // anterior a esta mudanca. A nota entra nos dois.
-                if matches!(caminho, Caminho::AgentConfig) {
-                    assert!(system.contains("You are a search assistant"), "{system}");
-                    assert!(system.ends_with(NOTA_GARRA_STATUS_PT), "{system}");
-                }
+                // #1347 (fatia 3): o streaming tambem aplica o template do
+                // modo — antes so o batch aplicava, e o mesmo turno recebia
+                // prompts diferentes conforme o ramo.
                 assert!(
-                    system.contains(NOTA_GARRA_STATUS_PT),
+                    system.contains("You are a search assistant"),
+                    "{caminho:?}: {system}"
+                );
+                assert!(
+                    system.ends_with(NOTA_GARRA_STATUS_PT),
                     "{caminho:?}: {system}"
                 );
             }
@@ -9445,16 +9458,17 @@ mod tests {
             for caminho in [Caminho::AgentConfig, Caminho::Streaming] {
                 let (system, tools) = primeira_requisicao(caminho, false, &search).await;
                 assert!(!tools.iter().any(|t| t == "garra_status"));
-                // A persona cita `garra_status` por conta propria; o que
-                // nao pode aparecer e a NOTA.
-                assert!(
-                    !system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT),
-                    "{caminho:?}"
-                );
+                // Nem a nota nem a persona (#1347, fatia 3) citam a tool.
+                let system = system.unwrap_or_default();
+                assert!(!system.contains("garra_status"), "{caminho:?}: {system}");
             }
+            // O heartbeat e o ramo que cai na persona (sem modo): o caso da
+            // CLI, que nunca registra `garra_status`.
             let (system, _) =
                 primeira_requisicao(Caminho::Heartbeat, false, &ExecContext::default()).await;
-            assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
+            let system = system.unwrap_or_default();
+            assert!(system.contains("Garra"), "a persona entrou: {system}");
+            assert!(!system.contains("garra_status"), "{system}");
 
             let perfil = crate::modes::ModeProfile::from_custom(
                 crate::modes::AgentMode::Search,
