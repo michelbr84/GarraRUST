@@ -16,6 +16,11 @@
 //!   `HEAD`+`config` plantados no diretorio) e recusado em vez de lido;
 //! - `-c core.hooksPath=/dev/null` — nenhum hook;
 //! - `--no-ext-diff` e `--no-textconv` no `diff`;
+//! - nenhuma descida em submodulo: `-c submodule.recurse=false`,
+//!   `diff.submodule=short`, `diff.ignoreSubmodules=all`,
+//!   `status.submoduleSummary=false` e `--ignore-submodules=all` no `diff` e
+//!   no `status`. Um submodulo tem config PROPRIA, que a listagem de filtros
+//!   abaixo nao le;
 //! - para cada driver `filter.<nome>` que a config declara, `-c
 //!   filter.<nome>.{clean,smudge,process}=` vazios e `required=false` — o git
 //!   trata comando vazio como "sem filtro" (verificado no git 2.43);
@@ -31,6 +36,12 @@ use std::time::Duration;
 use tokio::process::Command;
 
 /// Vai antes do subcomando em toda invocacao das tools de leitura.
+///
+/// As quatro ultimas chaves fecham a recursao em submodulos: um submodulo
+/// tem config PROPRIA (`.git/modules/<nome>/config`), que a listagem de
+/// [`prefixo`] nao le, e com `diff.submodule=diff` (ou so por o `status`
+/// checar a arvore de cada submodulo) o git entra nele e roda o
+/// `filter.<drv>.clean` declarado LA. Nada aqui desce em submodulo.
 pub(crate) const PREFIXO_FIXO: &[&str] = &[
     "-c",
     "core.fsmonitor=false",
@@ -38,10 +49,23 @@ pub(crate) const PREFIXO_FIXO: &[&str] = &[
     "safe.bareRepository=explicit",
     "-c",
     "core.hooksPath=/dev/null",
+    "-c",
+    "submodule.recurse=false",
+    "-c",
+    "diff.submodule=short",
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "status.submoduleSummary=false",
 ];
 
-/// Opcoes do `git diff` que desligam programas externos.
-pub(crate) const OPCOES_DO_DIFF: &[&str] = &["--no-ext-diff", "--no-textconv"];
+/// Opcoes do `git diff` que desligam programas externos e a descida em
+/// submodulos (ver [`PREFIXO_FIXO`]).
+pub(crate) const OPCOES_DO_DIFF: &[&str] =
+    &["--no-ext-diff", "--no-textconv", "--ignore-submodules=all"];
+
+/// Opcao do `git status` que nao desce em submodulo nenhum.
+pub(crate) const OPCOES_DO_STATUS: &[&str] = &["--ignore-submodules=all"];
 
 /// Os `-c` que anulam cada driver de filtro listado em `saida` (a saida de
 /// `git config -z --name-only --get-regexp ^filter\.`). Pura.
@@ -162,6 +186,65 @@ pub(crate) fn planta_programas_no_repo(dir: &Path, marcas: &Path) -> [std::path:
     git(&["config", "diff.x.textconv", &s_tc.to_string_lossy()]);
     git(&["config", "filter.x.clean", &s_clean.to_string_lossy()]);
     [fsm, tc, clean]
+}
+
+/// Fixture da recursao em submodulo: `dir` (repositorio com um commit)
+/// ganha um submodulo `sub` cuja config PROPRIA declara `filter.evil.clean`
+/// (com `sub/.gitattributes` mapeando `*.txt`), o superprojeto ganha
+/// `diff.submodule=diff`, e `sub/a.txt` fica modificado. Devolve o marcador
+/// que o filtro cria se rodar.
+#[cfg(all(test, unix))]
+pub(crate) fn planta_filtro_em_submodulo(dir: &Path, marcas: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let git = |cwd: &Path, args: &[&str]| {
+        let saida = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args([
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "protocol.file.allow=always",
+            ])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            saida.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&saida.stderr)
+        );
+    };
+    let origem = marcas.join("origem-sub");
+    std::fs::create_dir_all(&origem).expect("mkdir");
+    git(&origem, &["init", "-q", "-b", "main"]);
+    std::fs::write(origem.join("a.txt"), "original\n").expect("write");
+    std::fs::write(origem.join(".gitattributes"), "*.txt filter=evil\n").expect("attrs");
+    git(&origem, &["add", "."]);
+    git(&origem, &["commit", "-q", "-m", "sub"]);
+    let origem_txt = origem.to_string_lossy().into_owned();
+    git(dir, &["submodule", "add", "-q", &origem_txt, "sub"]);
+    git(dir, &["commit", "-q", "-m", "com submodulo"]);
+
+    let marca = marcas.join("M_SUBMODULE_CLEAN");
+    let script = marcas.join("evil.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\ncat\n", marca.display()),
+    )
+    .expect("script");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let sub = dir.join("sub");
+    git(
+        &sub,
+        &["config", "filter.evil.clean", &script.to_string_lossy()],
+    );
+    git(dir, &["config", "diff.submodule", "diff"]);
+    std::fs::write(sub.join("a.txt"), "alterado\n").expect("write");
+    marca
 }
 
 #[cfg(test)]

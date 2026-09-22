@@ -345,6 +345,23 @@ mod tests {
         }
     }
 
+    /// #1272 S3: filtro declarado na config PROPRIA de um submodulo, com o
+    /// superprojeto em `diff.submodule=diff`, nao roda pelo `code_review`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn code_review_nao_roda_filtro_de_submodulo() {
+        let repo = repo_git_temporario("alvo-review-sub", "ramo-review-sub");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let marca = crate::git_endurecido::planta_filtro_em_submodulo(repo.path(), marcas.path());
+        let wd = repo.path().to_string_lossy().into_owned();
+        let saida = tool_com_eco()
+            .execute(&ctx(Some(&wd)), serde_json::json!({}))
+            .await
+            .expect("execute");
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(!marca.exists(), "code_review rodou o filtro do submodulo");
+    }
+
     /// #1258 (item 4 da aceitação): o `code_review` tinha o **mesmo** defeito
     /// raiz — `Command::new("git")` sem `current_dir` em `get_diff` —, então
     /// ganha a mesma prova, também pelo caminho do agente.

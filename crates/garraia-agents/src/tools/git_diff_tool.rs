@@ -266,11 +266,17 @@ impl GitDiffTool {
 
     /// Obtém o status do repositório de `repo`
     async fn get_status(&self, repo: &RepoDir) -> Result<String> {
-        let args: Vec<String> = vec![
+        let mut args: Vec<String> = vec![
             "status".to_string(),
             "--porcelain".to_string(),
             "-b".to_string(),
         ];
+        // #1272 S3: sem descer em submodulo (config propria, filtros dele).
+        args.extend(
+            crate::git_endurecido::OPCOES_DO_STATUS
+                .iter()
+                .map(|s| s.to_string()),
+        );
 
         let output = self.run_git_command(&args, repo).await?;
 
@@ -481,6 +487,54 @@ mod tests {
         for m in [&fsm, &tc, &clean] {
             assert!(m.exists(), "o gemeo nao reproduziu {}", m.display());
         }
+    }
+
+    /// Um submodulo cuja config PROPRIA declara `filter.evil.clean`, com o
+    /// superprojeto em `diff.submodule=diff`: `diff` e `status` pela tool nao
+    /// descem nele, entao o filtro nao roda. Gemeo: o prefixo antigo (sem as
+    /// chaves de submodulo) roda o filtro — prova que o teste nao e vazio.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn filtro_declarado_em_submodulo_nao_roda() {
+        let repo = repo_git_temporario("alvo-sub", "ramo-sub");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let marca = crate::git_endurecido::planta_filtro_em_submodulo(repo.path(), marcas.path());
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = repo.path().to_string_lossy().into_owned();
+        for op in ["diff", "status"] {
+            let saida = tool
+                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": op}))
+                .await
+                .expect("execute");
+            assert!(!saida.is_error, "{op}: {}", saida.content);
+            assert!(!marca.exists(), "{op} rodou o filtro do submodulo");
+        }
+
+        // Gemeo: o endurecimento de antes (fsmonitor/bare/hooks, sem as
+        // chaves de submodulo) roda o filtro do submodulo.
+        let ok = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args([
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "safe.bareRepository=explicit",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+            ])
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok);
+        assert!(
+            marca.exists(),
+            "o gemeo nao reproduziu o filtro do submodulo"
+        );
     }
 
     /// `safe.bareRepository=explicit`: um repositorio bare implicito como
@@ -765,6 +819,7 @@ mod tests {
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
                 "--no-textconv".to_string(),
+                "--ignore-submodules=all".to_string(),
                 "-U3".to_string(),
                 "--".to_string(),
                 "--ext-diff".to_string(),
@@ -784,6 +839,7 @@ mod tests {
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
                 "--no-textconv".to_string(),
+                "--ignore-submodules=all".to_string(),
                 "-U3".to_string(),
                 "abc123..def456".to_string(),
                 "--".to_string(),
@@ -824,6 +880,7 @@ mod tests {
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
                 "--no-textconv".to_string(),
+                "--ignore-submodules=all".to_string(),
                 "-U3".to_string(),
                 "--".to_string(),
             ]
