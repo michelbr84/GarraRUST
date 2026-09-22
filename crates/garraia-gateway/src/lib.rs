@@ -3,6 +3,7 @@ pub mod admin;
 pub mod agent_router;
 pub mod anthropic_api;
 pub mod api;
+pub mod approval_scope;
 pub(crate) mod auth_common;
 pub mod auth_metrics;
 pub mod auth_routes;

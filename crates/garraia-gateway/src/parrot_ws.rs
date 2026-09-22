@@ -110,6 +110,11 @@ pub async fn parrot_ws_handler(
 async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
     let (mut sender, mut receiver) = socket.split();
 
+    // #1343: a sessao do desktop e fixa (`SESSION_ID`) e qualquer socket que
+    // passe pelo gate a usa, entao quem aprova um pedido pausado e esta
+    // CONEXAO — um nonce do servidor que o cliente nunca ve.
+    let conexao = crate::approval_scope::nonce_de_conexao();
+
     // Hydrate persistent history for the desktop session
     state
         .hydrate_session_history(SESSION_ID, Some(CHANNEL), None)
@@ -176,7 +181,12 @@ async fn handle_parrot_socket(socket: WebSocket, state: SharedState) {
         let text_for_agent = user_text.clone();
         // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
         // pelo tempo do turno inteiro.
-        let exec = state.exec_context_for(SESSION_ID, None).await;
+        let exec = crate::approval_scope::com_escopo(
+            state.exec_context_for(SESSION_ID, None).await,
+            crate::approval_scope::CANAL_PARROT,
+            SESSION_ID,
+            &conexao,
+        );
         let task = tokio::spawn(async move {
             agents
                 .process_message_streaming_with_agent_config(

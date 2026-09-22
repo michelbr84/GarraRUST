@@ -95,6 +95,13 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: SharedState) {
     let (mut sender, mut receiver) = socket.split();
 
+    // #1343: quem pode aprovar, no turno seguinte, um pedido de confirmacao
+    // que pausar um turno DESTA conexao. O chat web nao tem login e o
+    // `resume` sem token e aceito enquanto a sessao esta em memoria, entao o
+    // `session_id` nao prova quem e o humano; a conexao prova. O nonce nasce
+    // aqui e nunca sai para o cliente: reconectou, pergunta de novo.
+    let conexao = crate::approval_scope::nonce_de_conexao();
+
     // Declarados aqui, e nao junto do loop principal, porque desde o #1047 o
     // socket e lido durante o turno — e a primeira mensagem ja e um turno.
     let mut last_pong = Instant::now();
@@ -252,6 +259,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                 if drain_turns(
                     text.to_string(),
                     &id,
+                    &conexao,
                     &state,
                     &mut sender,
                     &mut receiver,
@@ -352,6 +360,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                         if drain_turns(
                             text.to_string(),
                             &session_id,
+                            &conexao,
                             &state,
                             &mut sender,
                             &mut receiver,
@@ -398,9 +407,11 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
 /// entrada — e cada volta do laco custa um turno de LLM inteiro.
 ///
 /// `Break` significa que o socket morreu — o chamador encerra a conexao.
+#[allow(clippy::too_many_arguments)]
 async fn drain_turns(
     first: String,
     session_id: &str,
+    conexao: &str,
     state: &SharedState,
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
     receiver: &mut futures::stream::SplitStream<WebSocket>,
@@ -414,6 +425,7 @@ async fn drain_turns(
         match process_text_message(
             &text,
             session_id,
+            conexao,
             state,
             sender,
             receiver,
@@ -471,6 +483,7 @@ enum TurnOutcome {
 async fn process_text_message(
     text: &str,
     session_id: &str,
+    conexao: &str,
     state: &SharedState,
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
     receiver: &mut futures::stream::SplitStream<WebSocket>,
@@ -502,9 +515,14 @@ async fn process_text_message(
     let continuity_key = state.continuity_key();
     // Lido **antes** do `spawn`: dentro da task seguraria o lock do store
     // pelo tempo do turno inteiro (mesma licao do `parrot_ws.rs`).
-    let exec = state
-        .exec_context_for_msg(session_id, None, Some(&user_text))
-        .await;
+    let exec = crate::approval_scope::com_escopo(
+        state
+            .exec_context_for_msg(session_id, None, Some(&user_text))
+            .await,
+        crate::approval_scope::CANAL_WEB,
+        session_id,
+        conexao,
+    );
 
     let (events_tx, events_rx) = tokio::sync::mpsc::channel::<TurnEvent>(TURN_EVENT_CHANNEL);
     let agents = state.agents.clone();
