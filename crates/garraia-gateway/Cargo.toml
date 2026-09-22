@@ -25,7 +25,6 @@ garraia-agents = { workspace = true, features = ["mcp"] }
 # rumqttc e cliente Rust puro, sem runtime C; o HA vai por REST + WebSocket
 # atrás do guard SSRF.
 garraia-hardware = { workspace = true, features = ["mqtt", "home-assistant", "automations", "skills"] }
-garraia-runtime = { workspace = true }
 garraia-db = { workspace = true }
 garraia-security = { workspace = true }
 garraia-skills = { workspace = true }

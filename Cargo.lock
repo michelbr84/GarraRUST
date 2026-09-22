@@ -3661,7 +3661,6 @@ dependencies = [
  "garraia-glob",
  "garraia-hardware",
  "garraia-learning",
- "garraia-runtime",
  "garraia-security",
  "garraia-skills",
  "garraia-storage",
@@ -3803,19 +3802,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "garraia-runtime"
-version = "0.1.0"
-dependencies = [
- "garraia-common",
- "garraia-tools",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "garraia-security"
 version = "0.4.4"
 dependencies = [
@@ -3895,18 +3881,6 @@ dependencies = [
  "tracing-test",
  "uuid",
  "validator",
-]
-
-[[package]]
-name = "garraia-tools"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "garraia-common",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
 ]
 
 [[package]]

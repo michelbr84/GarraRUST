@@ -116,7 +116,7 @@ agent:
 ## 3. Restringir tools por contexto: modos (ToolPolicy)
 
 Cada modo de execução carrega uma allow/deny-list de tools
-(`crates/garraia-runtime/src/mode.rs`) — este é o mecanismo legítimo
+(`crates/garraia-agents/src/modes.rs`) — este é o mecanismo legítimo
 para "menos poder por padrão":
 
 | Modo | Tools permitidas |

@@ -18,7 +18,7 @@
 
 ## Estrutura de crates
 
-**24 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
+**22 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
 mais o harness `benches/agent-framework-comparison/` (fora do workspace, não é crate).
 O histórico de entrega (plans, PRs, datas, IDs `GAR-xxx`) vive em `plans/`, `docs/adr/`
 e `CHANGELOG.md` — aqui fica só o estado atual e os invariantes que um agente precisa
@@ -154,8 +154,6 @@ crates/
                         (`workspace.memory_items`) ≠ skill (`learning.skills`) ≠ log
                         (`telemetry.traces`) ≠ manual distribuível (crate `garraia-skills`).
                         Nunca copiar código do Hermes Agent — referência só conceitual.
-  garraia-tools/      — tools compartilhadas (file ops, search, web)
-  garraia-runtime/    — runtime helpers
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app: bandeja + overlay do papagaio + Chat Bar

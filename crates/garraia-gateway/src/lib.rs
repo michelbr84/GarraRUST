@@ -45,7 +45,6 @@ pub mod push_channels;
 pub mod rate_limiter;
 pub mod rest_v1;
 pub mod router;
-pub mod runtime_handler;
 pub mod server;
 pub mod session_auth;
 pub mod settings_handler;
