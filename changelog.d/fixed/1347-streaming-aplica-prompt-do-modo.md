@@ -8,8 +8,13 @@
   precedencia (chamador > modo > runtime > persona) e o mesmo `max_tokens`
   (chamador > runtime > modo), e um teste prende que os dois ramos mandam o
   mesmo prompt, `max_tokens` e `temperature` num modo customizado. A
-  `temperature` do modo continua fora dos dois ramos: so o
-  `process_message_impl` (heartbeat, A2A) a manda. A persona padrao (PT e
+  `temperature` do modo continua fora dos dois ramos, e de proposito nesta
+  versao: so o `process_message_impl` a manda, e ele so roda pelo heartbeat,
+  que nunca tem modo, entao na pratica nenhum turno manda a `temperature`
+  de um modo. Passar a manda-la mudaria o pedido de todo turno com modo
+  (os embutidos declaram de 0.3 a 0.7), e modelo de raciocinio chamado direto
+  recusa temperatura fora do default; `docs/src/modes.md` registra o limite.
+  A persona padrao (PT e
   EN) citava `garra_status` pelo nome, e ela vale tambem em `garraia chat` e
   `garraia ask`, que nunca registram essa ferramenta; a linha ficou neutra
   ("use as ferramentas disponiveis nesta conversa"), e a instrucao de

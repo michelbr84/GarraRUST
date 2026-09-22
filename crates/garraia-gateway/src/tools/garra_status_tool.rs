@@ -926,6 +926,35 @@ mod tests {
         );
     }
 
+    /// Sessao que EXISTE em memoria mas nenhum turno gravou superficie: o
+    /// `create_session` que o `ws.rs` chama no `init`, antes de qualquer
+    /// `hydrate_session_history`, e o `create_session_with_id` dos canais.
+    /// O teste acima nao cobre este caso — la a sessao nem existe, e a regra
+    /// sai no `None` de `state.sessions.get`. Aqui ela existe, com
+    /// `canais_dos_turnos` vazio, sem prefixo de canal, sem banco e com a
+    /// porta do operador fechada: nenhum outro sinal restringe, e so a
+    /// guarda "nenhuma superficie gravada = desconhecida" impede que ela
+    /// conte como o operador (#1347, C1).
+    #[tokio::test]
+    async fn sessao_criada_sem_turno_gravado_e_restrita() {
+        let st = state();
+        let por_uuid = st.create_session();
+        st.create_session_with_id("sessao-criada-sem-turno".to_string());
+        for sid in [por_uuid.as_str(), "sessao-criada-sem-turno"] {
+            assert!(st.sessions.contains_key(sid), "{sid}: a sessao existe");
+            assert_eq!(crate::channels_view::channel_of_session(sid), None);
+            let (json, texto) = relatorio_aberto_em(&st, sid).await;
+            assert!(e_restrito(&json, &texto), "{sid}: {json}");
+            assert!(
+                json["withheld"]
+                    .as_array()
+                    .is_some_and(|retidos| !retidos.is_empty()),
+                "{sid}: {json}"
+            );
+            assert!(json["session"]["working_dir"].is_null(), "{sid}: {json}");
+        }
+    }
+
     /// Cada superficie local ve tudo; o app mobile (conta aberta) e o A2A
     /// (outro agente) nao.
     #[tokio::test]

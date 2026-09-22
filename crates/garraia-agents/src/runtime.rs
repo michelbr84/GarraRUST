@@ -9492,8 +9492,10 @@ mod tests {
         /// provider, num modo customizado com `temperature` e `max_tokens`
         /// proprios: o mesmo prompt, o mesmo `max_tokens` do modo e a mesma
         /// `temperature` nos dois ramos. Hoje nenhum dos dois manda a
-        /// `temperature` do modo — so o `process_message_impl` (heartbeat,
-        /// A2A) manda —, e o que o teste impede e um ramo mudar sem o outro.
+        /// `temperature` do modo — so o `process_message_impl` manda, e ele so
+        /// roda pelo heartbeat, que nunca tem modo (o A2A vai pelo
+        /// `process_message_with_agent_config`) —, e o que o teste impede e um
+        /// ramo mudar sem o outro.
         #[tokio::test]
         async fn streaming_e_batch_mandam_o_mesmo_pedido_no_modo() {
             let perfil = crate::modes::ModeProfile::from_custom(
