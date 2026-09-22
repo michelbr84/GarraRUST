@@ -430,8 +430,9 @@ conectado agora, e `offline` e um canal configurado que esta fora do ar. A lista
 cobre so os canais de mensagens: um canal de mensagens ausente dela nao esta ligado \
 neste Garra. O web chat e a API (`web`, `api`) e a CLI e o servidor MCP (`cli`, \
 `mcp`) nunca aparecem nela, e a ausencia deles nao diz nada; o canal desta conversa \
-esta em `session.channel`. Um campo citado em `withheld` foi retido nesta conversa, \
-e nao esta ausente.";
+esta em `session.channel`. Um campo citado em `withheld` foi retido nesta conversa: o \
+dado nao e divulgado aqui, e isso nao diz se o recurso existe ou nao — nunca leia um \
+campo retido como capacidade ausente.";
 
 /// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
 pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
@@ -442,7 +443,8 @@ messaging channels only: a messaging channel missing from it is not enabled on t
 Garra. The web chat and the API (`web`, `api`) and the CLI and the MCP server \
 (`cli`, `mcp`) never appear in it, and their absence says nothing; the channel of \
 this conversation is in `session.channel`. A field named in `withheld` was held \
-back in this conversation, and is not missing.";
+back in this conversation: the data is not disclosed here, which tells you nothing \
+about whether the thing exists — never read a withheld field as a missing capability.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
 /// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.

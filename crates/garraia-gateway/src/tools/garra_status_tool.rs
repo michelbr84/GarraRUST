@@ -81,11 +81,38 @@ const RETIDOS_NO_TURNO_RESTRITO: &[&str] = &[
 ///
 /// Texto constante e secret-free por construcao: nao interpola nada do
 /// estado, da config ou da sessao.
-const SENTIDO_DE_WITHHELD: &str = "Os campos nomeados em `withheld` foram OCULTADOS pela \
-politica desta sessao: eles existem neste Garra e aparecem `null` acima apenas por isso. \
-NUNCA leia um campo retido como capacidade ausente, desligada ou nao suportada, e nao \
-responda que o recurso nao existe — diga que o dado nao e divulgado nesta conversa. O \
-operador ve o valor numa superficie local (web chat, CLI ou desktop).";
+///
+/// ## Uma fonte so, e em ingles
+///
+/// Revisao da onda B: a frase e macro, e nao duas strings parecidas, porque
+/// [`SENTIDO_DE_WITHHELD`] e a [`Tool::description`] precisam do MESMO texto
+/// e `description` devolve `&'static str` — sem `concat!` de literal sobraria
+/// uma copia para cada lado, e duas copias de uma regra divergem. Em ingles
+/// como o resto do relatorio, que e todo em ingles.
+///
+/// ## O que a frase NAO pode dizer
+///
+/// Que o recurso existe. `withheld` e a lista estatica
+/// [`RETIDOS_NO_TURNO_RESTRITO`], aplicada sem olhar o estado: um Garra com
+/// zero servidores MCP, ou uma sessao remota que de fato nao tem
+/// `working_dir`, produz `withheld` identico ao de um que tem os dois. Dizer
+/// "eles existem" seria trocar o erro da #1382 pelo simetrico — inventar
+/// capacidade em vez de negar. O que o `null` significa, e so isso, e "nao
+/// divulgado nesta conversa".
+macro_rules! sentido_de_withheld {
+    () => {
+        "Every field named in `withheld` is HIDDEN BY POLICY in this conversation: it \
+         reads as `null` (for example `mcp_servers: null`), and that `null` means only \
+         \"not disclosed in this conversation\" — it tells you NOTHING about whether the \
+         thing exists. Never read a withheld field as a capability that is missing, \
+         disabled or unsupported, and never answer that the feature does not exist or \
+         that it does: say the detail is not disclosed here. The operator can see the \
+         value on a local surface (web chat, CLI or desktop)."
+    };
+}
+
+/// A frase acima, como constante, para o campo `withheld_means` do relatorio.
+const SENTIDO_DE_WITHHELD: &str = sentido_de_withheld!();
 
 pub struct GarraStatusTool {
     /// Weak for the same reason `TelegramSendTool` is: `AppState` owns the
@@ -158,18 +185,20 @@ impl Tool for GarraStatusTool {
     }
 
     fn description(&self) -> &str {
-        "Describes the Garra runtime you are running in: version, uptime, active \
-         provider and model, the tools available in this turn, advertised features, \
-         each enabled messaging channel with its status (`active` = connected now, \
-         `offline` = configured but down), the execution profile, MCP servers, and this \
-         session's channel and mode. Some fields can be held back: every field named in \
-         the report's `withheld` list is HIDDEN BY POLICY in this conversation, not \
-         absent. A withheld field reads as `null` (for example `mcp_servers: null`), and \
-         that never means the capability is missing, disabled or unsupported — say the \
-         detail is not disclosed here, never that the feature does not exist. Use it \
-         whenever the user asks what you are, what \
-         you can do, which channels or integrations you have, or how you are configured \
-         — instead of guessing or saying you cannot inspect yourself. Takes no input."
+        // A frase do `withheld` vem da MESMA macro que o campo
+        // `withheld_means` do relatorio: uma regra, um texto.
+        concat!(
+            "Describes the Garra runtime you are running in: version, uptime, active ",
+            "provider and model, the tools available in this turn, advertised features, ",
+            "each enabled messaging channel with its status (`active` = connected now, ",
+            "`offline` = configured but down), the execution profile, MCP servers, and this ",
+            "session's channel and mode. Some fields can be held back, and the report names ",
+            "them in its `withheld` list. ",
+            sentido_de_withheld!(),
+            " Use it whenever the user asks what you are, what you can do, which channels ",
+            "or integrations you have, or how you are configured — instead of guessing or ",
+            "saying you cannot inspect yourself. Takes no input."
+        )
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -904,10 +933,21 @@ mod tests {
     /// virava "este Garra nao tem MCP". O teste prende as tres partes da
     /// frase — o nome do campo, que ele foi ocultado por politica, e que isso
     /// nao e capacidade ausente.
+    ///
+    /// Revisao da onda B: o teste tambem prende a fonte unica — a
+    /// `description` CONTEM, literalmente, a frase que o relatorio publica em
+    /// `withheld_means`. Se alguem reescrever um dos dois lados a mao, isto
+    /// falha antes de as duas versoes da regra divergirem em producao.
     #[test]
     fn description_explica_que_withheld_e_ocultacao_por_politica() {
         let st = state();
-        let d = tool(&st).description().to_lowercase();
+        let t = tool(&st);
+        let d = t.description();
+        assert!(
+            d.contains(SENTIDO_DE_WITHHELD),
+            "a descricao deixou de usar a frase unica do `withheld_means`: {d}"
+        );
+        let d = d.to_lowercase();
         assert!(d.contains("`withheld`"), "{d}");
         assert!(d.contains("hidden by policy"), "{d}");
         assert!(d.contains("`mcp_servers: null`"), "{d}");
@@ -943,13 +983,44 @@ mod tests {
             "a frase so vale se o campo citado estiver mesmo null: {restrito}"
         );
         assert!(
-            SENTIDO_DE_WITHHELD.contains("OCULTADOS"),
+            SENTIDO_DE_WITHHELD.contains("HIDDEN BY POLICY"),
             "{SENTIDO_DE_WITHHELD}"
         );
         assert!(
-            SENTIDO_DE_WITHHELD.contains("NUNCA leia um campo retido como capacidade ausente"),
+            SENTIDO_DE_WITHHELD.contains("Never read a withheld field as a capability that is"),
             "{SENTIDO_DE_WITHHELD}"
         );
+        // Revisao da onda B: a frase nao pode AFIRMAR que o recurso existe.
+        // `withheld` e a lista estatica RETIDOS_NO_TURNO_RESTRITO, aplicada
+        // sem olhar o estado — um Garra com zero servidores MCP, ou uma
+        // sessao que de fato nao tem `working_dir`, produz o mesmo
+        // `withheld`. Prometer existencia seria o erro simetrico ao da
+        // #1382: inventar capacidade em vez de negar.
+        assert!(
+            SENTIDO_DE_WITHHELD.contains("tells you NOTHING about whether the thing exists"),
+            "{SENTIDO_DE_WITHHELD}"
+        );
+        for afirma_existencia in ["they exist", "it exists", "does exist", "is not missing"] {
+            assert!(
+                !SENTIDO_DE_WITHHELD.contains(afirma_existencia),
+                "a frase afirma existencia ({afirma_existencia}), e `withheld` nao prova isso: \
+                 {SENTIDO_DE_WITHHELD}"
+            );
+        }
+        // O mesmo para o par de notas do prompt (#1347), que carrega a versao
+        // curta da mesma regra: quatro textos para uma politica so divergem.
+        for nota in [
+            garraia_agents::NOTA_GARRA_STATUS_PT,
+            garraia_agents::NOTA_GARRA_STATUS_EN,
+        ] {
+            assert!(nota.contains("`withheld`"), "{nota}");
+            for afirma_existencia in ["nao esta ausente", "is not missing"] {
+                assert!(
+                    !nota.contains(afirma_existencia),
+                    "a nota afirma existencia ({afirma_existencia}): {nota}"
+                );
+            }
+        }
 
         let (aberto, _) = relatorio_no_turno(&tool, &ctx, false).await;
         assert_eq!(aberto["withheld"], serde_json::json!([]), "{aberto}");

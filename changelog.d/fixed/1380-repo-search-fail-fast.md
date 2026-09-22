@@ -7,4 +7,7 @@
   repositorio segue sendo buscado, como no `garra chat` local; sem `.git`/`.hg`/`.svn`/
   `.jj` nele ou acima dele, a resposta sai em milissegundos, dizendo onde a tool olhou
   e que basta selecionar um projeto. Sessao que escolheu um `working_dir` nao muda de
-  comportamento.
+  comportamento, e num turno restrito a recusa nao cita o caminho do host. Mudanca de
+  comportamento: uma arvore de codigo SEM metadado de VCS no diretorio do processo (por
+  exemplo um `COPY` de container ou um tarball exportado) era buscavel e agora recebe a
+  recusa — selecione o projeto (defina o `working_dir` da sessao) para buscar nela.

@@ -105,16 +105,41 @@ const MARCAS_DE_REPO: &[&str] = &[".git", ".hg", ".svn", ".jj"];
 
 /// O diretorio, ou algum acima dele, e um repositorio?
 ///
-/// So metadado (`Path::exists`), subindo os ancestrais: quatro `stat` por
-/// nivel, alguns microssegundos no total — e o oposto do que a #1380 descreve,
-/// que era varrer a arvore inteira ate o timeout.
+/// So metadado, subindo os ancestrais: quatro `stat` por nivel, alguns
+/// microssegundos no total — e o oposto do que a #1380 descreve, que era
+/// varrer a arvore inteira ate o timeout.
 ///
 /// `.git` entra como arquivo tambem, e nao so como diretorio: num worktree do
 /// git (`git worktree add`) e num submodulo ele e um arquivo apontando para o
 /// `.git` real, e recusar ali seria recusar um repositorio de verdade.
+///
+/// `try_exists` em vez de `exists`, e o `Err` conta como marca PRESENTE: o
+/// `exists` devolve `false` tanto para "nao ha `.git`" quanto para "nao deu
+/// para olhar" (EACCES num diretorio sem permissao de leitura), e confundir
+/// os dois faria a recusa pegar um repositorio de verdade. Na duvida a tool
+/// nao recusa e busca, que e exatamente o comportamento de antes da #1380.
 fn dentro_de_repositorio(dir: &Path) -> bool {
-    dir.ancestors()
-        .any(|d| MARCAS_DE_REPO.iter().any(|marca| d.join(marca).exists()))
+    dir.ancestors().any(|d| {
+        MARCAS_DE_REPO
+            .iter()
+            .any(|marca| matches!(d.join(marca).try_exists(), Ok(true) | Err(_)))
+    })
+}
+
+/// O caminho inspecionado pode ir na mensagem de recusa?
+///
+/// Revisao da onda B: `repo_search` vive no modo `search`, que e a superficie
+/// read-only dos canais remotos — o mesmo turno em que o `garra_status`
+/// DELIBERADAMENTE retem `session.working_dir` (#1347). Sem este portao, o
+/// usuario a quem o `garra_status` negou o diretorio da sessao receberia o
+/// caminho absoluto do host (`/home/<alguem>/...`, `/root`) pela mensagem de
+/// erro do `repo_search` — a mesma informacao, pela porta dos fundos.
+///
+/// Fail-closed: fora de um turno (teste direto, chamada sem escopo) o bit e
+/// `None` e o caminho NAO sai. Quem ve o caminho e o operador local, para
+/// quem ele e acionavel.
+fn pode_revelar_caminho() -> bool {
+    !crate::tools::turn_tools::turno_restrito().unwrap_or(true)
 }
 
 /// A recusa rapida da #1380, ou `None` quando ha onde buscar.
@@ -137,23 +162,39 @@ fn dentro_de_repositorio(dir: &Path) -> bool {
 /// repositorio no CWD ou acima dele? A sessao COM `working_dir` nao passa por
 /// aqui — quem escolheu o diretorio decide o que ha nele, e recusar mudaria o
 /// contrato de quem ja usa a tool assim.
-fn recusa_sem_repositorio(repo: &RepoDir, timeout: Duration) -> Option<String> {
+///
+/// `revelar_caminho` vem de [`pode_revelar_caminho`] e decide so quanto a
+/// mensagem conta, nunca SE recusa: o turno restrito recebe a mesma recusa,
+/// sem o caminho absoluto do host.
+fn recusa_sem_repositorio(
+    repo: &RepoDir,
+    timeout: Duration,
+    revelar_caminho: bool,
+) -> Option<String> {
     let RepoDir::ProcessoCwd(cwd) = repo else {
         return None;
     };
     match cwd {
         // Caso (a): o CWD do processo e (ou esta dentro de) um repositorio.
         Some(dir) if dentro_de_repositorio(dir) => None,
-        Some(dir) => Some(format!(
-            "No active repository to search. This session has no working directory, and the \
-             process directory ({}) is not inside a repository (no {} found in it or above it). \
-             Select a project for this session (set its working directory) and search again. \
-             Refused immediately instead of scanning unrelated directories for {}s and timing \
-             out — the answer would not have been about your repository.",
-            dir.display(),
-            MARCAS_DE_REPO.join("/"),
-            timeout.as_secs()
-        )),
+        Some(dir) => {
+            // O operador local ve ONDE a tool olhou, porque ali isso e
+            // acionavel; o turno restrito ve a mesma recusa sem o caminho.
+            let onde = if revelar_caminho {
+                format!("the process directory ({})", dir.display())
+            } else {
+                "the process directory".to_string()
+            };
+            Some(format!(
+                "No active repository to search. This session has no working directory, and {onde} \
+                 is not inside a repository (no {} found in it or above it). Select a project for \
+                 this session (set its working directory) and search again. Refused immediately \
+                 instead of scanning unrelated directories for {}s and timing out — the answer \
+                 would not have been about your repository.",
+                MARCAS_DE_REPO.join(", "),
+                timeout.as_secs()
+            ))
+        }
         None => Some(
             "No active repository to search. This session has no working directory and the \
              process directory cannot be read, so there is nowhere to search. Select a project \
@@ -286,7 +327,7 @@ impl Tool for RepoSearchTool {
         // no CWD herdado nao ha o que buscar, e a recusa sai aqui — antes de
         // qualquer spawn — em vez de depois do timeout.
         let repo = RepoDir::decidir(context.working_dir.as_deref());
-        if let Some(motivo) = recusa_sem_repositorio(&repo, self.timeout) {
+        if let Some(motivo) = recusa_sem_repositorio(&repo, self.timeout, pode_revelar_caminho()) {
             return Ok(ToolOutput::error(motivo));
         }
         let cwd = repo.cwd_do_git();
@@ -489,7 +530,7 @@ mod tests {
 
         let repo = RepoDir::ProcessoCwd(Some(fundo.clone()));
         let antes = std::time::Instant::now();
-        let motivo = recusa_sem_repositorio(&repo, Duration::from_secs(15))
+        let motivo = recusa_sem_repositorio(&repo, Duration::from_secs(15), true)
             .expect("sem repositorio, a tool tem de recusar");
         let gasto = antes.elapsed();
 
@@ -505,9 +546,63 @@ mod tests {
         assert!(motivo.contains(".git"), "{motivo}");
 
         // CWD ilegivel tambem recusa, e sem citar caminho nenhum.
-        let motivo = recusa_sem_repositorio(&RepoDir::ProcessoCwd(None), Duration::from_secs(15))
-            .expect("sem CWD legivel nao ha onde buscar");
+        let motivo =
+            recusa_sem_repositorio(&RepoDir::ProcessoCwd(None), Duration::from_secs(15), true)
+                .expect("sem CWD legivel nao ha onde buscar");
         assert!(motivo.contains("No active repository"), "{motivo}");
+    }
+
+    /// Revisao da onda B: o turno restrito recebe a MESMA recusa, sem o
+    /// caminho absoluto do host. `repo_search` vive no modo `search`, o mesmo
+    /// turno em que o `garra_status` retem `session.working_dir` (#1347) —
+    /// sem este portao a mensagem de erro entregaria pela porta dos fundos o
+    /// caminho que a outra tool nega.
+    #[test]
+    fn turno_restrito_recusa_sem_entregar_o_caminho_do_host() {
+        let tmp = dir_sem_repo();
+        let fundo = tmp.path().join("a/b/c/d");
+        let repo = RepoDir::ProcessoCwd(Some(fundo.clone()));
+
+        let motivo = recusa_sem_repositorio(&repo, Duration::from_secs(15), false)
+            .expect("o turno restrito recusa igual: muda o que a mensagem conta, nao a decisao");
+        // Espelho do caso aberto: mesma recusa acionavel, sem o caminho.
+        assert!(motivo.contains("No active repository"), "{motivo}");
+        assert!(motivo.contains("working directory"), "{motivo}");
+        assert!(motivo.contains("the process directory"), "{motivo}");
+        assert!(
+            !motivo.contains(&fundo.display().to_string()),
+            "o caminho do host vazou para um turno restrito: {motivo}"
+        );
+        // Nem o caminho inteiro, nem um pedaco dele que ja localize o host.
+        for parte in fundo.iter().filter(|p| p.len() > 2) {
+            let parte = parte.to_string_lossy();
+            assert!(
+                !motivo.contains(parte.as_ref()),
+                "componente {parte:?} do caminho vazou: {motivo}"
+            );
+        }
+    }
+
+    /// O portao que liga o bit do turno a mensagem, com o fail-closed que o
+    /// resto nao cobre: sem turno (chamada fora de escopo) o caminho NAO sai.
+    #[tokio::test]
+    async fn caminho_so_sai_no_turno_aberto_e_fail_closed_sem_turno() {
+        use crate::tools::turn_tools::com_ferramentas_do_turno;
+
+        assert!(
+            !pode_revelar_caminho(),
+            "fora de um turno o bit e desconhecido, e o fail-closed e esconder"
+        );
+        let restrito = com_ferramentas_do_turno(vec!["repo_search".to_string()], true, async {
+            pode_revelar_caminho()
+        })
+        .await;
+        assert!(!restrito, "turno restrito nao pode ver o caminho do host");
+        let aberto = com_ferramentas_do_turno(vec!["repo_search".to_string()], false, async {
+            pode_revelar_caminho()
+        })
+        .await;
+        assert!(aberto, "o operador local ve onde a tool olhou");
     }
 
     /// O caso (a), que a recusa NAO pode pegar: sem `working_dir`, mas com o
@@ -539,7 +634,7 @@ mod tests {
                 assert!(dentro_de_repositorio(dir), "{}", dir.display());
                 let repo = RepoDir::ProcessoCwd(Some(dir.clone()));
                 assert_eq!(
-                    recusa_sem_repositorio(&repo, Duration::from_secs(15)),
+                    recusa_sem_repositorio(&repo, Duration::from_secs(15), true),
                     None,
                     "{marca} em {} foi recusado: e o caso do `garra chat` local",
                     dir.display()
@@ -556,7 +651,10 @@ mod tests {
         let tmp = dir_sem_repo();
         let repo = RepoDir::decidir(Some(&tmp.path().to_string_lossy()));
         assert!(matches!(repo, RepoDir::Sessao(_)), "{repo:?}");
-        assert_eq!(recusa_sem_repositorio(&repo, Duration::from_secs(15)), None);
+        assert_eq!(
+            recusa_sem_repositorio(&repo, Duration::from_secs(15), true),
+            None
+        );
     }
 
     /// Regressao de ponta a ponta do caso (a), pela `execute` de verdade: o
@@ -580,7 +678,7 @@ mod tests {
 
         // A decisao em si nao depende de programa nenhum, e vale sempre.
         assert_eq!(
-            recusa_sem_repositorio(&RepoDir::decidir(None), Duration::from_secs(15)),
+            recusa_sem_repositorio(&RepoDir::decidir(None), Duration::from_secs(15), true),
             None,
             "a sessao sem working_dir dentro do checkout nao pode ser recusada"
         );
