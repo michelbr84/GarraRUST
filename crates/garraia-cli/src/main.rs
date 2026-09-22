@@ -1003,6 +1003,31 @@ fn log_file_path() -> PathBuf {
     garraia_dir().join("garraia.log")
 }
 
+/// Abre o `garraia.log` que o daemon herda como stdout/stderr.
+///
+/// Em append, nunca `File::create`. O create fazia duas coisas erradas de uma
+/// vez. Truncava: cada `start -d` apagava o log da execucao anterior, justo o
+/// que se quer ler ao reiniciar depois de uma queda. E abria o descritor SEM
+/// `O_APPEND`: esse descritor vira stdout E stderr do daemon pelo `dup2`, e
+/// tudo que escreve cru nele (um `eprintln!`, a mensagem de um panic, um
+/// filho que herde o stderr) escrevia no offset proprio do descritor, que
+/// comeca em 0 — por cima das linhas que o `tracing` ja tinha posto la pelo
+/// `rolling::never`, que abre em append. Era a cabeca rasgada do smoke de
+/// instalacao limpa da v0.4.4 ("Secure MCP Filesystem Server running on
+/// stdio" seguido de meia linha de tracing).
+///
+/// Com `O_APPEND` nos dois escritores, cada `write(2)` vai para o fim do
+/// arquivo, atomicamente, e as execucoes anteriores ficam. O arquivo cresce
+/// sem rotacao — como ja crescia no `start` em foreground, que sempre abriu o
+/// mesmo arquivo em append.
+#[cfg(unix)]
+fn abrir_log_do_daemon(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
 /// Read the PID from the PID file.
 pub(crate) fn read_pid() -> Option<u32> {
     let path = pid_file_path();
@@ -2539,8 +2564,9 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
     let pid_path = pid_file_path();
     let log_path = log_file_path();
 
-    let log_file = File::create(&log_path)
-        .context(format!("failed to create log file: {}", log_path.display()))?;
+    // Append, nao truncate: ver `abrir_log_do_daemon`.
+    let log_file = abrir_log_do_daemon(&log_path)
+        .context(format!("failed to open log file: {}", log_path.display()))?;
     let log_fd = log_file.as_raw_fd();
 
     // First fork: parent exits, child becomes a background process.
@@ -3009,5 +3035,38 @@ mod tests {
         let (host, port) = parsed(&["garra", "start"]);
         assert_eq!(port, 3888, "fallback default port must be 3888");
         assert_eq!(host, "127.0.0.1", "fallback default host must be 127.0.0.1");
+    }
+
+    /// L1 (smoke da v0.4.4): o descritor que o daemon herda como
+    /// stdout/stderr nao pode truncar o log nem escrever no proprio offset.
+    /// O `tracing` escreve pelo SEU descritor (append, `rolling::never`); uma
+    /// escrita crua pelo herdado (panic, `eprintln!`, filho com stderr
+    /// herdado) tem de ir para o fim, depois dele, sem apagar a execucao
+    /// anterior. Com `File::create` a execucao anterior sumia e a escrita
+    /// crua caia no offset 0, por cima da linha do tracing.
+    #[cfg(unix)]
+    #[test]
+    fn log_do_daemon_abre_em_append_sem_truncar_nem_sobrescrever() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("garraia.log");
+        std::fs::write(&path, "execucao anterior\n").expect("semeia o log");
+
+        let mut herdado = abrir_log_do_daemon(&path).expect("abre o log do daemon");
+        let mut do_tracing = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("descritor do tracing");
+        do_tracing
+            .write_all(b"linha do tracing\n")
+            .expect("tracing escreve");
+        herdado
+            .write_all(b"escrita crua\n")
+            .expect("herdado escreve");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("le o log"),
+            "execucao anterior\nlinha do tracing\nescrita crua\n"
+        );
     }
 }
