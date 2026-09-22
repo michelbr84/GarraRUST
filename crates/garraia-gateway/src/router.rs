@@ -373,6 +373,10 @@ pub fn build_router(
             get(crate::memory_handler::search_memory),
         )
         .route("/api/logs", get(crate::logs_handler::get_logs))
+        // #1227 (slice 6): ledger de runs, somente leitura. Atras do gate
+        // global; sem `api_key`, o handler so responde ao loopback com `Host`
+        // de loopback (ver `runs_handler`).
+        .route("/api/runs", get(crate::runs_handler::list_runs))
         // Plan 0156 (GAR-651): Learning Agent Web UI — montado acima, num
         // sub-router com o guarda de mutantes (#1093); aqui so o merge.
         .merge(learning_routes)

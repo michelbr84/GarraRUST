@@ -247,6 +247,132 @@ impl SessionStore {
     }
 }
 
+impl SessionStore {
+    /// Quantas linhas o ledger tem, de qualquer status (#1227 slice 5).
+    ///
+    /// Existe para o aviso de boot do gateway com a retencao desligada: o
+    /// operador ve o tamanho do ledger sem que nenhuma linha seja lida.
+    pub fn count_agent_runs(&self) -> Result<u64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM agent_runs", [], |r| r.get(0))
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
+    /// Retencao do ledger (#1227 slice 5): apaga runs **terminais** cujo
+    /// instante de referencia e anterior a `cutoff`. Devolve quantas linhas
+    /// sairam.
+    ///
+    /// Tres regras, e todas sao do SQL, nao do chamador:
+    ///
+    /// - **`running` nunca e apagado**, qualquer que seja a idade. Um run
+    ///   em voo que sumisse do ledger apagaria justamente a auditoria que o
+    ///   ledger existe para guardar; o residuo de uma queda vira
+    ///   `interrupted` na subida seguinte e so entao entra na politica.
+    /// - O instante de referencia e `finished_at` e, na falta dele,
+    ///   `started_at` — um run terminal sem fim gravado ainda envelhece.
+    /// - Instante que nao parseia (`datetime()` devolve `NULL`) **fica**: a
+    ///   comparacao com `NULL` e falsa, e o lado seguro de uma operacao que
+    ///   apaga dado e nao apagar.
+    ///
+    /// O `cutoff` e recebido, e nao lido do relogio, para o teste fixar o
+    /// presente. Sai no formato do `datetime('now')` do SQLite, que e o que
+    /// o ledger grava, e entra por bind — nunca por concatenacao.
+    pub fn prune_agent_runs(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<usize> {
+        let corte = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+        let apagados = self
+            .conn
+            .execute(
+                "DELETE FROM agent_runs
+                 WHERE status <> 'running'
+                   AND datetime(COALESCE(finished_at, started_at)) < datetime(?1)",
+                rusqlite::params![corte],
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(apagados)
+    }
+}
+
+/// Le um status do ledger de forma **estrita** (`garraia runs list
+/// --status`, `GET /api/runs?status=`).
+///
+/// `RunStatus::from_str` e leniente de proposito (linha de banco com valor
+/// estranho vira `Running`, o lado que nunca e apagado), mas para entrada de
+/// operador isso transformaria um erro de digitacao em "nenhum run
+/// encontrado" — a resposta mais enganosa possivel para quem procura um run
+/// que existe. Aqui valor desconhecido e `None`.
+pub fn parse_run_status(bruto: &str) -> Option<RunStatus> {
+    match bruto.trim().to_ascii_lowercase().as_str() {
+        "running" => Some(RunStatus::Running),
+        "done" => Some(RunStatus::Done),
+        "error" => Some(RunStatus::Error),
+        "cancelled" => Some(RunStatus::Cancelled),
+        "interrupted" => Some(RunStatus::Interrupted),
+        _ => None,
+    }
+}
+
+/// Normaliza o instante do banco para ISO 8601 UTC com sufixo `Z`.
+///
+/// O ledger grava com `datetime('now')` do SQLite, que devolve
+/// `YYYY-MM-DD HH:MM:SS` **em UTC, sem dizer que e UTC**. Timestamp de
+/// auditoria do projeto sai sempre com o `Z` explicito (CLAUDE.md §Convencao
+/// de datas), entao a marca e colocada na leitura.
+///
+/// Um valor que nao parseia volta como veio: inventar um instante para uma
+/// linha corrompida seria pior que mostrar o byte cru.
+///
+/// Mora aqui, e nao na CLI, desde o #1227 slice 6: `garraia runs list` e
+/// `GET /api/runs` leem o mesmo ledger, e duas copias desta funcao seriam
+/// dois formatos de instante para divergir em silencio.
+pub fn iso8601_utc(bruto: &str) -> String {
+    let t = bruto.trim();
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S") {
+        return naive
+            .and_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    }
+    // Linha gravada por outro produtor, ja com fuso: normaliza para UTC.
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
+        return dt
+            .with_timezone(&chrono::Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    }
+    t.to_string()
+}
+
+/// Troca todo caractere de controle pelo caractere de substituicao Unicode.
+///
+/// Quem le o ledger escreve num terminal (CLI) ou numa pagina (console), e
+/// `goal` pode ter nascido de uma tool call de LLM: um `\x1b[2K` embutido
+/// apaga a linha impressa, um `\r` reescreve por cima da anterior. O campo e
+/// dado hostil ate prova em contrario — e a prova e trocar a classe inteira,
+/// nao uma lista de sequencias conhecidas.
+///
+/// Mapeia 1 caractere para 1 caractere, entao nao mexe em contagem nem em
+/// limite de caractere de quem chama.
+pub fn sanitize_control_chars(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
+/// Corta o texto em `max_chars` caracteres (nao bytes: payload em portugues
+/// e cheio de acento, e cortar no meio de um `ç` entrega mojibake), com `…`
+/// quando houve corte — o resultado tem no maximo `max_chars + 1`.
+///
+/// A quebra de linha vira espaco antes da higienizacao: `goal` multilinha e
+/// texto legitimo, e dobra-lo numa linha le melhor que uma fileira de `�`.
+/// O resto dos controles nao tem leitura benigna e cai no sanitizador.
+pub fn preview(texto: &str, max_chars: usize) -> String {
+    let mut out: String = texto.chars().take(max_chars).collect();
+    if out.chars().count() < texto.chars().count() {
+        out.push('…');
+    }
+    sanitize_control_chars(&out.replace('\n', " "))
+}
+
 /// Hook de subida (gateway e CLI, #1227 slice 1): converte runs `running`
 /// de uma execucao anterior em `interrupted` e loga o resultado. Um lugar
 /// so para a regra de log — o log carrega ids, nunca `goal` (PII) — e uma
@@ -378,6 +504,135 @@ mod tests {
             st.list_recent_agent_runs_by_status(&RunStatus::Cancelled, 10)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// Insere uma linha com instantes escolhidos, sem passar pelo relogio
+    /// do SQLite — o prune compara idade, entao o teste precisa de idade.
+    fn semeia_linha(
+        st: &SessionStore,
+        id: &str,
+        status: &str,
+        started_at: &str,
+        finished_at: Option<&str>,
+    ) {
+        st.conn
+            .execute(
+                "INSERT INTO agent_runs (id, goal, status, started_at, finished_at)
+                 VALUES (?1, 'objetivo', ?2, ?3, ?4)",
+                rusqlite::params![id, status, started_at, finished_at],
+            )
+            .unwrap();
+    }
+
+    fn ids(st: &SessionStore) -> Vec<String> {
+        let mut v: Vec<String> = st
+            .list_recent_agent_runs(1000)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// #1227 (slice 5): tabela status x idade. `running` nunca sai, nem com
+    /// dez anos; terminal velho sai; terminal novo fica; terminal sem
+    /// `finished_at` envelhece pelo `started_at`.
+    #[test]
+    fn prune_apaga_so_terminal_velho_e_nunca_running() {
+        let st = store();
+        let velho = "2016-01-01 00:00:00";
+        let novo = "2026-09-20 00:00:00";
+        let mut esperados_vivos = Vec::new();
+        let mut esperados_apagados = 0;
+        for status in ["running", "done", "error", "cancelled", "interrupted"] {
+            // velho, com fim gravado
+            let id = format!("{status}-velho");
+            semeia_linha(&st, &id, status, velho, Some(velho));
+            // novo
+            let id_novo = format!("{status}-novo");
+            semeia_linha(&st, &id_novo, status, novo, Some(novo));
+            // velho, sem finished_at (usa started_at)
+            let id_sem_fim = format!("{status}-sem-fim");
+            semeia_linha(&st, &id_sem_fim, status, velho, None);
+            // inicio velho, fim novo: o que conta e o fim
+            let id_fim_novo = format!("{status}-fim-novo");
+            semeia_linha(&st, &id_fim_novo, status, velho, Some(novo));
+
+            esperados_vivos.push(id_novo);
+            esperados_vivos.push(id_fim_novo);
+            if status == "running" {
+                esperados_vivos.push(id);
+                esperados_vivos.push(id_sem_fim);
+            } else {
+                esperados_apagados += 2;
+            }
+        }
+        let corte = chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+
+        let apagados = st.prune_agent_runs(corte).unwrap();
+        assert_eq!(apagados, esperados_apagados);
+        esperados_vivos.sort();
+        assert_eq!(ids(&st), esperados_vivos);
+        assert!(ids(&st).contains(&"running-velho".to_string()));
+
+        // Idempotente: a segunda passada nao tem o que apagar.
+        assert_eq!(st.prune_agent_runs(corte).unwrap(), 0);
+    }
+
+    /// Instante ilegivel nao e "velho": a linha fica. Um corte no futuro
+    /// distante apaga o resto, mas nao ela.
+    #[test]
+    fn prune_poupa_instante_ilegivel() {
+        let st = store();
+        semeia_linha(&st, "lixo", "done", "nao-e-data", Some("tambem-nao"));
+        semeia_linha(&st, "ok", "done", "2020-01-01 00:00:00", None);
+        let futuro = chrono::Utc::now() + chrono::Duration::days(365);
+        assert_eq!(st.prune_agent_runs(futuro).unwrap(), 1);
+        assert_eq!(ids(&st), vec!["lixo".to_string()]);
+    }
+
+    #[test]
+    fn count_agent_runs_conta_todos_os_status() {
+        let st = store();
+        assert_eq!(st.count_agent_runs().unwrap(), 0);
+        st.start_agent_run("a", None, "g", None).unwrap();
+        st.start_agent_run("b", None, "g", None).unwrap();
+        st.finish_agent_run("b", RunStatus::Done, None, None)
+            .unwrap();
+        assert_eq!(st.count_agent_runs().unwrap(), 2);
+    }
+
+    #[test]
+    fn parse_run_status_e_estrito() {
+        assert_eq!(parse_run_status("done"), Some(RunStatus::Done));
+        assert_eq!(
+            parse_run_status(" INTERRUPTED "),
+            Some(RunStatus::Interrupted)
+        );
+        assert_eq!(parse_run_status("dnoe"), None);
+        assert_eq!(parse_run_status(""), None);
+    }
+
+    #[test]
+    fn helpers_de_leitura_compartilhados() {
+        assert_eq!(iso8601_utc("2026-09-21 12:34:56"), "2026-09-21T12:34:56Z");
+        assert_eq!(
+            iso8601_utc("2026-09-21T09:34:56-03:00"),
+            "2026-09-21T12:34:56Z"
+        );
+        assert_eq!(iso8601_utc("nao-e-data"), "nao-e-data");
+        assert_eq!(preview("coração de leão", 7), "coração…");
+        assert_eq!(preview("uma\nlinha", 40), "uma linha");
+        let limpo = preview("\x1b[2Kx\ry", 40);
+        assert!(
+            !limpo.contains('\x1b') && !limpo.contains('\r'),
+            "{limpo:?}"
         );
     }
 

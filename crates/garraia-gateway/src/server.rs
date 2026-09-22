@@ -588,6 +588,11 @@ impl GatewayServer {
             }
         }
 
+        // #1227 (slice 5): retencao do ledger `agent_runs`. Default 0 =
+        // nunca apaga; desligada, o boot avisa uma vez com a contagem. Ver o
+        // docblock de `runs_retention_worker`.
+        crate::runs_retention_worker::iniciar(&state.config, state.session_store.clone());
+
         // Start config hot-reload watcher
         let config_path = garraia_config::ConfigLoader::default_config_dir().join("config.yml");
 

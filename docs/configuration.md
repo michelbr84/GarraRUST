@@ -386,3 +386,64 @@ observability:
     enabled: true
     port: 9090
 ```
+
+## Runs ledger (`runs`)
+
+The gateway records every scheduled run (`mode: heartbeat`) in the
+`agent_runs` table of `sessions.db`. `garraia runs list` reads it from the
+terminal, and `GET /api/runs` reads it over HTTP (#1227).
+
+### Retention
+
+```yaml
+runs:
+  retention_days: 0   # default: never delete
+```
+
+- `0` (the default) keeps every row. An upgrade never deletes history. While
+  retention is off the gateway logs once at boot how many runs the ledger
+  holds and how to turn retention on.
+- `1..=3650` deletes **terminal** runs (`done`, `error`, `cancelled`,
+  `interrupted`) whose end time (or start time, when no end was recorded) is
+  older than that many days. The sweep runs at boot and then every 24 hours.
+  Its log carries only the count, never run content.
+- A `running` row is **never** deleted, whatever its age. A run left
+  `running` by a crash becomes `interrupted` at the next boot, and only then
+  ages like any other terminal run.
+- `garraia config check` rejects values above 3650.
+
+The key is top-level on purpose: `agents:` is a map of named agents, so
+`agents.runs_retention_days` would be read as an agent called
+`runs_retention_days`.
+
+### `GET /api/runs`
+
+Read-only. Query: `status` (`running`, `done`, `error`, `cancelled`,
+`interrupted`; anything else is `400`) and `limit` (default 20, clamped to
+`[1, 200]`). The response is `{"runs": [...]}` with `id`, `session_id`,
+`mode`, `status`, `started_at`, `finished_at` (UTC ISO 8601 with `Z`) and
+`goal_preview` / `result_preview` / `error_preview`: at most 120 characters,
+with known secret formats redacted and control characters replaced. The full
+500-character snippets stored in the ledger are not exposed over HTTP.
+
+Access is stricter than the rest of `/api/*`:
+
+- With `gateway.api_key` set, a valid `Authorization: Bearer` is required.
+  This is how a phone or another machine on the LAN reads the ledger.
+- Without `gateway.api_key`, only the local machine can read it: the peer
+  must be loopback **and** the `Host` header must be `127.0.0.1`,
+  `localhost` or `[::1]`. A LAN peer gets `503 runs: auth not configured`; a
+  loopback peer behind another `Host` name (DNS rebinding) gets `403`.
+
+### Why there is no `runs resume`
+
+A scheduled run marked `interrupted` is already retried automatically: at
+boot the scheduler puts a task whose lease expired back to `pending`
+(`recover_expired_leases`), and the next tick executes it again, which
+records a **new** run in the ledger. A manual resume of the old row would
+execute the task twice (duplicate system message and duplicate channel
+delivery). The ledger also cannot replay a run faithfully: `goal` is
+truncated to 500 characters and no column links a run back to its task.
+Resuming is left out until a real consumer of the sub-agent coordinator
+exists; when it does, it must require explicit confirmation and create a new
+run that references the original.
