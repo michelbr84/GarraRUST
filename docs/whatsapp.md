@@ -208,6 +208,14 @@ camadas, e nenhuma substitui a outra.
   `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`,
   `garra_status` — que descreve o proprio runtime, sem segredo, #1347) e
   `denied` para `file_write`, `bash` e `device_execute`.
+  O `garra_status` e o que responde "voce tem acesso ao WhatsApp?": a lista
+  `channels` dele sai da mesma funcao do `/api/channels`, entao este canal
+  aparece `active` com a ponte conectada e `offline` com ela caida. Numa
+  sessao deste canal (e em todo turno de portao restrito) o relatorio retem
+  o que e do operador — diretorio da sessao, `project_id`, lista de
+  provedores, nomes dos servidores MCP e a versao exata — e lista o que
+  reteve em `withheld`; o `session.id` sai com o numero mascarado nos 4
+  ultimos digitos.
   `channels.whatsapp_linked.default_mode` troca o perfil padrao por **outro
   modo nativo** (`ask`, `code`, `debug`, …); a escolha explicita do usuario
   (`/mode`) continua vencendo. Dois valores **nao** servem, e o canal nao sobe

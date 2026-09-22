@@ -13,27 +13,61 @@
 //! o runtime publica a lista num `task_local` em volta do `execute` da tool
 //! que precisa dela, e a tool le com [`ferramentas_do_turno`]. Fora desse
 //! escopo (teste, chamador que nao e o runtime) a leitura devolve `None`.
+//!
+//! Junto com a lista vai um bit: se o portao do turno restringe por
+//! whitelist (o piso `search` do WhatsApp e os demais modos somente
+//! leitura). O `garra_status` usa esse bit para nao entregar detalhe do
+//! operador (diretorio, provedores, versao exata) num turno restrito, cujo
+//! remetente nao e necessariamente o operador (#1347, fatia 3).
 
 use std::future::Future;
 use std::sync::Arc;
 
+/// O que o runtime publica em volta do `execute` de `garra_status`.
+#[derive(Clone)]
+struct Turno {
+    ferramentas: Arc<[String]>,
+    restrito: bool,
+}
+
 tokio::task_local! {
-    static FERRAMENTAS_DO_TURNO: Arc<[String]>;
+    static TURNO: Turno;
 }
 
 /// As ferramentas liberadas no turno em que esta execucao roda, ja na ordem
 /// lexica. `None` fora de uma execucao despachada pelo `AgentRuntime`.
 pub fn ferramentas_do_turno() -> Option<Vec<String>> {
-    FERRAMENTAS_DO_TURNO.try_with(|v| v.to_vec()).ok()
+    TURNO.try_with(|t| t.ferramentas.to_vec()).ok()
 }
 
-/// Roda `fut` com `nomes` publicados como as ferramentas do turno. O runtime
-/// chama em volta do `execute`; e publico para o teste do gateway montar o
-/// mesmo escopo sem subir um turno inteiro.
-pub async fn com_ferramentas_do_turno<F: Future>(mut nomes: Vec<String>, fut: F) -> F::Output {
+/// O portao deste turno restringe por whitelist? `None` fora de uma execucao
+/// despachada pelo `AgentRuntime` — quem le decide o que isso significa (o
+/// `garra_status` trata como nao restrito, porque fora do runtime nao ha
+/// remetente remoto; ver o docstring de la).
+pub fn turno_restrito() -> Option<bool> {
+    TURNO.try_with(|t| t.restrito).ok()
+}
+
+/// Roda `fut` com `nomes` publicados como as ferramentas do turno e
+/// `restrito` como o bit do portao. O runtime chama em volta do `execute`; e
+/// publico para o teste do gateway montar o mesmo escopo sem subir um turno
+/// inteiro.
+pub async fn com_ferramentas_do_turno<F: Future>(
+    mut nomes: Vec<String>,
+    restrito: bool,
+    fut: F,
+) -> F::Output {
     nomes.sort();
     nomes.dedup();
-    FERRAMENTAS_DO_TURNO.scope(Arc::from(nomes), fut).await
+    TURNO
+        .scope(
+            Turno {
+                ferramentas: Arc::from(nomes),
+                restrito,
+            },
+            fut,
+        )
+        .await
 }
 
 #[cfg(test)]
@@ -49,13 +83,20 @@ mod tests {
                 "garra_status".into(),
                 "file_read".into(),
             ],
-            async { ferramentas_do_turno() },
+            true,
+            async { (ferramentas_do_turno(), turno_restrito()) },
         )
         .await;
         assert_eq!(
             dentro,
-            Some(vec!["file_read".to_string(), "garra_status".to_string()])
+            (
+                Some(vec!["file_read".to_string(), "garra_status".to_string()]),
+                Some(true)
+            )
         );
         assert_eq!(ferramentas_do_turno(), None);
+        assert_eq!(turno_restrito(), None);
+        let aberto = com_ferramentas_do_turno(vec![], false, async { turno_restrito() }).await;
+        assert_eq!(aberto, Some(false));
     }
 }

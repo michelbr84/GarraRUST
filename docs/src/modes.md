@@ -262,6 +262,15 @@ POST /api/modes/custom
 }
 ```
 
+> **Limite conhecido (v0.4.5):** o prompt do modo chega ao provider em todo
+> turno, e o `max_tokens` do modo tambem, salvo quando o chamador ou a config
+> (`agent.max_tokens`) definem o seu (precedencia chamador > runtime > modo; o
+> CLI sempre define 4096). A `temperature` do modo ainda nao chega: os turnos
+> de chat, canais e API mandam o pedido sem temperatura, e o provider usa o
+> default dele. Manda-la mudaria o pedido de todo turno com modo, porque os
+> modos embutidos declaram de 0.3 a 0.7, e essa mudanca fica para quando o
+> provider souber omitir o parametro nos modelos que o recusam.
+
 ### Limites por Modo
 
 | Modo | Max Tool Loops | Timeout | Max Turns |
