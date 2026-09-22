@@ -79,10 +79,17 @@ mcp:
 
 Pin the version (`@2026.8.31`). A bare `npx -y @modelcontextprotocol/server-filesystem`
 resolves to whatever is newest on the registry every time the npx cache is
-cold, so the gateway runs a build nobody tested. New installs are provisioned
-with the pinned form (#1346); the `mcp.filesystem_pinned` check of
-`GET /api/diagnostics` warns about an existing unpinned entry and prints the
-exact `args` to paste — `mcp.json` itself is never rewritten.
+cold, so the gateway runs a build nobody tested. A dist-tag (`@latest`,
+`@next`) or a range (`@^1`, `@~2026.8`) floats the same way and is not
+counted as pinned. New installs are provisioned with the pinned form (#1346);
+the `mcp.filesystem_pinned` check of `GET /api/diagnostics` warns about an
+existing unpinned entry and prints the exact `args` to paste — `mcp.json`
+itself is never rewritten.
+
+Pinning fixes the top-level package only. Its own dependencies
+(`@modelcontextprotocol/sdk`, `zod`, `glob`, ...) are declared with semver
+ranges and the package ships no lockfile, so a cold `npx -y` still resolves
+the newest versions that match those ranges.
 
 #### Auto-provisioned root
 
@@ -253,8 +260,11 @@ Since v0.4.5 the gateway handles this itself (#1346):
 `GET /api/mcp/health` lists the failed server with `"connected": false`,
 `"status": "retrying"` or `"failed"`, the classified `cause`
 (`npx_cache_corrupt`, `disk_full`, `other`) and a short `last_error`.
-`GET /api/diagnostics` has an `mcp.servers` row whose `next_step` names the
-cache directory to remove. To fix it by hand:
+`last_error` names the cause but never a path. `GET /api/diagnostics` has an
+`mcp.servers` row whose `next_step` names the cache directory to remove — only
+when the gateway confirmed it is the entry of the configured package inside
+the npm cache it gave the child; a path the child printed is never repeated.
+To fix it by hand:
 
 ```bash
 rm -rf ~/.npm/_npx/<hash>      # the directory named by the diagnostic

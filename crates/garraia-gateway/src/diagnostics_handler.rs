@@ -654,14 +654,21 @@ fn mcp_server_next_step(
         "e reinicie o servidor com POST /admin/api/mcp/{name}/restart (ou reinicie o `{bin}`)"
     );
     match cause {
+        // `dir` so chega aqui depois de o manager ter reconstruido e
+        // validado a entrada dentro do cache do npm (revisao MCP-4): nunca e
+        // o caminho que o processo filho imprimiu.
         Some(McpFailureCause::NpxCacheCorrupt { dir: Some(dir) }) => format!(
             "{name}: o cache do npx em {} esta incompleto/corrompido. Apague esse diretorio \
              (ou rode `npm cache verify`) {restart}.",
             dir.display()
         ),
+        // Sem `dir`: integridade (EINTEGRITY) ou uma entrada que o gateway nao
+        // conseguiu confirmar dentro do cache — nao se repete caminho nenhum.
         Some(McpFailureCause::NpxCacheCorrupt { dir: None }) => {
             format!(
-                "{name}: o cache do npm falhou a verificacao de integridade. Rode `npm cache verify` {restart}."
+                "{name}: o cache do npx esta incompleto ou falhou a verificacao de integridade. \
+                 Rode `npm cache verify` (ou apague a entrada `_npx/<hash>` do pacote dentro \
+                 do seu cache do npm) {restart}."
             )
         }
         Some(McpFailureCause::DiskFull) => {

@@ -118,9 +118,13 @@ impl McpPersistenceService {
     /// registry a cada cache frio: uma instalacao nova recebia um build que
     /// ninguem tinha rodado, e um `_npx` montado pela metade (a queda do
     /// `zod/v4/mini`) nao tinha como ser distinguido de um pacote quebrado.
-    /// Fixar a versao tambem e cadeia de suprimento — o registry deixa de
-    /// decidir o que roda no gateway. Subir a versao e um PR comum, depois de
-    /// um handshake `initialize` + `tools/list` em node 20 e 22.
+    /// Fixar a versao tambem ajuda a cadeia de suprimento, mas so no primeiro
+    /// nivel: o pacote de topo deixa de flutuar, e as dependencias DELE
+    /// (`@modelcontextprotocol/sdk`, `zod`, `glob`, ...) continuam resolvidas
+    /// pelos ranges semver do `package.json` publicado, sem lockfile — o
+    /// `npx -y` num cache frio ainda pega a versao mais nova que casar. Subir
+    /// a versao e um PR comum, depois de um handshake `initialize` +
+    /// `tools/list` em node 20 e 22.
     pub const FILESYSTEM_PACKAGE_VERSION: &'static str = "2026.8.31";
 
     /// `<pacote>@<versao>` — o argumento que a provisao, o template do admin e
@@ -481,10 +485,13 @@ pub enum VersaoDoFilesystem {
     /// A entrada nao roda o pacote via `npx` (binario local, `node` direto,
     /// transporte HTTP) — versao nao e assunto do Garra.
     ForaDoNpx,
-    /// `npx ... @modelcontextprotocol/server-filesystem@<versao>`.
+    /// `npx ... @modelcontextprotocol/server-filesystem@<versao exata>`
+    /// (`1.2.3`, com `-prerelease`/`+build` opcionais).
     Fixada(String),
-    /// `npx ... @modelcontextprotocol/server-filesystem` sem `@versao`: cada
-    /// cache frio baixa o que for mais novo no registry. Carrega os `args`
+    /// `npx ... @modelcontextprotocol/server-filesystem` sem `@versao`, ou com
+    /// algo que nao e versao exata — dist-tag (`@latest`, `@next`) ou range
+    /// (`@^1`, `@~2026.8`, `@*`): cada cache frio baixa o que for mais novo
+    /// no registry do mesmo jeito. Carrega os `args`
     /// sugeridos (os mesmos, com o pacote trocado pela versao testada), para
     /// o diagnostico dizer exatamente o que colar.
     SemVersao { args_sugeridos: Vec<String> },
@@ -531,13 +538,40 @@ fn classificar_versao(command: Option<&str>, args: &[String]) -> VersaoDoFilesys
         .strip_prefix(McpPersistenceService::FILESYSTEM_PACKAGE)
         .and_then(|resto| resto.strip_prefix('@'))
     {
-        Some(versao) if !versao.is_empty() => VersaoDoFilesystem::Fixada(versao.to_string()),
+        Some(versao) if e_versao_exata(versao) => VersaoDoFilesystem::Fixada(versao.to_string()),
         _ => {
             let mut args_sugeridos = args.to_vec();
             args_sugeridos[i] = McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.to_string();
             VersaoDoFilesystem::SemVersao { args_sugeridos }
         }
     }
+}
+
+/// `v` e uma versao semver EXATA (`MAJOR.MINOR.PATCH`, com `-prerelease` e
+/// `+build` opcionais)? Dist-tag (`latest`) e range (`^1`, `1.x`, `>=1`) nao
+/// sao — o npm resolve os dois para "o mais novo que casar" (revisao MCP-8).
+fn e_versao_exata(v: &str) -> bool {
+    let (resto, build) = match v.split_once('+') {
+        Some((r, b)) => (r, Some(b)),
+        None => (v, None),
+    };
+    let (nucleo, pre) = match resto.split_once('-') {
+        Some((n, p)) => (n, Some(p)),
+        None => (resto, None),
+    };
+    let identificadores_ok = |s: &str| {
+        !s.is_empty()
+            && s.split('.').all(|id| {
+                !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+    };
+    let partes: Vec<&str> = nucleo.split('.').collect();
+    partes.len() == 3
+        && partes
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && pre.is_none_or(identificadores_ok)
+        && build.is_none_or(identificadores_ok)
 }
 
 /// `arg` e o pacote do servidor `filesystem`, nu ou com versao fixada
@@ -1276,6 +1310,36 @@ mod tests {
             ),
             VersaoDoFilesystem::Fixada("0.6.2".into())
         );
+        // Revisao MCP-8: dist-tag e range flutuam como o pacote nu.
+        for flutua in [
+            "latest",
+            "next",
+            "^1",
+            "~2026.8.31",
+            "*",
+            "1.x",
+            ">=1.0.0",
+            "1.2",
+        ] {
+            let spec = format!("@modelcontextprotocol/server-filesystem@{flutua}");
+            let args = ["-y", spec.as_str(), "/a"];
+            match versao_do_filesystem_efetivo(&nada, &cfg(Some("npx"), &args)) {
+                VersaoDoFilesystem::SemVersao { args_sugeridos } => assert_eq!(
+                    args_sugeridos[1],
+                    McpPersistenceService::FILESYSTEM_PACKAGE_SPEC,
+                    "{flutua}"
+                ),
+                outro => panic!("@{flutua} nao e versao fixada: {outro:?}"),
+            }
+        }
+        for exata in ["2026.8.31", "1.0.0-rc.1", "1.0.0+build.5", "0.6.2-beta-2"] {
+            let spec = format!("@modelcontextprotocol/server-filesystem@{exata}");
+            assert_eq!(
+                versao_do_filesystem_efetivo(&nada, &cfg(Some("npx"), &["-y", spec.as_str()])),
+                VersaoDoFilesystem::Fixada(exata.into()),
+                "{exata}"
+            );
+        }
         assert_eq!(
             versao_do_filesystem_efetivo(
                 &nada,
