@@ -254,15 +254,18 @@ When `garra chat` runs, the provider is chosen in this strict order:
    entry supplies the URL and the key.
 2. **`config.agent.default_provider`** — read as a *lookup key* into
    `config.llm[...]`. If the matching block has a usable credential
-   (api_key in config, matching `*_API_KEY` env var, or, for OpenAI-
-   compatible local backends, a `base_url`), this provider wins.
+   (api_key in config; the matching `*_API_KEY` env var, but only when
+   the block talks to the kind's default host — see "Endpoint and
+   credential" below; or, for OpenAI-compatible local backends, a
+   `base_url` of their own), this provider wins.
 3. **Autodetect** (no `--provider`, no usable `default_provider`) —
    cloud first, since issue #1180: the cloud providers you hold a
    credential for (`api_key` in config or the matching `*_API_KEY` env
-   var) are tried in the order **Anthropic → OpenAI → OpenRouter**, a
-   provider with no credential being skipped; then **Ollama**, if its
-   health check passes; and, as the last resort, an **offline Ollama**
-   handle so the REPL still opens and tells you what is missing.
+   var, under the same default-host rule) are tried in the order
+   **Anthropic → OpenAI → OpenRouter**, a provider with no credential
+   being skipped; then **Ollama**, if its health check passes; and, as
+   the last resort, an **offline Ollama** handle so the REPL still opens
+   and tells you what is missing.
 
 Before #1180 this chain probed Ollama *first*, so a stray `ollama serve`
 silently beat an exported `OPENROUTER_API_KEY`. If you want the local
@@ -312,14 +315,33 @@ that entry points somewhere else (`crates/garraia-cli/src/provider_binding.rs`).
 | --------------------------- | ----------------------------- |
 | `--provider <X>` / MCP `provider: <X>` | `llm.<X>`; if absent and `<X>` is a kind, `llm.main` when its `provider:` is `<X>`; otherwise none |
 | `agent.default_provider: <K>` | `llm.<K>` |
-| autodetect (Anthropic, OpenAI, OpenRouter) | same rule as `--provider <kind>` |
+| autodetect (Anthropic, OpenAI, OpenRouter) | same rule as `--provider <kind>`; an `llm.<kind>` that declares **another** `provider:` is used whole only when it carries its own `api_key`, otherwise the candidate falls back to "no entry" |
 
-Inside that entry the key precedence is the gateway's: the entry's own
-`api_key` wins over the kind's environment variable (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`), which only fills an entry
-that has no key. When **no** entry applies, the endpoint is the kind's
-default host and the key can only come from that environment variable —
-the key of some other entry of the same kind is never borrowed.
+Inside that entry the entry's own `api_key` wins over the kind's
+environment variable (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`OPENROUTER_API_KEY`). The variable **only ever reaches the kind's
+default host**: it fills an entry that has no key only when that entry
+has no `base_url`, or a `base_url` that *is* the default host
+(`https://api.openai.com[/v1]`, `https://api.anthropic.com`,
+`https://openrouter.ai/api/v1` — the last one is what `garraia init`
+writes, with the key left in the environment). An entry pointing
+anywhere else without its own `api_key` gets **no** credential: an
+OpenAI-compatible one sends the keyless placeholder `not-needed` (what
+LM Studio / vLLM expect), `anthropic` and `openrouter` refuse with an
+error. So an `OPENAI_API_KEY` sitting in a `.env` of the current
+directory (loaded by `dotenvy`) is never shipped to a proxy or to a
+third-party LM Studio just because its entry has no `api_key`. This is
+stricter than the gateway, which resolves config > env without looking
+at the `base_url`.
+
+When **no** entry applies, the endpoint is the kind's default host and
+the key can only come from that environment variable — the key of some
+other entry of the same kind is never borrowed.
+
+The MCP `garra_agent` looks the built provider up by the id it
+registered under (`llama-cpp` for `llamacpp`, the kind for an alias of
+`anthropic`/`ollama`/`llamacpp`), so every alias accepted by `-p` also
+works there; the envelope still reports the name that was passed.
 
 `--url <address>` (an ad-hoc OpenAI-compatible endpoint) takes its key
 from `LLM_API_KEY`, or from the `api_key` of an `llm:` entry whose

@@ -93,7 +93,10 @@ Para provider:
 Endpoint e credencial saem **sempre da mesma entrada**: `-p openai` usa
 `llm.openai.base_url` com `llm.openai.api_key` — nunca a chave de uma
 entrada com o endereço de outra, nem a chave de uma entrada apontando para
-outro lugar enviada ao host padrão do provider. Detalhes em
+outro lugar enviada ao host padrão do provider. A variável de ambiente do
+tipo (`OPENAI_API_KEY` etc., inclusive a de um `.env` no diretório
+corrente) só vai para o host padrão: uma entrada com `base_url` própria e
+sem `api_key` não a recebe. Detalhes em
 [`docs/configuration.md` §"Endpoint and credential"](configuration.md#endpoint-and-credential-always-the-same-entry).
 
 ## Exemplos

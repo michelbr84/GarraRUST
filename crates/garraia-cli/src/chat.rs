@@ -606,20 +606,23 @@ fn decide_default_provider(
     // Same emptiness rule as `provider_binding::bind_entry`, so the decision
     // and the construction cannot disagree about whether a key exists.
     let cfg_has_key = cfg.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    let cfg_has_base_url = cfg
-        .base_url
-        .as_deref()
-        .is_some_and(|u| !u.trim().is_empty());
+    // The kind's env var only counts when the entry talks to the kind's
+    // default host — `bind_entry` never sends it to the entry's own
+    // `base_url`, and the decision must not count a key the build will not
+    // use.
+    let env_reaches_entry =
+        provider_binding::env_credential_allowed(provider_kind, cfg.base_url.as_deref());
     let credential_ok = match provider_kind {
         // Local — health-checked by the caller. `llamacpp` talks to a local
         // llama-server (default http://localhost:8080), keyless like ollama.
         "ollama" | "llamacpp" => true,
-        "anthropic" => env_has_anthropic_key || cfg_has_key,
+        "anthropic" => cfg_has_key || (env_has_anthropic_key && env_reaches_entry),
         // OpenAI-compatible local backends (e.g. LM Studio) commonly omit
-        // the api_key and rely on `base_url` reachability. Treat them as
-        // credential-ok for the purposes of routing.
-        "openai" => cfg_has_base_url || env_has_openai_key || cfg_has_key,
-        "openrouter" => env_has_openrouter_key || cfg_has_key,
+        // the api_key and rely on `base_url` reachability. Treat an entry
+        // pointing at its own endpoint as credential-ok for routing (it gets
+        // the keyless placeholder); the OpenAI API itself needs a key.
+        "openai" => cfg_has_key || !env_reaches_entry || env_has_openai_key,
+        "openrouter" => cfg_has_key || (env_has_openrouter_key && env_reaches_entry),
         _ => {
             return DefaultProviderDecision::FallThroughToChain {
                 reason: "unknown provider kind in agent.default_provider",
@@ -833,8 +836,11 @@ fn select_explicit_provider_with_env(
         );
     };
     let model = explicit_model(config, &binding, model_override);
-    // An alias registers under its own name so the runtime's lookup by name
-    // (the MCP agent passes it) resolves instead of warning — GAR-582.
+    // An OpenAI-compatible alias registers under its own name (GAR-582), so
+    // a lookup by that name resolves. The other kinds cannot be renamed and
+    // register as their kind; callers that look the provider up by name
+    // (the MCP agent) therefore ask for `provider.provider_id()`, never for
+    // the name that was typed.
     let provider_id = (!provider_binding::is_buildable_kind(name)).then_some(name);
     let provider = provider_binding::build_provider(&binding, &model, provider_id, url_override)?;
     Ok((name.to_string(), model, provider))
@@ -1131,14 +1137,11 @@ async fn detect_provider_with_env(
     // `llm:` entry. The chain used to take only the key (`llm.<kind>` or
     // `llm.main`) and pair it with the kind's default host, dropping the
     // entry's `base_url`: a proxy key went to api.openai.com / api.anthropic.com
-    // / openrouter.ai.
-    let bind_cloud = |kind: &str| {
-        provider_binding::bind_named(config, kind, env)
-            .filter(|b| b.kind() == kind && b.has_credential())
-    };
-    let anthropic = bind_cloud("anthropic");
-    let openai = bind_cloud("openai");
-    let openrouter = bind_cloud(DEFAULT_CLOUD_PROVIDER);
+    // / openrouter.ai. An `llm.<kind>` that declares another `provider:` no
+    // longer erases the candidate — see `bind_autodetect`.
+    let anthropic = provider_binding::bind_autodetect(config, "anthropic", env);
+    let openai = provider_binding::bind_autodetect(config, "openai", env);
+    let openrouter = provider_binding::bind_autodetect(config, DEFAULT_CLOUD_PROVIDER, env);
 
     for candidate in autodetect_order(anthropic.is_some(), openai.is_some(), openrouter.is_some()) {
         let (name, binding) = match candidate {
@@ -1161,7 +1164,11 @@ async fn detect_provider_with_env(
             continue;
         };
         let model = explicit_model(config, binding, model_override);
-        let Ok(provider) = provider_binding::build_provider(binding, &model, None, None) else {
+        // An `llm.openrouter` declaring `provider: openai` registers under
+        // the entry's name, like an alias on the explicit path (GAR-582).
+        let provider_id = (binding.kind() != name).then_some(name);
+        let Ok(provider) = provider_binding::build_provider(binding, &model, provider_id, None)
+        else {
             continue;
         };
         return (name.to_string(), model, provider);
@@ -3422,13 +3429,20 @@ mod tests {
         );
     }
 
-    /// Dentro de uma entrada, a chave dela vence a variavel de ambiente (a
-    /// precedencia do gateway); a variavel so preenche uma chave ausente.
+    /// Dentro de uma entrada, a chave dela vence a variavel de ambiente. E a
+    /// variavel NUNCA preenche uma entrada que aponta para o proprio
+    /// endpoint: `llm.openai { base_url: <proxy> }` sem `api_key`, com uma
+    /// `OPENAI_API_KEY` velha no ambiente (ou no `.env` do diretorio
+    /// corrente), manda o marcador de "sem chave" ao proxy — a chave da API
+    /// da OpenAI so vai para a API da OpenAI (achado do verificador).
     #[tokio::test]
     async fn explicit_entry_key_beats_a_stale_env_key() {
         use crate::provider_binding::mock_endpoint::MockEndpoint;
         let env = |var: &str| (var == "OPENAI_API_KEY").then(|| "sk-velha".to_string());
-        for (entry_key, expected) in [(Some("da-entrada"), "da-entrada"), (None, "sk-velha")] {
+        for (entry_key, expected) in [
+            (Some("da-entrada"), "da-entrada"),
+            (None, provider_binding::KEYLESS_PLACEHOLDER),
+        ] {
             let mock = MockEndpoint::start().await;
             let cfg = config_with(&[(
                 "openai",
@@ -3444,6 +3458,121 @@ mod tests {
             texto_da_chamada(&p).await;
             assert_eq!(mock.credentials().await, vec![expected.to_string()]);
         }
+    }
+
+    /// O mesmo achado pelo caminho do `agent.default_provider` (onde, antes
+    /// deste branch, a `OPENAI_API_KEY` ja ia para a `base_url` da entrada
+    /// padrao) e pela autodeteccao: a variavel do ambiente nunca chega na
+    /// `base_url` propria de uma entrada sem chave.
+    #[tokio::test]
+    async fn env_key_never_reaches_an_entry_base_url_on_default_or_autodetect() {
+        use crate::provider_binding::mock_endpoint::MockEndpoint;
+        let env = |var: &str| match var {
+            "OPENAI_API_KEY" => Some("sk-do-env".to_string()),
+            "ANTHROPIC_API_KEY" => Some("sk-ant-do-env".to_string()),
+            "OPENROUTER_API_KEY" => Some("sk-or-do-env".to_string()),
+            _ => None,
+        };
+        let do_env = ["sk-do-env", "sk-ant-do-env", "sk-or-do-env"];
+
+        // default_provider: openai → o proxy recebe o marcador.
+        let mock = MockEndpoint::start().await;
+        let cfg = config_with_default(
+            "openai",
+            &[(
+                "openai",
+                make_llm_cfg(
+                    "openai",
+                    Some("m"),
+                    None,
+                    Some(&format!("{}/v1", mock.uri())),
+                ),
+            )],
+        );
+        let (name, _, provider) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+        assert_eq!(name, "openai");
+        texto_da_chamada(&provider).await;
+        assert_eq!(
+            mock.credentials().await,
+            vec![provider_binding::KEYLESS_PLACEHOLDER.to_string()]
+        );
+
+        // default_provider anthropic/openrouter sem chave propria, apontando
+        // para o proxy: a decisao nao conta a env, e nada chega ao proxy
+        // (nem por esse caminho nem pela autodeteccao que vem depois).
+        for kind in ["anthropic", "openrouter"] {
+            let mock = MockEndpoint::start().await;
+            let cfg = config_with_default(
+                kind,
+                &[(kind, make_llm_cfg(kind, Some("m"), None, Some(&mock.uri())))],
+            );
+            assert!(
+                matches!(
+                    decide_default_provider(&cfg, true, true, true),
+                    DefaultProviderDecision::FallThroughToChain { .. }
+                ),
+                "{kind}: a env nao e credencial para a base_url da entrada"
+            );
+            let (name, _, _) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+            assert_ne!(name, kind, "{kind}: nao ha credencial para o proxy");
+            assert!(
+                mock.paths().await.is_empty(),
+                "{kind}: o proxy recebeu pedido"
+            );
+        }
+
+        // Autodeteccao: `llm.openai` sem chave apontando para o proxy.
+        let mock = MockEndpoint::start().await;
+        let cfg = config_with(&[(
+            "openai",
+            make_llm_cfg(
+                "openai",
+                Some("m"),
+                None,
+                Some(&format!("{}/v1", mock.uri())),
+            ),
+        )]);
+        let only_openai_env =
+            |var: &str| (var == "OPENAI_API_KEY").then(|| "sk-do-env".to_string());
+        let (name, _, _) =
+            detect_provider_with_env(&cfg, None, None, false, &only_openai_env).await;
+        assert_ne!(name, "openai", "sem chave propria o proxy nao e candidato");
+        let vistas = mock.credentials().await;
+        assert!(
+            !vistas.iter().any(|c| do_env.contains(&c.as_str())),
+            "a env chegou no proxy: {vistas:?}"
+        );
+    }
+
+    /// Achado do verificador (LOW): `llm.openrouter` declarando
+    /// `provider: openai`, com chave propria e sem `agent.default_provider`,
+    /// era autodetectado como OpenRouter antes deste branch; o
+    /// `provider_binding` descartava o candidato e caia no Ollama. Volta a
+    /// ser o OpenRouter, vinculado inteiro: a chave dele, a base_url dele.
+    #[tokio::test]
+    async fn autodetect_keeps_a_candidate_whose_entry_declares_another_kind() {
+        use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+        let mock = MockEndpoint::start().await;
+        let cfg = config_with(&[(
+            "openrouter",
+            make_llm_cfg(
+                "openai",
+                Some("m"),
+                Some("k-or"),
+                Some(&format!("{}/api/v1", mock.uri())),
+            ),
+        )]);
+        let (name, model, provider) =
+            detect_provider_with_env(&cfg, None, None, false, &|_| None).await;
+        assert_eq!((name.as_str(), model.as_str()), ("openrouter", "m"));
+        // Registrado com o nome da entrada, como um alias no caminho explicito.
+        assert_eq!(provider.provider_id(), "openrouter");
+        assert_eq!(texto_da_chamada(&provider).await, SENTINEL);
+        assert_eq!(
+            mock.paths().await,
+            vec!["/api/v1/chat/completions".to_string()]
+        );
+        assert_eq!(mock.credentials().await, vec!["k-or".to_string()]);
     }
 
     /// O fallback legado `llm.main`: `-p anthropic` com a `llm.main` do tipo

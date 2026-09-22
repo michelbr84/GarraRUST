@@ -268,6 +268,69 @@ async fn explicit_provider_reaches_the_configured_base_url_and_nothing_else() {
     }
 }
 
+/// Achado do verificador (MEDIUM), no binario: a `OPENAI_API_KEY` que o
+/// `dotenvy` carrega do `.env` do diretorio corrente nunca vai para a
+/// `base_url` propria de uma entrada sem `api_key` — nem por `-p openai`,
+/// nem pelo `agent.default_provider`. O endpoint ve o marcador de "sem
+/// chave". E sem `base_url` a mesma variavel continua indo para o host
+/// padrao (a armadilha ve o `CONNECT api.openai.com:443`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dotenv_openai_key_never_reaches_an_entry_own_base_url() {
+    const DO_ENV: &str = "sk-do-dotenv-nao-pode-sair";
+    for args in [&["-p", "openai", "oi"][..], &["oi"][..]] {
+        let target = endpoint().await;
+        let trap = Trap::start();
+        let yaml = format!(
+            "agent:\n  default_provider: openai\nllm:\n  openai:\n    provider: openai\n    model: m\n    base_url: {}/v1\n",
+            target.uri()
+        );
+        let dir = config_dir(&yaml);
+        std::fs::write(
+            dir.path().join(".env"),
+            format!("OPENAI_API_KEY={DO_ENV}\n"),
+        )
+        .expect(".env");
+        let out = garra_ask(&dir, &trap, args).await;
+        let seen = credentials(&target).await;
+        assert!(
+            !seen.is_empty() && seen.iter().all(|c| c == "not-needed"),
+            "{args:?}: o endpoint viu {seen:?}\n{}",
+            describe(&out)
+        );
+        assert_eq!(
+            trap.lines(),
+            Vec::<String>::new(),
+            "{args:?}\n{}",
+            describe(&out)
+        );
+        assert_eq!(out.status.code(), Some(0), "{args:?}\n{}", describe(&out));
+    }
+
+    // Sem `base_url`: host padrao, com a variavel — comportamento mantido.
+    let trap = Trap::start();
+    let dir = config_dir("llm:\n  openai:\n    provider: openai\n    model: m\n");
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("OPENAI_API_KEY={DO_ENV}\n"),
+    )
+    .expect(".env");
+    let out = garra_ask(&dir, &trap, &["-p", "openai", "oi"]).await;
+    assert!(
+        trap.lines()
+            .iter()
+            .any(|l| l.starts_with("CONNECT api.openai.com:443")),
+        "sem base_url o destino e o host padrao: {:?}\n{}",
+        trap.lines(),
+        describe(&out)
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains(DO_ENV)
+            && !String::from_utf8_lossy(&out.stderr).contains(DO_ENV),
+        "a chave nunca aparece na saida\n{}",
+        describe(&out)
+    );
+}
+
 /// Negativo pelo caminho do `agent.default_provider` (sem `-p`): com
 /// `default_provider: lmstudio` e um `llm.openai` ao lado, a chave do
 /// `llm.openai` nunca vai para o endpoint do LM Studio — e nada vai ao

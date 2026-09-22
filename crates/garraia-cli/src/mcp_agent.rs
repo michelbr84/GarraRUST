@@ -567,6 +567,15 @@ async fn agent_oneshot(config: &AppConfig, opts: &AgentOptions, jail: &FileJail)
         };
 
     // 2. Build the runtime: provider + full tool set.
+    //
+    // The runtime looks the provider up by the id it REGISTERED under, not
+    // by the name the caller typed. They differ for `llamacpp` (registered
+    // as `llama-cpp`) and for an alias of a kind that cannot be renamed
+    // (`llm.claude` with `provider: anthropic` registers as `anthropic`);
+    // passing `provider_name` made the turn fail with
+    // "provider '<name>' not found". `provider_name` stays what the envelope
+    // reports.
+    let registered_id = provider.provider_id().to_string();
     let runtime = montar_runtime(config, jail, provider, opts.working_dir.as_deref());
 
     // 3. One-shot call: fresh session, empty history, wall-clock timeout
@@ -584,7 +593,7 @@ async fn agent_oneshot(config: &AppConfig, opts: &AgentOptions, jail: &FileJail)
         tx,
         None,
         None,
-        Some(&provider_name),
+        Some(&registered_id),
         Some(&model_name),
         opts.system_prompt.as_deref(),
         None,
@@ -1648,5 +1657,68 @@ mod provider_routing_tests {
             outra.paths().await.is_empty(),
             "a outra entrada nao pode receber nada"
         );
+    }
+
+    /// Achado do verificador (LOW): o `garra_agent` pedia ao runtime o
+    /// provider pelo nome DIGITADO. So os bracos openai/openrouter registram
+    /// o alias com o nome dele; um alias de anthropic/ollama/llamacpp
+    /// registra com o tipo (e o `llamacpp` com `llama-cpp`), e o turno
+    /// falhava com "provider '<nome>' not found". O envelope continua
+    /// reportando o nome que o chamador passou.
+    #[tokio::test]
+    async fn agent_resolves_aliases_and_kinds_whose_registered_id_differs() {
+        // (nome passado ao garra_agent, tipo da entrada, chave)
+        for (name, kind, key) in [
+            ("claude", "anthropic", Some("k-claude")),
+            ("ollama-local", "ollama", None),
+            ("llamacpp", "llamacpp", None),
+            ("llama-local", "llamacpp", None),
+        ] {
+            let mock = MockEndpoint::start().await;
+            let dentro = tempfile::tempdir().expect("tempdir");
+            let mut config = AppConfig::default();
+            config.agent.file_roots = vec![dentro.path().to_string_lossy().into_owned()];
+            config.llm.insert(
+                name.to_string(),
+                LlmProviderConfig {
+                    provider: kind.to_string(),
+                    model: Some("m".to_string()),
+                    api_key: key.map(str::to_string),
+                    base_url: Some(mock.uri()),
+                    extra: Default::default(),
+                },
+            );
+            let jail = file_jail(&config);
+            let opts = AgentOptions {
+                message: "oi".to_string(),
+                provider: name.to_string(),
+                model: "m".to_string(),
+                timeout_secs: 30,
+                system_prompt: None,
+                working_dir: None,
+            };
+            match agent_oneshot(&config, &opts, &jail).await {
+                AgentOutcome::Success {
+                    answer, provider, ..
+                } => {
+                    assert_eq!(answer, SENTINEL, "{name}");
+                    assert_eq!(provider, name, "{name}: o envelope reporta o nome pedido");
+                }
+                AgentOutcome::Failure { error, .. } => {
+                    panic!("garra_agent provider={name} falhou: {error:?}")
+                }
+            }
+            assert!(
+                !mock.paths().await.is_empty(),
+                "{name}: o endpoint nao recebeu nada"
+            );
+            if let Some(k) = key {
+                assert!(
+                    mock.credentials().await.iter().all(|c| c == k),
+                    "{name}: credenciais {:?}",
+                    mock.credentials().await
+                );
+            }
+        }
     }
 }
