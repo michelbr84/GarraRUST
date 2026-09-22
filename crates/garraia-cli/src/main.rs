@@ -1270,9 +1270,13 @@ fn stderr_is_log_channel(command: &Commands) -> bool {
 /// sem leitor nao deixa nada pela metade — `garra status | head -1` sai em
 /// silencio, como `ls | head`, em vez do panico "failed printing to stdout".
 ///
-/// O `match` e exaustivo de proposito: um subcomando novo nao compila ate
-/// alguem decidir de que lado ele fica. Ficam de fora, com o sinal ignorado
-/// do runtime do Rust:
+/// O `match` e exaustivo de proposito, ate a folha: cada enum de subcomando
+/// aninhado tem o proprio `match` sem curinga (nada de `matches!`, `_ =>` ou
+/// `{ .. }` no lugar de um `action`), entao um subcomando novo, de primeiro
+/// nivel ou aninhado, nao compila ate alguem decidir de que lado ele fica — e
+/// o teste `sigpipe_decide_cada_subcomando_aninhado_pelo_nome` varre este
+/// corpo para que ninguem troque isso por um curinga. Ficam de fora, com o
+/// sinal ignorado do runtime do Rust:
 /// - o que roda por tempo indeterminado e nao pode morrer porque um leitor
 ///   sumiu: `start`/`restart` (foreground e daemon), `mcp-server`, `chat`;
 /// - o que muda estado (config, memoria, credenciais, instalacao) ou lanca e
@@ -1286,40 +1290,90 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
         Commands::About | Commands::Status | Commands::Logs { .. } | Commands::Doctor { .. } => {
             true
         }
-        Commands::Runs {
-            action: RunsCommands::List { .. },
-        } => true,
-        Commands::Config { action } => matches!(action, ConfigCommands::Check { .. }),
-        Commands::Memory { action } => matches!(
-            action,
-            MemoryCommands::Stats { .. }
-                | MemoryCommands::List { .. }
-                | MemoryCommands::Search { .. }
-        ),
-        Commands::Mcp { action } => matches!(action, McpCommands::List),
-        Commands::Channel { .. } => true,
-        Commands::Skill { action } => matches!(action, SkillCommands::List),
-        Commands::Glob { .. } => true,
-        Commands::WhatsApp { action } => matches!(action, Some(WhatsAppCommands::Status)),
         // `ask` e one-shot: uma pergunta, uma resposta em stdout, sem estado.
         Commands::Ask { .. } => true,
         // So as formas que imprimem; sem flag, `desktop` lanca o aplicativo.
         Commands::Desktop { status, no_launch } => *status || *no_launch,
+        Commands::Runs { action } => match action {
+            RunsCommands::List { .. } => true,
+        },
+        Commands::Config { action } => match action {
+            ConfigCommands::Check { .. } => true,
+            ConfigCommands::SetModel { .. } | ConfigCommands::SetRouting { .. } => false,
+        },
+        Commands::Memory { action } => match action {
+            MemoryCommands::Stats { .. }
+            | MemoryCommands::List { .. }
+            | MemoryCommands::Search { .. } => true,
+            MemoryCommands::Add { .. }
+            | MemoryCommands::Reindex { .. }
+            | MemoryCommands::Backup { .. }
+            | MemoryCommands::Pin { .. }
+            | MemoryCommands::Ttl { .. }
+            | MemoryCommands::Delete { .. }
+            | MemoryCommands::Compact { .. } => false,
+        },
+        Commands::Mcp { action } => match action {
+            McpCommands::List => true,
+            // Lancam o servidor MCP e conversam com ele.
+            McpCommands::Inspect { .. }
+            | McpCommands::Resources { .. }
+            | McpCommands::Prompts { .. } => false,
+        },
+        Commands::Channel { action } => match action {
+            ChannelCommands::List | ChannelCommands::Status { .. } => true,
+        },
+        Commands::Skill { action } => match action {
+            SkillCommands::List => true,
+            SkillCommands::Install { .. } | SkillCommands::Remove { .. } => false,
+        },
+        Commands::Glob { action } => match action {
+            GlobCommands::Test { .. } => true,
+        },
+        Commands::WhatsApp { action } => match action {
+            Some(WhatsAppCommands::Status) => true,
+            // Sem subcomando e o menu interativo.
+            None
+            | Some(
+                WhatsAppCommands::Link { .. }
+                | WhatsAppCommands::Cloud
+                | WhatsAppCommands::Logout
+                | WhatsAppCommands::Restore
+                | WhatsAppCommands::Allow { .. },
+            ) => false,
+        },
+        Commands::Admin { action } => match action {
+            AdminCommands::Recovery { action } => match action {
+                RecoveryCommands::Start { .. } | RecoveryCommands::Complete { .. } => false,
+            },
+        },
+        Commands::Migrate { action } => match action {
+            MigrateCommands::Openclaw { .. } | MigrateCommands::Workspace { .. } => false,
+        },
+        Commands::Agents { action } => match action {
+            AgentsCommands::Setup { .. }
+            | AgentsCommands::Status
+            | AgentsCommands::Link { .. }
+            | AgentsCommands::Rollback { .. }
+            | AgentsCommands::Web { .. } => false,
+        },
+        #[cfg(feature = "plugins")]
+        Commands::Plugin { action } => match action {
+            PluginCommands::List
+            | PluginCommands::Install { .. }
+            | PluginCommands::Remove { .. }
+            | PluginCommands::Watch => false,
+        },
         Commands::Start { .. }
         | Commands::Restart { .. }
         | Commands::Stop
         | Commands::McpServer
         | Commands::Chat { .. }
         | Commands::Init
-        | Commands::Admin { .. }
-        | Commands::Migrate { .. }
         | Commands::Update { .. }
         | Commands::Rollback
         | Commands::MaxPower { .. }
-        | Commands::Agents { .. }
         | Commands::Verify { .. } => false,
-        #[cfg(feature = "plugins")]
-        Commands::Plugin { .. } => false,
     }
 }
 
@@ -3165,6 +3219,7 @@ mod tests {
             &["garra", "memory", "search", "x"],
             &["garra", "mcp", "list"],
             &["garra", "channel", "list"],
+            &["garra", "channel", "status", "telegram"],
             &["garra", "skill", "list"],
             &["garra", "glob", "test", "*.rs", "a.rs"],
             &["garra", "whatsapp", "status"],
@@ -3196,11 +3251,73 @@ mod tests {
             &["garra", "memory", "compact"],
             &["garra", "memory", "add", "x"],
             &["garra", "config", "set-model", "--model", "m"],
+            &["garra", "skill", "install", "u"],
+            &["garra", "skill", "remove", "n"],
+            &["garra", "whatsapp", "logout"],
+            &["garra", "agents", "status"],
         ] {
             assert!(
                 !sigpipe_padrao_para(&cmd(args)),
                 "{args:?} roda por tempo indeterminado ou muda estado: SIGPIPE segue ignorado"
             );
         }
+    }
+
+    /// A decisao de SIGPIPE e exaustiva ate a folha: o compilador so recusa
+    /// um subcomando aninhado novo se o `match` do enum dele nao tiver
+    /// curinga. Este teste prende isso: o corpo de `sigpipe_padrao_para` nao
+    /// usa `matches!` nem `_ =>`, e cada variante de cada enum de subcomando
+    /// (`enum XxxCommands` deste arquivo) aparece la pelo nome — um
+    /// `Commands::Channel { .. } => true` deixaria `ChannelCommands::List`
+    /// sem nome e falharia aqui.
+    #[test]
+    fn sigpipe_decide_cada_subcomando_aninhado_pelo_nome() {
+        let fonte = include_str!("main.rs");
+        let inicio = fonte
+            .find("fn sigpipe_padrao_para(")
+            .expect("sigpipe_padrao_para existe");
+        let corpo = &fonte[inicio..];
+        let corpo = &corpo[..corpo.find("\n}\n").expect("fim da funcao")];
+        assert!(!corpo.contains("matches!"), "matches! esconde variantes");
+        assert!(!corpo.contains("_ =>"), "curinga esconde variantes");
+
+        let mut enums = Vec::new();
+        let mut variantes = 0;
+        for (pos, _) in fonte.match_indices("\nenum ") {
+            let resto = &fonte[pos + "\nenum ".len()..];
+            let nome: String = resto
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if nome == "Commands" || !nome.ends_with("Commands") {
+                continue;
+            }
+            let bloco = &resto[..resto.find("\n}\n").expect("fim do enum")];
+            for linha in bloco.lines() {
+                let Some(v) = linha.strip_prefix("    ") else {
+                    continue;
+                };
+                if !v.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    continue;
+                }
+                let variante: String = v
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                assert!(
+                    corpo.contains(&format!("{nome}::{variante}")),
+                    "{nome}::{variante} nao tem decisao de SIGPIPE explicita"
+                );
+                variantes += 1;
+            }
+            enums.push(nome);
+        }
+        for esperado in ["MemoryCommands", "WhatsAppCommands", "RecoveryCommands"] {
+            assert!(
+                enums.iter().any(|e| e == esperado),
+                "varredura nao achou {esperado}: {enums:?}"
+            );
+        }
+        assert!(variantes >= 40, "varredura achou so {variantes} variantes");
     }
 }
