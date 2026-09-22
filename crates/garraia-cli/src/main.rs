@@ -433,7 +433,18 @@ enum Commands {
 #[derive(Subcommand)]
 enum WhatsAppCommands {
     /// Vincula o WhatsApp pessoal lendo um QR code (precisa de Node 20+).
-    Link,
+    ///
+    /// Depois do QR pergunta quem pode falar com o GarraIA (#1345).
+    /// `--allow`/`--owner` pre-respondem essa pergunta, mas o comando continua
+    /// exigindo terminal: o QR se le daqui.
+    Link {
+        /// Numero autorizado, com + e codigo do pais (ex.: +55 11 99999-8888).
+        #[arg(long, value_name = "NUMERO")]
+        allow: Option<String>,
+        /// Registra o numero como dono (so em `execution.profile = isolated-pod`).
+        #[arg(long)]
+        owner: bool,
+    },
     /// Configura um WhatsApp Business pela Cloud API oficial da Meta.
     Cloud,
     /// Mostra se ha WhatsApp pessoal vinculado e onde a sessao esta.
@@ -442,6 +453,26 @@ enum WhatsAppCommands {
     Logout,
     /// Traz de volta a sessao arquivada por um re-vinculo que nao terminou.
     Restore,
+    /// Autoriza um numero a falar com o GarraIA pelo WhatsApp pessoal (#1345).
+    ///
+    /// Funciona sem terminal. Acrescenta a `channels.whatsapp_linked.allow`
+    /// (ou `owners`, com `--owner`) sem mudar outro valor da config e sem
+    /// ligar o canal; o arquivo e reescrito, entao comentarios nao ficam.
+    /// Exit codes: 0 ok, 1 cancelado, 64 `--owner` fora de `isolated-pod` ou
+    /// sem terminal e sem `--yes`, 65 numero invalido, 70 config ilegivel.
+    /// Revogar e editar o config.yml.
+    Allow {
+        /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
+        /// LID `<id>@lid`.
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        /// Registra como dono (so em `execution.profile = isolated-pod`).
+        #[arg(long)]
+        owner: bool,
+        /// Confirma o `--owner` sem perguntar (obrigatorio fora de terminal).
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1453,11 +1484,28 @@ fn main() -> Result<()> {
     if let Commands::WhatsApp { ref action } = cli.command {
         let whatsapp_action = match action {
             None => whatsapp::Action::Menu,
-            Some(WhatsAppCommands::Link) => whatsapp::Action::Link,
+            Some(WhatsAppCommands::Link { allow, owner }) => {
+                if allow.is_none() && !owner {
+                    whatsapp::Action::Link
+                } else {
+                    whatsapp::Action::LinkCom(whatsapp::Pedido {
+                        numero: allow.clone(),
+                        owner: *owner,
+                        yes: false,
+                    })
+                }
+            }
             Some(WhatsAppCommands::Cloud) => whatsapp::Action::Cloud,
             Some(WhatsAppCommands::Status) => whatsapp::Action::Status,
             Some(WhatsAppCommands::Logout) => whatsapp::Action::Logout,
             Some(WhatsAppCommands::Restore) => whatsapp::Action::Restore,
+            Some(WhatsAppCommands::Allow { numero, owner, yes }) => {
+                whatsapp::Action::Allow(whatsapp::Pedido {
+                    numero: Some(numero.clone()),
+                    owner: *owner,
+                    yes: *yes,
+                })
+            }
         };
         let ctx = whatsapp::Context::from_env();
         let code = whatsapp::run(whatsapp_action, &ctx, &wizard::prompts::DialoguerPrompter);

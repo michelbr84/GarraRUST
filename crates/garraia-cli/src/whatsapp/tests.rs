@@ -60,6 +60,8 @@ fn ctx_in(dir: &tempfile::TempDir, interactive: bool) -> Context {
         columns: Some(120),
         unicode: true,
         lang: Lang::Pt,
+        gateway_pid: None,
+        perfil_da_env: None,
     }
 }
 
@@ -190,14 +192,14 @@ fn nenhuma_instrucao_fixa_o_nome_do_executavel() {
 fn a_instrucao_pos_link_nomeia_o_executavel_que_rodou() {
     for (bin, esperado) in [("garraia", "`garraia start`"), ("garra", "`garra start`")] {
         for lang in [Lang::Pt, Lang::En] {
-            let linha = instrucao_pos_link(lang, bin);
+            let linha = instrucao_pos_link(lang, bin, None, false);
             assert!(linha.contains(esperado), "{bin}/{lang:?}: {linha}");
             assert!(!linha.contains("{bin}"), "{linha}");
             assert!(!linha.contains("{}"), "{linha}");
         }
     }
     // E o nome real que a CLI passa e um dos dois — no harness, `garraia`.
-    let real = instrucao_pos_link(Lang::Pt, &crate::binario::nome());
+    let real = instrucao_pos_link(Lang::Pt, &crate::binario::nome(), None, false);
     assert!(
         real.contains("`garraia start`") || real.contains("`garra start`"),
         "{real}"
@@ -411,7 +413,7 @@ fn config_is_untouched_when_pairing_fails() {
 
     // `link` sem Node instalado (PATH vazio) falha antes de qualquer bridge.
     let prompter = ScriptedPrompter::with_confirms(&[true]);
-    let code = link_with(&ctx, &prompter, no_node);
+    let code = link_with(&ctx, &prompter, &Pedido::default(), no_node);
     assert_eq!(code, 69, "faltando node, EX_UNAVAILABLE");
 
     let config = loader.load().expect("load");
@@ -932,7 +934,7 @@ fn link_and_cloud_without_a_tty_refuse_with_69_before_touching_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ctx = ctx_in(&dir, false);
         assert_eq!(
-            run(acao, &ctx, &ScriptedPrompter::default()),
+            run(acao.clone(), &ctx, &ScriptedPrompter::default()),
             69,
             "{acao:?} num pipe tem de sair EX_UNAVAILABLE, nao 0"
         );
@@ -989,7 +991,7 @@ fn accepting_the_relink_but_failing_before_the_qr_leaves_the_session_untouched()
     // "sim" ao re-vincular, "sim" ao consentimento — e entao o fluxo morre na
     // deteccao do Node, que e o ponto de falha mais comum de todos.
     let prompter = ScriptedPrompter::with_confirms(&[true, true]);
-    let code = link_with(&ctx, &prompter, no_node);
+    let code = link_with(&ctx, &prompter, &Pedido::default(), no_node);
 
     assert_eq!(code, 69, "sem node");
     assert!(
@@ -1027,7 +1029,16 @@ fn a_relink_that_never_pairs_puts_the_previous_session_back() {
     store.save(&anterior, &key).expect("save");
 
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let code = link_paired(&ctx, &store, &key, &DeadLauncher, &runtime, true);
+    let code = link_paired(
+        &ctx,
+        &ScriptedPrompter::default(),
+        &Pedido::default(),
+        &store,
+        &key,
+        &DeadLauncher,
+        &runtime,
+        true,
+    );
 
     assert_eq!(code, 69, "um bridge que nao sobe e EX_UNAVAILABLE");
     assert!(
@@ -1306,7 +1317,16 @@ fn a_first_link_that_never_pairs_archives_nothing() {
     let key = ctx.key().expect("key");
 
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let code = link_paired(&ctx, &store, &key, &DeadLauncher, &runtime, false);
+    let code = link_paired(
+        &ctx,
+        &ScriptedPrompter::default(),
+        &Pedido::default(),
+        &store,
+        &key,
+        &DeadLauncher,
+        &runtime,
+        false,
+    );
 
     assert_eq!(code, 69);
     assert!(!store.exists(), "nao havia sessao e continua nao havendo");
@@ -1331,7 +1351,7 @@ fn declining_the_relink_prompt_never_archives_the_session() {
     // Responde "nao" ao re-vincular; o fluxo entao falha por falta de Node,
     // que e o que queremos — a asserção e sobre o estado do disco.
     let prompter = ScriptedPrompter::with_confirms(&[false]);
-    let code = link_with(&ctx, &prompter, no_node);
+    let code = link_with(&ctx, &prompter, &Pedido::default(), no_node);
 
     assert_eq!(code, 69, "sem node");
     assert!(store.exists(), "a sessao continua la");
@@ -1381,5 +1401,910 @@ fn restore_refuses_to_enable_the_channel_when_the_blob_no_longer_opens() {
             .get("whatsapp_linked")
             .is_none_or(|c| c.enabled != Some(true)),
         "o canal NAO pode ter sido ligado com uma sessao que nao abre"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #1345: quem pode falar com o GarraIA depois do `link`
+// ---------------------------------------------------------------------------
+
+use acesso::{
+    Acesso, Gravado, NumeroInvalido, Papel, acesso_da_config, autorizar, dica_do_gateway, final4,
+    normalizar_numero, pos_link,
+};
+
+const NUMERO: &str = "5511999998888";
+/// Como o operador digita [`NUMERO`]: com `+` (obrigatorio, #1345).
+const ENTRADA: &str = "+5511999998888";
+/// Um LID sem numero, como a ponte o entrega.
+const LID: &str = "87654321098765@lid";
+
+impl ScriptedPrompter {
+    /// Respostas de `input`, na ordem em que serao pedidas.
+    fn with_inputs(self, answers: &[&str]) -> Self {
+        *self.inputs.borrow_mut() = answers.iter().rev().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// Respostas de `confirm`, na ordem em que serao pedidas.
+    fn and_confirms(self, answers: &[bool]) -> Self {
+        *self.confirms.borrow_mut() = answers.iter().rev().copied().collect();
+        self
+    }
+
+    fn asked(&self, trecho: &str) -> bool {
+        self.seen_prompts
+            .borrow()
+            .iter()
+            .any(|p| p.contains(trecho))
+    }
+}
+
+/// Grava uma config com o perfil pedido e, opcionalmente, a secao do canal.
+fn grava_config(
+    ctx: &Context,
+    profile: Option<garraia_config::ExecutionProfile>,
+    secao: Option<serde_json::Value>,
+    enabled: Option<bool>,
+) {
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+    let mut config = garraia_config::AppConfig {
+        execution: garraia_config::ExecutionConfig::new(profile, None),
+        ..Default::default()
+    };
+    if let Some(settings) = secao {
+        config.channels.insert(
+            CONFIG_KEY.to_string(),
+            ChannelConfig {
+                channel_type: CONFIG_KEY.to_string(),
+                enabled,
+                settings: settings
+                    .as_object()
+                    .expect("objeto")
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            },
+        );
+    }
+    loader.save(&config).expect("save");
+}
+
+fn secao_de(ctx: &Context) -> Option<ChannelConfig> {
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .load()
+        .expect("load")
+        .channels
+        .get(CONFIG_KEY)
+        .cloned()
+}
+
+fn lista(ctx: &Context, chave: &str) -> Vec<String> {
+    secao_de(ctx)
+        .and_then(|s| s.settings.get(chave).cloned())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
+fn pod() -> Option<garraia_config::ExecutionProfile> {
+    Some(garraia_config::ExecutionProfile::IsolatedPod)
+}
+
+// --- normalizacao ----------------------------------------------------------
+
+#[test]
+fn o_numero_com_codigo_do_pais_vira_so_digitos_como_no_gateway() {
+    for entrada in [
+        "+55 11 99999-8888",
+        "+5511999998888",
+        "+55 (11) 99999.8888",
+        "  +55 11 99999 8888  ",
+    ] {
+        let n = normalizar_numero(entrada).expect(entrada);
+        assert_eq!(n, NUMERO, "{entrada}");
+        assert_eq!(
+            n,
+            garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(entrada),
+            "a forma gravada e a que o portao do gateway compara: {entrada}"
+        );
+    }
+    // Um numero dos EUA, com 11 digitos.
+    assert_eq!(
+        normalizar_numero("+1 555 123 4567").as_deref(),
+        Ok("15551234567")
+    );
+    // E.164 curto, que a ponte entrega (6 a 15): Andorra (9) e Niue (7).
+    assert_eq!(
+        normalizar_numero("+376 312 345").as_deref(),
+        Ok("376312345")
+    );
+    assert_eq!(normalizar_numero("+683 1234").as_deref(), Ok("6831234"));
+}
+
+/// #1345: um LID (`<digitos>@lid`) e aceito e gravado como veio — e e a
+/// forma que o portao compara quando a ponte nao tem o numero.
+#[test]
+fn um_lid_e_aceito_como_veio_e_casa_com_o_gateway() {
+    assert_eq!(normalizar_numero(LID).as_deref(), Ok(LID));
+    assert_eq!(normalizar_numero(&format!("  {LID} ")).as_deref(), Ok(LID));
+    assert_eq!(
+        normalizar_numero(LID).ok(),
+        Some(garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(LID))
+    );
+    for invalido in [
+        "abc@lid",
+        "12@lid",
+        "8765 4321@lid",
+        "87654321098765@LID",
+        "@lid",
+    ] {
+        assert_eq!(
+            normalizar_numero(invalido),
+            Err(NumeroInvalido::Jid),
+            "{invalido}"
+        );
+    }
+    assert_eq!(final4(LID), "8765", "o final e do id, nao de `@lid`");
+}
+
+#[test]
+fn numero_sem_codigo_do_pais_letra_ou_jid_e_recusado() {
+    for (entrada, esperado) in [
+        ("", NumeroInvalido::Vazio),
+        ("   ", NumeroInvalido::Vazio),
+        ("+", NumeroInvalido::Vazio),
+        ("+011 99999-8888", NumeroInvalido::ZeroInicial),
+        ("+12345", NumeroInvalido::Tamanho(5)),
+        ("+1234567890123456", NumeroInvalido::Tamanho(16)),
+        // Sem `+`: DDD + numero passaria por codigo do pais (review
+        // WHATSAPP-11), e o numero nunca casaria com o remetente.
+        ("11 99999-8888", NumeroInvalido::SemMais),
+        ("(11) 99999-8888", NumeroInvalido::SemMais),
+        ("5511999998888", NumeroInvalido::SemMais),
+        ("011 99999-8888", NumeroInvalido::SemMais),
+        ("99999-8888", NumeroInvalido::SemMais),
+        ("abc", NumeroInvalido::Caractere),
+        ("55 11 9999a-8888", NumeroInvalido::Caractere),
+        ("++5511999998888", NumeroInvalido::Caractere),
+        ("5511999998888@s.whatsapp.net", NumeroInvalido::Jid),
+    ] {
+        assert_eq!(normalizar_numero(entrada), Err(esperado), "{entrada:?}");
+    }
+}
+
+#[test]
+fn a_mensagem_de_numero_invalido_nao_repete_a_entrada_e_existe_nas_duas_linguas() {
+    for e in [
+        NumeroInvalido::Vazio,
+        NumeroInvalido::Jid,
+        NumeroInvalido::SemMais,
+        NumeroInvalido::Caractere,
+        NumeroInvalido::ZeroInicial,
+        NumeroInvalido::Tamanho(9),
+    ] {
+        let pt = e.mensagem(Lang::Pt);
+        let en = e.mensagem(Lang::En);
+        assert!(!pt.is_empty() && !en.is_empty() && pt != en, "{e:?}");
+    }
+    assert_eq!(final4(NUMERO), "8888");
+    assert_eq!(final4("12"), "12");
+}
+
+// --- escrita na config -----------------------------------------------------
+
+/// Instalacao nova: sem config nenhuma, `autorizar` cria a secao com o tipo
+/// certo, grava o numero e NAO liga o canal.
+#[test]
+fn autorizar_numa_instalacao_nova_cria_a_secao_sem_ligar_o_canal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+
+    assert_eq!(
+        autorizar(loader, NUMERO, Papel::Autorizado).expect("grava"),
+        Gravado::Novo
+    );
+    let secao = secao_de(&ctx).expect("secao criada");
+    assert_eq!(secao.channel_type, CONFIG_KEY);
+    assert_eq!(secao.enabled, None, "autorizar nunca liga o canal");
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+    assert!(lista(&ctx, "owners").is_empty());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.path().join("config.yml"))
+            .expect("config.yml")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "a config continua 0600");
+    }
+}
+
+/// Upgrade: a secao existente e preservada chave a chave; o numero novo e
+/// acrescentado, e o que ja estava (em qualquer grafia) nao duplica.
+#[test]
+fn autorizar_num_upgrade_preserva_tudo_e_nao_duplica() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({
+            "allow": ["+55 11 90000-0001"],
+            "owners": ["5511900000002"],
+            "default_mode": "search",
+            "reply_in_groups": true,
+        })),
+        Some(true),
+    );
+    let loader = ctx.loader.as_ref().expect("loader");
+
+    assert_eq!(
+        autorizar(loader, NUMERO, Papel::Autorizado).expect("grava"),
+        Gravado::Novo
+    );
+    assert_eq!(
+        autorizar(loader, "5511900000001", Papel::Autorizado).expect("grava"),
+        Gravado::JaEstava,
+        "o que ja estava, em outra grafia, nao duplica"
+    );
+
+    let secao = secao_de(&ctx).expect("secao");
+    assert_eq!(secao.enabled, Some(true), "enabled intocado");
+    assert_eq!(
+        lista(&ctx, "allow"),
+        vec!["+55 11 90000-0001".to_string(), NUMERO.to_string()],
+        "a entrada antiga fica como o operador escreveu"
+    );
+    assert_eq!(lista(&ctx, "owners"), vec!["5511900000002".to_string()]);
+    assert_eq!(
+        secao.settings.get("default_mode"),
+        Some(&serde_json::json!("search"))
+    );
+    assert_eq!(
+        secao.settings.get("reply_in_groups"),
+        Some(&serde_json::json!(true))
+    );
+}
+
+#[test]
+fn dono_vai_so_para_owners() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    autorizar(loader, NUMERO, Papel::Dono).expect("grava");
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+    assert!(lista(&ctx, "allow").is_empty(), "dono nao entra no allow");
+}
+
+/// Secao com `type` de outro canal: o gateway a ignora, entao "autorizado"
+/// seria mentira. Recusa, e o arquivo fica como estava.
+#[test]
+fn autorizar_recusa_secao_de_outro_tipo_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+    let mut config = garraia_config::AppConfig::default();
+    config.channels.insert(
+        CONFIG_KEY.to_string(),
+        ChannelConfig {
+            channel_type: "whatsapp".into(),
+            enabled: Some(true),
+            settings: Default::default(),
+        },
+    );
+    loader.save(&config).expect("save");
+    let antes = std::fs::read_to_string(dir.path().join("config.yml")).expect("ler");
+
+    assert!(autorizar(loader, NUMERO, Papel::Autorizado).is_err());
+    let depois = std::fs::read_to_string(dir.path().join("config.yml")).expect("ler");
+    assert_eq!(antes, depois);
+}
+
+// --- `garraia whatsapp allow` ----------------------------------------------
+
+fn pedido(numero: &str, owner: bool, yes: bool) -> Pedido {
+    Pedido {
+        numero: Some(numero.to_string()),
+        owner,
+        yes,
+    }
+}
+
+#[test]
+fn allow_sem_terminal_autoriza_e_sai_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    assert_eq!(
+        run(
+            Action::Allow(pedido("+55 11 99999-8888", false, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+}
+
+#[test]
+fn allow_com_numero_invalido_sai_65_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    assert_eq!(
+        run(
+            Action::Allow(pedido("abc", false, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        65
+    );
+    assert!(secao_de(&ctx).is_none());
+}
+
+/// `--owner` em `standard`: 64 e a config intocada — mesmo com `--yes`.
+#[test]
+fn allow_owner_em_standard_sai_64_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let p = ScriptedPrompter::default().and_confirms(&[true]);
+    assert_eq!(
+        run(Action::Allow(pedido(ENTRADA, true, true)), &ctx, &p),
+        64
+    );
+    assert!(secao_de(&ctx).is_none());
+    assert!(!p.asked("DONO"), "nem pergunta");
+}
+
+/// #1345 (review WHATSAPP-16): o perfil do `--owner` sai do arquivo e da env
+/// **capturada no contexto**, nunca relida do processo — o teste fixa o
+/// perfil sem depender do `GARRAIA_EXECUTION_PROFILE` da maquina.
+#[test]
+fn allow_owner_decide_pelo_perfil_da_env_do_contexto() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = ctx_in(&dir, false);
+    ctx.perfil_da_env = Some("isolated-pod".into());
+    assert_eq!(
+        run(
+            Action::Allow(pedido(ENTRADA, true, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0,
+        "a env do contexto diz pod: o dono entra"
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = ctx_in(&dir, false);
+    ctx.perfil_da_env = Some("standard".into());
+    grava_config(&ctx, pod(), None, None);
+    assert_eq!(
+        run(
+            Action::Allow(pedido(ENTRADA, true, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        64,
+        "a env vence o arquivo, como no gateway"
+    );
+}
+
+/// #1345: `allow <id>@lid` grava o LID como veio, e a tela so mostra o final.
+#[test]
+fn allow_de_um_lid_grava_o_lid_como_veio() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    assert_eq!(
+        run(
+            Action::Allow(pedido(LID, false, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert_eq!(lista(&ctx, "allow"), vec![LID.to_string()]);
+}
+
+/// #1345 (review WHATSAPP-2): o mesmo celular brasileiro com e sem o nono
+/// digito nao duplica — e a mesma chave que o portao compara.
+#[test]
+fn autorizar_nao_duplica_o_celular_com_e_sem_o_nono_digito() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    assert_eq!(
+        autorizar(loader, "5531999998888", Papel::Autorizado).expect("grava"),
+        Gravado::Novo
+    );
+    assert_eq!(
+        autorizar(loader, "553199998888", Papel::Autorizado).expect("grava"),
+        Gravado::JaEstava
+    );
+    assert_eq!(lista(&ctx, "allow"), vec!["5531999998888".to_string()]);
+}
+
+/// `--owner` em `isolated-pod`: sem terminal exige `--yes` (64); com
+/// `--yes` grava em `owners` e so la.
+#[test]
+fn allow_owner_no_pod_exige_yes_fora_de_terminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(&ctx, pod(), None, None);
+
+    assert_eq!(
+        run(
+            Action::Allow(pedido(ENTRADA, true, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        64
+    );
+    assert!(lista(&ctx, "owners").is_empty());
+
+    assert_eq!(
+        run(
+            Action::Allow(pedido(ENTRADA, true, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+    assert!(lista(&ctx, "allow").is_empty());
+}
+
+/// No terminal, `--owner` sem `--yes` pergunta — e o default e NAO.
+#[test]
+fn allow_owner_no_terminal_pergunta_com_default_nao() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, pod(), None, None);
+    let p = ScriptedPrompter::default();
+    assert_eq!(
+        run(Action::Allow(pedido(ENTRADA, true, false)), &ctx, &p),
+        1
+    );
+    assert!(p.asked("DONO"));
+    assert!(
+        lista(&ctx, "owners").is_empty(),
+        "default nao: nada gravado"
+    );
+}
+
+// --- o passo pos-link --------------------------------------------------------
+
+/// Instalacao nova: o `link` pergunta o numero e o grava normalizado; so
+/// entao a linha final e "pronto".
+#[test]
+fn pos_link_numa_instalacao_nova_grava_o_numero_e_diz_pronto() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default().with_inputs(&["+55 11 99999-8888"]);
+
+    let pos = pos_link(&ctx, &p, Some("0000"), &Pedido::default()).expect("ok");
+    assert_eq!(pos.autorizados, 1);
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+    assert!(!p.asked("DONO"), "em standard dono nem e oferecido");
+    let linha = final_line(Lang::Pt, pos.autorizados, None, false);
+    assert!(linha.contains("pronto"), "{linha}");
+}
+
+/// Resposta vazia: ninguem por enquanto — sem "pronto", com o aviso e o
+/// comando que resolve.
+#[test]
+fn pos_link_com_resposta_vazia_nao_diz_pronto_e_aponta_o_allow() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default().with_inputs(&[""]);
+
+    let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    assert_eq!(pos.autorizados, 0);
+    for lang in [Lang::Pt, Lang::En] {
+        let linha = final_line(lang, 0, None, false);
+        assert!(
+            !linha.contains("pronto") && !linha.contains("ready"),
+            "{linha}"
+        );
+        assert!(linha.contains("whatsapp allow <"), "{linha}");
+    }
+}
+
+#[test]
+fn pos_link_desiste_depois_de_tres_numeros_invalidos() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default().with_inputs(&["abc", "0119", "123", ENTRADA]);
+    let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    assert_eq!(pos.autorizados, 0, "a quarta resposta nem e pedida");
+    assert!(lista(&ctx, "allow").is_empty());
+}
+
+/// Em `isolated-pod` o dono e oferecido, com default NAO: nao responder
+/// deixa `owners` vazio e o numero so no `allow`.
+#[test]
+fn pos_link_no_pod_oferece_dono_com_default_nao() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, pod(), Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA]);
+
+    pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    assert!(p.asked("DONO"), "no pod o dono e oferecido");
+    assert!(lista(&ctx, "owners").is_empty());
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+}
+
+#[test]
+fn pos_link_no_pod_com_sim_grava_so_em_owners() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, pod(), Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default()
+        .with_inputs(&[ENTRADA])
+        .and_confirms(&[true]);
+
+    let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    assert_eq!(pos.autorizados, 1);
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+    assert!(lista(&ctx, "allow").is_empty());
+}
+
+/// O final do numero bate com o do celular vinculado: avisa do `from_me` e o
+/// default e NAO autorizar.
+#[test]
+fn pos_link_avisa_quando_o_numero_e_o_do_proprio_celular() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA, ""]);
+
+    let pos = pos_link(&ctx, &p, Some("8888"), &Pedido::default()).expect("ok");
+    assert!(p.asked("mesmo assim"), "pede confirmacao explicita");
+    assert_eq!(pos.autorizados, 0, "default nao");
+    assert!(lista(&ctx, "allow").is_empty());
+}
+
+/// Re-vinculo / upgrade com gente autorizada: mostra as contagens, pergunta
+/// se quer adicionar outro (default NAO) e nao mexe em nada.
+#[test]
+fn pos_link_com_allow_existente_nao_mexe_em_nada_por_default() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": ["5511900000001"], "default_mode": "search" })),
+        Some(true),
+    );
+    let antes = std::fs::read_to_string(dir.path().join("config.yml")).expect("ler");
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA]);
+
+    let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    assert!(p.asked("Adicionar outro"));
+    assert_eq!(pos.autorizados, 1);
+    let depois = std::fs::read_to_string(dir.path().join("config.yml")).expect("ler");
+    assert_eq!(antes, depois, "nada mudou");
+}
+
+/// `link --allow` pre-responde o numero: nada e perguntado sobre ele.
+#[test]
+fn pos_link_com_numero_pre_respondido_nao_pergunta() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": ["5511900000001"] })),
+        Some(true),
+    );
+    let p = ScriptedPrompter::default();
+    let pos = pos_link(&ctx, &p, None, &pedido("+55 11 99999-8888", false, false)).expect("ok");
+    assert_eq!(pos.autorizados, 2);
+    assert!(!p.asked("Número autorizado"));
+    assert!(!p.asked("Adicionar outro"));
+}
+
+/// `link --owner` em `standard` e `link --allow abc` falham antes do QR.
+#[test]
+fn link_com_pre_respostas_invalidas_falha_antes_do_qr() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    let p = ScriptedPrompter::default();
+    assert_eq!(
+        link_with(&ctx, &p, &pedido("abc", false, false), no_node),
+        65
+    );
+    assert_eq!(
+        link_with(
+            &ctx,
+            &p,
+            &Pedido {
+                numero: None,
+                owner: true,
+                yes: false
+            },
+            no_node
+        ),
+        64
+    );
+    assert!(
+        p.seen_prompts.borrow().is_empty(),
+        "nem a tela de consentimento"
+    );
+    // E num pipe continua 69, antes de validar qualquer coisa.
+    let pipe = ctx_in(&dir, false);
+    assert_eq!(
+        run(
+            Action::LinkCom(pedido(ENTRADA, false, false)),
+            &pipe,
+            &ScriptedPrompter::default()
+        ),
+        69
+    );
+}
+
+// --- textos ----------------------------------------------------------------
+
+#[test]
+fn a_dica_do_gateway_cobre_os_tres_casos_sem_reiniciar_nada() {
+    for lang in [Lang::Pt, Lang::En] {
+        let parado = dica_do_gateway(lang, false, None);
+        assert!(parado.contains(" start`"), "{parado}");
+        let novo = dica_do_gateway(lang, false, Some(42));
+        assert!(novo.contains(" restart`"), "{novo}");
+        // #1345 (review WHATSAPP-3/7/12): a CLI nao sabe se o gateway subiu
+        // com o canal ligado, nem se ele vigia o config.yml. Nunca afirma
+        // "sem reiniciar": diz a condicao e o comando do outro caso.
+        let quente = dica_do_gateway(lang, true, Some(42));
+        assert!(quente.contains(" restart`"), "{quente}");
+        assert!(
+            quente.starts_with("Se o gateway subiu")
+                || quente.starts_with("If the gateway started"),
+            "{quente}"
+        );
+    }
+    let linha = instrucao_pos_link(Lang::Pt, "garraia", Some(42), false);
+    assert!(
+        linha.contains("pronto") && linha.contains("restart"),
+        "{linha}"
+    );
+}
+
+/// #1345: o `status` explica as recusas de `@lid` sem numero que o gateway
+/// VIVO registrou — so a contagem e o final, nunca o LID inteiro.
+#[test]
+fn o_status_explica_as_recusas_de_lid_do_gateway_vivo() {
+    let r = garraia_gateway::bootstrap::WhatsAppLinkedRecusasLid {
+        pid: 42,
+        recusas: 2,
+        final4: "8765".into(),
+    };
+    for lang in [Lang::Pt, Lang::En] {
+        let linha = recusas_lid_line(lang, Some(&r), Some(42)).expect("gateway vivo");
+        assert!(linha.contains("@lid") && linha.contains("8765"), "{linha}");
+        assert!(linha.contains("whatsapp allow <id>@lid"), "{linha}");
+        assert!(linha.contains('2'), "{linha}");
+    }
+    assert_eq!(
+        recusas_lid_line(Lang::Pt, Some(&r), Some(43)),
+        None,
+        "arquivo de outro gateway"
+    );
+    assert_eq!(
+        recusas_lid_line(Lang::Pt, Some(&r), None),
+        None,
+        "gateway parado"
+    );
+    assert_eq!(recusas_lid_line(Lang::Pt, None, Some(42)), None);
+    let zero = garraia_gateway::bootstrap::WhatsAppLinkedRecusasLid { recusas: 0, ..r };
+    assert_eq!(recusas_lid_line(Lang::Pt, Some(&zero), Some(42)), None);
+}
+
+#[test]
+fn o_status_mostra_contagens_e_avisa_o_portao_vazio_sem_numeros() {
+    let vazio = Acesso {
+        enabled: true,
+        autorizados: 0,
+        donos: 0,
+    };
+    let linhas = access_lines(Lang::Pt, true, Some(7), Some(vazio)).join("\n");
+    assert!(linhas.contains("Autorizados: 0"), "{linhas}");
+    assert!(linhas.contains("Gateway:  rodando (pid 7)"), "{linhas}");
+    assert!(linhas.contains("Canal:    ligado"), "{linhas}");
+    assert!(linhas.contains("whatsapp allow <"), "{linhas}");
+
+    let config = config_com_linked(
+        None,
+        serde_json::json!({ "allow": [NUMERO], "owners": [NUMERO] }),
+    );
+    let a = acesso_da_config(&config);
+    assert_eq!((a.autorizados, a.donos), (1, 1), "uniao sem repeticao");
+    let linhas = access_lines(Lang::En, false, None, Some(a)).join("\n");
+    assert!(linhas.contains("Authorized: 1 · Owners: 1"), "{linhas}");
+    assert!(linhas.contains("dependencies missing"), "{linhas}");
+    assert!(!linhas.contains("whatsapp allow"), "{linhas}");
+    assert!(
+        !linhas.contains(NUMERO) && !linhas.contains("8888"),
+        "{linhas}"
+    );
+}
+
+/// O `status` continua saindo 0 com o portao vazio: scripts dependem do
+/// exit code, que responde "ha vinculo utilizavel?".
+#[test]
+fn status_com_portao_vazio_nao_muda_o_exit_code() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
+    let store = ctx.store().expect("store");
+    let key = ctx.key().expect("key");
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhIjoxfQ=="),
+            &key,
+        )
+        .expect("save");
+    assert_eq!(run(Action::Status, &ctx, &ScriptedPrompter::default()), 0);
+}
+
+/// `restore` liga o canal; com ninguem autorizado, o estado que ele deixa e
+/// o que dispara o aviso.
+#[test]
+fn restore_com_portao_vazio_deixa_o_estado_do_aviso() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    let store = ctx.store().expect("store");
+    let key = ctx.key().expect("key");
+    store
+        .save(
+            &garraia_channels::whatsapp_linked::SessionBlob::new("eyJhIjoxfQ=="),
+            &key,
+        )
+        .expect("save");
+    assert!(store.archive().expect("archive"));
+    assert_eq!(run(Action::Restore, &ctx, &ScriptedPrompter::default()), 0);
+    assert!(gate_is_empty(&ctx), "ligado e ninguem autorizado");
+}
+
+/// A varredura do `nenhuma_instrucao_fixa_o_nome_do_executavel`, estendida
+/// ao modulo novo.
+#[test]
+fn o_modulo_de_acesso_nao_fixa_o_nome_do_executavel() {
+    let corpo: String = include_str!("acesso.rs")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for proibido in [
+        "`garra start`",
+        "garra whatsapp",
+        "garraia whatsapp",
+        "`garraia start`",
+    ] {
+        assert!(
+            !corpo.contains(proibido),
+            "`{proibido}` literal em acesso.rs"
+        );
+    }
+    assert!(corpo.contains("{bin} whatsapp allow"));
+}
+
+// --- ponta a ponta com a ponte falsa ----------------------------------------
+
+/// A ponte falsa de `garraia-channels` no cenario `pair-ok`: QR, autentica,
+/// conecta e entrega a sessao.
+#[cfg(unix)]
+struct PairOkLauncher;
+
+#[cfg(unix)]
+impl BridgeLauncher for PairOkLauncher {
+    fn command(&self) -> Result<tokio::process::Command, BridgeError> {
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/")
+            .join("garraia-channels/tests/fixtures/fake_whatsapp_bridge.py");
+        let mut cmd = tokio::process::Command::new("python3");
+        cmd.arg(script)
+            .arg("--scenario")
+            .arg("pair-ok")
+            .arg("--qr-expires")
+            .arg("0.2")
+            .arg("--handshake-timeout")
+            .arg("5");
+        Ok(cmd)
+    }
+    fn describe(&self) -> String {
+        "python3 fake_whatsapp_bridge.py --scenario pair-ok".into()
+    }
+    fn dir(&self) -> std::path::PathBuf {
+        std::env::temp_dir()
+    }
+}
+
+/// **O defeito da #1345 pelo caminho inteiro do `link`.** QR lido, sessao
+/// salva, canal ligado — e agora o numero perguntado vai para o `allow`.
+#[cfg(unix)]
+#[test]
+fn o_link_de_verdade_pergunta_e_grava_quem_pode_falar() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+    let store = ctx.store().expect("store");
+    let key = ctx.key().expect("key");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let p = ScriptedPrompter::default().with_inputs(&["+55 11 99999-8888"]);
+
+    let code = link_paired(
+        &ctx,
+        &p,
+        &Pedido::default(),
+        &store,
+        &key,
+        &PairOkLauncher,
+        &runtime,
+        false,
+    );
+    assert_eq!(code, 0);
+    assert!(store.exists(), "a sessao foi salva");
+    let secao = secao_de(&ctx).expect("secao");
+    assert_eq!(secao.enabled, Some(true), "o canal foi ligado");
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+}
+
+/// Upgrade pelo mesmo caminho: quem ja tinha `allow` nao perde nada, e o
+/// default de "adicionar outro" e nao.
+#[cfg(unix)]
+#[test]
+fn o_link_de_verdade_num_upgrade_preserva_o_allow() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": ["5511900000001"], "reply_in_groups": true })),
+        Some(false),
+    );
+    let store = ctx.store().expect("store");
+    let key = ctx.key().expect("key");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA]);
+
+    let code = link_paired(
+        &ctx,
+        &p,
+        &Pedido::default(),
+        &store,
+        &key,
+        &PairOkLauncher,
+        &runtime,
+        false,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(lista(&ctx, "allow"), vec!["5511900000001".to_string()]);
+    let secao = secao_de(&ctx).expect("secao");
+    assert_eq!(secao.enabled, Some(true));
+    assert_eq!(
+        secao.settings.get("reply_in_groups"),
+        Some(&serde_json::json!(true))
     );
 }

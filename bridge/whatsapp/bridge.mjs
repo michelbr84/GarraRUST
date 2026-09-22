@@ -115,8 +115,8 @@ export function phoneLast4(jid) {
 
 /**
  * E.164 a partir do JID, quando ele ja e um numero. `@lid` e um identificador
- * opaco: em v1 NAO tentamos resolver LID -> telefone (exigiria consultar o
- * mapa de LID do proprio Baileys, que muda entre versoes). Devolve null.
+ * opaco e devolve null aqui — quem tenta o numero de um remetente `@lid` e
+ * [`senderPhoneOf`], pelo campo que o proprio servidor manda junto.
  */
 export function senderPhone(jid) {
   if (typeof jid !== 'string') return null;
@@ -124,6 +124,35 @@ export function senderPhone(jid) {
   if (domain !== 's.whatsapp.net') return null;
   const digits = user.split(':')[0];
   return /^\d{6,15}$/.test(digits) ? `+${digits}` : null;
+}
+
+/**
+ * O numero de quem mandou, inclusive quando o remetente veio como `@lid`.
+ *
+ * No Baileys 7 (fixado em 7.0.0-rc14) uma mensagem enderecada por LID traz o
+ * JID de telefone correspondente na propria chave: `decodeMessageNode` le os
+ * atributos `participant_pn`/`sender_pn`/`peer_recipient_pn` da stanza e os
+ * poe em `key.remoteJidAlt` (conversa 1:1) ou `key.participantAlt` (grupo).
+ * `senderPn`/`participantPn` sao os nomes do mesmo campo nas rc anteriores —
+ * aceitos para uma troca de versao nao voltar a esconder o numero.
+ *
+ * Sem nenhum deles, null: o Rust compara o JID `@lid` cru, e so casa com uma
+ * entrada `…@lid` explicita no `allow` (fail-closed). Nunca consultamos o
+ * mapa de LID do Baileys: ele muda entre versoes e e estado local, nao o que
+ * o servidor disse sobre ESTA mensagem.
+ */
+export function senderPhoneOf(senderJid, key, isGroup) {
+  const direto = senderPhone(senderJid);
+  if (direto !== null) return direto;
+  if (typeof senderJid !== 'string' || !senderJid.endsWith('@lid')) return null;
+  const alternativas = isGroup
+    ? [key?.participantAlt, key?.participantPn]
+    : [key?.remoteJidAlt, key?.senderPn];
+  for (const alt of alternativas) {
+    const fone = senderPhone(alt);
+    if (fone !== null) return fone;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +383,9 @@ export function toMessageEvent(waMessage, ownJid) {
     id: key.id,
     chat_jid: chatJid,
     sender_jid: senderJid,
-    sender_phone: senderPhone(senderJid),
+    // `fromMe` e a propria conta: o numero dela vem do `ownJid`, nunca de um
+    // campo alternativo da chave.
+    sender_phone: fromMe ? senderPhone(senderJid) : senderPhoneOf(senderJid, key, isGroup),
     text: mediaKind ? null : text,
     media_kind: mediaKind,
     timestamp: typeof ts === 'object' && ts !== null ? Number(ts.toNumber?.() ?? ts) : Number(ts ?? 0),

@@ -35,6 +35,8 @@ O binário `garraia` (alias `garra`) concentra toda a operação. Fonte: [`crate
 | `garra whatsapp status` | Diz se há WhatsApp pessoal vinculado, onde a sessão está e se ela abre; desde a v0.4.4 imprime também o perfil de execução (`standard` \| `isolated-pod`), o piso do dono e a contagem de `owners` (ADR 0024) |
 | `garra whatsapp logout` | Desvincula e apaga a sessão deste aparelho |
 | `garra whatsapp restore` | Traz de volta a sessão arquivada (`session.enc.prev`) por um re-vínculo que não terminou; nunca passa por cima de sessão em uso |
+| `garraia whatsapp allow <número> [--owner] [--yes]` | Autoriza um número (com `+` e código do país) ou um LID `<id>@lid` a falar com o GarraIA pelo WhatsApp pessoal, sem precisar de terminal; vale sem reiniciar quando o gateway subiu com o canal ligado e com o `config.yml` no disco (#1345). Exit 64 para `--owner` fora de `isolated-pod` ou num pipe sem `--yes`, 65 para número inválido |
+| `garraia whatsapp link --allow <número> [--owner]` | O `link` com a pergunta pós-QR já respondida; continua exigindo terminal (exit 69 num pipe) |
 
 Guia completo: [docs/whatsapp.md](https://github.com/michelbr84/GarraRUST/blob/main/docs/whatsapp.md).
 

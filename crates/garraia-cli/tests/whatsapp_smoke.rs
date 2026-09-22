@@ -184,7 +184,7 @@ fn whatsapp_help_lists_every_subcommand() {
     let out = garra(dir.path(), &["whatsapp", "--help"]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for sub in ["link", "cloud", "status", "logout", "restore"] {
+    for sub in ["link", "cloud", "status", "logout", "restore", "allow"] {
         assert!(stdout.contains(sub), "faltou `{sub}` no --help:\n{stdout}");
     }
 }
@@ -411,4 +411,149 @@ fn the_command_is_named_whatsapp_and_not_the_kebab_case_derivation() {
         !bad.status.success(),
         "`whats-app` nao pode ser um nome valido — seria o derivado acidental"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #1345: `whatsapp allow` sem terminal
+// ---------------------------------------------------------------------------
+
+/// O mesmo `garra()`, com env extra (o perfil de execucao, sobretudo).
+fn garra_env(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    let mut cmd = Command::new(garra_bin());
+    cmd.args(args)
+        .env("XDG_CONFIG_HOME", dir)
+        .env("GARRAIA_CONFIG_DIR", dir)
+        .env("HOME", dir)
+        .env("GARRAIA_LANG", "pt_BR.UTF-8")
+        .env_remove("GARRAIA_EXECUTION_PROFILE");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn garra")
+}
+
+fn config_yml(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join("config.yml")).unwrap_or_default()
+}
+
+/// Num pipe, `allow` grava o numero normalizado e sai 0 — e na tela so
+/// aparecem os quatro ultimos digitos.
+#[test]
+fn allow_in_a_pipe_writes_the_config_and_exits_zero() {
+    let dir = tempdir().expect("tempdir");
+    let out = garra_env(dir.path(), &["whatsapp", "allow", "+55 11 99999-8888"], &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        config_yml(dir.path()).contains("5511999998888"),
+        "{}",
+        config_yml(dir.path())
+    );
+    assert!(stdout.contains("8888"), "{stdout}");
+    assert!(
+        !stdout.contains("5511999998888") && !stderr.contains("5511999998888"),
+        "numero inteiro nunca vai para a tela:\n{stdout}\n{stderr}"
+    );
+}
+
+#[test]
+fn allow_with_an_invalid_number_exits_65() {
+    let dir = tempdir().expect("tempdir");
+    // Sem `+`, o DDD passaria por codigo do pais (#1345, review WHATSAPP-11).
+    for numero in [
+        "abc",
+        "011999998888",
+        "5511999998888@s.whatsapp.net",
+        "11 99999-8888",
+        "(11) 99999-8888",
+        "5511999998888",
+    ] {
+        let out = garra_env(dir.path(), &["whatsapp", "allow", numero], &[]);
+        assert_eq!(out.status.code(), Some(65), "{numero}");
+    }
+    assert!(!config_yml(dir.path()).contains("allow"));
+}
+
+/// Um LID (`<id>@lid`) e gravado como veio, e na tela so o final (#1345).
+#[test]
+fn allow_accepts_a_lid_and_prints_only_its_last_digits() {
+    let dir = tempdir().expect("tempdir");
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "allow", "87654321098765@lid"],
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(config_yml(dir.path()).contains("87654321098765@lid"));
+    assert!(
+        stdout.contains("LID") && stdout.contains("8765"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("87654321098765"), "{stdout}");
+}
+
+/// `--owner` em `standard` sai 64 (mesmo com `--yes`); em `isolated-pod`
+/// sem `--yes` tambem, porque num pipe nao ha a quem perguntar.
+#[test]
+fn allow_owner_needs_isolated_pod_and_yes_in_a_pipe() {
+    let dir = tempdir().expect("tempdir");
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "allow", "+5511999998888", "--owner", "--yes"],
+        &[],
+    );
+    assert_eq!(out.status.code(), Some(64), "standard recusa --owner");
+    assert!(!config_yml(dir.path()).contains("owners"));
+
+    let pod = [("GARRAIA_EXECUTION_PROFILE", "isolated-pod")];
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "allow", "+5511999998888", "--owner"],
+        &pod,
+    );
+    assert_eq!(out.status.code(), Some(64), "pod sem --yes num pipe");
+    assert!(!config_yml(dir.path()).contains("owners"));
+
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "allow", "+5511999998888", "--owner", "--yes"],
+        &pod,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(config_yml(dir.path()).contains("owners"));
+    assert!(
+        !config_yml(dir.path()).contains("isolated-pod"),
+        "o perfil da env nao vai para o arquivo"
+    );
+}
+
+/// `link --allow` pre-responde a pergunta, mas o QR continua precisando de
+/// terminal: num pipe e 69 com o texto do `ssh -t`, e nada e gravado.
+#[test]
+fn link_with_allow_in_a_pipe_still_needs_a_terminal() {
+    let dir = tempdir().expect("tempdir");
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "link", "--allow", "+5511999998888"],
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(69), "{stdout}");
+    assert!(stdout.contains("ssh -t"), "{stdout}");
+    assert!(!config_yml(dir.path()).contains("5511999998888"));
 }

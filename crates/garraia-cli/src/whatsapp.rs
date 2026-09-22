@@ -11,8 +11,11 @@
 //!   `curl … | sh`, a um Dockerfile e a um systemd.
 //! - **Sessao em claro.** Ver [`garraia_channels::whatsapp_linked::session`].
 //! - **A mensagem errada de allowlist vazia.** O bridge do Hermes e
-//!   fail-closed (allowlist vazia = ninguem) mas o wizard avisa o contrario;
-//!   a allowlist deste canal e do slice do gateway e nao e prometida aqui.
+//!   fail-closed (allowlist vazia = ninguem) mas o wizard avisa o contrario.
+//!   Aqui o portao tambem e fail-closed, e a CLI diz a verdade: depois do QR
+//!   o `link` pergunta quem pode falar com o GarraIA, so diz "pronto" quando
+//!   ha alguem autorizado, e `garraia whatsapp allow` autoriza sem terminal
+//!   (#1345, ver [`acesso`]).
 //!
 //! O que se copia inteiro e a **ordem de gravacao**: `session.enc` primeiro,
 //! `enabled = true` depois. Um wizard abortado que deixou `enabled = true` faz
@@ -25,6 +28,8 @@
 //! |---|---|
 //! | 0 | tudo certo, inclusive o caminho sem TTY |
 //! | 1 | o usuario cancelou (Ctrl+C, resposta "nao") |
+//! | 64 `EX_USAGE` | `allow --owner` fora de `isolated-pod`, ou num pipe sem `--yes` |
+//! | 65 `EX_DATAERR` | `allow <numero>` sem codigo do pais, com letra, zero inicial ou fora de 10-15 digitos |
 //! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, nao ha sessao, ou `link`/`cloud` foram chamados sem terminal |
 //! | 70 `EX_SOFTWARE` | erro interno (disco, config ilegivel) |
 
@@ -42,6 +47,9 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 
 use crate::wizard::prompts::Prompter;
 
+mod acesso;
+pub use acesso::Pedido;
+
 /// De quantos em quantos segundos o `connecting` pulsa na tela.
 const CONNECTING_PULSE_SECS: u64 = 5;
 
@@ -55,11 +63,16 @@ const CONFIG_KEY: &str = garraia_channels::whatsapp_linked::CONFIG_KEY;
 const CLOUD_CONFIG_KEY: &str = "whatsapp";
 
 /// O que `garra whatsapp` deve fazer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Sem subcomando: mostra o menu.
     Menu,
     Link,
+    /// `link --allow <numero> [--owner]`: as perguntas pos-QR ja respondidas.
+    /// Continua exigindo terminal — o QR se le daqui (#1345).
+    LinkCom(Pedido),
+    /// `allow <numero> [--owner] [--yes]`: autoriza sem terminal (#1345).
+    Allow(Pedido),
     Cloud,
     Status,
     Logout,
@@ -129,14 +142,31 @@ fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
 /// executavel se chama `garraia`, `garra start` quando `garra`. Recebe o nome
 /// em vez de le-lo para o teste unitario poder fixar os dois — a linha so e
 /// alcancavel de verdade depois de um QR lido.
-fn instrucao_pos_link(lang: Lang, bin: &str) -> String {
-    match lang {
-        Lang::Pt => {
+///
+/// #1345: so e impressa quando ha alguem autorizado, e o que ela diz sobre o
+/// gateway depende de ele estar rodando (ver [`acesso::dica_do_gateway`]).
+fn instrucao_pos_link(
+    lang: Lang,
+    bin: &str,
+    gateway_pid: Option<u32>,
+    canal_ja_supervisionado: bool,
+) -> String {
+    match (lang, gateway_pid) {
+        (Lang::Pt, None) => {
             format!("GarraIA está pronto para receber mensagens (inicie o gateway: `{bin} start`)")
         }
-        Lang::En => {
+        (Lang::En, None) => {
             format!("GarraIA is ready to receive messages (start the gateway: `{bin} start`)")
         }
+        (_, Some(_)) => format!(
+            "{} {}",
+            t(
+                lang,
+                "GarraIA está pronto para receber mensagens.",
+                "GarraIA is ready to receive messages."
+            ),
+            acesso::dica_do_gateway(lang, canal_ja_supervisionado, gateway_pid)
+        ),
     }
 }
 
@@ -171,6 +201,13 @@ pub struct Context {
     /// O locale afirma UTF-8?
     pub unicode: bool,
     pub lang: Lang,
+    /// O pid do gateway local, quando o `garraia.pid` aponta um processo vivo
+    /// (#1345). So informa a dica de restart; a CLI nunca reinicia nada.
+    pub gateway_pid: Option<u32>,
+    /// O `GARRAIA_EXECUTION_PROFILE` deste processo, lido uma vez aqui. O
+    /// `allow --owner` decide por ele (e pelo arquivo); guardado no contexto
+    /// para o teste fixa-lo sem depender da env da maquina.
+    pub perfil_da_env: Option<String>,
 }
 
 impl Context {
@@ -190,6 +227,8 @@ impl Context {
             columns: console::Term::stdout().size_checked().map(|(_, cols)| cols),
             unicode: crate::ui::spinner::locale_supports_unicode(),
             lang: Lang::detect(),
+            gateway_pid: crate::read_pid().filter(|pid| crate::is_process_running(*pid)),
+            perfil_da_env: std::env::var(garraia_config::execution::PROFILE_ENV).ok(),
         }
     }
 
@@ -225,7 +264,9 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
         Action::Logout => logout(ctx, prompter),
         Action::Restore => restore(ctx),
         Action::Menu => menu(ctx, prompter),
-        Action::Link => link(ctx, prompter),
+        Action::Link => link(ctx, prompter, &Pedido::default()),
+        Action::LinkCom(pre) => link(ctx, prompter, &pre),
+        Action::Allow(pedido) => acesso::allow(ctx, prompter, &pedido),
         Action::Cloud => cloud(ctx, prompter),
     }
 }
@@ -257,8 +298,8 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(&tb(
         lang,
-        "Também existem: {bin} whatsapp status | {bin} whatsapp restore | {bin} whatsapp logout",
-        "Also available: {bin} whatsapp status | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Também existem: {bin} whatsapp status | {bin} whatsapp allow <número> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Also available: {bin} whatsapp status | {bin} whatsapp allow <number> | {bin} whatsapp restore | {bin} whatsapp logout",
     ));
     out
 }
@@ -330,7 +371,7 @@ fn menu(ctx: &Context, prompter: &dyn Prompter) -> i32 {
         "How do you want to use WhatsApp with GarraIA?",
     );
     match prompter.select(prompt, &options, 0) {
-        Ok(0) => link(ctx, prompter),
+        Ok(0) => link(ctx, prompter, &Pedido::default()),
         Ok(_) => cloud(ctx, prompter),
         Err(_) => {
             println!();
@@ -383,6 +424,14 @@ fn status(ctx: &Context) -> i32 {
         store.blob_path().display()
     );
     print_execution_profile(ctx);
+    print_access(ctx, &facts);
+    if let Some(linha) = recusas_lid_line(
+        ctx.lang,
+        garraia_gateway::bootstrap::whatsapp_linked_ler_recusas_lid(store.dir()).as_ref(),
+        ctx.gateway_pid,
+    ) {
+        println!("{linha}");
+    }
     print_archive_warning(ctx, &store);
 
     match ctx.key() {
@@ -463,6 +512,112 @@ fn status(ctx: &Context) -> i32 {
         )
     );
     0
+}
+
+/// As linhas de acesso do `status` (#1345): ponte, gateway, canal ligado,
+/// autorizados e donos — contagens, nunca numeros — e o aviso de que ninguem
+/// recebera resposta quando o canal esta ligado com o portao vazio.
+///
+/// Informativas: nao mudam o exit code do `status`, que continua respondendo
+/// "ha um vinculo utilizavel?" (scripts dependem disso).
+fn print_access(ctx: &Context, facts: &DiskFacts) {
+    for linha in access_lines(
+        ctx.lang,
+        facts.deps_installed,
+        ctx.gateway_pid,
+        ctx.loader
+            .as_ref()
+            .and_then(|l| l.load().ok())
+            .map(|c| acesso::acesso_da_config(&c)),
+    ) {
+        println!("{linha}");
+    }
+}
+
+/// As linhas de [`print_access`], puras para o teste.
+fn access_lines(
+    lang: Lang,
+    deps_installed: bool,
+    gateway_pid: Option<u32>,
+    acesso: Option<acesso::Acesso>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    out.push(
+        if deps_installed {
+            t(
+                lang,
+                "Ponte:    dependências instaladas",
+                "Bridge:   dependencies installed",
+            )
+        } else {
+            t(
+                lang,
+                "Ponte:    dependências faltando",
+                "Bridge:   dependencies missing",
+            )
+        }
+        .to_string(),
+    );
+    out.push(match (lang, gateway_pid) {
+        (Lang::Pt, Some(pid)) => format!("Gateway:  rodando (pid {pid})"),
+        (Lang::En, Some(pid)) => format!("Gateway:  running (pid {pid})"),
+        (Lang::Pt, None) => "Gateway:  parado".to_string(),
+        (Lang::En, None) => "Gateway:  not running".to_string(),
+    });
+    let Some(a) = acesso else {
+        return out;
+    };
+    out.push(
+        match (lang, a.enabled) {
+            (Lang::Pt, true) => "Canal:    ligado",
+            (Lang::Pt, false) => "Canal:    desligado",
+            (Lang::En, true) => "Channel:  on",
+            (Lang::En, false) => "Channel:  off",
+        }
+        .to_string(),
+    );
+    out.push(match lang {
+        Lang::Pt => format!("Autorizados: {} · Donos: {}", a.autorizados, a.donos),
+        Lang::En => format!("Authorized: {} · Owners: {}", a.autorizados, a.donos),
+    });
+    if a.enabled && a.autorizados == 0 {
+        out.push(acesso::aviso_ninguem_autorizado(lang));
+    }
+    out
+}
+
+/// O aviso das recusas de remetente `@lid` sem numero (#1345), do arquivo
+/// que o gateway em execucao grava no diretorio da sessao.
+///
+/// Um numero no `allow` nao casa com um LID, e sem este aviso o operador so
+/// via "autorizado" e silencio. So o arquivo do gateway **vivo** conta (o
+/// `pid` bate): o de uma execucao anterior nao diz nada sobre esta. Nunca o
+/// LID inteiro — so os quatro ultimos digitos.
+fn recusas_lid_line(
+    lang: Lang,
+    registro: Option<&garraia_gateway::bootstrap::WhatsAppLinkedRecusasLid>,
+    gateway_pid: Option<u32>,
+) -> Option<String> {
+    let r = registro?;
+    if r.recusas == 0 || gateway_pid != Some(r.pid) {
+        return None;
+    }
+    let bin = crate::binario::nome();
+    let (n, fim) = (r.recusas, acesso::final4(&r.final4));
+    Some(match lang {
+        Lang::Pt => format!(
+            "⚠ {n} mensagem(ns) recusada(s) de remetente @lid sem número (a última de um LID terminado em {fim}). \
+             O WhatsApp identificou o contato só pelo LID, e um número no `allow` não casa com LID. \
+             Se era alguém que você autorizou, gere um código com `/pair` e peça para a pessoa mandá-lo por WhatsApp, \
+             ou autorize o LID inteiro: `{bin} whatsapp allow <id>@lid`."
+        ),
+        Lang::En => format!(
+            "⚠ {n} message(s) refused from @lid senders with no number (the last from a LID ending in {fim}). \
+             WhatsApp identified the contact only by LID, and a number in `allow` does not match a LID. \
+             If it was someone you authorized, generate a code with `/pair` and have them send it over WhatsApp, \
+             or authorize the full LID: `{bin} whatsapp allow <id>@lid`."
+        ),
+    })
 }
 
 /// Uma linha com o perfil de execucao (ADR 0024, #1329), quando a config abre.
@@ -703,6 +858,10 @@ fn restore(ctx: &Context) -> i32 {
         eprintln!("{e}");
         return EX_SOFTWARE;
     }
+    // #1345: restaurar liga o canal; se ninguem esta autorizado, dizer.
+    if gate_is_empty(ctx) {
+        println!("{}", acesso::aviso_ninguem_autorizado(ctx.lang));
+    }
     println!(
         "{}",
         tb(
@@ -928,8 +1087,8 @@ impl Drop for ArchiveGuard<'_> {
     }
 }
 
-fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
-    link_with(ctx, prompter, NodeRuntime::detect)
+fn link(ctx: &Context, prompter: &dyn Prompter, pre: &Pedido) -> i32 {
+    link_with(ctx, prompter, pre, NodeRuntime::detect)
 }
 
 /// [`link`] com a deteccao do Node injetada.
@@ -950,12 +1109,18 @@ fn link(ctx: &Context, prompter: &dyn Prompter) -> i32 {
 fn link_with(
     ctx: &Context,
     prompter: &dyn Prompter,
+    pre: &Pedido,
     detect_node: impl FnOnce() -> Result<NodeRuntime, BridgeError>,
 ) -> i32 {
     if !ctx.interactive {
         print_header(ctx);
         println!("{}", needs_a_terminal(ctx.lang, "link"));
         return EX_UNAVAILABLE;
+    }
+    // #1345: `--allow`/`--owner` invalidos falham ANTES do QR, sem gastar um
+    // pareamento (65 numero, 64 `--owner` fora do pod).
+    if let Err(code) = acesso::validar_pre_link(ctx, pre) {
+        return code;
     }
 
     let store = match ctx.store() {
@@ -1073,7 +1238,9 @@ fn link_with(
     }
 
     let launcher = NodeLauncher::new(&node.node, &bridge_dir);
-    link_paired(ctx, &store, &key, &launcher, &runtime, relink)
+    link_paired(
+        ctx, prompter, pre, &store, &key, &launcher, &runtime, relink,
+    )
 }
 
 /// A parte do [`link`] que comeca depois de o Node estar resolvido: arquivar a
@@ -1094,8 +1261,11 @@ fn link_with(
 /// launcher que sempre falha leva o fluxo ate o desfecho de erro, o guard cai,
 /// e o que se afirma e o que o usuario ve em disco — sessao de volta, nada
 /// arquivado.
+#[allow(clippy::too_many_arguments)]
 fn link_paired(
     ctx: &Context,
+    prompter: &dyn Prompter,
+    pre: &Pedido,
     store: &SessionStore,
     key: &SessionKey,
     launcher: &dyn BridgeLauncher,
@@ -1177,6 +1347,9 @@ fn link_paired(
                 store.dir().display()
             );
 
+            // Antes de ligar: o gateway que esta rodando ja supervisiona o
+            // canal? Decide entre "vale sem reiniciar" e "rode restart".
+            let ja_supervisionado = channel_is_enabled(ctx);
             // ORDEM: o blob ja esta em disco (o runner gravou). So agora a
             // config aprende que o canal existe.
             match enable_channel(ctx) {
@@ -1186,11 +1359,13 @@ fn link_paired(
                     return EX_SOFTWARE;
                 }
             }
-            println!(
-                "✓ {}",
-                instrucao_pos_link(ctx.lang, &crate::binario::nome())
-            );
-            0
+            after_pairing(
+                ctx,
+                prompter,
+                outcome.phone_last4.as_deref(),
+                pre,
+                ja_supervisionado,
+            )
         }
         Err(RunError::Cancelled) => {
             println!();
@@ -1630,6 +1805,80 @@ developers.facebook.com → your app → WhatsApp."
 // ---------------------------------------------------------------------------
 // Escrita de config
 // ---------------------------------------------------------------------------
+
+/// O passo depois do QR (#1345): garante alguem autorizado, ou diz que nao
+/// ha. "Pronto" so sai com pelo menos um autorizado; o link em si valeu nos
+/// dois casos, entao o exit e 0 nos dois.
+fn after_pairing(
+    ctx: &Context,
+    prompter: &dyn Prompter,
+    phone_last4: Option<&str>,
+    pre: &Pedido,
+    ja_supervisionado: bool,
+) -> i32 {
+    if ctx.loader.is_none() {
+        // Sem config nao ha allowlist para gravar, nem canal ligado.
+        println!("{}", final_line(ctx.lang, 0, ctx.gateway_pid, false));
+        return 0;
+    }
+    let pos = match acesso::pos_link(ctx, prompter, phone_last4, pre) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    println!();
+    println!(
+        "{}",
+        final_line(
+            ctx.lang,
+            pos.autorizados,
+            ctx.gateway_pid,
+            ja_supervisionado
+        )
+    );
+    0
+}
+
+/// A ultima linha do `link` (#1345): "pronto" so com alguem autorizado;
+/// senao o aviso com `whatsapp allow`. Pura, para o teste.
+fn final_line(
+    lang: Lang,
+    autorizados: usize,
+    gateway_pid: Option<u32>,
+    ja_supervisionado: bool,
+) -> String {
+    if autorizados > 0 {
+        format!(
+            "✓ {}",
+            instrucao_pos_link(
+                lang,
+                &crate::binario::nome(),
+                gateway_pid,
+                ja_supervisionado
+            )
+        )
+    } else {
+        acesso::aviso_ninguem_autorizado(lang)
+    }
+}
+
+/// `channels.whatsapp_linked.enabled` e `true` agora?
+fn channel_is_enabled(ctx: &Context) -> bool {
+    ctx.loader
+        .as_ref()
+        .and_then(|l| l.load().ok())
+        .is_some_and(|c| acesso::acesso_da_config(&c).enabled)
+}
+
+/// Canal ligado e ninguem autorizado?
+fn gate_is_empty(ctx: &Context) -> bool {
+    ctx.loader
+        .as_ref()
+        .and_then(|l| l.load().ok())
+        .is_some_and(|c| {
+            let a = acesso::acesso_da_config(&c);
+            a.enabled && a.autorizados == 0
+        })
+}
 
 /// Grava `channels.whatsapp_linked.enabled = true`.
 ///

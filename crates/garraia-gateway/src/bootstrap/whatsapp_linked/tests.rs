@@ -1655,6 +1655,260 @@ fn fonte_do_canal_nao_tem_a_recusa_por_mcp_nem_deteccao_de_container() {
 }
 
 // ---------------------------------------------------------------------------
+// #1345: admissao recarregada a quente, contagem e aviso de portao vazio
+// ---------------------------------------------------------------------------
+
+/// `autorizados()` e a uniao sem repeticao de `allow` e `owners` — a mesma
+/// que o portao monta. Quem esta nas duas listas conta uma vez.
+#[test]
+fn autorizados_conta_a_uniao_sem_repeticao() {
+    let s = LinkedSettings {
+        allow: vec!["5511900000001".into(), "5511900000002".into()],
+        owners: vec!["5511900000002".into(), "5511900000003".into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(s.autorizados(), 3);
+    assert_eq!(LinkedSettings::default().autorizados(), 0);
+}
+
+/// Recarregar troca a parte da config e mantem quem pareou por codigo: o
+/// codigo e memoria do processo, e a config nao tem como devolve-lo.
+#[test]
+fn recarregar_o_portao_mantem_os_pareados() {
+    let mut portao = portao_com(&["5511900000001"]);
+    let mut pair = pairing();
+    let codigo = pair.generate("whatsapp_linked");
+    assert_eq!(
+        admitir(&mut portao, &mut pair, "5511900000009", &codigo),
+        Admissao::PareadoAgora
+    );
+
+    portao.recarregar(&LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000002".into()],
+        ..LinkedSettings::default()
+    });
+    assert!(
+        !portao.libera("5511900000001"),
+        "saiu do allow: saiu do portao"
+    );
+    assert!(portao.libera("5511900000002"), "entrou no allow: entrou");
+    assert!(portao.libera("5511900000009"), "o pareado continua");
+}
+
+/// Config viva desligada, sem secao ou com `type` errado: a admissao vigente
+/// nao admite ninguem e nao tem dono — mesmo que o boot tivesse os dois.
+#[test]
+fn admissao_vigente_fecha_com_canal_desligado_sem_secao_ou_tipo_errado() {
+    let boot = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000001".into()],
+        owners: vec!["5511900000001".into()],
+        reply_in_groups: true,
+        default_mode: Some("search".into()),
+    };
+    let desligada = settings_from_config(&config_com(Some(secao(
+        Some(false),
+        serde_json::json!({ "allow": ["5511900000001"], "owners": ["5511900000001"] }),
+    ))));
+    let sem_secao = settings_from_config(&config_com(None));
+    let mut tipo_errado = secao(
+        Some(true),
+        serde_json::json!({ "allow": ["5511900000001"] }),
+    );
+    tipo_errado.channel_type = "whatsapp".into();
+    let tipo_errado = settings_from_config(&config_com(Some(tipo_errado)));
+
+    for viva in [desligada, sem_secao, tipo_errado] {
+        let v = admissao_vigente(&boot, &viva);
+        assert!(!v.enabled, "{viva:?}");
+        assert_eq!(v.autorizados(), 0, "ninguem: {viva:?}");
+        assert!(
+            perfil_do_turno(ExecutionProfile::IsolatedPod, &v, "5511900000001", false)
+                == PerfilDoTurno::Padrao,
+            "nem dono"
+        );
+    }
+}
+
+/// O que recarrega e so a admissao: `default_mode` e `reply_in_groups` ficam
+/// os do boot (pedem restart, e a doc diz isso).
+#[test]
+fn admissao_vigente_so_troca_enabled_allow_e_owners() {
+    let boot = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000001".into()],
+        owners: vec!["5511900000001".into()],
+        reply_in_groups: false,
+        default_mode: Some("search".into()),
+    };
+    let viva = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000002".into()],
+        owners: Vec::new(),
+        reply_in_groups: true,
+        default_mode: Some("code".into()),
+    };
+    let v = admissao_vigente(&boot, &viva);
+    assert_eq!(v.allow, vec!["5511900000002".to_string()]);
+    assert!(v.owners.is_empty(), "revogacao de dono vale a quente");
+    assert!(!v.reply_in_groups, "reply_in_groups e o do boot");
+    assert_eq!(
+        v.default_mode.as_deref(),
+        Some("search"),
+        "default_mode e o do boot"
+    );
+}
+
+/// O aviso de boot existe so com o portao vazio, cita o comando e nao carrega
+/// numero nenhum.
+#[test]
+fn aviso_de_portao_vazio_cita_o_allow_e_so_existe_quando_vazio() {
+    let aviso =
+        aviso_portao_vazio(&LinkedSettings::default(), "garraia", true).expect("vazio avisa");
+    assert!(aviso.contains("garraia whatsapp allow <numero>"), "{aviso}");
+    assert!(aviso.contains("sem reiniciar"), "{aviso}");
+    assert!(!aviso.chars().any(|c| c.is_ascii_digit()), "{aviso}");
+    // Sem watcher (nao havia config.yml no boot), a lista nao recarrega:
+    // "sem reiniciar" seria mentira (review WHATSAPP-3/12).
+    let frio =
+        aviso_portao_vazio(&LinkedSettings::default(), "garraia", false).expect("vazio avisa");
+    assert!(!frio.contains("sem reiniciar"), "{frio}");
+    assert!(frio.contains("garraia restart"), "{frio}");
+
+    let com_um = LinkedSettings {
+        owners: vec!["5511900000001".into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(aviso_portao_vazio(&com_um, "garraia", true), None);
+}
+
+/// A CLI grava no `allow` o que [`normalizar_identidade`] produz; o
+/// re-export tem de ser a mesma funcao.
+#[test]
+fn o_reexport_da_normalizacao_e_a_mesma_funcao() {
+    assert_eq!(
+        crate::bootstrap::whatsapp_linked_normalizar_identidade("+55 11 99999-8888"),
+        normalizar_identidade("+55 11 99999-8888")
+    );
+}
+
+/// #1345 (review WHATSAPP-2): o celular brasileiro com e sem o nono digito e
+/// a mesma pessoa para o portao, nos dois sentidos.
+#[test]
+fn celular_brasileiro_casa_com_e_sem_o_nono_digito() {
+    // O operador digitou 13; o JID da conta antiga tem 12.
+    let portao = portao_com(&["5531999998888"]);
+    assert!(portao.libera("553199998888"), "JID de 12 digitos");
+    assert!(portao.libera("5531999998888"), "e o de 13, claro");
+    // O contrario: gravado com 12, remetente chega com 13.
+    let portao = portao_com(&["553199998888"]);
+    assert!(portao.libera("5531999998888"));
+
+    // Fixo (primeiro digito 2 a 5) nunca perde digito nenhum.
+    assert_eq!(chave_do_portao("553133334444"), "553133334444");
+    let portao = portao_com(&["5531933334444"]);
+    assert!(
+        !portao.libera("553133334444"),
+        "9 + fixo nao e celular antigo"
+    );
+    // Outro pais, tamanho diferente e LID passam intactos.
+    for id in [
+        "15551234567",
+        "551199998888",
+        "87654321098765@lid",
+        "4479999988887",
+    ] {
+        assert_eq!(chave_do_portao(id), id);
+    }
+
+    // A contagem e a mesma do portao: as duas formas contam um.
+    let s = LinkedSettings {
+        allow: vec!["5531999998888".into()],
+        owners: vec!["553199998888".into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(s.autorizados(), 1);
+    assert_eq!(s.donos(), 1);
+    // E o dono e reconhecido pela mesma chave.
+    assert_eq!(
+        perfil_do_turno(ExecutionProfile::IsolatedPod, &s, "5531999998888", false),
+        PerfilDoTurno::Completo
+    );
+}
+
+/// #1345 (review WHATSAPP-4): quem pareou por codigo E estava no `allow` perde
+/// o acesso quando sai do `allow` — senao "apague o numero da lista" nao
+/// revogava. Quem so pareou, sem nunca estar na config, continua ate o
+/// restart (a doc diz isso).
+#[test]
+fn sair_do_allow_revoga_tambem_o_pareamento() {
+    let mut portao = portao_com(&[]);
+    let mut pair = pairing();
+    for quem in ["5511900000001", "5511900000009"] {
+        let codigo = pair.generate("whatsapp_linked");
+        assert_eq!(
+            admitir(&mut portao, &mut pair, quem, &codigo),
+            Admissao::PareadoAgora
+        );
+    }
+    let com_os_dois = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000001".into()],
+        ..LinkedSettings::default()
+    };
+    portao.recarregar(&com_os_dois);
+    portao.recarregar(&com_os_dois);
+    assert!(portao.libera("5511900000001"));
+
+    portao.recarregar(&LinkedSettings {
+        enabled: true,
+        ..LinkedSettings::default()
+    });
+    assert!(
+        !portao.libera("5511900000001"),
+        "tirado do allow: o codigo resgatado antes nao o segura la dentro"
+    );
+    assert!(
+        portao.libera("5511900000009"),
+        "so pareado, nunca na config: segue ate o restart"
+    );
+}
+
+/// O arquivo de recusas de `@lid` e atomico, `0600`, e volta igual.
+#[test]
+fn recusas_de_lid_vao_e_voltam_do_disco() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(ler_recusas_lid(dir.path()), None, "ausente = None");
+    let r = RecusasLid {
+        pid: 42,
+        recusas: 3,
+        final4: "8765".into(),
+    };
+    gravar_recusas_lid(dir.path(), &r).expect("grava");
+    assert_eq!(ler_recusas_lid(dir.path()), Some(r));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let modo = std::fs::metadata(dir.path().join(ARQUIVO_RECUSAS_LID))
+            .expect("meta")
+            .permissions()
+            .mode();
+        assert_eq!(modo & 0o777, 0o600);
+    }
+    let sobras: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("ls")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(sobras.is_empty(), "{sobras:?}");
+
+    std::fs::write(dir.path().join(ARQUIVO_RECUSAS_LID), "lixo").expect("w");
+    assert_eq!(ler_recusas_lid(dir.path()), None, "ilegivel = None");
+}
+
+// ---------------------------------------------------------------------------
 // Ponta a ponta contra a ponte falsa
 // ---------------------------------------------------------------------------
 /// `#[cfg(unix)]` pelo mesmo motivo da suite de `garraia-channels`: a fixture e
@@ -1830,6 +2084,10 @@ mod ponta_a_ponta {
         push_text: Option<String>,
         /// So vale em `serve-push`: marca a mensagem como da propria conta.
         push_from_me: bool,
+        /// So vale em `serve-push`: o remetente chega como este `@lid`.
+        push_lid: Option<&'static str>,
+        /// E o `key.remoteJidAlt` que o Baileys 7 manda junto com ele.
+        push_lid_alt: Option<&'static str>,
     }
 
     impl Roteiro {
@@ -1839,6 +2097,8 @@ mod ponta_a_ponta {
                 cenario: "serve-echo",
                 push_text: None,
                 push_from_me: false,
+                push_lid: None,
+                push_lid_alt: None,
             }
         }
 
@@ -1855,7 +2115,17 @@ mod ponta_a_ponta {
                 cenario: "serve-push",
                 push_text: Some(texto.to_string()),
                 push_from_me: false,
+                push_lid: None,
+                push_lid_alt: None,
             }
+        }
+
+        /// O remetente empurrado vem como `@lid` (#1345), com ou sem o JID de
+        /// telefone que o servidor manda junto.
+        fn por_lid(mut self, lid: &'static str, alt: Option<&'static str>) -> Self {
+            self.push_lid = Some(lid);
+            self.push_lid_alt = alt;
+            self
         }
 
         /// A mensagem empurrada vem marcada como da conta vinculada — a forma
@@ -1890,6 +2160,12 @@ mod ponta_a_ponta {
             }
             if self.roteiro.push_from_me {
                 cmd.arg("--push-from-me");
+            }
+            if let Some(lid) = self.roteiro.push_lid {
+                cmd.arg("--push-lid").arg(lid);
+            }
+            if let Some(alt) = self.roteiro.push_lid_alt {
+                cmd.arg("--push-lid-alt").arg(alt);
             }
             Ok(cmd)
         }
@@ -1929,6 +2205,18 @@ mod ponta_a_ponta {
         perfil: ExecutionProfile,
         provider: ProviderDeStub,
     ) -> (SharedState, Arc<ProviderDeStub>) {
+        monta_estado_vivo(dir, perfil, provider, None)
+    }
+
+    /// O mesmo, com um `ConfigWatcher` de mentira (#1345): o teste segura o
+    /// `watch::Sender` e "edita o config.yml" mandando um `AppConfig` novo —
+    /// exatamente o que o watcher de producao faz depois de reler o arquivo.
+    fn monta_estado_vivo(
+        dir: &tempfile::TempDir,
+        perfil: ExecutionProfile,
+        provider: ProviderDeStub,
+        config_viva: Option<watch::Receiver<AppConfig>>,
+    ) -> (SharedState, Arc<ProviderDeStub>) {
         let config = AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             execution: ExecutionConfig::new(Some(perfil), None),
@@ -1943,11 +2231,12 @@ mod ponta_a_ponta {
             agents.register_tool(Box::new(ToolDeMentira(nome)));
         }
 
-        let state: SharedState = Arc::new(crate::state::AppState::new(
-            config,
-            Arc::new(agents),
-            ChannelRegistry::new(),
-        ));
+        let mut state =
+            crate::state::AppState::new(config, Arc::new(agents), ChannelRegistry::new());
+        if let Some(rx) = config_viva {
+            state.set_config_watcher(rx);
+        }
+        let state: SharedState = Arc::new(state);
         (state, provider)
     }
 
@@ -2145,6 +2434,11 @@ mod ponta_a_ponta {
         reply_in_groups: bool,
         perfil: ExecutionProfile,
         provider: ProviderDeStub,
+        /// #1345: a config viva. `None` = sem watcher (os settings do boot
+        /// valem o processo inteiro).
+        config_viva: Option<watch::Receiver<AppConfig>>,
+        /// Identidades a mais no `allow` do boot (um `…@lid`, por exemplo).
+        allow_extra: Vec<String>,
     }
 
     impl Default for Montagem {
@@ -2156,6 +2450,8 @@ mod ponta_a_ponta {
                 reply_in_groups: false,
                 perfil: ExecutionProfile::Standard,
                 provider: ProviderDeStub::default(),
+                config_viva: None,
+                allow_extra: Vec::new(),
             }
         }
     }
@@ -2174,9 +2470,11 @@ mod ponta_a_ponta {
             reply_in_groups,
             perfil,
             provider,
+            config_viva,
+            allow_extra,
         } = m;
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, provider) = monta_estado_com(&dir, perfil, provider);
+        let (state, provider) = monta_estado_vivo(&dir, perfil, provider, config_viva);
         preparo(&state);
 
         // O `Allowlist` global fica em modo **aberto** de proposito: e o modo em
@@ -2197,7 +2495,10 @@ mod ponta_a_ponta {
                 vec![PEER.to_string()]
             } else {
                 Vec::new()
-            },
+            }
+            .into_iter()
+            .chain(allow_extra)
+            .collect(),
             owners: if dono {
                 vec![PEER.to_string()]
             } else {
@@ -2830,5 +3131,354 @@ mod ponta_a_ponta {
             ate(|| state.whatsapp_linked.bridge() == BridgeView::Down).await,
             "ao encerrar, o runtime volta para desconectado"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #1345: admissao recarregada a quente
+    // -----------------------------------------------------------------------
+
+    /// A config viva do canal: ligado ou nao, com `allow` e `owners`.
+    fn viva(enabled: bool, allow: &[&str], owners: &[&str]) -> AppConfig {
+        config_com(Some(secao(
+            Some(enabled),
+            serde_json::json!({ "allow": allow, "owners": owners }),
+        )))
+    }
+
+    /// Entrega uma mensagem 1:1 de `PEER` pelo sink real e espera o
+    /// `SinkEspiao` registra-la — assim a ausencia de turno depois nao e
+    /// vacua.
+    async fn entrega(c: &Cenario, texto: &str) {
+        let antes = recebidas(c).len();
+        InboundSink::deliver(&*c.espiao, msg(Some(texto)));
+        assert!(
+            ate(|| recebidas(c).len() > antes).await,
+            "a mensagem precisa chegar ao sink"
+        );
+    }
+
+    /// Sobe com a config viva e o eco marcado `from_me` (a resposta do agente
+    /// nao vira outro turno, entao cada `entrega` e no maximo um turno).
+    async fn sobe_vivo(
+        boot_liberado: bool,
+        boot_dono: bool,
+        perfil: ExecutionProfile,
+        rx: watch::Receiver<AppConfig>,
+    ) -> Cenario {
+        let c = Montagem {
+            roteiro: Roteiro::eco().da_propria_conta(),
+            liberado: boot_liberado,
+            dono: boot_dono,
+            perfil,
+            config_viva: Some(rx),
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe"
+        );
+        c
+    }
+
+    /// Espera o provider ver `n` turnos, e depois um respiro para um turno a
+    /// mais (que nao deveria existir) ter chance de aparecer.
+    async fn turnos_estaveis_em(c: &Cenario, n: usize) -> usize {
+        let _ = ate(|| turnos(&c.provider).len() >= n).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        turnos(&c.provider).len()
+    }
+
+    /// Quantas respostas do agente sairam pela ponte (o eco `from_me`).
+    fn respostas(c: &Cenario) -> usize {
+        recebidas(c).iter().filter(|m| m.from_me).count()
+    }
+
+    /// **O defeito da #1345, ponta a ponta.** O canal sobe com o portao vazio
+    /// (o estado exato em que o `garraia whatsapp link` o deixava), o numero
+    /// e recusado sem resposta; o operador roda `garraia whatsapp allow`
+    /// (aqui: o watcher entrega a config nova) e a mensagem SEGUINTE e
+    /// aceita, sem restart. Tirar o numero do `allow` de novo o recusa na
+    /// mensagem seguinte.
+    #[tokio::test]
+    async fn allow_adicionado_e_removido_vale_na_proxima_mensagem_sem_restart() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+
+        entrega(&c, "oi").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            0,
+            "portao vazio: recusado, sem turno"
+        );
+        assert_eq!(respostas(&c), 0, "e sem resposta: a recusa e silenciosa");
+
+        tx.send(viva(true, &[PEER], &[])).expect("watcher");
+        entrega(&c, "oi de novo").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            1,
+            "o `allow` novo vale na mensagem seguinte, sem restart"
+        );
+        assert!(
+            ate(|| respostas(&c) == 1).await,
+            "e a resposta sai pela ponte"
+        );
+
+        tx.send(viva(true, &[], &[])).expect("watcher");
+        entrega(&c, "ainda estou aqui").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            1,
+            "revogado: tirar do `allow` recusa a mensagem seguinte"
+        );
+        assert_eq!(respostas(&c), 1, "e a recusa segue silenciosa");
+
+        encerra(c).await;
+    }
+
+    /// `enabled: false` na config viva fecha o portao para todo mundo —
+    /// inclusive quem ainda esta no `allow` — sem esperar restart. Secao
+    /// sumida do arquivo: o mesmo.
+    #[tokio::test]
+    async fn canal_desligado_na_config_viva_recusa_todo_mundo() {
+        let (tx, rx) = watch::channel(viva(true, &[PEER], &[]));
+        let c = sobe_vivo(true, false, ExecutionProfile::Standard, rx).await;
+
+        entrega(&c, "oi").await;
+        assert_eq!(turnos_estaveis_em(&c, 1).await, 1, "controle: aceito");
+
+        tx.send(viva(false, &[PEER], &[])).expect("watcher");
+        entrega(&c, "oi de novo").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            1,
+            "`enabled = false` recusa mesmo quem esta no `allow`"
+        );
+
+        tx.send(AppConfig::default()).expect("watcher");
+        entrega(&c, "e agora").await;
+        assert_eq!(turnos_estaveis_em(&c, 2).await, 1, "sem secao: ninguem");
+
+        encerra(c).await;
+    }
+
+    /// **A regressao fail-open da revogacao.** Dono no pod, em `allow` E em
+    /// `owners`. Tirado so de `owners`, ele continua admitido — mas o turno
+    /// seguinte tem de cair no piso de `standard`. Com os `owners` do boot o
+    /// canal seguiria oferecendo `bash` a um dono revogado ate o restart.
+    #[tokio::test]
+    async fn dono_revogado_perde_o_piso_do_pod_na_proxima_mensagem() {
+        let (tx, rx) = watch::channel(viva(true, &[PEER], &[PEER]));
+        let c = sobe_vivo(true, true, ExecutionProfile::IsolatedPod, rx).await;
+
+        entrega(&c, "oi").await;
+        assert_eq!(turnos_estaveis_em(&c, 1).await, 1);
+        assert!(
+            turnos(&c.provider)[0]
+                .ferramentas
+                .iter()
+                .any(|f| f == "bash"),
+            "controle: o dono no pod recebe `code`: {:?}",
+            turnos(&c.provider)[0].ferramentas
+        );
+
+        tx.send(viva(true, &[PEER], &[])).expect("watcher");
+        entrega(&c, "oi de novo").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            2,
+            "ainda no `allow`: admitido"
+        );
+        let t = turnos(&c.provider);
+        assert!(
+            !t[1]
+                .ferramentas
+                .iter()
+                .any(|f| f == "bash" || f == "file_write"),
+            "dono revogado cai no piso `search` na mensagem seguinte: {:?}",
+            t[1].ferramentas
+        );
+
+        encerra(c).await;
+    }
+
+    /// Dono adicionado a quente em `standard` e admitido, e nao ganha poder
+    /// nenhum: o perfil de execucao continua o do boot.
+    #[tokio::test]
+    async fn dono_adicionado_a_quente_em_standard_nao_ganha_poder() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+
+        tx.send(viva(true, &[], &[PEER])).expect("watcher");
+        entrega(&c, "oi").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            1,
+            "dono e admitido (owners entra como allow)"
+        );
+        assert!(
+            !turnos(&c.provider)[0]
+                .ferramentas
+                .iter()
+                .any(|f| f == "bash" || f == "file_write"),
+            "em standard `owners` nao confere poder: {:?}",
+            turnos(&c.provider)[0].ferramentas
+        );
+
+        encerra(c).await;
+    }
+
+    /// Grupo continua exigindo `reply_in_groups`, mesmo para quem entrou no
+    /// `allow` a quente: a mensagem do grupo nem vira turno.
+    #[tokio::test]
+    async fn allow_a_quente_nao_abre_grupo_sem_reply_in_groups() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+
+        tx.send(viva(true, &[PEER], &[])).expect("watcher");
+        let mut do_grupo = msg(Some("oi grupo"));
+        do_grupo.chat_jid = Jid::new("120363000000000001@g.us");
+        do_grupo.is_group = true;
+        InboundSink::deliver(&*c.espiao, do_grupo);
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem chegou ao sink"
+        );
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            0,
+            "grupo sem `reply_in_groups`: sem turno"
+        );
+
+        // Controle: a mesma pessoa em 1:1 e aceita.
+        entrega(&c, "oi").await;
+        assert_eq!(turnos_estaveis_em(&c, 1).await, 1);
+
+        encerra(c).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // #1345: remetente `@lid` (Baileys 7)
+    // -----------------------------------------------------------------------
+
+    const LID: &str = "87654321098765@lid";
+
+    /// `@lid` com o telefone que o servidor manda junto (`remoteJidAlt`): a
+    /// ponte entrega o numero em `sender_phone`, e o numero salvo pelo
+    /// `garraia whatsapp allow` casa. Pelo eco, a resposta sai pela ponte.
+    #[tokio::test]
+    async fn lid_com_numero_do_servidor_casa_com_o_allow_e_recebe_resposta() {
+        let c = sobe_com(Roteiro::eco().por_lid(LID, Some(PEER_JID)), true).await;
+        semeia(&c, "oi").await;
+
+        assert!(
+            resposta_saiu(&c).await,
+            "o numero no `allow` tem de casar com o @lid que trouxe o telefone: {:?}",
+            recebidas(&c)
+        );
+        let primeira = &recebidas(&c)[0];
+        assert_eq!(primeira.sender_jid.as_str(), LID, "premissa: veio por LID");
+        assert_eq!(primeira.sender_phone.as_deref(), Some("+5511888880000"));
+        assert_eq!(c.state.whatsapp_linked.recusas_lid(), 0);
+
+        encerra(c).await;
+    }
+
+    /// `@lid` sem numero e fora do `allow`: recusado em silencio — o numero
+    /// autorizado nao abre a porta para um LID (fail-closed) — e a recusa fica
+    /// contada no runtime e no arquivo que o `status` da CLI le, so com o final.
+    #[tokio::test]
+    async fn lid_sem_numero_fora_do_allow_e_recusado_em_silencio_e_contado() {
+        let c = sobe_com(Roteiro::empurra("oi").por_lid(LID, None), true).await;
+
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem precisa chegar para o teste ter o que provar"
+        );
+        assert_eq!(recebidas(&c)[0].sender_phone, None, "premissa: sem numero");
+        assert!(
+            ate(|| c.state.whatsapp_linked.recusas_lid() == 1).await,
+            "a recusa de LID sem numero tem de ser contada"
+        );
+        assert!(
+            !ate(|| !turnos(&c.provider).is_empty()).await,
+            "LID sem numero nao casa com o numero do `allow`: {:?}",
+            turnos(&c.provider)
+        );
+        assert!(
+            !c.state
+                .sessions
+                .contains_key(&format!("whatsapp-linked-{LID}")),
+            "nenhuma sessao nasce de um remetente recusado"
+        );
+
+        let dir = LinkedPaths::from_config(&c.state.config)
+            .expect("DEFAULT_ACCOUNT e valido")
+            .store;
+        let registro = ler_recusas_lid(dir.dir()).expect("o arquivo de recusas existe");
+        assert_eq!(registro.pid, std::process::id());
+        assert_eq!(registro.recusas, 1);
+        assert_eq!(registro.final4, "8765");
+        let cru = std::fs::read_to_string(dir.dir().join(ARQUIVO_RECUSAS_LID)).expect("le");
+        assert!(
+            !cru.contains("87654321098765"),
+            "nunca o LID inteiro: {cru}"
+        );
+
+        encerra(c).await;
+    }
+
+    /// `@lid` sem numero, autorizado explicitamente pelo LID (o que o
+    /// `garraia whatsapp allow <id>@lid` grava): recebe resposta.
+    #[tokio::test]
+    async fn lid_autorizado_explicitamente_recebe_resposta() {
+        let c = Montagem {
+            roteiro: Roteiro::eco().por_lid(LID, None),
+            liberado: false,
+            allow_extra: vec![LID.to_string()],
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+        semeia(&c, "oi").await;
+
+        assert!(
+            resposta_saiu(&c).await,
+            "o LID no `allow` admite o remetente @lid: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(recebidas(&c)[0].sender_phone, None, "premissa: sem numero");
+        assert_eq!(c.state.whatsapp_linked.recusas_lid(), 0);
+
+        encerra(c).await;
+    }
+
+    /// #1345 (review WHATSAPP-15): canal desligado na config viva recusa ate
+    /// um codigo de pareamento valido — sem boas-vindas, e sem queimar o
+    /// codigo. O controle religa o canal e o MESMO codigo entra: prova que o
+    /// negativo nao era vacuo.
+    #[tokio::test]
+    async fn codigo_de_pareamento_nao_entra_com_o_canal_desligado_na_config_viva() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+        tx.send(viva(false, &[], &[])).expect("watcher");
+
+        let (_, pairing) = channel_gates(&c.state);
+        let codigo = pairing.lock().expect("lock").generate("whatsapp_linked");
+        entrega(&c, &codigo).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(respostas(&c), 0, "sem boas-vindas: o canal esta desligado");
+        assert!(turnos(&c.provider).is_empty());
+
+        tx.send(viva(true, &[], &[])).expect("watcher");
+        entrega(&c, &codigo).await;
+        assert!(
+            ate(|| respostas(&c) == 1).await,
+            "religado, o mesmo codigo ainda vale: a recusa nao o queimou"
+        );
+
+        encerra(c).await;
     }
 }

@@ -4,7 +4,7 @@ Existem **dois** jeitos de conectar o WhatsApp, e eles nao se misturam.
 
 | | Numero pessoal (QR) | WhatsApp Business (Cloud API) |
 |---|---|---|
-| Comando | `garra whatsapp link` | `garra whatsapp cloud` |
+| Comando | `garraia whatsapp link` | `garraia whatsapp cloud` |
 | Conta | qualquer numero | conta Business aprovada pela Meta |
 | Precisa de | Node.js 20+ na maquina | dominio publico com HTTPS |
 | Credencial | sessao cifrada em disco | `access_token` da Meta na config |
@@ -19,23 +19,42 @@ Este documento e sobre o **primeiro**. O segundo esta em
 ## Tutorial (o caminho inteiro)
 
 ```bash
-garra whatsapp
+garraia whatsapp
 ```
 
 1. Escolha a opção **1) Conectar meu WhatsApp pessoal (ler um QR code)**.
 2. Leia a tela de aviso e confirme.
 3. No celular: **Configurações → Aparelhos conectados → Conectar um aparelho**.
 4. Aponte a camera para o QR no terminal.
-5. Pronto:
+5. Diga **quem pode falar com o GarraIA** — o numero com o codigo do pais:
 
 ```text
 ✓ Autenticado. Sincronizando sessão…
 ✓ WhatsApp conectado com sucesso.
 ✓ Sessão salva em ~/.config/garraia/data/whatsapp/default.
-✓ GarraIA está pronto para receber mensagens (inicie o gateway: `garra start`)
+
+Quem pode falar com o GarraIA por este WhatsApp? Ninguém, até você autorizar.
+Número autorizado, com código do país (ex.: +55 11 99999-8888; vazio = ninguém por enquanto): +55 11 98888-0000
+✓ Número terminado em 0000 autorizado.
+
+✓ GarraIA está pronto para receber mensagens (inicie o gateway: `garraia start`)
 ```
 
-Rodar `garra whatsapp` de novo com uma sessao valida **nao** repareia e **nao**
+O "pronto" so aparece quando ha pelo menos um numero autorizado. Resposta
+vazia deixa o portao fechado (ninguem recebe resposta), e o `link` termina
+com o aviso e o comando que resolve depois — sem terminal inclusive:
+
+```text
+⚠ Ninguém está autorizado a falar com o GarraIA por este WhatsApp — toda mensagem será ignorada em silêncio. Autorize um número: `garraia whatsapp allow <número>` (com o código do país).
+```
+
+Se o gateway ja esta rodando, a ultima linha diz o que fazer: com o canal ja
+supervisionado, nada (a autorizacao vale na proxima mensagem); com o canal
+recem-ligado, `garraia restart` para o gateway subi-lo. A CLI **nunca**
+reinicia o gateway sozinha — ela nao sabe se ele roda em primeiro plano, sob
+systemd ou num container, e um restart derrubaria turnos de outros canais.
+
+Rodar `garraia whatsapp` de novo com uma sessao valida **nao** repareia e **nao**
 apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 
 > **Aviso.** Conectar pelo QR usa o recurso de "aparelho conectado" do WhatsApp
@@ -48,15 +67,21 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 
 | Comando | O que faz | Exit code |
 |---|---|---|
-| `garra whatsapp` | menu de duas opcoes | 0, ou 1 se cancelado |
-| `garra whatsapp link` | vincula por QR | 0 · 1 cancelado · 69 sem Node / QR nao lido · 70 erro interno |
-| `garra whatsapp cloud` | wizard da Cloud API | 0 · 1 cancelado · 70 erro interno |
-| `garra whatsapp status` | diz se ha vinculo e se a sessao abre | 0 vinculado · 69 nao vinculado ou ilegivel |
-| `garra whatsapp logout` | apaga a sessao e desliga o canal | 0 · 1 cancelado |
-| `garra whatsapp restore` | devolve o `session.enc.prev` ao lugar | 0 · 69 nao ha arquivada, ou ha sessao em uso · 70 erro interno |
+| `garraia whatsapp` | menu de duas opcoes | 0, ou 1 se cancelado |
+| `garraia whatsapp link` | vincula por QR | 0 · 1 cancelado · 69 sem Node / QR nao lido · 70 erro interno |
+| `garraia whatsapp cloud` | wizard da Cloud API | 0 · 1 cancelado · 70 erro interno |
+| `garraia whatsapp status` | diz se ha vinculo e se a sessao abre | 0 vinculado · 69 nao vinculado ou ilegivel |
+| `garraia whatsapp logout` | apaga a sessao e desliga o canal | 0 · 1 cancelado |
+| `garraia whatsapp restore` | devolve o `session.enc.prev` ao lugar | 0 · 69 nao ha arquivada, ou ha sessao em uso · 70 erro interno |
+| `garraia whatsapp allow <numero> [--owner] [--yes]` | autoriza um numero a falar com o GarraIA; funciona sem terminal | 0 · 1 cancelado · 64 `--owner` fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
 
-Os codigos seguem `sysexits` (69 = `EX_UNAVAILABLE`, 70 = `EX_SOFTWARE`), como
-`garra desktop` e `garra config check`.
+`garraia whatsapp link --allow <numero> [--owner]` pre-responde a pergunta do
+numero (e a do dono), mas continua exigindo terminal: o QR se le dali. Num
+pipe ele sai 69, como o `link` puro.
+
+Os codigos seguem `sysexits` (64 = `EX_USAGE`, 65 = `EX_DATAERR`,
+69 = `EX_UNAVAILABLE`, 70 = `EX_SOFTWARE`), como
+`garraia desktop` e `garraia config check`.
 
 **Sem terminal** (pipe, CI, `curl … | sh`, systemd) o comando **nao trava e nao
 falha**: ele imprime as duas opcoes com o comando de cada uma e sai 0.
@@ -75,7 +100,7 @@ sessao morta:    → session_dead (apaga o material, exige QR novo)
 ```
 
 O QR expira a cada ~20 s. O GarraIA regenera **ate 5 vezes**; na quinta
-expiracao ele desiste com `Nenhum QR foi lido. Rode `garra whatsapp` de novo.`
+expiracao ele desiste com `Nenhum QR foi lido. Rode `garraia whatsapp` de novo.`
 e sai 69. O teto e do GarraIA, nao da ponte: a ponte reconectaria para sempre.
 
 ## Onde a sessao fica, e como ela e protegida
@@ -97,18 +122,18 @@ O gap esta registrado na #1253; no Windows, a linha "outro usuario" da tabela
 abaixo **nao** se aplica.
 
 **`session.enc.prev` tambem e uma credencial viva.** Ele nasce quando voce
-responde "sim" ao re-vincular. Por isso `garra whatsapp status` o reporta mesmo
-quando nao ha sessao ativa, e `garra whatsapp logout` o apaga — sem isso, os
+responde "sim" ao re-vincular. Por isso `garraia whatsapp status` o reporta mesmo
+quando nao ha sessao ativa, e `garraia whatsapp logout` o apaga — sem isso, os
 dois comandos afirmariam que nao ha nada enquanto a credencial estivesse no
 disco.
 
-**E `garra whatsapp restore` o traz de volta.** Se um re-vinculo foi
+**E `garraia whatsapp restore` o traz de volta.** Se um re-vinculo foi
 interrompido de um jeito que nao deu ao GarraIA a chance de desfaze-lo — um
 `kill -9`, uma queda de energia —, a sessao boa fica no `.prev` sem
 `session.enc`. O `restore` a devolve ao lugar e religa o canal. Ele **nunca**
 passa por cima de uma sessao em uso: nesse caso diz o que ha e sai 69, sem
 apagar nada. Restaurar nao garante que o WhatsApp ainda aceite o aparelho — rode
-`garra whatsapp status` depois.
+`garraia whatsapp status` depois.
 
 **Um re-vinculo que nao termina devolve a sessao antiga.** QR expirado,
 `Ctrl+C` na tela do QR, ponte que morre antes de conectar: em qualquer desfecho
@@ -131,7 +156,7 @@ nao precisa do seu telefone. Trate-o como senha.
 | Root, ou seu proprio usuario | nao protegido | nao protegido |
 
 Por isso o aviso aparece **na tela de consentimento**, antes de a pessoa
-decidir, e de novo no `garra whatsapp status`:
+decidir, e de novo no `garraia whatsapp status`:
 
 ```text
 ⚠ a chave da sessao esta em session.key, no MESMO diretorio do arquivo
@@ -180,7 +205,8 @@ camadas, e nenhuma substitui a outra.
 - **O piso e o perfil `search`.** Sessao que nao escolheu modo (`/mode`)
   resolve para `search`, e nao para "sem politica de ferramenta":
   `whitelist_mode` ligado, `allowed` so de leitura (`file_read`, `repo_search`,
-  `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`) e
+  `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`,
+  `garra_status` — que descreve o proprio runtime, sem segredo, #1347) e
   `denied` para `file_write`, `bash` e `device_execute`.
   `channels.whatsapp_linked.default_mode` troca o perfil padrao por **outro
   modo nativo** (`ask`, `code`, `debug`, …); a escolha explicita do usuario
@@ -229,6 +255,81 @@ camadas, e nenhuma substitui a outra.
   subida; um servidor registrado depois pela admin API, sob um perfil ja
   permissivo, nao o reemite.
 
+### Quem pode falar com o GarraIA (`allow`)
+
+O portao do canal e **fail-closed**: `allow` e `owners` vazios significam
+**ninguem**. Mensagem de quem nao esta autorizado e descartada **em silencio**
+— sem resposta, porque responder confirmaria ao estranho que o numero roda um
+bot — e o log do gateway guarda so os 4 ultimos digitos. Nao existe auto-claim:
+o primeiro remetente nunca vira dono, e o numero vinculado nao se autoriza
+sozinho.
+
+```bash
+garraia whatsapp allow +55 11 98888-0000
+```
+
+- **`+` e codigo do pais obrigatorios**, nunca adivinhados: sem o `+`,
+  `11 98888-0000` (DDD + numero) passaria por um numero de 11 digitos e nunca
+  casaria com quem manda. Espacos, hifens, pontos e parenteses sao
+  descartados; letra, zero inicial (prefixo de discagem local), a forma
+  `@s.whatsapp.net` e qualquer coisa fora de 6 a 15 digitos (a faixa que a
+  ponte entrega) sao recusados (exit 65). O numero e gravado so com digitos
+  (`5511988880000`), a forma que o portao compara.
+- **Celular brasileiro com ou sem o nono digito e o mesmo.** Muita conta
+  antiga tem o JID sem o 9 (`55 31 9888-0000`, 12 digitos) e o numero se
+  digita com ele (`+55 31 98888-0000`, 13). O portao compara as duas formas
+  como uma so — so para `55` + DDD + `9` + numero que comeca com 6 a 9; fixo
+  e outro pais nao mudam. O `config.yml` guarda o que voce digitou.
+- `allow` **acrescenta** a lista sem mudar outro valor: as outras chaves da
+  secao, as outras secoes e o `enabled` ficam como estavam. Mas o arquivo e
+  **reescrito** a partir da config lida: comentarios, chaves que o GarraIA nao
+  conhece e a formatacao original nao sobrevivem, e secoes com valor default
+  podem passar a aparecer. Se voce cura o `config.yml` a mao, edite a lista a
+  mao. Numa instalacao sem a secao ele a cria com `type: whatsapp_linked` e o
+  canal desligado — quem liga e o `link`, depois de a sessao existir.
+- **Contato por LID (`@lid`).** O WhatsApp as vezes identifica um contato so
+  por um identificador opaco, `<id>@lid`, sem o numero. Quando o servidor
+  manda o numero junto (o Baileys 7 o entrega em `remoteJidAlt`/
+  `participantAlt`), a ponte o usa e o numero do `allow` casa normalmente.
+  Quando nao manda, o portao compara o LID — e um numero no `allow` **nao**
+  casa com ele (fail-closed: a mensagem e recusada em silencio). O
+  `garraia whatsapp status` avisa quando o gateway em execucao recusou
+  remetentes `@lid` sem numero (quantos, e o final do ultimo LID), e o
+  `/api/diagnostics` mostra a contagem. Para autorizar esse contato: gere um
+  codigo com `/pair` e peca para a pessoa manda-lo por WhatsApp (vale ate o
+  gateway reiniciar), ou autorize o LID inteiro com
+  `garraia whatsapp allow <id>@lid`, gravado como veio.
+- **O celular vinculado nao conversa com o GarraIA.** Mensagens que ele envia
+  saem da propria conta (`from_me`) e sao ignoradas, senao o canal responderia
+  a si mesmo. O `link` avisa quando o numero digitado termina como o do
+  aparelho vinculado e pede confirmacao (default nao). Use outro numero.
+- **Vale sem reiniciar — com duas condicoes.** Com o gateway rodando, `allow`
+  e `owners` sao relidos do `config.yml` a cada mensagem: autorizar vale na
+  proxima, e **revogar tambem** — apague o numero da lista no arquivo (nao ha
+  subcomando de revogacao). `enabled: false` no arquivo recusa todo mundo,
+  codigo de pareamento incluso, na mensagem seguinte (a ponte segue conectada
+  ate o restart, e o `/api/diagnostics` avisa). As condicoes: o gateway tem de
+  ter **subido com o canal ligado** (se o `link` ligou o canal depois, rode
+  `garraia restart`), e o `config.yml` tem de **existir quando o gateway
+  subiu** — so entao ele vigia o arquivo. O `allow` nao tem como saber
+  nenhuma das duas coisas e diz as duas; o aviso de boot e o diagnostico
+  dizem qual e o caso. Ja `enabled` de `false` para `true`, `default_mode`,
+  `reply_in_groups` e `execution.profile` pedem restart do gateway.
+- **O que a revogacao nao alcanca.** Quem entrou por um codigo `/pair` e
+  **nunca** esteve no `allow` continua admitido ate o gateway reiniciar (o
+  pareamento mora na memoria do processo); quem estava no `allow` e pareou
+  perde os dois ao sair da lista. E se o `config.yml` editado nao for YAML
+  valido, o gateway **mantem a lista anterior** e loga `config reload failed
+  (keeping previous config)` — confira o log depois de revogar.
+- **Grupos** continuam exigindo `reply_in_groups: true` (default `false`),
+  mesmo para numero autorizado.
+- `garraia whatsapp status` mostra a ponte, o gateway (rodando ou nao), o canal
+  (ligado ou nao), `Autorizados: N · Donos: M` — contagens, nunca numeros — e
+  avisa quando o canal esta ligado com ninguem autorizado. O
+  `/api/diagnostics` rebaixa `whatsapp.linked` para `warning` no mesmo caso,
+  com o passo `garraia whatsapp allow <numero>`, e o gateway loga um `WARN` ao
+  subir com o portao vazio.
+
 ### Dono e perfil de execucao (`owners`)
 
 Desde a v0.4.4 (ADR 0024, #1329) o piso acima depende tambem do **perfil de
@@ -248,8 +349,13 @@ channels:
 ```
 
 - `owners` usa a mesma normalizacao de `allow` (`normalizar_identidade`:
-  digitos, ou JID `@lid` como veio). Quem esta em `owners` e admitido como se
-  estivesse em `allow`.
+  digitos, ou JID `@lid` como veio) e a mesma comparacao (o nono digito
+  brasileiro incluso). Quem esta em `owners` e admitido como se estivesse em
+  `allow`.
+- O `--owner` do `allow` decide pelo perfil que **este shell** ve: o
+  `execution.profile` do arquivo ou `GARRAIA_EXECUTION_PROFILE` no ambiente
+  do comando. Se o gateway roda com a env (num pod, por exemplo), rode o
+  `allow --owner` com a mesma env.
 - Em **`standard`** `owners` nao muda nada: todo admitido, dono incluso, fica
   em `default_mode`. O `config check` avisa (`owners so tem efeito em
   isolated-pod`) — e aviso, nunca poder.
@@ -267,13 +373,20 @@ channels:
 - `from_me` continua fora (`deve_responder`): "note to self" nao e caminho
   suportado.
 - Um `/mode` explicito da sessao continua vencendo o piso, nos dois perfis.
+- Pela CLI: `garraia whatsapp allow <numero> --owner` grava em `owners` (e so
+  la). Fora de `isolated-pod` ele recusa com exit 64 — um dono em `standard`
+  seria um privilegio latente, que acordaria em silencio no dia em que o
+  perfil mudasse. Sem terminal exige `--yes`; no terminal pergunta, com
+  default nao. O `link` so oferece dono em `isolated-pod`, tambem com default
+  nao. Tirar o numero de `owners` no arquivo tira o piso do pod na mensagem
+  seguinte, mesmo que ele continue em `allow`.
 
 O perfil efetivo do turno e uma funcao pura (`perfil_do_turno`), avaliada
 **depois** de `admitir` e **antes** de montar o `ExecContext`; ela alimenta
 `piso_somente_leitura`. Cada turno loga `phone_last4` + `perfil` (`completo`
 | `padrao`) + o modo do piso — nunca JID, telefone, `push_name` nem texto (a
 varredura `fonte_nao_loga_jid_cru_nem_material_de_sessao` continua valendo).
-`garra whatsapp status` mostra o perfil, o piso do dono e a contagem de
+`garraia whatsapp status` mostra o perfil, o piso do dono e a contagem de
 donos; o check `execution.profile` do `/api/diagnostics` tambem. Sem
 `owners`, `isolated-pod` nao muda nada neste canal — o diagnostico diz
 "0 donos".
@@ -283,7 +396,7 @@ Detalhes do perfil, a lista do que ele **nao** isola e o exemplo para pod:
 
 ### `logout`
 
-`garra whatsapp logout` sobrescreve e remove `session.enc`, `session.enc.prev`,
+`garraia whatsapp logout` sobrescreve e remove `session.enc`, `session.enc.prev`,
 `session.key` e `session.salt`, e grava `enabled = false` na config. A
 sobrescrita e best-effort: em SSD com wear leveling ela nao garante que os bytes
 sumiram do meio fisico.
@@ -293,7 +406,7 @@ O aparelho **continua listado no celular** ate voce remove-lo em
 
 ### `restore`
 
-`garra whatsapp restore` renomeia `session.enc.prev` de volta para
+`garraia whatsapp restore` renomeia `session.enc.prev` de volta para
 `session.enc`, aperta o modo do arquivo para 0600 (um `.prev` restaurado de
 backup pode ter chegado frouxo) e grava `enabled = true` na config — nessa
 ordem, a mesma do `link`, porque um `enabled` sem sessao faz o gateway pagar
@@ -313,7 +426,7 @@ Na primeira execucao o GarraIA materializa a ponte em
 `<data_dir>/whatsapp/bridge/` (0700) e roda `npm ci --no-fund --no-audit`.
 `npm ci` e nao `npm install`: o `package-lock.json` e versionado e o pin exato
 do Baileys faz parte do contrato — e a mesma arvore que o CI audita. Uma
-atualizacao do `garra` que traga uma ponte nova reescreve o diretorio sozinha
+atualizacao do `garraia` que traga uma ponte nova reescreve o diretorio sozinha
 (o carimbo `.garraia-bridge-sha256` e quem detecta) **e reinstala as
 dependencias**, para um bump de versao por CVE nao ficar parado atras de um
 `node_modules` antigo.
@@ -335,16 +448,17 @@ Como o filho e contido:
 | Sintoma | O que fazer |
 |---|---|
 | **QR sai embaralhado / quadrado** | O terminal precisa de **pelo menos 60 colunas** e UTF-8. Abaixo disso o GarraIA imprime a string crua em vez de um QR que nao le. |
-| **O QR expirou** | Normal: ele e regenerado ate 5 vezes, com `QR anterior expirou — novo QR (tentativa N/5)`. Depois da quinta, rode `garra whatsapp` de novo. |
+| **O QR expirou** | Normal: ele e regenerado ate 5 vezes, com `QR anterior expirou — novo QR (tentativa N/5)`. Depois da quinta, rode `garraia whatsapp` de novo. |
 | **`node nao encontrado na PATH`** | Instale Node.js 20 ou mais novo (<https://nodejs.org/en/download>). So este caminho precisa dele. |
-| **`o bridge esta sem dependencias instaladas`** | Rode `npm ci` no diretorio que a mensagem cita, ou apague o diretorio e rode `garra whatsapp` de novo. |
-| **`Esta sessão não vale mais`** / `status` diz nao vinculado | A sessao morreu (401/403/419) e o comando imprime o codigo cru do WhatsApp. Rode `garra whatsapp` de novo e leia um QR novo. |
-| **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garra whatsapp` de novo. |
-| **`whatsapp_linked: canal nao subiu — …`** no log do gateway | A frase depois do travessao e a acao: ligar `channels.whatsapp_linked.enabled`; corrigir `channels.whatsapp_linked.default_mode` para um modo nativo (`search`, `ask`, `code`…; nao `auto`, nao modo customizado, nao typo) ou remover a chave; rodar `garra whatsapp link`; ou instalar Node.js 20+ e garantir `node` na PATH **do processo do gateway** (um servico systemd nao herda a PATH do seu shell). Canal desligado de proposito sai em `INFO`, nao aqui. |
+| **`o bridge esta sem dependencias instaladas`** | Rode `npm ci` no diretorio que a mensagem cita, ou apague o diretorio e rode `garraia whatsapp` de novo. |
+| **`Esta sessão não vale mais`** / `status` diz nao vinculado | A sessao morreu (401/403/419) e o comando imprime o codigo cru do WhatsApp. Rode `garraia whatsapp` de novo e leia um QR novo. |
+| **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garraia whatsapp` de novo. |
+| **`whatsapp_linked: canal nao subiu — …`** no log do gateway | A frase depois do travessao e a acao: ligar `channels.whatsapp_linked.enabled`; corrigir `channels.whatsapp_linked.default_mode` para um modo nativo (`search`, `ask`, `code`…; nao `auto`, nao modo customizado, nao typo) ou remover a chave; rodar `garraia whatsapp link`; ou instalar Node.js 20+ e garantir `node` na PATH **do processo do gateway** (um servico systemd nao herda a PATH do seu shell). Canal desligado de proposito sai em `INFO`, nao aqui. |
 | **`o perfil `…` (…default_mode) libera ferramentas MCP dos servidores …`** no log do gateway | Aviso de drift, nao erro: o `default_mode` do canal e um perfil nativo sem whitelist (`ask`, `code`) e esta expondo aqueles servidores MCP a quem manda mensagem. O trecho depois do travessao diz por que o portao liberou. Veja "Ferramentas e servidores MCP" acima. |
 | **`execution.profile = isolated-pod` e o WhatsApp continua em `search`** | `owners` vazio (o diagnostico diz "0 donos"); a mensagem veio de grupo (grupo nunca herda); `default_mode` explicito na config (em `isolated-pod` vale para o dono tambem — remova a chave para o default `code`); ou a sessao escolheu `/mode`. Veja "Dono e perfil de execucao" acima e [`execution-profiles.md`](execution-profiles.md). |
 | **`channels.whatsapp_linked.owners lists N identit… but the effective execution profile is standard`** no `config check` | `owners` so tem efeito em `isolated-pod`. Ou ligue o perfil (se este processo roda num pod descartavel), ou remova a chave. |
-| **Mensagem sobre outro aparelho ter assumido** | Alguem conectou o mesmo numero em outro lugar. A sessao gravada **continua valendo**; rode `garra start` de novo. |
+| **Vinculado, gateway de pe, e ninguem recebe resposta** | `garraia whatsapp status` diz `Autorizados: 0`: o portao esta vazio e toda mensagem e descartada em silencio. Rode `garraia whatsapp allow <numero>` com `+` e o codigo do pais (vale sem reiniciar se o gateway subiu com o canal ligado e com o `config.yml` ja no disco; senao `garraia restart`). Se `Autorizados` e maior que zero: o `status` avisa de remetente `@lid` sem numero recusado (veja "Contato por LID" acima); o numero que manda e o do proprio celular vinculado (ignorado, `from_me`); a conversa e um grupo sem `reply_in_groups`; o gateway subiu antes de o `link` ligar o canal (`garraia restart`); ou o `config.yml` editado a mao nao parseia (log `config reload failed`). |
+| **Mensagem sobre outro aparelho ter assumido** | Alguem conectou o mesmo numero em outro lugar. A sessao gravada **continua valendo**; rode `garraia start` de novo. |
 | **Conta bloqueada pelo WhatsApp** | Nao ha o que o GarraIA faca. Foi o risco avisado na tela de consentimento. Use a Cloud API. |
 
 ## Validacao manual (o que os testes automatizados nao cobrem)
@@ -356,13 +470,13 @@ processo filho contra uma ponte falsa em Python.
 
 Antes de cada release que toque este caminho, rode a mao:
 
-1. `garra whatsapp` num terminal de ≥ 80 colunas, com um numero **secundario**.
+1. `garraia whatsapp` num terminal de ≥ 80 colunas, com um numero **secundario**.
 2. Leia o QR. Confirme as tres linhas de sucesso.
-3. `garra whatsapp status` → `Vinculado: sim` e `Leitura: ok`.
-4. Rode `garra whatsapp` de novo → `✓ Sessao encontrada e valida`, sem QR.
-5. Remova o aparelho no celular e rode `garra whatsapp status` → deve falhar
+3. `garraia whatsapp status` → `Vinculado: sim` e `Leitura: ok`.
+4. Rode `garraia whatsapp` de novo → `✓ Sessao encontrada e valida`, sem QR.
+5. Remova o aparelho no celular e rode `garraia whatsapp status` → deve falhar
    claramente, e nao dizer que esta tudo bem.
-6. `garra whatsapp logout` → o diretorio da conta fica vazio.
+6. `garraia whatsapp logout` → o diretorio da conta fica vazio.
 
 ### O que JA foi exercitado contra o Baileys real (2026-09-17)
 
@@ -407,7 +521,10 @@ decidir se confia a propria conta ao GarraIA.
 | `QR anterior expirou — novo QR (tentativa N/5)` | `Previous QR expired — new QR (attempt N/5)` |
 | `✓ Autenticado. Sincronizando sessão…` | `✓ Authenticated. Syncing the session…` |
 | `✓ WhatsApp conectado com sucesso.` | `✓ WhatsApp connected successfully.` |
-| `Nenhum QR foi lido. Rode `garra whatsapp` de novo.` | `No QR was scanned. Run `garra whatsapp` again.` |
+| `Nenhum QR foi lido. Rode `garraia whatsapp` de novo.` | `No QR was scanned. Run `garraia whatsapp` again.` |
+| `Número autorizado, com código do país (ex.: +55 11 99999-8888; vazio = ninguém por enquanto)` | `Authorized number, with the country code (e.g. +1 555 123 4567; empty = nobody for now)` |
+| `⚠ Ninguém está autorizado a falar com o GarraIA por este WhatsApp — …` | `⚠ Nobody is authorized to talk to GarraIA through this WhatsApp — …` |
+| `Autorizados: N · Donos: M` | `Authorized: N · Owners: M` |
 
 ### O que **nao** esta nas duas linguas
 
@@ -426,8 +543,8 @@ O comando **vincula e guarda a sessao**, e o gateway **consome o canal**: o
 canal pull `whatsapp_linked` (`bootstrap/whatsapp_linked.rs`) sobe no boot
 quando `channels.whatsapp_linked.enabled = true`, ha `session.enc` legivel e
 `node` na PATH — e qualquer outro motivo de nao subir sai em `WARN` com a acao
-(ver Troubleshooting). Quem entra e decidido pelo `allow` do canal mais o
-pareamento; o que pode fazer, pela secao "Ferramentas e servidores MCP". O
+(ver Troubleshooting). Quem entra e decidido pelo `allow` do canal (e
+`owners`), relidos a quente a cada mensagem, mais o pareamento; o que pode fazer, pela secao "Ferramentas e servidores MCP". O
 check `whatsapp.linked` em `/api/diagnostics` e o `/api/channels` leem o mesmo
 estado do supervisor.
 
