@@ -8435,6 +8435,105 @@ mod tests {
             );
             assert!(ap.covers("precisa_confirmar", "z"));
         }
+
+        /// Pede `precisa_confirmar {alvo: z}` enquanto houver menos de dois
+        /// resultados de tool depois da ultima mensagem humana.
+        struct PedeDuasVezes;
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeDuasVezes {
+            fn provider_id(&self) -> &str {
+                "pede_duas_vezes"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let ultima_humana = request
+                    .messages
+                    .iter()
+                    .rposition(|m| {
+                        matches!(m.role, ChatRole::User)
+                            && matches!(m.content, MessagePart::Text(_))
+                    })
+                    .unwrap_or(0);
+                let resultados = request.messages[ultima_humana..]
+                    .iter()
+                    .filter(|m| {
+                        matches!(&m.content, MessagePart::Parts(p)
+                            if p.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
+                    })
+                    .count();
+                let content = if resultados < 2 {
+                    vec![ContentBlock::ToolUse {
+                        id: format!("t-{resultados}"),
+                        name: "precisa_confirmar".to_string(),
+                        input: serde_json::json!({ "alvo": "z" }),
+                    }]
+                } else {
+                    vec![ContentBlock::Text {
+                        text: "concluido".to_string(),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// Revisao da onda A: a aprovacao retomada vale para UM turno (o
+        /// registro e consumido na leitura), nao para uma execucao. Dentro do
+        /// turno aprovado, duas chamadas identicas ao pedido aprovado rodam
+        /// as duas — o mesmo contrato do caminho pelo historico. Este teste
+        /// prende o que o fragmento do changelog promete; se a aprovacao
+        /// virar uso unico, o teste e o fragmento mudam juntos.
+        #[tokio::test]
+        async fn aprovacao_retomada_vale_para_o_turno_e_nao_para_uma_execucao() {
+            let rt = AgentRuntime::new();
+            let (tool, rodou) = ToolQuePedeConfirmacao::nova();
+            rt.register_tool(Box::new(tool));
+            rt.register_provider(Arc::new(PedeDuasVezes));
+            let exec = ExecContext {
+                approval_scope: escopo("web", "s1", "a"),
+                ..ExecContext::default()
+            };
+            let turno = |texto: &'static str| {
+                let rt = &rt;
+                let exec = &exec;
+                async move {
+                    rt.process_message_with_agent_config(
+                        "s1",
+                        texto,
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno")
+                }
+            };
+            assert!(e_pedido(&turno("apaga z").await));
+            assert!(rodou.lock().expect("lock").is_empty());
+            let r = turno("sim").await;
+            assert_eq!(r, "concluido");
+            assert_eq!(
+                *rodou.lock().expect("lock"),
+                vec!["z".to_string(), "z".to_string()],
+                "as duas chamadas do turno aprovado rodam"
+            );
+            // O registro foi consumido: outro "sim" nao aprova nada.
+            assert!(rt.pending_approvals.is_empty());
+        }
     }
 
     // ─── #1078 item 2: aprovacao vinculada ao pedido ──────────────────────
