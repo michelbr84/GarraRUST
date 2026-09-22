@@ -1,4 +1,3 @@
-use crate::mcp_commands;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
@@ -102,9 +101,13 @@ pub struct AppState {
     pub channel_models: DashMap<String, String>,
     /// In-flight A2A tasks keyed by task ID.
     pub a2a_tasks: DashMap<String, garraia_agents::a2a::A2ATask>,
-    /// MCP manager wrapped in Arc for health monitoring, slash commands and
-    /// the admin API. Populated by `GatewayServer::run` right after
-    /// `AppState::new` — before `register_mcp_tools()` reads it.
+    /// MCP manager wrapped in Arc for health monitoring and the admin API.
+    /// Populated by `GatewayServer::run` right after `AppState::new`.
+    ///
+    /// MCP tools reach the model through `AgentRuntime` (see
+    /// `sync_mcp_tools`/`replace_mcp_tools`), which dispatches them behind
+    /// `ToolGate`. They are deliberately **not** exposed as slash commands:
+    /// that parallel path skipped the gate entirely (issue #1386).
     pub mcp_manager_arc: Option<Arc<garraia_agents::McpManager>>,
     /// Live registry of MCP server configs and statuses (source of truth for admin API).
     pub mcp_registry: crate::mcp::McpRuntimeRegistry,
@@ -506,19 +509,6 @@ impl AppState {
     /// Attach a config watch receiver for hot-reload support.
     pub fn set_config_watcher(&mut self, rx: watch::Receiver<AppConfig>) {
         self.config_rx = Some(rx);
-    }
-
-    /// Register MCP tools as slash commands.
-    /// This does the async work first, then registers synchronously.
-    pub async fn register_mcp_tools(&self) {
-        if let Some(manager_arc) = &self.mcp_manager_arc {
-            // First, do all async work to collect commands (no lock held)
-            let commands = mcp_commands::collect_mcp_commands(Arc::clone(manager_arc)).await;
-
-            // Then acquire lock and register synchronously
-            let mut registry = self.command_registry.write().unwrap();
-            mcp_commands::register_collected_commands(&mut registry, commands);
-        }
     }
 
     /// Check if config hot-reload watcher is active.

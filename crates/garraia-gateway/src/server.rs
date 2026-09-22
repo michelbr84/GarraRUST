@@ -244,8 +244,10 @@ impl GatewayServer {
 
         // `build_mcp_tools` already returns the Arc: the bridged tools hold it
         // so they can resolve the CURRENT peer on every call (surviving
-        // reconnects). register_mcp_tools() also reads mcp_manager_arc, and
-        // used to be a silent no-op when the Arc was created ~300 lines below.
+        // reconnects). The health monitor and the admin API read the same Arc
+        // from `AppState`, so it has to be installed here, before either of
+        // them can observe the state — not ~300 lines below, where it used to
+        // be created and where the earlier readers silently saw `None`.
         let mcp_manager_arc = mcp_manager;
         state.mcp_manager_arc = Some(Arc::clone(&mcp_manager_arc));
 
@@ -266,9 +268,6 @@ impl GatewayServer {
                 )
                 .await;
         }
-
-        // Register MCP tools as slash commands (must be done before Arc-wrapping)
-        state.register_mcp_tools().await;
 
         // Register built-in commands (must be done before Telegram channels are created)
         crate::commands::register_commands(&mut state.command_registry.write().unwrap());

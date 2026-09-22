@@ -23,7 +23,6 @@ pub mod learning_auth;
 pub mod learning_handler;
 pub mod logs_handler;
 pub mod mcp;
-pub mod mcp_commands;
 pub mod mcp_marketplace;
 pub mod memory_gauge_worker;
 pub mod memory_handler;
