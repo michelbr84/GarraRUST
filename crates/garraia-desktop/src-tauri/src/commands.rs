@@ -81,11 +81,14 @@ pub async fn notify_message(
 /// o `ws.js` entrava em reconexao infinita: overlay e Chat Bar morriam em
 /// silencio.
 ///
-/// A chave vem do **mesmo** `config.yml` que o gateway le: o
+/// A chave vem do **mesmo** `config.yml` e da mesma env
+/// (`GARRAIA_GATEWAY_API_KEY`, que vence o arquivo) que o gateway le: o
 /// `ConfigLoader::new()` e o resolvedor de path canonico (honra
 /// `GARRAIA_CONFIG_DIR`, prefere o XDG e cai no legado `~/.garraia`), o mesmo
 /// que o sidecar `garraia start` usa. Reimplementar o path aqui e como as
-/// duas pontas passam a discordar de qual arquivo vale.
+/// duas pontas passam a discordar de qual arquivo vale. Um gateway subido
+/// por outro processo com outra env (systemd, docker) continua fora do
+/// alcance do desktop.
 ///
 /// Devolve `None` quando nao ha chave — e o `ws.js` conecta na URL nua, que
 /// e o comportamento historico de uma instalacao sem `api_key`. Nenhum erro
@@ -94,11 +97,11 @@ pub async fn notify_message(
 #[tauri::command]
 pub async fn gateway_api_key() -> Option<String> {
     let config = garraia_config::ConfigLoader::new().ok()?.load().ok()?;
-    config
-        .gateway
-        .api_key
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
+    // #1261: `load()` injeta `GARRAIA_GATEWAY_API_KEY` em `api_key_env`, e o
+    // gate do `/ws/parrot` exige a chave de `api_key_normalizada` (env vence
+    // o arquivo). Ler so `gateway.api_key` mandava token nenhum (chave so na
+    // env) ou a chave velha do arquivo, e o handshake voltava ao 401 do #1240.
+    config.gateway.api_key_normalizada().map(str::to_string)
 }
 
 // ── Chat-bar window management ──────────────────────────────────────────────
