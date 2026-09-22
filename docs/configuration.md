@@ -247,8 +247,11 @@ Runtime overrides read directly by the loader (not secrets):
 
 When `garra chat` runs, the provider is chosen in this strict order:
 
-1. **`--provider <X>` CLI flag** — absolute precedence; the chosen kind
-   is used regardless of config or env.
+1. **`--provider <X>` CLI flag** — absolute precedence. `<X>` is a kind
+   (`ollama`, `llamacpp`, `anthropic`, `openai`, `openrouter`) or the
+   name of any `llm:` entry (an alias such as `lmstudio` with
+   `provider: openai`). See "Endpoint and credential" below for which
+   entry supplies the URL and the key.
 2. **`config.agent.default_provider`** — read as a *lookup key* into
    `config.llm[...]`. If the matching block has a usable credential
    (api_key in config, matching `*_API_KEY` env var, or, for OpenAI-
@@ -276,12 +279,16 @@ agent:
 Inside the chosen provider, the model is resolved in this order:
 
 1. **`--model <X>` CLI flag** — absolute precedence.
-2. **`config.llm[<key>].model`** with `<key>` matching the provider
-   name (key-match).
-3. **First `config.llm[*]` whose `provider:` field equals the chosen
+2. **The `model` of the entry the provider was bound to** (`llm.<X>` for
+   `--provider <X>`, `llm.<default_provider>` for the default). With
+   `default_provider: lmstudio` next to an `llm.openai`, the LM Studio
+   endpoint gets `llm.lmstudio.model`, never `llm.openai.model`.
+3. **`config.llm[<key>].model`** with `<key>` matching the provider
+   kind (key-match).
+4. **First `config.llm[*]` whose `provider:` field equals the chosen
    kind** and supplies a non-empty `model` (provider-field match — lets
    operators give blocks arbitrary names like `my-router`).
-4. **Hardcoded last-resort default** per kind: `qwen3.8:latest`,
+5. **Hardcoded last-resort default** per kind: `qwen3.8:latest`,
    `claude-sonnet-4-5-20250929`, `gpt-4o`, `z-ai/glm-5.3-flash`. The
    source of truth for the two project defaults (`DEFAULT_CLOUD_MODEL`,
    `DEFAULT_LOCAL_MODEL` and their provider keys) is
@@ -293,6 +300,33 @@ Inside the chosen provider, the model is resolved in this order:
    `config.default.yml` to the same values. The per-kind table above is
    `chat.rs::hardcoded_default_model`, which reads the constants for its
    two #1180 rows.
+
+### Endpoint and credential (always the same entry)
+
+A provider's `base_url` and its `api_key` always come from the **same**
+`llm:` entry. The CLI never pairs the key of one entry with the address
+of another, nor the key of an entry with the provider's default host when
+that entry points somewhere else (`crates/garraia-cli/src/provider_binding.rs`).
+
+| How the provider was chosen | Entry that supplies URL + key |
+| --------------------------- | ----------------------------- |
+| `--provider <X>` / MCP `provider: <X>` | `llm.<X>`; if absent and `<X>` is a kind, `llm.main` when its `provider:` is `<X>`; otherwise none |
+| `agent.default_provider: <K>` | `llm.<K>` |
+| autodetect (Anthropic, OpenAI, OpenRouter) | same rule as `--provider <kind>` |
+
+Inside that entry the key precedence is the gateway's: the entry's own
+`api_key` wins over the kind's environment variable (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`), which only fills an entry
+that has no key. When **no** entry applies, the endpoint is the kind's
+default host and the key can only come from that environment variable —
+the key of some other entry of the same kind is never borrowed.
+
+`--url <address>` (an ad-hoc OpenAI-compatible endpoint) takes its key
+from `LLM_API_KEY`, or from the `api_key` of an `llm:` entry whose
+`base_url` is that same address; otherwise it sends none. It does **not**
+read `OPENAI_API_KEY` or `GARRAIA_EMBEDDING_API_KEY` (it did up to
+v0.4.4): those are credentials of other endpoints. `--url` is honoured
+together with `--provider` only for the keyless `llamacpp`.
 
 ### OpenRouter cost policy
 

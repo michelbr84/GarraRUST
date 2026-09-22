@@ -1586,3 +1586,67 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod provider_routing_tests {
+    //! Rede so de loopback: um endpoint falso em 127.0.0.1 no lugar do
+    //! provider. O `garra_agent` resolve o provider pelo mesmo
+    //! `select_explicit_provider` do `garra_ask`; este teste prova o caminho
+    //! inteiro do agente, com tools registradas.
+
+    use super::*;
+    use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+    use garraia_config::LlmProviderConfig;
+
+    #[tokio::test]
+    async fn agent_with_provider_openai_reaches_llm_openai_base_url() {
+        let mock = MockEndpoint::start().await;
+        let outra = MockEndpoint::start().await;
+        let dentro = tempfile::tempdir().expect("tempdir");
+        let mut config = AppConfig::default();
+        config.agent.file_roots = vec![dentro.path().to_string_lossy().into_owned()];
+        config.llm.insert(
+            "openai".to_string(),
+            LlmProviderConfig {
+                provider: "openai".to_string(),
+                model: Some("m".to_string()),
+                api_key: Some("k-openai".to_string()),
+                base_url: Some(format!("{}/v1", mock.uri())),
+                extra: Default::default(),
+            },
+        );
+        // Uma segunda entrada do mesmo tipo: a chave dela nao pode aparecer.
+        config.llm.insert(
+            "lmstudio".to_string(),
+            LlmProviderConfig {
+                provider: "openai".to_string(),
+                model: Some("m".to_string()),
+                api_key: Some("k-lmstudio".to_string()),
+                base_url: Some(format!("{}/v1", outra.uri())),
+                extra: Default::default(),
+            },
+        );
+        let jail = file_jail(&config);
+        let opts = AgentOptions {
+            message: "oi".to_string(),
+            provider: "openai".to_string(),
+            model: "m".to_string(),
+            timeout_secs: 30,
+            system_prompt: None,
+            working_dir: None,
+        };
+        match agent_oneshot(&config, &opts, &jail).await {
+            AgentOutcome::Success { answer, .. } => assert_eq!(answer, SENTINEL),
+            AgentOutcome::Failure { error, .. } => panic!("garra_agent falhou: {error:?}"),
+        }
+        let creds = mock.credentials().await;
+        assert!(
+            !creds.is_empty() && creds.iter().all(|c| c == "k-openai"),
+            "credenciais recebidas {creds:?}"
+        );
+        assert!(
+            outra.paths().await.is_empty(),
+            "a outra entrada nao pode receber nada"
+        );
+    }
+}

@@ -685,3 +685,72 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod provider_routing_tests {
+    //! Rede so de loopback: um endpoint falso em 127.0.0.1 no lugar do
+    //! provider. E o nucleo de `garraia ask -p <provider>` E do `garra_ask`
+    //! do MCP (os dois chamam `ask_oneshot` com `provider_override`).
+
+    use super::*;
+    use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+    use garraia_config::LlmProviderConfig;
+
+    /// O `ask_explicit` do smoke de instalacao limpa: `-p openai` com
+    /// `llm.openai.base_url` apontando para outro endpoint tem de chegar LA,
+    /// com a chave daquela entrada — e o mesmo para os outros provedores e
+    /// para um alias em `llm:`.
+    #[tokio::test]
+    async fn ask_with_explicit_provider_reaches_the_configured_base_url() {
+        for (name, kind, suffix) in [
+            ("openai", "openai", "/v1"),
+            ("openrouter", "openrouter", "/api/v1"),
+            ("anthropic", "anthropic", ""),
+            ("lmstudio", "openai", "/v1"),
+        ] {
+            let mock = MockEndpoint::start().await;
+            let key = format!("k-{name}");
+            let mut config = AppConfig::default();
+            config.llm.insert(
+                name.to_string(),
+                LlmProviderConfig {
+                    provider: kind.to_string(),
+                    model: Some("m".to_string()),
+                    api_key: Some(key.clone()),
+                    base_url: Some(format!("{}{suffix}", mock.uri())),
+                    extra: Default::default(),
+                },
+            );
+            let outcome = ask_oneshot(
+                &config,
+                AskOptions {
+                    message: "oi".to_string(),
+                    provider_override: Some(name.to_string()),
+                    model_override: None,
+                    url_override: None,
+                    timeout_secs: 30,
+                    system_prompt_override: None,
+                    assume_yes: false,
+                },
+            )
+            .await;
+            match outcome {
+                AskOutcome::Success {
+                    answer,
+                    provider,
+                    model,
+                    ..
+                } => {
+                    assert_eq!(answer, SENTINEL, "{name}");
+                    assert_eq!((provider.as_str(), model.as_str()), (name, "m"));
+                }
+                AskOutcome::Failure(e) => panic!("{name}: {e:?}"),
+            }
+            let creds = mock.credentials().await;
+            assert!(
+                !creds.is_empty() && creds.iter().all(|c| *c == key),
+                "{name}: credenciais recebidas {creds:?}"
+            );
+        }
+    }
+}

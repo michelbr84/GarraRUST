@@ -108,6 +108,9 @@ sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "uuid", "chr
 # GAR-603 — env-var precedence test for `garra start --port` mutates
 # process env, so it must serialize against any future env-mutating tests.
 serial_test = { workspace = true }
+# Endpoint HTTP falso dos testes de roteamento de provider (base_url + credencial
+# da mesma entrada `llm:`). Mesmo pin do `garraia-gateway`, sem crate nova no lock.
+wiremock = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
