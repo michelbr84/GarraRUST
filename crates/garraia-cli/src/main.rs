@@ -21,6 +21,7 @@ mod mcp_server;
 mod memory_cmd;
 mod migrate;
 mod migrate_workspace;
+mod provider_binding;
 mod repo_workflow;
 mod runs_cmd;
 mod team;
@@ -226,7 +227,9 @@ enum Commands {
 
     /// Interactive AI chat (local-first REPL)
     Chat {
-        /// Override provider (ollama, anthropic, openai)
+        /// Override provider: ollama, llamacpp, anthropic, openai, openrouter, or
+        /// the name of an `llm:` entry in config.yml. The endpoint and the key
+        /// both come from that entry (`llm.<name>.base_url` / `.api_key`).
         #[arg(long, short = 'p')]
         provider: Option<String>,
 
@@ -275,7 +278,9 @@ enum Commands {
         /// Message to send. If absent, reads from stdin (64 KiB cap).
         message: Option<String>,
 
-        /// Override provider (ollama, anthropic, openai, openrouter)
+        /// Override provider: ollama, llamacpp, anthropic, openai, openrouter, or
+        /// the name of an `llm:` entry in config.yml. The endpoint and the key
+        /// both come from that entry (`llm.<name>.base_url` / `.api_key`).
         #[arg(long, short = 'p')]
         provider: Option<String>,
 
