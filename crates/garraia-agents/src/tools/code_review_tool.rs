@@ -53,7 +53,13 @@ impl CodeReviewTool {
     ) -> std::result::Result<String, String> {
         // --no-ext-diff: .git/config plantado (diff.external) não transforma
         // o code_review em execução arbitraria (#1075 — auditoria).
-        let mut args = vec!["diff".to_string(), "--no-ext-diff".to_string()];
+        // #1272 S3: e `--no-textconv`, pelo mesmo motivo.
+        let mut args = vec!["diff".to_string()];
+        args.extend(
+            crate::git_endurecido::OPCOES_DO_DIFF
+                .iter()
+                .map(|s| s.to_string()),
+        );
 
         if let Some(range) = commit_range {
             // #1269 (paridade com o `git_diff`): o `commit_range` vem do modelo
@@ -73,6 +79,8 @@ impl CodeReviewTool {
             args.push(path.to_string());
         }
 
+        // #1272 S3: mesmo prefixo endurecido do `git_diff`.
+        let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout).await?;
         let mut cmd = Command::new("git");
         // #1258 (mesmo defeito raiz do `git_diff`): sem `current_dir` o git
         // herdava o CWD do processo do gateway, então o `code_review` revisava
@@ -80,20 +88,15 @@ impl CodeReviewTool {
         if let Some(dir) = repo.cwd_do_git() {
             cmd.current_dir(dir);
         }
+        cmd.args(&prefixo);
         cmd.args(&args);
         // #1269 (paridade com o `git_diff`): o filho nunca lê a entrada padrão
         // do gateway — em terminal, pipe e serviço o comportamento fica
         // determinado, e não há consumo acidental de stdin.
         cmd.stdin(std::process::Stdio::null());
         // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
-        // allowlist de env do pai.
-        #[cfg(unix)]
-        {
-            cmd.env_clear();
-            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
-                cmd.env(key, value);
-            }
-        }
+        // allowlist de env do pai (e sem a config do sistema, #1272 S3).
+        crate::git_endurecido::aplica_env(&mut cmd);
         let result = tokio::time::timeout(self.timeout, cmd.output()).await;
 
         match result {
@@ -315,6 +318,31 @@ mod tests {
 
     fn tool_com_eco() -> CodeReviewTool {
         CodeReviewTool::new(Arc::new(ProvedorQueEcoa), "modelo-de-teste", Some(15))
+    }
+
+    /// #1272 S3: o `code_review` usa o mesmo git endurecido — config
+    /// plantada nao executa nada, e o diff ainda chega ao revisor.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn config_plantada_no_repo_nao_roda_programa_nenhum() {
+        let repo = repo_git_temporario("alvo-review-1272", "ramo-review-1272");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let marcadores =
+            crate::git_endurecido::planta_programas_no_repo(repo.path(), marcas.path());
+        let wd = repo.path().to_string_lossy().into_owned();
+        let saida = tool_com_eco()
+            .execute(&ctx(Some(&wd)), serde_json::json!({}))
+            .await
+            .expect("execute");
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(
+            saida.content.contains("alvo-review-1272"),
+            "{}",
+            saida.content
+        );
+        for m in &marcadores {
+            assert!(!m.exists(), "code_review executou {}", m.display());
+        }
     }
 
     /// #1258 (item 4 da aceitação): o `code_review` tinha o **mesmo** defeito

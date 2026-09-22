@@ -101,6 +101,23 @@ O que **continua ligado** em `isolated-pod`, por desenho:
 - Um `/mode` explicito da sessao continua vencendo o piso, para cima ou para
   baixo.
 
+## Bash nas superficies sem humano (#1272)
+
+O `garraia mcp-server` (tool `garra_agent`) e o runtime do gateway nao tem
+humano para confirmar comando. Nelas o `bash`:
+
+- em `standard`, so existe dentro de um sandbox `docker`/`podman` valido
+  (`agent.sandbox.mode: all` ou `allowlist` com `bash`, binario instalado).
+  Sem isso ele **nao e registrado** — `ssh` nao conta, porque e execucao
+  remota, nao isolamento;
+- em `isolated-pod` explicito, roda no host do pod (ou no sandbox, se houver
+  um), com a denylist e o tier arriscado ligados.
+
+O boot avisa uma vez quando o `bash` fica de fora, o `/api/diagnostics`
+mostra o check `tools.bash` com o passo, e o modelo e avisado no system prompt
+de que nao ha shell. `garraia chat` nao muda: la o humano confirma no
+terminal.
+
 ## O que o perfil NAO isola
 
 O perfil e uma **declaracao** do operador; ele nao cria a fronteira. Tudo

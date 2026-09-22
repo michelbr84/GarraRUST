@@ -365,6 +365,16 @@ esquecido.
   continua valendo como defesa em profundidade, pelo dia em que o `bash`
   apertar — e porque no **gateway** (canal de chat, identidade não verificada
   da §5.9) é ele que segura, não o `bash`.
+  **Apertou na #1272 (2026-09-21):** em `execution.profile = standard` o
+  `garraia mcp-server` e o gateway **não registram** `bash` sem um sandbox
+  `docker`/`podman` válido (`garraia_gateway::bootstrap::exposicao_do_bash`);
+  com ele, o comando só enxerga o diretório de trabalho montado. Em
+  `isolated-pod` explícito o `bash` roda no host do pod (§5.15). As cinco
+  leituras/escritas medidas acima viraram o teste
+  `standard_nega_leitura_e_escrita_fora_por_bash_e_por_file_tools`
+  (`crates/garraia-cli/src/mcp_agent.rs`), que dirige a montagem real do
+  `garra_agent` com um provider de stub; e o escape pelo container tem o
+  seu (`crates/garraia-agents/tests/sandbox_docker_escape.rs`, Docker real).
 - `garraia-tools` tem uma segunda implementação de `RepoSearchTool`/`ListDirTool`
   com `root_path`, consumida só por `garraia-runtime::executor`, que o gateway
   não usa para tools (só `RuntimeSettings`). Fora do alcance do agente hoje;
@@ -793,8 +803,8 @@ pelos próprios testes. A contenção estava escrita, testada e **inalcançável
 
 | Backend | Rede | Sistema de arquivos | Privilégios | Onde o comando roda | O que **não** cobre |
 |---|---|---|---|---|---|
-| `docker` | `--network none` quando `network_disabled` (default `true`) | Só o `cwd` montado rw quando `mount_workdir` (default `true`) e o diretório existe; o resto é a imagem | `--security-opt no-new-privileges`; **sem** `--user`, `--read-only`, `--cap-drop`, limite de pids/memória | Container efêmero (`--rm`) no host local | Não é hardening completo do container (flags acima ficam para um slice próprio); o daemon do Docker é root, então escape do container é escape para root; o `cwd` montado é rw e é código do projeto |
-| `podman` | igual ao `docker` | igual ao `docker` | igual ao `docker`, mais o rootless do próprio podman quando instalado assim | Container efêmero no host local | Idem, menos a parte do daemon root quando rootless |
+| `docker` | `--network none` quando `network_disabled` (default `true`) | Só o `cwd` **canônico e absoluto** montado rw quando `mount_workdir` (default `true`); `cwd` relativo, inexistente ou com `:` é recusa fail-closed (#1272); o resto é a imagem | `--security-opt no-new-privileges`, `--cap-drop ALL`, `--pids-limit 512`, `--user <uid>:<gid>` do operador (#1272); **sem** `--read-only` nem limite de memória | Container efêmero (`--rm`) no host local | O daemon do Docker é root, então escape do *kernel* a partir do container é escape para root; o `cwd` montado é rw e é código do projeto (por isso o git das tools de leitura roda endurecido, #1272 S3) |
+| `podman` | igual ao `docker` | igual ao `docker` | igual ao `docker`, com `--userns=keep-id` no lugar do `--user`, mais o rootless do próprio podman quando instalado assim | Container efêmero no host local | Idem, menos a parte do daemon root quando rootless |
 | `ssh` | **nenhuma** — e a policy é **recusada** (fail-closed, em todo comando) enquanto `network_disabled = true`, que é o default | **nenhuma** — idem enquanto `mount_workdir = true`; `image` é ignorado | os do usuário SSH no host remoto | Máquina remota, shell do usuário SSH | **Não é sandbox.** É execução remota: isola o host *local* e nada mais. O comando roda com tudo que aquele usuário pode fazer, inclusive rede. Só passa com `network_disabled = false` **e** `mount_workdir = false` explícitos — o reconhecimento do operador (#1225 S3, ADR 0019) |
 | *qualquer* | — | — | — | Só a tool **`bash`** passa pelo backend (`TOOLS_SANDBOXAVEIS`) | **Tools cobertas: `bash`. No host, mesmo com `mode = all`:** `run_tests`, `git_diff`, `code_review`, `repo_search` — `HOST_ONLY_SPAWNING_TOOLS` em `garraia-agents/src/sandbox.rs`, presa por teste que varre `src/tools/`. Dito uma vez **por processo** na subida (`avisa_cobertura_do_sandbox`: gateway, `garra chat`, `garra mcp-server` com `garra_agent` ligado — não por chamada) e como Warning do `config check` **quando uma delas é listada** em `sandboxed_tools`/`elevated`; a seção coerente fica verde sob `--strict` (#1225 S2) |
 
@@ -827,7 +837,7 @@ Três limites valem para os três backends:
 |---|---|---|---|
 | **T** Tampering | Tool call do LLM (influenciável por injeção indireta de prompt, #1213) escreve fora do projeto. | Denylist + tier arriscado do `safety_gate` rodam **antes** do sandbox; com `docker`/`podman` o comando só enxerga o `cwd` montado. | `--read-only` no rootfs e mount do `cwd` em `ro` quando a tool for de leitura: slice próprio da #1225. |
 | **I** Information disclosure | Comando lê `~/.ssh`, `.env` do host, ou exfiltra por rede. | `--network none` por default; `#1075 R3` já limpa o env do filho para uma allowlist; fora do mount o container não vê o host. | Com `backend = ssh` **nada disso vale** — a seção acima diz por quê. |
-| **E** Elevation of privilege | Escape do container; `sudo` dentro do comando. | `--security-opt no-new-privileges`. | Sem `--user` o processo é root **dentro** do container, e o daemon do Docker é root **fora**; podman rootless é a recomendação enquanto o hardening não chega. |
+| **E** Elevation of privilege | Escape do container; `sudo` dentro do comando; binário setuid ou device deixado no `cwd` montado. | `--security-opt no-new-privileges`, `--cap-drop ALL`, `--user <uid>:<gid>` (docker) / `--userns=keep-id` (podman), `--pids-limit` (#1272). Teste com Docker real: `id -u` é o uid do operador, artefato no mount pertence a ele, `mknod` falha. | O daemon do Docker continua root fora; podman rootless segue a recomendação para quem quer tirar isso da equação. |
 | **E** Elevation of privilege | Operador liga `mode = all` e acredita que o agente perdeu o host. | Quatro tools seguem no host (acima); `config check` e esta seção dizem quais. | Estender a policy às demais tools — tracking na #1225 (slices S2/S3). |
 | **D** Denial of service | Comando consome CPU/memória da máquina inteira dentro do container. | Timeout do próprio `BashTool` + orçamento de tool calls. | Sem `--memory`/`--pids-limit`; mesmo slice de hardening — tracking na #1225 (slices S2/S3). |
 | **R** Repudiation | Não se sabe depois se um comando rodou contido ou no host. | `tracing::info!` "comando executado dentro do sandbox" no caminho envolvido e `tracing::error!` no fail-closed. | Evento de audit dedicado (`agent.tool.sandboxed`) quando o audit de tools existir. |
@@ -959,6 +969,7 @@ nenhum.
 | **E** Elevation of privilege (`owners` fora do perfil) | Operador lista `owners` em `standard` esperando poder. | `owners` fora de `isolated-pod` é `Warning` no `config check` ("só tem efeito em isolated-pod") e nunca muda o piso — todo admitido fica em `default_mode`. | — |
 | **T** Tampering (comando destrutivo no pod) | Dono, ou uma página via `web_fetch`, induz `rm -rf /` dentro do pod. | O gate de comando arriscado do `bash` continua ligado nos dois perfis; sem canal de confirmação é fail-closed. `agent.bash_allowlist` alarga por escolha do operador. Jail das file tools nativas (`agent.file_roots` ∪ `working_dir`) inalterado — `execution.pod_root` muda só a raiz do MCP `filesystem`. | O pod é descartável por premissa; o que o gate protege é o operador de um acidente, não o host de um ataque. |
 | **I** Information disclosure (raiz implícita) | `filesystem` autoprovisionado em `$HOME` numa máquina compartilhada. | `$HOME` nunca é raiz em nenhum perfil: `standard` → `agent.file_roots` ou `<data_dir>/workspace`; `isolated-pod` → `execution.pod_root` ou o mesmo workspace. Raiz logada no provisionamento; check `mcp.filesystem_root` no `/api/diagnostics`. | `mcp.json` anterior à v0.4.4 mantém o `$HOME` (nunca reescrito): o diagnóstico avisa em `standard` com o passo para corrigir; não há migração automática. |
+| **E** Elevation of privilege (`bash` sem humano, #1272) | Em `standard`, o `garra_agent` do `garraia mcp-server` ou um remetente de canal em `/mode code` pede `bash` `cat /etc/shadow` / `echo x > /fora` — nada disso é "arriscado" para o gate textual. | `bash` só é registrado com sandbox `docker`/`podman` válido (`exposicao_do_bash`); `ssh`, `elevated`, `allowlist` sem `bash`, backend ausente ou binário ausente = sem `bash`. Em `isolated-pod` explícito ele roda no host do pod. `warn!` único no boot, check `tools.bash` no `/api/diagnostics`, system prompt diz que não há shell. Testes: `standard_nega_leitura_e_escrita_fora_por_bash_e_por_file_tools`, `isolated_pod_roda_bash_no_working_dir_e_mantem_a_denylist`, `gateway_em_standard_sem_sandbox_nao_registra_bash`, `modulo_nao_infere_nada_de_container`. | `garraia chat` fica como está (humano confirma no terminal). |
 | **R** Repudiation | Perfil ligado fora de um pod, e ninguém percebe. | `WARN` único no boot (origem, `pod_root`, o que foi liberado, o que NÃO é isolado, como reverter); `Warning` **permanente** em `/api/diagnostics` (`execution.profile`, com origem, piso do dono, número de donos, raiz do MCP e `next_step`); linha read-only `security.execution_profile` em `/api/settings/effective`; linha em `garra whatsapp status`; perfil e origem no sumário do `config check`; cada turno do WhatsApp loga `phone_last4` + `perfil` + piso (nunca JID, telefone, `push_name` ou texto). | — |
 
 **Residual aceito:** o perfil é uma declaração, e o Garra a honra sem poder
@@ -999,7 +1010,7 @@ Agregado das matrizes. Prioridade = (likelihood × impact) dado o estado atual d
 | 6 | Plugin WASM runtime ainda scaffold | Plugins | Baixa (não shipped) | Fase 2.2 |
 | 7 | Storage HMAC integrity + allow-list MIME pendente impl | Storage (future) | Baixa (ADR apenas) | GAR-394 |
 | 8 | Mobile Android `FLAG_SECURE` ausente | Mobile | Baixa | plan futuro |
-| 9 | Sandbox por tool cobre so `bash`; sem hardening de container (`--user`, `--read-only`, `--cap-drop`, limites) | Agents | Média | #1225 (slices S2/S3) |
+| 9 | Sandbox por tool cobre so `bash`; container sem `--read-only` nem limite de memoria (`--user`, `--cap-drop`, `--pids-limit` desde a #1272) | Agents | Média | #1225 (slices S2/S3) |
 
 ---
 

@@ -501,6 +501,28 @@ fn execution_profile_check(
     }
 }
 
+/// #1272: a linha `tools.bash`. `ok` quando o `bash` esta registrado (num
+/// sandbox docker/podman, ou no host de um `isolated-pod` explicito);
+/// `warning` com o passo acionavel quando ele ficou de fora em `standard`.
+/// O detalhe nunca carrega valor de config (imagem, host, caminho). Pura.
+fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
+    let (status, next_step) = if exposicao.registra_bash() {
+        (CheckStatus::Ok, None)
+    } else {
+        (
+            CheckStatus::Warning,
+            Some(crate::bootstrap::COMO_LIGAR_O_BASH.to_string()),
+        )
+    };
+    DiagnosticCheck {
+        id: "tools.bash",
+        label: "Tool bash",
+        status,
+        detail: exposicao.descricao(),
+        next_step,
+    }
+}
+
 /// `raiz` esta dentro de `permitida`? Cada lado vai para a sua forma
 /// comparavel ([`forma_comparavel`]) e a resposta e um `starts_with` por
 /// componente. Um lado que nao tem forma comparavel (um `..` que escapa da
@@ -722,6 +744,12 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         raizes_mcp.caminhos(),
         &data_dir,
     ));
+
+    // #1272: a tool `bash` existe neste gateway? Mesma decisao do boot.
+    checks.push(tools_bash_check(&crate::bootstrap::exposicao_do_bash(
+        politica.perfil,
+        &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+    )));
 
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
@@ -986,6 +1014,37 @@ mod tests {
     use super::*;
 
     const ENDPOINT: &str = "http://127.0.0.1:7860";
+
+    // ─── #1272: tools.bash ─────────────────────────────────────────────────
+
+    #[test]
+    fn tools_bash_desligado_e_warning_com_passo() {
+        use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
+        let c = tools_bash_check(&ExposicaoDoBash::Desligado {
+            motivo: MotivoDoBashDesligado::SandboxDesligado,
+        });
+        assert_eq!(c.id, "tools.bash");
+        assert!(matches!(c.status, CheckStatus::Warning));
+        let passo = c.next_step.expect("desligado precisa de passo");
+        assert!(passo.contains("agent.sandbox"), "{passo}");
+        assert!(passo.contains("execution.profile"), "{passo}");
+        assert!(c.detail.contains("DESLIGADO"), "{}", c.detail);
+    }
+
+    #[test]
+    fn tools_bash_sandbox_e_pod_sao_ok() {
+        use crate::bootstrap::ExposicaoDoBash;
+        for e in [
+            ExposicaoDoBash::HostDoPod,
+            ExposicaoDoBash::Sandbox {
+                backend: garraia_agents::SandboxBackend::Podman,
+            },
+        ] {
+            let c = tools_bash_check(&e);
+            assert!(matches!(c.status, CheckStatus::Ok), "{e:?}");
+            assert!(c.next_step.is_none());
+        }
+    }
 
     // ─── #1238: WhatsApp vinculado ────────────────────────────────────────
 

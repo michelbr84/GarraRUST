@@ -10,6 +10,8 @@ pub mod echo;
 pub mod embeddings;
 pub mod exec_context;
 pub mod execution_budget;
+/// #1272 S3: argv e env endurecidos do `git` das tools de leitura.
+mod git_endurecido;
 pub mod llama_cpp;
 pub mod memory_extractor;
 pub mod memory_noise;

@@ -620,7 +620,18 @@ pub async fn run_mcp_server(config: AppConfig) -> Result<()> {
     if policy.tools_enabled() {
         tracing::info!(
             "garra_agent tool ENABLED (opt-in GARRAIA_MCP_ENABLE_TOOLS): full-agent surface \
-             with shell/file/git/web tools; bash is full-auto with only the safety_gate denylist"
+             with file/git/web tools; bash only inside a docker/podman sandbox or on the host \
+             of an explicit execution.profile = isolated-pod (#1272)"
+        );
+        // #1272: a mesma decisao que `mcp_agent::build_tools` toma por chamada,
+        // anunciada UMA vez aqui — com o `warn!` e o passo quando o bash fica
+        // de fora.
+        garraia_gateway::bootstrap::anuncia_exposicao_do_bash(
+            "mcp-server",
+            &garraia_gateway::bootstrap::exposicao_do_bash(
+                config.execution.perfil(),
+                &garraia_gateway::bootstrap::sandbox_policy_from(&config.agent.sandbox),
+            ),
         );
         // #1225 S2: uma vez por processo, AQUI e nao em `mcp_agent::build_tools`
         // — aquele roda a cada chamada de `garra_agent`, e `sandbox_policy_from`
@@ -669,6 +680,21 @@ mod tests {
         assert_eq!(
             chamadas, 1,
             "run_mcp_server chama {nome} exatamente uma vez"
+        );
+    }
+
+    /// #1272: o anuncio da exposicao do bash e por processo, como o aviso de
+    /// cobertura, e o log de subida nao promete mais bash irrestrito.
+    #[test]
+    fn anuncio_do_bash_sai_na_subida_e_nunca_por_chamada() {
+        let nome = "anuncia_exposicao_do_bash";
+        assert!(!include_str!("mcp_agent.rs").contains(nome));
+        let fonte = include_str!("mcp_server.rs");
+        let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte);
+        assert_eq!(producao.matches(&format!("{nome}(")).count(), 1);
+        assert!(
+            !producao.contains(concat!("bash is full", "-auto")),
+            "o log de subida ainda promete bash irrestrito"
         );
     }
 

@@ -191,10 +191,10 @@ Mirrors the gateway bootstrap exactly (`garraia-gateway/src/bootstrap/`):
 
 | Tool | Notes |
 |------|-------|
-| `bash` | No confirmation channel (a stateless MCP call has no history to approve in). Two gates apply, both fail-closed: the `safety_gate` DENY_LIST hard-blocks destructive patterns, and the **risky tier BLOCKS** sensitive commands outright (#1075 R1) — exfiltration-capable programs (`curl`, `wget`, `ssh`, `env`, `printenv`, wrapper-resolved like `sudo curl`, ...), mutating subcommands (`git push`, `systemctl restart`, ...), env-dump interpolation (`$(env)`, backticks), pipe-to-shell (`\|bash` even without a space), procfs environ reads (`cat /proc/$PPID/environ`), destructive `rm` variants (`rm -fr /`), `find -delete`, `dd of=`, inline code (`bash -c '...'` is unwrapped and re-gated; `python3 -c` gated) and the legacy CONFIRM patterns. On unix the child shell inherits only `PATH/HOME/LANG/LC_ALL/TERM/USER` (#1075 R3) — the env-inheritance channel for parent secrets is closed; direct same-UID procfs reads are gated by the `environ` risk pattern, but only a real sandbox closes them fully. |
+| `bash` | **Only when #1272 allows it** (see [Bash exposure](#bash-exposure-1272) below): inside a valid `docker`/`podman` sandbox, or on the host of an explicit `execution.profile = isolated-pod`. In `standard` without a usable sandbox it is **not registered at all**. When present: no confirmation channel (a stateless MCP call has no history to approve in). Two gates apply, both fail-closed: the `safety_gate` DENY_LIST hard-blocks destructive patterns, and the **risky tier BLOCKS** sensitive commands outright (#1075 R1) — exfiltration-capable programs (`curl`, `wget`, `ssh`, `env`, `printenv`, wrapper-resolved like `sudo curl`, ...), mutating subcommands (`git push`, `systemctl restart`, ...), env-dump interpolation (`$(env)`, backticks), pipe-to-shell (`\|bash` even without a space), procfs environ reads (`cat /proc/$PPID/environ`), destructive `rm` variants (`rm -fr /`), `find -delete`, `dd of=`, inline code (`bash -c '...'` is unwrapped and re-gated; `python3 -c` gated) and the legacy CONFIRM patterns. On unix the child shell inherits only `PATH/HOME/LANG/LC_ALL/TERM/USER` (#1075 R3) — the env-inheritance channel for parent secrets is closed; direct same-UID procfs reads are gated by the `environ` risk pattern, but only a real sandbox closes them fully. |
 | `file_read` / `file_write` | Jailed since #1244. The roots are `GARRAIA_MCP_ALLOWED_DIRS` (comma-separated) or, without it, `agent.file_roots` plus the server's CWD; relative paths resolve against `working_dir`, which must itself be inside those roots. **No root resolves ⇒ every path is denied**, not every path allowed. Every refusal returns the same sentence, without the path or the root, so the tool is not an existence oracle. |
 | `web_fetch` | No blocked-domain list by default. |
-| `git_diff` | Read-only git inspection. |
+| `git_diff` | Read-only git inspection. Since #1272 git runs with `core.fsmonitor=false`, `safe.bareRepository=explicit`, `core.hooksPath=/dev/null`, `--no-textconv`, every configured `filter.<driver>` blanked and `GIT_CONFIG_NOSYSTEM=1`, so a planted `.git/config` cannot make it run a program on the host. |
 | `web_search` | Only when a Brave key exists (`config.yml llm.brave.api_key` or `BRAVE_API_KEY` env). |
 
 ### Tool schema (`garra_agent`)
@@ -206,7 +206,7 @@ Mirrors the gateway bootstrap exactly (`garraia-gateway/src/bootstrap/`):
 | `model`         | string  | no       | `z-ai/glm-5.3-flash` | Same default as `garra_ask`. Pass `openrouter/auto` for complex tasks. |
 | `timeout_secs`  | integer | no       | `300`              | Range `[5, 1800]`. **Wall-clock cap for the ENTIRE agent loop** — every LLM round-trip plus every tool execution. |
 | `system_prompt` | string  | no       | generated          | Max 8 KiB. The default prompt names every registered tool and instructs the model to investigate instead of describing. |
-| `working_dir`   | string  | no       | —                  | Directory for file-tool relative paths. Since #1075 R3 the **bash child also runs in it** (`current_dir`). Must exist, be a directory, **and sit inside the server's file-tool roots** — it is chosen by the model, and inside the jail it counts as a root, so it may *narrow* the file tools' reach but never widen it (#1244); a `working_dir` outside the roots comes back as `invalid_params`. The jail does not bind bash, which stays unsandboxed: absolute paths in a shell command still reach anywhere. |
+| `working_dir`   | string  | no       | —                  | Directory for file-tool relative paths. Since #1075 R3 the **bash child also runs in it** (`current_dir`). Must exist, be a directory, **and sit inside the server's file-tool roots** — it is chosen by the model, and inside the jail it counts as a root, so it may *narrow* the file tools' reach but never widen it (#1244); a `working_dir` outside the roots comes back as `invalid_params`. When bash is registered inside the sandbox, this directory (canonicalized) is the only host path the container sees. |
 
 ### Response shape (`garra.agent.v1`)
 
@@ -263,8 +263,10 @@ before dying.
   environment (its startup depends on it). The allowlist can also
   starve a child expecting an inherited variable (e.g. a cloud CLI
   reading env credentials).
-- **`allowed_dirs` is UX, not a boundary** — unrestricted bash reaches
-  the whole filesystem.
+- **Bash is contained by process isolation, never by a command blacklist
+  (#1272).** In `standard` it only exists inside a docker/podman sandbox;
+  in `isolated-pod` the pod is the boundary. `file_write` refuses any path
+  with a `.git` component.
 - **No per-caller authentication or rate limiting** (same as
   `garra_ask`); concurrent calls from the host run concurrently.
 - **Config write access**: the file tools can edit `~/.garraia/config.yml`
@@ -275,6 +277,41 @@ Implementation note: the agent handler lives in
 `mcp_server.rs` deliberately do NOT scan (they scan only their own
 file). `mcp_server.rs` remains a pure dispatcher — it names no runtime
 tool constructor and spawns no process.
+
+### Bash exposure (#1272)
+
+`garraia mcp-server` has no human in the loop, so bash is decided once per
+call from `execution.profile` and `agent.sandbox`:
+
+| Profile | `agent.sandbox` | Bash |
+|---|---|---|
+| `standard` (default) | `mode: off` (default), `backend: ssh`, `bash` in `elevated`, `allowlist` without `bash`, no backend, or `docker`/`podman` binary missing | **not registered** |
+| `standard` | `mode: all` (or `allowlist` with `bash`) + `backend: docker` or `podman`, binary present | registered; every command runs in the container (`--cap-drop ALL`, `--pids-limit`, `--user <uid>:<gid>` / `--userns=keep-id`, `--network none`, only the working dir mounted). No host fallback: a stopped daemon is a refused command |
+| `isolated-pod` (explicit, file or `GARRAIA_EXECUTION_PROFILE`) | anything | registered; runs on the pod host (or in the sandbox, if one is configured). Denylist and risky tier still apply |
+
+The profile is never inferred from container markers. With bash absent the
+model is told there is no shell, and the boot log carries one `warn!` naming
+the fix.
+
+**Migration.** Existing installs keep booting; the only change is that bash
+disappears in `standard` without a sandbox. To get it back, either contain it:
+
+```yaml
+agent:
+  sandbox:
+    mode: all
+    backend: docker   # or podman; the binary must be installed
+```
+
+or, only if the process really runs in a disposable pod:
+
+```yaml
+execution:
+  profile: isolated-pod
+```
+
+`garraia chat` is unchanged: there a human confirms risky commands in the
+terminal and is the principal.
 
 ## Stdio invariants
 

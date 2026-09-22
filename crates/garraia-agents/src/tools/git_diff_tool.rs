@@ -81,11 +81,15 @@ fn git_diff_args(
     from_commit: Option<&str>,
     to_commit: Option<&str>,
 ) -> std::result::Result<Vec<String>, String> {
-    let mut args: Vec<String> = vec![
-        "diff".to_string(),
-        "--no-ext-diff".to_string(),
-        format!("-U{context_lines}"),
-    ];
+    let mut args: Vec<String> = vec!["diff".to_string()];
+    // #1272 S3: `--no-ext-diff` e `--no-textconv` — nenhum programa da config
+    // do repositorio roda para montar o diff.
+    args.extend(
+        crate::git_endurecido::OPCOES_DO_DIFF
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    args.push(format!("-U{context_lines}"));
 
     // Se tem range de commits — validado antes de entrar na linha de comando.
     if let (Some(from), Some(to)) = (from_commit, to_commit) {
@@ -165,6 +169,11 @@ impl GitDiffTool {
 
     /// Executa um comando git com timeout, **no repositório de `repo`**.
     async fn run_git_command(&self, args: &[String], repo: &RepoDir) -> Result<String> {
+        // #1272 S3: `-c core.fsmonitor=false`, bare implicito recusado, sem
+        // hooks e todo `filter.<drv>` da config anulado — antes do subcomando.
+        let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout)
+            .await
+            .map_err(Error::Agent)?;
         let mut cmd = Command::new("git");
         // #1258: o git roda no `working_dir` da sessão quando há um. Sem esta
         // linha ele herdava o CWD do processo do gateway — respondendo sobre
@@ -175,6 +184,7 @@ impl GitDiffTool {
         if let Some(dir) = repo.cwd_do_git() {
             cmd.current_dir(dir);
         }
+        cmd.args(&prefixo);
         cmd.args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         // #1269 (paridade com o #1266/PR #1268): o filho nunca le a entrada
         // padrao do gateway — em terminal, pipe e servico o comportamento fica
@@ -183,13 +193,7 @@ impl GitDiffTool {
         // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
         // allowlist de env — um .gitconfig plantado com diff.external é
         // execução arbitraria, e não pode carregar segredos do pai junto.
-        #[cfg(unix)]
-        {
-            cmd.env_clear();
-            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
-                cmd.env(key, value);
-            }
-        }
+        crate::git_endurecido::aplica_env(&mut cmd);
         let resultado = tokio::time::timeout(self.timeout, cmd.output()).await;
 
         match resultado {
@@ -430,6 +434,80 @@ impl Tool for GitDiffTool {
 mod tests {
     use super::*;
     use crate::tools::repo_dir::{contexto_de_teste as ctx, repo_git_temporario};
+
+    // ─── #1272 S3: config plantada nao executa nada no host ────────────────
+
+    /// Um repo com `core.fsmonitor`, `diff.x.textconv` e `filter.x.clean`
+    /// plantados: `diff` e `status` pela tool nao criam marcador nenhum e o
+    /// diff continua vindo. Gemeo: o argv ANTIGO (`git diff --no-ext-diff`)
+    /// cria os tres — prova que o teste nao passa por vacuidade e prende as
+    /// flags.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn config_plantada_no_repo_nao_roda_programa_nenhum() {
+        let repo = repo_git_temporario("alvo-1272", "ramo-1272");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let [fsm, tc, clean] =
+            crate::git_endurecido::planta_programas_no_repo(repo.path(), marcas.path());
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = repo.path().to_string_lossy().into_owned();
+        for op in ["diff", "status"] {
+            let saida = tool
+                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": op}))
+                .await
+                .expect("execute");
+            assert!(!saida.is_error, "{op}: {}", saida.content);
+            if op == "diff" {
+                assert!(
+                    saida.content.contains("linha alterada"),
+                    "{}",
+                    saida.content
+                );
+            }
+            for m in [&fsm, &tc, &clean] {
+                assert!(!m.exists(), "{op} executou {}", m.display());
+            }
+        }
+
+        // Gemeo: sem o endurecimento, o mesmo repo executa os tres.
+        let ok = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["diff", "--no-ext-diff"])
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok);
+        for m in [&fsm, &tc, &clean] {
+            assert!(m.exists(), "o gemeo nao reproduziu {}", m.display());
+        }
+    }
+
+    /// `safe.bareRepository=explicit`: um repositorio bare implicito como
+    /// working_dir e recusado pelo git em vez de lido.
+    #[tokio::test]
+    async fn repositorio_bare_implicito_e_recusado() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let ok = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "--bare", "-q", "."])
+            .status()
+            .expect("git")
+            .success();
+        assert!(ok);
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = dir.path().to_string_lossy().into_owned();
+        let saida = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({"operation": "status"}))
+            .await
+            .expect("execute");
+        // O git recusa o diretorio (a tool devolve a saida de erro dele).
+        assert!(
+            saida.content.contains("safe.bareRepository"),
+            "bare implicito foi lido: {}",
+            saida.content
+        );
+    }
 
     // ─── #1258: o git roda no repositório da sessão ────────────────────────
     //
@@ -686,6 +764,7 @@ mod tests {
             vec![
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
+                "--no-textconv".to_string(),
                 "-U3".to_string(),
                 "--".to_string(),
                 "--ext-diff".to_string(),
@@ -704,6 +783,7 @@ mod tests {
             vec![
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
+                "--no-textconv".to_string(),
                 "-U3".to_string(),
                 "abc123..def456".to_string(),
                 "--".to_string(),
@@ -743,6 +823,7 @@ mod tests {
             vec![
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
+                "--no-textconv".to_string(),
                 "-U3".to_string(),
                 "--".to_string(),
             ]

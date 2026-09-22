@@ -29,6 +29,7 @@ mod channels;
 mod config;
 mod discord;
 mod execution;
+mod exposicao_do_bash;
 mod google_chat;
 #[cfg(target_os = "macos")]
 mod imessage;
@@ -79,6 +80,14 @@ pub use whatsapp_linked::{
 pub use execution::{
     PoliticaDeExecucao, RaizesDoMcpFilesystem, anunciar_no_boot, politica_de_execucao,
     raizes_do_mcp_filesystem,
+};
+
+/// #1272: quando a tool `bash` existe numa superficie sem humano no laco
+/// (gateway e `garraia mcp-server`): so num sandbox docker/podman valido ou no
+/// host de um `isolated-pod` explicito; em `standard` sem sandbox, ausente.
+pub use exposicao_do_bash::{
+    COMO_LIGAR_O_BASH, ExposicaoDoBash, MotivoDoBashDesligado, anuncia_exposicao_do_bash,
+    decidir_exposicao_do_bash, exposicao_do_bash,
 };
 
 /// #1050: o canal Google Chat. Canal push, como o WhatsApp — o `Vec<Arc<_>>`
@@ -714,12 +723,21 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // allowlist de proposito — ordem de construcao inalterada, e a policy e
     // camada adicional, nao substituta do safety gate. Secao ausente =>
     // `SandboxPolicy::default()` (Off) => comportamento identico ao de antes.
-    bash_tool.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
+    let politica_do_bash = sandbox_policy_from(&config.agent.sandbox);
+    // #1272: o gateway atende canais remotos (identidade nao verificada,
+    // threat-model §5.9) e um `/mode code` basta para pedir `bash`. Em
+    // `standard` ele so existe dentro de um sandbox docker/podman valido; em
+    // `isolated-pod` explicito roda no host do pod. Senao, nao e registrado.
+    let exposicao = exposicao_do_bash(config.execution.perfil(), &politica_do_bash);
+    bash_tool.set_sandbox_policy(politica_do_bash);
     // #1225 S2: uma vez por processo — `build_agent_runtime` roda uma vez na
     // subida do gateway (`server.rs`). Fora de `sandbox_policy_from` porque no
     // MCP a policy e reconstruida por chamada.
     avisa_cobertura_do_sandbox(&config.agent.sandbox);
-    runtime.register_tool(Box::new(bash_tool));
+    anuncia_exposicao_do_bash("gateway", &exposicao);
+    if exposicao.registra_bash() {
+        runtime.register_tool(Box::new(bash_tool));
+    }
     // ADR 0024 (#1329): o perfil de execucao, ja resolvido pelo loader (env >
     // arquivo > default), anunciado uma vez por processo ao lado do jail —
     // sao as duas linhas que dizem ao operador o que o agente alcanca.
@@ -2402,7 +2420,6 @@ mod tests {
         let runtime = build_agent_runtime(&AppConfig::default());
         let names = runtime.tool_names();
         for expected in [
-            "bash",
             "file_read",
             "file_write",
             "web_fetch",
@@ -2418,6 +2435,69 @@ mod tests {
         assert!(
             !names.iter().any(|n| n == "code_review"),
             "sem provider default, code_review nao pode ter sido registrada: {names:?}"
+        );
+    }
+
+    /// #1272: em `standard` sem sandbox (o default), o gateway NAO registra
+    /// `bash` — um remetente de canal que troque para `/mode code` nao tem
+    /// shell nenhum para pedir. As outras tools seguem registradas.
+    #[test]
+    fn gateway_em_standard_sem_sandbox_nao_registra_bash() {
+        let runtime = build_agent_runtime(&AppConfig::default());
+        let names = runtime.tool_names();
+        assert!(
+            !names.iter().any(|n| n == "bash"),
+            "bash registrado em standard sem sandbox: {names:?}"
+        );
+        assert!(names.iter().any(|n| n == "file_read"), "{names:?}");
+    }
+
+    /// #1272, gemeo positivo: `execution.profile = isolated-pod` explicito
+    /// devolve o `bash` (no host do pod).
+    #[test]
+    fn gateway_em_isolated_pod_registra_bash() {
+        let config = AppConfig {
+            execution: garraia_config::ExecutionConfig::new(
+                Some(garraia_config::ExecutionProfile::IsolatedPod),
+                None,
+            ),
+            ..AppConfig::default()
+        };
+        let names = build_agent_runtime(&config).tool_names();
+        assert!(
+            names.iter().any(|n| n == "bash"),
+            "isolated-pod explicito tem de registrar bash: {names:?}"
+        );
+    }
+
+    /// #1272: `standard` com sandbox docker. Registrado se e so se o binario
+    /// existe no host; os dois desfechos sao afirmados, nenhum e ignorado.
+    /// `ssh` nunca registra em `standard`.
+    #[test]
+    fn gateway_em_standard_com_sandbox_so_registra_bash_com_backend_real() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+        let tem_bash = build_agent_runtime(&config)
+            .tool_names()
+            .iter()
+            .any(|n| n == "bash");
+        assert_eq!(
+            tem_bash,
+            cfg!(unix) && SandboxBackend::Docker.is_available(),
+            "bash em standard so com docker de verdade"
+        );
+
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Ssh);
+        config.agent.sandbox.ssh_host = Some("box".into());
+        config.agent.sandbox.network_disabled = false;
+        config.agent.sandbox.mount_workdir = false;
+        assert!(
+            !build_agent_runtime(&config)
+                .tool_names()
+                .iter()
+                .any(|n| n == "bash"),
+            "ssh nao e isolamento: sem bash em standard"
         );
     }
 

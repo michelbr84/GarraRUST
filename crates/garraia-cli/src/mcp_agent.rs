@@ -42,7 +42,7 @@ use garraia_agents::{
     WebFetchTool, WebSearchTool,
 };
 use garraia_config::AppConfig;
-use garraia_gateway::bootstrap::sandbox_policy_from;
+use garraia_gateway::bootstrap::{ExposicaoDoBash, exposicao_do_bash, sandbox_policy_from};
 use rmcp::model::Tool;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
@@ -353,9 +353,10 @@ fn file_jail(config: &AppConfig) -> FileJail {
 }
 
 /// Register the same tool set the gateway bootstrap wires
-/// (`garraia-gateway/src/bootstrap/mod.rs`): bash (DENY_LIST + risky tier
-/// fail-closed — no confirmation channel in a stateless MCP call, #1075
-/// R1), file read/write,
+/// (`garraia-gateway/src/bootstrap/mod.rs`): bash only where #1272 allows it
+/// (a valid docker/podman sandbox, or the host of an explicit `isolated-pod`;
+/// DENY_LIST + risky tier fail-closed either way — no confirmation channel in
+/// a stateless MCP call, #1075 R1), file read/write,
 /// web fetch, git diff, and web search when a Brave key is available.
 /// `ListDirTool` is skipped on purpose: `bash ls` + the file tools
 /// cover it, and a tighter tool list helps weaker models route.
@@ -365,23 +366,44 @@ fn file_jail(config: &AppConfig) -> FileJail {
 /// `working_dir`. Construir um segundo aqui criaria duas reguas — a
 /// validacao aprovando contra uma e as tools operando com outra (#1244,
 /// rodada 4 I2).
-fn build_tools(config: &AppConfig, jail: &FileJail) -> Vec<Box<dyn garraia_agents::Tool>> {
-    // #1225: `agent.sandbox` vale tambem no caminho MCP — e onde ele mais
-    // importa, porque aqui NAO existe canal de confirmacao humana (#1075 R1):
-    // o tier arriscado ja falha fechado, e o sandbox e a unica camada que
-    // pode conter o que passa. Mesma funcao do gateway e do `garra chat`.
-    //
-    // Ortogonal ao jail: a policy diz ONDE o comando roda, o jail diz ONDE o
-    // arquivo pode estar. O `bash` segue fora do jail — ver #1272.
-    let mut bash = BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone());
-    bash.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
-    let mut tools: Vec<Box<dyn garraia_agents::Tool>> = vec![
-        Box::new(bash),
-        Box::new(FileReadTool::new(jail.clone())),
-        Box::new(FileWriteTool::new(jail.clone())),
-        Box::new(WebFetchTool::new(None)),
-        Box::new(GitDiffTool::new(None, None)),
-    ];
+/// Devolve tambem a decisao do `bash`, porque o system prompt e gerado a
+/// partir dela (#1272).
+fn build_tools(
+    config: &AppConfig,
+    jail: &FileJail,
+) -> (Vec<Box<dyn garraia_agents::Tool>>, ExposicaoDoBash) {
+    let policy = sandbox_policy_from(&config.agent.sandbox);
+    let exposicao = exposicao_do_bash(config.execution.perfil(), &policy);
+    let tools = build_tools_com(config, jail, policy, &exposicao);
+    (tools, exposicao)
+}
+
+/// [`build_tools`] com a decisao do `bash` ja tomada — e por aqui que os
+/// testes injetam a disponibilidade do backend sem depender do host.
+///
+/// #1272: o `bash` so entra quando `exposicao.registra_bash()`, ou seja,
+/// dentro de um sandbox docker/podman valido ou no host de um `isolated-pod`
+/// explicito. Em `standard` sem sandbox ele nao existe: aqui NAO ha canal de
+/// confirmacao humana (#1075 R1) e o tier arriscado nao pega `cat` nem `>`.
+fn build_tools_com(
+    config: &AppConfig,
+    jail: &FileJail,
+    policy: garraia_agents::SandboxPolicy,
+    exposicao: &ExposicaoDoBash,
+) -> Vec<Box<dyn garraia_agents::Tool>> {
+    let mut tools: Vec<Box<dyn garraia_agents::Tool>> = Vec::new();
+    if exposicao.registra_bash() {
+        // #1225: a policy do config chega ao BashTool; ortogonal ao jail — a
+        // policy diz ONDE o comando roda, o jail diz ONDE o arquivo pode
+        // estar.
+        let mut bash = BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone());
+        bash.set_sandbox_policy(policy);
+        tools.push(Box::new(bash));
+    }
+    tools.push(Box::new(FileReadTool::new(jail.clone())));
+    tools.push(Box::new(FileWriteTool::new(jail.clone())));
+    tools.push(Box::new(WebFetchTool::new(None)));
+    tools.push(Box::new(GitDiffTool::new(None, None)));
     let brave_config_key = config.llm.get("brave").and_then(|c| c.api_key.clone());
     let brave = brave_config_key
         .or_else(|| std::env::var("BRAVE_API_KEY").ok())
@@ -396,11 +418,15 @@ fn build_tools(config: &AppConfig, jail: &FileJail) -> Vec<Box<dyn garraia_agent
 /// (name + description of each), the effective working dir, and the
 /// bash-CWD caveat. Structure mirrors the CLI chat recipe
 /// (`chat.rs`) — weak models only call tools when the prompt names them.
-pub(crate) fn agent_system_prompt(tools: &[(String, String)], working_dir: Option<&str>) -> String {
+pub(crate) fn agent_system_prompt(
+    tools: &[(String, String)],
+    working_dir: Option<&str>,
+    bash: &ExposicaoDoBash,
+) -> String {
     let mut prompt = String::from(
         "Voce e o GarraIA, um assistente pessoal de IA criado em Rust. \
          Voce esta rodando como agente COMPLETO via MCP e pode executar \
-         ferramentas de verdade (shell, arquivos, git, web) para cumprir a tarefa. \
+         as ferramentas listadas abaixo para cumprir a tarefa. \
          Seja prestativo, conciso e amigavel. Responda no idioma do usuario.\n\n\
          ## Ferramentas disponiveis\n\
          Voce tem acesso a estas ferramentas que pode usar quando necessario:\n",
@@ -411,24 +437,43 @@ pub(crate) fn agent_system_prompt(tools: &[(String, String)], working_dir: Optio
     prompt.push_str(
         "\nIMPORTANTE: Quando a tarefa envolver arquivos, comandos ou dados reais, \
          USE as ferramentas para investigar em vez de apenas descrever. \
-         Use 'bash' com 'ls' para listar arquivos e 'file_read' para ler conteudo. \
+         Use 'file_read' para ler conteudo. \
          Nao invente resultados — execute e reporte o que aconteceu de verdade. \
          Se uma ferramenta falhar ou for bloqueada, relate isso na resposta \
          final: nunca reporte sucesso sem saida real e nunca contorne \
          silenciosamente um bloqueio de seguranca.\n",
     );
+    // #1272: o que o modelo le sobre o shell tem de ser o que o codigo faz.
+    prompt.push_str(&match bash {
+        ExposicaoDoBash::Desligado { .. } => "\n## Shell\n\
+             A ferramenta 'bash' NAO esta disponivel neste servidor (perfil \
+             standard; nenhum sandbox docker/podman utilizavel). Nao existe outro jeito de executar comandos \
+             de shell aqui: se a tarefa precisar de um, diga isso na resposta.\n"
+            .to_string(),
+        ExposicaoDoBash::Sandbox { .. } => "\n## Shell\n\
+             O 'bash' roda dentro de um container descartavel: so o diretorio \
+             de trabalho e visivel e gravavel, e o resto do host nao existe \
+             para ele.\n"
+            .to_string(),
+        ExposicaoDoBash::HostDoPod => "\n## Shell\n\
+             O 'bash' roda no host deste pod isolado (execution.profile = \
+             isolated-pod); a denylist de comandos perigosos continua valendo.\n"
+            .to_string(),
+    });
     if let Some(dir) = working_dir {
         prompt.push_str(&format!(
             "\n## Contexto do diretorio\n\
              O chamador indicou o diretorio de trabalho: {dir}\n\
              As ferramentas de arquivo (file_read/file_write) resolvem caminhos \
-             relativos contra este diretorio e o 'bash' EXECUTA nele (current_dir, \
-             hardening #1075). O diretorio ja foi confinado as raizes de \
+             relativos contra este diretorio{}. O diretorio ja foi confinado as raizes de \
              arquivo deste servidor: as file tools nao alcancam nada fora \
              delas, e uma recusa de caminho e um bloqueio de seguranca, nao \
-             um erro de digitacao — nao tente outra rota para o mesmo arquivo. \
-             So o 'bash' fica de fora desse confinamento: caminho absoluto \
-             nele alcanca o host (sem sandbox).\n"
+             um erro de digitacao — nao tente outra rota para o mesmo arquivo.\n",
+            if bash.registra_bash() {
+                " e o 'bash' EXECUTA nele (current_dir, hardening #1075)"
+            } else {
+                ""
+            }
         ));
     }
     prompt
@@ -470,6 +515,31 @@ fn truncate_chars(text: &str, max: usize) -> String {
     out
 }
 
+/// O runtime do `garra_agent`: provider + tools de [`build_tools`] + system
+/// prompt gerado delas. Separado de [`agent_oneshot`] para os testes
+/// adversariais da #1272 dirigirem ESTA montagem com um provider de stub.
+/// `register_tool` recebe `&self` (Arc-safe); os setters `&mut` rodam antes.
+fn montar_runtime(
+    config: &AppConfig,
+    jail: &FileJail,
+    provider: Arc<dyn garraia_agents::LlmProvider>,
+    working_dir: Option<&str>,
+) -> AgentRuntime {
+    let (tools, exposicao) = build_tools(config, jail);
+    let tool_pairs: Vec<(String, String)> = tools
+        .iter()
+        .map(|t| (t.name().to_string(), t.description().to_string()))
+        .collect();
+    let mut runtime = AgentRuntime::new();
+    runtime.register_provider(provider);
+    for tool in tools {
+        runtime.register_tool(tool);
+    }
+    runtime.set_system_prompt(agent_system_prompt(&tool_pairs, working_dir, &exposicao));
+    runtime.set_max_tokens(4096);
+    runtime
+}
+
 /// Full-agent one-shot: resolve the provider, build a fresh
 /// `AgentRuntime` WITH tools, run a single turn on an empty history,
 /// and return the outcome with the tool-call summary.
@@ -495,23 +565,8 @@ async fn agent_oneshot(config: &AppConfig, opts: &AgentOptions, jail: &FileJail)
             }
         };
 
-    // 2. Build the runtime: provider + full tool set. `register_tool`
-    //    takes `&self` (Arc-safe); the `&mut` setters must run before.
-    let tools = build_tools(config, jail);
-    let tool_pairs: Vec<(String, String)> = tools
-        .iter()
-        .map(|t| (t.name().to_string(), t.description().to_string()))
-        .collect();
-    let mut runtime = AgentRuntime::new();
-    runtime.register_provider(provider);
-    for tool in tools {
-        runtime.register_tool(tool);
-    }
-    runtime.set_system_prompt(agent_system_prompt(
-        &tool_pairs,
-        opts.working_dir.as_deref(),
-    ));
-    runtime.set_max_tokens(4096);
+    // 2. Build the runtime: provider + full tool set.
+    let runtime = montar_runtime(config, jail, provider, opts.working_dir.as_deref());
 
     // 3. One-shot call: fresh session, empty history, wall-clock timeout
     //    over the whole loop. The events channel gives us the tool
@@ -656,39 +711,47 @@ mod tests {
 
     // ─── #1225: agent.sandbox chega ao BashTool ────────────────────────
 
-    /// Prova de fiacao ponta a ponta, pela funcao de PRODUCAO
-    /// (`build_tools`), e nao por uma reconstrucao do wiring dentro do teste.
-    ///
-    /// O caso escolhido e `mode = all` com `backend` ausente de proposito: a
-    /// policy entao recusa todo comando sem consultar binario nenhum do host,
-    /// entao o teste e deterministico com ou sem docker/podman/ssh
-    /// instalados. Antes da #1225 esta config era ignorada — os tres
-    /// construtores de producao fixavam `SandboxPolicy::default()` — e o
-    /// `echo` teria rodado no host normalmente.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn sandbox_do_config_chega_ao_bash_tool_pelo_build_tools() {
-        use garraia_agents::tools::ToolContext;
+    fn config_isolated_pod() -> AppConfig {
+        AppConfig {
+            execution: garraia_config::ExecutionConfig::new(
+                Some(garraia_config::ExecutionProfile::IsolatedPod),
+                None,
+            ),
+            ..AppConfig::default()
+        }
+    }
 
-        let mut config = AppConfig::default();
-        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
-
-        let tools = build_tools(&config, &file_jail(&config));
-        let bash = tools
-            .iter()
-            .find(|t| t.name() == "bash")
-            .expect("build_tools registra a tool bash");
-
-        let ctx = ToolContext {
-            session_id: "teste-1225".into(),
+    fn ctx_sem_dir() -> garraia_agents::tools::ToolContext {
+        garraia_agents::tools::ToolContext {
+            session_id: "teste-1272".into(),
             user_id: None,
             is_heartbeat: false,
             approval: Default::default(),
             working_dir: None,
             project_id: None,
-        };
+        }
+    }
+
+    /// Prova de fiacao ponta a ponta, pela funcao de PRODUCAO
+    /// (`build_tools`), e nao por uma reconstrucao do wiring dentro do teste.
+    ///
+    /// `isolated-pod` + `mode = all` sem `backend`: a exposicao e `HostDoPod`
+    /// (o bash e registrado), e a policy que chega a ele recusa todo comando
+    /// sem consultar binario nenhum do host — deterministico com ou sem
+    /// docker/podman/ssh. Antes da #1225 esta config era ignorada.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandbox_do_config_chega_ao_bash_tool_pelo_build_tools() {
+        let mut config = config_isolated_pod();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+
+        let tools = build_tools(&config, &file_jail(&config)).0;
+        let bash = tools
+            .iter()
+            .find(|t| t.name() == "bash")
+            .expect("isolated-pod registra a tool bash");
         let out = bash
-            .execute(&ctx, serde_json::json!({"command": "echo nunca"}))
+            .execute(&ctx_sem_dir(), serde_json::json!({"command": "echo nunca"}))
             .await
             .expect("a tool devolve ToolOutput, nao Err");
         assert!(out.is_error, "sandbox obrigatorio tem de bloquear: {out:?}");
@@ -704,40 +767,310 @@ mod tests {
         );
     }
 
-    /// E o contrapositivo, que e o que protege toda instalacao existente:
-    /// sem a secao `agent.sandbox`, `build_tools` devolve a mesma tool de
-    /// sempre e o comando roda no host.
+    // ─── #1272: bash fail-closed em standard ───────────────────────────
+
+    /// O default de toda instalacao (`standard`, sem `agent.sandbox`): o
+    /// `bash` NAO e registrado; as file tools e o git seguem.
+    #[test]
+    fn standard_sem_sandbox_nao_registra_bash() {
+        let config = AppConfig::default();
+        let (tools, exposicao) = build_tools(&config, &file_jail(&config));
+        let nomes: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(!nomes.contains(&"bash"), "bash em standard: {nomes:?}");
+        assert!(!exposicao.registra_bash());
+        for esperada in ["file_read", "file_write", "web_fetch", "git_diff"] {
+            assert!(nomes.contains(&esperada), "{esperada} sumiu: {nomes:?}");
+        }
+    }
+
+    /// Cada forma de "sandbox que nao isola" em `standard` deixa o bash de
+    /// fora: ssh (mesmo com as flags reconhecidas), bash elevado, allowlist
+    /// sem bash, e sandbox sem backend.
+    #[test]
+    fn standard_com_sandbox_que_nao_isola_nao_registra_bash() {
+        use garraia_config::{SandboxBackendKind, SandboxMode};
+        let mut ssh = AppConfig::default();
+        ssh.agent.sandbox.mode = SandboxMode::All;
+        ssh.agent.sandbox.backend = Some(SandboxBackendKind::Ssh);
+        ssh.agent.sandbox.ssh_host = Some("box".into());
+        ssh.agent.sandbox.network_disabled = false;
+        ssh.agent.sandbox.mount_workdir = false;
+
+        let mut elevado = AppConfig::default();
+        elevado.agent.sandbox.mode = SandboxMode::All;
+        elevado.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+        elevado.agent.sandbox.elevated = vec!["bash".into()];
+
+        let mut allowlist = AppConfig::default();
+        allowlist.agent.sandbox.mode = SandboxMode::Allowlist;
+        allowlist.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
+        allowlist.agent.sandbox.sandboxed_tools = vec!["web_fetch".into()];
+
+        let mut sem_backend = AppConfig::default();
+        sem_backend.agent.sandbox.mode = SandboxMode::All;
+
+        for (caso, config) in [
+            ("ssh", ssh),
+            ("elevado", elevado),
+            ("allowlist", allowlist),
+            ("sem_backend", sem_backend),
+        ] {
+            let (tools, _) = build_tools(&config, &file_jail(&config));
+            assert!(
+                !tools.iter().any(|t| t.name() == "bash"),
+                "{caso}: bash registrado em standard"
+            );
+        }
+    }
+
+    /// Gemeo positivo: com sandbox docker e o binario "presente" (decisao
+    /// injetada), o bash entra.
+    #[test]
+    fn standard_com_sandbox_valido_registra_bash() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+        let policy = sandbox_policy_from(&config.agent.sandbox);
+        let exposicao = garraia_gateway::bootstrap::decidir_exposicao_do_bash(
+            config.execution.perfil(),
+            &policy,
+            true,
+            |_| true,
+        );
+        let tools = build_tools_com(&config, &file_jail(&config), policy, &exposicao);
+        assert!(tools.iter().any(|t| t.name() == "bash"));
+    }
+
+    #[test]
+    fn isolated_pod_registra_bash() {
+        let config = config_isolated_pod();
+        let (tools, exposicao) = build_tools(&config, &file_jail(&config));
+        assert!(tools.iter().any(|t| t.name() == "bash"));
+        assert_eq!(exposicao, ExposicaoDoBash::HostDoPod);
+    }
+
+    /// Provider de stub: pede, uma por rodada, as tool calls do roteiro e
+    /// guarda o que voltou de cada uma e quais tools o modelo viu. Sem
+    /// `async_trait` na CLI, o impl e escrito na forma que a macro gera.
+    struct Roteiro {
+        chamadas: Vec<(String, serde_json::Value)>,
+        volta: std::sync::atomic::AtomicUsize,
+        resultados: std::sync::Mutex<Vec<String>>,
+        vistas: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Roteiro {
+        fn novo(chamadas: Vec<(&str, serde_json::Value)>) -> Arc<Self> {
+            Arc::new(Self {
+                chamadas: chamadas
+                    .into_iter()
+                    .map(|(n, v)| (n.to_string(), v))
+                    .collect(),
+                volta: std::sync::atomic::AtomicUsize::new(0),
+                resultados: std::sync::Mutex::new(Vec::new()),
+                vistas: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn responder(&self, request: &garraia_agents::LlmRequest) -> garraia_agents::LlmResponse {
+            use garraia_agents::{ContentBlock, MessagePart};
+            let mut resultados = self.resultados.lock().expect("lock");
+            resultados.clear();
+            for m in &request.messages {
+                if let MessagePart::Parts(blocos) = &m.content {
+                    for b in blocos {
+                        if let ContentBlock::ToolResult { content, .. } = b {
+                            resultados.push(content.clone());
+                        }
+                    }
+                }
+            }
+            *self.vistas.lock().expect("lock") =
+                request.tools.iter().map(|t| t.name.clone()).collect();
+            let volta = self.volta.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let content = match self.chamadas.get(volta) {
+                Some((nome, input)) => vec![ContentBlock::ToolUse {
+                    id: format!("roteiro-{volta}"),
+                    name: nome.clone(),
+                    input: input.clone(),
+                }],
+                None => vec![ContentBlock::Text {
+                    text: "fim do roteiro".to_string(),
+                }],
+            };
+            garraia_agents::LlmResponse {
+                content,
+                model: "stub".to_string(),
+                stop_reason: None,
+                usage: None,
+            }
+        }
+    }
+
+    type Fut<'a, T> =
+        std::pin::Pin<Box<dyn std::future::Future<Output = garraia_common::Result<T>> + Send + 'a>>;
+
+    impl garraia_agents::LlmProvider for Roteiro {
+        fn provider_id(&self) -> &str {
+            "roteiro"
+        }
+        fn complete<'a, 'b, 'c>(
+            &'a self,
+            request: &'b garraia_agents::LlmRequest,
+        ) -> Fut<'c, garraia_agents::LlmResponse>
+        where
+            'a: 'c,
+            'b: 'c,
+            Self: 'c,
+        {
+            let resposta = self.responder(request);
+            Box::pin(async move { Ok(resposta) })
+        }
+        fn health_check<'a, 'c>(&'a self) -> Fut<'c, bool>
+        where
+            'a: 'c,
+            Self: 'c,
+        {
+            Box::pin(async { Ok(true) })
+        }
+    }
+
+    /// Roda um turno do `garra_agent` pela montagem de producao
+    /// ([`montar_runtime`]) com o provider de stub. Devolve os resultados das
+    /// tools (na ultima rodada) e as tools que o modelo viu.
+    async fn turno(
+        config: &AppConfig,
+        working_dir: Option<&str>,
+        chamadas: Vec<(&str, serde_json::Value)>,
+    ) -> (Vec<String>, Vec<String>) {
+        let n = chamadas.len();
+        let provider = Roteiro::novo(chamadas);
+        let jail = file_jail(config);
+        let runtime = montar_runtime(config, &jail, provider.clone(), working_dir);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TurnEvent>(512);
+        let drena = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let exec = ExecContext::with_working_dir(working_dir.map(str::to_string));
+        let _ = runtime
+            .process_message_streaming_with_events(
+                "mcp-teste-1272",
+                "faz o que o roteiro manda",
+                &[],
+                tx,
+                None,
+                None,
+                Some("roteiro"),
+                Some("stub"),
+                None,
+                None,
+                &exec,
+            )
+            .await;
+        drop(runtime);
+        let _ = drena.await;
+        let resultados = provider.resultados.lock().expect("lock").clone();
+        let vistas = provider.vistas.lock().expect("lock").clone();
+        assert!(
+            provider.volta.load(std::sync::atomic::Ordering::SeqCst) > n,
+            "o roteiro nao foi ate o fim"
+        );
+        (resultados, vistas)
+    }
+
+    /// Criterio de aceite da #1272, adversarial, pela montagem REAL: em
+    /// `standard` sem sandbox o modelo pede `bash cat /etc/shadow`, uma
+    /// escrita fora das raizes por redirecao, e um `sh -c tee` — e nada roda.
+    /// Depois pede o mesmo pelas file tools, que o jail recusa.
     #[cfg(unix)]
     #[tokio::test]
-    async fn sem_secao_sandbox_o_bash_continua_rodando_no_host() {
-        use garraia_agents::tools::ToolContext;
+    async fn standard_nega_leitura_e_escrita_fora_por_bash_e_por_file_tools() {
+        let fora = tempfile::tempdir().expect("tempdir fora");
+        let dentro = tempfile::tempdir().expect("tempdir dentro");
+        let alvo = fora.path().join("pwned");
+        let alvo_tee = fora.path().join("tee");
+        let alvo_fw = fora.path().join("fw");
+        let mut config = AppConfig::default();
+        config.agent.file_roots = vec![dentro.path().to_string_lossy().into_owned()];
+        let dir = dentro.path().to_string_lossy().into_owned();
 
-        let cfg = AppConfig::default();
-        let tools = build_tools(&cfg, &file_jail(&cfg));
-        let bash = tools
-            .iter()
-            .find(|t| t.name() == "bash")
-            .expect("build_tools registra a tool bash");
-        let ctx = ToolContext {
-            session_id: "teste-1225".into(),
-            user_id: None,
-            is_heartbeat: false,
-            approval: Default::default(),
-            working_dir: None,
-            project_id: None,
-        };
-        let out = bash
-            .execute(&ctx, serde_json::json!({"command": "echo intacto"}))
-            .await
-            .expect("ToolOutput");
-        // Assercao por conteudo e nao por igualdade exata: o que importa e
-        // que o comando rodou no host: um `\r\n` de plataforma ou um warn
-        // colado na saida nao e regressao de sandbox.
-        assert!(!out.is_error, "sem sandbox nada muda: {out:?}");
+        let (resultados, vistas) = turno(
+            &config,
+            Some(&dir),
+            vec![
+                ("bash", serde_json::json!({"command": "cat /etc/shadow"})),
+                (
+                    "bash",
+                    serde_json::json!({"command": format!("echo pwned > {}", alvo.display())}),
+                ),
+                (
+                    "bash",
+                    serde_json::json!({
+                        "command": format!("sh -c 'echo x | tee {}'", alvo_tee.display())
+                    }),
+                ),
+                ("file_read", serde_json::json!({"path": "/etc/shadow"})),
+                (
+                    "file_write",
+                    serde_json::json!({"path": alvo_fw.to_string_lossy(), "content": "x"}),
+                ),
+            ],
+        )
+        .await;
+
         assert!(
-            out.content.contains("intacto"),
-            "o comando deveria ter rodado: {}",
-            out.content
+            !vistas.iter().any(|t| t == "bash"),
+            "o modelo viu bash: {vistas:?}"
+        );
+        assert_eq!(
+            resultados.len(),
+            5,
+            "cada chamada tem um resultado: {resultados:?}"
+        );
+        let tudo = resultados.join("\n");
+        assert!(
+            !tudo.contains("root:"),
+            "conteudo de /etc/shadow vazou: {tudo}"
+        );
+        assert!(!alvo.exists(), "a redirecao escreveu fora das raizes");
+        assert!(!alvo_tee.exists(), "o tee escreveu fora das raizes");
+        assert!(!alvo_fw.exists(), "file_write escreveu fora das raizes");
+    }
+
+    /// Gemeo positivo: em `isolated-pod` explicito o mesmo turno VE o bash,
+    /// roda um comando no working_dir, e a denylist continua barrando o
+    /// `rm -rf` da raiz.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn isolated_pod_roda_bash_no_working_dir_e_mantem_a_denylist() {
+        let dentro = tempfile::tempdir().expect("tempdir");
+        let dir = dentro.path().canonicalize().expect("canon");
+        let dir_str = dir.to_string_lossy().into_owned();
+        let mut config = config_isolated_pod();
+        config.agent.file_roots = vec![dir_str.clone()];
+
+        let (resultados, vistas) = turno(
+            &config,
+            Some(&dir_str),
+            vec![
+                (
+                    "bash",
+                    serde_json::json!({"command": "echo ok > marca; pwd"}),
+                ),
+                (
+                    "bash",
+                    serde_json::json!({"command": concat!("rm -rf", " /")}),
+                ),
+            ],
+        )
+        .await;
+        assert!(vistas.iter().any(|t| t == "bash"), "{vistas:?}");
+        assert!(
+            dir.join("marca").exists(),
+            "o bash nao rodou no working_dir: {resultados:?}"
+        );
+        assert!(resultados[0].contains(&dir_str), "{resultados:?}");
+        assert!(
+            resultados[1].contains("bloqueado"),
+            "a denylist tem de continuar valendo: {resultados:?}"
         );
     }
 
@@ -961,7 +1294,7 @@ mod tests {
             ("bash".to_string(), "Executa comandos".to_string()),
             ("file_read".to_string(), "Le arquivos".to_string()),
         ];
-        let prompt = agent_system_prompt(&pairs, None);
+        let prompt = agent_system_prompt(&pairs, None, &ExposicaoDoBash::HostDoPod);
         assert!(prompt.contains("bash"));
         assert!(prompt.contains("file_read"));
         assert!(prompt.contains("## Ferramentas disponiveis"));
@@ -970,21 +1303,35 @@ mod tests {
     #[test]
     fn system_prompt_includes_working_dir_and_bash_caveat() {
         let pairs = vec![("bash".to_string(), "Executa comandos".to_string())];
-        let prompt = agent_system_prompt(&pairs, Some("/tmp/projeto"));
+        let prompt = agent_system_prompt(&pairs, Some("/tmp/projeto"), &ExposicaoDoBash::HostDoPod);
         assert!(prompt.contains("/tmp/projeto"));
-        // #1075 R3: bash EXECUTA no working_dir (nao ignora mais), e o
-        // prompt avisa que caminhos absolutos alcancam fora dele.
+        // #1075 R3: bash EXECUTA no working_dir (nao ignora mais).
         assert!(
             prompt.contains("bash' EXECUTA nele"),
             "deve dizer que bash roda no working_dir"
         );
-        assert!(prompt.contains("sem sandbox"));
+        assert!(prompt.contains("host deste pod"), "{prompt}");
+    }
+
+    /// #1272: sem bash registrado o prompt diz que ele nao existe, nao manda
+    /// usar `bash ls` e nunca promete alcance do host.
+    #[test]
+    fn system_prompt_sem_bash_diz_que_nao_ha_shell() {
+        let pairs = vec![("file_read".to_string(), "Le".to_string())];
+        let desligado = ExposicaoDoBash::Desligado {
+            motivo: garraia_gateway::bootstrap::MotivoDoBashDesligado::SandboxDesligado,
+        };
+        let prompt = agent_system_prompt(&pairs, Some("/x"), &desligado);
+        assert!(prompt.contains("'bash' NAO esta disponivel"), "{prompt}");
+        assert!(!prompt.contains("EXECUTA nele"), "{prompt}");
+        assert!(!prompt.contains("sem sandbox"), "{prompt}");
+        assert!(!prompt.contains("Use 'bash'"), "{prompt}");
     }
 
     #[test]
     fn system_prompt_obriga_relatar_falhas_de_ferramenta() {
         let pairs = vec![("bash".to_string(), "Executa comandos".to_string())];
-        let prompt = agent_system_prompt(&pairs, None);
+        let prompt = agent_system_prompt(&pairs, None, &ExposicaoDoBash::HostDoPod);
         assert!(
             prompt.contains("nunca reporte sucesso sem saida real"),
             "prompt deve obrigar a relatar falhas de ferramenta"
@@ -1184,7 +1531,7 @@ mod tests {
     #[test]
     fn system_prompt_do_working_dir_nao_promete_fail_open() {
         let pairs = vec![("bash".to_string(), "Executa comandos".to_string())];
-        let prompt = agent_system_prompt(&pairs, Some("/x"));
+        let prompt = agent_system_prompt(&pairs, Some("/x"), &ExposicaoDoBash::HostDoPod);
         assert!(
             !prompt.contains("validado apenas quanto a existencia"),
             "system prompt ainda promete fail-open: {prompt}"
@@ -1193,11 +1540,11 @@ mod tests {
             prompt.contains("confinado as raizes"),
             "prompt deve dizer que o working_dir e confinado ao jail: {prompt}"
         );
-        // A metade VERDADEIRA da frase antiga (#1272) tem de sobreviver: o
-        // `bash` continua fora do confinamento.
+        // #1272: o prompt nao promete mais que o bash alcanca o host "sem
+        // sandbox" — ele so existe sandboxado ou no host de um pod.
         assert!(
-            prompt.contains("sem sandbox"),
-            "prompt deve manter a ressalva do bash: {prompt}"
+            !prompt.contains("sem sandbox"),
+            "prompt ainda promete bash irrestrito: {prompt}"
         );
     }
 }

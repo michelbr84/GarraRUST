@@ -377,11 +377,19 @@ impl Tool for BashTool {
         // denylist/risco/read-only. Se aplicável, o comando vira o payload
         // do backend (Docker/Podman com no-new-privileges + --network none);
         // backend ausente => erro fail-closed, nunca fallback para o host.
-        let comando = match self.sandbox.wrap_command(
-            self.name(),
-            comando,
-            context.working_dir.as_deref().unwrap_or("."),
-        ) {
+        //
+        // #1272: o cwd que vai para o mount e o da sessao ou, sem ela, o
+        // cwd ABSOLUTO do processo — nunca `"."`, que o docker recusa ou
+        // resolve contra o cwd dele. Sem cwd resolvivel a string fica vazia e
+        // o `wrap_command` recusa fail-closed (so quando o sandbox se aplica).
+        let cwd = match context.working_dir.as_deref() {
+            Some(dir) => dir.to_string(),
+            None => std::env::current_dir()
+                .ok()
+                .and_then(|d| d.to_str().map(str::to_string))
+                .unwrap_or_default(),
+        };
+        let comando = match self.sandbox.wrap_command(self.name(), comando, &cwd) {
             Ok(None) => comando.to_string(),
             Ok(Some(sandboxed)) => {
                 // `debug!`, e nao `info!`, de proposito — nao promova.

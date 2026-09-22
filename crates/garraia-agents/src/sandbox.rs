@@ -85,6 +85,95 @@ fn parece_opcao(valor: &str) -> bool {
     valor.trim_start().starts_with('-')
 }
 
+/// Teto de processos do container (#1272): um fork bomb dentro do sandbox
+/// esgota o container, nao o host.
+const PIDS_LIMIT: u32 = 512;
+
+/// Flags de contencao que todo `docker run`/`podman run` do sandbox leva, na
+/// ordem em que entram na linha (#1272).
+///
+/// - `--cap-drop ALL`: root dentro do container nao tem `CAP_CHOWN`,
+///   `CAP_FOWNER`, `CAP_SETUID`, `CAP_MKNOD`... — nao deixa arquivo setuid
+///   nem device no diretorio do host montado rw.
+/// - `--pids-limit`: ver [`PIDS_LIMIT`].
+/// - Identidade: no `docker` (daemon rootful) o processo roda como o
+///   uid:gid de quem chamou, entao tudo que ele escreve no mount pertence ao
+///   operador e nunca a root. No `podman` (rootless) `--userns=keep-id` faz o
+///   mesmo mapeando o usuario do host para dentro.
+fn flags_de_contencao(backend: &SandboxBackend) -> Vec<String> {
+    let mut flags = vec![
+        "--cap-drop ALL".to_string(),
+        format!("--pids-limit {PIDS_LIMIT}"),
+    ];
+    match backend {
+        SandboxBackend::Podman => flags.push("--userns=keep-id".to_string()),
+        _ => {
+            let (uid, gid) = uid_gid_do_processo();
+            flags.push(format!("--user {uid}:{gid}"));
+        }
+    }
+    flags
+}
+
+/// uid/gid reais do processo que vai chamar o `docker`.
+#[cfg(unix)]
+fn uid_gid_do_processo() -> (u32, u32) {
+    // SAFETY: getuid/getgid nao recebem ponteiro, nao falham e nao tem
+    // efeito colateral (POSIX: "shall always be successful").
+    unsafe { (libc::getuid(), libc::getgid()) }
+}
+
+/// Fora de unix o wrap ja recusou antes de chegar aqui
+/// ([`plataforma_permite_wrap`]); o valor nunca vai para uma linha.
+#[cfg(not(unix))]
+fn uid_gid_do_processo() -> (u32, u32) {
+    (u32::MAX, u32::MAX)
+}
+
+/// O caminho que o sandbox monta com `mount_workdir = true`, ou a recusa
+/// fail-closed (#1272).
+///
+/// Antes, um `cwd` que nao existia era **silenciosamente nao montado**, e um
+/// `cwd` relativo (`"."`, o que o `BashTool` passava sem `working_dir`) ia
+/// para o `-v` como estava. Agora:
+///
+/// - relativo => recusa (o docker o resolve contra o cwd DELE, nao o da
+///   sessao, ou recusa com "needs to be an absolute path");
+/// - que nao canonicaliza (nao existe, sem permissao) ou nao e diretorio =>
+///   recusa, em vez de rodar sem o diretorio que o operador pediu;
+/// - com symlink => monta o alvo canonico;
+/// - canonico com `:` ou caractere de controle => recusa: o `:` partiria o
+///   `-v origem:destino` em outro lugar.
+///
+/// O caminho nao entra na mensagem de erro: ele vem da sessao (e, no MCP,
+/// do argumento que o modelo escolheu), e o erro volta para o modelo.
+fn fonte_do_mount(cwd: &str) -> Result<String> {
+    let recusa = |motivo: &str| {
+        Error::Agent(format!(
+            "sandbox fail-closed: agent.sandbox.mount_workdir = true e o diretorio de trabalho \
+             {motivo}; o comando nao roda sem o mount pedido"
+        ))
+    };
+    let caminho = Path::new(cwd);
+    if !caminho.is_absolute() {
+        return Err(recusa("nao e um caminho absoluto"));
+    }
+    let canonico = caminho
+        .canonicalize()
+        .map_err(|_| recusa("nao existe ou nao pode ser resolvido"))?;
+    if !canonico.is_dir() {
+        return Err(recusa("nao e um diretorio"));
+    }
+    let texto = canonico
+        .to_str()
+        .ok_or_else(|| recusa("nao e UTF-8"))?
+        .to_string();
+    if texto.contains(':') || texto.chars().any(char::is_control) {
+        return Err(recusa("contem `:` ou caractere de controle"));
+    }
+    Ok(texto)
+}
+
 /// Se o wrap de sandbox pode acontecer na plataforma alvo.
 ///
 /// Parametrizado em `alvo_unix` em vez de ler `cfg!(unix)` por dentro para o
@@ -319,6 +408,25 @@ impl SandboxPolicy {
         command: &str,
         cwd: &str,
     ) -> Result<Option<String>> {
+        self.wrap_command_com(
+            alvo_unix,
+            SandboxBackend::is_available,
+            tool_name,
+            command,
+            cwd,
+        )
+    }
+
+    /// [`Self::wrap_command_em`] com a sonda do binario tambem injetada, para
+    /// a linha montada ser testada sem depender de haver docker no host.
+    fn wrap_command_com(
+        &self,
+        alvo_unix: bool,
+        disponivel: impl Fn(&SandboxBackend) -> bool,
+        tool_name: &str,
+        command: &str,
+        cwd: &str,
+    ) -> Result<Option<String>> {
         if !self.requires_sandbox(tool_name) {
             return Ok(None);
         }
@@ -367,7 +475,7 @@ impl SandboxPolicy {
                 nao_honradas.join(" = true e ")
             )));
         }
-        if !backend.is_available() {
+        if !disponivel(backend) {
             return Err(Error::Agent(format!(
                 "sandbox fail-closed: backend `{}` não encontrado no host; \
                  instale-o, marque a tool como elevated, ou defina \
@@ -381,17 +489,29 @@ impl SandboxPolicy {
                     SandboxBackend::Docker => "docker",
                     _ => "podman",
                 };
+                // #1272: o mount e resolvido ANTES de montar a linha, para a
+                // recusa sair sem linha nenhuma.
+                let mount = if self.mount_workdir {
+                    Some(fonte_do_mount(cwd)?)
+                } else {
+                    None
+                };
                 let mut parts = format!(
-                    "{runtime} run --rm --security-opt no-new-privileges",
+                    "{runtime} run --rm --security-opt no-new-privileges {}",
+                    flags_de_contencao(backend).join(" "),
                     runtime = runtime
                 );
                 if self.network_disabled {
                     parts.push_str(" --network none");
                 }
-                if self.mount_workdir && Path::new(cwd).exists() {
-                    // cwd do host montado rw no mesmo path dentro do container
-                    // (mantém caminhos relativos do comando funcionando).
-                    let m = sh_quote(cwd);
+                if let Some(m) = mount {
+                    // cwd CANONICO do host montado rw no mesmo path dentro do
+                    // container (mantém caminhos relativos do comando
+                    // funcionando). Canonico porque um symlink no caminho
+                    // faria o docker montar o alvo sob outro nome — e um
+                    // caminho relativo (`.`) o docker recusa ou resolve contra
+                    // o cwd DELE, nao o da sessao.
+                    let m = sh_quote(&m);
                     parts.push_str(&format!(" -v {m}:{m} -w {m}"));
                 }
                 parts.push_str(&format!(
@@ -599,13 +719,11 @@ mod tests {
         // via allowlist de tool: se o host não tem docker, esperamos erro
         // fail-closed; se tem, esperamos flags de hardening. Ambos os caminhos
         // são válidos — o que NÃO pode acontecer é comando nu.
-        match p.wrap_command("bash", "echo oi", "/definitivamente/inexistente") {
+        match p.wrap_command("bash", "echo oi", "/tmp") {
             Ok(Some(cmd)) => {
                 assert!(cmd.starts_with("docker run --rm"));
                 assert!(cmd.contains("--network none"));
                 assert!(cmd.contains("no-new-privileges"));
-                // cwd inexistente não é montado
-                assert!(!cmd.contains("/definitivamente/inexistente"));
             }
             Ok(None) => panic!("sandbox obrigatório não pode devolver None"),
             Err(e) => assert!(e.to_string().contains("fail-closed")),
@@ -904,6 +1022,100 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("fail-closed"), "e = {e}"),
             Ok(None) => panic!("mode = all deveria sandboxar `bash`"),
         }
+    }
+
+    fn docker_all() -> SandboxPolicy {
+        SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Docker),
+            ..SandboxPolicy::default()
+        }
+    }
+
+    fn linha(p: &SandboxPolicy, cwd: &str) -> Result<Option<String>> {
+        p.wrap_command_com(true, |_| true, "bash", "echo oi", cwd)
+    }
+
+    /// #1272: docker leva `--cap-drop ALL`, `--pids-limit` e `--user
+    /// <uid>:<gid>` do processo — sem depender de haver docker no host.
+    #[cfg(unix)]
+    #[test]
+    fn docker_leva_cap_drop_pids_limit_e_user_do_processo() {
+        let cmd = linha(&docker_all(), "/tmp")
+            .expect("wrap")
+            .expect("aplicado");
+        assert!(cmd.contains("--cap-drop ALL"), "{cmd}");
+        assert!(cmd.contains(&format!("--pids-limit {PIDS_LIMIT}")), "{cmd}");
+        let (uid, gid) = uid_gid_do_processo();
+        assert!(cmd.contains(&format!("--user {uid}:{gid}")), "{cmd}");
+        assert!(!cmd.contains("--userns"), "{cmd}");
+    }
+
+    #[test]
+    fn podman_leva_userns_keep_id_e_nao_user() {
+        let p = SandboxPolicy {
+            backend: Some(SandboxBackend::Podman),
+            ..docker_all()
+        };
+        let cmd = linha(&p, "/tmp").expect("wrap").expect("aplicado");
+        assert!(cmd.starts_with("podman run --rm"), "{cmd}");
+        assert!(cmd.contains("--cap-drop ALL"), "{cmd}");
+        assert!(cmd.contains("--pids-limit"), "{cmd}");
+        assert!(cmd.contains("--userns=keep-id"), "{cmd}");
+        assert!(!cmd.contains("--user "), "{cmd}");
+    }
+
+    /// #1272: `cwd` relativo, inexistente ou que nao e diretorio com
+    /// `mount_workdir = true` e recusa — nunca mais "roda sem mount".
+    #[test]
+    fn mount_com_cwd_relativo_inexistente_ou_arquivo_falha_fechado() {
+        let arquivo = tempfile::NamedTempFile::new().expect("tmp");
+        let arquivo = arquivo.path().to_string_lossy().into_owned();
+        for cwd in [".", "relativo/x", "/definitivamente/inexistente", &arquivo] {
+            let err = linha(&docker_all(), cwd).expect_err(cwd);
+            let msg = err.to_string();
+            assert!(msg.contains("fail-closed"), "{cwd}: {msg}");
+            assert!(msg.contains("mount_workdir"), "{cwd}: {msg}");
+            assert!(!msg.contains("inexistente"), "o caminho vazou: {msg}");
+        }
+        // Sem mount pedido, o mesmo cwd nao importa.
+        let sem_mount = SandboxPolicy {
+            mount_workdir: false,
+            ..docker_all()
+        };
+        let cmd = linha(&sem_mount, ".").expect("wrap").expect("aplicado");
+        assert!(!cmd.contains(" -v "), "{cmd}");
+    }
+
+    /// Symlink no caminho: o que vai para o `-v` e o alvo canonico.
+    #[cfg(unix)]
+    #[test]
+    fn mount_de_symlink_usa_o_alvo_canonico() {
+        let base = tempfile::tempdir().expect("tmp");
+        let alvo = base.path().join("alvo");
+        std::fs::create_dir(&alvo).expect("mkdir");
+        let link = base.path().join("link");
+        std::os::unix::fs::symlink(&alvo, &link).expect("symlink");
+        let canonico = alvo.canonicalize().expect("canon");
+        let cmd = linha(&docker_all(), link.to_str().expect("utf8"))
+            .expect("wrap")
+            .expect("aplicado");
+        let esperado = sh_quote(canonico.to_str().expect("utf8"));
+        assert!(
+            cmd.contains(&format!("-v {esperado}:{esperado} -w {esperado}")),
+            "{cmd}"
+        );
+        assert!(!cmd.contains("/link"), "{cmd}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mount_com_dois_pontos_no_caminho_falha_fechado() {
+        let base = tempfile::tempdir().expect("tmp");
+        let dir = base.path().join("a:b");
+        std::fs::create_dir(&dir).expect("mkdir");
+        let err = linha(&docker_all(), dir.to_str().expect("utf8")).expect_err("':'");
+        assert!(err.to_string().contains("fail-closed"), "{err}");
     }
 
     #[test]
