@@ -1778,24 +1778,54 @@ async fn list_mcp_runtime_tools(
     }))
 }
 
+/// #1346: one `/api/mcp/health` server row. Back-compat keys (`name`,
+/// `connected`, `tool_count`, `status`) keep their meaning; a server that is
+/// not connected also carries `cause`, `attempts`, `max_restarts` and a
+/// short `last_error`. Everything here is secret-free: the manager builds
+/// `last_error` from rmcp/io errors (never from the child's stderr or env)
+/// and caps it at 200 chars; the npx cache path stays out of this endpoint
+/// and only shows in `/api/diagnostics`' next step.
+fn mcp_health_server_json(s: &garraia_agents::McpServerStatus) -> serde_json::Value {
+    let connected = s.state == garraia_agents::McpServerState::Connected;
+    let mut row = serde_json::json!({
+        "name": s.name,
+        "connected": connected,
+        "tool_count": s.tool_count,
+        "status": s.state.as_str(),
+    });
+    if !connected && let Some(obj) = row.as_object_mut() {
+        obj.insert("attempts".into(), s.attempts.into());
+        obj.insert("max_restarts".into(), s.max_restarts.into());
+        obj.insert(
+            "cause".into(),
+            s.cause
+                .as_ref()
+                .map(|c| serde_json::Value::from(c.as_str()))
+                .unwrap_or(serde_json::Value::Null),
+        );
+        obj.insert(
+            "last_error".into(),
+            s.last_error
+                .clone()
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    row
+}
+
 /// GET /api/mcp/health — per-server MCP connection status and tool inventory.
 async fn mcp_health(
     axum::extract::State(state): axum::extract::State<SharedState>,
 ) -> axum::Json<serde_json::Value> {
+    // #1346: `server_statuses`, not `list_servers` — the latter only walks
+    // live connections, so a server that failed at boot (parked in
+    // `pending`) was invisible and a lone broken `filesystem` made this
+    // endpoint answer `no_mcp_configured`.
     let (servers, total_mcp_tools) = if let Some(mgr) = &state.mcp_manager_arc {
-        let list = mgr.list_servers().await;
-        let total: usize = list.iter().map(|(_, count, _)| count).sum();
-        let servers = list
-            .into_iter()
-            .map(|(name, tool_count, connected)| {
-                serde_json::json!({
-                    "name": name,
-                    "connected": connected,
-                    "tool_count": tool_count,
-                    "status": if connected { "ok" } else { "disconnected" },
-                })
-            })
-            .collect::<Vec<_>>();
+        let list = mgr.server_statuses().await;
+        let total: usize = list.iter().map(|s| s.tool_count).sum();
+        let servers = list.iter().map(mcp_health_server_json).collect::<Vec<_>>();
         (servers, total)
     } else {
         (Vec::new(), 0)
@@ -2335,5 +2365,103 @@ mod tests {
         for (id, _, _, _) in super::KNOWN_CHANNELS {
             assert!(vistos.insert(*id), "id duplicado no KNOWN_CHANNELS: {id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_mcp_health_1346 {
+    use super::*;
+    use crate::state::AppState;
+    use garraia_agents::{AgentRuntime, McpManager};
+    use garraia_channels::ChannelRegistry;
+
+    /// A server that failed at boot (parked in `pending`, as `server.rs`
+    /// does) must be listed with `connected: false` and a cause — before
+    /// #1346 the endpoint answered `no_mcp_configured`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn mcp_health_lista_servidor_pendente_com_causa() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let anterior = std::env::var_os("GARRAIA_CONFIG_DIR");
+        // SAFETY: teste serializado.
+        unsafe { std::env::set_var("GARRAIA_CONFIG_DIR", dir.path()) };
+
+        let mgr = Arc::new(McpManager::new());
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "SEGREDO_DE_TESTE".to_string(),
+            "valor-que-nao-pode-vazar".to_string(),
+        );
+        // A command that cannot spawn: the connect fails like a boot failure.
+        let args = vec!["-y".to_string(), "pacote".to_string()];
+        let missing = dir.path().join("nao-existe").join("npx");
+        let missing = missing.to_string_lossy().into_owned();
+        let err = mgr
+            .connect(
+                "filesystem",
+                &missing,
+                &args,
+                &env,
+                5,
+                vec![],
+                None,
+                5,
+                1,
+                false,
+            )
+            .await;
+        assert!(err.is_err());
+        mgr.register_pending_stdio(
+            "filesystem",
+            &missing,
+            &args,
+            &env,
+            5,
+            vec![],
+            None,
+            5,
+            1,
+            false,
+        )
+        .await;
+
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut state = AppState::new(
+            config,
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        state.mcp_manager_arc = Some(mgr);
+        let state: SharedState = Arc::new(state);
+
+        let axum::Json(body) = mcp_health(axum::extract::State(state)).await;
+
+        // SAFETY: idem.
+        unsafe {
+            match anterior {
+                Some(v) => std::env::set_var("GARRAIA_CONFIG_DIR", v),
+                None => std::env::remove_var("GARRAIA_CONFIG_DIR"),
+            }
+        }
+
+        assert_eq!(body["status"], "all_disconnected", "{body}");
+        let servers = body["servers"].as_array().expect("servers");
+        assert_eq!(servers.len(), 1, "{body}");
+        let fs = &servers[0];
+        assert_eq!(fs["name"], "filesystem");
+        assert_eq!(fs["connected"], false);
+        assert_eq!(fs["status"], "retrying");
+        assert_eq!(fs["cause"], "other");
+        assert_eq!(fs["max_restarts"], 5);
+        let last = fs["last_error"].as_str().expect("last_error");
+        assert!(!last.is_empty() && last.chars().count() <= 200, "{last}");
+        let cru = body.to_string();
+        assert!(
+            !cru.contains("valor-que-nao-pode-vazar"),
+            "env vazou: {cru}"
+        );
     }
 }
