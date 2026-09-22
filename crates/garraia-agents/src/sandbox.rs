@@ -30,6 +30,22 @@
 //!   fora de unix não contém nada — ver `docs/security/threat-model.md` §5.13.
 //! - A configuração do operador é a seção `agent.sandbox` (#1225), traduzida
 //!   por `garraia_gateway::bootstrap::sandbox_policy_from`.
+//! - **Tools cobertas** (#1225 S2): `bash` por [`SandboxPolicy::wrap_command`]
+//!   (linha de shell) e `run_tests`, `git_diff`, `code_review`, `repo_search`
+//!   por [`SandboxPolicy::wrap_argv`] (argv, sem shell), via
+//!   `crate::sandbox_spawn`. O `git config` que lista os filtros a anular
+//!   (`git_endurecido`) roda no host: ele só lê config, não executa nada.
+//! - **`ssh` + container remoto é won't-do** (#1225 S5): (a) `backend =
+//!   docker` com um `docker context` `ssh://host` já entrega container
+//!   remoto pelo transporte do próprio Docker — o `HOME` chega ao filho
+//!   (`safety_gate::allowed_child_env`), e com ele o contexto do operador —,
+//!   sem código novo; (b) um ramo ssh+container empilharia três camadas de
+//!   `sh_quote` numa linha de shell, exatamente a superfície de injeção que a
+//!   #1231 e o argv da S2 eliminam; (c) nas tools de diretório de trabalho o
+//!   host remoto não tem os arquivos do projeto (um contexto docker remoto
+//!   monta caminhos do host REMOTO); (d) ninguém pediu, e o custo de
+//!   manutenção de um controle de segurança é contínuo. Ver
+//!   `docs/security/threat-model.md` §5.13.
 
 use garraia_common::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -83,6 +99,133 @@ fn sh_quote(s: &str) -> String {
 /// acompanhamento na #1225 (slices S2/S3), como já recomendado na #1231.
 fn parece_opcao(valor: &str) -> bool {
     valor.trim_start().starts_with('-')
+}
+
+/// Teto de processos do container (#1272): um fork bomb dentro do sandbox
+/// esgota o container, nao o host.
+const PIDS_LIMIT: u32 = 512;
+
+/// Flags de contencao que todo `docker run`/`podman run` do sandbox leva, na
+/// ordem em que entram na linha (#1272).
+///
+/// - `--cap-drop ALL`: root dentro do container nao tem `CAP_CHOWN`,
+///   `CAP_FOWNER`, `CAP_SETUID`, `CAP_MKNOD`... — nao deixa arquivo setuid
+///   nem device no diretorio do host montado rw.
+/// - `--pids-limit`: ver [`PIDS_LIMIT`].
+/// - Identidade: no `docker` (daemon rootful) o processo roda como o
+///   uid:gid de quem chamou, entao tudo que ele escreve no mount pertence ao
+///   operador e nunca a root. No `podman` (rootless) `--userns=keep-id` faz o
+///   mesmo mapeando o usuario do host para dentro.
+fn flags_de_contencao(backend: &SandboxBackend) -> Vec<String> {
+    let mut flags = vec![
+        "--cap-drop ALL".to_string(),
+        format!("--pids-limit {PIDS_LIMIT}"),
+    ];
+    match backend {
+        SandboxBackend::Podman => flags.push("--userns=keep-id".to_string()),
+        _ => {
+            let (uid, gid) = uid_gid_do_processo();
+            flags.push(format!("--user {uid}:{gid}"));
+        }
+    }
+    flags
+}
+
+/// uid/gid reais do processo que vai chamar o `docker`.
+#[cfg(unix)]
+fn uid_gid_do_processo() -> (u32, u32) {
+    // SAFETY: getuid/getgid nao recebem ponteiro, nao falham e nao tem
+    // efeito colateral (POSIX: "shall always be successful").
+    unsafe { (libc::getuid(), libc::getgid()) }
+}
+
+/// Fora de unix o wrap ja recusou antes de chegar aqui
+/// ([`plataforma_permite_wrap`]); o valor nunca vai para uma linha.
+#[cfg(not(unix))]
+fn uid_gid_do_processo() -> (u32, u32) {
+    (u32::MAX, u32::MAX)
+}
+
+/// O caminho que o sandbox monta com `mount_workdir = true`, ou a recusa
+/// fail-closed (#1272).
+///
+/// Antes, um `cwd` que nao existia era **silenciosamente nao montado**, e um
+/// `cwd` relativo (`"."`, o que o `BashTool` passava sem `working_dir`) ia
+/// para o `-v` como estava. Agora:
+///
+/// - relativo => recusa (o docker o resolve contra o cwd DELE, nao o da
+///   sessao, ou recusa com "needs to be an absolute path");
+/// - que nao canonicaliza (nao existe, sem permissao) ou nao e diretorio =>
+///   recusa, em vez de rodar sem o diretorio que o operador pediu;
+/// - com symlink => monta o alvo canonico;
+/// - canonico com `:` ou caractere de controle => recusa: o `:` partiria o
+///   `-v origem:destino` em outro lugar.
+///
+/// - vazio (sessao sem `working_dir`) => recusa: o sandbox nunca monta o cwd
+///   do PROCESSO no lugar dele — num `garra start` aberto no terminal esse
+///   cwd e o `$HOME` (review da #1272, SANDBOX-2/5);
+/// - canonico que e `/`, o `$HOME` do processo ou um ancestral dele =>
+///   recusa: montado rw, ele entregaria `~/.ssh`, `~/.bashrc` e a config do
+///   garraia ao container. Mesma classificacao de
+///   `FileJail::raizes_perigosas`, mais os ancestrais (um mount de `/home`
+///   contem o `$HOME`).
+///
+/// O caminho nao entra na mensagem de erro: ele vem da sessao (e, no MCP,
+/// do argumento que o modelo escolheu), e o erro volta para o modelo.
+fn fonte_do_mount(cwd: &str) -> Result<String> {
+    fonte_do_mount_com(cwd, crate::tools::file_jail::process_home_dir().as_deref())
+}
+
+/// Por que um mount **ja canonicalizado** exporia demais, ou `None`. Pura:
+/// `home` chega resolvido pelo chamador.
+fn motivo_de_mount_perigoso(canonico: &Path, home: Option<&Path>) -> Option<&'static str> {
+    if let Some(motivo) = crate::tools::file_jail::motivo_de_raiz_perigosa(canonico, home) {
+        return Some(motivo);
+    }
+    match home {
+        Some(h) if h.starts_with(canonico) => Some("e um ancestral do $HOME do processo"),
+        _ => None,
+    }
+}
+
+/// [`fonte_do_mount`] com o `$HOME` injetado, para o teste nao depender do
+/// `$HOME` da maquina.
+fn fonte_do_mount_com(cwd: &str, home: Option<&Path>) -> Result<String> {
+    let recusa = |motivo: &str| {
+        Error::Agent(format!(
+            "sandbox fail-closed: agent.sandbox.mount_workdir = true e o diretorio de trabalho \
+             {motivo}; o comando nao roda sem o mount pedido"
+        ))
+    };
+    if cwd.trim().is_empty() {
+        return Err(recusa(
+            "nao foi informado (sessao sem working_dir); o sandbox nao monta o diretorio do \
+             processo no lugar dele",
+        ));
+    }
+    let caminho = Path::new(cwd);
+    if !caminho.is_absolute() {
+        return Err(recusa("nao e um caminho absoluto"));
+    }
+    let canonico = caminho
+        .canonicalize()
+        .map_err(|_| recusa("nao existe ou nao pode ser resolvido"))?;
+    if !canonico.is_dir() {
+        return Err(recusa("nao e um diretorio"));
+    }
+    let texto = canonico
+        .to_str()
+        .ok_or_else(|| recusa("nao e UTF-8"))?
+        .to_string();
+    if texto.contains(':') || texto.chars().any(char::is_control) {
+        return Err(recusa("contem `:` ou caractere de controle"));
+    }
+    if let Some(motivo) = motivo_de_mount_perigoso(&canonico, home) {
+        return Err(recusa(&format!(
+            "{motivo}; montado rw ele exporia o host inteiro ao container"
+        )));
+    }
+    Ok(texto)
 }
 
 /// Se o wrap de sandbox pode acontecer na plataforma alvo.
@@ -156,16 +299,14 @@ pub enum SandboxMode {
     /// Comportamento atual: tudo roda no host (default).
     #[default]
     Off,
-    /// Toda tool que **consulta a policy** roda no sandbox — hoje, só a
-    /// `bash` (o `BashTool` é o único lugar que chama `wrap_command`). As
-    /// demais tools que spawnam processo — [`HOST_ONLY_SPAWNING_TOOLS`] —
-    /// continuam nascendo no host mesmo neste modo; roteá-las é a metade
-    /// estrutural da #1225 S2, ainda aberta.
+    /// Toda tool que spawna processo roda no sandbox, salvo as listadas em
+    /// `elevated`: `bash` (linha de shell, [`SandboxPolicy::wrap_command`]) e,
+    /// desde a #1225 S2, `run_tests`, `git_diff`, `code_review` e
+    /// `repo_search` (argv, [`SandboxPolicy::wrap_argv`]).
+    /// [`HOST_ONLY_SPAWNING_TOOLS`] ficou vazia, e um teste que varre
+    /// `src/tools/` a mantem assim.
     All,
-    /// Apenas as tools listadas em `sandboxed_tools` rodam no sandbox — e
-    /// só as que consultam a policy (hoje `bash`) conseguem honrar a lista.
-    /// Listar uma de [`HOST_ONLY_SPAWNING_TOOLS`] aqui não tem efeito: ela
-    /// roda no host, e o `garra config check` diz isso.
+    /// Apenas as tools listadas em `sandboxed_tools` rodam no sandbox.
     Allowlist,
 }
 
@@ -187,8 +328,12 @@ pub enum SandboxMode {
 ///
 /// Espelho em `garraia_config::sandbox::TOOLS_SO_NO_HOST`, com o mesmo
 /// motivo e a mesma tranca (teste no gateway) de `TOOLS_SANDBOXAVEIS`.
-pub const HOST_ONLY_SPAWNING_TOOLS: &[&str] =
-    &["run_tests", "git_diff", "code_review", "repo_search"];
+///
+/// **Vazia desde a #1225 S2b**: as quatro tools que moravam aqui passaram a
+/// spawnar por `sandbox_spawn::executar`, que consulta a policy. A const
+/// continua existindo para o teste de varredura ter onde falhar se uma tool
+/// nova voltar a spawnar direto.
+pub const HOST_ONLY_SPAWNING_TOOLS: &[&str] = &[];
 
 /// Política de sandbox, resolvida por tool antes da execução.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +447,25 @@ impl SandboxPolicy {
         self.wrap_command_em(cfg!(unix), tool_name, command, cwd)
     }
 
+    /// [`Self::wrap_command`] devolvendo tambem, no docker/podman, o runtime e
+    /// o nome do container (`--name garra-sbx-<uuid>`): quem roda a linha
+    /// precisa dos dois para `<runtime> rm -f <nome>` no timeout — matar o
+    /// cliente do docker nao mata o container (review da #1272, SANDBOX-6).
+    pub fn wrap_command_nomeado(
+        &self,
+        tool_name: &str,
+        command: &str,
+        cwd: &str,
+    ) -> Result<Option<LinhaSandboxada>> {
+        self.wrap_command_nomeado_com(
+            cfg!(unix),
+            SandboxBackend::is_available,
+            tool_name,
+            command,
+            cwd,
+        )
+    }
+
     /// [`Self::wrap_command`] com a plataforma como **parâmetro**.
     ///
     /// Existe para o ramo não-unix ter teste de verdade. Testar só
@@ -319,6 +483,40 @@ impl SandboxPolicy {
         command: &str,
         cwd: &str,
     ) -> Result<Option<String>> {
+        self.wrap_command_com(
+            alvo_unix,
+            SandboxBackend::is_available,
+            tool_name,
+            command,
+            cwd,
+        )
+    }
+
+    /// [`Self::wrap_command_em`] com a sonda do binario tambem injetada, para
+    /// a linha montada ser testada sem depender de haver docker no host.
+    fn wrap_command_com(
+        &self,
+        alvo_unix: bool,
+        disponivel: impl Fn(&SandboxBackend) -> bool,
+        tool_name: &str,
+        command: &str,
+        cwd: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .wrap_command_nomeado_com(alvo_unix, disponivel, tool_name, command, cwd)?
+            .map(|l| l.linha))
+    }
+
+    /// O nucleo de [`Self::wrap_command_nomeado`], com plataforma e sonda
+    /// injetadas.
+    fn wrap_command_nomeado_com(
+        &self,
+        alvo_unix: bool,
+        disponivel: impl Fn(&SandboxBackend) -> bool,
+        tool_name: &str,
+        command: &str,
+        cwd: &str,
+    ) -> Result<Option<LinhaSandboxada>> {
         if !self.requires_sandbox(tool_name) {
             return Ok(None);
         }
@@ -367,7 +565,7 @@ impl SandboxPolicy {
                 nao_honradas.join(" = true e ")
             )));
         }
-        if !backend.is_available() {
+        if !disponivel(backend) {
             return Err(Error::Agent(format!(
                 "sandbox fail-closed: backend `{}` não encontrado no host; \
                  instale-o, marque a tool como elevated, ou defina \
@@ -381,17 +579,31 @@ impl SandboxPolicy {
                     SandboxBackend::Docker => "docker",
                     _ => "podman",
                 };
+                // #1272: o mount e resolvido ANTES de montar a linha, para a
+                // recusa sair sem linha nenhuma.
+                let mount = if self.mount_workdir {
+                    Some(fonte_do_mount(cwd)?)
+                } else {
+                    None
+                };
+                // So `[0-9a-f-]`: nao precisa de quoting.
+                let nome = format!("garra-sbx-{}", uuid::Uuid::new_v4().simple());
                 let mut parts = format!(
-                    "{runtime} run --rm --security-opt no-new-privileges",
+                    "{runtime} run --rm --name {nome} --security-opt no-new-privileges {}",
+                    flags_de_contencao(backend).join(" "),
                     runtime = runtime
                 );
                 if self.network_disabled {
                     parts.push_str(" --network none");
                 }
-                if self.mount_workdir && Path::new(cwd).exists() {
-                    // cwd do host montado rw no mesmo path dentro do container
-                    // (mantém caminhos relativos do comando funcionando).
-                    let m = sh_quote(cwd);
+                if let Some(m) = mount {
+                    // cwd CANONICO do host montado rw no mesmo path dentro do
+                    // container (mantém caminhos relativos do comando
+                    // funcionando). Canonico porque um symlink no caminho
+                    // faria o docker montar o alvo sob outro nome — e um
+                    // caminho relativo (`.`) o docker recusa ou resolve contra
+                    // o cwd DELE, nao o da sessao.
+                    let m = sh_quote(&m);
                     parts.push_str(&format!(" -v {m}:{m} -w {m}"));
                 }
                 parts.push_str(&format!(
@@ -399,7 +611,10 @@ impl SandboxPolicy {
                     sh_quote(&self.image),
                     sh_quote(command)
                 ));
-                parts
+                LinhaSandboxada {
+                    linha: parts,
+                    container: Some((runtime.to_string(), nome)),
+                }
             }
             SandboxBackend::Ssh(host) => {
                 // NOTA: ssh não isola o host remoto; é isolamento do host
@@ -418,14 +633,176 @@ impl SandboxPolicy {
                 // o shell remoto **reparseia**. Uma camada de aspas morre no
                 // shell local, a outra no remoto. Com uma só, o comando
                 // voltaria a ser interpretado antes de virar comando.
-                format!(
-                    "ssh {} -- sh -lc {}",
-                    sh_quote(host),
-                    sh_quote(&sh_quote(command))
-                )
+                LinhaSandboxada {
+                    linha: format!(
+                        "ssh {} -- sh -lc {}",
+                        sh_quote(host),
+                        sh_quote(&sh_quote(command))
+                    ),
+                    container: None,
+                }
             }
         }))
     }
+
+    /// #1225 S2: o sandbox das tools que spawnam um PROGRAMA (nao uma linha
+    /// de shell) — `run_tests`, `git_diff`, `code_review`, `repo_search`.
+    ///
+    /// Devolve o argv do `docker run`/`podman run` montado **sem shell
+    /// nenhum**: `programa` e cada `arg` viram elementos literais depois da
+    /// imagem, entao `$(id)`, `;`, aspas ou um `-x` do modelo chegam ao
+    /// programa como texto. `Ok(None)` = a policy nao se aplica a `tool`
+    /// (roda no host, como antes).
+    ///
+    /// Herda todas as recusas fail-closed do [`Self::wrap_command`] (fora de
+    /// unix, imagem com `-`, sem backend, binario ausente, mount invalido) e
+    /// acrescenta uma: **`ssh` e recusado sempre**. Estas tools operam no
+    /// diretorio LOCAL, e o host remoto nao o tem (a S3 obriga
+    /// `mount_workdir = false` no ssh) — a resposta sairia sobre outros
+    /// arquivos, em silencio.
+    ///
+    /// `cwd = None` com `mount_workdir = true` e recusa fail-closed: o
+    /// sandbox nunca monta o cwd do PROCESSO no lugar do diretorio da sessao
+    /// (review da #1272, SANDBOX-2/5). `env` vira `-e K=V` (so constantes do
+    /// codigo, nunca valor do modelo).
+    pub fn wrap_argv(
+        &self,
+        tool_name: &str,
+        programa: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &[(&str, &str)],
+    ) -> Result<Option<SandboxedArgv>> {
+        self.wrap_argv_com(
+            cfg!(unix),
+            SandboxBackend::is_available,
+            tool_name,
+            programa,
+            args,
+            cwd,
+            env,
+        )
+    }
+
+    /// [`Self::wrap_argv`] com plataforma e sonda do binario injetadas.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn wrap_argv_com(
+        &self,
+        alvo_unix: bool,
+        disponivel: impl Fn(&SandboxBackend) -> bool,
+        tool_name: &str,
+        programa: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &[(&str, &str)],
+    ) -> Result<Option<SandboxedArgv>> {
+        if !self.requires_sandbox(tool_name) {
+            return Ok(None);
+        }
+        plataforma_permite_wrap(alvo_unix)?;
+        if parece_opcao(&self.image) {
+            return Err(Error::Agent(
+                "sandbox fail-closed: agent.sandbox.image comeca com `-` e seria lida como opcao \
+                 do docker/podman em vez de nome de imagem"
+                    .into(),
+            ));
+        }
+        let backend = self.backend.as_ref().ok_or_else(|| {
+            Error::Agent(
+                "sandbox obrigatório por config mas nenhum backend definido \
+                 (agent.sandbox.backend: docker|podman)"
+                    .into(),
+            )
+        })?;
+        let runtime = match backend {
+            SandboxBackend::Docker => "docker",
+            SandboxBackend::Podman => "podman",
+            SandboxBackend::Ssh(_) => {
+                return Err(Error::Agent(format!(
+                    "sandbox fail-closed: `{tool_name}` opera no diretorio de trabalho LOCAL e \
+                     agent.sandbox.backend = ssh roda em outra maquina, sem esse diretorio. Use \
+                     agent.sandbox.backend = docker ou podman, ou \
+                     agent.sandbox.elevated = [\"{tool_name}\"] para rodar no host."
+                )));
+            }
+        };
+        if !disponivel(backend) {
+            return Err(Error::Agent(format!(
+                "sandbox fail-closed: backend `{runtime}` não encontrado no host; instale-o, \
+                 marque a tool como elevated, ou defina agent.sandbox.mode = off"
+            )));
+        }
+        let mount = if self.mount_workdir {
+            // Sem `cwd`, string vazia: `fonte_do_mount` recusa.
+            let texto = match cwd {
+                Some(dir) => dir.to_str().ok_or_else(|| {
+                    Error::Agent("sandbox fail-closed: diretorio de trabalho nao e UTF-8".into())
+                })?,
+                None => "",
+            };
+            Some(fonte_do_mount(texto)?)
+        } else {
+            None
+        };
+
+        let nome = format!("garra-sbx-{}", uuid::Uuid::new_v4().simple());
+        let mut argv: Vec<String> = vec![
+            "run".into(),
+            "--rm".into(),
+            "--name".into(),
+            nome.clone(),
+            "--security-opt".into(),
+            "no-new-privileges".into(),
+        ];
+        for flag in flags_de_contencao(backend) {
+            // As flags compostas (`--cap-drop ALL`) viram dois elementos.
+            argv.extend(flag.split(' ').map(str::to_string));
+        }
+        // Com `--user` o HOME da imagem pode nao existir; /tmp sempre existe.
+        argv.extend(["-e".into(), "HOME=/tmp".into()]);
+        for (chave, valor) in env {
+            argv.extend(["-e".into(), format!("{chave}={valor}")]);
+        }
+        if self.network_disabled {
+            argv.extend(["--network".into(), "none".into()]);
+        }
+        if let Some(m) = mount {
+            argv.extend(["-v".into(), format!("{m}:{m}"), "-w".into(), m]);
+        }
+        argv.push(self.image.clone());
+        argv.push(programa.to_string());
+        argv.extend(args.iter().cloned());
+        Ok(Some(SandboxedArgv {
+            runtime: runtime.to_string(),
+            argv,
+            nome_do_container: nome,
+        }))
+    }
+}
+
+/// O que [`SandboxPolicy::wrap_command_nomeado`] devolve: a linha de shell
+/// e, no docker/podman, `(runtime, nome_do_container)` para o `rm -f` do
+/// timeout. `None` no `ssh`, que nao cria container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinhaSandboxada {
+    /// A linha que o shell do host executa.
+    pub linha: String,
+    /// `(docker|podman, garra-sbx-<uuid>)`.
+    pub container: Option<(String, String)>,
+}
+
+/// O que [`SandboxPolicy::wrap_argv`] devolve: o runtime (`docker` ou
+/// `podman`), os argumentos dele e o nome do container — que quem roda
+/// precisa para `rm -f` no timeout, porque matar o cliente do docker nao
+/// mata o container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxedArgv {
+    /// `docker` ou `podman`.
+    pub runtime: String,
+    /// Tudo depois do runtime, comecando por `run`.
+    pub argv: Vec<String>,
+    /// `garra-sbx-<uuid>`.
+    pub nome_do_container: String,
 }
 
 #[cfg(test)]
@@ -483,7 +860,10 @@ mod tests {
             // So a metade de producao: fixtures de teste spawnam `git` para
             // montar repositorio, e isso nao e a tool spawnando.
             let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte.as_str());
-            if !producao.contains("Command::new(") {
+            // #1225 S2: quem spawna por `sandbox_spawn::executar(` tambem
+            // spawna — e consulta a policy la dentro.
+            let pelo_helper = producao.contains("sandbox_spawn::executar(");
+            if !producao.contains("Command::new(") && !pelo_helper {
                 continue;
             }
             let nome = nome_registrado(producao).unwrap_or_else(|| {
@@ -494,7 +874,10 @@ mod tests {
                     caminho.display()
                 )
             });
-            if producao.contains("sandbox.wrap_command(") {
+            if producao.contains("sandbox.wrap_command(")
+                || producao.contains("sandbox.wrap_command_nomeado(")
+                || pelo_helper
+            {
                 consultam.push(nome.to_string());
             } else {
                 no_host.push(nome.to_string());
@@ -599,13 +982,11 @@ mod tests {
         // via allowlist de tool: se o host não tem docker, esperamos erro
         // fail-closed; se tem, esperamos flags de hardening. Ambos os caminhos
         // são válidos — o que NÃO pode acontecer é comando nu.
-        match p.wrap_command("bash", "echo oi", "/definitivamente/inexistente") {
+        match p.wrap_command("bash", "echo oi", "/tmp") {
             Ok(Some(cmd)) => {
                 assert!(cmd.starts_with("docker run --rm"));
                 assert!(cmd.contains("--network none"));
                 assert!(cmd.contains("no-new-privileges"));
-                // cwd inexistente não é montado
-                assert!(!cmd.contains("/definitivamente/inexistente"));
             }
             Ok(None) => panic!("sandbox obrigatório não pode devolver None"),
             Err(e) => assert!(e.to_string().contains("fail-closed")),
@@ -904,6 +1285,286 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("fail-closed"), "e = {e}"),
             Ok(None) => panic!("mode = all deveria sandboxar `bash`"),
         }
+    }
+
+    fn docker_all() -> SandboxPolicy {
+        SandboxPolicy {
+            mode: SandboxMode::All,
+            backend: Some(SandboxBackend::Docker),
+            ..SandboxPolicy::default()
+        }
+    }
+
+    fn linha(p: &SandboxPolicy, cwd: &str) -> Result<Option<String>> {
+        p.wrap_command_com(true, |_| true, "bash", "echo oi", cwd)
+    }
+
+    /// #1272: docker leva `--cap-drop ALL`, `--pids-limit` e `--user
+    /// <uid>:<gid>` do processo — sem depender de haver docker no host.
+    #[cfg(unix)]
+    #[test]
+    fn docker_leva_cap_drop_pids_limit_e_user_do_processo() {
+        let cmd = linha(&docker_all(), "/tmp")
+            .expect("wrap")
+            .expect("aplicado");
+        assert!(cmd.contains("--cap-drop ALL"), "{cmd}");
+        assert!(cmd.contains(&format!("--pids-limit {PIDS_LIMIT}")), "{cmd}");
+        let (uid, gid) = uid_gid_do_processo();
+        assert!(cmd.contains(&format!("--user {uid}:{gid}")), "{cmd}");
+        assert!(!cmd.contains("--userns"), "{cmd}");
+    }
+
+    #[test]
+    fn podman_leva_userns_keep_id_e_nao_user() {
+        let p = SandboxPolicy {
+            backend: Some(SandboxBackend::Podman),
+            ..docker_all()
+        };
+        let cmd = linha(&p, "/tmp").expect("wrap").expect("aplicado");
+        assert!(cmd.starts_with("podman run --rm"), "{cmd}");
+        assert!(cmd.contains("--cap-drop ALL"), "{cmd}");
+        assert!(cmd.contains("--pids-limit"), "{cmd}");
+        assert!(cmd.contains("--userns=keep-id"), "{cmd}");
+        assert!(!cmd.contains("--user "), "{cmd}");
+    }
+
+    /// #1272: `cwd` relativo, inexistente ou que nao e diretorio com
+    /// `mount_workdir = true` e recusa — nunca mais "roda sem mount".
+    #[test]
+    fn mount_com_cwd_relativo_inexistente_ou_arquivo_falha_fechado() {
+        let arquivo = tempfile::NamedTempFile::new().expect("tmp");
+        let arquivo = arquivo.path().to_string_lossy().into_owned();
+        for cwd in [".", "relativo/x", "/definitivamente/inexistente", &arquivo] {
+            let err = linha(&docker_all(), cwd).expect_err(cwd);
+            let msg = err.to_string();
+            assert!(msg.contains("fail-closed"), "{cwd}: {msg}");
+            assert!(msg.contains("mount_workdir"), "{cwd}: {msg}");
+            assert!(!msg.contains("inexistente"), "o caminho vazou: {msg}");
+        }
+        // Sem mount pedido, o mesmo cwd nao importa.
+        let sem_mount = SandboxPolicy {
+            mount_workdir: false,
+            ..docker_all()
+        };
+        let cmd = linha(&sem_mount, ".").expect("wrap").expect("aplicado");
+        assert!(!cmd.contains(" -v "), "{cmd}");
+    }
+
+    /// Review da #1272 (SANDBOX-2/5): sessao sem `working_dir` (cwd vazio),
+    /// `/`, o `$HOME` e um ancestral do `$HOME` nunca viram fonte de mount rw.
+    #[cfg(unix)]
+    #[test]
+    fn mount_nunca_e_raiz_home_ancestral_nem_vazio() {
+        let base = tempfile::tempdir().expect("tmp");
+        let home = base.path().join("home").join("u");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        let home = home.canonicalize().expect("canon");
+        let pai = home.parent().expect("pai").to_path_buf();
+        let projeto = home.join("projeto");
+        std::fs::create_dir(&projeto).expect("mkdir");
+        for cwd in ["", "  ", "/"] {
+            let err = fonte_do_mount_com(cwd, Some(&home)).expect_err(cwd);
+            assert!(err.to_string().contains("fail-closed"), "{cwd:?}: {err}");
+        }
+        for dir in [&home, &pai] {
+            let texto = dir.to_str().expect("utf8");
+            let err = fonte_do_mount_com(texto, Some(&home)).expect_err(texto);
+            let msg = err.to_string();
+            assert!(msg.contains("$HOME"), "{texto}: {msg}");
+            assert!(!msg.contains(texto), "o caminho vazou: {msg}");
+        }
+        // Abaixo do `$HOME` (um projeto) continua valendo.
+        let ok = fonte_do_mount_com(projeto.to_str().expect("utf8"), Some(&home)).expect("ok");
+        assert_eq!(ok, projeto.to_str().expect("utf8"));
+        // E o wrap real recusa `/` sem depender de `$HOME` nenhum.
+        assert!(linha(&docker_all(), "/").is_err());
+        assert!(linha(&docker_all(), "").is_err());
+    }
+
+    /// Symlink no caminho: o que vai para o `-v` e o alvo canonico.
+    #[cfg(unix)]
+    #[test]
+    fn mount_de_symlink_usa_o_alvo_canonico() {
+        let base = tempfile::tempdir().expect("tmp");
+        let alvo = base.path().join("alvo");
+        std::fs::create_dir(&alvo).expect("mkdir");
+        let link = base.path().join("link");
+        std::os::unix::fs::symlink(&alvo, &link).expect("symlink");
+        let canonico = alvo.canonicalize().expect("canon");
+        let cmd = linha(&docker_all(), link.to_str().expect("utf8"))
+            .expect("wrap")
+            .expect("aplicado");
+        let esperado = sh_quote(canonico.to_str().expect("utf8"));
+        assert!(
+            cmd.contains(&format!("-v {esperado}:{esperado} -w {esperado}")),
+            "{cmd}"
+        );
+        assert!(!cmd.contains("/link"), "{cmd}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mount_com_dois_pontos_no_caminho_falha_fechado() {
+        let base = tempfile::tempdir().expect("tmp");
+        let dir = base.path().join("a:b");
+        std::fs::create_dir(&dir).expect("mkdir");
+        let err = linha(&docker_all(), dir.to_str().expect("utf8")).expect_err("':'");
+        assert!(err.to_string().contains("fail-closed"), "{err}");
+    }
+
+    // ─── #1225 S2a: wrap_argv ──────────────────────────────────────────
+
+    fn argv(p: &SandboxPolicy, args: &[&str], cwd: Option<&Path>) -> Result<Option<SandboxedArgv>> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        p.wrap_argv_com(true, |_| true, "git_diff", "git", &args, cwd, &[])
+    }
+
+    #[test]
+    fn wrap_argv_off_devolve_none_sem_olhar_backend() {
+        let p = SandboxPolicy {
+            backend: Some(SandboxBackend::Ssh("-o".into())),
+            image: "-x".into(),
+            ..SandboxPolicy::default()
+        };
+        assert_eq!(argv(&p, &["status"], None).expect("off"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrap_argv_monta_o_argv_exato_do_docker() {
+        let base = tempfile::tempdir().expect("tmp");
+        let dir = base.path().canonicalize().expect("canon");
+        let d = dir.to_str().expect("utf8");
+        let sb = argv(&docker_all(), &["$(id)", "; rm", "-x"], Some(&dir))
+            .expect("wrap")
+            .expect("aplicado");
+        assert_eq!(sb.runtime, "docker");
+        let (uid, gid) = uid_gid_do_processo();
+        let esperado: Vec<String> = [
+            "run",
+            "--rm",
+            "--name",
+            sb.nome_do_container.as_str(),
+            "--security-opt",
+            "no-new-privileges",
+            "--cap-drop",
+            "ALL",
+            "--pids-limit",
+            "512",
+            "--user",
+            &format!("{uid}:{gid}"),
+            "-e",
+            "HOME=/tmp",
+            "--network",
+            "none",
+            "-v",
+            &format!("{d}:{d}"),
+            "-w",
+            d,
+            "debian:bookworm-slim",
+            "git",
+            "$(id)",
+            "; rm",
+            "-x",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(sb.argv, esperado);
+        assert!(sb.nome_do_container.starts_with("garra-sbx-"));
+    }
+
+    /// Review da #1272 (SANDBOX-2/5): sem `cwd` e com `mount_workdir` o
+    /// argv e recusado — nunca o cwd do processo montado —; `/` tambem.
+    #[test]
+    fn wrap_argv_sem_cwd_ou_com_raiz_recusa_o_mount() {
+        let e = argv(&docker_all(), &["status"], None).expect_err("sem cwd");
+        assert!(e.to_string().contains("sessao sem working_dir"), "{e}");
+        let e = argv(&docker_all(), &["status"], Some(Path::new("/"))).expect_err("raiz");
+        assert!(e.to_string().contains("fail-closed"), "{e}");
+    }
+
+    /// Review da #1272 (SANDBOX-6): a linha do bash leva `--name` e devolve o
+    /// nome, para o `rm -f` do timeout.
+    #[test]
+    fn linha_do_bash_leva_nome_do_container() {
+        let l = docker_all()
+            .wrap_command_nomeado_com(true, |_| true, "bash", "echo oi", "/tmp")
+            .expect("wrap")
+            .expect("aplicado");
+        let (runtime, nome) = l.container.expect("docker cria container");
+        assert_eq!(runtime, "docker");
+        assert!(nome.starts_with("garra-sbx-"), "{nome}");
+        assert!(l.linha.contains(&format!(" --name {nome} ")), "{}", l.linha);
+    }
+
+    #[test]
+    fn wrap_argv_sem_rede_desligada_e_sem_mount_nao_leva_as_flags() {
+        let p = SandboxPolicy {
+            backend: Some(SandboxBackend::Podman),
+            network_disabled: false,
+            mount_workdir: false,
+            ..docker_all()
+        };
+        let sb = argv(&p, &["status"], None)
+            .expect("wrap")
+            .expect("aplicado");
+        assert_eq!(sb.runtime, "podman");
+        assert!(sb.argv.contains(&"--userns=keep-id".to_string()));
+        assert!(!sb.argv.contains(&"--network".to_string()));
+        assert!(!sb.argv.contains(&"-v".to_string()));
+    }
+
+    #[test]
+    fn wrap_argv_herda_as_recusas_fail_closed() {
+        let casos: Vec<(SandboxPolicy, &str)> = vec![
+            (
+                SandboxPolicy {
+                    image: "--entrypoint=x".into(),
+                    ..docker_all()
+                },
+                "image",
+            ),
+            (
+                SandboxPolicy {
+                    backend: None,
+                    ..docker_all()
+                },
+                "nenhum backend",
+            ),
+            (
+                SandboxPolicy {
+                    backend: Some(SandboxBackend::Ssh("box".into())),
+                    network_disabled: false,
+                    mount_workdir: false,
+                    ..docker_all()
+                },
+                "ssh",
+            ),
+        ];
+        for (p, trecho) in casos {
+            let err = argv(&p, &["status"], None).expect_err(trecho);
+            assert!(err.to_string().contains("fail-closed") || err.to_string().contains(trecho));
+            assert!(err.to_string().contains(trecho), "{err}");
+        }
+        // Fora de unix e binario ausente.
+        let args = vec!["status".to_string()];
+        let e = docker_all()
+            .wrap_argv_com(false, |_| true, "git_diff", "git", &args, None, &[])
+            .expect_err("nao-unix");
+        assert!(e.to_string().contains("fora de unix"), "{e}");
+        let e = docker_all()
+            .wrap_argv_com(true, |_| false, "git_diff", "git", &args, None, &[])
+            .expect_err("ausente");
+        assert!(e.to_string().contains("não encontrado"), "{e}");
+        // Mount invalido.
+        let e = argv(
+            &docker_all(),
+            &["status"],
+            Some(Path::new("/definitivamente/inexistente")),
+        )
+        .expect_err("mount");
+        assert!(e.to_string().contains("mount_workdir"), "{e}");
     }
 
     #[test]

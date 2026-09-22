@@ -377,13 +377,22 @@ impl Tool for BashTool {
         // denylist/risco/read-only. Se aplicável, o comando vira o payload
         // do backend (Docker/Podman com no-new-privileges + --network none);
         // backend ausente => erro fail-closed, nunca fallback para o host.
-        let comando = match self.sandbox.wrap_command(
-            self.name(),
-            comando,
-            context.working_dir.as_deref().unwrap_or("."),
-        ) {
+        //
+        // #1272: o cwd que vai para o mount e SO o da sessao. Sem ele a
+        // string fica vazia e o `wrap_command` recusa fail-closed (so quando
+        // o sandbox se aplica) — nunca `"."` e nunca o cwd do processo, que
+        // num `garra start` aberto no terminal e o `$HOME` inteiro montado rw.
+        let cwd = cwd_do_mount(context);
+        // SANDBOX-6: com docker/podman, `(runtime, nome)` do container, para
+        // o `rm -f` no timeout.
+        let mut container: Option<(String, String)> = None;
+        let comando = match self.sandbox.wrap_command_nomeado(self.name(), comando, cwd) {
             Ok(None) => comando.to_string(),
-            Ok(Some(sandboxed)) => {
+            Ok(Some(crate::sandbox::LinhaSandboxada {
+                linha: sandboxed,
+                container: nome,
+            })) => {
+                container = nome;
                 // `debug!`, e nao `info!`, de proposito — nao promova.
                 //
                 // Ate a #1225 este ramo era inalcancavel (nenhum operador
@@ -418,6 +427,9 @@ impl Tool for BashTool {
 
         let mut cmd = Command::new(shell);
         cmd.arg(arg).arg(comando);
+        // Review da #1272 (SANDBOX-6): o timeout derruba o shell (e o cliente
+        // do docker) em vez de deixa-lo orfao.
+        cmd.kill_on_drop(true);
         // #1270 (paridade do #1269): o filho nunca le a entrada padrao do
         // gateway — em terminal, pipe e servico o comportamento fica o mesmo,
         // e um `cat` sem argumento nao rouba o que o operador digitou no
@@ -487,18 +499,65 @@ impl Tool for BashTool {
                 }
             }
             Ok(Err(e)) => Ok(ToolOutput::error(format!("falha ao executar comando: {e}"))),
-            Err(_) => Ok(ToolOutput::error(format!(
-                "comando excedeu o tempo limite após {}s",
-                self.timeout.as_secs()
-            ))),
+            Err(_) => {
+                // Matar o cliente do docker nao mata o container: sem isto ele
+                // seguia rodando, com o workdir montado rw, depois do timeout.
+                if let Some((runtime, nome)) = &container {
+                    crate::sandbox_spawn::remove_container_por_nome(runtime, nome).await;
+                }
+                Ok(ToolOutput::error(format!(
+                    "comando excedeu o tempo limite após {}s",
+                    self.timeout.as_secs()
+                )))
+            }
         }
     }
+}
+
+/// O diretorio que o sandbox do `bash` monta: o `working_dir` da sessao, ou
+/// vazio — que o `wrap_command` recusa. Nunca o cwd do processo.
+fn cwd_do_mount(context: &ToolContext) -> &str {
+    context.working_dir.as_deref().unwrap_or("")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::approval::ToolApproval;
+
+    /// Review da #1272 (SANDBOX-2/5): sem `working_dir` o mount pedido e
+    /// vazio (recusa fail-closed), nunca o cwd do processo.
+    #[test]
+    fn sem_working_dir_o_mount_nao_cai_no_cwd_do_processo() {
+        let sem = ctx(false);
+        assert_eq!(cwd_do_mount(&sem), "");
+        let com = ToolContext {
+            working_dir: Some("/srv/projeto".into()),
+            ..ctx(false)
+        };
+        assert_eq!(cwd_do_mount(&com), "/srv/projeto");
+    }
+
+    /// Pelo caminho da tool: sandbox exigido e sessao sem `working_dir` =>
+    /// o comando nao roda (nem no host, nem num container com o cwd do
+    /// processo montado).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sandbox_sem_working_dir_recusa_o_comando() {
+        let mut tool = BashTool::new(None);
+        tool.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+            mode: crate::sandbox::SandboxMode::All,
+            backend: Some(crate::sandbox::SandboxBackend::Docker),
+            ..crate::sandbox::SandboxPolicy::default()
+        });
+        let saida = tool
+            .execute(&ctx(false), serde_json::json!({"command": "echo nunca"}))
+            .await
+            .expect("execute");
+        assert!(saida.is_error, "{}", saida.content);
+        assert!(saida.content.contains("fail-closed"), "{}", saida.content);
+        assert!(!saida.content.contains("nunca\n"), "{}", saida.content);
+    }
 
     /// `approved` liga a aprovacao PARA O COMANDO que o teste vai rodar.
     /// Antes era um booleano solto que valia para qualquer comando — e era

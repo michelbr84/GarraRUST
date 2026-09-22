@@ -47,11 +47,9 @@ pub fn parece_opcao(valor: &str) -> bool {
 /// Tools que hoje consultam a `SandboxPolicy` — ou seja, as unicas que
 /// `sandboxed_tools`/`elevated` conseguem afetar.
 ///
-/// Espelho de `garraia-agents`: a policy e lida dentro do `BashTool` e em
-/// nenhum outro lugar. `run_tests`, `git_diff`, `code_review` e
-/// `repo_search` nascem no host mesmo com `mode: all`. Listar qualquer uma
-/// delas aqui nao tem efeito, e o `config check` diz isso em vez de deixar
-/// o operador acreditar que listou.
+/// Espelho de `garraia-agents`: a policy e lida pelo `BashTool`
+/// (`wrap_command`) e, desde a #1225 S2, por `sandbox_spawn::executar`, por
+/// onde `run_tests`, `git_diff`, `code_review` e `repo_search` spawnam.
 ///
 /// # Por que um espelho, e o que o prende
 ///
@@ -66,7 +64,13 @@ pub fn parece_opcao(valor: &str) -> bool {
 /// Por isso ha um teste em `garraia-gateway` (a unica crate que ve as duas)
 /// que varre o fonte de `garraia-agents` e falha se esta lista divergir das
 /// tools que de fato consultam a policy.
-pub const TOOLS_SANDBOXAVEIS: &[&str] = &["bash"];
+pub const TOOLS_SANDBOXAVEIS: &[&str] = &[
+    "bash",
+    "run_tests",
+    "git_diff",
+    "code_review",
+    "repo_search",
+];
 
 /// Tools que spawnam processo **sem consultar** a policy — rodam no host com
 /// qualquer `mode`, inclusive `all` (#1225 S2). E a outra metade do espelho
@@ -81,7 +85,10 @@ pub const TOOLS_SANDBOXAVEIS: &[&str] = &["bash"];
 /// motivo (a aresta `config -> agents` custa mais que uma lista) e com a
 /// mesma tranca: um teste em `garraia-gateway` compara as duas, e um teste em
 /// `garraia-agents` varre `src/tools/` para a const de la refletir o codigo.
-pub const TOOLS_SO_NO_HOST: &[&str] = &["run_tests", "git_diff", "code_review", "repo_search"];
+///
+/// **Vazia desde a #1225 S2b**: as quatro tools passaram a consultar a
+/// policy (`garraia_agents::sandbox_spawn`).
+pub const TOOLS_SO_NO_HOST: &[&str] = &[];
 
 /// Modo de aplicacao do sandbox por tool (`agent.sandbox.mode`, #1225).
 ///

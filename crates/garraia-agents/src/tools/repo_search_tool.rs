@@ -3,12 +3,12 @@
 //! Searches code semantically using grep + file pattern matching.
 //! Returns matching file paths, line numbers, and context.
 
+use super::{Tool, ToolContext, ToolOutput};
+use crate::sandbox::SandboxPolicy;
+use crate::sandbox_spawn::{Desfecho, Pedido};
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use std::time::Duration;
-use tokio::process::Command;
-
-use super::{Tool, ToolContext, ToolOutput};
 
 /// Maximum output size in bytes
 const MAX_OUTPUT_BYTES: usize = 32 * 1024;
@@ -102,6 +102,8 @@ fn findstr_args(query: &str) -> Vec<String> {
 pub struct RepoSearchTool {
     timeout: Duration,
     max_results: usize,
+    /// #1225 S2: `agent.sandbox`. Default `off` = host, como sempre.
+    sandbox: SandboxPolicy,
 }
 
 impl RepoSearchTool {
@@ -110,7 +112,21 @@ impl RepoSearchTool {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
             max_results: max_results.unwrap_or(DEFAULT_MAX_RESULTS),
+            sandbox: SandboxPolicy::default(),
         }
+    }
+
+    /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
+    pub fn set_sandbox_policy(&mut self, policy: SandboxPolicy) {
+        self.sandbox = policy;
+    }
+
+    /// #1225 S2: [`Self::set_sandbox_policy`] em forma de builder, para o
+    /// ponto de registro.
+    #[must_use = "devolve a tool com a policy; o receptor e consumido"]
+    pub fn com_sandbox(mut self, policy: SandboxPolicy) -> Self {
+        self.sandbox = policy;
+        self
     }
 
     /// Truncate output if too large
@@ -190,36 +206,30 @@ impl Tool for RepoSearchTool {
         // processo — o diretorio da sessao, quando ha um, e o que o usuario
         // quer dizer com "o repositorio" (auditoria do #1039: sem isto, um
         // gateway lancado de dentro de um repo buscava nesse repo).
-        let mut cmd = Command::new("rg");
-        if let Some(wd) = context.working_dir.as_deref() {
-            cmd.current_dir(wd);
-        }
-        // #1075 R3 (parity — auditoria do hardening): o filho herda só a
-        // allowlist de env (RIPGREP_CONFIG_PATH do pai não alcança o rg).
-        #[cfg(unix)]
-        {
-            cmd.env_clear();
-            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
-                cmd.env(key, value);
-            }
-        }
-        // #1266: o filho nunca le a entrada padrao do gateway. Sem isto o
-        // ripgrep decide o que fazer olhando o stdin herdado — com um pipe no
-        // lugar (`garra ask`, teste, servico), ele **busca no stdin** em vez de
-        // varrer o diretorio, e fica pendurado ate o timeout consumindo a
-        // entrada de quem o chamou. `Stdio::null()` torna o comportamento o
-        // mesmo em terminal, pipe e servico.
-        cmd.stdin(std::process::Stdio::null()).args(rg_args(
-            query,
-            file_pattern,
-            context_lines,
-            max_results,
-        ));
+        //
+        // #1225 S2: o spawn passa por `sandbox_spawn::executar`, que consulta
+        // `agent.sandbox` — no container quando a policy se aplica, nunca no
+        // host quando ela foi pedida e nao pode ser aplicada. La tambem moram
+        // o `stdin` nulo (#1266: sem ele o ripgrep busca no stdin herdado e
+        // fica pendurado) e a allowlist de env (#1075 R3: o
+        // RIPGREP_CONFIG_PATH do pai nao alcanca o rg).
+        let cwd = context.working_dir.as_deref().map(std::path::Path::new);
+        let args_rg = rg_args(query, file_pattern, context_lines, max_results);
+        let rg = crate::sandbox_spawn::executar(
+            &self.sandbox,
+            Pedido {
+                tool: self.name(),
+                programa: "rg",
+                args: &args_rg,
+                cwd,
+                env: &[],
+                timeout: self.timeout,
+            },
+        )
+        .await;
 
-        let result = tokio::time::timeout(self.timeout, cmd.output()).await;
-
-        match result {
-            Ok(Ok(output)) => {
+        match rg {
+            Desfecho::Saida(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -243,38 +253,29 @@ impl Tool for RepoSearchTool {
 
                 Ok(ToolOutput::success(self.truncate_output(&combined)))
             }
-            Ok(Err(e)) => {
-                // rg not found, try grep as fallback
-                let mut grep_cmd = Command::new(if cfg!(target_os = "windows") {
-                    "findstr"
+            Desfecho::NaoExecutou(e) => {
+                // rg nao existe (no host, ou na imagem do sandbox): grep no
+                // MESMO lugar — o fallback nunca troca container por host.
+                let (programa, args) = if cfg!(target_os = "windows") {
+                    ("findstr", findstr_args(query))
                 } else {
-                    "grep"
-                });
-                if let Some(wd) = context.working_dir.as_deref() {
-                    grep_cmd.current_dir(wd);
-                }
-                // #1075 R3 (parity): mesma allowlist do rg acima.
-                #[cfg(unix)]
-                {
-                    grep_cmd.env_clear();
-                    for (key, value) in garraia_common::safety_gate::allowed_child_env() {
-                        grep_cmd.env(key, value);
-                    }
-                }
-
-                // #1266: mesma regra do rg — o fallback tambem nao herda stdin.
-                grep_cmd.stdin(std::process::Stdio::null());
-
-                if cfg!(target_os = "windows") {
-                    grep_cmd.args(findstr_args(query));
-                } else {
-                    grep_cmd.args(grep_args(query, context_lines));
-                }
-
-                let fallback = tokio::time::timeout(self.timeout, grep_cmd.output()).await;
+                    ("grep", grep_args(query, context_lines))
+                };
+                let fallback = crate::sandbox_spawn::executar(
+                    &self.sandbox,
+                    Pedido {
+                        tool: self.name(),
+                        programa,
+                        args: &args,
+                        cwd,
+                        env: &[],
+                        timeout: self.timeout,
+                    },
+                )
+                .await;
 
                 match fallback {
-                    Ok(Ok(output)) => {
+                    Desfecho::Saida(output) => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         if stdout.is_empty() {
                             Ok(ToolOutput::success("No matches found."))
@@ -282,17 +283,19 @@ impl Tool for RepoSearchTool {
                             Ok(ToolOutput::success(self.truncate_output(&stdout)))
                         }
                     }
-                    Ok(Err(e2)) => Ok(ToolOutput::error(format!(
+                    Desfecho::NaoExecutou(e2) => Ok(ToolOutput::error(format!(
                         "Search failed (rg: {}, grep: {})",
                         e, e2
                     ))),
-                    Err(_) => Ok(ToolOutput::error(format!(
+                    Desfecho::Recusado(motivo) => Ok(ToolOutput::error(motivo)),
+                    Desfecho::Timeout => Ok(ToolOutput::error(format!(
                         "Search timed out after {}s",
                         self.timeout.as_secs()
                     ))),
                 }
             }
-            Err(_) => Ok(ToolOutput::error(format!(
+            Desfecho::Recusado(motivo) => Ok(ToolOutput::error(motivo)),
+            Desfecho::Timeout => Ok(ToolOutput::error(format!(
                 "Search timed out after {}s",
                 self.timeout.as_secs()
             ))),

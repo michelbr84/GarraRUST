@@ -659,7 +659,7 @@ jobs:
         timeout-minutes: 10
         env:
           GARRAIA_REQUIRE_DOCKER: "1"
-        run: cargo test -p garraia-agents --test sandbox_docker -- --nocapture
+        run: cargo test -p garraia-agents --test sandbox_docker --test sandbox_docker_escape --test sandbox_docker_tools -- --nocapture
 
   # Supply-chain gate: license allow-list + crate bans + registry source bans
   # + RustSec advisories. Uses deny.toml at the repo root. Runs in parallel
