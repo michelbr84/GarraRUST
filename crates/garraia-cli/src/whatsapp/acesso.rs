@@ -518,7 +518,9 @@ pub fn pos_link(
             .unwrap_or(false)
     };
 
-    if quer_adicionar && let Some(numero) = obter_numero(ctx, prompter, phone_last4, pre) {
+    if quer_adicionar
+        && let Some(numero) = obter_numero(ctx, prompter, phone_last4, pre, antes.autorizados == 0)
+    {
         let papel = if pod
             && (pre.owner
                 || prompter
@@ -557,6 +559,7 @@ fn obter_numero(
     prompter: &dyn Prompter,
     phone_last4: Option<&str>,
     pre: &Pedido,
+    portao_vazio: bool,
 ) -> Option<String> {
     if let Some(raw) = pre.numero.as_deref() {
         // Ja validado por `validar_pre_link`; normaliza de novo so para nao
@@ -564,15 +567,17 @@ fn obter_numero(
         let numero = normalizar_numero(raw).ok()?;
         return confirmar_se_proprio(ctx, prompter, phone_last4, numero);
     }
-    println!();
-    println!(
-        "{}",
-        t(
-            ctx.lang,
-            "Quem pode falar com o GarraIA por este WhatsApp? Ninguém, até você autorizar.",
-            "Who may talk to GarraIA through this WhatsApp? Nobody, until you authorize someone.",
-        )
-    );
+    if portao_vazio {
+        println!();
+        println!(
+            "{}",
+            t(
+                ctx.lang,
+                "Quem pode falar com o GarraIA por este WhatsApp? Ninguém, até você autorizar.",
+                "Who may talk to GarraIA through this WhatsApp? Nobody, until you authorize someone.",
+            )
+        );
+    }
     let prompt = t(
         ctx.lang,
         "Número autorizado, com código do país (ex.: +55 11 99999-8888; vazio = ninguém por enquanto)",
