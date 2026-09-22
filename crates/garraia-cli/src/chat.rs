@@ -1060,6 +1060,12 @@ async fn offer_pull_ollama_model(
 /// over every configured model, and — when it names a tag the local Ollama
 /// daemon has installed — it also selects the provider (see
 /// [`try_local_ollama_model`]).
+/// A chave que o [`detect_provider`] devolve quando nada respondeu: nenhum
+/// provider configurado, nenhuma chave no ambiente e nenhum Ollama local com
+/// saude. Quem precisa distinguir "achei um provider" de "sobrou o palpite"
+/// (o `max-power`, que tem caminho offline) compara com ela.
+pub(crate) const OLLAMA_ULTIMO_RECURSO: &str = "ollama (offline)";
+
 pub async fn detect_provider(
     config: &AppConfig,
     url_override: Option<&str>,
@@ -1233,7 +1239,7 @@ pub async fn detect_provider(
     // provider that needs no credential at all.
     let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url));
     (
-        "ollama (offline)".to_string(),
+        OLLAMA_ULTIMO_RECURSO.to_string(),
         model,
         Arc::new(ollama) as Arc<dyn LlmProvider>,
     )

@@ -59,6 +59,26 @@ pub struct OllamaProvider {
     client: Client,
 }
 
+/// O Ollama explica a recusa no corpo (`{"error":"model 'x' not found"}`), e
+/// so o status ("404 Not Found") nao diz o que fazer: o dogfood da #1228
+/// parou nesse texto com o modelo padrao ausente. O motivo entra truncado,
+/// porque o corpo e do servidor e pode ser qualquer coisa.
+async fn erro_de_status(res: reqwest::Response) -> Error {
+    const TETO: usize = 200;
+    let status = res.status();
+    let corpo = res.text().await.unwrap_or_default();
+    let motivo = serde_json::from_str::<serde_json::Value>(&corpo)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .unwrap_or(corpo);
+    let motivo: String = motivo.trim().chars().take(TETO).collect();
+    if motivo.is_empty() {
+        Error::Agent(format!("ollama error status: {status}"))
+    } else {
+        Error::Agent(format!("ollama error status: {status}: {motivo}"))
+    }
+}
+
 impl OllamaProvider {
     pub fn new(model: Option<String>, base_url: Option<String>) -> Self {
         // Redirects off by default (issue #1248, rule 14): even a local
@@ -230,10 +250,7 @@ impl OllamaProvider {
             .map_err(|e| erro_de_envio("ollama request failed", &e))?;
 
         if !res.status().is_success() {
-            return Err(Error::Agent(format!(
-                "ollama error status: {}",
-                res.status()
-            )));
+            return Err(erro_de_status(res).await);
         }
 
         let stream = res
@@ -343,10 +360,7 @@ impl OllamaProvider {
             .map_err(|e| Error::Agent(format!("failed to list models: {e}")))?;
 
         if !res.status().is_success() {
-            return Err(Error::Agent(format!(
-                "ollama error status: {}",
-                res.status()
-            )));
+            return Err(erro_de_status(res).await);
         }
 
         let models_res: OllamaModelsResponse = res
@@ -511,10 +525,7 @@ impl LlmProvider for OllamaProvider {
             .map_err(|e| erro_de_envio("ollama request failed", &e))?;
 
         if !res.status().is_success() {
-            return Err(Error::Agent(format!(
-                "ollama error status: {}",
-                res.status()
-            )));
+            return Err(erro_de_status(res).await);
         }
 
         let ollama_res: OllamaResponse = res
@@ -697,6 +708,15 @@ mod tests {
                 }),
             )
             .route(
+                "/sem-modelo/api/chat",
+                post(|| async {
+                    (
+                        axum::http::StatusCode::NOT_FOUND,
+                        "{\"error\":\"model 'qwen3.8:latest' not found\"}",
+                    )
+                }),
+            )
+            .route(
                 "/api/pull",
                 post(|Json(payload): Json<Value>| async move {
                     let model = payload
@@ -807,6 +827,37 @@ mod tests {
         assert_eq!(n("anthropic/claude-sonnet-4-5"), None);
         assert_eq!(n(""), None);
         assert_eq!(n("   "), None);
+    }
+
+    #[tokio::test]
+    async fn status_de_erro_traz_o_motivo_do_ollama() {
+        let (url, stop) = run_mock_server().await;
+        let provider = OllamaProvider::new(
+            Some("qwen3.8:latest".to_string()),
+            Some(format!("{url}/sem-modelo")),
+        );
+        let request = LlmRequest {
+            model: String::new(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text("oi".to_string()),
+            }],
+            system: None,
+            max_tokens: None,
+            temperature: None,
+            tools: vec![],
+        };
+        let erro = provider
+            .complete(&request)
+            .await
+            .expect_err("404 tem de falhar")
+            .to_string();
+        let _ = stop.send(());
+        assert!(erro.contains("404"), "{erro}");
+        assert!(
+            erro.contains("model 'qwen3.8:latest' not found"),
+            "o motivo do Ollama tem de chegar ao erro: {erro}"
+        );
     }
 
     #[tokio::test]

@@ -306,6 +306,9 @@ impl AgentTeam {
                     fwd_tx.send((p, output)).ok();
                 }
                 Ok(ExecMsg::Failed { phase: p, reason }) => {
+                    // #1228: a tela mostra a linha, mas sem isto a falha nao
+                    // chegava ao `garraia.log` e nao havia o que investigar.
+                    tracing::warn!(phase = ?p, skill = skill_name, "max-power: etapa falhou: {reason}");
                     let output = SkillRunOutput {
                         skill_name: skill_name.to_string(),
                         summary: format!("execution failed: {reason}"),

@@ -88,11 +88,13 @@ pub async fn run_provider_backed(
         return Ok(output);
     }
     let Some(completer) = completer else {
-        output.next_steps.push(
+        // #1228: o nome do binario em execucao, nao o alias `garra`, que
+        // nao existe numa maquina so com o `garraia` (imagem, `cargo install`).
+        output.next_steps.push(format!(
             "Provider-backed execution unavailable: no completer configured \
-             (run `garra max-power` with a default provider to enable it)."
-                .into(),
-        );
+             (run `{} max-power` with a default provider to enable it).",
+            garraia_common::executavel::nome()
+        ));
         return Ok(output);
     };
 
@@ -203,6 +205,9 @@ mod tests {
         assert!(out.model_output.is_none());
         let last = out.next_steps.last().expect("hint appended");
         assert!(last.contains("no completer configured"), "got: {last}");
+        // No harness de teste o executavel nao e `garra` nem `garraia`, e o
+        // helper cai no nome canonico: o alias fixo antigo nao volta (#1228).
+        assert!(last.contains("`garraia max-power`"), "got: {last}");
     }
 
     #[tokio::test]
