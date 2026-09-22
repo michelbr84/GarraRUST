@@ -72,6 +72,11 @@ async fn start_test_gateway_bound_to_wildcard(skins_dir: &str) -> String {
     let mut config = AppConfig::default();
     config.gateway.port = port;
     config.gateway.host = "0.0.0.0".to_string();
+    // #1261: bind exposto sem credencial recusa o boot. Este teste e sobre o
+    // portao de admin das rotas de skins nesse cenario, entao declara o
+    // opt-out explicito que existe exatamente para ele (LAN confiavel com
+    // firewall); sem esta linha o gateway nao sobe e o teste nao prova nada.
+    config.gateway.allow_unauthenticated_network_bind = true;
     config.memory.enabled = false;
     config.mcp.clear();
 
