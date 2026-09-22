@@ -437,7 +437,7 @@
       "ledger_md_anchor": "alert-174"
     },
     {
-      "alert_number": 177,
+      "alert_number": 178,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-channels/src/whatsapp_linked/bridge.rs",
       "line": 629,
@@ -446,10 +446,10 @@
       "dismissed_reason": "false_positive",
       "justification": "Falso-positivo da mesma classe do #174, no mesmo diretorio. O `dir` de `deps_pending` e o diretorio do bridge Node que o `prepare` recebe (#1373): `PreparoDaPonte::embutido(paths.bridge_dir)` no gateway (crates/garraia-gateway/src/bootstrap/whatsapp_linked.rs) e `ctx.bridge_dir()` na CLI (crates/garraia-cli/src/whatsapp.rs), os dois derivados de `AppConfig::resolved_data_dir()` do config.yml do operador. O arquivo lido e o carimbo `DEPS_STAMP_FILE`, nome constante; nenhum byte de request HTTP, de mensagem de canal ou de tool call de LLM alcanca o caminho, e quem controla o config.yml ja controla o processo. O CodeQL marca caminho vindo de config como 'user-provided' porque nao distingue operador local de remetente remoto (a limitacao do #174 e dos 16 `rust/path-injection` do GAR-490). A leitura e so `stat` + no maximo 7 bytes do marcador `pending`, sem seguir o conteudo para outro caminho. Deixa de valer, junto com o #174, se o diretorio do bridge passar a vir de request, canal ou LLM.",
       "gar_ref": "PR-1373",
-      "ledger_md_anchor": "alert-177"
+      "ledger_md_anchor": "alert-178"
     },
     {
-      "alert_number": 178,
+      "alert_number": 177,
       "rule_id": "rust/path-injection",
       "path": "crates/garraia-channels/src/whatsapp_linked/bridge.rs",
       "line": 631,
@@ -458,7 +458,7 @@
       "dismissed_reason": "false_positive",
       "justification": "Falso-positivo da mesma classe do #174, no mesmo diretorio. O `dir` de `deps_pending` e o diretorio do bridge Node que o `prepare` recebe (#1373): `PreparoDaPonte::embutido(paths.bridge_dir)` no gateway (crates/garraia-gateway/src/bootstrap/whatsapp_linked.rs) e `ctx.bridge_dir()` na CLI (crates/garraia-cli/src/whatsapp.rs), os dois derivados de `AppConfig::resolved_data_dir()` do config.yml do operador. O arquivo lido e o carimbo `DEPS_STAMP_FILE`, nome constante; nenhum byte de request HTTP, de mensagem de canal ou de tool call de LLM alcanca o caminho, e quem controla o config.yml ja controla o processo. O CodeQL marca caminho vindo de config como 'user-provided' porque nao distingue operador local de remetente remoto (a limitacao do #174 e dos 16 `rust/path-injection` do GAR-490). A leitura e so `stat` + no maximo 7 bytes do marcador `pending`, sem seguir o conteudo para outro caminho. Deixa de valer, junto com o #174, se o diretorio do bridge passar a vir de request, canal ou LLM.",
       "gar_ref": "PR-1373",
-      "ledger_md_anchor": "alert-178"
+      "ledger_md_anchor": "alert-177"
     }
   ]
 }
