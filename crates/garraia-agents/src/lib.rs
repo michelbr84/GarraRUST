@@ -77,4 +77,6 @@ pub use tools::{
 pub use turn_events::{TurnEvent, TurnSink, summarize_tool_input, summarize_tool_output};
 
 #[cfg(feature = "mcp")]
+pub use mcp::{McpFailureCause, McpServerState, McpServerStatus};
+#[cfg(feature = "mcp")]
 pub use mcp::{McpManager, McpPromptInfo, McpResourceInfo, McpToolInfo};

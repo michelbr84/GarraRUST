@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,9 +13,10 @@ use rmcp::service::{Peer, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::child_env::{build_child_env, parent_env_pairs};
+use super::npx_cache::{self, McpFailureCause};
 use super::tool_bridge::McpTool;
 use crate::tools::Tool;
 
@@ -223,6 +225,70 @@ impl McpConnection {
     }
 }
 
+/// Issue #1346: what the gateway knows about one configured MCP server,
+/// connected or not. Built by [`McpManager::server_statuses`] for
+/// `/api/mcp/health` and `/api/diagnostics`; every field is secret-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerState {
+    /// Live transport.
+    Connected,
+    /// In `connections` but the transport died; the health monitor will
+    /// retry it.
+    Disconnected,
+    /// Not connected, automatic retries still left.
+    Retrying,
+    /// Not connected and `max_restarts` exhausted: only a manual admin
+    /// restart brings it back.
+    Failed,
+}
+
+impl McpServerState {
+    /// Stable label used by the HTTP surfaces.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            McpServerState::Connected => "ok",
+            McpServerState::Disconnected => "disconnected",
+            McpServerState::Retrying => "retrying",
+            McpServerState::Failed => "failed",
+        }
+    }
+}
+
+/// One row of [`McpManager::server_statuses`].
+#[derive(Debug, Clone)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub state: McpServerState,
+    pub tool_count: usize,
+    /// Automatic restarts attempted since the last stable connection.
+    pub attempts: u32,
+    pub max_restarts: u32,
+    /// Classified cause of the last failed connect, if any.
+    pub cause: Option<McpFailureCause>,
+    /// Short (<= 200 chars) message of the last failed connect. Built by the
+    /// gateway from rmcp/io errors, never from the child's stderr.
+    pub last_error: Option<String>,
+}
+
+/// Last failed connect of one server (issue #1346).
+#[derive(Clone, Debug)]
+struct FailureRecord {
+    cause: McpFailureCause,
+    message: String,
+}
+
+/// Longest `last_error` exposed by [`McpServerStatus`].
+const LAST_ERROR_MAX_CHARS: usize = 200;
+
+/// A failed stdio connect: the error plus what is needed to diagnose it.
+struct StdioFailure {
+    error: Error,
+    cause: McpFailureCause,
+    /// The environment the child was actually spawned with — the only
+    /// source the npm cache root is resolved from.
+    child_env: Vec<(String, String)>,
+}
+
 /// Manages the lifecycle of MCP server connections.
 pub struct McpManager {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
@@ -238,6 +304,16 @@ pub struct McpManager {
     /// quando ele é mais lido — sem, em troca, dizer nada de novo. O primeiro
     /// connect avisa alto; os reconnects registram em `debug!`.
     inherit_env_warned: Arc<RwLock<HashSet<String>>>,
+    /// #1346: last failed connect per server, for `server_statuses`.
+    failures: Arc<RwLock<HashMap<String, FailureRecord>>>,
+    /// #1346: servers whose npx cache entry was already cleared once in this
+    /// process. The recovery is one-shot per server; a manual admin restart
+    /// (`reset_restart_state`) re-arms it.
+    npx_recovered: Arc<RwLock<HashSet<String>>>,
+    /// #1346: servers whose "max restarts reached" error was already logged.
+    /// Without this, an exhausted server parked in `pending` logged the same
+    /// `error!` on every 30s tick, forever.
+    exhausted_reported: Arc<RwLock<HashSet<String>>>,
 }
 
 /// `(name, params, allowed_tools)` for one server needing a (re)connect.
@@ -263,6 +339,9 @@ impl McpManager {
             restart_states: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
             inherit_env_warned: Arc::new(RwLock::new(HashSet::new())),
+            failures: Arc::new(RwLock::new(HashMap::new())),
+            npx_recovered: Arc::new(RwLock::new(HashSet::new())),
+            exhausted_reported: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -348,6 +427,13 @@ impl McpManager {
     /// `allowed_tools`: GAR-190 tool allowlist. Pass an empty `Vec` to allow all tools.
     /// `memory_limit_mb`: GAR-293 — max virtual memory in MB (Unix only). `None` = no limit.
     /// `max_restarts` / `restart_delay_secs`: GAR-293 backoff config.
+    ///
+    /// Issue #1346: the child's stderr is captured (forwarded at `debug!`,
+    /// tail kept for classification). When the spawn fails because the npx
+    /// cache entry of the configured package is corrupt, that single
+    /// `<npm cache>/_npx/<16 hex>` directory is removed — after
+    /// [`npx_cache::validate_candidate`] — and the connect is retried once.
+    /// At most once per server per process.
     #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         &self,
@@ -362,6 +448,148 @@ impl McpManager {
         restart_delay_secs: u64,
         inherit_env: bool,
     ) -> Result<()> {
+        let first = self
+            .connect_stdio_once(
+                name,
+                command,
+                args,
+                env,
+                timeout_secs,
+                allowed_tools.clone(),
+                memory_limit_mb,
+                max_restarts,
+                restart_delay_secs,
+                inherit_env,
+            )
+            .await;
+        let failure = match first {
+            Ok(()) => {
+                self.failures.write().await.remove(name);
+                return Ok(());
+            }
+            Err(f) => f,
+        };
+
+        let failure = if self
+            .try_recover_npx_cache(name, command, args, &failure)
+            .await
+        {
+            match self
+                .connect_stdio_once(
+                    name,
+                    command,
+                    args,
+                    env,
+                    timeout_secs,
+                    allowed_tools,
+                    memory_limit_mb,
+                    max_restarts,
+                    restart_delay_secs,
+                    inherit_env,
+                )
+                .await
+            {
+                Ok(()) => {
+                    info!("MCP server '{name}' connected after clearing its npx cache entry");
+                    self.failures.write().await.remove(name);
+                    return Ok(());
+                }
+                Err(f) => f,
+            }
+        } else {
+            failure
+        };
+
+        let hint = cause_hint(&failure.cause);
+        let message = format!("{}{hint}", failure.error);
+        self.record_failure(name, failure.cause, &message).await;
+        Err(Error::Mcp(message))
+    }
+
+    /// #1346: clear the corrupt npx cache entry named by `failure`, when every
+    /// guard holds. Returns `true` only when a directory was removed (and the
+    /// caller should retry once).
+    async fn try_recover_npx_cache(
+        &self,
+        name: &str,
+        command: &str,
+        args: &[String],
+        failure: &StdioFailure,
+    ) -> bool {
+        let McpFailureCause::NpxCacheCorrupt { dir: Some(dir) } = &failure.cause else {
+            return false;
+        };
+        if !npx_cache::is_npx_command(command) {
+            return false;
+        }
+        // One shot per server per process — armed BEFORE any check, so a
+        // refused or failed attempt does not get a second chance either.
+        if !self.npx_recovered.write().await.insert(name.to_string()) {
+            debug!(server = %name, "npx cache recovery already used for this server");
+            return false;
+        }
+        let Some(package) = npx_cache::package_from_args(args) else {
+            warn!(server = %name, "MCP server '{name}': npx cache looks corrupt but the package could not be read from args; not clearing anything");
+            return false;
+        };
+        let Some(root) = npx_cache::npm_cache_root(&failure.child_env, cfg!(windows)) else {
+            warn!(server = %name, "MCP server '{name}': npx cache looks corrupt but the npm cache root could not be resolved; not clearing anything");
+            return false;
+        };
+        let target = match npx_cache::validate_candidate(&root, dir, &package) {
+            Ok(t) => t,
+            Err(refusal) => {
+                warn!(
+                    server = %name,
+                    "MCP server '{name}': refusing to clear {} ({refusal})",
+                    dir.display()
+                );
+                return false;
+            }
+        };
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => {
+                warn!(
+                    server = %name,
+                    "MCP server '{name}': npx cache entry {} was corrupt (missing module); removed it, retrying once",
+                    target.display()
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    server = %name,
+                    "MCP server '{name}': could not remove corrupt npx cache entry {}: {e}",
+                    target.display()
+                );
+                false
+            }
+        }
+    }
+
+    async fn record_failure(&self, name: &str, cause: McpFailureCause, message: &str) {
+        let message: String = message.chars().take(LAST_ERROR_MAX_CHARS).collect();
+        self.failures
+            .write()
+            .await
+            .insert(name.to_string(), FailureRecord { cause, message });
+    }
+
+    /// One spawn + handshake + tools/list attempt.
+    #[allow(clippy::too_many_arguments)]
+    async fn connect_stdio_once(
+        &self,
+        name: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        timeout_secs: u64,
+        allowed_tools: Vec<String>,
+        memory_limit_mb: Option<u64>,
+        max_restarts: u32,
+        restart_delay_secs: u64,
+        inherit_env: bool,
+    ) -> std::result::Result<(), StdioFailure> {
         // On Windows, script wrappers like `npx`, `uvx`, `yarn`, etc. are `.cmd`
         // files that cannot be spawned directly by CreateProcess. We wrap them in
         // `cmd /c <command> [args...]` so the shell resolves the extension.
@@ -416,7 +644,8 @@ impl McpManager {
             }
         }
         cmd.env_clear();
-        for (key, value) in build_child_env(parent_env_pairs(), env, inherit_env) {
+        let child_env = build_child_env(parent_env_pairs(), env, inherit_env);
+        for (key, value) in &child_env {
             cmd.env(key, value);
         }
 
@@ -447,29 +676,78 @@ impl McpManager {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         apply_parent_death_signal(&mut cmd);
 
-        let transport = TokioChildProcess::new(cmd)
-            .map_err(|e| Error::Mcp(format!("failed to spawn MCP server '{name}': {e}")))?;
+        // #1346: stderr is piped, not inherited. Inherited, every failed
+        // retry dumped the child's whole Node stack trace into the gateway
+        // log, and the manager could not tell what went wrong.
+        let (transport, stderr) = match TokioChildProcess::builder(cmd)
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                return Err(StdioFailure {
+                    error: Error::Mcp(format!("failed to spawn MCP server '{name}': {e}")),
+                    cause: McpFailureCause::Other,
+                    child_env,
+                });
+            }
+        };
+        let drain = stderr.map(|s| npx_cache::spawn_stderr_drain(name, s));
 
-        let service = tokio::time::timeout(Duration::from_secs(timeout_secs), ().serve(transport))
-            .await
-            .map_err(|_| {
-                Error::Mcp(format!(
+        let service = match tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            ().serve(transport),
+        )
+        .await
+        {
+            Ok(Ok(service)) => service,
+            Ok(Err(e)) => {
+                let error = Error::Mcp(format!("MCP server '{name}' handshake failed: {e}"));
+                let cause = classify_after_exit(drain).await;
+                return Err(StdioFailure {
+                    error,
+                    cause,
+                    child_env,
+                });
+            }
+            Err(_) => {
+                let error = Error::Mcp(format!(
                     "MCP server '{name}' handshake timed out after {timeout_secs}s"
-                ))
-            })?
-            .map_err(|e| Error::Mcp(format!("MCP server '{name}' handshake failed: {e}")))?;
+                ));
+                let cause = classify_after_exit(drain).await;
+                return Err(StdioFailure {
+                    error,
+                    cause,
+                    child_env,
+                });
+            }
+        };
 
         // Discover tools. Timeout mirrors the handshake above: a child that
         // spawns but never answers tools/list must not block gateway startup.
-        let mcp_tools =
-            tokio::time::timeout(Duration::from_secs(timeout_secs), service.list_all_tools())
-                .await
-                .map_err(|_| {
-                    Error::Mcp(format!(
+        let listed =
+            tokio::time::timeout(Duration::from_secs(timeout_secs), service.list_all_tools()).await;
+        let mcp_tools = match listed {
+            Ok(Ok(tools)) => tools,
+            Ok(Err(e)) => {
+                drop(service);
+                return Err(StdioFailure {
+                    error: Error::Mcp(format!("failed to list tools from '{name}': {e}")),
+                    cause: classify_after_exit(drain).await,
+                    child_env,
+                });
+            }
+            Err(_) => {
+                drop(service);
+                return Err(StdioFailure {
+                    error: Error::Mcp(format!(
                         "MCP server '{name}' tools/list timed out after {timeout_secs}s"
-                    ))
-                })?
-                .map_err(|e| Error::Mcp(format!("failed to list tools from '{name}': {e}")))?;
+                    )),
+                    cause: classify_after_exit(drain).await,
+                    child_env,
+                });
+            }
+        };
 
         let tools: Vec<McpToolInfo> = mcp_tools
             .into_iter()
@@ -640,6 +918,10 @@ impl McpManager {
             state.reset();
             info!("MCP server '{name}' restart counter reset (manual restart)");
         }
+        // #1346: a manual restart re-arms the one-shot npx recovery and the
+        // one-shot "exhausted" error.
+        self.npx_recovered.write().await.remove(name);
+        self.exhausted_reported.write().await.remove(name);
     }
 
     /// Issue #1262: fully forget a server so the health monitor cannot
@@ -661,6 +943,9 @@ impl McpManager {
     pub async fn forget(&self, name: &str) {
         let pending = self.pending.write().await.remove(name).is_some();
         let restart = self.restart_states.write().await.remove(name).is_some();
+        self.failures.write().await.remove(name);
+        self.npx_recovered.write().await.remove(name);
+        self.exhausted_reported.write().await.remove(name);
         if pending || restart {
             info!(
                 pending_cleared = pending,
@@ -816,6 +1101,71 @@ impl McpManager {
             .iter()
             .map(|(name, conn)| (name.clone(), conn.tools.len(), conn.is_alive()))
             .collect()
+    }
+
+    /// Issue #1346: every server the manager knows about — connected ones and
+    /// the ones parked in `pending` (boot failures, exhausted restarts), which
+    /// [`Self::list_servers`] never shows. Sorted by name.
+    pub async fn server_statuses(&self) -> Vec<McpServerStatus> {
+        let states = self.restart_states.read().await.clone();
+        let failures = self.failures.read().await.clone();
+        let restart_of = |name: &str| {
+            states
+                .get(name)
+                .map(|s| (s.count, s.max_restarts, s.is_exhausted()))
+                .unwrap_or((0, 5, false))
+        };
+        let mut out: Vec<McpServerStatus> = Vec::new();
+        {
+            let conns = self.connections.read().await;
+            for (name, conn) in conns.iter() {
+                let (attempts, max_restarts, exhausted) = restart_of(name);
+                let state = if conn.is_alive() {
+                    McpServerState::Connected
+                } else if exhausted {
+                    McpServerState::Failed
+                } else {
+                    McpServerState::Disconnected
+                };
+                let failure = (state != McpServerState::Connected)
+                    .then(|| failures.get(name))
+                    .flatten();
+                out.push(McpServerStatus {
+                    name: name.clone(),
+                    state,
+                    tool_count: conn.tools.len(),
+                    attempts,
+                    max_restarts,
+                    cause: failure.map(|f| f.cause.clone()),
+                    last_error: failure.map(|f| f.message.clone()),
+                });
+            }
+        }
+        {
+            let pending = self.pending.read().await;
+            for name in pending.keys() {
+                if out.iter().any(|s| &s.name == name) {
+                    continue;
+                }
+                let (attempts, max_restarts, exhausted) = restart_of(name);
+                let failure = failures.get(name);
+                out.push(McpServerStatus {
+                    name: name.clone(),
+                    state: if exhausted {
+                        McpServerState::Failed
+                    } else {
+                        McpServerState::Retrying
+                    },
+                    tool_count: 0,
+                    attempts,
+                    max_restarts,
+                    cause: failure.map(|f| f.cause.clone()),
+                    last_error: failure.map(|f| f.message.clone()),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// Get tool info for a specific server.
@@ -1193,15 +1543,33 @@ impl McpManager {
                 });
 
                 if state.is_exhausted() {
-                    error!(
-                        "MCP server '{name}' has crashed {} time(s) — max restarts ({}) reached. \
-                         Use the admin API to restart manually.",
-                        state.count, state.max_restarts
-                    );
+                    // #1346: logged ONCE, on the transition. Every later tick
+                    // is silent; `reset_restart_state` (manual restart) and
+                    // `forget` re-arm it.
+                    let first_time = self.exhausted_reported.write().await.insert(name.clone());
+                    if first_time {
+                        let cause = self
+                            .failures
+                            .read()
+                            .await
+                            .get(&name)
+                            .map(|f| f.cause.as_str())
+                            .unwrap_or("other");
+                        error!(
+                            server = %name,
+                            cause,
+                            "MCP server '{name}' failed {} time(s) — max restarts ({}) reached (cause: {cause}). \
+                             Automatic retries stopped. Fix the cause (row `mcp.servers` of GET /api/diagnostics), \
+                             then restart it with POST /admin/api/mcp/{name}/restart or restart `{}`.",
+                            state.count,
+                            state.max_restarts,
+                            garraia_common::executavel::nome()
+                        );
+                    }
                     (false, state.count, state.max_restarts)
                 } else if !state.should_retry_now() {
                     let delay = state.current_delay_secs();
-                    info!(
+                    debug!(
                         "MCP server '{name}' waiting for backoff delay ({delay}s) before retry \
                          (attempt {}/{})",
                         state.count + 1,
@@ -1274,16 +1642,51 @@ impl McpManager {
 
             match result {
                 Ok(()) => {
+                    self.exhausted_reported.write().await.remove(&name);
                     info!("MCP server '{name}' reconnected successfully (attempt {attempt_num})");
                     // The counter is cleared only after STABILITY_WINDOW, at
                     // the top of a later tick — a handshake alone is not
                     // evidence that the server stopped crash-looping.
                 }
                 Err(e) => {
+                    // HTTP failures do not go through the stdio classifier;
+                    // make sure they still show up in `server_statuses`.
+                    if !self.failures.read().await.contains_key(&name) {
+                        self.record_failure(&name, McpFailureCause::Other, &e.to_string())
+                            .await;
+                    }
                     warn!("MCP server '{name}' reconnect attempt {attempt_num} failed: {e}");
                 }
             }
         }
+    }
+}
+
+/// #1346: wait (bounded) for the child's stderr to reach EOF, then classify
+/// its tail. The child is killed when its transport drops, so EOF normally
+/// comes within milliseconds; a grandchild holding the pipe open only costs
+/// the timeout.
+async fn classify_after_exit(
+    drain: Option<(npx_cache::SharedTail, tokio::task::JoinHandle<()>)>,
+) -> McpFailureCause {
+    let Some((tail, mut handle)) = drain else {
+        return McpFailureCause::Other;
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), &mut handle).await;
+    npx_cache::classify_npx_failure(&npx_cache::tail_snapshot(&tail))
+}
+
+/// Short, path-only suffix appended to a failed connect's error message.
+fn cause_hint(cause: &McpFailureCause) -> String {
+    match cause {
+        McpFailureCause::NpxCacheCorrupt { dir: Some(dir) } => {
+            format!(" (cause: npx cache entry {} is corrupt)", dir.display())
+        }
+        McpFailureCause::NpxCacheCorrupt { dir: None } => {
+            " (cause: npm cache integrity error)".to_string()
+        }
+        McpFailureCause::DiskFull => " (cause: disk full, ENOSPC)".to_string(),
+        McpFailureCause::Other => String::new(),
     }
 }
 
