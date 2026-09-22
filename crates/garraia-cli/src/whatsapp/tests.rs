@@ -2016,6 +2016,64 @@ fn users_com_o_portao_vazio_aponta_o_allow_e_sai_zero() {
     );
 }
 
+/// Com o canal DESLIGADO e o portao vazio, o `users` **nao** manda autorizar
+/// um numero: ninguem receberia mensagem de todo jeito, e o passo que resolve
+/// e o `link`. E a mesma regra do `status` (`enabled && autorizados == 0`), e
+/// agora e literalmente o mesmo codigo — ver [`acesso::linhas_de_acesso`].
+#[test]
+fn users_com_o_canal_desligado_nao_manda_autorizar_ninguem() {
+    let desligado = Acesso {
+        enabled: false,
+        autorizados: 0,
+        donos: 0,
+    };
+    for lang in [Lang::Pt, Lang::En] {
+        let linhas = linhas_de_usuarios(lang, desligado, &[]).join("\n");
+        assert!(
+            !linhas.contains("whatsapp allow"),
+            "canal desligado: o passo e o `link`, nao o `allow`:\n{linhas}"
+        );
+        // As contagens continuam saindo — elas sao verdade nos dois casos.
+        assert!(
+            linhas.contains("Autorizados: 0") || linhas.contains("Authorized: 0"),
+            "{linhas}"
+        );
+    }
+    let ligado = Acesso {
+        enabled: true,
+        ..desligado
+    };
+    assert!(
+        linhas_de_usuarios(Lang::Pt, ligado, &[])
+            .join("\n")
+            .contains("whatsapp allow"),
+        "ligado e vazio continua avisando"
+    );
+}
+
+/// As linhas de canal/contagens/aviso do `status` e do `users` sao as MESMAS
+/// — uma so funcao, para as duas telas nao divergirem sobre quantos donos ha.
+#[test]
+fn o_status_e_o_users_dizem_o_acesso_com_as_mesmas_linhas() {
+    let a = Acesso {
+        enabled: true,
+        autorizados: 2,
+        donos: 1,
+    };
+    let compartilhadas = acesso::linhas_de_acesso(Lang::Pt, a);
+    let do_status = access_lines(Lang::Pt, true, Some(7), Some(a));
+    let do_users = linhas_de_usuarios(Lang::Pt, a, &[]);
+    for linha in &compartilhadas {
+        assert!(do_status.contains(linha), "falta no status: {linha}");
+        assert!(do_users.contains(linha), "falta no users: {linha}");
+    }
+    assert_eq!(
+        compartilhadas.len(),
+        2,
+        "com gente autorizada nao ha aviso: {compartilhadas:?}"
+    );
+}
+
 /// O `--json` e contrato de script: chaves em ingles, papel com o nome da
 /// config (`allow`/`owners`) e `last4` — nunca a identidade inteira.
 #[test]
@@ -2134,11 +2192,19 @@ fn remove_casa_pela_chave_do_portao_e_sai_das_duas_listas() {
         None,
     );
 
-    let fora = remover(loader, "5531999998888").expect("remove");
+    let (fora, depois) = remover(loader, "5531999998888").expect("remove");
     assert_eq!((fora.de_allow, fora.de_owners), (1, 1));
     assert!(fora.era_dono());
     assert!(lista(&ctx, "allow").is_empty());
     assert!(lista(&ctx, "owners").is_empty());
+    // O `Acesso` devolvido e o estado JA GRAVADO — quem decide o aviso de
+    // portao vazio nao rele o arquivo (e portanto nao tem `Err` para engolir).
+    assert_eq!((depois.autorizados, depois.donos), (0, 0));
+    assert_eq!(
+        depois,
+        acesso_da_config(&ctx.loader.as_ref().expect("loader").load().expect("load")),
+        "o que a funcao afirma e o que esta no disco"
+    );
 }
 
 /// Numa config sem a secao, remover nao cria nada e nao escreve no disco.
@@ -2149,8 +2215,9 @@ fn remover_numa_config_sem_a_secao_nao_cria_nem_escreve() {
     let loader = ctx.loader.as_ref().expect("loader");
     loader.ensure_dirs().expect("dirs");
 
-    let fora = remover(loader, NUMERO).expect("remove");
+    let (fora, depois) = remover(loader, NUMERO).expect("remove");
     assert_eq!(fora.total(), 0);
+    assert_eq!(depois.autorizados, 0);
     assert!(secao_de(&ctx).is_none());
     assert!(
         !dir.path().join("config.yml").exists(),

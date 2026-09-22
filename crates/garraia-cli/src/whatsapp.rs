@@ -577,22 +577,10 @@ fn access_lines(
     let Some(a) = acesso else {
         return out;
     };
-    out.push(
-        match (lang, a.enabled) {
-            (Lang::Pt, true) => "Canal:    ligado",
-            (Lang::Pt, false) => "Canal:    desligado",
-            (Lang::En, true) => "Channel:  on",
-            (Lang::En, false) => "Channel:  off",
-        }
-        .to_string(),
-    );
-    out.push(match lang {
-        Lang::Pt => format!("Autorizados: {} · Donos: {}", a.autorizados, a.donos),
-        Lang::En => format!("Authorized: {} · Owners: {}", a.autorizados, a.donos),
-    });
-    if a.enabled && a.autorizados == 0 {
-        out.push(acesso::aviso_ninguem_autorizado(lang));
-    }
+    // As linhas de canal/contagens/aviso vem de [`acesso::linhas_de_acesso`],
+    // que o `users` tambem consome: duas telas com a propria copia dos
+    // literais divergiriam na primeira que ganhasse um campo.
+    out.extend(acesso::linhas_de_acesso(lang, a));
     out
 }
 

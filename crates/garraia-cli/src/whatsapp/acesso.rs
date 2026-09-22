@@ -419,11 +419,18 @@ impl Remocao {
 /// numa config sem a secao o resultado e [`Remocao::total`] zero e o arquivo
 /// nao e reescrito. Como todo `save`, comentarios do `config.yml` nao
 /// sobrevivem a uma remocao que de fato grava.
-pub fn remover(loader: &ConfigLoader, numero: &str) -> Result<Remocao> {
+///
+/// Devolve tambem o [`Acesso`] **depois** da remocao, calculado da config que
+/// acabou de ir ao disco. Reler o arquivo para descobrir se o portao ficou
+/// vazio custava uma leitura que pode falhar bem no momento em que o operador
+/// mais precisa do aviso — e engolir esse `Err` esconderia, de uma so vez,
+/// "ninguem mais esta autorizado" e "a config ficou ilegivel logo depois de
+/// eu grava-la".
+pub fn remover(loader: &ConfigLoader, numero: &str) -> Result<(Remocao, Acesso)> {
     loader.ensure_dirs()?;
     let mut config = loader.load_sem_env()?;
     let Some(secao) = config.channels.get_mut(CONFIG_KEY) else {
-        return Ok(Remocao::default());
+        return Ok((Remocao::default(), acesso_da_config(&config)));
     };
     if secao.channel_type != CONFIG_KEY {
         // Mesma recusa do `autorizar`: o gateway ignora a secao inteira, e
@@ -455,7 +462,8 @@ pub fn remover(loader: &ConfigLoader, numero: &str) -> Result<Remocao> {
     if fora.total() > 0 {
         loader.save(&config)?;
     }
-    Ok(fora)
+    // Do MESMO `config` que foi gravado: e o estado que o gateway vai ler.
+    Ok((fora, acesso_da_config(&config)))
 }
 
 // ---------------------------------------------------------------------------
@@ -743,10 +751,20 @@ pub fn users(ctx: &Context, json: bool) -> i32 {
     0
 }
 
-/// As linhas do `users`, puras para o teste.
-pub fn linhas_de_usuarios(lang: Lang, acesso: Acesso, usuarios: &[Autorizado]) -> Vec<String> {
-    let mut out = Vec::new();
-    out.push(
+/// As tres linhas de acesso que o `status` e o `users` dizem IGUAL: canal
+/// ligado ou nao, as contagens, e o aviso de portao vazio.
+///
+/// Uma copia so. A versao anterior deste comando repetia as quatro frases
+/// (pt/en × ligado/desligado) e a linha de contagem dentro do `users`, e duas
+/// telas que discordam sobre quantos donos ha sao piores do que uma so —
+/// exatamente o defeito que o `execution_profile_line` ja tinha pago uma vez
+/// (review C3/C8/C13 da #1329, quando a CLI reimplementava a contagem).
+///
+/// O aviso so sai com o canal **ligado**, como no `status`: com o canal
+/// desligado ninguem recebe mensagem de todo jeito, e "autorize um numero"
+/// nao e o passo que resolve — o passo e o `link`.
+pub fn linhas_de_acesso(lang: Lang, acesso: Acesso) -> Vec<String> {
+    let mut out = vec![
         match (lang, acesso.enabled) {
             (Lang::Pt, true) => "Canal:    ligado",
             (Lang::Pt, false) => "Canal:    desligado",
@@ -754,21 +772,27 @@ pub fn linhas_de_usuarios(lang: Lang, acesso: Acesso, usuarios: &[Autorizado]) -
             (Lang::En, false) => "Channel:  off",
         }
         .to_string(),
-    );
-    // A MESMA contagem do `status`, da mesma fonte: duas telas que discordam
-    // sobre quantos donos ha sao piores do que uma so.
-    out.push(match lang {
-        Lang::Pt => format!(
-            "Autorizados: {} · Donos: {}",
-            acesso.autorizados, acesso.donos
-        ),
-        Lang::En => format!(
-            "Authorized: {} · Owners: {}",
-            acesso.autorizados, acesso.donos
-        ),
-    });
-    if usuarios.is_empty() {
+        match lang {
+            Lang::Pt => format!(
+                "Autorizados: {} · Donos: {}",
+                acesso.autorizados, acesso.donos
+            ),
+            Lang::En => format!(
+                "Authorized: {} · Owners: {}",
+                acesso.autorizados, acesso.donos
+            ),
+        },
+    ];
+    if acesso.enabled && acesso.autorizados == 0 {
         out.push(aviso_ninguem_autorizado(lang));
+    }
+    out
+}
+
+/// As linhas do `users`, puras para o teste.
+pub fn linhas_de_usuarios(lang: Lang, acesso: Acesso, usuarios: &[Autorizado]) -> Vec<String> {
+    let mut out = linhas_de_acesso(lang, acesso);
+    if usuarios.is_empty() {
         return out;
     }
     out.push(String::new());
@@ -875,6 +899,11 @@ pub fn remove(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoRemocao) ->
         }
     };
 
+    // O papel sai da config que este comando leu; o `remover` rele o arquivo
+    // antes de gravar (nunca escreve por cima de uma leitura velha). A janela
+    // entre as duas leituras e teorica numa CLI de um usuario so, e fecha-la
+    // exigiria segurar o arquivo aberto entre a pergunta ao operador e a
+    // escrita — o que travaria o gateway enquanto o prompt espera resposta.
     if e_dono_na_config(&config, &numero) && !pedido.yes {
         if !ctx.interactive {
             eprintln!(
@@ -896,9 +925,8 @@ pub fn remove(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoRemocao) ->
         }
     }
 
-    let antes = acesso_da_config(&config);
-    let fora = match remover(loader, &numero) {
-        Ok(f) => f,
+    let (fora, depois) = match remover(loader, &numero) {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("{e}");
             return EX_SOFTWARE;
@@ -910,14 +938,14 @@ pub fn remove(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoRemocao) ->
     }
     println!("{}", linha_de_removido(ctx.lang, &numero, fora));
 
+    // O estado DEPOIS vem da config que o `remover` gravou — sem reler o
+    // arquivo, e portanto sem um `Err` para engolir justamente na hora em que
+    // o operador acabou de esvaziar o portao.
+    //
     // So o canal ligado precisa de dica: num canal desligado nao ha turno em
     // andamento para a remocao alcancar.
-    if antes.enabled {
-        if loader
-            .load_sem_env()
-            .map(|c| acesso_da_config(&c).autorizados == 0)
-            .unwrap_or(false)
-        {
+    if depois.enabled {
+        if depois.autorizados == 0 {
             println!("{}", aviso_ninguem_autorizado(ctx.lang));
         }
         println!("{}", dica_do_gateway(ctx.lang, true, ctx.gateway_pid));
