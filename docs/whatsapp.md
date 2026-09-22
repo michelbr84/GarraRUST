@@ -205,7 +205,8 @@ camadas, e nenhuma substitui a outra.
 - **O piso e o perfil `search`.** Sessao que nao escolheu modo (`/mode`)
   resolve para `search`, e nao para "sem politica de ferramenta":
   `whitelist_mode` ligado, `allowed` so de leitura (`file_read`, `repo_search`,
-  `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`) e
+  `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`,
+  `garra_status` — que descreve o proprio runtime, sem segredo, #1347) e
   `denied` para `file_write`, `bash` e `device_execute`.
   `channels.whatsapp_linked.default_mode` troca o perfil padrao por **outro
   modo nativo** (`ask`, `code`, `debug`, …); a escolha explicita do usuario
@@ -267,25 +268,59 @@ sozinho.
 garraia whatsapp allow +55 11 98888-0000
 ```
 
-- **Codigo do pais obrigatorio**, nunca adivinhado. `+` inicial opcional;
-  espacos, hifens, pontos e parenteses sao descartados; letra, zero inicial
-  (prefixo de discagem local), a forma `@s.whatsapp.net` e qualquer coisa fora
-  de 10 a 15 digitos sao recusados (exit 65). O numero e gravado so com
-  digitos (`5511988880000`), a mesma forma que o portao compara.
-- `allow` **acrescenta** a lista e nao mexe em mais nada: as outras chaves da
-  secao, as outras secoes e o `enabled` ficam como estavam. Numa instalacao
-  sem a secao ele a cria com `type: whatsapp_linked` e o canal desligado —
-  quem liga e o `link`, depois de a sessao existir.
+- **`+` e codigo do pais obrigatorios**, nunca adivinhados: sem o `+`,
+  `11 98888-0000` (DDD + numero) passaria por um numero de 11 digitos e nunca
+  casaria com quem manda. Espacos, hifens, pontos e parenteses sao
+  descartados; letra, zero inicial (prefixo de discagem local), a forma
+  `@s.whatsapp.net` e qualquer coisa fora de 6 a 15 digitos (a faixa que a
+  ponte entrega) sao recusados (exit 65). O numero e gravado so com digitos
+  (`5511988880000`), a forma que o portao compara.
+- **Celular brasileiro com ou sem o nono digito e o mesmo.** Muita conta
+  antiga tem o JID sem o 9 (`55 31 9888-0000`, 12 digitos) e o numero se
+  digita com ele (`+55 31 98888-0000`, 13). O portao compara as duas formas
+  como uma so — so para `55` + DDD + `9` + numero que comeca com 6 a 9; fixo
+  e outro pais nao mudam. O `config.yml` guarda o que voce digitou.
+- `allow` **acrescenta** a lista sem mudar outro valor: as outras chaves da
+  secao, as outras secoes e o `enabled` ficam como estavam. Mas o arquivo e
+  **reescrito** a partir da config lida: comentarios, chaves que o GarraIA nao
+  conhece e a formatacao original nao sobrevivem, e secoes com valor default
+  podem passar a aparecer. Se voce cura o `config.yml` a mao, edite a lista a
+  mao. Numa instalacao sem a secao ele a cria com `type: whatsapp_linked` e o
+  canal desligado — quem liga e o `link`, depois de a sessao existir.
+- **Contato por LID (`@lid`).** O WhatsApp as vezes identifica um contato so
+  por um identificador opaco, `<id>@lid`, sem o numero. Quando o servidor
+  manda o numero junto (o Baileys 7 o entrega em `remoteJidAlt`/
+  `participantAlt`), a ponte o usa e o numero do `allow` casa normalmente.
+  Quando nao manda, o portao compara o LID — e um numero no `allow` **nao**
+  casa com ele (fail-closed: a mensagem e recusada em silencio). O
+  `garraia whatsapp status` avisa quando o gateway em execucao recusou
+  remetentes `@lid` sem numero (quantos, e o final do ultimo LID), e o
+  `/api/diagnostics` mostra a contagem. Para autorizar esse contato: gere um
+  codigo com `/pair` e peca para a pessoa manda-lo por WhatsApp (vale ate o
+  gateway reiniciar), ou autorize o LID inteiro com
+  `garraia whatsapp allow <id>@lid`, gravado como veio.
 - **O celular vinculado nao conversa com o GarraIA.** Mensagens que ele envia
   saem da propria conta (`from_me`) e sao ignoradas, senao o canal responderia
   a si mesmo. O `link` avisa quando o numero digitado termina como o do
   aparelho vinculado e pede confirmacao (default nao). Use outro numero.
-- **Vale sem reiniciar.** Com o gateway rodando, `allow` e `owners` sao relidos
-  do `config.yml` a cada mensagem: autorizar vale na proxima, e **revogar
-  tambem** — apague o numero da lista no arquivo (nao ha subcomando de
-  revogacao). `enabled: false` no arquivo recusa todo mundo na mensagem
-  seguinte. Ja `enabled` de `false` para `true`, `default_mode`,
+- **Vale sem reiniciar — com duas condicoes.** Com o gateway rodando, `allow`
+  e `owners` sao relidos do `config.yml` a cada mensagem: autorizar vale na
+  proxima, e **revogar tambem** — apague o numero da lista no arquivo (nao ha
+  subcomando de revogacao). `enabled: false` no arquivo recusa todo mundo,
+  codigo de pareamento incluso, na mensagem seguinte (a ponte segue conectada
+  ate o restart, e o `/api/diagnostics` avisa). As condicoes: o gateway tem de
+  ter **subido com o canal ligado** (se o `link` ligou o canal depois, rode
+  `garraia restart`), e o `config.yml` tem de **existir quando o gateway
+  subiu** — so entao ele vigia o arquivo. O `allow` nao tem como saber
+  nenhuma das duas coisas e diz as duas; o aviso de boot e o diagnostico
+  dizem qual e o caso. Ja `enabled` de `false` para `true`, `default_mode`,
   `reply_in_groups` e `execution.profile` pedem restart do gateway.
+- **O que a revogacao nao alcanca.** Quem entrou por um codigo `/pair` e
+  **nunca** esteve no `allow` continua admitido ate o gateway reiniciar (o
+  pareamento mora na memoria do processo); quem estava no `allow` e pareou
+  perde os dois ao sair da lista. E se o `config.yml` editado nao for YAML
+  valido, o gateway **mantem a lista anterior** e loga `config reload failed
+  (keeping previous config)` — confira o log depois de revogar.
 - **Grupos** continuam exigindo `reply_in_groups: true` (default `false`),
   mesmo para numero autorizado.
 - `garraia whatsapp status` mostra a ponte, o gateway (rodando ou nao), o canal
@@ -314,8 +349,13 @@ channels:
 ```
 
 - `owners` usa a mesma normalizacao de `allow` (`normalizar_identidade`:
-  digitos, ou JID `@lid` como veio). Quem esta em `owners` e admitido como se
-  estivesse em `allow`.
+  digitos, ou JID `@lid` como veio) e a mesma comparacao (o nono digito
+  brasileiro incluso). Quem esta em `owners` e admitido como se estivesse em
+  `allow`.
+- O `--owner` do `allow` decide pelo perfil que **este shell** ve: o
+  `execution.profile` do arquivo ou `GARRAIA_EXECUTION_PROFILE` no ambiente
+  do comando. Se o gateway roda com a env (num pod, por exemplo), rode o
+  `allow --owner` com a mesma env.
 - Em **`standard`** `owners` nao muda nada: todo admitido, dono incluso, fica
   em `default_mode`. O `config check` avisa (`owners so tem efeito em
   isolated-pod`) — e aviso, nunca poder.
@@ -417,7 +457,7 @@ Como o filho e contido:
 | **`o perfil `…` (…default_mode) libera ferramentas MCP dos servidores …`** no log do gateway | Aviso de drift, nao erro: o `default_mode` do canal e um perfil nativo sem whitelist (`ask`, `code`) e esta expondo aqueles servidores MCP a quem manda mensagem. O trecho depois do travessao diz por que o portao liberou. Veja "Ferramentas e servidores MCP" acima. |
 | **`execution.profile = isolated-pod` e o WhatsApp continua em `search`** | `owners` vazio (o diagnostico diz "0 donos"); a mensagem veio de grupo (grupo nunca herda); `default_mode` explicito na config (em `isolated-pod` vale para o dono tambem — remova a chave para o default `code`); ou a sessao escolheu `/mode`. Veja "Dono e perfil de execucao" acima e [`execution-profiles.md`](execution-profiles.md). |
 | **`channels.whatsapp_linked.owners lists N identit… but the effective execution profile is standard`** no `config check` | `owners` so tem efeito em `isolated-pod`. Ou ligue o perfil (se este processo roda num pod descartavel), ou remova a chave. |
-| **Vinculado, gateway de pe, e ninguem recebe resposta** | `garraia whatsapp status` diz `Autorizados: 0`: o portao esta vazio e toda mensagem e descartada em silencio. Rode `garraia whatsapp allow <numero>` com o codigo do pais (vale sem reiniciar). Se `Autorizados` e maior que zero: o numero que manda e o do proprio celular vinculado (ignorado, `from_me`), a conversa e um grupo sem `reply_in_groups`, ou o numero foi gravado sem o codigo do pais — confira o `allow` no `config.yml`. |
+| **Vinculado, gateway de pe, e ninguem recebe resposta** | `garraia whatsapp status` diz `Autorizados: 0`: o portao esta vazio e toda mensagem e descartada em silencio. Rode `garraia whatsapp allow <numero>` com `+` e o codigo do pais (vale sem reiniciar se o gateway subiu com o canal ligado e com o `config.yml` ja no disco; senao `garraia restart`). Se `Autorizados` e maior que zero: o `status` avisa de remetente `@lid` sem numero recusado (veja "Contato por LID" acima); o numero que manda e o do proprio celular vinculado (ignorado, `from_me`); a conversa e um grupo sem `reply_in_groups`; o gateway subiu antes de o `link` ligar o canal (`garraia restart`); ou o `config.yml` editado a mao nao parseia (log `config reload failed`). |
 | **Mensagem sobre outro aparelho ter assumido** | Alguem conectou o mesmo numero em outro lugar. A sessao gravada **continua valendo**; rode `garraia start` de novo. |
 | **Conta bloqueada pelo WhatsApp** | Nao ha o que o GarraIA faca. Foi o risco avisado na tela de consentimento. Use a Cloud API. |
 
