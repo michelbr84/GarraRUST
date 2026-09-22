@@ -134,8 +134,9 @@ async fn run_tests_com_imagem_sem_cargo_nao_cai_no_cargo_do_host() {
         "esperava a mensagem de programa ausente na imagem: {}",
         out.content
     );
+    // O remedio e a imagem, nao rodar no host (review da #1225, SANDBOX-10).
     assert!(
-        out.content.contains("agent.sandbox.elevated"),
+        out.content.contains("agent.sandbox.image"),
         "{}",
         out.content
     );

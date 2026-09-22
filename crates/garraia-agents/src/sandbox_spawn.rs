@@ -25,8 +25,20 @@ use crate::sandbox::{SandboxPolicy, SandboxedArgv};
 const TIMEOUT_DO_RM: Duration = Duration::from_secs(15);
 
 /// O runtime (docker/podman) devolve 127 quando o programa pedido nao
-/// existe na imagem.
+/// existe na imagem. Mas 127 tambem e o codigo que um shell devolve para um
+/// comando ausente DENTRO de um script (`npm test` repassa o do script), entao
+/// o codigo sozinho nao prova nada: ver [`runtime_nao_achou_o_programa`].
 const PROGRAMA_NAO_ENCONTRADO: i32 = 127;
+
+/// O stderr traz a mensagem do PROPRIO runtime para "executavel nao existe na
+/// imagem"? Docker/runc: `exec: "rg": executable file not found in $PATH`;
+/// podman/crun: ``executable file `rg` not found in $PATH``. Sem isto, um
+/// 127 do script de teste virava "o programa nao existe na imagem" e a saida
+/// real da suite sumia (review da #1225, SANDBOX-10/12).
+fn runtime_nao_achou_o_programa(stderr: &[u8]) -> bool {
+    let texto = String::from_utf8_lossy(stderr).to_lowercase();
+    texto.contains("executable file") && texto.contains("not found")
+}
 
 /// O pedido de spawn de uma tool.
 pub(crate) struct Pedido<'a> {
@@ -112,12 +124,14 @@ async fn no_container(pedido: &Pedido<'_>, sb: SandboxedArgv) -> Desfecho {
     let mut cmd = filho(&sb.runtime);
     cmd.args(&sb.argv);
     match tokio::time::timeout(pedido.timeout, cmd.output()).await {
-        Ok(Ok(saida)) if saida.status.code() == Some(PROGRAMA_NAO_ENCONTRADO) => {
+        Ok(Ok(saida))
+            if saida.status.code() == Some(PROGRAMA_NAO_ENCONTRADO)
+                && runtime_nao_achou_o_programa(&saida.stderr) =>
+        {
             Desfecho::NaoExecutou(format!(
-                "o programa `{}` nao existe na imagem do sandbox (agent.sandbox.image) — use \
-                 uma imagem com a toolchain, ou agent.sandbox.elevated = [\"{}\"] para rodar \
-                 no host",
-                pedido.programa, pedido.tool
+                "o programa `{}` nao existe na imagem do sandbox — aponte agent.sandbox.image \
+                 para uma imagem com a toolchain",
+                pedido.programa
             ))
         }
         Ok(Ok(saida)) => Desfecho::Saida(saida),
@@ -263,18 +277,51 @@ pub(crate) mod testes {
         assert!(argv.contains(&"--cap-drop".to_string()), "{argv:?}");
     }
 
+    /// O que o docker/runc escreve quando o programa nao existe na imagem.
+    pub(crate) const NAO_ACHOU_DOCKER: &str = "echo 'docker: Error response from daemon: \
+        failed to create task for container: OCI runtime create failed: exec: \"rg\": \
+        executable file not found in $PATH' >&2; exit 127";
+
     #[tokio::test]
     async fn exit_127_do_runtime_vira_mensagem_acionavel() {
         let _t = TRAVA_DO_PATH.lock().await;
-        let _falso = RuntimeFalso::novo("exit 127");
+        let dir = tempfile::tempdir().expect("tmp");
+        let cwd = dir.path().canonicalize().expect("canon");
+        for corpo in [
+            NAO_ACHOU_DOCKER,
+            "echo 'Error: crun: executable file `rg` not found in $PATH: No such file or \
+             directory: OCI runtime attempted to invoke a command that was not found' >&2; \
+             exit 127",
+        ] {
+            let _falso = RuntimeFalso::novo(corpo);
+            let d = executar(&policy_docker(), pedido(&[], &cwd, Duration::from_secs(10))).await;
+            let Desfecho::NaoExecutou(msg) = d else {
+                panic!("esperava NaoExecutou: {d:?}");
+            };
+            assert!(msg.contains("nao existe na imagem"), "{msg}");
+            assert!(msg.contains("agent.sandbox.image"), "{msg}");
+            // Rodar no host nao e o remedio oferecido.
+            assert!(!msg.contains("elevated"), "{msg}");
+        }
+    }
+
+    /// SANDBOX-10/12: um 127 do PROPRIO programa (o script do `npm test`
+    /// chamando um comando ausente) nao e "nao existe na imagem": a saida
+    /// real volta inteira.
+    #[tokio::test]
+    async fn exit_127_do_programa_devolve_a_saida_real() {
+        let _t = TRAVA_DO_PATH.lock().await;
+        let _falso =
+            RuntimeFalso::novo("echo saida-da-suite; echo 'sh: 1: jest: not found' >&2; exit 127");
         let dir = tempfile::tempdir().expect("tmp");
         let cwd = dir.path().canonicalize().expect("canon");
         let d = executar(&policy_docker(), pedido(&[], &cwd, Duration::from_secs(10))).await;
-        let Desfecho::NaoExecutou(msg) = d else {
-            panic!("esperava NaoExecutou: {d:?}");
+        let Desfecho::Saida(saida) = d else {
+            panic!("esperava Saida: {d:?}");
         };
-        assert!(msg.contains("nao existe na imagem"), "{msg}");
-        assert!(msg.contains("agent.sandbox.elevated"), "{msg}");
+        assert_eq!(saida.status.code(), Some(127));
+        assert!(String::from_utf8_lossy(&saida.stdout).contains("saida-da-suite"));
+        assert!(String::from_utf8_lossy(&saida.stderr).contains("jest: not found"));
     }
 
     #[tokio::test]
@@ -422,7 +469,8 @@ mod testes_das_tools {
 
         // rg ausente na imagem (127): o grep roda NO CONTAINER, nunca no host.
         let falso = RuntimeFalso::novo(
-            "for a in \"$@\"; do [ \"$a\" = rg ] && exit 127; done; echo achou-com-grep",
+            "for a in \"$@\"; do [ \"$a\" = rg ] && { echo 'exec: \"rg\": executable file \
+             not found in $PATH' >&2; exit 127; }; done; echo achou-com-grep",
         );
         let out = tool
             .execute(&ctx(Some(&wd)), serde_json::json!({"query": "x"}))
