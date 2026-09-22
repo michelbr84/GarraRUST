@@ -281,7 +281,22 @@ pub(crate) fn bind_entry(key: &str, cfg: &LlmProviderConfig, env: Env<'_>) -> Pr
 /// `None` quando o nome nao e entrada nem tipo construivel.
 pub(crate) fn bind_named(config: &AppConfig, name: &str, env: Env<'_>) -> Option<ProviderBinding> {
     if let Some(cfg) = config.llm.get(name) {
-        return Some(bind_entry(name, cfg, env));
+        let vinculo = bind_entry(name, cfg, env);
+        // A regra do passo 3 da autodeteccao, no caminho explicito (achado da
+        // verificacao da #1370): `llm.openrouter { provider: openai }` sem
+        // chave propria nao descreve o OpenRouter, e `-p openrouter` com
+        // `OPENROUTER_API_KEY` exportada voltava sem credencial nenhuma. So
+        // quando a entrada nao tem credencial e a variavel do tipo pedido
+        // existe; a chave vai para o host padrao DESSE tipo, nunca para a
+        // `base_url` da entrada, e um alias sem chave (`llm.lmstudio`) segue
+        // com a entrada inteira.
+        if vinculo.kind != name && is_buildable_kind(name) && !vinculo.has_credential() {
+            let fallback = ProviderBinding::env_only(name, env);
+            if fallback.has_credential() {
+                return Some(fallback);
+            }
+        }
+        return Some(vinculo);
     }
     if !is_buildable_kind(name) {
         return None;
@@ -897,6 +912,40 @@ mod tests {
             panic!("api.openai.com sem chave deve falhar");
         };
         assert!(format!("{err}").contains("OPENAI_API_KEY not set"), "{err}");
+    }
+
+    /// Achado da verificacao da #1370: o caminho explicito (`-p openrouter`,
+    /// `garra_ask`/`garra_agent` com `provider=openrouter`) tinha de fazer o
+    /// que a autodeteccao ja fazia com uma entrada de outro tipo sem chave.
+    #[test]
+    fn explicit_mismatched_entry_without_key_falls_back_to_the_env_default_host() {
+        let cfg = config(&[(
+            "openrouter",
+            entry("openai", None, Some("https://openrouter.ai/api/v1")),
+        )]);
+        let b = bind_named(&cfg, "openrouter", &env_of("openrouter")).expect("vinculo");
+        assert_eq!((b.entry(), b.kind()), (None, "openrouter"));
+        assert_eq!(b.base_url(), None, "a env so vai para o host padrao");
+        assert_eq!(b.api_key(), Some("do-ambiente"));
+        // Sem a variavel, fica a entrada como ela e (sem chave).
+        let b = bind_named(&cfg, "openrouter", &no_env).expect("vinculo");
+        assert_eq!((b.entry(), b.kind()), (Some("openrouter"), "openai"));
+        // Com chave propria, a entrada inteira vale e a env nao entra.
+        let cfg = config(&[(
+            "openrouter",
+            entry("openai", Some("k-or"), Some("https://openrouter.ai/api/v1")),
+        )]);
+        let b = bind_named(&cfg, "openrouter", &env_of("openrouter")).expect("vinculo");
+        assert_eq!((b.entry(), b.api_key()), (Some("openrouter"), Some("k-or")));
+        // Alias que nao e nome de tipo (`lmstudio`) nunca troca de entrada.
+        let cfg = config(&[(
+            "lmstudio",
+            entry("openai", None, Some("http://127.0.0.1:1234/v1")),
+        )]);
+        let b = bind_named(&cfg, "lmstudio", &env_of("openai")).expect("vinculo");
+        assert_eq!(b.entry(), Some("lmstudio"));
+        assert_eq!(b.base_url(), Some("http://127.0.0.1:1234/v1"));
+        assert_eq!(b.api_key(), None, "a env da OpenAI nao vai para o proxy");
     }
 
     // ── bind_autodetect ─────────────────────────────────────────────────
