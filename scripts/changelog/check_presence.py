@@ -8,10 +8,16 @@ aparecia no dia da release, quando ninguem lembra mais o que o PR fez.
 
 Este script decide, a partir de dados que o workflow ja tem, se o PR passa:
 
-    git diff --name-status --no-renames HEAD^1 HEAD > changed.txt
+    git -c core.quotePath=false diff --name-status --no-renames -z \\
+        HEAD^1 HEAD > changed.txt
     python3 scripts/changelog/check_presence.py \\
         --event pull_request --labels-json '["bug"]' \\
-        --author alguem --head-ref fix/x --name-status-file changed.txt
+        --author alguem --head-ref fix/x --same-repo true \\
+        --name-status-file changed.txt
+
+A lista vem com `-z` (registros separados por NUL): sem isso o git poe entre
+aspas, com escape octal, qualquer caminho com acento ou aspas, e o fragmento
+deixaria de ser reconhecido. A saida por linhas continua aceita.
 
 Passa quando o PR ADICIONA ou MODIFICA um `changelog.d/<secao>/<nome>.md` de
 secao valida (as mesmas do `assemble.py`, importadas de la — uma lista so).
@@ -26,7 +32,11 @@ Isencoes, nesta ordem:
   (CI, doc interna, refactor sem efeito visivel). E uma decisao humana e fica
   registrada no PR;
 - autor `dependabot[bot]`;
-- head `release/*`: o PR de release APAGA os fragmentos ao junta-los.
+- head `release/vX.Y.Z` vindo DESTE repositorio (`--same-repo true`): o PR
+  de release APAGA os fragmentos ao junta-los. O nome da branch e escolhido
+  pelo autor do PR, entao sozinho nao isenta: um fork chamando a branch de
+  `release/qualquer` continua cobrado. `--same-repo` vem do workflow
+  (`head.repo.full_name == github.repository`), que o autor nao controla.
 
 Sem rede, sem segredo, sem ler titulo nem corpo do PR. Exit 0 = passa,
 1 = falta fragmento, 2 = erro de uso.
@@ -37,12 +47,13 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
 LABEL_DE_ESCAPE = "no-changelog"
 AUTORES_ISENTOS = frozenset({"dependabot[bot]"})
-PREFIXO_RELEASE = "release/"
+RELEASE_HEAD = re.compile(r"^release/v\d+\.\d+\.\d+$")
 
 # Status do `git diff --name-status` que contam como "o PR escreveu isto".
 STATUS_QUE_CONTAM = frozenset({"A", "M"})
@@ -77,12 +88,40 @@ def e_fragmento(caminho: str) -> bool:
     )
 
 
-def parse_name_status(texto: str) -> list[tuple[str, str]]:
-    """Linhas `S<TAB>caminho` do `git diff --name-status --no-renames`.
+def _parse_z(texto: str) -> list[tuple[str, str]]:
+    """Saida de `git diff --name-status -z`: `S\0caminho\0`, e `R`/`C` com
+    dois caminhos (`R100\0origem\0destino\0`). O caminho sai cru, sem aspas
+    nem escape — por isso o workflow usa `-z`."""
+    campos = texto.split("\0")
+    pares: list[tuple[str, str]] = []
+    i = 0
+    while i < len(campos):
+        bruto = campos[i]
+        i += 1
+        if not bruto:
+            continue
+        status = bruto[:1]
+        n = 2 if status in {"R", "C"} else 1
+        caminhos = campos[i : i + n]
+        i += n
+        if len(caminhos) < n:
+            break
+        if status in {"R", "C"}:
+            status = "A"
+        pares.append((status, caminhos[-1]))
+    return pares
 
-    Com `--no-renames` cada linha tem dois campos; `R`/`C` so apareceriam sem
-    a flag, e ai o caminho que conta e o de destino (ultimo campo).
+
+def parse_name_status(texto: str) -> list[tuple[str, str]]:
+    """Saida do `git diff --name-status --no-renames`, com ou sem `-z`.
+
+    Com NUL no texto, parse de `-z` (o que o workflow produz). Sem, linhas
+    `S<TAB>caminho`. Com `--no-renames` cada linha tem dois campos; `R`/`C` so
+    apareceriam sem a flag, e ai o caminho que conta e o de destino (ultimo
+    campo).
     """
+    if "\0" in texto:
+        return _parse_z(texto)
     pares: list[tuple[str, str]] = []
     for linha in texto.splitlines():
         if not linha.strip():
@@ -103,6 +142,7 @@ def decide(
     author: str,
     head_ref: str,
     event: str,
+    same_repo: bool = False,
 ) -> tuple[bool, str]:
     """A decisao, pura. Devolve (passa, motivo)."""
     if event != "pull_request":
@@ -111,7 +151,7 @@ def decide(
         return True, f"label `{LABEL_DE_ESCAPE}` presente"
     if author in AUTORES_ISENTOS:
         return True, f"autor `{author}` isento"
-    if head_ref.startswith(PREFIXO_RELEASE):
+    if same_repo and RELEASE_HEAD.match(head_ref):
         return True, "PR de release (apaga os fragmentos ao junta-los)"
     escritos = [c for s, c in changed if s in STATUS_QUE_CONTAM and e_fragmento(c)]
     if escritos:
@@ -130,8 +170,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--labels-json", default="[]")
     p.add_argument("--author", default="")
     p.add_argument("--head-ref", default="")
+    p.add_argument(
+        "--same-repo",
+        default="false",
+        help="`true` quando a head do PR e deste repositorio (nao de fork)",
+    )
     p.add_argument("--name-status-file", type=Path)
     args = p.parse_args(argv)
+    same_repo = args.same_repo.strip().lower() == "true"
 
     try:
         labels = json.loads(args.labels_json or "[]")
@@ -150,7 +196,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.name_status_file is not None:
         changed = parse_name_status(args.name_status_file.read_text(encoding="utf-8"))
 
-    passa, motivo = decide(changed, labels, args.author, args.head_ref, args.event)
+    passa, motivo = decide(
+        changed, labels, args.author, args.head_ref, args.event, same_repo
+    )
     if passa:
         print(f"OK: {motivo}")
         return 0

@@ -13,7 +13,10 @@ name: Changelog presence
 #     merge commit (HEAD^1 = ponta da base), nao da API.
 #   - Dado do evento chega ao shell por `env:`, nunca interpolado no `run:`.
 #   - Sem `continue-on-error`. Isencoes: label `no-changelog`, dependabot,
-#     head `release/*`, e eventos que nao sao `pull_request` (merge_group).
+#     head `release/vX.Y.Z` DESTE repo (fork nao isenta: o nome da branch e
+#     do autor), e eventos que nao sao `pull_request` (merge_group).
+#   - `git diff -z` com `core.quotePath=false`: caminho com acento sai cru,
+#     nao entre aspas com escape octal.
 #   - `labeled`/`unlabeled` reexecutam o check: aplicar a label resolve sem
 #     precisar de um push novo.
 
@@ -46,9 +49,10 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
-          git diff --name-status --no-renames HEAD^1 HEAD > changed.txt
+          git -c core.quotePath=false diff --name-status --no-renames -z \
+            HEAD^1 HEAD > changed.txt
           echo "::group::changed.txt"
-          cat changed.txt
+          tr '\0' '\n' < changed.txt
           echo "::endgroup::"
 
       - name: O PR deixa um fragmento em changelog.d/
@@ -57,10 +61,12 @@ jobs:
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           HEAD_REF: ${{ github.head_ref }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           set -euo pipefail
           args=(--event "$EVENT_NAME" --labels-json "${PR_LABELS:-[]}" \
-            --author "${PR_AUTHOR:-}" --head-ref "${HEAD_REF:-}")
+            --author "${PR_AUTHOR:-}" --head-ref "${HEAD_REF:-}" \
+            --same-repo "${SAME_REPO:-false}")
           if [ -f changed.txt ]; then
             args+=(--name-status-file changed.txt)
           fi

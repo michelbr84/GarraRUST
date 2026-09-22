@@ -58,14 +58,15 @@ Isenções:
   de release (CI, doc interna, refactor sem efeito visível). Aplicar ou tirar
   a label reexecuta o check, sem precisar de push;
 - PR do `dependabot[bot]`;
-- branch `release/*` (o PR de release apaga os fragmentos ao juntá-los);
+- branch `release/vX.Y.Z` aberta **deste** repositório (o PR de release apaga
+  os fragmentos ao juntá-los); de fork, o nome da branch não isenta;
 - eventos que não são `pull_request` (`merge_group`, push na `main`).
 
 A decisão mora em `scripts/changelog/check_presence.py` (testes em
 `scripts/changelog/tests/test_check_presence.py`):
 
 ```bash
-git diff --name-status --no-renames origin/main... > changed.txt
+git -c core.quotePath=false diff --name-status --no-renames -z origin/main... > changed.txt
 python3 scripts/changelog/check_presence.py --event pull_request \
     --labels-json '[]' --name-status-file changed.txt
 ```
