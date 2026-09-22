@@ -17,10 +17,12 @@
 //! | `bootstrap/whatsapp_linked.rs` | `whatsapp_linked` | remetente normalizado |
 //!
 //! Os caminhos sem humano verificavel (a2a, openclaw, `POST
-//! /api/sessions/{id}/messages`, `rest_v1` com historico vazio) ficam **sem**
-//! escopo, e ali a pausa continua terminal. O teste
-//! `tests/approval_scope_coverage.rs` lista cada chamada do runtime e reprova
-//! uma chamada nova que nao passe por aqui nem esteja na lista de excecoes.
+//! /api/sessions/{id}/messages`, `rest_v1` com historico vazio, tarefa
+//! agendada via `process_heartbeat`) ficam **sem** escopo, e ali a pausa
+//! continua terminal. O teste `tests/approval_scope_coverage.rs` decide cada
+//! chamada do runtime — escopada por aqui, ou presa por arquivo e `fn` na
+//! lista de excecoes — e confere o remetente de cada `com_escopo` contra uma
+//! tabela por arquivo.
 //!
 //! O remetente nunca e um valor que o cliente escolhe: nem `X-User-Id`, nem
 //! o `session_id` de um `resume`. Remetente vazio devolve o contexto sem
@@ -73,16 +75,27 @@ pub fn nonce_de_conexao() -> String {
 /// outra credencial, nao consegue aprovar o pedido do primeiro. Sem dono, sem
 /// escopo: devolve `None` e a pausa e terminal.
 ///
+/// O hash e dos BYTES do header, nao da string: um `Authorization` com
+/// obs-text (byte >= 0x80, que `HeaderValue::to_str` recusa) continua sendo
+/// a credencial dele, e nunca cai na identidade compartilhada de quem nao
+/// mandou header nenhum (#1343 A9).
+///
 /// O hash inteiro so vive no mapa em memoria; ele nao vai para log (o
 /// registro so loga ferramenta e canal).
-pub fn remetente_openai(dono: Option<&str>, authorization: Option<&str>) -> Option<String> {
+pub fn remetente_openai(
+    dono: Option<&str>,
+    authorization: Option<&axum::http::HeaderValue>,
+) -> Option<String> {
     use sha2::{Digest, Sha256};
     let dono = dono?.trim();
     if dono.is_empty() {
         return None;
     }
-    let credencial = match authorization.map(str::trim).filter(|a| !a.is_empty()) {
-        Some(a) => hex::encode(Sha256::digest(a.as_bytes())),
+    let credencial = match authorization
+        .map(|a| a.as_bytes().trim_ascii())
+        .filter(|a| !a.is_empty())
+    {
+        Some(a) => hex::encode(Sha256::digest(a)),
         None => "sem-credencial".to_string(),
     };
     Some(format!("{dono}#{credencial}"))
@@ -125,25 +138,51 @@ mod tests {
         assert_ne!(nonce_de_conexao(), nonce_de_conexao());
     }
 
+    fn header(v: &[u8]) -> axum::http::HeaderValue {
+        axum::http::HeaderValue::from_bytes(v).expect("header valido")
+    }
+
     #[test]
     fn remetente_openai_sem_dono_e_none() {
-        assert_eq!(remetente_openai(None, Some("Bearer x")), None);
-        assert_eq!(remetente_openai(Some(" "), Some("Bearer x")), None);
+        let h = header(b"Bearer x");
+        assert_eq!(remetente_openai(None, Some(&h)), None);
+        assert_eq!(remetente_openai(Some(" "), Some(&h)), None);
     }
 
     /// Outra credencial, outro remetente — e o valor cru do bearer nunca
     /// aparece no remetente.
     #[test]
     fn remetente_openai_separa_credenciais_e_nao_guarda_o_bearer() {
-        let a = remetente_openai(Some("dono"), Some("Bearer segredo-a")).expect("a");
-        let b = remetente_openai(Some("dono"), Some("Bearer segredo-b")).expect("b");
+        let a = remetente_openai(Some("dono"), Some(&header(b"Bearer segredo-a"))).expect("a");
+        let b = remetente_openai(Some("dono"), Some(&header(b"Bearer segredo-b"))).expect("b");
         let anon = remetente_openai(Some("dono"), None).expect("anon");
         assert_ne!(a, b);
         assert_ne!(a, anon);
         assert!(!a.contains("segredo-a"));
         assert_eq!(
-            remetente_openai(Some("dono"), Some("Bearer segredo-a")),
+            remetente_openai(Some("dono"), Some(&header(b"Bearer segredo-a"))),
             Some(a)
         );
+        // Header so de espaco e o mesmo que nenhum.
+        assert_eq!(
+            remetente_openai(Some("dono"), Some(&header(b"   "))),
+            Some(anon)
+        );
+    }
+
+    /// #1343 A9: `Authorization` com bytes que nao sao UTF-8 (obs-text) e
+    /// uma credencial como outra qualquer — nunca a identidade anonima, que
+    /// e compartilhada por todo cliente sem header.
+    #[test]
+    fn authorization_nao_utf8_nao_vira_o_anonimo() {
+        let obs_a = header(b"Bearer \xff\xfea");
+        let obs_b = header(b"Bearer \xff\xfeb");
+        assert!(obs_a.to_str().is_err(), "o caso e justamente o nao-UTF-8");
+        let anon = remetente_openai(Some("dono"), None).expect("anon");
+        let a = remetente_openai(Some("dono"), Some(&obs_a)).expect("a");
+        let b = remetente_openai(Some("dono"), Some(&obs_b)).expect("b");
+        assert_ne!(a, anon);
+        assert_ne!(b, anon);
+        assert_ne!(a, b);
     }
 }

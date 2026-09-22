@@ -246,14 +246,15 @@ pub async fn chat_completions(
     let user_id = resolve_user_id(&headers, &state);
     // #1343: quem pode aprovar, no proximo request desta `X-Session-Id`, um
     // pedido de confirmacao que pausar este. O dono resolvido pelo servidor
-    // (nunca `X-User-Id`) mais o hash do `Authorization` que chegou: outro
-    // cliente com a mesma sessao e outra credencial nao aprova. Sem dono,
-    // `None` — e sem escopo a pausa e terminal.
+    // (nunca `X-User-Id`) mais o hash dos bytes do `Authorization` que
+    // chegou: outro cliente com a mesma sessao e outra credencial nao
+    // aprova, e um header que nao e UTF-8 continua sendo a credencial dele
+    // (nunca o anonimo). Sem dono, `None` — e sem escopo a pausa e terminal.
+    // Sem `X-Session-Id` a sessao e um UUID novo por request, entao nao ha
+    // o que retomar: o cliente que quer o "sim" manda a mesma sessao.
     let aprovador = crate::approval_scope::remetente_openai(
         user_id.as_deref(),
-        headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok()),
+        headers.get(axum::http::header::AUTHORIZATION),
     );
 
     // GAR-234/238: Extract mode from header for logging and apply to session
