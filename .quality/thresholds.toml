@@ -10,9 +10,12 @@
 # CODEOWNERS lock + revisão explícita de Michel.
 
 [file_size]
-# Limite absoluto de linhas por arquivo .rs.
-# Baseline atual (2026-05-05): admin/handlers.rs com 3240 linhas — buffer
-# de ~8% deixa o limite em 3500 sem forçar refactor de status quo.
+# Limite absoluto de linhas por arquivo .rs. Fixado em 2026-05-05, quando o
+# maior arquivo (admin/handlers.rs) tinha 3240 linhas. Continua 3500 de
+# proposito: o re-baseline de 2026-09-22 (#1254) adotou o tamanho real no
+# baseline.json (maior: agents/src/runtime.rs, 10513 linhas), e subir este
+# teto afrouxaria o gate do PR-4. Os arquivos acima dele estao em
+# .quality/README.md, secao "Divida aceita (#1254)".
 max_file_lines = 3500
 
 # Soft thresholds (informativos em PR-1; viram trends bloqueantes em PR-4).
