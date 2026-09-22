@@ -112,15 +112,22 @@ pub fn detect_route(goal: &str) -> (&'static str, Option<&'static str>) {
     ("brainstorm", None)
 }
 
-/// Entry point for `garra max-power`.
-pub fn run(goal: Option<String>, mode: String, config: &garraia_config::AppConfig) {
+/// Entry point for `garraia max-power`.
+///
+/// Async de proposito (#1228, achado do dogfood): o comando e despachado de
+/// dentro do `async_main` da CLI, que ja roda num runtime tokio. A versao
+/// anterior era sincrona e criava um segundo runtime com `block_on`, o que
+/// faz o tokio entrar em panico ("Cannot start a runtime from within a
+/// runtime") em todo `garraia max-power --goal`: o modo provider-backed
+/// nunca rodou num binario publicado.
+pub async fn run(goal: Option<String>, mode: String, config: &garraia_config::AppConfig) {
     print_handoff_summary();
     match goal {
         None => print_menu_with_capabilities(config),
         Some(g) => {
             print_capability_summary(config);
-            let completer = build_completer(config);
-            route_goal(&g, &mode, completer.as_ref());
+            let completer = build_completer(config).await;
+            route_goal(&g, &mode, completer.as_ref()).await;
         }
     }
 }
@@ -175,12 +182,8 @@ impl SkillCompleter for RuntimeCompleter {
 /// in a `RuntimeCompleter`. `None` → the pipeline runs deterministic
 /// offline mode — never a hard failure, max-power stays usable without
 /// any provider configured.
-fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeCompleter> {
-    let outcome = block_on(async {
-        let (config_key, model, provider) = chat::detect_provider(config, None, None, true).await;
-        Some((config_key, model, provider))
-    });
-    let (_config_key, model, provider) = outcome?;
+async fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeCompleter> {
+    let (_config_key, model, provider) = chat::detect_provider(config, None, None, true).await;
     let runtime = AgentRuntime::new();
     runtime.register_provider(Arc::clone(&provider));
     Some(RuntimeCompleter {
@@ -188,16 +191,6 @@ fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeComplete
         provider,
         model,
     })
-}
-
-/// Run `fut` on a fresh current-thread runtime (max-power dispatch is sync
-/// and not nested inside a tokio runtime in the CLI entry point).
-fn block_on<F: Future>(fut: F) -> F::Output {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime for max-power");
-    runtime.block_on(fut)
 }
 
 /// Load `.garra-estado.md` and print a one-line handoff summary if the file
@@ -262,7 +255,7 @@ fn linha_de_exemplo(binario: &str) -> String {
     format!("  Example: {binario} max-power --goal \"fix the login crash\" --mode new")
 }
 
-fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
+async fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
     let (route, matched_kw) = detect_route(goal);
     println!("route: {route}");
     match matched_kw {
@@ -283,8 +276,8 @@ fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
     print_repo_preflight();
     let team = AgentTeam::new();
     let summary = match completer {
-        Some(c) => block_on(team.run_with_completer(goal, c)),
-        None => team.run(goal),
+        Some(c) => team.run_with_completer(goal, c).await,
+        None => team.run(goal).await,
     };
     print_team_summary(&summary);
 }
@@ -339,6 +332,41 @@ fn print_repo_preflight() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1228 (dogfood): o comando roda de dentro do runtime da CLI. Antes, o
+    /// `block_on` interno criava um segundo runtime e o tokio entrava em
+    /// panico em todo `garraia max-power --goal`. Este teste roda o roteamento
+    /// no mesmo cenario do `async_main` (runtime multi-thread ja ativo), sem
+    /// provider, para nao depender do ambiente.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn roteamento_roda_dentro_do_runtime_da_cli() {
+        route_goal("fix the login crash", "new", None).await;
+    }
+
+    /// #1228 (dogfood): nenhum caminho de producao deste modulo cria runtime
+    /// proprio. Foi um `block_on` num runtime novo, dentro do runtime do
+    /// `async_main`, que derrubava todo `garraia max-power --goal`. Varre o
+    /// fonte fora do bloco de testes.
+    #[test]
+    fn modulo_nao_cria_runtime_proprio() {
+        for (nome, fonte) in [
+            ("max_power.rs", include_str!("max_power.rs")),
+            ("team.rs", include_str!("team.rs")),
+        ] {
+            let corte = fonte.find("#[cfg(test)]").unwrap_or(fonte.len());
+            let producao: String = fonte[..corte]
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for proibido in ["block_on(", "tokio::runtime::", "block_in_place"] {
+                assert!(
+                    !producao.contains(proibido),
+                    "{nome} nao pode usar `{proibido}` fora dos testes: o max-power ja roda dentro do runtime da CLI"
+                );
+            }
+        }
+    }
 
     #[test]
     fn routes_bug_keywords() {

@@ -2503,7 +2503,7 @@ async fn async_main(
             mcp_server::run_mcp_server(config).await?;
         }
         Commands::MaxPower { goal, mode } => {
-            max_power::run(goal, mode, &config);
+            max_power::run(goal, mode, &config).await;
         }
         Commands::Verify { .. } => {
             // Handled in main() before the async runtime starts.
