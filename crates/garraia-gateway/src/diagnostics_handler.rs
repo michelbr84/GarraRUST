@@ -1538,12 +1538,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn o_relatorio_de_verdade_avisa_o_portao_vazio() {
-        use garraia_agents::AgentRuntime;
-        use garraia_channels::ChannelRegistry;
         use garraia_channels::whatsapp_linked::{SessionBlob, SessionKey};
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let mut config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
@@ -1564,11 +1561,7 @@ mod tests {
             .expect("sessao");
         std::fs::create_dir_all(paths.bridge_dir.join("node_modules")).expect("deps");
 
-        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
-            config,
-            std::sync::Arc::new(AgentRuntime::new()),
-            ChannelRegistry::new(),
-        ));
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
         let Json(report) = diagnostics_handler(State(state)).await;
         let linha = report
             .checks
