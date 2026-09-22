@@ -112,15 +112,22 @@ pub fn detect_route(goal: &str) -> (&'static str, Option<&'static str>) {
     ("brainstorm", None)
 }
 
-/// Entry point for `garra max-power`.
-pub fn run(goal: Option<String>, mode: String, config: &garraia_config::AppConfig) {
+/// Entry point for `garraia max-power`.
+///
+/// Async de proposito (#1228, achado do dogfood): o comando e despachado de
+/// dentro do `async_main` da CLI, que ja roda num runtime tokio. A versao
+/// anterior era sincrona e criava um segundo runtime com `block_on`, o que
+/// faz o tokio entrar em panico ("Cannot start a runtime from within a
+/// runtime") em todo `garraia max-power --goal`: o modo provider-backed
+/// nunca rodou num binario publicado.
+pub async fn run(goal: Option<String>, mode: String, config: &garraia_config::AppConfig) {
     print_handoff_summary();
     match goal {
         None => print_menu_with_capabilities(config),
         Some(g) => {
             print_capability_summary(config);
-            let completer = build_completer(config);
-            route_goal(&g, &mode, completer.as_ref());
+            let completer = build_completer(config).await;
+            route_goal(&g, &mode, completer.as_ref()).await;
         }
     }
 }
@@ -175,12 +182,93 @@ impl SkillCompleter for RuntimeCompleter {
 /// in a `RuntimeCompleter`. `None` → the pipeline runs deterministic
 /// offline mode — never a hard failure, max-power stays usable without
 /// any provider configured.
-fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeCompleter> {
-    let outcome = block_on(async {
-        let (config_key, model, provider) = chat::detect_provider(config, None, None, true).await;
-        Some((config_key, model, provider))
-    });
-    let (_config_key, model, provider) = outcome?;
+/// Por que o pipeline roda offline em vez de chamar um provider (#1228).
+#[derive(Debug, PartialEq, Eq)]
+enum SemProvider {
+    /// O `detect_provider` chegou ao ultimo recurso: nada configurado,
+    /// nenhuma chave no ambiente e nenhum Ollama local respondeu.
+    NadaAlcancavel,
+    /// O Ollama responde, mas nao tem o modelo que seria pedido.
+    ModeloAusente { modelo: String },
+    /// O Ollama respondeu, mas nao conseguiu listar os modelos.
+    ListaFalhou,
+}
+
+impl SemProvider {
+    fn explicar(&self, bin: &str) -> String {
+        match self {
+            Self::NadaAlcancavel => format!(
+                "nenhum provider configurado e nenhum Ollama local respondeu; \
+                 rodando offline. Configure um com `{bin} init`."
+            ),
+            Self::ModeloAusente { modelo } => format!(
+                "o Ollama local nao tem o modelo `{modelo}`; rodando offline. \
+                 Baixe com `ollama pull {modelo}` ou configure outro provider \
+                 com `{bin} init`."
+            ),
+            Self::ListaFalhou => {
+                "o Ollama local nao listou os modelos; rodando offline.".to_string()
+            }
+        }
+    }
+}
+
+/// Decide, sem rede, se o provider que o `detect_provider` devolveu serve.
+///
+/// Antes o `max-power` tomava qualquer retorno como provider: sem nada
+/// configurado, o palpite final (Ollama com o modelo padrao) virava
+/// "execution: provider-backed" e a primeira etapa morria com
+/// `ollama error status: 404`, e o caminho offline que a ajuda promete nunca
+/// rodava. `instalados` e a lista de modelos do Ollama, quando o provider e
+/// o Ollama e ela foi consultada.
+fn decidir_execucao(
+    config_key: &str,
+    provider_id: &str,
+    modelo: &str,
+    instalados: Option<std::result::Result<&[String], ()>>,
+) -> std::result::Result<(), SemProvider> {
+    if config_key == chat::OLLAMA_ULTIMO_RECURSO {
+        return Err(SemProvider::NadaAlcancavel);
+    }
+    if provider_id != "ollama" {
+        return Ok(());
+    }
+    match instalados {
+        None => Ok(()),
+        Some(Err(())) => Err(SemProvider::ListaFalhou),
+        Some(Ok(lista)) => {
+            let quero =
+                garraia_agents::normalize_ollama_tag(modelo).unwrap_or_else(|| modelo.to_string());
+            let tem = lista.iter().any(|m| {
+                m == &quero || garraia_agents::normalize_ollama_tag(m).is_some_and(|n| n == quero)
+            });
+            if tem {
+                Ok(())
+            } else {
+                Err(SemProvider::ModeloAusente { modelo: quero })
+            }
+        }
+    }
+}
+
+async fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeCompleter> {
+    let (config_key, model, provider) = chat::detect_provider(config, None, None, true).await;
+    let instalados =
+        if provider.provider_id() == "ollama" && config_key != chat::OLLAMA_ULTIMO_RECURSO {
+            Some(provider.available_models().await.map_err(|_| ()))
+        } else {
+            None
+        };
+    if let Err(motivo) = decidir_execucao(
+        &config_key,
+        provider.provider_id(),
+        &model,
+        instalados.as_ref().map(|r| r.as_deref().map_err(|_| ())),
+    ) {
+        println!("  [provider] {}", motivo.explicar(&crate::binario::nome()));
+        println!();
+        return None;
+    }
     let runtime = AgentRuntime::new();
     runtime.register_provider(Arc::clone(&provider));
     Some(RuntimeCompleter {
@@ -188,16 +276,6 @@ fn build_completer(config: &garraia_config::AppConfig) -> Option<RuntimeComplete
         provider,
         model,
     })
-}
-
-/// Run `fut` on a fresh current-thread runtime (max-power dispatch is sync
-/// and not nested inside a tokio runtime in the CLI entry point).
-fn block_on<F: Future>(fut: F) -> F::Output {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime for max-power");
-    runtime.block_on(fut)
 }
 
 /// Load `.garra-estado.md` and print a one-line handoff summary if the file
@@ -262,7 +340,7 @@ fn linha_de_exemplo(binario: &str) -> String {
     format!("  Example: {binario} max-power --goal \"fix the login crash\" --mode new")
 }
 
-fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
+async fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
     let (route, matched_kw) = detect_route(goal);
     println!("route: {route}");
     match matched_kw {
@@ -283,8 +361,8 @@ fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
     print_repo_preflight();
     let team = AgentTeam::new();
     let summary = match completer {
-        Some(c) => block_on(team.run_with_completer(goal, c)),
-        None => team.run(goal),
+        Some(c) => team.run_with_completer(goal, c).await,
+        None => team.run(goal).await,
     };
     print_team_summary(&summary);
 }
@@ -339,6 +417,99 @@ fn print_repo_preflight() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1228 (dogfood): o comando roda de dentro do runtime da CLI. Antes, o
+    /// `block_on` interno criava um segundo runtime e o tokio entrava em
+    /// panico em todo `garraia max-power --goal`. Este teste roda o roteamento
+    /// no mesmo cenario do `async_main` (runtime multi-thread ja ativo), sem
+    /// provider, para nao depender do ambiente.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn roteamento_roda_dentro_do_runtime_da_cli() {
+        route_goal("fix the login crash", "new", None).await;
+    }
+
+    /// #1228 (dogfood): nenhum caminho de producao deste modulo cria runtime
+    /// proprio. Foi um `block_on` num runtime novo, dentro do runtime do
+    /// `async_main`, que derrubava todo `garraia max-power --goal`. Varre o
+    /// fonte fora do bloco de testes.
+
+    #[test]
+    fn sem_provider_nenhum_roda_offline() {
+        assert_eq!(
+            decidir_execucao(
+                chat::OLLAMA_ULTIMO_RECURSO,
+                "ollama",
+                "qwen3.8:latest",
+                None
+            ),
+            Err(SemProvider::NadaAlcancavel)
+        );
+    }
+
+    #[test]
+    fn ollama_sem_o_modelo_roda_offline_e_diz_qual_baixar() {
+        let lista = vec!["qwen3.5:0.8b".to_string()];
+        let r = decidir_execucao("ollama", "ollama", "qwen3.8", Some(Ok(&lista)));
+        assert_eq!(
+            r,
+            Err(SemProvider::ModeloAusente {
+                modelo: "qwen3.8:latest".to_string()
+            })
+        );
+        let texto = r.expect_err("offline").explicar("garraia");
+        assert!(texto.contains("ollama pull qwen3.8:latest"), "{texto}");
+        assert!(texto.contains("garraia init"), "{texto}");
+    }
+
+    #[test]
+    fn ollama_com_o_modelo_segue_com_provider() {
+        let lista = vec!["qwen3.8:latest".to_string(), "qwen3.5:0.8b".to_string()];
+        assert_eq!(
+            decidir_execucao("ollama", "ollama", "qwen3.8", Some(Ok(&lista))),
+            Ok(())
+        );
+        assert_eq!(
+            decidir_execucao("ollama", "ollama", "qwen3.5:0.8b", Some(Ok(&lista))),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn ollama_que_nao_lista_roda_offline() {
+        assert_eq!(
+            decidir_execucao("ollama", "ollama", "qwen3.8", Some(Err(()))),
+            Err(SemProvider::ListaFalhou)
+        );
+    }
+
+    #[test]
+    fn provider_de_nuvem_nao_passa_pela_lista_do_ollama() {
+        assert_eq!(
+            decidir_execucao("openrouter", "openrouter", "z-ai/glm-5.3-flash", None),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn modulo_nao_cria_runtime_proprio() {
+        for (nome, fonte) in [
+            ("max_power.rs", include_str!("max_power.rs")),
+            ("team.rs", include_str!("team.rs")),
+        ] {
+            let corte = fonte.find("#[cfg(test)]").unwrap_or(fonte.len());
+            let producao: String = fonte[..corte]
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for proibido in ["block_on(", "tokio::runtime::", "block_in_place"] {
+                assert!(
+                    !producao.contains(proibido),
+                    "{nome} nao pode usar `{proibido}` fora dos testes: o max-power ja roda dentro do runtime da CLI"
+                );
+            }
+        }
+    }
 
     #[test]
     fn routes_bug_keywords() {

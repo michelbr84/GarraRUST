@@ -253,12 +253,12 @@ impl AgentTeam {
     ///
     /// This method is infallible — phase failures are recorded inside
     /// `PhaseResult.decision` rather than propagated as errors.
-    pub fn run(&self, goal: &str) -> TeamSummary {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime for team pipeline");
-        runtime.block_on(self.run_inner(goal, None))
+    ///
+    /// Async (#1228, achado do dogfood): o `garraia max-power` chama isto de
+    /// dentro do runtime da CLI; criar um runtime proprio aqui fazia o tokio
+    /// entrar em panico em todo `--goal` sem provider.
+    pub async fn run(&self, goal: &str) -> TeamSummary {
+        self.run_inner(goal, None).await
     }
 
     /// Provider-backed pipeline (GAR-498 follow-up): every phase runs
@@ -306,6 +306,9 @@ impl AgentTeam {
                     fwd_tx.send((p, output)).ok();
                 }
                 Ok(ExecMsg::Failed { phase: p, reason }) => {
+                    // #1228: a tela mostra a linha, mas sem isto a falha nao
+                    // chegava ao `garraia.log` e nao havia o que investigar.
+                    tracing::warn!(phase = ?p, skill = skill_name, "max-power: etapa falhou: {reason}");
                     let output = SkillRunOutput {
                         skill_name: skill_name.to_string(),
                         summary: format!("execution failed: {reason}"),
@@ -391,8 +394,18 @@ mod tests {
     use super::*;
     use std::pin::Pin;
 
+    /// Os testes sincronos rodam fora de qualquer runtime, entao criar um
+    /// aqui e legitimo (so em teste).
+    fn bloquear<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime de teste")
+            .block_on(fut)
+    }
+
     fn run(goal: &str) -> TeamSummary {
-        AgentTeam::new().run(goal)
+        bloquear(AgentTeam::new().run(goal))
     }
 
     #[test]
@@ -559,8 +572,8 @@ mod tests {
 
     #[test]
     fn agent_team_default_is_equivalent_to_new() {
-        let a = AgentTeam::new().run("goal");
-        let b = AgentTeam::default().run("goal");
+        let a = bloquear(AgentTeam::new().run("goal"));
+        let b = bloquear(AgentTeam::default().run("goal"));
         assert_eq!(a.completed, b.completed);
         assert_eq!(a.phases.len(), b.phases.len());
     }

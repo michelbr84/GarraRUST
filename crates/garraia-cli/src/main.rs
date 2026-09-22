@@ -391,13 +391,14 @@ enum Commands {
     /// Business pela Cloud API da Meta (#1238, ADR 0023).
     ///
     /// Sem subcomando, mostra o menu de duas opcoes. Sem TTY, imprime as duas
-    /// opcoes com o comando de cada uma e sai 0 — mesma postura do `garra
+    /// opcoes com o comando de cada uma e sai 0 — mesma postura do `garraia
     /// init`. Exit codes (sysexits): 0 ok, 1 cancelado, 69 falta Node / nao ha
     /// sessao, 70 erro interno.
-    ///
-    /// `name` explicito porque o clap deriva kebab-case do nome da variante, e
-    /// `WhatsApp` viraria `whats-app` — um comando que ninguem digitaria. O
-    /// teste `whatsapp_smoke` e quem pega isso.
+    //
+    // `name` explicito porque o clap deriva kebab-case do nome da variante, e
+    // `WhatsApp` viraria `whats-app` — um comando que ninguem digitaria. O
+    // teste `whatsapp_smoke` e quem pega isso. Comentario comum (`//`), e nao
+    // doc comment: o clap publica o doc comment inteiro no `--help`.
     #[command(name = "whatsapp")]
     WhatsApp {
         #[command(subcommand)]
@@ -560,11 +561,11 @@ enum MemoryCommands {
     },
 
     /// Add an entry to the memory (#958).
-    ///
-    /// O `garra memory` sabia inspecionar e podar, mas nao semear: a unica
-    /// forma de por algo na memoria era conversar com o agente, o que exige um
-    /// provider de LLM. E o que torna possivel medir a qualidade do recall de
-    /// forma reproduzivel.
+    //
+    // O `garraia memory` sabia inspecionar e podar, mas nao semear: a unica
+    // forma de por algo na memoria era conversar com o agente, o que exige um
+    // provider de LLM. E o que torna possivel medir a qualidade do recall de
+    // forma reproduzivel.
     Add {
         /// O texto a lembrar.
         content: String,
@@ -2503,7 +2504,11 @@ async fn async_main(
             mcp_server::run_mcp_server(config).await?;
         }
         Commands::MaxPower { goal, mode } => {
-            max_power::run(goal, mode, &config);
+            // #1228: sem isto o pipeline provider-backed nao deixava rastro no
+            // `garraia.log`, e uma etapa que caia (corpo truncado do provider)
+            // so sobrava como uma linha na tela, sem como investigar depois.
+            init_tracing(&effective_level);
+            max_power::run(goal, mode, &config).await;
         }
         Commands::Verify { .. } => {
             // Handled in main() before the async runtime starts.
@@ -2772,6 +2777,34 @@ mod tests {
     use super::*;
     use clap::Parser;
     use serial_test::serial;
+
+    /// O clap publica o doc comment inteiro de cada comando no `--help`, entao
+    /// nota de implementacao escrita com `///` vaza para o usuario (#1228:
+    /// o `whatsapp --help` explicava o `#[command(name)]` e citava o teste que
+    /// o prende). Varre a ajuda longa de todos os comandos e subcomandos.
+    #[test]
+    fn ajuda_nao_vaza_nota_de_implementacao() {
+        fn varrer(cmd: &mut clap::Command, caminho: &str, achados: &mut Vec<String>) {
+            let ajuda = cmd.render_long_help().to_string();
+            for marca in ["clap", "#[", "kebab-case", "teste `", "sabia inspecionar"] {
+                if ajuda.contains(marca) {
+                    achados.push(format!("`{caminho} --help` contem `{marca}`"));
+                }
+            }
+            for sub in cmd.get_subcommands_mut() {
+                let nome = format!("{caminho} {}", sub.get_name());
+                varrer(sub, &nome, achados);
+            }
+        }
+        let mut raiz = Cli::command();
+        raiz.build();
+        let mut achados = Vec::new();
+        varrer(&mut raiz, "garraia", &mut achados);
+        assert!(
+            achados.is_empty(),
+            "nota de implementacao na ajuda: {achados:#?}"
+        );
+    }
 
     /// `cli_args::inject_default_subcommand` needs to know which tokens eat
     /// the next argv entry; `value_taking_flags` derives that from the clap
