@@ -73,13 +73,11 @@ crates/
 ├── garraia-channels/  # Messaging channels
 ├── garraia-agents/    # LLM providers
 ├── garraia-voice/     # Voice pipeline
-├── garraia-runtime/   # State machine
 ├── garraia-db/        # Memory/SQLite
 ├── garraia-plugins/   # WASM plugins
 ├── garraia-media/     # Media processing
 ├── garraia-security/  # Vault/auth
 ├── garraia-skills/    # Skills system
-├── garraia-tools/     # Tool traits
 └── garraia-common/    # Shared types
 ```
 

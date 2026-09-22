@@ -186,7 +186,7 @@ Indicadores: ✅ estável · 🟡 parcial/experimental · 🔵 planejado · ❌ 
 | Aspecto | GarraIA | Hermes | OpenClaw |
 |---|---|---|---|
 | Nativas | 13 focadas em dev/sistema | ~15+ focadas em produtividade/browser | ~25 em 8 categorias |
-| Custom | ✅ crate garraia-tools | ✅ skills scripts + MCP | ✅ api.registerTool |
+| Custom | ✅ tools do garraia-agents + MCP | ✅ skills scripts + MCP | ✅ api.registerTool |
 | Permissões | ✅ ToolPolicy por modo + approval gates | ✅ allowlist + approvals smart | ✅ allow/deny por tool/agente pré-model-call |
 | Sandbox | 🟡 budget+gates; WASM p/ plugins | 🟡 processos; execute_code sem sandbox formal | ✅ Docker/Podman/SSH/OpenShell/Crabbox |
 | Aprovação humana | ✅ approval.rs | ✅ smart (LLM auxiliar)/manual | ✅ approvals retomáveis (Lobster) |

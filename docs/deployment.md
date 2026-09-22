@@ -16,6 +16,22 @@ cp .env.example .env
 # Edite o arquivo .env com o editor de sua preferência
 ```
 
+> **Credencial obrigatoria (#1261, v0.4.5).** O container liga em `0.0.0.0`
+> e o `garraia start` **recusa subir** num bind nao-loopback sem credencial
+> de gateway (exit 78, com a mensagem de como corrigir). Coloque no `.env`
+> uma linha `GARRAIA_GATEWAY_API_KEY=` seguida de um segredo longo — gere com
+> `openssl rand -hex 32` — e envie-o nos clientes como
+> `Authorization: Bearer <chave>`. `/ping`, `/health` e `/api/health` seguem
+> abertos para healthcheck. O `.env.example` ja traz a linha, vazia de
+> proposito (placeholder seria chave publica), e os tres `docker-compose*.yml` repassam a env. Sem ela o
+> `docker compose up -d` termina "com sucesso", mas o container entra em loop
+> de reinicio (`restart: unless-stopped`, exit 78 a cada tentativa):
+> `docker compose ps` mostra `Restarting` e `docker compose logs garraia`
+> mostra o motivo. Helm e Terraform/ECS: veja `deploy/helm/garraia/values.yaml`
+> (`gatewayApiKey`) e `deploy/terraform/README.md`
+> (`gateway_api_key_secret_arn`). Os `docs/deployment/config.*.yml` nao carregam
+> mais `gateway.host`/`gateway.port` (chaves deprecadas, nunca lidas).
+
 ---
 
 ## Exemplo 1: Gateway Local (Provedores em Nuvem)

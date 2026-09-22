@@ -1,10 +1,15 @@
 # Configuração do GarraIA para implantação local com Docker e Ollama
 # Conecta-se ao serviço local 'ollama' na mesma rede Docker.
 
-gateway:
-  # Vincula a todas as interfaces dentro do container
-  host: "0.0.0.0"
-  port: 3888
+# #1261: o bind nao mora mais aqui. `gateway.host`/`gateway.port` estao
+# deprecados (o `garraia start` nunca os leu): o Dockerfile passa
+# `--host 0.0.0.0`, e `HOST`/`PORT` do ambiente valem como sempre.
+#
+# Num bind nao-loopback o `garraia start` RECUSA subir sem credencial de
+# gateway. Este arquivo e montado somente-leitura pelo compose, entao a
+# credencial vem do ambiente: defina GARRAIA_GATEWAY_API_KEY (no `.env` ou
+# no painel do RunPod) com um segredo longo e aleatorio, por exemplo
+# `openssl rand -hex 32`. Nunca commite esse valor.
 
 llm:
   # Serviço local do Ollama

@@ -345,14 +345,15 @@ This wizard will (plan 0126):
   of those Python stacks is deferred — see [voice.md](voice.md)).
 - Configure the Telegram channel as before.
 - Store API keys and bot tokens in the encrypted vault.
-- Pick server-friendly defaults: `gateway.host: 0.0.0.0` when running
-  as root or inside a RunPod pod; `127.0.0.1` otherwise. Note these
-  file keys are a record of intent only — `garra start` binds from
-  `--host`/`HOST` and `--port`/`PORT` (env included), never from
-  `gateway.host`/`gateway.port` (#1261, [auth-config.md
-  §5.1](auth-config.md#51-the-gateway-bind-address--what-config-check-sees-vs-what-start-binds));
-  on RunPod LB Serverless the platform's `HOST`/`PORT` env vars are what
-  take effect.
+- Mint `gateway.api_key` when the machine is server-like (root or a RunPod
+  pod) or `HOST` is not loopback, and print how to expose the gateway
+  (`HOST=0.0.0.0 garraia start`). Since v0.4.5 the wizard no longer writes
+  `gateway.host`/`gateway.port` and removes them on a re-run: those keys are
+  deprecated and never fed the bind, which comes from `--host`/`HOST` and
+  `--port`/`PORT` (#1261, [auth-config.md
+  §5.1](auth-config.md#51-the-gateway-bind-address--what-config-check-sees-vs-what-start-binds)).
+  On a non-loopback bind `garraia start` refuses to boot without a gateway
+  credential (`gateway.api_key` or `GARRAIA_GATEWAY_API_KEY`).
 
 Skip toggles:
 

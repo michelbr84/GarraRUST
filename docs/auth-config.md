@@ -360,11 +360,16 @@ secret (§3.2.1, issue #824). Two consequences worth knowing:
   `GARRAIA_SIGNUP_DATABASE_URL` is missing — `AuthConfig::from_env` is
   all-or-nothing, so `/auth/*` and `/v1/auth/*` still answer 503
   (previously this partial state passed `config check` clean).
-- **Warning** (network section, field `gateway.host`) when the config
-  file binds `0.0.0.0`/`::` with no `gateway.api_key` or TLS disabled.
-  The finding reflects the **file**, which is a different value from the
-  live bind: `garra start` never reads these keys (see §5.1) — the boot
-  warning from #1252 is what covers the resolved address.
+- **Error** (network section, field `gateway.host`) when the resolved bind
+  (see §5.1) is not loopback and no gateway credential is set
+  (`gateway.api_key` or `GARRAIA_GATEWAY_API_KEY`): `garraia start` refuses
+  that bind (#1261), so `config check` never reports it clean. With a
+  credential but no TLS the finding is a **Warning**; with the file-only
+  opt-out `gateway.allow_unauthenticated_network_bind: true` it is a
+  **Warning**, and the opt-out itself is always reported.
+- **Warning** (field `gateway.api_key`) when `GARRAIA_GATEWAY_API_KEY` and
+  `gateway.api_key` are both set and differ — the env var wins. Presence
+  only; values are never emitted.
 - **Warning** when the env secret is set **and** `[auth]` overrides are
   present — non-secret overrides apply but secrets remain env-only.
 - **Warning** (deprecation) whenever the mixed-case
@@ -396,48 +401,67 @@ value never survives. Measured on v0.4.2: a `config.yml` with
 `gateway.host: 0.0.0.0` and `port: 3977` still binds `127.0.0.1:3888`,
 while `HOST=…` changes the banner and the bind.
 
-Consequences:
+`garraia restart` reads `HOST` / `PORT` exactly like `garraia start`
+(#1261 — before, restarting a RunPod/`HOST` daemon quietly rebound it to
+loopback).
 
-- `garra config check` and `garra doctor` (both call the same `run_check`)
-  resolve the bind the way `start` does, **minus the flag**: `HOST` /
-  `PORT` from their own environment if set, otherwise the clap defaults
-  `127.0.0.1` : `3888` (#1261; #1325 plus its follow-up). The
-  network-exposure warning is about that resolved address: `HOST=0.0.0.0`
-  in the shell that runs the check fires it even with a file pinning
-  `127.0.0.1`, and a file pinning `0.0.0.0` no longer fires it, because
-  that value never binds. Any non-loopback IP literal (`0.0.0.0`, `::`, a
-  LAN address) warns without `gateway.api_key` + TLS, matching the
-  gateway's own boot gate; a hostname other than `localhost` gets its own
-  warning saying the check cannot judge it.
+**`gateway.host` / `gateway.port` in the file are deprecated** (#1261,
+decision B). They still parse, for back-compat, but nothing reads them to
+bind: `garraia init` no longer writes them and removes them on a re-run, the
+Web Console shows the running bind read-only, and the client commands
+(`garraia status`, `stop`, `doctor`, `admin`) target the same address
+`start` uses (`HOST`/`PORT`, else `127.0.0.1:3888`, with `0.0.0.0`/`::`
+mapped to loopback) instead of the file value. Removing the keys from the
+schema is deliberately not done in v0.4.5: once nothing reads or writes
+them, deleting them would only turn a helpful deprecation warning into a
+silent no-op.
+
+#### The boot refuses an exposed bind without a credential
+
+Since v0.4.5 (#1261, decision A), `garraia start`, `start -d` and `restart`
+**refuse to boot** (exit 78, `EX_CONFIG`) when any address the bind resolves
+to is not loopback and no gateway credential is configured. The refusal
+happens before the socket is bound, before the fork in `-d` mode (so the
+message lands on the terminal), and before `restart` stops the running
+daemon. TLS does not exempt the bind: TLS without a credential is still open
+to anyone who can reach the port. A hostname counts as exposed if **any** of
+its resolved addresses is not loopback; a hostname that does not resolve is
+refused too.
+
+Fix it with one of:
+
+- run `garraia init` (it writes `gateway.api_key` on a server-like machine
+  or when `HOST` is not loopback);
+- set `gateway.api_key` in the config file;
+- export `GARRAIA_GATEWAY_API_KEY=<a long random secret>` — the env var
+  wins over the file and is never written back to disk (the way to give a
+  container a key without editing a read-only mounted config);
+- or bind locally: `garraia start --host 127.0.0.1` (unset `HOST`).
+
+A deployment that is open **on purpose**, behind an authenticating proxy or
+a firewall, can set `gateway.allow_unauthenticated_network_bind: true` in the
+config file. It is file-only by design — there is no env var or flag, so the
+same `HOST` injection that exposes the bind cannot also switch the guard off
+— and every boot with it logs a loud warning.
+
+Consequences for `config check`:
+
+- `garraia config check` and `garraia doctor` resolve the bind the way
+  `start` does, **minus the flag**: `HOST` / `PORT` from their own
+  environment if set, otherwise `127.0.0.1` : `3888`. A non-loopback IP
+  literal without a credential is an **Error** ("`garraia start` will
+  REFUSE"); a hostname other than `localhost` gets a warning saying the
+  check cannot judge it (`start` resolves it and applies the rule).
 - The file's `gateway.host` / `gateway.port` are reported by a separate
-  warning — "not read by `garra start`" — whenever they differ from the
-  resolved bind, in either direction. Under `--strict` that warning exits
-  2 like any other: a value in the file that does nothing is a
-  misconfiguration, not noise. (`config check --json` still echoes the
-  **file** values in `summary.gateway_host` / `summary.gateway_port`; the
-  effective bind lives in the findings' text.)
-- What the check **cannot** see: a `--host` / `--port` flag on a later
-  `garra start` (another process — a flag still wins over env and
-  default), and `garra restart`, which declares `--host`/`--port`
-  **without** `env =` (`crates/garraia-cli/src/main.rs`,
-  `Commands::Restart`). So `HOST=0.0.0.0 garra restart` binds `127.0.0.1`
-  regardless of the warning, and `garra restart --host 0.0.0.0` binds
-  open regardless of a clean check. The finding text says both.
-- What covers the flag gap at runtime is the **boot warning** from #1252 —
-  in foreground, and on stderr before the fork in `-d` mode — emitted about
-  the *resolved* address when it is non-loopback without a gateway API
-  key.
-- The dedicated `/metrics` listener is stricter by precedent: it refuses
+  deprecation warning ("deprecated and not read by `garraia start`") when
+  they differ from the resolved bind. Under `--strict` that warning exits
+  2: remove the keys.
+- What the check cannot see is a `--host` / `--port` flag on a later
+  `start`/`restart` (another process). That gap is closed at runtime: the
+  boot applies the same rule to the real bind.
+- The dedicated `/metrics` listener follows the same precedent: it refuses
   to start on a non-loopback bind with no auth configured
   (`metrics_exporter.rs`).
-
-Still open — owner decisions (R5) tracked in issue #1261, reopened after
-#1325: whether `start` should fail closed (or mint an ephemeral key) on a
-non-loopback bind without `gateway.api_key`, and what to do with the dead
-`gateway.host` / `gateway.port` file keys (read them as a clap fallback,
-or drop them). Until that lands: **bind deliberately** — pass
-`--host`/`HOST` (and `--port`/`PORT`) explicitly, and treat the config
-file's `gateway.host`/`gateway.port` as not-read-by-start.
 
 ---
 

@@ -18,7 +18,7 @@
 
 ## Estrutura de crates
 
-**24 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
+**22 crates ativos** no workspace (contagem ao vivo: `grep -c '^    "crates/' Cargo.toml`),
 mais o harness `benches/agent-framework-comparison/` (fora do workspace, não é crate).
 O histórico de entrega (plans, PRs, datas, IDs `GAR-xxx`) vive em `plans/`, `docs/adr/`
 e `CHANGELOG.md` — aqui fica só o estado atual e os invariantes que um agente precisa
@@ -116,6 +116,7 @@ crates/
                         secrets seguem env-only via `AuthConfig::from_env`. Invariante
                         de redaction: `config check` (humano + JSON) só reporta presença
                         (`api_key_set: true`), nunca valores.
+                        Boot gate (#1247, `boot_gate`): o mesmo `run_check` roda em todo `start`/`restart`/`start -d`; so `Error` da allowlist fechada `BLOQUEIA_O_BOOT` (hoje: TLS pela metade) recusa (exit 78; escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`, exatamente `1`).
   garraia-telemetry/  — OpenTelemetry + Prometheus baseline — feature-gated
   garraia-workspace/  — Postgres 16 + pgvector multi-tenant (Fase 3 schema completo).
                         37 tabelas em 33 migrations; 32 sob FORCE RLS e 5 fora (users,
@@ -154,8 +155,6 @@ crates/
                         (`workspace.memory_items`) ≠ skill (`learning.skills`) ≠ log
                         (`telemetry.traces`) ≠ manual distribuível (crate `garraia-skills`).
                         Nunca copiar código do Hermes Agent — referência só conceitual.
-  garraia-tools/      — tools compartilhadas (file ops, search, web)
-  garraia-runtime/    — runtime helpers
   garraia-common/     — tipos + erros compartilhados
   garraia-glob/       — glob matching utilitário
   garraia-desktop/    — Tauri v2 app: bandeja + overlay do papagaio + Chat Bar

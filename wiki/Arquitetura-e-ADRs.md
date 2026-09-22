@@ -2,7 +2,7 @@
 
 ## Visão geral
 
-- [Architecture Overview](https://github.com/michelbr84/GarraRUST/blob/main/docs/architecture.md) — estrutura do workspace (24 crates), fluxo do runtime, pipeline de voz, multi-agente, memória, segurança, hot-reload
+- [Architecture Overview](https://github.com/michelbr84/GarraRUST/blob/main/docs/architecture.md) — estrutura do workspace (22 crates), fluxo do runtime, pipeline de voz, multi-agente, memória, segurança, hot-reload
 - [A plataforma de hardware](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardware.md) — camadas core → `garraia-hardware` → adapter/skill → device, modelo de risco R0-R5, motor de automações · [Hardware skills](https://github.com/michelbr84/GarraRUST/blob/main/docs/hardware-skills.md)
 - [Referência da API REST do gateway](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/api-reference.md) · [OpenAPI da API mobile](https://github.com/michelbr84/GarraRUST/blob/main/docs/mobile-api-v1.yaml)
 - [Sistema de memória](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/memory.md) · [Benchmarks](https://github.com/michelbr84/GarraRUST/blob/main/docs/src/benchmarks.md)

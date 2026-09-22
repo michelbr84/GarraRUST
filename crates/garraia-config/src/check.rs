@@ -12,6 +12,15 @@
 //!   [`ConfigLoader::load`] itself returns a parse error (not this module's
 //!   responsibility).
 //!
+//! # No boot (#1247)
+//!
+//! `garraia start` / `restart` / `start -d` rodam este mesmo [`run_check`]
+//! uma vez e entregam o resultado a [`crate::boot_gate`]: todo achado e
+//! logado, e so um `Error` da allowlist fechada `BLOQUEIA_O_BOOT` recusa o
+//! boot (exit 78, escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`). Um `Error`
+//! novo aqui NAO recusa boot sozinho: entrar na allowlist e decisao item a
+//! item, com changelog.
+//!
 //! # Redaction invariant
 //!
 //! This module MUST NOT serialize secret material. Specifically it never
@@ -26,6 +35,12 @@ use serde::Serialize;
 
 use crate::loader::ConfigLoader;
 use crate::model::{AppConfig, McpServerConfig};
+// #1261: a precedencia do bind (e as constantes que espelham o clap) mora
+// em `crate::bind`, compartilhada com o boot e com os comandos cliente.
+use crate::auth::GATEWAY_API_KEY_ENV;
+use crate::bind::{
+    BindDoAmbiente as BindEfetivo, FonteDoBind, HOST_DEFAULT, HOST_ENV, PORT_DEFAULT, PORT_ENV,
+};
 
 /// Severity of a single validation finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -134,12 +149,19 @@ impl ConfigCheck {
 /// the full set from `CLAUDE.md` rule #6 plus auth/db/metrics/telemetry
 /// plumbing. See [`detect_env_vars`] for the read-semantics contract.
 const KNOWN_GARRAIA_ENV_VARS: &[&str] = &[
+    // #1247: a escotilha do `boot_gate` (`crate::boot_gate::ESCAPE_ENV`).
+    // Ligada, o boot sobe com Error da allowlist; o check tem de mostrar que
+    // ela esta no ambiente, ou ninguem ve por que um TLS pela metade subiu.
+    "GARRAIA_ALLOW_INVALID_CONFIG",
     "GARRAIA_APP_DATABASE_URL",
     "GARRAIA_CONFIG_DIR",
     "GARRAIA_DATA_DIR",
     // ADR 0024 (#1329): vence `execution.profile`; valor invalido e erro de
     // carga no gateway e `Error` aqui (`validate_execution`).
     "GARRAIA_EXECUTION_PROFILE",
+    // #1261: credencial do gateway por env (vence `gateway.api_key`). So o
+    // nome aparece aqui; o valor nunca.
+    "GARRAIA_GATEWAY_API_KEY",
     "GARRAIA_JWT_SECRET",
     "GARRAIA_LOGIN_DATABASE_URL",
     "GARRAIA_LOG_FORMAT",
@@ -260,7 +282,9 @@ fn summarise_com_env(
     ConfigSummary {
         gateway_host: config.gateway.host.clone(),
         gateway_port: config.gateway.port,
-        gateway_api_key_set: config.gateway.api_key.is_some(),
+        // #1241/#1261: a mesma regra do gate (em branco = ausente), com a
+        // credencial de `GARRAIA_GATEWAY_API_KEY` incluida. So presenca.
+        gateway_api_key_set: config.gateway.api_key_configurada(),
         tls_enabled,
         channels_count: config.channels.len(),
         llm_providers,
@@ -402,105 +426,164 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
     }
 
     // Bind exposure: a non-loopback bind puts /api/* + /ws on the network,
-    // and the bulk of that surface has no credential gate of its own, so
-    // only an api_key + TLS deployment (or network topology) protects it.
+    // and the bulk of that surface has no credential gate of its own.
     //
-    // #1261: este achado olhava SO para o arquivo, e o arquivo nao e o que
-    // manda. `garra start` recebe `--host`/`--port` do clap com
-    // `env = "HOST"`/`env = "PORT"` e `default_value`, e o `main.rs`
-    // sobrescreve `config.gateway.host`/`port` com esses valores depois de
-    // carregar a config — sem condicao, porque o arg do clap SEMPRE traz um
-    // valor (flag, env ou default). `gateway.host`/`gateway.port` do arquivo
-    // nunca chegam ao socket. Entao a precedencia que o check resolve e a
-    // real, env > default do clap, e o arquivo entra so como achado a parte
-    // (chave morta), nunca como fallback do veredito de exposicao. O que a
-    // env diz, `config check` consegue ver (mesmo processo); a flag, nao —
-    // e o texto do achado diz isso em vez de fingir autoridade sobre o
-    // bind real.
+    // #1261: o bind que vale e o de `garraia start`/`restart` — flag > env >
+    // default do clap. `gateway.host`/`gateway.port` do arquivo estao
+    // deprecados (nada os le para ligar o socket) e entram so como achado a
+    // parte, nunca como fallback do veredito. O check ve a env (mesmo
+    // processo); a flag de um start futuro, nao — e o texto diz isso.
+    //
+    // Desde a decisao A do #1261, `garraia start` RECUSA um bind exposto sem
+    // credencial (`crate::bind::verificar`). Entao aqui isso e **Error**: um
+    // `config check` limpo sobre uma config que o start recusa seria mentira.
+    let bin = garraia_common::executavel::nome();
     let bind = bind_efetivo(
         env_nao_vazia(HOST_ENV).as_deref(),
         env_nao_vazia(PORT_ENV).as_deref(),
     );
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
-    // #1241: `is_some()` mentia aqui. An empty or whitespace-only `api_key`
-    // leaves the gate OFF (`ApiKeyGate::from_config`), and `config check`
-    // stayed silent about a wide-open `/api/*` + `/ws`. Both surfaces now ask
-    // `GatewayConfig::api_key_configurada`, the single source of that rule.
+    // #1241: `api_key_configurada` e a regra unica (em branco = ausente), e
+    // desde o #1261 ela inclui `GARRAIA_GATEWAY_API_KEY` (`run_check` injeta
+    // a env em `api_key_env` antes de chegar aqui).
     let api_key_configurada = config.gateway.api_key_configurada();
-    let mut unguarded: Vec<&str> = Vec::new();
-    if !api_key_configurada {
-        unguarded.push("gateway.api_key is not set");
-    }
-    if !tls_enabled {
-        unguarded.push("TLS is disabled");
-    }
-    if !unguarded.is_empty() {
-        let origem = match bind.host_source {
-            FonteDoBind::Env => format!(
-                "{HOST_ENV}=`{}` (env var, which overrides the clap default `{HOST_DEFAULT}` \
-                 at `garra start`)",
-                bind.host
-            ),
-            FonteDoBind::DefaultDoClap => format!("host `{}` (clap default)", bind.host),
-        };
-        let porta = match bind.port_source {
-            FonteDoBind::Env => format!("port {} (from {PORT_ENV})", bind.port),
-            FonteDoBind::DefaultDoClap => format!("port {} (clap default)", bind.port),
-        };
-        let ressalva = format!(
-            "Caveat: this check sees this process's {HOST_ENV}/{PORT_ENV} env vars and the \
-             clap defaults, but NOT a `--host`/`--port` flag passed to `garra start` later — \
-             a flag still wins over both, so it can change the real bind after this check \
-             passes; and `garra restart` ignores {HOST_ENV}/{PORT_ENV} altogether, taking \
-             only its own flags or the defaults"
-        );
-        let desprotegido = unguarded.join(" and ");
-        match exposicao_do_host(&bind.host) {
-            ExposicaoDoHost::Loopback => {}
-            alcance @ (ExposicaoDoHost::TodasAsInterfaces | ExposicaoDoHost::NaoLoopback) => {
-                let alcance = if alcance == ExposicaoDoHost::TodasAsInterfaces {
-                    "listens on every interface"
-                } else {
-                    "is not a loopback address, so the gateway is reachable from the network"
-                };
+    let opt_out = config.gateway.allow_unauthenticated_network_bind;
+    let origem = match bind.host_source {
+        FonteDoBind::Env => format!(
+            "{HOST_ENV}=`{}` (env var, which overrides the clap default `{HOST_DEFAULT}` \
+             at `{bin} start`)",
+            bind.host
+        ),
+        FonteDoBind::DefaultDoClap => format!("host `{}` (clap default)", bind.host),
+    };
+    let porta = match bind.port_source {
+        FonteDoBind::Env => format!("port {} (from {PORT_ENV})", bind.port),
+        FonteDoBind::DefaultDoClap => format!("port {} (clap default)", bind.port),
+    };
+    let ressalva = format!(
+        "Caveat: this check sees this process's {HOST_ENV}/{PORT_ENV} env vars and the \
+         clap defaults, but NOT a `--host`/`--port` flag passed to `{bin} start` or \
+         `{bin} restart` later — a flag still wins over both, and `{bin} start` repeats \
+         this decision on the real bind"
+    );
+    let alcance = match exposicao_do_host(&bind.host) {
+        ExposicaoDoHost::Loopback => None,
+        ExposicaoDoHost::TodasAsInterfaces => Some("listens on every interface"),
+        ExposicaoDoHost::NaoLoopback => {
+            Some("is not a loopback address, so the gateway is reachable from the network")
+        }
+        ExposicaoDoHost::Indeterminada => {
+            if !api_key_configurada || !tls_enabled {
                 push_warn(
                     &mut findings,
                     "gateway.host",
                     format!(
-                        "{origem} {alcance} while {desprotegido} — make sure a firewall or \
-                         TLS-terminating reverse proxy protects {porta}, or switch to \
-                         {HOST_DEFAULT}. {ressalva}"
+                        "{origem} is a hostname, not an IP literal, so this check cannot tell \
+                         whether {porta} lands on loopback or on a network-facing address — \
+                         `{bin} start` resolves it and refuses to boot if any resolved address \
+                         is not loopback while no gateway credential is set. Prefer an IP \
+                         literal. {ressalva}"
                     ),
                 );
             }
-            ExposicaoDoHost::Indeterminada => push_warn(
+            None
+        }
+    };
+    if let Some(alcance) = alcance {
+        if !api_key_configurada && !opt_out {
+            push_err(
                 &mut findings,
                 "gateway.host",
                 format!(
-                    "{origem} is a hostname, not an IP literal, so this check cannot tell \
-                     whether {porta} lands on loopback or on a network-facing address while \
-                     {desprotegido} — `garra start` resolves it at bind time and only warns \
-                     then. Prefer an IP literal. {ressalva}"
+                    "{origem} {alcance} while no gateway credential is set, so \
+                     `{bin} start` will REFUSE to boot on {porta}. Fix: run `{bin} init`, \
+                     set gateway.api_key, export {GATEWAY_API_KEY_ENV}, or bind \
+                     {HOST_DEFAULT} (`--host {HOST_DEFAULT}`); an intentionally open \
+                     deployment behind an authenticating proxy can set \
+                     gateway.allow_unauthenticated_network_bind: true in the file. {ressalva}"
                 ),
-            ),
+            );
+        } else if !api_key_configurada {
+            push_warn(
+                &mut findings,
+                "gateway.host",
+                format!(
+                    "{origem} {alcance} WITHOUT a gateway credential: \
+                     gateway.allow_unauthenticated_network_bind is true, so `{bin} start` \
+                     boots anyway — make sure an authenticating proxy or a firewall protects \
+                     {porta}. {ressalva}"
+                ),
+            );
+        } else if !tls_enabled {
+            push_warn(
+                &mut findings,
+                "gateway.host",
+                format!(
+                    "{origem} {alcance} while TLS is disabled — the gateway credential travels \
+                     in clear text; make sure a firewall or TLS-terminating reverse proxy \
+                     protects {porta}, or switch to {HOST_DEFAULT}. {ressalva}"
+                ),
+            );
         }
     }
 
-    // As chaves do arquivo que o start nao le. Quando diferem do bind
-    // efetivo, quem as escreveu acredita numa coisa que nao acontece — nos
-    // dois sentidos: um `0.0.0.0` que nao expoe nada e um `127.0.0.1` que
-    // nao protege de `HOST=0.0.0.0`. Achado a parte, com a palavra exata
-    // ("not read"), nunca "binds all interfaces" sobre um valor morto.
+    // O opt-out e dito SEMPRE, mesmo com o bind em loopback hoje: e uma
+    // guarda desligada esperando o proximo `HOST=0.0.0.0`.
+    if opt_out {
+        push_warn(
+            &mut findings,
+            "gateway.allow_unauthenticated_network_bind",
+            format!(
+                "gateway.allow_unauthenticated_network_bind: true disables the #1261 boot \
+                 refusal: a non-loopback bind without a gateway credential boots (with a loud \
+                 warning) instead of being refused. Keep it only behind an authenticating \
+                 proxy or firewall; prefer gateway.api_key or {GATEWAY_API_KEY_ENV}."
+            ),
+        );
+    }
+
+    // Env e arquivo com credenciais diferentes: a env vence, e quem editou o
+    // arquivo acredita numa chave que o gate nao usa. So presenca no texto.
+    if let (Some(_), Some(arquivo)) = (
+        config
+            .gateway
+            .api_key_env
+            .as_ref()
+            .map(|s| secrecy::ExposeSecret::expose_secret(s).trim())
+            .filter(|k| !k.is_empty()),
+        config
+            .gateway
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty()),
+    ) && config.gateway.api_key_normalizada() != Some(arquivo)
+    {
+        push_warn(
+            &mut findings,
+            "gateway.api_key",
+            format!(
+                "{GATEWAY_API_KEY_ENV} and gateway.api_key are both set and differ: the env var \
+                 wins, so the key in the config file is not the one clients must send. Remove \
+                 one of them."
+            ),
+        );
+    }
+
+    // As chaves do arquivo que o start nao le (#1261, decisao B: deprecadas).
+    // Quando diferem do bind efetivo, quem as escreveu acredita numa coisa
+    // que nao acontece — nos dois sentidos.
     if config.gateway.host.trim() != bind.host.trim() {
         push_warn(
             &mut findings,
             "gateway.host",
             format!(
-                "gateway.host=`{}` in the config file is not read by `garra start` (it binds \
-                 {HOST_DEFAULT}:{PORT_DEFAULT} unless {HOST_ENV}/{PORT_ENV} or `--host`/`--port` \
-                 are set; this check resolved host `{}`) — set {HOST_ENV} or pass `--host` if \
-                 you meant it; see docs/auth-config.md section 5.1",
+                "gateway.host=`{}` in the config file is deprecated and not read by \
+                 `{bin} start` (it binds {HOST_DEFAULT}:{PORT_DEFAULT} unless \
+                 {HOST_ENV}/{PORT_ENV} or `--host`/`--port` are set; this check resolved host \
+                 `{}`) — remove the key, and set {HOST_ENV} or pass `--host` if you meant it; \
+                 see docs/auth-config.md section 5.1",
                 config.gateway.host, bind.host
             ),
         );
@@ -511,10 +594,11 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
             &mut findings,
             "gateway.port",
             format!(
-                "gateway.port=`{}` in the config file is not read by `garra start` (it binds \
-                 {HOST_DEFAULT}:{PORT_DEFAULT} unless {HOST_ENV}/{PORT_ENV} or `--host`/`--port` \
-                 are set; this check resolved port {}) — set {PORT_ENV} or pass `--port` if \
-                 you meant it; see docs/auth-config.md section 5.1",
+                "gateway.port=`{}` in the config file is deprecated and not read by \
+                 `{bin} start` (it binds {HOST_DEFAULT}:{PORT_DEFAULT} unless \
+                 {HOST_ENV}/{PORT_ENV} or `--host`/`--port` are set; this check resolved port \
+                 {}) — remove the key, and set {PORT_ENV} or pass `--port` if you meant it; \
+                 see docs/auth-config.md section 5.1",
                 config.gateway.port, bind.port
             ),
         );
@@ -829,6 +913,7 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
     validate_teams(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
+    validate_runs_retention(&config.runs, &mut findings, &push_err);
 
     // Channels: warn when a channel is enabled but its well-known token
     // env var is not set and no inline credential is present. This helps
@@ -896,78 +981,10 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
     findings
 }
 
-/// A env que o clap le em `--host` (`crates/garraia-cli/src/main.rs`,
-/// `#[arg(long, env = "HOST", default_value = "127.0.0.1")]`).
-///
-/// Escrita aqui por extenso porque `garraia-config` nao depende de
-/// `garraia-cli` — e e a CLI que decide o bind real.
-const HOST_ENV: &str = "HOST";
-
-/// A env irma de [`HOST_ENV`], lida por `--port`.
-const PORT_ENV: &str = "PORT";
-
-/// O `default_value` do clap para `--host` — o que `garra start` sobe
-/// quando nem flag nem [`HOST_ENV`] dizem nada. NUNCA `gateway.host` do
-/// arquivo: o arg do clap sempre traz um valor, e o `main.rs` escreve esse
-/// valor por cima da config carregada (#1261).
-///
-/// Espelho de `crates/garraia-cli/src/main.rs` (`Commands::Start`,
-/// `#[arg(long, env = "HOST", default_value = "127.0.0.1")]`). O teste
-/// `defaults_do_clap_espelham_o_main_da_cli` le aquele fonte e prende os
-/// dois literais a estas constantes, para que nao divirjam em silencio.
-const HOST_DEFAULT: &str = "127.0.0.1";
-
-/// O `default_value` irmao para `--port`
-/// (`#[arg(long, env = "PORT", default_value = "3888")]`).
-const PORT_DEFAULT: u16 = 3888;
-
-/// De onde veio o valor que um `garra start` sem flags usaria de fato.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FonteDoBind {
-    /// A env [`HOST_ENV`] / [`PORT_ENV`], que o clap resolve antes do
-    /// default e que o `main.rs` escreve por cima do arquivo.
-    Env,
-    /// O `default_value` do clap ([`HOST_DEFAULT`] / [`PORT_DEFAULT`]):
-    /// sem env, e isto que sobe — nao o arquivo.
-    DefaultDoClap,
-}
-
-/// O par host/porta que `config check` consegue afirmar, com a origem de
-/// cada metade.
-#[derive(Debug, Clone)]
-struct BindEfetivo {
-    host: String,
-    host_source: FonteDoBind,
-    port: u16,
-    port_source: FonteDoBind,
-}
-
-/// Funcao pura: dadas as envs, qual bind `config check` pode afirmar
-/// (#1261). Mesma precedencia do clap em `garra start`: env, senao o
-/// `default_value`. O arquivo nao entra — o `main.rs` o sobrescreve sempre.
-///
-/// Ela nao ve — e nao pode ver — a flag `--host`/`--port` de um `garra
-/// start` futuro, que roda em outro processo. Por isso o achado que a
-/// consome diz a limitacao em voz alta em vez de passar com falsa
-/// confianca.
-///
-/// Uma `PORT` que nao e um `u16` cai no default: o clap recusaria esse
-/// valor no `start`, entao nao ha bind nenhum para reportar.
+/// Funcao pura: dadas as envs, qual bind `config check` pode afirmar.
+/// Delegada a [`crate::bind::bind_de`], a mesma regra do boot.
 fn bind_efetivo(host_da_env: Option<&str>, porta_da_env: Option<&str>) -> BindEfetivo {
-    let (host, host_source) = match host_da_env {
-        Some(h) => (h.to_string(), FonteDoBind::Env),
-        None => (HOST_DEFAULT.to_string(), FonteDoBind::DefaultDoClap),
-    };
-    let (port, port_source) = match porta_da_env.and_then(|p| p.parse::<u16>().ok()) {
-        Some(p) => (p, FonteDoBind::Env),
-        None => (PORT_DEFAULT, FonteDoBind::DefaultDoClap),
-    };
-    BindEfetivo {
-        host,
-        host_source,
-        port,
-        port_source,
-    }
+    crate::bind::bind_de(host_da_env, porta_da_env)
 }
 
 /// O que um host diz sobre alcance de rede, pelo mesmo criterio do gateway
@@ -1191,6 +1208,30 @@ fn validate_retention(
                 r.interval_hours,
                 r.max_age_days,
                 u64::from(r.max_age_days) * 24
+            ),
+        );
+    }
+}
+
+/// Retencao do ledger `agent_runs` (#1227 slice 5).
+///
+/// `0` e o default e quer dizer "nunca apaga" — valido, e sem finding: um
+/// Warning aqui faria o `config check --strict` de toda instalacao default
+/// sair nao-zero. O sinal de ledger crescendo sem teto e o aviso de boot do
+/// gateway. Acima do teto e Error: o numero deixou de ser politica.
+fn validate_runs_retention(
+    runs: &crate::model::RunsConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    use crate::model::RUNS_RETENTION_MAX_DAYS;
+    if runs.retention_days > RUNS_RETENTION_MAX_DAYS {
+        push_err(
+            findings,
+            "runs.retention_days",
+            format!(
+                "runs.retention_days ({}) must be 0 (never delete) or in [1, {RUNS_RETENTION_MAX_DAYS}] days",
+                runs.retention_days
             ),
         );
     }
@@ -2649,6 +2690,19 @@ fn validate_config_dir(loader: &ConfigLoader) -> Vec<Finding> {
 /// recusado); a env `GARRAIA_EXECUTION_PROFILE` e lida aqui, uma vez, e
 /// injetada no nucleo puro.
 pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
+    // #1261: `GARRAIA_GATEWAY_API_KEY` conta como credencial. O `config
+    // check` recebe a config de `load_para_o_check` (sem env), entao a env e
+    // injetada aqui — numa copia, o chamador nunca ve o segredo aparecer.
+    let com_env;
+    let config = match crate::auth::gateway_api_key_from_env() {
+        Some(chave) if config.gateway.api_key_env.is_none() => {
+            let mut c = config.clone();
+            c.gateway.api_key_env = Some(chave);
+            com_env = c;
+            &com_env
+        }
+        _ => config,
+    };
     let env = crate::execution::perfil_do_env();
     let mut findings = validate_com_env(config, &env);
     findings.extend(validate_config_dir(loader));
@@ -2701,6 +2755,18 @@ fn findings_de_vault_sem_cofre<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    /// #1247: a escotilha do boot gate tem de aparecer em `env_vars_detected`
+    /// — e o unico jeito de o `config check` explicar um boot que ignorou um
+    /// Error da allowlist.
+    #[test]
+    fn escotilha_do_boot_gate_e_env_conhecida() {
+        assert!(
+            KNOWN_GARRAIA_ENV_VARS.contains(&crate::boot_gate::ESCAPE_ENV),
+            "{} fora de KNOWN_GARRAIA_ENV_VARS",
+            crate::boot_gate::ESCAPE_ENV
+        );
+    }
     use super::*;
     use crate::model::{AppConfig, GatewayConfig, LlmProviderConfig, McpServerConfig, VoiceConfig};
     use std::collections::HashMap;
@@ -3123,14 +3189,20 @@ mod tests {
         assert!(hit.message.contains("auto-fallback"));
     }
 
+    /// `validate` le HOST/PORT do processo desde a #1261, entao precisa do
+    /// `ENV_TEST_LOCK` e de neutralizar as duas envs — senao um teste vizinho
+    /// que passa por `com_bind_env` pode deixar `HOST=0.0.0.0` visivel aqui
+    /// e produzir um Error de exposicao que nao tem nada a ver com o default.
     #[test]
     fn valid_default_config_has_no_errors() {
-        let cfg = AppConfig::default();
-        let findings = validate(&cfg);
-        assert!(
-            !findings.iter().any(|f| f.severity == Severity::Error),
-            "default config produced errors: {findings:?}"
-        );
+        com_bind_env(None, None, || {
+            let cfg = AppConfig::default();
+            let findings = validate(&cfg);
+            assert!(
+                !findings.iter().any(|f| f.severity == Severity::Error),
+                "default config produced errors: {findings:?}"
+            );
+        });
     }
 
     /// Achado da investigação da #930: o flag não é implementado no gateway
@@ -3478,11 +3550,15 @@ mod tests {
             ),
             // F3: `all` com a unica tool sandboxavel em `elevated` == `off`.
             (
-                "mode=all com bash elevado nao sandboxa nada",
+                "mode=all com toda tool coberta elevada nao sandboxa nada",
                 |c| {
                     c.agent.sandbox.mode = SandboxMode::All;
                     c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-                    c.agent.sandbox.elevated = vec!["bash".into()];
+                    // #1225 S2: sao cinco tools cobertas agora, nao uma.
+                    c.agent.sandbox.elevated = crate::sandbox::TOOLS_SANDBOXAVEIS
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect();
                     c.agent.tool_confirmation_enabled = true;
                 },
                 "agent.sandbox.elevated",
@@ -3494,7 +3570,7 @@ mod tests {
                 |c| {
                     c.agent.sandbox.mode = SandboxMode::Allowlist;
                     c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-                    c.agent.sandbox.sandboxed_tools = vec!["run_tests".into()];
+                    c.agent.sandbox.sandboxed_tools = vec!["web_fetch".into()];
                 },
                 "agent.sandbox.sandboxed_tools",
                 Severity::Warning,
@@ -3740,13 +3816,14 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-        cfg.agent.sandbox.elevated = vec!["git_diff".into()];
+        // #1225 S2: `git_diff` virou tool coberta; o typo tipico e outro.
+        cfg.agent.sandbox.elevated = vec!["gitdiff".into()];
         cfg.agent.tool_confirmation_enabled = true;
         let findings = validate(&cfg);
         let f = findings
             .iter()
-            .find(|f| f.field == "agent.sandbox.elevated" && f.message.contains("git_diff"))
-            .unwrap_or_else(|| panic!("esperava finding nomeando git_diff: {findings:?}"));
+            .find(|f| f.field == "agent.sandbox.elevated" && f.message.contains("gitdiff"))
+            .unwrap_or_else(|| panic!("esperava finding nomeando gitdiff: {findings:?}"));
         assert_eq!(f.severity, Severity::Warning);
 
         // Entrada trimada casa: `" bash"` no YAML e um espaco, nao um erro.
@@ -4973,16 +5050,18 @@ mod tests {
     /// O achado de exposicao de rede. Mora em `gateway.host` como o de
     /// chave morta, entao e a mensagem que os distingue.
     fn achado_de_exposicao(findings: &[Finding]) -> Option<&Finding> {
-        findings
-            .iter()
-            .find(|f| f.field == "gateway.host" && f.message.contains("make sure a firewall"))
+        findings.iter().find(|f| {
+            f.field == "gateway.host"
+                && (f.message.contains("listens on every interface")
+                    || f.message.contains("not a loopback address"))
+        })
     }
 
     /// O achado de chave do arquivo que o start nao le, por campo.
     fn achado_de_chave_morta<'a>(findings: &'a [Finding], campo: &str) -> Option<&'a Finding> {
         findings
             .iter()
-            .find(|f| f.field == campo && f.message.contains("not read by `garra start`"))
+            .find(|f| f.field == campo && f.message.contains("is deprecated and not read by"))
     }
 
     /// O achado de hostname que o check nao consegue julgar.
@@ -5181,11 +5260,12 @@ mod tests {
             "os literais do clap sumiram do main.rs"
         );
 
+        // #1261: `restart` le HOST/PORT como o `start` (paridade) — sem isto
+        // um `restart` num pod RunPod religava em loopback em silencio.
         let restart = variante("Restart {");
         assert!(
-            !restart.contains("env = \"HOST\"") && !restart.contains("env = \"PORT\""),
-            "`garra restart` passou a ler HOST/PORT: atualize a ressalva do achado de bind \
-             e docs/auth-config.md secao 5.1"
+            restart.contains(&host) && restart.contains(&port),
+            "`Commands::Restart` precisa declarar `{host}` e `{port}`, como o Start"
         );
     }
 
@@ -5201,7 +5281,9 @@ mod tests {
         let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
         let hit = achado_de_exposicao(&findings)
             .unwrap_or_else(|| panic!("HOST=0.0.0.0 abre o gateway e tem de avisar: {findings:?}"));
-        assert!(matches!(hit.severity, Severity::Warning));
+        // #1261 decisao A: o start recusa isto, entao o check diz Error.
+        assert!(matches!(hit.severity, Severity::Error), "{hit:?}");
+        assert!(hit.message.contains("will REFUSE"), "{hit:?}");
         assert!(
             hit.message.contains("HOST=`0.0.0.0`"),
             "o achado tem de nomear a env como origem: {hit:?}"
@@ -5274,8 +5356,8 @@ mod tests {
             "o achado tem de admitir que a flag ainda vence: {hit:?}"
         );
         assert!(
-            hit.message.contains("`garra restart` ignores HOST/PORT"),
-            "e que o restart nem le as envs: {hit:?}"
+            hit.message.contains("restart"),
+            "a flag vale para start e restart: {hit:?}"
         );
         assert!(
             achado_de_chave_morta(&findings, "gateway.port").is_some(),
@@ -5439,10 +5521,154 @@ mod tests {
             let f = achado_de_exposicao(&findings)
                 .unwrap_or_else(|| panic!("com {valor:?} o gate esta desligado: {findings:?}"));
             assert!(
-                f.message.contains("gateway.api_key is not set"),
+                f.message.contains("no gateway credential is set"),
                 "o finding tem que nomear a credencial ausente: {f:?}"
             );
+            assert!(
+                matches!(f.severity, Severity::Error),
+                "TLS nao isenta: {f:?}"
+            );
         }
+    }
+
+    // ─── #1261: credencial por env, opt-out e o Error que espelha o boot ──
+
+    #[test]
+    fn exposto_sem_credencial_e_error_mesmo_sem_strict() {
+        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&AppConfig::default()));
+        let hit = achado_de_exposicao(&findings).unwrap_or_else(|| panic!("{findings:?}"));
+        assert!(matches!(hit.severity, Severity::Error), "{hit:?}");
+        for trecho in [
+            " init`",
+            "gateway.api_key",
+            "GARRAIA_GATEWAY_API_KEY",
+            "--host 127.0.0.1",
+            "allow_unauthenticated_network_bind",
+        ] {
+            assert!(hit.message.contains(trecho), "falta {trecho}: {hit:?}");
+        }
+    }
+
+    #[test]
+    fn credencial_de_env_tira_o_error_de_exposicao() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.api_key_env = crate::auth::gateway_api_key_de(Some("da-env".into()));
+        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.field == "gateway.host" && matches!(f.severity, Severity::Error)),
+            "com GARRAIA_GATEWAY_API_KEY o start sobe; o check nao pode dizer Error: {findings:?}"
+        );
+        // Sem TLS ainda vale o aviso de credencial em texto claro.
+        let hit = achado_de_exposicao(&findings).unwrap_or_else(|| panic!("{findings:?}"));
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("TLS is disabled"), "{hit:?}");
+    }
+
+    #[test]
+    fn opt_out_vira_warning_e_e_sempre_reportado() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.allow_unauthenticated_network_bind = true;
+        let exposto = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+        let hit = achado_de_exposicao(&exposto).unwrap_or_else(|| panic!("{exposto:?}"));
+        assert!(matches!(hit.severity, Severity::Warning), "{hit:?}");
+        assert!(
+            hit.message.contains("WITHOUT a gateway credential"),
+            "{hit:?}"
+        );
+
+        let local = com_bind_env(None, None, || validate(&cfg));
+        let opt = local
+            .iter()
+            .find(|f| f.field == "gateway.allow_unauthenticated_network_bind")
+            .unwrap_or_else(|| panic!("o opt-out e dito mesmo em loopback: {local:?}"));
+        assert!(matches!(opt.severity, Severity::Warning));
+    }
+
+    #[test]
+    fn env_e_arquivo_com_credenciais_diferentes_avisam_sem_mostrar_valor() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.api_key = Some("valor-do-arquivo-1261".into());
+        cfg.gateway.api_key_env = crate::auth::gateway_api_key_de(Some("valor-da-env-1261".into()));
+        let findings = com_bind_env(None, None, || validate(&cfg));
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "gateway.api_key")
+            .unwrap_or_else(|| panic!("{findings:?}"));
+        assert!(matches!(hit.severity, Severity::Warning));
+        let tudo = format!("{findings:?}");
+        assert!(!tudo.contains("valor-do-arquivo-1261") && !tudo.contains("valor-da-env-1261"));
+
+        // Iguais: nada a dizer.
+        cfg.gateway.api_key_env =
+            crate::auth::gateway_api_key_de(Some("valor-do-arquivo-1261".into()));
+        let findings = com_bind_env(None, None, || validate(&cfg));
+        assert!(
+            !findings.iter().any(|f| f.field == "gateway.api_key"),
+            "{findings:?}"
+        );
+    }
+
+    /// `run_check` le `GARRAIA_GATEWAY_API_KEY` por conta propria (a config
+    /// do check vem sem env) e a reporta so por presenca.
+    #[test]
+    fn run_check_ve_a_credencial_de_env_so_por_presenca() {
+        let dir = std::env::temp_dir().join(format!(
+            "garraia-check-1261-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let loader = ConfigLoader::with_dir(&dir);
+        let cfg = AppConfig::default();
+
+        let (check_com, check_sem) = com_bind_env(Some("0.0.0.0"), None, || {
+            struct Restaura(Option<std::ffi::OsString>);
+            impl Drop for Restaura {
+                fn drop(&mut self) {
+                    // SAFETY: ENV_TEST_LOCK held by com_bind_env.
+                    unsafe {
+                        match self.0.take() {
+                            Some(v) => std::env::set_var(GATEWAY_API_KEY_ENV, v),
+                            None => std::env::remove_var(GATEWAY_API_KEY_ENV),
+                        }
+                    }
+                }
+            }
+            let _r = Restaura(std::env::var_os(GATEWAY_API_KEY_ENV));
+            // SAFETY: ENV_TEST_LOCK held by com_bind_env.
+            unsafe { std::env::set_var(GATEWAY_API_KEY_ENV, "segredo-env-check-1261") };
+            let com = run_check(&loader, &cfg);
+            // SAFETY: idem.
+            unsafe { std::env::remove_var(GATEWAY_API_KEY_ENV) };
+            let sem = run_check(&loader, &cfg);
+            (com, sem)
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(check_com.summary.gateway_api_key_set);
+        assert!(
+            check_com
+                .source
+                .env_vars_detected
+                .iter()
+                .any(|v| v == GATEWAY_API_KEY_ENV)
+        );
+        assert!(
+            !check_com
+                .findings
+                .iter()
+                .any(|f| f.field == "gateway.host" && matches!(f.severity, Severity::Error))
+        );
+        let json = serde_json::to_string(&check_com).expect("json");
+        assert!(!json.contains("segredo-env-check-1261"), "{json}");
+
+        assert!(!check_sem.summary.gateway_api_key_set);
+        assert!(check_sem.has_errors(), "sem env o bind exposto e Error");
     }
 
     // ─── #1050: as duas credenciais do canal Google Chat ──────────────────

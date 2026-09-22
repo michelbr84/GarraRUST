@@ -983,7 +983,7 @@ credentials/
 
 ## Arquitetura
 
-GarraIA é um workspace Rust com **24 crates** de alta qualidade, cada um com responsabilidade única:
+GarraIA é um workspace Rust com **22 crates** de alta qualidade, cada um com responsabilidade única:
 
 ```text
 crates/
@@ -994,8 +994,6 @@ crates/
 ├── garraia-agents/     # Provedores de LLM, ferramentas, cliente MCP, runtime do agente
 ├── garraia-auth/       # ✅ verify path real + extractor + endpoints + RLS matrix (GAR-391a/b/c + GAR-392) — IdentityProvider trait, InternalProvider, LoginPool/SignupPool BYPASSRLS newtypes, JWT HS256 (15min) + refresh HMAC, Argon2id+PBKDF2 dual-verify, Role/Action enums + fn can() (110-case test), Principal extractor + RequirePermission, RedactedStorageError. Migration 008/010 (login/signup roles). GAR-392 RLS matrix ✅ (plan 0013 path C, 81 cenários × 3 dedicated roles × 10 FORCE RLS tables). GAR-391d (matriz cross-group via HTTP, plan 0014) entregue em `crates/garraia-gateway/tests/authz_http_matrix.rs` (50 cenários); epic GAR-391 fechado em 2026-04-15.
 ├── garraia-voice/      # Pipeline de voz: Whisper STT → LLM → Chatterbox/Hibiki TTS
-├── garraia-tools/      # Trait Tool + ToolRegistry, execução com timeout
-├── garraia-runtime/    # Executor com máquina de estados, meta-controller, gerenciador de turn
 ├── garraia-db/         # Memória SQLite, busca vetorial (sqlite-vec), sessões
 ├── garraia-glob/       # Glob pattern matching (picomatch + bash extglob), .garraignore, scanner de arquivos
 ├── garraia-plugins/    # Sandbox de plugins WASM (wasmtime)
@@ -1039,7 +1037,7 @@ apps/
 
 ### Fluxo de Execução do Runtime
 
-O [`garraia-runtime`](crates/garraia-runtime/src/lib.rs) gerencia o ciclo de vida completo da execução do agente:
+O [`AgentRuntime`](crates/garraia-agents/src/runtime.rs) do `garraia-agents` gerencia o ciclo de vida completo da execução do agente:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐

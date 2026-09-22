@@ -51,7 +51,8 @@ fn builtin_templates() -> Vec<McpTemplate> {
             command: Some("npx".into()),
             args: vec![
                 "-y".into(),
-                "@modelcontextprotocol/server-filesystem".into(),
+                // #1346: a mesma versao testada que a provisao escreve.
+                crate::mcp::persistence::McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.into(),
                 // Default to the user's home directory; customise before saving.
                 std::env::var("HOME")
                     .or_else(|_| std::env::var("USERPROFILE"))
@@ -241,4 +242,21 @@ pub async fn delete_mcp_template(
         tracing::warn!("failed to save user templates after delete: {e}");
     }
     (StatusCode::OK, Json(serde_json::json!({"deleted": id})))
+}
+
+#[cfg(test)]
+mod tests_filesystem_pin {
+    use super::builtin_templates;
+    use crate::mcp::persistence::McpPersistenceService;
+
+    /// #1346: o template do admin usa a MESMA versao testada que a provisao
+    /// escreve — um `npx -y` sem versao baixava o build mais novo do registry.
+    #[test]
+    fn template_filesystem_fixa_a_versao_da_provisao() {
+        let fs = builtin_templates()
+            .into_iter()
+            .find(|t| t.id == "filesystem")
+            .expect("template filesystem");
+        assert_eq!(fs.args[1], McpPersistenceService::FILESYSTEM_PACKAGE_SPEC);
+    }
 }

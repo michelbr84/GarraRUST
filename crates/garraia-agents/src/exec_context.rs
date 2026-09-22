@@ -68,6 +68,22 @@ pub struct ExecContext {
     /// caminho absoluto passa igual, antes e depois. E o `bash_tool` ignora
     /// este campo por completo.
     pub working_dir: Option<String>,
+
+    /// Quem pode aprovar, no proximo turno, um pedido de confirmacao que
+    /// pausar este (#1343).
+    ///
+    /// **Opt-in.** `None` e o comportamento de antes: a aprovacao so vem do
+    /// historico (`detect_confirmation_approval`), e nos canais que guardam
+    /// o historico como texto a pausa e terminal. Com `Some`, o runtime
+    /// grava o pedido pausado em memoria e, no turno seguinte, so o mesmo
+    /// remetente, na mesma sessao e no mesmo canal, dentro do prazo, aprova
+    /// — uma vez. O historico deixa de ser consultado para aprovar, entao
+    /// marcador copiado ou forjado nele nao pesa. Ver
+    /// [`crate::tools::pending_approval`].
+    ///
+    /// Quem preenche precisa de um remetente derivado pelo servidor, nunca
+    /// um valor que o cliente escolhe.
+    pub approval_scope: Option<crate::tools::pending_approval::ApprovalScope>,
 }
 
 impl ExecContext {

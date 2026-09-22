@@ -49,9 +49,9 @@
 //! logavel e `phone_last4`. O teste `fonte_nao_loga_jid_cru` varre este arquivo
 //! atras de regressao.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use garraia_agents::ChatMessage;
 use garraia_agents::exec_context::ExecContext;
@@ -135,6 +135,11 @@ const OUTBOUND_CAPACITY: usize = 32;
 pub struct WhatsAppLinkedRuntime {
     bridge: AtomicU8,
     cancel: std::sync::Mutex<Option<watch::Sender<bool>>>,
+    /// Mensagens recusadas de remetente `@lid` sem numero desde o boot
+    /// (#1345). Contagem, nunca identidade: e o que o `/api/diagnostics`
+    /// (auth-free) mostra para o operador entender por que um numero que ele
+    /// autorizou nao recebe resposta.
+    recusas_lid: AtomicU64,
 }
 
 impl Default for WhatsAppLinkedRuntime {
@@ -142,6 +147,7 @@ impl Default for WhatsAppLinkedRuntime {
         Self {
             bridge: AtomicU8::new(view_to_u8(BridgeView::Unknown)),
             cancel: std::sync::Mutex::new(None),
+            recusas_lid: AtomicU64::new(0),
         }
     }
 }
@@ -181,6 +187,19 @@ impl WhatsAppLinkedRuntime {
         self.bridge.store(view_to_u8(view), Ordering::Relaxed);
     }
 
+    /// Quantas mensagens de remetente `@lid` sem numero foram recusadas desde
+    /// o boot (#1345).
+    pub fn recusas_lid(&self) -> u64 {
+        self.recusas_lid.load(Ordering::Relaxed)
+    }
+
+    /// Conta mais uma recusa de `@lid` sem numero; devolve o total novo.
+    pub fn registrar_recusa_lid(&self) -> u64 {
+        self.recusas_lid
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
+    }
+
     /// Estaciona o cancelamento do supervisor que acabou de subir.
     ///
     /// Um supervisor anterior (que so existe se alguem subir o canal duas
@@ -217,6 +236,61 @@ impl WhatsAppLinkedRuntime {
             None => false,
         }
     }
+}
+
+/// O arquivo, no diretorio da sessao, em que o gateway conta as recusas de
+/// remetente `@lid` sem numero (#1345). E como o `garraia whatsapp status` —
+/// outro processo — fica sabendo por que um numero autorizado nao responde.
+pub const ARQUIVO_RECUSAS_LID: &str = "recusas-lid.json";
+
+/// O conteudo de [`ARQUIVO_RECUSAS_LID`]. Nunca o LID inteiro.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecusasLid {
+    /// O gateway que escreveu: a CLI so mostra o arquivo do gateway vivo, e
+    /// um arquivo de uma execucao anterior nao diz nada sobre esta.
+    pub pid: u32,
+    /// Recusas de `@lid` sem numero desde o boot desse gateway.
+    pub recusas: u64,
+    /// Os quatro ultimos digitos do ultimo LID recusado.
+    pub final4: String,
+}
+
+/// Le [`ARQUIVO_RECUSAS_LID`] de `dir`. Ausente, grande demais ou ilegivel =
+/// `None`: e informacao de apoio, nunca motivo de erro.
+pub fn ler_recusas_lid(dir: &Path) -> Option<RecusasLid> {
+    let bytes = std::fs::read(dir.join(ARQUIVO_RECUSAS_LID)).ok()?;
+    if bytes.len() > 4096 {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Grava [`ARQUIVO_RECUSAS_LID`] de forma atomica (tmp `0600` no mesmo
+/// diretorio + `rename`). O nome do tmp carrega pid e contagem: dois turnos
+/// recusados ao mesmo tempo nao disputam o mesmo arquivo.
+pub fn gravar_recusas_lid(dir: &Path, recusas: &RecusasLid) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(recusas).map_err(std::io::Error::other)?;
+    let tmp = dir.join(format!(
+        ".{ARQUIVO_RECUSAS_LID}.{}.{}.tmp",
+        recusas.pid, recusas.recusas
+    ));
+    let escrito = (|| {
+        let mut opcoes = std::fs::OpenOptions::new();
+        opcoes.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opcoes.mode(0o600);
+        }
+        let mut arquivo = opcoes.open(&tmp)?;
+        std::io::Write::write_all(&mut arquivo, &bytes)?;
+        arquivo.sync_all()?;
+        std::fs::rename(&tmp, dir.join(ARQUIVO_RECUSAS_LID))
+    })();
+    if escrito.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    escrito
 }
 
 /// Onde a sessao e a ponte deste canal moram, derivados do data dir.
@@ -310,6 +384,32 @@ pub struct LinkedSettings {
 }
 
 impl LinkedSettings {
+    /// Quantas identidades distintas este canal admite pela config: `allow`
+    /// uniao `owners`, sem repeticao (#1345).
+    ///
+    /// E a mesma uniao que [`PortaoDoCanal::from_settings`] monta, entao um
+    /// `0` aqui e exatamente "ninguem recebera resposta" — o que o `status`
+    /// da CLI, o `/api/diagnostics` e o aviso de boot dizem. Contagem, nunca
+    /// identidade: nenhum dos tres consumidores pode listar numeros.
+    pub fn autorizados(&self) -> usize {
+        self.allow
+            .iter()
+            .chain(self.owners.iter())
+            .map(|id| chave_do_portao(id))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
+    /// Quantos donos distintos, pela mesma chave do portao: o mesmo numero
+    /// escrito duas vezes (ou com e sem o nono digito) conta um.
+    pub fn donos(&self) -> usize {
+        self.owners
+            .iter()
+            .map(|id| chave_do_portao(id))
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
     /// O `default_mode` que vale para um dado perfil de execucao: o valor
     /// declarado, se houver; senao [`DEFAULT_MODE`] em `standard` e
     /// [`DEFAULT_MODE_DO_DONO_NO_POD`] em `isolated-pod`.
@@ -392,6 +492,41 @@ pub fn normalizar_identidade(raw: &str) -> String {
         return raw.to_string();
     }
     raw.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+/// A forma que o **portao** compara (#1345): [`normalizar_identidade`] mais
+/// o nono digito dos celulares brasileiros.
+///
+/// O WhatsApp nao acrescentou o 9 ao JID de todo celular brasileiro: muita
+/// conta antiga (DDD 31 em diante, sobretudo) segue com o JID de 12 digitos
+/// (`55 31 9999-8888`), enquanto o operador digita o numero como ele e hoje,
+/// com 13 (`+55 31 99999-8888`). Comparados byte a byte os dois nunca casavam
+/// e a recusa era silenciosa — com os mesmos quatro ultimos digitos no log.
+///
+/// A regra e a do plano de numeracao: `55` + DDD + `9` + oito digitos cujo
+/// primeiro e 6 a 9 (a faixa do celular antigo) e o mesmo assinante que
+/// `55` + DDD + esses oito digitos. So essa forma perde o 9; fixo (primeiro
+/// digito 2 a 5), numero de outro pais e `@lid` passam intactos. A config
+/// guarda o que o operador digitou — esta chave so existe na comparacao.
+pub fn chave_do_portao(identidade: &str) -> String {
+    let b = identidade.as_bytes();
+    let celular_br = b.len() == 13
+        && b.iter().all(u8::is_ascii_digit)
+        && identidade.starts_with("55")
+        && b[4] == b'9'
+        && matches!(b[5], b'6'..=b'9');
+    if celular_br {
+        // So digitos ASCII: o corte por byte nao parte caractere.
+        let (ddd, resto) = identidade.split_at(4);
+        format!("{ddd}{}", &resto[1..])
+    } else {
+        identidade.to_string()
+    }
+}
+
+/// O remetente so e conhecido pelo JID `@lid`, sem numero (#1345)?
+pub fn e_lid(identidade: &str) -> bool {
+    identidade.ends_with("@lid")
 }
 
 /// Quem mandou, do ponto de vista da allowlist e da sessao.
@@ -479,21 +614,102 @@ impl PortaoDoCanal {
                 .allow
                 .iter()
                 .chain(settings.owners.iter())
-                .cloned()
+                .map(|id| chave_do_portao(id))
                 .collect(),
             pareados: std::collections::HashSet::new(),
         }
     }
 
     /// Presenca explicita: nao existe modo, nem dono, nem valor que signifique
-    /// "todos".
+    /// "todos". Compara pela [`chave_do_portao`].
     pub fn libera(&self, remetente: &str) -> bool {
-        self.da_config.contains(remetente) || self.pareados.contains(remetente)
+        let chave = chave_do_portao(remetente);
+        self.da_config.contains(&chave) || self.pareados.contains(&chave)
     }
 
     fn parear(&mut self, remetente: &str) {
-        self.pareados.insert(remetente.to_string());
+        self.pareados.insert(chave_do_portao(remetente));
     }
+
+    /// Troca a parte que vem da config e mantem `pareados` (#1345) — menos
+    /// quem acabou de **sair** da config.
+    ///
+    /// Chamado a cada turno com a config viva: o que entrou no `allow` passa a
+    /// valer na proxima mensagem, e o que saiu deixa de valer — sem restart.
+    /// `pareados` nao vem da config e nao tem como ser relido dela; um codigo
+    /// resgatado continua valendo ate o processo cair, como antes. A excecao
+    /// e a revogacao: quem estava no `allow` (ou em `owners`) e foi tirado
+    /// perde tambem o pareamento, senao "apague o numero da lista" nao
+    /// revogaria quem um dia resgatou um codigo.
+    pub fn recarregar(&mut self, settings: &LinkedSettings) {
+        let mut pareados = std::mem::take(&mut self.pareados);
+        let anterior = std::mem::take(&mut self.da_config);
+        *self = Self::from_settings(settings);
+        pareados.retain(|p| !(anterior.contains(p) && !self.da_config.contains(p)));
+        self.pareados = pareados;
+    }
+}
+
+/// A admissao que vale **neste turno**: `boot` com `enabled`, `allow` e
+/// `owners` trocados pelos da config viva (#1345).
+///
+/// # O que recarrega e o que nao
+///
+/// So a **admissao** — quem entra e quem e dono. `default_mode` e
+/// `reply_in_groups` ficam os do boot: o primeiro foi validado por
+/// [`deve_supervisionar`] na subida e o aviso de drift de MCP falou dele; o
+/// segundo decide se o turno nem nasce, no `deliver`. Mudar os dois pede
+/// restart, e a documentacao diz isso.
+///
+/// # Por que `owners` recarrega junto com `allow`
+///
+/// Porque recarregar so o `allow` seria fail-open na revogacao: um dono tirado
+/// de `owners` que continua no `allow` seguiria recebendo o piso do pod
+/// (`code`: filesystem, bash, MCP) ate o proximo restart. Com os dois lidos da
+/// mesma fonte, tirar da lista tira o poder na mensagem seguinte.
+///
+/// # Fail-closed
+///
+/// A config viva sem a secao, com `type` errado ou com `enabled != true`
+/// chega aqui como `LinkedSettings` com `enabled = false` (e o que
+/// [`settings_from_config`] devolve), e o resultado admite **ninguem** —
+/// nem pela config, nem por dono. Quem recusa o turno inteiro, codigo de
+/// pareamento incluso, e o sink, olhando o `enabled` devolvido.
+pub fn admissao_vigente(boot: &LinkedSettings, viva: &LinkedSettings) -> LinkedSettings {
+    let mut vigente = boot.clone();
+    vigente.enabled = viva.enabled;
+    if viva.enabled {
+        vigente.allow = viva.allow.clone();
+        vigente.owners = viva.owners.clone();
+    } else {
+        vigente.allow = Vec::new();
+        vigente.owners = Vec::new();
+    }
+    vigente
+}
+
+/// O aviso de boot de um canal que sobe sem ninguem autorizado (#1345).
+///
+/// `None` quando ha pelo menos uma identidade em `allow` ou `owners`. O texto
+/// cita o comando que resolve e nao carrega numero nenhum. Puro, para o teste
+/// nao depender de capturar `tracing`.
+///
+/// "Vale sem reiniciar" so e dito com `a_quente` — o `ConfigWatcher` ligado,
+/// que o boot so liga quando o `config.yml` ja existia. Sem ele a lista do
+/// boot vale o processo inteiro, e o texto manda reiniciar.
+pub fn aviso_portao_vazio(settings: &LinkedSettings, bin: &str, a_quente: bool) -> Option<String> {
+    (settings.autorizados() == 0).then(|| {
+        let depois = if a_quente {
+            "vale sem reiniciar".to_string()
+        } else {
+            format!("e depois `{bin} restart`: este gateway nao vigia o config.yml")
+        };
+        format!(
+            "whatsapp_linked: nenhum numero autorizado em `channels.whatsapp_linked.allow` \
+             (nem em `owners`) — toda mensagem sera descartada em silencio. Rode \
+             `{bin} whatsapp allow <numero>` ({depois})"
+        )
+    })
 }
 
 /// Admite (ou nao) um remetente.
@@ -674,8 +890,8 @@ impl PerfilDoTurno {
 /// 2. Conversa **1:1**. Mensagem de grupo carrega o JID do participante, mas
 ///    quem le a resposta e o grupo inteiro; poder total nunca e herdado por
 ///    grupo, nem quando o participante e o dono.
-/// 3. O remetente esta em `owners`, byte a byte apos
-///    [`normalizar_identidade`]. Contato so pareado por codigo nao esta —
+/// 3. O remetente esta em `owners`, pela mesma [`chave_do_portao`] que a
+///    admissao usa. Contato so pareado por codigo nao esta —
 ///    `pareados` e memoria do processo, nao identidade declarada.
 ///
 /// Qualquer duvida cai em [`PerfilDoTurno::Padrao`], que e o comportamento
@@ -686,7 +902,11 @@ pub fn perfil_do_turno(
     remetente: &str,
     is_group: bool,
 ) -> PerfilDoTurno {
-    if perfil.is_isolated_pod() && !is_group && settings.owners.iter().any(|d| d == remetente) {
+    let chave = chave_do_portao(remetente);
+    if perfil.is_isolated_pod()
+        && !is_group
+        && settings.owners.iter().any(|d| chave_do_portao(d) == chave)
+    {
         PerfilDoTurno::Completo
     } else {
         PerfilDoTurno::Padrao
@@ -895,6 +1115,25 @@ pub fn deve_responder(msg: &InboundMessage, settings: &LinkedSettings) -> bool {
     msg.text.as_deref().is_some_and(|t| !t.trim().is_empty())
 }
 
+/// Os settings que valem para **um turno** (#1345).
+///
+/// Com o `ConfigWatcher` ligado (o boot liga quando o `config.yml` existe), a
+/// admissao — `enabled`, `allow`, `owners` — e relida da config viva a cada
+/// mensagem, via [`admissao_vigente`]: `garraia whatsapp allow` e a revogacao
+/// por edicao do arquivo valem na mensagem seguinte, sem restart.
+///
+/// Sem watcher a config nao muda durante o processo, e `current_config()`
+/// devolveria a mesma do boot — de onde `boot` ja saiu. Os settings do boot
+/// valem inteiros, e e isso que deixa o harness de teste passar settings
+/// direto ao [`supervisionar`] sem escrever a secao no `AppConfig`.
+fn settings_do_turno(state: &SharedState, boot: &LinkedSettings) -> LinkedSettings {
+    if state.has_config_watcher() {
+        admissao_vigente(boot, &settings_from_config(&state.current_config()))
+    } else {
+        boot.clone()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sink
 // ---------------------------------------------------------------------------
@@ -942,6 +1181,24 @@ impl GatewaySink {
         }
     }
 
+    /// Conta a recusa de um `@lid` sem numero no runtime (para o
+    /// `/api/diagnostics`) e no [`ARQUIVO_RECUSAS_LID`] (para o `status` da
+    /// CLI). Best-effort: falhar ao gravar nao muda a recusa.
+    fn registrar_recusa_lid(state: &SharedState, final4: &str) {
+        let recusas = state.whatsapp_linked.registrar_recusa_lid();
+        let Ok(paths) = LinkedPaths::from_config(&state.config) else {
+            return;
+        };
+        let registro = RecusasLid {
+            pid: std::process::id(),
+            recusas,
+            final4: final4.to_string(),
+        };
+        if let Err(e) = gravar_recusas_lid(paths.store.dir(), &registro) {
+            warn!("whatsapp_linked: nao consegui registrar a recusa de @lid: {e}");
+        }
+    }
+
     /// O turno inteiro de uma mensagem. `async` e fora do `deliver` porque
     /// `InboundSink::deliver` e sincrono e roda dentro do `select!` do driver —
     /// bloquear ali pararia de ler o stdout da ponte.
@@ -960,13 +1217,21 @@ impl GatewaySink {
         // codigo do `/pair` vale em qualquer canal, e o docblock dele diz isso.
         // A allowlist **nao** e: ver [`PortaoDoCanal`].
         let (_, pairing) = channel_gates(&state);
-        let admissao = {
+        // #1345: a admissao deste turno sai da config VIVA, nao da do boot.
+        // Ver `admissao_vigente` e `settings_do_turno`.
+        let settings = settings_do_turno(&state, &settings);
+        let admissao = if !settings.enabled {
+            // Canal desligado (ou secao sumida) na config viva: ninguem entra,
+            // nem por codigo de pareamento. Mesmo silencio do `Recusado`.
+            Admissao::Recusado
+        } else {
             // Os dois locks juntos, e soltos antes do `await`: `std::sync::
             // MutexGuard` nao e `Send`.
             let (Ok(mut gate), Ok(mut pair)) = (portao.lock(), pairing.lock()) else {
                 warn!("whatsapp_linked: gate envenenado; recusando por seguranca");
                 return;
             };
+            gate.recarregar(&settings);
             admitir(&mut gate, &mut pair, &remetente, &bruto)
         };
 
@@ -974,10 +1239,22 @@ impl GatewaySink {
             Admissao::Recusado => {
                 // Nao ha resposta: responder confirmaria ao estranho que o
                 // numero roda um bot. Fica o log, com os 4 digitos apenas.
-                warn!(
-                    phone_last4 = %last4,
-                    "whatsapp_linked: remetente fora da allowlist, mensagem descartada"
-                );
+                if e_lid(&remetente) {
+                    // #1345: remetente so com LID, sem numero. Um numero no
+                    // `allow` nunca casa com ele — o operador precisa saber
+                    // que e ESTE o caso, e nao "o numero esta errado".
+                    Self::registrar_recusa_lid(&state, &last4);
+                    warn!(
+                        lid_last4 = %last4,
+                        "whatsapp_linked: remetente @lid sem numero fora da allowlist, \
+                         mensagem descartada (um numero no `allow` nao casa com LID)"
+                    );
+                } else {
+                    warn!(
+                        phone_last4 = %last4,
+                        "whatsapp_linked: remetente fora da allowlist, mensagem descartada"
+                    );
+                }
                 return;
             }
             Admissao::PareadoAgora => {
@@ -1257,6 +1534,15 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     // sobre o modo que `deve_supervisionar` acabou de validar. Aviso, nao
     // recusa — ver `mcp_liberadas_pelo_perfil`.
     avisar_drift_de_mcp(modo, politica.perfil, &settings, &state.agents);
+    // #1345: sobe assim mesmo (o `allow` recarrega a quente), mas diz que
+    // ninguem vai receber resposta ate alguem ser autorizado.
+    if let Some(aviso) = aviso_portao_vazio(
+        &settings,
+        &garraia_common::executavel::nome(),
+        state.has_config_watcher(),
+    ) {
+        warn!("{aviso}");
+    }
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
     // compilador nao sabe disso, e um `unwrap()` em producao e proibido.
     let Some(node) = node else {

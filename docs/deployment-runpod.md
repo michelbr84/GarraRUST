@@ -50,11 +50,21 @@ Configure the Load Balancer Serverless endpoint with:
 > to the public URL. Hitting `https://ENDPOINT_ID.api.runpod.ai:3888/...`
 > from outside the container will not work.
 
-The `garra start` command honors `PORT` and `HOST` env vars (GAR-603); the
-shipped `Dockerfile` `CMD` already passes `--host 0.0.0.0` so the default
-`docker run` works without any env overrides. If Runpod injects `PORT` or
-`HOST`, the binary picks them up automatically — explicit `--port` / `--host`
-flags still win if you ever add them to the start command.
+The `garraia start` command honors `PORT` and `HOST` env vars (GAR-603); the
+shipped `Dockerfile` `CMD` passes `--host 0.0.0.0`, and that flag wins over a
+`HOST` env var. If Runpod injects `PORT`, the binary picks it up.
+
+**A gateway credential is required (#1261, v0.4.5).** On a non-loopback bind
+`garraia start` refuses to boot without one, and exits 78 with a message that
+says how to fix it. Set `GARRAIA_GATEWAY_API_KEY` in the endpoint's
+environment-variable UI (or its secrets manager) to a long random value, e.g.
+the output of `openssl rand -hex 32`. Clients then send it as
+`Authorization: Bearer <key>`; `/ping`, `/health` and `/api/health` stay open
+for the Load Balancer probes. An endpoint that is open on purpose behind an
+authenticating proxy can instead set
+`gateway.allow_unauthenticated_network_bind: true` in its config file (there
+is no env var for it). See
+[auth-config.md §5.1](auth-config.md#51-the-gateway-bind-address--what-config-check-sees-vs-what-start-binds).
 
 ## Local Docker smoke test
 
@@ -68,6 +78,7 @@ docker build -t garraia:local .
 # Pass an empty .env if you have no secrets to inject.
 docker run --rm -p 3888:3888 \
     -e RUST_LOG=info \
+    -e GARRAIA_GATEWAY_API_KEY="$(openssl rand -hex 32)" \
     garraia:local
 
 # In another shell — both should return HTTP 200.
@@ -91,8 +102,11 @@ curl -fsS https://${ENDPOINT_ID}.api.runpod.ai/ping
 If `/ping` returns `400 {"detail":"timed out waiting for worker"}`, the
 endpoint is reachable but the worker has not become healthy yet. Common causes:
 
-- The container start command launched something other than `garra start`
+- The container start command launched something other than `garraia start`
   (e.g. an interactive REPL — does not bind a listener).
+- `GARRAIA_GATEWAY_API_KEY` is not set: since v0.4.5 the worker refuses to
+  boot on `0.0.0.0` without a gateway credential (#1261) — the worker log
+  shows `refusing to start` and the fix.
 - `PORT` / `PORT_HEALTH` mismatch between the endpoint settings and what
   the container binds to.
 - The image was built from a branch that predates GAR-603 and has no `/ping`
@@ -140,12 +154,12 @@ garraia start
 3. Detect the lack of systemd inside RunPod containers and fall back to
    a `nohup ollama serve >> ~/.garraia/ollama.log 2>&1 &` start, with
    the PID stamped at `~/.garraia/ollama.pid`.
-4. Write `gateway.host: 0.0.0.0` and `port: 3888` (or the value of
-   `PORT` when set) into `~/.config/garraia/config.yml` as a record of
-   intent. Note the actual bind does not come from these keys:
-   `garra start` binds from `HOST`/`PORT` env (which RunPod LB
-   Serverless sets — GAR-603) or explicit `--host`/`--port` flags
-   (#1261, [auth-config.md
+4. Mint `gateway.api_key` into `~/.config/garraia/config.yml` (a RunPod pod
+   is server-like) and print how to expose the gateway:
+   `HOST=0.0.0.0 garraia start`. Since v0.4.5 the wizard no longer writes
+   `gateway.host`/`gateway.port`: those keys are deprecated and never fed
+   the bind, which comes from `--host`/`--port` or `HOST`/`PORT` (#1261,
+   [auth-config.md
    §5.1](auth-config.md#51-the-gateway-bind-address--what-config-check-sees-vs-what-start-binds)).
 5. Skip TTS/STT auto-install but write the endpoint defaults
    (`http://127.0.0.1:7860` for Chatterbox, `http://127.0.0.1:9090` for

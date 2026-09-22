@@ -468,12 +468,24 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn sessions_returns_empty_when_no_dir() {
-        // HOME is set to a temp dir so sessions_dir won't exist.
-        let tmp = std::env::temp_dir();
-        // SAFETY: test-only, single-threaded context.
-        unsafe { std::env::set_var("HOME", tmp.to_str().unwrap()) };
+        // HOME is set to a temp dir so sessions_dir won't exist. It is the
+        // process environment, so the test holds the same `#[serial]` lock as
+        // every other env-writing test and restores HOME before asserting —
+        // it used to leave HOME pointing at /tmp for the rest of the run.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home_antes = std::env::var_os("HOME");
+        // SAFETY: serialized test; restored right after the call.
+        unsafe { std::env::set_var("HOME", tmp.path()) };
         let resp = get_log_sessions().await.into_response();
+        // SAFETY: idem.
+        unsafe {
+            match home_antes {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+        }
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();

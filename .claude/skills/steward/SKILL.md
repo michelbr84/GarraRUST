@@ -63,21 +63,19 @@ migrations via `sqlx::migrate!` em Postgres real. Se falhar só localmente com
 essa mensagem, é ambiente. Diga isso explicitamente em vez de alegar que
 validou.
 
-### `utoipa-swagger-ui` — build script falha localmente
+### `utoipa-swagger-ui` — Swagger UI vem vendorizado (#1228)
 
-O `build.rs` baixa um zip do GitHub, e o proxy de egresso desta sessão bloqueia
-o domínio; o "zip" gravado é uma página de erro JSON de 378 bytes. O `ci.yml`
-já contorna pré-baixando com curl.
+O gateway compila o `utoipa-swagger-ui` com a feature `vendored`: o `build.rs`
+lê o zip embutido na crate `utoipa-swagger-ui-vendored` e **não baixa nada**,
+então build offline funciona sem preparo. O antigo contorno
+`SWAGGER_UI_DOWNLOAD_URL=file://...` (zip gerado de um clone da tag) é
+ignorado com `vendored` e não resolve mais nada — não perca tempo com ele.
 
-Para destravar localmente, **não apague o cache cegamente** (`find target -name
-'v5.17.14.zip' -delete` remove também cópias válidas de builds anteriores —
-erro já cometido). Gere o arquivo a partir do clone da tag:
-
-```bash
-git clone --depth 1 --branch v5.17.14 https://github.com/swagger-api/swagger-ui /tmp/swui
-git -C /tmp/swui archive --format=zip --prefix=swagger-ui-5.17.14/ HEAD -o /tmp/v5.17.14.zip
-export SWAGGER_UI_DOWNLOAD_URL="file:///tmp/v5.17.14.zip"
-```
+Se um build voltar a tentar baixar o Swagger UI, alguém tirou a feature
+`vendored` do `crates/garraia-gateway/Cargo.toml`; o teste
+`tests/swagger_ui_vendored.rs` do gateway falha nesse caso. A action
+`.github/actions/swagger-ui-cache` é vestigial (fica uma release, download
+best-effort) — falha nela não é causa de build quebrado.
 
 ### "No space left on device" disfarçado de erro de compilação
 
@@ -156,6 +154,32 @@ Consequências práticas:
 para esses alvos. Empurrar uma branch **não** roda nada: sem PR aberto, não há
 validação de CI. Planeje isso — e não peça para o usuário "esperar o CI" de uma
 branch que não tem PR.
+
+---
+
+## 5a. gitleaks lê o intervalo de commits do PR
+
+O job de segredos varre **cada commit** do PR, não só o diff final. Um
+fixture com cara de credencial (chave de teste, token de exemplo) que entrou
+num commit e saiu no seguinte continua vermelho — apagar o arquivo não
+resolve.
+
+- A saída é uma entrada de **fingerprint exato** em `.gitleaksignore`
+  (`<commit>:<arquivo>:<regra>:<linha>`, o que o próprio relatório imprime),
+  com um comentário dizendo por que é falso positivo.
+- **Nunca** reescreva commit já empurrado para sumir com o achado, e nunca
+  afrouxe regra do `gitleaks` para o PR passar. As duas saídas escondem o
+  próximo segredo de verdade junto com o falso.
+- Credencial real que entrou num commit empurrado é incidente, não falso
+  positivo: revogue antes de qualquer outra coisa.
+
+## 5b. Trem de merge: desligue o auto-merge primeiro
+
+Com checks estritos, cada merge em `main` deixa as outras PRs `BEHIND`. Antes
+de montar um trem de merge local, **desligue o auto-merge de toda PR
+carregada** (`gh pr merge --disable-auto <n>`): uma PR que fica verde no meio
+do trem entra sozinha, e o trem passa a conflitar com ela. Na v0.4.3 foi
+exatamente isso.
 
 ---
 

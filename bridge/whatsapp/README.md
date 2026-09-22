@@ -123,10 +123,13 @@ Baileys (thumbnail de midia). A ponte nao envia midia em v1 e nao importa
 
 ## Limitacoes conhecidas da v1
 
-- **`@lid` nao e resolvido para telefone.** Quando o remetente vem como
-  `<id>@lid`, `sender_phone` sai `null` e o `sender_jid` vai cru para o Rust.
-  Mapear LID -> telefone exigiria consultar o mapa interno do Baileys, que muda
-  entre versoes; a decisao fica para o Rust.
+- **`@lid` so vira telefone quando o servidor manda o numero junto.** No
+  Baileys 7 um remetente `<id>@lid` costuma chegar com o JID de telefone em
+  `key.remoteJidAlt` (1:1) ou `key.participantAlt` (grupo); `sender_phone` sai
+  dali (`senderPhoneOf`). Sem esse campo, `sender_phone` sai `null` e o
+  `sender_jid` vai cru para o Rust, que so o admite por uma entrada `…@lid`
+  explicita no `allow`. O mapa interno de LID do Baileys nunca e consultado:
+  ele muda entre versoes.
 - **Legenda de midia nao e entregue.** Midia vira `text: null` +
   `media_kind`, conforme o protocolo. Download de midia tambem nao existe.
 - **Sem historico.** `syncFullHistory: false`: a ponte e um dispositivo

@@ -19,8 +19,11 @@ fn handoff_path(config: &AppConfig) -> PathBuf {
     config.resolved_data_dir().join(RECOVERY_CODE_FILE)
 }
 
-fn base_url(config: &AppConfig) -> String {
-    format!("http://{}:{}", config.gateway.host, config.gateway.port)
+/// #1261: o endereco que o `start` usou (flag/env > default), nunca
+/// `gateway.host`/`gateway.port` do arquivo, que estao deprecados.
+fn base_url(_config: &AppConfig) -> String {
+    let (host, port) = garraia_config::bind::endereco_do_cliente();
+    garraia_config::bind::url_http(&host, port)
 }
 
 /// `garra admin recovery start --username <u>`

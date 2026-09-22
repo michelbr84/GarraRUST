@@ -632,7 +632,7 @@ WhatsApp, iMessage, voice, embeddings, MCP, timeouts, rate limiting and
 
 ## Architecture
 
-A Rust workspace of **24 crates**, each with a single responsibility:
+A Rust workspace of **22 crates**, each with a single responsibility:
 
 ```text
 crates/
@@ -651,7 +651,7 @@ crates/
 ├── garraia-learning/   # Self-improving skills (mining, safety gate, versioning)
 ├── garraia-hardware/   # Physical devices: Device trait, R0-R5 risk gate, MQTT/Home Assistant/serial/GPIO adapters
 ├── garraia-desktop-core/ # Tauri-free core of the Desktop Control Center (state, detect, supervise, locate)
-└── ...                 # telemetry, media, skills, storage, tools, runtime, common, glob, desktop
+└── ...                 # telemetry, media, skills, storage, common, glob, desktop
 apps/
 └── garraia-mobile/     # Flutter client (Riverpod, go_router) — Garra Cloud Alpha
 ```

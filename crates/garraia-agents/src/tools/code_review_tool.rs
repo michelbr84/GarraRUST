@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use garraia_common::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::process::Command;
 
 use super::repo_dir::RepoDir;
 use super::{Tool, ToolContext, ToolOutput};
@@ -28,6 +27,8 @@ pub struct CodeReviewTool {
     model: String,
     /// Timeout for git operations
     timeout: Duration,
+    /// #1225 S2: `agent.sandbox`. Default `off` = host, como sempre.
+    sandbox: crate::sandbox::SandboxPolicy,
 }
 
 impl CodeReviewTool {
@@ -41,7 +42,21 @@ impl CodeReviewTool {
             provider,
             model: model.into(),
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
+    }
+
+    /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox = policy;
+    }
+
+    /// #1225 S2: [`Self::set_sandbox_policy`] em forma de builder, para o
+    /// ponto de registro.
+    #[must_use = "devolve a tool com a policy; o receptor e consumido"]
+    pub fn com_sandbox(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
+        self.sandbox = policy;
+        self
     }
 
     /// Get git diff output, **from the repository in `repo`**
@@ -53,7 +68,13 @@ impl CodeReviewTool {
     ) -> std::result::Result<String, String> {
         // --no-ext-diff: .git/config plantado (diff.external) não transforma
         // o code_review em execução arbitraria (#1075 — auditoria).
-        let mut args = vec!["diff".to_string(), "--no-ext-diff".to_string()];
+        // #1272 S3: e `--no-textconv`, pelo mesmo motivo.
+        let mut args = vec!["diff".to_string()];
+        args.extend(
+            crate::git_endurecido::OPCOES_DO_DIFF
+                .iter()
+                .map(|s| s.to_string()),
+        );
 
         if let Some(range) = commit_range {
             // #1269 (paridade com o `git_diff`): o `commit_range` vem do modelo
@@ -73,31 +94,29 @@ impl CodeReviewTool {
             args.push(path.to_string());
         }
 
-        let mut cmd = Command::new("git");
-        // #1258 (mesmo defeito raiz do `git_diff`): sem `current_dir` o git
-        // herdava o CWD do processo do gateway, então o `code_review` revisava
-        // o diff de outro repositório — ou nenhum. Ver [`RepoDir`].
-        if let Some(dir) = repo.cwd_do_git() {
-            cmd.current_dir(dir);
-        }
-        cmd.args(&args);
-        // #1269 (paridade com o `git_diff`): o filho nunca lê a entrada padrão
-        // do gateway — em terminal, pipe e serviço o comportamento fica
-        // determinado, e não há consumo acidental de stdin.
-        cmd.stdin(std::process::Stdio::null());
-        // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
-        // allowlist de env do pai.
-        #[cfg(unix)]
-        {
-            cmd.env_clear();
-            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
-                cmd.env(key, value);
-            }
-        }
-        let result = tokio::time::timeout(self.timeout, cmd.output()).await;
+        // #1272 S3: mesmo prefixo endurecido do `git_diff`.
+        let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout).await?;
+        // #1258 (mesmo defeito raiz do `git_diff`): o git roda no
+        // `working_dir` da sessão quando há um — ver [`RepoDir`].
+        // #1225 S2: spawn por `sandbox_spawn::executar` (env reduzido, stdin
+        // nulo, container quando `agent.sandbox` se aplica).
+        let mut argv: Vec<String> = prefixo;
+        argv.extend(args);
+        let result = crate::sandbox_spawn::executar(
+            &self.sandbox,
+            crate::sandbox_spawn::Pedido {
+                tool: "code_review",
+                programa: "git",
+                args: &argv,
+                cwd: repo.cwd_do_git(),
+                env: crate::git_endurecido::ENV,
+                timeout: self.timeout,
+            },
+        )
+        .await;
 
         match result {
-            Ok(Ok(output)) => {
+            crate::sandbox_spawn::Desfecho::Saida(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 if stdout.is_empty() {
                     Err("No diff output (no changes found)".to_string())
@@ -116,8 +135,11 @@ impl CodeReviewTool {
                     }
                 }
             }
-            Ok(Err(e)) => Err(format!("Failed to run git diff: {}", e)),
-            Err(_) => Err(format!(
+            crate::sandbox_spawn::Desfecho::NaoExecutou(e) => {
+                Err(format!("Failed to run git diff: {}", e))
+            }
+            crate::sandbox_spawn::Desfecho::Recusado(motivo) => Err(motivo),
+            crate::sandbox_spawn::Desfecho::Timeout => Err(format!(
                 "git diff timed out after {}s",
                 self.timeout.as_secs()
             )),
@@ -315,6 +337,48 @@ mod tests {
 
     fn tool_com_eco() -> CodeReviewTool {
         CodeReviewTool::new(Arc::new(ProvedorQueEcoa), "modelo-de-teste", Some(15))
+    }
+
+    /// #1272 S3: o `code_review` usa o mesmo git endurecido — config
+    /// plantada nao executa nada, e o diff ainda chega ao revisor.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn config_plantada_no_repo_nao_roda_programa_nenhum() {
+        let repo = repo_git_temporario("alvo-review-1272", "ramo-review-1272");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let marcadores =
+            crate::git_endurecido::planta_programas_no_repo(repo.path(), marcas.path());
+        let wd = repo.path().to_string_lossy().into_owned();
+        let saida = tool_com_eco()
+            .execute(&ctx(Some(&wd)), serde_json::json!({}))
+            .await
+            .expect("execute");
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(
+            saida.content.contains("alvo-review-1272"),
+            "{}",
+            saida.content
+        );
+        for m in &marcadores {
+            assert!(!m.exists(), "code_review executou {}", m.display());
+        }
+    }
+
+    /// #1272 S3: filtro declarado na config PROPRIA de um submodulo, com o
+    /// superprojeto em `diff.submodule=diff`, nao roda pelo `code_review`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn code_review_nao_roda_filtro_de_submodulo() {
+        let repo = repo_git_temporario("alvo-review-sub", "ramo-review-sub");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let marca = crate::git_endurecido::planta_filtro_em_submodulo(repo.path(), marcas.path());
+        let wd = repo.path().to_string_lossy().into_owned();
+        let saida = tool_com_eco()
+            .execute(&ctx(Some(&wd)), serde_json::json!({}))
+            .await
+            .expect("execute");
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(!marca.exists(), "code_review rodou o filtro do submodulo");
     }
 
     /// #1258 (item 4 da aceitação): o `code_review` tinha o **mesmo** defeito

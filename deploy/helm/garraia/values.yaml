@@ -88,6 +88,29 @@ secretEnv:
   # GARRAIA_VAULT_PASSPHRASE: ""
   # GARRAIA_JWT_SECRET: ""
   # ANTHROPIC_API_KEY: ""
+  # Do NOT put GARRAIA_GATEWAY_API_KEY here: use `gatewayApiKey` below.
+
+# Gateway credential (GARRAIA_GATEWAY_API_KEY) — REQUIRED since v0.4.5 (#1261).
+#
+# The image runs `garraia start --host 0.0.0.0`, and `garraia start` refuses a
+# non-loopback bind without a gateway credential (exit 78, CrashLoopBackOff).
+# The key gates every /api/* route and the /ws agent channel; clients send it
+# as `Authorization: Bearer <key>`.
+#
+# Pick one source, in this order of precedence:
+#   1. existingSecret: a Secret you manage (recommended for GitOps/production);
+#   2. value: the key itself (e.g. --set gatewayApiKey.value=$(openssl rand -hex 32));
+#   3. neither: the chart GENERATES a random key on install, stores it in the
+#      Secret "<fullname>-gateway-key" and keeps it on upgrade (lookup).
+#      `helm template` / ArgoCD cannot lookup, so there the key would change
+#      on every render: set existingSecret or value in those setups.
+# Read the generated key with:
+#   kubectl get secret <fullname>-gateway-key \
+#     -o jsonpath='{.data.GARRAIA_GATEWAY_API_KEY}' | base64 -d
+gatewayApiKey:
+  existingSecret: ""
+  existingSecretKey: GARRAIA_GATEWAY_API_KEY
+  value: ""
 
 livenessProbe:
   httpGet:

@@ -11,7 +11,6 @@
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use std::time::Duration;
-use tokio::process::Command;
 
 use super::repo_dir::RepoDir;
 use super::{Tool, ToolContext, ToolOutput};
@@ -81,11 +80,15 @@ fn git_diff_args(
     from_commit: Option<&str>,
     to_commit: Option<&str>,
 ) -> std::result::Result<Vec<String>, String> {
-    let mut args: Vec<String> = vec![
-        "diff".to_string(),
-        "--no-ext-diff".to_string(),
-        format!("-U{context_lines}"),
-    ];
+    let mut args: Vec<String> = vec!["diff".to_string()];
+    // #1272 S3: `--no-ext-diff` e `--no-textconv` — nenhum programa da config
+    // do repositorio roda para montar o diff.
+    args.extend(
+        crate::git_endurecido::OPCOES_DO_DIFF
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    args.push(format!("-U{context_lines}"));
 
     // Se tem range de commits — validado antes de entrar na linha de comando.
     if let (Some(from), Some(to)) = (from_commit, to_commit) {
@@ -113,6 +116,8 @@ fn git_diff_args(
 pub struct GitDiffTool {
     timeout: Duration,
     max_lines: usize,
+    /// #1225 S2: `agent.sandbox`. Default `off` = host, como sempre.
+    sandbox: crate::sandbox::SandboxPolicy,
 }
 
 impl GitDiffTool {
@@ -121,7 +126,21 @@ impl GitDiffTool {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
             max_lines: max_lines.unwrap_or(DEFAULT_MAX_LINES),
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
+    }
+
+    /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox = policy;
+    }
+
+    /// #1225 S2: [`Self::set_sandbox_policy`] em forma de builder, para o
+    /// ponto de registro.
+    #[must_use = "devolve a tool com a policy; o receptor e consumido"]
+    pub fn com_sandbox(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
+        self.sandbox = policy;
+        self
     }
 
     /// Verifica se o output contém possíveis segredos
@@ -165,35 +184,37 @@ impl GitDiffTool {
 
     /// Executa um comando git com timeout, **no repositório de `repo`**.
     async fn run_git_command(&self, args: &[String], repo: &RepoDir) -> Result<String> {
-        let mut cmd = Command::new("git");
-        // #1258: o git roda no `working_dir` da sessão quando há um. Sem esta
-        // linha ele herdava o CWD do processo do gateway — respondendo sobre
-        // outro repositório, e de forma dependente de como o processo subiu
-        // (`garra start`, systemd com `WorkingDirectory=`, sidecar, container).
-        // Sem `working_dir` o CWD é mantido de propósito, e quem formata a
-        // resposta nomeia o diretório (ver [`RepoDir`]).
-        if let Some(dir) = repo.cwd_do_git() {
-            cmd.current_dir(dir);
-        }
-        cmd.args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-        // #1269 (paridade com o #1266/PR #1268): o filho nunca le a entrada
-        // padrao do gateway — em terminal, pipe e servico o comportamento fica
-        // o mesmo, e o teste de regressao da injecao nao passa por acidente.
-        cmd.stdin(std::process::Stdio::null());
-        // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
-        // allowlist de env — um .gitconfig plantado com diff.external é
-        // execução arbitraria, e não pode carregar segredos do pai junto.
-        #[cfg(unix)]
-        {
-            cmd.env_clear();
-            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
-                cmd.env(key, value);
-            }
-        }
-        let resultado = tokio::time::timeout(self.timeout, cmd.output()).await;
+        // #1272 S3: `-c core.fsmonitor=false`, bare implicito recusado, sem
+        // hooks e todo `filter.<drv>` da config anulado — antes do subcomando.
+        let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout)
+            .await
+            .map_err(Error::Agent)?;
+        // #1258: o git roda no `working_dir` da sessão quando há um. Sem ele
+        // o CWD do processo é mantido de propósito, e quem formata a resposta
+        // nomeia o diretório (ver [`RepoDir`]).
+        //
+        // #1225 S2: o spawn passa por `sandbox_spawn::executar` — env do filho
+        // reduzido a allowlist (#1075 R3: um .gitconfig plantado com
+        // diff.external é execução arbitrária e não pode carregar segredos do
+        // pai), stdin nulo (#1269) e, com `agent.sandbox` aplicável, o git
+        // roda no container.
+        let mut argv: Vec<String> = prefixo;
+        argv.extend(args.iter().cloned());
+        let resultado = crate::sandbox_spawn::executar(
+            &self.sandbox,
+            crate::sandbox_spawn::Pedido {
+                tool: "git_diff",
+                programa: "git",
+                args: &argv,
+                cwd: repo.cwd_do_git(),
+                env: crate::git_endurecido::ENV,
+                timeout: self.timeout,
+            },
+        )
+        .await;
 
         match resultado {
-            Ok(Ok(output)) => {
+            crate::sandbox_spawn::Desfecho::Saida(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -228,8 +249,11 @@ impl GitDiffTool {
 
                 Ok(combined)
             }
-            Ok(Err(e)) => Err(Error::Agent(format!("falha ao executar git: {e}"))),
-            Err(_) => Err(Error::Agent(format!(
+            crate::sandbox_spawn::Desfecho::NaoExecutou(e) => {
+                Err(Error::Agent(format!("falha ao executar git: {e}")))
+            }
+            crate::sandbox_spawn::Desfecho::Recusado(motivo) => Err(Error::Agent(motivo)),
+            crate::sandbox_spawn::Desfecho::Timeout => Err(Error::Agent(format!(
                 "comando git excedeu o tempo limite após {}s",
                 self.timeout.as_secs()
             ))),
@@ -262,11 +286,17 @@ impl GitDiffTool {
 
     /// Obtém o status do repositório de `repo`
     async fn get_status(&self, repo: &RepoDir) -> Result<String> {
-        let args: Vec<String> = vec![
+        let mut args: Vec<String> = vec![
             "status".to_string(),
             "--porcelain".to_string(),
             "-b".to_string(),
         ];
+        // #1272 S3: sem descer em submodulo (config propria, filtros dele).
+        args.extend(
+            crate::git_endurecido::OPCOES_DO_STATUS
+                .iter()
+                .map(|s| s.to_string()),
+        );
 
         let output = self.run_git_command(&args, repo).await?;
 
@@ -282,39 +312,62 @@ impl GitDiffTool {
 
     /// Formata a saída do git status --porcelain
     fn format_status(&self, output: &str) -> String {
-        let mut result = String::new();
-
-        //获取当前分支
-        for line in output.lines() {
-            if let Some(stripped) = line.strip_prefix("## ") {
-                result.push_str(&format!("Branch: {}\n", stripped));
-                continue;
-            }
-
-            let status = &line[..2];
-            let file = &line[3..];
-
-            let status_desc = match status {
-                " M" => "Modificado",
-                " A" => "Adicionado",
-                " D" => "Deletado",
-                " R" => "Renomeado",
-                " C" => "Copiado",
-                " U" => "Unmerged",
-                "??" => "Não rastreado",
-                "!!" => "Ignorado",
-                _ => "Desconhecido",
-            };
-
-            result.push_str(&format!("{}: {}\n", status_desc, file));
-        }
-
-        if result.is_empty() {
-            result.push_str("Working tree limpo (nenhuma modificação)");
-        }
-
-        result
+        format_status(output)
     }
+}
+
+/// Formata a saida de `git status --porcelain -b` (mais o bloco `STDERR:`
+/// que `run_git_command` anexa). Nunca entra em panico: linha curta, vazia
+/// ou com caractere multibyte no corte sai crua em vez de ser fatiada — o
+/// separador em branco antes do `STDERR:` e o aviso de pull do docker no
+/// sandbox tornavam o `&line[..2]` antigo um panic de rotina (review da
+/// #1225, SANDBOX-7). O que vem depois de `STDERR:` e anexado sem parse.
+fn format_status(output: &str) -> String {
+    let (stdout, stderr) = match output.find("STDERR:\n") {
+        Some(i) if i == 0 || output[..i].ends_with('\n') => (&output[..i], Some(&output[i..])),
+        _ => (output, None),
+    };
+    let mut result = String::new();
+
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(stripped) = line.strip_prefix("## ") {
+            result.push_str(&format!("Branch: {}\n", stripped));
+            continue;
+        }
+
+        let (Some(status), Some(file)) = (line.get(..2), line.get(3..)) else {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        };
+
+        let status_desc = match status {
+            " M" => "Modificado",
+            " A" => "Adicionado",
+            " D" => "Deletado",
+            " R" => "Renomeado",
+            " C" => "Copiado",
+            " U" => "Unmerged",
+            "??" => "Não rastreado",
+            "!!" => "Ignorado",
+            _ => "Desconhecido",
+        };
+
+        result.push_str(&format!("{}: {}\n", status_desc, file));
+    }
+
+    if result.is_empty() {
+        result.push_str("Working tree limpo (nenhuma modificação)");
+    }
+    if let Some(bloco) = stderr {
+        result.push('\n');
+        result.push_str(bloco);
+    }
+
+    result
 }
 
 #[async_trait]
@@ -429,7 +482,171 @@ impl Tool for GitDiffTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review da #1225 (SANDBOX-7): nenhuma entrada derruba o
+    /// `format_status` — linha vazia, curta, multibyte no corte, o bloco
+    /// `STDERR:` que `run_git_command` anexa, e combinacoes geradas.
+    #[test]
+    fn format_status_nao_entra_em_panico_com_linha_curta_ou_estranha() {
+        let pecas = [
+            "",
+            "\n",
+            "a",
+            "ab",
+            "abc",
+            "é",
+            "aé",
+            "éé",
+            "a\u{1F600}b",
+            " M",
+            " M ",
+            "??",
+            "## main",
+            "##",
+            "STDERR:",
+            "STDERR:\n",
+            "x\n\n",
+            "\r\n",
+            " M arquivo.rs",
+        ];
+        for a in pecas {
+            for b in pecas {
+                let entrada = format!("{a}\n{b}");
+                let _ = format_status(&entrada);
+                let _ = format_status(&format!("{a}{b}"));
+            }
+        }
+        // O caso real: stdout com `\n` final + o separador + stderr do docker.
+        let real = "## main\n M a.rs\n\nSTDERR:\nUnable to find image 'x' locally\nab\n";
+        let saida = format_status(real);
+        assert!(saida.contains("Branch: main"), "{saida}");
+        assert!(saida.contains("Modificado: a.rs"), "{saida}");
+        assert!(saida.contains("STDERR:\nUnable to find image"), "{saida}");
+        assert!(!saida.contains("Desconhecido: nable"), "{saida}");
+    }
     use crate::tools::repo_dir::{contexto_de_teste as ctx, repo_git_temporario};
+
+    // ─── #1272 S3: config plantada nao executa nada no host ────────────────
+
+    /// Um repo com `core.fsmonitor`, `diff.x.textconv` e `filter.x.clean`
+    /// plantados: `diff` e `status` pela tool nao criam marcador nenhum e o
+    /// diff continua vindo. Gemeo: o argv ANTIGO (`git diff --no-ext-diff`)
+    /// cria os tres — prova que o teste nao passa por vacuidade e prende as
+    /// flags.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn config_plantada_no_repo_nao_roda_programa_nenhum() {
+        let repo = repo_git_temporario("alvo-1272", "ramo-1272");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let [fsm, tc, clean] =
+            crate::git_endurecido::planta_programas_no_repo(repo.path(), marcas.path());
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = repo.path().to_string_lossy().into_owned();
+        for op in ["diff", "status"] {
+            let saida = tool
+                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": op}))
+                .await
+                .expect("execute");
+            assert!(!saida.is_error, "{op}: {}", saida.content);
+            if op == "diff" {
+                assert!(
+                    saida.content.contains("linha alterada"),
+                    "{}",
+                    saida.content
+                );
+            }
+            for m in [&fsm, &tc, &clean] {
+                assert!(!m.exists(), "{op} executou {}", m.display());
+            }
+        }
+
+        // Gemeo: sem o endurecimento, o mesmo repo executa os tres.
+        let ok = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .args(["diff", "--no-ext-diff"])
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok);
+        for m in [&fsm, &tc, &clean] {
+            assert!(m.exists(), "o gemeo nao reproduziu {}", m.display());
+        }
+    }
+
+    /// Um submodulo cuja config PROPRIA declara `filter.evil.clean`, com o
+    /// superprojeto em `diff.submodule=diff`: `diff` e `status` pela tool nao
+    /// descem nele, entao o filtro nao roda. Gemeo: o prefixo antigo (sem as
+    /// chaves de submodulo) roda o filtro — prova que o teste nao e vazio.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn filtro_declarado_em_submodulo_nao_roda() {
+        let repo = repo_git_temporario("alvo-sub", "ramo-sub");
+        let marcas = tempfile::tempdir().expect("tmp");
+        let marca = crate::git_endurecido::planta_filtro_em_submodulo(repo.path(), marcas.path());
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = repo.path().to_string_lossy().into_owned();
+        for op in ["diff", "status"] {
+            let saida = tool
+                .execute(&ctx(Some(&wd)), serde_json::json!({"operation": op}))
+                .await
+                .expect("execute");
+            assert!(!saida.is_error, "{op}: {}", saida.content);
+            assert!(!marca.exists(), "{op} rodou o filtro do submodulo");
+        }
+
+        // Gemeo: o endurecimento de antes (fsmonitor/bare/hooks, sem as
+        // chaves de submodulo) roda o filtro do submodulo.
+        let ok = std::process::Command::new("git")
+            .current_dir(repo.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args([
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "safe.bareRepository=explicit",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+            ])
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok);
+        assert!(
+            marca.exists(),
+            "o gemeo nao reproduziu o filtro do submodulo"
+        );
+    }
+
+    /// `safe.bareRepository=explicit`: um repositorio bare implicito como
+    /// working_dir e recusado pelo git em vez de lido.
+    #[tokio::test]
+    async fn repositorio_bare_implicito_e_recusado() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let ok = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "--bare", "-q", "."])
+            .status()
+            .expect("git")
+            .success();
+        assert!(ok);
+        let tool = GitDiffTool::new(Some(15), Some(500));
+        let wd = dir.path().to_string_lossy().into_owned();
+        let saida = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({"operation": "status"}))
+            .await
+            .expect("execute");
+        // O git recusa o diretorio (a tool devolve a saida de erro dele).
+        assert!(
+            saida.content.contains("safe.bareRepository"),
+            "bare implicito foi lido: {}",
+            saida.content
+        );
+    }
 
     // ─── #1258: o git roda no repositório da sessão ────────────────────────
     //
@@ -686,6 +903,8 @@ mod tests {
             vec![
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
+                "--no-textconv".to_string(),
+                "--ignore-submodules=all".to_string(),
                 "-U3".to_string(),
                 "--".to_string(),
                 "--ext-diff".to_string(),
@@ -704,6 +923,8 @@ mod tests {
             vec![
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
+                "--no-textconv".to_string(),
+                "--ignore-submodules=all".to_string(),
                 "-U3".to_string(),
                 "abc123..def456".to_string(),
                 "--".to_string(),
@@ -743,6 +964,8 @@ mod tests {
             vec![
                 "diff".to_string(),
                 "--no-ext-diff".to_string(),
+                "--no-textconv".to_string(),
+                "--ignore-submodules=all".to_string(),
                 "-U3".to_string(),
                 "--".to_string(),
             ]

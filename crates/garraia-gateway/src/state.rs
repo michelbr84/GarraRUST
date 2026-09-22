@@ -13,7 +13,6 @@ use garraia_auth::{
 use garraia_channels::{ChannelRegistry, CommandRegistry};
 use garraia_config::{AppConfig, AuthConfig};
 use garraia_db::{ChatSessionManager, SessionStore};
-use garraia_runtime::RuntimeSettings;
 use garraia_security::{Allowlist, PairingManager};
 use secrecy::SecretString;
 use std::sync::RwLock;
@@ -91,8 +90,6 @@ pub struct AppState {
     /// handle sempre presente, `BridgeView::Unknown` diz "ninguem
     /// supervisiona", que e a verdade num gateway sem WhatsApp vinculado.
     pub whatsapp_linked: Arc<crate::bootstrap::WhatsAppLinkedRuntime>,
-    /// Runtime settings for agent execution.
-    pub runtime_settings: RuntimeSettings,
 
     // ── GAR-391c: garraia-auth wiring ──────────────────────────────────────
     // All five are `Option` so the gateway boots in fail-soft mode when
@@ -215,6 +212,29 @@ pub struct AgentConfigOverride {
 
 impl AppState {
     pub fn new(config: AppConfig, agents: Arc<AgentRuntime>, channels: ChannelRegistry) -> Self {
+        Self::with_config_dir(
+            config,
+            agents,
+            channels,
+            &garraia_config::ConfigLoader::default_config_dir(),
+        )
+    }
+
+    /// Like [`Self::new`], with the config directory (where `mcp.json` is
+    /// provisioned and `allowlist.json` lives) passed in instead of resolved
+    /// from `GARRAIA_CONFIG_DIR`/`$HOME`.
+    ///
+    /// Tests use it so they never touch the process environment: a test that
+    /// pointed `GARRAIA_CONFIG_DIR` at its tempdir raced every other test
+    /// building an `AppState` in parallel — any of them could provision its own
+    /// `mcp.json` into that tempdir first (the flaky
+    /// `o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp`).
+    pub(crate) fn with_config_dir(
+        config: AppConfig,
+        agents: Arc<AgentRuntime>,
+        channels: ChannelRegistry,
+        config_dir: &std::path::Path,
+    ) -> Self {
         // ADR 0024 (#1329): raizes do MCP `filesystem` por perfil de execucao,
         // resolvidas antes de `config` ser movida para o estado.
         let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&config);
@@ -230,7 +250,7 @@ impl AppState {
                 // GAR-291: attach vault so sensitive env vars are resolved on load.
                 // Provision filesystem MCP on first boot when mcp.json is absent.
                 // ADR 0024 (#1329): raizes por perfil de execucao, nunca `$HOME`.
-                let svc = crate::mcp::McpPersistenceService::with_default_path();
+                let svc = crate::mcp::McpPersistenceService::new(config_dir.join("mcp.json"));
                 svc.provision_filesystem_if_missing(&raizes_mcp);
                 let svc = if let Some(vp) = crate::bootstrap::default_vault_path() {
                     svc.with_vault(vp)
@@ -255,14 +275,13 @@ impl AppState {
                 Arc::new(RwLock::new(reg))
             },
             allowlist: Arc::new(std::sync::Mutex::new(Allowlist::load_or_create(
-                &garraia_config::ConfigLoader::default_config_dir().join("allowlist.json"),
+                &config_dir.join("allowlist.json"),
             ))),
             pairing: Arc::new(std::sync::Mutex::new(PairingManager::new(
                 std::time::Duration::from_secs(300),
             ))),
             boot_time: Instant::now(),
             whatsapp_linked: Arc::new(crate::bootstrap::WhatsAppLinkedRuntime::default()),
-            runtime_settings: RuntimeSettings::default(),
             // GAR-391c auth wiring — None until bootstrap loads AuthConfig.
             auth_provider: None,
             jwt_issuer: None,
@@ -412,11 +431,6 @@ impl AppState {
         self.config_rx = Some(rx);
     }
 
-    /// Configure the runtime settings for agent execution.
-    pub fn set_runtime_settings(&mut self, settings: RuntimeSettings) {
-        self.runtime_settings = settings;
-    }
-
     /// Register MCP tools as slash commands.
     /// This does the async work first, then registers synchronously.
     pub async fn register_mcp_tools(&self) {
@@ -428,11 +442,6 @@ impl AppState {
             let mut registry = self.command_registry.write().unwrap();
             mcp_commands::register_collected_commands(&mut registry, commands);
         }
-    }
-
-    /// Get a reference to the runtime settings.
-    pub fn runtime_settings(&self) -> &RuntimeSettings {
-        &self.runtime_settings
     }
 
     /// Check if config hot-reload watcher is active.

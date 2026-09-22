@@ -323,7 +323,10 @@ fn canonicalizar_raiz(root: &Path) -> Option<PathBuf> {
 ///
 /// Recebe `resolvida` e `home` resolvidos pelo chamador — nucleo puro, para o
 /// teste nao depender do `$HOME` da maquina que roda a suite.
-fn motivo_de_raiz_perigosa(resolvida: &Path, home: Option<&Path>) -> Option<&'static str> {
+pub(crate) fn motivo_de_raiz_perigosa(
+    resolvida: &Path,
+    home: Option<&Path>,
+) -> Option<&'static str> {
     if resolvida.parent().is_none() {
         return Some("e a raiz do sistema (/)");
     }
@@ -336,7 +339,7 @@ fn motivo_de_raiz_perigosa(resolvida: &Path, home: Option<&Path>) -> Option<&'st
 /// O `$HOME` do processo, **canonicalizado**, para comparar com uma raiz que
 /// tambem ja foi canonicalizada. Sem isso um home que e symlink (o
 /// `/var` -> `/private/var` do macOS) nunca casaria.
-fn process_home_dir() -> Option<PathBuf> {
+pub(crate) fn process_home_dir() -> Option<PathBuf> {
     crate::tools::tool_context::process_home_dir().and_then(|home| std::fs::canonicalize(home).ok())
 }
 

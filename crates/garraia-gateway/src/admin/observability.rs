@@ -141,18 +141,32 @@ pub async fn admin_alerts(
         }));
     }
 
-    if config.gateway.api_key.is_none() {
-        alerts.push(serde_json::json!({
-            "level": "warning",
-            "source": "security",
-            "message": "No API key configured for the gateway",
-        }));
+    if let Some(alerta) = alerta_sem_credencial(&config.gateway) {
+        alerts.push(alerta);
     }
 
     (
         StatusCode::OK,
         Json(serde_json::json!({"alerts": alerts, "count": alerts.len()})),
     )
+}
+
+/// The "no gateway credential" alert, or `None` when there is one.
+///
+/// #1261: the credential may come from `GARRAIA_GATEWAY_API_KEY`
+/// (`api_key_env`), and a blank file key leaves the gate off (#1241). Both
+/// cases go through `api_key_configurada`, the predicate the gate itself uses
+/// — reading the raw `api_key` field warned about an env-only key and stayed
+/// quiet about a blank one.
+fn alerta_sem_credencial(gateway: &garraia_config::GatewayConfig) -> Option<serde_json::Value> {
+    if gateway.api_key_configurada() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "level": "warning",
+        "source": "security",
+        "message": "No API key configured for the gateway",
+    }))
 }
 
 /// GET /admin/api/themes — available UI themes
@@ -236,4 +250,38 @@ pub async fn about(State(state): State<AdminState>) -> Json<serde_json::Value> {
         "active_providers": active_providers.len(),
         "active_sessions": session_count,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use garraia_config::GatewayConfig;
+
+    #[test]
+    fn alerta_de_credencial_segue_o_predicado_do_gate() {
+        let env_only = GatewayConfig {
+            api_key_env: garraia_config::auth::gateway_api_key_de(Some("k-env-1261".into())),
+            ..GatewayConfig::default()
+        };
+        assert!(
+            alerta_sem_credencial(&env_only).is_none(),
+            "chave de env ignorada"
+        );
+
+        let arquivo = GatewayConfig {
+            api_key: Some("k-arquivo".into()),
+            ..GatewayConfig::default()
+        };
+        assert!(alerta_sem_credencial(&arquivo).is_none());
+
+        let branco = GatewayConfig {
+            api_key: Some("   ".into()),
+            ..GatewayConfig::default()
+        };
+        assert!(
+            alerta_sem_credencial(&branco).is_some(),
+            "chave em branco nao liga o gate"
+        );
+        assert!(alerta_sem_credencial(&GatewayConfig::default()).is_some());
+    }
 }

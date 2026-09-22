@@ -58,15 +58,21 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
 /// Whether the `garraia_session` cookie should carry the `Secure` flag.
 ///
 /// Derived from the transport actually configured: native TLS (cert + key
-/// both set, mirroring `use_tls` in `server.rs`), OR `gateway.api_key`
-/// present — the pre-fix heuristic, kept so no existing deployment gets a
+/// both set, mirroring `use_tls` in `server.rs`), OR a gateway credential
+/// configured — the pre-fix heuristic, kept so no existing deployment gets a
 /// *less* strict cookie than before.
+///
+/// The credential is read through `GatewayConfig::api_key_configurada`, the
+/// same predicate the bind refusal and the `/api/*` gate use (#1261): a key
+/// that only comes from `GARRAIA_GATEWAY_API_KEY` counts, and a blank
+/// `api_key: "  "` (which leaves the gate off, #1241) does not.
 ///
 /// TODO(deprecation): drop the `api_key` clause after a deprecation cycle —
 /// an api_key-only plain-HTTP deploy gets a Secure cookie that browsers
 /// refuse to send over HTTP (pre-existing behavior, preserved on purpose).
 pub fn session_cookie_secure(gateway: &garraia_config::GatewayConfig) -> bool {
-    (gateway.tls_cert_path.is_some() && gateway.tls_key_path.is_some()) || gateway.api_key.is_some()
+    (gateway.tls_cert_path.is_some() && gateway.tls_key_path.is_some())
+        || gateway.api_key_configurada()
 }
 
 /// Build a `Set-Cookie` header value for the session token.
@@ -159,6 +165,27 @@ mod tests {
             ..GatewayConfig::default()
         };
         assert!(session_cookie_secure(&keyed));
+    }
+
+    /// #1261: a credential that only comes from `GARRAIA_GATEWAY_API_KEY`
+    /// lives in `api_key_env`, not in `api_key`. The cookie must see it
+    /// exactly like a file key, or the same gateway hands out a non-Secure
+    /// cookie depending on where the operator put the secret.
+    #[test]
+    fn session_cookie_secure_sees_env_only_credential() {
+        let env_only = GatewayConfig {
+            api_key: None,
+            api_key_env: garraia_config::auth::gateway_api_key_de(Some("k-env-1261".into())),
+            ..GatewayConfig::default()
+        };
+        assert!(session_cookie_secure(&env_only));
+
+        // Blank file key: the gate is off (#1241), so no credential either.
+        let blank = GatewayConfig {
+            api_key: Some("   ".into()),
+            ..GatewayConfig::default()
+        };
+        assert!(!session_cookie_secure(&blank));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -48,6 +49,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub fs: FsConfig,
 
+    /// #1227 (slice 5): retencao do ledger de runs de agente
+    /// (`agent_runs`). Secao de topo, e nao `agents.runs_retention_days`:
+    /// `agents` e um mapa de agentes nomeados, e a chave viraria um agente.
+    #[serde(default)]
+    pub runs: RunsConfig,
+
     /// GAR-379 slice 2 (plan 0042) — typed overrides for the mobile
     /// chat stack. Currently carries only the assistant persona; future
     /// slices will fold in more mobile-specific runtime knobs.
@@ -96,6 +103,7 @@ impl Default for AppConfig {
             voice: VoiceConfig::default(),
             timeouts: TimeoutConfig::default(),
             fs: FsConfig::default(),
+            runs: RunsConfig::default(),
             mobile: MobileConfig::default(),
             storage: StorageConfig::default(),
             auth: AuthSection::default(),
@@ -437,6 +445,29 @@ pub struct GatewayConfig {
     /// Path to TLS private key file (PEM).
     #[serde(default)]
     pub tls_key_path: Option<String>,
+
+    /// #1261: opt-out explicito da recusa de boot em bind nao-loopback sem
+    /// credencial de gateway. Para a implantacao que e aberta **de
+    /// proposito**, atras de um proxy que autentica ou de um firewall.
+    ///
+    /// So existe no arquivo, de proposito: nao ha env nem flag, para que a
+    /// mesma injecao de `HOST` que expoe o bind nao consiga tambem desligar a
+    /// guarda. Cada boot com ele ligado sai com aviso alto, e o
+    /// `garraia config check` sempre o reporta como Warning.
+    #[serde(default)]
+    pub allow_unauthenticated_network_bind: bool,
+
+    /// #1261: a credencial vinda de `GARRAIA_GATEWAY_API_KEY`, aplicada por
+    /// [`crate::ConfigLoader::load`].
+    ///
+    /// Campo a parte, e nao escrita por cima de [`Self::api_key`], por um
+    /// motivo concreto: o `load()` alimenta caminhos que **salvam** a config
+    /// de volta (`ConfigLoader::set_channel_enabled`, o wizard, o console). Um
+    /// segredo de env copiado para `api_key` iria parar no `config.yml` na
+    /// primeira dessas escritas. `serde(skip)` garante que ele nunca e lido
+    /// do arquivo nem escrito nele, e o `SecretString` o esconde do `Debug`.
+    #[serde(skip)]
+    pub api_key_env: Option<SecretString>,
 }
 
 impl GatewayConfig {
@@ -451,11 +482,21 @@ impl GatewayConfig {
     /// true` — falsa garantia justamente para quem foi consultar o
     /// diagnostico. Qualquer consumidor novo deve chamar isto em vez de
     /// `api_key.is_some()`.
+    ///
+    /// #1261: `GARRAIA_GATEWAY_API_KEY` (em [`Self::api_key_env`]) vence o
+    /// arquivo, na mesma precedencia env-sobre-arquivo dos outros segredos.
     pub fn api_key_normalizada(&self) -> Option<&str> {
-        self.api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
+        let do_env = self
+            .api_key_env
+            .as_ref()
+            .map(|s| s.expose_secret().trim())
+            .filter(|k| !k.is_empty());
+        do_env.or_else(|| {
+            self.api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+        })
     }
 
     /// Acucar para [`Self::api_key_normalizada`] quando so a presenca importa.
@@ -484,6 +525,8 @@ impl Default for GatewayConfig {
             allowed_origins: Vec::new(),
             tls_cert_path: None,
             tls_key_path: None,
+            allow_unauthenticated_network_bind: false,
+            api_key_env: None,
         }
     }
 }
@@ -780,6 +823,27 @@ fn default_retention_max_age_days() -> u32 {
 fn default_retention_interval_hours() -> u32 {
     24
 }
+
+/// #1227 (slice 5): politica de retencao do ledger `agent_runs`.
+///
+/// **`retention_days: 0` (o default) = nunca apaga.** O ledger e auditoria;
+/// ligar uma varredura por default numa atualizacao apagaria historico de
+/// quem so quis atualizar a versao — o mesmo raciocinio da
+/// `memory.retention`. Com 0 o gateway avisa uma vez no boot quantos runs
+/// existem e como ligar. Run `running` nunca e apagado, qualquer que seja a
+/// idade.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunsConfig {
+    /// Idade (em dias, contada do fim do run) a partir da qual um run
+    /// terminal sai do ledger. `0` = desligado. Faixa aceita: `0` ou
+    /// `1..=`[`RUNS_RETENTION_MAX_DAYS`], cobrada pelo `garraia config check`.
+    #[serde(default)]
+    pub retention_days: u32,
+}
+
+/// Teto de `runs.retention_days`. Acima de 10 anos o numero deixa de ser
+/// politica e vira "nunca", que se escreve com `0`.
+pub const RUNS_RETENTION_MAX_DAYS: u32 = 3650;
 
 /// Plan 0250 (GAR-771): default voice Garra uses when no `system_prompt` is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

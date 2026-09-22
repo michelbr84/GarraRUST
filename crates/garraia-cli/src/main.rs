@@ -3,6 +3,8 @@ mod agents;
 mod ask;
 mod banner;
 mod binario;
+mod bind_gate;
+mod boot_gate_cli;
 mod capability_prompt;
 mod chat;
 mod chat_input;
@@ -113,12 +115,13 @@ enum Commands {
 
     /// Restart the daemon (stop if running, then start)
     Restart {
-        /// Host to bind to
-        #[arg(long, default_value = "127.0.0.1")]
+        /// Host to bind to. Reads `HOST` env var like `start` (#1261: without
+        /// it, restarting a RunPod/`HOST` daemon rebound it to loopback).
+        #[arg(long, env = "HOST", default_value = "127.0.0.1")]
         host: String,
 
-        /// Port to listen on
-        #[arg(long, default_value = "3888")]
+        /// Port to listen on. Reads `PORT` env var like `start`.
+        #[arg(long, env = "PORT", default_value = "3888")]
         port: u16,
 
         /// Run as a background daemon
@@ -339,11 +342,13 @@ enum Commands {
     /// Activate GarraMaxPower agent-pipeline mode (GAR-494 / GAR-492 epic).
     ///
     /// Without --goal: prints banner + numbered pipeline menu.
-    /// With --goal: detects the best entry point by keyword matching and
-    /// prints the selected route + rationale.
+    /// With --goal: detects the best entry point by keyword matching, prints
+    /// the selected route + rationale, then runs the agent team over the goal
+    /// (brainstorm → spec → plan → execute → review → merge).
     ///
-    /// Full state-machine execution (brainstorm → spec → plan → execute →
-    /// review → merge) lands in GAR-495..GAR-501.
+    /// Execution is provider-backed when a default LLM provider resolves (the
+    /// same chain as `chat`, one call per pipeline stage), and deterministic
+    /// (offline) otherwise; the output line `execution:` says which one ran.
     MaxPower {
         /// Goal or task description for automatic pipeline routing.
         /// Omit to see the interactive menu.
@@ -430,7 +435,18 @@ enum Commands {
 #[derive(Subcommand)]
 enum WhatsAppCommands {
     /// Vincula o WhatsApp pessoal lendo um QR code (precisa de Node 20+).
-    Link,
+    ///
+    /// Depois do QR pergunta quem pode falar com o GarraIA (#1345).
+    /// `--allow`/`--owner` pre-respondem essa pergunta, mas o comando continua
+    /// exigindo terminal: o QR se le daqui.
+    Link {
+        /// Numero autorizado, com + e codigo do pais (ex.: +55 11 99999-8888).
+        #[arg(long, value_name = "NUMERO")]
+        allow: Option<String>,
+        /// Registra o numero como dono (so em `execution.profile = isolated-pod`).
+        #[arg(long)]
+        owner: bool,
+    },
     /// Configura um WhatsApp Business pela Cloud API oficial da Meta.
     Cloud,
     /// Mostra se ha WhatsApp pessoal vinculado e onde a sessao esta.
@@ -439,6 +455,26 @@ enum WhatsAppCommands {
     Logout,
     /// Traz de volta a sessao arquivada por um re-vinculo que nao terminou.
     Restore,
+    /// Autoriza um numero a falar com o GarraIA pelo WhatsApp pessoal (#1345).
+    ///
+    /// Funciona sem terminal. Acrescenta a `channels.whatsapp_linked.allow`
+    /// (ou `owners`, com `--owner`) sem mudar outro valor da config e sem
+    /// ligar o canal; o arquivo e reescrito, entao comentarios nao ficam.
+    /// Exit codes: 0 ok, 1 cancelado, 64 `--owner` fora de `isolated-pod` ou
+    /// sem terminal e sem `--yes`, 65 numero invalido, 70 config ilegivel.
+    /// Revogar e editar o config.yml.
+    Allow {
+        /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
+        /// LID `<id>@lid`.
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        /// Registra como dono (so em `execution.profile = isolated-pod`).
+        #[arg(long)]
+        owner: bool,
+        /// Confirma o `--owner` sem perguntar (obrigatorio fora de terminal).
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1450,11 +1486,28 @@ fn main() -> Result<()> {
     if let Commands::WhatsApp { ref action } = cli.command {
         let whatsapp_action = match action {
             None => whatsapp::Action::Menu,
-            Some(WhatsAppCommands::Link) => whatsapp::Action::Link,
+            Some(WhatsAppCommands::Link { allow, owner }) => {
+                if allow.is_none() && !owner {
+                    whatsapp::Action::Link
+                } else {
+                    whatsapp::Action::LinkCom(whatsapp::Pedido {
+                        numero: allow.clone(),
+                        owner: *owner,
+                        yes: false,
+                    })
+                }
+            }
             Some(WhatsAppCommands::Cloud) => whatsapp::Action::Cloud,
             Some(WhatsAppCommands::Status) => whatsapp::Action::Status,
             Some(WhatsAppCommands::Logout) => whatsapp::Action::Logout,
             Some(WhatsAppCommands::Restore) => whatsapp::Action::Restore,
+            Some(WhatsAppCommands::Allow { numero, owner, yes }) => {
+                whatsapp::Action::Allow(whatsapp::Pedido {
+                    numero: Some(numero.clone()),
+                    owner: *owner,
+                    yes: *yes,
+                })
+            }
         };
         let ctx = whatsapp::Context::from_env();
         let code = whatsapp::run(whatsapp_action, &ctx, &wizard::prompts::DialoguerPrompter);
@@ -1467,6 +1520,15 @@ fn main() -> Result<()> {
     let config_loader = garraia_config::ConfigLoader::new()?;
     config_loader.ensure_dirs()?;
     let config = config_loader.load()?;
+
+    // #1247: o MESMO `run_check` do `garraia config check`, uma vez, em todo
+    // `start`/`restart`/`start -d` — sobre a config do arquivo, antes dos
+    // overrides de host/porta e antes de qualquer efeito do boot. Recusa (exit
+    // 78) so pela allowlist fechada; o resto e dito. No daemon os achados vao
+    // para stderr agora, porque depois do fork o log e invisivel ao terminal.
+    if let Commands::Start { daemon, .. } | Commands::Restart { daemon, .. } = &cli.command {
+        boot_gate_cli::rodar(&config_loader, &config, *daemon);
+    }
 
     // Handle daemon mode BEFORE creating the tokio runtime. The fork must
     // happen before any async runtime is initialised, otherwise the child
@@ -1487,13 +1549,13 @@ fn main() -> Result<()> {
         let mut config = config;
         config.gateway.host = host;
         config.gateway.port = port;
-        // #1241: o `warn!` equivalente de `serve_plain` nasce morto neste
-        // caminho — depois do fork o tracing aponta para
-        // `~/.garraia/garraia.log`, e `start -d` e o modo que o `install.sh`
-        // recomenda e que uma unit systemd usa. Entao o aviso sai aqui, em
-        // stderr, ANTES do fork, sobre o host ja resolvido acima (que pode
-        // vir de `--host`/`HOST` e portanto nao estar no config em disco).
-        aviso_de_bind_exposto_no_daemon(&config.gateway);
+        // #1261 (decisao A): bind exposto sem credencial e RECUSADO. Depois
+        // do fork o tracing aponta para `~/.garraia/garraia.log`, e `start -d`
+        // e o modo que o `install.sh` recomenda e que uma unit systemd usa —
+        // entao a recusa (e o aviso do opt-out) sai aqui, em stderr, ANTES do
+        // fork e ANTES de derrubar o daemon atual num `restart -d`, sobre o
+        // host ja resolvido acima (flag > env > default, nunca o arquivo).
+        preflight_do_bind(&config.gateway, true);
         if is_restart {
             // Don't init tracing here — try_stop_daemon uses println!,
             // and the daemon child will init its own subscriber after fork.
@@ -1507,24 +1569,29 @@ fn main() -> Result<()> {
     rt.block_on(async_main(cli, config, config_loader, init_tracing))
 }
 
-/// Imprime em stderr, uma vez, o aviso de bind exposto sem credencial do
-/// `garra start -d` / `restart -d` (#1241).
-///
-/// Reusa o texto de [`garraia_gateway::server::aviso_de_bind_exposto`] para
-/// que o modo daemon e o modo foreground nao possam divergir. Silencioso
-/// quando o host nao resolve: um host invalido ja vai falhar no bind, com
-/// mensagem propria, e este aviso nao e o lugar de reportar isso.
-fn aviso_de_bind_exposto_no_daemon(gateway: &garraia_config::GatewayConfig) {
-    use std::net::ToSocketAddrs;
+/// sysexits `EX_CONFIG`: a config (aqui, o bind com a credencial) nao
+/// permite subir.
+const EX_CONFIG: i32 = 78;
 
-    let ativa = garraia_gateway::gateway_auth::ApiKeyGate::from_config(gateway).is_enabled();
-    let Ok(mut enderecos) = (gateway.host.as_str(), gateway.port).to_socket_addrs() else {
-        return;
-    };
-    if let Some(bound) = enderecos.next()
-        && let Some(aviso) = garraia_gateway::server::aviso_de_bind_exposto(&bound, ativa)
-    {
-        eprintln!("aviso: {aviso}");
+/// Roda a recusa do #1261 antes de qualquer efeito colateral do boot.
+///
+/// Recusado: a mensagem (que diz como corrigir usando o binario instalado)
+/// vai para stderr e o processo sai com [`EX_CONFIG`] — antes do fork, do PID
+/// file e do `try_stop_daemon`. Com o opt-out, `imprimir_aviso` decide se o
+/// aviso sai em stderr aqui (daemon: o log do filho e invisivel ao terminal)
+/// ou fica so com o `warn!` do gateway (foreground).
+fn preflight_do_bind(gateway: &garraia_config::GatewayConfig, imprimir_aviso: bool) {
+    match bind_gate::preflight(gateway) {
+        Ok(bind_gate::Preflight::Sobe) => {}
+        Ok(bind_gate::Preflight::SobeComAviso(aviso)) => {
+            if imprimir_aviso {
+                eprintln!("warning: {aviso}");
+            }
+        }
+        Err(recusa) => {
+            eprintln!("{recusa}");
+            std::process::exit(EX_CONFIG);
+        }
     }
 }
 
@@ -1551,10 +1618,14 @@ async fn async_main(
             let mut config = config;
             config.gateway.host = host;
             config.gateway.port = port;
+            // #1261: recusa antes do banner, do PID file e do bind.
+            preflight_do_bind(&config.gateway, false);
             if with_voice {
                 config.voice.enabled = true;
             }
             init_tracing(&effective_level);
+            // #1247: os achados do boot gate, uma linha por achado.
+            boot_gate_cli::logar();
             // GAR-384: Initialize OpenTelemetry tracing + Prometheus metrics.
             // Guard is bound to `_telemetry_guard` so its Drop (which flushes
             // and shuts down the exporter) runs at the end of this scope.
@@ -1588,7 +1659,9 @@ async fn async_main(
 
         Commands::Stop => {
             init_tracing(&effective_level);
-            stop_daemon(config.gateway.port)?;
+            // #1261: a porta que o `start` usou (env > default), nunca a
+            // `gateway.port` deprecada do arquivo.
+            stop_daemon(garraia_config::bind::endereco_do_cliente().1)?;
         }
         Commands::Restart {
             host,
@@ -1596,13 +1669,17 @@ async fn async_main(
             with_voice,
             ..
         } => {
-            init_tracing(&effective_level);
-            #[cfg(feature = "telemetry")]
-            let (_telemetry_guard, telemetry_config) = init_telemetry_guard();
-            try_stop_daemon(port);
             let mut config = config;
             config.gateway.host = host;
             config.gateway.port = port;
+            // #1261: um `restart` recusado nao pode derrubar o daemon atual.
+            preflight_do_bind(&config.gateway, false);
+            init_tracing(&effective_level);
+            // #1247: os achados do boot gate, uma linha por achado.
+            boot_gate_cli::logar();
+            #[cfg(feature = "telemetry")]
+            let (_telemetry_guard, telemetry_config) = init_telemetry_guard();
+            try_stop_daemon(port);
             if with_voice {
                 config.voice.enabled = true;
             }
@@ -1701,33 +1778,33 @@ async fn async_main(
             // #1045: com `gateway.api_key` configurada, `/api/status` passou
             // a exigir `Authorization: Bearer`. Sem isto o `garra status`
             // responderia 401 contra o proprio gateway do usuario.
+            // #1261: o endereco que o `start` usou (env > default, com
+            // `0.0.0.0` trocado por loopback), nunca `gateway.host`/`port`
+            // do arquivo, que estao deprecados e podem apontar para uma
+            // porta que o gateway nunca abriu.
+            let (status_host, status_port) = garraia_config::bind::endereco_do_cliente();
             let mut pedido = client.get(format!(
-                "http://{}:{}/api/status",
-                config.gateway.host, config.gateway.port
+                "{}/api/status",
+                garraia_config::bind::url_http(&status_host, status_port)
             ));
-            if let Some(chave) = config
-                .gateway
-                .api_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|k| !k.is_empty())
-            {
+            // `api_key_normalizada` inclui GARRAIA_GATEWAY_API_KEY (#1261).
+            if let Some(chave) = config.gateway.api_key_normalizada() {
                 pedido = pedido.bearer_auth(chave);
             }
             match pedido.send().await {
                 Ok(resp) => {
                     if managed_pid.is_none() {
-                        match find_pid_on_port(config.gateway.port) {
+                        match find_pid_on_port(status_port) {
                             Some(pid) => println!(
                                 "Gateway is responding on port {} (PID {pid}, not started by \
                                  'garraia start' from this config dir — 'garraia stop' will \
                                  use the port lookup)",
-                                config.gateway.port
+                                status_port
                             ),
                             None => println!(
                                 "Gateway is responding on port {} but no local process was \
                                  found (remote host, container, or 'lsof' unavailable)",
-                                config.gateway.port
+                                status_port
                             ),
                         }
                     }
@@ -1738,9 +1815,10 @@ async fn async_main(
                     if let Some(pid) = managed_pid {
                         println!(
                             "PID {pid} is alive but the gateway is not responding on \
-                             http://{}:{} — it may still be starting, or is bound to a \
-                             different host/port than the config says.",
-                            config.gateway.host, config.gateway.port
+                             {} — it may still be starting, or is bound to a \
+                             different host/port (it binds --host/--port, else HOST/PORT, \
+                             else 127.0.0.1:3888).",
+                            garraia_config::bind::url_http(&status_host, status_port)
                         );
                     } else {
                         println!("Gateway is not responding.");
@@ -2522,6 +2600,9 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
         .init();
 
     tracing::info!("daemon started (PID file: {})", pid_path.display());
+    // #1247: o relatorio do boot gate (calculado antes do fork) tambem no log
+    // do daemon — o stderr do pai ja o mostrou ao terminal.
+    boot_gate_cli::logar();
 
     // GAR-384: telemetry guard must outlive the server run.
     #[cfg(feature = "telemetry")]

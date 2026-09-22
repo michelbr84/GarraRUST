@@ -16,6 +16,29 @@ Deploy GarraIA to AWS using ECS Fargate with an Application Load Balancer.
 - AWS CLI configured (`aws configure`)
 - Docker image pushed to GHCR or ECR
 
+## Gateway credential (required since v0.4.5)
+
+The image runs `garraia start --host 0.0.0.0`, and since v0.4.5 (#1261)
+garraia **refuses** a non-loopback bind without a gateway credential: the
+task exits 78 and never passes its health check. Store a key in Secrets
+Manager (or an SSM SecureString) and pass its ARN:
+
+```bash
+aws secretsmanager create-secret --name garraia/gateway-key \
+  --secret-string "$(openssl rand -hex 32)"
+```
+
+```hcl
+gateway_api_key_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789:secret:garraia/gateway-key"
+```
+
+The module injects it as `GARRAIA_GATEWAY_API_KEY` and grants the execution
+role read access to it (and to every ARN in `secrets`). Clients send it as
+`Authorization: Bearer <key>` on `/api/*` and `/ws`; `/health` stays open for
+the ALB and ECS probes. Upgrading an existing stack: create the secret and
+set this variable **before** moving `container_tag` to v0.4.5 or later
+(`latest` included).
+
 ## Usage
 
 ```bash
@@ -23,10 +46,10 @@ Deploy GarraIA to AWS using ECS Fargate with an Application Load Balancer.
 terraform init
 
 # Plan
-terraform plan -var="container_tag=v0.3.0"
+terraform plan -var="container_tag=v0.4.5" -var="gateway_api_key_secret_arn=arn:aws:secretsmanager:..."
 
 # Apply
-terraform apply -var="container_tag=v0.3.0"
+terraform apply -var="container_tag=v0.4.5" -var="gateway_api_key_secret_arn=arn:aws:secretsmanager:..."
 
 # Destroy
 terraform destroy
@@ -58,6 +81,7 @@ secrets = [
 | `aws_region` | `us-east-1` | AWS region |
 | `container_image` | `ghcr.io/michelbr84/garraia` | Docker image |
 | `container_tag` | `latest` | Image tag |
+| `gateway_api_key_secret_arn` | — (required) | ARN holding `GARRAIA_GATEWAY_API_KEY` (#1261) |
 | `task_cpu` | `512` | Fargate CPU (512 = 0.5 vCPU) |
 | `task_memory` | `1024` | Fargate memory (MiB) |
 | `desired_count` | `1` | Number of tasks |

@@ -1,4 +1,6 @@
 pub mod auth;
+pub mod bind;
+pub mod boot_gate;
 pub mod check;
 pub mod defaults;
 pub mod execution;
@@ -8,7 +10,7 @@ pub mod provider_keys;
 pub mod sandbox;
 pub mod watcher;
 
-pub use auth::{AuthConfig, AuthConfigError};
+pub use auth::{AuthConfig, AuthConfigError, GATEWAY_API_KEY_ENV};
 pub use check::{ConfigCheck, ConfigSummary, Finding, Severity, SourceReport, run_check};
 pub use defaults::{
     DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_PROVIDER,

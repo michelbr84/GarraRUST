@@ -188,6 +188,35 @@ nada no WhatsApp — e o diagnóstico diz "0 donos").
   fail-closed. Isso é deliberado: o perfil libera *ferramentas*, não desliga
   *proteções*.
 
+## Amendment 2026-09-21 — `bash` sem humano no laço (#1272)
+
+A linha "Jail das file tools nativas, gate de comando arriscado do `bash`,
+sandbox: inalterados" da tabela "O que cada perfil significa" valia para o
+jail e o gate, mas **não** para a existência do `bash`: em `standard` o
+`garraia mcp-server` e o gateway registravam um `bash` irrestrito, e o gate
+só pega comando que parece perigoso (`cat /etc/shadow` e `echo x > /fora`
+passavam). Decisão do dono, aplicada às superfícies sem humano no laço
+(`garraia mcp-server` e o runtime do gateway):
+
+| | `standard` | `isolated-pod` |
+|---|---|---|
+| `bash` registrado | só com `agent.sandbox` `docker`/`podman` válido e o binário presente; todo comando via `wrap_command`, sem fallback para o host | sim, no host do pod (ou no sandbox, se configurado) |
+| `bash` com sandbox desligado, `ssh`, `elevated`, `allowlist` sem `bash`, sem backend ou binário ausente | **não registrado** (warn! no boot, check `tools.bash`, system prompt diz que não há shell) | registrado no host do pod |
+| Jail das file tools, denylist e tier arriscado | inalterados | inalterados |
+
+- A decisão é a função pura `garraia_gateway::bootstrap::exposicao_do_bash`
+  (perfil + policy + disponibilidade do binário), com a mesma regra de
+  "nunca inferir de container" deste ADR (teste varre o fonte).
+- Nenhuma lista negra textual de comando é a fronteira: a contenção é o
+  isolamento de processo. O container ganha `--cap-drop ALL`,
+  `--pids-limit`, `--user <uid>:<gid>` (`--userns=keep-id` no podman) e
+  monta só o diretório de trabalho canônico.
+- Como o `bash` sandboxado escreve no diretório montado, as tools de git
+  (`git_diff`, `code_review`) rodam endurecidas (fsmonitor, textconv,
+  filtros, bare implícito, hooks) e `file_write` recusa caminho com `.git`.
+- `garraia chat` fica como está: o humano no terminal confirma e é o
+  principal.
+
 ## Testes de regressão exigidos pela decisão
 
 1. instalação padrão segura (perfil `standard`, piso `search`, MCP write

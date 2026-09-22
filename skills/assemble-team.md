@@ -55,9 +55,19 @@ dogfood registrado na #1228.
   produziu duas leituras falsas: um "vermelho" que não existia e um erro de
   compilação logo depois de o clippy passar na mesma lib. Em medição que vai
   virar decisão, force rebuild.
-- **`cargo test` não roda sem egresso** por causa do build script do
-  `utoipa-swagger-ui`; use `SWAGGER_UI_DOWNLOAD_URL=file://...`. Ver a skill
-  `steward`.
+- **O `utoipa-swagger-ui` não precisa mais de rede**: desde o #1228 o gateway
+  usa a feature `vendored` e o build script lê o zip embutido. O antigo
+  `SWAGGER_UI_DOWNLOAD_URL=file://...` é ignorado. Ver a skill `steward`.
+- **Worktree de Workflow começa na `main`, não no seu `HEAD`.** Um agente
+  disparado por script de Workflow recebe uma worktree nova a partir da
+  `main`; se o trabalho é empilhado sobre outra branch, ele implementa sobre a
+  base errada sem avisar. Passe o SHA base no brief, mande o agente fazer
+  `git checkout -b <branch> <sha>` explícito e confira o `merge-base` antes do
+  trem de merge.
+- **Em R4 o reviewer muta o controle.** Para aprovar uma guarda de segurança,
+  o `code-reviewer` remove (ou inverte) o controle na própria worktree e prova
+  que o teste fica vermelho. Teste que continua verde sem o controle não
+  protege nada.
 
 ## Seleção por risco
 

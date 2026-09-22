@@ -212,6 +212,60 @@ impl AuthConfig {
     }
 }
 
+/// Env que carrega a credencial do gateway (`gateway.api_key`) sem editar o
+/// arquivo (#1261). Existe para o container: o `docker-compose.yml` monta a
+/// config somente-leitura, e o RunPod/Docker so conseguem entregar segredo
+/// por env.
+pub const GATEWAY_API_KEY_ENV: &str = "GARRAIA_GATEWAY_API_KEY";
+
+/// Normaliza o valor cru de [`GATEWAY_API_KEY_ENV`]: vazio ou so espaco conta
+/// como ausente — a mesma regra de `GatewayConfig::api_key_normalizada`, para
+/// que um `GARRAIA_GATEWAY_API_KEY=` vazio no compose nao pareca credencial.
+///
+/// Funcao pura (o leitor da env e injetado) para os testes nao tocarem no
+/// ambiente do processo.
+pub fn gateway_api_key_de(valor: Option<String>) -> Option<SecretString> {
+    valor
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(SecretString::from)
+}
+
+/// [`gateway_api_key_de`] sobre a env real do processo.
+pub fn gateway_api_key_from_env() -> Option<SecretString> {
+    gateway_api_key_de(std::env::var(GATEWAY_API_KEY_ENV).ok())
+}
+
+#[cfg(test)]
+mod gateway_api_key_env_tests {
+    use super::*;
+
+    #[test]
+    fn valor_preenchido_vira_credencial() {
+        let s = gateway_api_key_de(Some("  segredo-longo  ".into())).expect("presente");
+        assert_eq!(s.expose_secret(), "segredo-longo");
+    }
+
+    #[test]
+    fn vazio_ou_so_espaco_conta_como_ausente() {
+        for v in [
+            None,
+            Some(String::new()),
+            Some("   ".into()),
+            Some("\t\n".into()),
+        ] {
+            assert!(gateway_api_key_de(v.clone()).is_none(), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn debug_nunca_mostra_o_valor() {
+        let s = gateway_api_key_de(Some("valor-que-nao-pode-vazar".into()));
+        let dbg = format!("{s:?}");
+        assert!(!dbg.contains("valor-que-nao-pode-vazar"), "{dbg}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

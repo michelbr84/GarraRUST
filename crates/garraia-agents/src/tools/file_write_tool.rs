@@ -43,6 +43,25 @@ impl FileWriteTool {
     }
 }
 
+/// #1272 S3: o caminho passa por um componente `.git` (arquivo ou
+/// diretorio, qualquer caixa, com `.`/espaco no fim que o NTFS descarta)?
+///
+/// Escrever em `<repo>/.git/config` define `core.fsmonitor`,
+/// `filter.<drv>.clean` ou `diff.<drv>.textconv` — programas que o proximo
+/// `git_diff` executaria no HOST. Um arquivo `.git` (gitdir redirect) aponta o
+/// git para uma config em outro lugar. A recusa e por COMPONENTE: `.gitignore`,
+/// `.gitattributes` e `gitnotes.md` continuam gravaveis.
+fn toca_diretorio_git(path: &std::path::Path) -> bool {
+    path.components().any(|c| match c {
+        std::path::Component::Normal(nome) => nome
+            .to_str()
+            .map(|n| n.trim_end_matches(['.', ' ']).eq_ignore_ascii_case(".git"))
+            // Nome que nao e UTF-8 nao e `.git`.
+            .unwrap_or(false),
+        _ => false,
+    })
+}
+
 #[async_trait]
 impl Tool for FileWriteTool {
     fn name(&self) -> &str {
@@ -119,6 +138,18 @@ impl Tool for FileWriteTool {
         )?;
         let described = resolved.describe();
         let path = self.confine(context, &resolved.path)?;
+        // #1272 S3: checado no caminho pedido E no confinado (canonico), para
+        // um symlink `x -> .git` dentro da raiz nao contornar a regra.
+        if toca_diretorio_git(&resolved.path) || toca_diretorio_git(&path) {
+            tracing::warn!(
+                session = %context.session_id,
+                "file_write: escrita dentro de .git recusada (#1272)"
+            );
+            return Ok(ToolOutput::error(format!(
+                "escrita recusada: {described} fica dentro de um diretorio .git. A config do \
+                 git define programas que as tools de git executariam no host (#1272)."
+            )));
+        }
 
         // Cria diretórios pai se necessário
         if let Some(parent) = path.parent() {
@@ -202,6 +233,90 @@ impl Tool for FileWriteTool {
             content.len(),
             path.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod testes_1272 {
+    use super::*;
+    use crate::tools::approval::ToolApproval;
+
+    fn ctx(dir: &std::path::Path) -> ToolContext {
+        ToolContext {
+            session_id: "t-1272".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: ToolApproval::None,
+            working_dir: Some(dir.to_string_lossy().into_owned()),
+            project_id: None,
+        }
+    }
+
+    #[test]
+    fn componente_git_e_reconhecido_sem_bloquear_vizinhos() {
+        use std::path::Path;
+        for sim in [
+            "repo/.git/config",
+            "repo/.GIT/hooks/x",
+            "repo/.git",
+            "a/.git/../.git/config",
+            "repo/.git./config",
+        ] {
+            assert!(toca_diretorio_git(Path::new(sim)), "{sim}");
+        }
+        for nao in [
+            "repo/src/.gitignore",
+            "repo/gitnotes.md",
+            "repo/.gitattributes",
+            "x.git",
+        ] {
+            assert!(!toca_diretorio_git(Path::new(nao)), "{nao}");
+        }
+    }
+
+    #[tokio::test]
+    async fn file_write_recusa_git_config_e_aceita_gitignore() {
+        let raiz = tempfile::tempdir().expect("tmp");
+        let dir = raiz.path().canonicalize().expect("canon");
+        std::fs::create_dir_all(dir.join(".git")).expect("mkdir");
+        let tool = FileWriteTool::new(FileJail::from_roots([dir.to_string_lossy().into_owned()]));
+        for alvo in [".git/config", ".GIT/hooks/post-checkout", "sub/.git"] {
+            let out = tool
+                .execute(
+                    &ctx(&dir),
+                    serde_json::json!({"path": alvo, "content": "[core]\nfsmonitor = /x"}),
+                )
+                .await
+                .expect("ToolOutput");
+            assert!(out.is_error, "{alvo}: {out:?}");
+            assert!(out.content.contains(".git"), "{}", out.content);
+        }
+        assert!(!dir.join(".git/config").exists());
+        assert!(!dir.join("sub/.git").exists());
+        // symlink para dentro de .git dentro da raiz
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join(".git"), dir.join("atalho")).expect("ln");
+            let out = tool
+                .execute(
+                    &ctx(&dir),
+                    serde_json::json!({"path": "atalho/config", "content": "x"}),
+                )
+                .await
+                .expect("ToolOutput");
+            assert!(out.is_error, "symlink contornou: {out:?}");
+            assert!(!dir.join(".git/config").exists());
+        }
+        // gemeo positivo
+        let out = tool
+            .execute(
+                &ctx(&dir),
+                serde_json::json!({"path": "src/.gitignore", "content": "target/"}),
+            )
+            .await
+            .expect("ToolOutput");
+        assert!(!out.is_error, "{out:?}");
+        assert!(dir.join("src/.gitignore").exists());
     }
 }
 

@@ -23,6 +23,16 @@ services:
       - garraia_data:/home/garraia/.config/garraia/data
       - garraia_skills:/home/garraia/.config/garraia/skills
     environment:
+      # #1261: a imagem liga em 0.0.0.0 e o `garraia start` RECUSA esse bind
+      # sem credencial de gateway. Defina GARRAIA_GATEWAY_API_KEY no `.env`
+      # (ex.: `openssl rand -hex 32`); sem ela o container sai com exit 78 e a
+      # mensagem que diz como corrigir. Com `restart: unless-stopped` isso vira
+      # um loop de reinicio (`docker compose ps` mostra `Restarting`): o motivo
+      # esta em `docker compose logs garraia`. O `:-` (e nao `:?`) e de
+      # proposito: `:?` abortaria ate um `up postgres` e quem usa o opt-out
+      # `gateway.allow_unauthenticated_network_bind` nao tem chave. A config
+      # montada e read-only de proposito.
+      - GARRAIA_GATEWAY_API_KEY=${GARRAIA_GATEWAY_API_KEY:-}
       - GARRAIA_VAULT_PASSPHRASE=${GARRAIA_VAULT_PASSPHRASE:-}
       - GARRAIA_JWT_SECRET=${GARRAIA_JWT_SECRET:-}
       - GARRAIA_LOG_LEVEL=${GARRAIA_LOG_LEVEL:-info}

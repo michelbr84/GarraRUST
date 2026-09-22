@@ -232,7 +232,11 @@ mod tests {
     }
 
     fn router(chave: Option<&str>) -> Router {
-        let gate = ApiKeyGate::from_config(&config_com(chave));
+        router_de(&config_com(chave))
+    }
+
+    fn router_de(gateway: &garraia_config::GatewayConfig) -> Router {
+        let gate = ApiKeyGate::from_config(gateway);
         Router::new()
             .route("/api/sessions", get(|| async { "sessoes" }))
             .route("/api/health", get(|| async { "ok" }))
@@ -275,6 +279,63 @@ mod tests {
             .header("x-api-key", valor)
             .body(Body::empty())
             .unwrap()
+    }
+
+    // ── credencial so na env (#1261) ─────────────────────────────────────
+
+    /// A credencial que so vem de `GARRAIA_GATEWAY_API_KEY` mora em
+    /// `api_key_env`. E ela que deixa o `start` subir em `0.0.0.0` (a recusa
+    /// do bind usa `api_key_configurada`), entao o gate TEM de vê-la: se o
+    /// `from_config` voltasse a ler so `gateway.api_key`, o gateway subiria
+    /// exposto com `/api/*` e `/ws` abertos. `ws.rs` e `parrot_ws.rs` montam
+    /// o gate por este mesmo `from_config` + `admits`.
+    fn config_com_env(arquivo: Option<&str>, env: &str) -> garraia_config::GatewayConfig {
+        garraia_config::GatewayConfig {
+            api_key: arquivo.map(str::to_string),
+            api_key_env: garraia_config::auth::gateway_api_key_de(Some(env.to_string())),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn credencial_so_na_env_liga_o_gate() {
+        let cfg = config_com_env(None, "k-env-1261");
+        let gate = ApiKeyGate::from_config(&cfg);
+        assert!(gate.is_enabled());
+        assert!(!gate.admits(None), "handshake do /ws sem token passou");
+        assert!(gate.admits(Some("k-env-1261")));
+
+        let resp = router_de(&cfg)
+            .oneshot(get_em("/api/sessions"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let resp = router_de(&cfg)
+            .oneshot(get_com_auth("/api/sessions", "Bearer k-env-1261"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Env e arquivo divergentes: a env vence (mesma precedencia dos outros
+    /// segredos), e a chave velha do arquivo deixa de servir.
+    #[tokio::test]
+    async fn env_vence_a_chave_do_arquivo() {
+        let cfg = config_com_env(Some("k-arquivo"), "k-env-1261");
+        let gate = ApiKeyGate::from_config(&cfg);
+        assert!(!gate.admits(Some("k-arquivo")));
+        assert!(gate.admits(Some("k-env-1261")));
+
+        let resp = router_de(&cfg)
+            .oneshot(get_com_auth("/api/sessions", "Bearer k-arquivo"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let resp = router_de(&cfg)
+            .oneshot(get_com_auth("/api/sessions", "Bearer k-env-1261"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     // ── o gate desligado ──────────────────────────────────────────────────

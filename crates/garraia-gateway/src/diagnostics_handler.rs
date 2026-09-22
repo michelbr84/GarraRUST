@@ -418,6 +418,79 @@ fn whatsapp_linked_check(
     }
 }
 
+/// #1345: um vinculo saudavel com o portao vazio vira `Warning`.
+///
+/// O canal esta ligado, a ponte conecta, e toda mensagem e descartada em
+/// silencio porque ninguem esta em `allow` nem em `owners`. `Ok` ali era a
+/// mentira que deixava o operador esperando uma resposta que nunca vinha.
+/// So rebaixa `Ok`: `Skipped` (nao vinculado) e `Error` (ponte quebrada) ja
+/// tem o proximo passo certo, e o do portao so importa depois deles.
+///
+/// Mais dois casos que o `Ok` escondia:
+///
+/// - **Canal desligado na config viva com a ponte conectada.** O supervisor
+///   do boot segue de pe e o turno recusa todo mundo, codigo de pareamento
+///   incluso (`enabled` e relido a quente; a ponte so desce no restart).
+/// - **Recusas de remetente `@lid` sem numero** desde o boot: um numero no
+///   `allow` nao casa com um LID, e sem isto o operador so via "autorizado"
+///   e silencio. Vai no detalhe, sem mudar o status — um estranho com LID
+///   tambem e recusado, e isso nao e defeito.
+///
+/// Contagem, nunca identidade: a rota e auth-free.
+fn whatsapp_linked_portao_vazio(
+    mut check: DiagnosticCheck,
+    saude: garraia_channels::whatsapp_linked::health::LinkHealth,
+    settings: &crate::bootstrap::WhatsAppLinkedSettings,
+    recusas_lid: u64,
+    a_quente: bool,
+) -> DiagnosticCheck {
+    use garraia_channels::whatsapp_linked::health::LinkHealth;
+
+    let bin = garraia_common::executavel::nome();
+    if matches!(check.status, CheckStatus::Ok)
+        && !settings.enabled
+        && saude == LinkHealth::Connected
+    {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — mas o canal esta desligado na config viva (`channels.whatsapp_linked.enabled` \
+             nao e `true`): toda mensagem e recusada, e a ponte segue conectada ate reiniciar",
+            check.detail
+        );
+        check.next_step = Some(format!(
+            "religue `channels.whatsapp_linked.enabled: true` no config.yml, ou rode `{bin} \
+             restart` para o gateway descer a ponte"
+        ));
+        return check;
+    }
+    if matches!(check.status, CheckStatus::Ok) && recusas_lid > 0 {
+        check.detail = format!(
+            "{} — {recusas_lid} mensagem(ns) de remetente @lid sem numero recusada(s) desde o \
+             boot: um numero no `allow` nao casa com LID (`{bin} whatsapp status` mostra o final)",
+            check.detail
+        );
+    }
+    if matches!(check.status, CheckStatus::Ok) && settings.enabled && settings.autorizados() == 0 {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — mas nenhum numero esta autorizado (`allow` e `owners` vazios): toda \
+             mensagem e descartada em silencio",
+            check.detail
+        );
+        // "Sem reiniciar" so com o `ConfigWatcher` ligado: sem ele o turno
+        // usa a lista do boot ate o proximo restart.
+        check.next_step = Some(if a_quente {
+            format!("rode `{bin} whatsapp allow <numero>` (com codigo do pais; vale sem reiniciar)")
+        } else {
+            format!(
+                "rode `{bin} whatsapp allow <numero>` (com codigo do pais) e depois `{bin} \
+                 restart`: este gateway nao vigia o config.yml"
+            )
+        });
+    }
+    check
+}
+
 // ─── ADR 0024 (#1329): perfil de execucao e raiz do MCP filesystem ──────────
 
 /// O que o `execution.profile` reporta sobre o canal `whatsapp_linked`: o
@@ -497,6 +570,28 @@ fn execution_profile_check(
         label: "Perfil de execucao",
         status,
         detail,
+        next_step,
+    }
+}
+
+/// #1272: a linha `tools.bash`. `ok` quando o `bash` esta registrado (num
+/// sandbox docker/podman, ou no host de um `isolated-pod` explicito);
+/// `warning` com o passo acionavel quando ele ficou de fora em `standard`.
+/// O detalhe nunca carrega valor de config (imagem, host, caminho). Pura.
+fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
+    let (status, next_step) = if exposicao.registra_bash() {
+        (CheckStatus::Ok, None)
+    } else {
+        (
+            CheckStatus::Warning,
+            Some(crate::bootstrap::COMO_LIGAR_O_BASH.to_string()),
+        )
+    };
+    DiagnosticCheck {
+        id: "tools.bash",
+        label: "Tool bash",
+        status,
+        detail: exposicao.descricao(),
         next_step,
     }
 }
@@ -642,6 +737,159 @@ fn mcp_filesystem_root_check(
     }
 }
 
+/// #1346: o proximo passo para UM servidor MCP que falhou, pela causa
+/// classificada. `bin` e o nome do executavel instalado (`garraia`/`garra`).
+fn mcp_server_next_step(
+    name: &str,
+    cause: Option<&garraia_agents::McpFailureCause>,
+    bin: &str,
+) -> String {
+    use garraia_agents::McpFailureCause;
+    let restart = format!(
+        "e reinicie o servidor com POST /admin/api/mcp/{name}/restart (ou reinicie o `{bin}`)"
+    );
+    match cause {
+        // `dir` so chega aqui depois de o manager ter reconstruido e
+        // validado a entrada dentro do cache do npm (revisao MCP-4): nunca e
+        // o caminho que o processo filho imprimiu.
+        Some(McpFailureCause::NpxCacheCorrupt { dir: Some(dir) }) => format!(
+            "{name}: o cache do npx em {} esta incompleto/corrompido. Apague esse diretorio \
+             (ou rode `npm cache verify`) {restart}.",
+            dir.display()
+        ),
+        // Sem `dir`: integridade (EINTEGRITY) ou uma entrada que o gateway nao
+        // conseguiu confirmar dentro do cache — nao se repete caminho nenhum.
+        Some(McpFailureCause::NpxCacheCorrupt { dir: None }) => {
+            format!(
+                "{name}: o cache do npx esta incompleto ou falhou a verificacao de integridade. \
+                 Rode `npm cache verify` (ou apague a entrada `_npx/<hash>` do pacote dentro \
+                 do seu cache do npm) {restart}."
+            )
+        }
+        Some(McpFailureCause::DiskFull) => {
+            format!("{name}: disco cheio (ENOSPC). Libere espaco em disco {restart}.")
+        }
+        _ => format!(
+            "{name}: veja `last_error` em GET /api/mcp/health e o stderr do processo \
+             (RUST_LOG=garraia_agents=debug); corrija a causa {restart}."
+        ),
+    }
+}
+
+/// #1346: a linha `mcp.servers` — todo servidor MCP que o manager conhece,
+/// inclusive os que falharam no boot e nunca entraram em `connections`.
+/// `None` (sem manager) ou lista vazia => `skipped`; algum `failed` (restarts
+/// esgotados) => `error` com um passo por servidor; algum ainda tentando =>
+/// `warning`; todos conectados => `ok`. Puro.
+fn mcp_servers_check(
+    statuses: Option<&[garraia_agents::McpServerStatus]>,
+    bin: &str,
+) -> DiagnosticCheck {
+    use garraia_agents::McpServerState;
+    let (status, detail, next_step) = match statuses {
+        None | Some([]) => (
+            CheckStatus::Skipped,
+            "nenhum servidor MCP configurado".to_string(),
+            None,
+        ),
+        Some(list) => {
+            let describe = |s: &garraia_agents::McpServerStatus| match s.state {
+                McpServerState::Connected => format!("{} ok ({} tools)", s.name, s.tool_count),
+                other => format!(
+                    "{} {} ({}/{} tentativas, causa: {})",
+                    s.name,
+                    other.as_str(),
+                    s.attempts,
+                    s.max_restarts,
+                    s.cause
+                        .as_ref()
+                        .map(|c| c.as_str())
+                        .unwrap_or("desconhecida")
+                ),
+            };
+            let detail = list.iter().map(describe).collect::<Vec<_>>().join("; ");
+            let failed: Vec<_> = list
+                .iter()
+                .filter(|s| s.state == McpServerState::Failed)
+                .collect();
+            let not_ok: Vec<_> = list
+                .iter()
+                .filter(|s| s.state != McpServerState::Connected)
+                .collect();
+            if !failed.is_empty() {
+                let steps = failed
+                    .iter()
+                    .map(|s| mcp_server_next_step(&s.name, s.cause.as_ref(), bin))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (CheckStatus::Error, detail, Some(steps))
+            } else if !not_ok.is_empty() {
+                let steps = not_ok
+                    .iter()
+                    .map(|s| mcp_server_next_step(&s.name, s.cause.as_ref(), bin))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (CheckStatus::Warning, detail, Some(steps))
+            } else {
+                (CheckStatus::Ok, detail, None)
+            }
+        }
+    };
+    DiagnosticCheck {
+        id: "mcp.servers",
+        label: "MCP servers",
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// #1346: a linha `mcp.filesystem_pinned` — a entrada `filesystem` efetiva
+/// roda o `server-filesystem` com versao fixada? Sem versao, cada cache frio
+/// do npx baixa o build mais novo do registry. O Garra nunca reescreve um
+/// mcp.json existente, entao o aviso diz exatamente o que colar. Puro.
+fn mcp_filesystem_pinned_check(
+    versao: &crate::mcp::persistence::VersaoDoFilesystem,
+    bin: &str,
+) -> DiagnosticCheck {
+    use crate::mcp::persistence::VersaoDoFilesystem;
+    let (status, detail, next_step) = match versao {
+        VersaoDoFilesystem::Ausente => (
+            CheckStatus::Skipped,
+            "nenhum servidor `filesystem` em mcp.json nem em `mcp:` do config.yml".to_string(),
+            None,
+        ),
+        VersaoDoFilesystem::ForaDoNpx => (
+            CheckStatus::Ok,
+            "o `filesystem` nao roda via npx; versao e do operador".to_string(),
+            None,
+        ),
+        VersaoDoFilesystem::Fixada(v) => (
+            CheckStatus::Ok,
+            format!("@modelcontextprotocol/server-filesystem@{v}"),
+            None,
+        ),
+        VersaoDoFilesystem::SemVersao { args_sugeridos } => (
+            CheckStatus::Warning,
+            "o `filesystem` roda `npx -y @modelcontextprotocol/server-filesystem` sem versao: \
+             cada cache frio baixa o que for mais novo no registry"
+                .to_string(),
+            Some(format!(
+                "Troque os `args` do `filesystem` (mcp.json, ou `mcp:` do config.yml) por {} \
+                 e reinicie o `{bin}`. O Garra nunca reescreve um mcp.json existente.",
+                serde_json::Value::from(args_sugeridos.clone())
+            )),
+        ),
+    };
+    DiagnosticCheck {
+        id: "mcp.filesystem_pinned",
+        label: "MCP filesystem (versao)",
+        status,
+        detail,
+        next_step,
+    }
+}
+
 /// GET /api/diagnostics — full diagnostic report.
 pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<DiagnosticsReport> {
     let mut checks: Vec<DiagnosticCheck> = Vec::new();
@@ -672,7 +920,11 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         next_step: if (1..=65535).contains(&port) {
             None
         } else {
-            Some("Set gateway.port in garraia.toml to a value 1..=65535.".to_string())
+            // #1261: `gateway.port` do arquivo esta deprecado e nao e lido.
+            Some(format!(
+                "Start with `{} start --port <1..=65535>` or set the PORT env var.",
+                garraia_common::executavel::nome()
+            ))
         },
     });
 
@@ -722,6 +974,27 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         raizes_mcp.caminhos(),
         &data_dir,
     ));
+    // #1346: servidores MCP que falharam (inclusive no boot) e a versao do
+    // `filesystem`.
+    let bin = garraia_common::executavel::nome();
+    let mcp_statuses = match &state.mcp_manager_arc {
+        Some(mgr) => Some(mgr.server_statuses().await),
+        None => None,
+    };
+    checks.push(mcp_servers_check(mcp_statuses.as_deref(), &bin));
+    checks.push(mcp_filesystem_pinned_check(
+        &crate::mcp::persistence::versao_do_filesystem_efetivo(
+            &state.config.mcp,
+            &state.mcp_registry.config_snapshot().await,
+        ),
+        &bin,
+    ));
+
+    // #1272: a tool `bash` existe neste gateway? Mesma decisao do boot.
+    checks.push(tools_bash_check(&crate::bootstrap::exposicao_do_bash(
+        politica.perfil,
+        &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+    )));
 
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
@@ -942,8 +1215,15 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     //     `whatsapp_linked` do `/api/channels`: `whatsapp_linked::health::
     //     classify`. Duas fontes divergentes sobre o mesmo canal e o defeito
     //     que a #1079 ja custou uma vez.
-    checks.push(whatsapp_linked_check(
-        crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked),
+    let (saude_wa, bridge_dir_wa) =
+        crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked);
+    checks.push(whatsapp_linked_portao_vazio(
+        whatsapp_linked_check((saude_wa, bridge_dir_wa)),
+        saude_wa,
+        // #1345: a config VIVA, a mesma que o turno le para admitir.
+        &crate::bootstrap::whatsapp_linked_settings(&state.current_config()),
+        state.whatsapp_linked.recusas_lid(),
+        state.has_config_watcher(),
     ));
 
     // 15. STT server reachable (#1098).
@@ -986,6 +1266,37 @@ mod tests {
     use super::*;
 
     const ENDPOINT: &str = "http://127.0.0.1:7860";
+
+    // ─── #1272: tools.bash ─────────────────────────────────────────────────
+
+    #[test]
+    fn tools_bash_desligado_e_warning_com_passo() {
+        use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
+        let c = tools_bash_check(&ExposicaoDoBash::Desligado {
+            motivo: MotivoDoBashDesligado::SandboxDesligado,
+        });
+        assert_eq!(c.id, "tools.bash");
+        assert!(matches!(c.status, CheckStatus::Warning));
+        let passo = c.next_step.expect("desligado precisa de passo");
+        assert!(passo.contains("agent.sandbox"), "{passo}");
+        assert!(passo.contains("execution.profile"), "{passo}");
+        assert!(c.detail.contains("DESLIGADO"), "{}", c.detail);
+    }
+
+    #[test]
+    fn tools_bash_sandbox_e_pod_sao_ok() {
+        use crate::bootstrap::ExposicaoDoBash;
+        for e in [
+            ExposicaoDoBash::HostDoPod,
+            ExposicaoDoBash::Sandbox {
+                backend: garraia_agents::SandboxBackend::Podman,
+            },
+        ] {
+            let c = tools_bash_check(&e);
+            assert!(matches!(c.status, CheckStatus::Ok), "{e:?}");
+            assert!(c.next_step.is_none());
+        }
+    }
 
     // ─── #1238: WhatsApp vinculado ────────────────────────────────────────
 
@@ -1045,6 +1356,150 @@ mod tests {
         }
     }
 
+    /// #1345: vinculo saudavel com `allow` e `owners` vazios e `Warning`, com
+    /// o comando que resolve — e sem numero nenhum no corpo auth-free.
+    #[test]
+    fn vinculo_saudavel_com_portao_vazio_e_warning_com_o_allow() {
+        let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        for saude in [LinkHealth::Connected, LinkHealth::Linked] {
+            let c = acesso(saude, &ligado_vazio, 0);
+            assert!(matches!(c.status, CheckStatus::Warning), "{saude:?}");
+            let passo = c.next_step.as_deref().unwrap_or_default();
+            assert!(passo.contains("whatsapp allow <numero>"), "{passo}");
+            assert!(
+                !c.detail.chars().any(|ch| ch.is_ascii_digit()),
+                "{}",
+                c.detail
+            );
+        }
+
+        // Com alguem autorizado, segue `Ok` sem passo.
+        let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        let c = acesso(LinkHealth::Connected, &com_um, 0);
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert!(c.next_step.is_none());
+        let json = serde_json::to_string(&c).expect("serializa");
+        assert!(!json.contains("5511900000001"), "{json}");
+
+        // Nao vinculado e ponte quebrada ficam com o veredito proprio.
+        let c = acesso(LinkHealth::NotLinked, &ligado_vazio, 0);
+        assert!(matches!(c.status, CheckStatus::Skipped));
+        let c = acesso(LinkHealth::BridgeDown, &ligado_vazio, 0);
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(
+            !c.next_step.unwrap_or_default().contains("allow"),
+            "consertar a ponte vem antes"
+        );
+
+        // Canal desligado sem ponte deste processo: o portao vazio nao e o
+        // problema.
+        let c = acesso(
+            LinkHealth::Linked,
+            &crate::bootstrap::WhatsAppLinkedSettings::default(),
+            0,
+        );
+        assert!(matches!(c.status, CheckStatus::Ok));
+    }
+
+    fn acesso(
+        saude: LinkHealth,
+        settings: &crate::bootstrap::WhatsAppLinkedSettings,
+        recusas_lid: u64,
+    ) -> DiagnosticCheck {
+        whatsapp_linked_portao_vazio(wa(saude), saude, settings, recusas_lid, true)
+    }
+
+    /// Sem `ConfigWatcher` o `allow` nao recarrega: o passo manda reiniciar
+    /// em vez de prometer "sem reiniciar" (review WHATSAPP-3/12).
+    #[test]
+    fn portao_vazio_sem_watcher_manda_reiniciar() {
+        let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let c = whatsapp_linked_portao_vazio(
+            wa(LinkHealth::Connected),
+            LinkHealth::Connected,
+            &ligado_vazio,
+            0,
+            false,
+        );
+        let passo = c.next_step.as_deref().unwrap_or_default();
+        assert!(!passo.contains("sem reiniciar"), "{passo}");
+        assert!(passo.contains("restart"), "{passo}");
+        let c = acesso(LinkHealth::Connected, &ligado_vazio, 0);
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("sem reiniciar"),
+            "{c:?}"
+        );
+    }
+
+    /// #1345 (review WHATSAPP-10/14): a ponte do boot segue conectada, a config
+    /// viva desligou o canal, e o turno recusa todo mundo. `Ok` "conectado"
+    /// ali mentia.
+    #[test]
+    fn ponte_conectada_com_canal_desligado_na_config_viva_e_warning() {
+        let desligado_com_gente = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: false,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        let c = acesso(LinkHealth::Connected, &desligado_com_gente, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(
+            c.detail.contains("desligado na config viva"),
+            "{}",
+            c.detail
+        );
+        let passo = c.next_step.as_deref().unwrap_or_default();
+        assert!(
+            passo.contains("enabled: true") && passo.contains("restart"),
+            "{passo}"
+        );
+        assert!(
+            !serde_json::to_string(&c)
+                .expect("json")
+                .contains("5511900000001")
+        );
+
+        // Sem supervisor neste processo (`Linked`), desligado e so desligado.
+        let c = acesso(LinkHealth::Linked, &desligado_com_gente, 0);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+    }
+
+    /// #1345: recusas de `@lid` sem numero aparecem no detalhe, como contagem,
+    /// sem mudar o status nem o passo.
+    #[test]
+    fn recusas_de_lid_sem_numero_aparecem_no_detalhe_como_contagem() {
+        let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        let c = acesso(LinkHealth::Connected, &com_um, 3);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(
+            c.detail.contains("3 mensagem(ns) de remetente @lid"),
+            "{}",
+            c.detail
+        );
+        assert!(c.detail.contains("whatsapp status"), "{}", c.detail);
+        assert!(c.next_step.is_none());
+
+        let c = acesso(LinkHealth::Connected, &com_um, 0);
+        assert!(!c.detail.contains("@lid"), "{}", c.detail);
+    }
+
     /// **A fiacao.** Os testes acima exercitam `whatsapp_linked_check`
     /// diretamente; sem este, apagar o `checks.push(...)` do handler deixaria
     /// todos eles verdes e o `/api/diagnostics` sem a linha — o padrao de
@@ -1052,20 +1507,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn o_relatorio_de_verdade_inclui_a_linha_do_whatsapp() {
-        use garraia_agents::AgentRuntime;
-        use garraia_channels::ChannelRegistry;
-
         let dir = tempfile::tempdir().expect("tempdir");
-        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
-            config,
-            std::sync::Arc::new(AgentRuntime::new()),
-            ChannelRegistry::new(),
-        ));
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
 
         let Json(report) = diagnostics_handler(State(state)).await;
         let linha = report
@@ -1082,6 +1529,60 @@ mod tests {
         assert_eq!(
             linha.next_step.as_deref(),
             Some("rode `garraia whatsapp link`")
+        );
+    }
+
+    /// #1345, a fiacao: sem o `whatsapp_linked_portao_vazio` no handler, o
+    /// teste de unidade acima continuaria verde e o relatorio diria `ok` para
+    /// um canal que descarta toda mensagem.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn o_relatorio_de_verdade_avisa_o_portao_vazio() {
+        use garraia_channels::whatsapp_linked::{SessionBlob, SessionKey};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        config.channels.insert(
+            "whatsapp_linked".into(),
+            garraia_config::ChannelConfig {
+                channel_type: "whatsapp_linked".into(),
+                enabled: Some(true),
+                settings: Default::default(),
+            },
+        );
+        let paths = crate::bootstrap::LinkedPaths::from_config(&config).expect("paths");
+        let key = SessionKey::resolve(paths.store.dir(), None).expect("chave");
+        paths
+            .store
+            .save(&SessionBlob::new("eyJhIjoxfQ=="), &key)
+            .expect("sessao");
+        std::fs::create_dir_all(paths.bridge_dir.join("node_modules")).expect("deps");
+
+        // Sem mexer em `GARRAIA_CONFIG_DIR` (#1346, causa do flake): o estado
+        // aponta o config dir direto para o tempdir.
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "whatsapp.linked")
+            .expect("linha whatsapp.linked");
+        assert!(
+            matches!(linha.status, CheckStatus::Warning),
+            "vinculado, ligado e ninguem autorizado: {:?} {}",
+            linha.status,
+            linha.detail
+        );
+        assert!(
+            linha
+                .next_step
+                .as_deref()
+                .is_some_and(|p| p.contains("whatsapp allow")),
+            "{:?}",
+            linha.next_step
         );
     }
 
@@ -1439,34 +1940,26 @@ mod tests {
         assert_eq!(lista_de_caminhos(&[], data), "(nenhuma)");
     }
 
-    /// F-6 da auditoria: `AppState::new` provisiona `mcp.json` em
-    /// `<GARRAIA_CONFIG_DIR>` quando ele nao existe. Um teste que constroi o
-    /// estado sem apontar essa env para um tempdir escreveria um `mcp.json`
-    /// de verdade no config dir do desenvolvedor, apontando para um
-    /// diretorio temporario que ja nao existe. O guard aponta e restaura;
-    /// `#[serial]` e o lock que os testes de `persistence` ja usam para as
-    /// envs de provisionamento.
-    struct ConfigDirDeTeste(Option<std::ffi::OsString>);
-
-    impl ConfigDirDeTeste {
-        fn apontar_para(dir: &Path) -> Self {
-            let anterior = std::env::var_os("GARRAIA_CONFIG_DIR");
-            // SAFETY: teste serializado (`#[serial_test::serial]`).
-            unsafe { std::env::set_var("GARRAIA_CONFIG_DIR", dir) };
-            Self(anterior)
-        }
-    }
-
-    impl Drop for ConfigDirDeTeste {
-        fn drop(&mut self) {
-            // SAFETY: teste serializado.
-            unsafe {
-                match self.0.take() {
-                    Some(v) => std::env::set_var("GARRAIA_CONFIG_DIR", v),
-                    None => std::env::remove_var("GARRAIA_CONFIG_DIR"),
-                }
-            }
-        }
+    /// F-6 da auditoria: `AppState::new` provisiona `mcp.json` no config dir
+    /// real quando ele nao existe. Os testes passam o config dir (um tempdir)
+    /// direto, sem mexer em `GARRAIA_CONFIG_DIR`: apontar a env deixava
+    /// qualquer outro teste que montasse um `AppState` em paralelo escrever o
+    /// PROPRIO `mcp.json` no tempdir deste, e a linha `mcp.filesystem_root`
+    /// virava aviso de vez em quando (flake do
+    /// `o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp`). `#[serial]`
+    /// continua: e o lock das envs de provisionamento
+    /// (`GARRAIA_DISABLE_MCP_AUTOPROVISION`, `HOME`) que os testes de
+    /// `persistence` escrevem.
+    fn estado_no_config_dir(
+        config: garraia_config::AppConfig,
+        config_dir: &Path,
+    ) -> crate::state::AppState {
+        crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            config_dir,
+        )
     }
 
     fn opt_out_de_provisionamento_ligado() -> bool {
@@ -1479,20 +1972,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp() {
-        use garraia_agents::AgentRuntime;
-        use garraia_channels::ChannelRegistry;
-
         let dir = tempfile::tempdir().expect("tempdir");
-        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
-            config,
-            std::sync::Arc::new(AgentRuntime::new()),
-            ChannelRegistry::new(),
-        ));
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
 
         let Json(report) = diagnostics_handler(State(state)).await;
         let perfil = report
@@ -1940,5 +2425,222 @@ mod tests {
         );
 
         *VOICE_PROBE_CACHE.lock().await = None;
+    }
+}
+
+#[cfg(test)]
+mod tests_mcp_1346 {
+    use super::*;
+    use crate::mcp::persistence::{McpPersistenceService, VersaoDoFilesystem};
+    use garraia_agents::{McpFailureCause, McpServerState, McpServerStatus};
+    use std::path::PathBuf;
+
+    fn st(name: &str, state: McpServerState, cause: Option<McpFailureCause>) -> McpServerStatus {
+        McpServerStatus {
+            name: name.into(),
+            state,
+            tool_count: if state == McpServerState::Connected {
+                3
+            } else {
+                0
+            },
+            attempts: 5,
+            max_restarts: 5,
+            cause,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn sem_servidores_e_skipped() {
+        assert!(matches!(
+            mcp_servers_check(None, "garraia").status,
+            CheckStatus::Skipped
+        ));
+        assert!(matches!(
+            mcp_servers_check(Some(&[]), "garraia").status,
+            CheckStatus::Skipped
+        ));
+    }
+
+    #[test]
+    fn todos_conectados_e_ok() {
+        let c = mcp_servers_check(
+            Some(&[st("filesystem", McpServerState::Connected, None)]),
+            "garraia",
+        );
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert!(c.next_step.is_none());
+        assert_eq!(c.id, "mcp.servers");
+    }
+
+    #[test]
+    fn cache_npx_corrompido_e_error_nomeando_o_diretorio() {
+        let dir = PathBuf::from("/home/ana/.npm/_npx/0123456789abcdef");
+        let c = mcp_servers_check(
+            Some(&[
+                st("github", McpServerState::Connected, None),
+                st(
+                    "filesystem",
+                    McpServerState::Failed,
+                    Some(McpFailureCause::NpxCacheCorrupt {
+                        dir: Some(dir.clone()),
+                    }),
+                ),
+            ]),
+            "garraia",
+        );
+        assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
+        let passo = c.next_step.expect("next_step");
+        assert!(
+            passo.contains("/home/ana/.npm/_npx/0123456789abcdef"),
+            "{passo}"
+        );
+        assert!(passo.contains("npm cache verify"), "{passo}");
+        assert!(
+            passo.contains("POST /admin/api/mcp/filesystem/restart"),
+            "{passo}"
+        );
+        assert!(passo.contains("`garraia`"), "{passo}");
+        assert!(c.detail.contains("filesystem failed"), "{}", c.detail);
+        assert!(c.detail.contains("npx_cache_corrupt"), "{}", c.detail);
+    }
+
+    #[test]
+    fn disco_cheio_e_error_mandando_liberar_espaco() {
+        let c = mcp_servers_check(
+            Some(&[st(
+                "filesystem",
+                McpServerState::Failed,
+                Some(McpFailureCause::DiskFull),
+            )]),
+            "garra",
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        let passo = c.next_step.expect("next_step");
+        assert!(
+            passo.contains("ENOSPC") && passo.contains("Libere espaco"),
+            "{passo}"
+        );
+        assert!(
+            passo.contains("`garra`"),
+            "o nome do binario instalado: {passo}"
+        );
+    }
+
+    #[test]
+    fn ainda_tentando_e_warning_com_passo() {
+        let c = mcp_servers_check(
+            Some(&[st(
+                "x",
+                McpServerState::Retrying,
+                Some(McpFailureCause::Other),
+            )]),
+            "garraia",
+        );
+        assert!(matches!(c.status, CheckStatus::Warning));
+        assert!(c.next_step.expect("passo").contains("/api/mcp/health"));
+    }
+
+    #[test]
+    fn filesystem_sem_versao_e_warning_com_os_args_para_colar() {
+        let c = mcp_filesystem_pinned_check(
+            &VersaoDoFilesystem::SemVersao {
+                args_sugeridos: vec![
+                    "-y".into(),
+                    McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.into(),
+                    "/srv".into(),
+                ],
+            },
+            "garraia",
+        );
+        assert_eq!(c.id, "mcp.filesystem_pinned");
+        assert!(matches!(c.status, CheckStatus::Warning));
+        let passo = c.next_step.expect("passo");
+        assert!(
+            passo.contains(r#"["-y","@modelcontextprotocol/server-filesystem@2026.8.31","/srv"]"#),
+            "{passo}"
+        );
+        assert!(passo.contains("`garraia`"), "{passo}");
+    }
+
+    #[test]
+    fn filesystem_fixado_ou_fora_do_npx_e_ok_e_ausente_e_skipped() {
+        for v in [
+            VersaoDoFilesystem::Fixada("2026.8.31".into()),
+            VersaoDoFilesystem::ForaDoNpx,
+        ] {
+            let c = mcp_filesystem_pinned_check(&v, "garraia");
+            assert!(matches!(c.status, CheckStatus::Ok), "{v:?}");
+            assert!(c.next_step.is_none());
+        }
+        let c = mcp_filesystem_pinned_check(&VersaoDoFilesystem::Ausente, "garraia");
+        assert!(matches!(c.status, CheckStatus::Skipped));
+    }
+
+    /// **A fiacao**: as duas linhas novas estao no relatorio de verdade.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn o_relatorio_de_verdade_inclui_as_linhas_do_1346() {
+        use garraia_agents::{AgentRuntime, McpManager};
+        use garraia_channels::ChannelRegistry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let mgr = std::sync::Arc::new(McpManager::new());
+        let missing = dir
+            .path()
+            .join("nao-existe")
+            .join("npx")
+            .to_string_lossy()
+            .into_owned();
+        let args = vec!["-y".to_string(), "pacote".to_string()];
+        let env = std::collections::HashMap::new();
+        // max_restarts 0: ja nasce esgotado, como um servidor que gastou tudo.
+        mgr.register_pending_stdio(
+            "quebrado",
+            &missing,
+            &args,
+            &env,
+            5,
+            vec![],
+            None,
+            0,
+            0,
+            false,
+        )
+        .await;
+
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut state = crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+            dir.path(),
+        );
+        state.mcp_manager_arc = Some(mgr);
+        let Json(report) = diagnostics_handler(State(std::sync::Arc::new(state))).await;
+
+        let servers = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp.servers")
+            .expect("linha mcp.servers");
+        assert!(matches!(servers.status, CheckStatus::Error), "{servers:?}");
+        assert!(
+            servers.detail.contains("quebrado failed"),
+            "{}",
+            servers.detail
+        );
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.id == "mcp.filesystem_pinned"),
+            "linha mcp.filesystem_pinned"
+        );
     }
 }
