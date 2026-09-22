@@ -11,8 +11,9 @@
 #
 # Plan 0127 (PR-B, 2026-05-14): after install_binary the installer
 # auto-runs `garraia init` and `garraia start` when a TTY is available.
-# In true non-interactive contexts (docker build, pure CI) it prints
-# the legacy "Next steps" message and exits 0 instead.
+# In true non-interactive contexts (docker build, pure CI: /dev/tty cannot
+# be opened, or CI is set -- see has_usable_tty) it prints the legacy
+# "Next steps" message and exits 0 instead.
 #
 # Optional environment variables:
 #   GARRAIA_VERSION         Pin a specific release tag (e.g. v0.1.0-beta).
@@ -596,14 +597,44 @@ LINKERWRAPPER
     echo "  Use it when the host filters the environment and the plain wrapper fails."
 }
 
+# Is there a terminal a human can answer the wizard on?
+#
+# `[ -r /dev/tty ]` is NOT that test: it only reads the permission bits, and
+# /dev/tty is crw-rw-rw- on every Linux box -- including a container or a CI
+# runner with no controlling terminal, where open(2) then fails with ENXIO.
+# That is how the v0.4.4 clean-install smoke run printed
+# "/dev/tty: No such device or address" followed by a bogus
+# "Wizard exited non-zero": the probe said yes, the redirect in front of
+# `garraia init` said no, and the wizard never even started.
+#
+# So open the device, exactly as the `</dev/tty` redirects below will, in a
+# subshell: a failed redirect then reports through the subshell's stderr,
+# which we discard, and cannot abort the `set -e` caller. Read-only on
+# purpose -- `<>` and `>` create a missing path, and as root in a chroot with
+# a writable /dev that would leave a regular file named /dev/tty behind. The
+# `-c` guard rejects anything that is not a character device, so a stray
+# regular file there cannot pass for a terminal and feed the wizard EOF.
+# (The old `-w` half never meant anything: the node is 0666 on every
+# platform this script supports.)
+#
+# A non-empty CI short-circuits to "no", as Test-InteractiveSession does in
+# install.ps1 (rule 16): a CI job that hands the installer a pty still has
+# nobody to type into it, and the wizard would block the job forever.
+has_usable_tty() {
+    [ -z "${CI:-}" ] || return 1
+    [ -c /dev/tty ] || return 1
+    (: </dev/tty) 2>/dev/null
+}
+
 # Plan 0127 — interactive bootstrap after install_binary.
 #
 # Decision logic:
 #   * both GARRAIA_SKIP_INIT=1 and GARRAIA_SKIP_START=1 → print legacy
 #     "Next steps" hint and return (preserves prior behavior).
-#   * /dev/tty not readable → true non-interactive context (docker build,
-#     pure CI, no controlling terminal). Print the same legacy hint and
-#     exit 0; never hang waiting for input.
+#   * no usable terminal (see has_usable_tty: /dev/tty cannot be opened,
+#     or CI is set) → true non-interactive context (docker build, pure CI,
+#     no controlling terminal). Print the same legacy hint and exit 0;
+#     never hang waiting for input, never attempt the wizard.
 #   * otherwise → run `garraia init </dev/tty` unless GARRAIA_SKIP_INIT=1,
 #     then `exec garraia start </dev/tty` unless GARRAIA_SKIP_START=1.
 #     `exec` is intentional — it replaces the installer shell so Ctrl-C
@@ -618,9 +649,13 @@ bootstrap_phase() {
         return 0
     fi
 
-    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    if ! has_usable_tty; then
         echo ""
-        echo "Non-interactive install (no /dev/tty available) — skipping wizard + start."
+        if [ -n "${CI:-}" ]; then
+            echo "Non-interactive install (CI environment detected) — skipping wizard + start."
+        else
+            echo "Non-interactive install (no /dev/tty available) — skipping wizard + start."
+        fi
         print_next_steps_legacy
         return 0
     fi

@@ -68,18 +68,59 @@ assert_log_absent() {
     fi
 }
 
+# Can this process open its controlling terminal? The same probe as
+# `has_usable_tty` in install.sh, minus the CI short-circuit (the
+# harness decides about CI itself). `[ -r /dev/tty ]` would lie here
+# exactly as it lied in install.sh: GitHub-hosted runners and containers
+# ship a crw-rw-rw- /dev/tty that fails to open with ENXIO.
+harness_has_tty() {
+    (: </dev/tty) 2>/dev/null
+}
+
+# Run "$@" with no controlling terminal, so /dev/tty exists (0666) but
+# open(2) on it fails with ENXIO -- the container/CI condition behind
+# the v0.4.4 smoke failure. `setsid -w` is util-linux (every CI runner);
+# python3's os.setsid() covers macOS, which ships no setsid(1). Returns
+# 127 when neither is available so the caller can SKIP instead of
+# asserting against a process that still owns a terminal.
+run_without_ctty() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid -w "$@"
+    elif command -v python3 >/dev/null 2>&1; then
+        # setsid(2) refuses a process-group leader (EPERM), so fork first
+        # in that case -- what setsid(1) does -- and hand back the exit code.
+        python3 -c '
+import os, sys
+if os.getpgrp() == os.getpid():
+    pid = os.fork()
+    if pid:
+        _, status = os.waitpid(pid, 0)
+        sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$@"
+    else
+        return 127
+    fi
+}
+
 # Source the script in library mode and run bootstrap_phase under a
 # controlled env. Output goes to ${log_dir}/output.log; the stub's
 # subcommand trace goes to ${log_dir}/stub.log.
 #
 # On a GitHub-hosted runner (or any environment with no controlling
-# tty) `[ -r /dev/tty ]` correctly fails — but that masks the
+# tty) the installer correctly refuses the wizard — but that masks the
 # init/start branches we want to test. When that happens we wrap the
 # subshell with `script -qec` to allocate a pty so /dev/tty is
-# readable inside the inner shell, restoring coverage of cases (c),
-# (d), and (e). The wrap is skipped when the parent shell already has
-# /dev/tty (developer running tests in a terminal) so the run stays
-# fast.
+# openable inside the inner shell, restoring coverage of cases (c),
+# (d), (e) and (f). The wrap is skipped when the parent shell already
+# has a terminal (developer running tests in a terminal) so the run
+# stays fast.
+#
+# CI is unset inside the runner: GitHub Actions exports CI=true, and
+# install.sh treats a non-empty CI as "nobody at the keyboard", which
+# would send every case down the non-interactive path. A case that
+# wants CI set (case g) passes it through BOOTSTRAP_TEST_CI.
 run_bootstrap_in_subshell() {
     local log_dir="$1"
     # Materialize the inner script to a temp file — keeps quoting
@@ -88,22 +129,29 @@ run_bootstrap_in_subshell() {
     cat >"${runner}" <<INNER
 #!/usr/bin/env bash
 set +e
+unset CI
+if [ -n "\${BOOTSTRAP_TEST_CI:-}" ]; then
+    export CI="\${BOOTSTRAP_TEST_CI}"
+fi
+if (: </dev/tty) 2>/dev/null; then
+    echo "__runner_tty__=ok"
+else
+    echo "__runner_tty__=fails"
+fi
 export GARRAIA_INSTALL_SH_LIBRARY=1
 export GARRAIA_STUB_LOG="${log_dir}/stub.log"
 # shellcheck disable=SC1090
 . "${install_sh}"
 INSTALL_PATH="${stub}"
 bootstrap_phase
-echo "__bootstrap_phase_rc__=\$?" >>"${log_dir}/output.log"
+# To stdout, not appended to output.log: under the \`script\` wrap the
+# pty relay holds output.log open at its own offset and overwrites
+# anything appended to the file behind its back.
+echo "__bootstrap_phase_rc__=\$?"
 INNER
     chmod +x "${runner}"
 
-    # GitHub-hosted runners present /dev/tty as a character device
-    # file (so `[ -r /dev/tty ]` returns true) but the actual `</dev/tty`
-    # redirect fails at exec time because no controlling terminal is
-    # attached. Probe via a real read-with-timeout instead of the
-    # superficial readability check.
-    if dd if=/dev/tty bs=0 count=0 status=none </dev/tty >/dev/null 2>&1; then
+    if harness_has_tty; then
         bash "${runner}" >"${log_dir}/output.log" 2>&1 || true
     elif command -v script >/dev/null 2>&1; then
         # `script -qec 'cmd' /dev/null`: -q suppresses the banner,
@@ -118,69 +166,101 @@ INNER
     fi
 }
 
-# ---- case (a): no /dev/tty → next-steps + exit 0 ----------------------------
-# We can't make /dev/tty unreadable on a real terminal, but the
-# bootstrap_phase logic checks `[ -r /dev/tty ]`. Under `</dev/null`
-# AND with no controlling tty (set sid / setsid not always available),
-# Bash still sees /dev/tty if there's any. Instead we cover this
-# branch by overriding the readability test via a Bash trick:
-# we wrap the section in a subshell where /dev/tty is bind-replaced
-# with a closed fd. Since that needs root on Linux, we instead drive
-# this case by running install.sh as a child with stdin from /dev/null,
-# inside a `script -q -c 'setsid ...'`-style setup ONLY when those
-# tools are present. Otherwise we run the equivalent assertion against
-# both-skip mode (case b), which already exercises the same
-# next-steps-and-exit code path.
+# ---- case (a): no usable /dev/tty → non-interactive path, cleanly ----------
+# Regression for the v0.4.4 clean-install smoke run. In a container (and on
+# a GitHub-hosted runner) /dev/tty is crw-rw-rw- but open(2) fails with
+# ENXIO; the old `[ -r /dev/tty ]` probe read only the permission bits,
+# said "interactive", and the installer printed
+#     main: line 631: /dev/tty: No such device or address
+#     Wizard exited non-zero — your config may need manual edits.
+# for a wizard that never ran. This case used to accept that output as a
+# "WSL/MinGW quirk"; it was the bug.
+#
+# The child runs with no controlling terminal (run_without_ctty) and stdin
+# from /dev/null, which recreates that exact condition on a laptop and on a
+# CI runner alike. It reports the precondition first, so the case cannot
+# pass vacuously on a host where /dev/tty still opens. It runs under `sh`
+# (dash on Debian/Ubuntu — what `curl | sh` actually uses) and under bash.
+#
+# CI is unset: on GitHub Actions CI=true would otherwise take the
+# non-interactive branch through the CI short-circuit (case g) and hide a
+# regression in the tty probe itself.
 case_a_no_tty() {
     echo ""
-    echo "== case (a) no /dev/tty → next-steps + exit 0 =="
-    local log_dir
-    log_dir="$(mktemp -d)"
-
-    # If `setsid` is available, use it to drop the controlling tty
-    # so /dev/tty becomes unavailable to the child.
-    if command -v setsid >/dev/null 2>&1; then
-        setsid bash -c '
-            set +e
-            export GARRAIA_INSTALL_SH_LIBRARY=1
-            export GARRAIA_STUB_LOG="'"${log_dir}"'/stub.log"
-            . "'"${install_sh}"'"
-            INSTALL_PATH="'"${stub}"'"
-            bootstrap_phase
-            echo "__rc__=$?" >>"'"${log_dir}"'/output.log"
-        ' </dev/null >"${log_dir}/output.log" 2>&1 || true
-
-        # On real Linux runners (CI), setsid + </dev/null makes
-        # /dev/tty unreadable, so `[ ! -r /dev/tty ]` fires and we print
-        # the explicit non-interactive notice. Under WSL/MinGW the
-        # readability check sometimes succeeds even though the
-        # subsequent `</dev/tty` redirect fails — in that case the
-        # wizard runs and exits non-zero, and we fall through to
-        # `print_next_steps_legacy` instead. Both outcomes prove the
-        # installer does NOT hang or `exec garraia start`, which is
-        # what this case ultimately guarantees. Accept either.
-        if grep -q "no /dev/tty available" "${log_dir}/output.log"; then
-            pass "case (a): prints non-interactive notice"
-        elif grep -q "Wizard exited non-zero" "${log_dir}/output.log"; then
-            pass "case (a): /dev/tty unusable → wizard fall-through (WSL/MinGW quirk)"
-        else
-            fail "case (a): neither non-interactive notice nor wizard fall-through observed"
-            sed 's/^/    /' "${log_dir}/output.log" >&2 || true
+    echo "== case (a) no usable /dev/tty → non-interactive path, no wizard =="
+    local shell_name
+    for shell_name in sh bash; do
+        if ! command -v "${shell_name}" >/dev/null 2>&1; then
+            echo "  SKIP: ${shell_name} not installed"
+            continue
         fi
-        assert_log_contains "case (a): prints legacy Next steps" \
-            "Next steps:" "${log_dir}/output.log"
-        assert_log_contains "case (a): exits 0" "__rc__=0" "${log_dir}/output.log"
-        # The stub log may or may not exist depending on which sub-path
-        # fired; assert that `start` was never invoked either way.
+        local log_dir
+        log_dir="$(mktemp -d)"
+        local inner="${log_dir}/run-no-ctty.sh"
+        cat >"${inner}" <<INNER
+set +e
+unset CI
+if [ -c /dev/tty ]; then echo "__tty_node__=present"; else echo "__tty_node__=absent"; fi
+if (: </dev/tty) 2>/dev/null; then echo "__tty_open__=ok"; else echo "__tty_open__=fails"; fi
+GARRAIA_INSTALL_SH_LIBRARY=1
+export GARRAIA_INSTALL_SH_LIBRARY
+GARRAIA_STUB_LOG="${log_dir}/stub.log"
+export GARRAIA_STUB_LOG
+. "${install_sh}"
+INSTALL_PATH="${stub}"
+bootstrap_phase
+echo "__rc__=\$?"
+INNER
+
+        local out="${log_dir}/output.log"
+        local rc=0
+        run_without_ctty "${shell_name}" "${inner}" </dev/null >"${out}" 2>&1 || rc=$?
+        if [ "${rc}" -eq 127 ] && [ ! -s "${out}" ]; then
+            echo "  SKIP: neither setsid nor python3 available — cannot drop the controlling terminal"
+            return 0
+        fi
+
+        local label="case (a) [${shell_name}]"
+        if grep -qF "__tty_open__=fails" "${out}"; then
+            pass "${label}: precondition — /dev/tty cannot be opened in the child"
+        else
+            fail "${label}: precondition — /dev/tty still opens with no controlling terminal; this case proves nothing here"
+            sed 's/^/    /' "${out}" >&2 || true
+            continue
+        fi
+        # The node being present is what made the old probe lie; without
+        # it the case still checks the clean path but cannot tell the
+        # probes apart.
+        if grep -qF "__tty_node__=present" "${out}"; then
+            pass "${label}: precondition — /dev/tty node present (the ENXIO condition)"
+        else
+            echo "  NOTE: ${label}: /dev/tty node absent — cannot discriminate the permission-bits probe"
+        fi
+
+        assert_log_contains "${label}: prints the non-interactive notice" \
+            "Non-interactive install (no /dev/tty available)" "${out}"
+        assert_log_absent "${label}: never announces the wizard" \
+            "Running interactive setup wizard" "${out}"
+        assert_log_absent "${label}: no misleading 'wizard exited non-zero'" \
+            "Wizard exited non-zero" "${out}"
+        # Every shell phrases a failed redirect as '<path>: <strerror>'
+        # (bash: 'line N: /dev/tty: ...', dash: 'cannot open /dev/tty: ...',
+        # busybox: "can't open /dev/tty: ..."). Our own notice never has
+        # the colon right after the path.
+        assert_log_absent "${label}: no shell redirect error on /dev/tty" \
+            "/dev/tty:" "${out}"
+        assert_log_absent "${label}: never tries to start in the foreground" \
+            "Starting GarraIA in the foreground" "${out}"
+        assert_log_contains "${label}: prints legacy Next steps" \
+            "Next steps:" "${out}"
+        assert_log_contains "${label}: exits 0" "__rc__=0" "${out}"
         if [ -f "${log_dir}/stub.log" ]; then
-            assert_log_absent "case (a): start never invoked" \
-                "start" "${log_dir}/stub.log"
+            fail "${label}: the binary was invoked without a terminal"
+            sed 's/^/    /' "${log_dir}/stub.log" >&2 || true
         else
-            pass "case (a): stub log never created"
+            pass "${label}: binary never invoked (stub log never created)"
         fi
-    else
-        echo "  SKIP: setsid not available — relying on case (b) for next-steps coverage"
-    fi
+    done
 }
 
 # ---- case (b): both skips → next-steps, no subcommand --------------------
@@ -281,12 +361,51 @@ case_f_init_fails() {
         "Next steps:" "${log_dir}/output.log"
 }
 
+# ---- case (g): CI set, terminal usable → non-interactive, no wizard --------
+# Parity with install.ps1 (rule 16): Test-InteractiveSession returns false
+# whenever CI is set. A CI job can hand the installer a pty (`docker run
+# -t`, `script`), but nobody will type into it, so the wizard would block
+# the job until its timeout. Driven through run_bootstrap_in_subshell's pty
+# wrap so the terminal really IS openable and only the CI check can keep
+# the wizard from running. Mirrored by the "CI is set" block in
+# tests/install_ps1/bootstrap_phase.ps1.
+case_g_ci_with_tty() {
+    echo ""
+    echo "== case (g) CI set, terminal usable → non-interactive, no wizard =="
+    local log_dir
+    log_dir="$(mktemp -d)"
+    BOOTSTRAP_TEST_CI=true run_bootstrap_in_subshell "${log_dir}"
+    local out="${log_dir}/output.log"
+
+    if grep -qF "__runner_tty__=ok" "${out}"; then
+        pass "case (g): precondition — /dev/tty opens inside the runner"
+    else
+        fail "case (g): precondition — no usable terminal inside the runner (need a tty or \`script\`)"
+        sed 's/^/    /' "${out}" >&2 || true
+        return 0
+    fi
+    assert_log_contains "case (g): says CI is why it stopped" \
+        "Non-interactive install (CI environment detected)" "${out}"
+    assert_log_absent "case (g): never announces the wizard" \
+        "Running interactive setup wizard" "${out}"
+    assert_log_contains "case (g): prints legacy Next steps" \
+        "Next steps:" "${out}"
+    assert_log_contains "case (g): exits 0" "__bootstrap_phase_rc__=0" "${out}"
+    if [ -f "${log_dir}/stub.log" ]; then
+        fail "case (g): the binary was invoked under CI"
+        sed 's/^/    /' "${log_dir}/stub.log" >&2 || true
+    else
+        pass "case (g): binary never invoked (stub log never created)"
+    fi
+}
+
 case_a_no_tty
 case_b_both_skip
 case_c_skip_init_only
 case_d_skip_start_only
 case_e_default
 case_f_init_fails
+case_g_ci_with_tty
 
 echo ""
 echo "==============================================="
