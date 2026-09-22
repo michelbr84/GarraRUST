@@ -1764,15 +1764,23 @@ fn admissao_vigente_so_troca_enabled_allow_e_owners() {
 /// numero nenhum.
 #[test]
 fn aviso_de_portao_vazio_cita_o_allow_e_so_existe_quando_vazio() {
-    let aviso = aviso_portao_vazio(&LinkedSettings::default(), "garraia").expect("vazio avisa");
+    let aviso =
+        aviso_portao_vazio(&LinkedSettings::default(), "garraia", true).expect("vazio avisa");
     assert!(aviso.contains("garraia whatsapp allow <numero>"), "{aviso}");
+    assert!(aviso.contains("sem reiniciar"), "{aviso}");
     assert!(!aviso.chars().any(|c| c.is_ascii_digit()), "{aviso}");
+    // Sem watcher (nao havia config.yml no boot), a lista nao recarrega:
+    // "sem reiniciar" seria mentira (review WHATSAPP-3/12).
+    let frio =
+        aviso_portao_vazio(&LinkedSettings::default(), "garraia", false).expect("vazio avisa");
+    assert!(!frio.contains("sem reiniciar"), "{frio}");
+    assert!(frio.contains("garraia restart"), "{frio}");
 
     let com_um = LinkedSettings {
         owners: vec!["5511900000001".into()],
         ..LinkedSettings::default()
     };
-    assert_eq!(aviso_portao_vazio(&com_um, "garraia"), None);
+    assert_eq!(aviso_portao_vazio(&com_um, "garraia", true), None);
 }
 
 /// A CLI grava no `allow` o que [`normalizar_identidade`] produz; o

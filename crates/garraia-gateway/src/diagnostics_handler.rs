@@ -442,6 +442,7 @@ fn whatsapp_linked_portao_vazio(
     saude: garraia_channels::whatsapp_linked::health::LinkHealth,
     settings: &crate::bootstrap::WhatsAppLinkedSettings,
     recusas_lid: u64,
+    a_quente: bool,
 ) -> DiagnosticCheck {
     use garraia_channels::whatsapp_linked::health::LinkHealth;
 
@@ -476,9 +477,16 @@ fn whatsapp_linked_portao_vazio(
              mensagem e descartada em silencio",
             check.detail
         );
-        check.next_step = Some(format!(
-            "rode `{bin} whatsapp allow <numero>` (com codigo do pais; vale sem reiniciar)"
-        ));
+        // "Sem reiniciar" so com o `ConfigWatcher` ligado: sem ele o turno
+        // usa a lista do boot ate o proximo restart.
+        check.next_step = Some(if a_quente {
+            format!("rode `{bin} whatsapp allow <numero>` (com codigo do pais; vale sem reiniciar)")
+        } else {
+            format!(
+                "rode `{bin} whatsapp allow <numero>` (com codigo do pais) e depois `{bin} \
+                 restart`: este gateway nao vigia o config.yml"
+            )
+        });
     }
     check
 }
@@ -1015,6 +1023,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         // #1345: a config VIVA, a mesma que o turno le para admitir.
         &crate::bootstrap::whatsapp_linked_settings(&state.current_config()),
         state.whatsapp_linked.recusas_lid(),
+        state.has_config_watcher(),
     ));
 
     // 15. STT server reachable (#1098).
@@ -1173,7 +1182,35 @@ mod tests {
         settings: &crate::bootstrap::WhatsAppLinkedSettings,
         recusas_lid: u64,
     ) -> DiagnosticCheck {
-        whatsapp_linked_portao_vazio(wa(saude), saude, settings, recusas_lid)
+        whatsapp_linked_portao_vazio(wa(saude), saude, settings, recusas_lid, true)
+    }
+
+    /// Sem `ConfigWatcher` o `allow` nao recarrega: o passo manda reiniciar
+    /// em vez de prometer "sem reiniciar" (review WHATSAPP-3/12).
+    #[test]
+    fn portao_vazio_sem_watcher_manda_reiniciar() {
+        let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let c = whatsapp_linked_portao_vazio(
+            wa(LinkHealth::Connected),
+            LinkHealth::Connected,
+            &ligado_vazio,
+            0,
+            false,
+        );
+        let passo = c.next_step.as_deref().unwrap_or_default();
+        assert!(!passo.contains("sem reiniciar"), "{passo}");
+        assert!(passo.contains("restart"), "{passo}");
+        let c = acesso(LinkHealth::Connected, &ligado_vazio, 0);
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("sem reiniciar"),
+            "{c:?}"
+        );
     }
 
     /// #1345 (review WHATSAPP-10/14): a ponte do boot segue conectada, a config

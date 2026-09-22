@@ -693,12 +693,21 @@ pub fn admissao_vigente(boot: &LinkedSettings, viva: &LinkedSettings) -> LinkedS
 /// `None` quando ha pelo menos uma identidade em `allow` ou `owners`. O texto
 /// cita o comando que resolve e nao carrega numero nenhum. Puro, para o teste
 /// nao depender de capturar `tracing`.
-pub fn aviso_portao_vazio(settings: &LinkedSettings, bin: &str) -> Option<String> {
+///
+/// "Vale sem reiniciar" so e dito com `a_quente` — o `ConfigWatcher` ligado,
+/// que o boot so liga quando o `config.yml` ja existia. Sem ele a lista do
+/// boot vale o processo inteiro, e o texto manda reiniciar.
+pub fn aviso_portao_vazio(settings: &LinkedSettings, bin: &str, a_quente: bool) -> Option<String> {
     (settings.autorizados() == 0).then(|| {
+        let depois = if a_quente {
+            "vale sem reiniciar".to_string()
+        } else {
+            format!("e depois `{bin} restart`: este gateway nao vigia o config.yml")
+        };
         format!(
             "whatsapp_linked: nenhum numero autorizado em `channels.whatsapp_linked.allow` \
              (nem em `owners`) — toda mensagem sera descartada em silencio. Rode \
-             `{bin} whatsapp allow <numero>` (vale sem reiniciar)"
+             `{bin} whatsapp allow <numero>` ({depois})"
         )
     })
 }
@@ -1527,7 +1536,11 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     avisar_drift_de_mcp(modo, politica.perfil, &settings, &state.agents);
     // #1345: sobe assim mesmo (o `allow` recarrega a quente), mas diz que
     // ninguem vai receber resposta ate alguem ser autorizado.
-    if let Some(aviso) = aviso_portao_vazio(&settings, &garraia_common::executavel::nome()) {
+    if let Some(aviso) = aviso_portao_vazio(
+        &settings,
+        &garraia_common::executavel::nome(),
+        state.has_config_watcher(),
+    ) {
         warn!("{aviso}");
     }
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
