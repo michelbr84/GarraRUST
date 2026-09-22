@@ -180,9 +180,11 @@ Arquivo completo comentado, validado com `garra config check`:
 
 1. `gateway.api_key` não tem interpolação de env no arquivo, mas desde a
    v0.4.5 a env `GARRAIA_GATEWAY_API_KEY` entrega a credencial sem editar o
-   arquivo (vence o arquivo, nunca é gravada nele; #1261). A linha
-   `GARRAIA_API_KEY` do `.env.example` segue sem efeito — o nome lido é
-   `GARRAIA_GATEWAY_API_KEY`.
+   arquivo (vence o arquivo, nunca é gravada nele; #1261). O `.env.example`
+   traz a linha `GARRAIA_GATEWAY_API_KEY=` vazia de proposito (placeholder
+   seria chave conhecida por todos; vazia conta como ausente e o container
+   recusa subir): preencha com `openssl rand -hex 32` antes do primeiro
+   `docker compose up`.
    Deploy aberto de proposito atras de proxy que autentica:
    `gateway.allow_unauthenticated_network_bind: true` (so no arquivo, sem
    env nem flag; aviso alto em todo boot).

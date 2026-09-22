@@ -245,6 +245,30 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# The execution role pulls the container secrets at task start. Without this
+# grant the task fails before garraia runs (#1261 made one secret mandatory).
+# A customer-managed KMS key on the secret still needs its own kms:Decrypt.
+locals {
+  container_secrets = concat(
+    [{ name = "GARRAIA_GATEWAY_API_KEY", valueFrom = var.gateway_api_key_secret_arn }],
+    var.secrets,
+  )
+}
+
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name = "${var.project_name}-read-container-secrets"
+  role = aws_iam_role.ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue", "ssm:GetParameters"]
+      Resource = [for s in local.container_secrets : s.valueFrom]
+    }]
+  })
+}
+
 resource "aws_iam_role" "ecs_task" {
   name = "${var.project_name}-ecs-task"
 
@@ -298,7 +322,8 @@ resource "aws_ecs_task_definition" "main" {
       { name = "GARRAIA_LOG_LEVEL", value = var.log_level },
     ]
 
-    secrets = var.secrets
+    # #1261: GARRAIA_GATEWAY_API_KEY is required — the image binds 0.0.0.0.
+    secrets = local.container_secrets
 
     logConfiguration = {
       logDriver = "awslogs"
