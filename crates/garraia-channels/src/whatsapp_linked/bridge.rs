@@ -58,6 +58,19 @@ use super::protocol::{BridgeCommand, BridgeEvent, MAX_FRAME_BYTES, PROTOCOL_VERS
 /// Nome do arquivo que guarda o hash dos assets ja materializados.
 const STAMP_FILE: &str = ".garraia-bridge-sha256";
 
+/// Nome do arquivo que diz para qual par `package.json` + `package-lock.json`
+/// o `node_modules` atual foi instalado. Ver [`prepare`].
+const DEPS_STAMP_FILE: &str = ".garraia-deps-sha256";
+
+/// Conteudo de [`DEPS_STAMP_FILE`] enquanto um `npm ci` corre — e depois dele,
+/// se ele nao terminou bem. Nao e um hash, entao nunca casa com
+/// [`deps_digest`]: um `node_modules` pela metade nunca passa por atual.
+const DEPS_PENDING: &str = "pending";
+
+/// Os assets que o `npm` le. Mudou um deles, o `node_modules` tem de ser
+/// refeito; mudou so o `bridge.mjs`, nao.
+pub const DEPENDENCY_MANIFESTS: &[&str] = &["package.json", "package-lock.json"];
+
 /// Teto do `npm install`. Rede ruim leva minutos; uma hora e travamento.
 pub const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -476,7 +489,8 @@ fn hex(bytes: &[u8]) -> String {
 pub enum Materialized {
     /// Ja estava la, com o mesmo hash.
     UpToDate,
-    /// Escrito agora (primeira vez, ou hash diferente).
+    /// Escrito agora (primeira vez, conteudo em disco diferente, ou hash
+    /// diferente).
     Written,
 }
 
@@ -506,12 +520,47 @@ fn validar_nome_de_asset(name: &str) -> Result<(), BridgeError> {
     }
 }
 
-/// Escreve os assets em `dir` quando faltam ou quando o hash embutido mudou.
+/// Escreve os assets em `dir` quando faltam, quando o conteudo em disco difere
+/// do embutido ou quando o hash embutido mudou.
 ///
 /// O carimbo (`.garraia-bridge-sha256`) e o que evita reescrever e reinstalar a
 /// cada execucao — e o que garante que uma CLI atualizada substitui um bridge
 /// velho, em vez de conviver com ele em silencio.
+///
+/// Para saber tambem **quais** arquivos mudaram (e se o `npm ci` tem de
+/// rodar), use [`prepare`].
 pub fn materialize(dir: &Path, assets: &dyn BridgeAssets) -> Result<Materialized, BridgeError> {
+    Ok(match materialize_files(dir, assets)? {
+        None => Materialized::UpToDate,
+        Some(_) => Materialized::Written,
+    })
+}
+
+/// O conteudo em disco de `path` e exatamente `contents`?
+///
+/// Compara o tamanho antes de ler: um arquivo trocado por outro de tamanho
+/// diferente (inclusive um enorme) decide sem ser lido. Qualquer erro de
+/// leitura conta como "diferente" — o lado seguro, que so custa uma escrita.
+fn same_on_disk(path: &Path, contents: &str) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() == contents.len() as u64 => std::fs::read(path)
+            .map(|bytes| bytes == contents.as_bytes())
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// O corpo de [`materialize`]: `None` quando nada foi tocado, `Some(nomes)`
+/// com os assets reescritos (vazio quando so o carimbo foi regravado).
+///
+/// So o que difere e reescrito. E o que deixa [`prepare`] distinguir "mudou o
+/// `bridge.mjs`" (basta reescrever) de "mudou o `package-lock.json`" (o
+/// `node_modules` tem de ser refeito), e o que faz um boot sem atualizacao nao
+/// tocar arquivo nenhum.
+fn materialize_files(
+    dir: &Path,
+    assets: &dyn BridgeAssets,
+) -> Result<Option<Vec<&'static str>>, BridgeError> {
     // Alerta CodeQL 174 (path-injection): o sink `dir.join(file.name)` esta
     // logo abaixo, e o trait `BridgeAssets` e publico justamente para um dia
     // servir a um bridge vindo de fora do binario. A unica impl de hoje embute
@@ -526,23 +575,201 @@ pub fn materialize(dir: &Path, assets: &dyn BridgeAssets) -> Result<Materialized
     let stamp = dir.join(STAMP_FILE);
 
     let current = std::fs::read_to_string(&stamp).ok();
-    let all_present = assets.files().iter().all(|f| dir.join(f.name).is_file());
-    if all_present && current.as_deref() == Some(digest.as_str()) {
-        return Ok(Materialized::UpToDate);
+    let stale: Vec<&Asset> = assets
+        .files()
+        .iter()
+        .filter(|f| !same_on_disk(&dir.join(f.name), f.contents))
+        .collect();
+    if stale.is_empty() && current.as_deref() == Some(digest.as_str()) {
+        return Ok(None);
     }
 
     garraia_common::fs_perms::create_secret_dir(dir).map_err(|e| BridgeError::io(dir, e))?;
-    for file in assets.files() {
+    for file in &stale {
         let path = dir.join(file.name);
         std::fs::write(&path, file.contents).map_err(|e| BridgeError::io(&path, e))?;
     }
     std::fs::write(&stamp, &digest).map_err(|e| BridgeError::io(&stamp, e))?;
-    Ok(Materialized::Written)
+    Ok(Some(stale.iter().map(|f| f.name).collect()))
 }
 
 /// `node_modules` ja existe em `dir`?
+///
+/// So o `stat`: e o fato que o `/api/diagnostics` e o `garra whatsapp status`
+/// leem sem cripto e sem processo ([`super::health::DiskFacts`]). Se ele foi
+/// instalado para os manifestos **atuais** e pergunta de [`prepare`].
 pub fn deps_installed(dir: &Path) -> bool {
     dir.join("node_modules").is_dir()
+}
+
+/// Hash so dos manifestos que o `npm` le ([`DEPENDENCY_MANIFESTS`]), na ordem
+/// dos assets. Mesma forma de [`assets_digest`].
+pub fn deps_digest(assets: &dyn BridgeAssets) -> String {
+    let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    for file in assets
+        .files()
+        .iter()
+        .filter(|f| DEPENDENCY_MANIFESTS.contains(&f.name))
+    {
+        ctx.update(file.name.as_bytes());
+        ctx.update(b"\0");
+        ctx.update(file.contents.as_bytes());
+        ctx.update(b"\0");
+    }
+    hex(ctx.finish().as_ref())
+}
+
+/// O que o `node_modules` precisa antes de a ponte subir.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepsPlan {
+    /// Instalado para os manifestos que estao em disco agora. Nada a fazer.
+    Current,
+    /// Falta, e de outros manifestos, ou um `npm ci` anterior nao terminou:
+    /// [`install_deps`] antes de lancar. Lancar a ponte assim seria rodar o
+    /// `bridge.mjs` novo contra dependencias que ele nao declarou.
+    Install,
+}
+
+/// O resultado de [`prepare`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preparation {
+    /// Se algum asset (ou o carimbo) foi reescrito agora.
+    pub assets: Materialized,
+    /// O que o `node_modules` precisa.
+    pub deps: DepsPlan,
+}
+
+/// Deixa `dir` com os assets embutidos e diz se o `npm ci` tem de rodar.
+///
+/// # Por que existe (W1 da v0.4.5)
+///
+/// Ate aqui so o `garra whatsapp link` materializava a ponte. O gateway subia
+/// o `bridge.mjs` que estivesse no disco, entao depois de um `garra update` o
+/// canal seguia com a ponte da versao anterior — sem o conserto do `@lid` da
+/// 0.4.5, por exemplo — ate alguem vincular de novo. Agora a CLI e o
+/// supervisor do gateway chamam esta funcao, e as duas decidem igual.
+///
+/// # A decisao do `npm ci`
+///
+/// Olhar so se `node_modules/` existe era o defeito F3 da auditoria R4: um
+/// update que bumpava o Baileys nunca reinstalava. Olhar so se algum asset foi
+/// reescrito rodava `npm ci` (rede, minutos) a cada mudanca de `bridge.mjs`.
+/// A regra, em ordem:
+///
+/// 1. Um manifesto ([`DEPENDENCY_MANIFESTS`]) foi reescrito agora, ou nao ha
+///    `node_modules`: [`DepsPlan::Install`].
+/// 2. O carimbo de dependencias ([`DEPS_STAMP_FILE`]) tem o [`deps_digest`]
+///    atual: [`DepsPlan::Current`].
+/// 3. O carimbo tem outra coisa — o hash de outros manifestos, ou o
+///    [`DEPS_PENDING`] que [`install_deps`] grava ANTES de rodar o npm (e que
+///    so vira hash quando ele termina bem) — ou nao da para le-lo:
+///    [`DepsPlan::Install`]. E o que impede um `npm ci` interrompido ou que
+///    falhou de deixar um `node_modules` pela metade passar por atual no boot
+///    seguinte, quando os manifestos em disco ja sao os novos.
+/// 4. Nao ha carimbo nenhum, mas os manifestos em disco ja eram os embutidos e
+///    ha `node_modules`: e a instalacao de uma versao que ainda nao gravava
+///    carimbo (ate a 0.4.4, o `garra whatsapp link` rodava `npm ci` para
+///    estes manifestos e parava ali). [`DepsPlan::Current`], e o carimbo e
+///    gravado agora — best-effort: se a escrita falhar, o boot seguinte
+///    chega a mesma conclusao pelo mesmo caminho.
+///
+/// # O que nao muda
+///
+/// As checagens de [`materialize`] (allowlist de nome antes de qualquer
+/// escrita, diretorio `0700`) valem aqui porque e ela que escreve. Nada fora
+/// de `dir` e tocado — a sessao mora em outro diretorio.
+pub fn prepare(dir: &Path, assets: &dyn BridgeAssets) -> Result<Preparation, BridgeError> {
+    let written = materialize_files(dir, assets)?;
+    let manifests_changed = written
+        .as_ref()
+        .is_some_and(|names| names.iter().any(|n| DEPENDENCY_MANIFESTS.contains(n)));
+    let materialized = match written {
+        None => Materialized::UpToDate,
+        Some(_) => Materialized::Written,
+    };
+
+    if manifests_changed || !deps_installed(dir) {
+        return Ok(Preparation {
+            assets: materialized,
+            deps: DepsPlan::Install,
+        });
+    }
+
+    let digest = deps_digest(assets);
+    let stamp = dir.join(DEPS_STAMP_FILE);
+    let deps = match std::fs::read_to_string(&stamp) {
+        Ok(recorded) if recorded.trim() == digest => DepsPlan::Current,
+        Ok(_) => DepsPlan::Install,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Regra 4: instalacao anterior ao carimbo, com os mesmos
+            // manifestos. Ver o docblock.
+            let _ = std::fs::write(&stamp, &digest);
+            DepsPlan::Current
+        }
+        Err(_) => DepsPlan::Install,
+    };
+    Ok(Preparation {
+        assets: materialized,
+        deps,
+    })
+}
+
+/// `npm ci` com carimbo: [`DEPS_PENDING`] antes, [`deps_digest`] depois.
+///
+/// Se o `npm` falhar (codigo de saida, timeout, nem lancar), o `node_modules`
+/// que sobrou e removido por [`abandon_deps`]: o `npm ci` apaga a arvore antiga
+/// antes de instalar, entao o que fica e pela metade — ou, se ele recusou logo
+/// de cara, a arvore dos manifestos ANTIGOS. Nenhum dos dois serve para a
+/// ponte nova, e com ele fora do disco o `status` e o `/api/diagnostics`
+/// mostram o passo certo (`rode npm ci em <dir>`) em vez de "ponte caida".
+///
+/// Se o future for abandonado no meio (gateway encerrando), o `npm` morre com
+/// ele (`kill_on_drop`) e o carimbo fica em [`DEPS_PENDING`]: o proximo
+/// [`prepare`] reinstala.
+pub async fn install_deps(
+    npm: &Path,
+    dir: &Path,
+    assets: &dyn BridgeAssets,
+) -> Result<(), BridgeError> {
+    let stamp = dir.join(DEPS_STAMP_FILE);
+    std::fs::write(&stamp, DEPS_PENDING).map_err(|e| BridgeError::io(&stamp, e))?;
+    match npm_ci(npm, dir).await {
+        Ok(()) => {
+            std::fs::write(&stamp, deps_digest(assets)).map_err(|e| BridgeError::io(&stamp, e))
+        }
+        Err(e) => {
+            // O erro do npm e o que importa ao usuario; uma falha ao limpar
+            // nao o substitui (o carimbo ja esta em `pending`, e o proximo
+            // `prepare` reinstala de qualquer jeito).
+            let _ = abandon_deps(dir);
+            Err(e)
+        }
+    }
+}
+
+/// Declara o `node_modules` de `dir` invalido para os manifestos atuais e o
+/// remove: carimbo em [`DEPS_PENDING`], arvore fora do disco.
+///
+/// Para quem precisa de [`DepsPlan::Install`] e nao consegue instalar (sem
+/// `npm` na PATH, por exemplo) — e para [`install_deps`], quando o `npm`
+/// falha. So toca `dir/node_modules` e o carimbo; um symlink no lugar do
+/// `node_modules` e removido como link, sem seguir o alvo.
+pub fn abandon_deps(dir: &Path) -> Result<(), BridgeError> {
+    if dir.is_dir() {
+        let stamp = dir.join(DEPS_STAMP_FILE);
+        std::fs::write(&stamp, DEPS_PENDING).map_err(|e| BridgeError::io(&stamp, e))?;
+    }
+    let modules = dir.join("node_modules");
+    let removed = match std::fs::symlink_metadata(&modules) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            std::fs::remove_file(&modules).or_else(|_| std::fs::remove_dir(&modules))
+        }
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&modules),
+        Ok(_) => std::fs::remove_file(&modules),
+    };
+    removed.map_err(|e| BridgeError::io(&modules, e))
 }
 
 /// Roda `npm ci --no-fund --no-audit --progress=false` em `dir`.
@@ -1495,6 +1722,289 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
             Materialized::Written
         );
         assert!(target.join("bridge.mjs").is_file());
+    }
+
+    /// Os assets de uma versao nova: so o `bridge.mjs` mudou em relacao a
+    /// [`COM_LOCK`], que e a "versao anterior".
+    const COM_LOCK: &[Asset] = &[
+        Asset {
+            name: "bridge.mjs",
+            contents: "console.log('v1')\n",
+        },
+        Asset {
+            name: "package.json",
+            contents: "{\"name\":\"a\"}\n",
+        },
+        Asset {
+            name: "package-lock.json",
+            contents: "{\"lockfileVersion\":3,\"baileys\":\"7.0.0\"}\n",
+        },
+    ];
+    const SO_O_BRIDGE_MUDOU: &[Asset] = &[
+        Asset {
+            name: "bridge.mjs",
+            contents: "console.log('v2 com o conserto do @lid')\n",
+        },
+        Asset {
+            name: "package.json",
+            contents: "{\"name\":\"a\"}\n",
+        },
+        Asset {
+            name: "package-lock.json",
+            contents: "{\"lockfileVersion\":3,\"baileys\":\"7.0.0\"}\n",
+        },
+    ];
+    const O_LOCK_MUDOU: &[Asset] = &[
+        Asset {
+            name: "bridge.mjs",
+            contents: "console.log('v1')\n",
+        },
+        Asset {
+            name: "package.json",
+            contents: "{\"name\":\"a\"}\n",
+        },
+        Asset {
+            name: "package-lock.json",
+            contents: "{\"lockfileVersion\":3,\"baileys\":\"7.0.1\"}\n",
+        },
+    ];
+
+    /// Poe o mtime de `path` no passado, para "nao foi reescrito" ser
+    /// observavel: uma reescrita no mesmo milissegundo nao muda o mtime, e o
+    /// inode tambem nao muda com `std::fs::write`.
+    fn envelhece(path: &Path) -> std::time::SystemTime {
+        let antigo = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("abre")
+            .set_modified(antigo)
+            .expect("set_modified");
+        antigo
+    }
+
+    fn mtime(path: &Path) -> std::time::SystemTime {
+        std::fs::metadata(path)
+            .expect("stat")
+            .modified()
+            .expect("mtime")
+    }
+
+    /// O estado que um `garra whatsapp link` bem-sucedido deixa: assets,
+    /// `node_modules` e o carimbo de dependencias dos manifestos atuais.
+    fn instalado(dir: &Path, assets: &[Asset]) {
+        materialize(dir, &FakeAssets(assets)).expect("materializa");
+        std::fs::create_dir_all(dir.join("node_modules")).expect("node_modules");
+        std::fs::write(dir.join(DEPS_STAMP_FILE), deps_digest(&FakeAssets(assets)))
+            .expect("carimbo");
+    }
+
+    #[test]
+    fn a_file_edited_on_disk_is_restored_even_when_the_stamp_matches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        materialize(&target, &FakeAssets(A)).expect("first");
+        std::fs::write(target.join("bridge.mjs"), "console.log('mexido')\n").expect("edita");
+
+        assert_eq!(
+            materialize(&target, &FakeAssets(A)).expect("repair"),
+            Materialized::Written
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("bridge.mjs")).expect("read"),
+            "console.log('a')\n"
+        );
+    }
+
+    /// Mudou so o `bridge.mjs` (o caso do update 0.4.4 -> 0.4.5): ele e
+    /// reescrito, os manifestos nao sao tocados, e o `npm` nao precisa rodar.
+    #[test]
+    fn only_a_new_bridge_mjs_is_rewritten_and_needs_no_npm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+        let lock_antigo = envelhece(&target.join("package-lock.json"));
+        let pkg_antigo = envelhece(&target.join("package.json"));
+
+        let prep = prepare(&target, &FakeAssets(SO_O_BRIDGE_MUDOU)).expect("prepare");
+        assert_eq!(prep.assets, Materialized::Written);
+        assert_eq!(prep.deps, DepsPlan::Current, "so o bridge.mjs mudou");
+        assert_eq!(
+            std::fs::read_to_string(target.join("bridge.mjs")).expect("read"),
+            "console.log('v2 com o conserto do @lid')\n"
+        );
+        assert_eq!(mtime(&target.join("package-lock.json")), lock_antigo);
+        assert_eq!(mtime(&target.join("package.json")), pkg_antigo);
+    }
+
+    #[test]
+    fn nothing_changed_means_nothing_touched_and_no_npm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+        let antigos: Vec<_> = ["bridge.mjs", "package.json", "package-lock.json"]
+            .iter()
+            .map(|n| (n, envelhece(&target.join(n))))
+            .collect();
+
+        let prep = prepare(&target, &FakeAssets(COM_LOCK)).expect("prepare");
+        assert_eq!(
+            prep,
+            Preparation {
+                assets: Materialized::UpToDate,
+                deps: DepsPlan::Current
+            }
+        );
+        for (nome, antigo) in antigos {
+            assert_eq!(mtime(&target.join(nome)), antigo, "{nome} foi reescrito");
+        }
+    }
+
+    #[test]
+    fn a_changed_lockfile_needs_npm_ci() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+
+        let prep = prepare(&target, &FakeAssets(O_LOCK_MUDOU)).expect("prepare");
+        assert_eq!(prep.deps, DepsPlan::Install);
+        assert_eq!(
+            std::fs::read_to_string(target.join("package-lock.json")).expect("read"),
+            O_LOCK_MUDOU[2].contents,
+            "o lockfile novo ja esta no disco para o npm ci ler"
+        );
+
+        // E a decisao sobrevive a um boot que nao reinstalou: o lockfile em
+        // disco ja e o novo, mas o carimbo ainda e o dos manifestos antigos.
+        let prep = prepare(&target, &FakeAssets(O_LOCK_MUDOU)).expect("prepare 2");
+        assert_eq!(prep.assets, Materialized::UpToDate);
+        assert_eq!(
+            prep.deps,
+            DepsPlan::Install,
+            "o node_modules ainda e o antigo"
+        );
+    }
+
+    #[test]
+    fn missing_node_modules_needs_npm_ci() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+        std::fs::remove_dir(target.join("node_modules")).expect("rm");
+        assert_eq!(
+            prepare(&target, &FakeAssets(COM_LOCK))
+                .expect("prepare")
+                .deps,
+            DepsPlan::Install
+        );
+    }
+
+    /// `npm ci` que nao terminou (falhou, ou o gateway morreu no meio): o
+    /// carimbo fica em `pending`, e o `node_modules` pela metade nunca passa
+    /// por atual — mesmo com os manifestos em disco ja iguais aos embutidos.
+    #[test]
+    fn a_pending_install_is_never_current() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+        std::fs::write(target.join(DEPS_STAMP_FILE), DEPS_PENDING).expect("pending");
+        assert_eq!(
+            prepare(&target, &FakeAssets(COM_LOCK))
+                .expect("prepare")
+                .deps,
+            DepsPlan::Install
+        );
+    }
+
+    /// Instalacao de antes do carimbo (ate a 0.4.4): manifestos iguais aos
+    /// embutidos e `node_modules` presente. Adotada sem `npm`, e o carimbo
+    /// passa a existir.
+    #[test]
+    fn a_pre_stamp_install_with_the_same_manifests_is_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+        std::fs::remove_file(target.join(DEPS_STAMP_FILE)).expect("rm carimbo");
+
+        let prep = prepare(&target, &FakeAssets(SO_O_BRIDGE_MUDOU)).expect("prepare");
+        assert_eq!(prep.deps, DepsPlan::Current);
+        assert_eq!(
+            std::fs::read_to_string(target.join(DEPS_STAMP_FILE)).expect("carimbo"),
+            deps_digest(&FakeAssets(SO_O_BRIDGE_MUDOU))
+        );
+
+        // Mas sem carimbo e com o lockfile mudando, reinstala.
+        std::fs::remove_file(target.join(DEPS_STAMP_FILE)).expect("rm carimbo");
+        assert_eq!(
+            prepare(&target, &FakeAssets(O_LOCK_MUDOU))
+                .expect("prepare")
+                .deps,
+            DepsPlan::Install
+        );
+    }
+
+    #[test]
+    fn deps_digest_ignores_bridge_mjs() {
+        assert_eq!(
+            deps_digest(&FakeAssets(COM_LOCK)),
+            deps_digest(&FakeAssets(SO_O_BRIDGE_MUDOU))
+        );
+        assert_ne!(
+            deps_digest(&FakeAssets(COM_LOCK)),
+            deps_digest(&FakeAssets(O_LOCK_MUDOU))
+        );
+    }
+
+    #[test]
+    fn prepare_keeps_the_asset_name_allowlist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        let assets = [Asset {
+            name: "../escapou",
+            contents: "x",
+        }];
+        assert!(matches!(
+            prepare(&target, &FakeAssets(&assets)),
+            Err(BridgeError::AssetName(_))
+        ));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn abandon_deps_removes_the_tree_and_marks_pending() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+        std::fs::write(target.join("node_modules").join("x.js"), "1").expect("arquivo");
+
+        abandon_deps(&target).expect("abandona");
+        assert!(!target.join("node_modules").exists());
+        assert!(!deps_installed(&target));
+        assert_eq!(
+            std::fs::read_to_string(target.join(DEPS_STAMP_FILE)).expect("carimbo"),
+            DEPS_PENDING
+        );
+        assert!(target.join("bridge.mjs").is_file(), "os assets ficam");
+        abandon_deps(&target).expect("idempotente");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn abandon_deps_removes_a_symlinked_node_modules_without_following_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        materialize(&target, &FakeAssets(COM_LOCK)).expect("materializa");
+        let fora = dir.path().join("fora");
+        std::fs::create_dir(&fora).expect("fora");
+        std::fs::write(fora.join("precioso"), "nao apague").expect("arquivo");
+        std::os::unix::fs::symlink(&fora, target.join("node_modules")).expect("symlink");
+
+        abandon_deps(&target).expect("abandona");
+        assert!(
+            std::fs::symlink_metadata(target.join("node_modules")).is_err(),
+            "o link sai"
+        );
+        assert!(fora.join("precioso").is_file(), "o alvo do link fica");
     }
 
     #[cfg(unix)]

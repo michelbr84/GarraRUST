@@ -1564,9 +1564,177 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
 
     let launcher: Arc<dyn bridge::BridgeLauncher> =
         Arc::new(NodeLauncher::new(node, paths.bridge_dir.clone()));
+    // W1 (v0.4.5): a ponte que sobe e a que ESTE binario embute, e nao a que
+    // o ultimo `whatsapp link` deixou no disco. Ver `preparar_ponte`.
+    let preparo = PreparoDaPonte::embutido(paths.bridge_dir.clone());
 
-    supervisionar(state, settings, paths.store.clone(), key, launcher);
+    supervisionar(state, settings, paths.store.clone(), key, launcher, preparo);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Preparo da ponte (W1 da v0.4.5)
+// ---------------------------------------------------------------------------
+
+/// O que o supervisor precisa para deixar a ponte pronta antes de lanca-la.
+///
+/// # Por que existe
+///
+/// Ate a 0.4.4 so o `garra whatsapp link` materializava `bridge.mjs`,
+/// `package.json` e `package-lock.json`. O gateway lancava o que estivesse no
+/// disco, entao depois de um `garra update` o canal seguia rodando a ponte da
+/// versao ANTERIOR — sem o conserto do `@lid` da 0.4.5, por exemplo — ate o
+/// operador vincular de novo, coisa que nada o mandava fazer.
+///
+/// `assets` e `npm` sao costura de teste: o boot usa [`Self::embutido`] (os
+/// assets do binario e o `npm` da PATH); o teste injeta o `npm` falso.
+pub(crate) struct PreparoDaPonte {
+    pub(crate) dir: PathBuf,
+    pub(crate) assets: Arc<dyn bridge::BridgeAssets>,
+    /// `None` quando nao ha `npm` na PATH. So faz falta se os manifestos
+    /// mudaram — ai a ponte nao sobe.
+    pub(crate) npm: Option<PathBuf>,
+}
+
+impl PreparoDaPonte {
+    /// O do boot: os assets embutidos neste binario e o `npm` da PATH.
+    pub(crate) fn embutido(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            assets: Arc::new(bridge::EmbeddedAssets),
+            npm: bridge::find_executable("npm"),
+        }
+    }
+}
+
+/// Por que a ponte nao foi lancada nesta vida do supervisor.
+///
+/// O `Display` diz a acao, como o de [`NaoSubiu`]. Nenhuma variante carrega a
+/// cauda do stderr do `npm`: ela sai redigida para a tela da CLI, mas um log
+/// persistente nao e lugar para saida crua de ferramenta externa — o passo
+/// (`npm ci` no diretorio da ponte) mostra o erro inteiro a quem precisar.
+#[derive(Debug)]
+pub(crate) enum PonteNaoPronta {
+    /// Nao deu para materializar os assets (disco, permissao).
+    Assets(bridge::BridgeError),
+    /// Os manifestos mudaram e nao ha `npm` na PATH do gateway.
+    SemNpm { dir: PathBuf },
+    /// O `npm ci` falhou, passou do prazo ou nem lancou.
+    Npm {
+        erro: bridge::BridgeError,
+        dir: PathBuf,
+    },
+    /// O gateway esta encerrando.
+    Cancelado,
+}
+
+impl std::fmt::Display for PonteNaoPronta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Assets(e) => write!(f, "nao consegui gravar os arquivos da ponte: {e}"),
+            Self::SemNpm { dir } => write!(
+                f,
+                "as dependencias da ponte mudaram e `npm` nao esta na PATH do gateway: \
+                 instale o npm (vem com o Node.js 20+) e rode `npm ci` em {}, ou reinicie o \
+                 gateway com o npm na PATH",
+                dir.display()
+            ),
+            Self::Npm { erro, dir } => {
+                let causa = match erro {
+                    bridge::BridgeError::NpmInstall { code, .. } => {
+                        format!("`npm ci` saiu com codigo {code}")
+                    }
+                    bridge::BridgeError::NpmTimeout => format!(
+                        "`npm ci` passou de {}s sem terminar",
+                        bridge::NPM_INSTALL_TIMEOUT.as_secs()
+                    ),
+                    outro => outro.to_string(),
+                };
+                write!(
+                    f,
+                    "{causa}: a ponte nao sobe contra dependencias de outra versao — rode \
+                     `npm ci` em {} para ver o erro e reinicie o gateway",
+                    dir.display()
+                )
+            }
+            Self::Cancelado => f.write_str("o gateway esta encerrando"),
+        }
+    }
+}
+
+/// Espera o cancelamento do supervisor. `changed()` com `Err` (o ultimo
+/// `Sender` caiu) tambem conta, como em `serve_once`.
+async fn ate_cancelar(cancel: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow_and_update() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Deixa a ponte do disco igual a embutida e, se os manifestos mudaram, roda
+/// o `npm ci` — antes de qualquer processo da ponte subir.
+///
+/// A decisao de disco e de [`bridge::prepare`], a mesma que o `garra whatsapp
+/// link` usa: so o que difere e reescrito (diretorio `0700`, allowlist de
+/// nome), e o `npm` so roda quando `package.json`/`package-lock.json` mudaram,
+/// quando falta `node_modules` ou quando um `npm ci` anterior nao terminou.
+/// Mudou so o `bridge.mjs`, nao ha `npm`.
+///
+/// # Falha
+///
+/// Fail-soft: `Err` e a ponte **nao** e lancada — nunca contra um
+/// `node_modules` que nao e dos manifestos atuais. Sem `npm`, ou com o `npm`
+/// falhando, a arvore velha sai do disco ([`bridge::abandon_deps`]), e e isso
+/// que faz o `/api/diagnostics` e o `garra whatsapp status` mostrarem
+/// "sem dependencias" com o passo `rode npm ci em <dir>`. A sessao nao e
+/// tocada: ela mora em outro diretorio, e nada aqui a le.
+///
+/// O cancelamento e ouvido antes de tocar o disco e durante o `npm ci` (que
+/// morre junto, `kill_on_drop`).
+pub(crate) async fn preparar_ponte(
+    preparo: &PreparoDaPonte,
+    cancel: &mut watch::Receiver<bool>,
+) -> Result<(), PonteNaoPronta> {
+    if *cancel.borrow() {
+        return Err(PonteNaoPronta::Cancelado);
+    }
+    let preparacao =
+        bridge::prepare(&preparo.dir, preparo.assets.as_ref()).map_err(PonteNaoPronta::Assets)?;
+    if preparacao.assets == bridge::Materialized::Written {
+        info!("whatsapp_linked: arquivos da ponte atualizados para os deste binario");
+    }
+    if preparacao.deps == bridge::DepsPlan::Current {
+        return Ok(());
+    }
+
+    let Some(npm) = preparo.npm.as_deref() else {
+        if let Err(e) = bridge::abandon_deps(&preparo.dir) {
+            warn!("whatsapp_linked: nao consegui descartar o node_modules antigo: {e}");
+        }
+        return Err(PonteNaoPronta::SemNpm {
+            dir: preparo.dir.clone(),
+        });
+    };
+    info!("whatsapp_linked: dependencias da ponte mudaram; rodando `npm ci`");
+    let instalar = bridge::install_deps(npm, &preparo.dir, preparo.assets.as_ref());
+    tokio::select! {
+        biased;
+        () = ate_cancelar(cancel) => Err(PonteNaoPronta::Cancelado),
+        resultado = instalar => match resultado {
+            Ok(()) => {
+                info!("whatsapp_linked: dependencias da ponte instaladas");
+                Ok(())
+            }
+            Err(erro) => Err(PonteNaoPronta::Npm {
+                erro,
+                dir: preparo.dir.clone(),
+            }),
+        },
+    }
 }
 
 /// A fiacao do supervisor, sem a descoberta do `node`.
@@ -1574,13 +1742,16 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
 /// Separada de [`spawn_whatsapp_linked`] por um motivo so: e o que permite a um
 /// teste exercitar **esta** fiacao — a que o boot usa — contra a ponte falsa,
 /// em vez de montar a sua propria e provar outra coisa. O que o boot faz a mais
-/// e achar o `node` e abrir a chave; tudo o que vem depois esta aqui.
+/// e achar o `node` e abrir a chave; tudo o que vem depois esta aqui —
+/// inclusive o [`preparar_ponte`], que roda dentro da tarefa, antes do
+/// primeiro `spawn` da ponte, para um `npm ci` de minutos nao segurar o boot.
 pub(crate) fn supervisionar(
     state: &SharedState,
     settings: LinkedSettings,
     store: SessionStore,
     key: SessionKey,
     launcher: Arc<dyn bridge::BridgeLauncher>,
+    preparo: PreparoDaPonte,
 ) {
     let runtime = Arc::clone(&state.whatsapp_linked);
     runtime.set_bridge(BridgeView::NotStarted);
@@ -1600,10 +1771,23 @@ pub(crate) fn supervisionar(
 
     let runtime_para_tarefa = Arc::clone(&runtime);
     tokio::spawn(async move {
-        let resultado = serve(launcher, store, key, sink, outbound_rx, cancel_rx, || {
-            rand::random::<f64>()
-        })
-        .await;
+        let mut cancel_rx = cancel_rx;
+        // W1 (v0.4.5): a ponte embutida, e as dependencias dela, antes do
+        // primeiro `spawn`. Falhou, a ponte nao sobe nesta vida do processo.
+        let resultado = match preparar_ponte(&preparo, &mut cancel_rx).await {
+            Ok(()) => {
+                serve(launcher, store, key, sink, outbound_rx, cancel_rx, || {
+                    rand::random::<f64>()
+                })
+                .await
+            }
+            Err(PonteNaoPronta::Cancelado) => Ok(()),
+            Err(motivo) => {
+                runtime_para_tarefa.set_bridge(BridgeView::Down);
+                warn!("whatsapp_linked: a ponte nao subiu — {motivo}");
+                return;
+            }
+        };
         runtime_para_tarefa.set_bridge(BridgeView::Down);
         match resultado {
             Ok(()) => info!("whatsapp_linked: supervisor encerrado"),

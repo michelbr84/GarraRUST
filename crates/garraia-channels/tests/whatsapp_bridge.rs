@@ -1812,3 +1812,87 @@ async fn a_failed_npm_ci_never_shows_a_credential_from_its_stderr() {
         "o caminho tem de continuar legivel: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W1 da v0.4.5: `install_deps` contra o `npm` falso
+// ---------------------------------------------------------------------------
+
+fn fake_npm() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("fake_npm.py")
+}
+
+/// Quantas vezes o `npm` falso rodou neste diretorio.
+fn npm_calls(dir: &std::path::Path) -> usize {
+    std::fs::read_to_string(dir.join(".fake-npm-calls"))
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
+
+/// `npm ci` que da certo: o carimbo passa a ser o dos manifestos embutidos, e
+/// o proximo `prepare` ja nao pede outro `npm`.
+#[tokio::test]
+async fn a_successful_install_records_the_manifests_it_installed() {
+    use garraia_channels::whatsapp_linked::bridge::{
+        DepsPlan, EmbeddedAssets, install_deps, prepare,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bridge = dir.path().join("bridge");
+    assert_eq!(
+        prepare(&bridge, &EmbeddedAssets).expect("prepare").deps,
+        DepsPlan::Install,
+        "primeira vez: nao ha node_modules"
+    );
+    std::fs::write(bridge.join(".fake-npm-ok"), "").expect("modo ok");
+
+    install_deps(&fake_npm(), &bridge, &EmbeddedAssets)
+        .await
+        .expect("o npm falso sai 0");
+    assert_eq!(npm_calls(&bridge), 1);
+    assert!(bridge.join("node_modules").is_dir());
+
+    assert_eq!(
+        prepare(&bridge, &EmbeddedAssets).expect("prepare").deps,
+        DepsPlan::Current,
+        "instalado para estes manifestos: nada a fazer"
+    );
+    assert_eq!(npm_calls(&bridge), 1, "prepare nunca roda o npm");
+}
+
+/// `npm ci` que falha: o `node_modules` que sobrou (aqui, o dos manifestos
+/// ANTIGOS, que o `npm ci` recusou-se a trocar) sai do disco, e o proximo
+/// `prepare` continua pedindo `npm` — nunca adota uma arvore que nao e dos
+/// manifestos atuais.
+#[tokio::test]
+async fn a_failed_install_removes_the_stale_tree_and_stays_pending() {
+    use garraia_channels::whatsapp_linked::bridge::{
+        DepsPlan, EmbeddedAssets, deps_installed, install_deps, prepare,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bridge = dir.path().join("bridge");
+    prepare(&bridge, &EmbeddedAssets).expect("prepare");
+    std::fs::create_dir_all(bridge.join("node_modules").join("baileys-antigo"))
+        .expect("arvore antiga");
+
+    let err = install_deps(&fake_npm(), &bridge, &EmbeddedAssets)
+        .await
+        .expect_err("o npm falso sai 1");
+    assert!(matches!(err, BridgeError::NpmInstall { .. }), "{err}");
+    assert_eq!(npm_calls(&bridge), 1);
+    assert!(
+        !deps_installed(&bridge),
+        "a arvore que nao e dos manifestos atuais tem de sair do disco"
+    );
+
+    // Alguem recria um `node_modules` (ou ele sobra de outro jeito): sem o
+    // `npm ci` ter terminado, ele continua nao valendo.
+    std::fs::create_dir_all(bridge.join("node_modules")).expect("node_modules");
+    assert_eq!(
+        prepare(&bridge, &EmbeddedAssets).expect("prepare").deps,
+        DepsPlan::Install
+    );
+}

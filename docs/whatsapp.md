@@ -425,11 +425,21 @@ nao precisa de Node.
 Na primeira execucao o GarraIA materializa a ponte em
 `<data_dir>/whatsapp/bridge/` (0700) e roda `npm ci --no-fund --no-audit`.
 `npm ci` e nao `npm install`: o `package-lock.json` e versionado e o pin exato
-do Baileys faz parte do contrato — e a mesma arvore que o CI audita. Uma
-atualizacao do `garraia` que traga uma ponte nova reescreve o diretorio sozinha
-(o carimbo `.garraia-bridge-sha256` e quem detecta) **e reinstala as
-dependencias**, para um bump de versao por CVE nao ficar parado atras de um
-`node_modules` antigo.
+do Baileys faz parte do contrato — e a mesma arvore que o CI audita.
+
+Uma atualizacao do `garraia` que traga uma ponte nova vale **no proximo boot
+do gateway**, sem vincular de novo: antes de lancar a ponte, o supervisor do
+canal regrava so os arquivos que diferem dos embutidos no binario. O `npm ci`
+so roda quando o `package.json`/`package-lock.json` mudou (um bump de versao
+por CVE nao fica parado atras de um `node_modules` antigo), quando falta
+`node_modules` ou quando um `npm ci` anterior nao terminou — o carimbo
+`.garraia-deps-sha256` diz para quais manifestos o `node_modules` foi
+instalado. Mudou so o `bridge.mjs`, nao ha `npm`. Se o `npm` falhar ou nao
+estiver na `PATH` do gateway, a ponte **nao sobe** (nunca contra dependencias de
+outra versao), o `node_modules` que sobrou sai do disco, e o
+`garraia whatsapp status` e o `/api/diagnostics` mostram "sem dependencias" com
+o passo `rode npm ci em <dir>`; depois disso, reinicie o gateway. A sessao
+vinculada nao e tocada. O `garraia whatsapp link` segue a mesma regra.
 
 Como o filho e contido:
 
