@@ -71,6 +71,63 @@ test('remetente @lid entrega sender_phone null, sem inventar mapeamento', () => 
   assert.equal(ev.sender_phone, null);
 });
 
+// Baileys 7.0.0-rc14 (`decodeMessageNode`): mensagem enderecada por LID traz
+// o JID de telefone em `remoteJidAlt` (1:1) ou `participantAlt` (grupo).
+const LID = '87654321098765@lid';
+
+test('1:1 por @lid com remoteJidAlt entrega o numero em sender_phone', () => {
+  const ev = toMessageEvent(
+    base({ key: { id: 'L1', remoteJid: LID, remoteJidAlt: PEER, addressingMode: 'lid' } }),
+    OWN,
+  );
+  assert.equal(ev.sender_jid, LID);
+  assert.equal(ev.chat_jid, LID);
+  assert.equal(ev.sender_phone, '+5511888880000');
+});
+
+test('grupo por @lid com participantAlt entrega o numero em sender_phone', () => {
+  const ev = toMessageEvent(
+    base({
+      key: { id: 'L2', remoteJid: '120363000000000000@g.us', participant: LID, participantAlt: PEER },
+    }),
+    OWN,
+  );
+  assert.equal(ev.sender_jid, LID);
+  assert.equal(ev.sender_phone, '+5511888880000');
+});
+
+test('nomes antigos senderPn/participantPn tambem valem', () => {
+  const um = toMessageEvent(base({ key: { id: 'L3', remoteJid: LID, senderPn: PEER } }), OWN);
+  assert.equal(um.sender_phone, '+5511888880000');
+  const grupo = toMessageEvent(
+    base({ key: { id: 'L4', remoteJid: '120363000000000000@g.us', participant: LID, participantPn: PEER } }),
+    OWN,
+  );
+  assert.equal(grupo.sender_phone, '+5511888880000');
+});
+
+test('alternativa que nao e JID de telefone nao vira numero', () => {
+  for (const alt of ['99999@lid', 'lixo', '12@s.whatsapp.net', 42, null]) {
+    const ev = toMessageEvent(base({ key: { id: 'L5', remoteJid: LID, remoteJidAlt: alt } }), OWN);
+    assert.equal(ev.sender_phone, null, String(alt));
+  }
+});
+
+test('alternativa do grupo nao vaza para 1:1, nem a de 1:1 para grupo', () => {
+  const um = toMessageEvent(base({ key: { id: 'L6', remoteJid: LID, participantAlt: PEER } }), OWN);
+  assert.equal(um.sender_phone, null);
+  const grupo = toMessageEvent(
+    base({ key: { id: 'L7', remoteJid: '120363000000000000@g.us', participant: LID, remoteJidAlt: PEER } }),
+    OWN,
+  );
+  assert.equal(grupo.sender_phone, null);
+});
+
+test('remetente com numero ignora a alternativa (ela e o LID dele)', () => {
+  const ev = toMessageEvent(base({ key: { id: 'L8', remoteJid: PEER, remoteJidAlt: LID } }), OWN);
+  assert.equal(ev.sender_phone, '+5511888880000');
+});
+
 test('fromMe em conversa direta atribui o proprio JID', () => {
   const ev = toMessageEvent(base({ key: { id: 'M', remoteJid: PEER, fromMe: true } }), OWN);
   assert.equal(ev.from_me, true);

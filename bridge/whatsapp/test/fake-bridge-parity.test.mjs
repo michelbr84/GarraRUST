@@ -8,6 +8,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { lintStream } from '../scripts/protocol-lint.mjs';
 import { BRIDGE_DIR } from './helpers.mjs';
+import { toMessageEvent } from '../bridge.mjs';
 
 const FIXTURE = path.join(
   path.dirname(BRIDGE_DIR),
@@ -112,3 +113,34 @@ test('fixture recusa linha ilegivel com codigo 3, como a ponte real', { skip }, 
   const events = res.stdout.trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(events.at(-1).code, 'protocol');
 });
+
+// A fixture nao roda Baileys: ela emite o `sender_phone` por uma copia em
+// Python do `senderPhoneOf`. Este teste prende que a copia e a ponte real dao o
+// MESMO par (sender_jid, sender_phone) para o mesmo remetente `@lid` — sem ele,
+// os testes Rust de @lid provariam o comportamento de um duble que divergiu.
+const LID = '87654321098765@lid';
+const LID_CASES = [
+  ['@lid com o telefone no remoteJidAlt', '5511888880000@s.whatsapp.net'],
+  ['@lid sem telefone', null],
+  ['@lid com alternativa que nao e telefone', '99999@lid'],
+];
+for (const [name, alt] of LID_CASES) {
+  test(`fixture e ponte real concordam no sender_phone: ${name}`, { skip }, () => {
+    const args = ['--scenario', 'serve-push', ...FAST, '--push-lid', LID];
+    if (alt !== null) args.push('--push-lid-alt', alt);
+    const res = runFixture(args);
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepEqual(lintStream(res.stdout).errors, []);
+    const fake = res.stdout
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .find((e) => e.type === 'message');
+    const key = { id: 'P1', remoteJid: LID, fromMe: false };
+    if (alt !== null) key.remoteJidAlt = alt;
+    const real = toMessageEvent({ key, message: { conversation: 'oi' } }, null);
+    assert.equal(fake.sender_jid, real.sender_jid);
+    assert.equal(fake.chat_jid, real.chat_jid);
+    assert.equal(fake.sender_phone, real.sender_phone);
+  });
+}

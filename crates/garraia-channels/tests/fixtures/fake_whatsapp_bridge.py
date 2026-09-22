@@ -48,7 +48,9 @@ SCENARIOS = (
     "serve-echo",
     # serve-push      conecta e, sem receber nada e sem ecoar nada, empurra UMA
     #                 mensagem de entrada — conteudo por `--push-text`, autoria
-    #                 por `--push-from-me`.
+    #                 por `--push-from-me`, remetente `@lid` por `--push-lid`
+    #                 (com o JID de telefone que o Baileys 7 manda junto em
+    #                 `key.remoteJidAlt` por `--push-lid-alt`).
     #
     #                 Existe por dois motivos. (1) E o unico cenario em que o
     #                 lado Rust nao precisa da ponta de SAIDA para ver uma
@@ -149,6 +151,31 @@ SCENARIOS = (
 # a tela, e para isso basta passar dos 40 caracteres de BASE64_RUN_MIN.
 SECRET_B64 = "c2VjcmV0/Y3JlZGVudGlhbCtub2lzZUtleUJBU0U2ND0="
 
+def sender_phone(jid: object) -> str | None:
+    """Espelho de `senderPhone` do `bridge.mjs`: E.164 so de `@s.whatsapp.net`."""
+    if not isinstance(jid, str) or "@" not in jid:
+        return None
+    user, domain = jid.split("@", 1)
+    if domain != "s.whatsapp.net":
+        return None
+    digits = user.split(":")[0]
+    if not (6 <= len(digits) <= 15 and digits.isdigit() and digits.isascii()):
+        return None
+    return "+" + digits
+
+
+def sender_phone_of(sender_jid: str, alt: str | None) -> str | None:
+    """Espelho de `senderPhoneOf` (1:1): o numero do JID, senao o da
+    alternativa quando o remetente e `@lid`. O teste de paridade do lado
+    Node prende que as duas dao o mesmo resultado."""
+    direto = sender_phone(sender_jid)
+    if direto is not None:
+        return direto
+    if not sender_jid.endswith("@lid"):
+        return None
+    return sender_phone(alt)
+
+
 def emit(event: dict) -> None:
     sys.stdout.write(json.dumps(event, separators=(",", ":")) + "\n")
     sys.stdout.flush()
@@ -217,13 +244,15 @@ class Bridge:
         self.status("reconnecting" if will_retry else "disconnected", reason)
 
     def message(self, text: str, index: int) -> None:
+        # Conversa 1:1: o chat e o remetente sao o mesmo JID, como na ponte.
+        remetente = self.args.push_lid or PEER_JID
         emit(
             {
                 "type": "message",
                 "id": f"FAKEMSG{index:04d}",
-                "chat_jid": PEER_JID,
-                "sender_jid": PEER_JID,
-                "sender_phone": "+" + PEER_JID.split("@")[0],
+                "chat_jid": remetente,
+                "sender_jid": remetente,
+                "sender_phone": sender_phone_of(remetente, self.args.push_lid_alt),
                 "text": text,
                 "media_kind": None,
                 "timestamp": BASE_TIMESTAMP + index,
@@ -550,6 +579,16 @@ def main(argv: list[str]) -> int:
         "--push-from-me",
         action="store_true",
         help="marca toda mensagem emitida como da propria conta (from_me)",
+    )
+    parser.add_argument(
+        "--push-lid",
+        default=None,
+        help="remetente `<id>@lid` no lugar do PEER_JID (conversa 1:1)",
+    )
+    parser.add_argument(
+        "--push-lid-alt",
+        default=None,
+        help="o `key.remoteJidAlt` do Baileys 7: JID de telefone do remetente @lid",
     )
     parser.add_argument("--qr-expires", type=float, default=20.0, help="segundos ate o QR expirar")
     parser.add_argument("--hang-secs", type=float, default=3600.0, help="duracao do cenario hang")
