@@ -3481,4 +3481,277 @@ mod ponta_a_ponta {
 
         encerra(c).await;
     }
+
+    /// #1347 (fatia 3), o relato de ponta a ponta: conectado ao WhatsApp, o
+    /// Garra respondia que nao tinha acesso ao WhatsApp. Aqui o modelo e um
+    /// stub que faz o que a nota do runtime manda — chama `garra_status` e
+    /// responde a partir do relatorio —, e o resto e o de producao: o portao
+    /// do piso `search`, o runtime, a tool do gateway e o estado do canal.
+    mod acesso_ao_whatsapp {
+        use super::*;
+
+        const PERGUNTA: &str = "voce tem acesso ao WhatsApp?";
+
+        /// O que o stub viu e respondeu.
+        #[derive(Debug, Default)]
+        struct Visto {
+            /// `(system, ferramentas)` da primeira rodada de cada turno.
+            primeira_rodada: Option<(Option<String>, Vec<String>)>,
+            /// O `tool_result` do `garra_status`.
+            relatorio: Option<String>,
+            /// A resposta final.
+            resposta: Option<String>,
+        }
+
+        /// Um modelo obediente: na primeira rodada pede `garra_status`; na
+        /// seguinte, responde "sim" se o relatorio lista o `whatsapp_linked`
+        /// como `active`, e "nao" em qualquer outro caso.
+        #[derive(Debug, Default)]
+        struct ModeloQueConsulta {
+            visto: Mutex<Visto>,
+        }
+
+        impl ModeloQueConsulta {
+            fn visto<T>(&self, f: impl FnOnce(&Visto) -> T) -> T {
+                f(&self.visto.lock().expect("lock"))
+            }
+        }
+
+        fn conectado_segundo(relatorio: &str) -> bool {
+            serde_json::from_str::<serde_json::Value>(relatorio)
+                .ok()
+                .and_then(|json| {
+                    json["channels"].as_array().map(|canais| {
+                        canais
+                            .iter()
+                            .any(|c| c["id"] == "whatsapp_linked" && c["status"] == "active")
+                    })
+                })
+                .unwrap_or(false)
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for ModeloQueConsulta {
+            fn provider_id(&self) -> &str {
+                "consulta"
+            }
+            async fn complete(&self, request: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+                let resultado = request.messages.last().and_then(|m| match &m.content {
+                    MessagePart::Parts(p) => p.iter().find_map(|b| match b {
+                        ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                });
+                let mut visto = self.visto.lock().expect("lock");
+                let content = match resultado {
+                    Some(relatorio) => {
+                        let resposta = if conectado_segundo(&relatorio) {
+                            "sim, estou conectado ao WhatsApp"
+                        } else {
+                            "nao, nao tenho acesso ao WhatsApp"
+                        };
+                        visto.relatorio = Some(relatorio);
+                        visto.resposta = Some(resposta.to_string());
+                        ContentBlock::Text {
+                            text: resposta.to_string(),
+                        }
+                    }
+                    None => {
+                        if visto.primeira_rodada.is_none() {
+                            visto.primeira_rodada = Some((
+                                request.system.clone(),
+                                request.tools.iter().map(|t| t.name.clone()).collect(),
+                            ));
+                        }
+                        ContentBlock::ToolUse {
+                            id: "status-1".to_string(),
+                            name: "garra_status".to_string(),
+                            input: serde_json::json!({}),
+                        }
+                    }
+                };
+                let stop = if matches!(content, ContentBlock::ToolUse { .. }) {
+                    "tool_use"
+                } else {
+                    "end_turn"
+                };
+                Ok(LlmResponse {
+                    content: vec![content],
+                    model: "consulta-1".to_string(),
+                    usage: None,
+                    stop_reason: Some(stop.to_string()),
+                })
+            }
+            async fn health_check(&self) -> garraia_common::Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// O estado de producao com o modelo obediente, uma tool que o piso
+        /// libera, uma que ele nega e o `garra_status` registrado como o
+        /// `server.rs` registra (depois do `Arc`, com as contagens push).
+        fn estado(dir: &tempfile::TempDir) -> (SharedState, Arc<ModeloQueConsulta>) {
+            let config = AppConfig {
+                data_dir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            };
+            let agents = AgentRuntime::new();
+            let modelo = Arc::new(ModeloQueConsulta::default());
+            agents.register_provider(Arc::clone(&modelo) as Arc<dyn LlmProvider>);
+            for nome in ["file_read", "bash"] {
+                agents.register_tool(Box::new(ToolDeMentira(nome)));
+            }
+            let state: SharedState = Arc::new(crate::state::AppState::with_config_dir(
+                config,
+                Arc::new(agents),
+                ChannelRegistry::new(),
+                dir.path(),
+            ));
+            state
+                .agents
+                .register_tool(Box::new(crate::tools::GarraStatusTool::new(
+                    &state,
+                    crate::push_channels::PushMounted::default(),
+                )));
+            (state, modelo)
+        }
+
+        /// Sessao gravada e dependencias da ponte "instaladas": os dois fatos
+        /// de disco que fazem o canal contar como vinculado.
+        fn vincula(state: &SharedState) -> (SessionStore, SessionKey) {
+            let par = grava_sessao(state);
+            let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
+            std::fs::create_dir_all(paths.bridge_dir.join("node_modules")).expect("node_modules");
+            par
+        }
+
+        /// O turno como o canal o roda: o piso somente leitura sobre um
+        /// contexto sem modo escolhido, na sessao do remetente.
+        async fn pergunta(state: &SharedState) -> String {
+            let exec = piso_somente_leitura(ExecContext::default(), DEFAULT_MODE);
+            state
+                .agents
+                .process_message_with_agent_config(
+                    &sid_do_peer(),
+                    PERGUNTA,
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &exec,
+                )
+                .await
+                .expect("turno")
+        }
+
+        /// A primeira rodada do turno no piso: a tool e a nota chegam ao
+        /// modelo, junto com o template do modo (nada substituido).
+        fn confere_primeira_rodada(modelo: &ModeloQueConsulta) {
+            let (system, tools) = modelo
+                .visto(|v| v.primeira_rodada.clone())
+                .expect("houve primeira rodada");
+            assert!(tools.iter().any(|t| t == "garra_status"), "{tools:?}");
+            assert!(
+                !tools.iter().any(|t| t == "bash"),
+                "o piso nega bash: {tools:?}"
+            );
+            let system = system.expect("prompt");
+            assert!(system.contains("You are a search assistant"), "{system}");
+            assert!(
+                system.contains(garraia_agents::NOTA_GARRA_STATUS_PT),
+                "{system}"
+            );
+        }
+
+        #[tokio::test]
+        async fn com_o_canal_conectado_responde_sim() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, modelo) = estado(&dir);
+            vincula(&state);
+            state.whatsapp_linked.set_bridge(BridgeView::Connected);
+
+            let resposta = pergunta(&state).await;
+            assert!(resposta.starts_with("sim"), "{resposta}");
+            confere_primeira_rodada(&modelo);
+            let relatorio = modelo.visto(|v| v.relatorio.clone()).expect("relatorio");
+            // O numero do remetente mora no session id; o relatorio nao o
+            // entrega inteiro.
+            assert!(!relatorio.contains(PEER), "{relatorio}");
+            let json: serde_json::Value = serde_json::from_str(&relatorio).expect("json");
+            assert_eq!(json["session"]["channel"], "whatsapp_linked");
+            assert!(json["session"]["working_dir"].is_null(), "{json}");
+        }
+
+        #[tokio::test]
+        async fn sem_o_canal_vinculado_responde_nao() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, modelo) = estado(&dir);
+            state.whatsapp_linked.set_bridge(BridgeView::Connected);
+
+            let resposta = pergunta(&state).await;
+            assert!(resposta.starts_with("nao"), "{resposta}");
+            confere_primeira_rodada(&modelo);
+            let relatorio = modelo.visto(|v| v.relatorio.clone()).expect("relatorio");
+            let json: serde_json::Value = serde_json::from_str(&relatorio).expect("json");
+            assert!(
+                json["channels"]
+                    .as_array()
+                    .expect("lista")
+                    .iter()
+                    .all(|c| c["id"] != "whatsapp_linked"),
+                "{json}"
+            );
+        }
+
+        #[tokio::test]
+        async fn com_a_ponte_caida_responde_nao() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, _modelo) = estado(&dir);
+            vincula(&state);
+            state.whatsapp_linked.set_bridge(BridgeView::Down);
+
+            let resposta = pergunta(&state).await;
+            assert!(resposta.starts_with("nao"), "{resposta}");
+        }
+
+        /// O mesmo "sim", agora pela fiacao inteira do canal: a ponte falsa
+        /// empurra a pergunta, o supervisor marca a ponte como conectada, o
+        /// sink do gateway monta o turno com o piso e o runtime roda a tool.
+        #[tokio::test]
+        async fn pela_ponte_de_verdade_a_pergunta_recebe_sim() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, modelo) = estado(&dir);
+            let (store, key) = vincula(&state);
+            let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher {
+                dir: LinkedPaths::from_config(&state.config)
+                    .expect("DEFAULT_ACCOUNT e valido")
+                    .bridge_dir,
+                roteiro: Roteiro::empurra(PERGUNTA),
+            });
+            supervisionar(
+                &state,
+                LinkedSettings {
+                    enabled: true,
+                    allow: vec![PEER.to_string()],
+                    ..LinkedSettings::default()
+                },
+                store,
+                key,
+                launcher,
+            );
+
+            assert!(
+                ate(|| modelo.visto(|v| v.resposta.is_some())).await,
+                "a pergunta empurrada pela ponte precisa virar turno"
+            );
+            let resposta = modelo.visto(|v| v.resposta.clone()).expect("resposta");
+            assert!(resposta.starts_with("sim"), "{resposta}");
+            confere_primeira_rodada(&modelo);
+            assert!(state.whatsapp_linked.cancelar(), "encerra o supervisor");
+        }
+    }
 }
