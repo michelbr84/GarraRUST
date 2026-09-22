@@ -135,9 +135,9 @@ vier do **mesmo remetente**, na **mesma sessao** e no **mesmo canal**:
 
 Continuam **sem** retomada, e ali a pausa e terminal de proposito: A2A,
 OpenClaw, `POST /api/sessions/{id}/messages`, a resposta do agente no chat
-do workspace (`rest_v1`), `garraia ask` e o `garra_agent` do
-`garraia mcp-server` — ou quem fala e outro agente, ou nao ha remetente que
-o servidor possa provar. Qualquer mensagem no meio encerra o pedido, e
+do workspace (`rest_v1`), as tarefas agendadas (`process_heartbeat`),
+`garraia ask` e o `garra_agent` do `garraia mcp-server` — ou quem fala e
+outro agente, ou nao ha remetente que o servidor possa provar. Qualquer mensagem no meio encerra o pedido, e
 reiniciar o gateway cancela todos. Detalhes em
 [`security/threat-model.md`](security/threat-model.md) §5.16.
 

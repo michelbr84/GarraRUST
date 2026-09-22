@@ -106,7 +106,12 @@ impl std::fmt::Debug for ApprovalScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApprovalScope")
             .field("channel", &self.channel)
-            .field("session_id", &self.session_id)
+            // Em WhatsApp, Signal e LINE o id de sessao carrega o remetente
+            // (`whatsapp-<telefone>`); passa pela mesma mascara do log.
+            .field(
+                "session_id",
+                &garraia_security::mascarar_numeros_longos(&self.session_id),
+            )
             .field("sender", &Redigido(self.sender.len()))
             .finish()
     }
@@ -172,11 +177,28 @@ impl std::fmt::Debug for PendingApproval {
 }
 
 /// Os pedidos pausados do processo, no maximo um por `(canal, sessao)`.
-#[derive(Debug)]
+///
+/// `Debug` manual: a chave do mapa e `(canal, sessao)`, e a sessao pode
+/// carregar o telefone do remetente. O dump mostra so quantos pedidos ha.
 pub struct PendingApprovals {
     inner: Mutex<HashMap<(String, String), PendingApproval>>,
     ttl: Duration,
     capacity: usize,
+}
+
+impl std::fmt::Debug for PendingApprovals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pendentes = self
+            .inner
+            .lock()
+            .map(|m| m.len())
+            .unwrap_or_else(|e| e.into_inner().len());
+        f.debug_struct("PendingApprovals")
+            .field("pendentes", &pendentes)
+            .field("ttl", &self.ttl)
+            .field("capacity", &self.capacity)
+            .finish()
+    }
 }
 
 impl Default for PendingApprovals {
@@ -527,7 +549,8 @@ mod tests {
     /// registro nao mostra o remetente (telefone, user id).
     #[test]
     fn debug_nao_mostra_o_remetente() {
-        let a = escopo("whatsapp", "whatsapp-s1", "+5511987654321");
+        // A forma real da sessao do WhatsApp Cloud: o telefone mora nela.
+        let a = escopo("whatsapp", "whatsapp-+5511987654321", "+5511987654321");
         let dump = format!("{a:?}");
         assert!(!dump.contains("5511987654321"), "{dump}");
         assert!(
@@ -547,7 +570,16 @@ mod tests {
         store.register(&a, "bash", fp("rm x"), Instant::now());
         let dump = format!("{store:?}");
         assert!(!dump.contains("5511987654321"), "{dump}");
-        assert!(dump.contains("bash"), "{dump}");
+        assert!(dump.contains("pendentes: 1"), "{dump}");
+
+        let linked = escopo(
+            "whatsapp_linked",
+            "whatsapp-linked-5511987654321@s.whatsapp.net",
+            "5511987654321@s.whatsapp.net",
+        );
+        let dump = format!("{linked:?}");
+        assert!(!dump.contains("5511987654321"), "{dump}");
+        assert!(dump.contains("4321@s.whatsapp.net"), "{dump}");
     }
 
     /// O registro nunca guarda o assunto cru — so o HMAC.
