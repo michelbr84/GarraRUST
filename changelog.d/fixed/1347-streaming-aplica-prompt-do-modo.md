@@ -11,9 +11,10 @@
   `temperature` do modo continua fora dos dois ramos, e de proposito nesta
   versao: so o `process_message_impl` a manda, e ele so roda pelo heartbeat,
   que nunca tem modo, entao na pratica nenhum turno manda a `temperature`
-  de um modo. Passar a manda-la mudaria o pedido de todo turno com modo
-  (os embutidos declaram de 0.3 a 0.7), e modelo de raciocinio chamado direto
-  recusa temperatura fora do default; `docs/src/modes.md` registra o limite.
+  de um modo. Passar a manda-la mudaria o pedido de todo turno com modo,
+  porque os embutidos declaram de 0.3 a 0.7, e isso fica para quando o
+  provider souber omitir o parametro nos modelos que o recusam;
+  `docs/src/modes.md` registra o limite.
   A persona padrao (PT e
   EN) citava `garra_status` pelo nome, e ela vale tambem em `garraia chat` e
   `garraia ask`, que nunca registram essa ferramenta; a linha ficou neutra
