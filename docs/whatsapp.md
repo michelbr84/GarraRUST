@@ -73,7 +73,18 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia whatsapp status` | diz se ha vinculo e se a sessao abre | 0 vinculado · 69 nao vinculado ou ilegivel |
 | `garraia whatsapp logout` | apaga a sessao e desliga o canal | 0 · 1 cancelado |
 | `garraia whatsapp restore` | devolve o `session.enc.prev` ao lugar | 0 · 69 nao ha arquivada, ou ha sessao em uso · 70 erro interno |
-| `garraia whatsapp allow <numero> [--owner] [--yes]` | autoriza um numero a falar com o GarraIA; funciona sem terminal | 0 · 1 cancelado · 64 `--owner` fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
+| `garraia whatsapp allow <numero> [--owner] [--yes]` | autoriza um numero a falar com o GarraIA; funciona sem terminal | 0 · 1 cancelado · 64 `--owner` fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido (inclusive `*`, ver abaixo) · 70 config ilegivel |
+| `garraia whatsapp users [--json]` | lista quem esta autorizado: papel (`allow`/`owners`) e os quatro ultimos digitos de cada identidade | 0 · 70 config ilegivel |
+| `garraia whatsapp remove <numero> [--yes]` | revoga o acesso: tira a identidade de `allow` **e** de `owners`; dono exige confirmacao | 0 (inclusive quem nao estava na lista) · 1 cancelado · 64 dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
+
+O `users` nunca imprime a identidade inteira — nem na tela, nem no `--json`,
+cujo documento e `{enabled, authorized, owners, users[{role, kind, last4}]}`.
+O numero completo so existe no `config.yml` (0600). Escopo de hoje: listagem
+simples, **sem** filtro por papel e **sem** paginacao.
+
+`garraia whatsapp allow '*'` nao abre o canal para todo mundo: o `*` e
+recusado com 65 e uma mensagem propria, porque essa semantica nao existe — o
+portao e fail-closed e cada identidade entra uma a uma.
 
 `garraia whatsapp link --allow <numero> [--owner]` pre-responde a pergunta do
 numero (e a do dono), mas continua exigindo terminal: o QR se le dali. Num
@@ -313,8 +324,9 @@ garraia whatsapp allow +55 11 98888-0000
   aparelho vinculado e pede confirmacao (default nao). Use outro numero.
 - **Vale sem reiniciar — com duas condicoes.** Com o gateway rodando, `allow`
   e `owners` sao relidos do `config.yml` a cada mensagem: autorizar vale na
-  proxima, e **revogar tambem** — apague o numero da lista no arquivo (nao ha
-  subcomando de revogacao). `enabled: false` no arquivo recusa todo mundo,
+  proxima, e **revogar tambem** — rode `garraia whatsapp remove <numero>`
+  (ou, se preferir editar a mao, apague a entrada das listas no arquivo).
+  `enabled: false` no arquivo recusa todo mundo,
   codigo de pareamento incluso, na mensagem seguinte (a ponte segue conectada
   ate o restart, e o `/api/diagnostics` avisa). As condicoes: o gateway tem de
   ter **subido com o canal ligado** (se o `link` ligou o canal depois, rode
@@ -333,7 +345,10 @@ garraia whatsapp allow +55 11 98888-0000
   mesmo para numero autorizado.
 - `garraia whatsapp status` mostra a ponte, o gateway (rodando ou nao), o canal
   (ligado ou nao), `Autorizados: N · Donos: M` — contagens, nunca numeros — e
-  avisa quando o canal esta ligado com ninguem autorizado. O
+  avisa quando o canal esta ligado com ninguem autorizado. Para saber **quem**
+  sao esses N, `garraia whatsapp users` lista papel e os quatro ultimos
+  digitos de cada um (as linhas de canal/contagens sao as mesmas dos dois
+  comandos, de proposito: uma funcao so). O
   `/api/diagnostics` rebaixa `whatsapp.linked` para `warning` no mesmo caso,
   com o passo `garraia whatsapp allow <numero>`, e o gateway loga um `WARN` ao
   subir com o portao vazio.
@@ -387,7 +402,9 @@ channels:
   perfil mudasse. Sem terminal exige `--yes`; no terminal pergunta, com
   default nao. O `link` so oferece dono em `isolated-pod`, tambem com default
   nao. Tirar o numero de `owners` no arquivo tira o piso do pod na mensagem
-  seguinte, mesmo que ele continue em `allow`.
+  seguinte, mesmo que ele continue em `allow`; ja
+  `garraia whatsapp remove <numero>` tira das **duas** listas, e por isso
+  tambem pede confirmacao quando o numero e dono.
 
 O perfil efetivo do turno e uma funcao pura (`perfil_do_turno`), avaliada
 **depois** de `admitir` e **antes** de montar o `ExecContext`; ela alimenta

@@ -470,7 +470,7 @@ enum WhatsAppCommands {
     /// ligar o canal; o arquivo e reescrito, entao comentarios nao ficam.
     /// Exit codes: 0 ok, 1 cancelado, 64 `--owner` fora de `isolated-pod` ou
     /// sem terminal e sem `--yes`, 65 numero invalido, 70 config ilegivel.
-    /// Revogar e editar o config.yml.
+    /// Revogar e `garra whatsapp remove <numero>`.
     Allow {
         /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
         /// LID `<id>@lid`.
@@ -481,6 +481,35 @@ enum WhatsAppCommands {
         owner: bool,
         /// Confirma o `--owner` sem perguntar (obrigatorio fora de terminal).
         #[arg(long)]
+        yes: bool,
+    },
+    /// Lista quem pode falar com o GarraIA por este WhatsApp (#1393).
+    ///
+    /// So le. Mostra o papel (`allow` ou `owners`) e os QUATRO ULTIMOS
+    /// digitos de cada identidade — nunca o numero inteiro, que fica so no
+    /// `config.yml` (0600). `--json` imprime o mesmo em JSON, para script.
+    /// Exit codes: 0 ok, 70 config ilegivel.
+    Users {
+        /// Saida em JSON (`{enabled, authorized, owners, users[]}`).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove um numero da lista de autorizados (#1394).
+    ///
+    /// O espelho do `allow`: tira de `channels.whatsapp_linked.allow` e de
+    /// `owners`, sem mexer em outro valor e sem desligar o canal; o arquivo e
+    /// reescrito, entao comentarios nao ficam. Remover um DONO exige
+    /// confirmacao — `--yes` fora de terminal. Exit codes: 0 ok (inclusive
+    /// quem nao estava na lista), 1 cancelado, 64 dono sem terminal e sem
+    /// `--yes`, 65 numero invalido, 70 config ilegivel.
+    Remove {
+        /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
+        /// LID `<id>@lid`.
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        /// Confirma a remocao de um dono sem perguntar (obrigatorio fora de
+        /// terminal).
+        #[arg(long, short = 'y')]
         yes: bool,
     },
 }
@@ -1337,7 +1366,8 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
             GlobCommands::Test { .. } => true,
         },
         Commands::WhatsApp { action } => match action {
-            Some(WhatsAppCommands::Status) => true,
+            // `users` so le a config e imprime, como o `status`.
+            Some(WhatsAppCommands::Status | WhatsAppCommands::Users { .. }) => true,
             // Sem subcomando e o menu interativo.
             None
             | Some(
@@ -1345,7 +1375,8 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                 | WhatsAppCommands::Cloud
                 | WhatsAppCommands::Logout
                 | WhatsAppCommands::Restore
-                | WhatsAppCommands::Allow { .. },
+                | WhatsAppCommands::Allow { .. }
+                | WhatsAppCommands::Remove { .. },
             ) => false,
         },
         Commands::Admin { action } => match action {
@@ -1660,6 +1691,13 @@ fn main() -> Result<()> {
                 whatsapp::Action::Allow(whatsapp::Pedido {
                     numero: Some(numero.clone()),
                     owner: *owner,
+                    yes: *yes,
+                })
+            }
+            Some(WhatsAppCommands::Users { json }) => whatsapp::Action::Users { json: *json },
+            Some(WhatsAppCommands::Remove { numero, yes }) => {
+                whatsapp::Action::Remove(whatsapp::PedidoRemocao {
+                    numero: numero.clone(),
                     yes: *yes,
                 })
             }
@@ -3261,6 +3299,8 @@ mod tests {
             &["garra", "skill", "list"],
             &["garra", "glob", "test", "*.rs", "a.rs"],
             &["garra", "whatsapp", "status"],
+            &["garra", "whatsapp", "users"],
+            &["garra", "whatsapp", "users", "--json"],
             &["garra", "ask", "oi"],
             &["garra", "desktop", "--status"],
             &["garra", "desktop", "--no-launch"],
@@ -3292,6 +3332,7 @@ mod tests {
             &["garra", "skill", "install", "u"],
             &["garra", "skill", "remove", "n"],
             &["garra", "whatsapp", "logout"],
+            &["garra", "whatsapp", "remove", "+5511999998888"],
             &["garra", "agents", "status"],
         ] {
             assert!(
