@@ -4,6 +4,7 @@ mod ask;
 mod banner;
 mod binario;
 mod bind_gate;
+mod boot_gate_cli;
 mod capability_prompt;
 mod chat;
 mod chat_input;
@@ -1470,6 +1471,15 @@ fn main() -> Result<()> {
     config_loader.ensure_dirs()?;
     let config = config_loader.load()?;
 
+    // #1247: o MESMO `run_check` do `garraia config check`, uma vez, em todo
+    // `start`/`restart`/`start -d` — sobre a config do arquivo, antes dos
+    // overrides de host/porta e antes de qualquer efeito do boot. Recusa (exit
+    // 78) so pela allowlist fechada; o resto e dito. No daemon os achados vao
+    // para stderr agora, porque depois do fork o log e invisivel ao terminal.
+    if let Commands::Start { daemon, .. } | Commands::Restart { daemon, .. } = &cli.command {
+        boot_gate_cli::rodar(&config_loader, &config, *daemon);
+    }
+
     // Handle daemon mode BEFORE creating the tokio runtime. The fork must
     // happen before any async runtime is initialised, otherwise the child
     // inherits stale kqueue/epoll FDs and spawned child processes fail
@@ -1564,6 +1574,8 @@ async fn async_main(
                 config.voice.enabled = true;
             }
             init_tracing(&effective_level);
+            // #1247: os achados do boot gate, uma linha por achado.
+            boot_gate_cli::logar();
             // GAR-384: Initialize OpenTelemetry tracing + Prometheus metrics.
             // Guard is bound to `_telemetry_guard` so its Drop (which flushes
             // and shuts down the exporter) runs at the end of this scope.
@@ -1613,6 +1625,8 @@ async fn async_main(
             // #1261: um `restart` recusado nao pode derrubar o daemon atual.
             preflight_do_bind(&config.gateway, false);
             init_tracing(&effective_level);
+            // #1247: os achados do boot gate, uma linha por achado.
+            boot_gate_cli::logar();
             #[cfg(feature = "telemetry")]
             let (_telemetry_guard, telemetry_config) = init_telemetry_guard();
             try_stop_daemon(port);
@@ -2536,6 +2550,9 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
         .init();
 
     tracing::info!("daemon started (PID file: {})", pid_path.display());
+    // #1247: o relatorio do boot gate (calculado antes do fork) tambem no log
+    // do daemon — o stderr do pai ja o mostrou ao terminal.
+    boot_gate_cli::logar();
 
     // GAR-384: telemetry guard must outlive the server run.
     #[cfg(feature = "telemetry")]

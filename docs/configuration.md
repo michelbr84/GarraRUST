@@ -233,6 +233,7 @@ Runtime overrides read directly by the loader (not secrets):
 | `GARRAIA_CONFIG_DIR` | config directory | See "Configuration File Location" above. |
 | `GARRAIA_EXECUTION_PROFILE` | `execution.profile` | `standard` \| `isolated-pod`. **Wins over the file**, resolved once at load; `config check` and `/api/diagnostics` report the source (`default` \| `file` \| `env`). Any other value is a load error: the gateway refuses to boot and `config check` reports `Error` (exit 2). Never persisted back to the file by a save. [`execution-profiles.md`](execution-profiles.md). |
 | `GARRAIA_FILE_ROOTS` | adds to `agent.file_roots` | PATH-style list; extra roots for the native file-tool jail (#1244). |
+| `GARRAIA_ALLOW_INVALID_CONFIG` | the boot gate (#1247) | Exactly `1` lets `garraia start`/`restart` boot despite a blocking config `Error` (exit 78 otherwise); any other value (`true`, `0`, ` 1`, empty) counts as unset. The blocking findings are still logged at error level, naming this variable. |
 | `GARRAIA_GATEWAY_API_KEY` | `gateway.api_key` | **Secret.** A non-blank value wins over the file (#1261); blank counts as unset. Applied at load into a field that is never serialized, so a save never writes it to disk. `config check` reports presence only, and warns when it differs from the file key. Required (one or the other) for a non-loopback bind: without a credential `garraia start` refuses to boot (exit 78). |
 | `HOST` / `PORT` | the listener bind | Read by `garraia start` **and** `garraia restart` (flag > env > `127.0.0.1:3888`). `gateway.host` / `gateway.port` in the file are deprecated and never read. |
 
@@ -356,6 +357,33 @@ garraia config check
 Options:
 - `--json` — machine-readable JSON output
 - `--strict` — treat warnings as errors (useful for CI)
+
+### The same check runs at boot (#1247)
+
+Every `garraia start`, `garraia restart` and `garraia start -d` runs the same
+check once, on the loaded config, before anything else happens (fork, PID
+file, stopping the running daemon, bind):
+
+- each `Error` is logged once at error level and each `Warning` once at warn
+  level, followed by a summary line pointing to `garraia config check`. In
+  `start -d` the same lines go to the terminal's stderr before the fork,
+  because afterwards the log file is the only output;
+- the boot is **refused** (exit 78, `EX_CONFIG`) only for an `Error` on a
+  short, closed list of fields that would fail open with nothing downstream
+  to catch them. In v0.4.5 that list is the half-configured TLS pair
+  (`gateway.tls_cert_path` / `gateway.tls_key_path`): with only one of them
+  set the gateway used to serve plain HTTP in silence;
+- every other `Error` (for example an `llm` entry without a resolvable key)
+  is reported but does **not** block the boot, so configs that work today
+  keep working after an update;
+- the `gateway.host` / `gateway.port` findings are not repeated at boot: the
+  bind is judged on the real address by the #1261 refusal
+  ([auth-config.md §5.1](auth-config.md#51-the-gateway-bind-address--what-config-check-sees-vs-what-start-binds)).
+
+An invalid `execution.profile` is still a load error and never reaches this
+check. Out-of-range `memory.retention.interval_hours` / `max_age_days` do not
+block the boot either: the retention worker does not start (and deletes
+nothing), with an error in the log.
 
 ## Advanced Options
 

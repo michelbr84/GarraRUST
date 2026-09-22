@@ -91,8 +91,12 @@ gateway:
 - **Métricas**: mantenha `GARRAIA_METRICS_BIND=127.0.0.1:9464` e use
   `GARRAIA_METRICS_TOKEN`/`GARRAIA_METRICS_ALLOW` se precisar raspar de
   fora (ver `.env.example`).
-- Verifique com `garra config check` após editar — ele valida o schema e
-  reporta a precedência efetiva.
+- Verifique com `garraia config check` após editar — ele valida o schema e
+  reporta a precedência efetiva. Desde a v0.4.5 o mesmo check roda em todo
+  `garraia start`/`restart`/`start -d` (#1247): os achados vão para o log,
+  e TLS configurado pela metade (só `tls_cert_path` ou só `tls_key_path`)
+  **recusa o boot** com exit 78 em vez de servir HTTP puro em silêncio.
+  Escotilha consciente: `GARRAIA_ALLOW_INVALID_CONFIG=1` (exatamente `1`).
 
 ## 2. Confirmação humana para comandos arriscados
 

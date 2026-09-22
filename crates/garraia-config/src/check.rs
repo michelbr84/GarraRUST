@@ -12,6 +12,15 @@
 //!   [`ConfigLoader::load`] itself returns a parse error (not this module's
 //!   responsibility).
 //!
+//! # No boot (#1247)
+//!
+//! `garraia start` / `restart` / `start -d` rodam este mesmo [`run_check`]
+//! uma vez e entregam o resultado a [`crate::boot_gate`]: todo achado e
+//! logado, e so um `Error` da allowlist fechada `BLOQUEIA_O_BOOT` recusa o
+//! boot (exit 78, escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`). Um `Error`
+//! novo aqui NAO recusa boot sozinho: entrar na allowlist e decisao item a
+//! item, com changelog.
+//!
 //! # Redaction invariant
 //!
 //! This module MUST NOT serialize secret material. Specifically it never

@@ -1063,6 +1063,18 @@ impl GatewayServer {
         // TLS support: if cert + key paths are configured and tls feature is enabled,
         // use axum-server with rustls. Otherwise, plain HTTP.
         let use_tls = tls_cert.is_some() && tls_key.is_some();
+        // #1247: so um dos dois caminhos configurado caia em HTTP puro em
+        // silencio — o operador pediu TLS e recebia texto claro. A CLI recusa
+        // o boot nesse caso (allowlist do boot gate); aqui fica o aviso para
+        // quem embute o `GatewayServer` sem passar pela CLI.
+        if let Some(falta) = tls_meio_configurado(tls_cert.as_deref(), tls_key.as_deref()) {
+            warn!(
+                "TLS half-configured: {falta} is missing, so the gateway serves PLAIN HTTP; \
+                 set both gateway.tls_cert_path and gateway.tls_key_path (or neither) — run \
+                 `{} config check`",
+                garraia_common::executavel::nome()
+            );
+        }
 
         // Each branch yields a Result instead of `?`-ing out: the MCP/channel
         // cleanup below must run even when serving fails, otherwise the child
@@ -1198,6 +1210,17 @@ pub async fn build_router_for_test_with_storage(
 /// stdin EOF must not hold the gateway open forever; children are killed when
 /// their transport is dropped regardless.
 const MCP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// #1247: qual campo de TLS falta quando so um dos dois esta configurado,
+/// ou `None` quando os dois estao (TLS) ou nenhum esta (HTTP de proposito).
+/// Os nomes batem com os campos dos achados do `garraia config check`.
+pub fn tls_meio_configurado(cert: Option<&str>, key: Option<&str>) -> Option<&'static str> {
+    match (cert, key) {
+        (Some(_), None) => Some("gateway.tls_key_path"),
+        (None, Some(_)) => Some("gateway.tls_cert_path"),
+        _ => None,
+    }
+}
 
 /// #1261 (decisao A): recusa o boot quando o bind pedido e alcancavel da
 /// rede sem credencial de gateway e sem o opt-out explicito
@@ -1912,6 +1935,20 @@ mod tests {
         ));
         shutdown_subsystems(&state).await;
         assert!(!state.whatsapp_linked.cancelamento_vivo());
+    }
+
+    #[test]
+    fn tls_meio_configurado_nomeia_o_campo_que_falta() {
+        assert_eq!(tls_meio_configurado(None, None), None);
+        assert_eq!(tls_meio_configurado(Some("c"), Some("k")), None);
+        assert_eq!(
+            tls_meio_configurado(Some("c"), None),
+            Some("gateway.tls_key_path")
+        );
+        assert_eq!(
+            tls_meio_configurado(None, Some("k")),
+            Some("gateway.tls_cert_path")
+        );
     }
 
     // ---- #1261: recusa de bind exposto sem credencial --------------------
