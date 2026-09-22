@@ -24,6 +24,8 @@ mod migrate_workspace;
 mod provider_binding;
 mod repo_workflow;
 mod runs_cmd;
+#[cfg(unix)]
+mod sigpipe;
 mod team;
 mod tracing_setup;
 mod ui;
@@ -1009,6 +1011,31 @@ fn log_file_path() -> PathBuf {
     garraia_dir().join("garraia.log")
 }
 
+/// Abre o `garraia.log` que o daemon herda como stdout/stderr.
+///
+/// Em append, nunca `File::create`. O create fazia duas coisas erradas de uma
+/// vez. Truncava: cada `start -d` apagava o log da execucao anterior, justo o
+/// que se quer ler ao reiniciar depois de uma queda. E abria o descritor SEM
+/// `O_APPEND`: esse descritor vira stdout E stderr do daemon pelo `dup2`, e
+/// tudo que escreve cru nele (um `eprintln!`, a mensagem de um panic, um
+/// filho que herde o stderr) escrevia no offset proprio do descritor, que
+/// comeca em 0 — por cima das linhas que o `tracing` ja tinha posto la pelo
+/// `rolling::never`, que abre em append. Era a cabeca rasgada do smoke de
+/// instalacao limpa da v0.4.4 ("Secure MCP Filesystem Server running on
+/// stdio" seguido de meia linha de tracing).
+///
+/// Com `O_APPEND` nos dois escritores, cada `write(2)` vai para o fim do
+/// arquivo, atomicamente, e as execucoes anteriores ficam. O arquivo cresce
+/// sem rotacao — como ja crescia no `start` em foreground, que sempre abriu o
+/// mesmo arquivo em append.
+#[cfg(unix)]
+fn abrir_log_do_daemon(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
 /// Read the PID from the PID file.
 pub(crate) fn read_pid() -> Option<u32> {
     let path = pid_file_path();
@@ -1244,6 +1271,118 @@ fn stderr_is_log_channel(command: &Commands) -> bool {
     )
 }
 
+/// Subcomandos em que SIGPIPE volta ao padrao do Unix (L2 do smoke da
+/// v0.4.4): os que so leem estado e imprimem, onde morrer no primeiro `write`
+/// sem leitor nao deixa nada pela metade — `garra status | head -1` sai em
+/// silencio, como `ls | head`, em vez do panico "failed printing to stdout".
+///
+/// O `match` e exaustivo de proposito, ate a folha: cada enum de subcomando
+/// aninhado tem o proprio `match` sem curinga (nada de `matches!`, `_ =>` ou
+/// `{ .. }` no lugar de um `action`), entao um subcomando novo, de primeiro
+/// nivel ou aninhado, nao compila ate alguem decidir de que lado ele fica — e
+/// o teste `sigpipe_decide_cada_subcomando_aninhado_pelo_nome` varre este
+/// corpo para que ninguem troque isso por um curinga. Ficam de fora, com o
+/// sinal ignorado do runtime do Rust:
+/// - o que roda por tempo indeterminado e nao pode morrer porque um leitor
+///   sumiu: `start`/`restart` (foreground e daemon), `mcp-server`, `chat`;
+/// - o que muda estado (config, memoria, credenciais, instalacao) ou lanca e
+///   conversa com outro processo: morrer no meio dele e deixar trabalho pela
+///   metade, e ai o `EPIPE` como erro tratado e o comportamento certo.
+///
+/// So e chamada no Unix (Windows nao tem SIGPIPE); o teste roda em todos.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn sigpipe_padrao_para(command: &Commands) -> bool {
+    match command {
+        Commands::About | Commands::Status | Commands::Logs { .. } | Commands::Doctor { .. } => {
+            true
+        }
+        // `ask` e one-shot: uma pergunta, uma resposta em stdout, sem estado.
+        Commands::Ask { .. } => true,
+        // So as formas que imprimem; sem flag, `desktop` lanca o aplicativo.
+        Commands::Desktop { status, no_launch } => *status || *no_launch,
+        Commands::Runs { action } => match action {
+            RunsCommands::List { .. } => true,
+        },
+        Commands::Config { action } => match action {
+            ConfigCommands::Check { .. } => true,
+            ConfigCommands::SetModel { .. } | ConfigCommands::SetRouting { .. } => false,
+        },
+        Commands::Memory { action } => match action {
+            MemoryCommands::Stats { .. }
+            | MemoryCommands::List { .. }
+            | MemoryCommands::Search { .. } => true,
+            MemoryCommands::Add { .. }
+            | MemoryCommands::Reindex { .. }
+            | MemoryCommands::Backup { .. }
+            | MemoryCommands::Pin { .. }
+            | MemoryCommands::Ttl { .. }
+            | MemoryCommands::Delete { .. }
+            | MemoryCommands::Compact { .. } => false,
+        },
+        Commands::Mcp { action } => match action {
+            McpCommands::List => true,
+            // Lancam o servidor MCP e conversam com ele.
+            McpCommands::Inspect { .. }
+            | McpCommands::Resources { .. }
+            | McpCommands::Prompts { .. } => false,
+        },
+        Commands::Channel { action } => match action {
+            ChannelCommands::List | ChannelCommands::Status { .. } => true,
+        },
+        Commands::Skill { action } => match action {
+            SkillCommands::List => true,
+            SkillCommands::Install { .. } | SkillCommands::Remove { .. } => false,
+        },
+        Commands::Glob { action } => match action {
+            GlobCommands::Test { .. } => true,
+        },
+        Commands::WhatsApp { action } => match action {
+            Some(WhatsAppCommands::Status) => true,
+            // Sem subcomando e o menu interativo.
+            None
+            | Some(
+                WhatsAppCommands::Link { .. }
+                | WhatsAppCommands::Cloud
+                | WhatsAppCommands::Logout
+                | WhatsAppCommands::Restore
+                | WhatsAppCommands::Allow { .. },
+            ) => false,
+        },
+        Commands::Admin { action } => match action {
+            AdminCommands::Recovery { action } => match action {
+                RecoveryCommands::Start { .. } | RecoveryCommands::Complete { .. } => false,
+            },
+        },
+        Commands::Migrate { action } => match action {
+            MigrateCommands::Openclaw { .. } | MigrateCommands::Workspace { .. } => false,
+        },
+        Commands::Agents { action } => match action {
+            AgentsCommands::Setup { .. }
+            | AgentsCommands::Status
+            | AgentsCommands::Link { .. }
+            | AgentsCommands::Rollback { .. }
+            | AgentsCommands::Web { .. } => false,
+        },
+        #[cfg(feature = "plugins")]
+        Commands::Plugin { action } => match action {
+            PluginCommands::List
+            | PluginCommands::Install { .. }
+            | PluginCommands::Remove { .. }
+            | PluginCommands::Watch => false,
+        },
+        Commands::Start { .. }
+        | Commands::Restart { .. }
+        | Commands::Stop
+        | Commands::McpServer
+        | Commands::Chat { .. }
+        | Commands::Init
+        | Commands::Update { .. }
+        | Commands::Rollback
+        | Commands::MaxPower { .. }
+        | Commands::Verify { .. } => false,
+    }
+}
+
 /// Modo de console por subcomando. Os canais de log (#933) espelham o
 /// arquivo; o REPL interativo fica em Quiet (#1301) — nem WARN cru compete
 /// com o renderer, porque a falha de turno já vira `ErrorCard`, e quem
@@ -1315,6 +1454,16 @@ fn main() -> Result<()> {
     let flag_refs: Vec<&str> = flags.iter().map(String::as_str).collect();
     let args = cli_args::inject_default_subcommand(std::env::args_os().collect(), &flag_refs);
     let cli = Cli::parse_from(args);
+
+    // L2 (smoke da v0.4.4): `garra status | head` entrava em panico com
+    // "failed printing to stdout: Broken pipe". Nos comandos que so leem e
+    // imprimem, SIGPIPE volta ao padrao do Unix ANTES da primeira escrita em
+    // stdout; o gateway, o `mcp-server` e o REPL ficam como estao. Ver
+    // `sigpipe_padrao_para` e o modulo `sigpipe`.
+    #[cfg(unix)]
+    if sigpipe_padrao_para(&cli.command) {
+        sigpipe::restaurar_padrao();
+    }
 
     // Show update notice (non-blocking, from cache)
     if !matches!(cli.command, Commands::Update { .. })
@@ -2549,8 +2698,9 @@ fn start_daemon(config: garraia_config::AppConfig) -> Result<()> {
     let pid_path = pid_file_path();
     let log_path = log_file_path();
 
-    let log_file = File::create(&log_path)
-        .context(format!("failed to create log file: {}", log_path.display()))?;
+    // Append, nao truncate: ver `abrir_log_do_daemon`.
+    let log_file = abrir_log_do_daemon(&log_path)
+        .context(format!("failed to open log file: {}", log_path.display()))?;
     let log_fd = log_file.as_raw_fd();
 
     // First fork: parent exits, child becomes a background process.
@@ -3047,5 +3197,165 @@ mod tests {
         let (host, port) = parsed(&["garra", "start"]);
         assert_eq!(port, 3888, "fallback default port must be 3888");
         assert_eq!(host, "127.0.0.1", "fallback default host must be 127.0.0.1");
+    }
+
+    /// L1 (smoke da v0.4.4): o descritor que o daemon herda como
+    /// stdout/stderr nao pode truncar o log nem escrever no proprio offset.
+    /// O `tracing` escreve pelo SEU descritor (append, `rolling::never`); uma
+    /// escrita crua pelo herdado (panic, `eprintln!`, filho com stderr
+    /// herdado) tem de ir para o fim, depois dele, sem apagar a execucao
+    /// anterior. Com `File::create` a execucao anterior sumia e a escrita
+    /// crua caia no offset 0, por cima da linha do tracing.
+    #[cfg(unix)]
+    #[test]
+    fn log_do_daemon_abre_em_append_sem_truncar_nem_sobrescrever() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("garraia.log");
+        std::fs::write(&path, "execucao anterior\n").expect("semeia o log");
+
+        let mut herdado = abrir_log_do_daemon(&path).expect("abre o log do daemon");
+        let mut do_tracing = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("descritor do tracing");
+        do_tracing
+            .write_all(b"linha do tracing\n")
+            .expect("tracing escreve");
+        herdado
+            .write_all(b"escrita crua\n")
+            .expect("herdado escreve");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("le o log"),
+            "execucao anterior\nlinha do tracing\nescrita crua\n"
+        );
+    }
+
+    /// L2 (smoke da v0.4.4): so os comandos que leem e imprimem ganham
+    /// SIGPIPE padrao. O gateway, o `mcp-server` e o REPL nunca — la um leitor
+    /// que some nao pode matar o processo —, nem o que muda estado.
+    #[test]
+    #[serial]
+    fn sigpipe_padrao_so_nos_comandos_que_leem_e_imprimem() {
+        let cmd = |args: &[&str]| {
+            Cli::try_parse_from(args)
+                .unwrap_or_else(|e| panic!("{args:?} deveria parsear: {e}"))
+                .command
+        };
+        for args in [
+            &["garra", "status"][..],
+            &["garra", "about"],
+            &["garra", "logs"],
+            &["garra", "logs", "-f"],
+            &["garra", "logs", "--path"],
+            &["garra", "doctor", "--json"],
+            &["garra", "runs", "list"],
+            &["garra", "config", "check"],
+            &["garra", "memory", "stats"],
+            &["garra", "memory", "list"],
+            &["garra", "memory", "search", "x"],
+            &["garra", "mcp", "list"],
+            &["garra", "channel", "list"],
+            &["garra", "channel", "status", "telegram"],
+            &["garra", "skill", "list"],
+            &["garra", "glob", "test", "*.rs", "a.rs"],
+            &["garra", "whatsapp", "status"],
+            &["garra", "ask", "oi"],
+            &["garra", "desktop", "--status"],
+            &["garra", "desktop", "--no-launch"],
+        ] {
+            assert!(
+                sigpipe_padrao_para(&cmd(args)),
+                "{args:?} so le e imprime: deveria sair em silencio com stdout fechado"
+            );
+        }
+        for args in [
+            &["garra", "start"][..],
+            &["garra", "start", "-d"],
+            &["garra", "restart"],
+            &["garra", "restart", "-d"],
+            &["garra", "stop"],
+            &["garra", "mcp-server"],
+            &["garra", "chat"],
+            &["garra", "init"],
+            &["garra", "update"],
+            &["garra", "verify"],
+            &["garra", "desktop"],
+            &["garra", "whatsapp"],
+            &["garra", "whatsapp", "link"],
+            &["garra", "mcp", "inspect", "x"],
+            &["garra", "memory", "reindex"],
+            &["garra", "memory", "compact"],
+            &["garra", "memory", "add", "x"],
+            &["garra", "config", "set-model", "--model", "m"],
+            &["garra", "skill", "install", "u"],
+            &["garra", "skill", "remove", "n"],
+            &["garra", "whatsapp", "logout"],
+            &["garra", "agents", "status"],
+        ] {
+            assert!(
+                !sigpipe_padrao_para(&cmd(args)),
+                "{args:?} roda por tempo indeterminado ou muda estado: SIGPIPE segue ignorado"
+            );
+        }
+    }
+
+    /// A decisao de SIGPIPE e exaustiva ate a folha: o compilador so recusa
+    /// um subcomando aninhado novo se o `match` do enum dele nao tiver
+    /// curinga. Este teste prende isso: o corpo de `sigpipe_padrao_para` nao
+    /// usa `matches!` nem `_ =>`, e cada variante de cada enum de subcomando
+    /// (`enum XxxCommands` deste arquivo) aparece la pelo nome — um
+    /// `Commands::Channel { .. } => true` deixaria `ChannelCommands::List`
+    /// sem nome e falharia aqui.
+    #[test]
+    fn sigpipe_decide_cada_subcomando_aninhado_pelo_nome() {
+        let fonte = include_str!("main.rs");
+        let inicio = fonte
+            .find("fn sigpipe_padrao_para(")
+            .expect("sigpipe_padrao_para existe");
+        let corpo = &fonte[inicio..];
+        let corpo = &corpo[..corpo.find("\n}\n").expect("fim da funcao")];
+        assert!(!corpo.contains("matches!"), "matches! esconde variantes");
+        assert!(!corpo.contains("_ =>"), "curinga esconde variantes");
+
+        let mut enums = Vec::new();
+        let mut variantes = 0;
+        for (pos, _) in fonte.match_indices("\nenum ") {
+            let resto = &fonte[pos + "\nenum ".len()..];
+            let nome: String = resto
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if nome == "Commands" || !nome.ends_with("Commands") {
+                continue;
+            }
+            let bloco = &resto[..resto.find("\n}\n").expect("fim do enum")];
+            for linha in bloco.lines() {
+                let Some(v) = linha.strip_prefix("    ") else {
+                    continue;
+                };
+                if !v.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    continue;
+                }
+                let variante: String = v
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                assert!(
+                    corpo.contains(&format!("{nome}::{variante}")),
+                    "{nome}::{variante} nao tem decisao de SIGPIPE explicita"
+                );
+                variantes += 1;
+            }
+            enums.push(nome);
+        }
+        for esperado in ["MemoryCommands", "WhatsAppCommands", "RecoveryCommands"] {
+            assert!(
+                enums.iter().any(|e| e == esperado),
+                "varredura nao achou {esperado}: {enums:?}"
+            );
+        }
+        assert!(variantes >= 40, "varredura achou so {variantes} variantes");
     }
 }

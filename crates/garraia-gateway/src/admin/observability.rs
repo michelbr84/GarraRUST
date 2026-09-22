@@ -41,22 +41,34 @@ pub async fn admin_logs(
             .into_response();
     }
 
-    match std::fs::read_to_string(&log_path) {
-        Ok(content) => {
-            let lines: Vec<&str> = content.lines().rev().take(limit).collect();
-            let lines: Vec<&str> = lines.into_iter().rev().collect();
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"lines": lines, "count": lines.len()})),
-            )
-                .into_response()
-        }
+    match ultimas_linhas_do_log(&log_path, limit) {
+        Ok(lines) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"lines": lines, "count": lines.len()})),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("{e}")})),
         )
             .into_response(),
     }
+}
+
+/// As ultimas `limit` linhas do `garraia.log`, lidas so da cauda.
+///
+/// O log cresce sem rotacao desde que o daemon passou a abrir em append
+/// (#1371), e o descritor que ele herda como stdout/stderr recebe escrita
+/// crua (panic, filho com stderr herdado). Um `read_to_string` do arquivo
+/// inteiro custava memoria e CPU proporcionais a toda a historia do daemon a
+/// cada GET e respondia 500 no primeiro byte que nao fosse UTF-8. A leitura
+/// agora e a mesma do `GET /api/logs`: no maximo `MAX_TAIL_BYTES` do fim, em
+/// UTF-8 lossy.
+fn ultimas_linhas_do_log(path: &std::path::Path, limit: usize) -> std::io::Result<Vec<String>> {
+    let cauda = crate::logs_handler::read_log_tail(path, crate::logs_handler::MAX_TAIL_BYTES)?;
+    let linhas: Vec<&str> = cauda.lines().collect();
+    let inicio = linhas.len().saturating_sub(limit);
+    Ok(linhas[inicio..].iter().map(|l| (*l).to_owned()).collect())
 }
 
 /// GET /admin/api/metrics — current metrics snapshot
@@ -283,5 +295,72 @@ mod tests {
             "chave em branco nao liga o gate"
         );
         assert!(alerta_sem_credencial(&GatewayConfig::default()).is_some());
+    }
+
+    /// #1371: o log do daemon cresce entre restarts. O GET le so a cauda
+    /// (`MAX_TAIL_BYTES`), nunca o arquivo inteiro, e a linha partida pelo
+    /// corte nao aparece.
+    #[test]
+    fn logs_do_admin_leem_so_a_cauda_de_um_log_maior_que_o_teto() {
+        use crate::logs_handler::MAX_TAIL_BYTES;
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("garraia.log");
+        let mut f = std::fs::File::create(&path).expect("cria o log");
+        let mut escrito = 0u64;
+        let mut n = 0u32;
+        while escrito <= 2 * MAX_TAIL_BYTES {
+            let linha = format!("linha {n:08} do daemon\n");
+            f.write_all(linha.as_bytes()).expect("escreve");
+            escrito += linha.len() as u64;
+            n += 1;
+        }
+        drop(f);
+
+        let linhas = ultimas_linhas_do_log(&path, usize::MAX).expect("le a cauda");
+        let bytes: usize = linhas.iter().map(|l| l.len() + 1).sum();
+        assert!(
+            bytes as u64 <= MAX_TAIL_BYTES,
+            "leu {bytes} bytes, acima do teto de {MAX_TAIL_BYTES}"
+        );
+        assert!(
+            !linhas.iter().any(|l| l == "linha 00000000 do daemon"),
+            "a cabeca do arquivo nao pode ser lida"
+        );
+        assert_eq!(
+            linhas.last().map(String::as_str),
+            Some(format!("linha {:08} do daemon", n - 1).as_str()),
+            "a ultima linha e a mais recente"
+        );
+        for l in &linhas {
+            assert!(
+                l.starts_with("linha ") && l.ends_with(" do daemon") && l.len() == 24,
+                "linha partida pelo corte: {l:?}"
+            );
+        }
+
+        let tres = ultimas_linhas_do_log(&path, 3).expect("le 3");
+        assert_eq!(tres.len(), 3);
+        assert_eq!(tres[2], format!("linha {:08} do daemon", n - 1));
+    }
+
+    /// #1371: escrita crua pelo descritor herdado nao e necessariamente
+    /// UTF-8. Um byte invalido vira U+FFFD em vez de 500.
+    #[test]
+    fn logs_do_admin_sobrevivem_a_byte_que_nao_e_utf8() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("garraia.log");
+        std::fs::write(&path, b"antes\nfilho cru \xff aqui\ndepois\n").expect("semeia");
+
+        let linhas = ultimas_linhas_do_log(&path, 100).expect("byte invalido nao derruba");
+        assert_eq!(
+            linhas,
+            vec![
+                "antes".to_owned(),
+                "filho cru \u{FFFD} aqui".to_owned(),
+                "depois".to_owned(),
+            ]
+        );
     }
 }
