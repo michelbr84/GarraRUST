@@ -1561,6 +1561,8 @@ mod tests {
             .expect("sessao");
         std::fs::create_dir_all(paths.bridge_dir.join("node_modules")).expect("deps");
 
+        // Sem mexer em `GARRAIA_CONFIG_DIR` (#1346, causa do flake): o estado
+        // aponta o config dir direto para o tempdir.
         let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
         let Json(report) = diagnostics_handler(State(state)).await;
         let linha = report
