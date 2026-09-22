@@ -413,21 +413,35 @@ const GARRA_STATUS_TOOL: &str = "garra_status";
 /// a #1347 (fatia 2) cada item de `channels` traz `status` (`active` /
 /// `offline`) e sai da mesma funcao do `/api/channels` — canal nao ligado fica
 /// de fora —, e um turno restrito lista em `withheld` o que foi retido.
+///
+/// A lista so cobre canais de mensagens: o web chat, a API, a CLI e o MCP
+/// nunca passam pelo registro de canais do gateway, e a nota diz isso com os
+/// ids que o gateway exclui (`channels_view::FORA_DO_RELATORIO_DO_AGENTE`),
+/// em vez de afirmar que todo canal ausente esta desligado — o usuario do web
+/// chat que perguntava se o web chat estava disponivel ouvia "nao". A
+/// superficie da conversa vai em `session.channel`.
+///
 /// Ferramentas ficam de fora da nota: a lista de ferramentas que o modelo
 /// recebeu no turno e a fonte de verdade para elas.
 pub const NOTA_GARRA_STATUS_PT: &str = "Antes de dizer que nao tem acesso a um canal \
 ou integracao, chame `garra_status` e responda a partir dele. Cada canal da lista \
 `channels` do relatorio traz um `status`: `active` e um canal em que voce esta \
-conectado agora, e `offline` e um canal configurado que esta fora do ar. Um canal \
-ausente da lista nao esta ligado neste Garra. Um campo citado em `withheld` foi \
-retido nesta conversa, e nao esta ausente.";
+conectado agora, e `offline` e um canal configurado que esta fora do ar. A lista \
+cobre so os canais de mensagens: um canal de mensagens ausente dela nao esta ligado \
+neste Garra. O web chat e a API (`web`, `api`) e a CLI e o servidor MCP (`cli`, \
+`mcp`) nunca aparecem nela, e a ausencia deles nao diz nada; o canal desta conversa \
+esta em `session.channel`. Um campo citado em `withheld` foi retido nesta conversa, \
+e nao esta ausente.";
 
 /// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
 pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
 channel or integration, call `garra_status` and answer from it. Each channel in the \
 report's `channels` list carries a `status`: `active` is a channel you are connected \
-to right now, and `offline` is a configured channel that is down. A channel missing \
-from the list is not enabled on this Garra. A field named in `withheld` was held \
+to right now, and `offline` is a configured channel that is down. The list covers \
+messaging channels only: a messaging channel missing from it is not enabled on this \
+Garra. The web chat and the API (`web`, `api`) and the CLI and the MCP server \
+(`cli`, `mcp`) never appear in it, and their absence says nothing; the channel of \
+this conversation is in `session.channel`. A field named in `withheld` was held \
 back in this conversation, and is not missing.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
@@ -9285,7 +9299,13 @@ mod tests {
         #[test]
         fn nota_casa_com_o_formato_do_relatorio_e_nao_fala_de_ferramenta() {
             for nota in [NOTA_GARRA_STATUS_PT, NOTA_GARRA_STATUS_EN] {
-                for campo in ["`channels`", "`status`", "`active`", "`offline`"] {
+                for campo in [
+                    "`channels`",
+                    "`status`",
+                    "`active`",
+                    "`offline`",
+                    "`session.channel`",
+                ] {
                     assert!(nota.contains(campo), "{campo} ausente: {nota}");
                 }
                 let minuscula = nota.to_lowercase();
@@ -9296,11 +9316,40 @@ mod tests {
             }
         }
 
+        /// #1347 (C4): a nota nao afirma que TODO canal ausente esta
+        /// desligado. O web chat, a API, a CLI e o MCP nunca entram na
+        /// lista, e a frase antiga fazia o usuario do web chat ouvir que o
+        /// web chat nao estava disponivel. A afirmacao vale so para canal de
+        /// mensagens, e a nota nomeia as superficies que a lista nao cobre.
+        #[test]
+        fn nota_so_afirma_ausencia_de_canal_de_mensagens() {
+            for (nota, geral, restrita) in [
+                (
+                    NOTA_GARRA_STATUS_PT,
+                    "Um canal ausente da lista",
+                    "um canal de mensagens ausente dela nao esta ligado",
+                ),
+                (
+                    NOTA_GARRA_STATUS_EN,
+                    "A channel missing from the list",
+                    "a messaging channel missing from it is not enabled",
+                ),
+            ] {
+                assert!(!nota.contains(geral), "{nota}");
+                assert!(nota.contains(restrita), "{nota}");
+                for id in ["`web`", "`api`", "`cli`", "`mcp`"] {
+                    assert!(nota.contains(id), "{id}: {nota}");
+                }
+            }
+        }
+
         /// Guarda o `system` e as `tools` da primeira requisicao; responde
         /// em texto (batch e streaming).
         #[derive(Default)]
         struct Captura {
             primeira: Mutex<Option<(Option<String>, Vec<String>)>>,
+            /// `(max_tokens, temperature)` da primeira requisicao.
+            parametros: Mutex<Option<(Option<u32>, Option<f64>)>>,
         }
 
         impl Captura {
@@ -9311,7 +9360,16 @@ mod tests {
                         request.system.clone(),
                         request.tools.iter().map(|t| t.name.clone()).collect(),
                     ));
+                    *self.parametros.lock().expect("lock") =
+                        Some((request.max_tokens, request.temperature));
                 }
+            }
+
+            fn parametros(&self) -> (Option<u32>, Option<f64>) {
+                self.parametros
+                    .lock()
+                    .expect("lock")
+                    .expect("houve requisicao")
             }
 
             fn primeira(&self) -> (Option<String>, Vec<String>) {
@@ -9369,6 +9427,10 @@ mod tests {
             com_tool: bool,
             exec: &ExecContext,
         ) -> (Option<String>, Vec<String>) {
+            rodar(caminho, com_tool, exec).await.primeira()
+        }
+
+        async fn rodar(caminho: Caminho, com_tool: bool, exec: &ExecContext) -> Arc<Captura> {
             let rt = AgentRuntime::new();
             rt.register_tool(stub("file_read"));
             if com_tool {
@@ -9421,7 +9483,32 @@ mod tests {
                         .expect("turno");
                 }
             }
-            provider.primeira()
+            provider
+        }
+
+        /// #1347 (N1): o changelog diz que o streaming e o batch
+        /// (`process_message_with_agent_config`) seguem a mesma precedencia.
+        /// Este teste prende a afirmacao no pedido inteiro que sai para o
+        /// provider, num modo customizado com `temperature` e `max_tokens`
+        /// proprios: o mesmo prompt, o mesmo `max_tokens` do modo e a mesma
+        /// `temperature` nos dois ramos. Hoje nenhum dos dois manda a
+        /// `temperature` do modo — so o `process_message_impl` (heartbeat,
+        /// A2A) manda —, e o que o teste impede e um ramo mudar sem o outro.
+        #[tokio::test]
+        async fn streaming_e_batch_mandam_o_mesmo_pedido_no_modo() {
+            let perfil = crate::modes::ModeProfile::from_custom(
+                crate::modes::AgentMode::Search,
+                "busca-fina",
+                None,
+                &serde_json::json!({}),
+                &serde_json::json!({ "temperature": 0.3, "max_tokens": 8192 }),
+            );
+            let exec = ExecContext::with_custom_profile("busca-fina".to_string(), perfil);
+            let batch = rodar(Caminho::AgentConfig, true, &exec).await;
+            let streaming = rodar(Caminho::Streaming, true, &exec).await;
+            assert_eq!(batch.primeira().0, streaming.primeira().0, "prompt");
+            assert_eq!(batch.parametros(), streaming.parametros());
+            assert_eq!(batch.parametros().0, Some(8192), "max_tokens do modo");
         }
 
         /// O cenario do relato: piso `search` (o do WhatsApp), pergunta sobre

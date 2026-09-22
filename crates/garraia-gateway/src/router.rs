@@ -2220,10 +2220,13 @@ mod tests {
         }
     }
 
-    /// #1347: o `garra_status` e o `/api/channels` dizem o mesmo sobre cada
-    /// canal — as duas superficies chamam `channels_view::channel_rows`. O
-    /// relatorio do agente e o console filtrado aos canais que nao sao
-    /// `optional`, com o mesmo status.
+    /// #1347: o `garra_status` e o `/api/channels` leem os mesmos fatos sobre
+    /// cada canal — as duas superficies chamam `channels_view::channel_rows`.
+    /// Sobre quem esta `active` eles concordam exatamente. O relatorio do
+    /// agente so deixa de fora o que ninguem ligou na config (C2): um
+    /// Telegram configurado e caido sai `offline` nos dois; o Discord que
+    /// ninguem configurou sai `offline` so no console (a pilula de "falta o
+    /// segredo") e nao aparece no relatorio.
     #[tokio::test]
     async fn api_channels_e_garra_status_concordam_sobre_cada_canal() {
         use garraia_agents::tools::Tool;
@@ -2231,10 +2234,14 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         vincula(dir.path());
-        let config = AppConfig {
+        let mut config = AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
+        config.channels.insert(
+            "meu-telegram".to_string(),
+            serde_json::from_value(serde_json::json!({ "type": "telegram" })).expect("canal"),
+        );
         let state: SharedState = Arc::new(crate::state::AppState::with_config_dir(
             config,
             Arc::new(AgentRuntime::new()),
@@ -2249,11 +2256,10 @@ mod tests {
             axum::Extension(Arc::new(push.clone())),
         )
         .await;
-        let console: Vec<(String, String)> = body["channels"]
+        let console: std::collections::BTreeMap<String, String> = body["channels"]
             .as_array()
             .expect("lista")
             .iter()
-            .filter(|c| c["status"] != "optional")
             .map(|c| (c["id"].to_string(), c["status"].to_string()))
             .collect();
 
@@ -2271,20 +2277,46 @@ mod tests {
             .await
             .expect("executa");
         let json: serde_json::Value = serde_json::from_str(&out.content).expect("json");
-        let agente: Vec<(String, String)> = json["channels"]
+        let agente: std::collections::BTreeMap<String, String> = json["channels"]
             .as_array()
             .expect("lista")
             .iter()
             .map(|c| (c["id"].to_string(), c["status"].to_string()))
             .collect();
 
-        assert_eq!(agente, console);
-        assert!(
-            agente
-                .iter()
-                .any(|(id, st)| id == "\"whatsapp_linked\"" && st == "\"active\""),
-            "{agente:?}"
+        let ativos = |m: &std::collections::BTreeMap<String, String>| -> Vec<String> {
+            m.iter()
+                .filter(|(_, st)| st.as_str() == "\"active\"")
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        assert_eq!(
+            ativos(&agente),
+            ativos(&console),
+            "{agente:?} x {console:?}"
         );
+        assert_eq!(
+            agente.get("\"whatsapp_linked\"").map(String::as_str),
+            Some("\"active\"")
+        );
+        assert_eq!(
+            (
+                agente.get("\"telegram\"").map(String::as_str),
+                console.get("\"telegram\"").map(String::as_str)
+            ),
+            (Some("\"offline\""), Some("\"offline\"")),
+            "configurado e caido: offline nos dois"
+        );
+        assert_eq!(
+            console.get("\"discord\"").map(String::as_str),
+            Some("\"offline\""),
+            "o console mantem a regra antiga"
+        );
+        assert!(!agente.contains_key("\"discord\""), "{agente:?}");
+        for (id, st) in &agente {
+            assert!(console.contains_key(id), "{id} fora do console");
+            assert!(st == "\"active\"" || st == "\"offline\"", "{id}: {st}");
+        }
     }
 
     /// Os quatro push nomeados. Se um deles for reclassificado como Pull

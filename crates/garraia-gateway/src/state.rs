@@ -199,6 +199,16 @@ pub struct SessionState {
     pub project_name: Option<String>,
     /// Phase 1.3: Project ID linking this session to a registered project.
     pub project_id: Option<String>,
+    /// #1347: toda superficie que ja atendeu um turno desta sessao — o nome
+    /// que o ponto de entrada passa a [`AppState::hydrate_session_history`] /
+    /// [`AppState::persist_turn`] (`"telegram"`, `"web"`, `"mobile"`...).
+    ///
+    /// Diferente de `channel_id`, que e o ULTIMO a escrever, isto so
+    /// cresce: uma sessao compartilhada (Chat Sync, VS Code + Telegram) guarda
+    /// os dois nomes, e um turno local nao apaga o fato de que um remetente
+    /// remoto le esta conversa. E o que o `garra_status` consulta para decidir
+    /// se retem o que e do operador (ver `channels_view::sessao_do_operador`).
+    pub canais_dos_turnos: std::collections::BTreeSet<String>,
 }
 
 /// Agent configuration override for a session.
@@ -503,6 +513,7 @@ impl AppState {
                 working_dir: None,
                 project_name: None,
                 project_id: None,
+                canais_dos_turnos: std::collections::BTreeSet::new(),
             },
         );
     }
@@ -600,6 +611,7 @@ impl AppState {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             if let Some(channel) = channel_id {
                 session.channel_id = Some(channel.to_string());
+                session.canais_dos_turnos.insert(channel.to_string());
             }
             if let Some(user) = user_id {
                 session.user_id = Some(user.to_string());
@@ -700,6 +712,7 @@ impl AppState {
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             if let Some(channel) = channel_id {
                 session.channel_id = Some(channel.to_string());
+                session.canais_dos_turnos.insert(channel.to_string());
             }
             if let Some(user) = user_id {
                 session.user_id = Some(user.to_string());

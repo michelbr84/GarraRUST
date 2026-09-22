@@ -770,6 +770,38 @@ impl SessionStore {
         Ok(result)
     }
 
+    /// Todas as fontes (`source`) com chave para esta sessao, sem repeticao e
+    /// em ordem lexica (#1347).
+    ///
+    /// O `garra_status` precisa saber se uma sessao ja foi tocada por um canal
+    /// remoto: a sessao do Telegram resolvida por `resolve_session` tem id
+    /// UUID, sem prefixo de canal, e a unica marca persistente de que ela e
+    /// do Telegram e a linha daqui. Uma sessao compartilhada (Chat Sync: o
+    /// VS Code e o Telegram na mesma conversa) tem uma linha por fonte, e a
+    /// consulta devolve todas — [`Self::get_external_key_for_session`] so
+    /// devolveria a primeira.
+    pub fn get_sources_for_session(&self, session_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT source FROM chat_session_keys \
+                 WHERE session_id = ?1 ORDER BY source",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare source query: {e}")))?;
+
+        let rows = stmt
+            .query_map(params![session_id], |row| row.get::<_, String>(0))
+            .map_err(|e| Error::Database(format!("failed to query session sources: {e}")))?;
+
+        let mut fontes = Vec::new();
+        for row in rows {
+            fontes.push(
+                row.map_err(|e| Error::Database(format!("failed to read session source: {e}")))?,
+            );
+        }
+        Ok(fontes)
+    }
+
     /// Delete a session key mapping.
     pub fn delete_session_key(&self, source: &str, external_id: &str) -> Result<()> {
         self.conn
@@ -3886,6 +3918,51 @@ mod tests {
             store.latest_session_id("canal-fantasma").expect("latest"),
             None,
             "canal sem sessao nenhuma nao tem alvo"
+        );
+    }
+
+    /// #1347: a sessao do Telegram resolvida por UUID so e reconhecivel pela
+    /// linha em `chat_session_keys`. Uma sessao compartilhada tem uma fonte
+    /// por canal, e a consulta devolve todas — nao so a primeira.
+    #[test]
+    fn fontes_da_sessao_voltam_todas_sem_repeticao() {
+        let store = SessionStore::in_memory().expect("store");
+        let meta = serde_json::json!({});
+        for sid in ["sessao-uuid", "outra"] {
+            store
+                .upsert_session(sid, "canal", "user", &meta)
+                .expect("sessao");
+        }
+        assert_eq!(
+            store
+                .get_sources_for_session("sessao-uuid")
+                .expect("fontes"),
+            Vec::<String>::new(),
+            "sessao sem chave nenhuma"
+        );
+        store
+            .upsert_session_key("sessao-uuid", "vscode", "workspace-1")
+            .expect("chave");
+        store
+            .upsert_session_key("sessao-uuid", "telegram", "123456")
+            .expect("chave");
+        store
+            .upsert_session_key("sessao-uuid", "telegram", "654321")
+            .expect("chave");
+        store
+            .upsert_session_key("outra", "discord", "999")
+            .expect("chave");
+        assert_eq!(
+            store
+                .get_sources_for_session("sessao-uuid")
+                .expect("fontes"),
+            vec!["telegram".to_string(), "vscode".to_string()]
+        );
+        assert_eq!(
+            store
+                .get_sources_for_session("inexistente")
+                .expect("fontes"),
+            Vec::<String>::new()
         );
     }
 }

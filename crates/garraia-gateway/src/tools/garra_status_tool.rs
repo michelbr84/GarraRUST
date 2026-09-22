@@ -21,7 +21,14 @@
 //! `whatsapp_linked` e os canais push nunca entram — e o Garra conectado ao
 //! WhatsApp respondia que nao tinha acesso ao WhatsApp.
 //!
-//! ## Turno restrito ou canal remoto (#1347, fatia 3)
+//! So entram canais de mensagens que o operador ligou
+//! ([`crate::channels_view::ChannelRow::status_do_agente`]): numa instalacao
+//! nova a lista e vazia, e nao uma fila de `offline` que o modelo lia como
+//! "configurado e caido". O web chat, a API, a CLI e o MCP nunca entram
+//! ([`crate::channels_view::FORA_DO_RELATORIO_DO_AGENTE`]); a superficie da
+//! conversa vai em `session.channel`.
+//!
+//! ## Turno restrito ou sessao que nao e do operador (#1347, fatia 3)
 //!
 //! No piso somente leitura de um canal (o `search` do WhatsApp) quem pergunta
 //! nao e necessariamente o operador: e qualquer remetente que o portao do
@@ -30,9 +37,12 @@
 //! dos `mcp_servers` e a versao exata (sai so `major.minor`) — e diz o que
 //! reteve em `withheld`, para o modelo nao confundir "retido" com "nao ha".
 //! O turno conta como restrito quando o portao do runtime restringe por
-//! whitelist ([`turno_restrito`]) OU quando a sessao e de um canal remoto
-//! ([`crate::channels_view::is_remote_channel`]). O `session.id` e mascarado
-//! sempre: o do WhatsApp e o numero de telefone inteiro.
+//! whitelist ([`turno_restrito`]) OU quando a sessao nao e provadamente do
+//! operador ([`crate::channels_view::sessao_do_operador`]) — decidido pelo
+//! que os pontos de entrada gravaram sobre a sessao, e nunca pelo prefixo
+//! do id, que a sessao do Telegram por UUID nao tem. Sessao desconhecida e
+//! restrita. O `session.id` e mascarado sempre: o do WhatsApp e o numero de
+//! telefone inteiro.
 //!
 //! [`turno_restrito`]: garraia_agents::tools::turn_tools::turno_restrito
 
@@ -129,11 +139,11 @@ impl Tool for GarraStatusTool {
     fn description(&self) -> &str {
         "Describes the Garra runtime you are running in: version, uptime, active \
          provider and model, the tools available in this turn, advertised features, \
-         each channel with its status (`active` = connected now, `offline` = configured \
-         but down), the execution profile, MCP servers, and this session's channel and \
-         mode. Use it whenever the user asks what you are, what you can do, which \
-         channels or integrations you have, or how you are configured — instead of \
-         guessing or saying you cannot inspect yourself. Takes no input."
+         each enabled messaging channel with its status (`active` = connected now, \
+         `offline` = configured but down), the execution profile, MCP servers, and this \
+         session's channel and mode. Use it whenever the user asks what you are, what \
+         you can do, which channels or integrations you have, or how you are configured \
+         — instead of guessing or saying you cannot inspect yourself. Takes no input."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -149,12 +159,13 @@ impl Tool for GarraStatusTool {
             return Ok(ToolOutput::error("gateway state is gone (shutting down?)"));
         };
 
-        let canal_da_sessao = crate::channels_view::channel_of_session(&ctx.session_id);
+        let canal_da_sessao = crate::channels_view::rotulo_da_sessao(&state, &ctx.session_id);
         // Os dois sinais valem: o portao do turno (piso somente leitura,
-        // modo restrito) e o canal da sessao. Fora de um turno do runtime
-        // (`None`) nao ha portao a consultar e vale so o canal.
+        // modo restrito) e quem fala na sessao. Fora de um turno do runtime
+        // (`None`) nao ha portao a consultar e vale so a sessao — que, sem
+        // superficie gravada, ja e restrita (fail-closed).
         let restrito = garraia_agents::tools::turn_tools::turno_restrito().unwrap_or(false)
-            || canal_da_sessao.is_some_and(crate::channels_view::is_remote_channel);
+            || !crate::channels_view::sessao_do_operador(&state, &ctx.session_id).await;
 
         let provider = state.agents.default_provider_id();
         let model = provider
@@ -181,18 +192,20 @@ impl Tool for GarraStatusTool {
         tools.sort();
 
         let features = feature_flags(&feature_inputs(&state));
-        // A mesma leitura do `/api/channels`. Canal `optional` (ninguem
-        // ligou) fica de fora: o relatorio lista o que existe neste Garra.
+        // A mesma leitura do `/api/channels`, com o status do agente: canal
+        // que ninguem ligou na config fica de fora (#1347, C2), e as
+        // superficies que nao sao canal de mensagens tambem (C4).
         let channels: Vec<serde_json::Value> =
             crate::channels_view::channel_rows(&state, self.push)
                 .await
                 .into_iter()
-                .filter(|row| row.status != "optional")
-                .map(|row| {
-                    serde_json::json!({
-                        "id": row.id,
-                        "name": row.display_name,
-                        "status": row.status,
+                .filter_map(|row| {
+                    row.status_do_agente.map(|status| {
+                        serde_json::json!({
+                            "id": row.id,
+                            "name": row.display_name,
+                            "status": status,
+                        })
                     })
                 })
                 .collect();
@@ -309,6 +322,52 @@ mod tests {
         GarraStatusTool::new(st, PushMounted::default())
     }
 
+    /// Grava `sessao-teste` como o web chat grava antes de um turno (#1347,
+    /// C1): sem superficie gravada a sessao e desconhecida, e restrita.
+    async fn sessao_local(st: &Arc<AppState>) {
+        st.hydrate_session_history("sessao-teste", Some("web"), None)
+            .await;
+    }
+
+    /// Estado com `sessions.db` e `chat_session_manager`, como o boot monta
+    /// quando ha banco — e o que faz o Telegram resolver sessao por UUID.
+    fn state_com_banco(dir: &std::path::Path) -> Arc<AppState> {
+        state_com_banco_e(config_no(dir), dir)
+    }
+
+    fn state_com_banco_e(config: AppConfig, dir: &std::path::Path) -> Arc<AppState> {
+        let store = garraia_db::SessionStore::open(&dir.join("sessions.db")).expect("store");
+        let store = Arc::new(tokio::sync::Mutex::new(store));
+        let mut st = AppState::with_config_dir(
+            config,
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+            dir,
+        );
+        st.set_session_store(Arc::clone(&store));
+        st.set_chat_session_manager(Arc::new(garraia_db::ChatSessionManager::new(store)));
+        Arc::new(st)
+    }
+
+    /// O relatorio de um turno aberto (portao sem restricao) na sessao
+    /// `sid`, com um diretorio de trabalho plantado.
+    async fn relatorio_aberto_em(st: &Arc<AppState>, sid: &str) -> (serde_json::Value, String) {
+        let ctx = ctx_na_sessao(sid, Some("/home/operador/projeto-plantado"));
+        relatorio_no_turno(&tool(st), &ctx, false).await
+    }
+
+    fn e_restrito(json: &serde_json::Value, texto: &str) -> bool {
+        let retido = json["withheld"] == serde_json::json!(RETIDOS_NO_TURNO_RESTRITO)
+            && json["session"]["working_dir"].is_null()
+            && json["providers"].is_null()
+            && json["mcp_servers"].is_null()
+            && !texto.contains("projeto-plantado");
+        let aberto = json["withheld"] == serde_json::json!([])
+            && json["session"]["working_dir"] == "/home/operador/projeto-plantado";
+        assert!(retido != aberto, "nem restrito nem aberto: {json}");
+        retido
+    }
+
     async fn relatorio(tool: &GarraStatusTool, ctx: &ToolContext) -> serde_json::Value {
         let out = tool
             .execute(ctx, serde_json::json!({}))
@@ -384,11 +443,12 @@ mod tests {
         st.agents.register_tool(Box::new(tool(&st)));
         let tool = tool(&st);
 
+        sessao_local(&st).await;
         let json = relatorio(&tool, &ctx(Some("/tmp/garra-projeto"))).await;
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(json["session"]["id"], "sessao-teste");
         assert_eq!(json["session"]["working_dir"], "/tmp/garra-projeto");
-        assert!(json["session"]["channel"].is_null());
+        assert_eq!(json["session"]["channel"], "web");
         assert_eq!(json["execution_profile"], "standard");
         assert_eq!(json["mcp_servers"], serde_json::json!([]));
         assert_eq!(json["withheld"], serde_json::json!([]));
@@ -553,8 +613,9 @@ mod tests {
         assert_eq!(linha["status"], "offline", "{json}");
     }
 
-    /// Canal push montado sai `active`; os push que nao subiram e precisam de
-    /// segredo saem `offline`, como no `/api/channels`.
+    /// Canal push montado sai `active`. O push que ninguem configurou nao
+    /// aparece — no `/api/channels` ele segue `offline`, com a pilula de
+    /// "falta o segredo" (#1347, C2).
     #[tokio::test]
     async fn canal_push_montado_sai_active() {
         let st = state();
@@ -568,11 +629,96 @@ mod tests {
             "active",
             "{json}"
         );
+        assert!(canal(&json, "teams").is_none(), "{json}");
+    }
+
+    // ─── #1347 (C2): canal que ninguem ligou nao entra ────────────────────
+
+    /// Instalacao nova: nenhum canal de mensagens foi ligado, e o relatorio
+    /// nao lista nenhum. Antes saiam oito `offline` (os que precisam de
+    /// segredo), e o modelo dizia que estavam configurados e fora do ar.
+    #[tokio::test]
+    async fn instalacao_nova_nao_lista_canal_nenhum() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com(config_no(dir.path()));
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        assert_eq!(json["channels"], serde_json::json!([]), "{json}");
+
+        // O console nao mudou: ali eles seguem `offline`.
+        let rows = crate::channels_view::channel_rows(&st, PushMounted::default()).await;
+        let telegram = rows.iter().find(|r| r.id == "telegram").expect("linha");
+        assert_eq!(telegram.status, "offline");
+        assert_eq!(telegram.status_do_agente, None);
+    }
+
+    /// Ligado na config e fora do ar: `offline`, inclusive o canal que nao
+    /// precisa de segredo (o console chama o IRC de `optional`). Desligado com
+    /// `enabled: false` nao e ligado.
+    #[tokio::test]
+    async fn canal_ligado_e_fora_do_ar_sai_offline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_no(dir.path());
+        for (nome, secao) in [
+            ("meu-telegram", serde_json::json!({ "type": "telegram" })),
+            ("meu-irc", serde_json::json!({ "type": "irc" })),
+            (
+                "teams-velho",
+                serde_json::json!({ "type": "teams", "enabled": false }),
+            ),
+        ] {
+            config.channels.insert(
+                nome.to_string(),
+                serde_json::from_value(secao).expect("canal"),
+            );
+        }
+        let st = state_com(config);
+        let json = relatorio(&tool(&st), &ctx(None)).await;
         assert_eq!(
-            canal(&json, "teams").expect("push sem canal")["status"],
+            canal(&json, "telegram").expect("ligado")["status"],
             "offline",
             "{json}"
         );
+        assert_eq!(
+            canal(&json, "irc").expect("ligado")["status"],
+            "offline",
+            "{json}"
+        );
+        assert!(canal(&json, "teams").is_none(), "desligado: {json}");
+        assert!(canal(&json, "discord").is_none(), "nao configurado: {json}");
+    }
+
+    // ─── #1347 (C4): o que a lista nao cobre ──────────────────────────────
+
+    /// `web`, `api`, `cli` e `mcp` nunca entram na lista — nem com uma secao
+    /// de config com esse `type` — e a nota do runtime diz isso com os
+    /// mesmos ids, e aponta `session.channel` para a superficie da conversa.
+    #[tokio::test]
+    async fn superficies_sem_canal_ficam_fora_e_a_nota_diz_isso() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_no(dir.path());
+        for id in crate::channels_view::FORA_DO_RELATORIO_DO_AGENTE {
+            config.channels.insert(
+                format!("secao-{id}"),
+                serde_json::from_value(serde_json::json!({ "type": id })).expect("canal"),
+            );
+        }
+        let st = state_com(config);
+        st.hydrate_session_history("sessao-teste", Some("web"), None)
+            .await;
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        for id in crate::channels_view::FORA_DO_RELATORIO_DO_AGENTE {
+            assert!(canal(&json, id).is_none(), "{id}: {json}");
+        }
+        assert_eq!(json["session"]["channel"], "web");
+        for nota in [
+            garraia_agents::NOTA_GARRA_STATUS_PT,
+            garraia_agents::NOTA_GARRA_STATUS_EN,
+        ] {
+            for id in crate::channels_view::FORA_DO_RELATORIO_DO_AGENTE {
+                assert!(nota.contains(&format!("`{id}`")), "{id}: {nota}");
+            }
+            assert!(nota.contains("`session.channel`"), "{nota}");
+        }
     }
 
     /// `mcp_servers`: nome, estado e contagem — e nada da config do servidor
@@ -609,6 +755,7 @@ mod tests {
         );
         state.mcp_manager_arc = Some(mgr);
         let st = Arc::new(state);
+        sessao_local(&st).await;
         let tool = tool(&st);
         let out = tool
             .execute(&ctx(None), serde_json::json!({}))
@@ -687,10 +834,11 @@ mod tests {
     }
 
     /// O portao restrito do turno (o piso `search`) basta, mesmo numa sessao
-    /// sem prefixo de canal. Fora dele, o mesmo contexto recebe tudo.
+    /// do web chat. Fora dele, o mesmo contexto recebe tudo.
     #[tokio::test]
     async fn portao_restrito_retem_diretorio_provedores_e_versao_exata() {
         let st = state();
+        sessao_local(&st).await;
         let tool = tool(&st);
         let ctx = ctx(Some("/home/operador/projeto"));
 
@@ -717,6 +865,112 @@ mod tests {
         assert!(restrito["channels"].is_array());
         assert!(restrito["tools"].is_array());
         assert_eq!(restrito["execution_profile"], "standard");
+    }
+
+    // ─── #1347 (C1): quem fala na sessao vem do que foi gravado ───────────
+
+    /// O achado da revisao: a sessao do Telegram com `chat_session_manager`
+    /// e um UUID, sem prefixo, e o relatorio a tratava como local — qualquer
+    /// remetente que o portao do Telegram deixou passar recebia diretorio,
+    /// provedores e servidores MCP. Agora a superficie gravada no turno decide,
+    /// e a chave de `chat_session_keys` mantem a sessao restrita mesmo depois
+    /// de um turno local nela (Chat Sync) e de um restart.
+    #[tokio::test]
+    async fn sessao_do_telegram_por_uuid_e_restrita() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com_banco(dir.path());
+        let sid = st.telegram_session_id(-1001234567890, Some(42)).await;
+        assert!(
+            uuid::Uuid::parse_str(&sid).is_ok(),
+            "com o manager a sessao e um UUID: {sid}"
+        );
+        assert_eq!(crate::channels_view::channel_of_session(&sid), None);
+
+        // O turno como o `bootstrap::telegram` roda: hidrata, depois executa.
+        st.hydrate_session_history(&sid, Some("telegram"), Some("42"))
+            .await;
+        let (json, texto) = relatorio_aberto_em(&st, &sid).await;
+        assert!(e_restrito(&json, &texto), "{json}");
+        assert_eq!(json["session"]["channel"], "telegram");
+
+        // O operador continua a mesma conversa pelo VS Code (Chat Sync): a
+        // conversa ainda e lida pelo Telegram, e continua restrita.
+        st.hydrate_session_history(&sid, Some("vscode"), None).await;
+        let (json, texto) = relatorio_aberto_em(&st, &sid).await;
+        assert!(e_restrito(&json, &texto), "{json}");
+
+        // Restart: a memoria esqueceu o Telegram, o banco nao.
+        st.sessions.remove(&sid);
+        st.hydrate_session_history(&sid, Some("vscode"), None).await;
+        let (json, texto) = relatorio_aberto_em(&st, &sid).await;
+        assert!(e_restrito(&json, &texto), "{json}");
+    }
+
+    /// Sessao que nenhum ponto de entrada gravou: desconhecida, restrita —
+    /// dentro e fora de um turno do runtime.
+    #[tokio::test]
+    async fn sessao_desconhecida_e_restrita() {
+        let st = state();
+        let (json, texto) = relatorio_aberto_em(&st, "sessao-que-ninguem-gravou").await;
+        assert!(e_restrito(&json, &texto), "{json}");
+        assert!(json["session"]["channel"].is_null(), "{json}");
+        let fora = relatorio(
+            &tool(&st),
+            &ctx_na_sessao("sessao-que-ninguem-gravou", Some("/home/operador/x")),
+        )
+        .await;
+        assert!(fora["session"]["working_dir"].is_null(), "{fora}");
+        assert_eq!(
+            fora["withheld"],
+            serde_json::json!(RETIDOS_NO_TURNO_RESTRITO)
+        );
+    }
+
+    /// Cada superficie local ve tudo; o app mobile (conta aberta) e o A2A
+    /// (outro agente) nao.
+    #[tokio::test]
+    async fn so_superficie_local_ve_o_que_e_do_operador() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com_banco(dir.path());
+        for local in ["web", "api", "vscode", "desktop"] {
+            let sid = format!("sessao-{local}");
+            st.hydrate_session_history(&sid, Some(local), None).await;
+            let (json, texto) = relatorio_aberto_em(&st, &sid).await;
+            assert!(!e_restrito(&json, &texto), "{local}: {json}");
+            assert_eq!(json["session"]["channel"], local);
+        }
+        for remoto in ["mobile", "a2a", "openclaw", "discord"] {
+            let sid = format!("sem-prefixo-{remoto}");
+            st.hydrate_session_history(&sid, Some(remoto), Some("alguem"))
+                .await;
+            let (json, texto) = relatorio_aberto_em(&st, &sid).await;
+            assert!(e_restrito(&json, &texto), "{remoto}: {json}");
+        }
+        // Um turno local depois nao apaga o remoto que ja leu a conversa:
+        // a superficie gravada so acumula (sem chave nem prefixo aqui).
+        st.hydrate_session_history("sem-prefixo-a2a", Some("api"), None)
+            .await;
+        let (json, texto) = relatorio_aberto_em(&st, "sem-prefixo-a2a").await;
+        assert!(e_restrito(&json, &texto), "{json}");
+        // Prefixo de canal remoto vence uma superficie local gravada depois.
+        st.hydrate_session_history("discord-123456789", Some("api"), None)
+            .await;
+        let (json, texto) = relatorio_aberto_em(&st, "discord-123456789").await;
+        assert!(e_restrito(&json, &texto), "{json}");
+    }
+
+    /// Com o opt-out do #1261 e sem chave, o web chat responde a quem
+    /// alcanca a porta: "e o web chat" deixa de provar "e o operador".
+    #[tokio::test]
+    async fn porta_aberta_sem_chave_restringe_ate_o_web_chat() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = config_no(dir.path());
+        config.gateway.allow_unauthenticated_network_bind = true;
+        let st = state_com_banco_e(config, dir.path());
+        st.hydrate_session_history("sessao-web", Some("web"), None)
+            .await;
+        let (json, texto) = relatorio_aberto_em(&st, "sessao-web").await;
+        assert!(e_restrito(&json, &texto), "{json}");
     }
 
     /// Varredura: uma config cheia de segredo plantado (token de bot, chave
@@ -818,9 +1072,11 @@ mod tests {
     }
 
     /// #1347: o `server.rs` registra `garra_status` DEPOIS de montar os
-    /// canais push, e passa as contagens deles. Registrada antes (onde
-    /// ficava), a tool so poderia receber zero canais push e diria
-    /// `offline` para um webhook que esta respondendo.
+    /// canais push, e passa as contagens deles — registrada antes, a tool so
+    /// poderia receber zero canais push e diria `offline` para um webhook
+    /// que esta respondendo. E ANTES do primeiro canal pull conectar (C3):
+    /// cada pull roda turno assim que conecta, e um turno sem a tool
+    /// respondia que nao conseguia se inspecionar.
     #[test]
     fn server_registra_a_tool_depois_dos_canais_push_e_com_as_contagens() {
         let fonte = include_str!("../server.rs");
@@ -836,6 +1092,34 @@ mod tests {
             "um registro so"
         );
         assert!(registro > push, "registro antes dos canais push");
+        // Todo ponto em que um canal pull passa a rodar turno, dentro de
+        // `run` — o `spawn_channel_connect_retry`, la em cima, e so a
+        // definicao do retry.
+        let inicio = fonte
+            .find("let state = Arc::new(state);")
+            .expect("o run compartilha o estado");
+        assert!(registro > inicio, "registro antes do Arc do estado");
+        for pull in [
+            "spawn_openclaw_router(Arc::clone(&state)",
+            "build_discord_channels(&state.config, &state)",
+            "build_telegram_channels(&state.config, &state)",
+            "build_irc_channels(&state.config, &state)",
+            "build_signal_channels(&state.config, &state)",
+            "build_matrix_channels(&state.config, &state)",
+            "build_slack_channels(&state.config, &state)",
+            "build_imessage_channels(&state.config, &state)",
+            "crate::bootstrap::spawn_whatsapp_linked(&state)",
+            "channel.connect().await",
+        ] {
+            let pos = fonte[inicio..]
+                .find(pull)
+                .map(|p| inicio + p)
+                .unwrap_or_else(|| panic!("server.rs nao tem mais `{pull}`"));
+            assert!(
+                registro < pos,
+                "garra_status registrada depois de `{pull}`: turnos desse canal rodariam sem a tool"
+            );
+        }
         let chamada = &fonte[registro..];
         let fim = chamada.find(";").expect("fim da chamada");
         assert!(

@@ -699,6 +699,93 @@ impl GatewayServer {
 
         let state = Arc::new(state);
 
+        // Build WhatsApp channels (webhook-driven — no persistent connection)
+        let whatsapp_channels = build_whatsapp_channels(&state.config, &state);
+        for channel in &whatsapp_channels {
+            info!(
+                "whatsapp channel ready (webhook mode, phone_number_id={})",
+                channel.phone_number_id()
+            );
+        }
+        let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState =
+            Arc::new(whatsapp_channels);
+
+        // Build Google Chat channels (webhook-driven — no persistent connection).
+        //
+        // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
+        // rota `/webhooks/google-chat`. Um canal sem `audience` nao chega ate
+        // aqui — `build_google_chat_channels` o descarta, porque sem ela o
+        // webhook aceitaria o token de qualquer outra app do Google Chat.
+        let google_chat_channels = build_google_chat_channels(&state.config, &state);
+        for channel in &google_chat_channels {
+            info!(
+                "google chat channel ready (webhook mode, name={})",
+                channel.name()
+            );
+        }
+        let google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState =
+            Arc::new(google_chat_channels);
+
+        // Build Teams channels (webhook-driven — no persistent connection).
+        //
+        // Um canal sem `app_id` nao chega ate aqui — `build_teams_channels` o
+        // descarta, porque sem ele o webhook aceitaria o token de qualquer
+        // outro bot do Bot Framework.
+        let teams_channels = build_teams_channels(&state.config, &state);
+        for channel in &teams_channels {
+            info!(
+                "teams channel ready (webhook mode, name={})",
+                channel.name()
+            );
+        }
+        let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(teams_channels);
+
+        // Build LINE channels (webhook-driven — no persistent connection).
+        //
+        // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
+        // rota `/webhooks/line`. Um canal com `channel_secret` invalido nao
+        // chega ate aqui — `build_line_channels` o descarta (#1051).
+        let line_channels = build_line_channels(&state.config, &state);
+        for channel in &line_channels {
+            info!("line channel ready (webhook mode, name={})", channel.name());
+        }
+        let line_state: garraia_channels::line_channel::webhook::LineState =
+            Arc::new(line_channels);
+
+        let push_channels = crate::push_channels::PushChannelStates {
+            whatsapp: whatsapp_state,
+            google_chat: google_chat_state,
+            teams: teams_state,
+            line: line_state,
+        };
+
+        // `garra_status` reads the live `AppState` (provider, model, tools,
+        // features, channels, session mode), so it can only exist once the
+        // state is shared. Unconditional: every runtime should be able to
+        // describe itself — the v0.4.0 field report was a Garra on a phone
+        // saying it "cannot inspect its own runtime", and nothing let it.
+        //
+        // #1347: registrada DEPOIS de montar os canais push e ANTES de
+        // qualquer canal pull conectar. Depois dos push porque o relatorio de
+        // canais e o do `/api/channels` saem da mesma funcao
+        // (`channels_view::channel_rows`), e ela precisa das contagens push.
+        // Antes dos pull porque cada um deles (OpenClaw, Discord, Telegram,
+        // IRC, Signal, Matrix, Slack, iMessage, `whatsapp_linked`) ja pode
+        // rodar turno assim que conecta, e um turno sem a tool respondia "nao
+        // consigo me inspecionar" — a janela que a revisao da #1347 achou
+        // quando o registro ficava depois do ultimo pull. Montar os push
+        // aqui e seguro: `build_*_channels` so constroi os canais e os
+        // callbacks, e ninguem os alcanca antes do listener HTTP subir, no
+        // fim de `run`. So as contagens: guardar o `PushChannelStates` na
+        // tool fecharia um ciclo de `Arc` (cada canal push segura o
+        // `AppState` forte). Um teste do `garra_status` varre esta ordem.
+        state
+            .agents
+            .register_tool(Box::new(crate::tools::GarraStatusTool::new(
+                &state,
+                push_channels.contagens(),
+            )));
+
         if let Some((client, rx)) = openclaw_rx {
             spawn_openclaw_router(Arc::clone(&state), client, rx);
         }
@@ -950,85 +1037,6 @@ impl GatewayServer {
             }
             Err(motivo) => warn!("whatsapp_linked: canal nao subiu — {motivo}"),
         }
-
-        // Build WhatsApp channels (webhook-driven — no persistent connection)
-        let whatsapp_channels = build_whatsapp_channels(&state.config, &state);
-        for channel in &whatsapp_channels {
-            info!(
-                "whatsapp channel ready (webhook mode, phone_number_id={})",
-                channel.phone_number_id()
-            );
-        }
-        let whatsapp_state: garraia_channels::whatsapp::webhook::WhatsAppState =
-            Arc::new(whatsapp_channels);
-
-        // Build Google Chat channels (webhook-driven — no persistent connection).
-        //
-        // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
-        // rota `/webhooks/google-chat`. Um canal sem `audience` nao chega ate
-        // aqui — `build_google_chat_channels` o descarta, porque sem ela o
-        // webhook aceitaria o token de qualquer outra app do Google Chat.
-        let google_chat_channels = build_google_chat_channels(&state.config, &state);
-        for channel in &google_chat_channels {
-            info!(
-                "google chat channel ready (webhook mode, name={})",
-                channel.name()
-            );
-        }
-        let google_chat_state: garraia_channels::google_chat::webhook::GoogleChatState =
-            Arc::new(google_chat_channels);
-
-        // Build Teams channels (webhook-driven — no persistent connection).
-        //
-        // Um canal sem `app_id` nao chega ate aqui — `build_teams_channels` o
-        // descarta, porque sem ele o webhook aceitaria o token de qualquer
-        // outro bot do Bot Framework.
-        let teams_channels = build_teams_channels(&state.config, &state);
-        for channel in &teams_channels {
-            info!(
-                "teams channel ready (webhook mode, name={})",
-                channel.name()
-            );
-        }
-        let teams_state: garraia_channels::teams::webhook::TeamsState = Arc::new(teams_channels);
-
-        // Build LINE channels (webhook-driven — no persistent connection).
-        //
-        // Como o WhatsApp: nao entram no `ChannelRegistry`, viram estado da
-        // rota `/webhooks/line`. Um canal com `channel_secret` invalido nao
-        // chega ate aqui — `build_line_channels` o descarta (#1051).
-        let line_channels = build_line_channels(&state.config, &state);
-        for channel in &line_channels {
-            info!("line channel ready (webhook mode, name={})", channel.name());
-        }
-        let line_state: garraia_channels::line_channel::webhook::LineState =
-            Arc::new(line_channels);
-
-        let push_channels = crate::push_channels::PushChannelStates {
-            whatsapp: whatsapp_state,
-            google_chat: google_chat_state,
-            teams: teams_state,
-            line: line_state,
-        };
-
-        // `garra_status` reads the live `AppState` (provider, model, tools,
-        // features, channels, session mode), so it can only exist once the
-        // state is shared. Unconditional: every runtime should be able to
-        // describe itself — the v0.4.0 field report was a Garra on a phone
-        // saying it "cannot inspect its own runtime", and nothing let it.
-        //
-        // #1347: registrada DEPOIS dos canais push, e nao logo apos o `Arc`
-        // do estado. O relatorio de canais e o do `/api/channels` saem da
-        // mesma funcao (`channels_view::channel_rows`), e ela precisa das
-        // contagens push que so existem aqui. So as contagens: guardar o
-        // `PushChannelStates` na tool fecharia um ciclo de `Arc` (cada canal
-        // push segura o `AppState` forte).
-        state
-            .agents
-            .register_tool(Box::new(crate::tools::GarraStatusTool::new(
-                &state,
-                push_channels.contagens(),
-            )));
 
         // Initialize admin store for the web admin console
         let admin_db_path = data_dir.join("admin.db");
