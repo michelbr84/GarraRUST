@@ -193,6 +193,15 @@ async fn subir(preparo: impl FnOnce(&mut AppState)) -> Gateway {
     let mut config = AppConfig::default();
     config.memory.enabled = false;
     let mut state = AppState::new(config, Arc::new(rt), ChannelRegistry::new());
+    // Cada teste com a sua allowlist, so em memoria (sem caminho, o `save`
+    // nao grava). O `claim_owner` de `com_dono` gravava no `allowlist.json`
+    // do diretorio de config que o binario inteiro compartilha, e um teste
+    // "sem dono" que subisse depois herdava o dono de quem rodou antes: foi
+    // assim que `openai_sem_dono_a_pausa_e_terminal` falhou no Security
+    // Gate do trem #1375, com a ordem das threads como unica variavel.
+    state.allowlist = Arc::new(std::sync::Mutex::new(
+        garraia_security::Allowlist::restricted(Vec::<String>::new()),
+    ));
     preparo(&mut state);
     let state = Arc::new(state);
 
