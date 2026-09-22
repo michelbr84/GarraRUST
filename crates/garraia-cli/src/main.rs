@@ -2504,6 +2504,10 @@ async fn async_main(
             mcp_server::run_mcp_server(config).await?;
         }
         Commands::MaxPower { goal, mode } => {
+            // #1228: sem isto o pipeline provider-backed nao deixava rastro no
+            // `garraia.log`, e uma etapa que caia (corpo truncado do provider)
+            // so sobrava como uma linha na tela, sem como investigar depois.
+            init_tracing(&effective_level);
             max_power::run(goal, mode, &config).await;
         }
         Commands::Verify { .. } => {

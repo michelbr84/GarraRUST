@@ -27,6 +27,26 @@ pub struct OpenAiProvider {
     is_openrouter: bool,
 }
 
+/// O `Display` do `reqwest::Error` para no rotulo: qualquer falha lendo o
+/// corpo (conexao fechada no meio, corpo truncado) sai como "error decoding
+/// response body", e a causa real fica em `source()`. Sem ela o erro nao da
+/// para agir (#1228: o dogfood do `max-power` parou nesse texto e nao havia
+/// como saber se o servidor caiu ou mandou lixo).
+fn com_causa(e: &dyn std::error::Error) -> String {
+    let mut texto = e.to_string();
+    let mut causa = e.source();
+    while let Some(c) = causa {
+        let parte = c.to_string();
+        // hyper e reqwest as vezes repetem a mensagem da camada de baixo.
+        if !texto.ends_with(&parte) {
+            texto.push_str(": ");
+            texto.push_str(&parte);
+        }
+        causa = c.source();
+    }
+    texto
+}
+
 impl OpenAiProvider {
     pub fn new(
         api_key: impl Into<String>,
@@ -391,10 +411,9 @@ impl LlmProvider for OpenAiProvider {
             .unwrap_or("")
             .to_string();
 
-        let body_bytes = response
-            .bytes()
-            .await
-            .map_err(|e| Error::Agent(format!("failed to read response body: {e}")))?;
+        let body_bytes = response.bytes().await.map_err(|e| {
+            Error::Agent(format!("failed to read response body: {}", com_causa(&e)))
+        })?;
 
         let body_str = String::from_utf8_lossy(&body_bytes);
 
@@ -1098,6 +1117,102 @@ fn erro_de_roteamento_openrouter(
 mod tests {
     use super::*;
     use crate::providers::ToolDefinition;
+
+    #[derive(Debug)]
+    struct Camada(&'static str, Option<Box<Camada>>);
+    impl std::fmt::Display for Camada {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+    impl std::error::Error for Camada {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|c| c as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn com_causa_desce_a_cadeia_sem_repetir() {
+        let erro = Camada(
+            "error decoding response body",
+            Some(Box::new(Camada(
+                "connection closed before message completed",
+                Some(Box::new(Camada(
+                    "connection closed before message completed",
+                    None,
+                ))),
+            ))),
+        );
+        assert_eq!(
+            com_causa(&erro),
+            "error decoding response body: connection closed before message completed"
+        );
+        assert_eq!(com_causa(&Camada("sozinho", None)), "sozinho");
+    }
+
+    /// Servidor que promete um corpo e fecha a conexao no meio: o erro que o
+    /// provider devolve tem de trazer a causa, nao so o rotulo do reqwest.
+    #[tokio::test]
+    async fn corpo_truncado_diz_a_causa() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind efemero");
+        let porta = listener.local_addr().expect("endereco local").port();
+        let servidor = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.expect("accept");
+            let mut buf = vec![0u8; 16 * 1024];
+            let mut lido = Vec::new();
+            while !lido.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.expect("read");
+                if n == 0 {
+                    break;
+                }
+                lido.extend_from_slice(&buf[..n]);
+            }
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 500\r\n\r\n{\"id\":",
+            )
+            .await
+            .expect("write");
+            sock.flush().await.expect("flush");
+            drop(sock);
+        });
+
+        let provider = OpenAiProvider::new(
+            "chave-de-teste",
+            Some("modelo".to_string()),
+            Some(format!("http://127.0.0.1:{porta}/v1")),
+        );
+        let request = LlmRequest {
+            model: String::new(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text("oi".to_string()),
+            }],
+            system: None,
+            max_tokens: Some(16),
+            temperature: None,
+            tools: vec![],
+        };
+        let erro = provider
+            .complete(&request)
+            .await
+            .expect_err("corpo truncado tem de falhar")
+            .to_string();
+        servidor.await.expect("servidor");
+        assert!(erro.contains("failed to read response body"), "{erro}");
+        let depois = erro
+            .split("error decoding response body")
+            .nth(1)
+            .unwrap_or_default();
+        assert!(
+            depois.starts_with(": ") && depois.len() > 2,
+            "o erro tem de trazer a causa depois do rotulo: {erro}"
+        );
+    }
 
     #[test]
     fn builds_request_with_default_model() {
