@@ -366,20 +366,6 @@ fn open_chat_store(
     Ok(Some(store))
 }
 
-/// Grava um turno (pergunta + resposta) no store.
-/// `direction` segue o vocabulario que o gateway ja usa em `persist_turn` —
-/// `"user"` e `"assistant"` —, porque e o que `load_history` e a hidratacao
-/// do gateway leem de volta. Nada de schema novo: sao as duas mesmas
-/// chamadas, so que feitas pelo CLI.
-///
-/// #1300: a gravacao e fracionada, nao atomica de proposito. A pergunta
-/// grava ANTES do turno rodar (`persist_user_turn`) e a resposta/marcador
-/// grava no fim (`persist_assistant_turn`). Um crash duro no meio deixa a
-/// pergunta sola no banco — e exatamente isso que o `--resume latest`
-/// seguinte recupera. O `append_turn` de antes gravava o par so DEPOIS do
-/// turno completo, entao timeout, Ctrl+C, provider caindo ou kill -9
-/// apagavam o turno do ponto de vista do resume: a sessao restaurada
-/// terminava na pergunta anterior, e o trabalho recente sumia.
 /// Quem aprova, no CLI, um pedido de confirmacao pausado (#1343).
 ///
 /// O processo e a fronteira de usuario: quem digita no terminal desta
@@ -403,6 +389,20 @@ fn exec_do_turno(cwd: &str, session_id: &str) -> ExecContext {
     exec
 }
 
+/// Grava um turno (pergunta + resposta) no store.
+/// `direction` segue o vocabulario que o gateway ja usa em `persist_turn` —
+/// `"user"` e `"assistant"` —, porque e o que `load_history` e a hidratacao
+/// do gateway leem de volta. Nada de schema novo: sao as duas mesmas
+/// chamadas, so que feitas pelo CLI.
+///
+/// #1300: a gravacao e fracionada, nao atomica de proposito. A pergunta
+/// grava ANTES do turno rodar (`persist_user_turn`) e a resposta/marcador
+/// grava no fim (`persist_assistant_turn`). Um crash duro no meio deixa a
+/// pergunta sola no banco — e exatamente isso que o `--resume latest`
+/// seguinte recupera. O `append_turn` de antes gravava o par so DEPOIS do
+/// turno completo, entao timeout, Ctrl+C, provider caindo ou kill -9
+/// apagavam o turno do ponto de vista do resume: a sessao restaurada
+/// terminava na pergunta anterior, e o trabalho recente sumia.
 fn persist_user_turn(store: &SessionStore, session_id: &str, user_text: &str) -> Result<()> {
     store.upsert_session(
         session_id,
