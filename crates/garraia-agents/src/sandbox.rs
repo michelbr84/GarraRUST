@@ -145,15 +145,48 @@ fn uid_gid_do_processo() -> (u32, u32) {
 /// - canonico com `:` ou caractere de controle => recusa: o `:` partiria o
 ///   `-v origem:destino` em outro lugar.
 ///
+/// - vazio (sessao sem `working_dir`) => recusa: o sandbox nunca monta o cwd
+///   do PROCESSO no lugar dele — num `garra start` aberto no terminal esse
+///   cwd e o `$HOME` (review da #1272, SANDBOX-2/5);
+/// - canonico que e `/`, o `$HOME` do processo ou um ancestral dele =>
+///   recusa: montado rw, ele entregaria `~/.ssh`, `~/.bashrc` e a config do
+///   garraia ao container. Mesma classificacao de
+///   `FileJail::raizes_perigosas`, mais os ancestrais (um mount de `/home`
+///   contem o `$HOME`).
+///
 /// O caminho nao entra na mensagem de erro: ele vem da sessao (e, no MCP,
 /// do argumento que o modelo escolheu), e o erro volta para o modelo.
 fn fonte_do_mount(cwd: &str) -> Result<String> {
+    fonte_do_mount_com(cwd, crate::tools::file_jail::process_home_dir().as_deref())
+}
+
+/// Por que um mount **ja canonicalizado** exporia demais, ou `None`. Pura:
+/// `home` chega resolvido pelo chamador.
+fn motivo_de_mount_perigoso(canonico: &Path, home: Option<&Path>) -> Option<&'static str> {
+    if let Some(motivo) = crate::tools::file_jail::motivo_de_raiz_perigosa(canonico, home) {
+        return Some(motivo);
+    }
+    match home {
+        Some(h) if h.starts_with(canonico) => Some("e um ancestral do $HOME do processo"),
+        _ => None,
+    }
+}
+
+/// [`fonte_do_mount`] com o `$HOME` injetado, para o teste nao depender do
+/// `$HOME` da maquina.
+fn fonte_do_mount_com(cwd: &str, home: Option<&Path>) -> Result<String> {
     let recusa = |motivo: &str| {
         Error::Agent(format!(
             "sandbox fail-closed: agent.sandbox.mount_workdir = true e o diretorio de trabalho \
              {motivo}; o comando nao roda sem o mount pedido"
         ))
     };
+    if cwd.trim().is_empty() {
+        return Err(recusa(
+            "nao foi informado (sessao sem working_dir); o sandbox nao monta o diretorio do \
+             processo no lugar dele",
+        ));
+    }
     let caminho = Path::new(cwd);
     if !caminho.is_absolute() {
         return Err(recusa("nao e um caminho absoluto"));
@@ -170,6 +203,11 @@ fn fonte_do_mount(cwd: &str) -> Result<String> {
         .to_string();
     if texto.contains(':') || texto.chars().any(char::is_control) {
         return Err(recusa("contem `:` ou caractere de controle"));
+    }
+    if let Some(motivo) = motivo_de_mount_perigoso(&canonico, home) {
+        return Err(recusa(&format!(
+            "{motivo}; montado rw ele exporia o host inteiro ao container"
+        )));
     }
     Ok(texto)
 }
@@ -1085,6 +1123,37 @@ mod tests {
         };
         let cmd = linha(&sem_mount, ".").expect("wrap").expect("aplicado");
         assert!(!cmd.contains(" -v "), "{cmd}");
+    }
+
+    /// Review da #1272 (SANDBOX-2/5): sessao sem `working_dir` (cwd vazio),
+    /// `/`, o `$HOME` e um ancestral do `$HOME` nunca viram fonte de mount rw.
+    #[cfg(unix)]
+    #[test]
+    fn mount_nunca_e_raiz_home_ancestral_nem_vazio() {
+        let base = tempfile::tempdir().expect("tmp");
+        let home = base.path().join("home").join("u");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        let home = home.canonicalize().expect("canon");
+        let pai = home.parent().expect("pai").to_path_buf();
+        let projeto = home.join("projeto");
+        std::fs::create_dir(&projeto).expect("mkdir");
+        for cwd in ["", "  ", "/"] {
+            let err = fonte_do_mount_com(cwd, Some(&home)).expect_err(cwd);
+            assert!(err.to_string().contains("fail-closed"), "{cwd:?}: {err}");
+        }
+        for dir in [&home, &pai] {
+            let texto = dir.to_str().expect("utf8");
+            let err = fonte_do_mount_com(texto, Some(&home)).expect_err(texto);
+            let msg = err.to_string();
+            assert!(msg.contains("$HOME"), "{texto}: {msg}");
+            assert!(!msg.contains(texto), "o caminho vazou: {msg}");
+        }
+        // Abaixo do `$HOME` (um projeto) continua valendo.
+        let ok = fonte_do_mount_com(projeto.to_str().expect("utf8"), Some(&home)).expect("ok");
+        assert_eq!(ok, projeto.to_str().expect("utf8"));
+        // E o wrap real recusa `/` sem depender de `$HOME` nenhum.
+        assert!(linha(&docker_all(), "/").is_err());
+        assert!(linha(&docker_all(), "").is_err());
     }
 
     /// Symlink no caminho: o que vai para o `-v` e o alvo canonico.
