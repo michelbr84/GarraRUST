@@ -233,6 +233,16 @@ jobs:
       - name: Testes dos parsers do quality ratchet
         run: python3 -m pytest scripts/quality/tests -q
 
+      # O `release.yml` so roda no tag; um asset copiado para `release/` e
+      # esquecido na lista `files:` do upload so aparecia na release publicada
+      # (v0.4.4: AppImage aarch64 com `.sha256` e sem o arquivo). Checado aqui,
+      # no PR, antes do tag. Invocacao separada pelo mesmo motivo acima.
+      - name: Todo asset da release esta na lista de upload
+        run: python3 scripts/release/check_files.py
+
+      - name: Testes do check_files.py
+        run: python3 -m pytest scripts/release/tests -q
+
   # Plan 0127 (PR-B) — shellcheck `install.sh` and the bash test harness.
   # `install.sh` is the public `curl | sh` entry point and has been
   # historically linted by hand; promoting that to a blocking CI step

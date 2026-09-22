@@ -1102,6 +1102,7 @@ jobs:
             release/garraia-linux-x86_64.rpm
             release/garraia-linux-aarch64.rpm
             release/garraia-linux-x86_64.AppImage
+            release/garraia-linux-aarch64.AppImage
             release/garraia-desktop-windows-x86_64.msi
             release/garraia-desktop-windows-x86_64-setup.exe
             release/garraia-desktop-linux-x86_64.deb
