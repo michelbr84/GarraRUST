@@ -149,6 +149,10 @@ impl ConfigCheck {
 /// the full set from `CLAUDE.md` rule #6 plus auth/db/metrics/telemetry
 /// plumbing. See [`detect_env_vars`] for the read-semantics contract.
 const KNOWN_GARRAIA_ENV_VARS: &[&str] = &[
+    // #1247: a escotilha do `boot_gate` (`crate::boot_gate::ESCAPE_ENV`).
+    // Ligada, o boot sobe com Error da allowlist; o check tem de mostrar que
+    // ela esta no ambiente, ou ninguem ve por que um TLS pela metade subiu.
+    "GARRAIA_ALLOW_INVALID_CONFIG",
     "GARRAIA_APP_DATABASE_URL",
     "GARRAIA_CONFIG_DIR",
     "GARRAIA_DATA_DIR",
@@ -2726,6 +2730,18 @@ fn findings_de_vault_sem_cofre<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    /// #1247: a escotilha do boot gate tem de aparecer em `env_vars_detected`
+    /// — e o unico jeito de o `config check` explicar um boot que ignorou um
+    /// Error da allowlist.
+    #[test]
+    fn escotilha_do_boot_gate_e_env_conhecida() {
+        assert!(
+            KNOWN_GARRAIA_ENV_VARS.contains(&crate::boot_gate::ESCAPE_ENV),
+            "{} fora de KNOWN_GARRAIA_ENV_VARS",
+            crate::boot_gate::ESCAPE_ENV
+        );
+    }
     use super::*;
     use crate::model::{AppConfig, GatewayConfig, LlmProviderConfig, McpServerConfig, VoiceConfig};
     use std::collections::HashMap;

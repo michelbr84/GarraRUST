@@ -200,3 +200,38 @@ fn restart_passa_pelo_mesmo_gate() {
     let out = roda_com_teto(comando(dir.path(), &["restart", "--port", &p]));
     assert_recusou(&out, "restart");
 }
+
+/// O gate roda antes do `try_stop_daemon`: um `restart` recusado nao pode
+/// deixar o operador sem gateway. Um sentinela vivo no `garraia.pid` faz o
+/// papel do daemon atual e tem de sobreviver, no foreground e no `-d` —
+/// mover o gate para depois do stop mata o sentinela e deixa isto vermelho.
+#[cfg(unix)]
+#[test]
+fn restart_recusado_nao_derruba_o_daemon_atual() {
+    for args in [&["restart"][..], &["restart", "-d"][..]] {
+        let dir = tempdir().expect("tempdir");
+        config_tls_pela_metade(dir.path());
+        let mut sentinela = Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sentinela");
+        std::fs::write(dir.path().join("garraia.pid"), sentinela.id().to_string())
+            .expect("pid file");
+        let p = porta_livre().to_string();
+        let mut todos: Vec<&str> = args.to_vec();
+        todos.extend(["--port", &p]);
+        let out = roda_com_teto(comando(dir.path(), &todos));
+        let vivo = sentinela.try_wait().expect("try_wait").is_none();
+        let _ = sentinela.kill();
+        let _ = sentinela.wait();
+        assert_recusou(&out, &args.join(" "));
+        assert!(
+            vivo,
+            "`garra {}` recusado derrubou o daemon atual",
+            args.join(" ")
+        );
+    }
+}

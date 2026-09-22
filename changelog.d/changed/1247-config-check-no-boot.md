@@ -12,7 +12,9 @@
   `gateway.host`/`gateway.port` nao se repetem no boot: quem julga o bind e a
   recusa do #1261, sobre o endereco real. Migracao: quem precisa subir apesar
   de um achado bloqueante usa `GARRAIA_ALLOW_INVALID_CONFIG=1` (exatamente
-  `1`; outro valor conta como ausente), e o achado segue logado como erro. A
+  `1`; outro valor conta como ausente), e o achado segue logado como erro; o
+  `garraia config check` lista a escotilha em `env_vars_detected` quando ela
+  esta no ambiente. A
   retencao da memoria com `interval_hours` ou `max_age_days` fora da faixa nao
   derruba mais o worker com panic de `interval(0)` nem apaga por um corte que
   ninguem pediu: a varredura nao sobe, com `error!` no log.
