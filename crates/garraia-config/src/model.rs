@@ -49,6 +49,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub fs: FsConfig,
 
+    /// #1227 (slice 5): retencao do ledger de runs de agente
+    /// (`agent_runs`). Secao de topo, e nao `agents.runs_retention_days`:
+    /// `agents` e um mapa de agentes nomeados, e a chave viraria um agente.
+    #[serde(default)]
+    pub runs: RunsConfig,
+
     /// GAR-379 slice 2 (plan 0042) — typed overrides for the mobile
     /// chat stack. Currently carries only the assistant persona; future
     /// slices will fold in more mobile-specific runtime knobs.
@@ -97,6 +103,7 @@ impl Default for AppConfig {
             voice: VoiceConfig::default(),
             timeouts: TimeoutConfig::default(),
             fs: FsConfig::default(),
+            runs: RunsConfig::default(),
             mobile: MobileConfig::default(),
             storage: StorageConfig::default(),
             auth: AuthSection::default(),
@@ -816,6 +823,27 @@ fn default_retention_max_age_days() -> u32 {
 fn default_retention_interval_hours() -> u32 {
     24
 }
+
+/// #1227 (slice 5): politica de retencao do ledger `agent_runs`.
+///
+/// **`retention_days: 0` (o default) = nunca apaga.** O ledger e auditoria;
+/// ligar uma varredura por default numa atualizacao apagaria historico de
+/// quem so quis atualizar a versao — o mesmo raciocinio da
+/// `memory.retention`. Com 0 o gateway avisa uma vez no boot quantos runs
+/// existem e como ligar. Run `running` nunca e apagado, qualquer que seja a
+/// idade.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunsConfig {
+    /// Idade (em dias, contada do fim do run) a partir da qual um run
+    /// terminal sai do ledger. `0` = desligado. Faixa aceita: `0` ou
+    /// `1..=`[`RUNS_RETENTION_MAX_DAYS`], cobrada pelo `garraia config check`.
+    #[serde(default)]
+    pub retention_days: u32,
+}
+
+/// Teto de `runs.retention_days`. Acima de 10 anos o numero deixa de ser
+/// politica e vira "nunca", que se escreve com `0`.
+pub const RUNS_RETENTION_MAX_DAYS: u32 = 3650;
 
 /// Plan 0250 (GAR-771): default voice Garra uses when no `system_prompt` is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

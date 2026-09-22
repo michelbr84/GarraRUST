@@ -913,6 +913,7 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
     validate_teams(&config.channels, &mut findings, &push_warn);
     validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
+    validate_runs_retention(&config.runs, &mut findings, &push_err);
 
     // Channels: warn when a channel is enabled but its well-known token
     // env var is not set and no inline credential is present. This helps
@@ -1207,6 +1208,30 @@ fn validate_retention(
                 r.interval_hours,
                 r.max_age_days,
                 u64::from(r.max_age_days) * 24
+            ),
+        );
+    }
+}
+
+/// Retencao do ledger `agent_runs` (#1227 slice 5).
+///
+/// `0` e o default e quer dizer "nunca apaga" — valido, e sem finding: um
+/// Warning aqui faria o `config check --strict` de toda instalacao default
+/// sair nao-zero. O sinal de ledger crescendo sem teto e o aviso de boot do
+/// gateway. Acima do teto e Error: o numero deixou de ser politica.
+fn validate_runs_retention(
+    runs: &crate::model::RunsConfig,
+    findings: &mut Vec<Finding>,
+    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
+) {
+    use crate::model::RUNS_RETENTION_MAX_DAYS;
+    if runs.retention_days > RUNS_RETENTION_MAX_DAYS {
+        push_err(
+            findings,
+            "runs.retention_days",
+            format!(
+                "runs.retention_days ({}) must be 0 (never delete) or in [1, {RUNS_RETENTION_MAX_DAYS}] days",
+                runs.retention_days
             ),
         );
     }

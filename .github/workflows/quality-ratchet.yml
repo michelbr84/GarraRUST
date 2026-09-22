@@ -53,6 +53,14 @@ jobs:
         with:
           python-version: "3.x"
 
+      # #1228 (slice E): the comment upsert used below has its own tests.
+      # Separate pytest invocation: every scripts/*/tests suite is a package
+      # named `tests`, and collecting two of them in one run breaks.
+      - name: Tests of scripts/ci (comment upsert)
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest scripts/ci/tests -q
+
       - name: Install jq
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends jq
 
@@ -164,11 +172,19 @@ jobs:
       - name: Post quality-report.md as PR comment
         # Skip on push events AND on fork PRs (same fork-safe guard as the
         # coverage job in ci.yml — Michel ajuste #3).
+        #
+        # #1228 (slice E): edits ONE comment in place on every push instead of
+        # adding a new one. `upsert_pr_comment.py` finds it by the marker
+        # `<!-- quality-ratchet-comment -->` (written by compare.py) AND by the
+        # author `github-actions[bot]`, so a human comment quoting the marker
+        # is never overwritten. Event data reaches the shell via `env:`.
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          # The marker `<!-- quality-ratchet-comment -->` is already written
-          # inside quality-report.md by compare.py. We pass the file as-is.
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file quality-report.md
+          set -euo pipefail
+          python3 scripts/ci/upsert_pr_comment.py \
+            --repo "$REPO" --pr "$PR_NUMBER" \
+            --marker '<!-- quality-ratchet-comment -->' --body-file quality-report.md

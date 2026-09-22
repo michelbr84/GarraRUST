@@ -42,12 +42,37 @@
 //! so no `--json`, e ainda assim redigidos por
 //! `crate::ask::sanitize_provider_error`: corpo de erro de provider ja
 //! chegou com chave de API dentro.
+//!
+//! # Por que nao ha `runs resume` (#1227, slice 7: wont-do)
+//!
+//! Run `interrupted` de tarefa agendada (`mode = heartbeat`, o unico produtor
+//! de producao do ledger hoje) **ja e retomado sozinho**: a subida do gateway
+//! roda `recover_expired_leases` (`garraia-db`, `session_store.rs`), que
+//! devolve a tarefa `running` de lease vencido para `pending`, e o proximo
+//! tick do scheduler a executa de novo — gravando um run novo no ledger. Um
+//! `resume` manual sobre esse run executaria a tarefa **duas vezes**:
+//! mensagem de sistema e entrega no canal em dobro, o bug que o slice 2
+//! fechou.
+//!
+//! Alem disso o ledger nao tem como reexecutar fielmente: `goal` e cortado em
+//! 500 caracteres na gravacao e nao ha coluna ligando o run a tarefa que o
+//! gerou. E o caminho do `AgentCoordinator` (sub-agentes) nao tem chamador de
+//! producao. Um `resume` que reexecuta LLM com tools e entrega em canal e
+//! poder de escrita novo (R4) e so faz sentido quando existir um consumidor
+//! real do coordinator — com confirmacao explicita e criando um run novo que
+//! referencia o original, nunca reabrindo o antigo.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use garraia_config::AppConfig;
 use garraia_db::{AgentRunRow, RunStatus, SessionStore};
+// #1227 (slice 6): os leitores do ledger moram no `garraia-db` porque o
+// `GET /api/runs` do gateway le o mesmo banco — duas copias seriam dois
+// formatos de instante e duas higienizacoes para divergir em silencio.
+use garraia_db::agent_runs::{
+    iso8601_utc, parse_run_status as parse_status, preview, sanitize_control_chars,
+};
 
 use crate::chat::SESSIONS_DB;
 
@@ -66,6 +91,12 @@ pub const LIMITE_PADRAO: u32 = 50;
 /// Corta por **caractere**, nao por byte: payload de tarefa em portugues e
 /// cheio de acento, e cortar no meio de um `ç` entrega mojibake.
 const GOAL_PREVIEW_CHARS: usize = 72;
+
+/// Nota impressa quando a listagem traz run `interrupted` (#1227, slice 7).
+/// Ver "Por que nao ha `runs resume`" no doc do modulo.
+const NOTA_INTERRUPTED: &str = "\nNota: run `interrupted` de tarefa agendada nao precisa de retomada manual: \
+     na subida,\no scheduler devolve a tarefa para a fila e o proximo tick a executa \
+     de novo, gravando um run novo.";
 
 /// Os valores que `--status` aceita, na mensagem de erro e na ajuda.
 const STATUS_VALIDOS: &str = "running, done, error, cancelled, interrupted";
@@ -104,81 +135,17 @@ fn open_store(config: &AppConfig) -> Opened {
 
 fn report_no_store(path: &Path) {
     println!("Nenhum run registrado: {} nao existe.", path.display());
-    println!(
-        "O ledger e criado quando o gateway sobe (`garra start`) ou quando o `garra chat`\n\
+    println!("{}", dica_sem_ledger(&crate::binario::nome()));
+}
+
+/// A dica de "como o ledger nasce", com o nome do binario em execucao
+/// (#1228): o literal `garra` e so o alias do instalador e nao existe numa
+/// maquina que so tem `garraia`.
+fn dica_sem_ledger(bin: &str) -> String {
+    format!(
+        "O ledger e criado quando o gateway sobe (`{bin} start`) ou quando o `{bin} chat`\n\
          roda com `--persist` ou `--resume` — uma conversa sem essas flags nao grava nada."
-    );
-}
-
-/// Le o `--status` do operador.
-///
-/// Estrito de proposito: `RunStatus::from_str` do `garraia-db` e leniente
-/// (qualquer coisa vira `Running`), o que transformaria um erro de digitacao
-/// em "nenhum run encontrado" — a resposta mais enganosa possivel para quem
-/// procura um run que existe.
-pub(crate) fn parse_status(bruto: &str) -> Option<RunStatus> {
-    match bruto.trim().to_ascii_lowercase().as_str() {
-        "running" => Some(RunStatus::Running),
-        "done" => Some(RunStatus::Done),
-        "error" => Some(RunStatus::Error),
-        "cancelled" => Some(RunStatus::Cancelled),
-        "interrupted" => Some(RunStatus::Interrupted),
-        _ => None,
-    }
-}
-
-/// Normaliza o instante do banco para ISO 8601 UTC com sufixo `Z`.
-///
-/// O ledger grava com `datetime('now')` do SQLite, que devolve
-/// `YYYY-MM-DD HH:MM:SS` **em UTC, sem dizer que e UTC**. Timestamp de
-/// auditoria do projeto sai sempre com o `Z` explicito (CLAUDE.md §Convencao
-/// de datas), entao a marca e colocada aqui, na leitura.
-///
-/// Um valor que nao parseia volta como veio: inventar um instante para uma
-/// linha corrompida seria pior que mostrar o byte cru.
-pub(crate) fn iso8601_utc(bruto: &str) -> String {
-    let t = bruto.trim();
-    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S") {
-        return naive
-            .and_utc()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    }
-    // Linha gravada por outro produtor, ja com fuso: normaliza para UTC.
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
-        return dt
-            .with_timezone(&chrono::Utc)
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    }
-    t.to_string()
-}
-
-/// Troca todo caractere de controle pelo caractere de substituicao Unicode.
-///
-/// A saida humana vai para um terminal, e terminal interpreta o que recebe:
-/// um `\x1b[2K` embutido num `goal` apaga a linha impressa, um `\r` reescreve
-/// por cima da anterior. Como o `goal` pode vir de uma tool call de LLM (ver
-/// o doc do modulo), o campo e dado hostil ate prova em contrario — e a prova
-/// aqui e trocar a classe inteira, nao uma lista de sequencias conhecidas.
-///
-/// Mapeia 1 caractere para 1 caractere, entao nao mexe em contagem nem em
-/// limite de caractere de quem chama.
-pub(crate) fn sanitize_control_chars(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
-        .collect()
-}
-
-/// Corta o texto para caber numa linha, respeitando limites de caractere.
-///
-/// A quebra de linha vira espaco antes da higienizacao: `goal` multilinha e
-/// texto legitimo, e dobra-lo numa linha le melhor que uma fileira de `�`.
-/// O resto dos controles nao tem leitura benigna e cai no sanitizador.
-pub(crate) fn preview(texto: &str, max_chars: usize) -> String {
-    let mut out: String = texto.chars().take(max_chars).collect();
-    if out.chars().count() < texto.chars().count() {
-        out.push('…');
-    }
-    sanitize_control_chars(&out.replace('\n', " "))
+    )
 }
 
 /// Um run em JSON. Contrato estavel de chaves — quem pediu `--json` esta
@@ -310,6 +277,12 @@ pub fn run_list(config: &AppConfig, status: Option<String>, limit: u32, json: bo
         );
     }
 
+    // #1227 (slice 7): sem esta nota o operador procura um comando de
+    // retomada que nao existe — e nao precisa existir para tarefa agendada.
+    if runs.iter().any(|r| r.status == RunStatus::Interrupted) {
+        println!("{}", NOTA_INTERRUPTED);
+    }
+
     Ok(EXIT_OK)
 }
 
@@ -364,6 +337,26 @@ mod tests {
                 "a saida deste comando e stdout, nunca log estruturado ({agulha})"
             );
         }
+    }
+
+    /// #1227 (slice 7): resume e wont-do, e a listagem diz por que quando
+    /// mostra um `interrupted` — sem a nota o operador procura um comando
+    /// que nao existe.
+    #[test]
+    fn listagem_explica_que_interrompido_agendado_se_retoma_sozinho() {
+        let corpo = corpo_de(concat!("pub fn run_", "list("));
+        assert!(corpo.contains(concat!("NOTA_", "INTERRUPTED")), "{corpo}");
+        assert!(NOTA_INTERRUPTED.contains("scheduler"));
+        assert!(NOTA_INTERRUPTED.contains("run novo"));
+    }
+
+    /// #1228: a dica nomeia o binario instalado, nunca o alias fixo.
+    #[test]
+    fn dica_sem_ledger_nomeia_o_binario_em_execucao() {
+        let dica = dica_sem_ledger(&crate::binario::nome());
+        assert!(dica.contains("`garraia start`"), "{dica}");
+        assert!(dica.contains("`garraia chat`"), "{dica}");
+        assert!(!dica.contains("`garra "), "{dica}");
     }
 
     #[test]

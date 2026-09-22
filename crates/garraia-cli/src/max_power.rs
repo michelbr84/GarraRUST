@@ -250,8 +250,16 @@ fn print_menu_with_capabilities(config: &garraia_config::AppConfig) {
     println!();
     println!("  Modes: --mode new (fresh start) | existing (resume) | auto (detect)");
     println!();
-    println!("  Example: garra max-power --goal \"fix the login crash\" --mode new");
+    println!("{}", linha_de_exemplo(&crate::binario::nome()));
     println!();
+}
+
+/// A linha de exemplo do menu, com o nome do binario que de fato esta
+/// rodando (#1228). O literal antigo dizia `garra`, que e so o alias do
+/// instalador: numa imagem Docker ou num `cargo install` o comando impresso
+/// nao existia na maquina.
+fn linha_de_exemplo(binario: &str) -> String {
+    format!("  Example: {binario} max-power --goal \"fix the login crash\" --mode new")
 }
 
 fn route_goal(goal: &str, mode: &str, completer: Option<&RuntimeCompleter>) {
@@ -431,5 +439,55 @@ mod tests {
         let (route, kw) = detect_route("fix the login crash");
         assert_eq!(route, "systematic-debugging");
         assert_eq!(kw, Some("fix"));
+    }
+
+    /// #1228: o exemplo do menu nomeia o binario em execucao, e o nome que
+    /// sai no `cargo test` (e numa maquina so com `garraia`) e `garraia`.
+    #[test]
+    fn exemplo_do_menu_usa_o_binario_instalado() {
+        let linha = linha_de_exemplo(&crate::binario::nome());
+        assert!(linha.contains("garraia max-power --goal"), "{linha}");
+        assert_eq!(
+            linha_de_exemplo("garra"),
+            "  Example: garra max-power --goal \"fix the login crash\" --mode new"
+        );
+
+        // Nenhum literal fixo com o alias pode voltar ao que o menu imprime.
+        // `concat!` impede o teste de casar consigo mesmo.
+        let src = include_str!("max_power.rs");
+        let fim = src.find(concat!("#[cfg(", "test)]")).expect("testes");
+        let producao = &src[..fim];
+        for linha in producao
+            .lines()
+            .filter(|l| l.contains(concat!("print", "ln!")))
+        {
+            assert!(
+                !linha.contains(concat!("garra ", "max-power")),
+                "literal fixo com o alias: {linha}"
+            );
+        }
+    }
+
+    /// #1228: a ajuda do `max-power` descrevia a execucao como futura
+    /// ("lands in GAR-495..GAR-501"), mas ela ja existe desde o PR #1218.
+    #[test]
+    fn ajuda_do_max_power_descreve_a_execucao_que_existe() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let sub = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "max-power")
+            .expect("subcomando max-power");
+        let ajuda = format!(
+            "{} {}",
+            sub.get_about().map(|a| a.to_string()).unwrap_or_default(),
+            sub.get_long_about()
+                .map(|a| a.to_string())
+                .unwrap_or_default()
+        );
+        assert!(!ajuda.contains("GAR-495"), "{ajuda}");
+        assert!(!ajuda.contains("lands in"), "{ajuda}");
+        assert!(ajuda.contains("provider-backed"), "{ajuda}");
+        assert!(ajuda.contains("deterministic"), "{ajuda}");
     }
 }

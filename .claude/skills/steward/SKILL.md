@@ -157,6 +157,32 @@ branch que não tem PR.
 
 ---
 
+## 5a. gitleaks lê o intervalo de commits do PR
+
+O job de segredos varre **cada commit** do PR, não só o diff final. Um
+fixture com cara de credencial (chave de teste, token de exemplo) que entrou
+num commit e saiu no seguinte continua vermelho — apagar o arquivo não
+resolve.
+
+- A saída é uma entrada de **fingerprint exato** em `.gitleaksignore`
+  (`<commit>:<arquivo>:<regra>:<linha>`, o que o próprio relatório imprime),
+  com um comentário dizendo por que é falso positivo.
+- **Nunca** reescreva commit já empurrado para sumir com o achado, e nunca
+  afrouxe regra do `gitleaks` para o PR passar. As duas saídas escondem o
+  próximo segredo de verdade junto com o falso.
+- Credencial real que entrou num commit empurrado é incidente, não falso
+  positivo: revogue antes de qualquer outra coisa.
+
+## 5b. Trem de merge: desligue o auto-merge primeiro
+
+Com checks estritos, cada merge em `main` deixa as outras PRs `BEHIND`. Antes
+de montar um trem de merge local, **desligue o auto-merge de toda PR
+carregada** (`gh pr merge --disable-auto <n>`): uma PR que fica verde no meio
+do trem entra sozinha, e o trem passa a conflitar com ela. Na v0.4.3 foi
+exatamente isso.
+
+---
+
 ## 6. Ao reagir a um review
 
 Achado de bot é relatório de defeito: verifique e corrija se for pequeno e
