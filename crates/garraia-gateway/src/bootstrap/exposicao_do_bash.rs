@@ -35,6 +35,22 @@
 //!
 //! `garraia chat` fica de fora de proposito: la o `BashTool` tem canal de
 //! confirmacao e o principal e o humano no terminal.
+//!
+//! # Nao e so o `bash`
+//!
+//! A regra vale para TODA tool que executa codigo controlado pelo
+//! repositorio ([`TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO`]). O `run_tests` roda o
+//! `scripts.test` do `package.json`, o `build.rs`, o `conftest.py` — e o
+//! `file_write` escreve esses arquivos. Sem esta regra, tirar o `bash` so
+//! trocava a porta: `file_write package.json` + `run_tests` era o mesmo shell
+//! no host (review da #1272, SANDBOX-1). [`decidir_exposicao_de`] decide por
+//! tool, com o mesmo criterio.
+//!
+//! Em `isolated-pod`, `HostDoPod` so vale quando a policy NAO exige sandbox
+//! para a tool: com `mode = all` e o backend inutilizavel, o wrap recusaria
+//! todo comando (ou mandaria por ssh para outra maquina), entao a tool fica
+//! `Desligado` e a descricao diz o motivo real, em vez de anunciar "no host do
+//! pod" (SANDBOX-11/13).
 
 use garraia_agents::sandbox::{SandboxBackend, SandboxPolicy};
 use garraia_config::ExecutionProfile;
@@ -43,15 +59,29 @@ use tracing::{info, warn};
 /// Nome da tool no registry.
 const BASH: &str = "bash";
 
-/// Por que o `bash` ficou fora do registry em `standard`.
+/// Nome da tool `run_tests` no registry.
+pub const RUN_TESTS: &str = "run_tests";
+
+/// As tools que executam codigo controlado pelo repositorio no processo que
+/// as roda. Todas passam por [`decidir_exposicao_de`] nas superficies sem
+/// humano no laco.
+pub const TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO: &[&str] = &[BASH, RUN_TESTS];
+
+/// Destas, as que o sandbox sabe envolver hoje. Uma tool fora desta lista
+/// nunca e `Sandbox`: em `standard` ela fica `Desligado`.
+const SANDBOXAVEIS: &[&str] = &[BASH];
+
+/// Por que a tool ficou fora do registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MotivoDoBashDesligado {
     /// `agent.sandbox.mode = off` (o default).
     SandboxDesligado,
-    /// `mode = all` com `bash` em `agent.sandbox.elevated`.
+    /// `mode = all` com a tool em `agent.sandbox.elevated`.
     BashElevado,
-    /// `mode = allowlist` sem `bash` em `sandboxed_tools`.
+    /// `mode = allowlist` sem a tool em `sandboxed_tools`.
     BashForaDaAllowlist,
+    /// A tool ainda nao passa pelo sandbox (roda sempre no host).
+    ToolSemSandbox,
     /// Sandbox ligado sem `agent.sandbox.backend`.
     SemBackend,
     /// `backend = ssh`: execucao remota, nao isolamento.
@@ -67,10 +97,11 @@ impl MotivoDoBashDesligado {
     pub fn descricao(self) -> &'static str {
         match self {
             Self::SandboxDesligado => "agent.sandbox.mode = off",
-            Self::BashElevado => "bash esta em agent.sandbox.elevated",
+            Self::BashElevado => "a tool esta em agent.sandbox.elevated",
             Self::BashForaDaAllowlist => {
-                "agent.sandbox.mode = allowlist sem bash em sandboxed_tools"
+                "agent.sandbox.mode = allowlist sem a tool em sandboxed_tools"
             }
+            Self::ToolSemSandbox => "a tool ainda nao passa pelo sandbox (rodaria no host)",
             Self::SemBackend => "agent.sandbox sem backend",
             Self::BackendSsh => "agent.sandbox.backend = ssh e execucao remota, nao isolamento",
             Self::BackendIndisponivel => "o binario do backend (docker/podman) nao existe no host",
@@ -101,56 +132,101 @@ pub const COMO_LIGAR_O_BASH: &str = "para ter bash: agent.sandbox { mode: all, b
      (ou podman) com o binario instalado; ou execution.profile = isolated-pod se este processo \
      roda mesmo num pod descartavel (#1272)";
 
+/// O passo acionavel para uma tool de [`TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO`]
+/// desligada. Sem valor de config.
+pub fn como_ligar(tool: &str) -> String {
+    if tool == BASH {
+        return COMO_LIGAR_O_BASH.to_string();
+    }
+    format!(
+        "para ter {tool}: execution.profile = isolated-pod se este processo roda mesmo num pod \
+         descartavel; em standard {tool} so existe dentro de um sandbox docker/podman (#1272)"
+    )
+}
+
 impl ExposicaoDoBash {
-    /// A tool `bash` entra no registry?
-    pub fn registra_bash(&self) -> bool {
+    /// A tool entra no registry?
+    pub fn registra(&self) -> bool {
         !matches!(self, Self::Desligado { .. })
     }
 
-    /// Uma linha para humano (log, diagnostico, system prompt). Sem valor de
-    /// config: nem imagem, nem host, nem caminho.
+    /// A tool `bash` entra no registry? (Mesmo que [`Self::registra`].)
+    pub fn registra_bash(&self) -> bool {
+        self.registra()
+    }
+
+    /// Uma linha para humano (log, diagnostico, system prompt) sobre o
+    /// `bash`. Sem valor de config: nem imagem, nem host, nem caminho.
     pub fn descricao(&self) -> String {
+        self.descricao_de(BASH)
+    }
+
+    /// [`Self::descricao`] para a tool `tool` (um nome fixo do codigo).
+    pub fn descricao_de(&self, tool: &str) -> String {
         match self {
             Self::Sandbox { backend } => format!(
-                "bash ligado, cada comando dentro de um container {} (agent.sandbox)",
+                "{tool} ligado, cada execucao dentro de um container {} (agent.sandbox)",
                 backend.binary()
             ),
-            Self::HostDoPod => {
-                "bash ligado no host do pod (execution.profile = isolated-pod); denylist e \
+            Self::HostDoPod => format!(
+                "{tool} ligado no host do pod (execution.profile = isolated-pod); denylist e \
                  tier arriscado continuam valendo"
-                    .to_string()
-            }
+            ),
             Self::Desligado { motivo } => format!(
-                "bash DESLIGADO em execution.profile = standard: {}",
+                "{tool} DESLIGADO (sem sandbox docker/podman utilizavel): {}",
                 motivo.descricao()
             ),
         }
     }
 }
 
-/// A decisao, pura: perfil, policy, plataforma e disponibilidade injetados.
+/// A decisao do `bash`, pura: perfil, policy, plataforma e disponibilidade
+/// injetados.
 pub fn decidir_exposicao_do_bash(
     perfil: ExecutionProfile,
     policy: &SandboxPolicy,
     alvo_unix: bool,
     disponivel: impl Fn(&SandboxBackend) -> bool,
 ) -> ExposicaoDoBash {
-    let sandbox = motivo_sem_sandbox(policy, alvo_unix, &disponivel);
+    decidir_exposicao_de(BASH, perfil, policy, alvo_unix, disponivel)
+}
+
+/// A mesma decisao para qualquer tool de
+/// [`TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO`].
+///
+/// `HostDoPod` so quando o perfil e `isolated-pod` **e** a policy nao exige
+/// sandbox para a tool: exigido e inutilizavel, o wrap recusaria tudo, entao
+/// e `Desligado` com o motivo real.
+pub fn decidir_exposicao_de(
+    tool: &str,
+    perfil: ExecutionProfile,
+    policy: &SandboxPolicy,
+    alvo_unix: bool,
+    disponivel: impl Fn(&SandboxBackend) -> bool,
+) -> ExposicaoDoBash {
+    let sandbox = if SANDBOXAVEIS.contains(&tool) {
+        motivo_sem_sandbox(tool, policy, alvo_unix, &disponivel)
+    } else {
+        Err(MotivoDoBashDesligado::ToolSemSandbox)
+    };
     match sandbox {
         Ok(backend) => ExposicaoDoBash::Sandbox { backend },
-        Err(_) if perfil.is_isolated_pod() => ExposicaoDoBash::HostDoPod,
+        Err(_) if perfil.is_isolated_pod() && !policy.requires_sandbox(tool) => {
+            ExposicaoDoBash::HostDoPod
+        }
         Err(motivo) => ExposicaoDoBash::Desligado { motivo },
     }
 }
 
-/// `Ok(backend)` quando o sandbox do `bash` e utilizavel; senao o motivo.
+/// `Ok(backend)` quando o sandbox de `tool` e utilizavel; senao o motivo.
 fn motivo_sem_sandbox(
+    tool: &str,
     policy: &SandboxPolicy,
     alvo_unix: bool,
     disponivel: &impl Fn(&SandboxBackend) -> bool,
 ) -> Result<SandboxBackend, MotivoDoBashDesligado> {
     use garraia_agents::SandboxMode;
-    if !policy.requires_sandbox(BASH) {
+    if !policy.requires_sandbox(tool) {
         return Err(match policy.mode {
             SandboxMode::Off => MotivoDoBashDesligado::SandboxDesligado,
             SandboxMode::All => MotivoDoBashDesligado::BashElevado,
@@ -176,20 +252,41 @@ fn motivo_sem_sandbox(
 /// [`decidir_exposicao_do_bash`] com a plataforma real e a sonda real do
 /// binario (`SandboxBackend::is_available`).
 pub fn exposicao_do_bash(perfil: ExecutionProfile, policy: &SandboxPolicy) -> ExposicaoDoBash {
-    decidir_exposicao_do_bash(perfil, policy, cfg!(unix), SandboxBackend::is_available)
+    exposicao_de(BASH, perfil, policy)
 }
 
-/// Anuncia a decisao uma vez por subida. `Desligado` e o unico `warn!`, e ele
-/// diz por que e como ligar. `superficie` e um nome fixo do codigo
-/// (`"gateway"`, `"mcp-server"`), nunca entrada de usuario.
+/// [`decidir_exposicao_de`] com a plataforma e a sonda reais.
+pub fn exposicao_de(
+    tool: &str,
+    perfil: ExecutionProfile,
+    policy: &SandboxPolicy,
+) -> ExposicaoDoBash {
+    decidir_exposicao_de(
+        tool,
+        perfil,
+        policy,
+        cfg!(unix),
+        SandboxBackend::is_available,
+    )
+}
+
+/// Anuncia a decisao do `bash` uma vez por subida. `Desligado` e o unico
+/// `warn!`, e ele diz por que e como ligar. `superficie` e um nome fixo do
+/// codigo (`"gateway"`, `"mcp-server"`), nunca entrada de usuario.
 pub fn anuncia_exposicao_do_bash(superficie: &'static str, exposicao: &ExposicaoDoBash) {
+    anuncia_exposicao_de(superficie, BASH, exposicao);
+}
+
+/// [`anuncia_exposicao_do_bash`] para qualquer tool (nome fixo do codigo).
+pub fn anuncia_exposicao_de(superficie: &'static str, tool: &str, exposicao: &ExposicaoDoBash) {
     match exposicao {
         ExposicaoDoBash::Desligado { .. } => warn!(
             superficie,
-            "{}; a tool bash NAO foi registrada. {COMO_LIGAR_O_BASH}",
-            exposicao.descricao()
+            "{}; a tool {tool} NAO foi registrada. {}",
+            exposicao.descricao_de(tool),
+            como_ligar(tool)
         ),
-        _ => info!(superficie, "{}", exposicao.descricao()),
+        _ => info!(superficie, "{}", exposicao.descricao_de(tool)),
     }
 }
 
@@ -307,12 +404,62 @@ mod tests {
         let e = decidir_exposicao_do_bash(POD, &SandboxPolicy::default(), true, sim);
         assert_eq!(e, ExposicaoDoBash::HostDoPod);
         assert!(e.registra_bash());
-        // ssh e binario ausente tambem caem no host do pod, nao em Desligado.
+        // bash fora do sandbox por escolha do operador: host do pod.
+        let mut elevado = policy(SandboxMode::All, Some(SandboxBackend::Docker));
+        elevado.elevated = vec!["bash".into()];
+        assert_eq!(
+            decidir_exposicao_do_bash(POD, &elevado, true, nao),
+            ExposicaoDoBash::HostDoPod
+        );
+    }
+
+    /// SANDBOX-11/13: em `isolated-pod` com sandbox EXIGIDO e inutilizavel
+    /// (ssh, sem backend, binario ausente) o wrap recusaria todo comando ou
+    /// o mandaria para outra maquina. A exposicao diz isso — `Desligado` com
+    /// o motivo real —, nunca "no host do pod".
+    #[test]
+    fn isolated_pod_com_sandbox_exigido_e_inutilizavel_nao_diz_host_do_pod() {
         let ssh = policy(SandboxMode::All, Some(SandboxBackend::Ssh("b".into())));
         assert_eq!(
             decidir_exposicao_do_bash(POD, &ssh, true, sim),
+            desligado(MotivoDoBashDesligado::BackendSsh)
+        );
+        assert_eq!(
+            decidir_exposicao_do_bash(POD, &policy(SandboxMode::All, None), true, sim),
+            desligado(MotivoDoBashDesligado::SemBackend)
+        );
+        let e = decidir_exposicao_do_bash(
+            POD,
+            &policy(SandboxMode::All, Some(SandboxBackend::Docker)),
+            true,
+            nao,
+        );
+        assert_eq!(e, desligado(MotivoDoBashDesligado::BackendIndisponivel));
+        assert!(!e.descricao().contains("host do pod"), "{}", e.descricao());
+    }
+
+    /// SANDBOX-1: `run_tests` executa codigo do repositorio (`scripts.test`,
+    /// `build.rs`, `conftest.py`) e segue a mesma regra do `bash`. Ele ainda
+    /// nao passa pelo sandbox, entao em `standard` fica desligado com
+    /// qualquer policy; em `isolated-pod` sem sandbox exigido roda no pod.
+    #[test]
+    fn run_tests_segue_a_regra_do_bash() {
+        assert!(TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO.contains(&RUN_TESTS));
+        let docker = policy(SandboxMode::All, Some(SandboxBackend::Docker));
+        for p in [SandboxPolicy::default(), docker.clone()] {
+            let e = decidir_exposicao_de(RUN_TESTS, STD, &p, true, sim);
+            assert!(!e.registra(), "{p:?}: {e:?}");
+        }
+        assert_eq!(
+            decidir_exposicao_de(RUN_TESTS, POD, &SandboxPolicy::default(), true, sim),
             ExposicaoDoBash::HostDoPod
         );
+        // Exigido e impossivel de honrar: desligado tambem no pod.
+        assert!(!decidir_exposicao_de(RUN_TESTS, POD, &docker, true, sim).registra());
+        let d = decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim)
+            .descricao_de(RUN_TESTS);
+        assert!(d.starts_with("run_tests DESLIGADO"), "{d}");
+        assert!(como_ligar(RUN_TESTS).contains("isolated-pod"));
     }
 
     #[test]

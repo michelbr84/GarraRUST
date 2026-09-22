@@ -111,7 +111,16 @@ humano para confirmar comando. Nelas o `bash`:
   Sem isso ele **nao e registrado** — `ssh` nao conta, porque e execucao
   remota, nao isolamento;
 - em `isolated-pod` explicito, roda no host do pod (ou no sandbox, se houver
-  um), com a denylist e o tier arriscado ligados.
+  um), com a denylist e o tier arriscado ligados. Se a policy **exige**
+  sandbox para o `bash` (`mode: all`) e ele nao e utilizavel (sem backend,
+  `ssh`, binario ausente), o `bash` fica de fora tambem no pod, e o aviso diz
+  o motivo real.
+
+A mesma regra vale para toda tool que executa codigo controlado pelo
+repositorio. Hoje isso e o `run_tests` do gateway: ele roda o `scripts.test`
+do `package.json`, o `build.rs` e o `conftest.py`, que o `file_write`
+consegue escrever. Em `standard` sem sandbox ele nao e registrado; em
+`isolated-pod` explicito roda no host do pod.
 
 O boot avisa uma vez quando o `bash` fica de fora, o `/api/diagnostics`
 mostra o check `tools.bash` com o passo, e o modelo e avisado no system prompt

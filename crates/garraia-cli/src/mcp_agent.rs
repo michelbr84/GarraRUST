@@ -446,8 +446,8 @@ pub(crate) fn agent_system_prompt(
     // #1272: o que o modelo le sobre o shell tem de ser o que o codigo faz.
     prompt.push_str(&match bash {
         ExposicaoDoBash::Desligado { .. } => "\n## Shell\n\
-             A ferramenta 'bash' NAO esta disponivel neste servidor (perfil \
-             standard; nenhum sandbox docker/podman utilizavel). Nao existe outro jeito de executar comandos \
+             A ferramenta 'bash' NAO esta disponivel neste servidor (nenhum \
+             sandbox docker/podman utilizavel). Nao existe outro jeito de executar comandos \
              de shell aqui: se a tarefa precisar de um, diga isso na resposta.\n"
             .to_string(),
         ExposicaoDoBash::Sandbox { .. } => "\n## Shell\n\
@@ -732,34 +732,51 @@ mod tests {
         }
     }
 
-    /// Prova de fiacao ponta a ponta, pela funcao de PRODUCAO
-    /// (`build_tools`), e nao por uma reconstrucao do wiring dentro do teste.
-    ///
-    /// `isolated-pod` + `mode = all` sem `backend`: a exposicao e `HostDoPod`
-    /// (o bash e registrado), e a policy que chega a ele recusa todo comando
-    /// sem consultar binario nenhum do host — deterministico com ou sem
-    /// docker/podman/ssh. Antes da #1225 esta config era ignorada.
+    /// `isolated-pod` + `mode = all` sem `backend`: o sandbox e EXIGIDO e
+    /// impossivel, entao o `bash` NAO e registrado — antes ele entrava como
+    /// `HostDoPod` e recusava todo comando, com o system prompt anunciando um
+    /// shell no host do pod (review da #1272, SANDBOX-11/13).
+    #[test]
+    fn isolated_pod_com_sandbox_exigido_sem_backend_nao_registra_bash() {
+        let mut config = config_isolated_pod();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        let (tools, exposicao) = build_tools(&config, &file_jail(&config));
+        assert!(!tools.iter().any(|t| t.name() == "bash"));
+        assert_eq!(
+            exposicao,
+            ExposicaoDoBash::Desligado {
+                motivo: garraia_gateway::bootstrap::MotivoDoBashDesligado::SemBackend
+            }
+        );
+    }
+
+    /// Prova de fiacao ponta a ponta pela funcao de PRODUCAO
+    /// (`build_tools_com`): a policy do config chega ao `BashTool`. Com
+    /// sandbox docker exigido e sessao sem `working_dir`, todo comando e
+    /// recusado fail-closed — deterministico com ou sem docker no host (sem
+    /// docker o motivo e o binario; com docker, o mount vazio: o sandbox
+    /// nunca monta o cwd do processo).
     #[cfg(unix)]
     #[tokio::test]
     async fn sandbox_do_config_chega_ao_bash_tool_pelo_build_tools() {
-        let mut config = config_isolated_pod();
+        let mut config = AppConfig::default();
         config.agent.sandbox.mode = garraia_config::SandboxMode::All;
-
-        let tools = build_tools(&config, &file_jail(&config)).0;
+        config.agent.sandbox.backend = Some(garraia_config::SandboxBackendKind::Docker);
+        let policy = sandbox_policy_from(&config.agent.sandbox);
+        let exposicao = ExposicaoDoBash::Sandbox {
+            backend: garraia_agents::SandboxBackend::Docker,
+        };
+        let tools = build_tools_com(&config, &file_jail(&config), policy, &exposicao);
         let bash = tools
             .iter()
             .find(|t| t.name() == "bash")
-            .expect("isolated-pod registra a tool bash");
+            .expect("exposicao Sandbox registra a tool bash");
         let out = bash
             .execute(&ctx_sem_dir(), serde_json::json!({"command": "echo nunca"}))
             .await
             .expect("a tool devolve ToolOutput, nao Err");
         assert!(out.is_error, "sandbox obrigatorio tem de bloquear: {out:?}");
-        assert!(
-            out.content.contains("sandbox"),
-            "a mensagem deve explicar o sandbox: {}",
-            out.content
-        );
+        assert!(out.content.contains("fail-closed"), "{}", out.content);
         assert!(
             !out.content.contains("nunca"),
             "o comando nao pode ter rodado no host: {}",

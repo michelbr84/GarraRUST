@@ -86,8 +86,9 @@ pub use execution::{
 /// (gateway e `garraia mcp-server`): so num sandbox docker/podman valido ou no
 /// host de um `isolated-pod` explicito; em `standard` sem sandbox, ausente.
 pub use exposicao_do_bash::{
-    COMO_LIGAR_O_BASH, ExposicaoDoBash, MotivoDoBashDesligado, anuncia_exposicao_do_bash,
-    decidir_exposicao_do_bash, exposicao_do_bash,
+    COMO_LIGAR_O_BASH, ExposicaoDoBash, MotivoDoBashDesligado, RUN_TESTS,
+    TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO, anuncia_exposicao_de, anuncia_exposicao_do_bash, como_ligar,
+    decidir_exposicao_de, decidir_exposicao_do_bash, exposicao_de, exposicao_do_bash,
 };
 
 /// #1050: o canal Google Chat. Canal push, como o WhatsApp — o `Vec<Arc<_>>`
@@ -791,12 +792,25 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
     // `run_tests` executa o que o projeto mandar (`npm test` roda o script do
     // package.json), entao respeita a mesma chave de confirmacao do bash.
-    let run_tests = if config.agent.tool_confirmation_enabled {
-        RunTestsTool::new_with_confirmation(None)
-    } else {
-        RunTestsTool::new(None)
-    };
-    runtime.register_tool(Box::new(run_tests));
+    //
+    // #1272 (review, SANDBOX-1): e a mesma regra de exposicao do `bash`. O
+    // `file_write` escreve `package.json`/`build.rs`/`conftest.py` e o
+    // `run_tests` os executa — sem esta regra, tirar o `bash` so trocava a
+    // porta do mesmo shell no host.
+    let exposicao_run_tests = exposicao_de(
+        RUN_TESTS,
+        config.execution.perfil(),
+        &sandbox_policy_from(&config.agent.sandbox),
+    );
+    anuncia_exposicao_de("gateway", RUN_TESTS, &exposicao_run_tests);
+    if exposicao_run_tests.registra() {
+        let run_tests = if config.agent.tool_confirmation_enabled {
+            RunTestsTool::new_with_confirmation(None)
+        } else {
+            RunTestsTool::new(None)
+        };
+        runtime.register_tool(Box::new(run_tests));
+    }
 
     // ADR 0020 / epic #1124: as tools de hardware (device_list/read/execute).
     // O registry nasce vazio — nenhum adaptador físico existe ainda (#1126/
@@ -2425,7 +2439,6 @@ mod tests {
             "web_fetch",
             "list_dir",
             "repo_search",
-            "run_tests",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
@@ -2450,6 +2463,103 @@ mod tests {
             "bash registrado em standard sem sandbox: {names:?}"
         );
         assert!(names.iter().any(|n| n == "file_read"), "{names:?}");
+    }
+
+    /// #1272 (review, SANDBOX-1): nenhuma tool que executa codigo do
+    /// repositorio fica registrada em `standard` sem sandbox — nao so o
+    /// `bash`. Com confirmacao ligada tambem: a regra e de isolamento, nao de
+    /// canal.
+    #[test]
+    fn gateway_em_standard_sem_sandbox_nao_registra_run_tests() {
+        for confirmacao in [false, true] {
+            let mut config = AppConfig::default();
+            config.agent.tool_confirmation_enabled = confirmacao;
+            let names = build_agent_runtime(&config).tool_names();
+            for tool in TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO {
+                assert!(
+                    !names.iter().any(|n| n == tool),
+                    "{tool} registrado em standard sem sandbox: {names:?}"
+                );
+            }
+        }
+    }
+
+    /// O ataque do review: `/mode code`, `file_write package.json` com um
+    /// `scripts.test` do atacante dentro de uma raiz do jail, depois
+    /// `run_tests`. No gateway em `standard` sem sandbox a escrita passa, mas
+    /// nao existe `run_tests` para executa-la. Gemeo: a mesma `RunTestsTool`
+    /// que o gateway registrava executa o script no host (quando ha `npm`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_write_mais_run_tests_nao_executa_codigo_no_host_em_standard() {
+        let raiz = tempfile::tempdir().expect("tmp");
+        let raiz_txt = raiz.path().to_string_lossy().into_owned();
+        let marca = raiz.path().join("PWNED");
+        let mut config = AppConfig::default();
+        config.agent.file_roots = vec![raiz_txt.clone()];
+        let runtime = build_agent_runtime(&config);
+        let ctx = garraia_agents::tools::ToolContext {
+            session_id: "sandbox-1".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: Default::default(),
+            working_dir: None,
+            project_id: None,
+        };
+        let pacote = serde_json::json!({
+            "name": "x",
+            "scripts": {"test": format!("touch '{}'", marca.display())}
+        })
+        .to_string();
+        let escrita = runtime
+            .find_tool("file_write")
+            .expect("file_write registrada")
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "path": format!("{raiz_txt}/package.json"),
+                    "content": pacote,
+                }),
+            )
+            .await
+            .expect("file_write");
+        assert!(!escrita.is_error, "{}", escrita.content);
+        assert!(
+            runtime.find_tool("run_tests").is_none(),
+            "run_tests registrada em standard sem sandbox"
+        );
+        assert!(!marca.exists());
+
+        // Gemeo: o que o gateway registrava antes executa o script no host.
+        let tem_npm = std::process::Command::new("npm")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if tem_npm {
+            let _ = RunTestsTool::new(None)
+                .execute(
+                    &ctx,
+                    serde_json::json!({"working_dir": raiz_txt, "framework": "npm"}),
+                )
+                .await
+                .expect("run_tests");
+            assert!(marca.exists(), "o gemeo nao reproduziu a execucao no host");
+        }
+    }
+
+    /// #1272, gemeo positivo do `run_tests`: `isolated-pod` explicito o
+    /// devolve (no host do pod).
+    #[test]
+    fn gateway_em_isolated_pod_registra_run_tests() {
+        let config = AppConfig {
+            execution: garraia_config::ExecutionConfig::new(
+                Some(garraia_config::ExecutionProfile::IsolatedPod),
+                None,
+            ),
+            ..AppConfig::default()
+        };
+        let names = build_agent_runtime(&config).tool_names();
+        assert!(names.iter().any(|n| n == "run_tests"), "{names:?}");
     }
 
     /// #1272, gemeo positivo: `execution.profile = isolated-pod` explicito

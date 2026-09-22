@@ -349,6 +349,13 @@ impl Tool for RunTestsTool {
         //
         // Com canal de confirmacao nada disso se aplica: a aprovacao humana
         // abaixo continua sendo pedida para toda suite, sensivel ou nao.
+        //
+        // #1272: a premissa "o `bash` ja roda no mesmo runtime" deixou de
+        // valer nas superficies sem humano, onde o `bash` so existe com
+        // sandbox. La (gateway) o `run_tests` segue a MESMA regra de exposicao
+        // do `bash` (`exposicao_de` no bootstrap): o `file_write` escreve o
+        // `package.json`/`build.rs` que esta suite executa, entao este gate
+        // textual nunca e a fronteira.
         if !self.confirmation_enabled {
             let linha = Self::command_line(&cmd);
             if garraia_common::safety_gate::is_risky(&linha).is_err() {
