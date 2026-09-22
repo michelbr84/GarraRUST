@@ -235,7 +235,10 @@ The v0.4.4 clean-install smoke test found these:
 - **Quality Ratchet** (#1254): `freeze-baseline.py` gains
   `--adopt-current-file-metrics --reason '#NNN'`. The flag adopts only the
   file-size metrics and records where they came from. Audit, coverage and
-  clippy stay on the strict ratchet.
+  clippy stay on the strict ratchet. The re-baseline itself (#1376) ran on
+  `main` right before the tag: the ratchet stops repeating months of drift on
+  every PR, the 3500-line ceiling did not go up, and the 16 files above 2500
+  lines are recorded as accepted debt in `.quality/README.md`.
 - **A PR without a fragment in `changelog.d/` goes red**, with an exemption
   through the `no-changelog` label.
 - **Coverage and the ratchet edit a single comment per PR**, instead of

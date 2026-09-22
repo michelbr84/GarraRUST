@@ -229,7 +229,10 @@ O smoke de instalação limpa da v0.4.4 achou estas:
 - **Quality Ratchet** (#1254): `freeze-baseline.py` ganha
   `--adopt-current-file-metrics --reason '#NNN'`. A flag adota só as métricas
   de tamanho de arquivo e registra a origem. Audit, cobertura e clippy seguem no
-  ratchet estrito.
+  ratchet estrito. O re-baseline em si (#1376) rodou no `main` logo antes da
+  tag: o ratchet deixa de repetir a deriva de meses em todo PR, o teto de 3500
+  linhas não subiu, e os 16 arquivos acima de 2500 linhas ficam registrados
+  como dívida aceita no `.quality/README.md`.
 - **PR sem fragmento em `changelog.d/` fica vermelho**, com isenção pela label
   `no-changelog`.
 - **Cobertura e ratchet editam um comentário só por PR**, em vez de postar um
