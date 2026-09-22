@@ -3056,14 +3056,26 @@ impl AgentRuntime {
         info!("tool '{}' result: is_error={}", name, output.is_error);
         let output = saida_sem_marcador_alheio(output);
 
+        // W3 (v0.4.5): o texto de um pedido de confirmacao como o HUMANO o le,
+        // sem o marcador interno. Calculado uma vez e usado nos dois lugares
+        // em que o pedido chega a alguem: a linha da ferramenta nos sinks de
+        // eventos (o `tool_finished` que a `garraia chat` desenha e que o
+        // `/ws` manda como resumo) e o `prompt` do turno pausado. O conteudo
+        // CRU, com o marcador, continua sendo o do `ToolResult` e o de onde
+        // sai a `fingerprint` — os dois lugares de onde a aprovacao sai.
+        let pedido_ao_humano = output
+            .requires_confirmation
+            .then(|| ApprovalFingerprint::strip_marker(&output.content));
+
         if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
             let ok = !output.is_error;
+            let visivel = pedido_ao_humano.as_deref().unwrap_or(&output.content);
             sink.tool_finished(
                 name,
                 iniciado_em.elapsed(),
                 ok,
-                summarize_tool_output(&output.content, ok),
-                capture_tool_output(&output.content),
+                summarize_tool_output(visivel, ok),
+                capture_tool_output(visivel),
             )
             .await;
         }
@@ -3093,7 +3105,8 @@ impl AgentRuntime {
                 // `fingerprint` (o registro de pendencias) — os dois lugares
                 // de onde a aprovacao sai. No texto ele so aparecia para o
                 // usuario do canal, que nunca aprovou nada digitando-o.
-                prompt: ApprovalFingerprint::strip_marker(&output.content),
+                prompt: pedido_ao_humano
+                    .unwrap_or_else(|| ApprovalFingerprint::strip_marker(&output.content)),
                 tool: name.to_string(),
                 fingerprint,
             };
@@ -8912,6 +8925,89 @@ mod tests {
                 "o comando aprovado rodou e o modelo viu a saida: {vistos:?}"
             );
             assert!(rt.pending_approvals.is_empty(), "o pedido foi consumido");
+        }
+
+        /// **W3 no sink de eventos.** O mesmo despacho que monta a resposta
+        /// pausada manda, ANTES dela, o `tool_finished` da ferramenta aos
+        /// sinks `Events` — a linha que a `garraia chat` desenha e o resumo
+        /// que o `/ws` envia. O resumo e a saida capturada eram tirados do
+        /// conteudo cru, e o humano via `[CONFIRM_REQUIRED:<hex>] O comando a
+        /// seguir...` ali, mesmo com a resposta ja limpa. O registro da
+        /// pausa continua saindo do conteudo cru.
+        #[tokio::test]
+        async fn a_linha_da_ferramenta_no_streaming_tambem_sai_sem_marcador() {
+            let rt = AgentRuntime::new();
+            rt.register_tool(Box::new(crate::tools::BashTool::new_with_confirmation(
+                None,
+            )));
+            let provider = Arc::new(PedeBash {
+                vistos: Mutex::new(Vec::new()),
+            });
+            rt.register_provider(Arc::clone(&provider) as Arc<dyn LlmProvider>);
+            let exec = ExecContext {
+                approval_scope: escopo("web", "s-w3", "u-1"),
+                ..ExecContext::default()
+            };
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::turn_events::TurnEvent>(64);
+            let coleta = tokio::spawn(async move {
+                let mut eventos = Vec::new();
+                while let Some(e) = rx.recv().await {
+                    eventos.push(e);
+                }
+                eventos
+            });
+            let resposta = rt
+                .process_message_streaming_with_events(
+                    "s-w3",
+                    "mostra o PATH",
+                    &[],
+                    tx,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &exec,
+                )
+                .await
+                .expect("turno");
+            let eventos = coleta.await.expect("coleta");
+
+            let fins: Vec<(&str, &str)> = eventos
+                .iter()
+                .filter_map(|e| match e {
+                    crate::turn_events::TurnEvent::ToolFinished {
+                        name,
+                        summary,
+                        output,
+                        ..
+                    } if name == "bash" => Some((summary.as_str(), output.as_str())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(fins.len(), 1, "um fim para a chamada do bash: {eventos:?}");
+            let (resumo, saida) = fins[0];
+            for (onde, texto) in [("summary", resumo), ("output", saida)] {
+                assert!(
+                    !texto.contains(crate::tools::approval::MARKER_PREFIX),
+                    "o marcador chegou ao {onde} do tool_finished: {texto}"
+                );
+                assert!(
+                    texto.starts_with("O comando a seguir requer confirma"),
+                    "o {onde} e o pedido, sem o marcador na frente: {texto}"
+                );
+            }
+            assert!(saida.contains("printenv PATH"), "{saida}");
+            assert!(
+                !resposta.contains(crate::tools::approval::MARKER_PREFIX),
+                "{resposta}"
+            );
+            assert!(
+                !rt.pending_approvals.is_empty(),
+                "a pausa foi registrada com a impressao digital do conteudo cru"
+            );
         }
     }
 
