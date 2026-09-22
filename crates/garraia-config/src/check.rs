@@ -323,13 +323,13 @@ fn perfil_efetivo_para_o_check(
 
 /// [`validate_com_env`] sem env — o que os testes deste modulo chamam. Pura:
 /// nenhum teste daqui depende do ambiente do desenvolvedor nem precisa de
-/// lock para ler `GARRAIA_EXECUTION_PROFILE`.
+/// lock para ler `GARRAIA_EXECUTION_PROFILE`, `HOST` ou `PORT`.
 #[cfg(test)]
 fn validate(config: &AppConfig) -> Vec<Finding> {
-    validate_com_env(config, &Ok(None))
+    validate_com_env(config, &Ok(None), &BindDaEnv::default())
 }
 
-fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
+fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv, bind_env: &BindDaEnv) -> Vec<Finding> {
     let mut findings: Vec<Finding> = Vec::new();
     let push_err = |findings: &mut Vec<Finding>, field: &str, message: String| {
         findings.push(Finding {
@@ -438,10 +438,7 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv) -> Vec<Finding> {
     // credencial (`crate::bind::verificar`). Entao aqui isso e **Error**: um
     // `config check` limpo sobre uma config que o start recusa seria mentira.
     let bin = garraia_common::executavel::nome();
-    let bind = bind_efetivo(
-        env_nao_vazia(HOST_ENV).as_deref(),
-        env_nao_vazia(PORT_ENV).as_deref(),
-    );
+    let bind = bind_efetivo(bind_env.host.as_deref(), bind_env.port.as_deref());
     let tls_enabled =
         config.gateway.tls_cert_path.is_some() && config.gateway.tls_key_path.is_some();
     // #1241: `api_key_configurada` e a regra unica (em branco = ausente), e
@@ -1031,10 +1028,36 @@ fn exposicao_do_host(host: &str) -> ExposicaoDoHost {
 /// parse do `SocketAddr` — nunca produz um falso "nao exposto", so um "nao
 /// vi nada de errado" onde o start real teria erro de config.
 fn env_nao_vazia(nome: &str) -> Option<String> {
-    std::env::var(nome)
-        .ok()
-        .map(|v| v.trim().to_string())
+    normalizar_env(std::env::var(nome).ok().as_deref())
+}
+
+/// Valor de env em branco (ou so espaco) nao e escolha: vale como ausente.
+fn normalizar_env(valor: Option<&str>) -> Option<String> {
+    valor
+        .map(str::trim)
         .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// `HOST`/`PORT` do processo, lidos UMA vez por [`run_check`] e injetados no
+/// nucleo puro. Antes o [`validate_com_env`] lia as duas envs por dentro, e
+/// um teste que ligava `HOST=0.0.0.0` sob o `ENV_TEST_LOCK` vazava o valor
+/// para qualquer teste vizinho que chamasse `validate` sem o lock: o
+/// "config padrao sem erros" falhou no CI com um achado de exposicao que
+/// nao tinha nada a ver com ele (#1261).
+#[derive(Debug, Default, Clone)]
+struct BindDaEnv {
+    host: Option<String>,
+    port: Option<String>,
+}
+
+impl BindDaEnv {
+    fn do_processo() -> Self {
+        Self {
+            host: env_nao_vazia(HOST_ENV),
+            port: env_nao_vazia(PORT_ENV),
+        }
+    }
 }
 
 /// O `$HOME` do processo, para [`validate_file_roots`]. Separado para o teste
@@ -2704,7 +2727,7 @@ pub fn run_check(loader: &ConfigLoader, config: &AppConfig) -> ConfigCheck {
         _ => config,
     };
     let env = crate::execution::perfil_do_env();
-    let mut findings = validate_com_env(config, &env);
+    let mut findings = validate_com_env(config, &env, &BindDaEnv::do_processo());
     findings.extend(validate_config_dir(loader));
     // #1237: `vault:` no `env` de um servidor MCP com o cofre indisponivel
     // (`GARRAIA_VAULT_PASSPHRASE` ausente) — no boot a referencia nao resolve
@@ -3189,20 +3212,16 @@ mod tests {
         assert!(hit.message.contains("auto-fallback"));
     }
 
-    /// `validate` le HOST/PORT do processo desde a #1261, entao precisa do
-    /// `ENV_TEST_LOCK` e de neutralizar as duas envs — senao um teste vizinho
-    /// que passa por `com_bind_env` pode deixar `HOST=0.0.0.0` visivel aqui
-    /// e produzir um Error de exposicao que nao tem nada a ver com o default.
+    /// `validate` e pura: nem `HOST`/`PORT` de um teste vizinho entram aqui
+    /// (o flake da #1261 que o CI pegou neste teste).
     #[test]
     fn valid_default_config_has_no_errors() {
-        com_bind_env(None, None, || {
-            let cfg = AppConfig::default();
-            let findings = validate(&cfg);
-            assert!(
-                !findings.iter().any(|f| f.severity == Severity::Error),
-                "default config produced errors: {findings:?}"
-            );
-        });
+        let cfg = AppConfig::default();
+        let findings = validate(&cfg);
+        assert!(
+            !findings.iter().any(|f| f.severity == Severity::Error),
+            "default config produced errors: {findings:?}"
+        );
     }
 
     /// Achado da investigação da #930: o flag não é implementado no gateway
@@ -4094,7 +4113,8 @@ mod tests {
             },
         );
 
-        let check = run_check(&loader, &cfg);
+        // HOST/PORT de um teste vizinho nao entram (#1261): run_check le a env.
+        let check = com_bind_env(None, None, || run_check(&loader, &cfg));
         let full_json = serde_json::to_string(&check).expect("serialise check");
         for needle in [
             "sk-gateway-supersecret",
@@ -4116,7 +4136,8 @@ mod tests {
         let loader = ConfigLoader::with_dir(&dir);
         let mut cfg = AppConfig::default();
         cfg.gateway.session_ttl_secs = 0;
-        let check = run_check(&loader, &cfg);
+        // HOST/PORT de um teste vizinho nao entram (#1261): run_check le a env.
+        let check = com_bind_env(None, None, || run_check(&loader, &cfg));
         assert!(check.source.used_defaults);
         assert!(check.has_errors());
         assert_eq!(check.max_severity(), Some(Severity::Error));
@@ -5022,6 +5043,50 @@ mod tests {
         }
     }
 
+    /// [`validate`] com `HOST`/`PORT` de mentira, sem tocar no ambiente do
+    /// processo e sem lock. Branco vale como ausente, como na leitura real.
+    fn validate_com_bind(cfg: &AppConfig, host: Option<&str>, port: Option<&str>) -> Vec<Finding> {
+        validate_com_env(
+            cfg,
+            &Ok(None),
+            &BindDaEnv {
+                host: normalizar_env(host),
+                port: normalizar_env(port),
+            },
+        )
+    }
+
+    /// A regressao do flake: `HOST=0.0.0.0` no processo (sob o lock, como
+    /// faz o teste vizinho) nao pode aparecer no `validate` dos testes, mas
+    /// o `run_check` de producao continua lendo a env.
+    #[test]
+    fn validate_nao_le_host_do_processo_mas_run_check_le() {
+        let dir = std::env::temp_dir().join(format!(
+            "garraia-check-1261-host-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let loader = ConfigLoader::with_dir(&dir);
+        let cfg = AppConfig::default();
+        let (puro, producao) = com_bind_env(Some("0.0.0.0"), None, || {
+            (validate(&cfg), run_check(&loader, &cfg))
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            achado_de_exposicao(&puro).is_none(),
+            "validate leu HOST do processo: {puro:?}"
+        );
+        assert!(
+            achado_de_exposicao(&producao.findings).is_some(),
+            "run_check deixou de ler HOST: {:?}",
+            producao.findings
+        );
+    }
+
     /// Roda `f` com `HOST`/`PORT` exatamente no estado pedido e devolve o
     /// ambiente como estava — mesmo se `f` entrar em panic. Sob o
     /// `ENV_TEST_LOCK` do crate porque, desde o #1261, `validate` LE essas
@@ -5113,7 +5178,7 @@ mod tests {
     fn arquivo_em_todas_as_interfaces_sem_env_e_chave_morta_nao_exposicao() {
         let mut cfg = AppConfig::default();
         cfg.gateway.host = "0.0.0.0".into();
-        let findings = com_bind_env(None, None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, None, None);
         assert!(
             achado_de_exposicao(&findings).is_none(),
             "sem HOST, o bind e o default do clap (loopback): {findings:?}"
@@ -5139,7 +5204,7 @@ mod tests {
         for host in ["::", "[::]"] {
             let mut cfg = AppConfig::default();
             cfg.gateway.host = host.into();
-            let findings = com_bind_env(None, None, || validate(&cfg));
+            let findings = validate_com_bind(&cfg, None, None);
             assert!(
                 achado_de_exposicao(&findings).is_none(),
                 "{host} no arquivo nao sobe, logo nao expoe: {findings:?}"
@@ -5155,7 +5220,7 @@ mod tests {
     fn bind_loopback_does_not_warn_about_exposure() {
         // AppConfig::default() binds 127.0.0.1:3888 — igual ao default do
         // clap, entao nem chave morta ha para reportar.
-        let findings = com_bind_env(None, None, || validate(&AppConfig::default()));
+        let findings = validate_com_bind(&AppConfig::default(), None, None);
         assert!(
             !findings
                 .iter()
@@ -5173,7 +5238,7 @@ mod tests {
         cfg.gateway.api_key = Some("test-gateway-bearer".into());
         cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
         cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
-        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, Some("0.0.0.0"), None);
         assert!(
             !findings.iter().any(|f| f.field == "gateway.host"),
             "api_key + TLS on HOST=0.0.0.0 must not warn: {findings:?}"
@@ -5278,7 +5343,7 @@ mod tests {
     fn host_env_expoe_o_bind_mesmo_com_arquivo_em_loopback() {
         let cfg = AppConfig::default();
         assert_eq!(cfg.gateway.host, "127.0.0.1", "premissa do teste");
-        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, Some("0.0.0.0"), None);
         let hit = achado_de_exposicao(&findings)
             .unwrap_or_else(|| panic!("HOST=0.0.0.0 abre o gateway e tem de avisar: {findings:?}"));
         // #1261 decisao A: o start recusa isto, entao o check diz Error.
@@ -5309,7 +5374,7 @@ mod tests {
     fn host_env_em_loopback_cala_o_aviso_do_arquivo() {
         let mut cfg = AppConfig::default();
         cfg.gateway.host = "0.0.0.0".into();
-        let findings = com_bind_env(Some("127.0.0.1"), None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, Some("127.0.0.1"), None);
         assert!(
             achado_de_exposicao(&findings).is_none(),
             "HOST=127.0.0.1 e o bind real; o 0.0.0.0 do arquivo nunca chega la: {findings:?}"
@@ -5327,7 +5392,7 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.gateway.host = "0.0.0.0".into();
         for branco in ["", "   "] {
-            let findings = com_bind_env(Some(branco), None, || validate(&cfg));
+            let findings = validate_com_bind(&cfg, Some(branco), None);
             assert!(
                 achado_de_exposicao(&findings).is_none(),
                 "HOST={branco:?} nao vira origem de bind: {findings:?}"
@@ -5345,7 +5410,7 @@ mod tests {
     #[test]
     fn achado_de_bind_usa_a_porta_efetiva_e_admite_a_flag() {
         let cfg = AppConfig::default();
-        let findings = com_bind_env(Some("0.0.0.0"), Some("4000"), || validate(&cfg));
+        let findings = validate_com_bind(&cfg, Some("0.0.0.0"), Some("4000"));
         let hit = achado_de_exposicao(&findings).unwrap_or_else(|| panic!("{findings:?}"));
         assert!(
             hit.message.contains("port 4000 (from PORT)"),
@@ -5373,7 +5438,7 @@ mod tests {
         cfg.gateway.host = "0.0.0.0".into();
         cfg.gateway.port = 3977;
 
-        let findings = com_bind_env(None, None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, None, None);
         let host = achado_de_chave_morta(&findings, "gateway.host")
             .unwrap_or_else(|| panic!("host morto: {findings:?}"));
         assert!(matches!(host.severity, Severity::Warning));
@@ -5387,7 +5452,7 @@ mod tests {
         );
 
         // Env igual ao arquivo: o que sobe coincide, nada a reportar.
-        let findings = com_bind_env(Some("0.0.0.0"), Some("3977"), || validate(&cfg));
+        let findings = validate_com_bind(&cfg, Some("0.0.0.0"), Some("3977"));
         assert!(
             achado_de_chave_morta(&findings, "gateway.host").is_none()
                 && achado_de_chave_morta(&findings, "gateway.port").is_none(),
@@ -5400,7 +5465,7 @@ mod tests {
     fn porta_zero_no_arquivo_nao_duplica_como_chave_morta() {
         let mut cfg = AppConfig::default();
         cfg.gateway.port = 0;
-        let findings = com_bind_env(None, None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, None, None);
         assert!(
             findings
                 .iter()
@@ -5449,7 +5514,7 @@ mod tests {
     fn host_env_nao_loopback_avisa_e_hostname_e_indeterminado() {
         let cfg = AppConfig::default();
         for host in ["::", "[::]", "::0", "0:0:0:0:0:0:0:0", "0.0.0.0"] {
-            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            let findings = validate_com_bind(&cfg, Some(host), None);
             let hit = achado_de_exposicao(&findings)
                 .unwrap_or_else(|| panic!("HOST={host}: {findings:?}"));
             assert!(
@@ -5458,7 +5523,7 @@ mod tests {
             );
         }
         for host in ["192.168.1.5", "10.0.0.7", "2001:db8::1"] {
-            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            let findings = validate_com_bind(&cfg, Some(host), None);
             let hit = achado_de_exposicao(&findings)
                 .unwrap_or_else(|| panic!("HOST={host}: {findings:?}"));
             assert!(
@@ -5467,14 +5532,14 @@ mod tests {
             );
         }
         for host in ["127.0.0.1", "127.0.0.2", "::1", "[::1]", "localhost"] {
-            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            let findings = validate_com_bind(&cfg, Some(host), None);
             assert!(
                 achado_de_exposicao(&findings).is_none() && achado_de_hostname(&findings).is_none(),
                 "HOST={host} e loopback e nao pode avisar: {findings:?}"
             );
         }
         for host in ["gateway.internal", "meu-host"] {
-            let findings = com_bind_env(Some(host), None, || validate(&cfg));
+            let findings = validate_com_bind(&cfg, Some(host), None);
             assert!(
                 achado_de_exposicao(&findings).is_none(),
                 "HOST={host}: o check nao sabe se e loopback, nao pode afirmar exposicao: {findings:?}"
@@ -5497,7 +5562,7 @@ mod tests {
         cfg.gateway.api_key = Some("test-gateway-bearer".into());
         cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
         cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
-        let findings = com_bind_env(Some("gateway.internal"), None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, Some("gateway.internal"), None);
         assert!(
             achado_de_hostname(&findings).is_none(),
             "credencial + TLS cobrem qualquer bind: {findings:?}"
@@ -5517,7 +5582,7 @@ mod tests {
             cfg.gateway.tls_cert_path = Some("/etc/garraia/tls/cert.pem".into());
             cfg.gateway.tls_key_path = Some("/etc/garraia/tls/key.pem".into());
             // Desde o #1261 o bind que expoe e o da env, nao o do arquivo.
-            let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+            let findings = validate_com_bind(&cfg, Some("0.0.0.0"), None);
             let f = achado_de_exposicao(&findings)
                 .unwrap_or_else(|| panic!("com {valor:?} o gate esta desligado: {findings:?}"));
             assert!(
@@ -5535,7 +5600,7 @@ mod tests {
 
     #[test]
     fn exposto_sem_credencial_e_error_mesmo_sem_strict() {
-        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&AppConfig::default()));
+        let findings = validate_com_bind(&AppConfig::default(), Some("0.0.0.0"), None);
         let hit = achado_de_exposicao(&findings).unwrap_or_else(|| panic!("{findings:?}"));
         assert!(matches!(hit.severity, Severity::Error), "{hit:?}");
         for trecho in [
@@ -5553,7 +5618,7 @@ mod tests {
     fn credencial_de_env_tira_o_error_de_exposicao() {
         let mut cfg = AppConfig::default();
         cfg.gateway.api_key_env = crate::auth::gateway_api_key_de(Some("da-env".into()));
-        let findings = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, Some("0.0.0.0"), None);
         assert!(
             !findings
                 .iter()
@@ -5570,7 +5635,7 @@ mod tests {
     fn opt_out_vira_warning_e_e_sempre_reportado() {
         let mut cfg = AppConfig::default();
         cfg.gateway.allow_unauthenticated_network_bind = true;
-        let exposto = com_bind_env(Some("0.0.0.0"), None, || validate(&cfg));
+        let exposto = validate_com_bind(&cfg, Some("0.0.0.0"), None);
         let hit = achado_de_exposicao(&exposto).unwrap_or_else(|| panic!("{exposto:?}"));
         assert!(matches!(hit.severity, Severity::Warning), "{hit:?}");
         assert!(
@@ -5578,7 +5643,7 @@ mod tests {
             "{hit:?}"
         );
 
-        let local = com_bind_env(None, None, || validate(&cfg));
+        let local = validate_com_bind(&cfg, None, None);
         let opt = local
             .iter()
             .find(|f| f.field == "gateway.allow_unauthenticated_network_bind")
@@ -5591,7 +5656,7 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.gateway.api_key = Some("valor-do-arquivo-1261".into());
         cfg.gateway.api_key_env = crate::auth::gateway_api_key_de(Some("valor-da-env-1261".into()));
-        let findings = com_bind_env(None, None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, None, None);
         let hit = findings
             .iter()
             .find(|f| f.field == "gateway.api_key")
@@ -5603,7 +5668,7 @@ mod tests {
         // Iguais: nada a dizer.
         cfg.gateway.api_key_env =
             crate::auth::gateway_api_key_de(Some("valor-do-arquivo-1261".into()));
-        let findings = com_bind_env(None, None, || validate(&cfg));
+        let findings = validate_com_bind(&cfg, None, None);
         assert!(
             !findings.iter().any(|f| f.field == "gateway.api_key"),
             "{findings:?}"
@@ -6624,10 +6689,11 @@ mod tests {
         let invalida: PerfilDaEnv = Err("not-a-profile"
             .parse::<ExecutionProfile>()
             .expect_err("invalido"));
-        let erros: Vec<_> = validate_com_env(&AppConfig::default(), &invalida)
-            .into_iter()
-            .filter(|f| f.field == "execution.profile")
-            .collect();
+        let erros: Vec<_> =
+            validate_com_env(&AppConfig::default(), &invalida, &BindDaEnv::default())
+                .into_iter()
+                .filter(|f| f.field == "execution.profile")
+                .collect();
         assert_eq!(erros.len(), 1, "{erros:?}");
         assert_eq!(erros[0].severity, Severity::Error);
         assert!(
@@ -6642,7 +6708,7 @@ mod tests {
         assert_eq!(sumario_invalido.execution_profile_source, "default");
 
         let env: PerfilDaEnv = Ok(Some(ExecutionProfile::IsolatedPod));
-        let limpo: Vec<_> = validate_com_env(&AppConfig::default(), &env)
+        let limpo: Vec<_> = validate_com_env(&AppConfig::default(), &env, &BindDaEnv::default())
             .into_iter()
             .filter(|f| f.field == "execution.profile")
             .collect();
@@ -6703,7 +6769,8 @@ mod tests {
 
         // O pipeline inteiro: `run_check` tem o Error e o sumario mostra o
         // default (o arquivo, sem o valor recusado, nao declara perfil).
-        let check = run_check(&loader, &config);
+        // HOST/PORT de um teste vizinho nao entram (#1261): run_check le a env.
+        let check = com_bind_env(None, None, || run_check(&loader, &config));
         assert!(check.has_errors(), "{:?}", check.findings);
         assert!(
             check
