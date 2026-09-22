@@ -15,12 +15,14 @@
 //!
 //! # Why so many conditions before deleting anything
 //!
-//! The candidate directory comes from the **child's stderr**, which is
-//! untrusted output: a hostile or buggy MCP server can print any path it
-//! likes. So the path from stderr is never used as-is. It is only accepted when
-//! it canonicalizes to exactly `<canonical npm cache root>/_npx/<16 hex>`,
-//! where the cache root is resolved from the environment the gateway itself
-//! built for the child (not from anything the child said), the entry is a real
+//! The hint that an entry is broken comes from the **child's stderr**, which
+//! is untrusted output: a hostile or buggy MCP server can print any path it
+//! likes. So only the `<16 hex>` entry name is taken from stderr; the directory
+//! is always rebuilt as `<npm cache root>/_npx/<16 hex>`, where the cache root
+//! is resolved from the environment the gateway itself built for the child
+//! (not from anything the child said). It is only accepted when it
+//! canonicalizes to exactly `<canonical npm cache root>/_npx/<16 hex>`, the
+//! entry is a real
 //! directory (never a symlink, and `_npx` itself is not one either), and its
 //! `package.json` declares the package the server was configured to run. The
 //! worst an adversarial stderr can achieve is a re-download of one npx cache
@@ -50,13 +52,17 @@ const PACKAGE_JSON_MAX_BYTES: u64 = 64 * 1024;
 /// Why an MCP stdio server failed to come up, as far as the gateway can tell.
 ///
 /// Secret-free by construction: the only payload is a filesystem path inside
-/// the npm cache.
+/// the npm cache, and that path is **never** text taken from the child.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpFailureCause {
     /// The npx cache entry the server runs from is incomplete or failed its
-    /// integrity check. `dir` is the `_npx/<16 hex>` entry named by the
-    /// child's stderr, when there was one — it is a *claim*, not yet
-    /// validated.
+    /// integrity check. `dir`, when present, is the entry
+    /// `<npm cache root>/_npx/<16 hex>` rebuilt by the gateway from the cache
+    /// root it resolved for the child plus the entry hash seen in stderr, and
+    /// only after it passed the same checks that guard the automatic delete
+    /// (real directory inside the cache, no symlink, `package.json` of the
+    /// configured package). An entry that fails them is reported as `None`:
+    /// the gateway never repeats a path the child made up.
     NpxCacheCorrupt { dir: Option<PathBuf> },
     /// The child reported `ENOSPC`.
     DiskFull,
@@ -74,7 +80,7 @@ impl McpFailureCause {
         }
     }
 
-    /// The cache entry named by the child, if any.
+    /// The validated cache entry, if any (see [`McpFailureCause::NpxCacheCorrupt`]).
     pub fn npx_dir(&self) -> Option<&Path> {
         match self {
             McpFailureCause::NpxCacheCorrupt { dir } => dir.as_deref(),
@@ -83,15 +89,32 @@ impl McpFailureCause {
     }
 }
 
+/// What the stderr tail says, before anything is checked on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NpxClassification {
+    /// The cause, with `dir` always `None` — only the manager fills it, after
+    /// validating the entry against the cache root it resolved itself.
+    pub(crate) cause: McpFailureCause,
+    /// The `<16 hex>` name of the npx entry named by stderr, if any. Only the
+    /// hash is kept: the directory prefix the child printed is untrusted and
+    /// is not even reliably parseable (a Windows profile such as
+    /// `C:\Users\John Smith` has a space in it).
+    pub(crate) entry: Option<String>,
+}
+
 /// Classify a failed spawn from the tail of its stderr.
 ///
 /// `ENOSPC` wins over everything: a full disk also produces missing-module
 /// errors, and clearing a cache entry would only make it worse.
-pub(crate) fn classify_npx_failure(stderr_tail: &str) -> McpFailureCause {
+pub(crate) fn classify_npx_failure(stderr_tail: &str) -> NpxClassification {
+    let corrupt = McpFailureCause::NpxCacheCorrupt { dir: None };
     if stderr_tail.contains("ENOSPC") {
-        return McpFailureCause::DiskFull;
+        return NpxClassification {
+            cause: McpFailureCause::DiskFull,
+            entry: None,
+        };
     }
-    let dir = find_npx_entry(stderr_tail);
+    let entry = find_npx_entry_name(stderr_tail);
     let missing_module = [
         "ERR_MODULE_NOT_FOUND",
         "MODULE_NOT_FOUND",
@@ -100,13 +123,16 @@ pub(crate) fn classify_npx_failure(stderr_tail: &str) -> McpFailureCause {
     ]
     .iter()
     .any(|m| stderr_tail.contains(m));
-    if missing_module && dir.is_some() {
-        return McpFailureCause::NpxCacheCorrupt { dir };
+    if (missing_module && entry.is_some()) || stderr_tail.contains("EINTEGRITY") {
+        return NpxClassification {
+            cause: corrupt,
+            entry,
+        };
     }
-    if stderr_tail.contains("EINTEGRITY") {
-        return McpFailureCause::NpxCacheCorrupt { dir };
+    NpxClassification {
+        cause: McpFailureCause::Other,
+        entry: None,
     }
-    McpFailureCause::Other
 }
 
 fn is_sep(c: u8) -> bool {
@@ -119,9 +145,10 @@ fn is_lower_hex16(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// First `<...>/_npx/<16 hex>` directory in `text` that is followed by
-/// `/node_modules`, i.e. a module path inside an npx entry.
-fn find_npx_entry(text: &str) -> Option<PathBuf> {
+/// Hash of the first `_npx/<16 hex>/node_modules` segment in `text`, i.e. a
+/// module path inside an npx entry. The path before `_npx` is deliberately
+/// ignored (see [`NpxClassification::entry`]).
+fn find_npx_entry_name(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut from = 0;
     while let Some(off) = text[from..].find("_npx") {
@@ -142,24 +169,7 @@ fn find_npx_entry(text: &str) -> Option<PathBuf> {
         {
             continue;
         }
-        // Walk back to the start of the path token.
-        let start = text[..i]
-            .rfind(|c: char| c.is_whitespace() || "'\"`(<[".contains(c))
-            .map(|p| p + 1)
-            .unwrap_or(0);
-        let mut raw = &text[start..hex_end];
-        if let Some(rest) = raw.strip_prefix("file://") {
-            raw = rest;
-            // `file:///C:/Users/...` → `C:/Users/...`
-            let b = raw.as_bytes();
-            if b.len() > 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
-                raw = &raw[1..];
-            }
-        }
-        let path = PathBuf::from(raw);
-        if path.is_absolute() || looks_like_windows_absolute(raw) {
-            return Some(path);
-        }
+        return Some(text[hex_start..hex_end].to_string());
     }
     None
 }
@@ -176,7 +186,9 @@ pub(crate) fn is_npx_command(command: &str) -> bool {
         .file_name()
         .and_then(|b| b.to_str())
         .unwrap_or(command);
-    base == "npx" || base.eq_ignore_ascii_case("npx.cmd")
+    ["npx", "npx.cmd", "npx.exe"]
+        .iter()
+        .any(|n| base.eq_ignore_ascii_case(n))
 }
 
 /// The npm cache root the child **actually** uses, resolved from the
@@ -458,8 +470,9 @@ mod tests {
     fn classifies_the_real_zod_trace_as_corrupt_npx_cache() {
         assert_eq!(
             classify_npx_failure(ZOD_TRACE),
-            McpFailureCause::NpxCacheCorrupt {
-                dir: Some(PathBuf::from("/home/u/.npm/_npx/a1b2c3d4e5f60718"))
+            NpxClassification {
+                cause: McpFailureCause::NpxCacheCorrupt { dir: None },
+                entry: Some("a1b2c3d4e5f60718".to_string()),
             }
         );
     }
@@ -507,36 +520,47 @@ mod tests {
             ),
         ];
         for (text, want) in cases {
-            assert_eq!(classify_npx_failure(text).as_str(), *want, "{text}");
+            assert_eq!(classify_npx_failure(text).cause.as_str(), *want, "{text}");
         }
         assert_eq!(
             classify_npx_failure("npm error code EINTEGRITY"),
-            McpFailureCause::NpxCacheCorrupt { dir: None }
+            NpxClassification {
+                cause: McpFailureCause::NpxCacheCorrupt { dir: None },
+                entry: None,
+            }
         );
     }
 
     #[test]
-    fn extracts_windows_paths() {
+    fn extracts_the_entry_name_from_windows_paths() {
         let t = "Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\0123456789abcdef\\node_modules\\zod\\a.js'";
         assert_eq!(
-            classify_npx_failure(t).npx_dir(),
-            Some(Path::new(
-                "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\0123456789abcdef"
-            ))
+            classify_npx_failure(t).entry.as_deref(),
+            Some("0123456789abcdef")
         );
         let u = "url: 'file:///C:/Users/u/AppData/Local/npm-cache/_npx/0123456789abcdef/node_modules/a.js' ERR_MODULE_NOT_FOUND";
         assert_eq!(
-            classify_npx_failure(u).npx_dir(),
-            Some(Path::new(
-                "C:/Users/u/AppData/Local/npm-cache/_npx/0123456789abcdef"
-            ))
+            classify_npx_failure(u).entry.as_deref(),
+            Some("0123456789abcdef")
         );
     }
 
+    /// Review MCP-5: a profile with a space in it (`John Smith`) used to cut
+    /// the path token in half, so the entry was never found and the cause
+    /// fell through to `other`. Quoted, unquoted (ESM `imported from`) and
+    /// percent-encoded `file://` forms all name the entry.
     #[test]
-    fn relative_npx_paths_are_ignored() {
-        let t = "Cannot find module 'cache/_npx/0123456789abcdef/node_modules/a.js'";
-        assert_eq!(classify_npx_failure(t), McpFailureCause::Other);
+    fn a_space_in_the_profile_path_still_names_the_entry() {
+        for t in [
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'C:\\Users\\John Smith\\AppData\\Local\\npm-cache\\_npx\\0123456789abcdef\\node_modules\\zod\\a.js'",
+            "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'zod' imported from C:\\Users\\John Smith\\AppData\\Local\\npm-cache\\_npx\\0123456789abcdef\\node_modules\\x\\i.js",
+            "url: 'file:///C:/Users/John%20Smith/AppData/Local/npm-cache/_npx/0123456789abcdef/node_modules/a.js' ERR_MODULE_NOT_FOUND",
+            "Cannot find module '/home/John Smith/.npm/_npx/0123456789abcdef/node_modules/a.js'",
+        ] {
+            let c = classify_npx_failure(t);
+            assert_eq!(c.cause.as_str(), "npx_cache_corrupt", "{t}");
+            assert_eq!(c.entry.as_deref(), Some("0123456789abcdef"), "{t}");
+        }
     }
 
     fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -626,6 +650,8 @@ mod tests {
         assert!(is_npx_command("/usr/local/bin/npx"));
         assert!(is_npx_command("npx.cmd"));
         assert!(is_npx_command("NPX.CMD"));
+        assert!(is_npx_command("npx.exe"));
+        assert!(is_npx_command("NPX"));
         assert!(!is_npx_command("node"));
         assert!(!is_npx_command("npx-wrapper"));
         assert!(!is_npx_command("python3"));

@@ -68,18 +68,24 @@ impl Recorder {
 struct Sandbox {
     _tmp: tempfile::TempDir,
     root: PathBuf,
+    home: PathBuf,
     npx: String,
     log: PathBuf,
 }
 
 impl Sandbox {
     fn new() -> Self {
+        Self::with_home("home")
+    }
+
+    /// `home` is the directory name used as `$HOME` (it may contain spaces).
+    fn with_home(home: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).expect("mkdir bin");
-        std::fs::create_dir_all(root.join("home")).expect("mkdir home");
+        std::fs::create_dir_all(root.join(home)).expect("mkdir home");
         let npx = bin.join("npx");
         std::fs::copy(
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_npx.py"),
@@ -88,6 +94,7 @@ impl Sandbox {
         .expect("copy fake npx");
         std::fs::set_permissions(&npx, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         Self {
+            home: root.join(home),
             log: root.join("npx.log"),
             npx: npx.to_string_lossy().into_owned(),
             root,
@@ -96,7 +103,7 @@ impl Sandbox {
     }
 
     fn home(&self) -> PathBuf {
-        self.root.join("home")
+        self.home.clone()
     }
 
     fn entry(&self) -> PathBuf {
@@ -278,6 +285,42 @@ async fn stderr_pointing_outside_the_cache_deletes_nothing() {
         assert!(err.to_string().contains("npx cache entry"), "{err}");
         assert!(victim.join("SENTINEL").exists(), "victim must survive");
         assert_eq!(sb.invocations(), 1, "no retry when nothing was cleared");
+
+        // Review MCP-1/3/4: the path the child made up reaches neither the
+        // error (which becomes `last_error` on the auth-free health endpoint)
+        // nor the cause (which diagnostics turns into "delete this
+        // directory"): the gateway refused it, so it does not repeat it.
+        assert!(!err.to_string().contains("victim"), "{err}");
+        m.register_pending_stdio(
+            "filesystem",
+            &sb.npx,
+            &args(),
+            &env,
+            10,
+            vec![],
+            None,
+            5,
+            1,
+            false,
+        )
+        .await;
+        let st = m.server_statuses().await;
+        let fs = st
+            .iter()
+            .find(|s| s.name == "filesystem")
+            .expect("pending server listed");
+        assert_eq!(
+            fs.cause,
+            Some(McpFailureCause::NpxCacheCorrupt { dir: None }),
+            "an entry the gateway refused is never reported as the corrupt one"
+        );
+        assert!(
+            fs.last_error
+                .as_deref()
+                .is_some_and(|e| !e.contains("victim") && !e.contains("_npx")),
+            "{:?}",
+            fs.last_error
+        );
     })
     .await
     .expect("test must not hang");
@@ -395,6 +438,29 @@ async fn exhausted_restarts_are_logged_exactly_once() {
         }
         assert_eq!(sb.invocations(), 4);
         assert_eq!(rec.count(Level::ERROR, "max restarts"), 2);
+    })
+    .await
+    .expect("test must not hang");
+}
+
+/// Review MCP-5: a `$HOME` with a space in it (`C:\Users\John Smith` on
+/// Windows is the common case) used to cut the stderr path in half, so the
+/// entry was never found and the recovery silently never ran. Only the entry
+/// hash is read from stderr now; the directory is rebuilt from the cache root.
+#[tokio::test]
+async fn a_space_in_home_does_not_defeat_the_recovery() {
+    timeout(async {
+        let sb = Sandbox::with_home("John Smith");
+        Sandbox::corrupt_entry_at(&sb.entry());
+        let env = sb.env(&[]);
+        let m = McpManager::new();
+
+        connect(&m, &sb, "filesystem", &env)
+            .await
+            .expect("connect must succeed after one cache clear");
+        assert_eq!(sb.invocations(), 2, "one failed spawn + exactly one retry");
+        assert!(!sb.entry().join("SENTINEL").exists());
+        m.disconnect_all().await;
     })
     .await
     .expect("test must not hang");

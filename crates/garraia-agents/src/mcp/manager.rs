@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -283,7 +283,11 @@ const LAST_ERROR_MAX_CHARS: usize = 200;
 /// A failed stdio connect: the error plus what is needed to diagnose it.
 struct StdioFailure {
     error: Error,
+    /// Classified cause; an `NpxCacheCorrupt` here always has `dir: None`
+    /// (see [`McpManager::validated_npx_entry`]).
     cause: McpFailureCause,
+    /// `<16 hex>` npx entry name read from stderr — never a path.
+    npx_entry: Option<String>,
     /// The environment the child was actually spawned with — the only
     /// source the npm cache root is resolved from.
     child_env: Vec<(String, String)>,
@@ -502,8 +506,46 @@ impl McpManager {
 
         let hint = cause_hint(&failure.cause);
         let message = format!("{}{hint}", failure.error);
-        self.record_failure(name, failure.cause, &message).await;
+        let cause = match failure.cause {
+            McpFailureCause::NpxCacheCorrupt { .. } => McpFailureCause::NpxCacheCorrupt {
+                dir: Self::validated_npx_entry(command, args, &failure).ok(),
+            },
+            other => other,
+        };
+        self.record_failure(name, cause, &message).await;
         Err(Error::Mcp(message))
+    }
+
+    /// #1346: the npx entry `failure` points at, as a directory the gateway
+    /// rebuilt and checked itself: `<npm cache root>/_npx/<hash>`, where the
+    /// root comes from the environment the child was spawned with and only the
+    /// hash comes from stderr, accepted by [`npx_cache::validate_candidate`].
+    /// This is the only path the manager ever deletes and the only one it
+    /// reports (review MCP-4): a directory the gateway refused is not shown to
+    /// the operator as "the corrupt entry" either.
+    fn validated_npx_entry(
+        command: &str,
+        args: &[String],
+        failure: &StdioFailure,
+    ) -> std::result::Result<PathBuf, String> {
+        let entry = match (&failure.cause, &failure.npx_entry) {
+            (McpFailureCause::NpxCacheCorrupt { .. }, Some(entry)) => entry,
+            _ => return Err("stderr names no npx cache entry".to_string()),
+        };
+        if !npx_cache::is_npx_command(command) {
+            return Err("the command is not npx".to_string());
+        }
+        let package = npx_cache::package_from_args(args)
+            .ok_or_else(|| "the package could not be read from args".to_string())?;
+        let root = npx_cache::npm_cache_root(&failure.child_env, cfg!(windows))
+            .ok_or_else(|| "the npm cache root could not be resolved".to_string())?;
+        let candidate = root.join("_npx").join(entry);
+        npx_cache::validate_candidate(&root, &candidate, &package).map_err(|refusal| {
+            format!(
+                "refusing npx cache entry {} ({refusal})",
+                candidate.display()
+            )
+        })
     }
 
     /// #1346: clear the corrupt npx cache entry named by `failure`, when every
@@ -516,10 +558,10 @@ impl McpManager {
         args: &[String],
         failure: &StdioFailure,
     ) -> bool {
-        let McpFailureCause::NpxCacheCorrupt { dir: Some(dir) } = &failure.cause else {
-            return false;
-        };
-        if !npx_cache::is_npx_command(command) {
+        if !matches!(failure.cause, McpFailureCause::NpxCacheCorrupt { .. })
+            || failure.npx_entry.is_none()
+            || !npx_cache::is_npx_command(command)
+        {
             return false;
         }
         // One shot per server per process — armed BEFORE any check, so a
@@ -528,21 +570,12 @@ impl McpManager {
             debug!(server = %name, "npx cache recovery already used for this server");
             return false;
         }
-        let Some(package) = npx_cache::package_from_args(args) else {
-            warn!(server = %name, "MCP server '{name}': npx cache looks corrupt but the package could not be read from args; not clearing anything");
-            return false;
-        };
-        let Some(root) = npx_cache::npm_cache_root(&failure.child_env, cfg!(windows)) else {
-            warn!(server = %name, "MCP server '{name}': npx cache looks corrupt but the npm cache root could not be resolved; not clearing anything");
-            return false;
-        };
-        let target = match npx_cache::validate_candidate(&root, dir, &package) {
+        let target = match Self::validated_npx_entry(command, args, failure) {
             Ok(t) => t,
-            Err(refusal) => {
+            Err(why) => {
                 warn!(
                     server = %name,
-                    "MCP server '{name}': refusing to clear {} ({refusal})",
-                    dir.display()
+                    "MCP server '{name}': npx cache looks corrupt but not clearing anything: {why}"
                 );
                 return false;
             }
@@ -688,6 +721,7 @@ impl McpManager {
                 return Err(StdioFailure {
                     error: Error::Mcp(format!("failed to spawn MCP server '{name}': {e}")),
                     cause: McpFailureCause::Other,
+                    npx_entry: None,
                     child_env,
                 });
             }
@@ -703,10 +737,11 @@ impl McpManager {
             Ok(Ok(service)) => service,
             Ok(Err(e)) => {
                 let error = Error::Mcp(format!("MCP server '{name}' handshake failed: {e}"));
-                let cause = classify_after_exit(drain).await;
+                let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error,
-                    cause,
+                    cause: c.cause,
+                    npx_entry: c.entry,
                     child_env,
                 });
             }
@@ -714,10 +749,11 @@ impl McpManager {
                 let error = Error::Mcp(format!(
                     "MCP server '{name}' handshake timed out after {timeout_secs}s"
                 ));
-                let cause = classify_after_exit(drain).await;
+                let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error,
-                    cause,
+                    cause: c.cause,
+                    npx_entry: c.entry,
                     child_env,
                 });
             }
@@ -731,19 +767,23 @@ impl McpManager {
             Ok(Ok(tools)) => tools,
             Ok(Err(e)) => {
                 drop(service);
+                let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error: Error::Mcp(format!("failed to list tools from '{name}': {e}")),
-                    cause: classify_after_exit(drain).await,
+                    cause: c.cause,
+                    npx_entry: c.entry,
                     child_env,
                 });
             }
             Err(_) => {
                 drop(service);
+                let c = classify_after_exit(drain).await;
                 return Err(StdioFailure {
                     error: Error::Mcp(format!(
                         "MCP server '{name}' tools/list timed out after {timeout_secs}s"
                     )),
-                    cause: classify_after_exit(drain).await,
+                    cause: c.cause,
+                    npx_entry: c.entry,
                     child_env,
                 });
             }
@@ -827,8 +867,51 @@ impl McpManager {
     /// is *stored* in `mcp.json` between them, so a value can be edited out of
     /// band after any front-door check. Validating here covers all three and
     /// re-validates on every reconnect. CodeQL: `rust/request-forgery` (9.1).
+    ///
+    /// Like the stdio [`Self::connect`], every outcome updates the failure
+    /// record behind `server_statuses`: a failure overwrites it, a success
+    /// clears it (review MCP-2/MCP-6 — it used to be written once and kept
+    /// forever, so health showed the first error of the process).
     #[cfg(feature = "mcp-http")]
     pub async fn connect_http(
+        &self,
+        name: &str,
+        url: &str,
+        timeout_secs: u64,
+        allowed_tools: Vec<String>,
+        max_restarts: u32,
+        restart_delay_secs: u64,
+    ) -> Result<()> {
+        let result = self
+            .connect_http_once(
+                name,
+                url,
+                timeout_secs,
+                allowed_tools,
+                max_restarts,
+                restart_delay_secs,
+            )
+            .await;
+        self.settle_http_result(name, &result).await;
+        result
+    }
+
+    /// Record (or clear) the failure of one HTTP connect attempt.
+    #[cfg(feature = "mcp-http")]
+    async fn settle_http_result(&self, name: &str, result: &Result<()>) {
+        match result {
+            Ok(()) => {
+                self.failures.write().await.remove(name);
+            }
+            Err(e) => {
+                self.record_failure(name, McpFailureCause::Other, &e.to_string())
+                    .await;
+            }
+        }
+    }
+
+    #[cfg(feature = "mcp-http")]
+    async fn connect_http_once(
         &self,
         name: &str,
         url: &str,
@@ -1649,12 +1732,8 @@ impl McpManager {
                     // evidence that the server stopped crash-looping.
                 }
                 Err(e) => {
-                    // HTTP failures do not go through the stdio classifier;
-                    // make sure they still show up in `server_statuses`.
-                    if !self.failures.read().await.contains_key(&name) {
-                        self.record_failure(&name, McpFailureCause::Other, &e.to_string())
-                            .await;
-                    }
+                    // Both `connect` and `connect_http` already recorded this
+                    // failure (with its classified cause, for stdio).
                     warn!("MCP server '{name}' reconnect attempt {attempt_num} failed: {e}");
                 }
             }
@@ -1668,25 +1747,27 @@ impl McpManager {
 /// the timeout.
 async fn classify_after_exit(
     drain: Option<(npx_cache::SharedTail, tokio::task::JoinHandle<()>)>,
-) -> McpFailureCause {
+) -> npx_cache::NpxClassification {
     let Some((tail, mut handle)) = drain else {
-        return McpFailureCause::Other;
+        return npx_cache::NpxClassification {
+            cause: McpFailureCause::Other,
+            entry: None,
+        };
     };
     let _ = tokio::time::timeout(Duration::from_secs(2), &mut handle).await;
     npx_cache::classify_npx_failure(&npx_cache::tail_snapshot(&tail))
 }
 
-/// Short, path-only suffix appended to a failed connect's error message.
-fn cause_hint(cause: &McpFailureCause) -> String {
+/// Short suffix appended to a failed connect's error message. It names the
+/// cause only — never a path: this text ends up in `last_error` on the
+/// auth-free `/api/mcp/health`, and the operator's home directory has no
+/// business there (review MCP-1). The validated entry, when there is one,
+/// travels in [`McpFailureCause::npx_dir`] for `/api/diagnostics`.
+fn cause_hint(cause: &McpFailureCause) -> &'static str {
     match cause {
-        McpFailureCause::NpxCacheCorrupt { dir: Some(dir) } => {
-            format!(" (cause: npx cache entry {} is corrupt)", dir.display())
-        }
-        McpFailureCause::NpxCacheCorrupt { dir: None } => {
-            " (cause: npm cache integrity error)".to_string()
-        }
-        McpFailureCause::DiskFull => " (cause: disk full, ENOSPC)".to_string(),
-        McpFailureCause::Other => String::new(),
+        McpFailureCause::NpxCacheCorrupt { .. } => " (cause: npx cache entry is corrupt)",
+        McpFailureCause::DiskFull => " (cause: disk full, ENOSPC)",
+        McpFailureCause::Other => "",
     }
 }
 
@@ -1904,6 +1985,45 @@ mod tests {
     }
 
     use super::{RestartState, is_tool_allowed, validate_mcp_url};
+
+    /// Review MCP-2/MCP-6: every HTTP connect updates the failure record —
+    /// a second failure with a different message replaces the first, and a
+    /// successful connect clears it. It used to be written once (by the
+    /// health monitor, only when absent) and never cleared, so health kept
+    /// showing the first error of the process.
+    #[cfg(feature = "mcp-http")]
+    #[tokio::test]
+    async fn http_failure_record_follows_the_latest_attempt() {
+        let m = super::McpManager::new();
+        let first = m
+            .connect_http("h", "gopher://127.0.0.1/mcp", 1, vec![], 5, 1)
+            .await
+            .expect_err("bad scheme");
+        let second = m
+            .connect_http("h", "http://169.254.169.254/mcp", 1, vec![], 5, 1)
+            .await
+            .expect_err("metadata address");
+        assert_ne!(first.to_string(), second.to_string());
+        let recorded = m
+            .failures
+            .read()
+            .await
+            .get("h")
+            .map(|f| f.message.clone())
+            .expect("the failure is recorded by connect_http itself");
+        let want: String = second
+            .to_string()
+            .chars()
+            .take(super::LAST_ERROR_MAX_CHARS)
+            .collect();
+        assert_eq!(recorded, want, "the latest failure wins");
+
+        m.settle_http_result("h", &Ok(())).await;
+        assert!(
+            m.failures.read().await.get("h").is_none(),
+            "a successful connect clears the record"
+        );
+    }
 
     #[test]
     fn empty_allowlist_allows_everything() {
