@@ -409,25 +409,26 @@ const GARRA_STATUS_TOOL: &str = "garra_status";
 /// integracao (#1347), em PT.
 ///
 /// Publica de proposito: e o contrato entre a nota e o formato do relatorio
-/// do `garra_status` no gateway, e os testes de la afirmam contra ela. O
-/// relatorio de hoje traz `channels` como lista de nomes; a fatia do gateway
-/// que acrescenta estado por canal usa `status` com `active`/`offline`, e a
-/// nota ja fala dos dois formatos. Ferramentas ficam de fora: a lista de
-/// ferramentas que o modelo recebeu no turno e a fonte de verdade para elas.
+/// do `garra_status` no gateway, e os testes de la afirmam contra ela. Desde
+/// a #1347 (fatia 2) cada item de `channels` traz `status` (`active` /
+/// `offline`) e sai da mesma funcao do `/api/channels` — canal nao ligado fica
+/// de fora —, e um turno restrito lista em `withheld` o que foi retido.
+/// Ferramentas ficam de fora da nota: a lista de ferramentas que o modelo
+/// recebeu no turno e a fonte de verdade para elas.
 pub const NOTA_GARRA_STATUS_PT: &str = "Antes de dizer que nao tem acesso a um canal \
-ou integracao, chame `garra_status` e responda a partir dele. Um canal presente na \
-lista `channels` do relatorio e um canal em que voce esta conectado; se o canal \
-trouxer um campo `status`, so `active` conta como conectado, e `offline` nao. Um \
-canal ausente da lista pode estar conectado por um caminho que o relatorio ainda \
-nao cobre: nao negue o acesso so por isso.";
+ou integracao, chame `garra_status` e responda a partir dele. Cada canal da lista \
+`channels` do relatorio traz um `status`: `active` e um canal em que voce esta \
+conectado agora, e `offline` e um canal configurado que esta fora do ar. Um canal \
+ausente da lista nao esta ligado neste Garra. Um campo citado em `withheld` foi \
+retido nesta conversa, e nao esta ausente.";
 
 /// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
 pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
-channel or integration, call `garra_status` and answer from it. A channel present \
-in the report's `channels` list is a channel you are connected to; if the channel \
-carries a `status` field, only `active` counts as connected, and `offline` does not. \
-A channel missing from the list may still be connected through a path the report \
-does not cover yet: do not deny access on that basis alone.";
+channel or integration, call `garra_status` and answer from it. Each channel in the \
+report's `channels` list carries a `status`: `active` is a channel you are connected \
+to right now, and `offline` is a configured channel that is down. A channel missing \
+from the list is not enabled on this Garra. A field named in `withheld` was held \
+back in this conversation, and is not missing.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
 /// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.
@@ -3050,8 +3051,12 @@ impl AgentRuntime {
                                 .into_iter()
                                 .filter(|n| portao.permite(n))
                                 .collect();
-                            crate::tools::turn_tools::com_ferramentas_do_turno(liberadas, execucao)
-                                .await
+                            crate::tools::turn_tools::com_ferramentas_do_turno(
+                                liberadas,
+                                portao.restringe_por_whitelist(),
+                                execucao,
+                            )
+                            .await
                         } else {
                             execucao.await
                         }
@@ -9485,8 +9490,10 @@ mod tests {
 
         /// Uma `garra_status` de mentira que anota o que
         /// `ferramentas_do_turno` devolveu quando o runtime a executou.
+        type Visto = Option<(Option<Vec<String>>, Option<bool>)>;
+
         struct SondaDeStatus {
-            viu: Arc<Mutex<Option<Option<Vec<String>>>>>,
+            viu: Arc<Mutex<Visto>>,
         }
 
         #[async_trait::async_trait]
@@ -9505,8 +9512,10 @@ mod tests {
                 _c: &crate::tools::ToolContext,
                 _i: serde_json::Value,
             ) -> Result<crate::tools::ToolOutput> {
-                *self.viu.lock().expect("lock") =
-                    Some(crate::tools::turn_tools::ferramentas_do_turno());
+                *self.viu.lock().expect("lock") = Some((
+                    crate::tools::turn_tools::ferramentas_do_turno(),
+                    crate::tools::turn_tools::turno_restrito(),
+                ));
                 Ok(crate::tools::ToolOutput::success("{}"))
             }
         }
@@ -9554,41 +9563,48 @@ mod tests {
         /// estao registradas mas negadas, e nao podem aparecer.
         #[tokio::test]
         async fn garra_status_recebe_so_as_ferramentas_liberadas_no_turno() {
-            let rt = AgentRuntime::new();
-            for nome in ["bash", "file_write", "file_read"] {
-                rt.register_tool(stub(nome));
+            async fn visto_em(exec: &ExecContext) -> Visto {
+                let rt = AgentRuntime::new();
+                for nome in ["bash", "file_write", "file_read"] {
+                    rt.register_tool(stub(nome));
+                }
+                let viu = Arc::new(Mutex::new(None));
+                rt.register_tool(Box::new(SondaDeStatus {
+                    viu: Arc::clone(&viu),
+                }));
+                rt.register_provider(Arc::new(PedeStatus));
+                let r = rt
+                    .process_message_with_agent_config(
+                        "s-1347-tools",
+                        "o que voce pode fazer?",
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno");
+                assert_eq!(r, "ok");
+                viu.lock().expect("lock").clone()
             }
-            let viu = Arc::new(Mutex::new(None));
-            rt.register_tool(Box::new(SondaDeStatus {
-                viu: Arc::clone(&viu),
-            }));
-            rt.register_provider(Arc::new(PedeStatus));
+
             let search = ExecContext::with_mode(Some("search".to_string()));
-            let r = rt
-                .process_message_with_agent_config(
-                    "s-1347-tools",
-                    "o que voce pode fazer?",
-                    &[],
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    &search,
-                )
-                .await
-                .expect("turno");
-            assert_eq!(r, "ok");
-            let visto = viu.lock().expect("lock").clone();
             assert_eq!(
-                visto,
-                Some(Some(vec![
-                    "file_read".to_string(),
-                    "garra_status".to_string()
-                ])),
-                "a tool so ve o que o portao do search libera"
+                visto_em(&search).await,
+                Some((
+                    Some(vec!["file_read".to_string(), "garra_status".to_string()]),
+                    Some(true)
+                )),
+                "a tool so ve o que o portao do search libera, e sabe que o turno e restrito"
             );
+            // #1347 (fatia 3): sem modo, o portao nao restringe — e a tool
+            // recebe `false`, nao `None` (esta dentro de um turno).
+            let (_, restrito) = visto_em(&ExecContext::default()).await.expect("rodou");
+            assert_eq!(restrito, Some(false));
         }
     }
 

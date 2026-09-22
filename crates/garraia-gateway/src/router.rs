@@ -18,7 +18,6 @@ use crate::mobile_chat;
 use crate::oauth;
 use crate::openai_api;
 use crate::parrot_ws;
-use crate::push_channels::ChannelKind;
 use crate::state::SharedState;
 use crate::stats_handler;
 use crate::totp;
@@ -1503,96 +1502,13 @@ async fn test_provider(
 
 // ─── Channels (plan 0120 / PR-7) ───────────────────────────────────────────
 
-/// Known channels — display metadata mirrors `KNOWN_PROVIDERS`. The `id`
-/// column matches `ChannelRegistry` entries for pull channels; `needs_secret`
-/// is purely informational (the Web Console renders an amber pill when true
-/// but the actual secret value never crosses the API boundary).
-///
-/// A coluna `kind` entrou pela #1079 e e a **unica** fonte de "quem e push".
-/// Canal push nao entra no `ChannelRegistry` — o `Vec<Arc<_>>` dele vira
-/// estado da rota `/webhooks/*` —, entao derivar status do registry dava
-/// `"offline"` eterno para os quatro. O status deles vem do
-/// [`PushChannelStates`], e um teste confere que todo `Push` desta tabela e
-/// conhecido la, para as duas fontes nao divergirem em silencio.
-///
-/// [`PushChannelStates`]: crate::push_channels::PushChannelStates
-const KNOWN_CHANNELS: &[(&str, &str, bool, ChannelKind)] = &[
-    ("web", "Web Chat", false, ChannelKind::Pull),
-    ("api", "REST API", false, ChannelKind::Pull),
-    ("telegram", "Telegram", true, ChannelKind::Pull),
-    ("discord", "Discord", true, ChannelKind::Pull),
-    ("slack", "Slack", true, ChannelKind::Pull),
-    ("whatsapp", "WhatsApp", true, ChannelKind::Push),
-    // #1238 (fatia D). `needs_secret: false` de proposito: a credencial deste
-    // canal nao e um valor de config, e um blob cifrado em `<data_dir>/
-    // whatsapp/default/session.enc`. O console nao tem campo para pedir, entao
-    // a pilula ambar de "falta o segredo" seria mentira. Quando ha sessao e a
-    // ponte nao esta de pe, quem transforma o `optional` em `offline` e o
-    // `provisioned` — ver `channel_status`.
-    (
-        "whatsapp_linked",
-        "WhatsApp (dispositivo vinculado)",
-        false,
-        ChannelKind::Pull,
-    ),
-    ("imessage", "iMessage", false, ChannelKind::Pull),
-    ("google_chat", "Google Chat", true, ChannelKind::Push),
-    ("teams", "Microsoft Teams", true, ChannelKind::Push),
-    ("line", "LINE", true, ChannelKind::Push),
-    ("irc", "IRC", false, ChannelKind::Pull),
-    ("signal", "Signal", false, ChannelKind::Pull),
-    ("matrix", "Matrix", true, ChannelKind::Pull),
-    ("openclaw", "OpenClaw", false, ChannelKind::Pull),
-    ("mcp", "MCP", false, ChannelKind::Pull),
-    ("cli", "CLI", false, ChannelKind::Pull),
-];
-
-/// Decide o `status` de uma linha do `/api/channels`.
-///
-/// Extraida do handler para poder ser exercitada sem montar router, pool nem
-/// runtime: e a regra que a #1079 errava, e um teste dela vale mais que um
-/// teste do JSON inteiro.
-///
-/// `mounted` e o que o [`PushChannelStates`] respondeu para este `id`:
-/// `None` para canal pull (a resposta vem de `live`), e para canal push
-/// significa que a tabela e o struct discordam — tratado como `"unknown"`
-/// em vez de virar `"offline"` numa linha que ninguem consegue explicar.
-///
-/// `provisioned` responde "o operador ligou este canal?" para os canais cuja
-/// credencial **nao** e um valor de config e por isso nao cabe no
-/// `needs_secret` estatico (#1238: o `whatsapp_linked` guarda a sessao cifrada
-/// no data dir). `None` mantem a regra antiga, onde `needs_secret` responde
-/// pelos dois. A distincao importa: um canal que ninguem ligou esta
-/// `"optional"` — nao ha defeito —, mas um canal que alguem ligou e que nao
-/// esta de pe esta `"offline"`, e um console que mostrasse `"optional"` nos
-/// dois casos esconderia exatamente a falha que o operador precisa ver.
-///
-/// [`PushChannelStates`]: crate::push_channels::PushChannelStates
-fn channel_status(
-    kind: ChannelKind,
-    needs_secret: bool,
-    live: bool,
-    mounted: Option<usize>,
-    provisioned: Option<bool>,
-) -> &'static str {
-    let up = match kind {
-        ChannelKind::Pull => live,
-        ChannelKind::Push => match mounted {
-            Some(n) => n > 0,
-            // A tabela diz push e o struct nao conhece o id. Defeito de
-            // codigo, nao estado de runtime — nao vale mentir "offline".
-            None => return "unknown",
-        },
-    };
-
-    if up {
-        "active"
-    } else if provisioned.unwrap_or(needs_secret) {
-        "offline"
-    } else {
-        "optional"
-    }
-}
+// #1347 (fatia 2): `KNOWN_CHANNELS`, a regra `channel_status` e o montador
+// das linhas moraram aqui ate a tool `garra_status` precisar da MESMA
+// resposta. Agora vivem em `crate::channels_view`, e esta rota e o
+// `garra_status` chamam a mesma `channel_rows`. Os testes abaixo continuam
+// exercitando a tabela e a regra pelo `super::` via este import.
+#[cfg(test)]
+use crate::channels_view::{KNOWN_CHANNELS, channel_status};
 
 #[derive(serde::Serialize)]
 struct ChannelInfo {
@@ -1615,54 +1531,18 @@ async fn list_channels(
     axum::extract::State(state): axum::extract::State<SharedState>,
     axum::Extension(push): axum::Extension<Arc<crate::push_channels::PushChannelStates>>,
 ) -> axum::Json<serde_json::Value> {
-    let live: Vec<String> = state
-        .channels
-        .read()
+    let boot_time_secs = state.boot_time.elapsed().as_secs();
+    let channels: Vec<ChannelInfo> = crate::channels_view::channel_rows(&state, push.contagens())
         .await
-        .list()
         .into_iter()
-        .map(|s| s.to_string())
+        .map(|row| ChannelInfo {
+            id: row.id,
+            display_name: row.display_name,
+            status: row.status,
+            needs_secret: row.needs_secret,
+            boot_time_secs,
+        })
         .collect();
-
-    let mut channels: Vec<ChannelInfo> = Vec::with_capacity(KNOWN_CHANNELS.len());
-    for (id, display, needs_secret, kind) in KNOWN_CHANNELS {
-        // Canal push nunca aparece em `live` — nao entra no registry por
-        // desenho (#1079). Consultar `mounted` so quando `kind` diz push
-        // mantem o registry como fonte unica para os pull.
-        let mounted = match kind {
-            ChannelKind::Push => push.mounted(id),
-            ChannelKind::Pull => None,
-        };
-        // #1238: o `whatsapp_linked` e pull mas **nao** entra no
-        // `ChannelRegistry` — o `Channel` trait pressupoe `connect()` sobre um
-        // objeto mutavel, e aqui quem vive e um processo filho Node com loop de
-        // reconexao proprio. E o mesmo desencontro que a #1079 custou nos
-        // canais push, entao a correcao e a mesma: o status sai de quem
-        // observa o canal de verdade — o supervisor —, e a leitura e a MESMA
-        // que o `/api/diagnostics` faz (`whatsapp_linked_health`), para as duas
-        // telas nao poderem discordar sobre o mesmo canal.
-        let (live_aqui, provisioned) = if *id == crate::bootstrap::WHATSAPP_LINKED_CONFIG_KEY {
-            let (saude, _) =
-                crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked);
-            (saude.healthy(), Some(saude.provisioned()))
-        } else {
-            (live.iter().any(|name| name == *id), None)
-        };
-        let status = channel_status(*kind, *needs_secret, live_aqui, mounted, provisioned);
-        if status == "unknown" {
-            tracing::warn!(
-                channel = id,
-                "KNOWN_CHANNELS marca este canal como push mas PushChannelStates nao o conhece"
-            );
-        }
-        channels.push(ChannelInfo {
-            id,
-            display_name: display,
-            status,
-            needs_secret: *needs_secret,
-            boot_time_secs: state.boot_time.elapsed().as_secs(),
-        });
-    }
 
     axum::Json(serde_json::json!({ "channels": channels }))
 }
@@ -2338,6 +2218,73 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// #1347: o `garra_status` e o `/api/channels` dizem o mesmo sobre cada
+    /// canal — as duas superficies chamam `channels_view::channel_rows`. O
+    /// relatorio do agente e o console filtrado aos canais que nao sao
+    /// `optional`, com o mesmo status.
+    #[tokio::test]
+    async fn api_channels_e_garra_status_concordam_sobre_cada_canal() {
+        use garraia_agents::tools::Tool;
+        use garraia_channels::whatsapp_linked::health::BridgeView;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        vincula(dir.path());
+        let config = AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let state: SharedState = Arc::new(crate::state::AppState::with_config_dir(
+            config,
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+            dir.path(),
+        ));
+        state.whatsapp_linked.set_bridge(BridgeView::Connected);
+        let push = PushChannelStates::empty();
+
+        let axum::Json(body) = super::list_channels(
+            axum::extract::State(Arc::clone(&state)),
+            axum::Extension(Arc::new(push.clone())),
+        )
+        .await;
+        let console: Vec<(String, String)> = body["channels"]
+            .as_array()
+            .expect("lista")
+            .iter()
+            .filter(|c| c["status"] != "optional")
+            .map(|c| (c["id"].to_string(), c["status"].to_string()))
+            .collect();
+
+        let tool = crate::tools::GarraStatusTool::new(&state, push.contagens());
+        let ctx = garraia_agents::tools::ToolContext {
+            session_id: "sessao-1347".to_string(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: garraia_agents::tools::approval::ToolApproval::None,
+            working_dir: None,
+            project_id: None,
+        };
+        let out = tool
+            .execute(&ctx, serde_json::json!({}))
+            .await
+            .expect("executa");
+        let json: serde_json::Value = serde_json::from_str(&out.content).expect("json");
+        let agente: Vec<(String, String)> = json["channels"]
+            .as_array()
+            .expect("lista")
+            .iter()
+            .map(|c| (c["id"].to_string(), c["status"].to_string()))
+            .collect();
+
+        assert_eq!(agente, console);
+        assert!(
+            agente
+                .iter()
+                .any(|(id, st)| id == "\"whatsapp_linked\"" && st == "\"active\""),
+            "{agente:?}"
+        );
     }
 
     /// Os quatro push nomeados. Se um deles for reclassificado como Pull

@@ -703,15 +703,6 @@ impl GatewayServer {
             spawn_openclaw_router(Arc::clone(&state), client, rx);
         }
 
-        // `garra_status` reads the live `AppState` (provider, model, tools,
-        // features, channels, session mode), so it can only exist once the
-        // state is shared. Unconditional: every runtime should be able to
-        // describe itself — the v0.4.0 field report was a Garra on a phone
-        // saying it "cannot inspect its own runtime", and nothing let it.
-        state
-            .agents
-            .register_tool(Box::new(crate::tools::GarraStatusTool::new(&state)));
-
         // Issue #921: the proactive-send tool needs `AppState.channels` and the
         // session store, so it can only be built once the state is shared —
         // which is exactly why it lives in this crate and not in
@@ -1013,6 +1004,32 @@ impl GatewayServer {
         let line_state: garraia_channels::line_channel::webhook::LineState =
             Arc::new(line_channels);
 
+        let push_channels = crate::push_channels::PushChannelStates {
+            whatsapp: whatsapp_state,
+            google_chat: google_chat_state,
+            teams: teams_state,
+            line: line_state,
+        };
+
+        // `garra_status` reads the live `AppState` (provider, model, tools,
+        // features, channels, session mode), so it can only exist once the
+        // state is shared. Unconditional: every runtime should be able to
+        // describe itself — the v0.4.0 field report was a Garra on a phone
+        // saying it "cannot inspect its own runtime", and nothing let it.
+        //
+        // #1347: registrada DEPOIS dos canais push, e nao logo apos o `Arc`
+        // do estado. O relatorio de canais e o do `/api/channels` saem da
+        // mesma funcao (`channels_view::channel_rows`), e ela precisa das
+        // contagens push que so existem aqui. So as contagens: guardar o
+        // `PushChannelStates` na tool fecharia um ciclo de `Arc` (cada canal
+        // push segura o `AppState` forte).
+        state
+            .agents
+            .register_tool(Box::new(crate::tools::GarraStatusTool::new(
+                &state,
+                push_channels.contagens(),
+            )));
+
         // Initialize admin store for the web admin console
         let admin_db_path = data_dir.join("admin.db");
         let mut admin_store_owned = match admin::store::AdminStore::open(&admin_db_path) {
@@ -1053,17 +1070,7 @@ impl GatewayServer {
         }
 
         let state_for_shutdown = Arc::clone(&state);
-        let app = build_router(
-            state,
-            crate::push_channels::PushChannelStates {
-                whatsapp: whatsapp_state,
-                google_chat: google_chat_state,
-                teams: teams_state,
-                line: line_state,
-            },
-            admin_store,
-            admin_encryption_key,
-        );
+        let app = build_router(state, push_channels, admin_store, admin_encryption_key);
 
         // TLS support: if cert + key paths are configured and tls feature is enabled,
         // use axum-server with rustls. Otherwise, plain HTTP.

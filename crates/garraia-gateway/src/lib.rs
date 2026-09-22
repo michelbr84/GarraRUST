@@ -10,6 +10,7 @@ pub mod billing;
 pub mod bootstrap;
 pub mod capabilities;
 pub mod channel_send;
+pub(crate) mod channels_view;
 pub mod cluster;
 pub mod commands;
 pub mod context_summarizer;
