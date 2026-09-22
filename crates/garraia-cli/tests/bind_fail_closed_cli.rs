@@ -148,6 +148,71 @@ fn restart_le_host_da_env_e_recusa() {
     assert_recusou(&out, porta, "HOST=0.0.0.0 garra restart");
 }
 
+/// Um processo-sentinela vivo cujo PID esta no `garraia.pid` do tempdir —
+/// o "daemon atual" que um `restart` derrubaria via `try_stop_daemon`.
+#[cfg(unix)]
+struct Sentinela(std::process::Child);
+
+#[cfg(unix)]
+impl Sentinela {
+    fn no_pid_file(dir: &std::path::Path) -> Self {
+        let filho = Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sentinela");
+        std::fs::write(dir.join("garraia.pid"), filho.id().to_string()).expect("pid file");
+        Self(filho)
+    }
+
+    fn vivo(&mut self) -> bool {
+        self.0.try_wait().expect("try_wait sentinela").is_none()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Sentinela {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// O motivo de a recusa vir antes do `try_stop_daemon` (bind_gate.rs): um
+/// `restart` recusado nao pode deixar o operador sem gateway. Com um daemon
+/// "rodando" (sentinela no PID file), o `restart` recusado sai com 78 e o
+/// sentinela continua vivo — nos dois braços, foreground e `-d`. Inverter a
+/// ordem mata o sentinela e deixa este teste vermelho.
+#[cfg(unix)]
+#[test]
+fn restart_recusado_nao_derruba_o_daemon_atual() {
+    for args in [&["restart"][..], &["restart", "-d"][..]] {
+        let dir = tempdir().expect("tempdir");
+        config_em_loopback_sem_chave(dir.path());
+        let mut sentinela = Sentinela::no_pid_file(dir.path());
+        let porta = porta_livre();
+        let mut cmd = comando(dir.path(), args);
+        cmd.env("HOST", "0.0.0.0").env("PORT", porta.to_string());
+        let out = roda_com_teto(cmd);
+        assert_recusou(
+            &out,
+            porta,
+            &format!("HOST=0.0.0.0 garra {}", args.join(" ")),
+        );
+        assert!(
+            sentinela.vivo(),
+            "`garra {}` recusado derrubou o daemon atual",
+            args.join(" ")
+        );
+        assert!(
+            dir.path().join("garraia.pid").exists(),
+            "o PID file do daemon atual sumiu"
+        );
+    }
+}
+
 /// Uma credencial de verdade nao e recusada: com GARRAIA_GATEWAY_API_KEY o
 /// processo passa da checagem (ele entao sobe, e o teste o derruba).
 #[test]
