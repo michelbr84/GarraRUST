@@ -61,6 +61,7 @@ fn ctx_in(dir: &tempfile::TempDir, interactive: bool) -> Context {
         unicode: true,
         lang: Lang::Pt,
         gateway_pid: None,
+        perfil_da_env: None,
     }
 }
 
@@ -1413,6 +1414,10 @@ use acesso::{
 };
 
 const NUMERO: &str = "5511999998888";
+/// Como o operador digita [`NUMERO`]: com `+` (obrigatorio, #1345).
+const ENTRADA: &str = "+5511999998888";
+/// Um LID sem numero, como a ponte o entrega.
+const LID: &str = "87654321098765@lid";
 
 impl ScriptedPrompter {
     /// Respostas de `input`, na ordem em que serao pedidas.
@@ -1497,7 +1502,7 @@ fn pod() -> Option<garraia_config::ExecutionProfile> {
 fn o_numero_com_codigo_do_pais_vira_so_digitos_como_no_gateway() {
     for entrada in [
         "+55 11 99999-8888",
-        "5511999998888",
+        "+5511999998888",
         "+55 (11) 99999.8888",
         "  +55 11 99999 8888  ",
     ] {
@@ -1514,6 +1519,38 @@ fn o_numero_com_codigo_do_pais_vira_so_digitos_como_no_gateway() {
         normalizar_numero("+1 555 123 4567").as_deref(),
         Ok("15551234567")
     );
+    // E.164 curto, que a ponte entrega (6 a 15): Andorra (9) e Niue (7).
+    assert_eq!(
+        normalizar_numero("+376 312 345").as_deref(),
+        Ok("376312345")
+    );
+    assert_eq!(normalizar_numero("+683 1234").as_deref(), Ok("6831234"));
+}
+
+/// #1345: um LID (`<digitos>@lid`) e aceito e gravado como veio — e e a
+/// forma que o portao compara quando a ponte nao tem o numero.
+#[test]
+fn um_lid_e_aceito_como_veio_e_casa_com_o_gateway() {
+    assert_eq!(normalizar_numero(LID).as_deref(), Ok(LID));
+    assert_eq!(normalizar_numero(&format!("  {LID} ")).as_deref(), Ok(LID));
+    assert_eq!(
+        normalizar_numero(LID).ok(),
+        Some(garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(LID))
+    );
+    for invalido in [
+        "abc@lid",
+        "12@lid",
+        "8765 4321@lid",
+        "87654321098765@LID",
+        "@lid",
+    ] {
+        assert_eq!(
+            normalizar_numero(invalido),
+            Err(NumeroInvalido::Jid),
+            "{invalido}"
+        );
+    }
+    assert_eq!(final4(LID), "8765", "o final e do id, nao de `@lid`");
 }
 
 #[test]
@@ -1522,9 +1559,16 @@ fn numero_sem_codigo_do_pais_letra_ou_jid_e_recusado() {
         ("", NumeroInvalido::Vazio),
         ("   ", NumeroInvalido::Vazio),
         ("+", NumeroInvalido::Vazio),
-        ("011 99999-8888", NumeroInvalido::ZeroInicial),
-        ("99999-8888", NumeroInvalido::Tamanho(9)),
-        ("1234567890123456", NumeroInvalido::Tamanho(16)),
+        ("+011 99999-8888", NumeroInvalido::ZeroInicial),
+        ("+12345", NumeroInvalido::Tamanho(5)),
+        ("+1234567890123456", NumeroInvalido::Tamanho(16)),
+        // Sem `+`: DDD + numero passaria por codigo do pais (review
+        // WHATSAPP-11), e o numero nunca casaria com o remetente.
+        ("11 99999-8888", NumeroInvalido::SemMais),
+        ("(11) 99999-8888", NumeroInvalido::SemMais),
+        ("5511999998888", NumeroInvalido::SemMais),
+        ("011 99999-8888", NumeroInvalido::SemMais),
+        ("99999-8888", NumeroInvalido::SemMais),
         ("abc", NumeroInvalido::Caractere),
         ("55 11 9999a-8888", NumeroInvalido::Caractere),
         ("++5511999998888", NumeroInvalido::Caractere),
@@ -1539,6 +1583,7 @@ fn a_mensagem_de_numero_invalido_nao_repete_a_entrada_e_existe_nas_duas_linguas(
     for e in [
         NumeroInvalido::Vazio,
         NumeroInvalido::Jid,
+        NumeroInvalido::SemMais,
         NumeroInvalido::Caractere,
         NumeroInvalido::ZeroInicial,
         NumeroInvalido::Tamanho(9),
@@ -1710,9 +1755,80 @@ fn allow_owner_em_standard_sai_64_sem_escrever() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
     let p = ScriptedPrompter::default().and_confirms(&[true]);
-    assert_eq!(run(Action::Allow(pedido(NUMERO, true, true)), &ctx, &p), 64);
+    assert_eq!(
+        run(Action::Allow(pedido(ENTRADA, true, true)), &ctx, &p),
+        64
+    );
     assert!(secao_de(&ctx).is_none());
     assert!(!p.asked("DONO"), "nem pergunta");
+}
+
+/// #1345 (review WHATSAPP-16): o perfil do `--owner` sai do arquivo e da env
+/// **capturada no contexto**, nunca relida do processo — o teste fixa o
+/// perfil sem depender do `GARRAIA_EXECUTION_PROFILE` da maquina.
+#[test]
+fn allow_owner_decide_pelo_perfil_da_env_do_contexto() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = ctx_in(&dir, false);
+    ctx.perfil_da_env = Some("isolated-pod".into());
+    assert_eq!(
+        run(
+            Action::Allow(pedido(ENTRADA, true, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0,
+        "a env do contexto diz pod: o dono entra"
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = ctx_in(&dir, false);
+    ctx.perfil_da_env = Some("standard".into());
+    grava_config(&ctx, pod(), None, None);
+    assert_eq!(
+        run(
+            Action::Allow(pedido(ENTRADA, true, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        64,
+        "a env vence o arquivo, como no gateway"
+    );
+}
+
+/// #1345: `allow <id>@lid` grava o LID como veio, e a tela so mostra o final.
+#[test]
+fn allow_de_um_lid_grava_o_lid_como_veio() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    assert_eq!(
+        run(
+            Action::Allow(pedido(LID, false, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert_eq!(lista(&ctx, "allow"), vec![LID.to_string()]);
+}
+
+/// #1345 (review WHATSAPP-2): o mesmo celular brasileiro com e sem o nono
+/// digito nao duplica — e a mesma chave que o portao compara.
+#[test]
+fn autorizar_nao_duplica_o_celular_com_e_sem_o_nono_digito() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    assert_eq!(
+        autorizar(loader, "5531999998888", Papel::Autorizado).expect("grava"),
+        Gravado::Novo
+    );
+    assert_eq!(
+        autorizar(loader, "553199998888", Papel::Autorizado).expect("grava"),
+        Gravado::JaEstava
+    );
+    assert_eq!(lista(&ctx, "allow"), vec!["5531999998888".to_string()]);
 }
 
 /// `--owner` em `isolated-pod`: sem terminal exige `--yes` (64); com
@@ -1725,7 +1841,7 @@ fn allow_owner_no_pod_exige_yes_fora_de_terminal() {
 
     assert_eq!(
         run(
-            Action::Allow(pedido(NUMERO, true, false)),
+            Action::Allow(pedido(ENTRADA, true, false)),
             &ctx,
             &ScriptedPrompter::default()
         ),
@@ -1735,7 +1851,7 @@ fn allow_owner_no_pod_exige_yes_fora_de_terminal() {
 
     assert_eq!(
         run(
-            Action::Allow(pedido(NUMERO, true, true)),
+            Action::Allow(pedido(ENTRADA, true, true)),
             &ctx,
             &ScriptedPrompter::default()
         ),
@@ -1752,7 +1868,10 @@ fn allow_owner_no_terminal_pergunta_com_default_nao() {
     let ctx = ctx_in(&dir, true);
     grava_config(&ctx, pod(), None, None);
     let p = ScriptedPrompter::default();
-    assert_eq!(run(Action::Allow(pedido(NUMERO, true, false)), &ctx, &p), 1);
+    assert_eq!(
+        run(Action::Allow(pedido(ENTRADA, true, false)), &ctx, &p),
+        1
+    );
     assert!(p.asked("DONO"));
     assert!(
         lista(&ctx, "owners").is_empty(),
@@ -1805,7 +1924,7 @@ fn pos_link_desiste_depois_de_tres_numeros_invalidos() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
     grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
-    let p = ScriptedPrompter::default().with_inputs(&["abc", "0119", "123", NUMERO]);
+    let p = ScriptedPrompter::default().with_inputs(&["abc", "0119", "123", ENTRADA]);
     let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
     assert_eq!(pos.autorizados, 0, "a quarta resposta nem e pedida");
     assert!(lista(&ctx, "allow").is_empty());
@@ -1818,7 +1937,7 @@ fn pos_link_no_pod_oferece_dono_com_default_nao() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
     grava_config(&ctx, pod(), Some(serde_json::json!({})), Some(true));
-    let p = ScriptedPrompter::default().with_inputs(&[NUMERO]);
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA]);
 
     pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
     assert!(p.asked("DONO"), "no pod o dono e oferecido");
@@ -1832,7 +1951,7 @@ fn pos_link_no_pod_com_sim_grava_so_em_owners() {
     let ctx = ctx_in(&dir, true);
     grava_config(&ctx, pod(), Some(serde_json::json!({})), Some(true));
     let p = ScriptedPrompter::default()
-        .with_inputs(&[NUMERO])
+        .with_inputs(&[ENTRADA])
         .and_confirms(&[true]);
 
     let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
@@ -1848,7 +1967,7 @@ fn pos_link_avisa_quando_o_numero_e_o_do_proprio_celular() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
     grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
-    let p = ScriptedPrompter::default().with_inputs(&[NUMERO, ""]);
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA, ""]);
 
     let pos = pos_link(&ctx, &p, Some("8888"), &Pedido::default()).expect("ok");
     assert!(p.asked("mesmo assim"), "pede confirmacao explicita");
@@ -1869,7 +1988,7 @@ fn pos_link_com_allow_existente_nao_mexe_em_nada_por_default() {
         Some(true),
     );
     let antes = std::fs::read_to_string(dir.path().join("config.yml")).expect("ler");
-    let p = ScriptedPrompter::default().with_inputs(&[NUMERO]);
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA]);
 
     let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
     assert!(p.asked("Adicionar outro"));
@@ -1927,7 +2046,7 @@ fn link_com_pre_respostas_invalidas_falha_antes_do_qr() {
     let pipe = ctx_in(&dir, false);
     assert_eq!(
         run(
-            Action::LinkCom(pedido(NUMERO, false, false)),
+            Action::LinkCom(pedido(ENTRADA, false, false)),
             &pipe,
             &ScriptedPrompter::default()
         ),
@@ -1944,14 +2063,52 @@ fn a_dica_do_gateway_cobre_os_tres_casos_sem_reiniciar_nada() {
         assert!(parado.contains(" start`"), "{parado}");
         let novo = dica_do_gateway(lang, false, Some(42));
         assert!(novo.contains(" restart`"), "{novo}");
+        // #1345 (review WHATSAPP-3/7/12): a CLI nao sabe se o gateway subiu
+        // com o canal ligado, nem se ele vigia o config.yml. Nunca afirma
+        // "sem reiniciar": diz a condicao e o comando do outro caso.
         let quente = dica_do_gateway(lang, true, Some(42));
-        assert!(!quente.contains('`'), "nenhum comando a rodar: {quente}");
+        assert!(quente.contains(" restart`"), "{quente}");
+        assert!(
+            quente.starts_with("Se o gateway subiu")
+                || quente.starts_with("If the gateway started"),
+            "{quente}"
+        );
     }
     let linha = instrucao_pos_link(Lang::Pt, "garraia", Some(42), false);
     assert!(
         linha.contains("pronto") && linha.contains("restart"),
         "{linha}"
     );
+}
+
+/// #1345: o `status` explica as recusas de `@lid` sem numero que o gateway
+/// VIVO registrou — so a contagem e o final, nunca o LID inteiro.
+#[test]
+fn o_status_explica_as_recusas_de_lid_do_gateway_vivo() {
+    let r = garraia_gateway::bootstrap::WhatsAppLinkedRecusasLid {
+        pid: 42,
+        recusas: 2,
+        final4: "8765".into(),
+    };
+    for lang in [Lang::Pt, Lang::En] {
+        let linha = recusas_lid_line(lang, Some(&r), Some(42)).expect("gateway vivo");
+        assert!(linha.contains("@lid") && linha.contains("8765"), "{linha}");
+        assert!(linha.contains("whatsapp allow <id>@lid"), "{linha}");
+        assert!(linha.contains('2'), "{linha}");
+    }
+    assert_eq!(
+        recusas_lid_line(Lang::Pt, Some(&r), Some(43)),
+        None,
+        "arquivo de outro gateway"
+    );
+    assert_eq!(
+        recusas_lid_line(Lang::Pt, Some(&r), None),
+        None,
+        "gateway parado"
+    );
+    assert_eq!(recusas_lid_line(Lang::Pt, None, Some(42)), None);
+    let zero = garraia_gateway::bootstrap::WhatsAppLinkedRecusasLid { recusas: 0, ..r };
+    assert_eq!(recusas_lid_line(Lang::Pt, Some(&zero), Some(42)), None);
 }
 
 #[test]
@@ -2130,7 +2287,7 @@ fn o_link_de_verdade_num_upgrade_preserva_o_allow() {
     let store = ctx.store().expect("store");
     let key = ctx.key().expect("key");
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let p = ScriptedPrompter::default().with_inputs(&[NUMERO]);
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA]);
 
     let code = link_paired(
         &ctx,

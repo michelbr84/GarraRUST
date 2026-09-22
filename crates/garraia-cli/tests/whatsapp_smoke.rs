@@ -468,11 +468,38 @@ fn allow_in_a_pipe_writes_the_config_and_exits_zero() {
 #[test]
 fn allow_with_an_invalid_number_exits_65() {
     let dir = tempdir().expect("tempdir");
-    for numero in ["abc", "011999998888", "5511999998888@s.whatsapp.net"] {
+    // Sem `+`, o DDD passaria por codigo do pais (#1345, review WHATSAPP-11).
+    for numero in [
+        "abc",
+        "011999998888",
+        "5511999998888@s.whatsapp.net",
+        "11 99999-8888",
+        "(11) 99999-8888",
+        "5511999998888",
+    ] {
         let out = garra_env(dir.path(), &["whatsapp", "allow", numero], &[]);
         assert_eq!(out.status.code(), Some(65), "{numero}");
     }
     assert!(!config_yml(dir.path()).contains("allow"));
+}
+
+/// Um LID (`<id>@lid`) e gravado como veio, e na tela so o final (#1345).
+#[test]
+fn allow_accepts_a_lid_and_prints_only_its_last_digits() {
+    let dir = tempdir().expect("tempdir");
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "allow", "87654321098765@lid"],
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(config_yml(dir.path()).contains("87654321098765@lid"));
+    assert!(
+        stdout.contains("LID") && stdout.contains("8765"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("87654321098765"), "{stdout}");
 }
 
 /// `--owner` em `standard` sai 64 (mesmo com `--yes`); em `isolated-pod`

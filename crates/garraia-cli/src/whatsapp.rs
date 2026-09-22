@@ -204,6 +204,10 @@ pub struct Context {
     /// O pid do gateway local, quando o `garraia.pid` aponta um processo vivo
     /// (#1345). So informa a dica de restart; a CLI nunca reinicia nada.
     pub gateway_pid: Option<u32>,
+    /// O `GARRAIA_EXECUTION_PROFILE` deste processo, lido uma vez aqui. O
+    /// `allow --owner` decide por ele (e pelo arquivo); guardado no contexto
+    /// para o teste fixa-lo sem depender da env da maquina.
+    pub perfil_da_env: Option<String>,
 }
 
 impl Context {
@@ -224,6 +228,7 @@ impl Context {
             unicode: crate::ui::spinner::locale_supports_unicode(),
             lang: Lang::detect(),
             gateway_pid: crate::read_pid().filter(|pid| crate::is_process_running(*pid)),
+            perfil_da_env: std::env::var(garraia_config::execution::PROFILE_ENV).ok(),
         }
     }
 
@@ -420,6 +425,13 @@ fn status(ctx: &Context) -> i32 {
     );
     print_execution_profile(ctx);
     print_access(ctx, &facts);
+    if let Some(linha) = recusas_lid_line(
+        ctx.lang,
+        garraia_gateway::bootstrap::whatsapp_linked_ler_recusas_lid(store.dir()).as_ref(),
+        ctx.gateway_pid,
+    ) {
+        println!("{linha}");
+    }
     print_archive_warning(ctx, &store);
 
     match ctx.key() {
@@ -572,6 +584,40 @@ fn access_lines(
         out.push(acesso::aviso_ninguem_autorizado(lang));
     }
     out
+}
+
+/// O aviso das recusas de remetente `@lid` sem numero (#1345), do arquivo
+/// que o gateway em execucao grava no diretorio da sessao.
+///
+/// Um numero no `allow` nao casa com um LID, e sem este aviso o operador so
+/// via "autorizado" e silencio. So o arquivo do gateway **vivo** conta (o
+/// `pid` bate): o de uma execucao anterior nao diz nada sobre esta. Nunca o
+/// LID inteiro — so os quatro ultimos digitos.
+fn recusas_lid_line(
+    lang: Lang,
+    registro: Option<&garraia_gateway::bootstrap::WhatsAppLinkedRecusasLid>,
+    gateway_pid: Option<u32>,
+) -> Option<String> {
+    let r = registro?;
+    if r.recusas == 0 || gateway_pid != Some(r.pid) {
+        return None;
+    }
+    let bin = crate::binario::nome();
+    let (n, fim) = (r.recusas, acesso::final4(&r.final4));
+    Some(match lang {
+        Lang::Pt => format!(
+            "⚠ {n} mensagem(ns) recusada(s) de remetente @lid sem número (a última de um LID terminado em {fim}). \
+             O WhatsApp identificou o contato só pelo LID, e um número no `allow` não casa com LID. \
+             Se era alguém que você autorizou, gere um código com `/pair` e peça para a pessoa mandá-lo por WhatsApp, \
+             ou autorize o LID inteiro: `{bin} whatsapp allow <id>@lid`."
+        ),
+        Lang::En => format!(
+            "⚠ {n} message(s) refused from @lid senders with no number (the last from a LID ending in {fim}). \
+             WhatsApp identified the contact only by LID, and a number in `allow` does not match a LID. \
+             If it was someone you authorized, generate a code with `/pair` and have them send it over WhatsApp, \
+             or authorize the full LID: `{bin} whatsapp allow <id>@lid`."
+        ),
+    })
 }
 
 /// Uma linha com o perfil de execucao (ADR 0024, #1329), quando a config abre.

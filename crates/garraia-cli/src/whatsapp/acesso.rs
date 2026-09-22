@@ -19,15 +19,23 @@
 //!   nao): um dono em `standard` seria um privilegio latente, que acordaria
 //!   em silencio no dia em que a env do perfil mudasse.
 //!
-//! # Numero, e so numero
+//! # Numero com `+` e codigo do pais — ou um LID
 //!
-//! Codigo do pais **obrigatorio** e nunca adivinhado. `+` inicial opcional;
-//! espacos, hifens, pontos e parenteses sao descartados; o resto tem de ser
-//! digito. Zero inicial e recusado (e o prefixo de discagem local, nao um
-//! codigo de pais) e o total tem de caber no E.164 (10 a 15 digitos). A forma
+//! Codigo do pais **obrigatorio** e nunca adivinhado, e por isso o `+`
+//! inicial tambem: sem ele `11 99999-8888` (DDD + numero, como se escreve no
+//! Brasil) passava por numero de 11 digitos, era gravado e nunca casava com o
+//! remetente, que chega sempre com o codigo do pais. Espacos, hifens, pontos
+//! e parenteses sao descartados; o resto tem de ser digito. Zero inicial e
+//! recusado (e o prefixo de discagem local) e o total tem de caber no E.164
+//! como a ponte o aceita (6 a 15 digitos — Niue e Tokelau tem 7). A forma
 //! gravada e a que o portao do gateway compara
 //! (`whatsapp_linked_normalizar_identidade`), e na tela so aparecem os quatro
 //! ultimos digitos.
+//!
+//! O WhatsApp as vezes identifica o contato so por um LID (`<id>@lid`), sem
+//! numero; a ponte entrega o numero quando o servidor o manda junto, e quando
+//! nao manda o portao compara o LID. Por isso `<digitos>@lid` tambem e aceito,
+//! gravado como veio.
 
 use anyhow::{Result, bail};
 use garraia_config::{AppConfig, ChannelConfig, ConfigLoader};
@@ -52,13 +60,15 @@ const TENTATIVAS: usize = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NumeroInvalido {
     Vazio,
-    /// Veio na forma `…@s.whatsapp.net` (ou qualquer JID).
+    /// Veio na forma `…@s.whatsapp.net` (ou qualquer JID que nao `<id>@lid`).
     Jid,
+    /// Numero sem o `+` do codigo do pais.
+    SemMais,
     /// Letra ou outro caractere fora de `+ -().` e espaco.
     Caractere,
     /// Comeca com `0`: prefixo de discagem local, nao codigo de pais.
     ZeroInicial,
-    /// Fora de 10 a 15 digitos.
+    /// Fora de 6 a 15 digitos.
     Tamanho(usize),
 }
 
@@ -69,8 +79,14 @@ impl NumeroInvalido {
             Self::Vazio => t(lang, "O número está vazio.", "The number is empty.").to_string(),
             Self::Jid => t(
                 lang,
-                "Use só o número, sem `@s.whatsapp.net`.",
-                "Use just the number, without `@s.whatsapp.net`.",
+                "Use o número com + e código do país, sem `@s.whatsapp.net` (só um LID, `<id>@lid`, vai com o @).",
+                "Use the number with + and the country code, without `@s.whatsapp.net` (only a LID, `<id>@lid`, keeps the @).",
+            )
+            .to_string(),
+            Self::SemMais => t(
+                lang,
+                "Comece com + e o código do país (ex.: +55 11 99999-8888): sem ele o número nunca casa com quem manda a mensagem.",
+                "Start with + and the country code (e.g. +1 555 123 4567): without it the number never matches the sender.",
             )
             .to_string(),
             Self::Caractere => t(
@@ -87,35 +103,57 @@ impl NumeroInvalido {
             .to_string(),
             Self::Tamanho(n) => match lang {
                 Lang::Pt => format!(
-                    "O número tem {n} dígitos; com o código do país ele precisa ter de 10 a 15 (ex.: +55 11 99999-8888)."
+                    "O número tem {n} dígitos; com o código do país ele precisa ter de 6 a 15 (ex.: +55 11 99999-8888)."
                 ),
                 Lang::En => format!(
-                    "The number has {n} digits; with the country code it must have 10 to 15 (e.g. +55 11 99999-8888)."
+                    "The number has {n} digits; with the country code it must have 6 to 15 (e.g. +55 11 99999-8888)."
                 ),
             },
         }
     }
 }
 
+/// Separadores que o numero pode trazer e que sao descartados.
+fn separador(c: char) -> bool {
+    matches!(c, ' ' | '-' | '.' | '(' | ')')
+}
+
+/// `<digitos>@lid`, exatamente: o LID que a ponte entrega quando o servidor
+/// nao manda o numero junto.
+fn e_lid_valido(s: &str) -> bool {
+    s.strip_suffix("@lid")
+        .is_some_and(|id| (6..=20).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Normaliza um numero digitado para a forma que o portao do canal compara.
 ///
-/// Pura. `Ok` e sempre so digitos, com codigo do pais, 10 a 15 de comprimento
-/// — e e byte a byte o que `whatsapp_linked_normalizar_identidade` do gateway
-/// devolve para a mesma entrada (um teste prende isso).
+/// Pura. `Ok` e so digitos, com codigo do pais, 6 a 15 de comprimento — ou
+/// um `<digitos>@lid` como veio — e e byte a byte o que
+/// `whatsapp_linked_normalizar_identidade` do gateway devolve para a mesma
+/// entrada (um teste prende isso).
 pub fn normalizar_numero(raw: &str) -> Result<String, NumeroInvalido> {
     let s = raw.trim();
     if s.is_empty() {
         return Err(NumeroInvalido::Vazio);
     }
+    if e_lid_valido(s) {
+        return Ok(garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(s));
+    }
     if s.contains('@') {
         return Err(NumeroInvalido::Jid);
     }
-    let corpo = s.strip_prefix('+').unwrap_or(s);
+    let Some(corpo) = s.strip_prefix('+') else {
+        return Err(if s.chars().all(|c| c.is_ascii_digit() || separador(c)) {
+            NumeroInvalido::SemMais
+        } else {
+            NumeroInvalido::Caractere
+        });
+    };
     let mut digitos = String::with_capacity(corpo.len());
     for c in corpo.chars() {
         if c.is_ascii_digit() {
             digitos.push(c);
-        } else if !matches!(c, ' ' | '-' | '.' | '(' | ')') {
+        } else if !separador(c) {
             return Err(NumeroInvalido::Caractere);
         }
     }
@@ -125,19 +163,26 @@ pub fn normalizar_numero(raw: &str) -> Result<String, NumeroInvalido> {
     if digitos.starts_with('0') {
         return Err(NumeroInvalido::ZeroInicial);
     }
-    if !(10..=15).contains(&digitos.len()) {
+    if !(6..=15).contains(&digitos.len()) {
         return Err(NumeroInvalido::Tamanho(digitos.len()));
     }
     Ok(garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(&digitos))
 }
 
-/// Os quatro ultimos digitos — a unica parte de um numero que a CLI imprime.
+/// Os quatro ultimos digitos — a unica parte de um numero (ou de um LID,
+/// antes do `@lid`) que a CLI imprime.
 pub fn final4(numero: &str) -> &str {
+    let numero = numero.split_once('@').map_or(numero, |(id, _)| id);
     let n = numero.len();
     // So digitos ASCII chegam aqui (`normalizar_numero`), entao cortar por
     // byte nao parte caractere; o `get` e o seguro contra o dia em que isso
     // mudar.
     numero.get(n.saturating_sub(4)..).unwrap_or("")
+}
+
+/// E um LID (`<id>@lid`), e nao um numero?
+fn e_lid(identidade: &str) -> bool {
+    identidade.ends_with("@lid")
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +205,7 @@ pub fn acesso_da_config(config: &AppConfig) -> Acesso {
     Acesso {
         enabled: s.enabled,
         autorizados: s.autorizados(),
-        donos: s.owners.len(),
+        donos: s.donos(),
     }
 }
 
@@ -192,17 +237,24 @@ pub enum Gravado {
 /// Acrescenta `numero` (ja normalizado) a `allow` ou `owners`.
 ///
 /// Carrega, mexe so na lista pedida, e grava pela escrita atomica `0600` do
-/// [`ConfigLoader::save`]. Tudo o mais fica como estava: as outras chaves da
-/// secao (`default_mode`, `reply_in_groups`, a outra lista), as outras secoes
-/// e **`enabled`** — autorizar nao liga canal; quem liga e o `link`, depois de
-/// a sessao existir. Secao ausente nasce com `type: whatsapp_linked` e sem
-/// `enabled` (desligado, ver `settings_from_config`).
+/// [`ConfigLoader::save`]. Os **valores** ficam como estavam: as outras
+/// chaves da secao (`default_mode`, `reply_in_groups`, a outra lista), as
+/// outras secoes e **`enabled`** — autorizar nao liga canal; quem liga e o
+/// `link`, depois de a sessao existir. Secao ausente nasce com `type:
+/// whatsapp_linked` e sem `enabled` (desligado, ver `settings_from_config`).
+///
+/// O arquivo, porem, e **reescrito** a partir da config lida (como todo
+/// `save`): comentarios, chaves que o `AppConfig` nao modela e a formatacao
+/// original nao sobrevivem, e secoes com default passam a aparecer. A
+/// documentacao diz isso; quem cura o `config.yml` a mao edita a lista a mao.
 ///
 /// Nunca remove: revogar e editar o arquivo (a documentacao diz como, e o
 /// gateway relê a quente).
 pub fn autorizar(loader: &ConfigLoader, numero: &str, papel: Papel) -> Result<Gravado> {
     loader.ensure_dirs()?;
-    let mut config = loader.load()?;
+    // Sem a env do perfil: ela nao vai ao disco (`#[serde(skip)]`) e nao
+    // decide nada aqui — so o `--owner` depende dela, e ja foi validado.
+    let mut config = loader.load_sem_env()?;
     let secao = config
         .channels
         .entry(CONFIG_KEY.to_string())
@@ -228,10 +280,18 @@ pub fn autorizar(loader: &ConfigLoader, numero: &str, papel: Papel) -> Result<Gr
     let Some(itens) = lista.as_array_mut() else {
         bail!("`channels.{CONFIG_KEY}.{chave}` nao e uma lista — corrija o config.yml");
     };
+    // A mesma chave que o portao compara: `+55 31 99999-8888` ja cobre
+    // `553199998888` (o nono digito, ver `whatsapp_linked_chave_do_portao`).
+    let chave = |v: &str| {
+        garraia_gateway::bootstrap::whatsapp_linked_chave_do_portao(
+            &garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(v),
+        )
+    };
+    let alvo = chave(numero);
     let ja_estava = itens
         .iter()
         .filter_map(|v| v.as_str())
-        .any(|v| garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(v) == numero);
+        .any(|v| chave(v) == alvo);
     if ja_estava {
         return Ok(Gravado::JaEstava);
     }
@@ -249,14 +309,19 @@ pub fn autorizar(loader: &ConfigLoader, numero: &str, papel: Papel) -> Result<Gr
 /// A CLI **nao reinicia** nada: ela nao sabe o host, a porta, nem se o
 /// gateway roda em primeiro plano, sob systemd ou num container, e um restart
 /// mataria turnos em andamento nos outros canais. Ela diz qual e o caso.
+///
+/// "Sem reiniciar" nunca e afirmado: a CLI le o `enabled` do **arquivo**, e
+/// o gateway so supervisiona o canal se ele estava ligado quando subiu (o
+/// `link` pode te-lo ligado depois), e so rele a lista a quente se havia um
+/// `config.yml` para vigiar no boot. Nenhum dos dois e visivel daqui, entao o
+/// texto diz a condicao e o comando do outro caso.
 pub fn dica_do_gateway(lang: Lang, canal_ja_supervisionado: bool, pid: Option<u32>) -> String {
     match (pid, canal_ja_supervisionado) {
-        (Some(_), true) => t(
+        (Some(_), true) => tb(
             lang,
-            "O gateway em execução aplica isto na próxima mensagem, sem reiniciar.",
-            "The running gateway applies this on the next message, no restart needed.",
-        )
-        .to_string(),
+            "Se o gateway subiu com este canal ligado, ele aplica isto na próxima mensagem, sem reiniciar; se não, rode `{bin} restart`.",
+            "If the gateway started with this channel on, it applies this on the next message, no restart needed; otherwise run `{bin} restart`.",
+        ),
         (Some(_), false) => tb(
             lang,
             "O gateway está rodando sem este canal: rode `{bin} restart` para ele subir o WhatsApp.",
@@ -327,13 +392,25 @@ fn validar(ctx: &Context, pedido: &Pedido, config: &AppConfig) -> Result<Option<
             "{}",
             t(
                 ctx.lang,
-                "`--owner` só vale com `execution.profile = isolated-pod`. Em `standard` um dono não tem poder nenhum — e ganharia em silêncio no dia em que o perfil mudasse. Autorize sem `--owner`.",
-                "`--owner` only applies with `execution.profile = isolated-pod`. In `standard` an owner has no power — and would silently gain it the day the profile changed. Authorize without `--owner`.",
+                "`--owner` só vale com `execution.profile = isolated-pod`. Em `standard` um dono não tem poder nenhum — e ganharia em silêncio no dia em que o perfil mudasse. Autorize sem `--owner`. (O perfil lido aqui vem do config.yml ou de `GARRAIA_EXECUTION_PROFILE` NESTE shell; se o gateway roda com essa env, rode este comando com a mesma env.)",
+                "`--owner` only applies with `execution.profile = isolated-pod`. In `standard` an owner has no power — and would silently gain it the day the profile changed. Authorize without `--owner`. (The profile read here comes from config.yml or from `GARRAIA_EXECUTION_PROFILE` in THIS shell; if the gateway runs with that env, run this command with the same env.)",
             )
         );
         return Err(EX_USAGE);
     }
     Ok(numero)
+}
+
+/// A config como o gateway a veria: o arquivo, e por cima a env do perfil
+/// **capturada no [`Context`]** (e nao relida do processo) — assim o teste
+/// fixa o perfil sem depender do `GARRAIA_EXECUTION_PROFILE` da maquina.
+fn carregar_com_env(ctx: &Context, loader: &ConfigLoader) -> garraia_common::Result<AppConfig> {
+    let mut config = loader.load_sem_env()?;
+    config
+        .execution
+        .aplicar_valor_da_env(ctx.perfil_da_env.as_deref())
+        .map_err(|e| garraia_common::Error::Config(e.to_string()))?;
+    Ok(config)
 }
 
 fn carregar(ctx: &Context) -> Result<(&ConfigLoader, AppConfig), i32> {
@@ -348,7 +425,7 @@ fn carregar(ctx: &Context) -> Result<(&ConfigLoader, AppConfig), i32> {
         );
         return Err(EX_SOFTWARE);
     };
-    match loader.load() {
+    match carregar_com_env(ctx, loader) {
         Ok(c) => Ok((loader, c)),
         Err(e) => {
             eprintln!("{e}");
@@ -424,6 +501,30 @@ pub fn allow(ctx: &Context, prompter: &dyn Prompter, pedido: &Pedido) -> i32 {
 
 fn imprimir_gravado(lang: Lang, numero: &str, papel: Papel, gravado: Gravado) {
     let fim = final4(numero);
+    if e_lid(numero) {
+        let linha = match (lang, papel, gravado) {
+            (Lang::Pt, Papel::Autorizado, Gravado::Novo) => {
+                format!("✓ LID terminado em {fim} autorizado.")
+            }
+            (Lang::Pt, Papel::Dono, Gravado::Novo) => {
+                format!("✓ LID terminado em {fim} registrado como dono.")
+            }
+            (Lang::Pt, _, Gravado::JaEstava) => {
+                format!("✓ O LID terminado em {fim} já estava na lista.")
+            }
+            (Lang::En, Papel::Autorizado, Gravado::Novo) => {
+                format!("✓ LID ending in {fim} authorized.")
+            }
+            (Lang::En, Papel::Dono, Gravado::Novo) => {
+                format!("✓ LID ending in {fim} registered as owner.")
+            }
+            (Lang::En, _, Gravado::JaEstava) => {
+                format!("✓ The LID ending in {fim} was already listed.")
+            }
+        };
+        println!("{linha}");
+        return;
+    }
     let linha = match (lang, papel, gravado) {
         (Lang::Pt, Papel::Autorizado, Gravado::Novo) => {
             format!("✓ Número terminado em {fim} autorizado.")
@@ -540,7 +641,7 @@ pub fn pos_link(
         }
     }
 
-    let depois = match loader.load() {
+    let depois = match loader.load_sem_env() {
         Ok(c) => acesso_da_config(&c),
         Err(e) => {
             eprintln!("{e}");
@@ -610,7 +711,9 @@ fn confirmar_se_proprio(
     phone_last4: Option<&str>,
     numero: String,
 ) -> Option<String> {
-    if phone_last4.is_some_and(|p| p == final4(&numero)) {
+    // Um LID nao e o numero do celular: o final dele nao diz nada sobre o
+    // `from_me`.
+    if !e_lid(&numero) && phone_last4.is_some_and(|p| p == final4(&numero)) {
         println!("{}", aviso_do_proprio_numero(ctx.lang));
         let usar = prompter
             .confirm(

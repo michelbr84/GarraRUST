@@ -435,7 +435,7 @@ enum WhatsAppCommands {
     /// `--allow`/`--owner` pre-respondem essa pergunta, mas o comando continua
     /// exigindo terminal: o QR se le daqui.
     Link {
-        /// Numero autorizado, com codigo do pais (ex.: +55 11 99999-8888).
+        /// Numero autorizado, com + e codigo do pais (ex.: +55 11 99999-8888).
         #[arg(long, value_name = "NUMERO")]
         allow: Option<String>,
         /// Registra o numero como dono (so em `execution.profile = isolated-pod`).
@@ -453,12 +453,14 @@ enum WhatsAppCommands {
     /// Autoriza um numero a falar com o GarraIA pelo WhatsApp pessoal (#1345).
     ///
     /// Funciona sem terminal. Acrescenta a `channels.whatsapp_linked.allow`
-    /// (ou `owners`, com `--owner`) sem mexer no resto da config e sem ligar
-    /// o canal. Exit codes: 0 ok, 1 cancelado, 64 `--owner` fora de
-    /// `isolated-pod` ou sem terminal e sem `--yes`, 65 numero invalido, 70
-    /// config ilegivel. Revogar e editar o config.yml (vale sem reiniciar).
+    /// (ou `owners`, com `--owner`) sem mudar outro valor da config e sem
+    /// ligar o canal; o arquivo e reescrito, entao comentarios nao ficam.
+    /// Exit codes: 0 ok, 1 cancelado, 64 `--owner` fora de `isolated-pod` ou
+    /// sem terminal e sem `--yes`, 65 numero invalido, 70 config ilegivel.
+    /// Revogar e editar o config.yml.
     Allow {
-        /// Numero com codigo do pais (ex.: +55 11 99999-8888).
+        /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
+        /// LID `<id>@lid`.
         #[arg(value_name = "NUMERO")]
         numero: String,
         /// Registra como dono (so em `execution.profile = isolated-pod`).
