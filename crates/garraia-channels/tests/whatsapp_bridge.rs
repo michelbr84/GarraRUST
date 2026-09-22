@@ -1896,3 +1896,57 @@ async fn a_failed_install_removes_the_stale_tree_and_stays_pending() {
         DepsPlan::Install
     );
 }
+
+/// **O passo que o `status` manda dar, de ponta a ponta.** O `npm ci` do
+/// GarraIA falhou (arvore removida, carimbo em `pending`, `status` dizendo
+/// `rode npm ci em <dir>`); o usuario roda `npm ci` a mao naquele diretorio.
+/// O proximo `prepare` — o do boot do gateway ou o do `whatsapp link` — adota
+/// a arvore sem rodar `npm`, e o carimbo passa a ser o dos manifestos
+/// embutidos. Antes, o carimbo continuava `pending` e o boot pedia outro
+/// `npm ci` para sempre (e, sem `npm` na PATH do gateway, apagava a arvore
+/// do usuario).
+#[tokio::test]
+async fn a_manual_npm_ci_after_a_failed_install_is_adopted() {
+    use garraia_channels::whatsapp_linked::bridge::{
+        DepsPlan, EmbeddedAssets, deps_installed, install_deps, prepare,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bridge = dir.path().join("bridge");
+    prepare(&bridge, &EmbeddedAssets).expect("prepare");
+    install_deps(&fake_npm(), &bridge, &EmbeddedAssets)
+        .await
+        .expect_err("o npm do GarraIA falha");
+    assert!(
+        !deps_installed(&bridge),
+        "premissa: o status manda rodar npm ci"
+    );
+
+    // O usuario, no terminal dele: `cd <dir> && npm ci`.
+    std::fs::write(bridge.join(".fake-npm-ok"), "").expect("rede voltou");
+    let manual = std::process::Command::new(fake_npm())
+        .args(["ci"])
+        .current_dir(&bridge)
+        .status()
+        .expect("npm a mao");
+    assert!(manual.success());
+    assert_eq!(npm_calls(&bridge), 2, "o do GarraIA e o do usuario");
+    assert!(
+        !deps_installed(&bridge),
+        "ate o proximo preparo, o carimbo ainda diz pending: o passo diz para reiniciar"
+    );
+
+    assert_eq!(
+        prepare(&bridge, &EmbeddedAssets).expect("prepare").deps,
+        DepsPlan::Current,
+        "a arvore que o npm registrou para o lock embutido e adotada"
+    );
+    assert_eq!(npm_calls(&bridge), 2, "adotar nao roda npm");
+    assert!(deps_installed(&bridge));
+    assert!(bridge.join("node_modules/@whiskeysockets/baileys").is_dir());
+    assert_eq!(
+        prepare(&bridge, &EmbeddedAssets).expect("prepare").deps,
+        DepsPlan::Current,
+        "e fica adotada: o carimbo foi gravado"
+    );
+}

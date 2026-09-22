@@ -1617,7 +1617,8 @@ impl PreparoDaPonte {
 pub(crate) enum PonteNaoPronta {
     /// Nao deu para materializar os assets (disco, permissao).
     Assets(bridge::BridgeError),
-    /// Os manifestos mudaram e nao ha `npm` na PATH do gateway.
+    /// O `node_modules` nao e dos manifestos atuais e nao ha `npm` na PATH do
+    /// gateway.
     SemNpm { dir: PathBuf },
     /// O `npm ci` falhou, passou do prazo ou nem lancou.
     Npm {
@@ -1634,9 +1635,10 @@ impl std::fmt::Display for PonteNaoPronta {
             Self::Assets(e) => write!(f, "nao consegui gravar os arquivos da ponte: {e}"),
             Self::SemNpm { dir } => write!(
                 f,
-                "as dependencias da ponte mudaram e `npm` nao esta na PATH do gateway: \
-                 instale o npm (vem com o Node.js 20+) e rode `npm ci` em {}, ou reinicie o \
-                 gateway com o npm na PATH",
+                "as dependencias da ponte precisam de `npm ci` e `npm` nao esta na PATH do \
+                 gateway: rode `npm ci` em {} e reinicie o gateway (a arvore instalada e \
+                 adotada no boot seguinte), ou reinicie o gateway com o npm (vem com o \
+                 Node.js 20+) na PATH",
                 dir.display()
             ),
             Self::Npm { erro, dir } => {
@@ -1675,26 +1677,41 @@ async fn ate_cancelar(cancel: &mut watch::Receiver<bool>) {
     }
 }
 
-/// Deixa a ponte do disco igual a embutida e, se os manifestos mudaram, roda
-/// o `npm ci` — antes de qualquer processo da ponte subir.
+/// Deixa a ponte do disco igual a embutida e, se o `node_modules` nao e dos
+/// manifestos atuais, roda o `npm ci` — antes de qualquer processo da ponte
+/// subir.
 ///
 /// A decisao de disco e de [`bridge::prepare`], a mesma que o `garra whatsapp
 /// link` usa: so o que difere e reescrito (diretorio `0700`, allowlist de
-/// nome), e o `npm` so roda quando `package.json`/`package-lock.json` mudaram,
-/// quando falta `node_modules` ou quando um `npm ci` anterior nao terminou.
-/// Mudou so o `bridge.mjs`, nao ha `npm`.
+/// nome), e o `npm` so roda quando falta `node_modules` ou quando nem o
+/// carimbo nem o registro do proprio npm (`node_modules/.package-lock.json`)
+/// dizem que a arvore e a do `package-lock.json` embutido — um lock novo, um
+/// `npm ci` que nao terminou. Mudou so o `bridge.mjs`, nao ha `npm`.
 ///
 /// # Falha
 ///
 /// Fail-soft: `Err` e a ponte **nao** e lancada — nunca contra um
-/// `node_modules` que nao e dos manifestos atuais. Sem `npm`, ou com o `npm`
-/// falhando, a arvore velha sai do disco ([`bridge::abandon_deps`]), e e isso
-/// que faz o `/api/diagnostics` e o `garra whatsapp status` mostrarem
-/// "sem dependencias" com o passo `rode npm ci em <dir>`. A sessao nao e
-/// tocada: ela mora em outro diretorio, e nada aqui a le.
+/// `node_modules` que nao e dos manifestos atuais. O `prepare` que respondeu
+/// `Install` ja deixou o carimbo em `pending`, e e isso que faz o
+/// `/api/diagnostics` e o `garra whatsapp status` mostrarem "sem
+/// dependencias" com o passo `rode npm ci em <dir> e reinicie o gateway` — e
+/// o passo funciona: o `prepare` do boot seguinte adota a arvore que o `npm
+/// ci` do usuario registrou ([`bridge::prepare`], regra 3).
+///
+/// **Sem `npm` na PATH, nada e apagado.** A arvore que esta no disco nao foi
+/// este gateway que tentou instalar — pode ser a que o usuario acabou de
+/// instalar a mao, com um `npm` que so existe no shell dele. So o `npm ci`
+/// falho do proprio [`bridge::install_deps`] remove o que ele deixou pela
+/// metade. A sessao nao e tocada: ela mora em outro diretorio, e nada aqui a
+/// le.
+///
+/// O `prepare` e I/O sincrono de disco (comparar os assets, ler o registro
+/// do npm), entao roda em `spawn_blocking`, fora da thread do runtime.
 ///
 /// O cancelamento e ouvido antes de tocar o disco e durante o `npm ci` (que
-/// morre junto, `kill_on_drop`).
+/// morre junto, `kill_on_drop`). Cancelado ENTRE o `prepare` e o `npm ci`, o
+/// carimbo ja esta em `pending` — gravado antes de qualquer manifesto ser
+/// reescrito —, e o boot seguinte nao adota a arvore antiga.
 pub(crate) async fn preparar_ponte(
     preparo: &PreparoDaPonte,
     cancel: &mut watch::Receiver<bool>,
@@ -1702,8 +1719,20 @@ pub(crate) async fn preparar_ponte(
     if *cancel.borrow() {
         return Err(PonteNaoPronta::Cancelado);
     }
-    let preparacao =
-        bridge::prepare(&preparo.dir, preparo.assets.as_ref()).map_err(PonteNaoPronta::Assets)?;
+    let dir = preparo.dir.clone();
+    let assets = Arc::clone(&preparo.assets);
+    let preparacao = tokio::task::spawn_blocking(move || bridge::prepare(&dir, assets.as_ref()))
+        .await
+        .unwrap_or_else(|tarefa| {
+            // A tarefa so morre sem resultado se `prepare` entrar em panic (ou
+            // o runtime estiver desligando): a ponte nao sobe, como em
+            // qualquer falha de disco.
+            Err(bridge::BridgeError::Io {
+                path: preparo.dir.display().to_string(),
+                source: std::io::Error::other(tarefa.to_string()),
+            })
+        })
+        .map_err(PonteNaoPronta::Assets)?;
     if preparacao.assets == bridge::Materialized::Written {
         info!("whatsapp_linked: arquivos da ponte atualizados para os deste binario");
     }
@@ -1712,14 +1741,11 @@ pub(crate) async fn preparar_ponte(
     }
 
     let Some(npm) = preparo.npm.as_deref() else {
-        if let Err(e) = bridge::abandon_deps(&preparo.dir) {
-            warn!("whatsapp_linked: nao consegui descartar o node_modules antigo: {e}");
-        }
         return Err(PonteNaoPronta::SemNpm {
             dir: preparo.dir.clone(),
         });
     };
-    info!("whatsapp_linked: dependencias da ponte mudaram; rodando `npm ci`");
+    info!("whatsapp_linked: o node_modules da ponte nao e o destes manifestos; rodando `npm ci`");
     let instalar = bridge::install_deps(npm, &preparo.dir, preparo.assets.as_ref());
     tokio::select! {
         biased;

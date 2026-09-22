@@ -62,10 +62,24 @@ const STAMP_FILE: &str = ".garraia-bridge-sha256";
 /// o `node_modules` atual foi instalado. Ver [`prepare`].
 const DEPS_STAMP_FILE: &str = ".garraia-deps-sha256";
 
-/// Conteudo de [`DEPS_STAMP_FILE`] enquanto um `npm ci` corre — e depois dele,
-/// se ele nao terminou bem. Nao e um hash, entao nunca casa com
-/// [`deps_digest`]: um `node_modules` pela metade nunca passa por atual.
+/// Conteudo de [`DEPS_STAMP_FILE`] sempre que o `node_modules` nao pode ser
+/// dado como atual pelo carimbo: gravado ANTES de um manifesto ser reescrito,
+/// antes de cada `npm ci` (e mantido se ele nao terminou bem) e sempre que
+/// [`prepare`] responde [`DepsPlan::Install`]. Nao e um hash, entao nunca casa
+/// com [`deps_digest`]: um `node_modules` pela metade nunca passa por atual.
 const DEPS_PENDING: &str = "pending";
+
+/// O "lockfile escondido" que o npm 7+ grava dentro do `node_modules` como
+/// ULTIMO passo de uma instalacao que terminou bem. E o registro do proprio
+/// npm do que esta instalado — ver [`tree_matches_lock`].
+const NPM_HIDDEN_LOCKFILE: &str = ".package-lock.json";
+
+/// Teto de leitura do [`NPM_HIDDEN_LOCKFILE`]. O da ponte tem ~33 KB; um
+/// arquivo maior que isto nao e dela, e decide "nao casa" sem ser lido.
+const HIDDEN_LOCKFILE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// O manifesto que diz qual arvore o `npm ci` instala.
+const LOCKFILE: &str = "package-lock.json";
 
 /// Os assets que o `npm` le. Mudou um deles, o `node_modules` tem de ser
 /// refeito; mudou so o `bridge.mjs`, nao.
@@ -527,13 +541,11 @@ fn validar_nome_de_asset(name: &str) -> Result<(), BridgeError> {
 /// cada execucao — e o que garante que uma CLI atualizada substitui um bridge
 /// velho, em vez de conviver com ele em silencio.
 ///
-/// Para saber tambem **quais** arquivos mudaram (e se o `npm ci` tem de
-/// rodar), use [`prepare`].
+/// Reescrever um manifesto ([`DEPENDENCY_MANIFESTS`]) invalida o
+/// `node_modules` (o carimbo de dependencias vira [`DEPS_PENDING`] antes da
+/// escrita). Para saber tambem se o `npm ci` tem de rodar, use [`prepare`].
 pub fn materialize(dir: &Path, assets: &dyn BridgeAssets) -> Result<Materialized, BridgeError> {
-    Ok(match materialize_files(dir, assets)? {
-        None => Materialized::UpToDate,
-        Some(_) => Materialized::Written,
-    })
+    materialize_files(dir, assets)
 }
 
 /// O conteudo em disco de `path` e exatamente `contents`?
@@ -550,17 +562,12 @@ fn same_on_disk(path: &Path, contents: &str) -> bool {
     }
 }
 
-/// O corpo de [`materialize`]: `None` quando nada foi tocado, `Some(nomes)`
-/// com os assets reescritos (vazio quando so o carimbo foi regravado).
+/// O corpo de [`materialize`] e de [`prepare`].
 ///
-/// So o que difere e reescrito. E o que deixa [`prepare`] distinguir "mudou o
-/// `bridge.mjs`" (basta reescrever) de "mudou o `package-lock.json`" (o
-/// `node_modules` tem de ser refeito), e o que faz um boot sem atualizacao nao
-/// tocar arquivo nenhum.
-fn materialize_files(
-    dir: &Path,
-    assets: &dyn BridgeAssets,
-) -> Result<Option<Vec<&'static str>>, BridgeError> {
+/// So o que difere e reescrito: um boot sem atualizacao nao toca arquivo
+/// nenhum, e um update que so mudou o `bridge.mjs` nao toca os manifestos —
+/// nem, portanto, o carimbo de dependencias, e o `npm` nao roda.
+fn materialize_files(dir: &Path, assets: &dyn BridgeAssets) -> Result<Materialized, BridgeError> {
     // Alerta CodeQL 174 (path-injection): o sink `dir.join(file.name)` esta
     // logo abaixo, e o trait `BridgeAssets` e publico justamente para um dia
     // servir a um bridge vindo de fora do binario. A unica impl de hoje embute
@@ -581,25 +588,152 @@ fn materialize_files(
         .filter(|f| !same_on_disk(&dir.join(f.name), f.contents))
         .collect();
     if stale.is_empty() && current.as_deref() == Some(digest.as_str()) {
-        return Ok(None);
+        return Ok(Materialized::UpToDate);
     }
 
     garraia_common::fs_perms::create_secret_dir(dir).map_err(|e| BridgeError::io(dir, e))?;
+    // O `node_modules` deixa de valer ANTES de o primeiro manifesto mudar, e
+    // nao depois: entre reescrever o `package-lock.json` e o `npm ci` pode
+    // nao haver "depois" (gateway encerrando, processo morto), e um carimbo
+    // que ainda dissesse "instalado" — ou uma instalacao de antes do carimbo,
+    // sem carimbo nenhum — faria o proximo boot adotar a arvore ANTIGA com os
+    // manifestos NOVOS. Nao deu para marcar, nada e reescrito.
+    if stale.iter().any(|f| DEPENDENCY_MANIFESTS.contains(&f.name)) {
+        mark_deps_pending(dir)?;
+    }
     for file in &stale {
         let path = dir.join(file.name);
         std::fs::write(&path, file.contents).map_err(|e| BridgeError::io(&path, e))?;
     }
     std::fs::write(&stamp, &digest).map_err(|e| BridgeError::io(&stamp, e))?;
-    Ok(Some(stale.iter().map(|f| f.name).collect()))
+    Ok(Materialized::Written)
 }
 
-/// `node_modules` ja existe em `dir`?
+/// Grava [`DEPS_PENDING`] no carimbo de dependencias de `dir`.
+fn mark_deps_pending(dir: &Path) -> Result<(), BridgeError> {
+    let stamp = dir.join(DEPS_STAMP_FILE);
+    std::fs::write(&stamp, DEPS_PENDING).map_err(|e| BridgeError::io(&stamp, e))
+}
+
+/// O carimbo de dependencias de `dir` diz [`DEPS_PENDING`]?
 ///
-/// So o `stat`: e o fato que o `/api/diagnostics` e o `garra whatsapp status`
-/// leem sem cripto e sem processo ([`super::health::DiskFacts`]). Se ele foi
-/// instalado para os manifestos **atuais** e pergunta de [`prepare`].
-pub fn deps_installed(dir: &Path) -> bool {
+/// Le no maximo os 7 bytes do marcador: um carimbo de outro tamanho (o hash,
+/// ou lixo) decide pelo `stat`.
+fn deps_pending(dir: &Path) -> bool {
+    let stamp = dir.join(DEPS_STAMP_FILE);
+    match std::fs::metadata(&stamp) {
+        Ok(meta) if meta.is_file() && meta.len() == DEPS_PENDING.len() as u64 => {
+            std::fs::read(&stamp).is_ok_and(|bytes| bytes == DEPS_PENDING.as_bytes())
+        }
+        _ => false,
+    }
+}
+
+/// Ha um diretorio `node_modules` em `dir`? So o `stat`, sem juizo sobre ele.
+fn has_node_modules(dir: &Path) -> bool {
     dir.join("node_modules").is_dir()
+}
+
+/// A ponte em `dir` tem dependencias utilizaveis?
+///
+/// E o fato que o `/api/diagnostics` e o `garra whatsapp status` leem sem
+/// cripto e sem processo ([`super::health::DiskFacts`]): ha `node_modules` e
+/// o carimbo nao esta em [`DEPS_PENDING`]. Um `stat` e, no maximo, a leitura
+/// de 7 bytes.
+///
+/// O `pending` conta como "sem dependencias" porque e o que ele e: um
+/// `npm ci` correndo, um que nao terminou, ou uma arvore que [`prepare`] ja
+/// recusou para os manifestos atuais (e que o gateway sem `npm` na PATH
+/// deixou no disco, sem apagar — ver [`prepare`]). Em todos, o passo e o
+/// mesmo: `npm ci` no diretorio da ponte e reiniciar o gateway, que adota a
+/// arvore no boot seguinte.
+///
+/// Se a arvore foi instalada para os manifestos **atuais** e pergunta de
+/// [`prepare`].
+pub fn deps_installed(dir: &Path) -> bool {
+    has_node_modules(dir) && !deps_pending(dir)
+}
+
+/// O `node_modules` de `dir` e, pelo registro do proprio npm, a arvore que
+/// `lock` (o conteudo de um `package-lock.json`) descreve?
+///
+/// # O registro
+///
+/// O npm 7+ grava `node_modules/.package-lock.json` como ULTIMO passo de uma
+/// instalacao que terminou bem, e o `npm ci` apaga a arvore inteira — ele
+/// incluso — antes de comecar. Um `npm ci` que falhou ou foi interrompido nao
+/// deixa esse arquivo; um que terminou deixa, com uma entrada por pacote
+/// instalado, byte a byte a mesma entrada do `package-lock.json`
+/// (`version`, `resolved`, `integrity`, ...).
+///
+/// # A regra (fail-closed: qualquer duvida e "nao")
+///
+/// - o arquivo existe, cabe em [`HIDDEN_LOCKFILE_MAX_BYTES`] e nao e mais
+///   velho que o proprio `node_modules`: tirar ou acrescentar um pacote
+///   depois da instalacao (um `rm` pela metade, a limpeza de um `npm ci`
+///   interrompida) muda o mtime do diretorio e invalida o registro — a mesma
+///   desconfianca que o npm tem dele;
+/// - toda entrada instalada existe no `lock`, com o MESMO conteudo: nada de
+///   versao, origem ou `integrity` diferente, nada de pacote estranho;
+/// - toda entrada do `lock` esta instalada, menos a raiz (`""`, que o npm nao
+///   repete ali) e as `optional` — as que o npm pula por plataforma, como os
+///   binarios do `sharp` de outros sistemas.
+///
+/// Nao e mais fraco que o carimbo: o carimbo diz "este processo viu o `npm`
+/// sair 0"; isto diz "o npm registrou esta arvore, versao por versao". Nenhum
+/// dos dois confere o conteudo dos arquivos dentro do `node_modules` — quem
+/// escreve no diretorio `0700` da ponte ja e o dono dela.
+fn tree_matches_lock(dir: &Path, lock: &str) -> bool {
+    let modules = dir.join("node_modules");
+    let hidden = modules.join(NPM_HIDDEN_LOCKFILE);
+    let (Ok(meta_modules), Ok(meta_hidden)) =
+        (std::fs::metadata(&modules), std::fs::metadata(&hidden))
+    else {
+        return false;
+    };
+    if !meta_modules.is_dir()
+        || !meta_hidden.is_file()
+        || meta_hidden.len() > HIDDEN_LOCKFILE_MAX_BYTES
+    {
+        return false;
+    }
+    match (meta_modules.modified(), meta_hidden.modified()) {
+        (Ok(arvore), Ok(registro)) if registro >= arvore => {}
+        _ => return false,
+    }
+    let Ok(bytes) = std::fs::read(&hidden) else {
+        return false;
+    };
+    let (Ok(installed), Ok(wanted)) = (
+        serde_json::from_slice::<serde_json::Value>(&bytes),
+        serde_json::from_str::<serde_json::Value>(lock),
+    ) else {
+        return false;
+    };
+    lock_satisfied(&wanted, &installed)
+}
+
+/// A comparacao de [`tree_matches_lock`], sem disco.
+fn lock_satisfied(wanted: &serde_json::Value, installed: &serde_json::Value) -> bool {
+    let (Some(wanted), Some(installed)) = (
+        wanted
+            .get("packages")
+            .and_then(serde_json::Value::as_object),
+        installed
+            .get("packages")
+            .and_then(serde_json::Value::as_object),
+    ) else {
+        return false;
+    };
+    let nada_estranho = installed
+        .iter()
+        .all(|(nome, entrada)| wanted.get(nome) == Some(entrada));
+    let nada_faltando = wanted.iter().all(|(nome, entrada)| {
+        nome.is_empty()
+            || installed.contains_key(nome)
+            || entrada.get("optional") == Some(&serde_json::Value::Bool(true))
+    });
+    nada_estranho && nada_faltando
 }
 
 /// Hash so dos manifestos que o `npm` le ([`DEPENDENCY_MANIFESTS`]), na ordem
@@ -656,58 +790,71 @@ pub struct Preparation {
 /// reescrito rodava `npm ci` (rede, minutos) a cada mudanca de `bridge.mjs`.
 /// A regra, em ordem:
 ///
-/// 1. Um manifesto ([`DEPENDENCY_MANIFESTS`]) foi reescrito agora, ou nao ha
-///    `node_modules`: [`DepsPlan::Install`].
+/// 1. Nao ha `node_modules`: [`DepsPlan::Install`].
 /// 2. O carimbo de dependencias ([`DEPS_STAMP_FILE`]) tem o [`deps_digest`]
-///    atual: [`DepsPlan::Current`].
-/// 3. O carimbo tem outra coisa — o hash de outros manifestos, ou o
-///    [`DEPS_PENDING`] que [`install_deps`] grava ANTES de rodar o npm (e que
-///    so vira hash quando ele termina bem) — ou nao da para le-lo:
-///    [`DepsPlan::Install`]. E o que impede um `npm ci` interrompido ou que
-///    falhou de deixar um `node_modules` pela metade passar por atual no boot
-///    seguinte, quando os manifestos em disco ja sao os novos.
-/// 4. Nao ha carimbo nenhum, mas os manifestos em disco ja eram os embutidos e
-///    ha `node_modules`: e a instalacao de uma versao que ainda nao gravava
-///    carimbo (ate a 0.4.4, o `garra whatsapp link` rodava `npm ci` para
-///    estes manifestos e parava ali). [`DepsPlan::Current`], e o carimbo e
-///    gravado agora — best-effort: se a escrita falhar, o boot seguinte
-///    chega a mesma conclusao pelo mesmo caminho.
+///    atual: [`DepsPlan::Current`]. O carimbo so chega a esse valor por um
+///    `npm ci` que saiu 0 ([`install_deps`]) ou pela regra 3; e ele vira
+///    [`DEPS_PENDING`] ANTES de qualquer manifesto ser reescrito e antes de
+///    cada `npm ci`, entao um manifesto novo, ou um `npm ci` interrompido,
+///    nunca deixa para tras um carimbo que ainda diga "atual".
+/// 3. O proprio npm registrou, em `node_modules/.package-lock.json`, a arvore
+///    que o `package-lock.json` embutido descreve ([`tree_matches_lock`]):
+///    [`DepsPlan::Current`], e o carimbo e gravado agora — best-effort, porque
+///    a decisao nao depende dele: se a escrita falhar, o boot seguinte chega a
+///    mesma conclusao pelo mesmo caminho. E a regra que adota, sem `npm`:
+///    - a instalacao de uma versao que nao gravava carimbo (ate a 0.4.4, o
+///      `garra whatsapp link` rodava `npm ci` e parava ali) — mas so se o
+///      `npm ci` dela terminou, o que a regra "nao ha carimbo, os manifestos
+///      sao iguais" de antes nao sabia distinguir de uma arvore pela metade;
+///    - o `npm ci` que o **usuario** rodou a mao no diretorio da ponte, que e
+///      o passo que o `status` e o `/api/diagnostics` mandam dar quando o
+///      `npm` do gateway falhou ou nao existe. Sem isto o carimbo continuava
+///      em `pending`, o boot seguinte pedia outro `npm ci`, e o gateway sem
+///      `npm` na PATH nunca subia a ponte.
+/// 4. Qualquer outra coisa — carimbo de outros manifestos, `pending` sem
+///    registro do npm que case, carimbo ilegivel: [`DepsPlan::Install`], e o
+///    carimbo passa a [`DEPS_PENDING`] (o que faz o `status` e o
+///    `/api/diagnostics` mostrarem "sem dependencias", ver
+///    [`deps_installed`]).
 ///
-/// # O que nao muda
+/// # O que esta funcao nunca faz
+///
+/// Apagar o `node_modules`. Ela decide e marca; quem tenta instalar e
+/// [`install_deps`], e so ele remove a arvore — e so a que o proprio `npm ci`
+/// dele deixou pela metade. Uma arvore que o gateway nao tentou instalar (a
+/// do usuario, a de outra versao) fica onde esta.
 ///
 /// As checagens de [`materialize`] (allowlist de nome antes de qualquer
 /// escrita, diretorio `0700`) valem aqui porque e ela que escreve. Nada fora
 /// de `dir` e tocado — a sessao mora em outro diretorio.
+///
+/// E I/O sincrono de disco: quem esta num runtime async chama por
+/// `tokio::task::spawn_blocking`.
 pub fn prepare(dir: &Path, assets: &dyn BridgeAssets) -> Result<Preparation, BridgeError> {
-    let written = materialize_files(dir, assets)?;
-    let manifests_changed = written
-        .as_ref()
-        .is_some_and(|names| names.iter().any(|n| DEPENDENCY_MANIFESTS.contains(n)));
-    let materialized = match written {
-        None => Materialized::UpToDate,
-        Some(_) => Materialized::Written,
-    };
-
-    if manifests_changed || !deps_installed(dir) {
-        return Ok(Preparation {
-            assets: materialized,
-            deps: DepsPlan::Install,
-        });
-    }
+    let materialized = materialize_files(dir, assets)?;
 
     let digest = deps_digest(assets);
     let stamp = dir.join(DEPS_STAMP_FILE);
-    let deps = match std::fs::read_to_string(&stamp) {
-        Ok(recorded) if recorded.trim() == digest => DepsPlan::Current,
-        Ok(_) => DepsPlan::Install,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Regra 4: instalacao anterior ao carimbo, com os mesmos
-            // manifestos. Ver o docblock.
-            let _ = std::fs::write(&stamp, &digest);
-            DepsPlan::Current
-        }
-        Err(_) => DepsPlan::Install,
+    let lock = assets
+        .files()
+        .iter()
+        .find(|f| f.name == LOCKFILE)
+        .map(|f| f.contents);
+
+    let deps = if !has_node_modules(dir) {
+        DepsPlan::Install
+    } else if std::fs::read_to_string(&stamp).is_ok_and(|recorded| recorded.trim() == digest) {
+        DepsPlan::Current
+    } else if lock.is_some_and(|lock| tree_matches_lock(dir, lock)) {
+        // Regra 3: ver o docblock.
+        let _ = std::fs::write(&stamp, &digest);
+        DepsPlan::Current
+    } else {
+        DepsPlan::Install
     };
+    if deps == DepsPlan::Install {
+        mark_deps_pending(dir)?;
+    }
     Ok(Preparation {
         assets: materialized,
         deps,
@@ -721,27 +868,36 @@ pub fn prepare(dir: &Path, assets: &dyn BridgeAssets) -> Result<Preparation, Bri
 /// antes de instalar, entao o que fica e pela metade — ou, se ele recusou logo
 /// de cara, a arvore dos manifestos ANTIGOS. Nenhum dos dois serve para a
 /// ponte nova, e com ele fora do disco o `status` e o `/api/diagnostics`
-/// mostram o passo certo (`rode npm ci em <dir>`) em vez de "ponte caida".
+/// mostram o passo certo (`rode npm ci em <dir>`) em vez de "ponte caida". E o
+/// UNICO caminho que apaga um `node_modules`, e so depois de ESTE processo ter
+/// tentado instalar nele.
+///
+/// A remocao (a arvore do Baileys tem milhares de arquivos) roda em
+/// `spawn_blocking`, fora da thread do runtime.
 ///
 /// Se o future for abandonado no meio (gateway encerrando), o `npm` morre com
 /// ele (`kill_on_drop`) e o carimbo fica em [`DEPS_PENDING`]: o proximo
-/// [`prepare`] reinstala.
+/// [`prepare`] reinstala — a nao ser que alguem tenha terminado a instalacao
+/// a mao, que ele adota (regra 3).
 pub async fn install_deps(
     npm: &Path,
     dir: &Path,
     assets: &dyn BridgeAssets,
 ) -> Result<(), BridgeError> {
     let stamp = dir.join(DEPS_STAMP_FILE);
-    std::fs::write(&stamp, DEPS_PENDING).map_err(|e| BridgeError::io(&stamp, e))?;
+    tokio::fs::write(&stamp, DEPS_PENDING)
+        .await
+        .map_err(|e| BridgeError::io(&stamp, e))?;
     match npm_ci(npm, dir).await {
-        Ok(()) => {
-            std::fs::write(&stamp, deps_digest(assets)).map_err(|e| BridgeError::io(&stamp, e))
-        }
+        Ok(()) => tokio::fs::write(&stamp, deps_digest(assets))
+            .await
+            .map_err(|e| BridgeError::io(&stamp, e)),
         Err(e) => {
             // O erro do npm e o que importa ao usuario; uma falha ao limpar
-            // nao o substitui (o carimbo ja esta em `pending`, e o proximo
-            // `prepare` reinstala de qualquer jeito).
-            let _ = abandon_deps(dir);
+            // (ou a tarefa de limpeza morrer) nao o substitui: o carimbo ja
+            // esta em `pending`, e o proximo `prepare` nao adota o que sobrou.
+            let alvo = dir.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || abandon_deps(&alvo)).await;
             Err(e)
         }
     }
@@ -750,14 +906,14 @@ pub async fn install_deps(
 /// Declara o `node_modules` de `dir` invalido para os manifestos atuais e o
 /// remove: carimbo em [`DEPS_PENDING`], arvore fora do disco.
 ///
-/// Para quem precisa de [`DepsPlan::Install`] e nao consegue instalar (sem
-/// `npm` na PATH, por exemplo) — e para [`install_deps`], quando o `npm`
-/// falha. So toca `dir/node_modules` e o carimbo; um symlink no lugar do
+/// So para [`install_deps`], quando o `npm ci` DELE falhou — e por isso
+/// privada: apagar uma arvore que este processo nao tentou instalar (a que o
+/// usuario instalou a mao, por exemplo) e exatamente o que nao pode
+/// acontecer. So toca `dir/node_modules` e o carimbo; um symlink no lugar do
 /// `node_modules` e removido como link, sem seguir o alvo.
-pub fn abandon_deps(dir: &Path) -> Result<(), BridgeError> {
+fn abandon_deps(dir: &Path) -> Result<(), BridgeError> {
     if dir.is_dir() {
-        let stamp = dir.join(DEPS_STAMP_FILE);
-        std::fs::write(&stamp, DEPS_PENDING).map_err(|e| BridgeError::io(&stamp, e))?;
+        mark_deps_pending(dir)?;
     }
     let modules = dir.join("node_modules");
     let removed = match std::fs::symlink_metadata(&modules) {
@@ -1724,6 +1880,48 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         assert!(target.join("bridge.mjs").is_file());
     }
 
+    /// Um `package-lock.json` com a forma do de verdade: raiz `""`, um pacote
+    /// obrigatorio e um `optional` de outra plataforma (o que o npm pula).
+    const LOCK_700: &str = r#"{
+  "name": "a",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": { "name": "a", "dependencies": { "baileys": "7.0.0" } },
+    "node_modules/baileys": {
+      "version": "7.0.0",
+      "resolved": "https://registry.npmjs.org/baileys/-/baileys-7.0.0.tgz",
+      "integrity": "sha512-setecero"
+    },
+    "node_modules/@img/sharp-darwin-arm64": {
+      "version": "0.34.0",
+      "integrity": "sha512-darwin",
+      "optional": true
+    }
+  }
+}
+"#;
+    /// O mesmo, com o Baileys bumpado (a versao nova de um update por CVE).
+    const LOCK_701: &str = r#"{
+  "name": "a",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": { "name": "a", "dependencies": { "baileys": "7.0.1" } },
+    "node_modules/baileys": {
+      "version": "7.0.1",
+      "resolved": "https://registry.npmjs.org/baileys/-/baileys-7.0.1.tgz",
+      "integrity": "sha512-seteceroum"
+    },
+    "node_modules/@img/sharp-darwin-arm64": {
+      "version": "0.34.0",
+      "integrity": "sha512-darwin",
+      "optional": true
+    }
+  }
+}
+"#;
+
     /// Os assets de uma versao nova: so o `bridge.mjs` mudou em relacao a
     /// [`COM_LOCK`], que e a "versao anterior".
     const COM_LOCK: &[Asset] = &[
@@ -1737,7 +1935,7 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         },
         Asset {
             name: "package-lock.json",
-            contents: "{\"lockfileVersion\":3,\"baileys\":\"7.0.0\"}\n",
+            contents: LOCK_700,
         },
     ];
     const SO_O_BRIDGE_MUDOU: &[Asset] = &[
@@ -1751,7 +1949,7 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         },
         Asset {
             name: "package-lock.json",
-            contents: "{\"lockfileVersion\":3,\"baileys\":\"7.0.0\"}\n",
+            contents: LOCK_700,
         },
     ];
     const O_LOCK_MUDOU: &[Asset] = &[
@@ -1765,7 +1963,7 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         },
         Asset {
             name: "package-lock.json",
-            contents: "{\"lockfileVersion\":3,\"baileys\":\"7.0.1\"}\n",
+            contents: LOCK_701,
         },
     ];
 
@@ -1790,6 +1988,30 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
             .expect("mtime")
     }
 
+    /// O `node_modules/.package-lock.json` que o npm grava depois de instalar
+    /// `lock`: as entradas do lock, sem a raiz `""` e sem as `optional` de
+    /// outra plataforma — a forma medida numa instalacao real da ponte.
+    fn registro_do_npm(lock: &str) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(lock).expect("lock");
+        let pacotes = v
+            .get_mut("packages")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("packages");
+        pacotes.retain(|nome, entrada| {
+            !nome.is_empty() && entrada.get("optional") != Some(&serde_json::Value::Bool(true))
+        });
+        serde_json::to_string_pretty(&v).expect("json")
+    }
+
+    /// Um `npm ci` que terminou para `lock`: arvore nova, com o registro do
+    /// npm gravado por ultimo.
+    fn npm_instalou(dir: &Path, lock: &str) {
+        let modules = dir.join("node_modules");
+        let _ = std::fs::remove_dir_all(&modules);
+        std::fs::create_dir_all(modules.join("baileys")).expect("node_modules");
+        std::fs::write(modules.join(NPM_HIDDEN_LOCKFILE), registro_do_npm(lock)).expect("registro");
+    }
+
     /// O estado que um `garra whatsapp link` bem-sucedido deixa: assets,
     /// `node_modules` e o carimbo de dependencias dos manifestos atuais.
     fn instalado(dir: &Path, assets: &[Asset]) {
@@ -1797,6 +2019,20 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         std::fs::create_dir_all(dir.join("node_modules")).expect("node_modules");
         std::fs::write(dir.join(DEPS_STAMP_FILE), deps_digest(&FakeAssets(assets)))
             .expect("carimbo");
+    }
+
+    fn carimbo(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join(DEPS_STAMP_FILE)).expect("carimbo")
+    }
+
+    /// O disco que o `link` da 0.4.4 deixava: os assets de `assets`, um
+    /// `node_modules` (sem registro do npm — quem quiser um, chama
+    /// [`npm_instalou`]) e NENHUM carimbo de dependencias, que ele nao
+    /// gravava.
+    fn como_a_044(dir: &Path, assets: &[Asset]) {
+        materialize(dir, &FakeAssets(assets)).expect("materializa");
+        let _ = std::fs::remove_file(dir.join(DEPS_STAMP_FILE));
+        std::fs::create_dir_all(dir.join("node_modules").join("baileys")).expect("node_modules");
     }
 
     #[test]
@@ -1865,6 +2101,7 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("bridge");
         instalado(&target, COM_LOCK);
+        npm_instalou(&target, LOCK_700);
 
         let prep = prepare(&target, &FakeAssets(O_LOCK_MUDOU)).expect("prepare");
         assert_eq!(prep.deps, DepsPlan::Install);
@@ -1873,9 +2110,18 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
             O_LOCK_MUDOU[2].contents,
             "o lockfile novo ja esta no disco para o npm ci ler"
         );
+        assert_eq!(carimbo(&target), DEPS_PENDING);
+        assert!(
+            !deps_installed(&target),
+            "o status ja mostra \"sem dependencias\""
+        );
+        assert!(
+            target.join("node_modules").is_dir(),
+            "prepare decide e marca; nunca apaga a arvore"
+        );
 
         // E a decisao sobrevive a um boot que nao reinstalou: o lockfile em
-        // disco ja e o novo, mas o carimbo ainda e o dos manifestos antigos.
+        // disco ja e o novo, e o registro do npm e o da arvore ANTIGA.
         let prep = prepare(&target, &FakeAssets(O_LOCK_MUDOU)).expect("prepare 2");
         assert_eq!(prep.assets, Materialized::UpToDate);
         assert_eq!(
@@ -1900,10 +2146,11 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
     }
 
     /// `npm ci` que nao terminou (falhou, ou o gateway morreu no meio): o
-    /// carimbo fica em `pending`, e o `node_modules` pela metade nunca passa
-    /// por atual — mesmo com os manifestos em disco ja iguais aos embutidos.
+    /// carimbo fica em `pending`, e o `node_modules` pela metade — sem o
+    /// registro que o npm so grava no fim — nunca passa por atual, mesmo com
+    /// os manifestos em disco ja iguais aos embutidos.
     #[test]
-    fn a_pending_install_is_never_current() {
+    fn a_pending_install_without_npm_s_record_is_never_current() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("bridge");
         instalado(&target, COM_LOCK);
@@ -1914,22 +2161,127 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
                 .deps,
             DepsPlan::Install
         );
+        assert!(!deps_installed(&target));
+    }
+
+    /// **O passo que o `status` manda dar, funcionando.** O `npm ci` do
+    /// gateway falhou (carimbo em `pending`), o usuario rodou `npm ci` a mao
+    /// no diretorio da ponte: o proximo `prepare` adota a arvore pelo
+    /// registro do npm, sem `npm`, e grava o carimbo.
+    #[test]
+    fn a_pending_tree_that_npm_finished_for_this_lock_is_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        materialize(&target, &FakeAssets(COM_LOCK)).expect("materializa");
+        std::fs::write(target.join(DEPS_STAMP_FILE), DEPS_PENDING).expect("pending");
+        npm_instalou(&target, LOCK_700);
+        assert!(!deps_installed(&target), "premissa: ainda pendente");
+
+        let prep = prepare(&target, &FakeAssets(COM_LOCK)).expect("prepare");
+        assert_eq!(prep.deps, DepsPlan::Current);
+        assert_eq!(carimbo(&target), deps_digest(&FakeAssets(COM_LOCK)));
+        assert!(deps_installed(&target));
+    }
+
+    /// Adocao so pelo registro do npm, e so do lock embutido: uma arvore de
+    /// outro lock, uma com um pacote a mais, a menos ou com outra
+    /// `integrity`, e uma mexida depois do registro, nao passam.
+    #[test]
+    fn only_npm_s_record_of_this_exact_lock_is_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        materialize(&target, &FakeAssets(COM_LOCK)).expect("materializa");
+        let registro = target.join("node_modules").join(NPM_HIDDEN_LOCKFILE);
+        let pendente = |t: &Path| {
+            std::fs::write(t.join(DEPS_STAMP_FILE), DEPS_PENDING).expect("pending");
+        };
+
+        // A arvore de outro lock.
+        pendente(&target);
+        npm_instalou(&target, LOCK_701);
+        assert_eq!(
+            prepare(&target, &FakeAssets(COM_LOCK)).expect("p").deps,
+            DepsPlan::Install,
+            "arvore do lock 7.0.1 com o lock 7.0.0 embutido"
+        );
+
+        let base: serde_json::Value =
+            serde_json::from_str(&registro_do_npm(LOCK_700)).expect("json");
+        let variantes: Vec<(&str, serde_json::Value)> = {
+            let mut a_mais = base.clone();
+            a_mais["packages"]["node_modules/estranho"] = serde_json::json!({"version": "1.0.0"});
+            let mut a_menos = base.clone();
+            a_menos["packages"]
+                .as_object_mut()
+                .expect("obj")
+                .remove("node_modules/baileys");
+            let mut outra_integrity = base.clone();
+            outra_integrity["packages"]["node_modules/baileys"]["integrity"] =
+                serde_json::json!("sha512-outro");
+            vec![
+                ("pacote a mais", a_mais),
+                ("pacote obrigatorio a menos", a_menos),
+                ("outra integrity", outra_integrity),
+                ("sem packages", serde_json::json!({"lockfileVersion": 3})),
+            ]
+        };
+        for (caso, v) in variantes {
+            pendente(&target);
+            npm_instalou(&target, LOCK_700);
+            std::fs::write(&registro, v.to_string()).expect("registro");
+            assert_eq!(
+                prepare(&target, &FakeAssets(COM_LOCK)).expect("p").deps,
+                DepsPlan::Install,
+                "{caso}"
+            );
+        }
+
+        // Nao e JSON.
+        pendente(&target);
+        npm_instalou(&target, LOCK_700);
+        std::fs::write(&registro, "npm ERR!").expect("registro");
+        assert_eq!(
+            prepare(&target, &FakeAssets(COM_LOCK)).expect("p").deps,
+            DepsPlan::Install,
+            "registro ilegivel"
+        );
+
+        // Um pacote saiu DEPOIS do registro (limpeza de um `npm ci`
+        // interrompida): o diretorio fica mais novo que o registro.
+        pendente(&target);
+        npm_instalou(&target, LOCK_700);
+        envelhece(&registro);
+        std::fs::remove_dir(target.join("node_modules").join("baileys")).expect("rm");
+        assert_eq!(
+            prepare(&target, &FakeAssets(COM_LOCK)).expect("p").deps,
+            DepsPlan::Install,
+            "arvore mexida depois do registro"
+        );
+
+        // E o registro certo, com o `optional` de outra plataforma ausente,
+        // passa — o controle do teste.
+        pendente(&target);
+        npm_instalou(&target, LOCK_700);
+        assert_eq!(
+            prepare(&target, &FakeAssets(COM_LOCK)).expect("p").deps,
+            DepsPlan::Current
+        );
     }
 
     /// Instalacao de antes do carimbo (ate a 0.4.4): manifestos iguais aos
-    /// embutidos e `node_modules` presente. Adotada sem `npm`, e o carimbo
-    /// passa a existir.
+    /// embutidos e o `node_modules` que o `npm ci` dela terminou. Adotada sem
+    /// `npm`, e o carimbo passa a existir.
     #[test]
     fn a_pre_stamp_install_with_the_same_manifests_is_adopted() {
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("bridge");
-        instalado(&target, COM_LOCK);
-        std::fs::remove_file(target.join(DEPS_STAMP_FILE)).expect("rm carimbo");
+        como_a_044(&target, COM_LOCK);
+        npm_instalou(&target, LOCK_700);
 
         let prep = prepare(&target, &FakeAssets(SO_O_BRIDGE_MUDOU)).expect("prepare");
         assert_eq!(prep.deps, DepsPlan::Current);
         assert_eq!(
-            std::fs::read_to_string(target.join(DEPS_STAMP_FILE)).expect("carimbo"),
+            carimbo(&target),
             deps_digest(&FakeAssets(SO_O_BRIDGE_MUDOU))
         );
 
@@ -1940,6 +2292,81 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
                 .expect("prepare")
                 .deps,
             DepsPlan::Install
+        );
+    }
+
+    /// Instalacao de antes do carimbo cujo `npm ci` NAO terminou (a 0.4.4 nao
+    /// apagava nada quando o `npm` falhava): manifestos iguais, `node_modules`
+    /// pela metade, sem registro do npm. A regra antiga ("sem carimbo e
+    /// manifestos iguais, adota") subia a ponte contra ela.
+    #[test]
+    fn a_pre_stamp_tree_npm_never_finished_is_not_adopted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        como_a_044(&target, COM_LOCK);
+        assert!(
+            !target.join(DEPS_STAMP_FILE).exists(),
+            "premissa: sem carimbo"
+        );
+
+        assert_eq!(
+            prepare(&target, &FakeAssets(SO_O_BRIDGE_MUDOU))
+                .expect("prepare")
+                .deps,
+            DepsPlan::Install
+        );
+        assert_eq!(carimbo(&target), DEPS_PENDING);
+        assert!(target.join("node_modules").is_dir(), "e nada e apagado");
+    }
+
+    /// **A janela de antes do carimbo (W1, item 2).** Instalacao da 0.4.4
+    /// (sem carimbo), update cujo lock difere: o primeiro `prepare` reescreve
+    /// os manifestos e responde `Install`; o `npm ci` nao chega a rodar
+    /// (gateway encerrando). O proximo `prepare` NAO pode adotar a arvore
+    /// antiga com os manifestos novos — e o `status` ja diz "sem
+    /// dependencias" no intervalo.
+    #[test]
+    fn a_rewrite_interrupted_before_npm_never_adopts_the_old_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        como_a_044(&target, COM_LOCK);
+        assert!(deps_installed(&target), "premissa: a 0.4.4 instalada");
+
+        assert_eq!(
+            prepare(&target, &FakeAssets(O_LOCK_MUDOU))
+                .expect("p1")
+                .deps,
+            DepsPlan::Install
+        );
+        // (o `npm ci` nao roda)
+        assert!(!deps_installed(&target), "sem dependencias no intervalo");
+        assert_eq!(
+            prepare(&target, &FakeAssets(O_LOCK_MUDOU))
+                .expect("p2")
+                .deps,
+            DepsPlan::Install
+        );
+    }
+
+    /// O `pending` e gravado ANTES do primeiro manifesto ser reescrito: se a
+    /// escrita do lockfile falhar no meio (aqui, o caminho e um diretorio), o
+    /// que ficou no disco ja diz que o `node_modules` nao vale.
+    #[test]
+    fn the_deps_stamp_turns_pending_before_any_manifest_is_rewritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        instalado(&target, COM_LOCK);
+        std::fs::remove_file(target.join("package-lock.json")).expect("rm");
+        std::fs::create_dir(target.join("package-lock.json")).expect("vira diretorio");
+
+        assert!(matches!(
+            prepare(&target, &FakeAssets(O_LOCK_MUDOU)),
+            Err(BridgeError::Io { .. })
+        ));
+        assert_eq!(
+            carimbo(&target),
+            DEPS_PENDING,
+            "o carimbo antigo nao pode sobreviver a um manifesto sendo trocado"
         );
     }
 
@@ -1970,6 +2397,53 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         assert!(!target.exists());
     }
 
+    /// O `deps_installed` do `status`: `node_modules` e carimbo fora de
+    /// `pending`. Sem carimbo (instalacao de antes dele), conta como
+    /// instalado — quem decide se e dos manifestos atuais e o `prepare`.
+    #[test]
+    fn deps_installed_reads_the_pending_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("bridge");
+        assert!(!deps_installed(&target));
+        instalado(&target, COM_LOCK);
+        assert!(deps_installed(&target));
+        std::fs::remove_file(target.join(DEPS_STAMP_FILE)).expect("rm");
+        assert!(deps_installed(&target), "sem carimbo");
+        std::fs::write(target.join(DEPS_STAMP_FILE), DEPS_PENDING).expect("pending");
+        assert!(!deps_installed(&target), "pendente");
+        std::fs::write(target.join(DEPS_STAMP_FILE), format!("{DEPS_PENDING}\n")).expect("quase");
+        assert!(deps_installed(&target), "so o marcador exato conta");
+    }
+
+    /// A remocao do `node_modules` que um `npm ci` falho deixou (milhares de
+    /// arquivos do Baileys) roda em `spawn_blocking`, e nao na thread do
+    /// runtime que esta no `install_deps` — nem direto, nem por outro nome.
+    #[test]
+    fn install_deps_removes_the_tree_off_the_runtime_thread() {
+        // O corte vai ate o item seguinte, e nao ate a chave que fecha a
+        // funcao: uma chave num literal daqui confundiria o cortador de
+        // `#[cfg(test)]` do `source_scan`.
+        let fonte = include_str!("bridge.rs");
+        let corpo = fonte
+            .split("pub async fn install_deps(")
+            .nth(1)
+            .and_then(|resto| resto.split("fn abandon_deps(").next())
+            .expect("corpo de install_deps");
+        assert!(
+            corpo.contains("tokio::task::spawn_blocking(move || abandon_deps(&alvo))"),
+            "{corpo}"
+        );
+        assert_eq!(
+            corpo.matches("abandon_deps(").count(),
+            1,
+            "abandon_deps so por dentro do spawn_blocking: {corpo}"
+        );
+        assert!(
+            !corpo.contains("std::fs::"),
+            "I/O sincrono no async fn: {corpo}"
+        );
+    }
+
     #[test]
     fn abandon_deps_removes_the_tree_and_marks_pending() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1980,10 +2454,7 @@ apos decodificar a tela; {sem_marcador} linhas sem marcador",
         abandon_deps(&target).expect("abandona");
         assert!(!target.join("node_modules").exists());
         assert!(!deps_installed(&target));
-        assert_eq!(
-            std::fs::read_to_string(target.join(DEPS_STAMP_FILE)).expect("carimbo"),
-            DEPS_PENDING
-        );
+        assert_eq!(carimbo(&target), DEPS_PENDING);
         assert!(target.join("bridge.mjs").is_file(), "os assets ficam");
         abandon_deps(&target).expect("idempotente");
     }

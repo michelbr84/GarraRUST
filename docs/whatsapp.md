@@ -429,17 +429,33 @@ do Baileys faz parte do contrato — e a mesma arvore que o CI audita.
 
 Uma atualizacao do `garraia` que traga uma ponte nova vale **no proximo boot
 do gateway**, sem vincular de novo: antes de lancar a ponte, o supervisor do
-canal regrava so os arquivos que diferem dos embutidos no binario. O `npm ci`
-so roda quando o `package.json`/`package-lock.json` mudou (um bump de versao
-por CVE nao fica parado atras de um `node_modules` antigo), quando falta
-`node_modules` ou quando um `npm ci` anterior nao terminou — o carimbo
-`.garraia-deps-sha256` diz para quais manifestos o `node_modules` foi
-instalado. Mudou so o `bridge.mjs`, nao ha `npm`. Se o `npm` falhar ou nao
-estiver na `PATH` do gateway, a ponte **nao sobe** (nunca contra dependencias de
-outra versao), o `node_modules` que sobrou sai do disco, e o
+canal regrava so os arquivos que diferem dos embutidos no binario. Mudou so o
+`bridge.mjs`, nao ha `npm`. O `npm ci` so roda quando falta `node_modules` ou
+quando nada prova que a arvore instalada e a do `package-lock.json` embutido
+(um bump de versao por CVE nao fica parado atras de um `node_modules` antigo).
+Duas coisas provam:
+
+- o carimbo `.garraia-deps-sha256`, que o GarraIA grava quando o `npm ci` dele
+  sai 0 — e que vira `pending` **antes** de um manifesto ser reescrito e antes
+  de cada `npm ci`, entao um `npm ci` que falhou ou foi interrompido nunca deixa
+  uma arvore pela metade passar por atual;
+- o registro do proprio npm, `node_modules/.package-lock.json`, que o npm 7+
+  grava por ultimo ao terminar uma instalacao: se ele lista exatamente os
+  pacotes do lock embutido (mesma versao, mesma `integrity`; so os `optional`
+  de outra plataforma podem faltar) e nao e mais velho que o `node_modules`, a
+  arvore e adotada sem `npm`, e o carimbo e gravado. E o que faz uma instalacao
+  da 0.4.4 (que nao tinha carimbo) e um `npm ci` rodado a mao valerem.
+
+Se o `npm` do gateway falhar, a ponte **nao sobe** (nunca contra dependencias
+de outra versao) e o `node_modules` que esse `npm ci` deixou pela metade sai do
+disco. Se nao houver `npm` na `PATH` do gateway (um servico do systemd, por
+exemplo), a ponte tambem nao sobe, mas **nada e apagado**: a arvore no disco
+nao foi o gateway que tentou instalar. Nos dois casos o
 `garraia whatsapp status` e o `/api/diagnostics` mostram "sem dependencias" com
-o passo `rode npm ci em <dir>`; depois disso, reinicie o gateway. A sessao
-vinculada nao e tocada. O `garraia whatsapp link` segue a mesma regra.
+o passo `rode npm ci em <dir> e reinicie o gateway` — e o passo funciona: rode
+`npm ci` naquele diretorio, num shell que tenha o `npm`, e reinicie o gateway,
+que adota a arvore no boot. A sessao vinculada nao e tocada. O
+`garraia whatsapp link` segue a mesma regra.
 
 Como o filho e contido:
 
@@ -460,7 +476,7 @@ Como o filho e contido:
 | **QR sai embaralhado / quadrado** | O terminal precisa de **pelo menos 60 colunas** e UTF-8. Abaixo disso o GarraIA imprime a string crua em vez de um QR que nao le. |
 | **O QR expirou** | Normal: ele e regenerado ate 5 vezes, com `QR anterior expirou — novo QR (tentativa N/5)`. Depois da quinta, rode `garraia whatsapp` de novo. |
 | **`node nao encontrado na PATH`** | Instale Node.js 20 ou mais novo (<https://nodejs.org/en/download>). So este caminho precisa dele. |
-| **`o bridge esta sem dependencias instaladas`** | Rode `npm ci` no diretorio que a mensagem cita, ou apague o diretorio e rode `garraia whatsapp` de novo. |
+| **`o bridge esta sem dependencias instaladas`** / `status` diz `dependências faltando` | Rode `npm ci` no diretorio que a mensagem cita (num shell com `npm`) e reinicie o gateway, que adota a arvore no boot; ou rode `garraia whatsapp link` e responda nao ao re-vinculo: ele instala com o `npm` do seu shell. |
 | **`Esta sessão não vale mais`** / `status` diz nao vinculado | A sessao morreu (401/403/419) e o comando imprime o codigo cru do WhatsApp. Rode `garraia whatsapp` de novo e leia um QR novo. |
 | **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garraia whatsapp` de novo. |
 | **`whatsapp_linked: canal nao subiu — …`** no log do gateway | A frase depois do travessao e a acao: ligar `channels.whatsapp_linked.enabled`; corrigir `channels.whatsapp_linked.default_mode` para um modo nativo (`search`, `ask`, `code`…; nao `auto`, nao modo customizado, nao typo) ou remover a chave; rodar `garraia whatsapp link`; ou instalar Node.js 20+ e garantir `node` na PATH **do processo do gateway** (um servico systemd nao herda a PATH do seu shell). Canal desligado de proposito sai em `INFO`, nao aqui. |
