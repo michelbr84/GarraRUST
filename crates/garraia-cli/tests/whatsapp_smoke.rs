@@ -185,7 +185,8 @@ fn whatsapp_help_lists_every_subcommand() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     for sub in [
-        "link", "cloud", "status", "logout", "restore", "allow", "users", "remove",
+        "link", "cloud", "status", "logout", "restore", "allow", "users", "remove", "owner",
+        "unowner",
     ] {
         assert!(stdout.contains(sub), "faltou `{sub}` no --help:\n{stdout}");
     }
@@ -655,6 +656,153 @@ fn remove_revokes_a_number_and_never_drops_an_owner_silently() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(!config_yml(dir.path()).contains("5511999998888"));
+}
+
+// ---------------------------------------------------------------------------
+// #1395: promover e rebaixar, no binario de verdade
+// ---------------------------------------------------------------------------
+
+/// `owner` num pipe: recusado em `standard` (64), promove no pod com `--yes`
+/// (0), e na tela so aparecem os quatro ultimos digitos.
+#[test]
+fn owner_is_refused_in_standard_and_promotes_inside_the_pod() {
+    let dir = tempdir().expect("tempdir");
+    let pod = [("GARRAIA_EXECUTION_PROFILE", "isolated-pod")];
+    assert_eq!(
+        garra_env(dir.path(), &["whatsapp", "allow", "+5511999998888"], &[])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    // `standard` (o default do `garra_env`): o perfil manda, mesmo com --yes.
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "owner", "+5511999998888", "--yes"],
+        &[],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(64), "{stderr}");
+    assert!(stderr.contains("isolated-pod"), "{stderr}");
+    assert!(!config_yml(dir.path()).contains("owners"), "nada gravado");
+
+    // No pod, sem terminal e sem `--yes`: continua 64.
+    let out = garra_env(dir.path(), &["whatsapp", "owner", "+5511999998888"], &pod);
+    assert_eq!(
+        out.status.code(),
+        Some(64),
+        "dono num pipe precisa de --yes"
+    );
+    assert!(!config_yml(dir.path()).contains("owners"));
+
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "owner", "+55 11 99999-8888", "--yes"],
+        &pod,
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("8888"), "{stdout}");
+    assert!(
+        !stdout.contains("5511999998888") && !stderr.contains("5511999998888"),
+        "numero inteiro nunca vai para a tela:\n{stdout}\n{stderr}"
+    );
+    assert!(config_yml(dir.path()).contains("owners"), "gravou");
+
+    // O `users` reflete o papel novo, e promover de novo sai 0.
+    let out = garra_env(dir.path(), &["whatsapp", "users", "--json"], &pod);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(doc["owners"], 1);
+    assert_eq!(doc["users"][0]["role"], "owners");
+    assert_eq!(
+        garra_env(
+            dir.path(),
+            &["whatsapp", "owner", "+5511999998888", "--yes"],
+            &pod
+        )
+        .status
+        .code(),
+        Some(0),
+        "promover duas vezes nao e erro"
+    );
+}
+
+/// `unowner` tira o papel e **nunca** o acesso — e o ultimo dono exige
+/// `--yes` num pipe. Rebaixar funciona tambem em `standard`, onde promover
+/// nao funciona: um dono esquecido ali e justamente o que se quer limpar.
+#[test]
+fn unowner_demotes_without_ever_dropping_access() {
+    let dir = tempdir().expect("tempdir");
+    let pod = [("GARRAIA_EXECUTION_PROFILE", "isolated-pod")];
+    for numero in ["+5511999998888", "+5511977776666"] {
+        assert_eq!(
+            garra_env(dir.path(), &["whatsapp", "owner", numero, "--yes"], &pod)
+                .status
+                .code(),
+            Some(0),
+            "{numero}"
+        );
+    }
+
+    // Dois donos: rebaixar um nao precisa de confirmacao.
+    let out = garra_env(dir.path(), &["whatsapp", "unowner", "+5511999998888"], &pod);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("8888"), "{stdout}");
+    assert!(
+        !stdout.contains("5511999998888"),
+        "identidade inteira nunca vai para a tela:\n{stdout}"
+    );
+
+    // O acesso sobreviveu: ele e um `allow` agora, e o portao continua com 2.
+    let out = garra_env(dir.path(), &["whatsapp", "users", "--json"], &pod);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(doc["authorized"], 2, "ninguem perdeu acesso: {doc}");
+    assert_eq!(doc["owners"], 1);
+    assert!(
+        !doc.to_string().contains("5511999998888"),
+        "nem o JSON leva a identidade inteira"
+    );
+
+    // Sobrou um dono: num pipe, sem `--yes`, o comando para.
+    let out = garra_env(dir.path(), &["whatsapp", "unowner", "+5511977776666"], &pod);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(64), "{stderr}");
+    assert!(config_yml(dir.path()).contains("owners"), "intacto");
+
+    // Com `--yes` sai — e rodando em `standard`, onde `owner` seria recusado.
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "unowner", "+5511977776666", "--yes"],
+        &[],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = garra_env(dir.path(), &["whatsapp", "users", "--json"], &[]);
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(doc["owners"], 0, "sem dono nenhum");
+    assert_eq!(doc["authorized"], 2, "e com os dois ainda autorizados");
+    for u in doc["users"].as_array().expect("array") {
+        assert_eq!(u["role"], "allow", "{doc}");
+    }
+
+    // Idempotente: rebaixar quem nao e dono nao e erro.
+    assert_eq!(
+        garra_env(dir.path(), &["whatsapp", "unowner", "+5511977776666"], &[])
+            .status
+            .code(),
+        Some(0)
+    );
 }
 
 /// #1389: `allow '*'` continua recusado (65), mas a mensagem diz que "abrir

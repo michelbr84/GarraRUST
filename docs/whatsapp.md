@@ -76,6 +76,8 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia whatsapp allow <numero> [--owner] [--yes]` | autoriza um numero a falar com o GarraIA; funciona sem terminal | 0 · 1 cancelado · 64 `--owner` fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido (inclusive `*`, ver abaixo) · 70 config ilegivel |
 | `garraia whatsapp users [--json]` | lista quem esta autorizado: papel (`allow`/`owners`) e os quatro ultimos digitos de cada identidade | 0 · 70 config ilegivel |
 | `garraia whatsapp remove <numero> [--yes]` | revoga o acesso: tira a identidade de `allow` **e** de `owners`; dono exige confirmacao | 0 (inclusive quem nao estava na lista) · 1 cancelado · 64 dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
+| `garraia whatsapp owner <numero> [--yes]` | promove a DONO: grava em `owners`, a mesma escrita do `allow --owner` | 0 (inclusive quem ja era dono) · 1 cancelado · 64 fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
+| `garraia whatsapp unowner <numero> [--yes]` | tira o papel de DONO **sem** tirar o acesso; o ultimo dono exige confirmacao | 0 (inclusive quem nao era dono) · 1 cancelado · 64 ultimo dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
 
 O `users` nunca imprime a identidade inteira — nem na tela, nem no `--json`,
 cujo documento e `{enabled, authorized, owners, users[{role, kind, last4}]}`.
@@ -85,6 +87,27 @@ simples, **sem** filtro por papel e **sem** paginacao.
 `garraia whatsapp allow '*'` nao abre o canal para todo mundo: o `*` e
 recusado com 65 e uma mensagem propria, porque essa semantica nao existe — o
 portao e fail-closed e cada identidade entra uma a uma.
+
+**`unowner` nunca e `remove`.** Como o `allow --owner` (e o `owner`) gravam
+so em `owners`, o caso comum e a identidade existir apenas la; tirar dali e
+pronto revogaria o acesso junto com o papel. Entao, quando `allow` ainda nao
+a tem, a entrada passa para `allow` **na mesma escrita** — nao existe instante
+no disco em que a pessoa nao esteja em nenhuma das duas listas. Quem quer
+revogar de fato usa o `remove`.
+
+A assimetria entre os dois comandos e proposital: **promover** exige
+`isolated-pod` (mesma porta do `allow --owner`: em `standard` o dono nao tem
+poder nenhum e ganharia tudo em silencio no dia em que o perfil mudasse),
+**rebaixar** funciona em qualquer perfil — e justamente em `standard` que um
+`owners` esquecido e um privilegio latente, e recusar a limpeza ali deixaria o
+operador sem o comando onde ele mais importa.
+
+A confirmacao do `unowner` vale para o **ultimo** dono, nao para todo
+rebaixamento: com outro dono na lista nada fica invalido e o acesso e
+preservado nos dois casos, entao o que merece uma parada explicita e o estado
+que o `owner` nao pode desfazer sozinho num pipe — a configuracao ficar sem
+dono nenhum. O `remove` de um dono continua pedindo confirmacao sempre, porque
+la o acesso cai junto.
 
 `garraia whatsapp link --allow <numero> [--owner]` pre-responde a pergunta do
 numero (e a do dono), mas continua exigindo terminal: o QR se le dali. Num
@@ -326,6 +349,9 @@ garraia whatsapp allow +55 11 98888-0000
   e `owners` sao relidos do `config.yml` a cada mensagem: autorizar vale na
   proxima, e **revogar tambem** — rode `garraia whatsapp remove <numero>`
   (ou, se preferir editar a mao, apague a entrada das listas no arquivo).
+  Trocar o papel vale igual: `garraia whatsapp owner` e
+  `garraia whatsapp unowner` mexem nas mesmas duas listas, e o piso do dono
+  muda (ou some) na mensagem seguinte.
   `enabled: false` no arquivo recusa todo mundo,
   codigo de pareamento incluso, na mensagem seguinte (a ponte segue conectada
   ate o restart, e o `/api/diagnostics` avisa). As condicoes: o gateway tem de
@@ -401,8 +427,13 @@ channels:
   seria um privilegio latente, que acordaria em silencio no dia em que o
   perfil mudasse. Sem terminal exige `--yes`; no terminal pergunta, com
   default nao. O `link` so oferece dono em `isolated-pod`, tambem com default
-  nao. Tirar o numero de `owners` no arquivo tira o piso do pod na mensagem
-  seguinte, mesmo que ele continue em `allow`; ja
+  nao. `garraia whatsapp owner <numero>` faz a MESMA escrita pelo caminho
+  dedicado, com as mesmas duas portas (perfil e confirmacao): promover quem ja
+  esta em `allow` deixa de exigir que se repita o comando de autorizar.
+- Tirar o numero de `owners` no arquivo tira o piso do pod na mensagem
+  seguinte, mesmo que ele continue em `allow` — e e isso que
+  `garraia whatsapp unowner <numero>` faz, preservando o acesso (a entrada
+  passa para `allow` se so existia em `owners`). Ja
   `garraia whatsapp remove <numero>` tira das **duas** listas, e por isso
   tambem pede confirmacao quando o numero e dono.
 
