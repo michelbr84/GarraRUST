@@ -1,26 +1,35 @@
 //! Issue #1386 (P0): uma ferramenta MCP nunca vira slash command.
 //!
-//! O boot registrava um comando `/mcp_<tool>` por ferramenta MCP conectada,
-//! e o fechamento desse comando chamava `McpManager::call_tool` direto. Esse
+//! O boot registrava um comando `/mcp_<tool>` por ferramenta MCP conectada, e
+//! o fechamento desse comando chamava `McpManager::call_tool` direto. Esse
 //! caminho nao passava por `ToolGate`, nem pelo modo da sessao, nem por
 //! `ToolApproval`, nem por `HardwareGate` — o unico controle era o `Role::User`
 //! do proprio comando, que na pratica todo mundo tem. Resultado: uma sessao
 //! criada em modo `search` (read-only) executava ferramenta de mutacao por
-//! `POST /api/sessions/{id}/messages`, e `GET /api/slash-commands` ainda
-//! listava os nomes de graca.
+//! `POST /api/sessions/{id}/messages`, e `GET /api/slash-commands` listava os
+//! nomes de graca.
 //!
 //! O caminho legitimo e outro e continua intacto: as ferramentas MCP entram no
 //! `AgentRuntime` (`sync_mcp_tools`/`replace_mcp_tools`) e sao despachadas pelo
-//! laco de tool-calling, atras do `ToolGate`. Este teste prova so a ausencia do
-//! caminho paralelo.
+//! laco de tool-calling, atras do `ToolGate`. O ponte que as executa mora em
+//! `garraia-agents`, nao aqui.
 //!
-//! O teste monta o registro do mesmo jeito que `GatewayServer::run` monta
-//! (`AppState::new` + `commands::register_commands`) e com um servidor MCP de
-//! verdade conectado, com ferramentas de verdade. Se alguem reintroduzir a
-//! auto-registracao — no boot, no reconnect do health monitor ou no restart do
-//! admin — e aqui que estoura.
+//! # Por que um teste de fonte
+//!
+//! A registracao vivia dentro de `GatewayServer::run`, que abre socket e sobe
+//! canal — nao ha seam barato para exercitar o boot de verdade, e um teste que
+//! so monta `AppState` a mao nao executa o sitio do defeito (ele passaria
+//! identico ANTES da correcao, o que o tornaria decoracao). Entao o guarda
+//! principal e estatico, no mesmo espirito do
+//! `approval_scope_coverage.rs` e do teste que varre o `detect.rs`: nenhum
+//! fonte de producao do gateway pode chamar `call_tool`. Esse e o primitivo de
+//! execucao do bypass — qualquer reintroducao dele, no boot, no reconnect do
+//! health monitor ou no restart do admin, tem de passar por ali.
+
+mod varredura_de_escopo;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
 use garraia_agents::{AgentRuntime, McpManager};
@@ -28,8 +37,41 @@ use garraia_channels::ChannelRegistry;
 use garraia_channels::commands::Role;
 use garraia_config::AppConfig;
 use garraia_gateway::state::AppState;
+use varredura_de_escopo::varrer;
 
 const SERVER: &str = "fixture-1386";
+
+/// O guarda que reprova se alguem devolver o caminho paralelo.
+///
+/// `Fonte::codigo` vem com comentario e conteudo de literal apagados, entao a
+/// mencao em doc comment de `admin/mcp.rs` ("reachable through
+/// `McpManager::call_tool`") nao conta — o teste fala do que o gateway *faz*.
+///
+/// Se algum dia o gateway precisar mesmo executar ferramenta MCP fora do
+/// `AgentRuntime`, o conserto NAO e afrouxar este teste: e fazer a chamada
+/// atras do `ToolGate`, com o modo da sessao e o `ToolApproval` no caminho,
+/// e entao decidir aqui, por escrito, por que aquele sitio e seguro.
+#[test]
+fn nenhum_fonte_de_producao_do_gateway_executa_ferramenta_mcp() {
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let arquivos = varrer(&raiz);
+    assert!(
+        arquivos.iter().any(|(a, _)| a == "server.rs"),
+        "a varredura nao achou src/server.rs; ela quebrou?"
+    );
+
+    let culpados: Vec<String> = arquivos
+        .iter()
+        .filter(|(_, fonte)| fonte.codigo.contains(".call_tool("))
+        .map(|(arq, _)| arq.clone())
+        .collect();
+
+    assert!(
+        culpados.is_empty(),
+        "ferramenta MCP so pode ser executada pelo laco de tool-calling, atras do \
+         `ToolGate` (#1386); chamam `call_tool` direto: {culpados:?}"
+    );
+}
 
 /// Aponta o binario de teste inteiro para um diretorio de config descartavel
 /// antes que qualquer teste construa um `AppState`.
@@ -90,8 +132,8 @@ async fn connected_manager() -> Arc<McpManager> {
     manager
 }
 
-/// Monta o estado como o boot monta: `AppState::new`, o `Arc` do manager
-/// instalado, e os comandos embutidos registrados.
+/// O registro de comandos como o gateway o entrega: `AppState::new` mais os
+/// embutidos, que e tudo que `GatewayServer::run` registra hoje.
 async fn booted_state(manager: &Arc<McpManager>) -> AppState {
     let mut state = AppState::new(
         AppConfig::default(),
@@ -103,8 +145,16 @@ async fn booted_state(manager: &Arc<McpManager>) -> AppState {
     state
 }
 
+/// Complemento do guarda estatico, pelo lado do resultado: com um servidor MCP
+/// de verdade conectado e com ferramentas de verdade, o registro entregue nao
+/// tem comando `mcp_*` e `/mcp_<tool>` nao resolve para nada — cai em comando
+/// desconhecido, como qualquer texto solto.
+///
+/// Sozinho este teste NAO pegaria a regressao (antes da correcao quem
+/// registrava era `register_mcp_tools()`, chamado do `run()`, que ele nao
+/// executa). Quem pega e o teste de fonte la em cima.
 #[tokio::test(flavor = "multi_thread")]
-async fn boot_nao_registra_nenhum_comando_mcp() {
+async fn registro_entregue_nao_tem_comando_mcp() {
     test_env();
     let manager = connected_manager().await;
 
@@ -143,32 +193,14 @@ async fn boot_nao_registra_nenhum_comando_mcp() {
         }
         assert!(registry.resolve("/mcp_write_file").is_none());
         assert!(registry.resolve("/mcp_read_file arg").is_none());
-    }
 
-    manager.disconnect(SERVER).await;
-}
-
-/// A superficie listada tambem nao pode vazar o nome: `GET /api/slash-commands`
-/// e o menu do Telegram saem daqui, e ambos serviam de indice do bypass.
-#[tokio::test(flavor = "multi_thread")]
-async fn listagem_para_usuario_comum_nao_mostra_ferramenta_mcp() {
-    test_env();
-    let manager = connected_manager().await;
-    let state = booted_state(&manager).await;
-    {
-        let registry = state.command_registry.read().unwrap();
-
+        // E a superficie listada nao vaza nem o nome: `GET /api/slash-commands`
+        // e o menu do Telegram saem daqui, e serviam de indice do bypass.
         for (name, _) in registry.list_for_role(Role::User) {
-            assert!(
-                !name.starts_with("mcp_"),
-                "`/{name}` exposto a Role::User sem passar pelo ToolGate (#1386)"
-            );
+            assert!(!name.starts_with("mcp_"), "`/{name}` exposto a Role::User");
         }
         for (name, _) in registry.telegram_commands() {
-            assert!(
-                !name.starts_with("mcp_"),
-                "`/{name}` no menu do Telegram sem passar pelo ToolGate (#1386)"
-            );
+            assert!(!name.starts_with("mcp_"), "`/{name}` no menu do Telegram");
         }
     }
 
