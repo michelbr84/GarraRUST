@@ -63,12 +63,18 @@ impl ConfigLoader {
     /// em silencio. E o unico lugar que aplica a env: `AppConfig::default()`
     /// nunca a le, para os fluxos de teste baseados em `Default` nao
     /// dependerem do ambiente.
+    ///
+    /// #1261: `GARRAIA_GATEWAY_API_KEY` tambem entra aqui, e so aqui, em
+    /// `gateway.api_key_env` — um campo que o serde nunca le nem escreve,
+    /// para que um `save()` depois do `load()` nao grave o segredo de env no
+    /// `config.yml`.
     pub fn load(&self) -> Result<AppConfig> {
         let mut config = self.load_sem_env()?;
         config
             .execution
             .aplicar_env()
             .map_err(|e| Error::Config(e.to_string()))?;
+        config.gateway.api_key_env = crate::auth::gateway_api_key_from_env();
         Ok(config)
     }
 
@@ -675,6 +681,73 @@ mod tests {
 
         let sem_nada = sem_nada.expect("sem env carrega");
         assert_eq!(sem_nada.execution.origem(), ProfileSource::File);
+    }
+
+    /// #1261: `GARRAIA_GATEWAY_API_KEY` vence o arquivo em `load()`, nunca
+    /// entra em `load_sem_env()`, e — o ponto de seguranca — um `save()` do
+    /// que `load()` devolveu NAO grava o segredo de env no `config.yml`.
+    #[test]
+    fn load_aplica_a_credencial_de_env_sem_nunca_salva_la() {
+        use crate::auth::GATEWAY_API_KEY_ENV;
+
+        let dir = temp_dir("gateway-key-env");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(
+            dir.join("config.yml"),
+            "gateway:\n  api_key: \"chave-do-arquivo\"\n",
+        )
+        .expect("failed to write config");
+        let loader = ConfigLoader::with_dir(&dir);
+
+        let _guard = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct Restaura(Option<std::ffi::OsString>);
+        impl Drop for Restaura {
+            fn drop(&mut self) {
+                // SAFETY: ENV_TEST_LOCK held for the whole test.
+                unsafe {
+                    match self.0.take() {
+                        Some(v) => std::env::set_var(GATEWAY_API_KEY_ENV, v),
+                        None => std::env::remove_var(GATEWAY_API_KEY_ENV),
+                    }
+                }
+            }
+        }
+        let _restaura = Restaura(std::env::var_os(GATEWAY_API_KEY_ENV));
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(GATEWAY_API_KEY_ENV, "segredo-da-env-1261") };
+        let com_env = loader.load().expect("carrega");
+        let sem_env = loader.load_sem_env().expect("carrega");
+        loader.save(&com_env).expect("salva");
+        let gravado = fs::read_to_string(dir.join("config.yml")).expect("le");
+
+        // SAFETY: ENV_TEST_LOCK held.
+        unsafe { std::env::set_var(GATEWAY_API_KEY_ENV, "   ") };
+        let em_branco = loader.load().expect("carrega");
+        let _ = fs::remove_dir_all(dir);
+
+        assert_eq!(
+            com_env.gateway.api_key_normalizada(),
+            Some("segredo-da-env-1261"),
+            "a env vence o arquivo"
+        );
+        assert_eq!(
+            sem_env.gateway.api_key_normalizada(),
+            Some("chave-do-arquivo")
+        );
+        assert!(
+            !gravado.contains("segredo-da-env-1261"),
+            "o segredo de env nao pode chegar ao disco: {gravado}"
+        );
+        assert!(gravado.contains("chave-do-arquivo"));
+        assert_eq!(
+            em_branco.gateway.api_key_normalizada(),
+            Some("chave-do-arquivo"),
+            "env em branco nao e credencial e nao apaga a do arquivo"
+        );
+        assert!(!format!("{:?}", com_env.gateway).contains("segredo-da-env-1261"));
     }
 
     /// ADR 0024: valor invalido de `execution.profile` NO ARQUIVO e erro de

@@ -66,3 +66,25 @@ Image reference.
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag }}
 {{- end }}
+
+{{/*
+Name of the Secret that holds GARRAIA_GATEWAY_API_KEY (#1261).
+*/}}
+{{- define "garraia.gatewayKeySecretName" -}}
+{{- if .Values.gatewayApiKey.existingSecret }}
+{{- .Values.gatewayApiKey.existingSecret }}
+{{- else }}
+{{- printf "%s-gateway-key" (include "garraia.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+
+{{/*
+Key inside that Secret.
+*/}}
+{{- define "garraia.gatewayKeySecretKey" -}}
+{{- if .Values.gatewayApiKey.existingSecret }}
+{{- required "gatewayApiKey.existingSecretKey must name the key inside gatewayApiKey.existingSecret" .Values.gatewayApiKey.existingSecretKey }}
+{{- else }}
+{{- "GARRAIA_GATEWAY_API_KEY" }}
+{{- end }}
+{{- end }}

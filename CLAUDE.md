@@ -116,6 +116,7 @@ crates/
                         secrets seguem env-only via `AuthConfig::from_env`. Invariante
                         de redaction: `config check` (humano + JSON) só reporta presença
                         (`api_key_set: true`), nunca valores.
+                        Boot gate (#1247, `boot_gate`): o mesmo `run_check` roda em todo `start`/`restart`/`start -d`; so `Error` da allowlist fechada `BLOQUEIA_O_BOOT` (hoje: TLS pela metade) recusa (exit 78; escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`, exatamente `1`).
   garraia-telemetry/  — OpenTelemetry + Prometheus baseline — feature-gated
   garraia-workspace/  — Postgres 16 + pgvector multi-tenant (Fase 3 schema completo).
                         37 tabelas em 33 migrations; 32 sob FORCE RLS e 5 fora (users,

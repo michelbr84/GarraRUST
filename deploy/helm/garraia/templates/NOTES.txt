@@ -1,0 +1,13 @@
+GarraIA is starting as {{ include "garraia.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+The gateway binds 0.0.0.0 and requires GARRAIA_GATEWAY_API_KEY (#1261).
+{{- if .Values.gatewayApiKey.existingSecret }}
+The key comes from your Secret "{{ .Values.gatewayApiKey.existingSecret }}" (key "{{ .Values.gatewayApiKey.existingSecretKey }}").
+{{- else }}
+The key is stored in the Secret "{{ include "garraia.gatewayKeySecretName" . }}". Read it with:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "garraia.gatewayKeySecretName" . }} \
+    -o jsonpath='{.data.GARRAIA_GATEWAY_API_KEY}' | base64 -d
+{{- end }}
+
+Clients send it as "Authorization: Bearer <key>" on /api/* and /ws.

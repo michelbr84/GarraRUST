@@ -119,11 +119,16 @@ fn settings() -> Vec<SettingSchema> {
         SettingSchema {
             id: "gateway.host",
             label: "Listener host",
-            description: "Bind address for the HTTP/WS listener.",
+            // #1261 (decisao B): `gateway.host` do arquivo esta deprecado —
+            // `garraia start` nunca o le. Editavel aqui, ele gravaria uma
+            // chave que nao muda o bind.
+            description: "Bind address of the running HTTP/WS listener. Set it with \
+                          `--host` or the HOST env var; the gateway.host file key is deprecated \
+                          and not read.",
             category: SettingCategory::Gateway,
             type_: SettingType::String,
             default: serde_json::Value::Null,
-            editable: true,
+            editable: false,
             secret: false,
             requires_restart: true,
             choices: None,
@@ -135,11 +140,13 @@ fn settings() -> Vec<SettingSchema> {
         SettingSchema {
             id: "gateway.port",
             label: "Listener port",
-            description: "TCP port for the HTTP/WS listener.",
+            description: "TCP port of the running HTTP/WS listener. Set it with `--port` or \
+                          the PORT env var; the gateway.port file key is deprecated and not \
+                          read.",
             category: SettingCategory::Gateway,
             type_: SettingType::Integer,
             default: serde_json::json!(3888),
-            editable: true,
+            editable: false,
             secret: false,
             requires_restart: true,
             choices: None,
@@ -513,12 +520,18 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
             None,
             SettingSource::Default,
         ),
+        // #1261: o valor e o do bind resolvido em runtime (flag > env >
+        // default), que a CLI escreve em `config.gateway` antes do boot.
         "gateway.host" => (
             Value::String(state.config.gateway.host.clone()),
             None,
-            SettingSource::File,
+            SettingSource::Runtime,
         ),
-        "gateway.port" => (json!(state.config.gateway.port), None, SettingSource::File),
+        "gateway.port" => (
+            json!(state.config.gateway.port),
+            None,
+            SettingSource::Runtime,
+        ),
         "gateway.tls_enabled" => (
             json!(state.config.gateway.tls_cert_path.is_some()),
             None,
@@ -540,10 +553,15 @@ fn effective_value_for(s: &SettingSchema, state: &SharedState) -> EffectiveValue
         // #1241: `is_some()` reportava `configured: true` para um
         // `api_key: "  "` que deixa o gate de `/api/*` e `/ws` DESLIGADO.
         // `api_key_configurada` e a mesma regra que o `ApiKeyGate` aplica.
+        // #1261: GARRAIA_GATEWAY_API_KEY vence o arquivo; a origem diz qual.
         "secrets.gateway_api_key" => (
             Value::Null,
             Some(state.config.gateway.api_key_configurada()),
-            SettingSource::File,
+            if state.config.gateway.api_key_env.is_some() {
+                SettingSource::Env
+            } else {
+                SettingSource::File
+            },
         ),
         "secrets.jwt_secret" => (
             Value::Null,
@@ -932,5 +950,38 @@ mod tests {
             assert!(!row.secret);
             assert!(matches!(row.category, SettingCategory::Security));
         }
+    }
+
+    /// #1261 (decisao B): `gateway.host`/`gateway.port` do arquivo nao sao
+    /// lidos por `garraia start`; o console nao pode oferece-los como
+    /// editaveis, e um PATCH neles e recusado.
+    #[test]
+    fn bind_do_gateway_e_somente_leitura_no_schema() {
+        let todas = settings();
+        for id in ["gateway.host", "gateway.port"] {
+            let row = todas
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("{id} deveria estar no schema"));
+            assert!(!row.editable, "{id} nao pode ser editavel");
+            assert!(
+                row.description.contains("deprecated"),
+                "{id}: a descricao diz como mudar o bind: {}",
+                row.description
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_no_bind_do_gateway_e_recusado() {
+        let mut patch = serde_json::Map::new();
+        patch.insert("gateway.host".to_string(), serde_json::json!("0.0.0.0"));
+        patch.insert("gateway.port".to_string(), serde_json::json!(4000));
+        let (_status, Json(resp)) = patch_handler(Json(PatchSettingsRequest { patch })).await;
+        let resp = serde_json::to_value(&resp).expect("json");
+        let applied = resp["applied"].as_array().cloned().unwrap_or_default();
+        assert!(applied.is_empty(), "nada pode ser aplicado: {resp}");
+        let rejected = resp["rejected"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rejected.len(), 2, "{resp}");
     }
 }

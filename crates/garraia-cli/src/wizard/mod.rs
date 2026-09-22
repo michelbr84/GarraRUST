@@ -531,7 +531,16 @@ fn aviso_de_bind_exposto_com_chave_preservada(host: &str, port: u16) -> String {
 }
 
 fn aviso_de_bind_exposto_cabecalho(host: &str, port: u16) -> String {
-    format!("  Atenção: o gateway vai ouvir em {host}:{port} — alcançável pela rede.")
+    // #1261: o `config.yml` nao guarda mais host/porta, entao o aviso diz
+    // como expor — com o nome do binario instalado, nunca um literal.
+    let bin = crate::binario::nome();
+    format!(
+        "  Atenção: esta máquina vai expor o gateway na rede ({host}:{port}).\n\
+         \x20 O config.yml não guarda mais host/porta: para ouvir na rede, rode\n\
+         \x20     HOST={host} {bin} start\n\
+         \x20 (ou `{bin} start --host {host}`). Sem credencial de gateway o\n\
+         \x20 `{bin} start` recusa esse bind."
+    )
 }
 
 fn print_non_interactive_hint(config_dir: &Path) {
@@ -547,9 +556,12 @@ fn print_non_interactive_hint(config_dir: &Path) {
     // chance de rodar com HOST=0.0.0.0 — e sem credencial de gateway o gate
     // de /api/* e /ws fica desligado. O exemplo minimo tem que dizer isso,
     // porque aqui nao ha wizard para mintar a credencial.
+    // #1261: o bind nao mora mais no arquivo (HOST/--host); sem credencial,
+    // um bind exposto e recusado no boot.
     println!("gateway:");
-    println!("  host: 127.0.0.1   # 0.0.0.0 expoe /api/* e /ws a rede inteira");
-    println!("  api_key: <32 bytes aleatorios em hex>   # exigido se host nao for loopback");
+    println!(
+        "  api_key: <32 bytes aleatorios em hex>   # exigido com HOST=0.0.0.0 (ou use GARRAIA_GATEWAY_API_KEY)"
+    );
     println!("llm:");
     println!("  main:");
     println!("    provider: anthropic");
@@ -807,11 +819,23 @@ fn collect_local_stack(
     Ok(())
 }
 
+/// O bind que o operador vai usar **de fato** nesta maquina — so para decidir
+/// a credencial e o aviso final; desde o #1261 ele nao e mais escrito no
+/// `config.yml` (as chaves `gateway.host`/`port` estao deprecadas).
+///
+/// `HOST` nao vazio vence (e o que o `garraia start` vai ler); sem ele,
+/// maquina de servidor (root/RunPod) conta como `0.0.0.0` — o caso em que o
+/// operador vai expor —, e laptop como loopback.
 fn pick_host_port(env: &EnvSnapshot) -> (String, u16) {
-    let host = if env.is_server_like() {
-        "0.0.0.0".to_string()
-    } else {
-        "127.0.0.1".to_string()
+    pick_host_port_com(env, std::env::var("HOST").ok().as_deref())
+}
+
+/// [`pick_host_port`] com a env `HOST` injetada, para teste.
+fn pick_host_port_com(env: &EnvSnapshot, host_da_env: Option<&str>) -> (String, u16) {
+    let host = match host_da_env.map(str::trim).filter(|h| !h.is_empty()) {
+        Some(h) => h.to_string(),
+        None if env.is_server_like() => "0.0.0.0".to_string(),
+        None => "127.0.0.1".to_string(),
     };
     let port = std::env::var("PORT")
         .ok()
@@ -924,7 +948,7 @@ mod tests {
     #[test]
     fn host_de_servidor_sai_com_credencial_e_laptop_sai_sem() {
         for (is_root, is_runpod) in [(true, false), (false, true), (true, true)] {
-            let (host, _porta) = pick_host_port(&env_de_teste(is_root, is_runpod));
+            let (host, _porta) = pick_host_port_com(&env_de_teste(is_root, is_runpod), None);
             assert_eq!(host, "0.0.0.0", "root={is_root} runpod={is_runpod}");
             let chave =
                 config_writer::gateway_api_key_for_host(&host).expect("CSPRNG do sistema no teste");
@@ -934,7 +958,7 @@ mod tests {
             );
         }
 
-        let (host, _porta) = pick_host_port(&env_de_teste(false, false));
+        let (host, _porta) = pick_host_port_com(&env_de_teste(false, false), None);
         assert_eq!(host, "127.0.0.1");
         assert!(
             config_writer::gateway_api_key_for_host(&host)
@@ -942,6 +966,37 @@ mod tests {
                 .is_none(),
             "o laptop nao pode ganhar credencial: nada muda para quem instala local"
         );
+    }
+
+    /// #1261: `HOST` nao-loopback num laptop tambem minta a credencial — e
+    /// `HOST` em loopback num servidor nao.
+    #[test]
+    fn host_da_env_decide_a_credencial() {
+        let (host, _) = pick_host_port_com(&env_de_teste(false, false), Some("0.0.0.0"));
+        assert_eq!(host, "0.0.0.0");
+        assert!(
+            config_writer::gateway_api_key_for_host(&host)
+                .unwrap()
+                .is_some()
+        );
+
+        let (host, _) = pick_host_port_com(&env_de_teste(true, true), Some("127.0.0.1"));
+        assert_eq!(host, "127.0.0.1");
+        assert!(
+            config_writer::gateway_api_key_for_host(&host)
+                .unwrap()
+                .is_none()
+        );
+
+        let (host, _) = pick_host_port_com(&env_de_teste(false, false), Some("  "));
+        assert_eq!(host, "127.0.0.1", "HOST em branco nao conta");
+    }
+
+    #[test]
+    fn aviso_de_exposicao_diz_como_expor_com_o_binario_instalado() {
+        let aviso = aviso_de_bind_exposto_cabecalho("0.0.0.0", 3888);
+        assert!(aviso.contains("HOST=0.0.0.0 garraia start"), "{aviso}");
+        assert!(!aviso.contains(" garra start"), "{aviso}");
     }
 
     /// Fiacao: fixa que `run_wizard` de fato liga as duas pontas acima, e que

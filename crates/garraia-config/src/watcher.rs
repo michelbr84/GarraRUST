@@ -65,7 +65,11 @@ impl ConfigWatcher {
                 while notify_rx.try_recv().is_ok() {}
 
                 // Re-read the config
-                match reload_config(&cfg_path) {
+                let recarregada = {
+                    let anterior = tx.borrow();
+                    recarregar(&cfg_path, &anterior)
+                };
+                match recarregada {
                     Ok(new_config) => {
                         info!("config reloaded from {}", cfg_path.display());
                         let _ = tx.send(new_config);
@@ -82,6 +86,21 @@ impl ConfigWatcher {
     }
 }
 
+/// Leva para a config recarregada o que veio da env no boot, e nao do arquivo.
+///
+/// #1261: `gateway.api_key_env` (`GARRAIA_GATEWAY_API_KEY`) e `serde(skip)`
+/// e so o `ConfigLoader::load` a preenche. O reload desserializa o arquivo
+/// cru, entao sem isto a primeira edicao do `config.yml` apagava a credencial
+/// de env do `current_config()`: o cookie de sessao perdia o `Secure` e o
+/// alerta do admin passava a dizer que nao ha chave, com o gate (montado no
+/// boot) ainda ligado. A env do processo nao muda depois do boot, entao
+/// copiar o valor anterior e o mesmo que reler a env — sem tocar no ambiente.
+fn recarregar(path: &Path, anterior: &AppConfig) -> Result<AppConfig, String> {
+    let mut nova = reload_config(path)?;
+    nova.gateway.api_key_env = anterior.gateway.api_key_env.clone();
+    Ok(nova)
+}
+
 fn reload_config(path: &Path) -> Result<AppConfig, String> {
     let contents = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
 
@@ -92,5 +111,33 @@ fn reload_config(path: &Path) -> Result<AppConfig, String> {
         }
         "toml" => toml::from_str(&contents).map_err(|e| format!("TOML parse error: {e}")),
         other => Err(format!("unsupported config extension: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::ExposeSecret;
+
+    #[test]
+    fn reload_preserva_a_credencial_de_env() {
+        let mut anterior = AppConfig::default();
+        anterior.gateway.api_key_env = crate::auth::gateway_api_key_de(Some("k-env-1261".into()));
+
+        let dir = std::env::temp_dir().join(format!("garraia-watcher-1261-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.yml");
+        std::fs::write(&path, "gateway:\n  port: 3888\n").expect("write");
+
+        let nova = recarregar(&path, &anterior).expect("reload");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(nova.gateway.port, 3888, "o resto vem do arquivo");
+        assert_eq!(
+            nova.gateway.api_key_env.as_ref().map(|s| s.expose_secret()),
+            Some("k-env-1261"),
+            "o reload apagou a credencial de env"
+        );
+        assert!(nova.gateway.api_key_configurada());
     }
 }

@@ -185,6 +185,12 @@ impl GatewayServer {
         // hardening flag that does not do what its documentation promised.
         refuse_inert_auth_flag(&self.config)?;
 
+        // #1261 (decisao A): bind nao-loopback sem credencial de gateway
+        // RECUSA o boot, antes de qualquer MCP/canal subir e antes do bind.
+        // Mesma regra da CLI (`garraia_config::bind`), para embedders que nao
+        // passam pela CLI. TLS nao isenta.
+        refuse_exposed_bind(&self.config.gateway)?;
+
         let addr = format!("{}:{}", self.config.gateway.host, self.config.gateway.port);
         // Copia da secao `gateway` para depois do `AppState::new`, que consome
         // a config. `serve_plain`/`serve_tls` recebem a CONFIG, e nao um bool
@@ -1057,6 +1063,18 @@ impl GatewayServer {
         // TLS support: if cert + key paths are configured and tls feature is enabled,
         // use axum-server with rustls. Otherwise, plain HTTP.
         let use_tls = tls_cert.is_some() && tls_key.is_some();
+        // #1247: so um dos dois caminhos configurado caia em HTTP puro em
+        // silencio — o operador pediu TLS e recebia texto claro. A CLI recusa
+        // o boot nesse caso (allowlist do boot gate); aqui fica o aviso para
+        // quem embute o `GatewayServer` sem passar pela CLI.
+        if let Some(falta) = tls_meio_configurado(tls_cert.as_deref(), tls_key.as_deref()) {
+            warn!(
+                "TLS half-configured: {falta} is missing, so the gateway serves PLAIN HTTP; \
+                 set both gateway.tls_cert_path and gateway.tls_key_path (or neither) — run \
+                 `{} config check`",
+                garraia_common::executavel::nome()
+            );
+        }
 
         // Each branch yields a Result instead of `?`-ing out: the MCP/channel
         // cleanup below must run even when serving fails, otherwise the child
@@ -1193,36 +1211,56 @@ pub async fn build_router_for_test_with_storage(
 /// their transport is dropped regardless.
 const MCP_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Aviso de bind exposto sem credencial (#1241), ou `None` quando nao ha o
-/// que avisar.
-///
-/// A decisao e tomada sobre o endereco **efetivamente ligado**, e nao sobre a
-/// config, porque `garra start --host`/`HOST` sobrescreve `gateway.host`
-/// depois que o `garra config check` ja opinou — o unico ponto que enxerga
-/// todos os caminhos e o bind.
-///
-/// Nao recusa o boot: quem roda assim de proposito atras de firewall nao pode
-/// ser derrubado por esta mudanca. Isso e decisao do dono (R5).
-///
-/// `pub` porque `garra start -d` / `restart -d` precisa emitir o mesmo texto
-/// **antes** do fork: depois dele o tracing aponta para
-/// `~/.garraia/garraia.log` e o `warn!` de [`serve_plain`] nunca chega ao
-/// terminal do operador — justamente no modo que o `install.sh` recomenda e
-/// que uma unit systemd usa.
-pub fn aviso_de_bind_exposto(bound: &std::net::SocketAddr, api_key_ativa: bool) -> Option<String> {
-    if api_key_ativa || bound.ip().is_loopback() {
-        return None;
+/// #1247: qual campo de TLS falta quando so um dos dois esta configurado,
+/// ou `None` quando os dois estao (TLS) ou nenhum esta (HTTP de proposito).
+/// Os nomes batem com os campos dos achados do `garraia config check`.
+pub fn tls_meio_configurado(cert: Option<&str>, key: Option<&str>) -> Option<&'static str> {
+    match (cert, key) {
+        (Some(_), None) => Some("gateway.tls_key_path"),
+        (None, Some(_)) => Some("gateway.tls_cert_path"),
+        _ => None,
     }
-    Some(format!(
-        "gateway ouvindo em {bound}, que nao e loopback, SEM credencial de \
-         gateway configurada: todo o /api/* (sessoes, memoria, providers, \
-         logs, diagnosticos) E o /ws (o canal do agente, com as tools de \
-         arquivo e de dispositivo) respondem a qualquer um que alcance esta \
-         porta. Corrija rodando `{bin} init` ou definindo `gateway.api_key` \
-         no config.yml e reiniciando; para ouvir so localmente, use \
-         `--host 127.0.0.1`.",
-        bin = garraia_common::executavel::nome()
-    ))
+}
+
+/// #1261 (decisao A): recusa o boot quando o bind pedido e alcancavel da
+/// rede sem credencial de gateway e sem o opt-out explicito
+/// `gateway.allow_unauthenticated_network_bind` (so no arquivo). Com o
+/// opt-out sobe, com `warn!` alto em todo boot.
+///
+/// Substitui o aviso-sem-recusa do #1241: um bind exposto sem credencial
+/// abre o `/ws` (tools de arquivo e de dispositivo) e o
+/// `/api/mcp/marketplace/install` — spawn remoto de processo — para quem
+/// alcanca a porta, e o boot ja sabia disso e seguia assim mesmo.
+pub fn refuse_exposed_bind(gateway: &garraia_config::GatewayConfig) -> Result<()> {
+    match garraia_config::bind::verificar(&gateway.host, gateway.port, gateway) {
+        Ok(garraia_config::bind::VereditoDoBind::ExpostoPorOptOut) => {
+            warn!(
+                "{}",
+                garraia_config::bind::aviso_de_opt_out(&gateway.host, gateway.port)
+            );
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(recusa) => Err(garraia_common::Error::Config(recusa.to_string())),
+    }
+}
+
+/// A mesma regra de [`refuse_exposed_bind`] sobre o endereco **efetivamente
+/// ligado** — defesa em profundidade para o caso de o nome resolver diferente
+/// entre a checagem e o bind. Nunca repete o aviso do opt-out (esse sai uma
+/// vez, em `run`).
+fn conferir_socket(
+    bound: &std::net::SocketAddr,
+    gateway: &garraia_config::GatewayConfig,
+) -> Result<()> {
+    garraia_config::bind::decidir(
+        &bound.to_string(),
+        std::slice::from_ref(bound),
+        gateway.api_key_configurada(),
+        gateway.allow_unauthenticated_network_bind,
+    )
+    .map(|_| ())
+    .map_err(|recusa| garraia_common::Error::Config(recusa.to_string()))
 }
 
 /// Serve plain HTTP until the shutdown signal.
@@ -1231,17 +1269,14 @@ async fn serve_plain(
     app: axum::Router,
     gateway: &garraia_config::GatewayConfig,
 ) -> Result<()> {
-    // Mesma normalizacao do gate de `/api/*` e do `/ws`: ausente, vazia ou so
-    // com espaco significam "sem credencial" (#1241).
-    let api_key_ativa = crate::gateway_auth::ApiKeyGate::from_config(gateway).is_enabled();
     let listener = TcpListener::bind(addr).await?;
     // Depois do bind: `local_addr` e o endereco real, inclusive quando `addr`
-    // era um nome. Uma vez por boot (#1241).
-    if let Ok(bound) = listener.local_addr()
-        && let Some(aviso) = aviso_de_bind_exposto(&bound, api_key_ativa)
-    {
-        warn!("{aviso}");
-    }
+    // era um nome. Recusado (#1261), o listener cai aqui sem ter aceitado
+    // conexao nenhuma. Sem `local_addr` nao ha como afirmar loopback: recusa.
+    let bound = listener
+        .local_addr()
+        .map_err(|e| garraia_common::Error::Gateway(format!("local_addr: {e}")))?;
+    conferir_socket(&bound, gateway)?;
     info!("GarraIA gateway listening on http://{}", addr);
     axum::serve(
         listener,
@@ -1261,7 +1296,6 @@ async fn serve_tls(
     app: axum::Router,
     gateway: &garraia_config::GatewayConfig,
 ) -> Result<()> {
-    let api_key_ativa = crate::gateway_auth::ApiKeyGate::from_config(gateway).is_enabled();
     let (Some(cert_path), Some(key_path)) = (cert_path, key_path) else {
         return Err(garraia_common::Error::Gateway(
             "TLS requested without cert/key paths".to_string(),
@@ -1274,9 +1308,8 @@ async fn serve_tls(
     let sock_addr: std::net::SocketAddr = addr
         .parse()
         .map_err(|e| garraia_common::Error::Gateway(format!("invalid addr: {e}")))?;
-    if let Some(aviso) = aviso_de_bind_exposto(&sock_addr, api_key_ativa) {
-        warn!("{aviso}");
-    }
+    // #1261: TLS nao isenta — TLS sem credencial continua aberto.
+    conferir_socket(&sock_addr, gateway)?;
     info!("GarraIA gateway listening on https://{}", sock_addr);
     axum_server::bind_rustls(sock_addr, tls_config)
         .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
@@ -1904,140 +1937,118 @@ mod tests {
         assert!(!state.whatsapp_linked.cancelamento_vivo());
     }
 
-    // ---- #1241: aviso de bind exposto sem credencial ---------------------
+    #[test]
+    fn tls_meio_configurado_nomeia_o_campo_que_falta() {
+        assert_eq!(tls_meio_configurado(None, None), None);
+        assert_eq!(tls_meio_configurado(Some("c"), Some("k")), None);
+        assert_eq!(
+            tls_meio_configurado(Some("c"), None),
+            Some("gateway.tls_key_path")
+        );
+        assert_eq!(
+            tls_meio_configurado(None, Some("k")),
+            Some("gateway.tls_cert_path")
+        );
+    }
+
+    // ---- #1261: recusa de bind exposto sem credencial --------------------
 
     fn addr(s: &str) -> SocketAddr {
         s.parse().expect("socket addr de teste")
     }
 
-    /// O caso da issue: `0.0.0.0` sem credencial avisa, e o aviso nomeia o
-    /// risco (o que esta aberto) e a correcao.
-    #[test]
-    fn bind_exposto_sem_credencial_avisa() {
-        let aviso = aviso_de_bind_exposto(&addr("0.0.0.0:3888"), false)
-            .expect("bind exposto sem credencial tem que avisar");
-        assert!(aviso.contains("0.0.0.0:3888"), "{aviso}");
-        assert!(
-            aviso.contains("/api/"),
-            "o aviso nomeia o que esta aberto: {aviso}"
-        );
-        // #1241 (achado 6 da auditoria): sem chave o `/ws` cai no MESMO gate
-        // (`ws.rs`), e e o canal do agente com tools — file ops,
-        // `device_execute`. Omiti-lo subestimava o alcance do aviso.
-        assert!(
-            aviso.contains("/ws"),
-            "o aviso tem que nomear o /ws, nao so o /api/*: {aviso}"
-        );
-        assert!(
-            aviso.contains("garraia init") && aviso.contains("127.0.0.1"),
-            "o aviso nomeia as duas correcoes: {aviso}"
-        );
+    fn gateway_em(host: &str, api_key: Option<&str>) -> garraia_config::GatewayConfig {
+        garraia_config::GatewayConfig {
+            host: host.into(),
+            port: 0,
+            api_key: api_key.map(str::to_string),
+            ..Default::default()
+        }
     }
 
-    /// Um IP de LAN e tao exposto quanto `0.0.0.0` — o teste existe porque a
-    /// versao ingenua desta checagem compara a string com "0.0.0.0".
     #[test]
-    fn bind_em_ip_de_lan_tambem_avisa() {
-        assert!(aviso_de_bind_exposto(&addr("192.168.1.10:3888"), false).is_some());
-        assert!(aviso_de_bind_exposto(&addr("[::]:3888"), false).is_some());
+    fn refuse_exposed_bind_recusa_sem_credencial() {
+        for host in ["0.0.0.0", "[::]"] {
+            let err = refuse_exposed_bind(&gateway_em(host, None))
+                .expect_err("bind exposto sem credencial recusa");
+            let msg = err.to_string();
+            assert!(msg.contains("refusing to start"), "{msg}");
+            assert!(msg.contains("GARRAIA_GATEWAY_API_KEY"), "{msg}");
+            assert!(msg.contains("/ws"), "a mensagem nomeia o /ws: {msg}");
+        }
     }
 
-    /// Com credencial configurada nao ha nada a avisar — e e isso que impede
-    /// o aviso de virar ruido em toda instalacao de servidor bem configurada.
-    #[test]
-    fn bind_exposto_com_credencial_nao_avisa() {
-        assert!(aviso_de_bind_exposto(&addr("0.0.0.0:3888"), true).is_none());
-    }
-
-    /// Loopback nunca avisa, com ou sem credencial: e o caso do laptop.
-    #[test]
-    fn bind_loopback_nunca_avisa() {
-        assert!(aviso_de_bind_exposto(&addr("127.0.0.1:3888"), false).is_none());
-        assert!(aviso_de_bind_exposto(&addr("[::1]:3888"), false).is_none());
-        assert!(aviso_de_bind_exposto(&addr("127.0.0.1:3888"), true).is_none());
-    }
-
-    /// A normalizacao do aviso e a MESMA do gate de `/api/*`: chave vazia ou
-    /// so com espaco e gate desligado, entao tem que avisar.
+    /// Chave vazia ou so com espaco e gate desligado (#1241): recusa igual.
     #[test]
     fn credencial_em_branco_conta_como_ausente() {
-        for valor in [None, Some(String::new()), Some("   ".to_string())] {
-            let gateway = garraia_config::GatewayConfig {
-                api_key: valor.clone(),
-                ..Default::default()
-            };
-            let ativa = crate::gateway_auth::ApiKeyGate::from_config(&gateway).is_enabled();
+        for valor in [None, Some(""), Some("   ")] {
             assert!(
-                aviso_de_bind_exposto(&addr("0.0.0.0:3888"), ativa).is_some(),
-                "com {valor:?} o gate esta desligado, logo o boot tem que avisar"
+                refuse_exposed_bind(&gateway_em("0.0.0.0", valor)).is_err(),
+                "{valor:?}"
             );
         }
-
-        let gateway = garraia_config::GatewayConfig {
-            api_key: Some("uma-credencial".into()),
-            ..Default::default()
-        };
-        let ativa = crate::gateway_auth::ApiKeyGate::from_config(&gateway).is_enabled();
-        assert!(aviso_de_bind_exposto(&addr("0.0.0.0:3888"), ativa).is_none());
     }
 
-    // ---- #1241: testes de FIACAO, nao da funcao pura ---------------------
+    #[test]
+    fn refuse_exposed_bind_sobe_com_credencial_loopback_ou_opt_out() {
+        assert!(refuse_exposed_bind(&gateway_em("0.0.0.0", Some("uma-credencial"))).is_ok());
+        assert!(refuse_exposed_bind(&gateway_em("127.0.0.1", None)).is_ok());
+        assert!(refuse_exposed_bind(&gateway_em("[::1]", None)).is_ok());
+        let mut g = gateway_em("0.0.0.0", None);
+        g.allow_unauthenticated_network_bind = true;
+        assert!(refuse_exposed_bind(&g).is_ok());
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn opt_out_avisa_alto_no_boot() {
+        let mut g = gateway_em("0.0.0.0", None);
+        g.allow_unauthenticated_network_bind = true;
+        refuse_exposed_bind(&g).expect("opt-out sobe");
+        assert!(logs_contain("allow_unauthenticated_network_bind is true"));
+    }
+
+    #[test]
+    fn conferir_socket_segue_a_mesma_regra() {
+        let sem = gateway_em("x", None);
+        assert!(conferir_socket(&addr("0.0.0.0:3888"), &sem).is_err());
+        assert!(conferir_socket(&addr("192.168.1.10:3888"), &sem).is_err());
+        assert!(conferir_socket(&addr("127.0.0.1:3888"), &sem).is_ok());
+        let com = gateway_em("x", Some("k"));
+        assert!(conferir_socket(&addr("0.0.0.0:3888"), &com).is_ok());
+    }
+
+    // ---- FIACAO: `serve_plain` confere o socket real -------------------
     //
-    // Os cinco testes acima seguem verdes se alguem apagar a chamada de
-    // `aviso_de_bind_exposto` de dentro de `serve_plain` — eles so exercitam
-    // a funcao. Os dois abaixo ligam um listener de verdade e olham o log.
-    //
-    // `serve_plain` so retorna no shutdown, entao o teste roda com timeout: o
-    // aviso sai logo depois do `bind`, muito antes dele expirar.
-
-    fn gateway_sem_credencial() -> garraia_config::GatewayConfig {
-        garraia_config::GatewayConfig {
-            api_key: None,
-            ..Default::default()
-        }
-    }
-
-    fn gateway_com_credencial() -> garraia_config::GatewayConfig {
-        garraia_config::GatewayConfig {
-            api_key: Some("uma-credencial".into()),
-            ..Default::default()
-        }
-    }
+    // `serve_plain` so retorna no shutdown; com timeout, "serviu ate o
+    // timeout" e "recusou" sao distinguiveis pelo resultado.
 
     /// Apagar a chamada em `serve_plain` tem que quebrar AQUI.
     #[tokio::test]
-    #[tracing_test::traced_test]
-    async fn serve_plain_avisa_em_bind_exposto_sem_credencial() {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_millis(400),
-            serve_plain("0.0.0.0:0", axum::Router::new(), &gateway_sem_credencial()),
+    async fn serve_plain_recusa_socket_exposto_sem_credencial() {
+        let r = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            serve_plain("0.0.0.0:0", axum::Router::new(), &gateway_em("x", None)),
         )
-        .await;
-
-        assert!(
-            logs_contain("SEM credencial de gateway configurada"),
-            "o bind em 0.0.0.0 sem credencial tem que emitir o warn no boot"
-        );
+        .await
+        .expect("a recusa e imediata, nao pode esperar o timeout");
+        let err = r.expect_err("socket exposto sem credencial recusa");
+        assert!(err.to_string().contains("refusing to start"), "{err}");
     }
 
-    /// O outro lado, e o motivo de `serve_plain` receber a CONFIG e nao um
-    /// bool: um `api_key_ativa = true` hardcoded dentro dela some com o aviso
-    /// (o teste acima pega), e um `= false` o torna incondicional, ruido em
-    /// toda instalacao correta (este pega). Com o bool vindo de `run()` o
-    /// hardcode ficava fora do alcance dos dois.
+    /// O outro lado: com credencial `serve_plain` fica servindo.
     #[tokio::test]
-    #[tracing_test::traced_test]
-    async fn serve_plain_nao_avisa_com_credencial() {
-        let _ = tokio::time::timeout(
+    async fn serve_plain_serve_com_credencial() {
+        let r = tokio::time::timeout(
             std::time::Duration::from_millis(400),
-            serve_plain("0.0.0.0:0", axum::Router::new(), &gateway_com_credencial()),
+            serve_plain(
+                "0.0.0.0:0",
+                axum::Router::new(),
+                &gateway_em("x", Some("k")),
+            ),
         )
         .await;
-
-        assert!(
-            !logs_contain("SEM credencial de gateway configurada"),
-            "com credencial configurada o boot nao pode avisar nada"
-        );
+        assert!(r.is_err(), "com credencial serve ate o timeout: {r:?}");
     }
 
     /// A borda que importa: cresce exponencialmente, satura no teto, e não

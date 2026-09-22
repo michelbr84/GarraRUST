@@ -42,6 +42,17 @@ spec:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
+          {{- if hasKey (.Values.secretEnv | default dict) "GARRAIA_GATEWAY_API_KEY" }}
+          {{- fail "set the gateway credential through gatewayApiKey, not secretEnv.GARRAIA_GATEWAY_API_KEY (#1261)" }}
+          {{- end }}
+          env:
+            # #1261: required — the image binds 0.0.0.0 and garraia refuses
+            # that bind without a gateway credential. See values.yaml.
+            - name: GARRAIA_GATEWAY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "garraia.gatewayKeySecretName" . }}
+                  key: {{ include "garraia.gatewayKeySecretKey" . }}
           envFrom:
             - configMapRef:
                 name: {{ include "garraia.fullname" . }}

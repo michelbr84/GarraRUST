@@ -40,9 +40,37 @@ pub struct MemoryRetentionConfig {
 impl MemoryRetentionConfig {
     /// Le a secao `memory.retention` — `None` quando a politica esta desligada
     /// ou a memoria inteira esta.
+    ///
+    /// #1247: `None` tambem quando `interval_hours` ou `max_age_days` esta
+    /// fora da faixa que o `garraia config check` aceita. Fail-closed no ponto
+    /// de uso: `tokio::time::interval(0)` entra em panic, e um corte fora da
+    /// faixa apagaria memoria por uma idade que ninguem pediu. A varredura nao
+    /// sobe (logado em `error!`), e o resto do gateway segue — nao apagar e o
+    /// lado seguro de uma operacao destrutiva, e derrubar o boot tiraria o
+    /// chat do ar por um erro de digitacao na retencao.
     pub fn from_app_config(config: &garraia_config::AppConfig) -> Option<Self> {
+        use garraia_config::model::{
+            RETENTION_INTERVAL_MAX_HOURS, RETENTION_INTERVAL_MIN_HOURS, RETENTION_MAX_AGE_MAX_DAYS,
+            RETENTION_MAX_AGE_MIN_DAYS,
+        };
         let r = &config.memory.retention;
         if !config.memory.enabled || !r.enabled {
+            return None;
+        }
+        let intervalo_ok = (RETENTION_INTERVAL_MIN_HOURS..=RETENTION_INTERVAL_MAX_HOURS)
+            .contains(&r.interval_hours);
+        let idade_ok =
+            (RETENTION_MAX_AGE_MIN_DAYS..=RETENTION_MAX_AGE_MAX_DAYS).contains(&r.max_age_days);
+        if !intervalo_ok || !idade_ok {
+            tracing::error!(
+                interval_hours = r.interval_hours,
+                max_age_days = r.max_age_days,
+                "memory.retention fora da faixa (interval_hours \
+                 {RETENTION_INTERVAL_MIN_HOURS}..={RETENTION_INTERVAL_MAX_HOURS}, max_age_days \
+                 {RETENTION_MAX_AGE_MIN_DAYS}..={RETENTION_MAX_AGE_MAX_DAYS}): a varredura de \
+                 retencao NAO sobe e nada e apagado; rode `{} config check`",
+                garraia_common::executavel::nome()
+            );
             return None;
         }
         Some(Self {
@@ -115,6 +143,44 @@ pub fn spawn_memory_retention_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config_retencao(interval_hours: u32, max_age_days: u32) -> garraia_config::AppConfig {
+        let mut c = garraia_config::AppConfig::default();
+        c.memory.enabled = true;
+        c.memory.retention.enabled = true;
+        c.memory.retention.interval_hours = interval_hours;
+        c.memory.retention.max_age_days = max_age_days;
+        c
+    }
+
+    /// #1247: fora da faixa, a varredura nao sobe — nem panic de
+    /// `interval(0)`, nem corte que ninguem pediu.
+    #[test]
+    fn retencao_fora_da_faixa_nao_sobe() {
+        use garraia_config::model::{
+            RETENTION_INTERVAL_MAX_HOURS, RETENTION_INTERVAL_MIN_HOURS, RETENTION_MAX_AGE_MAX_DAYS,
+            RETENTION_MAX_AGE_MIN_DAYS,
+        };
+        for (h, d) in [
+            (0, 30),
+            (RETENTION_INTERVAL_MAX_HOURS + 1, 30),
+            (24, 0),
+            (24, RETENTION_MAX_AGE_MAX_DAYS + 1),
+        ] {
+            assert!(
+                MemoryRetentionConfig::from_app_config(&config_retencao(h, d)).is_none(),
+                "interval_hours={h} max_age_days={d}"
+            );
+        }
+        for (h, d) in [
+            (RETENTION_INTERVAL_MIN_HOURS, RETENTION_MAX_AGE_MIN_DAYS),
+            (RETENTION_INTERVAL_MAX_HOURS, RETENTION_MAX_AGE_MAX_DAYS),
+        ] {
+            let cfg = MemoryRetentionConfig::from_app_config(&config_retencao(h, d))
+                .unwrap_or_else(|| panic!("nos limites sobe: {h}/{d}"));
+            assert!(cfg.interval > Duration::ZERO);
+        }
+    }
     use chrono::Duration as ChronoDuration;
     use garraia_db::{MemoryRole, MemoryStore, NewMemoryEntry};
 
