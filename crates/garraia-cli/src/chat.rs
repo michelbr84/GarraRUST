@@ -261,17 +261,25 @@ fn register_cli_tools(
     // arquivo pode estar, a policy decide ONDE o comando roda. O `bash`
     // continua fora do jail de proposito — ver #1272.
     let mut bash_tool = BashTool::new_with_confirmation(Some(30)).with_allowlist(bash_allowlist);
-    bash_tool.set_sandbox_policy(sandbox_policy_from(&config.agent.sandbox));
+    // #1225 S2: a mesma policy vale para as tools que spawnam programa.
+    let politica = sandbox_policy_from(&config.agent.sandbox);
+    bash_tool.set_sandbox_policy(politica.clone());
     // #1225 S2: uma vez por processo — `register_cli_tools` roda uma vez na
     // subida do `garra chat`. Fora de `sandbox_policy_from` porque no MCP a
     // policy e reconstruida por chamada.
     avisa_cobertura_do_sandbox(&config.agent.sandbox);
     runtime.register_tool(Box::new(bash_tool));
-    runtime.register_tool(Box::new(GitDiffTool::new(None, None)));
+    runtime.register_tool(Box::new(
+        GitDiffTool::new(None, None).com_sandbox(politica.clone()),
+    ));
     runtime.register_tool(Box::new(ListDirTool::new(file_jail, None)));
-    runtime.register_tool(Box::new(RepoSearchTool::new(None, None)));
+    runtime.register_tool(Box::new(
+        RepoSearchTool::new(None, None).com_sandbox(politica.clone()),
+    ));
     // Runs whatever the project's test script says; confirmed like `bash`.
-    runtime.register_tool(Box::new(RunTestsTool::new_with_confirmation(None)));
+    runtime.register_tool(Box::new(
+        RunTestsTool::new_with_confirmation(None).com_sandbox(politica.clone()),
+    ));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
     // ADR 0020 / epic #1124: tools de hardware. O CLI é interativo — sempre
     // com canal de confirmação (R3/R4 pedem "sim" na própria conversa). O
@@ -296,7 +304,9 @@ fn register_cli_tools(
     runtime.register_tool(Box::new(DeviceReadTool::new(device_config.clone())));
     runtime.register_tool(Box::new(DeviceExecuteTool::new(device_config)));
     if let Some((provider, model)) = review {
-        runtime.register_tool(Box::new(CodeReviewTool::new(provider, model, None)));
+        runtime.register_tool(Box::new(
+            CodeReviewTool::new(provider, model, None).com_sandbox(politica),
+        ));
     }
     if let Some(key) = brave_key {
         runtime.register_tool(Box::new(WebSearchTool::new(key)));
@@ -2467,6 +2477,54 @@ pub async fn run_chat(
     }
 
     Ok(codigo_de_saida)
+}
+
+#[cfg(test)]
+mod testes_1225_s2 {
+    use super::*;
+
+    /// #1225 S2b: a policy de `agent.sandbox` chega as tools de programa
+    /// pelo ponto de registro de PRODUCAO. `mode = all` sem backend recusa
+    /// todo spawn sem consultar binario nenhum do host — deterministico, e
+    /// antes da S2b esta config deixava as tools rodarem no host.
+    async fn roda_recusada(
+        tool: std::sync::Arc<dyn garraia_agents::Tool>,
+        input: serde_json::Value,
+    ) {
+        let dir = tempfile::tempdir().expect("tmp");
+        let ctx = garraia_agents::ToolContext {
+            session_id: "wiring-1225".into(),
+            user_id: None,
+            is_heartbeat: false,
+            approval: Default::default(),
+            working_dir: Some(dir.path().to_string_lossy().into_owned()),
+            project_id: None,
+        };
+        let out = tool.execute(&ctx, input).await;
+        let texto = match out {
+            Ok(o) => {
+                assert!(o.is_error, "{}: {o:?}", tool.name());
+                o.content
+            }
+            Err(e) => e.to_string(),
+        };
+        assert!(texto.contains("nenhum backend"), "{}: {texto}", tool.name());
+    }
+
+    #[tokio::test]
+    async fn sandbox_do_config_chega_as_tools_de_programa_do_chat() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        let runtime = AgentRuntime::new();
+        register_cli_tools(&runtime, &config, None, None, Vec::new());
+        for (nome, input) in [
+            ("repo_search", serde_json::json!({"query": "x"})),
+            ("git_diff", serde_json::json!({"operation": "status"})),
+        ] {
+            let tool = runtime.find_tool(nome).expect("registrada");
+            roda_recusada(tool, input).await;
+        }
+    }
 }
 
 #[cfg(test)]

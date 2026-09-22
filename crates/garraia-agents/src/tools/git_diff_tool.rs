@@ -11,7 +11,6 @@
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use std::time::Duration;
-use tokio::process::Command;
 
 use super::repo_dir::RepoDir;
 use super::{Tool, ToolContext, ToolOutput};
@@ -117,6 +116,8 @@ fn git_diff_args(
 pub struct GitDiffTool {
     timeout: Duration,
     max_lines: usize,
+    /// #1225 S2: `agent.sandbox`. Default `off` = host, como sempre.
+    sandbox: crate::sandbox::SandboxPolicy,
 }
 
 impl GitDiffTool {
@@ -125,7 +126,21 @@ impl GitDiffTool {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
             max_lines: max_lines.unwrap_or(DEFAULT_MAX_LINES),
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
+    }
+
+    /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox = policy;
+    }
+
+    /// #1225 S2: [`Self::set_sandbox_policy`] em forma de builder, para o
+    /// ponto de registro.
+    #[must_use = "devolve a tool com a policy; o receptor e consumido"]
+    pub fn com_sandbox(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
+        self.sandbox = policy;
+        self
     }
 
     /// Verifica se o output contém possíveis segredos
@@ -174,30 +189,32 @@ impl GitDiffTool {
         let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout)
             .await
             .map_err(Error::Agent)?;
-        let mut cmd = Command::new("git");
-        // #1258: o git roda no `working_dir` da sessão quando há um. Sem esta
-        // linha ele herdava o CWD do processo do gateway — respondendo sobre
-        // outro repositório, e de forma dependente de como o processo subiu
-        // (`garra start`, systemd com `WorkingDirectory=`, sidecar, container).
-        // Sem `working_dir` o CWD é mantido de propósito, e quem formata a
-        // resposta nomeia o diretório (ver [`RepoDir`]).
-        if let Some(dir) = repo.cwd_do_git() {
-            cmd.current_dir(dir);
-        }
-        cmd.args(&prefixo);
-        cmd.args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-        // #1269 (paridade com o #1266/PR #1268): o filho nunca le a entrada
-        // padrao do gateway — em terminal, pipe e servico o comportamento fica
-        // o mesmo, e o teste de regressao da injecao nao passa por acidente.
-        cmd.stdin(std::process::Stdio::null());
-        // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
-        // allowlist de env — um .gitconfig plantado com diff.external é
-        // execução arbitraria, e não pode carregar segredos do pai junto.
-        crate::git_endurecido::aplica_env(&mut cmd);
-        let resultado = tokio::time::timeout(self.timeout, cmd.output()).await;
+        // #1258: o git roda no `working_dir` da sessão quando há um. Sem ele
+        // o CWD do processo é mantido de propósito, e quem formata a resposta
+        // nomeia o diretório (ver [`RepoDir`]).
+        //
+        // #1225 S2: o spawn passa por `sandbox_spawn::executar` — env do filho
+        // reduzido a allowlist (#1075 R3: um .gitconfig plantado com
+        // diff.external é execução arbitrária e não pode carregar segredos do
+        // pai), stdin nulo (#1269) e, com `agent.sandbox` aplicável, o git
+        // roda no container.
+        let mut argv: Vec<String> = prefixo;
+        argv.extend(args.iter().cloned());
+        let resultado = crate::sandbox_spawn::executar(
+            &self.sandbox,
+            crate::sandbox_spawn::Pedido {
+                tool: "git_diff",
+                programa: "git",
+                args: &argv,
+                cwd: repo.cwd_do_git(),
+                env: crate::git_endurecido::ENV,
+                timeout: self.timeout,
+            },
+        )
+        .await;
 
         match resultado {
-            Ok(Ok(output)) => {
+            crate::sandbox_spawn::Desfecho::Saida(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -232,8 +249,11 @@ impl GitDiffTool {
 
                 Ok(combined)
             }
-            Ok(Err(e)) => Err(Error::Agent(format!("falha ao executar git: {e}"))),
-            Err(_) => Err(Error::Agent(format!(
+            crate::sandbox_spawn::Desfecho::NaoExecutou(e) => {
+                Err(Error::Agent(format!("falha ao executar git: {e}")))
+            }
+            crate::sandbox_spawn::Desfecho::Recusado(motivo) => Err(Error::Agent(motivo)),
+            crate::sandbox_spawn::Desfecho::Timeout => Err(Error::Agent(format!(
                 "comando git excedeu o tempo limite após {}s",
                 self.timeout.as_secs()
             ))),

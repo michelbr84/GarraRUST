@@ -397,13 +397,14 @@ fn build_tools_com(
         // policy diz ONDE o comando roda, o jail diz ONDE o arquivo pode
         // estar.
         let mut bash = BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone());
-        bash.set_sandbox_policy(policy);
+        bash.set_sandbox_policy(policy.clone());
         tools.push(Box::new(bash));
     }
     tools.push(Box::new(FileReadTool::new(jail.clone())));
     tools.push(Box::new(FileWriteTool::new(jail.clone())));
     tools.push(Box::new(WebFetchTool::new(None)));
-    tools.push(Box::new(GitDiffTool::new(None, None)));
+    // #1225 S2: o git_diff tambem consulta `agent.sandbox`.
+    tools.push(Box::new(GitDiffTool::new(None, None).com_sandbox(policy)));
     let brave_config_key = config.llm.get("brave").and_then(|c| c.api_key.clone());
     let brave = brave_config_key
         .or_else(|| std::env::var("BRAVE_API_KEY").ok())
@@ -782,6 +783,26 @@ mod tests {
             "o comando nao pode ter rodado no host: {}",
             out.content
         );
+    }
+
+    /// #1225 S2b: o `git_diff` do `garra_agent` recebe a policy do config.
+    #[tokio::test]
+    async fn sandbox_do_config_chega_ao_git_diff_pelo_build_tools() {
+        let mut config = AppConfig::default();
+        config.agent.sandbox.mode = garraia_config::SandboxMode::All;
+        let tools = build_tools(&config, &file_jail(&config)).0;
+        let git = tools
+            .iter()
+            .find(|t| t.name() == "git_diff")
+            .expect("git_diff registrada");
+        let texto = match git
+            .execute(&ctx_sem_dir(), serde_json::json!({"operation": "status"}))
+            .await
+        {
+            Ok(o) => o.content,
+            Err(e) => e.to_string(),
+        };
+        assert!(texto.contains("nenhum backend"), "{texto}");
     }
 
     // ─── #1272: bash fail-closed em standard ───────────────────────────

@@ -386,3 +386,44 @@ observability:
     enabled: true
     port: 9090
 ```
+
+### Tool sandbox (`agent.sandbox`)
+
+Runs the agent's process-spawning tools inside a throwaway container instead
+of on the host. Default `mode: off` changes nothing.
+
+```yaml
+agent:
+  sandbox:
+    mode: all            # off (default) | all | allowlist
+    backend: docker      # docker | podman | ssh (ssh is remote execution, not isolation)
+    image: debian:bookworm-slim   # must contain the programs the tools call
+    elevated: []         # tools that stay on the host even with mode: all
+    sandboxed_tools: []  # used by mode: allowlist
+    mount_workdir: true  # mount only the (canonical) working dir, read-write
+    network_disabled: true
+```
+
+Covered tools: `bash` (shell line) and, since #1225 S2, `run_tests`,
+`git_diff`, `code_review` and `repo_search` (argv, no shell). Every container
+runs with `--cap-drop ALL`, `--pids-limit 512`, `--security-opt
+no-new-privileges` and your own uid (`--user <uid>:<gid>`, or
+`--userns=keep-id` on podman). Nothing falls back to the host: a missing
+backend, a stopped daemon, a relative or missing working dir, or `ssh` for a
+working-dir tool is a refused call.
+
+**Migration for `mode: all`.** Those four tools now run in the container, so
+the image needs their programs (`git`, `rg` or `grep`, `cargo`/`npm`/`python`).
+The default `debian:bookworm-slim` has only `grep`: `run_tests` and `git_diff`
+answer "the program does not exist in the sandbox image". Either point
+`image` at one with your toolchain, or list the tool in `elevated` to keep it
+on the host. With `network_disabled: true`, `cargo` cannot download crates.
+
+In `execution.profile: standard`, `garraia mcp-server` and the gateway only
+register `bash` when this section puts it in a working docker/podman
+container (#1272); see [`execution-profiles.md`](execution-profiles.md).
+
+A remote container is `backend: docker` with a `docker context` pointing at
+`ssh://host` — note that the mount then refers to paths on the REMOTE host.
+There is no `ssh` + container backend (#1225 S5, won't-do: see
+[`security/threat-model.md`](security/threat-model.md) §5.13).

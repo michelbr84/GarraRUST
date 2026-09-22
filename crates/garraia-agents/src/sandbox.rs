@@ -30,6 +30,22 @@
 //!   fora de unix não contém nada — ver `docs/security/threat-model.md` §5.13.
 //! - A configuração do operador é a seção `agent.sandbox` (#1225), traduzida
 //!   por `garraia_gateway::bootstrap::sandbox_policy_from`.
+//! - **Tools cobertas** (#1225 S2): `bash` por [`SandboxPolicy::wrap_command`]
+//!   (linha de shell) e `run_tests`, `git_diff`, `code_review`, `repo_search`
+//!   por [`SandboxPolicy::wrap_argv`] (argv, sem shell), via
+//!   `crate::sandbox_spawn`. O `git config` que lista os filtros a anular
+//!   (`git_endurecido`) roda no host: ele só lê config, não executa nada.
+//! - **`ssh` + container remoto é won't-do** (#1225 S5): (a) `backend =
+//!   docker` com um `docker context` `ssh://host` já entrega container
+//!   remoto pelo transporte do próprio Docker — o `HOME` chega ao filho
+//!   (`safety_gate::allowed_child_env`), e com ele o contexto do operador —,
+//!   sem código novo; (b) um ramo ssh+container empilharia três camadas de
+//!   `sh_quote` numa linha de shell, exatamente a superfície de injeção que a
+//!   #1231 e o argv da S2 eliminam; (c) nas tools de diretório de trabalho o
+//!   host remoto não tem os arquivos do projeto (um contexto docker remoto
+//!   monta caminhos do host REMOTO); (d) ninguém pediu, e o custo de
+//!   manutenção de um controle de segurança é contínuo. Ver
+//!   `docs/security/threat-model.md` §5.13.
 
 use garraia_common::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -283,16 +299,14 @@ pub enum SandboxMode {
     /// Comportamento atual: tudo roda no host (default).
     #[default]
     Off,
-    /// Toda tool que **consulta a policy** roda no sandbox — hoje, só a
-    /// `bash` (o `BashTool` é o único lugar que chama `wrap_command`). As
-    /// demais tools que spawnam processo — [`HOST_ONLY_SPAWNING_TOOLS`] —
-    /// continuam nascendo no host mesmo neste modo; roteá-las é a metade
-    /// estrutural da #1225 S2, ainda aberta.
+    /// Toda tool que spawna processo roda no sandbox, salvo as listadas em
+    /// `elevated`: `bash` (linha de shell, [`SandboxPolicy::wrap_command`]) e,
+    /// desde a #1225 S2, `run_tests`, `git_diff`, `code_review` e
+    /// `repo_search` (argv, [`SandboxPolicy::wrap_argv`]).
+    /// [`HOST_ONLY_SPAWNING_TOOLS`] ficou vazia, e um teste que varre
+    /// `src/tools/` a mantem assim.
     All,
-    /// Apenas as tools listadas em `sandboxed_tools` rodam no sandbox — e
-    /// só as que consultam a policy (hoje `bash`) conseguem honrar a lista.
-    /// Listar uma de [`HOST_ONLY_SPAWNING_TOOLS`] aqui não tem efeito: ela
-    /// roda no host, e o `garra config check` diz isso.
+    /// Apenas as tools listadas em `sandboxed_tools` rodam no sandbox.
     Allowlist,
 }
 
@@ -314,8 +328,12 @@ pub enum SandboxMode {
 ///
 /// Espelho em `garraia_config::sandbox::TOOLS_SO_NO_HOST`, com o mesmo
 /// motivo e a mesma tranca (teste no gateway) de `TOOLS_SANDBOXAVEIS`.
-pub const HOST_ONLY_SPAWNING_TOOLS: &[&str] =
-    &["run_tests", "git_diff", "code_review", "repo_search"];
+///
+/// **Vazia desde a #1225 S2b**: as quatro tools que moravam aqui passaram a
+/// spawnar por `sandbox_spawn::executar`, que consulta a policy. A const
+/// continua existindo para o teste de varredura ter onde falhar se uma tool
+/// nova voltar a spawnar direto.
+pub const HOST_ONLY_SPAWNING_TOOLS: &[&str] = &[];
 
 /// Política de sandbox, resolvida por tool antes da execução.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -584,6 +602,158 @@ impl SandboxPolicy {
             }
         }))
     }
+
+    /// #1225 S2: o sandbox das tools que spawnam um PROGRAMA (nao uma linha
+    /// de shell) — `run_tests`, `git_diff`, `code_review`, `repo_search`.
+    ///
+    /// Devolve o argv do `docker run`/`podman run` montado **sem shell
+    /// nenhum**: `programa` e cada `arg` viram elementos literais depois da
+    /// imagem, entao `$(id)`, `;`, aspas ou um `-x` do modelo chegam ao
+    /// programa como texto. `Ok(None)` = a policy nao se aplica a `tool`
+    /// (roda no host, como antes).
+    ///
+    /// Herda todas as recusas fail-closed do [`Self::wrap_command`] (fora de
+    /// unix, imagem com `-`, sem backend, binario ausente, mount invalido) e
+    /// acrescenta uma: **`ssh` e recusado sempre**. Estas tools operam no
+    /// diretorio LOCAL, e o host remoto nao o tem (a S3 obriga
+    /// `mount_workdir = false` no ssh) — a resposta sairia sobre outros
+    /// arquivos, em silencio.
+    ///
+    /// `cwd = None` vira o cwd absoluto do processo. `env` vira `-e K=V` (so
+    /// constantes do codigo, nunca valor do modelo).
+    pub fn wrap_argv(
+        &self,
+        tool_name: &str,
+        programa: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &[(&str, &str)],
+    ) -> Result<Option<SandboxedArgv>> {
+        self.wrap_argv_com(
+            cfg!(unix),
+            SandboxBackend::is_available,
+            tool_name,
+            programa,
+            args,
+            cwd,
+            env,
+        )
+    }
+
+    /// [`Self::wrap_argv`] com plataforma e sonda do binario injetadas.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn wrap_argv_com(
+        &self,
+        alvo_unix: bool,
+        disponivel: impl Fn(&SandboxBackend) -> bool,
+        tool_name: &str,
+        programa: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &[(&str, &str)],
+    ) -> Result<Option<SandboxedArgv>> {
+        if !self.requires_sandbox(tool_name) {
+            return Ok(None);
+        }
+        plataforma_permite_wrap(alvo_unix)?;
+        if parece_opcao(&self.image) {
+            return Err(Error::Agent(
+                "sandbox fail-closed: agent.sandbox.image comeca com `-` e seria lida como opcao \
+                 do docker/podman em vez de nome de imagem"
+                    .into(),
+            ));
+        }
+        let backend = self.backend.as_ref().ok_or_else(|| {
+            Error::Agent(
+                "sandbox obrigatório por config mas nenhum backend definido \
+                 (agent.sandbox.backend: docker|podman)"
+                    .into(),
+            )
+        })?;
+        let runtime = match backend {
+            SandboxBackend::Docker => "docker",
+            SandboxBackend::Podman => "podman",
+            SandboxBackend::Ssh(_) => {
+                return Err(Error::Agent(format!(
+                    "sandbox fail-closed: `{tool_name}` opera no diretorio de trabalho LOCAL e \
+                     agent.sandbox.backend = ssh roda em outra maquina, sem esse diretorio. Use \
+                     agent.sandbox.backend = docker ou podman, ou \
+                     agent.sandbox.elevated = [\"{tool_name}\"] para rodar no host."
+                )));
+            }
+        };
+        if !disponivel(backend) {
+            return Err(Error::Agent(format!(
+                "sandbox fail-closed: backend `{runtime}` não encontrado no host; instale-o, \
+                 marque a tool como elevated, ou defina agent.sandbox.mode = off"
+            )));
+        }
+        let mount = if self.mount_workdir {
+            let cwd_abs = match cwd {
+                Some(dir) => dir.to_path_buf(),
+                None => std::env::current_dir().map_err(|_| {
+                    Error::Agent(
+                        "sandbox fail-closed: o diretorio de trabalho do processo nao pode ser \
+                         resolvido"
+                            .into(),
+                    )
+                })?,
+            };
+            let texto = cwd_abs.to_str().ok_or_else(|| {
+                Error::Agent("sandbox fail-closed: diretorio de trabalho nao e UTF-8".into())
+            })?;
+            Some(fonte_do_mount(texto)?)
+        } else {
+            None
+        };
+
+        let nome = format!("garra-sbx-{}", uuid::Uuid::new_v4().simple());
+        let mut argv: Vec<String> = vec![
+            "run".into(),
+            "--rm".into(),
+            "--name".into(),
+            nome.clone(),
+            "--security-opt".into(),
+            "no-new-privileges".into(),
+        ];
+        for flag in flags_de_contencao(backend) {
+            // As flags compostas (`--cap-drop ALL`) viram dois elementos.
+            argv.extend(flag.split(' ').map(str::to_string));
+        }
+        // Com `--user` o HOME da imagem pode nao existir; /tmp sempre existe.
+        argv.extend(["-e".into(), "HOME=/tmp".into()]);
+        for (chave, valor) in env {
+            argv.extend(["-e".into(), format!("{chave}={valor}")]);
+        }
+        if self.network_disabled {
+            argv.extend(["--network".into(), "none".into()]);
+        }
+        if let Some(m) = mount {
+            argv.extend(["-v".into(), format!("{m}:{m}"), "-w".into(), m]);
+        }
+        argv.push(self.image.clone());
+        argv.push(programa.to_string());
+        argv.extend(args.iter().cloned());
+        Ok(Some(SandboxedArgv {
+            runtime: runtime.to_string(),
+            argv,
+            nome_do_container: nome,
+        }))
+    }
+}
+
+/// O que [`SandboxPolicy::wrap_argv`] devolve: o runtime (`docker` ou
+/// `podman`), os argumentos dele e o nome do container — que quem roda
+/// precisa para `rm -f` no timeout, porque matar o cliente do docker nao
+/// mata o container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxedArgv {
+    /// `docker` ou `podman`.
+    pub runtime: String,
+    /// Tudo depois do runtime, comecando por `run`.
+    pub argv: Vec<String>,
+    /// `garra-sbx-<uuid>`.
+    pub nome_do_container: String,
 }
 
 #[cfg(test)]
@@ -641,7 +811,10 @@ mod tests {
             // So a metade de producao: fixtures de teste spawnam `git` para
             // montar repositorio, e isso nao e a tool spawnando.
             let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte.as_str());
-            if !producao.contains("Command::new(") {
+            // #1225 S2: quem spawna por `sandbox_spawn::executar(` tambem
+            // spawna — e consulta a policy la dentro.
+            let pelo_helper = producao.contains("sandbox_spawn::executar(");
+            if !producao.contains("Command::new(") && !pelo_helper {
                 continue;
             }
             let nome = nome_registrado(producao).unwrap_or_else(|| {
@@ -652,7 +825,7 @@ mod tests {
                     caminho.display()
                 )
             });
-            if producao.contains("sandbox.wrap_command(") {
+            if producao.contains("sandbox.wrap_command(") || pelo_helper {
                 consultam.push(nome.to_string());
             } else {
                 no_host.push(nome.to_string());
@@ -1185,6 +1358,137 @@ mod tests {
         std::fs::create_dir(&dir).expect("mkdir");
         let err = linha(&docker_all(), dir.to_str().expect("utf8")).expect_err("':'");
         assert!(err.to_string().contains("fail-closed"), "{err}");
+    }
+
+    // ─── #1225 S2a: wrap_argv ──────────────────────────────────────────
+
+    fn argv(p: &SandboxPolicy, args: &[&str], cwd: Option<&Path>) -> Result<Option<SandboxedArgv>> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        p.wrap_argv_com(true, |_| true, "git_diff", "git", &args, cwd, &[])
+    }
+
+    #[test]
+    fn wrap_argv_off_devolve_none_sem_olhar_backend() {
+        let p = SandboxPolicy {
+            backend: Some(SandboxBackend::Ssh("-o".into())),
+            image: "-x".into(),
+            ..SandboxPolicy::default()
+        };
+        assert_eq!(argv(&p, &["status"], None).expect("off"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrap_argv_monta_o_argv_exato_do_docker() {
+        let base = tempfile::tempdir().expect("tmp");
+        let dir = base.path().canonicalize().expect("canon");
+        let d = dir.to_str().expect("utf8");
+        let sb = argv(&docker_all(), &["$(id)", "; rm", "-x"], Some(&dir))
+            .expect("wrap")
+            .expect("aplicado");
+        assert_eq!(sb.runtime, "docker");
+        let (uid, gid) = uid_gid_do_processo();
+        let esperado: Vec<String> = [
+            "run",
+            "--rm",
+            "--name",
+            sb.nome_do_container.as_str(),
+            "--security-opt",
+            "no-new-privileges",
+            "--cap-drop",
+            "ALL",
+            "--pids-limit",
+            "512",
+            "--user",
+            &format!("{uid}:{gid}"),
+            "-e",
+            "HOME=/tmp",
+            "--network",
+            "none",
+            "-v",
+            &format!("{d}:{d}"),
+            "-w",
+            d,
+            "debian:bookworm-slim",
+            "git",
+            "$(id)",
+            "; rm",
+            "-x",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(sb.argv, esperado);
+        assert!(sb.nome_do_container.starts_with("garra-sbx-"));
+    }
+
+    #[test]
+    fn wrap_argv_sem_rede_desligada_e_sem_mount_nao_leva_as_flags() {
+        let p = SandboxPolicy {
+            backend: Some(SandboxBackend::Podman),
+            network_disabled: false,
+            mount_workdir: false,
+            ..docker_all()
+        };
+        let sb = argv(&p, &["status"], None)
+            .expect("wrap")
+            .expect("aplicado");
+        assert_eq!(sb.runtime, "podman");
+        assert!(sb.argv.contains(&"--userns=keep-id".to_string()));
+        assert!(!sb.argv.contains(&"--network".to_string()));
+        assert!(!sb.argv.contains(&"-v".to_string()));
+    }
+
+    #[test]
+    fn wrap_argv_herda_as_recusas_fail_closed() {
+        let casos: Vec<(SandboxPolicy, &str)> = vec![
+            (
+                SandboxPolicy {
+                    image: "--entrypoint=x".into(),
+                    ..docker_all()
+                },
+                "image",
+            ),
+            (
+                SandboxPolicy {
+                    backend: None,
+                    ..docker_all()
+                },
+                "nenhum backend",
+            ),
+            (
+                SandboxPolicy {
+                    backend: Some(SandboxBackend::Ssh("box".into())),
+                    network_disabled: false,
+                    mount_workdir: false,
+                    ..docker_all()
+                },
+                "ssh",
+            ),
+        ];
+        for (p, trecho) in casos {
+            let err = argv(&p, &["status"], None).expect_err(trecho);
+            assert!(err.to_string().contains("fail-closed") || err.to_string().contains(trecho));
+            assert!(err.to_string().contains(trecho), "{err}");
+        }
+        // Fora de unix e binario ausente.
+        let args = vec!["status".to_string()];
+        let e = docker_all()
+            .wrap_argv_com(false, |_| true, "git_diff", "git", &args, None, &[])
+            .expect_err("nao-unix");
+        assert!(e.to_string().contains("fora de unix"), "{e}");
+        let e = docker_all()
+            .wrap_argv_com(true, |_| false, "git_diff", "git", &args, None, &[])
+            .expect_err("ausente");
+        assert!(e.to_string().contains("não encontrado"), "{e}");
+        // Mount invalido.
+        let e = argv(
+            &docker_all(),
+            &["status"],
+            Some(Path::new("/definitivamente/inexistente")),
+        )
+        .expect_err("mount");
+        assert!(e.to_string().contains("mount_workdir"), "{e}");
     }
 
     #[test]

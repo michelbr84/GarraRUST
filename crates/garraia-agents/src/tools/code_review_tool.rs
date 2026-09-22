@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use garraia_common::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::process::Command;
 
 use super::repo_dir::RepoDir;
 use super::{Tool, ToolContext, ToolOutput};
@@ -28,6 +27,8 @@ pub struct CodeReviewTool {
     model: String,
     /// Timeout for git operations
     timeout: Duration,
+    /// #1225 S2: `agent.sandbox`. Default `off` = host, como sempre.
+    sandbox: crate::sandbox::SandboxPolicy,
 }
 
 impl CodeReviewTool {
@@ -41,7 +42,21 @@ impl CodeReviewTool {
             provider,
             model: model.into(),
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
+    }
+
+    /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox = policy;
+    }
+
+    /// #1225 S2: [`Self::set_sandbox_policy`] em forma de builder, para o
+    /// ponto de registro.
+    #[must_use = "devolve a tool com a policy; o receptor e consumido"]
+    pub fn com_sandbox(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
+        self.sandbox = policy;
+        self
     }
 
     /// Get git diff output, **from the repository in `repo`**
@@ -81,26 +96,27 @@ impl CodeReviewTool {
 
         // #1272 S3: mesmo prefixo endurecido do `git_diff`.
         let prefixo = crate::git_endurecido::prefixo(repo.cwd_do_git(), self.timeout).await?;
-        let mut cmd = Command::new("git");
-        // #1258 (mesmo defeito raiz do `git_diff`): sem `current_dir` o git
-        // herdava o CWD do processo do gateway, então o `code_review` revisava
-        // o diff de outro repositório — ou nenhum. Ver [`RepoDir`].
-        if let Some(dir) = repo.cwd_do_git() {
-            cmd.current_dir(dir);
-        }
-        cmd.args(&prefixo);
-        cmd.args(&args);
-        // #1269 (paridade com o `git_diff`): o filho nunca lê a entrada padrão
-        // do gateway — em terminal, pipe e serviço o comportamento fica
-        // determinado, e não há consumo acidental de stdin.
-        cmd.stdin(std::process::Stdio::null());
-        // #1075 R3 (parity — auditoria do hardening): o filho git herda só a
-        // allowlist de env do pai (e sem a config do sistema, #1272 S3).
-        crate::git_endurecido::aplica_env(&mut cmd);
-        let result = tokio::time::timeout(self.timeout, cmd.output()).await;
+        // #1258 (mesmo defeito raiz do `git_diff`): o git roda no
+        // `working_dir` da sessão quando há um — ver [`RepoDir`].
+        // #1225 S2: spawn por `sandbox_spawn::executar` (env reduzido, stdin
+        // nulo, container quando `agent.sandbox` se aplica).
+        let mut argv: Vec<String> = prefixo;
+        argv.extend(args);
+        let result = crate::sandbox_spawn::executar(
+            &self.sandbox,
+            crate::sandbox_spawn::Pedido {
+                tool: "code_review",
+                programa: "git",
+                args: &argv,
+                cwd: repo.cwd_do_git(),
+                env: crate::git_endurecido::ENV,
+                timeout: self.timeout,
+            },
+        )
+        .await;
 
         match result {
-            Ok(Ok(output)) => {
+            crate::sandbox_spawn::Desfecho::Saida(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 if stdout.is_empty() {
                     Err("No diff output (no changes found)".to_string())
@@ -119,8 +135,11 @@ impl CodeReviewTool {
                     }
                 }
             }
-            Ok(Err(e)) => Err(format!("Failed to run git diff: {}", e)),
-            Err(_) => Err(format!(
+            crate::sandbox_spawn::Desfecho::NaoExecutou(e) => {
+                Err(format!("Failed to run git diff: {}", e))
+            }
+            crate::sandbox_spawn::Desfecho::Recusado(motivo) => Err(motivo),
+            crate::sandbox_spawn::Desfecho::Timeout => Err(format!(
                 "git diff timed out after {}s",
                 self.timeout.as_secs()
             )),

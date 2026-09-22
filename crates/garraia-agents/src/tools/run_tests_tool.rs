@@ -33,6 +33,8 @@ enum TestFramework {
 /// Auto-detects the test framework based on project files.
 pub struct RunTestsTool {
     timeout: Duration,
+    /// #1225 S2: `agent.sandbox`. Default `off` = host, como sempre.
+    sandbox: crate::sandbox::SandboxPolicy,
     /// Roda `cargo test` / `npm test` / ... — e `npm test` executa o que o
     /// `package.json` do diretorio mandar. E execucao arbitraria com outro
     /// nome, entao segue a mesma regra do `bash` (GAR-187): com
@@ -46,7 +48,21 @@ impl RunTestsTool {
         Self {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
             confirmation_enabled: false,
+            sandbox: crate::sandbox::SandboxPolicy::default(),
         }
+    }
+
+    /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
+    pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.sandbox = policy;
+    }
+
+    /// #1225 S2: [`Self::set_sandbox_policy`] em forma de builder, para o
+    /// ponto de registro.
+    #[must_use = "devolve a tool com a policy; o receptor e consumido"]
+    pub fn com_sandbox(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
+        self.sandbox = policy;
+        self
     }
 
     /// Como [`Self::new`], mas exige confirmacao humana antes de executar.
@@ -334,7 +350,7 @@ impl Tool for RunTestsTool {
             _ => Self::detect_framework(&working_dir),
         };
 
-        let (mut cmd, framework_name) = Self::build_command(framework, test_name, &working_dir);
+        let (cmd, framework_name) = Self::build_command(framework, test_name, &working_dir);
 
         // #1084 item 4: sem canal de confirmacao, a regra passa a ser a MESMA
         // do `bash`, aplicada ao comando que vai rodar de verdade.
@@ -372,30 +388,32 @@ impl Tool for RunTestsTool {
             }
         }
 
-        // #1075 R3 (parity — auditoria do hardening): o filho de run_tests
-        // executa o que o projeto mandar e, como o bash, herda SOMENTE a
-        // allowlist de env do pai — nunca segredos do processo gateway/MCP.
-        #[cfg(unix)]
-        {
-            cmd.env_clear();
-            for (key, value) in garraia_common::safety_gate::allowed_child_env() {
-                cmd.env(key, value);
-            }
-        }
-
-        // #1270 (paridade do #1269): o filho de teste nunca le a entrada
-        // padrao do gateway — em terminal, pipe e servico o comportamento fica
-        // o mesmo, e um binario de teste que le stdin nao rouba o que o
-        // operador digitou no terminal do `garra chat`. Ate a varredura
-        // #1270, `repo_search`, `git_diff` e `code_review` fechavam o stdin
-        // e este nao.
-        cmd.stdin(std::process::Stdio::null());
-
-        // Execute with timeout
-        let result = tokio::time::timeout(self.timeout, cmd.output()).await;
+        // #1225 S2: o spawn passa por `sandbox_spawn::executar`, DEPOIS de
+        // todos os gates acima (test_name, confirmacao, tier arriscado). La
+        // o filho herda SOMENTE a allowlist de env (#1075 R3), nunca le o
+        // stdin do gateway (#1270) e, com `agent.sandbox` aplicavel, roda no
+        // container — nunca no host quando o sandbox nao pode ser aplicado.
+        let std_cmd = cmd.as_std();
+        let programa = std_cmd.get_program().to_string_lossy().into_owned();
+        let args: Vec<String> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let result = crate::sandbox_spawn::executar(
+            &self.sandbox,
+            crate::sandbox_spawn::Pedido {
+                tool: self.name(),
+                programa: &programa,
+                args: &args,
+                cwd: Some(&working_dir),
+                env: &[],
+                timeout: self.timeout,
+            },
+        )
+        .await;
 
         match result {
-            Ok(Ok(output)) => {
+            crate::sandbox_spawn::Desfecho::Saida(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -430,11 +448,12 @@ impl Tool for RunTestsTool {
                     Ok(ToolOutput::error(content))
                 }
             }
-            Ok(Err(e)) => Ok(ToolOutput::error(format!(
+            crate::sandbox_spawn::Desfecho::NaoExecutou(e) => Ok(ToolOutput::error(format!(
                 "Failed to execute {}: {}",
                 framework_name, e
             ))),
-            Err(_) => Ok(ToolOutput::error(format!(
+            crate::sandbox_spawn::Desfecho::Recusado(motivo) => Ok(ToolOutput::error(motivo)),
+            crate::sandbox_spawn::Desfecho::Timeout => Ok(ToolOutput::error(format!(
                 "Tests timed out after {}s",
                 self.timeout.as_secs()
             ))),
@@ -463,10 +482,18 @@ mod tests {
     /// execute e ele fica vermelho.
     #[test]
     fn stdin_do_filho_de_teste_e_fechado() {
+        // #1225 S2: o spawn mudou para `sandbox_spawn`, e o stdin nulo mora
+        // la — para os dois caminhos (host e container).
         let fonte = include_str!("run_tests_tool.rs");
+        let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte);
         assert!(
-            fonte.contains("cmd.stdin(std::process::Stdio::null());"),
-            "run_tests deve fechar o stdin do filho (paridade #1269)"
+            producao.contains("crate::sandbox_spawn::executar("),
+            "run_tests deve spawnar por sandbox_spawn"
+        );
+        let spawn = include_str!("../sandbox_spawn.rs");
+        assert!(
+            spawn.contains("cmd.stdin(Stdio::null())"),
+            "sandbox_spawn deve fechar o stdin do filho (paridade #1269)"
         );
     }
 

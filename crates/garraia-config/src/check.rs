@@ -3478,11 +3478,15 @@ mod tests {
             ),
             // F3: `all` com a unica tool sandboxavel em `elevated` == `off`.
             (
-                "mode=all com bash elevado nao sandboxa nada",
+                "mode=all com toda tool coberta elevada nao sandboxa nada",
                 |c| {
                     c.agent.sandbox.mode = SandboxMode::All;
                     c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-                    c.agent.sandbox.elevated = vec!["bash".into()];
+                    // #1225 S2: sao cinco tools cobertas agora, nao uma.
+                    c.agent.sandbox.elevated = crate::sandbox::TOOLS_SANDBOXAVEIS
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect();
                     c.agent.tool_confirmation_enabled = true;
                 },
                 "agent.sandbox.elevated",
@@ -3494,7 +3498,7 @@ mod tests {
                 |c| {
                     c.agent.sandbox.mode = SandboxMode::Allowlist;
                     c.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-                    c.agent.sandbox.sandboxed_tools = vec!["run_tests".into()];
+                    c.agent.sandbox.sandboxed_tools = vec!["web_fetch".into()];
                 },
                 "agent.sandbox.sandboxed_tools",
                 Severity::Warning,
@@ -3740,13 +3744,14 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.agent.sandbox.mode = SandboxMode::All;
         cfg.agent.sandbox.backend = Some(SandboxBackendKind::Docker);
-        cfg.agent.sandbox.elevated = vec!["git_diff".into()];
+        // #1225 S2: `git_diff` virou tool coberta; o typo tipico e outro.
+        cfg.agent.sandbox.elevated = vec!["gitdiff".into()];
         cfg.agent.tool_confirmation_enabled = true;
         let findings = validate(&cfg);
         let f = findings
             .iter()
-            .find(|f| f.field == "agent.sandbox.elevated" && f.message.contains("git_diff"))
-            .unwrap_or_else(|| panic!("esperava finding nomeando git_diff: {findings:?}"));
+            .find(|f| f.field == "agent.sandbox.elevated" && f.message.contains("gitdiff"))
+            .unwrap_or_else(|| panic!("esperava finding nomeando gitdiff: {findings:?}"));
         assert_eq!(f.severity, Severity::Warning);
 
         // Entrada trimada casa: `" bash"` no YAML e um espaco, nao um erro.

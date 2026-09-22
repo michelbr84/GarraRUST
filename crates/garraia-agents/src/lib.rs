@@ -27,6 +27,8 @@ pub mod providers;
 pub mod quantization;
 pub mod runtime;
 pub mod sandbox;
+/// #1225 S2: spawn das tools de programa pela `SandboxPolicy`.
+pub(crate) mod sandbox_spawn;
 pub mod tools;
 pub use sandbox::{SandboxBackend, SandboxMode, SandboxPolicy};
 pub mod turn_events;

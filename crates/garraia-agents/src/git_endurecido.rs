@@ -101,6 +101,9 @@ pub(crate) fn neutraliza_filtros(saida: &[u8]) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
+/// Env extra do git das tools: nada da config do sistema.
+pub(crate) const ENV: &[(&str, &str)] = &[("GIT_CONFIG_NOSYSTEM", "1")];
+
 /// Env do filho git: so a allowlist (#1075 R3) e nada da config do sistema.
 pub(crate) fn aplica_env(cmd: &mut Command) {
     #[cfg(unix)]
