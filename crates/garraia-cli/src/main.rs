@@ -20,6 +20,7 @@ mod memory_cmd;
 mod migrate;
 mod migrate_workspace;
 mod repo_workflow;
+mod runs_cmd;
 mod team;
 mod tracing_setup;
 mod ui;
@@ -312,6 +313,17 @@ enum Commands {
         action: MemoryCommands,
     },
 
+    /// Read the durable ledger of agent runs (#1227).
+    ///
+    /// Opens the same `sessions.db` the gateway writes to, without talking to
+    /// it — so it answers "what was in flight?" precisely when the gateway is
+    /// down. Read-only: converting leftover `running` rows into `interrupted`
+    /// belongs to the boot hook, not to a listing.
+    Runs {
+        #[command(subcommand)]
+        action: RunsCommands,
+    },
+
     /// Inspect, validate, and diagnose the effective configuration
     Config {
         #[command(subcommand)]
@@ -463,6 +475,29 @@ enum RecoveryCommands {
         /// Atenção: passar na linha de comando expõe a senha em `ps`.
         #[arg(long)]
         new_password: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunsCommands {
+    /// List the most recent agent runs, newest first.
+    ///
+    /// An empty ledger is not an error: exit 0 with a friendly line (or `[]`
+    /// under `--json`).
+    List {
+        /// Only runs in this status: `running`, `done`, `error`,
+        /// `cancelled` or `interrupted`. An unknown value is a usage error,
+        /// never a silently empty list.
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Cap on how many runs to show.
+        #[arg(long, default_value_t = runs_cmd::LIMITE_PADRAO)]
+        limit: u32,
+
+        /// Emit a stable JSON array instead of the human-friendly listing.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2274,6 +2309,23 @@ async fn async_main(
                 yes,
             )
             .await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Commands::Runs { action } => {
+            // Mesmo console limpo do `memory` (#933): a saida do subcomando e
+            // o relatorio, e o tracing so entra quando o operador pede.
+            if cli.verbose || cli.debug {
+                init_tracing(&effective_level);
+            }
+            let code = match action {
+                RunsCommands::List {
+                    status,
+                    limit,
+                    json,
+                } => runs_cmd::run_list(&config, status, limit, json)?,
+            };
             if code != 0 {
                 std::process::exit(code);
             }

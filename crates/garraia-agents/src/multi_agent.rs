@@ -166,11 +166,15 @@ pub struct AgentCoordinator {
     default_system_prompt: String,
     /// Maximum concurrent agents
     max_concurrent: usize,
-    /// Ledger durável de runs (P1 gap analysis 2026-09-15). Default no-op;
-    /// o wiring de produção (subida do gateway/CLI chamando
-    /// `mark_interrupted_runs`, scheduler gravando run) é a #1227 — hoje
-    /// nenhum caminho de produção injeta o adapter, embora `DbRunLedger` já
-    /// aceite o `Arc<tokio::sync::Mutex<SessionStore>>` do `AppState`.
+    /// Ledger durável de runs (P1 gap analysis 2026-09-15). Default no-op.
+    ///
+    /// O wiring de produção da #1227 já chegou, mas **por fora deste trait**:
+    /// a subida do gateway/CLI chama `log_interrupted_runs` (slice 1) e o
+    /// scheduler (`execute_scheduled_task`) grava cada execução agendada em
+    /// `agent_runs` com `mode = "heartbeat"` (slice 1), ambos direto no
+    /// `SessionStore`. O que segue sem chamador de produção é **este**
+    /// campo: nenhum caminho de gateway/CLI constrói um `AgentCoordinator`
+    /// hoje, então `with_ledger` só é exercitado em teste.
     ledger: Arc<dyn RunLedger>,
 }
 
@@ -180,8 +184,10 @@ pub struct AgentCoordinator {
 /// `on_finish`. Implementação padrão: no-op. O adapter sobre a tabela
 /// `agent_runs` (`garraia-db`, `DbRunLedger`) existe, é testado e aceita o
 /// `Arc<tokio::sync::Mutex<SessionStore>>` que o gateway já guarda em
-/// `AppState`, mas ainda não tem chamador de produção — o wiring na subida
-/// do gateway/CLI (que audita runs `interrupted` no restart) é a #1227.
+/// `AppState`, mas segue sem chamador de produção: a tabela hoje é povoada
+/// pelo scheduler do gateway (#1227 slice 1), que chama
+/// `start_agent_run`/`finish_agent_run` direto no `SessionStore` sem passar
+/// por este trait.
 ///
 /// O trait usa [`async_trait`] — exceção documentada à regra "AFIT nativo"
 /// (CLAUDE.md §Rust), pela mesma razão de `garraia_storage::ObjectStore`: é
@@ -232,8 +238,10 @@ impl RunLedger for NoopLedger {
 /// em `AppState::session_store` (#1227 slice 3) — antes exigia
 /// `std::sync::Mutex`, tipo incompatível, e o wiring era impossível. Continua
 /// sem chamador de produção: nenhum caminho do gateway/CLI constrói um
-/// `AgentCoordinator` hoje, então `with_ledger` só é chamado em teste. O
-/// wiring na subida segue sendo a #1227.
+/// `AgentCoordinator` hoje, então `with_ledger` só é chamado em teste. Quem
+/// povoa `agent_runs` em produção é o scheduler do gateway (#1227 slice 1),
+/// por chamada direta ao `SessionStore` — o `garra runs list` (slice 4) lê
+/// exatamente essas linhas.
 ///
 /// Falha de I/O no SQLite vira aviso no log e não derruba o run — o ledger é
 /// auditoria a posteriori, não pré-condição de execução (comportamento
