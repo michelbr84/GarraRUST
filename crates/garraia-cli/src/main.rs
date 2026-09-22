@@ -470,7 +470,7 @@ enum WhatsAppCommands {
     /// ligar o canal; o arquivo e reescrito, entao comentarios nao ficam.
     /// Exit codes: 0 ok, 1 cancelado, 64 `--owner` fora de `isolated-pod` ou
     /// sem terminal e sem `--yes`, 65 numero invalido, 70 config ilegivel.
-    /// Revogar e editar o config.yml.
+    /// Revogar e `garra whatsapp remove <numero>`.
     Allow {
         /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
         /// LID `<id>@lid`.
