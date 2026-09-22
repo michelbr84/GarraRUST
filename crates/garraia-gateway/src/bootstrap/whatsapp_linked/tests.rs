@@ -3435,8 +3435,13 @@ mod ponta_a_ponta {
             .filter(|m| {
                 m.from_me
                     && m.text.as_deref().is_some_and(|t| {
-                        garraia_agents::tools::approval::ApprovalFingerprint::from_marker(t)
-                            .is_some()
+                        // #1373: o marcador interno nao sai para o WhatsApp;
+                        // o pedido e reconhecido pela frase da ferramenta.
+                        assert!(
+                            !t.contains(garraia_agents::tools::approval::MARKER_PREFIX),
+                            "o marcador interno chegou ao WhatsApp: {t}"
+                        );
+                        t.contains("Confirma apagar")
                     })
             })
             .count()

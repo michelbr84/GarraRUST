@@ -157,8 +157,15 @@ impl LlmProvider for Roteiro {
     }
 }
 
+/// O pedido de confirmacao pela frase da ferramenta de teste. Desde a #1373 o
+/// marcador interno nao chega ao texto do humano (e digita-lo nunca aprovou
+/// nada), entao toda resposta que passa por aqui tambem prova que ele sumiu.
 fn e_pedido(resposta: &str) -> bool {
-    ApprovalFingerprint::from_marker(resposta).is_some()
+    assert!(
+        !resposta.contains(garraia_agents::tools::approval::MARKER_PREFIX),
+        "o marcador interno chegou ao texto do humano: {resposta}"
+    );
+    resposta.contains("Confirma apagar")
 }
 
 struct Gateway {

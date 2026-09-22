@@ -4655,22 +4655,25 @@ mod aprovacao_tests {
         rt.register_provider(Arc::new(Roteiro));
         let mut h = Vec::new();
 
+        // #1373: o marcador interno nao chega ao texto do humano; o pedido e
+        // reconhecido pela frase da ferramenta de teste.
+        let e_pedido = |r: &str| {
+            assert!(
+                !r.contains(garraia_agents::tools::approval::MARKER_PREFIX),
+                "o marcador interno chegou ao terminal: {r}"
+            );
+            r.contains("Confirma apagar")
+        };
         let r1 = turno(&rt, "cli-1343", &mut h, "apaga o arquivo").await;
-        assert!(
-            ApprovalFingerprint::from_marker(&r1).is_some(),
-            "pausa: {r1}"
-        );
+        assert!(e_pedido(&r1), "pausa: {r1}");
         assert_eq!(vezes.load(Ordering::SeqCst), 0);
 
         let r2 = turno(&rt, "cli-1343", &mut h, "sim").await;
-        assert!(ApprovalFingerprint::from_marker(&r2).is_none(), "{r2}");
+        assert!(!e_pedido(&r2), "{r2}");
         assert_eq!(vezes.load(Ordering::SeqCst), 1, "roda uma vez");
 
         let r3 = turno(&rt, "cli-1343", &mut h, "sim").await;
-        assert!(
-            ApprovalFingerprint::from_marker(&r3).is_some(),
-            "replay pausa: {r3}"
-        );
+        assert!(e_pedido(&r3), "replay pausa: {r3}");
         assert_eq!(vezes.load(Ordering::SeqCst), 1, "replay nao roda");
     }
 

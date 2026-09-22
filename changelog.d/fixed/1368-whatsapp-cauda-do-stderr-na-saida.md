@@ -1,5 +1,5 @@
 - **O erro do `garraia whatsapp link` quando o bridge morre antes de
-  conectar volta a trazer as ultimas linhas do stderr do Node.** A cauda so
+  conectar volta a trazer as ultimas linhas do stderr do Node (#1368).** A cauda so
   era lida com o que a task do stderr ja tinha encaminhado; com o filho
   recem-terminado, a ultima linha, justamente a que explica o erro, ainda
   estava no pipe, e a mensagem saia so com "o bridge encerrou (codigo 1)
