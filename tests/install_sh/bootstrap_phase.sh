@@ -77,6 +77,23 @@ harness_has_tty() {
     (: </dev/tty) 2>/dev/null
 }
 
+# Is the `script` on PATH the util-linux one? The pty wrap below passes
+# util-linux flags (`-qec CMD /dev/null`): the BSD `script` on macOS has
+# no -c and busybox's has no -e, so "a `script` exists" is not enough and
+# anything else must fall to the no-pty branch instead of failing on a
+# usage error. The output is captured rather than piped into `grep -q`,
+# which can SIGPIPE the writer and, under pipefail, turn a match into a
+# failure. Mirrors Get-UtilLinuxScript in tests/install_ps1/bootstrap_phase.ps1.
+have_util_linux_script() {
+    command -v script >/dev/null 2>&1 || return 1
+    local version
+    version="$(script --version 2>/dev/null)" || return 1
+    case "${version}" in
+        *util-linux*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Run "$@" with no controlling terminal, so /dev/tty exists (0666) but
 # open(2) on it fails with ENXIO -- the container/CI condition behind
 # the v0.4.4 smoke failure. `setsid -w` is util-linux (every CI runner);
@@ -153,7 +170,7 @@ INNER
 
     if harness_has_tty; then
         bash "${runner}" >"${log_dir}/output.log" 2>&1 || true
-    elif command -v script >/dev/null 2>&1; then
+    elif have_util_linux_script; then
         # `script -qec 'cmd' /dev/null`: -q suppresses the banner,
         # -e forwards the wrapped command's exit code, -c runs the
         # command and exits. Allocates a pty so /dev/tty is real
@@ -161,7 +178,7 @@ INNER
         script -qec "bash ${runner}" /dev/null \
             >"${log_dir}/output.log" 2>&1 || true
     else
-        echo "WARNING: no working /dev/tty and no \`script\` command — cases (c)/(d)/(e) may fail" >&2
+        echo "WARNING: no working /dev/tty and no util-linux \`script\` — cases (c)/(d)/(e)/(g) may fail" >&2
         bash "${runner}" >"${log_dir}/output.log" 2>&1 || true
     fi
 }
@@ -399,6 +416,58 @@ case_g_ci_with_tty() {
     fi
 }
 
+# ---- case (h): only a util-linux `script` drives the pty wrap -------------
+# The wrap in run_bootstrap_in_subshell passes util-linux flags. Pinned with
+# fake `script` binaries so the result does not depend on the host's PATH.
+# Mirrored by the Get-UtilLinuxScript block in
+# tests/install_ps1/bootstrap_phase.ps1.
+case_h_pty_tool_probe() {
+    echo ""
+    echo "== case (h) only a util-linux script drives the pty wrap =="
+    local base
+    base="$(mktemp -d)"
+    mkdir -p "${base}/util-linux" "${base}/bsd" "${base}/busybox" "${base}/empty"
+    cat >"${base}/util-linux/script" <<'FAKE'
+#!/bin/sh
+case "$1" in --version) echo "script from util-linux 9.99 (fake)"; exit 0;; esac
+exit 0
+FAKE
+    cat >"${base}/bsd/script" <<'FAKE'
+#!/bin/sh
+echo "script: illegal option -- -" >&2
+echo "usage: script [-aeFkqr] [-t time] [file [command ...]]" >&2
+exit 1
+FAKE
+    cat >"${base}/busybox/script" <<'FAKE'
+#!/bin/sh
+echo "BusyBox v1.36.1 multi-call binary."
+exit 0
+FAKE
+    chmod +x "${base}/util-linux/script" "${base}/bsd/script" "${base}/busybox/script"
+
+    if (PATH="${base}/util-linux"; have_util_linux_script); then
+        pass "case (h): a util-linux script is accepted"
+    else
+        fail "case (h): a util-linux script was rejected"
+    fi
+    if (PATH="${base}/bsd"; have_util_linux_script); then
+        fail "case (h): a BSD script was accepted (it has no -c)"
+    else
+        pass "case (h): a BSD script is not accepted"
+    fi
+    if (PATH="${base}/busybox"; have_util_linux_script); then
+        fail "case (h): a non-util-linux script was accepted"
+    else
+        pass "case (h): a non-util-linux script is not accepted"
+    fi
+    if (PATH="${base}/empty"; have_util_linux_script); then
+        fail "case (h): no script on PATH was accepted"
+    else
+        pass "case (h): no script on PATH is not accepted"
+    fi
+    rm -r "${base}"
+}
+
 case_a_no_tty
 case_b_both_skip
 case_c_skip_init_only
@@ -406,6 +475,7 @@ case_d_skip_start_only
 case_e_default
 case_f_init_fails
 case_g_ci_with_tty
+case_h_pty_tool_probe
 
 echo ""
 echo "==============================================="

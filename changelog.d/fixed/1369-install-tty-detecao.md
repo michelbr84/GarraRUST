@@ -1,4 +1,4 @@
-- **`install.sh` deixa de tentar o wizard sem terminal em container e CI.**
+- **`install.sh` deixa de tentar o wizard sem terminal em container e CI (#1369).**
   O teste era `[ -r /dev/tty ]`, que so le os bits de permissao; o `/dev/tty`
   e `crw-rw-rw-` em qualquer Linux, inclusive num container ou runner sem
   terminal de controle, onde abrir o dispositivo falha com ENXIO. O smoke de

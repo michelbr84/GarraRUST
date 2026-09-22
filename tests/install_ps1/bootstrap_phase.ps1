@@ -206,7 +206,98 @@ if (-not `$ProbeOnly) {
     # pty on Linux; the windows-latest runner has no way to hand a child an
     # interactive console, so they are skipped there, as the registry cases are
     # in install_dir.ps1.
-    $ptyTool = if ($onWindows) { $null } else { Get-Command script -CommandType Application -ErrorAction SilentlyContinue }
+    #
+    # Resolves to ONE path or $null, never an array, and only to a util-linux
+    # `script`. Both halves have bitten:
+    #   * On merged-/usr Linux (ubuntu-latest) /bin is a symlink to usr/bin and
+    #     PATH lists both, so Get-Command returns the same binary twice. Its
+    #     .Source is then an array, ProcessStartInfo.FileName becomes
+    #     "/usr/bin/script /bin/script", Start() throws and the whole suite
+    #     exits 1.
+    #   * The cases pass util-linux flags (`-qec CMD /dev/null`). The BSD
+    #     `script` on macOS has no -c and busybox has no -e, so "a `script`
+    #     exists" is not the precondition; "it is util-linux" is. Anything else
+    #     SKIPs, as documented, instead of FAILing on a usage error.
+    # $SearchPath exists so the cases below can pin both halves with fake
+    # `script` binaries, independent of the runner's PATH layout.
+    function Get-UtilLinuxScript {
+        param([string]$SearchPath = $env:PATH)
+        if ($onWindows) { return $null }
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = $SearchPath
+            $first = Get-Command script -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        } finally {
+            $env:PATH = $savedPath
+        }
+        if ($null -eq $first) { return $null }
+        $candidate = [string]$first.Source
+        $probe = Invoke-BoundedChild -FileName $candidate -Arguments '--version'
+        if ($probe.TimedOut -or $probe.ExitCode -ne 0) { return $null }
+        if ($probe.Output -notmatch 'util-linux') { return $null }
+        return $candidate
+    }
+
+    function New-FakeScript {
+        param([string]$Directory, [string]$Body)
+        New-Item -ItemType Directory -Force -Path $Directory | Out-Null
+        $fake = Join-Path $Directory 'script'
+        Set-Content -Path $fake -Value ("#!/bin/sh`n" + $Body)
+        & chmod +x $fake
+        return $fake
+    }
+
+    Write-Host ''
+    Write-Host 'Get-UtilLinuxScript: which `script` the pty cases may drive'
+    if ($onWindows) {
+        Assert-Skip 'resolver cases' 'no POSIX `script` on Windows'
+    } else {
+        $utilLinuxBody = 'case "$1" in --version) echo "script from util-linux 9.99 (fake)"; exit 0;; esac' + "`nexit 0"
+        $firstDir = Join-Path $sandbox 'fake-bin-1'
+        $secondDir = Join-Path $sandbox 'fake-bin-2'
+        $firstFake = New-FakeScript -Directory $firstDir -Body $utilLinuxBody
+        New-FakeScript -Directory $secondDir -Body $utilLinuxBody | Out-Null
+        $sep = [IO.Path]::PathSeparator
+        # The ubuntu-latest layout: two PATH entries, two matches. Caught so a
+        # regression reports here as FAILs instead of aborting the suite, which
+        # is how it first showed up in CI.
+        $resolverError = $null
+        try {
+            $resolved = Get-UtilLinuxScript -SearchPath ($firstDir + $sep + $secondDir)
+        } catch {
+            $resolved = $null
+            $resolverError = $_.Exception.Message
+        }
+        Assert-Equal 'two matches on PATH resolve without throwing' '' $resolverError
+        Assert-True  'two matches on PATH resolve to a single path' ($resolved -is [string])
+        Assert-Equal 'and it is the first match, as exec would pick' $firstFake $resolved
+
+        # BSD script (macOS): no --version, usage on stderr, exit 1.
+        $bsdDir = Join-Path $sandbox 'fake-bin-bsd'
+        New-FakeScript -Directory $bsdDir -Body ('echo "script: illegal option -- -" >&2' + "`n" +
+            'echo "usage: script [-aeFkqr] [-t time] [file [command ...]]" >&2' + "`nexit 1") | Out-Null
+        $resolved = Get-UtilLinuxScript -SearchPath $bsdDir
+        Assert-True  'a BSD script is not accepted (the pty cases SKIP)' ($null -eq $resolved)
+
+        # A `script` that answers --version but is not util-linux (busybox-like).
+        $otherDir = Join-Path $sandbox 'fake-bin-other'
+        New-FakeScript -Directory $otherDir -Body ('echo "BusyBox v1.36.1 multi-call binary."' + "`nexit 0") | Out-Null
+        $resolved = Get-UtilLinuxScript -SearchPath $otherDir
+        Assert-True  'a non-util-linux script is not accepted' ($null -eq $resolved)
+
+        $emptyDir = Join-Path $sandbox 'fake-bin-empty'
+        New-Item -ItemType Directory -Force -Path $emptyDir | Out-Null
+        $resolved = Get-UtilLinuxScript -SearchPath $emptyDir
+        Assert-True  'no script on PATH resolves to nothing' ($null -eq $resolved)
+    }
+
+    try {
+        $ptyTool = Get-UtilLinuxScript
+    } catch {
+        Assert-Fail "resolving util-linux script on this PATH threw: $($_.Exception.Message)"
+        $ptyTool = $null
+    }
 
     Write-Host ''
     Write-Host 'Test-InteractiveSession (real probe): real terminal, CI unset'
@@ -215,7 +306,7 @@ if (-not `$ProbeOnly) {
     } else {
         $inner = "'" + $psExe + "' -NoProfile -NonInteractive -File '" + $child + "' -ProbeOnly"
         $failedBefore = $script:Failed
-        $run = Invoke-BoundedChild -FileName $ptyTool.Source -Arguments ('-qec "' + $inner + '" /dev/null')
+        $run = Invoke-BoundedChild -FileName $ptyTool -Arguments ('-qec "' + $inner + '" /dev/null')
         $out = $run.Output
         Assert-False 'the child does not hang' $run.TimedOut
         Assert-True  'precondition: stdin is a terminal' ($out -match '__redirected__=False')
@@ -234,7 +325,7 @@ if (-not `$ProbeOnly) {
     } else {
         $inner = "'" + $psExe + "' -NoProfile -NonInteractive -File '" + $child + "' -Ci true"
         $failedBefore = $script:Failed
-        $run = Invoke-BoundedChild -FileName $ptyTool.Source -Arguments ('-qec "' + $inner + '" /dev/null')
+        $run = Invoke-BoundedChild -FileName $ptyTool -Arguments ('-qec "' + $inner + '" /dev/null')
         $out = $run.Output
         Assert-False 'the child does not hang' $run.TimedOut
         Assert-True  'precondition: stdin is a terminal' ($out -match '__redirected__=False')
