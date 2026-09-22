@@ -26,3 +26,9 @@
   id reetiquetava a sessao de outra superficie (uma `whatsapp-<numero>` ainda
   sem mensagem, por exemplo) como da API, e a readocao passava a aceita-la.
   Agora ele so cria a linha que falta e grava apenas o modo.
+  Limite conhecido: a marca so existe para `DELETE` feito a partir desta
+  versao. Uma sessao REST encerrada numa versao anterior ficou sem ela, e
+  depois da atualizacao volta a ser lida por esta rota como uma sessao viva.
+  A rota e do proprio operador (loopback, ou o gate de `api_key` num bind
+  exposto) e o historico ja esta no `sessions.db` dele; quem quiser apagar
+  de vez faz um novo `DELETE`, que agora grava a marca.
