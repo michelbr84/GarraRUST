@@ -68,8 +68,20 @@ impl Jid {
     ///
     /// Mesma politica do `redactWhatsAppId` do Hermes e do campo
     /// `phone_last4` do proprio protocolo.
+    ///
+    /// # So a parte de usuario conta
+    ///
+    /// Um JID e `<usuario>[:<aparelho>]@<dominio>`. Os digitos do aparelho
+    /// nao sao do numero: `5511555554321:7@s.whatsapp.net` e o `…4321`, e a
+    /// versao que contava todos os digitos do texto logava `3217` — o final
+    /// de um numero que nao existe, justamente na linha em que o operador
+    /// confere qual conta conectou. O corte e o mesmo do `phoneLast4` da
+    /// ponte (`split('@')[0].split(':')[0]`), para as duas pontas darem o
+    /// mesmo final para o mesmo JID. Vale igual para `@lid`, grupo e JID sem
+    /// dominio.
     pub fn last4(&self) -> String {
-        let digits: Vec<char> = self.0.chars().filter(|c| c.is_ascii_digit()).collect();
+        let user = self.0.split(['@', ':']).next().unwrap_or_default();
+        let digits: Vec<char> = user.chars().filter(|c| c.is_ascii_digit()).collect();
         let tail: String = digits.iter().rev().take(4).rev().collect();
         if tail.is_empty() {
             "????".to_string()
@@ -579,6 +591,38 @@ mod tests {
     #[test]
     fn jid_without_digits_degrades_to_a_placeholder() {
         assert_eq!(Jid::new("status@broadcast").last4(), "????");
+    }
+
+    /// O `connected` da conta propria traz o JID com o sufixo de aparelho
+    /// (`:7`). O log de conexao mostrava `phone_last4=3217` para o numero
+    /// `…4321`: os digitos do aparelho entravam na conta.
+    #[test]
+    fn last4_ignores_the_device_suffix_and_the_domain() {
+        let casos: &[(&str, &str, &str)] = &[
+            ("5511555554321:7@s.whatsapp.net", "4321", "JID com aparelho"),
+            (
+                "5511555554321:12@s.whatsapp.net",
+                "4321",
+                "aparelho de 2 digitos",
+            ),
+            ("5511555554321@s.whatsapp.net", "4321", "JID de telefone"),
+            ("123456789012345@lid", "2345", "@lid"),
+            ("123456789012345:3@lid", "2345", "@lid com aparelho"),
+            ("5511555554321", "4321", "sem dominio"),
+            ("5511555554321:7", "4321", "aparelho sem dominio"),
+            ("120363041234567890@g.us", "7890", "grupo"),
+            ("status@broadcast", "????", "sem digitos"),
+            (":7@s.whatsapp.net", "????", "usuario vazio"),
+            ("", "????", "vazio"),
+        ];
+        for (jid, esperado, caso) in casos {
+            assert_eq!(Jid::new(*jid).last4(), *esperado, "{caso}: {jid}");
+        }
+        assert_eq!(
+            format!("{:?}", Jid::new("5511555554321:7@s.whatsapp.net")),
+            "Jid(***4321)",
+            "o Debug usa o mesmo final"
+        );
     }
 
     #[test]

@@ -2293,7 +2293,8 @@ mod ponta_a_ponta {
             roteiro: Roteiro::empurra("oi do celular"),
         });
 
-        supervisionar(&state, settings, store, key, launcher);
+        let preparo = preparo_da_ponte::ponte_ja_pronta(&state).await;
+        supervisionar(&state, settings, store, key, launcher, preparo);
 
         assert!(
             state.whatsapp_linked.cancelamento_vivo(),
@@ -2335,6 +2336,7 @@ mod ponta_a_ponta {
                 .bridge_dir,
             roteiro: Roteiro::eco(),
         });
+        let preparo = preparo_da_ponte::ponte_ja_pronta(&state).await;
         supervisionar(
             &state,
             LinkedSettings {
@@ -2344,6 +2346,7 @@ mod ponta_a_ponta {
             store,
             key,
             launcher,
+            preparo,
         );
 
         assert!(
@@ -2360,6 +2363,11 @@ mod ponta_a_ponta {
             "e o slot fica vazio, para um proximo supervisor poder ocupa-lo"
         );
     }
+
+    // W1 (v0.4.5): o boot re-materializa a ponte embutida e roda o `npm ci`
+    // quando os manifestos mudaram. Em arquivo proprio para nao disputar
+    // linhas com o resto desta suite.
+    mod preparo_da_ponte;
 
     // -----------------------------------------------------------------------
     // O circuito da mensagem (sink + gates)
@@ -2439,6 +2447,9 @@ mod ponta_a_ponta {
         config_viva: Option<watch::Receiver<AppConfig>>,
         /// Identidades a mais no `allow` do boot (um `…@lid`, por exemplo).
         allow_extra: Vec<String>,
+        /// `default_mode` declarado na secao (#1343: o teste de grupo precisa
+        /// de um piso que deixe a ferramenta pausar).
+        default_mode: Option<String>,
     }
 
     impl Default for Montagem {
@@ -2452,6 +2463,7 @@ mod ponta_a_ponta {
                 provider: ProviderDeStub::default(),
                 config_viva: None,
                 allow_extra: Vec::new(),
+                default_mode: None,
             }
         }
     }
@@ -2472,6 +2484,7 @@ mod ponta_a_ponta {
             provider,
             config_viva,
             allow_extra,
+            default_mode,
         } = m;
         let dir = tempfile::tempdir().expect("tempdir");
         let (state, provider) = monta_estado_vivo(&dir, perfil, provider, config_viva);
@@ -2505,7 +2518,7 @@ mod ponta_a_ponta {
                 Vec::new()
             },
             reply_in_groups,
-            ..LinkedSettings::default()
+            default_mode,
         };
 
         let (outbound_tx, outbound_rx) = mpsc::channel(16);
@@ -3360,6 +3373,197 @@ mod ponta_a_ponta {
     }
 
     // -----------------------------------------------------------------------
+    // #1343: aprovacao retomada entre turnos (GAR-187)
+    // -----------------------------------------------------------------------
+
+    const PERIGOSA: &str = "apaga_arquivo";
+    const ALVO_PERIGOSO: &str = "/tmp/garraia-1343-alvo";
+
+    /// Ferramenta que pede confirmacao e conta quantas vezes RODOU (so roda
+    /// quando a aprovacao do turno cobre `(PERIGOSA, ALVO_PERIGOSO)`).
+    struct ToolQuePedeConfirmacao {
+        rodou: Contador,
+    }
+
+    #[async_trait::async_trait]
+    impl garraia_agents::tools::Tool for ToolQuePedeConfirmacao {
+        fn name(&self) -> &str {
+            PERIGOSA
+        }
+        fn description(&self) -> &str {
+            "apaga um arquivo (stub)"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            c: &garraia_agents::tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> garraia_common::Result<garraia_agents::tools::ToolOutput> {
+            if c.approval.covers(PERIGOSA, ALVO_PERIGOSO) {
+                self.rodou.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(garraia_agents::tools::ToolOutput::success("apagado"));
+            }
+            let marcador =
+                garraia_agents::tools::approval::ApprovalFingerprint::of(PERIGOSA, ALVO_PERIGOSO)
+                    .marker();
+            Ok(garraia_agents::tools::ToolOutput::confirmation_request(
+                format!("Confirma apagar {ALVO_PERIGOSO}? Responda sim. {marcador}"),
+            ))
+        }
+    }
+
+    fn registra_perigosa(rodou: &Contador) -> impl FnOnce(&SharedState) {
+        let rodou = Arc::clone(rodou);
+        move |state: &SharedState| {
+            state
+                .agents
+                .register_tool(Box::new(ToolQuePedeConfirmacao { rodou }));
+        }
+    }
+
+    fn pedido_perigoso() -> ProviderDeStub {
+        ProviderDeStub::que_pede(PERIGOSA, serde_json::json!({ "alvo": ALVO_PERIGOSO }))
+    }
+
+    /// Quantos pedidos de confirmacao sairam pela ponte (o eco `from_me` da
+    /// resposta do agente traz o marcador).
+    fn pedidos_que_sairam(c: &Cenario) -> usize {
+        recebidas(c)
+            .iter()
+            .filter(|m| {
+                m.from_me
+                    && m.text.as_deref().is_some_and(|t| {
+                        // #1373: o marcador interno nao sai para o WhatsApp;
+                        // o pedido e reconhecido pela frase da ferramenta.
+                        assert!(
+                            !t.contains(garraia_agents::tools::approval::MARKER_PREFIX),
+                            "o marcador interno chegou ao WhatsApp: {t}"
+                        );
+                        t.contains("Confirma apagar")
+                    })
+            })
+            .count()
+    }
+
+    /// Entrega `m` pelo sink real com o pedido de ferramenta rearmado (no
+    /// GAR-187 o modelo repete a chamada no turno do "sim"), e espera a
+    /// resposta do agente sair pela ponte.
+    async fn turno_pela_ponte(c: &Cenario, m: InboundMessage) {
+        c.provider
+            .rearma(PERIGOSA, serde_json::json!({ "alvo": ALVO_PERIGOSO }));
+        let antes = respostas(c);
+        InboundSink::deliver(&*c.espiao, m);
+        assert!(
+            ate(|| respostas(c) > antes).await,
+            "a resposta do agente tem de sair pela ponte: {:?}",
+            recebidas(c)
+        );
+    }
+
+    /// **O #1343 pela ponte do WhatsApp.** O dono, num `isolated-pod`, em
+    /// 1:1: o turno pausa e o pedido sai pela ponte; o "sim" seguinte roda a
+    /// ferramenta UMA vez; um segundo "sim" (replay) pausa de novo.
+    #[tokio::test]
+    async fn dono_no_pod_recebe_o_pedido_e_o_sim_roda_uma_vez() {
+        let vezes = contador();
+        let c = Montagem {
+            roteiro: Roteiro::eco().da_propria_conta(),
+            dono: true,
+            perfil: ExecutionProfile::IsolatedPod,
+            provider: pedido_perigoso(),
+            ..Montagem::default()
+        }
+        .sobe(registra_perigosa(&vezes))
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe"
+        );
+
+        turno_pela_ponte(&c, msg(Some("apaga o arquivo"))).await;
+        assert_eq!(
+            pedidos_que_sairam(&c),
+            1,
+            "o pedido saiu: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(rodou(&vezes), 0, "pausou, nao rodou");
+
+        turno_pela_ponte(&c, msg(Some("sim"))).await;
+        assert_eq!(rodou(&vezes), 1, "o sim do mesmo remetente roda — uma vez");
+
+        turno_pela_ponte(&c, msg(Some("sim"))).await;
+        assert_eq!(rodou(&vezes), 1, "replay nao roda de novo");
+        assert_eq!(pedidos_que_sairam(&c), 2, "o replay pausa de novo");
+
+        encerra(c).await;
+    }
+
+    const OUTRO: &str = "5511777770000";
+    const GRUPO_1343: &str = "120363000000000043@g.us";
+
+    fn no_grupo(remetente: &str, texto: &str) -> InboundMessage {
+        let mut m = msg(Some(texto));
+        m.chat_jid = Jid::new(GRUPO_1343);
+        m.sender_jid = Jid::new(format!("{remetente}@s.whatsapp.net"));
+        m.sender_phone = Some(format!("+{remetente}"));
+        m.is_group = true;
+        m
+    }
+
+    /// **Grupo, fail-closed.** `PEER` e `OUTRO` estao no `allow`, o grupo
+    /// responde e o piso deixa a ferramenta pausar. `PEER` recebe o pedido;
+    /// o "sim" de `OUTRO`, no mesmo grupo, nao roda nada — e encerra o
+    /// pedido, entao o "sim" tardio de `PEER` tambem nao roda. O controle no
+    /// fim prova que o caminho roda a ferramenta quando o "sim" e de quem
+    /// recebeu o pedido.
+    #[tokio::test]
+    async fn no_grupo_o_sim_de_outro_membro_nao_aprova_o_pedido() {
+        let vezes = contador();
+        let c = Montagem {
+            roteiro: Roteiro::eco().da_propria_conta(),
+            liberado: true,
+            allow_extra: vec![OUTRO.to_string()],
+            reply_in_groups: true,
+            default_mode: Some("code".to_string()),
+            provider: pedido_perigoso(),
+            ..Montagem::default()
+        }
+        .sobe(registra_perigosa(&vezes))
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe"
+        );
+
+        turno_pela_ponte(&c, no_grupo(PEER, "apaga o arquivo")).await;
+        assert_eq!(pedidos_que_sairam(&c), 1, "{:?}", recebidas(&c));
+
+        turno_pela_ponte(&c, no_grupo(OUTRO, "sim")).await;
+        assert_eq!(rodou(&vezes), 0, "o sim de outro membro nao aprova");
+
+        turno_pela_ponte(&c, no_grupo(PEER, "sim")).await;
+        assert_eq!(
+            rodou(&vezes),
+            0,
+            "o pedido de PEER foi encerrado pelo sim alheio; o pedido novo e de OUTRO"
+        );
+
+        // Controle: agora o pedido pendente e o de PEER (o turno anterior
+        // pausou), e o "sim" dele roda.
+        turno_pela_ponte(&c, no_grupo(PEER, "sim")).await;
+        assert_eq!(
+            rodou(&vezes),
+            1,
+            "controle: o sim de quem recebeu o pedido roda"
+        );
+
+        encerra(c).await;
+    }
+
+    // -----------------------------------------------------------------------
     // #1345: remetente `@lid` (Baileys 7)
     // -----------------------------------------------------------------------
 
@@ -3480,5 +3684,282 @@ mod ponta_a_ponta {
         );
 
         encerra(c).await;
+    }
+
+    /// #1347 (fatia 3), o relato de ponta a ponta: conectado ao WhatsApp, o
+    /// Garra respondia que nao tinha acesso ao WhatsApp. Aqui o modelo e um
+    /// stub que faz o que a nota do runtime manda — chama `garra_status` e
+    /// responde a partir do relatorio —, e o resto e o de producao: o portao
+    /// do piso `search`, o runtime, a tool do gateway e o estado do canal.
+    mod acesso_ao_whatsapp {
+        use super::*;
+
+        const PERGUNTA: &str = "voce tem acesso ao WhatsApp?";
+
+        /// O que o stub viu e respondeu.
+        #[derive(Debug, Default)]
+        struct Visto {
+            /// `(system, ferramentas)` da primeira rodada de cada turno.
+            primeira_rodada: Option<(Option<String>, Vec<String>)>,
+            /// O `tool_result` do `garra_status`.
+            relatorio: Option<String>,
+            /// A resposta final.
+            resposta: Option<String>,
+        }
+
+        /// Um modelo obediente: na primeira rodada pede `garra_status`; na
+        /// seguinte, responde "sim" se o relatorio lista o `whatsapp_linked`
+        /// como `active`, e "nao" em qualquer outro caso.
+        #[derive(Debug, Default)]
+        struct ModeloQueConsulta {
+            visto: Mutex<Visto>,
+        }
+
+        impl ModeloQueConsulta {
+            fn visto<T>(&self, f: impl FnOnce(&Visto) -> T) -> T {
+                f(&self.visto.lock().expect("lock"))
+            }
+        }
+
+        fn conectado_segundo(relatorio: &str) -> bool {
+            serde_json::from_str::<serde_json::Value>(relatorio)
+                .ok()
+                .and_then(|json| {
+                    json["channels"].as_array().map(|canais| {
+                        canais
+                            .iter()
+                            .any(|c| c["id"] == "whatsapp_linked" && c["status"] == "active")
+                    })
+                })
+                .unwrap_or(false)
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for ModeloQueConsulta {
+            fn provider_id(&self) -> &str {
+                "consulta"
+            }
+            async fn complete(&self, request: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+                let resultado = request.messages.last().and_then(|m| match &m.content {
+                    MessagePart::Parts(p) => p.iter().find_map(|b| match b {
+                        ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                });
+                let mut visto = self.visto.lock().expect("lock");
+                let content = match resultado {
+                    Some(relatorio) => {
+                        let resposta = if conectado_segundo(&relatorio) {
+                            "sim, estou conectado ao WhatsApp"
+                        } else {
+                            "nao, nao tenho acesso ao WhatsApp"
+                        };
+                        visto.relatorio = Some(relatorio);
+                        visto.resposta = Some(resposta.to_string());
+                        ContentBlock::Text {
+                            text: resposta.to_string(),
+                        }
+                    }
+                    None => {
+                        if visto.primeira_rodada.is_none() {
+                            visto.primeira_rodada = Some((
+                                request.system.clone(),
+                                request.tools.iter().map(|t| t.name.clone()).collect(),
+                            ));
+                        }
+                        ContentBlock::ToolUse {
+                            id: "status-1".to_string(),
+                            name: "garra_status".to_string(),
+                            input: serde_json::json!({}),
+                        }
+                    }
+                };
+                let stop = if matches!(content, ContentBlock::ToolUse { .. }) {
+                    "tool_use"
+                } else {
+                    "end_turn"
+                };
+                Ok(LlmResponse {
+                    content: vec![content],
+                    model: "consulta-1".to_string(),
+                    usage: None,
+                    stop_reason: Some(stop.to_string()),
+                })
+            }
+            async fn health_check(&self) -> garraia_common::Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// O estado de producao com o modelo obediente, uma tool que o piso
+        /// libera, uma que ele nega e o `garra_status` registrado como o
+        /// `server.rs` registra (depois do `Arc`, com as contagens push).
+        fn estado(dir: &tempfile::TempDir) -> (SharedState, Arc<ModeloQueConsulta>) {
+            let config = AppConfig {
+                data_dir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            };
+            let agents = AgentRuntime::new();
+            let modelo = Arc::new(ModeloQueConsulta::default());
+            agents.register_provider(Arc::clone(&modelo) as Arc<dyn LlmProvider>);
+            for nome in ["file_read", "bash"] {
+                agents.register_tool(Box::new(ToolDeMentira(nome)));
+            }
+            let state: SharedState = Arc::new(crate::state::AppState::with_config_dir(
+                config,
+                Arc::new(agents),
+                ChannelRegistry::new(),
+                dir.path(),
+            ));
+            state
+                .agents
+                .register_tool(Box::new(crate::tools::GarraStatusTool::new(
+                    &state,
+                    crate::push_channels::PushMounted::default(),
+                )));
+            (state, modelo)
+        }
+
+        /// Sessao gravada e dependencias da ponte "instaladas": os dois fatos
+        /// de disco que fazem o canal contar como vinculado.
+        fn vincula(state: &SharedState) -> (SessionStore, SessionKey) {
+            let par = grava_sessao(state);
+            let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
+            std::fs::create_dir_all(paths.bridge_dir.join("node_modules")).expect("node_modules");
+            par
+        }
+
+        /// O turno como o canal o roda: o piso somente leitura sobre um
+        /// contexto sem modo escolhido, na sessao do remetente.
+        async fn pergunta(state: &SharedState) -> String {
+            let exec = piso_somente_leitura(ExecContext::default(), DEFAULT_MODE);
+            state
+                .agents
+                .process_message_with_agent_config(
+                    &sid_do_peer(),
+                    PERGUNTA,
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &exec,
+                )
+                .await
+                .expect("turno")
+        }
+
+        /// A primeira rodada do turno no piso: a tool e a nota chegam ao
+        /// modelo, junto com o template do modo (nada substituido).
+        fn confere_primeira_rodada(modelo: &ModeloQueConsulta) {
+            let (system, tools) = modelo
+                .visto(|v| v.primeira_rodada.clone())
+                .expect("houve primeira rodada");
+            assert!(tools.iter().any(|t| t == "garra_status"), "{tools:?}");
+            assert!(
+                !tools.iter().any(|t| t == "bash"),
+                "o piso nega bash: {tools:?}"
+            );
+            let system = system.expect("prompt");
+            assert!(system.contains("You are a search assistant"), "{system}");
+            assert!(
+                system.contains(garraia_agents::NOTA_GARRA_STATUS_PT),
+                "{system}"
+            );
+        }
+
+        #[tokio::test]
+        async fn com_o_canal_conectado_responde_sim() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, modelo) = estado(&dir);
+            vincula(&state);
+            state.whatsapp_linked.set_bridge(BridgeView::Connected);
+
+            let resposta = pergunta(&state).await;
+            assert!(resposta.starts_with("sim"), "{resposta}");
+            confere_primeira_rodada(&modelo);
+            let relatorio = modelo.visto(|v| v.relatorio.clone()).expect("relatorio");
+            // O numero do remetente mora no session id; o relatorio nao o
+            // entrega inteiro.
+            assert!(!relatorio.contains(PEER), "{relatorio}");
+            let json: serde_json::Value = serde_json::from_str(&relatorio).expect("json");
+            assert_eq!(json["session"]["channel"], "whatsapp_linked");
+            assert!(json["session"]["working_dir"].is_null(), "{json}");
+        }
+
+        #[tokio::test]
+        async fn sem_o_canal_vinculado_responde_nao() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, modelo) = estado(&dir);
+            state.whatsapp_linked.set_bridge(BridgeView::Connected);
+
+            let resposta = pergunta(&state).await;
+            assert!(resposta.starts_with("nao"), "{resposta}");
+            confere_primeira_rodada(&modelo);
+            let relatorio = modelo.visto(|v| v.relatorio.clone()).expect("relatorio");
+            let json: serde_json::Value = serde_json::from_str(&relatorio).expect("json");
+            assert!(
+                json["channels"]
+                    .as_array()
+                    .expect("lista")
+                    .iter()
+                    .all(|c| c["id"] != "whatsapp_linked"),
+                "{json}"
+            );
+        }
+
+        #[tokio::test]
+        async fn com_a_ponte_caida_responde_nao() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, _modelo) = estado(&dir);
+            vincula(&state);
+            state.whatsapp_linked.set_bridge(BridgeView::Down);
+
+            let resposta = pergunta(&state).await;
+            assert!(resposta.starts_with("nao"), "{resposta}");
+        }
+
+        /// O mesmo "sim", agora pela fiacao inteira do canal: a ponte falsa
+        /// empurra a pergunta, o supervisor marca a ponte como conectada, o
+        /// sink do gateway monta o turno com o piso e o runtime roda a tool.
+        #[tokio::test]
+        async fn pela_ponte_de_verdade_a_pergunta_recebe_sim() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (state, modelo) = estado(&dir);
+            let (store, key) = vincula(&state);
+            let launcher: Arc<dyn BridgeLauncher> = Arc::new(FixtureLauncher {
+                dir: LinkedPaths::from_config(&state.config)
+                    .expect("DEFAULT_ACCOUNT e valido")
+                    .bridge_dir,
+                roteiro: Roteiro::empurra(PERGUNTA),
+            });
+            // Integracao do trem: a #1373 deu ao supervisor o preparo da
+            // ponte; aqui ela ja esta pronta, como nos testes irmaos.
+            let preparo = preparo_da_ponte::ponte_ja_pronta(&state).await;
+            supervisionar(
+                &state,
+                LinkedSettings {
+                    enabled: true,
+                    allow: vec![PEER.to_string()],
+                    ..LinkedSettings::default()
+                },
+                store,
+                key,
+                launcher,
+                preparo,
+            );
+
+            assert!(
+                ate(|| modelo.visto(|v| v.resposta.is_some())).await,
+                "a pergunta empurrada pela ponte precisa virar turno"
+            );
+            let resposta = modelo.visto(|v| v.resposta.clone()).expect("resposta");
+            assert!(resposta.starts_with("sim"), "{resposta}");
+            confere_primeira_rodada(&modelo);
+            assert!(state.whatsapp_linked.cancelar(), "encerra o supervisor");
+        }
     }
 }

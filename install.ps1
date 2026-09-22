@@ -701,6 +701,16 @@ function Write-NextStepsLegacy {
 # Note: under `irm | iex` the pipeline carries objects, not stdin, so
 # IsInputRedirected is false and the console is genuinely interactive. The
 # wizard correctly runs, which is the intended behavior.
+#
+# Rule 16 counterpart: has_usable_tty in install.sh. That one had to stop
+# trusting `[ -r /dev/tty ]` (permission bits -- true in a container where
+# opening the device fails with ENXIO). This probe never had that flaw:
+# IsInputRedirected asks GetFileType for a character device AND GetConsoleMode
+# to accept the handle, so a stdin with no console behind it -- even NUL, which
+# IS a character device -- reads as redirected. It also probes the very handle
+# `garraia init` inherits, as the sh probe now opens the very /dev/tty the
+# wizard is redirected from. The CI short-circuit is mirrored there too.
+# tests/install_ps1/bootstrap_phase.ps1 runs this real probe in child processes.
 function Test-InteractiveSession {
     if (-not [Environment]::UserInteractive) { return $false }
     if ($env:CI) { return $false }

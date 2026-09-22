@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use garraia_agents::{
-    AgentRuntime, AnthropicProvider, BashTool, ChatMessage, ChatRole, CodeReviewTool,
-    DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, FileJail, FileReadTool,
-    FileWriteTool, ListDirTool, LlamaCppProvider, LlmProvider, MessagePart, OllamaProvider,
-    OpenAiProvider, RepoSearchTool, RunTestsTool, ValidacaoDeModelo, WebFetchTool, WebSearchTool,
-    normalize_ollama_tag, tools::git_diff_tool::GitDiffTool,
+    AgentRuntime, BashTool, ChatMessage, ChatRole, CodeReviewTool, DeviceExecuteTool,
+    DeviceListTool, DeviceReadTool, DeviceToolsConfig, FileJail, FileReadTool, FileWriteTool,
+    ListDirTool, LlmProvider, MessagePart, OllamaProvider, OpenAiProvider, RepoSearchTool,
+    RunTestsTool, ValidacaoDeModelo, WebFetchTool, WebSearchTool, normalize_ollama_tag,
+    tools::git_diff_tool::GitDiffTool,
 };
 use garraia_config::AppConfig;
 use garraia_db::SessionStore;
@@ -25,6 +25,7 @@ use garraia_hardware::DeviceRegistry;
 use tokio::sync::mpsc;
 
 use crate::defaults::{DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_PROVIDER};
+use crate::provider_binding;
 use crate::ui::error_card::ErrorCard;
 use crate::ui::panel;
 use crate::ui::tool_log::{Busca, ToolLog};
@@ -195,7 +196,13 @@ fn scan_directory_context(cwd: &str) -> String {
     parts.join(" | ")
 }
 
-/// Helper to resolve the API key checking env var, explicit config, and "main" config.
+/// Helper to resolve a NON-LLM API key (today only Brave's, for `web_search`)
+/// checking env var, explicit config, and "main" config.
+///
+/// LLM providers do not come through here any more: their endpoint and
+/// credential are bound together by [`provider_binding`], because this
+/// helper returns a key with no idea of which host it belongs to — which is
+/// how `-p openai` ended up sending a custom endpoint's key to api.openai.com.
 fn get_api_key(config: &AppConfig, provider_name: &str, env_var: &str) -> Option<String> {
     if !env_var.is_empty()
         && let Ok(key) = std::env::var(env_var)
@@ -364,6 +371,29 @@ fn open_chat_store(
     // `goal`), igual ao gateway.
     garraia_db::agent_runs::log_interrupted_runs(&store);
     Ok(Some(store))
+}
+
+/// Quem aprova, no CLI, um pedido de confirmacao pausado (#1343).
+///
+/// O processo e a fronteira de usuario: quem digita no terminal desta
+/// sessao e o mesmo humano que leu o pedido. O remetente e uma constante, e
+/// o escopo fica preso a `session_id` — `/resume` para outra sessao troca o
+/// escopo, e um restart zera o registro (ele vive em memoria no runtime).
+pub(crate) const REMETENTE_CLI: &str = "local-tty";
+
+/// O canal do CLI no registro de aprovacoes pendentes.
+pub(crate) const CANAL_CLI: &str = "cli";
+
+/// O `ExecContext` de um turno do `garraia chat`.
+///
+/// #980: o diretorio do projeto resolve caminho relativo das ferramentas de
+/// arquivo (**nao e sandbox** — ver `ExecContext::working_dir`). #1343: o
+/// escopo de aprovacao faz o "sim" do turno seguinte rodar o pedido pausado,
+/// uma vez.
+fn exec_do_turno(cwd: &str, session_id: &str) -> ExecContext {
+    let mut exec = ExecContext::with_working_dir(Some(cwd.to_string()));
+    exec.approval_scope = garraia_agents::ApprovalScope::new(CANAL_CLI, session_id, REMETENTE_CLI);
+    exec
 }
 
 /// Grava um turno (pergunta + resposta) no store.
@@ -594,19 +624,28 @@ fn decide_default_provider(
             reason: "agent.default_provider key not present in llm map",
         };
     };
-    let provider_kind = cfg.provider.as_str();
+    let provider_kind = cfg.provider.trim();
 
-    let cfg_has_key = cfg.api_key.as_deref().is_some_and(|k| !k.is_empty());
+    // Same emptiness rule as `provider_binding::bind_entry`, so the decision
+    // and the construction cannot disagree about whether a key exists.
+    let cfg_has_key = cfg.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+    // The kind's env var only counts when the entry talks to the kind's
+    // default host — `bind_entry` never sends it to the entry's own
+    // `base_url`, and the decision must not count a key the build will not
+    // use.
+    let env_reaches_entry =
+        provider_binding::env_credential_allowed(provider_kind, cfg.base_url.as_deref());
     let credential_ok = match provider_kind {
         // Local — health-checked by the caller. `llamacpp` talks to a local
         // llama-server (default http://localhost:8080), keyless like ollama.
         "ollama" | "llamacpp" => true,
-        "anthropic" => env_has_anthropic_key || cfg_has_key,
+        "anthropic" => cfg_has_key || (env_has_anthropic_key && env_reaches_entry),
         // OpenAI-compatible local backends (e.g. LM Studio) commonly omit
-        // the api_key and rely on `base_url` reachability. Treat them as
-        // credential-ok for the purposes of routing.
-        "openai" => cfg.base_url.is_some() || env_has_openai_key || cfg_has_key,
-        "openrouter" => env_has_openrouter_key || cfg_has_key,
+        // the api_key and rely on `base_url` reachability. Treat an entry
+        // pointing at its own endpoint as credential-ok for routing (it gets
+        // the keyless placeholder); the OpenAI API itself needs a key.
+        "openai" => cfg_has_key || !env_reaches_entry || env_has_openai_key,
+        "openrouter" => cfg_has_key || (env_has_openrouter_key && env_reaches_entry),
         _ => {
             return DefaultProviderDecision::FallThroughToChain {
                 reason: "unknown provider kind in agent.default_provider",
@@ -620,7 +659,17 @@ fn decide_default_provider(
         };
     }
 
-    let model = resolve_provider_model(config, provider_kind, None)
+    // The default entry's OWN model first: `resolve_provider_model` looks up
+    // `llm.<kind>` before anything else, so with `default_provider: lmstudio`
+    // (kind `openai`) next to an `llm.openai` it used to send llm.openai's
+    // model name to the LM Studio endpoint.
+    let model = cfg
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .or_else(|| resolve_provider_model(config, provider_kind, None))
         .unwrap_or_else(|| hardcoded_default_model(provider_kind));
 
     DefaultProviderDecision::UseDefault {
@@ -707,188 +756,117 @@ pub(crate) fn hardcoded_default_model(provider_kind: &str) -> String {
     .to_string()
 }
 
-/// Base URL do `llamacpp` — precedência `--url` > `config.llm["llamacpp"]`.
-///
-/// Retorna `None` quando nenhuma fonte fornece URL e o provider usa o
-/// default interno (`http://localhost:8080`). Extraído como função pura
-/// para que a precedência seja afirmável em teste (o provider devolvido
-/// pelo arm é um `Arc<dyn LlmProvider>` sem downcast).
-fn resolve_llamacpp_base_url(config: &AppConfig, url_override: Option<&str>) -> Option<String> {
-    url_override
-        .filter(|u| !u.is_empty())
-        .map(|u| u.to_string())
-        .or_else(|| config.llm.get("llamacpp").and_then(|c| c.base_url.clone()))
-}
-
 /// GAR-576 — Construct an [`LlmProvider`] from a config-resolved default.
 ///
 /// Returns `None` when construction is infeasible (e.g. Ollama daemon
 /// unreachable, or required api_key absent at build time); the caller
 /// then falls through to the legacy autodetect chain.
+///
+/// Endpoint AND credential come from the `llm.<config_key>` entry itself
+/// ([`provider_binding::bind_entry`]). This used to read the key from
+/// `llm.<kind>` instead, so `default_provider: lmstudio` (kind `openai`)
+/// next to an `llm.openai` sent llm.openai's key to the LM Studio endpoint,
+/// and an `anthropic` default dropped its `base_url` entirely.
 async fn try_build_default_provider(
-    config: &AppConfig,
-    provider_kind: &str,
+    config_key: &str,
     cfg: &garraia_config::LlmProviderConfig,
     model: &str,
+    env: provider_binding::Env<'_>,
 ) -> Option<Arc<dyn LlmProvider>> {
     // GAR-576: return ONLY the trait object — the display strings
     // (config_key, model) are formed at the call site from inputs that
     // never pass through this function. That keeps CodeQL's cleartext-
     // logging dataflow analysis from conservatively tainting the model
-    // name through this scope, which also calls `get_api_key`.
-    match provider_kind {
-        "ollama" => {
-            let ollama = OllamaProvider::new(Some(model.to_string()), cfg.base_url.clone());
-            if !ollama.health_check().await.unwrap_or(false) {
-                return None;
-            }
-            Some(Arc::new(ollama) as Arc<dyn LlmProvider>)
-        }
-        "llamacpp" => {
-            let llama = LlamaCppProvider::new(Some(model.to_string()), cfg.base_url.clone(), None);
-            if !llama.health_check().await.unwrap_or(false) {
-                return None;
-            }
-            Some(Arc::new(llama) as Arc<dyn LlmProvider>)
-        }
-        "anthropic" => {
-            let key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY")?;
-            let ap = AnthropicProvider::new(&key, Some(model.to_string()), None);
-            Some(Arc::new(ap) as Arc<dyn LlmProvider>)
-        }
-        "openai" => {
-            // OpenAI-compatible local backends (e.g. LM Studio) usually
-            // omit the api_key; accept "not-needed" when `base_url` is set.
-            let key = get_api_key(config, "openai", "OPENAI_API_KEY").or_else(|| {
-                if cfg.base_url.is_some() {
-                    Some("not-needed".to_string())
-                } else {
-                    None
-                }
-            })?;
-            let op = OpenAiProvider::new(&key, Some(model.to_string()), cfg.base_url.clone());
-            Some(Arc::new(op) as Arc<dyn LlmProvider>)
-        }
-        "openrouter" => {
-            let key = get_api_key(config, "openrouter", "OPENROUTER_API_KEY")?;
-            let base = cfg
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-            // GAR-582: name the provider "openrouter" so AgentRuntime's
-            // lookup-by-name resolves correctly. Without this, the runtime
-            // emits `WARN Provider 'openrouter' not found, falling back to default`.
-            let op = OpenAiProvider::new(&key, Some(model.to_string()), Some(base))
-                .with_name("openrouter");
-            Some(Arc::new(op) as Arc<dyn LlmProvider>)
-        }
-        _ => None,
+    // name through this scope, which also resolves the api_key.
+    let binding = provider_binding::bind_entry(config_key, cfg, env);
+    let provider = provider_binding::build_provider(&binding, model, None, None).ok()?;
+    // Local daemons are health-checked: a dead one must not win over the
+    // autodetect chain.
+    if matches!(binding.kind(), "ollama" | "llamacpp")
+        && !provider.health_check().await.unwrap_or(false)
+    {
+        return None;
     }
+    Some(provider)
 }
 
-/// GAR-579 — Build a provider from an explicit `--provider <kind>` flag.
+/// Model for an explicitly named provider: `--model` > the bound entry's own
+/// model > `resolve_provider_model` (legacy scan by kind) > the per-kind
+/// hardcoded default.
+fn explicit_model(
+    config: &AppConfig,
+    binding: &provider_binding::ProviderBinding,
+    model_override: Option<&str>,
+) -> String {
+    model_override
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .or_else(|| binding.model().map(str::to_string))
+        .or_else(|| resolve_provider_model(config, binding.kind(), None))
+        .unwrap_or_else(|| hardcoded_default_model(binding.kind()))
+}
+
+/// GAR-579 — Build a provider from an explicit `--provider <name>` flag.
 ///
 /// Returns the same `(display_name, model, Arc<dyn LlmProvider>)` triple
-/// that `detect_provider` returns. Honors `model_override` first, then
-/// `config.llm[*].model` via `resolve_provider_model`, then a hardcoded
-/// per-kind fallback. Unknown `kind` is an error; missing api_key for a
+/// that `detect_provider` returns. Honors `model_override` first, then the
+/// bound entry's model, then `resolve_provider_model`, then a hardcoded
+/// per-kind fallback. An unknown name is an error; a missing api_key for a
 /// cloud provider is an error.
 ///
-/// `url_override` is the CLI `--url` flag. Today only the `llamacpp` arm
-/// consumes it (the keyless local providers are exactly where an ad-hoc
-/// URL matters most); the cloud arms keep their fixed endpoints.
+/// `name` is a provider kind (`openai`, `anthropic`, …) or an alias defined
+/// under `llm:` (`lmstudio` with `provider: openai`) — the MCP policy already
+/// accepted aliases, this is where they now resolve. Endpoint and
+/// credential come from the same entry ([`provider_binding::bind_named`]):
+/// `-p openai` used to read `llm.openai.api_key` and drop
+/// `llm.openai.base_url`, sending the key of a custom OpenAI-compatible
+/// endpoint to https://api.openai.com (v0.4.4 clean-install smoke).
 ///
-/// Shared by `chat::run_chat` and `ask::run_ask` so the explicit-provider
-/// path lives in exactly one place.
+/// `url_override` is the CLI `--url` flag. Only the keyless `llamacpp`
+/// consumes it; on a keyed provider it would ship the entry's key to an
+/// ad-hoc address.
+///
+/// Shared by `chat::run_chat`, `ask::run_ask` and the MCP tools so the
+/// explicit-provider path lives in exactly one place.
 pub(crate) fn select_explicit_provider(
     config: &AppConfig,
-    kind: &str,
+    name: &str,
     model_override: Option<&str>,
     url_override: Option<&str>,
 ) -> Result<(String, String, Arc<dyn LlmProvider>)> {
-    match kind {
-        "ollama" => {
-            let model = resolve_provider_model(config, "ollama", model_override)
-                .unwrap_or_else(|| hardcoded_default_model("ollama"));
-            let ollama = OllamaProvider::new(Some(model.clone()), None);
-            Ok((
-                "ollama".to_string(),
-                model,
-                Arc::new(ollama) as Arc<dyn LlmProvider>,
-            ))
-        }
-        "llamacpp" => {
-            let model = resolve_provider_model(config, "llamacpp", model_override)
-                .unwrap_or_else(|| hardcoded_default_model("llamacpp"));
-            let base_url = resolve_llamacpp_base_url(config, url_override);
-            let llama = LlamaCppProvider::new(Some(model.clone()), base_url, None);
-            Ok((
-                "llamacpp".to_string(),
-                model,
-                Arc::new(llama) as Arc<dyn LlmProvider>,
-            ))
-        }
-        "anthropic" => {
-            let key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY")
-                .context("ANTHROPIC_API_KEY not set and not found in config")?;
-            let model = resolve_provider_model(config, "anthropic", model_override)
-                .unwrap_or_else(|| hardcoded_default_model("anthropic"));
-            let ap = AnthropicProvider::new(&key, Some(model.clone()), None);
-            Ok((
-                "anthropic".to_string(),
-                model,
-                Arc::new(ap) as Arc<dyn LlmProvider>,
-            ))
-        }
-        "openai" => {
-            let key = get_api_key(config, "openai", "OPENAI_API_KEY")
-                .context("OPENAI_API_KEY not set and not found in config")?;
-            let model = resolve_provider_model(config, "openai", model_override)
-                .unwrap_or_else(|| hardcoded_default_model("openai"));
-            let op = OpenAiProvider::new(&key, Some(model.clone()), None);
-            Ok((
-                "openai".to_string(),
-                model,
-                Arc::new(op) as Arc<dyn LlmProvider>,
-            ))
-        }
-        "openrouter" => {
-            let key = get_api_key(config, "openrouter", "OPENROUTER_API_KEY")
-                .context("OPENROUTER_API_KEY not set and not found in config")?;
-            let model = resolve_provider_model(config, "openrouter", model_override)
-                .unwrap_or_else(|| hardcoded_default_model("openrouter"));
-            // GAR-582: name the provider "openrouter" so AgentRuntime's
-            // lookup-by-name resolves correctly (avoids WARN at request time).
-            let op = OpenAiProvider::new(
-                &key,
-                Some(model.clone()),
-                Some("https://openrouter.ai/api/v1".to_string()),
-            )
-            .with_name("openrouter");
-            Ok((
-                "openrouter".to_string(),
-                model,
-                Arc::new(op) as Arc<dyn LlmProvider>,
-            ))
-        }
-        // Dev/CI only: o EchoProvider keyless (feature `dev-echo-provider`)
-        // fica acessível também por `ask`/`mcp-server`, não só pelo gateway —
-        // é o que permite smoke-testar o pipeline `garra_ask` sem API key.
-        #[cfg(feature = "dev-echo-provider")]
-        "echo" => {
-            let model = resolve_provider_model(config, "echo", model_override)
-                .unwrap_or_else(|| hardcoded_default_model("echo"));
-            let echo = garraia_agents::EchoProvider::new(Some(model.clone()));
-            Ok((
-                "echo".to_string(),
-                model,
-                Arc::new(echo) as Arc<dyn LlmProvider>,
-            ))
-        }
-        other => anyhow::bail!(
-            "Provider desconhecido: {other}. Use: ollama, llamacpp, anthropic, openai, openrouter"
-        ),
-    }
+    select_explicit_provider_with_env(
+        config,
+        name,
+        model_override,
+        url_override,
+        &provider_binding::process_env,
+    )
+}
+
+/// [`select_explicit_provider`] with the environment injected, so tests pin
+/// the env-var fallback without touching the process environment.
+fn select_explicit_provider_with_env(
+    config: &AppConfig,
+    name: &str,
+    model_override: Option<&str>,
+    url_override: Option<&str>,
+    env: provider_binding::Env<'_>,
+) -> Result<(String, String, Arc<dyn LlmProvider>)> {
+    let Some(binding) = provider_binding::bind_named(config, name, env) else {
+        anyhow::bail!(
+            "Provider desconhecido: {name}. Use: ollama, llamacpp, anthropic, openai, openrouter \
+             (ou o nome de uma entrada em llm: no config.yml)"
+        );
+    };
+    let model = explicit_model(config, &binding, model_override);
+    // An OpenAI-compatible alias registers under its own name (GAR-582), so
+    // a lookup by that name resolves. The other kinds cannot be renamed and
+    // register as their kind; callers that look the provider up by name
+    // (the MCP agent) therefore ask for `provider.provider_id()`, never for
+    // the name that was typed.
+    let provider_id = (!provider_binding::is_buildable_kind(name)).then_some(name);
+    let provider = provider_binding::build_provider(&binding, &model, provider_id, url_override)?;
+    Ok((name.to_string(), model, provider))
 }
 
 /// Base URL of the local Ollama daemon. Extracted so the autodetect chain
@@ -1060,20 +1038,44 @@ async fn offer_pull_ollama_model(
 /// over every configured model, and — when it names a tag the local Ollama
 /// daemon has installed — it also selects the provider (see
 /// [`try_local_ollama_model`]).
+/// A chave que o [`detect_provider`] devolve quando nada respondeu: nenhum
+/// provider configurado, nenhuma chave no ambiente e nenhum Ollama local com
+/// saude. Quem precisa distinguir "achei um provider" de "sobrou o palpite"
+/// (o `max-power`, que tem caminho offline) compara com ela.
+pub(crate) const OLLAMA_ULTIMO_RECURSO: &str = "ollama (offline)";
+
 pub async fn detect_provider(
     config: &AppConfig,
     url_override: Option<&str>,
     model_override: Option<&str>,
     assume_yes: bool,
 ) -> (String, String, Arc<dyn LlmProvider>) {
+    detect_provider_with_env(
+        config,
+        url_override,
+        model_override,
+        assume_yes,
+        &provider_binding::process_env,
+    )
+    .await
+}
+
+/// [`detect_provider`] with the environment injected, so tests pin every
+/// env-var fallback without touching the process environment.
+async fn detect_provider_with_env(
+    config: &AppConfig,
+    url_override: Option<&str>,
+    model_override: Option<&str>,
+    assume_yes: bool,
+    env: provider_binding::Env<'_>,
+) -> (String, String, Arc<dyn LlmProvider>) {
     // 0. If a custom URL is provided, use OpenAI-compatible provider (LM Studio, vLLM, etc.)
     if let Some(url) = url_override {
         let base = url.trim_end_matches('/').to_string();
-        // Try multiple env vars for the API key (LM Studio may require auth)
-        let key = std::env::var("LLM_API_KEY")
-            .or_else(|_| std::env::var("OPENAI_API_KEY"))
-            .or_else(|_| std::env::var("GARRAIA_EMBEDDING_API_KEY"))
-            .unwrap_or_else(|_| "not-needed".to_string());
+        // An ad-hoc address gets `LLM_API_KEY` or the key of the `llm:` entry
+        // that describes that same address — never `OPENAI_API_KEY` or
+        // `GARRAIA_EMBEDDING_API_KEY`, which belong to other endpoints.
+        let key = provider_binding::credential_for_ad_hoc_url(config, &base, env);
         let provider = OpenAiProvider::new(
             &key,
             None, // model will be set from --model flag or default
@@ -1118,7 +1120,7 @@ pub async fn detect_provider(
     // autodetect chain below. This prevents a stale `OPENAI_API_KEY` loaded
     // from cwd `.env` (via `dotenvy::dotenv()` in main.rs) from hijacking the
     // provider when the operator explicitly configured a different default.
-    let env_has = |name: &str| std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false);
+    let env_has = |name: &str| env(name).is_some_and(|v| !v.is_empty());
     let decision = decide_default_provider(
         config,
         env_has("OPENAI_API_KEY"),
@@ -1127,28 +1129,28 @@ pub async fn detect_provider(
     );
     if let DefaultProviderDecision::UseDefault {
         config_key,
-        provider_kind,
+        provider_kind: _,
         model,
     } = decision
-        // `--model` outranks the configured default. With `None` this
-        // reproduces `decide_default_provider`'s own lookup exactly.
-        && let model = resolve_provider_model(config, &provider_kind, model_override)
+        // `--model` outranks the configured default.
+        && let model = model_override
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
             .unwrap_or(model)
         && let Some(cfg) = config.llm.get(&config_key)
-        && let Some(provider) =
-            try_build_default_provider(config, &provider_kind, cfg, &model).await
+        && let Some(provider) = try_build_default_provider(&config_key, cfg, &model, env).await
     {
         // GAR-576: form the display tuple here from the (untainted)
         // strings returned by `decide_default_provider` — they never
-        // pass through the function that calls `get_api_key`.
+        // pass through the function that resolves the api_key.
         return (config_key, model, provider);
         // If construction fails (e.g. Ollama health-check fails) the
         // outer `if-let` chain shorts out and we fall through to the
         // legacy autodetect chain below.
     }
 
-    // Every branch below resolves its model through `resolve_provider_model`,
-    // so `--model` is honored whichever provider wins — and the returned
+    // Every branch below resolves its model through `explicit_model`, so
+    // `--model` is honored whichever provider wins — and the returned
     // provider object always carries the model it will actually be asked for.
     let ollama_url = ollama_base_url();
     let model = resolve_provider_model(config, DEFAULT_LOCAL_PROVIDER, model_override)
@@ -1159,62 +1161,22 @@ pub async fn detect_provider(
     // var + `config.llm` lookup, no network, no vault) because the ORDER of
     // the chain depends on which of them exist, and that ordering decision
     // lives in a pure function so it can be tested without a daemon.
-    let anthropic_key = get_api_key(config, "anthropic", "ANTHROPIC_API_KEY");
-    let openai_key = get_api_key(config, "openai", "OPENAI_API_KEY");
-    let openrouter_key = get_api_key(config, DEFAULT_CLOUD_PROVIDER, "OPENROUTER_API_KEY");
+    //
+    // Each candidate is bound WHOLE — endpoint and credential from the same
+    // `llm:` entry. The chain used to take only the key (`llm.<kind>` or
+    // `llm.main`) and pair it with the kind's default host, dropping the
+    // entry's `base_url`: a proxy key went to api.openai.com / api.anthropic.com
+    // / openrouter.ai. An `llm.<kind>` that declares another `provider:` no
+    // longer erases the candidate — see `bind_autodetect`.
+    let anthropic = provider_binding::bind_autodetect(config, "anthropic", env);
+    let openai = provider_binding::bind_autodetect(config, "openai", env);
+    let openrouter = provider_binding::bind_autodetect(config, DEFAULT_CLOUD_PROVIDER, env);
 
-    for candidate in autodetect_order(
-        anthropic_key.is_some(),
-        openai_key.is_some(),
-        openrouter_key.is_some(),
-    ) {
-        match candidate {
-            AutodetectCandidate::Anthropic => {
-                let Some(key) = anthropic_key.as_deref() else {
-                    continue;
-                };
-                let model = resolve_provider_model(config, "anthropic", model_override)
-                    .unwrap_or_else(|| hardcoded_default_model("anthropic"));
-                let provider = AnthropicProvider::new(key, Some(model.clone()), None);
-                return (
-                    "anthropic".to_string(),
-                    model,
-                    Arc::new(provider) as Arc<dyn LlmProvider>,
-                );
-            }
-            AutodetectCandidate::OpenAi => {
-                let Some(key) = openai_key.as_deref() else {
-                    continue;
-                };
-                let model = resolve_provider_model(config, "openai", model_override)
-                    .unwrap_or_else(|| hardcoded_default_model("openai"));
-                let provider = OpenAiProvider::new(key, Some(model.clone()), None);
-                return (
-                    "openai".to_string(),
-                    model,
-                    Arc::new(provider) as Arc<dyn LlmProvider>,
-                );
-            }
-            AutodetectCandidate::OpenRouter => {
-                let Some(key) = openrouter_key.as_deref() else {
-                    continue;
-                };
-                let model = resolve_provider_model(config, DEFAULT_CLOUD_PROVIDER, model_override)
-                    .unwrap_or_else(|| hardcoded_default_model(DEFAULT_CLOUD_PROVIDER));
-                // GAR-582: name the provider "openrouter" so AgentRuntime's
-                // lookup-by-name resolves correctly (avoids WARN at request time).
-                let provider = OpenAiProvider::new(
-                    key,
-                    Some(model.clone()),
-                    Some("https://openrouter.ai/api/v1".to_string()),
-                )
-                .with_name(DEFAULT_CLOUD_PROVIDER);
-                return (
-                    DEFAULT_CLOUD_PROVIDER.to_string(),
-                    model,
-                    Arc::new(provider) as Arc<dyn LlmProvider>,
-                );
-            }
+    for candidate in autodetect_order(anthropic.is_some(), openai.is_some(), openrouter.is_some()) {
+        let (name, binding) = match candidate {
+            AutodetectCandidate::Anthropic => ("anthropic", anthropic.as_ref()),
+            AutodetectCandidate::OpenAi => ("openai", openai.as_ref()),
+            AutodetectCandidate::OpenRouter => (DEFAULT_CLOUD_PROVIDER, openrouter.as_ref()),
             AutodetectCandidate::Ollama => {
                 let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url.clone()));
                 if ollama.health_check().await.unwrap_or(false) {
@@ -1224,8 +1186,21 @@ pub async fn detect_provider(
                         Arc::new(ollama) as Arc<dyn LlmProvider>,
                     );
                 }
+                continue;
             }
-        }
+        };
+        let Some(binding) = binding else {
+            continue;
+        };
+        let model = explicit_model(config, binding, model_override);
+        // An `llm.openrouter` declaring `provider: openai` registers under
+        // the entry's name, like an alias on the explicit path (GAR-582).
+        let provider_id = (binding.kind() != name).then_some(name);
+        let Ok(provider) = provider_binding::build_provider(binding, &model, provider_id, None)
+        else {
+            continue;
+        };
+        return (name.to_string(), model, provider);
     }
 
     // Last resort: Ollama with no health check (user will see the error on
@@ -1233,7 +1208,7 @@ pub async fn detect_provider(
     // provider that needs no credential at all.
     let ollama = OllamaProvider::new(Some(model.clone()), Some(ollama_url));
     (
-        "ollama (offline)".to_string(),
+        OLLAMA_ULTIMO_RECURSO.to_string(),
         model,
         Arc::new(ollama) as Arc<dyn LlmProvider>,
     )
@@ -2363,7 +2338,7 @@ pub async fn run_chat(
         // de texto e nao pagam nada por isto.
         // Ligado a uma variavel porque o `call` e um future que vive alem
         // desta expressao — um temporario seria descartado antes do `await`.
-        let exec = ExecContext::with_working_dir(Some(cwd.clone()));
+        let exec = exec_do_turno(&cwd, &session_clone);
         let call = runtime.process_message_streaming_with_events(
             &session_clone,
             &input,
@@ -3154,22 +3129,42 @@ mod tests {
         assert_eq!(name, "llamacpp");
         assert_eq!(model, "custom");
 
-        // Precedência do base_url, afirmável pela função pura do arm:
-        // config alimenta quando não há `--url`; `--url` vence quando há;
-        // string vazia conta como ausente (não apaga a config).
-        assert_eq!(
-            resolve_llamacpp_base_url(&cfg, None).as_deref(),
-            Some("http://pc:8080")
-        );
-        assert_eq!(
-            resolve_llamacpp_base_url(&cfg, Some("http://box:9090")).as_deref(),
-            Some("http://box:9090")
-        );
-        assert_eq!(
-            resolve_llamacpp_base_url(&cfg, Some("")).as_deref(),
-            Some("http://pc:8080")
-        );
-        assert_eq!(resolve_llamacpp_base_url(&AppConfig::default(), None), None);
+        // A precedência do base_url (`--url` > config > default) é afirmada
+        // com pedido de verdade em
+        // `llamacpp_url_flag_beats_the_config_base_url_and_empty_flag_keeps_it`.
+    }
+
+    /// `--url` vence a base_url da config; `--url` vazio conta como ausente
+    /// (não apaga a config). Afirmado por onde o pedido CHEGA, não por uma
+    /// função auxiliar que o provider poderia deixar de usar.
+    #[tokio::test]
+    async fn llamacpp_url_flag_beats_the_config_base_url_and_empty_flag_keeps_it() {
+        use crate::provider_binding::mock_endpoint::MockEndpoint;
+        for (flag_aponta_para_b, flag_vazia) in [(false, false), (true, false), (false, true)] {
+            let a = MockEndpoint::start().await;
+            let b = MockEndpoint::start().await;
+            let cfg = config_with(&[(
+                "llamacpp",
+                make_llm_cfg("llamacpp", Some("m"), None, Some(&a.uri())),
+            )]);
+            let flag = if flag_aponta_para_b {
+                Some(b.uri())
+            } else if flag_vazia {
+                Some(String::new())
+            } else {
+                None
+            };
+            let (_, _, provider) =
+                select_explicit_provider(&cfg, "llamacpp", None, flag.as_deref()).unwrap();
+            texto_da_chamada(&provider).await;
+            let (esperado, outro) = if flag_aponta_para_b {
+                (&b, &a)
+            } else {
+                (&a, &b)
+            };
+            assert_eq!(esperado.paths().await.len(), 1, "flag={flag:?}");
+            assert!(outro.paths().await.is_empty(), "flag={flag:?}");
+        }
     }
 
     /// Provider desconhecido lista `llamacpp` junto dos demais no bail —
@@ -3184,6 +3179,496 @@ mod tests {
         let msg = format!("{err}");
         for kind in ["ollama", "llamacpp", "anthropic", "openai", "openrouter"] {
             assert!(msg.contains(kind), "mensagem `{msg}` não cita `{kind}`");
+        }
+    }
+
+    // ─── base_url + credencial da MESMA entrada (smoke v0.4.4, O1) ──────
+
+    fn pedido_minimo() -> garraia_agents::LlmRequest {
+        garraia_agents::LlmRequest {
+            model: String::new(),
+            messages: vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Text("oi".to_string()),
+            }],
+            system: None,
+            max_tokens: Some(16),
+            temperature: None,
+            tools: Vec::new(),
+        }
+    }
+
+    /// Uma chamada de verdade; o texto so traz o SENTINEL se o pedido chegou
+    /// ao endpoint falso — o host padrao do provider nao o conhece.
+    async fn texto_da_chamada(provider: &Arc<dyn LlmProvider>) -> String {
+        let resposta = provider
+            .complete(&pedido_minimo())
+            .await
+            .unwrap_or_else(|e| panic!("chamada ao provider falhou: {e}"));
+        resposta
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                garraia_agents::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `-p <provider>` com `base_url` configurada: para CADA provider
+    /// explicito, o pedido chega na base_url configurada, com a chave daquela
+    /// entrada, e a resposta vem de la (nada vai ao host padrao). Era o
+    /// `ask_explicit.out` do smoke: `-p openai` mandava `llm.openai.api_key`
+    /// para https://api.openai.com.
+    #[tokio::test]
+    async fn explicit_provider_calls_the_configured_base_url_for_every_kind() {
+        use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+        // (nome passado em -p, tipo da entrada, chave, sufixo da base, caminho esperado)
+        let rows: [(&str, &str, Option<&str>, &str, &str); 6] = [
+            (
+                "openai",
+                "openai",
+                Some("k-openai"),
+                "/v1",
+                "/v1/chat/completions",
+            ),
+            (
+                "openrouter",
+                "openrouter",
+                Some("k-openrouter"),
+                "/api/v1",
+                "/api/v1/chat/completions",
+            ),
+            (
+                "anthropic",
+                "anthropic",
+                Some("k-anthropic"),
+                "",
+                "/v1/messages",
+            ),
+            ("ollama", "ollama", None, "", "/api/chat"),
+            ("llamacpp", "llamacpp", None, "", "/v1/chat/completions"),
+            // Alias em llm: (aceito pela policy do MCP): usa o tipo declarado.
+            (
+                "lmstudio",
+                "openai",
+                Some("k-lmstudio"),
+                "/v1",
+                "/v1/chat/completions",
+            ),
+        ];
+        for (name, kind, key, suffix, expected_path) in rows {
+            let mock = MockEndpoint::start().await;
+            let base = format!("{}{suffix}", mock.uri());
+            let cfg = config_with(&[(name, make_llm_cfg(kind, Some("m"), key, Some(&base)))]);
+            let (display, model, provider) = select_explicit_provider(&cfg, name, None, None)
+                .unwrap_or_else(|e| panic!("-p {name}: {e:#}"));
+            assert_eq!(display, name);
+            assert_eq!(model, "m", "-p {name}: modelo da propria entrada");
+            let texto = texto_da_chamada(&provider).await;
+            assert_eq!(
+                texto, SENTINEL,
+                "-p {name}: resposta nao veio da base_url configurada"
+            );
+            assert_eq!(
+                mock.paths().await,
+                vec![expected_path.to_string()],
+                "-p {name}"
+            );
+            if let Some(key) = key {
+                assert_eq!(mock.credentials().await, vec![key.to_string()], "-p {name}");
+            }
+        }
+    }
+
+    /// Negativo: a chave da entrada A nunca vai para o endpoint da entrada B,
+    /// nem pelo caminho explicito nem pelo do `agent.default_provider`.
+    #[tokio::test]
+    async fn key_of_entry_a_is_never_sent_to_entry_b() {
+        use crate::provider_binding::mock_endpoint::MockEndpoint;
+        let a = MockEndpoint::start().await;
+        let b = MockEndpoint::start().await;
+        let entries = [
+            (
+                "openai",
+                make_llm_cfg(
+                    "openai",
+                    Some("m"),
+                    Some("chave-a"),
+                    Some(&format!("{}/v1", a.uri())),
+                ),
+            ),
+            (
+                "lmstudio",
+                make_llm_cfg(
+                    "openai",
+                    Some("m"),
+                    Some("chave-b"),
+                    Some(&format!("{}/v1", b.uri())),
+                ),
+            ),
+        ];
+
+        // -p lmstudio → so B, so com a chave de B.
+        let cfg = config_with(&entries);
+        let (_, _, p) = select_explicit_provider(&cfg, "lmstudio", None, None)
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        texto_da_chamada(&p).await;
+        // -p openai → so A, so com a chave de A.
+        let (_, _, p) = select_explicit_provider(&cfg, "openai", None, None)
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        texto_da_chamada(&p).await;
+        assert_eq!(a.credentials().await, vec!["chave-a".to_string()]);
+        assert_eq!(b.credentials().await, vec!["chave-b".to_string()]);
+
+        // Caminho do default_provider: `default_provider: lmstudio` com um
+        // `llm.openai` ao lado. Antes, a chave de `llm.openai` ia para B.
+        let a = MockEndpoint::start().await;
+        let b = MockEndpoint::start().await;
+        let cfg = config_with_default(
+            "lmstudio",
+            &[
+                (
+                    "openai",
+                    make_llm_cfg(
+                        "openai",
+                        Some("m"),
+                        Some("chave-a"),
+                        Some(&format!("{}/v1", a.uri())),
+                    ),
+                ),
+                (
+                    "lmstudio",
+                    make_llm_cfg(
+                        "openai",
+                        Some("m"),
+                        Some("chave-b"),
+                        Some(&format!("{}/v1", b.uri())),
+                    ),
+                ),
+            ],
+        );
+        let entry = cfg.llm.get("lmstudio").cloned().expect("entrada");
+        let p = try_build_default_provider("lmstudio", &entry, "m", &|_: &str| None)
+            .await
+            .expect("default provider construivel");
+        texto_da_chamada(&p).await;
+        assert!(a.credentials().await.is_empty(), "A nao pode receber nada");
+        assert_eq!(b.credentials().await, vec!["chave-b".to_string()]);
+    }
+
+    /// Autodetect (sem `agent.default_provider`): cada nuvem entra no
+    /// encadeamento vinculada INTEIRA. Antes o encadeamento pegava so a chave
+    /// de `llm.<tipo>` e a mandava para o host padrao, largando a `base_url`.
+    #[tokio::test]
+    async fn autodetect_chain_calls_the_entry_base_url_not_the_default_host() {
+        use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+        let sem_env = |_: &str| None;
+        for (kind, suffix, expected_path) in [
+            ("anthropic", "", "/v1/messages"),
+            ("openai", "/v1", "/v1/chat/completions"),
+            ("openrouter", "/api/v1", "/api/v1/chat/completions"),
+        ] {
+            let mock = MockEndpoint::start().await;
+            let base = format!("{}{suffix}", mock.uri());
+            let cfg = config_with(&[(
+                kind,
+                make_llm_cfg(kind, Some("m"), Some("k-proxy"), Some(&base)),
+            )]);
+            assert!(
+                cfg.agent.default_provider.is_none(),
+                "pre-condicao: autodetect"
+            );
+            let (name, model, provider) =
+                detect_provider_with_env(&cfg, None, None, false, &sem_env).await;
+            assert_eq!((name.as_str(), model.as_str()), (kind, "m"));
+            assert_eq!(texto_da_chamada(&provider).await, SENTINEL, "{kind}");
+            assert_eq!(
+                mock.paths().await,
+                vec![expected_path.to_string()],
+                "{kind}"
+            );
+            assert_eq!(
+                mock.credentials().await,
+                vec!["k-proxy".to_string()],
+                "{kind}"
+            );
+        }
+    }
+
+    /// Caminho do `agent.default_provider` por `detect_provider`: a entrada
+    /// padrao traz endpoint, chave E modelo — nem a chave do `llm.openai` ao
+    /// lado, nem uma `OPENAI_API_KEY` velha do ambiente, nem o modelo do
+    /// `llm.openai`.
+    #[tokio::test]
+    async fn default_provider_path_uses_only_its_own_entry() {
+        use crate::provider_binding::mock_endpoint::MockEndpoint;
+        let a = MockEndpoint::start().await;
+        let b = MockEndpoint::start().await;
+        let cfg = config_with_default(
+            "lmstudio",
+            &[
+                (
+                    "openai",
+                    make_llm_cfg(
+                        "openai",
+                        Some("modelo-a"),
+                        Some("chave-a"),
+                        Some(&format!("{}/v1", a.uri())),
+                    ),
+                ),
+                (
+                    "lmstudio",
+                    make_llm_cfg(
+                        "openai",
+                        Some("modelo-b"),
+                        Some("chave-b"),
+                        Some(&format!("{}/v1", b.uri())),
+                    ),
+                ),
+            ],
+        );
+        let env = |var: &str| (var == "OPENAI_API_KEY").then(|| "sk-velha-do-env".to_string());
+        let (name, model, provider) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+        assert_eq!((name.as_str(), model.as_str()), ("lmstudio", "modelo-b"));
+        texto_da_chamada(&provider).await;
+        assert!(a.paths().await.is_empty(), "A nao pode receber nada");
+        assert_eq!(b.credentials().await, vec!["chave-b".to_string()]);
+    }
+
+    /// `--url` avulso: a `OPENAI_API_KEY` e a `GARRAIA_EMBEDDING_API_KEY` sao
+    /// credenciais de outros endpoints e nunca vao para o endereco digitado.
+    #[tokio::test]
+    async fn url_flag_never_forwards_the_openai_or_embedding_key() {
+        use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+        let mock = MockEndpoint::start().await;
+        let env = |var: &str| match var {
+            "OPENAI_API_KEY" => Some("sk-da-openai".to_string()),
+            "GARRAIA_EMBEDDING_API_KEY" => Some("k-embeddings".to_string()),
+            _ => None,
+        };
+        let url = format!("{}/v1", mock.uri());
+        let (_, _, provider) =
+            detect_provider_with_env(&AppConfig::default(), Some(&url), Some("m"), false, &env)
+                .await;
+        assert_eq!(texto_da_chamada(&provider).await, SENTINEL);
+        assert_eq!(
+            mock.credentials().await,
+            vec![provider_binding::KEYLESS_PLACEHOLDER.to_string()]
+        );
+    }
+
+    /// Dentro de uma entrada, a chave dela vence a variavel de ambiente. E a
+    /// variavel NUNCA preenche uma entrada que aponta para o proprio
+    /// endpoint: `llm.openai { base_url: <proxy> }` sem `api_key`, com uma
+    /// `OPENAI_API_KEY` velha no ambiente (ou no `.env` do diretorio
+    /// corrente), manda o marcador de "sem chave" ao proxy — a chave da API
+    /// da OpenAI so vai para a API da OpenAI (achado do verificador).
+    #[tokio::test]
+    async fn explicit_entry_key_beats_a_stale_env_key() {
+        use crate::provider_binding::mock_endpoint::MockEndpoint;
+        let env = |var: &str| (var == "OPENAI_API_KEY").then(|| "sk-velha".to_string());
+        for (entry_key, expected) in [
+            (Some("da-entrada"), "da-entrada"),
+            (None, provider_binding::KEYLESS_PLACEHOLDER),
+        ] {
+            let mock = MockEndpoint::start().await;
+            let cfg = config_with(&[(
+                "openai",
+                make_llm_cfg(
+                    "openai",
+                    Some("m"),
+                    entry_key,
+                    Some(&format!("{}/v1", mock.uri())),
+                ),
+            )]);
+            let (_, _, p) = select_explicit_provider_with_env(&cfg, "openai", None, None, &env)
+                .unwrap_or_else(|e| panic!("{e:#}"));
+            texto_da_chamada(&p).await;
+            assert_eq!(mock.credentials().await, vec![expected.to_string()]);
+        }
+    }
+
+    /// O mesmo achado pelo caminho do `agent.default_provider` (onde, antes
+    /// deste branch, a `OPENAI_API_KEY` ja ia para a `base_url` da entrada
+    /// padrao) e pela autodeteccao: a variavel do ambiente nunca chega na
+    /// `base_url` propria de uma entrada sem chave.
+    #[tokio::test]
+    async fn env_key_never_reaches_an_entry_base_url_on_default_or_autodetect() {
+        use crate::provider_binding::mock_endpoint::MockEndpoint;
+        let env = |var: &str| match var {
+            "OPENAI_API_KEY" => Some("sk-do-env".to_string()),
+            "ANTHROPIC_API_KEY" => Some("sk-ant-do-env".to_string()),
+            "OPENROUTER_API_KEY" => Some("sk-or-do-env".to_string()),
+            _ => None,
+        };
+        let do_env = ["sk-do-env", "sk-ant-do-env", "sk-or-do-env"];
+
+        // default_provider: openai → o proxy recebe o marcador.
+        let mock = MockEndpoint::start().await;
+        let cfg = config_with_default(
+            "openai",
+            &[(
+                "openai",
+                make_llm_cfg(
+                    "openai",
+                    Some("m"),
+                    None,
+                    Some(&format!("{}/v1", mock.uri())),
+                ),
+            )],
+        );
+        let (name, _, provider) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+        assert_eq!(name, "openai");
+        texto_da_chamada(&provider).await;
+        assert_eq!(
+            mock.credentials().await,
+            vec![provider_binding::KEYLESS_PLACEHOLDER.to_string()]
+        );
+
+        // default_provider anthropic/openrouter sem chave propria, apontando
+        // para o proxy: a decisao nao conta a env, e nada chega ao proxy
+        // (nem por esse caminho nem pela autodeteccao que vem depois).
+        for kind in ["anthropic", "openrouter"] {
+            let mock = MockEndpoint::start().await;
+            let cfg = config_with_default(
+                kind,
+                &[(kind, make_llm_cfg(kind, Some("m"), None, Some(&mock.uri())))],
+            );
+            assert!(
+                matches!(
+                    decide_default_provider(&cfg, true, true, true),
+                    DefaultProviderDecision::FallThroughToChain { .. }
+                ),
+                "{kind}: a env nao e credencial para a base_url da entrada"
+            );
+            let (name, _, _) = detect_provider_with_env(&cfg, None, None, false, &env).await;
+            assert_ne!(name, kind, "{kind}: nao ha credencial para o proxy");
+            assert!(
+                mock.paths().await.is_empty(),
+                "{kind}: o proxy recebeu pedido"
+            );
+        }
+
+        // Autodeteccao: `llm.openai` sem chave apontando para o proxy.
+        let mock = MockEndpoint::start().await;
+        let cfg = config_with(&[(
+            "openai",
+            make_llm_cfg(
+                "openai",
+                Some("m"),
+                None,
+                Some(&format!("{}/v1", mock.uri())),
+            ),
+        )]);
+        let only_openai_env =
+            |var: &str| (var == "OPENAI_API_KEY").then(|| "sk-do-env".to_string());
+        let (name, _, _) =
+            detect_provider_with_env(&cfg, None, None, false, &only_openai_env).await;
+        assert_ne!(name, "openai", "sem chave propria o proxy nao e candidato");
+        let vistas = mock.credentials().await;
+        assert!(
+            !vistas.iter().any(|c| do_env.contains(&c.as_str())),
+            "a env chegou no proxy: {vistas:?}"
+        );
+    }
+
+    /// Achado do verificador (LOW): `llm.openrouter` declarando
+    /// `provider: openai`, com chave propria e sem `agent.default_provider`,
+    /// era autodetectado como OpenRouter antes deste branch; o
+    /// `provider_binding` descartava o candidato e caia no Ollama. Volta a
+    /// ser o OpenRouter, vinculado inteiro: a chave dele, a base_url dele.
+    #[tokio::test]
+    async fn autodetect_keeps_a_candidate_whose_entry_declares_another_kind() {
+        use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+        let mock = MockEndpoint::start().await;
+        let cfg = config_with(&[(
+            "openrouter",
+            make_llm_cfg(
+                "openai",
+                Some("m"),
+                Some("k-or"),
+                Some(&format!("{}/api/v1", mock.uri())),
+            ),
+        )]);
+        let (name, model, provider) =
+            detect_provider_with_env(&cfg, None, None, false, &|_| None).await;
+        assert_eq!((name.as_str(), model.as_str()), ("openrouter", "m"));
+        // Registrado com o nome da entrada, como um alias no caminho explicito.
+        assert_eq!(provider.provider_id(), "openrouter");
+        assert_eq!(texto_da_chamada(&provider).await, SENTINEL);
+        assert_eq!(
+            mock.paths().await,
+            vec!["/api/v1/chat/completions".to_string()]
+        );
+        assert_eq!(mock.credentials().await, vec!["k-or".to_string()]);
+    }
+
+    /// O fallback legado `llm.main`: `-p anthropic` com a `llm.main` do tipo
+    /// vai para a base_url DELA. Antes so a chave da `llm.main` era usada, e
+    /// ia para https://api.anthropic.com.
+    #[tokio::test]
+    async fn main_entry_fallback_keeps_its_base_url() {
+        use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+        let mock = MockEndpoint::start().await;
+        let cfg = config_with(&[(
+            "main",
+            make_llm_cfg("anthropic", Some("m"), Some("k-main"), Some(&mock.uri())),
+        )]);
+        let (_, _, p) = select_explicit_provider_with_env(&cfg, "anthropic", None, None, &|_| None)
+            .unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(texto_da_chamada(&p).await, SENTINEL);
+        assert_eq!(mock.credentials().await, vec!["k-main".to_string()]);
+    }
+
+    /// Sem entrada nenhuma para o tipo, `-p openai` nao pega a chave de outra
+    /// entrada do mesmo tipo (ela iria para api.openai.com): falha fechado.
+    #[test]
+    fn explicit_kind_without_entry_never_borrows_another_entrys_key() {
+        let cfg = config_with(&[(
+            "lmstudio",
+            make_llm_cfg(
+                "openai",
+                Some("m"),
+                Some("k-lm"),
+                Some("http://127.0.0.1:1/v1"),
+            ),
+        )]);
+        let Err(err) = select_explicit_provider_with_env(&cfg, "openai", None, None, &|_| None)
+        else {
+            panic!("sem chave para api.openai.com, deve falhar");
+        };
+        assert!(format!("{err}").contains("OPENAI_API_KEY"), "{err}");
+    }
+
+    #[test]
+    fn decide_default_provider_prefers_the_default_entrys_own_model() {
+        let cfg = config_with_default(
+            "lmstudio",
+            &[
+                (
+                    "openai",
+                    make_llm_cfg("openai", Some("gpt-4o"), Some("k"), None),
+                ),
+                (
+                    "lmstudio",
+                    make_llm_cfg(
+                        "openai",
+                        Some("local-model"),
+                        None,
+                        Some("http://127.0.0.1:1234/v1"),
+                    ),
+                ),
+            ],
+        );
+        match decide_default_provider(&cfg, false, false, false) {
+            DefaultProviderDecision::UseDefault {
+                config_key, model, ..
+            } => {
+                assert_eq!(config_key, "lmstudio");
+                assert_eq!(model, "local-model");
+            }
+            other => panic!("esperava UseDefault(lmstudio), veio {other:?}"),
         }
     }
 
@@ -4032,5 +4517,178 @@ mod persist_tests {
         let (id, nova) = id_inicial_da_sessao(None, Some("cli-alvo".into()), "cli-fresh".into());
         assert_eq!(id, "cli-fresh");
         assert!(nova);
+    }
+}
+
+#[cfg(test)]
+mod aprovacao_tests {
+    //! #1343 — o `garraia chat` retoma o pedido de confirmacao no turno
+    //! seguinte. O historico do CLI e texto puro (`MessagePart::Text`), entao
+    //! antes do escopo o "sim" nunca aprovava: a ferramenta perguntava de
+    //! novo para sempre.
+
+    use super::*;
+    use garraia_agents::tools::approval::ApprovalFingerprint;
+    use garraia_agents::{
+        ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+        Tool, ToolContext, ToolOutput,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const TOOL: &str = "apaga_arquivo";
+    const ALVO: &str = "/tmp/garraia-1343-cli";
+
+    struct ApagaArquivo(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for ApagaArquivo {
+        fn name(&self) -> &str {
+            TOOL
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            c: &ToolContext,
+            _i: serde_json::Value,
+        ) -> garraia_common::Result<ToolOutput> {
+            if c.approval.covers(TOOL, ALVO) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                return Ok(ToolOutput::success("apagado"));
+            }
+            let m = ApprovalFingerprint::of(TOOL, ALVO).marker();
+            Ok(ToolOutput::confirmation_request(format!(
+                "Confirma apagar {ALVO}? {m}"
+            )))
+        }
+    }
+
+    /// A cada mensagem humana pede a tool; depois do resultado, texto. Sem
+    /// `stream_complete`: o runtime cai no batch, como com provider local.
+    struct Roteiro;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for Roteiro {
+        fn provider_id(&self) -> &str {
+            "roteiro"
+        }
+        async fn complete(&self, r: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+            let humano = matches!(
+                r.messages.last(),
+                Some(ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text(_),
+                })
+            );
+            let content = if humano {
+                vec![ContentBlock::ToolUse {
+                    id: "t".into(),
+                    name: TOOL.into(),
+                    input: serde_json::json!({ "alvo": ALVO }),
+                }]
+            } else {
+                vec![ContentBlock::Text {
+                    text: "feito".into(),
+                }]
+            };
+            Ok(LlmResponse {
+                content,
+                model: "m".into(),
+                stop_reason: None,
+                usage: None,
+            })
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Um turno pelo mesmo ponto de entrada do REPL, com o mesmo
+    /// `exec_do_turno`, e o historico crescendo so com texto.
+    async fn turno(
+        rt: &AgentRuntime,
+        sessao: &str,
+        historico: &mut Vec<ChatMessage>,
+        texto: &str,
+    ) -> String {
+        let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
+        let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let exec = exec_do_turno("/tmp", sessao);
+        let r = rt
+            .process_message_streaming_with_events(
+                sessao, texto, historico, tx, None, None, None, None, None, None, &exec,
+            )
+            .await
+            .expect("turno");
+        dreno.await.expect("dreno");
+        historico.push(ChatMessage {
+            role: ChatRole::User,
+            content: MessagePart::Text(texto.to_string()),
+        });
+        historico.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content: MessagePart::Text(r.clone()),
+        });
+        r
+    }
+
+    #[test]
+    fn exec_do_turno_escopa_canal_sessao_e_o_terminal() {
+        let exec = exec_do_turno("/tmp", "sess-1");
+        let escopo = exec.approval_scope.expect("o CLI opta pelo escopo");
+        assert_eq!(escopo.channel(), CANAL_CLI);
+        assert_eq!(escopo.session_id(), "sess-1");
+        assert_eq!(escopo.sender(), REMETENTE_CLI);
+        assert_eq!(exec.working_dir.as_deref(), Some("/tmp"));
+    }
+
+    #[tokio::test]
+    async fn sim_no_turno_seguinte_roda_uma_vez_e_replay_pausa() {
+        let rt = AgentRuntime::new();
+        let vezes = Arc::new(AtomicUsize::new(0));
+        rt.register_tool(Box::new(ApagaArquivo(Arc::clone(&vezes))));
+        rt.register_provider(Arc::new(Roteiro));
+        let mut h = Vec::new();
+
+        // #1373: o marcador interno nao chega ao texto do humano; o pedido e
+        // reconhecido pela frase da ferramenta de teste.
+        let e_pedido = |r: &str| {
+            assert!(
+                !r.contains(garraia_agents::tools::approval::MARKER_PREFIX),
+                "o marcador interno chegou ao terminal: {r}"
+            );
+            r.contains("Confirma apagar")
+        };
+        let r1 = turno(&rt, "cli-1343", &mut h, "apaga o arquivo").await;
+        assert!(e_pedido(&r1), "pausa: {r1}");
+        assert_eq!(vezes.load(Ordering::SeqCst), 0);
+
+        let r2 = turno(&rt, "cli-1343", &mut h, "sim").await;
+        assert!(!e_pedido(&r2), "{r2}");
+        assert_eq!(vezes.load(Ordering::SeqCst), 1, "roda uma vez");
+
+        let r3 = turno(&rt, "cli-1343", &mut h, "sim").await;
+        assert!(e_pedido(&r3), "replay pausa: {r3}");
+        assert_eq!(vezes.load(Ordering::SeqCst), 1, "replay nao roda");
+    }
+
+    /// `/resume` para outra sessao troca o escopo: o pedido da sessao
+    /// anterior nao e aprovado pelo "sim" dado na nova.
+    #[tokio::test]
+    async fn sim_em_outra_sessao_nao_aprova() {
+        let rt = AgentRuntime::new();
+        let vezes = Arc::new(AtomicUsize::new(0));
+        rt.register_tool(Box::new(ApagaArquivo(Arc::clone(&vezes))));
+        rt.register_provider(Arc::new(Roteiro));
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+
+        turno(&rt, "cli-a", &mut a, "apaga o arquivo").await;
+        turno(&rt, "cli-b", &mut b, "sim").await;
+        assert_eq!(vezes.load(Ordering::SeqCst), 0);
     }
 }

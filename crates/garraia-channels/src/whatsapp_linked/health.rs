@@ -16,10 +16,11 @@
 //!
 //! # O que NAO esta aqui
 //!
-//! Nada de cripto. [`DiskFacts::read`] so faz `stat` — tres deles. A prova de
-//! que o blob **abre** (decifrar com a chave atual) e cara em modo passphrase
-//! (PBKDF2 600k) e continua sendo do chamador que pode pagar por ela: a CLI,
-//! uma vez por comando. Um `/api/diagnostics` que derivasse chave a cada
+//! Nada de cripto. [`DiskFacts::read`] so faz `stat` (e le, no maximo, os 7
+//! bytes do carimbo `pending` da ponte). A prova de que o blob **abre**
+//! (decifrar com a chave atual) e cara em modo passphrase (PBKDF2 600k) e
+//! continua sendo do chamador que pode pagar por ela: a CLI, uma vez por
+//! comando. Um `/api/diagnostics` que derivasse chave a cada
 //! request seria um DoS contra o proprio gateway.
 
 use std::path::Path;
@@ -45,7 +46,8 @@ pub enum BridgeView {
     Connected,
 }
 
-/// Fatos de disco. Tres `stat`, sem cripto e sem processo.
+/// Fatos de disco. Quatro `stat` (e, no maximo, a leitura dos 7 bytes do
+/// carimbo `pending`), sem cripto e sem processo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskFacts {
     /// Ha `session.enc`.
@@ -53,12 +55,15 @@ pub struct DiskFacts {
     /// Ha `session.enc.prev` — credencial viva de um re-vinculo que nao
     /// terminou (F1 da auditoria R4).
     pub archive_present: bool,
-    /// Ha `node_modules` no diretorio da ponte.
+    /// Ha `node_modules` no diretorio da ponte, e o carimbo de dependencias
+    /// nao esta em `pending` ([`deps_installed`]): um `npm ci` que nao
+    /// terminou, ou uma arvore que o preparo da ponte recusou para os
+    /// manifestos atuais, contam como "sem dependencias".
     pub deps_installed: bool,
 }
 
 impl DiskFacts {
-    /// Le os tres fatos. **Nao cria nada** — de proposito: o
+    /// Le os fatos. **Nao cria nada** — de proposito: o
     /// `/api/diagnostics` e uma rota de leitura e nao pode materializar
     /// diretorio nem chave por ter sido chamada.
     pub fn read(store: &SessionStore, bridge_dir: &Path) -> Self {
@@ -138,9 +143,13 @@ impl LinkHealth {
     pub fn next_step(self, bridge_dir: &Path, bin: &str) -> Option<String> {
         match self {
             LinkHealth::NotLinked => Some(format!("rode `{bin} whatsapp link`")),
-            LinkHealth::MissingDependencies => {
-                Some(format!("rode `npm ci` em {}", bridge_dir.display()))
-            }
+            // "e reinicie o gateway" nao e enfeite: o supervisor prepara a
+            // ponte uma vez por boot, e e no boot seguinte que ele adota a
+            // arvore que o `npm ci` do usuario instalou.
+            LinkHealth::MissingDependencies => Some(format!(
+                "rode `npm ci` em {} e reinicie o gateway",
+                bridge_dir.display()
+            )),
             LinkHealth::BridgeDown => Some(format!(
                 "a ponte nao esta de pe: confira se `node` 20+ esta na PATH e \
 veja o log do gateway; `{bin} whatsapp status` confirma a sessao"
@@ -153,9 +162,10 @@ veja o log do gateway; `{bin} whatsapp status` confirma a sessao"
     pub fn next_step_en(self, bridge_dir: &Path, bin: &str) -> Option<String> {
         match self {
             LinkHealth::NotLinked => Some(format!("run `{bin} whatsapp link`")),
-            LinkHealth::MissingDependencies => {
-                Some(format!("run `npm ci` in {}", bridge_dir.display()))
-            }
+            LinkHealth::MissingDependencies => Some(format!(
+                "run `npm ci` in {} and restart the gateway",
+                bridge_dir.display()
+            )),
             LinkHealth::BridgeDown => Some(format!(
                 "the bridge is not up: check that `node` 20+ is on PATH and \
 read the gateway log; `{bin} whatsapp status` confirms the session"
@@ -300,6 +310,13 @@ mod tests {
             passo.contains("/home/ana/.garraia/data/whatsapp/bridge"),
             "{passo}"
         );
+        // O `npm ci` a mao so vale no boot seguinte do gateway, que e quem
+        // adota a arvore: o passo diz isso, nos dois idiomas.
+        assert!(passo.ends_with("e reinicie o gateway"), "{passo}");
+        let en = LinkHealth::MissingDependencies
+            .next_step_en(&dir, "garraia")
+            .expect("step");
+        assert!(en.ends_with("and restart the gateway"), "{en}");
     }
 
     /// O passo de "nao vinculado" cita o comando que existe. `<bin> whatsapp`

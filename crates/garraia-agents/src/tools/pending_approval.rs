@@ -81,11 +81,40 @@ pub fn is_approval_word(user_text: &str) -> bool {
 /// pelo servidor** (id da plataforma do canal, `sub` do JWT, nonce da
 /// conexao) — nunca um valor que o cliente escolhe. Sem escopo, o turno usa
 /// a deteccao antiga pelo historico, exatamente como antes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// O `Debug` nao mostra o remetente: ele e um telefone no WhatsApp e no
+/// Signal, um user id nas outras plataformas (PII, regra absoluta 6), e o
+/// `ExecContext` que carrega o escopo tambem e `Debug`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ApprovalScope {
     channel: String,
     session_id: String,
     sender: String,
+}
+
+/// Como o remetente aparece num `Debug`: so o tamanho. Um hash curto de um
+/// telefone seria revertido por forca bruta.
+struct Redigido(usize);
+
+impl std::fmt::Debug for Redigido {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<redigido: {} bytes>", self.0)
+    }
+}
+
+impl std::fmt::Debug for ApprovalScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApprovalScope")
+            .field("channel", &self.channel)
+            // Em WhatsApp, Signal e LINE o id de sessao carrega o remetente
+            // (`whatsapp-<telefone>`); passa pela mesma mascara do log.
+            .field(
+                "session_id",
+                &garraia_security::mascarar_numeros_longos(&self.session_id),
+            )
+            .field("sender", &Redigido(self.sender.len()))
+            .finish()
+    }
 }
 
 impl ApprovalScope {
@@ -124,8 +153,9 @@ impl ApprovalScope {
     }
 }
 
-/// Um pedido pausado esperando aprovacao.
-#[derive(Debug, Clone)]
+/// Um pedido pausado esperando aprovacao. `Debug` manual pelo mesmo motivo
+/// do [`ApprovalScope`]: o remetente nao aparece.
+#[derive(Clone)]
 struct PendingApproval {
     sender: String,
     tool: String,
@@ -134,12 +164,41 @@ struct PendingApproval {
     expires_at: Instant,
 }
 
+impl std::fmt::Debug for PendingApproval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingApproval")
+            .field("sender", &Redigido(self.sender.len()))
+            .field("tool", &self.tool)
+            .field("fingerprint", &self.fingerprint)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 /// Os pedidos pausados do processo, no maximo um por `(canal, sessao)`.
-#[derive(Debug)]
+///
+/// `Debug` manual: a chave do mapa e `(canal, sessao)`, e a sessao pode
+/// carregar o telefone do remetente. O dump mostra so quantos pedidos ha.
 pub struct PendingApprovals {
     inner: Mutex<HashMap<(String, String), PendingApproval>>,
     ttl: Duration,
     capacity: usize,
+}
+
+impl std::fmt::Debug for PendingApprovals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pendentes = self
+            .inner
+            .lock()
+            .map(|m| m.len())
+            .unwrap_or_else(|e| e.into_inner().len());
+        f.debug_struct("PendingApprovals")
+            .field("pendentes", &pendentes)
+            .field("ttl", &self.ttl)
+            .field("capacity", &self.capacity)
+            .finish()
+    }
 }
 
 impl Default for PendingApprovals {
@@ -484,6 +543,43 @@ mod tests {
         assert_eq!(store.resolve(&a, "sim", t0), ToolApproval::None);
         store.register(&a, "bash", fp("rm x"), t0);
         assert!(store.resolve(&a, "sim", t0).covers("bash", "rm x"));
+    }
+
+    /// N1 (#1343): o `Debug` do escopo, do `ExecContext` que o carrega e do
+    /// registro nao mostra o remetente (telefone, user id).
+    #[test]
+    fn debug_nao_mostra_o_remetente() {
+        // A forma real da sessao do WhatsApp Cloud: o telefone mora nela.
+        let a = escopo("whatsapp", "whatsapp-+5511987654321", "+5511987654321");
+        let dump = format!("{a:?}");
+        assert!(!dump.contains("5511987654321"), "{dump}");
+        assert!(
+            dump.contains("whatsapp"),
+            "o canal continua legivel: {dump}"
+        );
+        assert!(dump.contains("<redigido: 14 bytes>"), "{dump}");
+
+        let exec = crate::exec_context::ExecContext {
+            approval_scope: Some(a.clone()),
+            ..Default::default()
+        };
+        let dump = format!("{exec:?}");
+        assert!(!dump.contains("5511987654321"), "{dump}");
+
+        let store = PendingApprovals::new();
+        store.register(&a, "bash", fp("rm x"), Instant::now());
+        let dump = format!("{store:?}");
+        assert!(!dump.contains("5511987654321"), "{dump}");
+        assert!(dump.contains("pendentes: 1"), "{dump}");
+
+        let linked = escopo(
+            "whatsapp_linked",
+            "whatsapp-linked-5511987654321@s.whatsapp.net",
+            "5511987654321@s.whatsapp.net",
+        );
+        let dump = format!("{linked:?}");
+        assert!(!dump.contains("5511987654321"), "{dump}");
+        assert!(dump.contains("4321@s.whatsapp.net"), "{dump}");
     }
 
     /// O registro nunca guarda o assunto cru — so o HMAC.

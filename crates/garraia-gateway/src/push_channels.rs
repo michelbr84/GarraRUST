@@ -86,11 +86,46 @@ impl PushChannelStates {
     /// tabela `KNOWN_CHANNELS` e este struct discordando sobre quem e push,
     /// que e defeito de codigo e nao estado de runtime.
     pub fn mounted(&self, id: &str) -> Option<usize> {
+        self.contagens().mounted(id)
+    }
+
+    /// So as contagens, sem os canais (#1347, fatia 2).
+    ///
+    /// E o que a tool `garra_status` guarda. Guardar o `PushChannelStates`
+    /// inteiro fecharia um ciclo de `Arc`: cada canal push carrega um
+    /// `on_message` que segura um `Arc<AppState>` forte, o `AppState` e dono
+    /// do runtime, e o runtime e dono da tool. As listas sao imutaveis depois
+    /// do boot (`Arc<Vec<_>>`), entao a contagem tirada no registro nao
+    /// envelhece.
+    pub fn contagens(&self) -> PushMounted {
+        PushMounted {
+            whatsapp: self.whatsapp.len(),
+            google_chat: self.google_chat.len(),
+            teams: self.teams.len(),
+            line: self.line.len(),
+        }
+    }
+}
+
+/// Quantos canais de cada tipo push subiram. Ver
+/// [`PushChannelStates::contagens`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PushMounted {
+    pub whatsapp: usize,
+    pub google_chat: usize,
+    pub teams: usize,
+    pub line: usize,
+}
+
+impl PushMounted {
+    /// Mesmo contrato de [`PushChannelStates::mounted`]: `None` e "este `id`
+    /// nao e um canal push que eu conheco", e nao "zero".
+    pub fn mounted(&self, id: &str) -> Option<usize> {
         match id {
-            "whatsapp" => Some(self.whatsapp.len()),
-            "google_chat" => Some(self.google_chat.len()),
-            "teams" => Some(self.teams.len()),
-            "line" => Some(self.line.len()),
+            "whatsapp" => Some(self.whatsapp),
+            "google_chat" => Some(self.google_chat),
+            "teams" => Some(self.teams),
+            "line" => Some(self.line),
             _ => None,
         }
     }

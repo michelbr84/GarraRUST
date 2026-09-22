@@ -137,6 +137,51 @@ impl ApprovalFingerprint {
         }
         Some(Self(hex.to_ascii_lowercase()))
     }
+
+    /// O texto de um pedido como o **humano** o le: sem o marcador que
+    /// [`Self::from_marker`] extrai — o mesmo, e so ele.
+    ///
+    /// # Por que existe (W3 da v0.4.5)
+    ///
+    /// O pedido de confirmacao que a ferramenta devolve comeca pelo marcador
+    /// (`[CONFIRM_REQUIRED:<16 hex>] O comando a seguir requer...`), e esse
+    /// texto subia inteiro como resposta do turno: o usuario do WhatsApp (e de
+    /// todo canal) recebia `[CONFIRM_REQUIRED:6b2e7f7e9f135cbc]` no meio da
+    /// mensagem. O marcador e dado interno — a impressao digital que o runtime
+    /// guarda no registro de pendencias e que o historico carrega no
+    /// `ToolResult` —, e digita-lo nunca aprovou nada: a aprovacao e uma
+    /// palavra ("sim") casada com o registro do servidor ou com o
+    /// `ToolResult` do historico, nunca com o texto do assistente.
+    ///
+    /// # O que sai e o que fica
+    ///
+    /// Sai o primeiro marcador bem formado, exatamente o que `from_marker`
+    /// le, com UM espaco vizinho (o de depois, ou o de antes quando o marcador
+    /// fecha a frase), para o texto nao ficar com espaco duplo. Um marcador
+    /// mal formado nao e marcador (`from_marker` devolve `None`) e fica como
+    /// esta. Um segundo marcador tambem fica: depois do primeiro, so pode ter
+    /// vindo do assunto do pedido — o comando que o humano esta aprovando — e
+    /// o pedido tem de mostrar o comando como ele e.
+    pub fn strip_marker(text: &str) -> String {
+        let Some(inicio) = text.find(MARKER_PREFIX) else {
+            return text.to_string();
+        };
+        let apos_prefixo = inicio + MARKER_PREFIX.len();
+        let resto = &text[apos_prefixo..];
+        let Some(fim) = resto.find(']') else {
+            return text.to_string();
+        };
+        let hex = &resto[..fim];
+        if hex.len() != FINGERPRINT_LEN || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return text.to_string();
+        }
+        let antes = &text[..inicio];
+        let depois = &text[apos_prefixo + fim + 1..];
+        match depois.strip_prefix(' ') {
+            Some(depois) => format!("{antes}{depois}"),
+            None => format!("{}{depois}", antes.strip_suffix(' ').unwrap_or(antes)),
+        }
+    }
 }
 
 /// O que o [`ToolContext`] carrega no lugar do `bool` antigo.
@@ -237,6 +282,58 @@ mod tests {
         assert!(!ap.covers("bash", "ls -la"));
         assert!(!ap.covers("bash", ""));
         assert_eq!(ToolApproval::default(), ToolApproval::None);
+    }
+
+    /// W3: o texto que o humano le perde exatamente o marcador que
+    /// `from_marker` le, e nada mais.
+    #[test]
+    fn strip_marker_tira_so_o_marcador_que_from_marker_le() {
+        let fp = ApprovalFingerprint::of("bash", "truncate -s 0 /tmp/x");
+        let m = fp.marker();
+
+        // No comeco (as tres ferramentas de hoje), no meio (o prefixo do
+        // `tool_program`) e no fim (fecha a frase): um espaco vizinho sai
+        // junto, e o resto fica byte a byte.
+        let casos = [
+            (
+                format!("{m} O comando a seguir requer confirmação:\n```\nls\n```"),
+                "O comando a seguir requer confirmação:\n```\nls\n```".to_string(),
+            ),
+            (
+                format!("[tool_program pausado no passo 1 de 2] {m} Confirme."),
+                "[tool_program pausado no passo 1 de 2] Confirme.".to_string(),
+            ),
+            (
+                format!("Confirma apagar x? Responda sim. {m}"),
+                "Confirma apagar x? Responda sim.".to_string(),
+            ),
+            (m.clone(), String::new()),
+        ];
+        for (com, sem) in casos {
+            assert_eq!(ApprovalFingerprint::strip_marker(&com), sem, "{com:?}");
+            assert!(!sem.contains(MARKER_PREFIX), "{sem:?}");
+            // A impressao digital continua saindo do texto ORIGINAL.
+            assert_eq!(ApprovalFingerprint::from_marker(&com), Some(fp.clone()));
+        }
+
+        // Sem marcador bem formado, nada muda — nem o que parece um.
+        for texto in [
+            "nada aqui",
+            "[CONFIRM_REQUIRED] antigo",
+            "[CONFIRM_REQUIRED:abc] curto",
+            "[CONFIRM_REQUIRED:0123456789abcdef sem fechar",
+        ] {
+            assert_eq!(ApprovalFingerprint::strip_marker(texto), texto);
+        }
+
+        // Um segundo marcador so pode vir do assunto (o comando que o humano
+        // aprova): fica, porque o pedido mostra o comando como ele e.
+        let outro = ApprovalFingerprint::of("bash", "outro").marker();
+        let com_dois = format!("{m} rode:\n```\necho '{outro}'\n```");
+        assert_eq!(
+            ApprovalFingerprint::strip_marker(&com_dois),
+            format!("rode:\n```\necho '{outro}'\n```")
+        );
     }
 
     #[test]

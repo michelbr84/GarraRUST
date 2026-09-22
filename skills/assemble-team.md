@@ -51,10 +51,26 @@ dogfood registrado na #1228.
   reexporte em *cada* comando. Numa rodada real isso produziu um `target/` de
   4,5 GB dentro de um worktree e levou o disco a 100%, travando todos os
   agentes ao mesmo tempo.
-- **Um `target/` compartilhado entre worktrees serve artefato velho.** Já
-  produziu duas leituras falsas: um "vermelho" que não existia e um erro de
-  compilação logo depois de o clippy passar na mesma lib. Em medição que vai
-  virar decisão, force rebuild.
+- **Um `target/` compartilhado entre worktrees mistura o código de uma com o
+  da outra.** O cargo gera o hash dos membros do workspace pelo caminho
+  *relativo* à raiz, então toda worktree deste repo escreve o mesmo
+  `libgarraia_agents-<hash>.rlib`, e o frescor é decidido por mtime: se a
+  worktree B compilou `garraia-agents` depois da última edição da A, a A linka
+  o artefato da B sem recompilar. Na onda C da v0.4.5 isso apareceu como erro
+  fantasma (`cannot find function turno_restrito`, `E0061` com o número de
+  argumentos de outro branch); o caso pior é o silencioso — teste verde contra
+  o código errado. Só o crate que a própria worktree editou é recompilado com
+  certeza. Regra: **um `CARGO_TARGET_DIR` por worktree** (ou, sem disco, um
+  perfil próprio: `--config 'profile.<nome>.inherits="dev"' --profile
+  <nome>`, que separa a saída em `<target>/<nome>/`). Resultado de gate num
+  target compartilhado é indicativo; a prova é o trem integrado num target
+  exclusivo mais o CI em runner limpo.
+- **Não responda a um agente de workflow que já terminou.** O `SendMessage`
+  para o `agentId` dele o retoma como uma cópia fora do workflow, com o mesmo
+  id; na v0.4.5 a cópia e a instância do workflow escreveram na mesma
+  worktree, e o `TaskStop` pelo id parou a instância errada. Antes de
+  responder, confira no `journal.jsonl` do workflow se ele já tem `result`; se
+  tiver, assuma a worktree você mesmo.
 - **O `utoipa-swagger-ui` não precisa mais de rede**: desde o #1228 o gateway
   usa a feature `vendored` e o build script lê o zip embutido. O antigo
   `SWAGGER_UI_DOWNLOAD_URL=file://...` é ignorado. Ver a skill `steward`.

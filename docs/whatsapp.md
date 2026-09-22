@@ -208,6 +208,14 @@ camadas, e nenhuma substitui a outra.
   `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`,
   `garra_status` — que descreve o proprio runtime, sem segredo, #1347) e
   `denied` para `file_write`, `bash` e `device_execute`.
+  O `garra_status` e o que responde "voce tem acesso ao WhatsApp?": a lista
+  `channels` dele sai da mesma funcao do `/api/channels`, entao este canal
+  aparece `active` com a ponte conectada e `offline` com ela caida. Numa
+  sessao deste canal (e em todo turno de portao restrito) o relatorio retem
+  o que e do operador — diretorio da sessao, `project_id`, lista de
+  provedores, nomes dos servidores MCP e a versao exata — e lista o que
+  reteve em `withheld`; o `session.id` sai com o numero mascarado nos 4
+  ultimos digitos.
   `channels.whatsapp_linked.default_mode` troca o perfil padrao por **outro
   modo nativo** (`ask`, `code`, `debug`, …); a escolha explicita do usuario
   (`/mode`) continua vencendo. Dois valores **nao** servem, e o canal nao sobe
@@ -394,6 +402,28 @@ donos; o check `execution.profile` do `/api/diagnostics` tambem. Sem
 Detalhes do perfil, a lista do que ele **nao** isola e o exemplo para pod:
 [`execution-profiles.md`](execution-profiles.md).
 
+### Confirmacao de ferramenta perigosa ("sim")
+
+Quando uma ferramenta pede confirmacao (o `bash` num comando arriscado com
+`agent.tool_confirmation_enabled`, um `device_execute` R3/R4), o turno pausa e
+o pedido chega como mensagem. Desde a v0.4.5 (#1343) responder **`sim`** (ou
+`yes`, `ok`, `confirma`, `confirmar`, `proceed`, `approve` — a mensagem
+inteira, nada mais) na mensagem seguinte roda o pedido, **uma vez**. Antes
+disso o "sim" nunca aprovava: o historico deste canal e guardado como texto,
+o pedido pausado nao voltava no turno seguinte, e a ferramenta perguntava de
+novo para sempre.
+
+- So aprova **quem recebeu o pedido**, na **mesma conversa**. Em grupo a
+  conversa e o grupo e o remetente e quem falou: o "sim" de outro membro nao
+  aprova — e **encerra** o pedido (fail-closed), entao o dono tem de pedir de
+  novo.
+- Qualquer outra mensagem no meio (inclusive "nao") encerra o pedido.
+- O pedido vale **5 minutos** e **uma vez**: um segundo "sim" pausa de novo.
+- Reiniciar o gateway cancela todo pedido pendente (ele vive em memoria, com
+  uma chave que muda a cada processo).
+- A ferramenta ainda precisa passar pelo piso do turno: em `search` o `bash`
+  nem e oferecido, entao nao ha o que confirmar.
+
 ### `logout`
 
 `garraia whatsapp logout` sobrescreve e remove `session.enc`, `session.enc.prev`,
@@ -425,11 +455,37 @@ nao precisa de Node.
 Na primeira execucao o GarraIA materializa a ponte em
 `<data_dir>/whatsapp/bridge/` (0700) e roda `npm ci --no-fund --no-audit`.
 `npm ci` e nao `npm install`: o `package-lock.json` e versionado e o pin exato
-do Baileys faz parte do contrato — e a mesma arvore que o CI audita. Uma
-atualizacao do `garraia` que traga uma ponte nova reescreve o diretorio sozinha
-(o carimbo `.garraia-bridge-sha256` e quem detecta) **e reinstala as
-dependencias**, para um bump de versao por CVE nao ficar parado atras de um
-`node_modules` antigo.
+do Baileys faz parte do contrato — e a mesma arvore que o CI audita.
+
+Uma atualizacao do `garraia` que traga uma ponte nova vale **no proximo boot
+do gateway**, sem vincular de novo: antes de lancar a ponte, o supervisor do
+canal regrava so os arquivos que diferem dos embutidos no binario. Mudou so o
+`bridge.mjs`, nao ha `npm`. O `npm ci` so roda quando falta `node_modules` ou
+quando nada prova que a arvore instalada e a do `package-lock.json` embutido
+(um bump de versao por CVE nao fica parado atras de um `node_modules` antigo).
+Duas coisas provam:
+
+- o carimbo `.garraia-deps-sha256`, que o GarraIA grava quando o `npm ci` dele
+  sai 0 — e que vira `pending` **antes** de um manifesto ser reescrito e antes
+  de cada `npm ci`, entao um `npm ci` que falhou ou foi interrompido nunca deixa
+  uma arvore pela metade passar por atual;
+- o registro do proprio npm, `node_modules/.package-lock.json`, que o npm 7+
+  grava por ultimo ao terminar uma instalacao: se ele lista exatamente os
+  pacotes do lock embutido (mesma versao, mesma `integrity`; so os `optional`
+  de outra plataforma podem faltar) e nao e mais velho que o `node_modules`, a
+  arvore e adotada sem `npm`, e o carimbo e gravado. E o que faz uma instalacao
+  da 0.4.4 (que nao tinha carimbo) e um `npm ci` rodado a mao valerem.
+
+Se o `npm` do gateway falhar, a ponte **nao sobe** (nunca contra dependencias
+de outra versao) e o `node_modules` que esse `npm ci` deixou pela metade sai do
+disco. Se nao houver `npm` na `PATH` do gateway (um servico do systemd, por
+exemplo), a ponte tambem nao sobe, mas **nada e apagado**: a arvore no disco
+nao foi o gateway que tentou instalar. Nos dois casos o
+`garraia whatsapp status` e o `/api/diagnostics` mostram "sem dependencias" com
+o passo `rode npm ci em <dir> e reinicie o gateway` — e o passo funciona: rode
+`npm ci` naquele diretorio, num shell que tenha o `npm`, e reinicie o gateway,
+que adota a arvore no boot. A sessao vinculada nao e tocada. O
+`garraia whatsapp link` segue a mesma regra.
 
 Como o filho e contido:
 
@@ -450,7 +506,7 @@ Como o filho e contido:
 | **QR sai embaralhado / quadrado** | O terminal precisa de **pelo menos 60 colunas** e UTF-8. Abaixo disso o GarraIA imprime a string crua em vez de um QR que nao le. |
 | **O QR expirou** | Normal: ele e regenerado ate 5 vezes, com `QR anterior expirou — novo QR (tentativa N/5)`. Depois da quinta, rode `garraia whatsapp` de novo. |
 | **`node nao encontrado na PATH`** | Instale Node.js 20 ou mais novo (<https://nodejs.org/en/download>). So este caminho precisa dele. |
-| **`o bridge esta sem dependencias instaladas`** | Rode `npm ci` no diretorio que a mensagem cita, ou apague o diretorio e rode `garraia whatsapp` de novo. |
+| **`o bridge esta sem dependencias instaladas`** / `status` diz `dependências faltando` | Rode `npm ci` no diretorio que a mensagem cita (num shell com `npm`) e reinicie o gateway, que adota a arvore no boot; ou rode `garraia whatsapp link` e responda nao ao re-vinculo: ele instala com o `npm` do seu shell, e depois reinicie o gateway, que so prepara o bridge uma vez por boot. |
 | **`Esta sessão não vale mais`** / `status` diz nao vinculado | A sessao morreu (401/403/419) e o comando imprime o codigo cru do WhatsApp. Rode `garraia whatsapp` de novo e leia um QR novo. |
 | **`status` diz `Leitura: FALHOU`** | A chave mudou: `GARRAIA_VAULT_PASSPHRASE` diferente, ou `session.key` perdida. Rode `garraia whatsapp` de novo. |
 | **`whatsapp_linked: canal nao subiu — …`** no log do gateway | A frase depois do travessao e a acao: ligar `channels.whatsapp_linked.enabled`; corrigir `channels.whatsapp_linked.default_mode` para um modo nativo (`search`, `ask`, `code`…; nao `auto`, nao modo customizado, nao typo) ou remover a chave; rodar `garraia whatsapp link`; ou instalar Node.js 20+ e garantir `node` na PATH **do processo do gateway** (um servico systemd nao herda a PATH do seu shell). Canal desligado de proposito sai em `INFO`, nao aqui. |

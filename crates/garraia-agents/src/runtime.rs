@@ -409,25 +409,40 @@ const GARRA_STATUS_TOOL: &str = "garra_status";
 /// integracao (#1347), em PT.
 ///
 /// Publica de proposito: e o contrato entre a nota e o formato do relatorio
-/// do `garra_status` no gateway, e os testes de la afirmam contra ela. O
-/// relatorio de hoje traz `channels` como lista de nomes; a fatia do gateway
-/// que acrescenta estado por canal usa `status` com `active`/`offline`, e a
-/// nota ja fala dos dois formatos. Ferramentas ficam de fora: a lista de
-/// ferramentas que o modelo recebeu no turno e a fonte de verdade para elas.
+/// do `garra_status` no gateway, e os testes de la afirmam contra ela. Desde
+/// a #1347 (fatia 2) cada item de `channels` traz `status` (`active` /
+/// `offline`) e sai da mesma funcao do `/api/channels` — canal nao ligado fica
+/// de fora —, e um turno restrito lista em `withheld` o que foi retido.
+///
+/// A lista so cobre canais de mensagens: o web chat, a API, a CLI e o MCP
+/// nunca passam pelo registro de canais do gateway, e a nota diz isso com os
+/// ids que o gateway exclui (`channels_view::FORA_DO_RELATORIO_DO_AGENTE`),
+/// em vez de afirmar que todo canal ausente esta desligado — o usuario do web
+/// chat que perguntava se o web chat estava disponivel ouvia "nao". A
+/// superficie da conversa vai em `session.channel`.
+///
+/// Ferramentas ficam de fora da nota: a lista de ferramentas que o modelo
+/// recebeu no turno e a fonte de verdade para elas.
 pub const NOTA_GARRA_STATUS_PT: &str = "Antes de dizer que nao tem acesso a um canal \
-ou integracao, chame `garra_status` e responda a partir dele. Um canal presente na \
-lista `channels` do relatorio e um canal em que voce esta conectado; se o canal \
-trouxer um campo `status`, so `active` conta como conectado, e `offline` nao. Um \
-canal ausente da lista pode estar conectado por um caminho que o relatorio ainda \
-nao cobre: nao negue o acesso so por isso.";
+ou integracao, chame `garra_status` e responda a partir dele. Cada canal da lista \
+`channels` do relatorio traz um `status`: `active` e um canal em que voce esta \
+conectado agora, e `offline` e um canal configurado que esta fora do ar. A lista \
+cobre so os canais de mensagens: um canal de mensagens ausente dela nao esta ligado \
+neste Garra. O web chat e a API (`web`, `api`) e a CLI e o servidor MCP (`cli`, \
+`mcp`) nunca aparecem nela, e a ausencia deles nao diz nada; o canal desta conversa \
+esta em `session.channel`. Um campo citado em `withheld` foi retido nesta conversa, \
+e nao esta ausente.";
 
 /// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
 pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
-channel or integration, call `garra_status` and answer from it. A channel present \
-in the report's `channels` list is a channel you are connected to; if the channel \
-carries a `status` field, only `active` counts as connected, and `offline` does not. \
-A channel missing from the list may still be connected through a path the report \
-does not cover yet: do not deny access on that basis alone.";
+channel or integration, call `garra_status` and answer from it. Each channel in the \
+report's `channels` list carries a `status`: `active` is a channel you are connected \
+to right now, and `offline` is a configured channel that is down. The list covers \
+messaging channels only: a messaging channel missing from it is not enabled on this \
+Garra. The web chat and the API (`web`, `api`) and the CLI and the MCP server \
+(`cli`, `mcp`) never appear in it, and their absence says nothing; the channel of \
+this conversation is in `session.channel`. A field named in `withheld` was held \
+back in this conversation, and is not missing.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
 /// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.
@@ -703,7 +718,9 @@ enum DesfechoDoPrograma {
     /// - `para_o_humano` e o que sobe como resposta do turno — so o prefixo
     ///   que localiza o passo mais o pedido do passo. Nunca a saida crua dos
     ///   passos anteriores, que ficaria colada ao pedido em que o humano
-    ///   decide aprovar (F-1).
+    ///   decide aprovar (F-1). Ainda carrega o marcador do passo: quem o tira
+    ///   e o despacho do envelope, ao montar o `prompt` (W3 da v0.4.5), depois
+    ///   de ler dele a impressao digital.
     /// - `para_o_modelo` e o `ToolResult` que entra no historico: comeca
     ///   pelo MESMO texto do humano e acrescenta o relatorio parcial (passos
     ///   ja executados, `parou_no_passo`, `vars`). Sem ele o modelo nunca via
@@ -2204,11 +2221,21 @@ impl AgentRuntime {
                 .ok_or_else(|| Error::Agent("no LLM provider configured".into()))?
         };
 
+        // O portao sai daqui de cima, como no `process_message_with_agent_config`:
+        // o prompt e o `max_tokens` do modo (#986) entram nas resolucoes logo
+        // abaixo. Ate a #1347 (fatia 3) este ramo montava o prompt sem o
+        // template do modo, e o mesmo turno no piso `search` recebia um prompt
+        // no batch e outro no streaming.
+        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
+
         // Plan 0250 (GAR-771): resolve override → config prompt → default
         // persona. An explicit prompt always wins; the persona only fills in
         // when nothing is configured (and not in Neutral mode).
+        // Precedencia identica a do ramo batch: override explicito do
+        // chamador > prompt do modo (#986) > prompt configurado no runtime.
         let explicit_prompt = system_prompt_override
             .map(|s| s.to_string())
+            .or_else(|| portao.system_prompt().map(|s| s.to_string()))
             .or_else(|| self.system_prompt.clone());
         let effective_system_prompt = com_objetivo(
             self.base_system_prompt(explicit_prompt.as_deref()),
@@ -2219,7 +2246,11 @@ impl AgentRuntime {
             .filter(|m| !m.is_empty())
             .map(|m| m.to_string())
             .unwrap_or_default();
-        let effective_max_tokens = max_tokens_override.or(self.max_tokens).unwrap_or(4096);
+        // Mesma precedencia (#986): chamador > runtime > modo > default.
+        let effective_max_tokens = max_tokens_override
+            .or(self.max_tokens)
+            .or_else(|| portao.max_tokens())
+            .unwrap_or(4096);
 
         // Build system message (same as process_message)
         let memory_context = match self
@@ -2251,7 +2282,6 @@ impl AgentRuntime {
         // UX — o modelo nao perde turno pedindo o que nao pode. A garantia de
         // seguranca e o guard antes do `execute`, porque o modelo pode inventar
         // um nome que nunca esteve na lista.
-        let portao = crate::modes::ToolGate::para_o_turno(exec, user_text);
         let todas_as_tools = self.tool_definitions();
         // #1264: os avisos leem a lista INTEIRA, antes do filtro do portao — e
         // sobre o que o filtro tirou que eles falam.
@@ -3037,8 +3067,12 @@ impl AgentRuntime {
                                 .into_iter()
                                 .filter(|n| portao.permite(n))
                                 .collect();
-                            crate::tools::turn_tools::com_ferramentas_do_turno(liberadas, execucao)
-                                .await
+                            crate::tools::turn_tools::com_ferramentas_do_turno(
+                                liberadas,
+                                portao.restringe_por_whitelist(),
+                                execucao,
+                            )
+                            .await
                         } else {
                             execucao.await
                         }
@@ -3054,14 +3088,26 @@ impl AgentRuntime {
         info!("tool '{}' result: is_error={}", name, output.is_error);
         let output = saida_sem_marcador_alheio(output);
 
+        // W3 (v0.4.5): o texto de um pedido de confirmacao como o HUMANO o le,
+        // sem o marcador interno. Calculado uma vez e usado nos dois lugares
+        // em que o pedido chega a alguem: a linha da ferramenta nos sinks de
+        // eventos (o `tool_finished` que a `garraia chat` desenha e que o
+        // `/ws` manda como resumo) e o `prompt` do turno pausado. O conteudo
+        // CRU, com o marcador, continua sendo o do `ToolResult` e o de onde
+        // sai a `fingerprint` — os dois lugares de onde a aprovacao sai.
+        let pedido_ao_humano = output
+            .requires_confirmation
+            .then(|| ApprovalFingerprint::strip_marker(&output.content));
+
         if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
             let ok = !output.is_error;
+            let visivel = pedido_ao_humano.as_deref().unwrap_or(&output.content);
             sink.tool_finished(
                 name,
                 iniciado_em.elapsed(),
                 ok,
-                summarize_tool_output(&output.content, ok),
-                capture_tool_output(&output.content),
+                summarize_tool_output(visivel, ok),
+                capture_tool_output(visivel),
             )
             .await;
         }
@@ -3085,7 +3131,14 @@ impl AgentRuntime {
                     tool_use_id: id.to_string(),
                     content: conteudo_para_o_modelo.unwrap_or_else(|| output.content.clone()),
                 },
-                prompt: output.content,
+                // W3 (v0.4.5): o unico lugar em que o pedido vira o texto que
+                // o humano le, nas quatro copias do loop e no `tool_program`.
+                // O marcador fica no `ToolResult` (o historico) e na
+                // `fingerprint` (o registro de pendencias) — os dois lugares
+                // de onde a aprovacao sai. No texto ele so aparecia para o
+                // usuario do canal, que nunca aprovou nada digitando-o.
+                prompt: pedido_ao_humano
+                    .unwrap_or_else(|| ApprovalFingerprint::strip_marker(&output.content)),
                 tool: name.to_string(),
                 fingerprint,
             };
@@ -3361,7 +3414,25 @@ impl AgentRuntime {
                         .to_string(),
                     )));
                 }
-                DispatchOutcome::Paused { prompt, .. } => {
+                DispatchOutcome::Paused {
+                    tool_result,
+                    prompt,
+                    ..
+                } => {
+                    // W3 (v0.4.5): o `prompt` do passo ja chega sem o
+                    // marcador — e o texto do humano. O envelope precisa do
+                    // pedido CRU, com o marcador: e dele que o despacho do
+                    // `tool_program` tira a `fingerprint` registrada e e ele
+                    // que o `ToolResult` do modelo carrega para o historico.
+                    // O cru e o conteudo do `ToolResult` do passo (um passo
+                    // nunca e `tool_program`, entao nao ha relatorio ali). O
+                    // `prompt` so serve de reserva: sem marcador, a pausa
+                    // nao registra nada e o humano e perguntado de novo
+                    // (fail-closed).
+                    let prompt = match tool_result {
+                        ContentBlock::ToolResult { content, .. } => content,
+                        _ => prompt,
+                    };
                     // Achado de auditoria/revisao (F-1 / importante 1): o
                     // texto do humano vira a RESPOSTA QUE ELE LE, na mesma
                     // mensagem em que decide aprovar — por isso so o prefixo
@@ -6479,12 +6550,15 @@ mod tests {
             !resposta.contains("\"steps\""),
             "o relatorio e do modelo, nao do humano: {resposta}"
         );
-        // O marcador sobrevive ao prefixo, e e o do pedido com o alvo ja
-        // substituido (`$sete` -> 7).
-        assert_eq!(
-            ApprovalFingerprint::from_marker(&resposta),
-            Some(ApprovalFingerprint::of("precisa_confirmar", "7")),
+        // O pedido e o do passo com o alvo ja substituido (`$sete` -> 7), e
+        // chega ao humano sem o marcador interno (W3 da v0.4.5).
+        assert!(
+            resposta.contains("confirme a acao perigosa em 7"),
             "{resposta}"
+        );
+        assert!(
+            !resposta.contains(crate::tools::approval::MARKER_PREFIX),
+            "o marcador e dado interno, nao texto do humano: {resposta}"
         );
         assert!(
             resposta.starts_with("[tool_program pausado no passo 2 de 4;"),
@@ -6553,6 +6627,7 @@ mod tests {
                     content: para_o_modelo,
                 },
             prompt: para_o_humano,
+            fingerprint,
             ..
         } = desfecho
         else {
@@ -6564,16 +6639,28 @@ mod tests {
 
         let pedido = ApprovalFingerprint::of("precisa_confirmar", "7");
 
-        // Humano: so o pedido.
-        assert!(para_o_humano.contains(&pedido.marker()), "{para_o_humano}");
+        // Humano: so o pedido, e sem o marcador interno (W3 da v0.4.5) — a
+        // impressao digital que o registro de pendencias guarda vem na
+        // `fingerprint`, e e a do pedido do passo.
+        assert!(
+            para_o_humano.contains("confirme a acao perigosa em 7"),
+            "{para_o_humano}"
+        );
+        assert!(
+            !para_o_humano.contains(crate::tools::approval::MARKER_PREFIX),
+            "{para_o_humano}"
+        );
+        assert_eq!(fingerprint, Some(pedido.clone()));
         assert!(
             !para_o_humano.contains("saida-crua-do-passo-0"),
             "{para_o_humano}"
         );
         assert!(!para_o_humano.contains(forjado), "{para_o_humano}");
 
-        // Modelo: o mesmo texto do humano PRIMEIRO, depois o relatorio.
-        let relatorio = para_o_modelo
+        // Modelo: o mesmo texto do humano PRIMEIRO — com o marcador, que e o
+        // que o historico precisa —, depois o relatorio.
+        let sem_marcador = ApprovalFingerprint::strip_marker(&para_o_modelo);
+        let relatorio = sem_marcador
             .strip_prefix(para_o_humano.as_str())
             .expect("o ToolResult do modelo comeca pelo texto do humano");
         let relatorio: serde_json::Value =
@@ -6714,9 +6801,9 @@ mod tests {
             "so o pedido aprovado roda, e uma vez"
         );
         assert!(executou_depois.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(
-            ApprovalFingerprint::from_marker(&resposta),
-            Some(ApprovalFingerprint::of("precisa_confirmar", "outro")),
+        assert!(
+            resposta.contains("confirme a acao perigosa em outro")
+                && !resposta.contains(crate::tools::approval::MARKER_PREFIX),
             "o segundo pedido, de outro alvo, pausa de novo: {resposta}"
         );
         assert!(
@@ -8442,8 +8529,17 @@ mod tests {
             ApprovalScope::new(canal, sessao, remetente)
         }
 
+        /// O turno pausou pedindo confirmacao: o pedido da ferramenta chegou
+        /// ao humano. E chegou **sem o marcador** (W3 da v0.4.5) — ele e dado
+        /// interno, e digita-lo nunca aprovou nada; a aprovacao sai do registro
+        /// do servidor (com escopo) ou do `ToolResult` do historico. Toda
+        /// resposta que passa por aqui, nos tres caminhos, e checada.
         fn e_pedido(resposta: &str) -> bool {
-            ApprovalFingerprint::from_marker(resposta).is_some()
+            assert!(
+                !resposta.contains(crate::tools::approval::MARKER_PREFIX),
+                "o marcador interno chegou ao texto do humano: {resposta}"
+            );
+            resposta.contains("confirme a acao perigosa em")
         }
 
         /// O bug do #1343 ponta a ponta: com o historico so em texto, o "sim"
@@ -8732,6 +8828,218 @@ mod tests {
             );
             // O registro foi consumido: outro "sim" nao aprova nada.
             assert!(rt.pending_approvals.is_empty());
+        }
+
+        /// Pede `bash {command: printenv PATH}` enquanto nao houver resultado
+        /// de tool depois da ultima mensagem humana, e guarda o conteudo de
+        /// todo resultado que viu.
+        struct PedeBash {
+            vistos: Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeBash {
+            fn provider_id(&self) -> &str {
+                "pede_bash"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let ultima_humana = request
+                    .messages
+                    .iter()
+                    .rposition(|m| {
+                        matches!(m.role, ChatRole::User)
+                            && matches!(m.content, MessagePart::Text(_))
+                    })
+                    .unwrap_or(0);
+                let mut depois = Vec::new();
+                for m in &request.messages[ultima_humana..] {
+                    if let MessagePart::Parts(p) = &m.content {
+                        for b in p {
+                            if let ContentBlock::ToolResult { content, .. } = b {
+                                depois.push(content.clone());
+                            }
+                        }
+                    }
+                }
+                let content = if depois.is_empty() {
+                    vec![ContentBlock::ToolUse {
+                        id: "t-bash".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({ "command": "printenv PATH" }),
+                    }]
+                } else {
+                    self.vistos.lock().expect("lock").extend(depois);
+                    vec![ContentBlock::Text {
+                        text: "concluido".to_string(),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// **W3 da v0.4.5 com a ferramenta de verdade.** O usuario do
+        /// WhatsApp via `[CONFIRM_REQUIRED:6b2e7f7e9f135cbc] O comando a
+        /// seguir requer confirmacao...`: o marcador interno subia como
+        /// resposta do turno. Agora o texto que sai diz o comando e como
+        /// aprovar, sem o marcador — e o "sim" seguinte continua retomando,
+        /// porque a aprovacao nunca dependeu do marcador no texto.
+        #[tokio::test]
+        async fn pedido_do_bash_chega_sem_marcador_e_o_sim_ainda_retoma() {
+            let rt = AgentRuntime::new();
+            rt.register_tool(Box::new(crate::tools::BashTool::new_with_confirmation(
+                None,
+            )));
+            let provider = Arc::new(PedeBash {
+                vistos: Mutex::new(Vec::new()),
+            });
+            rt.register_provider(Arc::clone(&provider) as Arc<dyn LlmProvider>);
+            let exec = ExecContext {
+                approval_scope: escopo("whatsapp_linked", "s1", "5511888880000"),
+                ..ExecContext::default()
+            };
+            let turno = |texto: &'static str| {
+                let rt = &rt;
+                let exec = &exec;
+                async move {
+                    rt.process_message_with_agent_config(
+                        "s1",
+                        texto,
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno")
+                }
+            };
+
+            let pedido = turno("mostra o PATH").await;
+            assert!(
+                !pedido.contains(crate::tools::approval::MARKER_PREFIX),
+                "o marcador chegou ao humano: {pedido}"
+            );
+            assert!(
+                pedido.starts_with("O comando a seguir requer confirma"),
+                "o texto comeca pela frase, sem o marcador na frente: {pedido}"
+            );
+            assert!(pedido.contains("printenv PATH"), "{pedido}");
+            assert!(
+                pedido.contains("Responda **sim**"),
+                "o texto diz como aprovar: {pedido}"
+            );
+            assert!(!rt.pending_approvals.is_empty(), "a pausa foi registrada");
+
+            // Digitar o marcador nunca aprovou: ele nem chega ao humano, e o
+            // que aprova e a palavra.
+            let resposta = turno("sim").await;
+            assert_eq!(resposta, "concluido");
+            let vistos = provider.vistos.lock().expect("lock").clone();
+            let caminho = std::env::var("PATH").unwrap_or_default();
+            assert!(
+                vistos
+                    .iter()
+                    .any(|r| !caminho.is_empty() && r.contains(caminho.as_str())),
+                "o comando aprovado rodou e o modelo viu a saida: {vistos:?}"
+            );
+            assert!(rt.pending_approvals.is_empty(), "o pedido foi consumido");
+        }
+
+        /// **W3 no sink de eventos.** O mesmo despacho que monta a resposta
+        /// pausada manda, ANTES dela, o `tool_finished` da ferramenta aos
+        /// sinks `Events` — a linha que a `garraia chat` desenha e o resumo
+        /// que o `/ws` envia. O resumo e a saida capturada eram tirados do
+        /// conteudo cru, e o humano via `[CONFIRM_REQUIRED:<hex>] O comando a
+        /// seguir...` ali, mesmo com a resposta ja limpa. O registro da
+        /// pausa continua saindo do conteudo cru.
+        #[tokio::test]
+        async fn a_linha_da_ferramenta_no_streaming_tambem_sai_sem_marcador() {
+            let rt = AgentRuntime::new();
+            rt.register_tool(Box::new(crate::tools::BashTool::new_with_confirmation(
+                None,
+            )));
+            let provider = Arc::new(PedeBash {
+                vistos: Mutex::new(Vec::new()),
+            });
+            rt.register_provider(Arc::clone(&provider) as Arc<dyn LlmProvider>);
+            let exec = ExecContext {
+                approval_scope: escopo("web", "s-w3", "u-1"),
+                ..ExecContext::default()
+            };
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::turn_events::TurnEvent>(64);
+            let coleta = tokio::spawn(async move {
+                let mut eventos = Vec::new();
+                while let Some(e) = rx.recv().await {
+                    eventos.push(e);
+                }
+                eventos
+            });
+            let resposta = rt
+                .process_message_streaming_with_events(
+                    "s-w3",
+                    "mostra o PATH",
+                    &[],
+                    tx,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &exec,
+                )
+                .await
+                .expect("turno");
+            let eventos = coleta.await.expect("coleta");
+
+            let fins: Vec<(&str, &str)> = eventos
+                .iter()
+                .filter_map(|e| match e {
+                    crate::turn_events::TurnEvent::ToolFinished {
+                        name,
+                        summary,
+                        output,
+                        ..
+                    } if name == "bash" => Some((summary.as_str(), output.as_str())),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(fins.len(), 1, "um fim para a chamada do bash: {eventos:?}");
+            let (resumo, saida) = fins[0];
+            for (onde, texto) in [("summary", resumo), ("output", saida)] {
+                assert!(
+                    !texto.contains(crate::tools::approval::MARKER_PREFIX),
+                    "o marcador chegou ao {onde} do tool_finished: {texto}"
+                );
+                assert!(
+                    texto.starts_with("O comando a seguir requer confirma"),
+                    "o {onde} e o pedido, sem o marcador na frente: {texto}"
+                );
+            }
+            assert!(saida.contains("printenv PATH"), "{saida}");
+            assert!(
+                !resposta.contains(crate::tools::approval::MARKER_PREFIX),
+                "{resposta}"
+            );
+            assert!(
+                !rt.pending_approvals.is_empty(),
+                "a pausa foi registrada com a impressao digital do conteudo cru"
+            );
         }
     }
 
@@ -9267,7 +9575,13 @@ mod tests {
         #[test]
         fn nota_casa_com_o_formato_do_relatorio_e_nao_fala_de_ferramenta() {
             for nota in [NOTA_GARRA_STATUS_PT, NOTA_GARRA_STATUS_EN] {
-                for campo in ["`channels`", "`status`", "`active`", "`offline`"] {
+                for campo in [
+                    "`channels`",
+                    "`status`",
+                    "`active`",
+                    "`offline`",
+                    "`session.channel`",
+                ] {
                     assert!(nota.contains(campo), "{campo} ausente: {nota}");
                 }
                 let minuscula = nota.to_lowercase();
@@ -9278,11 +9592,40 @@ mod tests {
             }
         }
 
+        /// #1347 (C4): a nota nao afirma que TODO canal ausente esta
+        /// desligado. O web chat, a API, a CLI e o MCP nunca entram na
+        /// lista, e a frase antiga fazia o usuario do web chat ouvir que o
+        /// web chat nao estava disponivel. A afirmacao vale so para canal de
+        /// mensagens, e a nota nomeia as superficies que a lista nao cobre.
+        #[test]
+        fn nota_so_afirma_ausencia_de_canal_de_mensagens() {
+            for (nota, geral, restrita) in [
+                (
+                    NOTA_GARRA_STATUS_PT,
+                    "Um canal ausente da lista",
+                    "um canal de mensagens ausente dela nao esta ligado",
+                ),
+                (
+                    NOTA_GARRA_STATUS_EN,
+                    "A channel missing from the list",
+                    "a messaging channel missing from it is not enabled",
+                ),
+            ] {
+                assert!(!nota.contains(geral), "{nota}");
+                assert!(nota.contains(restrita), "{nota}");
+                for id in ["`web`", "`api`", "`cli`", "`mcp`"] {
+                    assert!(nota.contains(id), "{id}: {nota}");
+                }
+            }
+        }
+
         /// Guarda o `system` e as `tools` da primeira requisicao; responde
         /// em texto (batch e streaming).
         #[derive(Default)]
         struct Captura {
             primeira: Mutex<Option<(Option<String>, Vec<String>)>>,
+            /// `(max_tokens, temperature)` da primeira requisicao.
+            parametros: Mutex<Option<(Option<u32>, Option<f64>)>>,
         }
 
         impl Captura {
@@ -9293,7 +9636,16 @@ mod tests {
                         request.system.clone(),
                         request.tools.iter().map(|t| t.name.clone()).collect(),
                     ));
+                    *self.parametros.lock().expect("lock") =
+                        Some((request.max_tokens, request.temperature));
                 }
+            }
+
+            fn parametros(&self) -> (Option<u32>, Option<f64>) {
+                self.parametros
+                    .lock()
+                    .expect("lock")
+                    .expect("houve requisicao")
             }
 
             fn primeira(&self) -> (Option<String>, Vec<String>) {
@@ -9351,6 +9703,10 @@ mod tests {
             com_tool: bool,
             exec: &ExecContext,
         ) -> (Option<String>, Vec<String>) {
+            rodar(caminho, com_tool, exec).await.primeira()
+        }
+
+        async fn rodar(caminho: Caminho, com_tool: bool, exec: &ExecContext) -> Arc<Captura> {
             let rt = AgentRuntime::new();
             rt.register_tool(stub("file_read"));
             if com_tool {
@@ -9403,7 +9759,34 @@ mod tests {
                         .expect("turno");
                 }
             }
-            provider.primeira()
+            provider
+        }
+
+        /// #1347 (N1): o changelog diz que o streaming e o batch
+        /// (`process_message_with_agent_config`) seguem a mesma precedencia.
+        /// Este teste prende a afirmacao no pedido inteiro que sai para o
+        /// provider, num modo customizado com `temperature` e `max_tokens`
+        /// proprios: o mesmo prompt, o mesmo `max_tokens` do modo e a mesma
+        /// `temperature` nos dois ramos. Hoje nenhum dos dois manda a
+        /// `temperature` do modo — so o `process_message_impl` manda, e ele so
+        /// roda pelo heartbeat, que nunca tem modo (o A2A vai pelo
+        /// `process_message_with_agent_config`) —, e o que o teste impede e um
+        /// ramo mudar sem o outro.
+        #[tokio::test]
+        async fn streaming_e_batch_mandam_o_mesmo_pedido_no_modo() {
+            let perfil = crate::modes::ModeProfile::from_custom(
+                crate::modes::AgentMode::Search,
+                "busca-fina",
+                None,
+                &serde_json::json!({}),
+                &serde_json::json!({ "temperature": 0.3, "max_tokens": 8192 }),
+            );
+            let exec = ExecContext::with_custom_profile("busca-fina".to_string(), perfil);
+            let batch = rodar(Caminho::AgentConfig, true, &exec).await;
+            let streaming = rodar(Caminho::Streaming, true, &exec).await;
+            assert_eq!(batch.primeira().0, streaming.primeira().0, "prompt");
+            assert_eq!(batch.parametros(), streaming.parametros());
+            assert_eq!(batch.parametros().0, Some(8192), "max_tokens do modo");
         }
 
         /// O cenario do relato: piso `search` (o do WhatsApp), pergunta sobre
@@ -9419,15 +9802,15 @@ mod tests {
                     "{caminho:?}: {tools:?}"
                 );
                 let system = system.expect("prompt");
-                // O ramo de streaming nao aplica o template do modo (so
-                // override > prompt do runtime > persona) — divergencia
-                // anterior a esta mudanca. A nota entra nos dois.
-                if matches!(caminho, Caminho::AgentConfig) {
-                    assert!(system.contains("You are a search assistant"), "{system}");
-                    assert!(system.ends_with(NOTA_GARRA_STATUS_PT), "{system}");
-                }
+                // #1347 (fatia 3): o streaming tambem aplica o template do
+                // modo — antes so o batch aplicava, e o mesmo turno recebia
+                // prompts diferentes conforme o ramo.
                 assert!(
-                    system.contains(NOTA_GARRA_STATUS_PT),
+                    system.contains("You are a search assistant"),
+                    "{caminho:?}: {system}"
+                );
+                assert!(
+                    system.ends_with(NOTA_GARRA_STATUS_PT),
                     "{caminho:?}: {system}"
                 );
             }
@@ -9445,16 +9828,17 @@ mod tests {
             for caminho in [Caminho::AgentConfig, Caminho::Streaming] {
                 let (system, tools) = primeira_requisicao(caminho, false, &search).await;
                 assert!(!tools.iter().any(|t| t == "garra_status"));
-                // A persona cita `garra_status` por conta propria; o que
-                // nao pode aparecer e a NOTA.
-                assert!(
-                    !system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT),
-                    "{caminho:?}"
-                );
+                // Nem a nota nem a persona (#1347, fatia 3) citam a tool.
+                let system = system.unwrap_or_default();
+                assert!(!system.contains("garra_status"), "{caminho:?}: {system}");
             }
+            // O heartbeat e o ramo que cai na persona (sem modo): o caso da
+            // CLI, que nunca registra `garra_status`.
             let (system, _) =
                 primeira_requisicao(Caminho::Heartbeat, false, &ExecContext::default()).await;
-            assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
+            let system = system.unwrap_or_default();
+            assert!(system.contains("Garra"), "a persona entrou: {system}");
+            assert!(!system.contains("garra_status"), "{system}");
 
             let perfil = crate::modes::ModeProfile::from_custom(
                 crate::modes::AgentMode::Search,
@@ -9471,8 +9855,10 @@ mod tests {
 
         /// Uma `garra_status` de mentira que anota o que
         /// `ferramentas_do_turno` devolveu quando o runtime a executou.
+        type Visto = Option<(Option<Vec<String>>, Option<bool>)>;
+
         struct SondaDeStatus {
-            viu: Arc<Mutex<Option<Option<Vec<String>>>>>,
+            viu: Arc<Mutex<Visto>>,
         }
 
         #[async_trait::async_trait]
@@ -9491,8 +9877,10 @@ mod tests {
                 _c: &crate::tools::ToolContext,
                 _i: serde_json::Value,
             ) -> Result<crate::tools::ToolOutput> {
-                *self.viu.lock().expect("lock") =
-                    Some(crate::tools::turn_tools::ferramentas_do_turno());
+                *self.viu.lock().expect("lock") = Some((
+                    crate::tools::turn_tools::ferramentas_do_turno(),
+                    crate::tools::turn_tools::turno_restrito(),
+                ));
                 Ok(crate::tools::ToolOutput::success("{}"))
             }
         }
@@ -9540,41 +9928,48 @@ mod tests {
         /// estao registradas mas negadas, e nao podem aparecer.
         #[tokio::test]
         async fn garra_status_recebe_so_as_ferramentas_liberadas_no_turno() {
-            let rt = AgentRuntime::new();
-            for nome in ["bash", "file_write", "file_read"] {
-                rt.register_tool(stub(nome));
+            async fn visto_em(exec: &ExecContext) -> Visto {
+                let rt = AgentRuntime::new();
+                for nome in ["bash", "file_write", "file_read"] {
+                    rt.register_tool(stub(nome));
+                }
+                let viu = Arc::new(Mutex::new(None));
+                rt.register_tool(Box::new(SondaDeStatus {
+                    viu: Arc::clone(&viu),
+                }));
+                rt.register_provider(Arc::new(PedeStatus));
+                let r = rt
+                    .process_message_with_agent_config(
+                        "s-1347-tools",
+                        "o que voce pode fazer?",
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno");
+                assert_eq!(r, "ok");
+                viu.lock().expect("lock").clone()
             }
-            let viu = Arc::new(Mutex::new(None));
-            rt.register_tool(Box::new(SondaDeStatus {
-                viu: Arc::clone(&viu),
-            }));
-            rt.register_provider(Arc::new(PedeStatus));
+
             let search = ExecContext::with_mode(Some("search".to_string()));
-            let r = rt
-                .process_message_with_agent_config(
-                    "s-1347-tools",
-                    "o que voce pode fazer?",
-                    &[],
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    &search,
-                )
-                .await
-                .expect("turno");
-            assert_eq!(r, "ok");
-            let visto = viu.lock().expect("lock").clone();
             assert_eq!(
-                visto,
-                Some(Some(vec![
-                    "file_read".to_string(),
-                    "garra_status".to_string()
-                ])),
-                "a tool so ve o que o portao do search libera"
+                visto_em(&search).await,
+                Some((
+                    Some(vec!["file_read".to_string(), "garra_status".to_string()]),
+                    Some(true)
+                )),
+                "a tool so ve o que o portao do search libera, e sabe que o turno e restrito"
             );
+            // #1347 (fatia 3): sem modo, o portao nao restringe — e a tool
+            // recebe `false`, nao `None` (esta dentro de um turno).
+            let (_, restrito) = visto_em(&ExecContext::default()).await.expect("rodou");
+            assert_eq!(restrito, Some(false));
         }
     }
 

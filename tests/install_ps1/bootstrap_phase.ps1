@@ -13,9 +13,16 @@
 # Test-InteractiveSession is overridden here for the same reason
 # Invoke-GhRequest is overridden in resolve_version.ps1: the real probe depends
 # on how the runner attaches stdio, which would make these branches untestable.
+#
+# The override covers the BRANCHES. The PROBE itself is covered at the end of
+# this file, in child processes that dot-source the real install.ps1 -- the
+# mirror of cases (a) and (g) in tests/install_sh/bootstrap_phase.sh, which
+# pin install.sh's has_usable_tty after the v0.4.4 smoke run caught it
+# trusting /dev/tty's permission bits inside a container.
 
 . (Join-Path $PSScriptRoot '_harness.ps1')
-. (Get-InstallerPath)
+$installerPath = Get-InstallerPath
+. $installerPath
 
 $onWindows = [IO.Path]::DirectorySeparatorChar -eq '\'
 $script:Interactive = $true
@@ -113,6 +120,221 @@ try {
     Assert-Equal 'stops after init -- start is never reached' 1 $calls.Count
     Assert-Equal 'the one call was init' 'init' $calls[0]
     Assert-True  'explains the config may need edits' ($out -match 'may need manual edits')
+
+    # ---- the REAL probe, in child processes -------------------------------
+    #
+    # Each child dot-sources the real install.ps1 (so it gets the real
+    # Test-InteractiveSession, not the override above), prints what its stdin
+    # looks like and what the probe decided, then runs Invoke-BootstrapPhase
+    # against a stub. CI is set or removed INSIDE the child: GitHub Actions
+    # exports CI=true, and inheriting it would let the CI short-circuit answer
+    # for the stdin probe and hide a regression in it.
+    $probeStub = New-GarraiaStub -Directory (New-Item -ItemType Directory -Force -Path (Join-Path $sandbox 'probe')).FullName
+    $child = Join-Path $sandbox 'probe-child.ps1'
+    $quotedInstaller = $installerPath -replace "'", "''"
+    $quotedStub = $probeStub.Path -replace "'", "''"
+    Set-Content -Path $child -Value @"
+param([string]`$Ci = '', [switch]`$ProbeOnly)
+Set-StrictMode -Version Latest
+`$ErrorActionPreference = 'Stop'
+if (`$Ci) { `$env:CI = `$Ci } else { Remove-Item Env:CI -ErrorAction SilentlyContinue }
+`$env:GARRAIA_INSTALL_PS1_LIBRARY = '1'
+. '$quotedInstaller'
+Write-Output ('__redirected__=' + [Console]::IsInputRedirected)
+Write-Output ('__probe__=' + (Test-InteractiveSession))
+if (-not `$ProbeOnly) {
+    Invoke-BootstrapPhase -InstallPath '$quotedStub' -SkipInit `$false -SkipStart `$false 6>&1 | Out-String
+}
+"@
+    $psExe = (Get-Process -Id $PID).Path
+
+    # Run a process with every stdio handle redirected and stdin closed at
+    # once, bounded in time: a child that blocks is killed and reported as a
+    # failure instead of hanging the CI job -- the very failure mode these
+    # cases exist to rule out.
+    function Invoke-BoundedChild {
+        param([string]$FileName, [string]$Arguments)
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = $FileName
+        $psi.Arguments = $Arguments
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $proc = [Diagnostics.Process]::Start($psi)
+        $proc.StandardInput.Close()
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $exited = $proc.WaitForExit(120000)
+        if (-not $exited) {
+            try { $proc.Kill() } catch { Write-Host "    could not kill the child: $($_.Exception.Message)" }
+            $proc.WaitForExit()
+        }
+        return @{
+            Output   = $stdoutTask.Result + $stderrTask.Result
+            ExitCode = $proc.ExitCode
+            TimedOut = -not $exited
+        }
+    }
+
+    Write-Host ''
+    Write-Host 'Test-InteractiveSession (real probe): stdin redirected, CI unset'
+    # The container/CI condition behind the v0.4.4 smoke failure, in its
+    # Windows form: there is a stdin handle, but no console behind it.
+    # [Console]::IsInputRedirected is not a permission check -- it asks
+    # GetFileType for a character device AND GetConsoleMode to accept the
+    # handle, so even NUL (a character device that is not a console) counts
+    # as redirected. That is the Windows analogue of actually opening /dev/tty.
+    $failedBefore = $script:Failed
+    $run = Invoke-BoundedChild -FileName $psExe `
+        -Arguments ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $child + '"')
+    $out = $run.Output
+    Assert-False 'the child does not hang' $run.TimedOut
+    Assert-Equal 'the child exits 0' 0 $run.ExitCode
+    Assert-True  'precondition: the child sees a redirected stdin' ($out -match '__redirected__=True')
+    Assert-True  'the probe answers non-interactive' ($out -match '__probe__=False')
+    Assert-True  'takes the non-interactive path' ($out -match 'Non-interactive install detected')
+    Assert-False 'never announces the wizard' ($out -match 'Running interactive setup wizard')
+    Assert-False "no misleading 'wizard exited non-zero'" ($out -match 'Wizard exited non-zero')
+    Assert-True  'still prints next steps' ($out -match 'Next steps')
+    Assert-Equal 'the binary is never invoked' 0 (Get-StubInvocations $probeStub.Log).Count
+    if ($script:Failed -gt $failedBefore) { Write-Host ($out -replace '(?m)^', '    ') }
+    Remove-Item $probeStub.Log -ErrorAction SilentlyContinue
+
+    # The two pty cases need a console the probe WILL accept, so that only the
+    # thing under test can say no. util-linux `script` gives the child a real
+    # pty on Linux; the windows-latest runner has no way to hand a child an
+    # interactive console, so they are skipped there, as the registry cases are
+    # in install_dir.ps1.
+    #
+    # Resolves to ONE path or $null, never an array, and only to a util-linux
+    # `script`. Both halves have bitten:
+    #   * On merged-/usr Linux (ubuntu-latest) /bin is a symlink to usr/bin and
+    #     PATH lists both, so Get-Command returns the same binary twice. Its
+    #     .Source is then an array, ProcessStartInfo.FileName becomes
+    #     "/usr/bin/script /bin/script", Start() throws and the whole suite
+    #     exits 1.
+    #   * The cases pass util-linux flags (`-qec CMD /dev/null`). The BSD
+    #     `script` on macOS has no -c and busybox has no -e, so "a `script`
+    #     exists" is not the precondition; "it is util-linux" is. Anything else
+    #     SKIPs, as documented, instead of FAILing on a usage error.
+    # $SearchPath exists so the cases below can pin both halves with fake
+    # `script` binaries, independent of the runner's PATH layout.
+    function Get-UtilLinuxScript {
+        param([string]$SearchPath = $env:PATH)
+        if ($onWindows) { return $null }
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = $SearchPath
+            $first = Get-Command script -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        } finally {
+            $env:PATH = $savedPath
+        }
+        if ($null -eq $first) { return $null }
+        $candidate = [string]$first.Source
+        $probe = Invoke-BoundedChild -FileName $candidate -Arguments '--version'
+        if ($probe.TimedOut -or $probe.ExitCode -ne 0) { return $null }
+        if ($probe.Output -notmatch 'util-linux') { return $null }
+        return $candidate
+    }
+
+    function New-FakeScript {
+        param([string]$Directory, [string]$Body)
+        New-Item -ItemType Directory -Force -Path $Directory | Out-Null
+        $fake = Join-Path $Directory 'script'
+        Set-Content -Path $fake -Value ("#!/bin/sh`n" + $Body)
+        & chmod +x $fake
+        return $fake
+    }
+
+    Write-Host ''
+    Write-Host 'Get-UtilLinuxScript: which `script` the pty cases may drive'
+    if ($onWindows) {
+        Assert-Skip 'resolver cases' 'no POSIX `script` on Windows'
+    } else {
+        $utilLinuxBody = 'case "$1" in --version) echo "script from util-linux 9.99 (fake)"; exit 0;; esac' + "`nexit 0"
+        $firstDir = Join-Path $sandbox 'fake-bin-1'
+        $secondDir = Join-Path $sandbox 'fake-bin-2'
+        $firstFake = New-FakeScript -Directory $firstDir -Body $utilLinuxBody
+        New-FakeScript -Directory $secondDir -Body $utilLinuxBody | Out-Null
+        $sep = [IO.Path]::PathSeparator
+        # The ubuntu-latest layout: two PATH entries, two matches. Caught so a
+        # regression reports here as FAILs instead of aborting the suite, which
+        # is how it first showed up in CI.
+        $resolverError = $null
+        try {
+            $resolved = Get-UtilLinuxScript -SearchPath ($firstDir + $sep + $secondDir)
+        } catch {
+            $resolved = $null
+            $resolverError = $_.Exception.Message
+        }
+        Assert-Equal 'two matches on PATH resolve without throwing' '' $resolverError
+        Assert-True  'two matches on PATH resolve to a single path' ($resolved -is [string])
+        Assert-Equal 'and it is the first match, as exec would pick' $firstFake $resolved
+
+        # BSD script (macOS): no --version, usage on stderr, exit 1.
+        $bsdDir = Join-Path $sandbox 'fake-bin-bsd'
+        New-FakeScript -Directory $bsdDir -Body ('echo "script: illegal option -- -" >&2' + "`n" +
+            'echo "usage: script [-aeFkqr] [-t time] [file [command ...]]" >&2' + "`nexit 1") | Out-Null
+        $resolved = Get-UtilLinuxScript -SearchPath $bsdDir
+        Assert-True  'a BSD script is not accepted (the pty cases SKIP)' ($null -eq $resolved)
+
+        # A `script` that answers --version but is not util-linux (busybox-like).
+        $otherDir = Join-Path $sandbox 'fake-bin-other'
+        New-FakeScript -Directory $otherDir -Body ('echo "BusyBox v1.36.1 multi-call binary."' + "`nexit 0") | Out-Null
+        $resolved = Get-UtilLinuxScript -SearchPath $otherDir
+        Assert-True  'a non-util-linux script is not accepted' ($null -eq $resolved)
+
+        $emptyDir = Join-Path $sandbox 'fake-bin-empty'
+        New-Item -ItemType Directory -Force -Path $emptyDir | Out-Null
+        $resolved = Get-UtilLinuxScript -SearchPath $emptyDir
+        Assert-True  'no script on PATH resolves to nothing' ($null -eq $resolved)
+    }
+
+    try {
+        $ptyTool = Get-UtilLinuxScript
+    } catch {
+        Assert-Fail "resolving util-linux script on this PATH threw: $($_.Exception.Message)"
+        $ptyTool = $null
+    }
+
+    Write-Host ''
+    Write-Host 'Test-InteractiveSession (real probe): real terminal, CI unset'
+    if ($null -eq $ptyTool) {
+        Assert-Skip 'positive control under a pty' 'needs util-linux script (Linux leg only)'
+    } else {
+        $inner = "'" + $psExe + "' -NoProfile -NonInteractive -File '" + $child + "' -ProbeOnly"
+        $failedBefore = $script:Failed
+        $run = Invoke-BoundedChild -FileName $ptyTool -Arguments ('-qec "' + $inner + '" /dev/null')
+        $out = $run.Output
+        Assert-False 'the child does not hang' $run.TimedOut
+        Assert-True  'precondition: stdin is a terminal' ($out -match '__redirected__=False')
+        # Without this the redirected case above would pass against a probe
+        # that always says no.
+        Assert-True  'the probe answers interactive' ($out -match '__probe__=True')
+        if ($script:Failed -gt $failedBefore) { Write-Host ($out -replace '(?m)^', '    ') }
+    }
+
+    Write-Host ''
+    Write-Host 'Test-InteractiveSession (real probe): real terminal, CI is set'
+    # Mirror of case (g) in bootstrap_phase.sh: a CI job can hand the installer
+    # a pty, but nobody is going to type into it.
+    if ($null -eq $ptyTool) {
+        Assert-Skip 'CI short-circuit under a pty' 'needs util-linux script (Linux leg only)'
+    } else {
+        $inner = "'" + $psExe + "' -NoProfile -NonInteractive -File '" + $child + "' -Ci true"
+        $failedBefore = $script:Failed
+        $run = Invoke-BoundedChild -FileName $ptyTool -Arguments ('-qec "' + $inner + '" /dev/null')
+        $out = $run.Output
+        Assert-False 'the child does not hang' $run.TimedOut
+        Assert-True  'precondition: stdin is a terminal' ($out -match '__redirected__=False')
+        Assert-True  'the probe answers non-interactive' ($out -match '__probe__=False')
+        Assert-True  'takes the non-interactive path' ($out -match 'Non-interactive install detected')
+        Assert-False 'never announces the wizard' ($out -match 'Running interactive setup wizard')
+        Assert-Equal 'the binary is never invoked' 0 (Get-StubInvocations $probeStub.Log).Count
+        if ($script:Failed -gt $failedBefore) { Write-Host ($out -replace '(?m)^', '    ') }
+    }
 } finally {
     Remove-Item -Path $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }

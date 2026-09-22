@@ -769,7 +769,9 @@ a sessao gravada continua valendo"
         .into());
     }
     if !saw_connected || machine.desired() == Desired::Off {
-        let hint = conn.stderr_hint();
+        // O filho ja saiu (o `wait` acima devolveu o codigo): a cauda pode
+        // ainda estar a caminho.
+        let hint = conn.stderr_hint_na_saida().await;
         return Err(BridgeError::Protocol(format!(
             "o bridge encerrou (codigo {code:?}) antes de conectar{hint}"
         ))

@@ -1195,14 +1195,15 @@ fn link_with(
     };
 
     let bridge_dir = ctx.bridge_dir();
-    // F3 da auditoria R4: o retorno NAO pode ser descartado. `Written`
-    // significa que o `package.json`/`package-lock.json` embutidos mudaram —
-    // tipicamente um `garra update` que bumpou o Baileys por causa de CVE. Se
-    // a decisao de reinstalar olhasse so para `node_modules/` existir, o npm
-    // nunca rodaria e a ponte subiria com a versao vulneravel indefinidamente,
-    // reportando a versao velha em `started.baileys_version`.
-    let materialized = match bridge::materialize(&bridge_dir, &bridge::EmbeddedAssets) {
-        Ok(m) => m,
+    // F3 da auditoria R4: a decisao de reinstalar NAO pode olhar so para
+    // `node_modules/` existir. Um `garra update` que bumpou o Baileys por
+    // causa de CVE muda o `package.json`/`package-lock.json` embutidos; sem
+    // reinstalar, a ponte subiria com a versao vulneravel indefinidamente,
+    // reportando a versao velha em `started.baileys_version`. Quem decide e
+    // `bridge::prepare` — a MESMA regra que o gateway aplica no boot (W1 da
+    // v0.4.5), com o carimbo de dependencias que as duas pontas mantem.
+    let preparo = match bridge::prepare(&bridge_dir, &bridge::EmbeddedAssets) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
             return EX_SOFTWARE;
@@ -1217,7 +1218,7 @@ fn link_with(
         }
     };
 
-    if materialized == bridge::Materialized::Written || !bridge::deps_installed(&bridge_dir) {
+    if preparo.deps == bridge::DepsPlan::Install {
         println!(
             "→ {}",
             t(
@@ -1226,7 +1227,11 @@ fn link_with(
                 "Installing bridge dependencies (this can take a few minutes)…"
             )
         );
-        if let Err(e) = runtime.block_on(bridge::npm_ci(&node.npm, &bridge_dir)) {
+        if let Err(e) = runtime.block_on(bridge::install_deps(
+            &node.npm,
+            &bridge_dir,
+            &bridge::EmbeddedAssets,
+        )) {
             eprintln!();
             eprintln!("{e}");
             return EX_UNAVAILABLE;

@@ -136,9 +136,14 @@ pub fn build_matrix_channels(
                     // `exec_context_for`, nunca o wrapper `_with_context`: o
                     // segundo passa `ExecContext::default()` e faria o `/mode`
                     // do usuario nao valer neste canal (#988).
-                    let exec = state
-                        .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
-                        .await;
+                    let exec = crate::approval_scope::com_escopo(
+                        state
+                            .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
+                            .await,
+                        "matrix",
+                        &session_id,
+                        &user_id,
+                    );
 
                     let response = if let Some(delta_sender) = delta_tx {
                         state

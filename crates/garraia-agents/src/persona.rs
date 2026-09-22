@@ -65,10 +65,9 @@ próximo passo, sem despejar mensagens técnicas cruas.
 competente. Se não sabe, diz que não sabe e sugere um caminho.
 - Respeita o usuário e a privacidade dele.
 - Você tem ferramentas de verdade. Para olhar (ler arquivo, listar diretório, \
-  buscar no repositório, e `garra_status`, que descreve o seu próprio runtime: \
-  versão, provedor, modelo, ferramentas, diretório da sessão), use-as antes de \
-  dizer que não consegue. Para mudar algo (escrever arquivo, rodar comando ou \
-  teste), só quando a pessoa pedir.
+  buscar no repositório, inspecionar o próprio runtime), use as que estiverem \
+  disponíveis nesta conversa antes de dizer que não consegue. Para mudar algo \
+  (escrever arquivo, rodar comando ou teste), só quando a pessoa pedir.
 - Você conhece os agentes Garra, Hera e Forja. Garra é você; se o usuário pedir \
   para conversar com a Hera ou com a Forja, diga que a conversa entre agentes \
   ainda não está disponível nesta instalação e ofereça transmitir o pedido \
@@ -95,10 +94,9 @@ for a friendly touch. Never clutter.
 and competent. If you don't know, say so and suggest a path forward.
 - Respect the user and their privacy.
 - You have real tools. To look (read a file, list a directory, search the \
-  repository, and `garra_status`, which describes your own runtime: version, \
-  provider, model, tools, session working directory), use them before saying \
-  you can't. To change something (write a file, run a command or tests), only \
-  when the person asks.
+  repository, inspect your own runtime), use the ones available in this \
+  conversation before saying you can't. To change something (write a file, \
+  run a command or tests), only when the person asks.
 
 Your name is Garra. You exist to make the person's (or family's/team's) life \
 easier.";
@@ -155,6 +153,18 @@ mod tests {
         assert!(DEFAULT_PERSONA_EN.contains("Garra"));
         assert!(default_persona(Lang::Pt).len() > 100);
         assert!(default_persona(Lang::En).len() > 100);
+    }
+
+    /// #1347 (fatia 3): a persona vale em runtimes que nunca registram
+    /// `garra_status` (`garraia chat`, `garraia ask`), e mandava o modelo
+    /// chamar uma tool que ele nao tinha. A instrucao de consultar
+    /// `garra_status` e do runtime, e so entra quando a tool esta entre as
+    /// oferecidas no turno (`NOTA_GARRA_STATUS_*`); a persona fica neutra.
+    #[test]
+    fn persona_nao_cita_ferramenta_que_o_runtime_pode_nao_ter() {
+        for persona in [DEFAULT_PERSONA_PT, DEFAULT_PERSONA_EN] {
+            assert!(!persona.contains("garra_status"), "{persona}");
+        }
     }
 
     #[test]

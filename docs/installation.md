@@ -368,6 +368,14 @@ Skip toggles:
   `garraia start` after `garraia init` completes. Both toggles set
   together is equivalent to the pre-PR-B installer behavior.
 
+The installers also skip both steps on their own, printing
+`Non-interactive install ...` and the next-steps hint and exiting 0, when
+nobody can answer the wizard: `install.sh` when `/dev/tty` cannot actually
+be opened (a container, a CI runner, `docker build` — the device node is
+there but has no controlling terminal behind it), `install.ps1` when stdin
+has no console behind it; both whenever `CI` is set to a non-empty value,
+since a CI job that provides a pseudo-terminal still has no one to type.
+
 ### 2. Configure
 
 `garraia init` writes this for you. To edit it by hand, first find the file the

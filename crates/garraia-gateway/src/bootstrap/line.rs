@@ -176,9 +176,14 @@ pub fn build_line_channels(config: &AppConfig, state: &SharedState) -> Vec<Arc<L
                     // search` responde "modo definido" sem a politica de
                     // ferramenta valer. Prometer uma restricao que nao existe e
                     // pior que nao a oferecer.
-                    let exec = state
-                        .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
-                        .await;
+                    let exec = crate::approval_scope::com_escopo(
+                        state
+                            .exec_context_for_msg(&session_id, Some(&user_id), Some(&text))
+                            .await,
+                        "line",
+                        &session_id,
+                        &user_id,
+                    );
 
                     let response = if let Some(delta_sender) = delta_tx {
                         state

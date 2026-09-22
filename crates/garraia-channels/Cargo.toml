@@ -103,6 +103,11 @@ whatsapp-linked = [
     "tokio/io-util",
     "tokio/time",
     "tokio/macros",
+    # `install_deps`: o carimbo por `tokio::fs` e a remocao do `node_modules`
+    # que sobrou de um `npm ci` falho por `spawn_blocking`, fora da thread do
+    # runtime.
+    "tokio/fs",
+    "tokio/rt",
 ]
 
 # PDEATHSIG do filho `node` (`whatsapp_linked::bridge`). **So PDEATHSIG**: ao
