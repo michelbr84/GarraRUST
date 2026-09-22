@@ -55,9 +55,9 @@ dogfood registrado na #1228.
   produziu duas leituras falsas: um "vermelho" que não existia e um erro de
   compilação logo depois de o clippy passar na mesma lib. Em medição que vai
   virar decisão, force rebuild.
-- **`cargo test` não roda sem egresso** por causa do build script do
-  `utoipa-swagger-ui`; use `SWAGGER_UI_DOWNLOAD_URL=file://...`. Ver a skill
-  `steward`.
+- **O `utoipa-swagger-ui` não precisa mais de rede**: desde o #1228 o gateway
+  usa a feature `vendored` e o build script lê o zip embutido. O antigo
+  `SWAGGER_UI_DOWNLOAD_URL=file://...` é ignorado. Ver a skill `steward`.
 
 ## Seleção por risco
 

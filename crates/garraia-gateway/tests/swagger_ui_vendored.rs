@@ -84,3 +84,42 @@ async fn swagger_ui_embutido_serve_a_pagina() {
         "swagger-initializer.js nao veio do Swagger UI embutido: {texto}"
     );
 }
+
+/// Com `vendored`, o zip que a action `swagger-ui-cache` baixa nunca e lido.
+/// O download dela nao pode, portanto, derrubar um job de CI ou de release
+/// quando o GitHub falha: todo `curl` e toda verificacao do zip ficam atras de
+/// um `if !` que avisa e sai com 0. Um `curl`/`check` nu sob `set -e` volta a
+/// tornar a release refem de um arquivo inutil (#1228, review HOUSE1-1).
+#[test]
+fn action_swagger_ui_cache_nao_aborta_o_job_no_download() {
+    let raiz = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let action = ler(&raiz.join(".github/actions/swagger-ui-cache/action.yml"));
+    let passo = match action.split("- name: Download Swagger UI zip").nth(1) {
+        Some(p) => p,
+        None => panic!("passo de download sumiu da action swagger-ui-cache"),
+    };
+    for linha in passo.lines().map(str::trim) {
+        if linha.starts_with("curl ") || linha.starts_with("check \"${zip}\"") {
+            panic!(
+                "comando que aborta o job sob `set -e` no download vestigial: `{linha}`. \
+                 Use `if ! ...; then echo ::warning::...; exit 0; fi` (#1228)"
+            );
+        }
+    }
+    assert!(
+        passo.contains("if ! curl ") && passo.contains("::warning::"),
+        "o download da action swagger-ui-cache deve ser best-effort (#1228)"
+    );
+    assert!(
+        action.contains("VESTIGIAL"),
+        "a descricao da action deve dizer que ela e vestigial com `vendored` (#1228)"
+    );
+    for wf in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
+        let texto = ler(&raiz.join(wf));
+        assert!(
+            !texto.contains("build.rs downloads swagger-ui at compile time"),
+            "{wf} ainda diz que o build.rs baixa o Swagger UI; com `vendored` isso \
+             deixou de ser verdade (#1228)"
+        );
+    }
+}

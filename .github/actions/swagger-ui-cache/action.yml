@@ -1,11 +1,13 @@
 name: Cache Swagger UI zip
 description: >-
-  Pre-downloads the swagger-ui archive that `utoipa-swagger-ui`'s build.rs
-  fetches at compile time and points SWAGGER_UI_DOWNLOAD_URL at the local
-  copy (GAR-822). Without this, every job that compiles `garraia-gateway`
-  depends on a build-script download from GitHub that intermittently comes
-  back truncated — `InvalidArchive("Could not find EOCD")` — which took the
-  E2E job down on `main` on 2026-09-07 and can abort a release.
+  VESTIGIAL since #1228. The gateway now builds `utoipa-swagger-ui` with the
+  `vendored` feature, so its build.rs reads the zip embedded in
+  `utoipa-swagger-ui-vendored` and never looks at SWAGGER_UI_DOWNLOAD_URL or
+  this cache. The action used to pre-download the archive that the build.rs
+  fetched at compile time (GAR-822, truncated-zip failures on `main` on
+  2026-09-07). It is kept for one release so callers do not change in the
+  same PR, and its download is best-effort: a GitHub outage prints a warning
+  instead of aborting a CI or release job over a file nothing reads.
 
 inputs:
   version:
@@ -65,8 +67,18 @@ runs:
           exit 0
         fi
         rm -f "${zip}"
-        curl -sSLf --retry 5 --retry-delay 5 \
+        # Best-effort (#1228): with `vendored` the build never reads this zip,
+        # so a failed download or a bad archive warns and moves on.
+        if ! curl -sSLf --retry 5 --retry-delay 5 \
           -o "${zip}" \
-          "https://github.com/swagger-api/swagger-ui/archive/refs/tags/${SWAGGER_UI_VERSION}.zip"
-        check "${zip}"
+          "https://github.com/swagger-api/swagger-ui/archive/refs/tags/${SWAGGER_UI_VERSION}.zip"; then
+          rm -f "${zip}"
+          echo "::warning::swagger-ui download failed; ignored, the vendored build does not need it"
+          exit 0
+        fi
+        if ! check "${zip}" 2>/dev/null; then
+          rm -f "${zip}"
+          echo "::warning::downloaded swagger-ui zip is invalid; ignored, the vendored build does not need it"
+          exit 0
+        fi
         echo "downloaded ${zip} ($(wc -c < "${zip}") bytes, zip verified)"
