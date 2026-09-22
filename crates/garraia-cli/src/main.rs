@@ -23,6 +23,8 @@ mod migrate;
 mod migrate_workspace;
 mod repo_workflow;
 mod runs_cmd;
+#[cfg(unix)]
+mod sigpipe;
 mod team;
 mod tracing_setup;
 mod ui;
@@ -1263,6 +1265,64 @@ fn stderr_is_log_channel(command: &Commands) -> bool {
     )
 }
 
+/// Subcomandos em que SIGPIPE volta ao padrao do Unix (L2 do smoke da
+/// v0.4.4): os que so leem estado e imprimem, onde morrer no primeiro `write`
+/// sem leitor nao deixa nada pela metade — `garra status | head -1` sai em
+/// silencio, como `ls | head`, em vez do panico "failed printing to stdout".
+///
+/// O `match` e exaustivo de proposito: um subcomando novo nao compila ate
+/// alguem decidir de que lado ele fica. Ficam de fora, com o sinal ignorado
+/// do runtime do Rust:
+/// - o que roda por tempo indeterminado e nao pode morrer porque um leitor
+///   sumiu: `start`/`restart` (foreground e daemon), `mcp-server`, `chat`;
+/// - o que muda estado (config, memoria, credenciais, instalacao) ou lanca e
+///   conversa com outro processo: morrer no meio dele e deixar trabalho pela
+///   metade, e ai o `EPIPE` como erro tratado e o comportamento certo.
+///
+/// So e chamada no Unix (Windows nao tem SIGPIPE); o teste roda em todos.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn sigpipe_padrao_para(command: &Commands) -> bool {
+    match command {
+        Commands::About | Commands::Status | Commands::Logs { .. } | Commands::Doctor { .. } => {
+            true
+        }
+        Commands::Runs {
+            action: RunsCommands::List { .. },
+        } => true,
+        Commands::Config { action } => matches!(action, ConfigCommands::Check { .. }),
+        Commands::Memory { action } => matches!(
+            action,
+            MemoryCommands::Stats { .. }
+                | MemoryCommands::List { .. }
+                | MemoryCommands::Search { .. }
+        ),
+        Commands::Mcp { action } => matches!(action, McpCommands::List),
+        Commands::Channel { .. } => true,
+        Commands::Skill { action } => matches!(action, SkillCommands::List),
+        Commands::Glob { .. } => true,
+        Commands::WhatsApp { action } => matches!(action, Some(WhatsAppCommands::Status)),
+        // `ask` e one-shot: uma pergunta, uma resposta em stdout, sem estado.
+        Commands::Ask { .. } => true,
+        // So as formas que imprimem; sem flag, `desktop` lanca o aplicativo.
+        Commands::Desktop { status, no_launch } => *status || *no_launch,
+        Commands::Start { .. }
+        | Commands::Restart { .. }
+        | Commands::Stop
+        | Commands::McpServer
+        | Commands::Chat { .. }
+        | Commands::Init
+        | Commands::Admin { .. }
+        | Commands::Migrate { .. }
+        | Commands::Update { .. }
+        | Commands::Rollback
+        | Commands::MaxPower { .. }
+        | Commands::Agents { .. }
+        | Commands::Verify { .. } => false,
+        #[cfg(feature = "plugins")]
+        Commands::Plugin { .. } => false,
+    }
+}
+
 /// Modo de console por subcomando. Os canais de log (#933) espelham o
 /// arquivo; o REPL interativo fica em Quiet (#1301) — nem WARN cru compete
 /// com o renderer, porque a falha de turno já vira `ErrorCard`, e quem
@@ -1334,6 +1394,16 @@ fn main() -> Result<()> {
     let flag_refs: Vec<&str> = flags.iter().map(String::as_str).collect();
     let args = cli_args::inject_default_subcommand(std::env::args_os().collect(), &flag_refs);
     let cli = Cli::parse_from(args);
+
+    // L2 (smoke da v0.4.4): `garra status | head` entrava em panico com
+    // "failed printing to stdout: Broken pipe". Nos comandos que so leem e
+    // imprimem, SIGPIPE volta ao padrao do Unix ANTES da primeira escrita em
+    // stdout; o gateway, o `mcp-server` e o REPL ficam como estao. Ver
+    // `sigpipe_padrao_para` e o modulo `sigpipe`.
+    #[cfg(unix)]
+    if sigpipe_padrao_para(&cli.command) {
+        sigpipe::restaurar_padrao();
+    }
 
     // Show update notice (non-blocking, from cache)
     if !matches!(cli.command, Commands::Update { .. })
@@ -3068,5 +3138,69 @@ mod tests {
             std::fs::read_to_string(&path).expect("le o log"),
             "execucao anterior\nlinha do tracing\nescrita crua\n"
         );
+    }
+
+    /// L2 (smoke da v0.4.4): so os comandos que leem e imprimem ganham
+    /// SIGPIPE padrao. O gateway, o `mcp-server` e o REPL nunca — la um leitor
+    /// que some nao pode matar o processo —, nem o que muda estado.
+    #[test]
+    #[serial]
+    fn sigpipe_padrao_so_nos_comandos_que_leem_e_imprimem() {
+        let cmd = |args: &[&str]| {
+            Cli::try_parse_from(args)
+                .unwrap_or_else(|e| panic!("{args:?} deveria parsear: {e}"))
+                .command
+        };
+        for args in [
+            &["garra", "status"][..],
+            &["garra", "about"],
+            &["garra", "logs"],
+            &["garra", "logs", "-f"],
+            &["garra", "logs", "--path"],
+            &["garra", "doctor", "--json"],
+            &["garra", "runs", "list"],
+            &["garra", "config", "check"],
+            &["garra", "memory", "stats"],
+            &["garra", "memory", "list"],
+            &["garra", "memory", "search", "x"],
+            &["garra", "mcp", "list"],
+            &["garra", "channel", "list"],
+            &["garra", "skill", "list"],
+            &["garra", "glob", "test", "*.rs", "a.rs"],
+            &["garra", "whatsapp", "status"],
+            &["garra", "ask", "oi"],
+            &["garra", "desktop", "--status"],
+            &["garra", "desktop", "--no-launch"],
+        ] {
+            assert!(
+                sigpipe_padrao_para(&cmd(args)),
+                "{args:?} so le e imprime: deveria sair em silencio com stdout fechado"
+            );
+        }
+        for args in [
+            &["garra", "start"][..],
+            &["garra", "start", "-d"],
+            &["garra", "restart"],
+            &["garra", "restart", "-d"],
+            &["garra", "stop"],
+            &["garra", "mcp-server"],
+            &["garra", "chat"],
+            &["garra", "init"],
+            &["garra", "update"],
+            &["garra", "verify"],
+            &["garra", "desktop"],
+            &["garra", "whatsapp"],
+            &["garra", "whatsapp", "link"],
+            &["garra", "mcp", "inspect", "x"],
+            &["garra", "memory", "reindex"],
+            &["garra", "memory", "compact"],
+            &["garra", "memory", "add", "x"],
+            &["garra", "config", "set-model", "--model", "m"],
+        ] {
+            assert!(
+                !sigpipe_padrao_para(&cmd(args)),
+                "{args:?} roda por tempo indeterminado ou muda estado: SIGPIPE segue ignorado"
+            );
+        }
     }
 }
