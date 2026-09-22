@@ -23,7 +23,7 @@ pub use memory_store::{
 };
 pub use project_store::{DataRetentionRecord, Project, ProjectFile, ProjectTemplate};
 pub use session_store::{
-    MobileUser, ScheduledTask, SessionStore, StoredMessage, log_recovered_leases,
+    MobileUser, ScheduledTask, SessionStore, SessionSurfaces, StoredMessage, log_recovered_leases,
 };
 pub use sqlite_db::SqliteDb;
 pub use vector_store::{VecIndexInventory, VectorStore};
