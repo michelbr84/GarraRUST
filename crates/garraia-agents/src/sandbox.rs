@@ -66,9 +66,11 @@ fn sh_quote(s: &str) -> String {
 /// Nenhum host real e nenhuma imagem real começa com `-`, então a defesa é
 /// recusar em vez de tentar escapar. Isto aqui é a terceira camada; as
 /// outras duas são `sandbox_policy_from`, que recusa ao construir a policy,
-/// e o `garra config check`, que **reporta Error** — comando opt-in, não
-/// gate de boot: nada no boot do gateway chama `run_check`, então ele avisa
-/// quem o roda e não impede ninguém de subir.
+/// e o `run_check` do `garraia config check`, que **reporta Error**. Desde o
+/// #1247 esse mesmo check roda em todo `start`/`restart`/`start -d` (o
+/// `boot_gate`), mas só **recusa** o boot pelos Errors da allowlist fechada
+/// `BLOQUEIA_O_BOOT` (hoje, o TLS pela metade): o Error do sandbox sai no log
+/// do boot e o gateway sobe mesmo assim.
 ///
 /// É por isso que a garantia mora aqui e na conversão, e não no relatório:
 /// estas duas rodam sempre. A camada de dentro existe ainda por outro

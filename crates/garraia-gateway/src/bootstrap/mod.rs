@@ -1307,9 +1307,10 @@ pub struct HardwareBoot {
 /// `token_env` apontando para env vazia ou inexistente, URL vetada recusada
 /// pelo guard SSRF) nao derruba o processo — o registry segue com os
 /// dispositivos dos adapters que subiram, e cada warn diz o que faltou.
-/// `garra config check` mostra os mesmos erros de config — comando
-/// **opt-in**: nada no boot do gateway invoca o `run_check`, entao o
-/// diagnostico depende do operador rodar (ver issue #1247).
+/// `garraia config check` mostra os mesmos erros de config, e desde o #1247
+/// o `boot_gate` roda esse `run_check` em todo `start`/`restart` e os
+/// reporta no log do boot — mas nenhum erro de `hardware.*` esta na
+/// allowlist `BLOQUEIA_O_BOOT`, entao eles avisam e nao impedem de subir.
 ///
 /// Precisa de runtime tokio (spawn dos event loops) — gateway e CLI chamam
 /// de dentro de `run()` async. Sem secao `hardware.*`, retorna antes de
@@ -1446,9 +1447,10 @@ fn carregar_e_aplicar_catalogo(
 /// - `backend = ssh` sem `ssh_host` **nao** vira backend nenhum. A policy
 ///   fica com `backend: None`, e `wrap_command` recusa cada comando em vez
 ///   de escolher um backend por conta propria ou cair para o host. O
-///   `garra config check` reporta isso como Error, mas e comando opt-in e
-///   nao gate de boot — nada no boot o invoca —, entao a recusa que vale e
-///   esta aqui, mais o `warn!` para quem subiu assim mesmo.
+///   `garraia config check` reporta isso como Error, e o `boot_gate` do
+///   #1247 repete o aviso em todo boot, mas esse Error nao esta na allowlist
+///   `BLOQUEIA_O_BOOT` — o gateway sobe —, entao a recusa que vale e esta
+///   aqui, mais o `warn!` para quem subiu assim mesmo.
 /// - `image` vazia ou so espacos e tratada como ausente, caindo no default
 ///   da propria `SandboxPolicy` — nunca vira `-v ... '' sh -lc ...`.
 /// - `ssh_host` ou `image` **comecando com `-`** sao recusados. `sh_quote`
