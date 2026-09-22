@@ -133,14 +133,21 @@ async fn no_container(pedido: &Pedido<'_>, sb: SandboxedArgv) -> Desfecho {
 /// esforco: se falhar, o `--rm` do proprio container ainda o recolhe quando
 /// o processo terminar.
 async fn remove_container(sb: &SandboxedArgv) {
-    let mut rm = filho(&sb.runtime);
-    rm.args(["rm", "-f", sb.nome_do_container.as_str()])
+    remove_container_por_nome(&sb.runtime, &sb.nome_do_container).await;
+}
+
+/// [`remove_container`] a partir do par `(runtime, nome)` — o que o `bash`
+/// recebe de `SandboxPolicy::wrap_command_nomeado` (review da #1272,
+/// SANDBOX-6).
+pub(crate) async fn remove_container_por_nome(runtime: &str, nome: &str) {
+    let mut rm = filho(runtime);
+    rm.args(["rm", "-f", nome])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     match tokio::time::timeout(TIMEOUT_DO_RM, rm.status()).await {
         Ok(Ok(_)) => {}
         _ => tracing::warn!(
-            container = %sb.nome_do_container,
+            container = %nome,
             "sandbox: nao foi possivel remover o container depois do timeout"
         ),
     }
@@ -561,6 +568,37 @@ mod testes_das_tools {
             out.content
         );
         rodou_no_container(&falso, "git");
+    }
+
+    /// Review da #1272 (SANDBOX-6): o `bash` sandboxado que estoura o
+    /// timeout remove o container pelo nome — como as tools de argv —, em vez
+    /// de deixa-lo rodando com o workdir montado rw.
+    #[tokio::test]
+    async fn bash_no_timeout_remove_o_container_pelo_nome() {
+        let _t = TRAVA_DO_PATH.lock().await;
+        let (_g, wd) = dir();
+        let falso = RuntimeFalso::novo("[ \"$1\" = run ] && sleep 30; exit 0");
+        let mut tool = crate::tools::BashTool::new(Some(1));
+        tool.set_sandbox_policy(policy_docker());
+        let out = tool
+            .execute(&ctx(Some(&wd)), serde_json::json!({"command": "echo oi"}))
+            .await
+            .expect("execute");
+        assert!(
+            out.is_error && out.content.contains("tempo limite"),
+            "{}",
+            out.content
+        );
+        let inv = falso.invocacoes();
+        let nome = inv
+            .first()
+            .and_then(|a| a.iter().skip_while(|x| *x != "--name").nth(1).cloned())
+            .expect("--name no docker run");
+        assert!(nome.starts_with("garra-sbx-"), "{nome}");
+        assert!(
+            inv.iter().any(|a| a == &["rm", "-f", nome.as_str()]),
+            "o container nao foi removido: {inv:?}"
+        );
     }
 
     /// `elevated` e `off` nao tocam no runtime (regressao zero para quem

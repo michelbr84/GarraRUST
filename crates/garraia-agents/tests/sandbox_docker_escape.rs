@@ -228,3 +228,48 @@ async fn artefato_no_mount_e_do_operador_e_nunca_de_root() {
         "mknod criou device no host (cap-drop ausente)"
     );
 }
+
+/// Review da #1272 (SANDBOX-6): o `bash` sandboxado que estoura o timeout nao
+/// deixa container vivo. Antes, matar o cliente do docker deixava o container
+/// (sem `--name`, sem `rm -f`) rodando com o workdir montado rw.
+#[tokio::test(flavor = "multi_thread")]
+async fn timeout_do_bash_nao_deixa_container_vivo() {
+    if docker_disponivel().await.is_err() {
+        assert!(
+            std::env::var_os("GARRAIA_REQUIRE_DOCKER").is_none(),
+            "GARRAIA_REQUIRE_DOCKER esta setado, mas o Docker nao respondeu"
+        );
+        eprintln!("[skip] Docker indisponivel; timeout do bash (#1272) pulado");
+        return;
+    }
+    let mut tool = BashTool::new_with_confirmation(Some(3));
+    tool.set_sandbox_policy(SandboxPolicy {
+        mode: SandboxMode::All,
+        backend: Some(SandboxBackend::Docker),
+        ..SandboxPolicy::default()
+    });
+    let c = cenario();
+    // Um marcador unico no comando, para achar o container pelo `ps`.
+    let marca = 6_000 + std::process::id() % 3_000;
+    let comando = format!("sleep {marca}");
+    let saida = executar(&tool, &c.workdir, &comando).await;
+    assert!(saida.is_error, "{}", saida.content);
+    assert!(saida.content.contains("tempo limite"), "{}", saida.content);
+
+    let ps = std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--format",
+            "{{.Names}} {{.Command}}",
+        ])
+        .output()
+        .expect("docker ps");
+    let vivos = String::from_utf8_lossy(&ps.stdout);
+    let sobrou: Vec<&str> = vivos.lines().filter(|l| l.contains(&comando)).collect();
+    assert!(
+        sobrou.is_empty(),
+        "container sobreviveu ao timeout: {sobrou:?}"
+    );
+}

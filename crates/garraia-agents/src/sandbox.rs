@@ -447,6 +447,25 @@ impl SandboxPolicy {
         self.wrap_command_em(cfg!(unix), tool_name, command, cwd)
     }
 
+    /// [`Self::wrap_command`] devolvendo tambem, no docker/podman, o runtime e
+    /// o nome do container (`--name garra-sbx-<uuid>`): quem roda a linha
+    /// precisa dos dois para `<runtime> rm -f <nome>` no timeout — matar o
+    /// cliente do docker nao mata o container (review da #1272, SANDBOX-6).
+    pub fn wrap_command_nomeado(
+        &self,
+        tool_name: &str,
+        command: &str,
+        cwd: &str,
+    ) -> Result<Option<LinhaSandboxada>> {
+        self.wrap_command_nomeado_com(
+            cfg!(unix),
+            SandboxBackend::is_available,
+            tool_name,
+            command,
+            cwd,
+        )
+    }
+
     /// [`Self::wrap_command`] com a plataforma como **parâmetro**.
     ///
     /// Existe para o ramo não-unix ter teste de verdade. Testar só
@@ -483,6 +502,21 @@ impl SandboxPolicy {
         command: &str,
         cwd: &str,
     ) -> Result<Option<String>> {
+        Ok(self
+            .wrap_command_nomeado_com(alvo_unix, disponivel, tool_name, command, cwd)?
+            .map(|l| l.linha))
+    }
+
+    /// O nucleo de [`Self::wrap_command_nomeado`], com plataforma e sonda
+    /// injetadas.
+    fn wrap_command_nomeado_com(
+        &self,
+        alvo_unix: bool,
+        disponivel: impl Fn(&SandboxBackend) -> bool,
+        tool_name: &str,
+        command: &str,
+        cwd: &str,
+    ) -> Result<Option<LinhaSandboxada>> {
         if !self.requires_sandbox(tool_name) {
             return Ok(None);
         }
@@ -552,8 +586,10 @@ impl SandboxPolicy {
                 } else {
                     None
                 };
+                // So `[0-9a-f-]`: nao precisa de quoting.
+                let nome = format!("garra-sbx-{}", uuid::Uuid::new_v4().simple());
                 let mut parts = format!(
-                    "{runtime} run --rm --security-opt no-new-privileges {}",
+                    "{runtime} run --rm --name {nome} --security-opt no-new-privileges {}",
                     flags_de_contencao(backend).join(" "),
                     runtime = runtime
                 );
@@ -575,7 +611,10 @@ impl SandboxPolicy {
                     sh_quote(&self.image),
                     sh_quote(command)
                 ));
-                parts
+                LinhaSandboxada {
+                    linha: parts,
+                    container: Some((runtime.to_string(), nome)),
+                }
             }
             SandboxBackend::Ssh(host) => {
                 // NOTA: ssh não isola o host remoto; é isolamento do host
@@ -594,11 +633,14 @@ impl SandboxPolicy {
                 // o shell remoto **reparseia**. Uma camada de aspas morre no
                 // shell local, a outra no remoto. Com uma só, o comando
                 // voltaria a ser interpretado antes de virar comando.
-                format!(
-                    "ssh {} -- sh -lc {}",
-                    sh_quote(host),
-                    sh_quote(&sh_quote(command))
-                )
+                LinhaSandboxada {
+                    linha: format!(
+                        "ssh {} -- sh -lc {}",
+                        sh_quote(host),
+                        sh_quote(&sh_quote(command))
+                    ),
+                    container: None,
+                }
             }
         }))
     }
@@ -619,8 +661,10 @@ impl SandboxPolicy {
     /// `mount_workdir = false` no ssh) — a resposta sairia sobre outros
     /// arquivos, em silencio.
     ///
-    /// `cwd = None` vira o cwd absoluto do processo. `env` vira `-e K=V` (so
-    /// constantes do codigo, nunca valor do modelo).
+    /// `cwd = None` com `mount_workdir = true` e recusa fail-closed: o
+    /// sandbox nunca monta o cwd do PROCESSO no lugar do diretorio da sessao
+    /// (review da #1272, SANDBOX-2/5). `env` vira `-e K=V` (so constantes do
+    /// codigo, nunca valor do modelo).
     pub fn wrap_argv(
         &self,
         tool_name: &str,
@@ -689,19 +733,13 @@ impl SandboxPolicy {
             )));
         }
         let mount = if self.mount_workdir {
-            let cwd_abs = match cwd {
-                Some(dir) => dir.to_path_buf(),
-                None => std::env::current_dir().map_err(|_| {
-                    Error::Agent(
-                        "sandbox fail-closed: o diretorio de trabalho do processo nao pode ser \
-                         resolvido"
-                            .into(),
-                    )
+            // Sem `cwd`, string vazia: `fonte_do_mount` recusa.
+            let texto = match cwd {
+                Some(dir) => dir.to_str().ok_or_else(|| {
+                    Error::Agent("sandbox fail-closed: diretorio de trabalho nao e UTF-8".into())
                 })?,
+                None => "",
             };
-            let texto = cwd_abs.to_str().ok_or_else(|| {
-                Error::Agent("sandbox fail-closed: diretorio de trabalho nao e UTF-8".into())
-            })?;
             Some(fonte_do_mount(texto)?)
         } else {
             None
@@ -740,6 +778,17 @@ impl SandboxPolicy {
             nome_do_container: nome,
         }))
     }
+}
+
+/// O que [`SandboxPolicy::wrap_command_nomeado`] devolve: a linha de shell
+/// e, no docker/podman, `(runtime, nome_do_container)` para o `rm -f` do
+/// timeout. `None` no `ssh`, que nao cria container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinhaSandboxada {
+    /// A linha que o shell do host executa.
+    pub linha: String,
+    /// `(docker|podman, garra-sbx-<uuid>)`.
+    pub container: Option<(String, String)>,
 }
 
 /// O que [`SandboxPolicy::wrap_argv`] devolve: o runtime (`docker` ou
@@ -825,7 +874,10 @@ mod tests {
                     caminho.display()
                 )
             });
-            if producao.contains("sandbox.wrap_command(") || pelo_helper {
+            if producao.contains("sandbox.wrap_command(")
+                || producao.contains("sandbox.wrap_command_nomeado(")
+                || pelo_helper
+            {
                 consultam.push(nome.to_string());
             } else {
                 no_host.push(nome.to_string());
@@ -1420,6 +1472,30 @@ mod tests {
         .collect();
         assert_eq!(sb.argv, esperado);
         assert!(sb.nome_do_container.starts_with("garra-sbx-"));
+    }
+
+    /// Review da #1272 (SANDBOX-2/5): sem `cwd` e com `mount_workdir` o
+    /// argv e recusado — nunca o cwd do processo montado —; `/` tambem.
+    #[test]
+    fn wrap_argv_sem_cwd_ou_com_raiz_recusa_o_mount() {
+        let e = argv(&docker_all(), &["status"], None).expect_err("sem cwd");
+        assert!(e.to_string().contains("sessao sem working_dir"), "{e}");
+        let e = argv(&docker_all(), &["status"], Some(Path::new("/"))).expect_err("raiz");
+        assert!(e.to_string().contains("fail-closed"), "{e}");
+    }
+
+    /// Review da #1272 (SANDBOX-6): a linha do bash leva `--name` e devolve o
+    /// nome, para o `rm -f` do timeout.
+    #[test]
+    fn linha_do_bash_leva_nome_do_container() {
+        let l = docker_all()
+            .wrap_command_nomeado_com(true, |_| true, "bash", "echo oi", "/tmp")
+            .expect("wrap")
+            .expect("aplicado");
+        let (runtime, nome) = l.container.expect("docker cria container");
+        assert_eq!(runtime, "docker");
+        assert!(nome.starts_with("garra-sbx-"), "{nome}");
+        assert!(l.linha.contains(&format!(" --name {nome} ")), "{}", l.linha);
     }
 
     #[test]

@@ -383,9 +383,16 @@ impl Tool for BashTool {
         // o sandbox se aplica) — nunca `"."` e nunca o cwd do processo, que
         // num `garra start` aberto no terminal e o `$HOME` inteiro montado rw.
         let cwd = cwd_do_mount(context);
-        let comando = match self.sandbox.wrap_command(self.name(), comando, cwd) {
+        // SANDBOX-6: com docker/podman, `(runtime, nome)` do container, para
+        // o `rm -f` no timeout.
+        let mut container: Option<(String, String)> = None;
+        let comando = match self.sandbox.wrap_command_nomeado(self.name(), comando, cwd) {
             Ok(None) => comando.to_string(),
-            Ok(Some(sandboxed)) => {
+            Ok(Some(crate::sandbox::LinhaSandboxada {
+                linha: sandboxed,
+                container: nome,
+            })) => {
+                container = nome;
                 // `debug!`, e nao `info!`, de proposito — nao promova.
                 //
                 // Ate a #1225 este ramo era inalcancavel (nenhum operador
@@ -420,6 +427,9 @@ impl Tool for BashTool {
 
         let mut cmd = Command::new(shell);
         cmd.arg(arg).arg(comando);
+        // Review da #1272 (SANDBOX-6): o timeout derruba o shell (e o cliente
+        // do docker) em vez de deixa-lo orfao.
+        cmd.kill_on_drop(true);
         // #1270 (paridade do #1269): o filho nunca le a entrada padrao do
         // gateway — em terminal, pipe e servico o comportamento fica o mesmo,
         // e um `cat` sem argumento nao rouba o que o operador digitou no
@@ -489,10 +499,17 @@ impl Tool for BashTool {
                 }
             }
             Ok(Err(e)) => Ok(ToolOutput::error(format!("falha ao executar comando: {e}"))),
-            Err(_) => Ok(ToolOutput::error(format!(
-                "comando excedeu o tempo limite após {}s",
-                self.timeout.as_secs()
-            ))),
+            Err(_) => {
+                // Matar o cliente do docker nao mata o container: sem isto ele
+                // seguia rodando, com o workdir montado rw, depois do timeout.
+                if let Some((runtime, nome)) = &container {
+                    crate::sandbox_spawn::remove_container_por_nome(runtime, nome).await;
+                }
+                Ok(ToolOutput::error(format!(
+                    "comando excedeu o tempo limite após {}s",
+                    self.timeout.as_secs()
+                )))
+            }
         }
     }
 }

@@ -3029,6 +3029,7 @@ mod tests {
             // nao significa que a tool envolva comando nenhum.
             let producao = fonte.split("#[cfg(test)]").next().unwrap_or(fonte);
             if producao.contains("sandbox.wrap_command(")
+                || producao.contains("sandbox.wrap_command_nomeado(")
                 || producao.contains("sandbox_spawn::executar(")
             {
                 envolvem.push(nome);
