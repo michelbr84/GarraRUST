@@ -371,7 +371,7 @@ pub async fn delete_session(
     // Depois de um restart a sessao so esta no disco; sem readota-la, o
     // logout respondia 404 e os tokens dela seguiam validos.
     if let Err(resposta) = exigir_sessao_da_api(&state, &session_id).await {
-        return resposta;
+        return *resposta;
     }
 
     // Revoke tokens
@@ -421,23 +421,29 @@ pub async fn delete_session(
 async fn exigir_sessao_da_api(
     state: &SharedState,
     session_id: &str,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), Box<axum::response::Response>> {
+    // `Box` porque a resposta pronta tem 128+ bytes, e o `result_large_err`
+    // do clippy 1.98 recusa um `Err` desse tamanho.
     match state.sessao_da_api(session_id).await {
         Ok(SessaoDaApi::EmMemoria | SessaoDaApi::Readotada) => Ok(()),
-        Ok(SessaoDaApi::NaoEncontrada) => Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "session not found" })),
-        )
-            .into_response()),
+        Ok(SessaoDaApi::NaoEncontrada) => Err(Box::new(
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session not found" })),
+            )
+                .into_response(),
+        )),
         Err(e) => {
             // O erro do banco vai para o log, nunca para o corpo; e nada foi
             // readotado.
             warn!(erro = %e, "falhou ao ler o sessions.db para readotar a sessao");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "failed to read session store" })),
-            )
-                .into_response())
+            Err(Box::new(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "failed to read session store" })),
+                )
+                    .into_response(),
+            ))
         }
     }
 }
@@ -449,7 +455,7 @@ pub async fn send_message(
     Json(body): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
     if let Err(resposta) = exigir_sessao_da_api(&state, &session_id).await {
-        return resposta;
+        return *resposta;
     }
 
     // Slash commands never reach the model. Not persisted into history either
@@ -576,7 +582,7 @@ pub async fn session_history(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     if let Err(resposta) = exigir_sessao_da_api(&state, &session_id).await {
-        return resposta;
+        return *resposta;
     }
 
     state
