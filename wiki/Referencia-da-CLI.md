@@ -11,6 +11,7 @@ O binário `garraia` (alias `garra`) concentra toda a operação. Fonte: [`crate
 | `garra stop` / `restart` / `status` | Controle do daemon |
 | `garra about` | Banner completo do GarraIA e o que cada comando faz (sem cor fora de TTY) |
 | `garra logs` | Lê o `garraia.log` canônico direto do disco, sem precisar do gateway (`-f` segue, `-n` últimas linhas, `--path` só imprime o caminho) — #943 |
+| `garraia runs list` | Lê o ledger de runs de agente (`agent_runs` do `sessions.db`) direto do disco, sem o gateway: `--status running\|done\|error\|cancelled\|interrupted`, `--limit` (padrão 50), `--json` com instantes UTC ISO 8601 — #1227 |
 | `garra doctor` | Diagnóstico da instalação: plataforma, diretórios, config, providers, daemon (`--json`, `--strict` trata warnings como erro) |
 | `garra update` / `rollback` | Auto-atualização com verificação SHA-256 (`--yes`; `--check-binaries` só varre a PATH atrás de outros binários `garraia`/`garra`, sem download) / volta à versão anterior |
 | `garra verify` | Pipeline local: fmt, clippy, test, flutter analyze, gitleaks (`--json`, `--skip <step>`; exit 0/2) |
@@ -47,7 +48,7 @@ Guia completo: [docs/whatsapp.md](https://github.com/michelbr84/GarraRUST/blob/m
 | `garra memory stats` · `list` · `search` | Inspeciona a memória semântica (contagens + integridade do índice vetorial; busca pelo mesmo recall do agente) — #950 |
 | `garra memory add` · `reindex` · `backup` | Semeia uma entrada, re-embeda as sem vetor, snapshot consistente via `VACUUM INTO` com retenção |
 | `garra memory pin` · `ttl` · `delete` · `compact` | Fixa contra retenção, define/limpa expiração, apaga por id, apaga mais antigas que N dias |
-| `garra config check [--json] [--strict]` | Carrega a configuração efetiva e reporta precedência + findings; exit 0 / 2 / 65. É **opt-in** (também rodado por `garra doctor`), não gate de boot (#1247). Desde a v0.4.4 o sumário traz `execution profile  : <perfil> (source: default \| file \| env)`; valor inválido em `execution.profile`/`GARRAIA_EXECUTION_PROFILE` é `Error` (exit 2); `execution.pod_root` fora de `isolated-pod` ou relativo, e `channels.whatsapp_linked.owners` fora de `isolated-pod` (só a contagem, nunca as identidades) são `Warning` (ADR 0024) |
+| `garraia config check [--json] [--strict]` | Carrega a configuração efetiva e reporta precedência + findings; exit 0 / 2 / 65. Desde a v0.4.5 também roda em todo `start`/`restart`/`start -d` (#1247), e só o TLS pela metade recusa o boot (exit 78; escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`). Desde a v0.4.4 o sumário traz `execution profile  : <perfil> (source: default \| file \| env)`; valor inválido em `execution.profile`/`GARRAIA_EXECUTION_PROFILE` é `Error` (exit 2); `execution.pod_root` fora de `isolated-pod` ou relativo, e `channels.whatsapp_linked.owners` fora de `isolated-pod` (só a contagem, nunca as identidades) são `Warning` (ADR 0024) |
 | `garra config set-model` | Aponta o GarraIA para um modelo sem prompt, escrevendo uma entrada `llm:` e `agent.default_provider` (instalações headless, `ollama launch garraia`) |
 | `garra config set-routing` | Provider primário **e** backup numa escrita só; a chave vem por `--api-key-stdin`, nunca por flag |
 | `garra admin recovery start --username X` | Gera um código de recuperação de senha do painel admin, de uso único, gravado num arquivo `0600` no host (#1122) |

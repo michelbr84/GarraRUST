@@ -911,11 +911,15 @@ jobs:
   #              avoid restoring target/ from the `test` job (compiled
   #              without `llvm-tools-preview` instrumentation).
   #   - MEDIUM:  `garraia-auth` and `garraia-workspace` excluded (see above).
-  #   - LOW:     `timeout-minutes: 30` to bound runaway test hangs.
+  #   - LOW:     `timeout-minutes: 45` to bound runaway test hangs (30 until v0.4.5).
   coverage:
     name: Coverage (cargo-llvm-cov)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45 e nao 30: o job levava 21-24 min ate a v0.4.4, e o trem da onda B da
+    # v0.4.5 (#1375) o levou ao teto — cancelado em main (af3227c) aos 30 min,
+    # com todos os testes ja verdes e o relatorio ja gerado, a ~30 s do fim.
+    # O teto continua pegando hang; so deixa de derrubar o job por volume.
+    timeout-minutes: 45
     permissions:
       contents: read
       pull-requests: write   # required for gh pr comment

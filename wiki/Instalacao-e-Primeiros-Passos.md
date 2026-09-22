@@ -116,6 +116,8 @@ garra start
 
 Com `isolated-pod` o dono do WhatsApp pessoal (declarado em `channels.whatsapp_linked.owners`, conversa 1:1) recebe o piso `code` e o MCP `filesystem` nasce em `execution.pod_root` (ou `<data_dir>/workspace`). O perfil **não** isola volume do host, socket do Docker, `--privileged` nem segredos do host — se algum desses vale para o seu container, fique em `standard`. Lista completa, exemplo de `config.yml` e troubleshooting: [`docs/execution-profiles.md`](https://github.com/michelbr84/GarraRUST/blob/main/docs/execution-profiles.md) · [Runpod](https://github.com/michelbr84/GarraRUST/blob/main/docs/deployment-runpod.md) · [Docker](https://github.com/michelbr84/GarraRUST/blob/main/docs/deployment.md).
 
+> Desde a v0.4.5 (#1261), num bind exposto (`0.0.0.0`, como o da imagem Docker) o `garraia start` recusa subir sem credencial de gateway (exit 78). Defina `GARRAIA_GATEWAY_API_KEY` no ambiente do container (`openssl rand -hex 32`) ou `gateway.api_key` no `config.yml`; o `garraia init` grava a chave sozinho num pod RunPod.
+
 > A instrução impressa ao fim do `garra whatsapp link` ("inicie o gateway: `garraia start`" ou "`garra start`") usa o nome do executável que você está rodando — os dois são o mesmo binário.
 
 ## Atualização e rollback

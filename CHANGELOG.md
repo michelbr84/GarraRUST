@@ -6,6 +6,801 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-22
+
+Release que tira o `bash` irrestrito das superficies sem humano no laco e faz
+funcionar o que a v0.4.4 deixava pela metade: o "sim" a um pedido de
+confirmacao, o onboarding do WhatsApp pessoal e o MCP `filesystem` de uma
+instalacao nova. A correcao P1 e a #1272: em `execution.profile = standard` o
+`garraia mcp-server` e o gateway so registram `bash` dentro de um sandbox
+`docker` ou `podman` valido, com todo comando no container e sem fallback para
+o host. Com o sandbox desligado (o default), com `ssh` ou sem o binario, a tool
+nao existe; antes, um `cat /etc/shadow` pedido pelo modelo rodava no host.
+Poder total no host so em `isolated-pod` explicito, nunca por deteccao de
+container. O `run_tests` do gateway segue a mesma regra, o container ganha
+`--cap-drop ALL`, `--pids-limit 512` e o uid do operador, o git de
+`git_diff`/`code_review` nao executa programa plantado no repositorio e
+`file_write` recusa caminho com `.git`. Instalacoes existentes continuam
+subindo: o boot avisa uma vez, o `/api/diagnostics` ganha o check `tools.bash`,
+e o `garraia chat`, onde o humano confirma no terminal, nao muda.
+
+O "sim" volta a aprovar em todo canal com um humano do outro lado (#1343): o
+pedido pausado fica em memoria e a mensagem seguinte, se for inteira uma
+palavra de aprovacao, roda o pedido uma vez, dentro de 5 minutos, so se vier do
+mesmo remetente, na mesma sessao e no mesmo canal. Aprova a mesma conexao no
+Web Console e no desktop, o `sub` do JWT no app mobile, o id da plataforma nos
+canais de mensagem, o terminal no `garraia chat` e, em `/v1/chat/completions`,
+o dono com o mesmo `Authorization` e a mesma `X-Session-Id` nos dois requests.
+Em grupo, o "sim" de outro membro nao aprova e encerra o pedido; qualquer
+mensagem no meio tambem encerra (#1340), e reiniciar o gateway cancela os
+pendentes. O pedido chega ao humano sem o marcador interno (#1373), e o log
+passa a mascarar o telefone de quem fala pelo WhatsApp e pelo Signal.
+
+No WhatsApp pessoal, o `garraia whatsapp link` pergunta quem pode falar com o
+GarraIA e so diz "pronto" com alguem autorizado (#1345); o novo
+`garraia whatsapp allow <numero> [--owner] [--yes]` autoriza sem terminal, com
+dono so em `isolated-pod`, e o gateway rele `allow`, `owners` e `enabled` a
+cada mensagem. Depois de um `garraia update`, o gateway regrava no boot a ponte
+embutida no binario e so roda `npm ci` quando nada prova que a arvore instalada
+e a do lock (#1373). O MCP `filesystem` de instalacao nova fixa a versao do
+pacote, se recupera uma vez de um cache do npx corrompido e, esgotadas as
+tentativas, loga o erro uma vez so (#1346). O `garra_status` chega aos modos
+restritos, enxerga o `whatsapp_linked` e os canais push com o status do
+`/api/channels`, e o modelo e instruido a consulta-lo antes de negar acesso a
+um canal (#1347). Em turno restrito ou em sessao que nao e provadamente do
+operador (WhatsApp, app mobile, A2A), o relatorio retem o que e do operador e
+lista o que reteve em `withheld`.
+
+O boot passa a recusar o que falharia aberto. Um bind exposto sem credencial de
+gateway sai com exit 78 antes do socket, antes do fork e antes de o `restart`
+derrubar o daemon (#1261); a saida e `garraia init`, `gateway.api_key`, a nova
+env `GARRAIA_GATEWAY_API_KEY` ou `--host 127.0.0.1`. Imagem Docker, compose e
+RunPod precisam da env antes de subir a imagem v0.4.5, e Helm e Terraform
+ganharam o segredo. `gateway.host`/`gateway.port` do arquivo ficam deprecados,
+e o `restart` passa a ler `HOST`/`PORT`. O `garraia config check` roda em todo
+`start`, `restart` e `start -d` (#1247): cada achado vai para o log, e so uma
+lista fechada recusa o boot (hoje, o TLS pela metade), com a escotilha
+`GARRAIA_ALLOW_INVALID_CONFIG=1`.
+
+Com `agent.sandbox.mode: all`, `run_tests`, `git_diff`, `code_review` e
+`repo_search` tambem rodam no container, por argv e sem shell (#1225). O ledger
+de runs ganha retencao (`runs.retention_days`, default 0 = nunca apaga),
+`GET /api/runs` e `garraia runs list` (#1227). As crates mortas `garraia-tools`
+e `garraia-runtime` saem, e o workspace fica com 22 crates (#1226). O detector
+de loop avisa o modelo uma vez antes de abortar (#1295), e o
+`garraia max-power --goal` passa a rodar, inclusive offline (#1228). Do smoke
+de instalacao limpa da v0.4.4 vieram: o `install.sh` nao tenta mais o wizard
+sem terminal em container e CI (#1369); o `garraia start -d` abre o
+`garraia.log` em append em vez de apaga-lo, e `garraia status | head` sai em
+silencio em vez de panico (#1371); sessoes REST sobrevivem ao restart do
+gateway (#1372); e a chave de um provider so vai para o endpoint da propria
+entrada `llm:` (#1370). Na infraestrutura, o `freeze-baseline.py` ganha um
+re-baseline auditado do Quality Ratchet, usado logo antes da tag para que o
+ratchet deixe de repetir a deriva de meses em todo PR (#1254), PR sem fragmento em
+`changelog.d/` fica vermelho, o Swagger UI entra vendored, e a release volta a
+subir o AppImage aarch64 da CLI.
+
+### Added
+- **`GET /api/runs` le o ledger de runs pelo gateway (#1227).** Somente
+  leitura, com `status` filtrado no SQL (valor desconhecido e `400` de corpo
+  constante) e `limit` preso em `[1, 200]`. Os instantes saem em UTC ISO 8601
+  com `Z` e o conteudo sai so como previa de ate 120 caracteres, com segredo
+  de formato conhecido redigido e caractere de controle trocado; o trecho
+  completo do ledger nao sai por HTTP. O acesso e mais estrito que o resto de
+  `/api/*`: com `gateway.api_key` exige o bearer; sem chave, so responde a
+  peer loopback com `Host` de loopback (LAN recebe `503`, DNS rebinding
+  recebe `403`, mesmo sem `Origin`, e pedido com cabecalho de proxy reverso
+  como `X-Forwarded-For` recebe `503` — atras de proxy, configure a chave). Os leitores de instante e de previa
+  passaram para o `garraia-db`, compartilhados com `garraia runs list`, que
+  agora explica que run `interrupted` de tarefa agendada e reexecutado
+  sozinho pelo scheduler — por isso nao ha `runs resume`.
+- **Retencao do ledger de runs com `runs.retention_days` (#1227).** A tabela
+  `agent_runs` ganhava uma linha por run agendado e nada a encurtava. A nova
+  secao de topo `runs.retention_days` liga uma varredura no gateway (no boot e
+  a cada 24 horas) que apaga runs terminais mais velhos que a janela. O
+  default e `0` = nunca apaga, entao uma atualizacao nao remove historico;
+  desligada, o gateway avisa uma vez no boot quantos runs existem. Run
+  `running` nunca e apagado, qualquer que seja a idade, e instante ilegivel
+  tambem fica. A chave e de topo porque `agents` e um mapa de agentes
+  nomeados. `garraia config check` recusa valor acima de 3650, e o log da
+  varredura leva so contagem, nunca conteudo do run.
+- **`garraia runs list` le o ledger de runs de agente (#1227).** A tabela
+  `agent_runs` ja era povoada pelo scheduler do gateway e ja marcava
+  `interrupted` na subida depois de uma queda, mas nao havia como olhar para
+  ela sem abrir o SQLite na mao. O comando abre o mesmo `sessions.db` sem
+  falar com o gateway — igual ao `garraia logs` —, entao ele responde "o que
+  estava em voo?" justamente quando o gateway esta fora. `--status`
+  (`running`, `done`, `error`, `cancelled`, `interrupted`) filtra no SQL,
+  `--limit` corta a janela (padrao 50) e `--json` devolve um array com chaves
+  estaveis e instantes em UTC ISO 8601 com `Z`. Ledger vazio nao e erro: sai
+  0 com uma linha amigavel (ou `[]`). **A listagem nao cria o arquivo** — numa
+  instalacao que nunca rodou nada ela sai 0 e deixa o disco como estava, sem
+  um `sessions.db` vazio como efeito colateral de uma leitura — e tampouco
+  escreve no ledger existente: converter `running` residual em `interrupted`
+  continua sendo do hook de subida. Campo vindo do banco e higienizado antes
+  de chegar ao terminal (controle de terminal vira `U+FFFD`) e os trechos de
+  provider saem redigidos no `--json`.
+- **PR sem fragmento em `changelog.d/` fica vermelho (#1228).** O job de
+  fragmentos do CI validava so o formato do que existia; um PR que nao
+  escrevia fragmento nenhum passava, e como as notas de release saem do
+  CHANGELOG.md o silencio so aparecia no dia da release. O novo workflow
+  `Changelog presence` exige que o PR adicione ou edite um
+  `changelog.d/<secao>/<nome>.md` de secao valida. Isentos: a label
+  `no-changelog` (aplicar ou tirar reexecuta o check), o dependabot, branches
+  `release/vX.Y.Z` abertas deste repositorio (de fork o nome da branch nao
+  isenta, porque quem escolhe e o autor) e eventos fora de `pull_request`.
+  Roda em `pull_request` com `contents: read`, sem segredo, sem ler titulo
+  nem corpo do PR, e le os arquivos do proprio merge commit com `git diff -z`,
+  para que fragmento com acento no nome nao saia entre aspas e deixe de
+  contar.
+- **O runtime passa a suportar a retomada de um pedido de confirmacao entre
+  turnos (#1343).** Ate aqui um "sim" dado no
+  turno seguinte nunca aprovava nada nos canais de producao: a aprovacao
+  GAR-187 so e lida do historico, e gateway, CLI e API compativel com OpenAI
+  guardam o historico como texto puro, entao o resultado de ferramenta com o
+  marcador nunca volta e a ferramenta pede confirmacao para sempre. Esta
+  fatia so traz o mecanismo: quando o turno traz
+  `ExecContext::approval_scope` (canal, sessao e um remetente derivado pelo
+  servidor), o `AgentRuntime` grava em memoria o nome da ferramenta e a
+  impressao digital HMAC do pedido, e o proximo turno aprova so se a mensagem
+  for exatamente uma palavra de aprovacao, do mesmo remetente, na mesma sessao
+  e no mesmo canal, dentro de 5 minutos. A aprovacao vale para um unico turno
+  (o registro e consumido na leitura), e nao para uma unica execucao: dentro
+  desse turno, chamadas identicas ao pedido aprovado rodam, como no caminho
+  pelo historico. Qualquer outra mensagem na sessao encerra o pedido (a regra
+  do #1340, inclusive em grupo), marcador copiado ou forjado no historico
+  deixa de pesar, e reiniciar o processo continua cancelando tudo, porque a
+  chave do HMAC vive so na memoria. O assunto cru (o comando do bash) nunca e
+  guardado. Caminho sem escopo continua exatamente como antes. Quais canais
+  aderem, e com qual remetente, esta na entrada de `Fixed` do #1343.
+
+### Changed
+- **Com `agent.sandbox.mode: all`, a imagem do sandbox precisa da toolchain das tools de repositorio (#1225).**
+  `run_tests`, `git_diff`, `code_review` e `repo_search` rodam no container.
+  A imagem default (`debian:bookworm-slim`) so tem `grep`: `repo_search` cai
+  para ele dentro do container, e `run_tests`/`git_diff`/`code_review`
+  respondem que o programa nao existe na imagem (so quando o proprio runtime
+  diz isso no stderr: um exit 127 do script de teste devolve a saida real da
+  suite). Para migrar, aponte
+  `agent.sandbox.image` para uma imagem com `git`/`cargo`/`rg`, ou liste a
+  tool em `agent.sandbox.elevated` para ela seguir no host. `mode: off` (o
+  default) nao muda nada. O aviso de subida e o `garraia config check`
+  deixaram de dizer que essas tools rodam no host.
+- **O snapshot de capacidades do `garraia max-power` passa a anunciar o
+  `tool_program` (#1226).** A lista estatica de tools do snapshot nao tinha a
+  ferramenta intrinseca que o runtime ja expoe nos modos `auto`, `code` e
+  `ask`, e o teste que devia fixa-la so comparava o tamanho da lista com ele
+  mesmo. Agora o teste fixa a lista inteira, em ordem. As tools `device_*` e
+  `schedule_*` continuam fora de proposito: so existem em algumas instalacoes.
+  Em `docs/src/modes.md` fica registrada a decisao de nao incluir
+  `tool_program` na whitelist dos perfis nativos `search`, `architect`,
+  `debug`, `orchestrator`, `review` e `edit`; um perfil customizado pode
+  liga-la.
+- **Cobertura e Quality Ratchet editam um comentario so por PR (#1228).** Os
+  dois postavam um comentario novo a cada push, e num PR com dez pushes a
+  conversa de review sumia no meio de vinte relatorios quase iguais. Agora
+  `scripts/ci/upsert_pr_comment.py` edita no lugar o comentario achado pelo
+  marcador **e** pelo autor `github-actions[bot]` — um comentario humano que
+  cite o marcador nunca e sobrescrito. O comentario de cobertura encolheu para
+  a linha TOTAL e o link do run; a tabela por arquivo vai para o job summary.
+  Permissoes, gatilhos e a guarda de fork continuam os mesmos.
+- **O Swagger UI do gateway entra pela feature `vendored`, sem download no
+  build (#1228).** O build.rs do `utoipa-swagger-ui` baixava o zip do Swagger UI
+  do GitHub a cada build limpo, o que quebrava build offline e punha um download
+  sem pino de conteudo na cadeia de build (o CI contornava com um cache e
+  `SWAGGER_UI_DOWNLOAD_URL=file://`). Agora o zip vem da crate
+  `utoipa-swagger-ui-vendored` (mesma versao 5.17.14, MIT OR Apache-2.0), e a
+  build-dependency `reqwest` que so servia para baixar sai. A rota `/docs`
+  continua igual. Um teste prende a feature no manifesto e confere que a pagina
+  embutida e servida. A action `swagger-ui-cache` do CI fica uma release como
+  vestigial: o download dela virou best-effort (avisa em vez de abortar o job),
+  entao uma queda do GitHub nao derruba mais uma release por um zip que nada le.
+- **O `garraia config check` passa a rodar em todo boot (#1247).** `garraia
+  start`, `garraia restart` e `garraia start -d` rodam o mesmo `run_check` do
+  comando, uma vez, antes do fork, do PID file e do stop do daemon atual. Cada
+  `Error` sai no log uma vez em nivel de erro e cada `Warning` em nivel de
+  aviso, com um resumo apontando para `garraia config check`; no `start -d` as
+  mesmas linhas vao para o stderr do terminal antes do fork, porque depois
+  dele o log e invisivel. Antes, uma config com `Error` subia em silencio, e o
+  check so valia para quem lembrasse de roda-lo. Recusar o boot fica restrito
+  a uma lista fechada de achados que falham abertos (hoje so o TLS pela
+  metade): todo outro `Error`, como uma entrada `llm` sem chave, e dito mas
+  nao derruba instalacoes que funcionam hoje. Os achados de
+  `gateway.host`/`gateway.port` nao se repetem no boot: quem julga o bind e a
+  recusa do #1261, sobre o endereco real. Migracao: quem precisa subir apesar
+  de um achado bloqueante usa `GARRAIA_ALLOW_INVALID_CONFIG=1` (exatamente
+  `1`; outro valor conta como ausente), e o achado segue logado como erro; o
+  `garraia config check` lista a escotilha em `env_vars_detected` quando ela
+  esta no ambiente. A
+  retencao da memoria com `interval_hours` ou `max_age_days` fora da faixa nao
+  derruba mais o worker com panic de `interval(0)` nem apaga por um corte que
+  ninguem pediu: a varredura nao sobe, com `error!` no log.
+- **`freeze-baseline.py` ganha um re-baseline auditado:
+  `--adopt-current-file-metrics --reason '#NNN'` (#1254).** Ate aqui a
+  ferramenta so sabia apertar o ratchet: com o baseline de 2026-05-05 muito
+  atras do main, qualquer proposta saia igual ao baseline velho, e a unica
+  saida seria editar `.quality/baseline.json` a mao, o que e proibido. A flag
+  adota do `current-metrics.json` apenas as metricas de tamanho de arquivo;
+  audit, cobertura e clippy continuam no ratchet estrito e `audit.critical`
+  segue 0. O `--reason` tem de citar uma issue, o arquivo gerado registra
+  `adopted_reason`, `source_git_sha` e `source_collected_at` para qualquer um
+  reproduzir, e a flag recusa `--seed` e um `--out` que aponte para o baseline:
+  continua escrevendo so o `baseline.proposed.json`. Sem a flag, nada muda.
+- **O Quality Ratchet volta a comparar contra o estado real do codigo
+  (#1254).** O baseline estava congelado em 2026-05-05 (maior arquivo com
+  3240 linhas, 334 arquivos `.rs`) e todo PR recebia as mesmas quatro
+  "regressoes", que eram deriva de meses e nao culpa de ninguem. O
+  `freeze-baseline.py --adopt-current-file-metrics --reason '#1254'` foi
+  rodado no SHA de `main` logo antes da tag e o `baseline.json` e o arquivo
+  que ele gerou, sem edicao: so as metricas de tamanho de arquivo mudaram
+  (hoje 608 arquivos, maior com 10513 linhas); auditoria, cobertura e clippy
+  seguem a catraca estrita, e `audit.critical` continua 0. O teto de
+  `thresholds.toml` (3500 linhas) nao subiu. Os 16 arquivos acima de 2500
+  linhas ficam registrados como divida aceita no `.quality/README.md`, com o
+  comando que reproduz o baseline.
+- **`gateway.host`/`gateway.port` do arquivo ficam deprecados, e `restart` le `HOST`/`PORT` (#1261).**
+  As duas chaves nunca alimentaram o bind (`garraia start` liga em flag >
+  `HOST`/`PORT` > `127.0.0.1:3888`), mas o wizard escrevia `0.0.0.0` nelas e
+  os comandos cliente as liam como "onde esta o meu gateway". Agora: o
+  `garraia init` para de escreve-las e as remove num re-run; os
+  `docs/deployment/config.*.yml` nao as trazem mais; `status`, `stop`,
+  `doctor` e `admin` usam o mesmo endereco do `start` (com `0.0.0.0`/`::`
+  trocados por loopback); o Web Console mostra o bind como somente-leitura,
+  com origem `runtime`; e o `config check` as reporta como Warning de
+  deprecacao quando diferem do bind efetivo. `garraia restart` ganhou
+  `env = "HOST"`/`"PORT"` como o `start` — antes, reiniciar um daemon de
+  RunPod religava em loopback em silencio. As chaves seguem no schema (o
+  arquivo antigo continua parseando); remove-las de vez fica para um release
+  com quebra, porque hoje so trocaria um aviso util por um no-op silencioso.
+- **O detector de loop de ferramenta avisa o modelo uma vez antes de abortar
+  o turno (#1295).** Na primeira vez que uma tarefa repete a mesma chamada
+  (mesma ferramenta, mesmos argumentos) tres vezes seguidas, a terceira
+  continua sem rodar, mas o turno nao morre mais: o modelo recebe no lugar do
+  resultado uma observacao corretiva com o nome da ferramenta, a contagem e o
+  resumo redigido do input repetido, pedindo que leia o erro anterior e mude
+  de abordagem. Qualquer deteccao seguinte na mesma tarefa, do mesmo loop ou
+  de outro, aborta como antes, com a mensagem do #1318, e a chamada avisada
+  aborta tambem na proxima vez que voltar na tarefa, mesmo com outra chamada
+  no meio ou depois do reset do teto por turno. A chamada barrada, avisada
+  ou abortada, nunca roda: antes do aviso a chamada em loop roda no maximo
+  duas vezes seguidas (a mesma janela de tres chamadas de antes), depois
+  dele nao roda mais na tarefa, e o resto segue limitado por
+  `max_per_turn`/`max_per_task`. O custo extra e no maximo uma volta de
+  LLM. O aviso so e rearmado por uma mensagem nova do usuario, nunca pelo
+  reset do teto por turno, e nao ha chave de config para desliga-lo. Dentro de `tool_program` (e no
+  programa que falha antes do primeiro passo) vale a mesma cadencia, com o
+  motivo rotulado como loop e nao como gate. A chamada barrada, avisada ou
+  abortada, agora emite o par `tool_started`/`tool_finished` com
+  `success=false` e o veredito, entao aparece no `/tool` do `garraia chat` ao
+  lado das chamadas identicas anteriores e do erro original. O sub-item de
+  "diff dos payloads" fica sem codigo: a assinatura e nome mais hash dos
+  argumentos, entao um loop detectado tem payloads identicos por definicao.
+
+### Removed
+- **As crates mortas `garraia-tools` e `garraia-runtime` saem do workspace
+  (#1226).** Nenhum caminho alcancavel as usava: o unico consumidor era codigo
+  do gateway que nunca foi roteado (`runtime_handler.rs` e o campo
+  `RuntimeSettings` do `AppState`, sem chamador). Elas carregavam um segundo
+  executor com limites diferentes do `ExecutionBudget` real, o
+  `ToolRegistry::execute_program` ja marcado `deprecated` e uma segunda
+  `RepoSearchTool`/`ListDirTool` sem jail, um risco latente se alguem a
+  ligasse. Nenhum binario, rota, chave de config ou asset de release muda.
+  O workspace passa de 24 para 22 crates.
+
+### Fixed
+- **`garraia whatsapp --help` e `garraia memory add --help` param de exibir
+  notas de implementacao (#1228).** O clap publica o doc comment inteiro no
+  `--help`, e os dois comandos mostravam ao usuario a justificativa interna
+  (o `#[command(name)]`, o nome do teste que o prende, o historico do
+  `memory add`). As notas viraram comentario comum, a ajuda do `whatsapp`
+  passa a citar `garraia init` em vez do alias, e um teste renderiza a ajuda
+  longa de todos os comandos e falha se uma nota assim voltar.
+- **Erro lendo a resposta de um provider OpenAI-compativel passa a dizer a
+  causa, e o `garraia max-power` passa a gravar no `garraia.log` (#1228).** O
+  dogfood parou numa etapa com `failed to read response body: error decoding
+  response body`: o reqwest da esse mesmo rotulo para qualquer falha lendo o
+  corpo (conexao fechada no meio, corpo truncado) e guarda a causa real em
+  `source()`, que o texto descartava. A mensagem agora desce a cadeia de
+  causas. E o `max-power` nao inicializava o tracing, entao o pipeline nao
+  deixava rastro no log; agora deixa, como os outros comandos.
+- **`garraia max-power` para de anunciar como futura a execucao que ja existe
+  (#1228).** A ajuda dizia que a execucao do pipeline "lands in
+  GAR-495..GAR-501", mas ela existe desde o PR #1218: com provider padrao
+  resolvido cada etapa e uma chamada ao LLM, e sem ele a execucao e
+  deterministica (offline) — a linha `execution:` da saida diz qual rodou. O
+  exemplo do menu e a dica do `garraia runs list` sem ledger passam a nomear o
+  binario em execucao em vez do alias fixo `garra`, que nao existe numa
+  maquina com so o `garraia` (imagem Docker, `cargo install`).
+- **`garraia max-power` sem provider utilizavel roda offline, como a ajuda
+  promete, em vez de parar na primeira etapa (#1228).** Numa instalacao sem
+  provider configurado o comando dizia `execution: provider-backed` e morria
+  com `ollama error status: 404 Not Found`: o palpite final da deteccao
+  (Ollama com o modelo padrao) era tomado como provider, entao o caminho
+  offline nunca rodava. Agora, sem nada alcancavel, com o Ollama sem o modelo
+  ou sem conseguir listar os modelos, o pipeline roda deterministico e diz o
+  que fazer (`ollama pull <modelo>` ou `garraia init`). O erro de status do
+  Ollama passa a trazer o motivo que o servidor mandou (por exemplo
+  `model 'qwen3.8:latest' not found`), a dica de cada etapa offline nomeia o
+  binario em execucao em vez do alias `garra`, e uma etapa que falha fica
+  registrada no `garraia.log`.
+- **`garraia max-power --goal` para de abortar com "Cannot start a runtime
+  from within a runtime" (#1228).** O comando ja roda dentro do runtime tokio
+  da CLI, mas `max_power.rs` e `AgentTeam::run` criavam um runtime proprio e
+  chamavam `block_on` por dentro, o que o tokio recusa com panic antes da
+  primeira etapa. Com provider configurado ou sem ele (execucao offline), o
+  goal agora roda de ponta a ponta: a cadeia inteira ficou `async` e usa o
+  runtime da CLI. Um teste varre `max_power.rs` e `team.rs` e falha se algum
+  deles voltar a montar runtime ou a bloquear fora dos testes.
+- **A aprovacao de um pedido de confirmacao nao sobrevive a uma mensagem
+  humana no meio (#1340).** `detect_confirmation_approval` aceitava o pedido
+  mais recente em qualquer ponto das ultimas 6 mensagens, e a janela dizia so
+  "recente". Na pratica: o turno 1 pausava pedindo para apagar uma pasta, o
+  humano respondia "nao", o modelo perguntava outra coisa em texto, e um "ok"
+  dado a ESSA pergunta ainda aprovava o apagamento. Agora o marcador so vale
+  quando o historico termina no resultado pausado, com no maximo a narracao do
+  assistente depois dele — a forma da retomada GAR-187 em todo canal. Uma
+  mensagem humana entre o pedido e o "ok" encerra o pedido, e um resultado de
+  ferramenta posterior sem marcador tambem, sem depender de o turno humano
+  estar no historico (no caminho compativel com a OpenAI ele vem do corpo do
+  request). A ordem dentro de cada mensagem e a neutralizacao de marcador em
+  saida de ferramenta, das #1339 e #1226, seguem como estavam.
+- **O "sim" a um pedido de confirmacao volta a aprovar em todo canal com um
+  humano do outro lado (#1343).** Quando uma ferramenta pedia confirmacao (um
+  comando arriscado do `bash` com `agent.tool_confirmation_enabled`, um
+  `device_execute` R3/R4), o turno pausava e o "sim" da mensagem seguinte nao
+  aprovava nada: o gateway, a CLI e a API compativel com OpenAI guardam o
+  historico como texto, o pedido pausado nao voltava, e a ferramenta
+  perguntava de novo para sempre. Agora o pedido fica guardado em memoria e o
+  "sim" (a mensagem inteira) aprova o pedido para o turno seguinte, uma vez,
+  dentro de 5 minutos, so se vier do mesmo remetente, na mesma sessao e no
+  mesmo canal: a mesma conexao no Web Console e no desktop; em
+  `/v1/chat/completions`, o dono com o mesmo `Authorization` e a mesma
+  `X-Session-Id` nos dois requests (sem `X-Session-Id` cada request e uma
+  sessao nova e o "sim" nao retoma; vale com e sem `"stream": true`); o `sub`
+  do JWT no app mobile; o id do usuario na plataforma no Telegram, Discord,
+  Slack, WhatsApp, Matrix, IRC, Signal, LINE, Teams, Google Chat, iMessage e
+  no WhatsApp pessoal; e o terminal no `garraia chat`. Em grupo, o "sim" de
+  outro membro nao aprova e encerra o pedido. Qualquer mensagem no meio
+  encerra o pedido, um segundo "sim" pausa de novo, e reiniciar o gateway
+  cancela os pendentes. A2A, OpenClaw, `POST /api/sessions/{id}/messages`, a
+  resposta do agente no chat do workspace, as tarefas agendadas, `garraia ask`
+  e o `garra_agent` do `garraia mcp-server` continuam sem retomada, de
+  proposito: ali a pausa segue terminal.
+- **A release passa a subir o AppImage aarch64 da CLI (#1344).** O `release.yml`
+  copiava `garraia-linux-aarch64.AppImage` para `release/` e o `SHA256SUMS`
+  o listava, mas a lista `files:` do upload nunca teve a linha dele: na
+  v0.4.4, primeira release a produzir o arquivo, so o `.sha256` subiu (pelo
+  glob) e o asset foi anexado a mao depois, com o hash conferido contra o
+  `SHA256SUMS`. A linha entrou, e `scripts/release/check_files.py` — que le o
+  workflow e exige que todo nome copiado para `release/` case com um padrao
+  do upload — roda no CI de todo PR, com testes proprios.
+- **WhatsApp pessoal: o `link` passa a perguntar quem pode falar com o GarraIA, e autorizar ou revogar vale sem reiniciar (#1345).**
+  Depois do QR, o `garraia whatsapp link` deixava `allow` e `owners` vazios e
+  dizia "pronto para receber mensagens": o portao do gateway (fail-closed, o
+  que continua certo) descartava toda mensagem em silencio. Agora o `link`
+  pede o numero autorizado com o codigo do pais (normalizado como o gateway
+  compara; so os 4 ultimos digitos na tela; aviso quando e o proprio celular
+  vinculado, cujas mensagens sao ignoradas) e so diz "pronto" com alguem
+  autorizado. O novo `garraia whatsapp allow <numero> [--owner] [--yes]`
+  autoriza sem terminal, sem mudar outro valor da config (o arquivo e
+  reescrito: comentarios nao ficam) e sem ligar o canal (exit 65 para numero
+  invalido, 64 para `--owner` fora de `isolated-pod` ou num pipe sem
+  `--yes`); dono so e oferecido em `isolated-pod`, com default nao. O numero
+  exige `+` e codigo do pais (6 a 15 digitos, a faixa da ponte), e
+  `<id>@lid` tambem e aceito. O gateway rele `allow`/`owners`/`enabled` da
+  config viva a cada mensagem quando vigia o `config.yml`: entrar, sair e
+  perder o piso de dono valem na mensagem seguinte, e `enabled: false`
+  recusa todo mundo, codigo de pareamento incluso. Quem pareou por codigo e
+  estava no `allow` perde os dois ao sair da lista; quem so pareou segue ate
+  o restart, e um `config.yml` que nao parseia mantem a lista anterior.
+  Celular brasileiro com e sem o nono digito casa como o mesmo numero. A
+  ponte passa a entregar o numero de remetente `@lid` quando o servidor o
+  manda (`remoteJidAlt`/`participantAlt` do Baileys 7); sem ele o portao
+  compara o LID, e `status` e `/api/diagnostics` contam essas recusas.
+  `status`, `/api/diagnostics` (`whatsapp.linked` vira `warning`, tambem com
+  a ponte conectada e o canal desligado na config viva) e o log de boot
+  avisam quando ninguem esta autorizado. Estranhos continuam recusados em
+  silencio e nao ha auto-claim.
+- **O MCP `filesystem` deixa de ficar preso num cache do npx corrompido e para de
+  inundar o log (#1346).** A provisao de instalacao nova agora fixa
+  `@modelcontextprotocol/server-filesystem@2026.8.31` (testada com handshake em
+  node 20 e 22; o mesmo valor vale para o template do admin e o marketplace) em
+  vez de baixar o build mais novo do registry a cada cache frio (so o pacote de
+  topo: as dependencias dele seguem os ranges semver publicados); um `mcp.json`
+  existente nunca e reescrito, e o novo check `mcp.filesystem_pinned` do
+  `/api/diagnostics` avisa quem ficou sem versao (dist-tag como `@latest` e
+  range como `@^1` contam como sem versao) com os `args` exatos para colar.
+  O stderr do processo filho passa a ser capturado (so em `debug`), e um
+  `ERR_MODULE_NOT_FOUND` dentro de `<cache npm>/_npx/<16 hex>/` apaga so aquela
+  entrada e tenta de novo uma vez: comando `npx`, do stderr so o hash da
+  entrada (o diretorio e remontado a partir do cache que o proprio gateway deu
+  ao filho, o que tambem cobre perfil com espaco no nome), caminho canonico,
+  nunca symlink, `package.json` do pacote configurado, uma vez por servidor por
+  processo. Esgotados os
+  `max_restarts`, o erro sai uma unica vez em vez de a cada 30 s. O
+  `/api/mcp/health` passa a listar servidores que falharam no boot (antes
+  respondia `no_mcp_configured`), com `status`, `cause` e `last_error` (que
+  nunca leva caminho; em servidor HTTP reflete a ultima tentativa e some quando
+  ele reconecta), e o check `mcp.servers` do diagnostico traz o proximo passo
+  por causa, nomeando o diretorio so quando o gateway o validou.
+- **`garra_status` passa a chegar ao modelo nos modos restritos, com a
+  instrucao de consulta-lo antes de negar uma integracao (#1347, fatia 1).**
+  Com o `whatsapp_linked` conectado, o Garra respondia "nao tenho acesso ao
+  WhatsApp": o piso do canal e o modo `search`, cuja allowlist nao tinha
+  `garra_status`, e o runtime tira da lista tudo que o modo nao permite; alem
+  disso o prompt do modo substitui a persona, o unico lugar que mandava usar
+  a tool. Agora `garra_status` (leitura R0 do proprio runtime, sem I/O nem
+  rede) entra na allowlist de `search`, `architect`, `debug`,
+  `orchestrator`, `review` e `edit` — `denied` num modo customizado continua
+  tirando-a —, e o `AgentRuntime` acrescenta ao prompt de sistema que venceu,
+  depois dele e sem substitui-lo, uma linha pedindo que o modelo chame
+  `garra_status` antes de dizer que nao tem acesso a um canal ou integracao:
+  um canal presente na lista `channels` do relatorio esta conectado, um
+  campo `status` por canal (quando existir) so conta como conectado em
+  `active`, e um canal ausente da lista nao basta para negar o acesso. A
+  linha nao fala de ferramentas, porque a lista oferecida no turno e a
+  fonte de verdade delas, e o `tools` do relatorio do `garra_status` passa
+  a trazer so as ferramentas que o portao do turno libera, e nao mais toda
+  tool registrada: no piso `search` o relatorio nao lista mais `bash` nem
+  `file_write`, que o turno nega. A linha so entra quando a tool esta entre
+  as oferecidas no turno, entao a CLI (`garraia chat`/`garraia ask`, que nao
+  registram a tool) nunca a recebe. O sintoma do WhatsApp nao some so com
+  esta fatia: o relatorio ainda nao enxerga o `whatsapp_linked` nem os
+  canais push, e isso fica para a fatia do gateway.
+- **`garra_status` enxerga o `whatsapp_linked` e os canais push, com o mesmo
+  status do `/api/channels` (#1347, fatias 2 e 3).** O relatorio lia so o
+  `ChannelRegistry`, onde o `whatsapp_linked` (supervisionado a parte) e os
+  canais push (WhatsApp Cloud, Teams, LINE, Google Chat) nunca entram, entao
+  o Garra conectado ao WhatsApp respondia que nao tinha acesso ao WhatsApp
+  mesmo depois da fatia 1. A tabela de canais e a regra de status sairam do
+  `router.rs` para um modulo compartilhado, e o `/api/channels` e o
+  `garra_status` chamam a mesma funcao: cada item de `channels` agora traz
+  `id`, `name` e `status` (`active` / `offline`). No relatorio so entram
+  canais de mensagens que o operador ligou na config: numa instalacao nova a
+  lista vem vazia (antes vinham oito `offline`, que o modelo repetia como
+  "configurado e fora do ar"), e um canal ligado e caido sai `offline`
+  mesmo quando nao precisa de segredo; o `/api/channels` mantem a regra
+  dele. Web chat, API, CLI e MCP nunca entram na lista. O relatorio ganha
+  `execution_profile` (`standard` / `isolated-pod`), `mcp_servers` (so nome,
+  `connected` e contagem de ferramentas, nunca comando, env ou erro) e
+  `session.channel`, e o `session.id` sai sempre mascarado nos 4 ultimos
+  digitos (no WhatsApp ele e o numero de telefone inteiro). Num turno de
+  portao restrito (o piso `search` do WhatsApp) ou numa sessao que nao e
+  provadamente do operador, o relatorio retem o que e do operador
+  (`working_dir`, `project_id`, a lista `providers`, os nomes dos servidores
+  MCP e a versao exata, que cai para `major.minor`) e lista o que reteve
+  em `withheld`, para o modelo nao confundir "retido" com "nao ha". Quem
+  fala na sessao sai do que os pontos de entrada gravam (a superficie de
+  cada turno, que so acumula, e as fontes de `chat_session_keys`), e nao do
+  prefixo do id: a sessao do Telegram resolvida por UUID nao tem prefixo e
+  passava por local. So web chat, API, VS Code e Desktop (e, sem chegar ao gateway
+  hoje, `cli` e `mcp`) contam como do operador, e so com a porta fechada (loopback ou `gateway.api_key`); sessao
+  desconhecida, app mobile (conta aberta em `/auth/register`), A2A e gateway
+  exposto pelo opt-out sem chave ficam restritos. A tool passa a ser
+  registrada depois de montar os canais push e antes do primeiro canal pull
+  conectar, e guarda so as contagens dos push (guardar os canais fecharia um
+  ciclo de `Arc` com o estado do gateway). A instrucao do runtime acompanha
+  o formato novo: um canal de mensagens ausente da lista nao esta ligado, a
+  ausencia de web chat, API, CLI e MCP nao diz nada, e a superficie da
+  conversa esta em `session.channel`. Um teste ponta a ponta pergunta "voce
+  tem acesso ao WhatsApp?" pela ponte de teste e pelo piso do canal e recebe
+  "sim" com o canal conectado e "nao" sem ele ou com a ponte caida.
+- **O turno em streaming aplica o prompt do modo, e a persona padrao nao
+  manda mais o modelo chamar `garra_status` (#1347).** O caminho de
+  streaming do `AgentRuntime` montava o prompt de sistema so com override,
+  prompt do runtime e persona, ignorando o `system_prompt_template` e o
+  `max_tokens` do modo que o caminho batch (`process_message_with_agent_config`)
+  ja aplicava: o mesmo turno no piso `search` recebia prompts diferentes
+  conforme o ramo. Agora os dois montam o mesmo pedido: o prompt com a mesma
+  precedencia (chamador > modo > runtime > persona) e o mesmo `max_tokens`
+  (chamador > runtime > modo), e um teste prende que os dois ramos mandam o
+  mesmo prompt, `max_tokens` e `temperature` num modo customizado. A
+  `temperature` do modo continua fora dos dois ramos, e de proposito nesta
+  versao: so o `process_message_impl` a manda, e ele so roda pelo heartbeat,
+  que nunca tem modo, entao na pratica nenhum turno manda a `temperature`
+  de um modo. Passar a manda-la mudaria o pedido de todo turno com modo,
+  porque os embutidos declaram de 0.3 a 0.7, e isso fica para quando o
+  provider souber omitir o parametro nos modelos que o recusam;
+  `docs/src/modes.md` registra o limite.
+  A persona padrao (PT e
+  EN) citava `garra_status` pelo nome, e ela vale tambem em `garraia chat` e
+  `garraia ask`, que nunca registram essa ferramenta; a linha ficou neutra
+  ("use as ferramentas disponiveis nesta conversa"), e a instrucao de
+  consultar `garra_status` continua vindo do runtime, so quando a
+  ferramenta esta entre as oferecidas no turno.
+- **O erro do `garraia whatsapp link` quando o bridge morre antes de
+  conectar volta a trazer as ultimas linhas do stderr do Node (#1368).** A cauda so
+  era lida com o que a task do stderr ja tinha encaminhado; com o filho
+  recem-terminado, a ultima linha, justamente a que explica o erro, ainda
+  estava no pipe, e a mensagem saia so com "o bridge encerrou (codigo 1)
+  antes de conectar". O CI de cobertura pegou a corrida em `main`. Agora,
+  quando o filho ja saiu, o erro espera o fim do stderr por ate 2 s antes de
+  montar a cauda, que continua redigida.
+- **`install.sh` deixa de tentar o wizard sem terminal em container e CI (#1369).**
+  O teste era `[ -r /dev/tty ]`, que so le os bits de permissao; o `/dev/tty`
+  e `crw-rw-rw-` em qualquer Linux, inclusive num container ou runner sem
+  terminal de controle, onde abrir o dispositivo falha com ENXIO. O smoke de
+  instalacao limpa da v0.4.4 imprimia `main: line 631: /dev/tty: No such
+  device or address` e depois "Wizard exited non-zero" para um wizard que
+  nem chegou a rodar. O `has_usable_tty` agora abre o `/dev/tty` de verdade
+  (so leitura, dentro de um subshell, com `-c` exigindo dispositivo de
+  caractere), e sem terminal o instalador segue o caminho nao interativo
+  documentado sem linha de erro. Um `CI` nao vazio tambem conta como sem
+  terminal, como o `Test-InteractiveSession` do `install.ps1` ja fazia
+  (regra 16): um job de CI com pty nao tem ninguem para digitar. O
+  `install.ps1` nao tinha a falha (`[Console]::IsInputRedirected` consulta
+  `GetConsoleMode`, nao permissao); a suite dele ganhou os casos espelhados
+  que rodam a sonda real em processos filhos.
+- **`GET /admin/api/logs` passa a ler so a cauda do `garraia.log` e deixa de
+  responder 500 com byte que nao e UTF-8 (#1371).** O handler fazia
+  `read_to_string` do arquivo inteiro a cada requisicao para devolver as
+  ultimas `limit` linhas. Com o log do daemon crescendo entre restarts, isso
+  custava memoria e CPU proporcionais a toda a historia do daemon, e a
+  escrita crua que chega pelo descritor herdado (panic, filho com stderr
+  herdado) nao tem garantia de ser UTF-8, o que derrubava a leitura inteira.
+  Agora o `/admin/api/logs` usa a mesma leitura do `GET /api/logs`: no
+  maximo 512 KiB do fim do arquivo, com teto que vale mesmo se o daemon
+  escrever durante a leitura, em UTF-8 lossy (o byte invalido vira U+FFFD),
+  e sem a linha partida pelo corte.
+- **`garraia status | head` deixa de terminar em panico (#1371).** O
+  runtime do Rust ignora SIGPIPE, entao um `println!` num pipe cujo leitor
+  ja fechou recebia `EPIPE` e o processo morria com "failed printing to
+  stdout: Broken pipe" e exit 101 (ou, no `garraia logs`, com "Error: Broken
+  pipe" e exit 1). Nos comandos que so leem e imprimem, o SIGPIPE volta ao
+  padrao do Unix antes da primeira escrita: o comando sai em silencio no
+  primeiro `write` sem leitor, como `ls | head`, e o shell ve 141. Entram
+  `status`, `about`, `logs` (inclusive `--follow`), `doctor`, `runs list`,
+  `config check`, `memory stats|list|search`, `mcp list`, `channel list|status`,
+  `skill list`, `glob`, `whatsapp status`, `ask` e
+  `desktop --status|--no-launch`. O gateway (`start`, `restart`, o daemon),
+  o `mcp-server` e o REPL do `chat` ficam com o sinal ignorado, porque la um
+  leitor que some tem de virar erro tratado e nunca a morte do processo, e o
+  mesmo vale para os comandos que mudam estado. A decisao e um `match`
+  exaustivo ate o subcomando aninhado, sem curinga: um subcomando novo, de
+  primeiro nivel ou aninhado (um `memory` ou `config` novo, por exemplo), nao
+  compila sem alguem decidir de que lado ele fica, e um teste varre o corpo
+  da funcao para que ninguem troque isso por `matches!` ou `_ =>`. No
+  Windows nada muda.
+- **`garraia start -d` deixa de apagar o `garraia.log` a cada start e de
+  rasgar a cabeca dele (#1371).** O daemon abria o log com `File::create`,
+  que trunca, e sem `O_APPEND`. Com isso cada start do daemon apagava o log
+  da execucao anterior, justo o que se quer ler ao reiniciar depois de uma
+  queda. E esse descritor vira stdout e stderr do daemon pelo `dup2`, entao
+  tudo que escrevia cru nele (a mensagem de um panic, um `eprintln!`, um
+  filho com o stderr herdado) caia no offset proprio do descritor, que
+  comeca em 0, por cima das linhas que o `tracing` ja tinha gravado: o smoke
+  de instalacao limpa da v0.4.4 achou "Secure MCP Filesystem Server running
+  on stdio" na primeira linha, seguido de meia linha de tracing. O log agora
+  abre em append: cada escrita vai para o fim do arquivo, atomicamente, e as
+  execucoes anteriores ficam. O arquivo cresce sem rotacao, como ja crescia
+  no `garraia start` em foreground, que sempre abriu o mesmo arquivo em
+  append.
+- **Sessao REST sobrevive ao restart do gateway: `GET /api/sessions/{id}/history`, `POST .../messages` e `DELETE /api/sessions/{id}` deixam de responder 404 para sessao que esta no `sessions.db` (#1372).**
+  Os tres handlers so olhavam o mapa em memoria, que nasce vazio a cada
+  subida, e davam `{"error":"session not found"}` antes da hidratacao que
+  carregaria as mensagens do disco (achado do smoke de instalacao limpa da
+  v0.4.4, em todos os cenarios). Agora a sessao fora da memoria volta do
+  banco, o historico e servido e o turno novo grava ao lado dos antigos; o
+  `DELETE` volta a revogar os tokens depois de um restart. So volta a sessao
+  que so a superficie REST gravou: canal da linha `api` no tenant `default`,
+  nenhuma chave do Chat Sync, tokens so de `api` e o canal de cada mensagem
+  so `api`. Sessao de Telegram, WhatsApp, web, mobile ou do `garraia chat
+  --persist` segue 404 por esta rota ate a propria superficie a trazer de
+  volta, e nada dela e reescrito (o `--resume latest` do CLI continua achando
+  a sua). Id que nao existe segue 404 sem criar linha, e banco ilegivel da
+  500 sem readotar nada. O gate de `api_key` e o `origin_guard` rodam antes
+  do handler e nao mudam. O `working_dir` da sessao continua so em memoria:
+  depois do restart a sessao REST volta sem ele.
+  Sessao encerrada pelo `DELETE` nao volta: revogar os tokens so esvaziava
+  `session_tokens`, e a linha de uma sessao encerrada ficava igual a de uma
+  viva. O `DELETE` agora grava `api_logout` no metadado da linha (so o
+  metadado; tenant, canal e usuario ficam) e a readocao recusa quem a
+  carrega com o mesmo 404 de id desconhecido, como era antes desta mudanca
+  depois do TTL ou do restart. Se a marca nao pode ser gravada, o `DELETE`
+  responde 500 `failed to record logout` em vez de `ok`, com os tokens ja
+  revogados. E `POST /api/mode/select` deixa de reescrever tenant, canal e
+  usuario da linha que ja existe: o upsert com o `X-Session-Id` de qualquer
+  id reetiquetava a sessao de outra superficie (uma `whatsapp-<numero>` ainda
+  sem mensagem, por exemplo) como da API, e a readocao passava a aceita-la.
+  Agora ele so cria a linha que falta e grava apenas o modo.
+  Limite conhecido: a marca so existe para `DELETE` feito a partir desta
+  versao. Uma sessao REST encerrada numa versao anterior ficou sem ela, e
+  depois da atualizacao volta a ser lida por esta rota como uma sessao viva.
+  A rota e do proprio operador (loopback, ou o gate de `api_key` num bind
+  exposto) e o historico ja esta no `sessions.db` dele; quem quiser apagar
+  de vez faz um novo `DELETE`, que agora grava a marca.
+- **O pedido de confirmacao chega ao usuario sem o marcador interno (#1373).**
+  Quando um comando de risco pausava o turno, o texto da ferramenta subia
+  inteiro como resposta, e o usuario do WhatsApp (e de todo canal e do web
+  chat) recebia `[CONFIRM_REQUIRED:6b2e7f7e9f135cbc] O comando a seguir requer
+  confirmacao...`. O marcador sai no unico ponto em que o pedido vira texto do
+  humano, o despacho de ferramenta do runtime, que alimenta as quatro copias do
+  loop e o `tool_program` - e sai tambem da linha da ferramenta nos sinks de
+  eventos (o resumo e a saida do `tool_finished` que a `garraia chat` desenha e
+  que o `/ws` envia), que o mesmo despacho mandava antes da pausa com o
+  conteudo cru. A frase que fica continua dizendo o comando e "Responda
+  **sim** para executar". A aprovacao nao muda: a impressao digital segue no
+  `ToolResult` do historico e no registro de pedidos pendentes, e digitar o
+  marcador nunca aprovou nada.
+- **O log do WhatsApp vinculado mostra o final certo do numero conectado
+  (#1373).** `Jid::last4` contava todos os digitos do JID, inclusive o sufixo
+  de aparelho: `5511555554321:7@s.whatsapp.net` virava `phone_last4=3217`, o
+  final de um numero que nao existe, justamente na linha em que o operador
+  confere qual conta conectou. Agora so a parte de usuario conta (antes do `:`
+  e do `@`), o mesmo corte do `phoneLast4` da ponte, para JID de telefone,
+  `@lid`, grupo e JID sem dominio.
+- **O gateway sobe a ponte do WhatsApp vinculado deste binario, e nao a da
+  versao anterior (#1373).** So o `garraia whatsapp link` materializava o
+  `bridge.mjs`, o `package.json` e o `package-lock.json` embutidos; depois de
+  um `garraia update` o gateway seguia lancando o `bridge.mjs` que estava no
+  disco (o da 0.4.4 nao tem o conserto do `@lid`) ate alguem vincular de novo.
+  Agora o supervisor do canal regrava, antes de lancar a ponte, so os arquivos
+  que diferem do embutido (diretorio `0700` e allowlist de nome mantidos, I/O
+  em `spawn_blocking`), e roda o `npm ci` so quando falta `node_modules` ou
+  quando nada prova que a arvore e a do lock embutido. Provam o carimbo
+  `.garraia-deps-sha256` (gravado quando o `npm ci` do GarraIA sai 0, e posto
+  em `pending` antes de um manifesto ser reescrito e antes de cada `npm ci`) ou
+  o registro do proprio npm, `node_modules/.package-lock.json`, quando lista
+  exatamente os pacotes do lock embutido e nao e mais velho que a arvore - o
+  que adota sem `npm` uma instalacao da 0.4.4 cujo `npm ci` terminou (e nao
+  mais uma pela metade) e o `npm ci` que o usuario roda a mao. Se o `npm` do
+  gateway falhar, a ponte nao sobe e a arvore que ele deixou pela metade sai do
+  disco; sem `npm` na PATH do gateway, a ponte nao sobe e nada e apagado. Nos
+  dois casos o `/api/diagnostics` e o `garraia whatsapp status` mostram "sem
+  dependencias" com o passo `rode npm ci em <dir> e reinicie o gateway`, que
+  agora funciona: o boot seguinte adota a arvore. A sessao vinculada nao e
+  tocada. O `garraia whatsapp link` usa a mesma regra, e ja nao roda `npm` so
+  porque o `bridge.mjs` mudou.
+- **O job de cobertura do CI deixa de ser cancelado por tempo (#1377).** Ele levava
+  de 21 a 24 minutos ate a v0.4.4, e com os testes da v0.4.5 passou do teto
+  de 30: em `main`, depois do trem da onda B, saiu cancelado com todos os
+  testes verdes e o relatorio ja gerado. O teto sobe para 45 minutos, que
+  continua pegando um teste travado.
+
+### Security
+- **`agent.sandbox` passa a conter `run_tests`, `git_diff`, `code_review` e `repo_search` (#1225).**
+  Ate aqui so o `bash` consultava a policy: com `mode: all` essas quatro tools
+  continuavam spawnando no host. Agora elas passam por um spawn que monta o
+  argv do `docker run`/`podman run` sem shell nenhum (argumento hostil do
+  modelo chega literal ao programa), com as mesmas recusas fail-closed do
+  `bash` (sem backend, binario ausente, fora de unix, imagem com `-`, mount
+  invalido) e mais uma: `backend: ssh` e recusado para elas, porque o host
+  remoto nao tem o diretorio de trabalho. No timeout o container e removido
+  (`rm -f garra-sbx-<uuid>`), e o `bash` sandboxado passa a fazer o mesmo
+  (antes o container dele seguia rodando depois do timeout, com o workdir
+  montado rw). O `working_dir` que o modelo passa ao `run_tests` fica no jail
+  das file tools antes de virar o mount do container, e no gateway o
+  `run_tests` so existe em `standard` quando o sandbox docker/podman o cobre
+  (#1272). O `ssh` + container remoto fica como won't-do:
+  `backend: docker` com um `docker context` `ssh://` ja entrega isso.
+- **TLS configurado pela metade recusa o boot em vez de servir HTTP puro (#1247).**
+  Com so `gateway.tls_cert_path` ou so `gateway.tls_key_path` no arquivo, o
+  gateway caia em `serve_plain` sem aviso: o operador pediu TLS e recebia
+  texto claro, credencial de gateway inclusive. Agora `garraia start`,
+  `restart` e `start -d` saem com exit 78 (`EX_CONFIG`) nomeando o campo que
+  falta, antes de ligar o socket e antes do fork. Escotilha consciente:
+  `GARRAIA_ALLOW_INVALID_CONFIG=1` (exatamente `1`), que sobe e continua
+  logando o achado como erro. Quem embute o `GatewayServer` sem a CLI recebe
+  um `warn!` nomeando o campo ausente no ponto de uso.
+- **`garraia start` recusa subir num bind exposto sem credencial de gateway (#1261).**
+  **Quebra de compatibilidade para deploys expostos sem chave:** `start`,
+  `start -d` e `restart` saem com exit 78 (`EX_CONFIG`) quando qualquer
+  endereco resolvido do bind nao e loopback e nao ha `gateway.api_key` nem
+  `GARRAIA_GATEWAY_API_KEY`. Antes o boot so avisava e subia com o `/ws` (tools
+  de arquivo e de dispositivo) e o `/api/mcp/marketplace/install` abertos para
+  quem alcancasse a porta. A recusa vem antes do bind, antes do fork em `-d`
+  (a mensagem chega ao terminal) e antes de o `restart` derrubar o daemon
+  atual; TLS nao isenta, e um nome que nao resolve tambem e recusado. A
+  mensagem diz como corrigir usando o binario instalado: `garraia init`,
+  `gateway.api_key`, `GARRAIA_GATEWAY_API_KEY` ou `--host 127.0.0.1`. Deploy
+  aberto de proposito atras de proxy que autentica tem o opt-out
+  `gateway.allow_unauthenticated_network_bind: true`, so no arquivo (sem env
+  nem flag, para que a mesma injecao de `HOST` que expoe o bind nao desligue
+  a guarda), com aviso alto em todo boot. **Migracao (faca ANTES de subir a
+  imagem v0.4.5, `latest` incluso):** a imagem Docker, os tres
+  `docker-compose*.yml` (o `.env.example` traz a linha vazia, para preencher) e os pods RunPod
+  precisam de `GARRAIA_GATEWAY_API_KEY` no ambiente (`openssl rand -hex 32`);
+  sem ela o container sai com 78 e o `restart: unless-stopped` o reinicia em
+  loop. O chart Helm ganhou `gatewayApiKey` (Secret proprio, gerado no install
+  e preservado no upgrade, ou `existingSecret`/`value`; `helm template`/ArgoCD
+  precisam de um dos dois) e recusa renderizar a chave via `secretEnv`. O
+  modulo Terraform/ECS ganhou a variavel **obrigatoria**
+  `gateway_api_key_secret_arn` (Secrets Manager ou SSM), injetada como
+  `GARRAIA_GATEWAY_API_KEY`, e a role de execucao passou a ler os ARNs de
+  `secrets` — um `terraform plan` sem ela falha antes de trocar a imagem.
+  Instalacoes do `install.sh` e a unit systemd ligam em loopback e nao mudam.
+  O desktop, o cookie de sessao (`Secure`), o alerta do admin e o hot-reload
+  do `config.yml` passam a enxergar a chave que so vem da env. Nova env `GARRAIA_GATEWAY_API_KEY`:
+  vence o arquivo, vazia conta como ausente, e mora num campo que o serde
+  nunca le nem grava, entao um `save()` depois do `load()` nao a escreve no
+  `config.yml`. `garraia config check` passa a dizer **Error** onde o `start`
+  recusaria, e reporta a env so por presenca.
+- **O `bash` do `garraia mcp-server` e do gateway deixa de rodar no host em `standard` (#1272).**
+  Em `execution.profile = standard` a tool `bash` so e registrada quando
+  `agent.sandbox` a coloca dentro de um container `docker` ou `podman` que
+  existe no host (todo comando passa por `wrap_command`, sem fallback para o
+  host); em `execution.profile = isolated-pod` explicito ela roda no host do
+  pod, com a denylist e o tier arriscado ligados. Em qualquer outro caso
+  (sandbox desligado, o default; `ssh`, que e execucao remota; `bash` em
+  `elevated`; `allowlist` sem `bash`; binario ausente) ela simplesmente nao
+  existe: antes, um `cat /etc/shadow` ou um `echo x > /qualquer/lugar` pedido
+  pelo modelo rodava no host, porque o tier arriscado so pega o que parece
+  perigoso. A decisao nunca vem de detectar container. Instalacoes existentes
+  continuam subindo: o boot do gateway e do `garraia mcp-server` avisa uma vez
+  com `warn!` dizendo por que e como religar, `/api/diagnostics` ganha o check
+  `tools.bash`, e o system prompt do `garra_agent` diz ao modelo que nao ha
+  shell. `garraia chat` (humano no terminal, com confirmacao) nao muda.
+  A regra vale para toda tool que executa codigo do repositorio: o
+  `run_tests` do gateway (que roda o `scripts.test` do `package.json`, o
+  `build.rs` e o `conftest.py` que o `file_write` consegue escrever) tambem
+  nao e registrado em `standard` sem sandbox. Em `isolated-pod` com sandbox
+  exigido e inutilizavel a tool fica de fora, em vez de ser anunciada como
+  rodando no host do pod.
+- **O container do sandbox passa a ser fronteira de verdade (#1272).** `docker
+  run` ganha `--cap-drop ALL`, `--pids-limit 512` e `--user <uid>:<gid>` do
+  operador (`podman` usa `--userns=keep-id`), entao nada que o comando deixa
+  no diretorio montado pertence a root nem e device. O mount e o caminho
+  canonico e absoluto do diretorio de trabalho da sessao; relativo,
+  inexistente, com `:`, ausente (sessao sem `working_dir`: o cwd do processo
+  nunca e montado no lugar), `/`, o `$HOME` ou um ancestral dele agora e
+  recusa fail-closed, em vez de rodar sem o mount ou com o disco inteiro.
+- **`git_diff` e `code_review` nao executam programa plantado no repositorio
+  (#1272).** O git dessas tools roda com `core.fsmonitor=false`,
+  `safe.bareRepository=explicit`, `core.hooksPath=/dev/null`, `--no-textconv`,
+  todo `filter.<driver>` da config anulado, nenhuma descida em submodulo
+  (`--ignore-submodules=all`, `diff.submodule=short`,
+  `submodule.recurse=false`: um submodulo tem config propria) e
+  `GIT_CONFIG_NOSYSTEM=1`; e
+  `file_write` recusa qualquer caminho com componente `.git`, para o modelo
+  nao plantar a config que o proximo diff executaria no host.
+- **O log deixa de gravar o telefone de quem fala com o GarraIA pelo WhatsApp
+  ou pelo Signal (#1343).** O id de sessao desses canais embute o remetente
+  (`whatsapp-<telefone>`, `signal-<telefone>`, `whatsapp-linked-<jid>`), e os
+  spans do `AgentRuntime` gravam `session_id` em todo evento do turno: o
+  canal `whatsapp_linked` ja so logava os 4 ultimos digitos por conta
+  propria, mas o span passava o numero inteiro por baixo. O `RedactingWriter`
+  do stderr e do `garraia.log` agora troca toda sequencia de 10 ou mais
+  digitos que nao esteja colada a letra por `…` e os 4 ultimos; hash
+  hexadecimal e UUID passam intactos. O `Debug` do escopo de aprovacao
+  mascara a sessao do mesmo jeito, e o do registro de pedidos pausados mostra
+  so quantos ha. O `user_id` do LINE, que nao e numerico, continua legivel.
+- **A chave de um provider so vai para o endpoint da propria entrada `llm:` (#1370).**
+  `garraia ask -p openai` (e o `garra_ask`/`garra_agent` do MCP com
+  `provider=openai`) lia `llm.openai.api_key` e descartava `llm.openai.base_url`:
+  a chave de um endpoint OpenAI-compativel proprio era enviada para
+  `https://api.openai.com`. O smoke de instalacao limpa da v0.4.4 pegou isso, e a
+  auditoria dos outros pontos de construcao da CLI achou a mesma classe de
+  defeito em mais quatro lugares: `-p anthropic` e `-p openrouter` tambem
+  ignoravam a `base_url`; a autodeteccao (sem `agent.default_provider`) fazia o
+  mesmo com os tres; o caminho do `agent.default_provider` lia a `base_url` da
+  entrada padrao mas a chave de `llm.<tipo>` (com `default_provider: lmstudio` e
+  um `llm.openai` ao lado, a chave do `llm.openai` ia para o LM Studio) e largava
+  a `base_url` de um default `anthropic`; e o `--url` avulso mandava
+  `OPENAI_API_KEY` ou `GARRAIA_EMBEDDING_API_KEY` para o endereco digitado.
+  Agora endpoint e credencial saem sempre da mesma entrada
+  (`crates/garraia-cli/src/provider_binding.rs`): dentro dela o `api_key` vence a
+  variavel de ambiente do tipo; sem entrada, o endpoint e o padrao do tipo e a
+  chave so vem do ambiente, nunca de outra entrada; o `--url` usa `LLM_API_KEY`
+  ou a chave da entrada com a mesma `base_url`. **A variavel de ambiente do tipo
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, inclusive a de um
+  `.env` do diretorio corrente) so vai para o host padrao do tipo:** ela preenche
+  uma entrada sem `api_key` apenas quando a entrada nao tem `base_url` ou tem o
+  proprio host padrao (o `https://openrouter.ai/api/v1` que o `garraia init`
+  grava continua funcionando com a chave na env). **Mudanca de comportamento:**
+  uma entrada com `base_url` propria e sem `api_key` deixa de receber a variavel
+  do ambiente, inclusive pelo `agent.default_provider` (onde ela ja era enviada
+  para a `base_url` antes desta versao); o OpenAI-compativel manda o marcador
+  `not-needed`, e `anthropic`/`openrouter` recusam com erro. Quem dependia disso
+  poe o `api_key` na propria entrada. `-p <alias>` (uma entrada `llm:` com outro
+  nome, ja aceita pela policy do MCP) passa a funcionar em vez de falhar com
+  "Provider desconhecido", e o `garra_agent` resolve o provider pelo id com que
+  ele foi registrado, entao um alias de `anthropic`/`ollama`/`llamacpp` (e o
+  proprio `llamacpp`) nao falha mais com "provider '<nome>' not found". Na
+  autodeteccao, um `llm.openrouter` que declara `provider: openai` com chave
+  propria volta a ser escolhido, vinculado inteiro (a chave dele vai para a
+  `base_url` dele); sem chave propria, o candidato cai para a
+  `OPENROUTER_API_KEY` do ambiente no host padrao, em vez de sumir.
+
 ## [0.4.4] - 2026-09-21
 
 Release que faz o WhatsApp pessoal funcionar numa instalacao nova e da ao

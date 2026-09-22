@@ -38,8 +38,9 @@ fn default_true() -> bool {
 /// lado da fronteira de crate, porque a `SandboxPolicy` tambem pode ser
 /// montada sem passar por config nenhuma.
 ///
-/// O conserto estrutural — montar argv em vez de uma linha de shell — e
-/// acompanhamento na #1225 (slices S2/S3), como ja recomendado na #1231.
+/// O conserto estrutural — montar argv em vez de uma linha de shell — ja
+/// vale para as tools de repositorio (#1225 S2, `wrap_argv`); o `bash`
+/// continua uma linha de shell, limite conhecido registrado no threat model.
 pub fn parece_opcao(valor: &str) -> bool {
     valor.trim_start().starts_with('-')
 }

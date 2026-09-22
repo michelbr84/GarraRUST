@@ -594,9 +594,8 @@ exist). Run `garraia config check` to see which directory and file are
 active. Details in [docs/installation.md](docs/installation.md):
 
 ```yaml
-gateway:
-  host: "127.0.0.1"
-  port: 3888
+# The bind comes from --host/HOST and --port/PORT (default 127.0.0.1:3888);
+# gateway.host/gateway.port are deprecated and never bound the socket (#1261).
 
 llm:
   claude:

@@ -97,8 +97,9 @@ fn sh_quote(s: &str) -> String {
 /// lado da fronteira de crate. As duas existem porque uma `SandboxPolicy`
 /// pode chegar aqui sem ter passado por config nenhuma.
 ///
-/// O conserto estrutural — montar argv em vez de uma linha de shell — é
-/// acompanhamento na #1225 (slices S2/S3), como já recomendado na #1231.
+/// O conserto estrutural — montar argv em vez de uma linha de shell — já
+/// vale para as tools de repositório (#1225 S2, `SandboxPolicy::wrap_argv`);
+/// o `bash` continua uma linha de shell, limite conhecido do threat model.
 fn parece_opcao(valor: &str) -> bool {
     valor.trim_start().starts_with('-')
 }
