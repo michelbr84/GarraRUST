@@ -19,7 +19,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::context_policy::ContextPolicy;
 use crate::embeddings::EmbeddingProvider;
 use crate::exec_context::ExecContext;
-use crate::execution_budget::ExecutionBudget;
+use crate::execution_budget::{ExecutionBudget, VereditoDeLoop};
 use crate::memory_extractor::LlmMemoryExtractor;
 use crate::provider_resilience::ResilienceManager;
 use crate::providers::{
@@ -108,17 +108,7 @@ pub struct ToolInventoryEntry {
 /// marcador o "ok" tambem nao alcanca nenhum pedido mais antigo — aquele o
 /// humano ja respondeu. A janela de 6 continua valendo por cima disso.
 fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> ToolApproval {
-    let text = user_text.trim().to_lowercase();
-    let approval_words = [
-        "sim",
-        "yes",
-        "confirmar",
-        "confirma",
-        "proceed",
-        "ok",
-        "approve",
-    ];
-    if !approval_words.iter().any(|w| text == *w) {
+    if !crate::tools::pending_approval::is_approval_word(user_text) {
         return ToolApproval::None;
     }
 
@@ -291,6 +281,11 @@ pub struct AgentRuntime {
     /// fallback e o runtime — perguntar a config devolveria o configurado, que
     /// a issue distingue explicitamente do efetivo.
     turn_stats: RwLock<crate::turn_stats::TurnStatsRegistry>,
+    /// #1343: pedidos de confirmacao pausados, esperando o "sim" do proximo
+    /// turno. So os turnos com `ExecContext::approval_scope` escrevem e leem
+    /// aqui. Mora no runtime porque ele e o unico ponto que gateway e CLI
+    /// compartilham — um mapa por processo cobre todo caminho.
+    pending_approvals: crate::tools::pending_approval::PendingApprovals,
 }
 
 /// O TEXTO do aviso de ferramenta MCP escondida pelo whitelist (#1264).
@@ -405,6 +400,63 @@ fn com_objetivo(system: Option<String>, goal: Option<&str>) -> Option<String> {
     }
 }
 
+/// O nome da tool de autoinspecao do gateway (#1347). Ela e registrada pelo
+/// `garraia-gateway`; o runtime so precisa do nome para saber se ela esta
+/// entre as oferecidas no turno.
+const GARRA_STATUS_TOOL: &str = "garra_status";
+
+/// A instrucao que manda consultar `garra_status` antes de negar uma
+/// integracao (#1347), em PT.
+///
+/// Publica de proposito: e o contrato entre a nota e o formato do relatorio
+/// do `garra_status` no gateway, e os testes de la afirmam contra ela. O
+/// relatorio de hoje traz `channels` como lista de nomes; a fatia do gateway
+/// que acrescenta estado por canal usa `status` com `active`/`offline`, e a
+/// nota ja fala dos dois formatos. Ferramentas ficam de fora: a lista de
+/// ferramentas que o modelo recebeu no turno e a fonte de verdade para elas.
+pub const NOTA_GARRA_STATUS_PT: &str = "Antes de dizer que nao tem acesso a um canal \
+ou integracao, chame `garra_status` e responda a partir dele. Um canal presente na \
+lista `channels` do relatorio e um canal em que voce esta conectado; se o canal \
+trouxer um campo `status`, so `active` conta como conectado, e `offline` nao. Um \
+canal ausente da lista pode estar conectado por um caminho que o relatorio ainda \
+nao cobre: nao negue o acesso so por isso.";
+
+/// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
+pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
+channel or integration, call `garra_status` and answer from it. A channel present \
+in the report's `channels` list is a channel you are connected to; if the channel \
+carries a `status` field, only `active` counts as connected, and `offline` does not. \
+A channel missing from the list may still be connected through a path the report \
+does not cover yet: do not deny access on that basis alone.";
+
+/// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
+/// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.
+///
+/// O prompt de um modo (`system_prompt_template`) SUBSTITUI a persona, e a
+/// persona era o unico lugar com essa instrucao: no piso `search` do
+/// WhatsApp, o modelo respondia "nao tenho acesso ao WhatsApp" conectado ao
+/// WhatsApp. Aqui a nota entra DEPOIS de qualquer prompt de operador ou de
+/// modo, como o objetivo e a memoria entram — nada e substituido. Sem a tool
+/// na lista (CLI, modo que a nega), nao entra: o modelo nunca e mandado
+/// chamar uma tool que nao tem.
+fn com_nota_de_capacidades(
+    system: Option<String>,
+    tool_defs: &[ToolDefinition],
+    lang: crate::persona::Lang,
+) -> Option<String> {
+    if !tool_defs.iter().any(|d| d.name == GARRA_STATUS_TOOL) {
+        return system;
+    }
+    let nota = match lang {
+        crate::persona::Lang::Pt => NOTA_GARRA_STATUS_PT,
+        crate::persona::Lang::En => NOTA_GARRA_STATUS_EN,
+    };
+    Some(match system {
+        Some(s) => format!("{s}\n\n{nota}"),
+        None => nota.to_string(),
+    })
+}
+
 /// O desfecho de uma chamada de tool, no unico ponto de despacho (#1226 S-A).
 ///
 /// As quatro copias do loop de turno recebem um destes desfechos e tratam so
@@ -431,10 +483,24 @@ enum DispatchOutcome {
 
     /// A tool pede confirmacao humana (GAR-187): o resultado entra na lista
     /// e o turno pausa, devolvendo `prompt` a quem chama.
+    ///
+    /// `tool` e `fingerprint` existem para o registro entre turnos (#1343):
+    /// a impressao digital sai do PRIMEIRO marcador bem formado da saida do
+    /// pedido — que o #1339 garante ser o verdadeiro. Sem marcador bem
+    /// formado, `None`, e nada e registrado (fail-closed).
     Paused {
         tool_result: ContentBlock,
         prompt: String,
+        tool: String,
+        fingerprint: Option<ApprovalFingerprint>,
     },
+
+    /// Primeira deteccao de loop da tarefa (#1295 item 1): a chamada NAO
+    /// rodou, e este `ToolResult` leva a observacao corretiva ao modelo. As
+    /// quatro copias do loop tratam como `Denied` — empilham e seguem —, mas
+    /// e variante propria porque o `tool_program` rotula o passo: um aviso
+    /// de loop nao e "negado pelo gate do modo".
+    LoopWarning(ContentBlock),
 
     /// O `ExecutionBudget` detectou loop por assinatura: o turno inteiro
     /// falha. Quem chama converte em `Error::Agent` tal qual — a mensagem
@@ -461,6 +527,48 @@ fn neutralizar_marcadores(texto: &str) -> String {
         crate::tools::approval::MARKER_PREFIX,
         "[CONFIRM_REQUIRED(neutralizado):",
     )
+}
+
+/// O que o despacho devolve para uma chamada barrada pelo detector de loop
+/// (#1295), com o par de eventos que a poe no `/tool` da CLI (item 3).
+///
+/// Detectar roda ANTES do `tool_started` do despacho — a chamada nao
+/// executa —, entao sem este par a chamada barrada nao aparecia no
+/// `tool_log` e o `/tool <n>` mostrava so as chamadas identicas anteriores,
+/// sem o veredito. O resumo do input e o `summarize_tool_input` (redigido);
+/// a saida e a mensagem do detector, que ja sai redigida de
+/// `ExecutionBudget::mensagem_de_loop`.
+async fn desfecho_de_loop(
+    sink: Option<&TurnSink>,
+    id: &str,
+    name: &str,
+    input: &serde_json::Value,
+    veredito: VereditoDeLoop,
+) -> DispatchOutcome {
+    let (texto, resumo) = match &veredito {
+        VereditoDeLoop::Avisar(t) => (t, "bloqueada: loop detectado (aviso ao modelo)"),
+        VereditoDeLoop::Abortar(t) => (t, "bloqueada: loop detectado (turno abortado)"),
+    };
+    warn!(tool = %name, "{resumo}");
+    if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+        sink.tool_started(name, summarize_tool_input(name, input))
+            .await;
+        sink.tool_finished(
+            name,
+            std::time::Duration::ZERO,
+            false,
+            resumo.to_string(),
+            capture_tool_output(texto),
+        )
+        .await;
+    }
+    match veredito {
+        VereditoDeLoop::Avisar(aviso) => DispatchOutcome::LoopWarning(ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: neutralizar_marcadores(&aviso),
+        }),
+        VereditoDeLoop::Abortar(mensagem) => DispatchOutcome::BudgetExceeded { mensagem },
+    }
 }
 
 /// #1339: so um pedido de confirmacao pode carregar marcador no historico.
@@ -737,6 +845,7 @@ impl AgentRuntime {
             noise_policy: crate::memory_noise::NoisePolicy::default(),
             auto_extract: true,
             max_facts: None,
+            pending_approvals: crate::tools::pending_approval::PendingApprovals::new(),
         }
     }
 
@@ -1446,6 +1555,9 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        // #1347: depois do filtro, porque a nota so entra quando
+        // `garra_status` esta entre as tools que o modelo vai ver.
+        let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -1456,7 +1568,7 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = detect_confirmation_approval(conversation_history, user_text);
+        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -1591,13 +1703,18 @@ impl AgentRuntime {
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
                         .await
                     {
-                        DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
+                        DispatchOutcome::Result(bloco, _)
+                        | DispatchOutcome::Denied(bloco)
+                        | DispatchOutcome::LoopWarning(bloco) => {
                             tool_results.push(bloco);
                         }
                         DispatchOutcome::Paused {
                             tool_result,
                             prompt,
+                            tool,
+                            fingerprint,
                         } => {
+                            self.registrar_pausa(exec, session_id, &tool, fingerprint);
                             tool_results.push(tool_result);
                             confirmation_response = Some(prompt);
                             break;
@@ -1698,6 +1815,9 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        // #1347: depois do filtro, porque a nota so entra quando
+        // `garra_status` esta entre as tools que o modelo vai ver.
+        let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
         let (provider, tools_model_override) =
             self.apply_tools_model_override(provider, String::new(), tool_defs.len());
 
@@ -1714,7 +1834,7 @@ impl AgentRuntime {
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = detect_confirmation_approval(conversation_history, user_text);
+        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
 
         // #979: os limites do modo valem, no lugar dos fixos. Precedencia:
         // override explicito do runtime > limites do modo > padrao. Quem passou
@@ -1845,13 +1965,18 @@ impl AgentRuntime {
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
                         .await
                     {
-                        DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
+                        DispatchOutcome::Result(bloco, _)
+                        | DispatchOutcome::Denied(bloco)
+                        | DispatchOutcome::LoopWarning(bloco) => {
                             tool_results.push(bloco);
                         }
                         DispatchOutcome::Paused {
                             tool_result,
                             prompt,
+                            tool,
+                            fingerprint,
                         } => {
+                            self.registrar_pausa(exec, session_id, &tool, fingerprint);
                             tool_results.push(tool_result);
                             confirmation_response = Some(prompt);
                             break;
@@ -2136,6 +2261,9 @@ impl AgentRuntime {
             .into_iter()
             .filter(|d| portao.permite(&d.name))
             .collect();
+        // #1347: depois do filtro, porque a nota so entra quando
+        // `garra_status` esta entre as tools que o modelo vai ver.
+        let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
         let (provider, effective_model) =
             self.apply_tools_model_override(provider, effective_model, tool_defs.len());
         info!(
@@ -2146,7 +2274,7 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = detect_confirmation_approval(conversation_history, user_text);
+        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -2457,13 +2585,18 @@ impl AgentRuntime {
                             )
                             .await
                         {
-                            DispatchOutcome::Result(bloco, _) | DispatchOutcome::Denied(bloco) => {
+                            DispatchOutcome::Result(bloco, _)
+                            | DispatchOutcome::Denied(bloco)
+                            | DispatchOutcome::LoopWarning(bloco) => {
                                 tool_results.push(bloco);
                             }
                             DispatchOutcome::Paused {
                                 tool_result,
                                 prompt,
+                                tool,
+                                fingerprint,
                             } => {
+                                self.registrar_pausa(exec, session_id, &tool, fingerprint);
                                 tool_results.push(tool_result);
                                 confirmation_response = Some(prompt);
                                 break;
@@ -2609,13 +2742,17 @@ impl AgentRuntime {
                                 .await
                             {
                                 DispatchOutcome::Result(bloco, _)
-                                | DispatchOutcome::Denied(bloco) => {
+                                | DispatchOutcome::Denied(bloco)
+                                | DispatchOutcome::LoopWarning(bloco) => {
                                     tool_results.push(bloco);
                                 }
                                 DispatchOutcome::Paused {
                                     tool_result,
                                     prompt,
+                                    tool,
+                                    fingerprint,
                                 } => {
+                                    self.registrar_pausa(exec, session_id, &tool, fingerprint);
                                     tool_results.push(tool_result);
                                     confirmation_response = Some(prompt);
                                     break;
@@ -2641,6 +2778,67 @@ impl AgentRuntime {
                 }
             }
         }
+    }
+
+    /// A aprovacao humana que vale neste turno (GAR-187, #1343).
+    ///
+    /// Sem `approval_scope`, a deteccao antiga pelo historico, intacta. Com
+    /// escopo, so o registro do servidor conta, e o historico e ignorado —
+    /// marcador copiado ou forjado nele nao aprova nada. O registro e
+    /// consumido aqui em todo desfecho (ver
+    /// [`crate::tools::pending_approval::PendingApprovals::resolve`]).
+    ///
+    /// Um escopo cuja sessao nao e a do turno e erro de quem chama: nada e
+    /// aprovado (fail-closed), e o registro da sessao do escopo nao e tocado.
+    fn aprovacao_do_turno(
+        &self,
+        exec: &ExecContext,
+        session_id: &str,
+        conversation_history: &[ChatMessage],
+        user_text: &str,
+    ) -> ToolApproval {
+        match exec.approval_scope.as_ref() {
+            None => detect_confirmation_approval(conversation_history, user_text),
+            Some(scope) if scope.session_id() != session_id => {
+                warn!(
+                    channel = %scope.channel(),
+                    "approval_scope de outra sessao: nenhuma aprovacao neste turno"
+                );
+                ToolApproval::None
+            }
+            Some(scope) => {
+                self.pending_approvals
+                    .resolve(scope, user_text, std::time::Instant::now())
+            }
+        }
+    }
+
+    /// Grava o pedido que acabou de pausar o turno (#1343), quando o turno
+    /// tem escopo e o pedido tem impressao digital bem formada. Fora disso
+    /// nao grava nada, e a pausa e terminal como antes.
+    fn registrar_pausa(
+        &self,
+        exec: &ExecContext,
+        session_id: &str,
+        tool: &str,
+        fingerprint: Option<ApprovalFingerprint>,
+    ) {
+        let Some(scope) = exec.approval_scope.as_ref() else {
+            return;
+        };
+        if scope.session_id() != session_id {
+            return;
+        }
+        let Some(fp) = fingerprint else {
+            warn!(
+                channel = %scope.channel(),
+                tool = %tool,
+                "pausa sem marcador bem formado: nada registrado"
+            );
+            return;
+        };
+        self.pending_approvals
+            .register(scope, tool, fp, std::time::Instant::now());
     }
 
     /// O unico ponto de despacho de tool do `AgentRuntime` (#1226 S-A).
@@ -2686,11 +2884,10 @@ impl AgentRuntime {
             // registra chamada com payload para detecção de loop por assinatura
             budget.registrar_chamada(name, input);
 
-            // detecta loop (#1295: o erro carrega o diagnostico do input repetido)
-            if budget.detectar_loop_ferramenta() {
-                return DispatchOutcome::BudgetExceeded {
-                    mensagem: budget.mensagem_de_loop(name, input),
-                };
+            // detecta loop (#1295: a primeira deteccao da tarefa avisa o
+            // modelo; a seguinte aborta com o diagnostico do input repetido)
+            if let Some(veredito) = budget.veredito_de_loop(name, input) {
+                return desfecho_de_loop(sink, id, name, input, veredito).await;
             }
         }
 
@@ -2767,10 +2964,28 @@ impl AgentRuntime {
                     // So a assinatura: o envelope ja foi contado la em cima
                     // (`registrar_contagem`), e o orcamento continua 1 + N.
                     budget.registrar_assinatura(name, input);
-                    if budget.detectar_loop_ferramenta() {
-                        Err(budget.mensagem_de_loop(name, input))
-                    } else {
-                        Ok(DesfechoDoPrograma::Saida(saida))
+                    match budget.veredito_de_loop(name, input) {
+                        None => Ok(DesfechoDoPrograma::Saida(saida)),
+                        // #1295: o mesmo aviso-uma-vez do loop normal. O
+                        // `tool_started` do envelope ja saiu la em cima, entao
+                        // aqui so o fim, com o rotulo de loop.
+                        Some(VereditoDeLoop::Avisar(aviso)) => {
+                            if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+                                sink.tool_finished(
+                                    name,
+                                    iniciado_em.elapsed(),
+                                    false,
+                                    "bloqueada: loop detectado (aviso ao modelo)".to_string(),
+                                    capture_tool_output(&aviso),
+                                )
+                                .await;
+                            }
+                            return DispatchOutcome::LoopWarning(ContentBlock::ToolResult {
+                                tool_use_id: id.to_string(),
+                                content: neutralizar_marcadores(&aviso),
+                            });
+                        }
+                        Some(VereditoDeLoop::Abortar(mensagem)) => Err(mensagem),
                     }
                 }
                 outro => outro,
@@ -2810,7 +3025,25 @@ impl AgentRuntime {
         } else {
             match self.find_tool(name) {
                 Some(tool) => {
-                    match timeout(budget.timeout(), tool.execute(context, input.clone())).await {
+                    let execucao = tool.execute(context, input.clone());
+                    // #1347 (revisao da onda A): `garra_status` relata as
+                    // ferramentas que ESTE portao libera, e nao todas as
+                    // registradas. So ela recebe a lista: montar a cada
+                    // chamada de outra tool seria custo sem leitor.
+                    let execucao = async {
+                        if name == GARRA_STATUS_TOOL {
+                            let liberadas: Vec<String> = self
+                                .tool_names()
+                                .into_iter()
+                                .filter(|n| portao.permite(n))
+                                .collect();
+                            crate::tools::turn_tools::com_ferramentas_do_turno(liberadas, execucao)
+                                .await
+                        } else {
+                            execucao.await
+                        }
+                    };
+                    match timeout(budget.timeout(), execucao).await {
                         Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
                         Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
                     }
@@ -2846,12 +3079,15 @@ impl AgentRuntime {
                 session = %context.session_id,
                 "agent paused: awaiting user confirmation"
             );
+            let fingerprint = ApprovalFingerprint::from_marker(&output.content);
             return DispatchOutcome::Paused {
                 tool_result: ContentBlock::ToolResult {
                     tool_use_id: id.to_string(),
                     content: conteudo_para_o_modelo.unwrap_or_else(|| output.content.clone()),
                 },
                 prompt: output.content,
+                tool: name.to_string(),
+                fingerprint,
             };
         }
 
@@ -3106,6 +3342,25 @@ impl AgentRuntime {
                         .to_string(),
                     )));
                 }
+                DispatchOutcome::LoopWarning(ContentBlock::ToolResult { content, .. }) => {
+                    // #1295: o passo fechou a janela de loop e NAO rodou. O
+                    // programa para aqui com o aviso, rotulado como loop (nao
+                    // como gate); a proxima repeticao aborta o turno.
+                    executados.push(serde_json::json!({
+                        "step": i,
+                        "tool": passo.tool,
+                        "ok": false,
+                        "loop": content,
+                    }));
+                    return Ok(Saida(ToolOutput::error(
+                        serde_json::json!({
+                            "steps": executados,
+                            "parou_no_passo": i,
+                            "motivo": "loop detectado: aviso corretivo",
+                        })
+                        .to_string(),
+                    )));
+                }
                 DispatchOutcome::Paused { prompt, .. } => {
                     // Achado de auditoria/revisao (F-1 / importante 1): o
                     // texto do humano vira a RESPOSTA QUE ELE LE, na mesma
@@ -3151,7 +3406,9 @@ impl AgentRuntime {
                 DispatchOutcome::BudgetExceeded { mensagem } => {
                     return Err(mensagem);
                 }
-                DispatchOutcome::Result(_, _) | DispatchOutcome::Denied(_) => {
+                DispatchOutcome::Result(_, _)
+                | DispatchOutcome::Denied(_)
+                | DispatchOutcome::LoopWarning(_) => {
                     // `dispatch_tool_call` so constroi `ToolResult` para
                     // estas duas variantes; nunca deveria acontecer, mas o
                     // repo nao usa `unwrap`/`unreachable!` em codigo de
@@ -5744,11 +6001,14 @@ mod tests {
     }
 
     /// A deteccao de loop por assinatura (JANELA_LOOP=3) vale DENTRO de um
-    /// `tool_program` como vale no loop normal: 3 passos identicos (mesma
-    /// tool, mesmos args) abortam a conversa inteira, nao viram resultado
-    /// parcial silencioso.
+    /// `tool_program` como vale no loop normal. Desde o #1295 item 1 a
+    /// primeira deteccao da tarefa avisa em vez de abortar: o terceiro passo
+    /// identico NAO roda, o programa para nele com o motivo rotulado como
+    /// loop (e nao como gate), e o modelo recebe a observacao corretiva. A
+    /// repeticao seguinte aborta — ver
+    /// `tool_program_repetido_entre_voltas_cai_no_detector_de_loop`.
     #[tokio::test]
-    async fn tool_program_aborta_a_conversa_em_loop_de_passos_identicos() {
+    async fn tool_program_avisa_no_loop_de_passos_identicos() {
         let rt = AgentRuntime::new();
         rt.register_tool(Box::new(EcoInteiroTool));
 
@@ -5757,7 +6017,7 @@ mod tests {
         let provider = Arc::new(RodaPrograma::novo(programa));
         rt.register_provider(provider.clone());
 
-        let erro = rt
+        let resposta = rt
             .process_message_with_agent_config(
                 "sessao-tp-loop",
                 "roda",
@@ -5771,9 +6031,26 @@ mod tests {
                 &ExecContext::default(),
             )
             .await
-            .expect_err("3 passos identicos e loop, mesmo dentro do programa");
+            .expect("o primeiro loop da tarefa avisa, nao aborta");
+        assert_eq!(resposta, "concluido");
 
-        assert!(erro.to_string().contains("tool loop detected"), "{erro}");
+        let resultados = provider.resultados();
+        let relatorio = resultados
+            .iter()
+            .find(|r| r.contains("\"steps\""))
+            .expect("o modelo recebeu o relatorio do programa");
+        let corpo: serde_json::Value = serde_json::from_str(relatorio).expect("relatorio e JSON");
+        assert_eq!(
+            corpo["motivo"], "loop detectado: aviso corretivo",
+            "{corpo}"
+        );
+        assert_eq!(corpo["parou_no_passo"], 2, "{corpo}");
+        let passo = &corpo["steps"][2];
+        assert_eq!(passo["ok"], false, "{corpo}");
+        let aviso = passo["loop"].as_str().expect("aviso do loop");
+        assert!(aviso.contains("tool loop detected: eco_inteiro"), "{aviso}");
+        assert!(aviso.contains("NAO foi executada"), "{aviso}");
+        assert!(passo.get("denied").is_none(), "loop nao e gate: {corpo}");
     }
 
     /// Criterio de aceite da issue (S-B, texto literal): "programa nao
@@ -6276,6 +6553,7 @@ mod tests {
                     content: para_o_modelo,
                 },
             prompt: para_o_humano,
+            ..
         } = desfecho
         else {
             panic!("esperava pausa, veio {desfecho:?}");
@@ -6369,6 +6647,7 @@ mod tests {
         let DispatchOutcome::Paused {
             tool_result,
             prompt,
+            ..
         } = desfecho
         else {
             panic!("esperava pausa, veio {desfecho:?}");
@@ -6451,7 +6730,8 @@ mod tests {
     /// repete o MESMO programa de um passo so a cada volta deixava a janela
     /// alternando `[tp, X, tp]` e so parava no teto da tarefa (~25
     /// repeticoes). Agora os passos ficam colados, e a terceira repeticao
-    /// de X corta — antes de rodar — como cortaria fora do programa.
+    /// de X e barrada — antes de rodar — como seria fora do programa: na
+    /// terceira volta o modelo recebe o aviso do #1295, e a quarta aborta.
     #[tokio::test]
     async fn tool_program_repetido_entre_voltas_cai_no_detector_de_loop() {
         let rt = AgentRuntime::new();
@@ -6491,13 +6771,13 @@ mod tests {
         );
         assert_eq!(
             provider.voltas.load(std::sync::atomic::Ordering::SeqCst),
-            3,
-            "corta na terceira volta, e nao no teto da tarefa"
+            4,
+            "avisa na terceira volta e corta na quarta, e nao no teto da tarefa"
         );
         assert_eq!(
             vezes.load(std::sync::atomic::Ordering::SeqCst),
             2,
-            "a terceira repeticao e cortada antes de rodar"
+            "a terceira e a quarta repeticoes sao barradas antes de rodar"
         );
     }
 
@@ -6505,8 +6785,8 @@ mod tests {
     /// programa que para ANTES de despachar qualquer passo nao registrava
     /// nada, e o mesmo programa repetido a cada volta so parava no teto da
     /// tarefa (50 voltas). Sem passo despachado, o envelope entra na janela:
-    /// os tres jeitos de falhar antes do passo 0 cortam na terceira volta, e
-    /// nenhuma tool roda.
+    /// os tres jeitos de falhar antes do passo 0 avisam na terceira volta e
+    /// cortam na quarta (#1295), e nenhuma tool roda.
     #[tokio::test]
     async fn tool_program_que_falha_antes_de_despachar_tambem_cai_no_detector_de_loop() {
         let dezessete: Vec<serde_json::Value> = (0..17)
@@ -6561,8 +6841,8 @@ mod tests {
             );
             assert_eq!(
                 provider.voltas.load(std::sync::atomic::Ordering::SeqCst),
-                3,
-                "{caso}: corta na terceira volta, e nao no teto da tarefa"
+                4,
+                "{caso}: avisa na terceira volta e corta na quarta, e nao no teto da tarefa"
             );
             assert_eq!(
                 vezes.load(std::sync::atomic::Ordering::SeqCst),
@@ -7933,6 +8213,1369 @@ mod tests {
             achados.iter().any(|m| m.content.contains("Frajola")),
             "a memoria da propria sessao sumiu com a chave ligada: {achados:?}"
         );
+    }
+
+    // ─── #1343: aprovacao retomada entre turnos (registro no servidor) ────
+
+    mod aprovacao_entre_turnos {
+        use super::super::AgentRuntime;
+        use super::ToolQuePedeConfirmacao;
+        use crate::exec_context::ExecContext;
+        use crate::providers::{
+            ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+            StreamEvent,
+        };
+        use crate::tools::approval::ApprovalFingerprint;
+        use crate::tools::pending_approval::ApprovalScope;
+        use futures::Stream;
+        use garraia_common::Result;
+        use std::collections::VecDeque;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+
+        /// O modelo de cada teste: a cada mensagem HUMANA (texto do lado do
+        /// usuario) pede `precisa_confirmar` com o proximo alvo do roteiro;
+        /// depois de um resultado de tool, encerra com texto. Assim cada
+        /// turno de teste e: o humano fala, o modelo pede a tool, a tool
+        /// pausa ou roda.
+        struct PedeAlvos {
+            alvos: Mutex<VecDeque<String>>,
+            streaming: bool,
+        }
+
+        impl PedeAlvos {
+            fn novo(alvos: &[&str], streaming: bool) -> Arc<Self> {
+                Arc::new(Self {
+                    alvos: Mutex::new(alvos.iter().map(|a| a.to_string()).collect()),
+                    streaming,
+                })
+            }
+
+            /// `Some(alvo)` quando esta volta pede a tool.
+            fn proxima(&self, request: &LlmRequest) -> Option<String> {
+                let humano = matches!(
+                    request.messages.last(),
+                    Some(ChatMessage {
+                        role: ChatRole::User,
+                        content: MessagePart::Text(_),
+                    })
+                );
+                if !humano {
+                    return None;
+                }
+                // Alvo vazio no roteiro: o modelo so responde em texto
+                // neste turno (nao pede a tool de novo).
+                let alvo = self
+                    .alvos
+                    .lock()
+                    .expect("lock")
+                    .pop_front()
+                    .unwrap_or_else(|| "x".to_string());
+                (!alvo.is_empty()).then_some(alvo)
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeAlvos {
+            fn provider_id(&self) -> &str {
+                "pede_alvos"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let content = match self.proxima(request) {
+                    Some(alvo) => vec![ContentBlock::ToolUse {
+                        id: "t-conf".to_string(),
+                        name: "precisa_confirmar".to_string(),
+                        input: serde_json::json!({ "alvo": alvo }),
+                    }],
+                    None => vec![ContentBlock::Text {
+                        text: "concluido".to_string(),
+                    }],
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn stream_complete(
+                &self,
+                request: &LlmRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+                if !self.streaming {
+                    return Err(garraia_common::Error::Agent("sem streaming".into()));
+                }
+                let eventos = match self.proxima(request) {
+                    Some(alvo) => vec![
+                        Ok(StreamEvent::ToolUseStart {
+                            index: 0,
+                            id: "t-conf".to_string(),
+                            name: "precisa_confirmar".to_string(),
+                        }),
+                        Ok(StreamEvent::InputJsonDelta(
+                            serde_json::json!({ "alvo": alvo }).to_string(),
+                        )),
+                        Ok(StreamEvent::ContentBlockStop { index: 0 }),
+                        Ok(StreamEvent::MessageStop),
+                    ],
+                    None => vec![
+                        Ok(StreamEvent::TextDelta("concluido".to_string())),
+                        Ok(StreamEvent::MessageStop),
+                    ],
+                };
+                Ok(Box::pin(futures::stream::iter(eventos)))
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// Os tres ramos com pausa alcancaveis com `ExecContext`: o
+        /// nao-streaming, o streaming de verdade e o streaming que cai no
+        /// batch porque o provider nao faz streaming. (O quarto, o
+        /// `process_message_impl`, so e alcancado pelo heartbeat, que passa
+        /// `ExecContext::default()` — sem escopo nunca.)
+        #[derive(Clone, Copy, Debug)]
+        enum Caminho {
+            AgentConfig,
+            Streaming,
+            StreamingSemSuporte,
+        }
+
+        const CAMINHOS: [Caminho; 3] = [
+            Caminho::AgentConfig,
+            Caminho::Streaming,
+            Caminho::StreamingSemSuporte,
+        ];
+
+        struct Cenario {
+            rt: AgentRuntime,
+            rodou: Arc<Mutex<Vec<String>>>,
+            caminho: Caminho,
+            /// O historico como os canais de producao guardam: so texto.
+            historico: Vec<ChatMessage>,
+        }
+
+        impl Cenario {
+            fn novo(caminho: Caminho, alvos: &[&str]) -> Self {
+                let rt = AgentRuntime::new();
+                let (tool, rodou) = ToolQuePedeConfirmacao::nova();
+                rt.register_tool(Box::new(tool));
+                let streaming = matches!(caminho, Caminho::Streaming);
+                rt.register_provider(PedeAlvos::novo(alvos, streaming));
+                Self {
+                    rt,
+                    rodou,
+                    caminho,
+                    historico: Vec::new(),
+                }
+            }
+
+            fn rodou(&self) -> Vec<String> {
+                self.rodou.lock().expect("lock").clone()
+            }
+
+            /// Um turno, e o historico cresce so com texto — exatamente o
+            /// `persist_turn`/`hydrate_session_history` do gateway.
+            async fn turno(
+                &mut self,
+                sessao: &str,
+                texto: &str,
+                escopo: Option<ApprovalScope>,
+            ) -> String {
+                let historico = self.historico.clone();
+                self.turno_com_historico(sessao, texto, escopo, &historico)
+                    .await
+            }
+
+            async fn turno_com_historico(
+                &mut self,
+                sessao: &str,
+                texto: &str,
+                escopo: Option<ApprovalScope>,
+                historico: &[ChatMessage],
+            ) -> String {
+                let exec = ExecContext {
+                    approval_scope: escopo,
+                    ..ExecContext::default()
+                };
+                let resposta = match self.caminho {
+                    Caminho::AgentConfig => self
+                        .rt
+                        .process_message_with_agent_config(
+                            sessao, texto, historico, None, None, None, None, None, None, &exec,
+                        )
+                        .await
+                        .expect("turno"),
+                    Caminho::Streaming | Caminho::StreamingSemSuporte => {
+                        let (tx, mut rx) =
+                            tokio::sync::mpsc::channel::<crate::turn_events::TurnEvent>(64);
+                        let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                        let r = self
+                            .rt
+                            .process_message_streaming_with_events(
+                                sessao, texto, historico, tx, None, None, None, None, None, None,
+                                &exec,
+                            )
+                            .await
+                            .expect("turno");
+                        dreno.await.expect("dreno");
+                        r
+                    }
+                };
+                self.historico.push(ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text(texto.to_string()),
+                });
+                self.historico.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text(resposta.clone()),
+                });
+                resposta
+            }
+        }
+
+        fn escopo(canal: &str, sessao: &str, remetente: &str) -> Option<ApprovalScope> {
+            ApprovalScope::new(canal, sessao, remetente)
+        }
+
+        fn e_pedido(resposta: &str) -> bool {
+            ApprovalFingerprint::from_marker(resposta).is_some()
+        }
+
+        /// O bug do #1343 ponta a ponta: com o historico so em texto, o "sim"
+        /// do turno 2 aprova o pedido do turno 1 — uma vez. O terceiro "sim"
+        /// e replay e pausa de novo.
+        #[tokio::test]
+        async fn sim_no_turno_seguinte_roda_o_pedido_uma_vez() {
+            for caminho in CAMINHOS {
+                let mut c = Cenario::novo(caminho, &["x", "x", "x"]);
+                let r1 = c
+                    .turno("s1", "apaga x", escopo("web", "s1", "conn-a"))
+                    .await;
+                assert!(e_pedido(&r1), "{caminho:?}: turno 1 pausa: {r1}");
+                assert!(c.rodou().is_empty(), "{caminho:?}");
+
+                let r2 = c.turno("s1", "sim", escopo("web", "s1", "conn-a")).await;
+                assert_eq!(c.rodou(), vec!["x".to_string()], "{caminho:?}: {r2}");
+                assert!(r2.contains("concluido"), "{caminho:?}: {r2}");
+
+                let r3 = c.turno("s1", "sim", escopo("web", "s1", "conn-a")).await;
+                assert!(e_pedido(&r3), "{caminho:?}: replay pausa de novo: {r3}");
+                assert_eq!(c.rodou(), vec!["x".to_string()], "{caminho:?}: nao roda 2x");
+            }
+        }
+
+        /// Sem escopo, o comportamento de antes: historico em texto nunca
+        /// aprova, a pausa e terminal.
+        #[tokio::test]
+        async fn sem_escopo_historico_em_texto_nao_aprova() {
+            for caminho in CAMINHOS {
+                let mut c = Cenario::novo(caminho, &["x", "x"]);
+                assert!(e_pedido(&c.turno("s1", "apaga x", None).await));
+                let r2 = c.turno("s1", "sim", None).await;
+                assert!(e_pedido(&r2), "{caminho:?}: {r2}");
+                assert!(c.rodou().is_empty(), "{caminho:?}");
+                assert!(c.rt.pending_approvals.is_empty(), "{caminho:?}");
+            }
+        }
+
+        /// Depois do "sim", o modelo pede OUTRO assunto: `covers` recusa, o
+        /// turno pausa de novo, e a aprovacao foi gasta — um novo "sim" nao
+        /// alcanca mais o pedido original.
+        #[tokio::test]
+        async fn assunto_diferente_depois_do_sim_nao_roda_e_gasta_a_aprovacao() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "y", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "s1", "a")).await
+            ));
+            let r2 = c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert!(e_pedido(&r2), "y nao estava aprovado: {r2}");
+            assert!(c.rodou().is_empty());
+            // O pedido pendente agora e o de `y`; `x` no turno 3 nao casa.
+            let r3 = c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert!(e_pedido(&r3), "{r3}");
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Outro remetente na mesma sessao (grupo, ou outra conexao) nao
+        /// aprova — e derruba o pedido: o dono tem de pedir de novo.
+        #[tokio::test]
+        async fn outro_remetente_nao_aprova_nem_mantem_o_pedido() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "x", "x"]);
+            assert!(e_pedido(
+                &c.turno("g1", "apaga x", escopo("telegram", "g1", "user-a"))
+                    .await
+            ));
+            let r2 = c
+                .turno("g1", "sim", escopo("telegram", "g1", "user-b"))
+                .await;
+            assert!(e_pedido(&r2), "{r2}");
+            let r3 = c
+                .turno("g1", "sim", escopo("telegram", "g1", "user-a"))
+                .await;
+            assert!(e_pedido(&r3), "{r3}");
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Outra sessao e outro canal nao alcancam o pedido.
+        #[tokio::test]
+        async fn outra_sessao_e_outro_canal_nao_aprovam() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "x", "x", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "s1", "a")).await
+            ));
+            let r = c.turno("s2", "sim", escopo("web", "s2", "a")).await;
+            assert!(e_pedido(&r));
+            let r = c.turno("s1", "sim", escopo("openai", "s1", "a")).await;
+            assert!(e_pedido(&r));
+            assert!(c.rodou().is_empty());
+            // O pedido original continuou la para o dono.
+            c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert_eq!(c.rodou(), vec!["x".to_string()]);
+        }
+
+        /// "nao" e depois "sim": o "nao" encerrou o pedido (#1340).
+        #[tokio::test]
+        async fn recusado_e_depois_sim_nao_aprova() {
+            // O turno do "nao" o modelo so responde em texto (alvo vazio).
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "s1", "a")).await
+            ));
+            let r = c.turno("s1", "nao", escopo("web", "s1", "a")).await;
+            assert!(!e_pedido(&r), "{r}");
+            let r = c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert!(e_pedido(&r), "{r}");
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Com escopo, o historico nao aprova: um `ToolResult` com marcador
+        /// VERDADEIRO (cunhado neste processo, copiado de outro lugar) no
+        /// fim do historico nao vale sem o registro do servidor. Sem escopo,
+        /// o mesmo historico aprova — e o caminho antigo, intacto.
+        #[tokio::test]
+        async fn com_escopo_marcador_copiado_no_historico_nao_aprova() {
+            let marcador = ApprovalFingerprint::of("precisa_confirmar", "x").marker();
+            let historico = vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Parts(vec![ContentBlock::ToolResult {
+                    tool_use_id: "copiado".into(),
+                    content: format!("{marcador} confirme"),
+                }]),
+            }];
+
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x"]);
+            let r = c
+                .turno_com_historico("s1", "sim", escopo("web", "s1", "a"), &historico)
+                .await;
+            assert!(e_pedido(&r), "{r}");
+            assert!(c.rodou().is_empty());
+
+            let mut legado = Cenario::novo(Caminho::AgentConfig, &["x"]);
+            legado
+                .turno_com_historico("s1", "sim", None, &historico)
+                .await;
+            assert_eq!(legado.rodou(), vec!["x".to_string()]);
+        }
+
+        /// Escopo de outra sessao que nao a do turno: nada e aprovado nem
+        /// registrado (fail-closed).
+        #[tokio::test]
+        async fn escopo_de_outra_sessao_nao_registra_nem_aprova() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "outra", "a")).await
+            ));
+            assert!(c.rt.pending_approvals.is_empty());
+            let r = c.turno("s1", "sim", escopo("web", "outra", "a")).await;
+            assert!(e_pedido(&r));
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Um `tool_program` cujo passo pausa registra a impressao digital
+        /// do PASSO: o "sim" seguinte aprova aquele `(tool, assunto)`.
+        #[tokio::test]
+        async fn pausa_dentro_de_tool_program_registra_o_pedido_do_passo() {
+            let rt = AgentRuntime::new();
+            let (tool, rodou) = ToolQuePedeConfirmacao::nova();
+            rt.register_tool(Box::new(tool));
+            rt.register_provider(Arc::new(super::RodaPrograma::novo(serde_json::json!({
+                "steps": [ { "tool": "precisa_confirmar", "args": { "alvo": "z" } } ]
+            }))));
+            let exec = ExecContext {
+                approval_scope: escopo("web", "s1", "a"),
+                ..ExecContext::default()
+            };
+            let r = rt
+                .process_message_with_agent_config(
+                    "s1",
+                    "roda",
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &exec,
+                )
+                .await
+                .expect("turno");
+            assert!(e_pedido(&r), "{r}");
+            assert!(rodou.lock().expect("lock").is_empty());
+            let ap = rt.pending_approvals.resolve(
+                exec.approval_scope.as_ref().expect("escopo"),
+                "sim",
+                std::time::Instant::now(),
+            );
+            assert!(ap.covers("precisa_confirmar", "z"));
+        }
+
+        /// Pede `precisa_confirmar {alvo: z}` enquanto houver menos de dois
+        /// resultados de tool depois da ultima mensagem humana.
+        struct PedeDuasVezes;
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeDuasVezes {
+            fn provider_id(&self) -> &str {
+                "pede_duas_vezes"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let ultima_humana = request
+                    .messages
+                    .iter()
+                    .rposition(|m| {
+                        matches!(m.role, ChatRole::User)
+                            && matches!(m.content, MessagePart::Text(_))
+                    })
+                    .unwrap_or(0);
+                let resultados = request.messages[ultima_humana..]
+                    .iter()
+                    .filter(|m| {
+                        matches!(&m.content, MessagePart::Parts(p)
+                            if p.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
+                    })
+                    .count();
+                let content = if resultados < 2 {
+                    vec![ContentBlock::ToolUse {
+                        id: format!("t-{resultados}"),
+                        name: "precisa_confirmar".to_string(),
+                        input: serde_json::json!({ "alvo": "z" }),
+                    }]
+                } else {
+                    vec![ContentBlock::Text {
+                        text: "concluido".to_string(),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// Revisao da onda A: a aprovacao retomada vale para UM turno (o
+        /// registro e consumido na leitura), nao para uma execucao. Dentro do
+        /// turno aprovado, duas chamadas identicas ao pedido aprovado rodam
+        /// as duas — o mesmo contrato do caminho pelo historico. Este teste
+        /// prende o que o fragmento do changelog promete; se a aprovacao
+        /// virar uso unico, o teste e o fragmento mudam juntos.
+        #[tokio::test]
+        async fn aprovacao_retomada_vale_para_o_turno_e_nao_para_uma_execucao() {
+            let rt = AgentRuntime::new();
+            let (tool, rodou) = ToolQuePedeConfirmacao::nova();
+            rt.register_tool(Box::new(tool));
+            rt.register_provider(Arc::new(PedeDuasVezes));
+            let exec = ExecContext {
+                approval_scope: escopo("web", "s1", "a"),
+                ..ExecContext::default()
+            };
+            let turno = |texto: &'static str| {
+                let rt = &rt;
+                let exec = &exec;
+                async move {
+                    rt.process_message_with_agent_config(
+                        "s1",
+                        texto,
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno")
+                }
+            };
+            assert!(e_pedido(&turno("apaga z").await));
+            assert!(rodou.lock().expect("lock").is_empty());
+            let r = turno("sim").await;
+            assert_eq!(r, "concluido");
+            assert_eq!(
+                *rodou.lock().expect("lock"),
+                vec!["z".to_string(), "z".to_string()],
+                "as duas chamadas do turno aprovado rodam"
+            );
+            // O registro foi consumido: outro "sim" nao aprova nada.
+            assert!(rt.pending_approvals.is_empty());
+        }
+    }
+
+    // ─── #1295 itens 1 e 3: aviso corretivo, depois aborta; /tool ─────────
+
+    mod aviso_de_loop {
+        use super::super::AgentRuntime;
+        use super::{ToolQueConta, inicios_casados_com_fins, turno_de_streaming_com_eventos};
+        use crate::exec_context::ExecContext;
+        use crate::providers::{
+            ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+        };
+        use crate::turn_events::TurnEvent;
+        use garraia_common::Result;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Pede `conta {x:1}` toda volta. Com `muda_apos_aviso`, ao ler o
+        /// aviso do detector no ultimo resultado, responde em texto — o
+        /// modelo que aprendeu com a observacao.
+        struct RepeteConta {
+            voltas: AtomicUsize,
+            muda_apos_aviso: bool,
+            viu_aviso: std::sync::atomic::AtomicBool,
+        }
+
+        impl RepeteConta {
+            fn novo(muda_apos_aviso: bool) -> Arc<Self> {
+                Arc::new(Self {
+                    voltas: AtomicUsize::new(0),
+                    muda_apos_aviso,
+                    viu_aviso: std::sync::atomic::AtomicBool::new(false),
+                })
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for RepeteConta {
+            fn provider_id(&self) -> &str {
+                "repete_conta"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                self.voltas.fetch_add(1, Ordering::SeqCst);
+                let aviso = request.messages.last().is_some_and(|m| {
+                    matches!(m.role, ChatRole::User)
+                        && matches!(&m.content, MessagePart::Parts(p) if p.iter().any(|b|
+                            matches!(b, ContentBlock::ToolResult { content, .. }
+                                if content.contains("NAO foi executada"))))
+                });
+                if aviso {
+                    self.viu_aviso.store(true, Ordering::SeqCst);
+                }
+                let content = if aviso && self.muda_apos_aviso {
+                    vec![ContentBlock::Text {
+                        text: "mudei de abordagem".to_string(),
+                    }]
+                } else {
+                    vec![ContentBlock::ToolUse {
+                        id: "t-conta".to_string(),
+                        name: "conta".to_string(),
+                        input: serde_json::json!({ "x": 1 }),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        fn runtime_com_conta(provider: Arc<RepeteConta>) -> (AgentRuntime, Arc<AtomicUsize>) {
+            let rt = AgentRuntime::new();
+            let vezes = Arc::new(AtomicUsize::new(0));
+            rt.register_tool(Box::new(ToolQueConta {
+                vezes: Arc::clone(&vezes),
+            }));
+            rt.register_provider(provider);
+            (rt, vezes)
+        }
+
+        async fn turno(rt: &AgentRuntime) -> Result<String> {
+            rt.process_message_with_agent_config(
+                "sessao-1295",
+                "conta",
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &ExecContext::default(),
+            )
+            .await
+        }
+
+        /// Item 1: a terceira chamada identica nao roda e vira aviso; a
+        /// quarta aborta com a mensagem do #1318. Execucoes reais: 2, como
+        /// antes do aviso existir.
+        #[tokio::test]
+        async fn terceira_chamada_avisa_quarta_aborta_e_so_duas_rodam() {
+            let provider = RepeteConta::novo(false);
+            let (rt, vezes) = runtime_com_conta(provider.clone());
+
+            let erro = turno(&rt).await.expect_err("repetir apos o aviso aborta");
+            let msg = erro.to_string();
+            assert!(msg.contains("tool loop detected: conta"), "{msg}");
+            assert!(msg.contains("3 chamadas identicas"), "{msg}");
+            assert!(
+                provider.viu_aviso.load(Ordering::SeqCst),
+                "o modelo recebeu a observacao corretiva antes do corte"
+            );
+            assert_eq!(provider.voltas.load(Ordering::SeqCst), 4);
+            assert_eq!(vezes.load(Ordering::SeqCst), 2, "nunca mais de 2 execucoes");
+        }
+
+        /// Revisao da onda A: `conta{x:1}` tres vezes (a terceira vira
+        /// aviso), `conta{x:2}` e `conta{x:1}` de novo. A chamada diferente
+        /// no meio nao libera a avisada: o turno aborta na volta 5, e
+        /// `conta{x:1}` roda exatamente 2 vezes (mais 1 do `x:2`).
+        struct RoteiroComOutraNoMeio {
+            voltas: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for RoteiroComOutraNoMeio {
+            fn provider_id(&self) -> &str {
+                "roteiro_outra_no_meio"
+            }
+
+            async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+                let volta = self.voltas.fetch_add(1, Ordering::SeqCst) + 1;
+                let content = match volta {
+                    1..=3 | 5 => vec![ContentBlock::ToolUse {
+                        id: format!("t-{volta}"),
+                        name: "conta".to_string(),
+                        input: serde_json::json!({ "x": 1 }),
+                    }],
+                    4 => vec![ContentBlock::ToolUse {
+                        id: "t-4".to_string(),
+                        name: "conta".to_string(),
+                        input: serde_json::json!({ "x": 2 }),
+                    }],
+                    _ => vec![ContentBlock::Text {
+                        text: "fim".to_string(),
+                    }],
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        #[tokio::test]
+        async fn chamada_avisada_aborta_mesmo_com_outra_chamada_no_meio() {
+            let rt = AgentRuntime::new();
+            let vezes = Arc::new(AtomicUsize::new(0));
+            rt.register_tool(Box::new(ToolQueConta {
+                vezes: Arc::clone(&vezes),
+            }));
+            let provider = Arc::new(RoteiroComOutraNoMeio {
+                voltas: AtomicUsize::new(0),
+            });
+            rt.register_provider(provider.clone());
+
+            let erro = turno(&rt)
+                .await
+                .expect_err("a avisada volta depois de outra chamada e aborta");
+            let msg = erro.to_string();
+            assert!(msg.contains("tool loop detected: conta"), "{msg}");
+            assert!(msg.contains("depois do aviso"), "{msg}");
+            assert_eq!(provider.voltas.load(Ordering::SeqCst), 5);
+            assert_eq!(
+                vezes.load(Ordering::SeqCst),
+                3,
+                "x:1 roda 2 vezes e x:2 uma; a avisada nunca volta a rodar"
+            );
+        }
+
+        /// O modelo que muda de abordagem depois do aviso termina o turno.
+        #[tokio::test]
+        async fn modelo_que_muda_de_abordagem_depois_do_aviso_termina_ok() {
+            let provider = RepeteConta::novo(true);
+            let (rt, vezes) = runtime_com_conta(provider.clone());
+
+            let resposta = turno(&rt).await.expect("o aviso nao aborta");
+            assert_eq!(resposta, "mudei de abordagem");
+            assert_eq!(vezes.load(Ordering::SeqCst), 2);
+            assert_eq!(provider.voltas.load(Ordering::SeqCst), 4);
+        }
+
+        /// Item 3: no streaming, a chamada barrada aparece no `/tool` — um
+        /// par `tool_started`/`tool_finished(success=false)` com o veredito,
+        /// tanto no aviso quanto no aborto. Usa o `EmLoop` (`file_read` com
+        /// o mesmo `path` toda volta, via `stream_complete` de verdade).
+        #[tokio::test]
+        async fn chamada_barrada_por_loop_aparece_nos_eventos_de_tool() {
+            let rt = AgentRuntime::new();
+            rt.register_provider(Arc::new(super::EmLoop));
+            let (resultado, eventos) =
+                turno_de_streaming_com_eventos(&rt, "sessao-1295-eventos", &ExecContext::default())
+                    .await;
+            let erro = resultado.expect_err("aborta na quarta");
+            assert!(erro.to_string().contains("tool loop detected"), "{erro}");
+
+            let iniciados = inicios_casados_com_fins(&eventos);
+            assert_eq!(iniciados.len(), 4, "{eventos:?}");
+
+            let fins: Vec<(&bool, &String, &String)> = eventos
+                .iter()
+                .filter_map(|e| match e {
+                    TurnEvent::ToolFinished {
+                        success,
+                        summary,
+                        output,
+                        ..
+                    } => Some((success, summary, output)),
+                    _ => None,
+                })
+                .collect();
+            let (ok, resumo, saida) = fins[2];
+            assert!(!ok);
+            assert_eq!(resumo, "bloqueada: loop detectado (aviso ao modelo)");
+            assert!(
+                saida.contains("input repetido: /tmp/alvo-repetido"),
+                "{saida}"
+            );
+            let (ok, resumo, saida) = fins[3];
+            assert!(!ok);
+            assert_eq!(resumo, "bloqueada: loop detectado (turno abortado)");
+            assert!(
+                saida.starts_with("tool loop detected: file_read"),
+                "{saida}"
+            );
+        }
+    }
+
+    // ─── #1226 S-D: eventos por passo no ramo de streaming DE VERDADE ─────
+
+    /// T6 (`tool_program_com_passo_negado_casa_todo_inicio_com_fim_no_streaming`)
+    /// e T10 (`tool_program_que_esgota_a_tarefa_casa_todo_inicio_com_fim_no_streaming`)
+    /// usam o `RodaPrograma`, que so implementa `complete()`: o
+    /// `stream_complete` padrao devolve `Err`, e aqueles testes rodam o ramo
+    /// de FALLBACK em batch do turno de streaming. Estes cobrem o outro
+    /// ramo — o `tool_program` chega em `ToolUseStart` + `InputJsonDelta`
+    /// (partido em dois pedacos, como um provider real manda) e o input so
+    /// existe depois de o runtime juntar os deltas.
+    mod eventos_por_passo_no_streaming {
+        use super::super::{AgentRuntime, TOOL_PROGRAM_NAME};
+        use super::{
+            EcoInteiroTool, ToolQueMarca, inicios_casados_com_fins, turno_de_streaming_com_eventos,
+        };
+        use crate::exec_context::ExecContext;
+        use crate::providers::{
+            ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart, StreamEvent,
+        };
+        use crate::turn_events::TurnEvent;
+        use futures::Stream;
+        use garraia_common::Result;
+        use std::pin::Pin;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        /// Volta 0: o `tool_program` pelo stream. Volta 1: texto. O
+        /// `complete()` FALHA — se o turno caisse no batch, o teste
+        /// quebraria em vez de passar pelo ramo errado em silencio.
+        struct ProgramaEmStreaming {
+            programa: serde_json::Value,
+            voltas: AtomicUsize,
+            resultados: std::sync::Mutex<Vec<String>>,
+        }
+
+        impl ProgramaEmStreaming {
+            fn novo(programa: serde_json::Value) -> Arc<Self> {
+                Arc::new(Self {
+                    programa,
+                    voltas: AtomicUsize::new(0),
+                    resultados: std::sync::Mutex::new(Vec::new()),
+                })
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for ProgramaEmStreaming {
+            fn provider_id(&self) -> &str {
+                "programa_em_streaming"
+            }
+
+            async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+                Err(garraia_common::Error::Agent(
+                    "o teste exige o ramo de streaming; o batch nao pode rodar".into(),
+                ))
+            }
+
+            async fn stream_complete(
+                &self,
+                request: &LlmRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+                for m in &request.messages {
+                    if let (ChatRole::User, MessagePart::Parts(blocos)) = (&m.role, &m.content) {
+                        for b in blocos {
+                            if let ContentBlock::ToolResult { content, .. } = b {
+                                self.resultados.lock().expect("lock").push(content.clone());
+                            }
+                        }
+                    }
+                }
+                let volta = self.voltas.fetch_add(1, Ordering::SeqCst);
+                let eventos = if volta == 0 {
+                    let json = self.programa.to_string();
+                    let meio = json.len() / 2;
+                    vec![
+                        Ok(StreamEvent::ToolUseStart {
+                            index: 0,
+                            id: "programa-stream".to_string(),
+                            name: TOOL_PROGRAM_NAME.to_string(),
+                        }),
+                        Ok(StreamEvent::InputJsonDelta(json[..meio].to_string())),
+                        Ok(StreamEvent::InputJsonDelta(json[meio..].to_string())),
+                        Ok(StreamEvent::ContentBlockStop { index: 0 }),
+                        Ok(StreamEvent::MessageStop),
+                    ]
+                } else {
+                    vec![
+                        Ok(StreamEvent::TextDelta("concluido".to_string())),
+                        Ok(StreamEvent::MessageStop),
+                    ]
+                };
+                Ok(Box::pin(futures::stream::iter(eventos)))
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// Posicao de cada evento de tool, para afirmar "dentro do par".
+        fn posicoes(eventos: &[TurnEvent], alvo: &str) -> (Vec<usize>, Vec<usize>) {
+            let mut inicios = Vec::new();
+            let mut fins = Vec::new();
+            for (i, e) in eventos.iter().enumerate() {
+                match e {
+                    TurnEvent::ToolStarted { name, .. } if name == alvo => inicios.push(i),
+                    TurnEvent::ToolFinished { name, .. } if name == alvo => fins.push(i),
+                    _ => {}
+                }
+            }
+            (inicios, fins)
+        }
+
+        #[tokio::test]
+        async fn tool_program_no_streaming_real_emite_eventos_por_passo_em_ordem() {
+            let rt = AgentRuntime::new();
+            rt.register_tool(Box::new(EcoInteiroTool));
+            let provider = ProgramaEmStreaming::novo(serde_json::json!({
+                "steps": [
+                    { "tool": "eco_inteiro", "args": { "n": 7 }, "as": "sete" },
+                    { "tool": "eco_inteiro", "args": { "n": "$sete" } }
+                ]
+            }));
+            rt.register_provider(provider.clone());
+
+            let (resultado, eventos) =
+                turno_de_streaming_com_eventos(&rt, "sessao-sd-stream", &ExecContext::default())
+                    .await;
+            let resposta = resultado.expect("turno");
+            assert!(resposta.contains("concluido"), "{resposta}");
+            assert_eq!(provider.voltas.load(Ordering::SeqCst), 2);
+
+            assert_eq!(
+                inicios_casados_com_fins(&eventos),
+                [TOOL_PROGRAM_NAME, "eco_inteiro", "eco_inteiro"],
+                "{eventos:?}"
+            );
+            let (ini_prog, fim_prog) = posicoes(&eventos, TOOL_PROGRAM_NAME);
+            let (ini_passos, fim_passos) = posicoes(&eventos, "eco_inteiro");
+            assert_eq!((ini_prog.len(), fim_prog.len()), (1, 1), "{eventos:?}");
+            assert_eq!((ini_passos.len(), fim_passos.len()), (2, 2), "{eventos:?}");
+            for p in ini_passos.iter().chain(&fim_passos) {
+                assert!(
+                    ini_prog[0] < *p && *p < fim_prog[0],
+                    "evento de passo fora do par do programa: {eventos:?}"
+                );
+            }
+            // Passo 0 inteiro antes do passo 1: nada intercalado.
+            assert!(fim_passos[0] < ini_passos[1], "{eventos:?}");
+            let sucessos: Vec<bool> = eventos
+                .iter()
+                .filter_map(|e| match e {
+                    TurnEvent::ToolFinished { success, .. } => Some(*success),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(sucessos, [true, true, true], "{eventos:?}");
+
+            // O `$sete` chegou substituido: os dois passos devolveram 7.
+            let resultados = provider.resultados.lock().expect("lock").clone();
+            let relatorio: serde_json::Value =
+                serde_json::from_str(resultados.last().expect("resultado do programa"))
+                    .expect("relatorio e JSON");
+            assert_eq!(relatorio["steps"][0]["output"], "7", "{relatorio}");
+            assert_eq!(relatorio["steps"][1]["output"], "7", "{relatorio}");
+        }
+
+        /// A mesma coisa com um passo negado pelo gate: a contraparte, no
+        /// streaming de verdade, do T6.
+        #[tokio::test]
+        async fn tool_program_no_streaming_real_com_passo_negado_casa_os_eventos() {
+            let rt = AgentRuntime::new();
+            rt.register_tool(Box::new(EcoInteiroTool));
+            let executou_negada = Arc::new(AtomicBool::new(false));
+            rt.register_tool(Box::new(ToolQueMarca {
+                nome: "negada",
+                executou: Arc::clone(&executou_negada),
+            }));
+            let perfil = crate::modes::ModeProfile::from_custom(
+                crate::modes::AgentMode::Search,
+                "so-eco",
+                None,
+                &serde_json::json!({ "allow": ["tool_program", "eco_inteiro"] }),
+                &serde_json::json!({}),
+            );
+            let exec = ExecContext {
+                custom_profile: Some(perfil),
+                ..Default::default()
+            };
+            let provider = ProgramaEmStreaming::novo(serde_json::json!({
+                "steps": [
+                    { "tool": "eco_inteiro", "args": { "n": 1 } },
+                    { "tool": "negada", "args": {} },
+                    { "tool": "eco_inteiro", "args": { "n": 2 } }
+                ]
+            }));
+            rt.register_provider(provider.clone());
+
+            let (resultado, eventos) =
+                turno_de_streaming_com_eventos(&rt, "sessao-sd-stream-negada", &exec).await;
+            let resposta = resultado.expect("turno");
+            assert!(resposta.contains("concluido"), "{resposta}");
+            assert!(!executou_negada.load(Ordering::SeqCst));
+
+            assert_eq!(
+                inicios_casados_com_fins(&eventos),
+                [TOOL_PROGRAM_NAME, "eco_inteiro", "negada"],
+                "{eventos:?}"
+            );
+            let (ini_prog, fim_prog) = posicoes(&eventos, TOOL_PROGRAM_NAME);
+            let (ini_neg, fim_neg) = posicoes(&eventos, "negada");
+            assert!(
+                ini_prog[0] < ini_neg[0] && fim_neg[0] < fim_prog[0],
+                "{eventos:?}"
+            );
+            let fim_da_negada = eventos.iter().find_map(|e| match e {
+                TurnEvent::ToolFinished { name, success, .. } if name == "negada" => Some(*success),
+                _ => None,
+            });
+            assert_eq!(fim_da_negada, Some(false), "{eventos:?}");
+        }
+    }
+
+    // ─── #1347: garra_status nos modos restritos + nota no prompt ─────────
+
+    mod nota_garra_status {
+        use super::super::{
+            AgentRuntime, NOTA_GARRA_STATUS_EN, NOTA_GARRA_STATUS_PT, com_nota_de_capacidades,
+        };
+        use super::stub;
+        use crate::exec_context::ExecContext;
+        use crate::persona::Lang;
+        use crate::providers::{
+            ContentBlock, LlmProvider, LlmRequest, LlmResponse, StreamEvent, ToolDefinition,
+        };
+        use futures::Stream;
+        use garraia_common::Result;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+
+        fn def(nome: &str) -> ToolDefinition {
+            ToolDefinition {
+                name: nome.to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+
+        #[test]
+        fn nota_so_entra_com_garra_status_oferecida() {
+            let sem = com_nota_de_capacidades(Some("P".into()), &[def("file_read")], Lang::Pt);
+            assert_eq!(sem.as_deref(), Some("P"));
+            assert_eq!(com_nota_de_capacidades(None, &[], Lang::Pt), None);
+        }
+
+        #[test]
+        fn nota_vai_depois_do_prompt_sem_substituir() {
+            let com = com_nota_de_capacidades(
+                Some("prompt do modo".into()),
+                &[def("file_read"), def("garra_status")],
+                Lang::Pt,
+            )
+            .expect("prompt");
+            assert!(com.starts_with("prompt do modo\n\n"), "{com}");
+            assert!(com.ends_with(NOTA_GARRA_STATUS_PT), "{com}");
+        }
+
+        #[test]
+        fn nota_sem_prompt_e_a_lingua_da_persona() {
+            assert_eq!(
+                com_nota_de_capacidades(None, &[def("garra_status")], Lang::En).as_deref(),
+                Some(NOTA_GARRA_STATUS_EN)
+            );
+            assert!(NOTA_GARRA_STATUS_PT.contains("`garra_status`"));
+            assert!(NOTA_GARRA_STATUS_EN.contains("`garra_status`"));
+        }
+
+        /// Revisao da onda A: a nota descreve o relatorio que existe — a
+        /// lista `channels` — e o `status` com `active`/`offline` que a
+        /// fatia do gateway acrescenta, e nao fala de ferramentas: para elas
+        /// a lista do turno e a fonte, e o relatorio listava tools negadas.
+        #[test]
+        fn nota_casa_com_o_formato_do_relatorio_e_nao_fala_de_ferramenta() {
+            for nota in [NOTA_GARRA_STATUS_PT, NOTA_GARRA_STATUS_EN] {
+                for campo in ["`channels`", "`status`", "`active`", "`offline`"] {
+                    assert!(nota.contains(campo), "{campo} ausente: {nota}");
+                }
+                let minuscula = nota.to_lowercase();
+                assert!(
+                    !minuscula.contains("ferramenta") && !minuscula.contains("tool"),
+                    "{nota}"
+                );
+            }
+        }
+
+        /// Guarda o `system` e as `tools` da primeira requisicao; responde
+        /// em texto (batch e streaming).
+        #[derive(Default)]
+        struct Captura {
+            primeira: Mutex<Option<(Option<String>, Vec<String>)>>,
+        }
+
+        impl Captura {
+            fn anotar(&self, request: &LlmRequest) {
+                let mut p = self.primeira.lock().expect("lock");
+                if p.is_none() {
+                    *p = Some((
+                        request.system.clone(),
+                        request.tools.iter().map(|t| t.name.clone()).collect(),
+                    ));
+                }
+            }
+
+            fn primeira(&self) -> (Option<String>, Vec<String>) {
+                self.primeira
+                    .lock()
+                    .expect("lock")
+                    .clone()
+                    .expect("houve requisicao")
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for Captura {
+            fn provider_id(&self) -> &str {
+                "captura"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                self.anotar(request);
+                Ok(LlmResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "nao sei".to_string(),
+                    }],
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn stream_complete(
+                &self,
+                request: &LlmRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+                self.anotar(request);
+                Ok(Box::pin(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta("nao sei".to_string())),
+                    Ok(StreamEvent::MessageStop),
+                ])))
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        enum Caminho {
+            AgentConfig,
+            Streaming,
+            Heartbeat,
+        }
+
+        async fn primeira_requisicao(
+            caminho: Caminho,
+            com_tool: bool,
+            exec: &ExecContext,
+        ) -> (Option<String>, Vec<String>) {
+            let rt = AgentRuntime::new();
+            rt.register_tool(stub("file_read"));
+            if com_tool {
+                rt.register_tool(stub("garra_status"));
+            }
+            let provider = Arc::new(Captura::default());
+            rt.register_provider(provider.clone());
+            let texto = "voce tem acesso ao WhatsApp?";
+            match caminho {
+                Caminho::AgentConfig => {
+                    rt.process_message_with_agent_config(
+                        "s-1347",
+                        texto,
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno");
+                }
+                Caminho::Streaming => {
+                    let (tx, mut rx) =
+                        tokio::sync::mpsc::channel::<crate::turn_events::TurnEvent>(64);
+                    let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                    rt.process_message_streaming_with_events(
+                        "s-1347",
+                        texto,
+                        &[],
+                        tx,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno");
+                    dreno.await.expect("dreno");
+                }
+                Caminho::Heartbeat => {
+                    rt.process_heartbeat("s-1347", texto, &[], None, None)
+                        .await
+                        .expect("turno");
+                }
+            }
+            provider.primeira()
+        }
+
+        /// O cenario do relato: piso `search` (o do WhatsApp), pergunta sobre
+        /// acesso. A tool chega ao modelo e o prompt tem o template do modo
+        /// E a nota — nos tres ramos do runtime.
+        #[tokio::test]
+        async fn modo_search_oferece_garra_status_e_a_nota() {
+            let search = ExecContext::with_mode(Some("search".to_string()));
+            for caminho in [Caminho::AgentConfig, Caminho::Streaming] {
+                let (system, tools) = primeira_requisicao(caminho, true, &search).await;
+                assert!(
+                    tools.iter().any(|t| t == "garra_status"),
+                    "{caminho:?}: {tools:?}"
+                );
+                let system = system.expect("prompt");
+                // O ramo de streaming nao aplica o template do modo (so
+                // override > prompt do runtime > persona) — divergencia
+                // anterior a esta mudanca. A nota entra nos dois.
+                if matches!(caminho, Caminho::AgentConfig) {
+                    assert!(system.contains("You are a search assistant"), "{system}");
+                    assert!(system.ends_with(NOTA_GARRA_STATUS_PT), "{system}");
+                }
+                assert!(
+                    system.contains(NOTA_GARRA_STATUS_PT),
+                    "{caminho:?}: {system}"
+                );
+            }
+            // O heartbeat nao escolhe modo: persona + nota.
+            let (system, _) =
+                primeira_requisicao(Caminho::Heartbeat, true, &ExecContext::default()).await;
+            assert!(system.expect("prompt").contains(NOTA_GARRA_STATUS_PT));
+        }
+
+        /// Sem a tool registrada (a CLI), ou com um modo que a nega, nada
+        /// de nota: o modelo nunca e mandado chamar o que nao tem.
+        #[tokio::test]
+        async fn sem_garra_status_oferecida_nao_ha_nota() {
+            let search = ExecContext::with_mode(Some("search".to_string()));
+            for caminho in [Caminho::AgentConfig, Caminho::Streaming] {
+                let (system, tools) = primeira_requisicao(caminho, false, &search).await;
+                assert!(!tools.iter().any(|t| t == "garra_status"));
+                // A persona cita `garra_status` por conta propria; o que
+                // nao pode aparecer e a NOTA.
+                assert!(
+                    !system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT),
+                    "{caminho:?}"
+                );
+            }
+            let (system, _) =
+                primeira_requisicao(Caminho::Heartbeat, false, &ExecContext::default()).await;
+            assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
+
+            let perfil = crate::modes::ModeProfile::from_custom(
+                crate::modes::AgentMode::Search,
+                "sem-status",
+                None,
+                &serde_json::json!({ "deny": ["garra_status"] }),
+                &serde_json::json!({}),
+            );
+            let nega = ExecContext::with_custom_profile("sem-status".to_string(), perfil);
+            let (system, tools) = primeira_requisicao(Caminho::AgentConfig, true, &nega).await;
+            assert!(!tools.iter().any(|t| t == "garra_status"), "{tools:?}");
+            assert!(!system.unwrap_or_default().contains(NOTA_GARRA_STATUS_PT));
+        }
+
+        /// Uma `garra_status` de mentira que anota o que
+        /// `ferramentas_do_turno` devolveu quando o runtime a executou.
+        struct SondaDeStatus {
+            viu: Arc<Mutex<Option<Option<Vec<String>>>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for SondaDeStatus {
+            fn name(&self) -> &str {
+                "garra_status"
+            }
+            fn description(&self) -> &str {
+                "sonda"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn execute(
+                &self,
+                _c: &crate::tools::ToolContext,
+                _i: serde_json::Value,
+            ) -> Result<crate::tools::ToolOutput> {
+                *self.viu.lock().expect("lock") =
+                    Some(crate::tools::turn_tools::ferramentas_do_turno());
+                Ok(crate::tools::ToolOutput::success("{}"))
+            }
+        }
+
+        /// Pede `garra_status` na primeira volta; responde em texto depois.
+        struct PedeStatus;
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeStatus {
+            fn provider_id(&self) -> &str {
+                "pede_status"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let ja_rodou = request.messages.iter().any(|m| {
+                    matches!(&m.content, crate::providers::MessagePart::Parts(p)
+                        if p.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })))
+                });
+                let content = if ja_rodou {
+                    vec![ContentBlock::Text {
+                        text: "ok".to_string(),
+                    }]
+                } else {
+                    vec![ContentBlock::ToolUse {
+                        id: "t-status".to_string(),
+                        name: "garra_status".to_string(),
+                        input: serde_json::json!({}),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// Revisao da onda A: no piso `search`, `garra_status` recebe so as
+        /// ferramentas que o portao do turno libera — `bash` e `file_write`
+        /// estao registradas mas negadas, e nao podem aparecer.
+        #[tokio::test]
+        async fn garra_status_recebe_so_as_ferramentas_liberadas_no_turno() {
+            let rt = AgentRuntime::new();
+            for nome in ["bash", "file_write", "file_read"] {
+                rt.register_tool(stub(nome));
+            }
+            let viu = Arc::new(Mutex::new(None));
+            rt.register_tool(Box::new(SondaDeStatus {
+                viu: Arc::clone(&viu),
+            }));
+            rt.register_provider(Arc::new(PedeStatus));
+            let search = ExecContext::with_mode(Some("search".to_string()));
+            let r = rt
+                .process_message_with_agent_config(
+                    "s-1347-tools",
+                    "o que voce pode fazer?",
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &search,
+                )
+                .await
+                .expect("turno");
+            assert_eq!(r, "ok");
+            let visto = viu.lock().expect("lock").clone();
+            assert_eq!(
+                visto,
+                Some(Some(vec![
+                    "file_read".to_string(),
+                    "garra_status".to_string()
+                ])),
+                "a tool so ve o que o portao do search libera"
+            );
+        }
     }
 
     // ─── #1078 item 2: aprovacao vinculada ao pedido ──────────────────────

@@ -67,7 +67,9 @@ pub use providers::{
     StreamEvent, ToolDefinition, ValidacaoDeModelo,
 };
 pub use quantization::{ModelQuant, auto_select_quant, detect_vram_bytes};
-pub use runtime::{AgentRuntime, resolve_provider_from_model};
+pub use runtime::{
+    AgentRuntime, NOTA_GARRA_STATUS_EN, NOTA_GARRA_STATUS_PT, resolve_provider_from_model,
+};
 pub use tools::{
     BashTool, CodeReviewTool, DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig,
     EventTrigger, EventType, FileJail, FileJailDenial, FileReadTool, FileWriteTool, ListDirTool,
@@ -75,6 +77,8 @@ pub use tools::{
     Tool, ToolContext, ToolOutput, TriggerRegistry, WebFetchTool, WebSearchTool, WebhookTrigger,
 };
 pub use turn_events::{TurnEvent, TurnSink, summarize_tool_input, summarize_tool_output};
+// #1343: o escopo de aprovacao entre turnos, para os canais aderirem.
+pub use tools::pending_approval::ApprovalScope;
 
 #[cfg(feature = "mcp")]
 pub use mcp::{McpManager, McpPromptInfo, McpResourceInfo, McpToolInfo};
