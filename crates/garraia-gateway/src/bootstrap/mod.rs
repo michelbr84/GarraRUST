@@ -1512,10 +1512,11 @@ fn carregar_e_aplicar_catalogo(
 ///   mesmo vale para `image`, posicional do `docker run`. Nenhum host e
 ///   nenhuma imagem de verdade comeca com `-`, entao recusar e barato.
 ///   Esta e a camada que garante a propriedade no boot, junto com o
-///   proprio `wrap_command`; o `config check` **reporta** o mesmo Error,
-///   mas e comando opt-in, nao gate de boot. O conserto estrutural (montar
-///   argv em vez de linha de shell) e acompanhamento na #1225 (slices
-///   S2/S3), como ja recomendado na #1231.
+///   proprio `wrap_command`; o `config check` **reporta** o mesmo Error e,
+///   desde a #1247, roda no boot, mas o achado nao esta na lista que recusa
+///   o boot. O conserto estrutural (montar argv em vez de linha de shell)
+///   ja vale para as tools de repositorio (#1225 S2); o `bash` continua
+///   uma linha de shell, limite conhecido do threat model.
 /// - Nomes em `sandboxed_tools`/`elevated` sao trimados. A comparacao na
 ///   policy e exata, entao `" bash"` no YAML seria um no-op silencioso.
 ///   Maiusculas NAO sao normalizadas: o registry de tools e case-sensitive.

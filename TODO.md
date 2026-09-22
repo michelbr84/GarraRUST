@@ -5,12 +5,34 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-21 (America/New_York)
+**Atualizado:** 2026-09-22 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-22 — release v0.4.5: bash fail-closed, aprovação nos canais, onboarding do WhatsApp
+
+- **`bash` sem humano no laço** (#1272 via #1352): em `standard` o `garraia mcp-server` e o gateway só registram `bash` e `run_tests` dentro de sandbox `docker`/`podman` válido; `isolated-pod` explícito roda no host do pod. Container com `--cap-drop ALL`, `--pids-limit 512`, `--user`/`--userns=keep-id`; git endurecido em `git_diff`/`code_review`; `file_write` recusa `.git`. Amendment 2026-09-21 do ADR 0024.
+- **Sandbox nas tools de repositório** (#1225 via #1353): `run_tests`, `git_diff`, `code_review`, `repo_search` por argv (`wrap_argv` + `sandbox_spawn`); S5 (ssh + container remoto) won't-do, com motivo no threat model §5.13.
+- **Boot** (#1261 via #1354, #1365; #1247 via #1355): bind exposto sem credencial recusa com exit 78; env `GARRAIA_GATEWAY_API_KEY`; opt-out só no arquivo; `gateway.host`/`gateway.port` deprecados; `config check` em todo boot, recusa só pela allowlist `BLOQUEIA_O_BOOT` (TLS pela metade), escotilha `GARRAIA_ALLOW_INVALID_CONFIG=1`.
+- **Aprovação GAR-187** (#1343 via #1348 e #1366; #1340 via #1342): registro de pedidos pendentes por `(canal, sessão)` com remetente derivado pelo servidor, 5 min, uma vez; pedido sem marcador (#1373); telefone mascarado no log.
+- **WhatsApp pessoal** (#1345 via #1356; #1373; #1368): `link` pergunta quem pode falar, `garraia whatsapp allow`, releitura a quente; ponte regravada no boot com `npm ci` só quando a árvore não é provada; `last4` sem sufixo de aparelho; erro de bridge morto com a cauda do stderr.
+- **MCP `filesystem`** (#1346 via #1357): versão fixa, recuperação única do cache `_npx`, `/api/mcp/health` com servidores que falharam.
+- **`garra_status`** (#1347 via #1351 e #1367): modos com whitelist, canais do `/api/channels`, `withheld` em turno restrito; streaming aplica prompt e `max_tokens` do modo.
+- **Runs** (#1227 via #1326 e #1361): `garraia runs list`, `runs.retention_days`, `GET /api/runs`; s7 (`runs resume`) won't-do, motivo em `docs/configuration.md`.
+- **Limpeza** (#1226 via #1350, #1358): `garraia-tools` e `garraia-runtime` removidas (22 crates); `tool_program` no snapshot.
+- **Runtime e CLI**: aviso de loop antes de abortar (#1295 via #1349); `max-power` sem runtime aninhado, offline de verdade, ajuda e erro de corpo (#1228 via #1362, #1364); smoke de instalação limpa da v0.4.4: TTY do `install.sh` (#1369), log do daemon em append, SIGPIPE e cauda do `/admin/api/logs` (#1371), sessão REST após restart (#1372), chave do provider ligada à própria entrada `llm:` (#1370).
+- **Infra**: gate `Changelog presence` e comentários de PR editados no lugar (#1362); Swagger UI vendored (#1359); `freeze-baseline.py --adopt-current-file-metrics` (#1360) e o re-baseline auditado (#1254); upload do AppImage aarch64 conferido no CI (#1344); `skills/assemble-team.md`: um target por worktree (#1374).
+
+### Limites documentados, sem issue de acompanhamento
+
+- `temperature` do modo não chega ao provider (`docs/src/modes.md`).
+- Sessão REST encerrada antes da 0.4.5 não tem `api_logout` e volta a ser lida (fragmento da #1372).
+- `bash` no sandbox ainda é linha de shell (`wrap_command` + `sh_quote`); nenhum caminho tem `--read-only` nem limite de memória (threat model, prioridade 9).
+- O gateway (`garraia_config::provider_keys`) resolve config > env sem olhar a `base_url`; a regra da #1370 vale só na CLI.
+- `garraia.log` sem rotação; `/admin/api/logs` lê só a cauda.
 
 ## Concluído em 2026-09-21 — release v0.4.4: WhatsApp em instalação nova e perfis de execução
 

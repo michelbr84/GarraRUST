@@ -24,8 +24,8 @@
   fala na sessao sai do que os pontos de entrada gravam (a superficie de
   cada turno, que so acumula, e as fontes de `chat_session_keys`), e nao do
   prefixo do id: a sessao do Telegram resolvida por UUID nao tem prefixo e
-  passava por local. So web chat, API, VS Code e Desktop contam como do
-  operador, e so com a porta fechada (loopback ou `gateway.api_key`); sessao
+  passava por local. So web chat, API, VS Code e Desktop (e, sem chegar ao gateway
+  hoje, `cli` e `mcp`) contam como do operador, e so com a porta fechada (loopback ou `gateway.api_key`); sessao
   desconhecida, app mobile (conta aberta em `/auth/register`), A2A e gateway
   exposto pelo opt-out sem chave ficam restritos. A tool passa a ser
   registrada depois de montar os canais push e antes do primeiro canal pull

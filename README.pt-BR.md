@@ -664,7 +664,7 @@ Consulte a [documentação completa de integração com Continue](docs/src/conti
 ### TLS/HTTPS (builds de fonte)
 
 - **Suporte TLS** - compile com `cargo build -p garraia --features garraia-gateway/tls` (a feature vive no crate do gateway; o binário ainda não tem passthrough `tls`) e aponte `tls_cert_path`/`tls_key_path` para seus certificados (ex.: emitidos via certbot/Let's Encrypt). Não há cliente ACME embutido. Caveats honestos: os binários release atuais **não** incluem a feature TLS, e com certs configurados mas sem a feature o gateway loga warning e serve HTTP puro — ambos itens de hardening no roadmap. Para produção, recomenda-se reverse proxy com TLS na frente do bind loopback.
-- **Binding seguro** - `127.0.0.1` por padrao, `0.0.0.0` com TLS para producao
+- **Binding seguro** - `127.0.0.1` por padrao; desde a v0.4.5 um bind nao-loopback so sobe com credencial de gateway (`gateway.api_key` ou `GARRAIA_GATEWAY_API_KEY`) — TLS sozinho nao basta (#1261)
 
 ### Health Checks Centralizados
 
@@ -858,8 +858,8 @@ O GarraIA procura `config.yml` no diretório de config, resolvido como `$GARRAIA
 
 ```yaml
 gateway:
-  host: "127.0.0.1"
-  port: 3888
+  # O bind vem de --host/HOST e --port/PORT (default 127.0.0.1:3888);
+  # gateway.host/gateway.port estao deprecados e nunca foram lidos (#1261).
   # GAR-202: tokens de sessão — TTL, idle timeout e exigência de autenticação
   session_ttl_secs: 86400       # validade do token (1 dia). Padrão: 86400
   session_idle_secs: 3600       # timeout por inatividade (1h). Padrão: 3600

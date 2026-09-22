@@ -23,6 +23,11 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.4.5 — Novidades](Novidades-v0.4.5)** · **[What's New in v0.4.5 (English)](Whats-New-v0.4.5)**
+  — `bash` só dentro de sandbox onde não há humano no laço, o "sim" a um
+  pedido de confirmação aprovando em todo canal, `garraia whatsapp allow` e a
+  ponte que se atualiza no boot, e um boot que recusa bind exposto sem
+  credencial.
 - **[v0.4.4 — Novidades](Novidades-v0.4.4)** · **[What's New in v0.4.4 (English)](Whats-New-v0.4.4)**
   — WhatsApp pessoal funcionando numa instalação nova, perfis de execução
   `standard` e `isolated-pod` (poder total dentro do pod, nada implícito

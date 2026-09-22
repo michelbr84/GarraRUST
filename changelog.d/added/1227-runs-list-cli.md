@@ -1,8 +1,8 @@
-- **`garra runs list` le o ledger de runs de agente (#1227).** A tabela
+- **`garraia runs list` le o ledger de runs de agente (#1227).** A tabela
   `agent_runs` ja era povoada pelo scheduler do gateway e ja marcava
   `interrupted` na subida depois de uma queda, mas nao havia como olhar para
   ela sem abrir o SQLite na mao. O comando abre o mesmo `sessions.db` sem
-  falar com o gateway — igual ao `garra logs` —, entao ele responde "o que
+  falar com o gateway — igual ao `garraia logs` —, entao ele responde "o que
   estava em voo?" justamente quando o gateway esta fora. `--status`
   (`running`, `done`, `error`, `cancelled`, `interrupted`) filtra no SQL,
   `--limit` corta a janela (padrao 50) e `--json` devolve um array com chaves

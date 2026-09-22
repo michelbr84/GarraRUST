@@ -7,7 +7,7 @@
   `DELETE` volta a revogar os tokens depois de um restart. So volta a sessao
   que so a superficie REST gravou: canal da linha `api` no tenant `default`,
   nenhuma chave do Chat Sync, tokens so de `api` e o canal de cada mensagem
-  so `api`. Sessao de Telegram, WhatsApp, web, mobile ou do `garra chat
+  so `api`. Sessao de Telegram, WhatsApp, web, mobile ou do `garraia chat
   --persist` segue 404 por esta rota ate a propria superficie a trazer de
   volta, e nada dela e reescrito (o `--resume latest` do CLI continua achando
   a sua). Id que nao existe segue 404 sem criar linha, e banco ilegivel da
