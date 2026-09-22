@@ -1785,6 +1785,121 @@ fn o_reexport_da_normalizacao_e_a_mesma_funcao() {
     );
 }
 
+/// #1345 (review WHATSAPP-2): o celular brasileiro com e sem o nono digito e
+/// a mesma pessoa para o portao, nos dois sentidos.
+#[test]
+fn celular_brasileiro_casa_com_e_sem_o_nono_digito() {
+    // O operador digitou 13; o JID da conta antiga tem 12.
+    let portao = portao_com(&["5531999998888"]);
+    assert!(portao.libera("553199998888"), "JID de 12 digitos");
+    assert!(portao.libera("5531999998888"), "e o de 13, claro");
+    // O contrario: gravado com 12, remetente chega com 13.
+    let portao = portao_com(&["553199998888"]);
+    assert!(portao.libera("5531999998888"));
+
+    // Fixo (primeiro digito 2 a 5) nunca perde digito nenhum.
+    assert_eq!(chave_do_portao("553133334444"), "553133334444");
+    let portao = portao_com(&["5531933334444"]);
+    assert!(
+        !portao.libera("553133334444"),
+        "9 + fixo nao e celular antigo"
+    );
+    // Outro pais, tamanho diferente e LID passam intactos.
+    for id in [
+        "15551234567",
+        "551199998888",
+        "87654321098765@lid",
+        "4479999988887",
+    ] {
+        assert_eq!(chave_do_portao(id), id);
+    }
+
+    // A contagem e a mesma do portao: as duas formas contam um.
+    let s = LinkedSettings {
+        allow: vec!["5531999998888".into()],
+        owners: vec!["553199998888".into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(s.autorizados(), 1);
+    assert_eq!(s.donos(), 1);
+    // E o dono e reconhecido pela mesma chave.
+    assert_eq!(
+        perfil_do_turno(ExecutionProfile::IsolatedPod, &s, "5531999998888", false),
+        PerfilDoTurno::Completo
+    );
+}
+
+/// #1345 (review WHATSAPP-4): quem pareou por codigo E estava no `allow` perde
+/// o acesso quando sai do `allow` — senao "apague o numero da lista" nao
+/// revogava. Quem so pareou, sem nunca estar na config, continua ate o
+/// restart (a doc diz isso).
+#[test]
+fn sair_do_allow_revoga_tambem_o_pareamento() {
+    let mut portao = portao_com(&[]);
+    let mut pair = pairing();
+    for quem in ["5511900000001", "5511900000009"] {
+        let codigo = pair.generate("whatsapp_linked");
+        assert_eq!(
+            admitir(&mut portao, &mut pair, quem, &codigo),
+            Admissao::PareadoAgora
+        );
+    }
+    let com_os_dois = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000001".into()],
+        ..LinkedSettings::default()
+    };
+    portao.recarregar(&com_os_dois);
+    portao.recarregar(&com_os_dois);
+    assert!(portao.libera("5511900000001"));
+
+    portao.recarregar(&LinkedSettings {
+        enabled: true,
+        ..LinkedSettings::default()
+    });
+    assert!(
+        !portao.libera("5511900000001"),
+        "tirado do allow: o codigo resgatado antes nao o segura la dentro"
+    );
+    assert!(
+        portao.libera("5511900000009"),
+        "so pareado, nunca na config: segue ate o restart"
+    );
+}
+
+/// O arquivo de recusas de `@lid` e atomico, `0600`, e volta igual.
+#[test]
+fn recusas_de_lid_vao_e_voltam_do_disco() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(ler_recusas_lid(dir.path()), None, "ausente = None");
+    let r = RecusasLid {
+        pid: 42,
+        recusas: 3,
+        final4: "8765".into(),
+    };
+    gravar_recusas_lid(dir.path(), &r).expect("grava");
+    assert_eq!(ler_recusas_lid(dir.path()), Some(r));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let modo = std::fs::metadata(dir.path().join(ARQUIVO_RECUSAS_LID))
+            .expect("meta")
+            .permissions()
+            .mode();
+        assert_eq!(modo & 0o777, 0o600);
+    }
+    let sobras: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("ls")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(sobras.is_empty(), "{sobras:?}");
+
+    std::fs::write(dir.path().join(ARQUIVO_RECUSAS_LID), "lixo").expect("w");
+    assert_eq!(ler_recusas_lid(dir.path()), None, "ilegivel = None");
+}
+
 // ---------------------------------------------------------------------------
 // Ponta a ponta contra a ponte falsa
 // ---------------------------------------------------------------------------
@@ -1961,6 +2076,10 @@ mod ponta_a_ponta {
         push_text: Option<String>,
         /// So vale em `serve-push`: marca a mensagem como da propria conta.
         push_from_me: bool,
+        /// So vale em `serve-push`: o remetente chega como este `@lid`.
+        push_lid: Option<&'static str>,
+        /// E o `key.remoteJidAlt` que o Baileys 7 manda junto com ele.
+        push_lid_alt: Option<&'static str>,
     }
 
     impl Roteiro {
@@ -1970,6 +2089,8 @@ mod ponta_a_ponta {
                 cenario: "serve-echo",
                 push_text: None,
                 push_from_me: false,
+                push_lid: None,
+                push_lid_alt: None,
             }
         }
 
@@ -1986,7 +2107,17 @@ mod ponta_a_ponta {
                 cenario: "serve-push",
                 push_text: Some(texto.to_string()),
                 push_from_me: false,
+                push_lid: None,
+                push_lid_alt: None,
             }
+        }
+
+        /// O remetente empurrado vem como `@lid` (#1345), com ou sem o JID de
+        /// telefone que o servidor manda junto.
+        fn por_lid(mut self, lid: &'static str, alt: Option<&'static str>) -> Self {
+            self.push_lid = Some(lid);
+            self.push_lid_alt = alt;
+            self
         }
 
         /// A mensagem empurrada vem marcada como da conta vinculada — a forma
@@ -2021,6 +2152,12 @@ mod ponta_a_ponta {
             }
             if self.roteiro.push_from_me {
                 cmd.arg("--push-from-me");
+            }
+            if let Some(lid) = self.roteiro.push_lid {
+                cmd.arg("--push-lid").arg(lid);
+            }
+            if let Some(alt) = self.roteiro.push_lid_alt {
+                cmd.arg("--push-lid-alt").arg(alt);
             }
             Ok(cmd)
         }
@@ -2292,6 +2429,8 @@ mod ponta_a_ponta {
         /// #1345: a config viva. `None` = sem watcher (os settings do boot
         /// valem o processo inteiro).
         config_viva: Option<watch::Receiver<AppConfig>>,
+        /// Identidades a mais no `allow` do boot (um `…@lid`, por exemplo).
+        allow_extra: Vec<String>,
     }
 
     impl Default for Montagem {
@@ -2304,6 +2443,7 @@ mod ponta_a_ponta {
                 perfil: ExecutionProfile::Standard,
                 provider: ProviderDeStub::default(),
                 config_viva: None,
+                allow_extra: Vec::new(),
             }
         }
     }
@@ -2323,6 +2463,7 @@ mod ponta_a_ponta {
             perfil,
             provider,
             config_viva,
+            allow_extra,
         } = m;
         let dir = tempfile::tempdir().expect("tempdir");
         let (state, provider) = monta_estado_vivo(&dir, perfil, provider, config_viva);
@@ -2346,7 +2487,10 @@ mod ponta_a_ponta {
                 vec![PEER.to_string()]
             } else {
                 Vec::new()
-            },
+            }
+            .into_iter()
+            .chain(allow_extra)
+            .collect(),
             owners: if dono {
                 vec![PEER.to_string()]
             } else {
@@ -3203,6 +3347,129 @@ mod ponta_a_ponta {
         // Controle: a mesma pessoa em 1:1 e aceita.
         entrega(&c, "oi").await;
         assert_eq!(turnos_estaveis_em(&c, 1).await, 1);
+
+        encerra(c).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // #1345: remetente `@lid` (Baileys 7)
+    // -----------------------------------------------------------------------
+
+    const LID: &str = "87654321098765@lid";
+
+    /// `@lid` com o telefone que o servidor manda junto (`remoteJidAlt`): a
+    /// ponte entrega o numero em `sender_phone`, e o numero salvo pelo
+    /// `garraia whatsapp allow` casa. Pelo eco, a resposta sai pela ponte.
+    #[tokio::test]
+    async fn lid_com_numero_do_servidor_casa_com_o_allow_e_recebe_resposta() {
+        let c = sobe_com(Roteiro::eco().por_lid(LID, Some(PEER_JID)), true).await;
+        semeia(&c, "oi").await;
+
+        assert!(
+            resposta_saiu(&c).await,
+            "o numero no `allow` tem de casar com o @lid que trouxe o telefone: {:?}",
+            recebidas(&c)
+        );
+        let primeira = &recebidas(&c)[0];
+        assert_eq!(primeira.sender_jid.as_str(), LID, "premissa: veio por LID");
+        assert_eq!(primeira.sender_phone.as_deref(), Some("+5511888880000"));
+        assert_eq!(c.state.whatsapp_linked.recusas_lid(), 0);
+
+        encerra(c).await;
+    }
+
+    /// `@lid` sem numero e fora do `allow`: recusado em silencio — o numero
+    /// autorizado nao abre a porta para um LID (fail-closed) — e a recusa fica
+    /// contada no runtime e no arquivo que o `status` da CLI le, so com o final.
+    #[tokio::test]
+    async fn lid_sem_numero_fora_do_allow_e_recusado_em_silencio_e_contado() {
+        let c = sobe_com(Roteiro::empurra("oi").por_lid(LID, None), true).await;
+
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem precisa chegar para o teste ter o que provar"
+        );
+        assert_eq!(recebidas(&c)[0].sender_phone, None, "premissa: sem numero");
+        assert!(
+            ate(|| c.state.whatsapp_linked.recusas_lid() == 1).await,
+            "a recusa de LID sem numero tem de ser contada"
+        );
+        assert!(
+            !ate(|| !turnos(&c.provider).is_empty()).await,
+            "LID sem numero nao casa com o numero do `allow`: {:?}",
+            turnos(&c.provider)
+        );
+        assert!(
+            !c.state
+                .sessions
+                .contains_key(&format!("whatsapp-linked-{LID}")),
+            "nenhuma sessao nasce de um remetente recusado"
+        );
+
+        let dir = LinkedPaths::from_config(&c.state.config)
+            .expect("DEFAULT_ACCOUNT e valido")
+            .store;
+        let registro = ler_recusas_lid(dir.dir()).expect("o arquivo de recusas existe");
+        assert_eq!(registro.pid, std::process::id());
+        assert_eq!(registro.recusas, 1);
+        assert_eq!(registro.final4, "8765");
+        let cru = std::fs::read_to_string(dir.dir().join(ARQUIVO_RECUSAS_LID)).expect("le");
+        assert!(
+            !cru.contains("87654321098765"),
+            "nunca o LID inteiro: {cru}"
+        );
+
+        encerra(c).await;
+    }
+
+    /// `@lid` sem numero, autorizado explicitamente pelo LID (o que o
+    /// `garraia whatsapp allow <id>@lid` grava): recebe resposta.
+    #[tokio::test]
+    async fn lid_autorizado_explicitamente_recebe_resposta() {
+        let c = Montagem {
+            roteiro: Roteiro::eco().por_lid(LID, None),
+            liberado: false,
+            allow_extra: vec![LID.to_string()],
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+        semeia(&c, "oi").await;
+
+        assert!(
+            resposta_saiu(&c).await,
+            "o LID no `allow` admite o remetente @lid: {:?}",
+            recebidas(&c)
+        );
+        assert_eq!(recebidas(&c)[0].sender_phone, None, "premissa: sem numero");
+        assert_eq!(c.state.whatsapp_linked.recusas_lid(), 0);
+
+        encerra(c).await;
+    }
+
+    /// #1345 (review WHATSAPP-15): canal desligado na config viva recusa ate
+    /// um codigo de pareamento valido — sem boas-vindas, e sem queimar o
+    /// codigo. O controle religa o canal e o MESMO codigo entra: prova que o
+    /// negativo nao era vacuo.
+    #[tokio::test]
+    async fn codigo_de_pareamento_nao_entra_com_o_canal_desligado_na_config_viva() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+        tx.send(viva(false, &[], &[])).expect("watcher");
+
+        let (_, pairing) = channel_gates(&c.state);
+        let codigo = pairing.lock().expect("lock").generate("whatsapp_linked");
+        entrega(&c, &codigo).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(respostas(&c), 0, "sem boas-vindas: o canal esta desligado");
+        assert!(turnos(&c.provider).is_empty());
+
+        tx.send(viva(true, &[], &[])).expect("watcher");
+        entrega(&c, &codigo).await;
+        assert!(
+            ate(|| respostas(&c) == 1).await,
+            "religado, o mesmo codigo ainda vale: a recusa nao o queimou"
+        );
 
         encerra(c).await;
     }

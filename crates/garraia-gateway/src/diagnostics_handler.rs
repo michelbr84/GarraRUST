@@ -426,11 +426,49 @@ fn whatsapp_linked_check(
 /// So rebaixa `Ok`: `Skipped` (nao vinculado) e `Error` (ponte quebrada) ja
 /// tem o proximo passo certo, e o do portao so importa depois deles.
 ///
+/// Mais dois casos que o `Ok` escondia:
+///
+/// - **Canal desligado na config viva com a ponte conectada.** O supervisor
+///   do boot segue de pe e o turno recusa todo mundo, codigo de pareamento
+///   incluso (`enabled` e relido a quente; a ponte so desce no restart).
+/// - **Recusas de remetente `@lid` sem numero** desde o boot: um numero no
+///   `allow` nao casa com um LID, e sem isto o operador so via "autorizado"
+///   e silencio. Vai no detalhe, sem mudar o status — um estranho com LID
+///   tambem e recusado, e isso nao e defeito.
+///
 /// Contagem, nunca identidade: a rota e auth-free.
 fn whatsapp_linked_portao_vazio(
     mut check: DiagnosticCheck,
+    saude: garraia_channels::whatsapp_linked::health::LinkHealth,
     settings: &crate::bootstrap::WhatsAppLinkedSettings,
+    recusas_lid: u64,
 ) -> DiagnosticCheck {
+    use garraia_channels::whatsapp_linked::health::LinkHealth;
+
+    let bin = garraia_common::executavel::nome();
+    if matches!(check.status, CheckStatus::Ok)
+        && !settings.enabled
+        && saude == LinkHealth::Connected
+    {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — mas o canal esta desligado na config viva (`channels.whatsapp_linked.enabled` \
+             nao e `true`): toda mensagem e recusada, e a ponte segue conectada ate reiniciar",
+            check.detail
+        );
+        check.next_step = Some(format!(
+            "religue `channels.whatsapp_linked.enabled: true` no config.yml, ou rode `{bin} \
+             restart` para o gateway descer a ponte"
+        ));
+        return check;
+    }
+    if matches!(check.status, CheckStatus::Ok) && recusas_lid > 0 {
+        check.detail = format!(
+            "{} — {recusas_lid} mensagem(ns) de remetente @lid sem numero recusada(s) desde o \
+             boot: um numero no `allow` nao casa com LID (`{bin} whatsapp status` mostra o final)",
+            check.detail
+        );
+    }
     if matches!(check.status, CheckStatus::Ok) && settings.enabled && settings.autorizados() == 0 {
         check.status = CheckStatus::Warning;
         check.detail = format!(
@@ -439,8 +477,7 @@ fn whatsapp_linked_portao_vazio(
             check.detail
         );
         check.next_step = Some(format!(
-            "rode `{} whatsapp allow <numero>` (com codigo do pais; vale sem reiniciar)",
-            garraia_common::executavel::nome()
+            "rode `{bin} whatsapp allow <numero>` (com codigo do pais; vale sem reiniciar)"
         ));
     }
     check
@@ -970,13 +1007,14 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     //     `whatsapp_linked` do `/api/channels`: `whatsapp_linked::health::
     //     classify`. Duas fontes divergentes sobre o mesmo canal e o defeito
     //     que a #1079 ja custou uma vez.
+    let (saude_wa, bridge_dir_wa) =
+        crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked);
     checks.push(whatsapp_linked_portao_vazio(
-        whatsapp_linked_check(crate::bootstrap::whatsapp_linked_health(
-            &state.config,
-            &state.whatsapp_linked,
-        )),
+        whatsapp_linked_check((saude_wa, bridge_dir_wa)),
+        saude_wa,
         // #1345: a config VIVA, a mesma que o turno le para admitir.
         &crate::bootstrap::whatsapp_linked_settings(&state.current_config()),
+        state.whatsapp_linked.recusas_lid(),
     ));
 
     // 15. STT server reachable (#1098).
@@ -1087,7 +1125,7 @@ mod tests {
             ..Default::default()
         };
         for saude in [LinkHealth::Connected, LinkHealth::Linked] {
-            let c = whatsapp_linked_portao_vazio(wa(saude), &ligado_vazio);
+            let c = acesso(saude, &ligado_vazio, 0);
             assert!(matches!(c.status, CheckStatus::Warning), "{saude:?}");
             let passo = c.next_step.as_deref().unwrap_or_default();
             assert!(passo.contains("whatsapp allow <numero>"), "{passo}");
@@ -1104,28 +1142,94 @@ mod tests {
             allow: vec!["5511900000001".into()],
             ..Default::default()
         };
-        let c = whatsapp_linked_portao_vazio(wa(LinkHealth::Connected), &com_um);
+        let c = acesso(LinkHealth::Connected, &com_um, 0);
         assert!(matches!(c.status, CheckStatus::Ok));
         assert!(c.next_step.is_none());
         let json = serde_json::to_string(&c).expect("serializa");
         assert!(!json.contains("5511900000001"), "{json}");
 
         // Nao vinculado e ponte quebrada ficam com o veredito proprio.
-        let c = whatsapp_linked_portao_vazio(wa(LinkHealth::NotLinked), &ligado_vazio);
+        let c = acesso(LinkHealth::NotLinked, &ligado_vazio, 0);
         assert!(matches!(c.status, CheckStatus::Skipped));
-        let c = whatsapp_linked_portao_vazio(wa(LinkHealth::BridgeDown), &ligado_vazio);
+        let c = acesso(LinkHealth::BridgeDown, &ligado_vazio, 0);
         assert!(matches!(c.status, CheckStatus::Error));
         assert!(
             !c.next_step.unwrap_or_default().contains("allow"),
             "consertar a ponte vem antes"
         );
 
-        // Canal desligado: o portao vazio nao e o problema.
-        let c = whatsapp_linked_portao_vazio(
-            wa(LinkHealth::Linked),
+        // Canal desligado sem ponte deste processo: o portao vazio nao e o
+        // problema.
+        let c = acesso(
+            LinkHealth::Linked,
             &crate::bootstrap::WhatsAppLinkedSettings::default(),
+            0,
         );
         assert!(matches!(c.status, CheckStatus::Ok));
+    }
+
+    fn acesso(
+        saude: LinkHealth,
+        settings: &crate::bootstrap::WhatsAppLinkedSettings,
+        recusas_lid: u64,
+    ) -> DiagnosticCheck {
+        whatsapp_linked_portao_vazio(wa(saude), saude, settings, recusas_lid)
+    }
+
+    /// #1345 (review WHATSAPP-10/14): a ponte do boot segue conectada, a config
+    /// viva desligou o canal, e o turno recusa todo mundo. `Ok` "conectado"
+    /// ali mentia.
+    #[test]
+    fn ponte_conectada_com_canal_desligado_na_config_viva_e_warning() {
+        let desligado_com_gente = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: false,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        let c = acesso(LinkHealth::Connected, &desligado_com_gente, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(
+            c.detail.contains("desligado na config viva"),
+            "{}",
+            c.detail
+        );
+        let passo = c.next_step.as_deref().unwrap_or_default();
+        assert!(
+            passo.contains("enabled: true") && passo.contains("restart"),
+            "{passo}"
+        );
+        assert!(
+            !serde_json::to_string(&c)
+                .expect("json")
+                .contains("5511900000001")
+        );
+
+        // Sem supervisor neste processo (`Linked`), desligado e so desligado.
+        let c = acesso(LinkHealth::Linked, &desligado_com_gente, 0);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+    }
+
+    /// #1345: recusas de `@lid` sem numero aparecem no detalhe, como contagem,
+    /// sem mudar o status nem o passo.
+    #[test]
+    fn recusas_de_lid_sem_numero_aparecem_no_detalhe_como_contagem() {
+        let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        let c = acesso(LinkHealth::Connected, &com_um, 3);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(
+            c.detail.contains("3 mensagem(ns) de remetente @lid"),
+            "{}",
+            c.detail
+        );
+        assert!(c.detail.contains("whatsapp status"), "{}", c.detail);
+        assert!(c.next_step.is_none());
+
+        let c = acesso(LinkHealth::Connected, &com_um, 0);
+        assert!(!c.detail.contains("@lid"), "{}", c.detail);
     }
 
     /// **A fiacao.** Os testes acima exercitam `whatsapp_linked_check`

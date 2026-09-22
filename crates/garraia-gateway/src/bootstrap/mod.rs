@@ -61,6 +61,12 @@ pub use slack::build_slack_channels;
 // Slice 10.e (GAR-479): WhatsApp wiring extracted to `bootstrap::whatsapp`.
 pub use whatsapp::build_whatsapp_channels;
 
+/// #1345: as recusas de remetente `@lid` sem numero, que o gateway conta e o
+/// `garraia whatsapp status` le do diretorio da sessao.
+pub use whatsapp_linked::{
+    ARQUIVO_RECUSAS_LID as WHATSAPP_LINKED_ARQUIVO_RECUSAS_LID,
+    RecusasLid as WhatsAppLinkedRecusasLid, ler_recusas_lid as whatsapp_linked_ler_recusas_lid,
+};
 /// #1238 (fatia D): o canal PULL `whatsapp_linked` — WhatsApp por dispositivo
 /// vinculado. Irmao do `whatsapp` acima (Cloud API) e disjunto dele: chave de
 /// config propria, transporte proprio (bridge Node/Baileys por NDJSON) e um
@@ -75,7 +81,7 @@ pub use whatsapp_linked::{
 /// (`garraia whatsapp allow`) gravar no `allow` exatamente a forma que o
 /// portao compara.
 pub use whatsapp_linked::{
-    LinkedSettings as WhatsAppLinkedSettings,
+    LinkedSettings as WhatsAppLinkedSettings, chave_do_portao as whatsapp_linked_chave_do_portao,
     normalizar_identidade as whatsapp_linked_normalizar_identidade,
 };
 
