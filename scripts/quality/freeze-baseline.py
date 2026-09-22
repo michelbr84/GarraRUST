@@ -20,12 +20,27 @@ proposal preserves the BETTER value. When current is WORSE, the proposal
 preserves the BASELINE value (so the proposed file is never a regression).
 This makes it safe to run after every push to main as a "what would the
 new baseline look like" preview.
+
+Audited re-baseline (#1254): `--adopt-current-file-metrics --reason '#NNN'`
+is the one sanctioned way to RELAX the file-size metrics when the baseline has
+gone stale (main far past it). Rules, all fail-closed:
+    - Only max_file_lines, max_file_path, files_over_{700,1500,2500} and
+      total_rs_files take the current values. Audit, coverage and clippy keep
+      the strict ratchet above, and audit.critical stays 0.
+    - --reason is required and must reference an issue (`#123`).
+    - current-metrics.json must carry git_sha and collected_at; they are
+      copied to source_git_sha / source_collected_at next to adopted_reason,
+      so a reviewer can reproduce the file from that commit.
+    - It still writes only the proposed file: --seed is rejected, and so is an
+      --out that points at --baseline-in.
+Without the flag the behavior is exactly the strict ratchet described above.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +48,24 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BASELINE = REPO_ROOT / ".quality" / "baseline.json"
 DEFAULT_PROPOSED = REPO_ROOT / ".quality" / "baseline.proposed.json"
+
+# #1254: the metrics an audited re-baseline may adopt from current. Nothing
+# security- or quality-related (audit, coverage, clippy) is ever on this list.
+ADOPTABLE_FILE_METRICS = (
+    "max_file_lines",
+    "max_file_path",
+    "files_over_700",
+    "files_over_1500",
+    "files_over_2500",
+    "total_rs_files",
+)
+# Provenance keys written only by an audited adoption.
+ADOPTION_KEYS = ("adopted_reason", "source_git_sha", "source_collected_at")
+REASON_ISSUE_RE = re.compile(r"#\d+")
+
+
+class AdoptionError(ValueError):
+    """The audited adoption cannot be done safely; nothing must be written."""
 
 
 def load_or_default_baseline(path: Path) -> dict:
@@ -88,8 +121,40 @@ def ratchet_int_max(b: int | None, c: int | None) -> int | None:
     return max(b, c)
 
 
+def adopt_current_file_metrics(proposed: dict, current: dict, reason: str) -> dict:
+    """#1254: overwrite ONLY the file-size metrics with the measured current.
+
+    Fail-closed: a missing metric or missing provenance raises AdoptionError
+    instead of adopting a partial or unreproducible baseline.
+    """
+    if not REASON_ISSUE_RE.search(reason or ""):
+        raise AdoptionError("--reason must reference an issue, e.g. '#1254'")
+    missing = [k for k in ADOPTABLE_FILE_METRICS if current.get(k) is None]
+    if missing:
+        raise AdoptionError(
+            "current metrics lack " + ", ".join(missing) + "; refusing a partial adoption"
+        )
+    sha = current.get("git_sha")
+    collected_at = current.get("collected_at")
+    if not sha or not collected_at:
+        raise AdoptionError(
+            "current metrics lack git_sha/collected_at; the adoption would not be reproducible"
+        )
+    out = dict(proposed)
+    for key in ADOPTABLE_FILE_METRICS:
+        out[key] = current[key]
+    out["adopted_reason"] = reason
+    out["source_git_sha"] = sha
+    out["source_collected_at"] = collected_at
+    return out
+
+
 def freeze(baseline: dict, current: dict) -> dict:
     out = dict(baseline)  # copy
+    # Provenance of an earlier audited adoption does not describe a strict
+    # ratchet run: drop it so a later proposal never claims a source it lacks.
+    for key in ADOPTION_KEYS:
+        out.pop(key, None)
 
     # File size: smaller is better
     out["max_file_lines"] = ratchet_int_min(
@@ -189,11 +254,38 @@ def main(argv: list[str]) -> int:
         help="overwrite the input baseline directly (used ONCE for initial capture; "
              "after that, always go through .quality/baseline.proposed.json)",
     )
+    parser.add_argument(
+        "--adopt-current-file-metrics",
+        action="store_true",
+        help="audited re-baseline (#1254): take ONLY the file-size metrics from current "
+             "(audit/coverage/clippy stay ratcheted); requires --reason '#NNN'",
+    )
+    parser.add_argument(
+        "--reason",
+        default=None,
+        help="issue reference justifying --adopt-current-file-metrics, e.g. '#1254'",
+    )
     args = parser.parse_args(argv[1:])
+
+    if args.adopt_current_file_metrics:
+        if args.seed:
+            parser.error("--adopt-current-file-metrics cannot be combined with --seed")
+        if not args.reason or not REASON_ISSUE_RE.search(args.reason):
+            parser.error("--adopt-current-file-metrics requires --reason referencing an issue (#NNN)")
+        if args.out.resolve() == args.baseline_in.resolve():
+            parser.error("--adopt-current-file-metrics never writes --baseline-in; pick another --out")
+    elif args.reason is not None:
+        parser.error("--reason only applies to --adopt-current-file-metrics")
 
     current = json.loads(args.current.read_text(encoding="utf-8"))
     baseline = load_or_default_baseline(args.baseline_in)
     proposed = freeze(baseline, current)
+    if args.adopt_current_file_metrics:
+        try:
+            proposed = adopt_current_file_metrics(proposed, current, args.reason)
+        except AdoptionError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
 
     if args.seed:
         target = args.baseline_in
