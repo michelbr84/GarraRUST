@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::agent_router;
 use crate::rate_limiter::{TRUSTED_PROXIES_ENV, parse_trusted_proxies, real_client_ip};
-use crate::state::{CANAL_DA_API, SessaoDaApi, SharedState};
+use crate::state::{CANAL_DA_API, SessaoDaApi, SharedState, TENANT_DA_API};
 
 /// The registry's `(name, description)` list as the HTTP surface sees it.
 ///
@@ -378,11 +378,29 @@ pub async fn delete_session(
     if let Some(manager) = &state.chat_session_manager {
         let _ = manager.revoke_all_tokens(&session_id).await;
     }
+    // Revogar so esvazia `session_tokens`: sem a marca no banco, a sessao
+    // encerrada que a memoria esquecer (TTL ou restart) volta do disco pela
+    // readocao, com o historico inteiro. Vem depois da revogacao para uma
+    // falha aqui nunca deixar os tokens valendo.
+    let marca = state.registrar_logout_da_api(&session_id).await;
     state.disconnect_session(&session_id);
 
     let mut headers = HeaderMap::new();
     if let Ok(val) = HeaderValue::from_str(&crate::session_auth::clear_session_cookie()) {
         headers.insert("set-cookie", val);
+    }
+
+    if let Err(e) = marca {
+        // O erro do banco vai para o log, nunca para o corpo. Os tokens ja
+        // foram revogados; o que falhou foi o logout sobreviver ao restart,
+        // e o cliente fica sabendo em vez de ler `ok`.
+        warn!(erro = %e, "falhou ao gravar o logout da sessao no sessions.db");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            headers,
+            Json(serde_json::json!({ "error": "failed to record logout" })),
+        )
+            .into_response();
     }
 
     (
@@ -755,15 +773,15 @@ pub async fn select_mode(
     // Ensure session exists in store
     if let Some(store) = &state.session_store {
         let store = store.lock().await;
-        // Upsert session if needed (using default values)
-        let _ = store.upsert_session(
-            &session_id,
-            CANAL_DA_API,
-            "anonymous",
-            &serde_json::json!({}),
-        );
-        // Set the mode
-        match store.set_agent_mode(&session_id, &mode_str) {
+        // So cria a linha que falta; a que existe fica como esta. O
+        // `X-Session-Id` e qualquer id, e o upsert de antes reescrevia
+        // tenant, canal e usuario da linha de outra superficie para os da
+        // API — o que a readocao REST aceita depois de um restart.
+        // `set_agent_mode` so mexe no metadado.
+        let gravado = store
+            .insert_session_if_absent(&session_id, TENANT_DA_API, CANAL_DA_API, "anonymous")
+            .and_then(|_| store.set_agent_mode(&session_id, &mode_str));
+        match gravado {
             Ok(_) => {
                 return (
                     StatusCode::OK,
@@ -1950,6 +1968,236 @@ mod sessao_apos_restart_tests {
         let (status, corpo) = apagar(&depois, &sid).await;
         assert_eq!(status, StatusCode::OK, "{corpo}");
         assert!(tokens(&depois).await.is_empty(), "os tokens ficaram");
+    }
+
+    /// Sessao encerrada pelo `DELETE` nao volta do disco: antes desta
+    /// readocao, depois que a memoria a esquecia (TTL ou restart), o
+    /// historico e o `send_message` davam `404`; revogar os tokens so esvazia
+    /// `session_tokens`, e sem a marca de logout a linha ficava igual a de
+    /// uma sessao REST viva. A sessao vizinha, nunca apagada, segue voltando.
+    #[tokio::test]
+    async fn sessao_encerrada_pelo_delete_nao_volta_depois_do_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (encerrada, viva) = {
+            let antes = processo(dir.path(), None);
+            let encerrada = criar_sessao_rest(&antes).await;
+            let viva = criar_sessao_rest(&antes).await;
+            for sid in [&encerrada, &viva] {
+                antes
+                    .persist_turn(sid, Some("api"), None, "pergunta-antes", "resposta-antes")
+                    .await;
+            }
+            let (status, corpo) = apagar(&antes, &encerrada).await;
+            assert_eq!(status, StatusCode::OK, "{corpo}");
+            (encerrada, viva)
+        };
+
+        let depois = processo(dir.path(), Some(Arc::new(ProviderQueAnota::default())));
+        let antes_das_rotas = marcas(&depois, &encerrada).await;
+        let (status, corpo) = historico(&depois, &encerrada).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        assert_eq!(
+            corpo["error"], "session not found",
+            "o 404 de id desconhecido"
+        );
+        let (status, corpo) = mandar(&depois, &encerrada, "tentativa").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        let (status, corpo) = apagar(&depois, &encerrada).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        assert!(
+            !depois.sessions.contains_key(&encerrada),
+            "a sessao encerrada foi para a memoria"
+        );
+        assert_eq!(
+            marcas(&depois, &encerrada).await,
+            antes_das_rotas,
+            "a recusa nao escreve na sessao"
+        );
+
+        let (status, corpo) = historico(&depois, &viva).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(textos(&corpo), vec!["pergunta-antes", "resposta-antes"]);
+    }
+
+    /// A varredura de TTL tem o mesmo efeito que o restart: a sessao
+    /// encerrada que a memoria esqueceu nao volta — nem a que so existia em
+    /// memoria quando o `DELETE` chegou, e que uma leitura depois do logout
+    /// levou ao banco.
+    #[tokio::test]
+    async fn sessao_encerrada_sem_linha_no_banco_tambem_nao_volta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = processo(dir.path(), None);
+        // So em memoria: sem modo e sem token, nada foi gravado ainda.
+        let sid = st.create_session();
+        assert_eq!(linha(&st, &sid).await, None, "pre-condicao: sem linha");
+
+        let (status, corpo) = apagar(&st, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        // Em memoria, a sessao encerrada segue legivel, como sempre foi. A
+        // linha que existe agora nasceu com a marca no `DELETE`; sem isso, a
+        // hidratacao desta leitura a criaria sem ela.
+        let (status, corpo) = historico(&st, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(
+            linha(&st, &sid).await,
+            Some((CANAL_DA_API.to_string(), "default".to_string(), 0))
+        );
+
+        // A varredura de TTL a esquece.
+        st.sessions.remove(&sid);
+        let (status, corpo) = historico(&st, &sid).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        assert!(!st.sessions.contains_key(&sid));
+    }
+
+    /// A marca de logout que nao pode ser gravada nao vira `ok`: os tokens
+    /// saem mesmo assim (a revogacao vem antes), e a resposta diz que o
+    /// logout nao ficou gravado, sem ecoar o erro do banco.
+    #[tokio::test]
+    async fn delete_sem_gravar_o_logout_responde_500_com_os_tokens_revogados() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = processo(dir.path(), None);
+        let sid = criar_sessao_rest(&st).await;
+        {
+            let store = st.session_store.as_ref().expect("store").lock().await;
+            store
+                .connection()
+                .execute_batch(
+                    "CREATE TRIGGER sessions_somente_leitura BEFORE UPDATE ON sessions
+                     BEGIN SELECT RAISE(ABORT, 'somente leitura'); END;",
+                )
+                .expect("trigger");
+        }
+        let (status, corpo) = apagar(&st, &sid).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{corpo}");
+        assert_eq!(corpo["error"], "failed to record logout");
+        let store = st.session_store.as_ref().expect("store").lock().await;
+        let s = store
+            .get_session_surfaces(&sid)
+            .expect("ler")
+            .expect("linha");
+        assert!(s.token_sources.is_empty(), "os tokens ficaram: {s:?}");
+        assert!(!s.api_logout);
+    }
+
+    /// `POST /api/mode/select` com o `X-Session-Id` de uma linha de outra
+    /// superficie so grava o modo: o upsert de antes reescrevia tenant, canal
+    /// e usuario para os da API, e a sessao do WhatsApp ainda sem mensagem
+    /// (ou a de outro tenant) passava a ser readotada pela rota REST depois
+    /// do restart.
+    #[tokio::test]
+    async fn mode_select_nao_reetiqueta_a_linha_de_outra_superficie() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ids = ["whatsapp-5511999990000", "outro-tenant-vazio"];
+        let linhas_apos_o_modo = {
+            let antes = processo(dir.path(), None);
+            {
+                let store = antes.session_store.as_ref().expect("store").lock().await;
+                store
+                    .upsert_session(ids[0], "whatsapp", "5511999990000", &serde_json::json!({}))
+                    .expect("sessao do whatsapp");
+                store
+                    .upsert_session_with_tenant(
+                        ids[1],
+                        "tenant-a",
+                        "api",
+                        "anonymous",
+                        &serde_json::json!({}),
+                    )
+                    .expect("sessao de outro tenant");
+            }
+            let mut linhas = Vec::new();
+            for id in ids {
+                let mut headers = HeaderMap::new();
+                headers.insert("x-session-id", HeaderValue::from_static(id));
+                let (status, corpo) = em_json(
+                    select_mode(
+                        State(Arc::clone(&antes)),
+                        headers,
+                        Json(SelectModeRequest {
+                            mode: "search".to_string(),
+                        }),
+                    )
+                    .await
+                    .into_response(),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{id}: {corpo}");
+                let store = antes.session_store.as_ref().expect("store").lock().await;
+                assert_eq!(
+                    store.get_chosen_agent_mode(id).expect("ler"),
+                    Some("search".to_string()),
+                    "{id}: o modo foi gravado"
+                );
+                drop(store);
+                linhas.push(linha(&antes, id).await);
+            }
+            linhas
+        };
+        assert_eq!(
+            linhas_apos_o_modo,
+            vec![
+                Some(("whatsapp".to_string(), "default".to_string(), 0)),
+                Some(("api".to_string(), "tenant-a".to_string(), 0)),
+            ],
+            "o /api/mode/select reetiquetou a linha"
+        );
+
+        let depois = processo(dir.path(), Some(Arc::new(ProviderQueAnota::default())));
+        for id in ids {
+            for (rota, (status, corpo)) in [
+                ("history", historico(&depois, id).await),
+                ("messages", mandar(&depois, id, "tentativa").await),
+                ("delete", apagar(&depois, id).await),
+            ] {
+                assert_eq!(status, StatusCode::NOT_FOUND, "{id} {rota}: {corpo}");
+            }
+            assert!(
+                !depois.sessions.contains_key(id),
+                "{id}: foi para a memoria"
+            );
+        }
+        let store = depois.session_store.as_ref().expect("store").lock().await;
+        assert_eq!(
+            store
+                .get_session_surfaces(ids[0])
+                .expect("ler")
+                .map(|s| s.channel_id),
+            Some("whatsapp".to_string())
+        );
+    }
+
+    /// O id que ainda nao existe continua ganhando a linha que o
+    /// `set_agent_mode` exige, com os valores da API — so a linha que ja
+    /// existe deixou de ser reescrita.
+    #[tokio::test]
+    async fn mode_select_ainda_cria_a_linha_que_falta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = processo(dir.path(), None);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-session-id", HeaderValue::from_static("nova-do-modo"));
+        let (status, corpo) = em_json(
+            select_mode(
+                State(Arc::clone(&st)),
+                headers,
+                Json(SelectModeRequest {
+                    mode: "search".to_string(),
+                }),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(
+            linha(&st, "nova-do-modo").await,
+            Some((CANAL_DA_API.to_string(), "default".to_string(), 0))
+        );
+        let store = st.session_store.as_ref().expect("store").lock().await;
+        assert_eq!(
+            store.get_chosen_agent_mode("nova-do-modo").expect("ler"),
+            Some("search".to_string())
+        );
     }
 
     /// Banco ilegivel: nada e readotado e a resposta diz que falhou, sem

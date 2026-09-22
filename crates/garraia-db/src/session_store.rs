@@ -52,6 +52,14 @@ pub struct SessionSurfaces {
     /// Ha mensagem cujo metadado nao e JSON legivel (ou e `NULL`): dela nao
     /// da para dizer quem a gravou.
     pub unreadable_message_metadata: bool,
+    /// `sessions.metadata` carrega a marca de logout que o
+    /// `DELETE /api/sessions/{id}` grava ([`SessionStore::mark_api_logout`]).
+    /// Nao e superficie: e o registro de que a sessao foi encerrada, e so
+    /// cresce — nenhum gravador de metadado a remove.
+    pub api_logout: bool,
+    /// `sessions.metadata` nao e JSON legivel (ou e `NULL`): dela nao da para
+    /// dizer se ha a marca de logout.
+    pub unreadable_session_metadata: bool,
 }
 
 /// Persistent storage for conversation sessions and message history.
@@ -880,18 +888,27 @@ impl SessionStore {
     /// avalia na ordem, entao um metadado quebrado nunca chega ao
     /// `json_extract` (que falharia a consulta inteira) — ele so liga
     /// `unreadable_message_metadata`. O `CAST` cobre um `channel_id` gravado
-    /// como numero.
+    /// como numero. A marca de logout da linha segue a mesma guarda: com o
+    /// metadado da sessao ilegivel, liga `unreadable_session_metadata` e nunca
+    /// chega ao `json_type`.
     pub fn get_session_surfaces(&self, session_id: &str) -> Result<Option<SessionSurfaces>> {
-        let linha: Option<(String, String)> = self
+        let linha: Option<(String, String, i64, i64)> = self
             .conn
             .query_row(
-                "SELECT tenant_id, channel_id FROM sessions WHERE id = ?1",
-                params![session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                "SELECT tenant_id,
+                        channel_id,
+                        CASE WHEN json_valid(metadata) THEN 0 ELSE 1 END,
+                        CASE WHEN json_valid(metadata)
+                             THEN json_type(metadata, ?2) IS NOT NULL
+                             ELSE 0
+                        END
+                 FROM sessions WHERE id = ?1",
+                params![session_id, Self::API_LOGOUT_PATH],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(|e| Error::Database(format!("failed to read session row: {e}")))?;
-        let Some((tenant_id, channel_id)) = linha else {
+        let Some((tenant_id, channel_id, metadado_ilegivel, logout)) = linha else {
             return Ok(None);
         };
 
@@ -944,7 +961,94 @@ impl SessionStore {
             token_sources,
             message_channels,
             unreadable_message_metadata,
+            api_logout: logout != 0,
+            unreadable_session_metadata: metadado_ilegivel != 0,
         }))
+    }
+
+    /// A chave de `sessions.metadata` que marca a sessao encerrada pelo
+    /// `DELETE /api/sessions/{id}`.
+    pub const API_LOGOUT: &'static str = "api_logout";
+
+    /// O caminho JSON de [`Self::API_LOGOUT`], para o `json_type` de
+    /// [`Self::get_session_surfaces`] (vai por bind, nao por concatenacao).
+    const API_LOGOUT_PATH: &'static str = "$.api_logout";
+
+    /// Grava em `sessions.metadata` que a sessao foi encerrada pelo `DELETE`
+    /// da superficie REST — e e so isso que ela muda.
+    ///
+    /// # Por que existe
+    ///
+    /// O `DELETE /api/sessions/{id}` revoga os tokens e desconecta a sessao
+    /// em memoria, e a varredura de TTL a esquece depois. Revogar so esvazia
+    /// `session_tokens`: sem marca no banco, a linha de uma sessao encerrada
+    /// ficava identica a de uma sessao REST nunca usada com token, e a
+    /// readocao do disco a trazia de volta, servindo o historico inteiro de
+    /// uma sessao que o dono tinha fechado.
+    ///
+    /// # O que muda — e o que nao muda
+    ///
+    /// Com a linha existente, so o metadado recebe a chave (merge do RFC 7396
+    /// por `json_patch`, como no upsert) e `updated_at` anda. `tenant_id`,
+    /// `channel_id` e `user_id` **nao** sao reescritos: o `DELETE` alcanca
+    /// sessao em memoria de qualquer superficie, e reetiqueta-la seria
+    /// mudar a conta de quem a sessao e. Metadado ilegivel vira `{}` antes do
+    /// patch, e a marca entra do mesmo jeito.
+    ///
+    /// Sem linha (a sessao so existia em memoria), a linha nasce com os
+    /// valores recebidos e a marca: a hidratacao seguinte da mesma sessao
+    /// mescla metadado e nunca a apaga, entao uma leitura depois do logout
+    /// nao cria uma linha sem ela.
+    pub fn mark_api_logout(
+        &self,
+        session_id: &str,
+        tenant_id: &str,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Result<()> {
+        let marca = serde_json::json!({ Self::API_LOGOUT: true }).to_string();
+        self.conn
+            .execute(
+                "INSERT INTO sessions (id, tenant_id, channel_id, user_id, metadata)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                   metadata = json_patch(
+                       CASE WHEN json_valid(sessions.metadata)
+                            THEN sessions.metadata
+                            ELSE '{}' END,
+                       excluded.metadata),
+                   updated_at = datetime('now')",
+                params![session_id, tenant_id, channel_id, user_id, marca],
+            )
+            .map_err(|e| Error::Database(format!("failed to mark session logout: {e}")))?;
+        Ok(())
+    }
+
+    /// Cria a linha da sessao se ela nao existe; se existe, nao toca em nada.
+    ///
+    /// Devolve `true` quando criou. E o que precisa quem so quer garantir a
+    /// linha antes de gravar um campo do metadado (o `set_agent_mode` falha
+    /// sem ela) sem **reetiquetar** a sessao: o
+    /// [`Self::upsert_session_with_tenant`] sobrescreve `tenant_id`,
+    /// `channel_id` e `user_id` no conflito, e chamado com os valores de uma
+    /// superficie sobre a linha de outra, muda a conta de quem ela e.
+    pub fn insert_session_if_absent(
+        &self,
+        session_id: &str,
+        tenant_id: &str,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Result<bool> {
+        let criadas = self
+            .conn
+            .execute(
+                "INSERT INTO sessions (id, tenant_id, channel_id, user_id, metadata)
+                 VALUES (?1, ?2, ?3, ?4, '{}')
+                 ON CONFLICT(id) DO NOTHING",
+                params![session_id, tenant_id, channel_id, user_id],
+            )
+            .map_err(|e| Error::Database(format!("failed to insert session: {e}")))?;
+        Ok(criadas > 0)
     }
 
     /// Uma coluna `source` de uma consulta com `?1 = session_id`, sem
@@ -2367,6 +2471,8 @@ mod tests {
         assert!(s.token_sources.is_empty(), "{s:?}");
         assert!(s.message_channels.is_empty(), "{s:?}");
         assert!(!s.unreadable_message_metadata);
+        assert!(!s.api_logout, "sessao nunca encerrada");
+        assert!(!s.unreadable_session_metadata);
 
         let agora = chrono::Utc::now();
         for (texto, meta) in [
@@ -2442,6 +2548,167 @@ mod tests {
                 .expect("limpar");
         }
         assert_eq!(contar_sessoes(&store), 1, "ler nao cria linha nenhuma");
+    }
+
+    /// `(tenant_id, channel_id, user_id, metadata)` da linha, direto do banco.
+    fn linha_crua(store: &SessionStore, id: &str) -> (String, String, String, Option<String>) {
+        store
+            .conn
+            .query_row(
+                "SELECT tenant_id, channel_id, user_id, metadata FROM sessions WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("a linha existe")
+    }
+
+    /// A marca de logout do `DELETE` REST: `get_session_surfaces` a le, ela
+    /// so mexe no metadado (nem tenant, nem canal, nem usuario), preserva o
+    /// que ja estava la, sobrevive ao upsert da hidratacao seguinte e entra
+    /// ate por cima de metadado ilegivel ou `null`.
+    #[test]
+    fn marca_de_logout_da_api_so_mexe_no_metadado_e_fica() {
+        let store = SessionStore::in_memory().expect("store");
+        store
+            .upsert_session_with_tenant("s", "tenant-a", "whatsapp", "5511", &serde_json::json!({}))
+            .expect("sessao");
+        store.set_agent_mode("s", "search").expect("modo");
+
+        store
+            .mark_api_logout("s", "default", "api", "anonymous")
+            .expect("marcar");
+        let s = store
+            .get_session_surfaces("s")
+            .expect("ler")
+            .expect("existe");
+        assert!(s.api_logout, "{s:?}");
+        assert!(!s.unreadable_session_metadata);
+        let (tenant, canal, usuario, _) = linha_crua(&store, "s");
+        assert_eq!(
+            (tenant.as_str(), canal.as_str(), usuario.as_str()),
+            ("tenant-a", "whatsapp", "5511"),
+            "a marca nao reetiqueta a linha"
+        );
+        assert_eq!(
+            store.get_chosen_agent_mode("s").expect("ler"),
+            Some("search".to_string()),
+            "o resto do metadado fica"
+        );
+
+        // A hidratacao seguinte (upsert com `{}` e com a chave de
+        // continuidade) e o modo gravado depois nao apagam a marca.
+        for meta in [
+            serde_json::json!({}),
+            serde_json::json!({ "continuity_key": "bus:shared-global" }),
+        ] {
+            store
+                .upsert_session("s", "api", "anonymous", &meta)
+                .expect("upsert");
+        }
+        store.set_agent_mode("s", "code").expect("modo");
+        store.set_session_goal("s", "u", "meta").expect("goal");
+        store.clear_agent_mode("s").expect("limpar modo");
+        assert!(
+            store
+                .get_session_surfaces("s")
+                .expect("ler")
+                .expect("existe")
+                .api_logout,
+            "um gravador de metadado apagou a marca"
+        );
+
+        // Sessao que so existia em memoria: a linha nasce com a marca.
+        store
+            .mark_api_logout("so-memoria", "default", "api", "anonymous")
+            .expect("marcar");
+        let (tenant, canal, usuario, _) = linha_crua(&store, "so-memoria");
+        assert_eq!(
+            (tenant.as_str(), canal.as_str(), usuario.as_str()),
+            ("default", "api", "anonymous")
+        );
+        assert!(
+            store
+                .get_session_surfaces("so-memoria")
+                .expect("ler")
+                .expect("existe")
+                .api_logout
+        );
+
+        // Metadado ilegivel, `NULL` e `null`: a leitura nao falha, diz que
+        // nao da para ler, e a marca entra por cima de qualquer um deles.
+        for (id, meta) in [
+            ("quebrado", Some("{quebrado")),
+            ("nulo-sql", None),
+            ("nulo-json", Some("null")),
+        ] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO sessions (id, tenant_id, channel_id, user_id, metadata)
+                     VALUES (?1, 'default', 'api', 'anonymous', ?2)",
+                    params![id, meta],
+                )
+                .expect("linha com metadado estranho");
+            let s = store
+                .get_session_surfaces(id)
+                .expect("ler")
+                .expect("existe");
+            assert!(!s.api_logout, "{id}");
+            assert_eq!(
+                s.unreadable_session_metadata,
+                meta != Some("null"),
+                "{id}: `null` e JSON legivel, sem a marca"
+            );
+            store
+                .mark_api_logout(id, "default", "api", "anonymous")
+                .expect("marcar");
+            let s = store
+                .get_session_surfaces(id)
+                .expect("ler")
+                .expect("existe");
+            assert!(
+                s.api_logout && !s.unreadable_session_metadata,
+                "{id}: {s:?}"
+            );
+        }
+    }
+
+    /// `insert_session_if_absent` cria a linha que falta e nao toca na que
+    /// existe — nem tenant, nem canal, nem usuario, nem metadado.
+    #[test]
+    fn inserir_se_ausente_nao_reetiqueta_linha_existente() {
+        let store = SessionStore::in_memory().expect("store");
+        store
+            .upsert_session_with_tenant(
+                "whatsapp-5511",
+                "tenant-a",
+                "whatsapp",
+                "5511",
+                &serde_json::json!({ "k": "v" }),
+            )
+            .expect("sessao");
+        let antes = linha_crua(&store, "whatsapp-5511");
+        assert!(
+            !store
+                .insert_session_if_absent("whatsapp-5511", "default", "api", "anonymous")
+                .expect("inserir")
+        );
+        assert_eq!(linha_crua(&store, "whatsapp-5511"), antes);
+
+        assert!(
+            store
+                .insert_session_if_absent("nova", "default", "api", "anonymous")
+                .expect("inserir")
+        );
+        assert_eq!(
+            linha_crua(&store, "nova"),
+            (
+                "default".to_string(),
+                "api".to_string(),
+                "anonymous".to_string(),
+                Some("{}".to_string())
+            )
+        );
     }
 
     #[test]

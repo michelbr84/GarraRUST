@@ -1,4 +1,4 @@
-- **Sessao REST sobrevive ao restart do gateway: `GET /api/sessions/{id}/history`, `POST .../messages` e `DELETE /api/sessions/{id}` deixam de responder 404 para sessao que esta no `sessions.db`.**
+- **Sessao REST sobrevive ao restart do gateway: `GET /api/sessions/{id}/history`, `POST .../messages` e `DELETE /api/sessions/{id}` deixam de responder 404 para sessao que esta no `sessions.db` (#1372).**
   Os tres handlers so olhavam o mapa em memoria, que nasce vazio a cada
   subida, e davam `{"error":"session not found"}` antes da hidratacao que
   carregaria as mensagens do disco (achado do smoke de instalacao limpa da
@@ -14,3 +14,15 @@
   500 sem readotar nada. O gate de `api_key` e o `origin_guard` rodam antes
   do handler e nao mudam. O `working_dir` da sessao continua so em memoria:
   depois do restart a sessao REST volta sem ele.
+  Sessao encerrada pelo `DELETE` nao volta: revogar os tokens so esvaziava
+  `session_tokens`, e a linha de uma sessao encerrada ficava igual a de uma
+  viva. O `DELETE` agora grava `api_logout` no metadado da linha (so o
+  metadado; tenant, canal e usuario ficam) e a readocao recusa quem a
+  carrega com o mesmo 404 de id desconhecido, como era antes desta mudanca
+  depois do TTL ou do restart. Se a marca nao pode ser gravada, o `DELETE`
+  responde 500 `failed to record logout` em vez de `ok`, com os tokens ja
+  revogados. E `POST /api/mode/select` deixa de reescrever tenant, canal e
+  usuario da linha que ja existe: o upsert com o `X-Session-Id` de qualquer
+  id reetiquetava a sessao de outra superficie (uma `whatsapp-<numero>` ainda
+  sem mensagem, por exemplo) como da API, e a readocao passava a aceita-la.
+  Agora ele so cria a linha que falta e grava apenas o modo.

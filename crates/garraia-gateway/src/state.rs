@@ -34,7 +34,7 @@ pub const CANAL_DA_API: &str = "api";
 /// O tenant de toda sessao que a superficie REST cria: `POST /api/sessions`
 /// passa por [`AppState::create_session`], que usa o de
 /// [`AppState::create_session_with_id`].
-const TENANT_DA_API: &str = "default";
+pub(crate) const TENANT_DA_API: &str = "default";
 
 /// O que [`AppState::sessao_da_api`] encontrou.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,8 +44,9 @@ pub enum SessaoDaApi {
     /// Estava so no `sessions.db`, gravada so pela superficie REST, e voltou
     /// para a memoria.
     Readotada,
-    /// Nao existe, ou existe mas nao e so da superficie REST — que a rota
-    /// REST nao alcanca enquanto a sessao nao esta em memoria.
+    /// Nao existe, existe mas nao e so da superficie REST — que a rota REST
+    /// nao alcanca enquanto a sessao nao esta em memoria —, ou foi encerrada
+    /// pelo `DELETE`: nos tres casos, o mesmo `404` de id desconhecido.
     NaoEncontrada,
 }
 
@@ -75,6 +76,20 @@ pub fn sessao_so_da_api(s: &garraia_db::SessionSurfaces) -> bool {
             .iter()
             .chain(&s.message_channels)
             .all(|superficie| superficie == CANAL_DA_API)
+}
+
+/// Se a rota REST pode readotar esta sessao do disco: [`sessao_so_da_api`] e
+/// **nao encerrada** pelo `DELETE /api/sessions/{id}`.
+///
+/// O `DELETE` revoga os tokens, e revogar so esvazia `session_tokens`: sem
+/// mais nada, a linha de uma sessao encerrada ficava identica a de uma sessao
+/// REST viva, e a readocao servia o historico inteiro de uma sessao que o
+/// dono tinha fechado. A marca de logout
+/// ([`garraia_db::SessionStore::mark_api_logout`]) e o que as separa. Metadado
+/// da linha ilegivel recusa tambem: dele nao da para dizer se ha a marca, e na
+/// duvida a sessao fica fechada.
+pub fn sessao_readotavel_pela_api(s: &garraia_db::SessionSurfaces) -> bool {
+    sessao_so_da_api(s) && !s.api_logout && !s.unreadable_session_metadata
 }
 
 /// Shared application state accessible from all request handlers.
@@ -874,9 +889,10 @@ impl AppState {
     /// propria superficie; trazer ela do disco por aqui seria alcance novo —
     /// e a do `garra chat --persist` nunca esteve na memoria do gateway. Por
     /// isso so volta a sessao cujas marcas no banco sao todas as que a
-    /// superficie REST grava (ver [`sessao_so_da_api`]). A de outra
-    /// superficie segue `NaoEncontrada` ate a propria superficie a trazer de
-    /// volta, e dai em diante e tratada exatamente como era em memoria.
+    /// superficie REST grava e que o `DELETE` nao encerrou (ver
+    /// [`sessao_readotavel_pela_api`]). A de outra superficie segue
+    /// `NaoEncontrada` ate a propria superficie a trazer de volta, e dai em
+    /// diante e tratada exatamente como era em memoria.
     ///
     /// A readocao so pos na memoria o que o banco ja dizia — tenant
     /// [`TENANT_DA_API`] e canal [`CANAL_DA_API`] — e nao escreve no banco:
@@ -890,13 +906,14 @@ impl AppState {
     /// prazo: sessao desconectada sai pelo TTL, e o token e o que prova dono
     /// depois disso. Aqui a prova nunca foi o token — nenhuma rota HTTP valida
     /// token de sessao (ver `refuse_inert_auth_flag` em `server.rs`) — e a
-    /// sessao REST nao desconecta sozinha: so o `DELETE` a marca assim, e ele
+    /// sessao REST nao desconecta sozinha: so o `DELETE` a marca assim. Ele
     /// revoga os tokens sem apagar a conversa, que seguia legivel por aqui
-    /// (e cada leitura a reconectava). A unica diferenca e depois do TTL: a
-    /// sessao apagada e esquecida pela memoria dava `404`, e agora volta do
-    /// disco como qualquer sessao REST — o `DELETE` e logout dos tokens, nunca
-    /// foi bloqueio de leitura. O que protege estas rotas e o gate de
-    /// `api_key` (#1045/#1261), que roda antes do handler e nao muda aqui.
+    /// enquanto estava em memoria (e cada leitura a reconectava) — isso nao
+    /// muda. Depois que a memoria a esquece (TTL ou restart), a sessao
+    /// encerrada dava `404`, e continua dando: o `DELETE` grava a marca de
+    /// logout no banco ([`Self::registrar_logout_da_api`]) e a readocao recusa
+    /// quem a carrega. O que protege estas rotas e o gate de `api_key`
+    /// (#1045/#1261), que roda antes do handler e nao muda aqui.
     ///
     /// `Err` so quando o banco nao pode ser lido: ai nada e readotado, e o
     /// handler diz que falhou em vez de afirmar que a sessao nao existe.
@@ -911,11 +928,14 @@ impl AppState {
         let Some(superficies) = superficies else {
             return Ok(SessaoDaApi::NaoEncontrada);
         };
-        if !sessao_so_da_api(&superficies) {
+        if !sessao_readotavel_pela_api(&superficies) {
             // Sem o id nem o canal no log: o id de sessao de canal carrega
             // telefone (`whatsapp-<numero>`), e o `channel_id` que o Chat Sync
             // grava ao criar a sessao e o id externo (o `chat_id`).
-            tracing::debug!("sessao de outra superficie: a rota REST nao a readota do disco");
+            tracing::debug!(
+                encerrada = superficies.api_logout,
+                "sessao de outra superficie ou encerrada: a rota REST nao a readota do disco"
+            );
             return Ok(SessaoDaApi::NaoEncontrada);
         }
         // Reconfere depois do `await` do lock: outra requisicao pode ter
@@ -930,6 +950,37 @@ impl AppState {
         }
         info!("sessao REST readotada do sessions.db");
         Ok(SessaoDaApi::Readotada)
+    }
+
+    /// Grava no `sessions.db` que o `DELETE /api/sessions/{id}` encerrou esta
+    /// sessao — a marca que [`Self::sessao_da_api`] recusa depois que a
+    /// memoria a esquece.
+    ///
+    /// So o metadado da linha muda (ver
+    /// [`garraia_db::SessionStore::mark_api_logout`]): o `DELETE` alcanca
+    /// sessao em memoria de qualquer superficie, e nada dela e reetiquetado.
+    /// Sem linha no banco, ela nasce com os valores que a hidratacao REST
+    /// gravaria (o tenant da memoria, canal [`CANAL_DA_API`], usuario
+    /// `anonymous`) e a marca, para uma leitura depois do logout nao criar
+    /// uma linha sem ela. Sem banco nao ha de onde readotar, e nao ha o que
+    /// gravar.
+    ///
+    /// `Err` quando a marca nao pode ser gravada: o logout nao e duravel, e o
+    /// handler diz isso em vez de responder `ok`.
+    pub async fn registrar_logout_da_api(&self, session_id: &str) -> garraia_common::Result<()> {
+        let Some(store) = &self.session_store else {
+            return Ok(());
+        };
+        // Clonado antes do `await`: o guard do DashMap nao atravessa o lock.
+        let tenant_id = self
+            .sessions
+            .get(session_id)
+            .map(|s| s.tenant_id.clone())
+            .unwrap_or_else(|| TENANT_DA_API.to_string());
+        store
+            .lock()
+            .await
+            .mark_api_logout(session_id, &tenant_id, CANAL_DA_API, "anonymous")
     }
 
     /// Remove sessions that have been disconnected longer than the TTL.
@@ -1688,8 +1739,11 @@ mod tests {
             token_sources: um(CANAL_DA_API),
             message_channels: um(CANAL_DA_API),
             unreadable_message_metadata: false,
+            api_logout: false,
+            unreadable_session_metadata: false,
         };
         assert!(sessao_so_da_api(&so_api));
+        assert!(sessao_readotavel_pela_api(&so_api));
         assert!(
             sessao_so_da_api(&garraia_db::SessionSurfaces {
                 token_sources: BTreeSet::new(),
@@ -1764,6 +1818,29 @@ mod tests {
         ];
         for (caso, s) in casos {
             assert!(!sessao_so_da_api(&s), "{caso}: {s:?}");
+            assert!(!sessao_readotavel_pela_api(&s), "{caso}: {s:?}");
+        }
+
+        // So da API, mas encerrada pelo `DELETE` — ou sem como saber: a
+        // superficie e a da API e mesmo assim nao volta do disco.
+        for (caso, s) in [
+            (
+                "marca de logout",
+                garraia_db::SessionSurfaces {
+                    api_logout: true,
+                    ..so_api.clone()
+                },
+            ),
+            (
+                "metadado da linha ilegivel",
+                garraia_db::SessionSurfaces {
+                    unreadable_session_metadata: true,
+                    ..so_api.clone()
+                },
+            ),
+        ] {
+            assert!(sessao_so_da_api(&s), "{caso}: a superficie e a da API");
+            assert!(!sessao_readotavel_pela_api(&s), "{caso}: {s:?}");
         }
     }
 
