@@ -375,10 +375,10 @@ esquecido.
   (`crates/garraia-cli/src/mcp_agent.rs`), que dirige a montagem real do
   `garra_agent` com um provider de stub; e o escape pelo container tem o
   seu (`crates/garraia-agents/tests/sandbox_docker_escape.rs`, Docker real).
-- `garraia-tools` tem uma segunda implementação de `RepoSearchTool`/`ListDirTool`
-  com `root_path`, consumida só por `garraia-runtime::executor`, que o gateway
-  não usa para tools (só `RuntimeSettings`). Fora do alcance do agente hoje;
-  se entrar, entra com jail.
+- A segunda implementação de `RepoSearchTool`/`ListDirTool` (sem jail), que
+  vivia em `garraia-tools` e só era consumida por `garraia-runtime::executor`,
+  foi removida junto com as duas crates na #1226. Só as tools de
+  `garraia-agents` existem.
 
 **Varredura sistêmica de argv injection (#1270, 2026-09-19)** — inventário de
 todo `std::process::Command` nas tools, com argumento vindo de campo de tool
@@ -393,7 +393,8 @@ call do modelo, cobrindo o pedido do sign-off do PR #1268:
 | `bash` | `bash -c` / `powershell -Command` | o comando inteiro | a classe não se aplica — o comando é **um** argv só, nunca posição de flag; contenção é a do sandbox e do jail (#1075, #1225) |
 
 Demais ocorrências de `Command::new` no inventário são fixture `#[cfg(test)]`
-(`repo_dir.rs`), e `crates/garraia-tools/` não monta processo nenhum.
+(`repo_dir.rs`); a `crates/garraia-tools/`, que não montava processo nenhum,
+foi removida na #1226.
 **Zero achados novos.** Os filhos herdam só a allowlist de env
 (`R3_ENV_ALLOWLIST`) e têm stdin nulo em todas as sites acima.
 

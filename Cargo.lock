@@ -3662,7 +3662,6 @@ dependencies = [
  "garraia-glob",
  "garraia-hardware",
  "garraia-learning",
- "garraia-runtime",
  "garraia-security",
  "garraia-skills",
  "garraia-storage",
@@ -3804,19 +3803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "garraia-runtime"
-version = "0.1.0"
-dependencies = [
- "garraia-common",
- "garraia-tools",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "garraia-security"
 version = "0.4.4"
 dependencies = [
@@ -3896,18 +3882,6 @@ dependencies = [
  "tracing-test",
  "uuid",
  "validator",
-]
-
-[[package]]
-name = "garraia-tools"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "garraia-common",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
 ]
 
 [[package]]
@@ -7773,7 +7747,6 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "futures-channel",
  "futures-core",
  "futures-util",
  "http 1.4.1",
@@ -11069,14 +11042,20 @@ dependencies = [
  "base64 0.22.1",
  "mime_guess",
  "regex",
- "reqwest 0.12.28",
  "rust-embed",
  "serde",
  "serde_json",
  "url",
  "utoipa",
+ "utoipa-swagger-ui-vendored",
  "zip 3.0.0",
 ]
+
+[[package]]
+name = "utoipa-swagger-ui-vendored"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2eebbbfe4093922c2b6734d7c679ebfebd704a0d7e56dfcb0d05818ce28977d"
 
 [[package]]
 name = "uuid"

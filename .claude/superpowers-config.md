@@ -61,9 +61,7 @@ garraia-common (base)
 ├── garraia-plugins (depends on common)
 ├── garraia-media
 ├── garraia-voice
-├── garraia-tools
 ├── garraia-skills
-├── garraia-runtime (depends on agents, channels)
 ├── garraia-glob
 ├── garraia-gateway (depends on most crates)
 └── garraia-cli (depends on gateway)

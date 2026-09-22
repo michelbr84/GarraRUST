@@ -63,21 +63,19 @@ migrations via `sqlx::migrate!` em Postgres real. Se falhar só localmente com
 essa mensagem, é ambiente. Diga isso explicitamente em vez de alegar que
 validou.
 
-### `utoipa-swagger-ui` — build script falha localmente
+### `utoipa-swagger-ui` — Swagger UI vem vendorizado (#1228)
 
-O `build.rs` baixa um zip do GitHub, e o proxy de egresso desta sessão bloqueia
-o domínio; o "zip" gravado é uma página de erro JSON de 378 bytes. O `ci.yml`
-já contorna pré-baixando com curl.
+O gateway compila o `utoipa-swagger-ui` com a feature `vendored`: o `build.rs`
+lê o zip embutido na crate `utoipa-swagger-ui-vendored` e **não baixa nada**,
+então build offline funciona sem preparo. O antigo contorno
+`SWAGGER_UI_DOWNLOAD_URL=file://...` (zip gerado de um clone da tag) é
+ignorado com `vendored` e não resolve mais nada — não perca tempo com ele.
 
-Para destravar localmente, **não apague o cache cegamente** (`find target -name
-'v5.17.14.zip' -delete` remove também cópias válidas de builds anteriores —
-erro já cometido). Gere o arquivo a partir do clone da tag:
-
-```bash
-git clone --depth 1 --branch v5.17.14 https://github.com/swagger-api/swagger-ui /tmp/swui
-git -C /tmp/swui archive --format=zip --prefix=swagger-ui-5.17.14/ HEAD -o /tmp/v5.17.14.zip
-export SWAGGER_UI_DOWNLOAD_URL="file:///tmp/v5.17.14.zip"
-```
+Se um build voltar a tentar baixar o Swagger UI, alguém tirou a feature
+`vendored` do `crates/garraia-gateway/Cargo.toml`; o teste
+`tests/swagger_ui_vendored.rs` do gateway falha nesse caso. A action
+`.github/actions/swagger-ui-cache` é vestigial (fica uma release, download
+best-effort) — falha nela não é causa de build quebrado.
 
 ### "No space left on device" disfarçado de erro de compilação
 

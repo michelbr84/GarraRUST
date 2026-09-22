@@ -418,15 +418,6 @@ pub fn build_router(
                 .patch(api::update_custom_mode)
                 .delete(api::delete_custom_mode),
         )
-        // Runtime endpoints - temporarily disabled
-        // .route(
-        //     "/api/runtime/run",
-        //     post(runtime_handler::run_turn_handler),
-        // )
-        // .route(
-        //     "/api/runtime/tools",
-        //     get(runtime_handler::list_tools_handler),
-        // )
         // GAR-335/339: Mobile Cloud Alpha — auth + chat endpoints
         // Auth routes with strict rate limiting (10 req/min, burst 3).
         //

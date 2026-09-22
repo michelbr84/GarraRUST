@@ -40,9 +40,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
@@ -75,9 +75,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GAR-822 for the cross build: the zip must live INSIDE the workspace
-      # (cross mounts it at the same absolute path in the container) and the
-      # env var is passed through in Cross.toml.
+      # GAR-822 for the cross build (vestigial since #1228, see the action):
+      # the zip lives INSIDE the workspace (cross mounts it at the same
+      # absolute path) and the env var is passed through in Cross.toml.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
         with:
@@ -121,9 +121,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
@@ -160,9 +160,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
@@ -195,9 +195,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
@@ -243,9 +243,9 @@ jobs:
         with:
           targets: aarch64-pc-windows-msvc
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
@@ -301,9 +301,9 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
@@ -492,9 +492,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 
@@ -565,9 +565,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # GAR-822: utoipa-swagger-ui's build.rs downloads swagger-ui at compile time
-      # and intermittently gets a truncated zip (E2E on main, 2026-09-07).
-      # The composite action pre-fetches, verifies and caches it.
+      # GAR-822 (vestigial since #1228): the gateway builds utoipa-swagger-ui with
+      # `vendored`, so its build.rs reads the embedded zip and never this cache.
+      # Kept for one release; the step soft-fails and cannot abort the job.
       - name: Cache Swagger UI zip
         uses: ./.github/actions/swagger-ui-cache
 

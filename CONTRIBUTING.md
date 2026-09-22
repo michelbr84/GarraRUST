@@ -89,8 +89,6 @@ crates/
 ├── garraia-channels/     # Adaptadores de canais (Telegram, Discord, Slack...)
 ├── garraia-agents/       # Provedores LLM + AgentRuntime
 ├── garraia-voice/        # Pipeline de voz (STT + TTS)
-├── garraia-tools/        # Trait Tool + registro de ferramentas
-├── garraia-runtime/      # Máquina de estados do executor
 ├── garraia-db/           # SQLite + busca vetorial (rusqlite)
 ├── garraia-plugins/      # Sandbox de plugins WASM (Wasmtime)
 ├── garraia-media/        # Processamento de PDF e imagens

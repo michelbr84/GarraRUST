@@ -1,6 +1,6 @@
 # Architecture Overview
 
-GarraIA is built as a Rust workspace with 24 crates, each responsible for a specific domain.
+GarraIA is built as a Rust workspace with 22 crates, each responsible for a specific domain.
 
 ## Workspace Structure
 
@@ -12,8 +12,6 @@ crates/
 ├── garraia-channels/     # Channel integrations
 ├── garraia-agents/       # LLM providers + agent runtime
 ├── garraia-voice/        # Voice pipeline (STT/TTS)
-├── garraia-tools/        # Tool trait + registry
-├── garraia-runtime/      # State machine executor
 ├── garraia-db/           # SQLite memory + vector store
 ├── garraia-plugins/     # WASM plugin sandbox
 ├── garraia-media/        # PDF/image processing

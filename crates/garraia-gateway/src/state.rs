@@ -13,7 +13,6 @@ use garraia_auth::{
 use garraia_channels::{ChannelRegistry, CommandRegistry};
 use garraia_config::{AppConfig, AuthConfig};
 use garraia_db::{ChatSessionManager, SessionStore};
-use garraia_runtime::RuntimeSettings;
 use garraia_security::{Allowlist, PairingManager};
 use secrecy::SecretString;
 use std::sync::RwLock;
@@ -91,8 +90,6 @@ pub struct AppState {
     /// handle sempre presente, `BridgeView::Unknown` diz "ninguem
     /// supervisiona", que e a verdade num gateway sem WhatsApp vinculado.
     pub whatsapp_linked: Arc<crate::bootstrap::WhatsAppLinkedRuntime>,
-    /// Runtime settings for agent execution.
-    pub runtime_settings: RuntimeSettings,
 
     // ── GAR-391c: garraia-auth wiring ──────────────────────────────────────
     // All five are `Option` so the gateway boots in fail-soft mode when
@@ -285,7 +282,6 @@ impl AppState {
             ))),
             boot_time: Instant::now(),
             whatsapp_linked: Arc::new(crate::bootstrap::WhatsAppLinkedRuntime::default()),
-            runtime_settings: RuntimeSettings::default(),
             // GAR-391c auth wiring — None until bootstrap loads AuthConfig.
             auth_provider: None,
             jwt_issuer: None,
@@ -435,11 +431,6 @@ impl AppState {
         self.config_rx = Some(rx);
     }
 
-    /// Configure the runtime settings for agent execution.
-    pub fn set_runtime_settings(&mut self, settings: RuntimeSettings) {
-        self.runtime_settings = settings;
-    }
-
     /// Register MCP tools as slash commands.
     /// This does the async work first, then registers synchronously.
     pub async fn register_mcp_tools(&self) {
@@ -451,11 +442,6 @@ impl AppState {
             let mut registry = self.command_registry.write().unwrap();
             mcp_commands::register_collected_commands(&mut registry, commands);
         }
-    }
-
-    /// Get a reference to the runtime settings.
-    pub fn runtime_settings(&self) -> &RuntimeSettings {
-        &self.runtime_settings
     }
 
     /// Check if config hot-reload watcher is active.
