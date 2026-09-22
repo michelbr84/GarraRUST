@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 FREEZE = ROOT / "freeze-baseline.py"
 
@@ -152,6 +154,20 @@ def test_adopt_with_reason_lacking_issue_ref_is_rejected(tmp_path):
     proc, out = _run(tmp_path, _current_worse(), "--adopt-current-file-metrics", "--reason", "baseline velho")
     assert proc.returncode != 0
     assert not out.exists()
+
+
+@pytest.mark.parametrize("reason", ["#0", "foo#1", "#12abc", "##", "#007"])
+def test_adopt_with_loose_issue_ref_is_rejected(tmp_path, reason):
+    proc, out = _run(tmp_path, _current_worse(), "--adopt-current-file-metrics", "--reason", reason)
+    assert proc.returncode != 0
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("reason", ["#1254", "re-baseline (#1254)", "#7: velho"])
+def test_adopt_with_real_issue_ref_is_accepted(tmp_path, reason):
+    proc, out = _run(tmp_path, _current_worse(), "--adopt-current-file-metrics", "--reason", reason)
+    assert proc.returncode == 0, proc.stderr
+    assert out.exists()
 
 
 def test_reason_without_adopt_is_rejected(tmp_path):

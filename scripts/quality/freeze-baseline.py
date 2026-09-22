@@ -27,7 +27,8 @@ gone stale (main far past it). Rules, all fail-closed:
     - Only max_file_lines, max_file_path, files_over_{700,1500,2500} and
       total_rs_files take the current values. Audit, coverage and clippy keep
       the strict ratchet above, and audit.critical stays 0.
-    - --reason is required and must reference an issue (`#123`).
+    - --reason is required and must reference an issue (`#123`; not `#0`,
+      `foo#1` or `#12abc`).
     - current-metrics.json must carry git_sha and collected_at; they are
       copied to source_git_sha / source_collected_at next to adopted_reason,
       so a reviewer can reproduce the file from that commit.
@@ -61,7 +62,9 @@ ADOPTABLE_FILE_METRICS = (
 )
 # Provenance keys written only by an audited adoption.
 ADOPTION_KEYS = ("adopted_reason", "source_git_sha", "source_collected_at")
-REASON_ISSUE_RE = re.compile(r"#\d+")
+# An issue reference is `#` + a number with no leading zero, standing on its
+# own: `#0`, `foo#1` and `#12abc` do not count as referencing an issue.
+REASON_ISSUE_RE = re.compile(r"(?<![\w#])#[1-9]\d*\b")
 
 
 class AdoptionError(ValueError):

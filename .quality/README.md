@@ -83,6 +83,35 @@ Se `frozenAt` do baseline estiver a mais de **90 dias** de `collected_at` do
 campos (ISO-8601 UTC), nunca o relógio — mesma entrada, mesmo relatório.
 Re-baseline continua sendo decisão do dono via `freeze-baseline.py`.
 
+## Re-baseline auditado (`--adopt-current-file-metrics`, #1254)
+
+Quando o baseline fica velho (a `main` passou muito dele) e as regressões de
+tamanho de arquivo são deriva, não PR, o caminho sancionado para **relaxar**
+é:
+
+```bash
+python3 scripts/quality/freeze-baseline.py current-metrics.json \
+    --adopt-current-file-metrics --reason '#NNNN'
+```
+
+- **Decisão do dono (R5).** Relaxar o baseline é trocar o que a catraca
+  protege; quem roda o comando propõe, o dono aprova o PR que promove o
+  `baseline.proposed.json`.
+- **Só métricas de tamanho de arquivo** (`max_file_lines`, `max_file_path`,
+  `files_over_{700,1500,2500}`, `total_rs_files`) adotam o valor atual.
+  `audit`, `coverage` e `clippy` seguem a catraca estrita, e `audit.critical`
+  continua 0.
+- `--reason` é obrigatório e precisa citar uma issue (`#` + número, sem zero
+  à esquerda). O `current-metrics.json` precisa ter `git_sha` e
+  `collected_at`, copiados para `source_git_sha` / `source_collected_at` ao
+  lado de `adopted_reason` — o revisor reproduz o arquivo a partir daquele
+  commit.
+- Continua escrevendo só `.quality/baseline.proposed.json`: `--seed` e um
+  `--out` igual ao `--baseline-in` são recusados.
+
+O `compare.py` não mostra `adopted_reason`; a proveniência aparece no diff do
+PR que promove o arquivo, e é lá que o revisor a confere.
+
 ## Métricas trackedas (PR-1)
 
 | Métrica | Fonte | Tipo |
