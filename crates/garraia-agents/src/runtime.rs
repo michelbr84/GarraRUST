@@ -703,7 +703,9 @@ enum DesfechoDoPrograma {
     /// - `para_o_humano` e o que sobe como resposta do turno — so o prefixo
     ///   que localiza o passo mais o pedido do passo. Nunca a saida crua dos
     ///   passos anteriores, que ficaria colada ao pedido em que o humano
-    ///   decide aprovar (F-1).
+    ///   decide aprovar (F-1). Ainda carrega o marcador do passo: quem o tira
+    ///   e o despacho do envelope, ao montar o `prompt` (W3 da v0.4.5), depois
+    ///   de ler dele a impressao digital.
     /// - `para_o_modelo` e o `ToolResult` que entra no historico: comeca
     ///   pelo MESMO texto do humano e acrescenta o relatorio parcial (passos
     ///   ja executados, `parou_no_passo`, `vars`). Sem ele o modelo nunca via
@@ -3085,7 +3087,13 @@ impl AgentRuntime {
                     tool_use_id: id.to_string(),
                     content: conteudo_para_o_modelo.unwrap_or_else(|| output.content.clone()),
                 },
-                prompt: output.content,
+                // W3 (v0.4.5): o unico lugar em que o pedido vira o texto que
+                // o humano le, nas quatro copias do loop e no `tool_program`.
+                // O marcador fica no `ToolResult` (o historico) e na
+                // `fingerprint` (o registro de pendencias) — os dois lugares
+                // de onde a aprovacao sai. No texto ele so aparecia para o
+                // usuario do canal, que nunca aprovou nada digitando-o.
+                prompt: ApprovalFingerprint::strip_marker(&output.content),
                 tool: name.to_string(),
                 fingerprint,
             };
@@ -3361,7 +3369,25 @@ impl AgentRuntime {
                         .to_string(),
                     )));
                 }
-                DispatchOutcome::Paused { prompt, .. } => {
+                DispatchOutcome::Paused {
+                    tool_result,
+                    prompt,
+                    ..
+                } => {
+                    // W3 (v0.4.5): o `prompt` do passo ja chega sem o
+                    // marcador — e o texto do humano. O envelope precisa do
+                    // pedido CRU, com o marcador: e dele que o despacho do
+                    // `tool_program` tira a `fingerprint` registrada e e ele
+                    // que o `ToolResult` do modelo carrega para o historico.
+                    // O cru e o conteudo do `ToolResult` do passo (um passo
+                    // nunca e `tool_program`, entao nao ha relatorio ali). O
+                    // `prompt` so serve de reserva: sem marcador, a pausa
+                    // nao registra nada e o humano e perguntado de novo
+                    // (fail-closed).
+                    let prompt = match tool_result {
+                        ContentBlock::ToolResult { content, .. } => content,
+                        _ => prompt,
+                    };
                     // Achado de auditoria/revisao (F-1 / importante 1): o
                     // texto do humano vira a RESPOSTA QUE ELE LE, na mesma
                     // mensagem em que decide aprovar — por isso so o prefixo
@@ -6479,12 +6505,15 @@ mod tests {
             !resposta.contains("\"steps\""),
             "o relatorio e do modelo, nao do humano: {resposta}"
         );
-        // O marcador sobrevive ao prefixo, e e o do pedido com o alvo ja
-        // substituido (`$sete` -> 7).
-        assert_eq!(
-            ApprovalFingerprint::from_marker(&resposta),
-            Some(ApprovalFingerprint::of("precisa_confirmar", "7")),
+        // O pedido e o do passo com o alvo ja substituido (`$sete` -> 7), e
+        // chega ao humano sem o marcador interno (W3 da v0.4.5).
+        assert!(
+            resposta.contains("confirme a acao perigosa em 7"),
             "{resposta}"
+        );
+        assert!(
+            !resposta.contains(crate::tools::approval::MARKER_PREFIX),
+            "o marcador e dado interno, nao texto do humano: {resposta}"
         );
         assert!(
             resposta.starts_with("[tool_program pausado no passo 2 de 4;"),
@@ -6553,6 +6582,7 @@ mod tests {
                     content: para_o_modelo,
                 },
             prompt: para_o_humano,
+            fingerprint,
             ..
         } = desfecho
         else {
@@ -6564,16 +6594,28 @@ mod tests {
 
         let pedido = ApprovalFingerprint::of("precisa_confirmar", "7");
 
-        // Humano: so o pedido.
-        assert!(para_o_humano.contains(&pedido.marker()), "{para_o_humano}");
+        // Humano: so o pedido, e sem o marcador interno (W3 da v0.4.5) — a
+        // impressao digital que o registro de pendencias guarda vem na
+        // `fingerprint`, e e a do pedido do passo.
+        assert!(
+            para_o_humano.contains("confirme a acao perigosa em 7"),
+            "{para_o_humano}"
+        );
+        assert!(
+            !para_o_humano.contains(crate::tools::approval::MARKER_PREFIX),
+            "{para_o_humano}"
+        );
+        assert_eq!(fingerprint, Some(pedido.clone()));
         assert!(
             !para_o_humano.contains("saida-crua-do-passo-0"),
             "{para_o_humano}"
         );
         assert!(!para_o_humano.contains(forjado), "{para_o_humano}");
 
-        // Modelo: o mesmo texto do humano PRIMEIRO, depois o relatorio.
-        let relatorio = para_o_modelo
+        // Modelo: o mesmo texto do humano PRIMEIRO — com o marcador, que e o
+        // que o historico precisa —, depois o relatorio.
+        let sem_marcador = ApprovalFingerprint::strip_marker(&para_o_modelo);
+        let relatorio = sem_marcador
             .strip_prefix(para_o_humano.as_str())
             .expect("o ToolResult do modelo comeca pelo texto do humano");
         let relatorio: serde_json::Value =
@@ -6714,9 +6756,9 @@ mod tests {
             "so o pedido aprovado roda, e uma vez"
         );
         assert!(executou_depois.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(
-            ApprovalFingerprint::from_marker(&resposta),
-            Some(ApprovalFingerprint::of("precisa_confirmar", "outro")),
+        assert!(
+            resposta.contains("confirme a acao perigosa em outro")
+                && !resposta.contains(crate::tools::approval::MARKER_PREFIX),
             "o segundo pedido, de outro alvo, pausa de novo: {resposta}"
         );
         assert!(
@@ -8442,8 +8484,17 @@ mod tests {
             ApprovalScope::new(canal, sessao, remetente)
         }
 
+        /// O turno pausou pedindo confirmacao: o pedido da ferramenta chegou
+        /// ao humano. E chegou **sem o marcador** (W3 da v0.4.5) — ele e dado
+        /// interno, e digita-lo nunca aprovou nada; a aprovacao sai do registro
+        /// do servidor (com escopo) ou do `ToolResult` do historico. Toda
+        /// resposta que passa por aqui, nos tres caminhos, e checada.
         fn e_pedido(resposta: &str) -> bool {
-            ApprovalFingerprint::from_marker(resposta).is_some()
+            assert!(
+                !resposta.contains(crate::tools::approval::MARKER_PREFIX),
+                "o marcador interno chegou ao texto do humano: {resposta}"
+            );
+            resposta.contains("confirme a acao perigosa em")
         }
 
         /// O bug do #1343 ponta a ponta: com o historico so em texto, o "sim"
@@ -8732,6 +8783,135 @@ mod tests {
             );
             // O registro foi consumido: outro "sim" nao aprova nada.
             assert!(rt.pending_approvals.is_empty());
+        }
+
+        /// Pede `bash {command: printenv PATH}` enquanto nao houver resultado
+        /// de tool depois da ultima mensagem humana, e guarda o conteudo de
+        /// todo resultado que viu.
+        struct PedeBash {
+            vistos: Mutex<Vec<String>>,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeBash {
+            fn provider_id(&self) -> &str {
+                "pede_bash"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let ultima_humana = request
+                    .messages
+                    .iter()
+                    .rposition(|m| {
+                        matches!(m.role, ChatRole::User)
+                            && matches!(m.content, MessagePart::Text(_))
+                    })
+                    .unwrap_or(0);
+                let mut depois = Vec::new();
+                for m in &request.messages[ultima_humana..] {
+                    if let MessagePart::Parts(p) = &m.content {
+                        for b in p {
+                            if let ContentBlock::ToolResult { content, .. } = b {
+                                depois.push(content.clone());
+                            }
+                        }
+                    }
+                }
+                let content = if depois.is_empty() {
+                    vec![ContentBlock::ToolUse {
+                        id: "t-bash".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({ "command": "printenv PATH" }),
+                    }]
+                } else {
+                    self.vistos.lock().expect("lock").extend(depois);
+                    vec![ContentBlock::Text {
+                        text: "concluido".to_string(),
+                    }]
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// **W3 da v0.4.5 com a ferramenta de verdade.** O usuario do
+        /// WhatsApp via `[CONFIRM_REQUIRED:6b2e7f7e9f135cbc] O comando a
+        /// seguir requer confirmacao...`: o marcador interno subia como
+        /// resposta do turno. Agora o texto que sai diz o comando e como
+        /// aprovar, sem o marcador — e o "sim" seguinte continua retomando,
+        /// porque a aprovacao nunca dependeu do marcador no texto.
+        #[tokio::test]
+        async fn pedido_do_bash_chega_sem_marcador_e_o_sim_ainda_retoma() {
+            let rt = AgentRuntime::new();
+            rt.register_tool(Box::new(crate::tools::BashTool::new_with_confirmation(
+                None,
+            )));
+            let provider = Arc::new(PedeBash {
+                vistos: Mutex::new(Vec::new()),
+            });
+            rt.register_provider(Arc::clone(&provider) as Arc<dyn LlmProvider>);
+            let exec = ExecContext {
+                approval_scope: escopo("whatsapp_linked", "s1", "5511888880000"),
+                ..ExecContext::default()
+            };
+            let turno = |texto: &'static str| {
+                let rt = &rt;
+                let exec = &exec;
+                async move {
+                    rt.process_message_with_agent_config(
+                        "s1",
+                        texto,
+                        &[],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        exec,
+                    )
+                    .await
+                    .expect("turno")
+                }
+            };
+
+            let pedido = turno("mostra o PATH").await;
+            assert!(
+                !pedido.contains(crate::tools::approval::MARKER_PREFIX),
+                "o marcador chegou ao humano: {pedido}"
+            );
+            assert!(
+                pedido.starts_with("O comando a seguir requer confirma"),
+                "o texto comeca pela frase, sem o marcador na frente: {pedido}"
+            );
+            assert!(pedido.contains("printenv PATH"), "{pedido}");
+            assert!(
+                pedido.contains("Responda **sim**"),
+                "o texto diz como aprovar: {pedido}"
+            );
+            assert!(!rt.pending_approvals.is_empty(), "a pausa foi registrada");
+
+            // Digitar o marcador nunca aprovou: ele nem chega ao humano, e o
+            // que aprova e a palavra.
+            let resposta = turno("sim").await;
+            assert_eq!(resposta, "concluido");
+            let vistos = provider.vistos.lock().expect("lock").clone();
+            let caminho = std::env::var("PATH").unwrap_or_default();
+            assert!(
+                vistos
+                    .iter()
+                    .any(|r| !caminho.is_empty() && r.contains(caminho.as_str())),
+                "o comando aprovado rodou e o modelo viu a saida: {vistos:?}"
+            );
+            assert!(rt.pending_approvals.is_empty(), "o pedido foi consumido");
         }
     }
 
