@@ -19,7 +19,13 @@
 //!      **mesmo sem `Origin`**: uma pagina de DNS rebinding faz um GET
 //!      same-origin, e GET same-origin nao manda `Origin`. So o `Host`
 //!      `127.0.0.1`/`localhost`/`[::1]` distingue o console do alias;
-//!    - peer loopback com `Origin` de outra origem -> `403`.
+//!    - peer loopback com `Origin` de outra origem -> `403`;
+//!    - peer loopback com cabecalho de proxy (`X-Forwarded-For`,
+//!      `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) -> `503 runs: auth not
+//!      configured`. Atras de um proxy reverso local o peer e o proxy, nao o
+//!      cliente do dono — e um proxy que reescreve o `Host` para o upstream
+//!      (o default do nginx sem `proxy_set_header Host`) passaria nos dois
+//!      testes acima com um cliente remoto.
 //!
 //!    Para ler de um celular na LAN, configure `gateway.api_key`.
 //!
@@ -70,7 +76,17 @@ const CORPO_SEM_PEER: &str = "runs: peer address unavailable";
 const CORPO_SEM_AUTH: &str = "runs: auth not configured";
 const CORPO_HOST: &str = "runs: loopback Host required without gateway.api_key";
 const CORPO_ORIGEM: &str = "runs: cross-origin request refused";
-const CORPO_QUERY: &str = "runs: invalid query (status must be one of running, done, error, cancelled, interrupted; limit must be a positive integer)";
+const CORPO_QUERY: &str = "runs: invalid query (status must be one of running, done, error, cancelled, interrupted; limit must be a non-negative integer)";
+
+/// Cabecalhos que um proxy reverso acrescenta. Qualquer um deles num pedido
+/// de peer loopback sem `gateway.api_key` significa "o peer e um proxy", e o
+/// cliente real pode estar em qualquer lugar.
+const CABECALHOS_DE_PROXY: [&str; 4] = [
+    "x-forwarded-for",
+    "x-real-ip",
+    "forwarded",
+    "x-forwarded-host",
+];
 const CORPO_SEM_LEDGER: &str = "runs: ledger unavailable";
 const CORPO_FALHA: &str = "runs: ledger read failed";
 
@@ -104,6 +120,13 @@ fn recusa(state: &SharedState, req: &Request) -> Option<Response> {
             Some(negar(StatusCode::SERVICE_UNAVAILABLE, CORPO_SEM_PEER))
         }
         Some(ip) if ip.is_loopback() => {
+            if CABECALHOS_DE_PROXY
+                .iter()
+                .any(|h| req.headers().contains_key(*h))
+            {
+                warn!("runs: loopback peer carrying proxy headers with no auth configured");
+                return Some(negar(StatusCode::SERVICE_UNAVAILABLE, CORPO_SEM_AUTH));
+            }
             let pedido = Pedido::de(req.headers(), req.uri());
             if !host_de_loopback(&pedido) {
                 warn!("runs: loopback peer behind a non-loopback Host (DNS rebinding?)");
@@ -314,6 +337,37 @@ mod tests {
             assert_eq!(st, StatusCode::FORBIDDEN, "origin={com_origin}");
             assert_eq!(v["error"], CORPO_HOST);
         }
+    }
+
+    /// Proxy reverso local que reescreve o `Host` para o upstream (nginx sem
+    /// `proxy_set_header Host`): peer 127.0.0.1, `Host` de loopback, sem
+    /// `Origin` — so o cabecalho de proxy denuncia o cliente remoto.
+    #[tokio::test]
+    async fn sem_chave_atras_de_proxy_e_503() {
+        for (cabecalho, valor) in [
+            ("x-forwarded-for", "203.0.113.9"),
+            ("x-real-ip", "203.0.113.9"),
+            ("forwarded", "for=203.0.113.9"),
+            ("x-forwarded-host", "garraia.example"),
+        ] {
+            let mut p = Pedir::local("/api/runs");
+            p.headers.push((cabecalho, valor));
+            let (st, v) = chamar(estado(None, Some(store_semeado())), p).await;
+            assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{cabecalho}: {v}");
+            assert_eq!(v["error"], CORPO_SEM_AUTH);
+            assert!(v.get("runs").is_none());
+        }
+    }
+
+    /// Com a chave, o proxy e o caminho suportado: o bearer decide.
+    #[tokio::test]
+    async fn com_chave_atras_de_proxy_le_com_bearer() {
+        let bearer = format!("Bearer {CHAVE}");
+        let mut p = Pedir::local("/api/runs");
+        p.headers.push(("x-forwarded-for", "203.0.113.9"));
+        p.headers.push(("authorization", &bearer));
+        let (st, v) = chamar(estado(Some(CHAVE), Some(store_semeado())), p).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
     }
 
     #[tokio::test]

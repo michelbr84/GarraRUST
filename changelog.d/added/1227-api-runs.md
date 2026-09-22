@@ -6,7 +6,8 @@
   completo do ledger nao sai por HTTP. O acesso e mais estrito que o resto de
   `/api/*`: com `gateway.api_key` exige o bearer; sem chave, so responde a
   peer loopback com `Host` de loopback (LAN recebe `503`, DNS rebinding
-  recebe `403`, mesmo sem `Origin`). Os leitores de instante e de previa
+  recebe `403`, mesmo sem `Origin`, e pedido com cabecalho de proxy reverso
+  como `X-Forwarded-For` recebe `503` — atras de proxy, configure a chave). Os leitores de instante e de previa
   passaram para o `garraia-db`, compartilhados com `garraia runs list`, que
   agora explica que run `interrupted` de tarefa agendada e reexecutado
   sozinho pelo scheduler — por isso nao ha `runs resume`.

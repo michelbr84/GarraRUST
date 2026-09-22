@@ -431,9 +431,15 @@ Access is stricter than the rest of `/api/*`:
 - With `gateway.api_key` set, a valid `Authorization: Bearer` is required.
   This is how a phone or another machine on the LAN reads the ledger.
 - Without `gateway.api_key`, only the local machine can read it: the peer
-  must be loopback **and** the `Host` header must be `127.0.0.1`,
-  `localhost` or `[::1]`. A LAN peer gets `503 runs: auth not configured`; a
-  loopback peer behind another `Host` name (DNS rebinding) gets `403`.
+  must be loopback **and** the `Host` header must be a loopback address
+  (`127.0.0.1`, `[::1]`, any `127.x.y.z`) or `localhost`. A LAN peer gets
+  `503 runs: auth not configured`; a loopback peer behind another `Host` name
+  (DNS rebinding) gets `403`.
+- Behind a reverse proxy, set `gateway.api_key`. Without it, a request that
+  carries `X-Forwarded-For`, `X-Real-IP`, `Forwarded` or `X-Forwarded-Host`
+  gets `503 runs: auth not configured` even from a loopback peer: the peer is
+  the proxy, not the owner's own client, and a proxy that rewrites `Host` to
+  its upstream would otherwise pass the loopback checks.
 
 ### Why there is no `runs resume`
 
