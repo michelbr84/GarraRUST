@@ -71,6 +71,15 @@ Classifique risco, monte o grafo de dependências, decida o que paraleliza. **N�
 ### 4. Execução por item
 Worktree isolada por issue. `implementer` → `test-engineer` → `code-reviewer` → (`security-auditor` se R4) → (`doc-writer` se API/setup/CHANGELOG).
 
+### 4a. Antes de comentar um achado
+
+Confirme o achado **contra a branch do PR** (`gh pr checkout <n>` numa
+worktree, ou `git show <head>:<arquivo>`), não contra a `main` nem contra o
+relatório de outro agente. Autorrelato de agente não é prova: na rodada 2 do
+dogfood (#1228) um achado recebido e repassado sem conferência apontava
+código que a branch já não tinha. Comentário público errado custa uma
+retratação.
+
 ### 5. Abertura de PR
 Uma PR por item, com:
 - o que mudou e por quê
@@ -78,6 +87,11 @@ Uma PR por item, com:
 - risco declarado
 - fragmento em `changelog.d/`
 - `Closes #n`
+
+Se as PRs vão entrar por um trem de merge (checks estritos deixam cada uma
+`BEHIND` a cada merge), **desligue o auto-merge de todas antes** de começar
+(`gh pr merge --disable-auto <n>`). Uma PR que fica verde no meio do trem
+entra sozinha e conflita o resto — ver a skill `steward`, §5b.
 
 ### 6. Relatório final
 
