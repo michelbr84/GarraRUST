@@ -100,6 +100,15 @@ pub struct ExecutionBudget {
     /// e atingido, e se ele rearmasse o aviso o modelo ganharia um aviso novo
     /// a cada 10 chamadas — um jeito de cultivar avisos em vez de parar.
     aviso_de_loop_dado: bool,
+    /// #1295 (revisao da onda A): a assinatura que recebeu o aviso.
+    ///
+    /// Sem ela, uma chamada diferente no meio (`X, X, X` avisado, `Y`, `X`)
+    /// esvaziava a janela de tres e a chamada avisada voltava a rodar mais
+    /// duas vezes antes do corte. Com ela, a proxima ocorrencia da mesma
+    /// assinatura na tarefa aborta, em sequencia ou nao. Mesmo escopo do
+    /// `aviso_de_loop_dado`: so [`Self::resetar_tarefa`] a limpa — nem o
+    /// [`Self::resetar_turno`], que esvazia a janela no meio da tarefa.
+    assinatura_avisada: Option<AssinaturaFerramenta>,
 }
 
 /// O que fazer com uma chamada que fechou a janela de loop (#1295 item 1).
@@ -205,6 +214,7 @@ impl ExecutionBudget {
             current_task_calls: 0,
             historico_assinaturas: VecDeque::with_capacity(JANELA_LOOP),
             aviso_de_loop_dado: false,
+            assinatura_avisada: None,
         }
     }
 
@@ -357,7 +367,9 @@ impl ExecutionBudget {
     /// tarefa devolve [`VereditoDeLoop::Avisar`] com a observacao corretiva
     /// e marca a tarefa; toda deteccao seguinte, da mesma assinatura ou de
     /// outro loop, devolve [`VereditoDeLoop::Abortar`] com a mensagem de
-    /// [`Self::mensagem_de_loop`]. A chamada ja foi contada no orcamento
+    /// [`Self::mensagem_de_loop`]. Depois do aviso, a assinatura avisada
+    /// aborta na proxima ocorrencia mesmo sem fechar a janela (outra
+    /// chamada no meio nao a libera). A chamada ja foi contada no orcamento
     /// (`registrar_chamada`), entao `max_per_turn`/`max_per_task` seguem
     /// valendo por cima.
     pub fn veredito_de_loop(
@@ -366,6 +378,20 @@ impl ExecutionBudget {
         input_atual: &Value,
     ) -> Option<VereditoDeLoop> {
         if !self.detectar_loop_ferramenta() {
+            // A janela nao fechou, mas a chamada avisada voltou: aborta.
+            // A chamada atual ja foi registrada, entao ela e o fim da janela.
+            let voltou_a_avisada = self
+                .assinatura_avisada
+                .as_ref()
+                .is_some_and(|avisada| self.historico_assinaturas.back() == Some(avisada));
+            if voltou_a_avisada {
+                return Some(VereditoDeLoop::Abortar(format!(
+                    "tool loop detected: {} (repetida depois do aviso de loop); \
+                     input repetido: {}",
+                    tool_name,
+                    resumo_do_input(tool_name, input_atual),
+                )));
+            }
             return None;
         }
         let mensagem = self.mensagem_de_loop(tool_name, input_atual);
@@ -373,6 +399,7 @@ impl ExecutionBudget {
             return Some(VereditoDeLoop::Abortar(mensagem));
         }
         self.aviso_de_loop_dado = true;
+        self.assinatura_avisada = self.historico_assinaturas.back().cloned();
         Some(VereditoDeLoop::Avisar(format!(
             "{mensagem}. Esta chamada NAO foi executada: as ultimas {n} chamadas \
              foram identicas. Leia o resultado ou o erro anterior e mude de \
@@ -398,6 +425,7 @@ impl ExecutionBudget {
         self.current_task_calls = 0;
         self.historico_assinaturas.clear();
         self.aviso_de_loop_dado = false;
+        self.assinatura_avisada = None;
     }
 
     /// Retorna o status atual do orçamento em formato textual.
@@ -879,6 +907,56 @@ mod tests {
             budget.veredito_de_loop("file_read", &b),
             Some(super::VereditoDeLoop::Abortar(_))
         ));
+    }
+
+    /// Revisao da onda A: uma chamada diferente no meio nao libera a
+    /// chamada avisada. `X, X, X` (aviso), `Y`, `X` aborta no segundo `X`
+    /// depois do aviso, sem esperar a janela fechar de novo.
+    #[test]
+    fn chamada_avisada_aborta_mesmo_com_outra_chamada_no_meio() {
+        let mut budget = ExecutionBudget::padrao();
+        let x = json!({"path": "/x"});
+        let y = json!({"path": "/y"});
+        tres_iguais(&mut budget, &x);
+        assert!(matches!(
+            budget.veredito_de_loop("file_read", &x),
+            Some(super::VereditoDeLoop::Avisar(_))
+        ));
+        budget.registrar_chamada("file_read", &y);
+        assert_eq!(budget.veredito_de_loop("file_read", &y), None);
+        budget.registrar_chamada("file_read", &x);
+        let Some(super::VereditoDeLoop::Abortar(msg)) = budget.veredito_de_loop("file_read", &x)
+        else {
+            panic!("a chamada avisada aborta mesmo com outra no meio");
+        };
+        assert!(msg.starts_with("tool loop detected: file_read"), "{msg}");
+        assert!(msg.contains("depois do aviso"), "{msg}");
+        assert!(msg.contains("input repetido: /x"), "{msg}");
+    }
+
+    /// Nem o reset do teto por turno libera a chamada avisada; so a tarefa
+    /// nova. A mesma ferramenta com OUTRO input segue livre.
+    #[test]
+    fn assinatura_avisada_sobrevive_ao_reset_de_turno_e_so_ela_aborta() {
+        let mut budget = ExecutionBudget::padrao();
+        let x = json!({"path": "/x"});
+        tres_iguais(&mut budget, &x);
+        let _ = budget.veredito_de_loop("file_read", &x);
+        budget.resetar_turno();
+        budget.registrar_chamada("file_read", &json!({"path": "/outro"}));
+        assert_eq!(
+            budget.veredito_de_loop("file_read", &json!({"path": "/outro"})),
+            None
+        );
+        budget.registrar_chamada("file_read", &x);
+        assert!(matches!(
+            budget.veredito_de_loop("file_read", &x),
+            Some(super::VereditoDeLoop::Abortar(_))
+        ));
+
+        budget.resetar_tarefa();
+        budget.registrar_chamada("file_read", &x);
+        assert_eq!(budget.veredito_de_loop("file_read", &x), None);
     }
 
     /// O reset do teto por turno NAO rearma o aviso; nova tarefa rearma.

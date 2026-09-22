@@ -8771,6 +8771,76 @@ mod tests {
             assert_eq!(vezes.load(Ordering::SeqCst), 2, "nunca mais de 2 execucoes");
         }
 
+        /// Revisao da onda A: `conta{x:1}` tres vezes (a terceira vira
+        /// aviso), `conta{x:2}` e `conta{x:1}` de novo. A chamada diferente
+        /// no meio nao libera a avisada: o turno aborta na volta 5, e
+        /// `conta{x:1}` roda exatamente 2 vezes (mais 1 do `x:2`).
+        struct RoteiroComOutraNoMeio {
+            voltas: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for RoteiroComOutraNoMeio {
+            fn provider_id(&self) -> &str {
+                "roteiro_outra_no_meio"
+            }
+
+            async fn complete(&self, _request: &LlmRequest) -> Result<LlmResponse> {
+                let volta = self.voltas.fetch_add(1, Ordering::SeqCst) + 1;
+                let content = match volta {
+                    1..=3 | 5 => vec![ContentBlock::ToolUse {
+                        id: format!("t-{volta}"),
+                        name: "conta".to_string(),
+                        input: serde_json::json!({ "x": 1 }),
+                    }],
+                    4 => vec![ContentBlock::ToolUse {
+                        id: "t-4".to_string(),
+                        name: "conta".to_string(),
+                        input: serde_json::json!({ "x": 2 }),
+                    }],
+                    _ => vec![ContentBlock::Text {
+                        text: "fim".to_string(),
+                    }],
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        #[tokio::test]
+        async fn chamada_avisada_aborta_mesmo_com_outra_chamada_no_meio() {
+            let rt = AgentRuntime::new();
+            let vezes = Arc::new(AtomicUsize::new(0));
+            rt.register_tool(Box::new(ToolQueConta {
+                vezes: Arc::clone(&vezes),
+            }));
+            let provider = Arc::new(RoteiroComOutraNoMeio {
+                voltas: AtomicUsize::new(0),
+            });
+            rt.register_provider(provider.clone());
+
+            let erro = turno(&rt)
+                .await
+                .expect_err("a avisada volta depois de outra chamada e aborta");
+            let msg = erro.to_string();
+            assert!(msg.contains("tool loop detected: conta"), "{msg}");
+            assert!(msg.contains("depois do aviso"), "{msg}");
+            assert_eq!(provider.voltas.load(Ordering::SeqCst), 5);
+            assert_eq!(
+                vezes.load(Ordering::SeqCst),
+                3,
+                "x:1 roda 2 vezes e x:2 uma; a avisada nunca volta a rodar"
+            );
+        }
+
         /// O modelo que muda de abordagem depois do aviso termina o turno.
         #[tokio::test]
         async fn modelo_que_muda_de_abordagem_depois_do_aviso_termina_ok() {
