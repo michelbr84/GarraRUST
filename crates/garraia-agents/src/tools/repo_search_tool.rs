@@ -3,11 +3,13 @@
 //! Searches code semantically using grep + file pattern matching.
 //! Returns matching file paths, line numbers, and context.
 
+use super::repo_dir::RepoDir;
 use super::{Tool, ToolContext, ToolOutput};
 use crate::sandbox::SandboxPolicy;
 use crate::sandbox_spawn::{Desfecho, Pedido};
 use async_trait::async_trait;
 use garraia_common::{Error, Result};
+use std::path::Path;
 use std::time::Duration;
 
 /// Maximum output size in bytes
@@ -95,6 +97,70 @@ fn findstr_args(query: &str) -> Vec<String> {
         format!("/C:{query}"),
         "*.*".to_string(),
     ]
+}
+
+/// As marcas que provam um repositorio no disco, para a recusa rapida da
+/// #1380. Nenhuma delas e lida: so a existencia do caminho importa.
+const MARCAS_DE_REPO: &[&str] = &[".git", ".hg", ".svn", ".jj"];
+
+/// O diretorio, ou algum acima dele, e um repositorio?
+///
+/// So metadado (`Path::exists`), subindo os ancestrais: quatro `stat` por
+/// nivel, alguns microssegundos no total — e o oposto do que a #1380 descreve,
+/// que era varrer a arvore inteira ate o timeout.
+///
+/// `.git` entra como arquivo tambem, e nao so como diretorio: num worktree do
+/// git (`git worktree add`) e num submodulo ele e um arquivo apontando para o
+/// `.git` real, e recusar ali seria recusar um repositorio de verdade.
+fn dentro_de_repositorio(dir: &Path) -> bool {
+    dir.ancestors()
+        .any(|d| MARCAS_DE_REPO.iter().any(|marca| d.join(marca).exists()))
+}
+
+/// A recusa rapida da #1380, ou `None` quando ha onde buscar.
+///
+/// ## O defeito
+///
+/// Sem `working_dir` a busca herda o CWD do processo (ver [`RepoDir`]). Isso
+/// tem dois significados MUITO diferentes, e o codigo tratava os dois igual:
+///
+/// (a) **`garra chat` local**, em que o CWD do processo E o repositorio do
+///     usuario. Buscar ali e exatamente o que ele pediu — este caso nao pode
+///     falhar, e por isso a funcao devolve `None` nele.
+/// (b) **Sessao sem projeto selecionado** (o celular, um canal remoto, o
+///     gateway subido por systemd de `/`): o CWD e `/`, `$HOME` ou o diretorio
+///     de dados, e a varredura recursiva ia ate estourar o timeout de 15s
+///     para no fim nao responder nada util. Quinze segundos de I/O por uma
+///     resposta que ja era conhecida no primeiro `stat`.
+///
+/// O que separa (a) de (b) e a unica pergunta barata que existe: ha um
+/// repositorio no CWD ou acima dele? A sessao COM `working_dir` nao passa por
+/// aqui — quem escolheu o diretorio decide o que ha nele, e recusar mudaria o
+/// contrato de quem ja usa a tool assim.
+fn recusa_sem_repositorio(repo: &RepoDir, timeout: Duration) -> Option<String> {
+    let RepoDir::ProcessoCwd(cwd) = repo else {
+        return None;
+    };
+    match cwd {
+        // Caso (a): o CWD do processo e (ou esta dentro de) um repositorio.
+        Some(dir) if dentro_de_repositorio(dir) => None,
+        Some(dir) => Some(format!(
+            "No active repository to search. This session has no working directory, and the \
+             process directory ({}) is not inside a repository (no {} found in it or above it). \
+             Select a project for this session (set its working directory) and search again. \
+             Refused immediately instead of scanning unrelated directories for {}s and timing \
+             out — the answer would not have been about your repository.",
+            dir.display(),
+            MARCAS_DE_REPO.join("/"),
+            timeout.as_secs()
+        )),
+        None => Some(
+            "No active repository to search. This session has no working directory and the \
+             process directory cannot be read, so there is nowhere to search. Select a project \
+             for this session (set its working directory) and search again."
+                .to_string(),
+        ),
+    }
 }
 
 /// Searches code in a repository using grep and file pattern matching.
@@ -213,7 +279,17 @@ impl Tool for RepoSearchTool {
         // o `stdin` nulo (#1266: sem ele o ripgrep busca no stdin herdado e
         // fica pendurado) e a allowlist de env (#1075 R3: o
         // RIPGREP_CONFIG_PATH do pai nao alcanca o rg).
-        let cwd = context.working_dir.as_deref().map(std::path::Path::new);
+        //
+        // #1380: `RepoDir::decidir` ja separa "a sessao escolheu um
+        // diretorio" de "herda o CWD do processo" (normalizando o
+        // `working_dir` em branco, que nao e projeto nenhum). Sem repositorio
+        // no CWD herdado nao ha o que buscar, e a recusa sai aqui — antes de
+        // qualquer spawn — em vez de depois do timeout.
+        let repo = RepoDir::decidir(context.working_dir.as_deref());
+        if let Some(motivo) = recusa_sem_repositorio(&repo, self.timeout) {
+            return Ok(ToolOutput::error(motivo));
+        }
+        let cwd = repo.cwd_do_git();
         let args_rg = rg_args(query, file_pattern, context_lines, max_results);
         let rg = crate::sandbox_spawn::executar(
             &self.sandbox,
@@ -375,6 +451,172 @@ mod tests {
 
         let result = tool.execute(&ctx, serde_json::json!({})).await;
         assert!(result.is_err());
+    }
+
+    // ─── #1380: recusa rapida quando nao ha repositorio ativo ─────────────
+
+    /// O contexto que a #1380 descreve: sessao sem `working_dir` (celular,
+    /// canal remoto, gateway sem projeto selecionado). Vem do helper que o
+    /// `repo_dir` ja expoe aos testes, para nao haver duas nocoes de
+    /// "contexto sem diretorio" na crate.
+    fn ctx_sem_working_dir() -> ToolContext {
+        crate::tools::repo_dir::contexto_de_teste(None)
+    }
+
+    /// O programa esta no `PATH`? Sonda de metadado, sem executar nada.
+    #[cfg(not(windows))]
+    fn existe_no_path(programa: &str) -> bool {
+        std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| dir.join(programa).is_file())
+        })
+    }
+
+    /// Um diretorio fundo SEM nenhuma marca de repositorio acima dele: o
+    /// `tempdir` do sistema nao esta dentro de um checkout.
+    fn dir_sem_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("a/b/c/d")).expect("subdirs");
+        tmp
+    }
+
+    /// O caso (b): nada de repositorio no diretorio herdado. A tool recusa, e
+    /// a decisao custa alguns `stat` — nao os 15s de varredura da issue.
+    #[test]
+    fn sem_repositorio_no_cwd_herdado_recusa_e_e_barato() {
+        let tmp = dir_sem_repo();
+        let fundo = tmp.path().join("a/b/c/d");
+        assert!(!dentro_de_repositorio(&fundo), "{}", fundo.display());
+
+        let repo = RepoDir::ProcessoCwd(Some(fundo.clone()));
+        let antes = std::time::Instant::now();
+        let motivo = recusa_sem_repositorio(&repo, Duration::from_secs(15))
+            .expect("sem repositorio, a tool tem de recusar");
+        let gasto = antes.elapsed();
+
+        assert!(
+            gasto < Duration::from_millis(500),
+            "a recusa levou {gasto:?} — a issue pede resposta imediata, nao o timeout"
+        );
+        assert!(motivo.contains("No active repository"), "{motivo}");
+        // A mensagem diz ONDE ele olhou e O QUE fazer: sem isso o operador
+        // nao tem como distinguir isto de "a busca nao encontrou nada".
+        assert!(motivo.contains(&fundo.display().to_string()), "{motivo}");
+        assert!(motivo.contains("working directory"), "{motivo}");
+        assert!(motivo.contains(".git"), "{motivo}");
+
+        // CWD ilegivel tambem recusa, e sem citar caminho nenhum.
+        let motivo = recusa_sem_repositorio(&RepoDir::ProcessoCwd(None), Duration::from_secs(15))
+            .expect("sem CWD legivel nao ha onde buscar");
+        assert!(motivo.contains("No active repository"), "{motivo}");
+    }
+
+    /// O caso (a), que a recusa NAO pode pegar: sem `working_dir`, mas com o
+    /// CWD do processo dentro de um repositorio — o `garra chat` rodando na
+    /// raiz do projeto do usuario. Aqui a tool segue buscando, como sempre.
+    #[test]
+    fn sem_working_dir_com_repositorio_no_cwd_nao_recusa() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for (marca, como_diretorio) in [
+            (".git", true),
+            // Worktree e submodulo: `.git` e ARQUIVO, e continua sendo
+            // repositorio.
+            (".git", false),
+            (".hg", true),
+            (".svn", true),
+            (".jj", true),
+        ] {
+            let raiz = tmp.path().join(format!("{marca}-{como_diretorio}"));
+            let fundo = raiz.join("src/tools");
+            std::fs::create_dir_all(&fundo).expect("subdirs");
+            if como_diretorio {
+                std::fs::create_dir_all(raiz.join(marca)).expect("marca");
+            } else {
+                std::fs::write(raiz.join(marca), "gitdir: /outro/lugar\n").expect("marca");
+            }
+
+            // Tanto na raiz quanto la no fundo: a marca vale para a arvore.
+            for dir in [&raiz, &fundo] {
+                assert!(dentro_de_repositorio(dir), "{}", dir.display());
+                let repo = RepoDir::ProcessoCwd(Some(dir.clone()));
+                assert_eq!(
+                    recusa_sem_repositorio(&repo, Duration::from_secs(15)),
+                    None,
+                    "{marca} em {} foi recusado: e o caso do `garra chat` local",
+                    dir.display()
+                );
+            }
+        }
+    }
+
+    /// A sessao que ESCOLHEU um diretorio nunca passa pela recusa, tenha ele
+    /// repositorio ou nao: quem escolheu decide o que ha la, e recusar
+    /// mudaria o contrato de quem ja usa a tool assim.
+    #[test]
+    fn working_dir_da_sessao_nunca_e_recusado() {
+        let tmp = dir_sem_repo();
+        let repo = RepoDir::decidir(Some(&tmp.path().to_string_lossy()));
+        assert!(matches!(repo, RepoDir::Sessao(_)), "{repo:?}");
+        assert_eq!(recusa_sem_repositorio(&repo, Duration::from_secs(15)), None);
+    }
+
+    /// Regressao de ponta a ponta do caso (a), pela `execute` de verdade: o
+    /// processo de teste roda no diretorio do crate, dentro deste
+    /// repositorio, e a sessao nao tem `working_dir` — exatamente a forma que
+    /// a correcao nao pode quebrar.
+    ///
+    /// A agulha e a propria string literal desta linha: ela existe neste
+    /// arquivo fonte, entao um resultado com `repo_search_tool.rs` prova que a
+    /// busca rodou no repositorio herdado do CWD, e nao que a tool respondeu
+    /// qualquer coisa.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn regressao_1380_sem_working_dir_no_repo_do_cwd_ainda_busca() {
+        let cwd = std::env::current_dir().expect("CWD do processo de teste");
+        assert!(
+            dentro_de_repositorio(&cwd),
+            "este teste precisa rodar dentro do checkout ({}): e o caso (a) da #1380",
+            cwd.display()
+        );
+
+        // A decisao em si nao depende de programa nenhum, e vale sempre.
+        assert_eq!(
+            recusa_sem_repositorio(&RepoDir::decidir(None), Duration::from_secs(15)),
+            None,
+            "a sessao sem working_dir dentro do checkout nao pode ser recusada"
+        );
+        // A busca de verdade so com o `rg`: sem ele o fallback e um `grep -r`
+        // que nao le `.gitignore` e desceria em `target/`, o que torna o teste
+        // lento por um motivo que nao e o desta issue.
+        if !existe_no_path("rg") {
+            eprintln!("rg ausente no PATH: parte da execucao deste teste foi pulada");
+            return;
+        }
+
+        let tool = RepoSearchTool::new(Some(20), None);
+        let saida = tool
+            .execute(
+                &ctx_sem_working_dir(),
+                serde_json::json!({
+                    "query": "agulha_da_regressao_1380",
+                    "file_pattern": "*.rs",
+                    "max_results": 5,
+                    "context_lines": 0,
+                }),
+            )
+            .await
+            .expect("executa");
+
+        assert!(!saida.is_error, "{}", saida.content);
+        assert!(
+            !saida.content.contains("No active repository"),
+            "a recusa da #1380 pegou o caso legitimo: {}",
+            saida.content
+        );
+        assert!(
+            saida.content.contains("repo_search_tool.rs"),
+            "a busca tinha de achar a agulha neste arquivo: {}",
+            saida.content
+        );
     }
 
     // ─── #1266: a query do modelo nunca pode cair em posicao de flag ──────
