@@ -788,7 +788,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // proprios modulos de teste. As whitelists dos modos (`search`, `debug`,
     // `review`) ja anunciavam `list_dir` e `repo_search`; o modelo via a
     // promessa na policy e nao recebia a ferramenta.
-    runtime.register_tool(Box::new(ListDirTool::new(file_jail, None)));
+    runtime.register_tool(Box::new(ListDirTool::new(file_jail.clone(), None)));
     // #1225 S2: as tools que spawnam programa consultam a mesma policy.
     let politica_das_tools = sandbox_policy_from(&config.agent.sandbox);
     runtime.register_tool(Box::new(
@@ -810,7 +810,9 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
         } else {
             RunTestsTool::new(None)
         }
-        .com_sandbox(politica_das_tools.clone());
+        .com_sandbox(politica_das_tools.clone())
+        // O `working_dir` do modelo nao sai do jail das file tools.
+        .com_jail(file_jail);
         runtime.register_tool(Box::new(run_tests));
     }
 

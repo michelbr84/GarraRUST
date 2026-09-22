@@ -40,6 +40,10 @@ pub struct RunTestsTool {
     /// nome, entao segue a mesma regra do `bash` (GAR-187): com
     /// `agent.tool_confirmation_enabled`, pede confirmacao antes de rodar.
     confirmation_enabled: bool,
+    /// Review da #1272 (SANDBOX-2): o `working_dir` escolhido pelo modelo
+    /// passa pelo MESMO jail das file tools antes de virar `current_dir` ou
+    /// fonte do mount do sandbox. `None` = sem jail (comportamento antigo).
+    jail: Option<crate::tools::file_jail::FileJail>,
 }
 
 impl RunTestsTool {
@@ -49,7 +53,16 @@ impl RunTestsTool {
             timeout: Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
             confirmation_enabled: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
+            jail: None,
         }
+    }
+
+    /// Confina o `working_dir` ao `jail` (raizes do operador + `working_dir`
+    /// da sessao), como o `file_read`/`file_write`. Fora dele, recusa.
+    #[must_use = "devolve a tool com o jail; o receptor e consumido"]
+    pub fn com_jail(mut self, jail: crate::tools::file_jail::FileJail) -> Self {
+        self.jail = Some(jail);
+        self
     }
 
     /// #1225 S2: a policy de `agent.sandbox` que o spawn consulta.
@@ -313,13 +326,29 @@ impl Tool for RunTestsTool {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::error(e.to_string())),
         };
-        let working_dir = resolved.path.clone();
+        let mut working_dir = resolved.path.clone();
 
         if !working_dir.exists() {
             return Ok(ToolOutput::error(format!(
                 "Working directory not found: {}",
                 resolved.describe()
             )));
+        }
+
+        // Review da #1272 (SANDBOX-2): com jail, o diretorio tem de cair numa
+        // raiz — senao `working_dir: "/"` ou `"~"` virava o mount rw do
+        // sandbox (o disco ou o `$HOME` inteiro). Segue o caminho RESOLVIDO.
+        if let Some(jail) = &self.jail {
+            match jail.confine(&working_dir, context.working_dir.as_deref()) {
+                Ok(confinado) => working_dir = confinado,
+                Err(negado) => {
+                    tracing::warn!(
+                        session = %context.session_id,
+                        "run_tests: working_dir fora do jail"
+                    );
+                    return Ok(ToolOutput::error(negado.message().to_string()));
+                }
+            }
         }
 
         // #1078 item 2: o assunto da aprovacao e o diretorio que a suite vai

@@ -272,13 +272,16 @@ fn register_cli_tools(
     runtime.register_tool(Box::new(
         GitDiffTool::new(None, None).com_sandbox(politica.clone()),
     ));
-    runtime.register_tool(Box::new(ListDirTool::new(file_jail, None)));
+    runtime.register_tool(Box::new(ListDirTool::new(file_jail.clone(), None)));
     runtime.register_tool(Box::new(
         RepoSearchTool::new(None, None).com_sandbox(politica.clone()),
     ));
     // Runs whatever the project's test script says; confirmed like `bash`.
+    // O `working_dir` do modelo fica no mesmo jail das file tools.
     runtime.register_tool(Box::new(
-        RunTestsTool::new_with_confirmation(None).com_sandbox(politica.clone()),
+        RunTestsTool::new_with_confirmation(None)
+            .com_sandbox(politica.clone())
+            .com_jail(file_jail),
     ));
     runtime.register_tool(Box::new(WebFetchTool::new(None)));
     // ADR 0020 / epic #1124: tools de hardware. O CLI é interativo — sempre

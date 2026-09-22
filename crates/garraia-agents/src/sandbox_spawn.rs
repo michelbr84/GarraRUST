@@ -466,6 +466,48 @@ mod testes_das_tools {
         rodou_no_container(&falso, "cargo");
     }
 
+    /// Review da #1272 (SANDBOX-2): com jail, o `working_dir` do modelo fora
+    /// das raizes (`/`, outro diretorio) e recusado ANTES do runtime — nunca
+    /// vira mount rw. Dentro da raiz, roda no container.
+    #[tokio::test]
+    async fn run_tests_confina_o_working_dir_ao_jail() {
+        let _t = TRAVA_DO_PATH.lock().await;
+        let (_g, raiz) = dir();
+        let (_o, outro) = dir();
+        let falso = RuntimeFalso::novo(SAIDA);
+        let jail = crate::tools::file_jail::FileJail::from_roots([raiz.as_str()]);
+        let tool = RunTestsTool::new(Some(10))
+            .com_sandbox(policy_docker())
+            .com_jail(jail);
+        for fora in ["/", outro.as_str()] {
+            let out = tool
+                .execute(
+                    &ctx(None),
+                    serde_json::json!({"framework": "cargo", "working_dir": fora}),
+                )
+                .await
+                .expect("execute");
+            assert!(out.is_error, "{fora}: {}", out.content);
+            assert!(out.content.contains("acesso negado"), "{}", out.content);
+        }
+        assert!(falso.invocacoes().is_empty(), "o runtime foi chamado");
+
+        let out = tool
+            .execute(
+                &ctx(None),
+                serde_json::json!({"framework": "cargo", "working_dir": raiz}),
+            )
+            .await
+            .expect("execute");
+        assert!(
+            out.content.contains("saida-do-container"),
+            "{}",
+            out.content
+        );
+        let argv = falso.invocacoes().pop().expect("argv");
+        assert!(argv.contains(&format!("{raiz}:{raiz}")), "{argv:?}");
+    }
+
     #[tokio::test]
     async fn run_tests_com_confirmacao_pede_antes_de_qualquer_spawn() {
         let _t = TRAVA_DO_PATH.lock().await;
