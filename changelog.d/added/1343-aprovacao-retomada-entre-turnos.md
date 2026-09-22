@@ -1,6 +1,6 @@
 - **O runtime passa a suportar a retomada de um pedido de confirmacao entre
-  turnos (#1343, fatia S1); nenhum canal adere ainda.** Hoje um "sim" dado no
-  turno seguinte nunca aprova nada nos canais de producao: a aprovacao
+  turnos (#1343).** Ate aqui um "sim" dado no
+  turno seguinte nunca aprovava nada nos canais de producao: a aprovacao
   GAR-187 so e lida do historico, e gateway, CLI e API compativel com OpenAI
   guardam o historico como texto puro, entao o resultado de ferramenta com o
   marcador nunca volta e a ferramenta pede confirmacao para sempre. Esta
@@ -16,6 +16,5 @@
   do #1340, inclusive em grupo), marcador copiado ou forjado no historico
   deixa de pesar, e reiniciar o processo continua cancelando tudo, porque a
   chave do HMAC vive so na memoria. O assunto cru (o comando do bash) nunca e
-  guardado. Caminho sem escopo continua exatamente como antes. Nenhum
-  chamador de producao preenche `approval_scope` ainda, entao o sintoma
-  visivel so muda quando os canais aderirem, nas fatias seguintes.
+  guardado. Caminho sem escopo continua exatamente como antes. Quais canais
+  aderem, e com qual remetente, esta na entrada de `Fixed` do #1343.

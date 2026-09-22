@@ -118,6 +118,29 @@ agent:
   max_tool_calls: 50   # teto de chamadas de tool por tarefa
 ```
 
+**Como o "sim" e retomado (#1343).** Antes da v0.4.5 a pausa era terminal
+em todo canal de producao: o historico e guardado como texto, o pedido
+pausado nao voltava no turno seguinte e o "sim" nunca aprovava. Agora o
+gateway guarda o pedido em memoria e o "sim" (a mensagem inteira) da
+mensagem seguinte roda o pedido **uma vez**, dentro de 5 minutos, e so se
+vier do **mesmo remetente**, na **mesma sessao** e no **mesmo canal**:
+
+| Caminho | Quem pode aprovar |
+|---|---|
+| Web Console (`/ws`) e desktop (`/ws/parrot`) | a mesma conexao WebSocket — reconectou (ou retomou a sessao em outra aba), pergunta de novo |
+| `/v1/chat/completions` | o dono da allowlist **com o mesmo** `Authorization`; sem dono reivindicado, a pausa e terminal |
+| App mobile (`POST /chat`) | o `sub` do JWT |
+| Telegram, Discord, Slack, WhatsApp Cloud, Matrix, IRC, Signal, LINE, Teams, Google Chat, iMessage, WhatsApp pessoal | o id do usuario na plataforma; em grupo, o "sim" de outro membro nao aprova e encerra o pedido |
+| `garraia chat` | o proprio terminal, na mesma sessao |
+
+Continuam **sem** retomada, e ali a pausa e terminal de proposito: A2A,
+OpenClaw, `POST /api/sessions/{id}/messages`, a resposta do agente no chat
+do workspace (`rest_v1`), `garraia ask` e o `garra_agent` do
+`garraia mcp-server` — ou quem fala e outro agente, ou nao ha remetente que
+o servidor possa provar. Qualquer mensagem no meio encerra o pedido, e
+reiniciar o gateway cancela todos. Detalhes em
+[`security/threat-model.md`](security/threat-model.md) §5.16.
+
 ## 3. Restringir tools por contexto: modos (ToolPolicy)
 
 Cada modo de execução carrega uma allow/deny-list de tools

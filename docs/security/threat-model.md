@@ -1003,6 +1003,83 @@ comando — que são proteção contra acidente, não contra um dono hostil. A
 mitigação é a soma das superfícies de observação acima e o nome
 autoexplicativo do perfil.
 
+## 5.16. Aprovação retomada entre turnos — quem pode dizer "sim" (#1343)
+
+O fluxo GAR-187 pausa o turno quando uma ferramenta pede confirmação (`bash`
+arriscado com `agent.tool_confirmation_enabled`, `device_execute` R3/R4,
+`run_tests`) e espera o "sim" no turno seguinte. Até a v0.4.4 a aprovação só
+vinha do histórico (`detect_confirmation_approval`), e todo canal de produção
+guarda e reidrata o histórico como texto: o `ToolResult` pausado nunca
+voltava, e a pausa era terminal. Falhava fechado, mas o humano nunca
+conseguia aprovar.
+
+Desde a v0.4.5 o runtime guarda o pedido pausado em memória
+(`garraia_agents::tools::pending_approval::PendingApprovals`), um por
+`(canal, sessão)`, com o remetente que pode aprovar e a impressão digital
+HMAC do pedido — nunca o assunto cru (o comando do `bash` pode ter segredo).
+Um turno só grava e só lê esse registro quando chega com
+`ExecContext::approval_scope`, montado pelo gateway em
+`crates/garraia-gateway/src/approval_scope.rs` e pela CLI em
+`exec_do_turno` (`garraia chat`). Com escopo, o histórico deixa de ser
+consultado para aprovar.
+
+**O remetente é sempre derivado pelo servidor:**
+
+| Caminho | Canal | Remetente |
+|---|---|---|
+| `/ws` (Web Console) | `web` | nonce da conexão WebSocket, gerado no servidor e nunca enviado ao cliente |
+| `/ws/parrot` (desktop) | `parrot` | nonce da conexão |
+| `/v1/chat/completions` | `openai` | dono da allowlist (nunca `X-User-Id`) + SHA-256 do `Authorization` recebido; sem dono, sem escopo |
+| `POST /chat` (mobile) | `mobile` | `sub` do JWT |
+| `bootstrap/<canal>.rs` (11 canais) | nome do canal | id do usuário na plataforma, o mesmo que a allowlist confere |
+| `whatsapp_linked` | `whatsapp_linked` | remetente normalizado; em grupo a sessão é do grupo |
+| `garraia chat` | `cli` | `local-tty` — o processo é a fronteira de usuário |
+
+**Matriz de recusa** (cada linha tem teste; ver abaixo):
+
+| Tentativa | Resultado |
+|---|---|
+| "sim" do mesmo remetente, mesma sessão e canal, dentro de 5 min | aprova **uma vez** o `(ferramenta, assunto)` pausado |
+| Segundo "sim" (replay) | pausa de novo |
+| Outra conexão WebSocket retomando a mesma sessão sem token | não aprova, e encerra o pedido |
+| Outra sessão | não alcança o pedido |
+| `X-Session-Id` escolhida pelo cliente apontando para uma sessão de outro canal | não alcança o pedido (o canal é fixado por quem chama, nunca lido da sessão) |
+| Mesma `X-Session-Id`, outro `Authorization` | não aprova, e encerra o pedido |
+| Outro membro do grupo (canais e `whatsapp_linked`) | não aprova, e encerra o pedido (fail-closed) |
+| "não" (qualquer mensagem que não seja palavra de aprovação) e depois "sim" | não aprova |
+| Registro vencido (TTL 300 s) | não aprova |
+| Marcador copiado ou forjado no histórico, com escopo | ignorado — só o registro conta |
+| Pedido re-emitido com outro assunto depois do "sim" | `ToolApproval::covers` recusa; a aprovação é gasta |
+| Dois "sim" concorrentes no mesmo escopo | exatamente um aprova |
+| Gateway reiniciado com pedido pendente | não aprova: o registro some com o processo e a chave HMAC é aleatória por processo |
+
+**Caminhos sem escopo, de propósito** — ali a pausa continua terminal: A2A
+(`a2a.rs`) e OpenClaw (`bootstrap/openclaw.rs`), porque quem fala é outro
+agente; `POST /api/sessions/{id}/messages` (`api.rs`), porque o Web Console é
+auth-free e a sessão vem do path; a resposta do agente no chat do workspace
+(`rest_v1/messages.rs`), one-shot com histórico vazio; `garraia ask` e o
+`garra_agent` do `garraia mcp-server`, one-shot e dirigidos por agente.
+
+**Guardas de regressão.** `crates/garraia-gateway/tests/approval_scope_coverage.rs`
+varre `src/` atrás de toda chamada a `process_message*` e exige escopo via
+`approval_scope::com_escopo` ou a entrada do arquivo em `SEM_ESCOPO`, com o
+número exato de chamadas e o motivo: um caminho novo não entra sem decisão.
+`crates/garraia-cli/tests/approval_scope_oneshot.rs` faz o mesmo na CLI.
+Ponta a ponta: `crates/garraia-gateway/tests/approval_resume_e2e.rs` (WS,
+parrot, OpenAI e mobile sobre os handlers reais), os testes
+`dono_no_pod_recebe_o_pedido_e_o_sim_roda_uma_vez` e
+`no_grupo_o_sim_de_outro_membro_nao_aprova_o_pedido` pela ponte falsa do
+WhatsApp, e `chat::aprovacao_tests` na CLI. O registro em si:
+`pending_approval.rs` e o módulo `aprovacao_vinculada` de `runtime.rs`.
+
+| STRIDE | Ameaça | Mitigação | Residual |
+|---|---|---|---|
+| **S** Spoofing | Um segundo cliente (outra aba, outro processo) diz "sim" pelo humano que leu o pedido. | Remetente derivado pelo servidor por caminho (tabela acima); remetente diferente não aprova e encerra o pedido. | Em `/v1/chat/completions` sem `Authorization`, dois clientes com a mesma `X-Session-Id` são indistinguíveis — a rota é auth-free por desenho (§5.9); quem alcança a rota já pode pedir e aprovar a própria ferramenta. No IRC o nick é a única identidade e pode ser tomado sem NickServ — o mesmo limite da allowlist daquele canal. |
+| **T** Tampering | Marcador colado no histórico (mensagem do cliente OpenAI, saída de ferramenta) para forjar a aprovação. | Com escopo, o histórico não é consultado; o registro só é escrito pela pausa de uma ferramenta nativa. | Sem escopo vale a detecção antiga pelo histórico, com as regras das #1226/#1339/#1340. |
+| **I** Information disclosure | O comando pausado (com segredo) fica guardado ou vai para log. | Só nome da ferramenta + HMAC são guardados; log leva canal e ferramenta, nunca sessão, remetente ou assunto. O hash do `Authorization` só vive no mapa em memória. | — |
+| **D** Denial of service | Encher o mapa de pedidos. | Teto de 4096 registros; vencidos são varridos em toda escrita e o mais antigo sai quando cheio — o humano dele é perguntado de novo. | — |
+| **E** Elevation of privilege | Um "sim" aprova mais do que o pedido lido, ou duas vezes. | A aprovação cobre só o `(ferramenta, assunto)` do HMAC, é consumida sob um único lock em todo desfecho e dura um turno. | — |
+
 ---
 
 ## 6. Mobile apps (`apps/garraia-mobile`)

@@ -394,6 +394,28 @@ donos; o check `execution.profile` do `/api/diagnostics` tambem. Sem
 Detalhes do perfil, a lista do que ele **nao** isola e o exemplo para pod:
 [`execution-profiles.md`](execution-profiles.md).
 
+### Confirmacao de ferramenta perigosa ("sim")
+
+Quando uma ferramenta pede confirmacao (o `bash` num comando arriscado com
+`agent.tool_confirmation_enabled`, um `device_execute` R3/R4), o turno pausa e
+o pedido chega como mensagem. Desde a v0.4.5 (#1343) responder **`sim`** (ou
+`yes`, `ok`, `confirma`, `confirmar`, `proceed`, `approve` — a mensagem
+inteira, nada mais) na mensagem seguinte roda o pedido, **uma vez**. Antes
+disso o "sim" nunca aprovava: o historico deste canal e guardado como texto,
+o pedido pausado nao voltava no turno seguinte, e a ferramenta perguntava de
+novo para sempre.
+
+- So aprova **quem recebeu o pedido**, na **mesma conversa**. Em grupo a
+  conversa e o grupo e o remetente e quem falou: o "sim" de outro membro nao
+  aprova — e **encerra** o pedido (fail-closed), entao o dono tem de pedir de
+  novo.
+- Qualquer outra mensagem no meio (inclusive "nao") encerra o pedido.
+- O pedido vale **5 minutos** e **uma vez**: um segundo "sim" pausa de novo.
+- Reiniciar o gateway cancela todo pedido pendente (ele vive em memoria, com
+  uma chave que muda a cada processo).
+- A ferramenta ainda precisa passar pelo piso do turno: em `search` o `bash`
+  nem e oferecido, entao nao ha o que confirmar.
+
 ### `logout`
 
 `garraia whatsapp logout` sobrescreve e remove `session.enc`, `session.enc.prev`,
