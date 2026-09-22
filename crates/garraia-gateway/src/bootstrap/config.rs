@@ -207,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn resolve_api_key_falls_back_to_env() {
         // Set a unique env var for this test
         let var_name = "GARRAIA_TEST_API_KEY_BOOTSTRAP_72";

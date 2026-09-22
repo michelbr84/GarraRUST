@@ -737,6 +737,159 @@ fn mcp_filesystem_root_check(
     }
 }
 
+/// #1346: o proximo passo para UM servidor MCP que falhou, pela causa
+/// classificada. `bin` e o nome do executavel instalado (`garraia`/`garra`).
+fn mcp_server_next_step(
+    name: &str,
+    cause: Option<&garraia_agents::McpFailureCause>,
+    bin: &str,
+) -> String {
+    use garraia_agents::McpFailureCause;
+    let restart = format!(
+        "e reinicie o servidor com POST /admin/api/mcp/{name}/restart (ou reinicie o `{bin}`)"
+    );
+    match cause {
+        // `dir` so chega aqui depois de o manager ter reconstruido e
+        // validado a entrada dentro do cache do npm (revisao MCP-4): nunca e
+        // o caminho que o processo filho imprimiu.
+        Some(McpFailureCause::NpxCacheCorrupt { dir: Some(dir) }) => format!(
+            "{name}: o cache do npx em {} esta incompleto/corrompido. Apague esse diretorio \
+             (ou rode `npm cache verify`) {restart}.",
+            dir.display()
+        ),
+        // Sem `dir`: integridade (EINTEGRITY) ou uma entrada que o gateway nao
+        // conseguiu confirmar dentro do cache — nao se repete caminho nenhum.
+        Some(McpFailureCause::NpxCacheCorrupt { dir: None }) => {
+            format!(
+                "{name}: o cache do npx esta incompleto ou falhou a verificacao de integridade. \
+                 Rode `npm cache verify` (ou apague a entrada `_npx/<hash>` do pacote dentro \
+                 do seu cache do npm) {restart}."
+            )
+        }
+        Some(McpFailureCause::DiskFull) => {
+            format!("{name}: disco cheio (ENOSPC). Libere espaco em disco {restart}.")
+        }
+        _ => format!(
+            "{name}: veja `last_error` em GET /api/mcp/health e o stderr do processo \
+             (RUST_LOG=garraia_agents=debug); corrija a causa {restart}."
+        ),
+    }
+}
+
+/// #1346: a linha `mcp.servers` — todo servidor MCP que o manager conhece,
+/// inclusive os que falharam no boot e nunca entraram em `connections`.
+/// `None` (sem manager) ou lista vazia => `skipped`; algum `failed` (restarts
+/// esgotados) => `error` com um passo por servidor; algum ainda tentando =>
+/// `warning`; todos conectados => `ok`. Puro.
+fn mcp_servers_check(
+    statuses: Option<&[garraia_agents::McpServerStatus]>,
+    bin: &str,
+) -> DiagnosticCheck {
+    use garraia_agents::McpServerState;
+    let (status, detail, next_step) = match statuses {
+        None | Some([]) => (
+            CheckStatus::Skipped,
+            "nenhum servidor MCP configurado".to_string(),
+            None,
+        ),
+        Some(list) => {
+            let describe = |s: &garraia_agents::McpServerStatus| match s.state {
+                McpServerState::Connected => format!("{} ok ({} tools)", s.name, s.tool_count),
+                other => format!(
+                    "{} {} ({}/{} tentativas, causa: {})",
+                    s.name,
+                    other.as_str(),
+                    s.attempts,
+                    s.max_restarts,
+                    s.cause
+                        .as_ref()
+                        .map(|c| c.as_str())
+                        .unwrap_or("desconhecida")
+                ),
+            };
+            let detail = list.iter().map(describe).collect::<Vec<_>>().join("; ");
+            let failed: Vec<_> = list
+                .iter()
+                .filter(|s| s.state == McpServerState::Failed)
+                .collect();
+            let not_ok: Vec<_> = list
+                .iter()
+                .filter(|s| s.state != McpServerState::Connected)
+                .collect();
+            if !failed.is_empty() {
+                let steps = failed
+                    .iter()
+                    .map(|s| mcp_server_next_step(&s.name, s.cause.as_ref(), bin))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (CheckStatus::Error, detail, Some(steps))
+            } else if !not_ok.is_empty() {
+                let steps = not_ok
+                    .iter()
+                    .map(|s| mcp_server_next_step(&s.name, s.cause.as_ref(), bin))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (CheckStatus::Warning, detail, Some(steps))
+            } else {
+                (CheckStatus::Ok, detail, None)
+            }
+        }
+    };
+    DiagnosticCheck {
+        id: "mcp.servers",
+        label: "MCP servers",
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// #1346: a linha `mcp.filesystem_pinned` — a entrada `filesystem` efetiva
+/// roda o `server-filesystem` com versao fixada? Sem versao, cada cache frio
+/// do npx baixa o build mais novo do registry. O Garra nunca reescreve um
+/// mcp.json existente, entao o aviso diz exatamente o que colar. Puro.
+fn mcp_filesystem_pinned_check(
+    versao: &crate::mcp::persistence::VersaoDoFilesystem,
+    bin: &str,
+) -> DiagnosticCheck {
+    use crate::mcp::persistence::VersaoDoFilesystem;
+    let (status, detail, next_step) = match versao {
+        VersaoDoFilesystem::Ausente => (
+            CheckStatus::Skipped,
+            "nenhum servidor `filesystem` em mcp.json nem em `mcp:` do config.yml".to_string(),
+            None,
+        ),
+        VersaoDoFilesystem::ForaDoNpx => (
+            CheckStatus::Ok,
+            "o `filesystem` nao roda via npx; versao e do operador".to_string(),
+            None,
+        ),
+        VersaoDoFilesystem::Fixada(v) => (
+            CheckStatus::Ok,
+            format!("@modelcontextprotocol/server-filesystem@{v}"),
+            None,
+        ),
+        VersaoDoFilesystem::SemVersao { args_sugeridos } => (
+            CheckStatus::Warning,
+            "o `filesystem` roda `npx -y @modelcontextprotocol/server-filesystem` sem versao: \
+             cada cache frio baixa o que for mais novo no registry"
+                .to_string(),
+            Some(format!(
+                "Troque os `args` do `filesystem` (mcp.json, ou `mcp:` do config.yml) por {} \
+                 e reinicie o `{bin}`. O Garra nunca reescreve um mcp.json existente.",
+                serde_json::Value::from(args_sugeridos.clone())
+            )),
+        ),
+    };
+    DiagnosticCheck {
+        id: "mcp.filesystem_pinned",
+        label: "MCP filesystem (versao)",
+        status,
+        detail,
+        next_step,
+    }
+}
+
 /// GET /api/diagnostics — full diagnostic report.
 pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<DiagnosticsReport> {
     let mut checks: Vec<DiagnosticCheck> = Vec::new();
@@ -820,6 +973,21 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         persistidas.as_deref(),
         raizes_mcp.caminhos(),
         &data_dir,
+    ));
+    // #1346: servidores MCP que falharam (inclusive no boot) e a versao do
+    // `filesystem`.
+    let bin = garraia_common::executavel::nome();
+    let mcp_statuses = match &state.mcp_manager_arc {
+        Some(mgr) => Some(mgr.server_statuses().await),
+        None => None,
+    };
+    checks.push(mcp_servers_check(mcp_statuses.as_deref(), &bin));
+    checks.push(mcp_filesystem_pinned_check(
+        &crate::mcp::persistence::versao_do_filesystem_efetivo(
+            &state.config.mcp,
+            &state.mcp_registry.config_snapshot().await,
+        ),
+        &bin,
     ));
 
     // #1272: a tool `bash` existe neste gateway? Mesma decisao do boot.
@@ -1339,20 +1507,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn o_relatorio_de_verdade_inclui_a_linha_do_whatsapp() {
-        use garraia_agents::AgentRuntime;
-        use garraia_channels::ChannelRegistry;
-
         let dir = tempfile::tempdir().expect("tempdir");
-        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
-            config,
-            std::sync::Arc::new(AgentRuntime::new()),
-            ChannelRegistry::new(),
-        ));
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
 
         let Json(report) = diagnostics_handler(State(state)).await;
         let linha = report
@@ -1785,34 +1945,26 @@ mod tests {
         assert_eq!(lista_de_caminhos(&[], data), "(nenhuma)");
     }
 
-    /// F-6 da auditoria: `AppState::new` provisiona `mcp.json` em
-    /// `<GARRAIA_CONFIG_DIR>` quando ele nao existe. Um teste que constroi o
-    /// estado sem apontar essa env para um tempdir escreveria um `mcp.json`
-    /// de verdade no config dir do desenvolvedor, apontando para um
-    /// diretorio temporario que ja nao existe. O guard aponta e restaura;
-    /// `#[serial]` e o lock que os testes de `persistence` ja usam para as
-    /// envs de provisionamento.
-    struct ConfigDirDeTeste(Option<std::ffi::OsString>);
-
-    impl ConfigDirDeTeste {
-        fn apontar_para(dir: &Path) -> Self {
-            let anterior = std::env::var_os("GARRAIA_CONFIG_DIR");
-            // SAFETY: teste serializado (`#[serial_test::serial]`).
-            unsafe { std::env::set_var("GARRAIA_CONFIG_DIR", dir) };
-            Self(anterior)
-        }
-    }
-
-    impl Drop for ConfigDirDeTeste {
-        fn drop(&mut self) {
-            // SAFETY: teste serializado.
-            unsafe {
-                match self.0.take() {
-                    Some(v) => std::env::set_var("GARRAIA_CONFIG_DIR", v),
-                    None => std::env::remove_var("GARRAIA_CONFIG_DIR"),
-                }
-            }
-        }
+    /// F-6 da auditoria: `AppState::new` provisiona `mcp.json` no config dir
+    /// real quando ele nao existe. Os testes passam o config dir (um tempdir)
+    /// direto, sem mexer em `GARRAIA_CONFIG_DIR`: apontar a env deixava
+    /// qualquer outro teste que montasse um `AppState` em paralelo escrever o
+    /// PROPRIO `mcp.json` no tempdir deste, e a linha `mcp.filesystem_root`
+    /// virava aviso de vez em quando (flake do
+    /// `o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp`). `#[serial]`
+    /// continua: e o lock das envs de provisionamento
+    /// (`GARRAIA_DISABLE_MCP_AUTOPROVISION`, `HOME`) que os testes de
+    /// `persistence` escrevem.
+    fn estado_no_config_dir(
+        config: garraia_config::AppConfig,
+        config_dir: &Path,
+    ) -> crate::state::AppState {
+        crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            config_dir,
+        )
     }
 
     fn opt_out_de_provisionamento_ligado() -> bool {
@@ -1825,20 +1977,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn o_relatorio_de_verdade_inclui_perfil_e_raiz_do_mcp() {
-        use garraia_agents::AgentRuntime;
-        use garraia_channels::ChannelRegistry;
-
         let dir = tempfile::tempdir().expect("tempdir");
-        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
         let config = garraia_config::AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
-        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
-            config,
-            std::sync::Arc::new(AgentRuntime::new()),
-            ChannelRegistry::new(),
-        ));
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
 
         let Json(report) = diagnostics_handler(State(state)).await;
         let perfil = report
@@ -2286,5 +2430,222 @@ mod tests {
         );
 
         *VOICE_PROBE_CACHE.lock().await = None;
+    }
+}
+
+#[cfg(test)]
+mod tests_mcp_1346 {
+    use super::*;
+    use crate::mcp::persistence::{McpPersistenceService, VersaoDoFilesystem};
+    use garraia_agents::{McpFailureCause, McpServerState, McpServerStatus};
+    use std::path::PathBuf;
+
+    fn st(name: &str, state: McpServerState, cause: Option<McpFailureCause>) -> McpServerStatus {
+        McpServerStatus {
+            name: name.into(),
+            state,
+            tool_count: if state == McpServerState::Connected {
+                3
+            } else {
+                0
+            },
+            attempts: 5,
+            max_restarts: 5,
+            cause,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn sem_servidores_e_skipped() {
+        assert!(matches!(
+            mcp_servers_check(None, "garraia").status,
+            CheckStatus::Skipped
+        ));
+        assert!(matches!(
+            mcp_servers_check(Some(&[]), "garraia").status,
+            CheckStatus::Skipped
+        ));
+    }
+
+    #[test]
+    fn todos_conectados_e_ok() {
+        let c = mcp_servers_check(
+            Some(&[st("filesystem", McpServerState::Connected, None)]),
+            "garraia",
+        );
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert!(c.next_step.is_none());
+        assert_eq!(c.id, "mcp.servers");
+    }
+
+    #[test]
+    fn cache_npx_corrompido_e_error_nomeando_o_diretorio() {
+        let dir = PathBuf::from("/home/ana/.npm/_npx/0123456789abcdef");
+        let c = mcp_servers_check(
+            Some(&[
+                st("github", McpServerState::Connected, None),
+                st(
+                    "filesystem",
+                    McpServerState::Failed,
+                    Some(McpFailureCause::NpxCacheCorrupt {
+                        dir: Some(dir.clone()),
+                    }),
+                ),
+            ]),
+            "garraia",
+        );
+        assert!(matches!(c.status, CheckStatus::Error), "{c:?}");
+        let passo = c.next_step.expect("next_step");
+        assert!(
+            passo.contains("/home/ana/.npm/_npx/0123456789abcdef"),
+            "{passo}"
+        );
+        assert!(passo.contains("npm cache verify"), "{passo}");
+        assert!(
+            passo.contains("POST /admin/api/mcp/filesystem/restart"),
+            "{passo}"
+        );
+        assert!(passo.contains("`garraia`"), "{passo}");
+        assert!(c.detail.contains("filesystem failed"), "{}", c.detail);
+        assert!(c.detail.contains("npx_cache_corrupt"), "{}", c.detail);
+    }
+
+    #[test]
+    fn disco_cheio_e_error_mandando_liberar_espaco() {
+        let c = mcp_servers_check(
+            Some(&[st(
+                "filesystem",
+                McpServerState::Failed,
+                Some(McpFailureCause::DiskFull),
+            )]),
+            "garra",
+        );
+        assert!(matches!(c.status, CheckStatus::Error));
+        let passo = c.next_step.expect("next_step");
+        assert!(
+            passo.contains("ENOSPC") && passo.contains("Libere espaco"),
+            "{passo}"
+        );
+        assert!(
+            passo.contains("`garra`"),
+            "o nome do binario instalado: {passo}"
+        );
+    }
+
+    #[test]
+    fn ainda_tentando_e_warning_com_passo() {
+        let c = mcp_servers_check(
+            Some(&[st(
+                "x",
+                McpServerState::Retrying,
+                Some(McpFailureCause::Other),
+            )]),
+            "garraia",
+        );
+        assert!(matches!(c.status, CheckStatus::Warning));
+        assert!(c.next_step.expect("passo").contains("/api/mcp/health"));
+    }
+
+    #[test]
+    fn filesystem_sem_versao_e_warning_com_os_args_para_colar() {
+        let c = mcp_filesystem_pinned_check(
+            &VersaoDoFilesystem::SemVersao {
+                args_sugeridos: vec![
+                    "-y".into(),
+                    McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.into(),
+                    "/srv".into(),
+                ],
+            },
+            "garraia",
+        );
+        assert_eq!(c.id, "mcp.filesystem_pinned");
+        assert!(matches!(c.status, CheckStatus::Warning));
+        let passo = c.next_step.expect("passo");
+        assert!(
+            passo.contains(r#"["-y","@modelcontextprotocol/server-filesystem@2026.8.31","/srv"]"#),
+            "{passo}"
+        );
+        assert!(passo.contains("`garraia`"), "{passo}");
+    }
+
+    #[test]
+    fn filesystem_fixado_ou_fora_do_npx_e_ok_e_ausente_e_skipped() {
+        for v in [
+            VersaoDoFilesystem::Fixada("2026.8.31".into()),
+            VersaoDoFilesystem::ForaDoNpx,
+        ] {
+            let c = mcp_filesystem_pinned_check(&v, "garraia");
+            assert!(matches!(c.status, CheckStatus::Ok), "{v:?}");
+            assert!(c.next_step.is_none());
+        }
+        let c = mcp_filesystem_pinned_check(&VersaoDoFilesystem::Ausente, "garraia");
+        assert!(matches!(c.status, CheckStatus::Skipped));
+    }
+
+    /// **A fiacao**: as duas linhas novas estao no relatorio de verdade.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn o_relatorio_de_verdade_inclui_as_linhas_do_1346() {
+        use garraia_agents::{AgentRuntime, McpManager};
+        use garraia_channels::ChannelRegistry;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let mgr = std::sync::Arc::new(McpManager::new());
+        let missing = dir
+            .path()
+            .join("nao-existe")
+            .join("npx")
+            .to_string_lossy()
+            .into_owned();
+        let args = vec!["-y".to_string(), "pacote".to_string()];
+        let env = std::collections::HashMap::new();
+        // max_restarts 0: ja nasce esgotado, como um servidor que gastou tudo.
+        mgr.register_pending_stdio(
+            "quebrado",
+            &missing,
+            &args,
+            &env,
+            5,
+            vec![],
+            None,
+            0,
+            0,
+            false,
+        )
+        .await;
+
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let mut state = crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+            dir.path(),
+        );
+        state.mcp_manager_arc = Some(mgr);
+        let Json(report) = diagnostics_handler(State(std::sync::Arc::new(state))).await;
+
+        let servers = report
+            .checks
+            .iter()
+            .find(|c| c.id == "mcp.servers")
+            .expect("linha mcp.servers");
+        assert!(matches!(servers.status, CheckStatus::Error), "{servers:?}");
+        assert!(
+            servers.detail.contains("quebrado failed"),
+            "{}",
+            servers.detail
+        );
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.id == "mcp.filesystem_pinned"),
+            "linha mcp.filesystem_pinned"
+        );
     }
 }

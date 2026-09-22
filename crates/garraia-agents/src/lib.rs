@@ -85,4 +85,6 @@ pub use turn_events::{TurnEvent, TurnSink, summarize_tool_input, summarize_tool_
 pub use tools::pending_approval::ApprovalScope;
 
 #[cfg(feature = "mcp")]
+pub use mcp::{McpFailureCause, McpServerState, McpServerStatus};
+#[cfg(feature = "mcp")]
 pub use mcp::{McpManager, McpPromptInfo, McpResourceInfo, McpToolInfo};

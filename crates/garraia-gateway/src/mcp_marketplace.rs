@@ -101,7 +101,8 @@ fn built_in_catalog() -> Vec<McpCatalogEntry> {
             install_command: "npx".into(),
             install_args: vec![
                 "-y".into(),
-                "@modelcontextprotocol/server-filesystem".into(),
+                // #1346: a mesma versao testada que a provisao escreve.
+                crate::mcp::persistence::McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.into(),
             ],
             config_schema: serde_json::json!({
                 "type": "object",
@@ -621,6 +622,23 @@ mod tests {
         assert!(ids.contains(&"brave-search"));
         assert!(ids.contains(&"puppeteer"));
         assert!(ids.contains(&"sqlite"));
+    }
+
+    /// #1346: a entrada do marketplace fixa a mesma versao da provisao.
+    #[test]
+    fn filesystem_do_catalogo_fixa_a_versao_da_provisao() {
+        let catalog = built_in_catalog();
+        let fs = catalog
+            .iter()
+            .find(|e| e.id == "filesystem")
+            .expect("filesystem no catalogo");
+        assert_eq!(
+            fs.install_args,
+            vec![
+                "-y".to_string(),
+                crate::mcp::persistence::McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.to_string()
+            ]
+        );
     }
 
     #[test]

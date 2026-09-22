@@ -112,6 +112,28 @@ impl McpPersistenceService {
     /// [`raizes_do_filesystem_persistido`] le de volta.
     pub const FILESYSTEM_PACKAGE: &'static str = "@modelcontextprotocol/server-filesystem";
 
+    /// Versao do `server-filesystem` que o Garra testou (issue #1346).
+    ///
+    /// `npx -y <pacote>` sem versao resolve para o que for mais novo no
+    /// registry a cada cache frio: uma instalacao nova recebia um build que
+    /// ninguem tinha rodado, e um `_npx` montado pela metade (a queda do
+    /// `zod/v4/mini`) nao tinha como ser distinguido de um pacote quebrado.
+    /// Fixar a versao tambem ajuda a cadeia de suprimento, mas so no primeiro
+    /// nivel: o pacote de topo deixa de flutuar, e as dependencias DELE
+    /// (`@modelcontextprotocol/sdk`, `zod`, `glob`, ...) continuam resolvidas
+    /// pelos ranges semver do `package.json` publicado, sem lockfile — o
+    /// `npx -y` num cache frio ainda pega a versao mais nova que casar. Subir
+    /// a versao e um PR comum, depois de um handshake `initialize` +
+    /// `tools/list` em node 20 e 22.
+    pub const FILESYSTEM_PACKAGE_VERSION: &'static str = "2026.8.31";
+
+    /// `<pacote>@<versao>` — o argumento que a provisao, o template do admin e
+    /// o marketplace escrevem. So instalacoes NOVAS recebem: um `mcp.json`
+    /// existente nunca e reescrito, e o diagnostico `mcp.filesystem_pinned`
+    /// avisa quem ficou sem versao.
+    pub const FILESYSTEM_PACKAGE_SPEC: &'static str =
+        "@modelcontextprotocol/server-filesystem@2026.8.31";
+
     /// Seed `mcp.json` with a Filesystem MCP entry when the file does not exist yet.
     ///
     /// This is a first-run convenience: new installations get local filesystem
@@ -143,7 +165,7 @@ impl McpPersistenceService {
     ///
     /// # Por que existe um opt-out
     ///
-    /// A entrada provisionada roda `npx -y @modelcontextprotocol/server-filesystem`,
+    /// A entrada provisionada roda `npx -y @modelcontextprotocol/server-filesystem@<versao>`,
     /// e o `-y` **baixa o pacote do npm na primeira execução**. Como o boot do
     /// gateway spawna os servidores MCP logo em seguida (`build_mcp_tools`), num
     /// ambiente de cache frio esse download entra no caminho crítico do start.
@@ -214,7 +236,7 @@ impl McpPersistenceService {
         }
         let raizes = raizes.caminhos();
 
-        let mut args = vec!["-y".to_string(), Self::FILESYSTEM_PACKAGE.to_string()];
+        let mut args = vec!["-y".to_string(), Self::FILESYSTEM_PACKAGE_SPEC.to_string()];
         args.extend(raizes.iter().map(|r| r.to_string_lossy().into_owned()));
 
         let mut config = McpConfig::default();
@@ -452,6 +474,104 @@ pub fn raizes_do_filesystem_efetivo(
         Some(entrada) => Some(raizes_dos_args(&entrada.args)),
         None => raizes_do_filesystem_persistido(do_mcp_json),
     }
+}
+
+/// Se a entrada `filesystem` efetiva roda o pacote npm com versao fixada
+/// (issue #1346). Alimenta o diagnostico `mcp.filesystem_pinned`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersaoDoFilesystem {
+    /// Nenhuma entrada `filesystem` em `config.yml` nem no `mcp.json`.
+    Ausente,
+    /// A entrada nao roda o pacote via `npx` (binario local, `node` direto,
+    /// transporte HTTP) — versao nao e assunto do Garra.
+    ForaDoNpx,
+    /// `npx ... @modelcontextprotocol/server-filesystem@<versao exata>`
+    /// (`1.2.3`, com `-prerelease`/`+build` opcionais).
+    Fixada(String),
+    /// `npx ... @modelcontextprotocol/server-filesystem` sem `@versao`, ou com
+    /// algo que nao e versao exata — dist-tag (`@latest`, `@next`) ou range
+    /// (`@^1`, `@~2026.8`, `@*`): cada cache frio baixa o que for mais novo
+    /// no registry do mesmo jeito. Carrega os `args`
+    /// sugeridos (os mesmos, com o pacote trocado pela versao testada), para
+    /// o diagnostico dizer exatamente o que colar.
+    SemVersao { args_sugeridos: Vec<String> },
+}
+
+/// Classifica a versao da entrada `filesystem` que o boot de fato usa —
+/// `config.yml` vence o `mcp.json`, como em [`raizes_do_filesystem_efetivo`].
+/// Pura. NUNCA reescreve nada: um `mcp.json` existente e do operador.
+pub fn versao_do_filesystem_efetivo(
+    do_config_yml: &HashMap<String, garraia_config::McpServerConfig>,
+    do_mcp_json: &McpConfig,
+) -> VersaoDoFilesystem {
+    let (command, args) = match do_config_yml.get("filesystem") {
+        Some(e) => (Some(e.command.clone()), e.args.clone()),
+        None => match do_mcp_json.mcp_servers.get("filesystem") {
+            Some(e) => (e.command.clone(), e.args.clone()),
+            None => return VersaoDoFilesystem::Ausente,
+        },
+    };
+    classificar_versao(command.as_deref(), &args)
+}
+
+fn e_o_npx(command: Option<&str>) -> bool {
+    let Some(command) = command else {
+        return false;
+    };
+    let base = std::path::Path::new(command)
+        .file_name()
+        .and_then(|b| b.to_str())
+        .unwrap_or(command);
+    ["npx", "npx.cmd", "npx.exe"]
+        .iter()
+        .any(|n| base.eq_ignore_ascii_case(n))
+}
+
+fn classificar_versao(command: Option<&str>, args: &[String]) -> VersaoDoFilesystem {
+    if !e_o_npx(command) {
+        return VersaoDoFilesystem::ForaDoNpx;
+    }
+    let Some(i) = args.iter().position(|a| e_o_pacote_do_filesystem(a)) else {
+        return VersaoDoFilesystem::ForaDoNpx;
+    };
+    match args[i]
+        .strip_prefix(McpPersistenceService::FILESYSTEM_PACKAGE)
+        .and_then(|resto| resto.strip_prefix('@'))
+    {
+        Some(versao) if e_versao_exata(versao) => VersaoDoFilesystem::Fixada(versao.to_string()),
+        _ => {
+            let mut args_sugeridos = args.to_vec();
+            args_sugeridos[i] = McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.to_string();
+            VersaoDoFilesystem::SemVersao { args_sugeridos }
+        }
+    }
+}
+
+/// `v` e uma versao semver EXATA (`MAJOR.MINOR.PATCH`, com `-prerelease` e
+/// `+build` opcionais)? Dist-tag (`latest`) e range (`^1`, `1.x`, `>=1`) nao
+/// sao — o npm resolve os dois para "o mais novo que casar" (revisao MCP-8).
+fn e_versao_exata(v: &str) -> bool {
+    let (resto, build) = match v.split_once('+') {
+        Some((r, b)) => (r, Some(b)),
+        None => (v, None),
+    };
+    let (nucleo, pre) = match resto.split_once('-') {
+        Some((n, p)) => (n, Some(p)),
+        None => (resto, None),
+    };
+    let identificadores_ok = |s: &str| {
+        !s.is_empty()
+            && s.split('.').all(|id| {
+                !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+    };
+    let partes: Vec<&str> = nucleo.split('.').collect();
+    partes.len() == 3
+        && partes
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && pre.is_none_or(identificadores_ok)
+        && build.is_none_or(identificadores_ok)
 }
 
 /// `arg` e o pacote do servidor `filesystem`, nu ou com versao fixada
@@ -741,7 +861,7 @@ mod tests {
             fs.args,
             vec![
                 "-y".to_string(),
-                McpPersistenceService::FILESYSTEM_PACKAGE.to_string(),
+                McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.to_string(),
                 raiz.to_string_lossy().into_owned(),
             ]
         );
@@ -1070,5 +1190,182 @@ mod tests {
         }
         // SAFETY: idem.
         unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+    }
+
+    /// #1346: a provisao escreve o pacote COM a versao testada, e a leitura
+    /// das raizes continua devolvendo exatamente as raizes (o `@versao` nao
+    /// vira raiz nem some com a primeira).
+    #[test]
+    #[serial_test::serial]
+    fn provision_fixa_a_versao_testada_do_server_filesystem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+        let raiz = dir.path().join("ws");
+        std::fs::create_dir_all(&raiz).expect("mkdir");
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+            &RaizesDoMcpFilesystem::Declaradas(vec![raiz.clone()]),
+        );
+
+        let cru = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            cru.contains("\"@modelcontextprotocol/server-filesystem@2026.8.31\""),
+            "a provisao tem de fixar a versao: {cru}"
+        );
+        assert_eq!(
+            McpPersistenceService::FILESYSTEM_PACKAGE_SPEC,
+            format!(
+                "{}@{}",
+                McpPersistenceService::FILESYSTEM_PACKAGE,
+                McpPersistenceService::FILESYSTEM_PACKAGE_VERSION
+            )
+        );
+        let loaded = McpPersistenceService::new(&path).load().expect("load");
+        assert_eq!(raizes_do_filesystem_persistido(&loaded), Some(vec![raiz]));
+        assert_eq!(
+            versao_do_filesystem_efetivo(&HashMap::new(), &loaded),
+            VersaoDoFilesystem::Fixada("2026.8.31".into())
+        );
+    }
+
+    /// #1346: um `mcp.json` antigo, SEM versao, sai byte-identico da provisao
+    /// — a correcao alcanca so instalacao nova; quem ja tem o arquivo e
+    /// avisado pelo diagnostico, nunca reescrito.
+    #[test]
+    #[serial_test::serial]
+    fn provision_nao_reescreve_um_filesystem_sem_versao_existente() {
+        let json = r#"{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/srv/dados"] }
+  }
+}"#;
+        let (dir, path) = temp_mcp_json(json);
+        // SAFETY: teste serializado.
+        unsafe { std::env::remove_var(McpPersistenceService::DISABLE_AUTOPROVISION_ENV) };
+
+        McpPersistenceService::new(&path).provision_filesystem_if_missing(
+            &RaizesDoMcpFilesystem::Workspace(raiz_de_teste(&dir)),
+        );
+
+        let cru = std::fs::read(&path).expect("read back");
+        assert_eq!(cru, json.as_bytes(), "mcp.json existente e intocavel");
+    }
+
+    /// Tabela do diagnostico `mcp.filesystem_pinned`.
+    #[test]
+    fn versao_do_filesystem_classifica_as_formas() {
+        fn cfg(command: Option<&str>, args: &[&str]) -> McpConfig {
+            let mut c = McpConfig::default();
+            c.mcp_servers.insert(
+                "filesystem".into(),
+                McpServerConfig {
+                    command: command.map(str::to_string),
+                    args: args.iter().map(|a| a.to_string()).collect(),
+                    ..McpServerConfig::default()
+                },
+            );
+            c
+        }
+        let nada = HashMap::new();
+        assert_eq!(
+            versao_do_filesystem_efetivo(&nada, &McpConfig::default()),
+            VersaoDoFilesystem::Ausente
+        );
+        assert_eq!(
+            versao_do_filesystem_efetivo(
+                &nada,
+                &cfg(
+                    Some("npx"),
+                    &["-y", "@modelcontextprotocol/server-filesystem", "/a"]
+                )
+            ),
+            VersaoDoFilesystem::SemVersao {
+                args_sugeridos: vec![
+                    "-y".into(),
+                    McpPersistenceService::FILESYSTEM_PACKAGE_SPEC.into(),
+                    "/a".into()
+                ]
+            }
+        );
+        // `@` vazio no fim nao e versao.
+        assert!(matches!(
+            versao_do_filesystem_efetivo(
+                &nada,
+                &cfg(
+                    Some("npx"),
+                    &["-y", "@modelcontextprotocol/server-filesystem@", "/a"]
+                )
+            ),
+            VersaoDoFilesystem::SemVersao { .. }
+        ));
+        assert_eq!(
+            versao_do_filesystem_efetivo(
+                &nada,
+                &cfg(
+                    Some("/usr/bin/npx"),
+                    &["-y", "@modelcontextprotocol/server-filesystem@0.6.2", "/a"]
+                )
+            ),
+            VersaoDoFilesystem::Fixada("0.6.2".into())
+        );
+        // Revisao MCP-8: dist-tag e range flutuam como o pacote nu.
+        for flutua in [
+            "latest",
+            "next",
+            "^1",
+            "~2026.8.31",
+            "*",
+            "1.x",
+            ">=1.0.0",
+            "1.2",
+        ] {
+            let spec = format!("@modelcontextprotocol/server-filesystem@{flutua}");
+            let args = ["-y", spec.as_str(), "/a"];
+            match versao_do_filesystem_efetivo(&nada, &cfg(Some("npx"), &args)) {
+                VersaoDoFilesystem::SemVersao { args_sugeridos } => assert_eq!(
+                    args_sugeridos[1],
+                    McpPersistenceService::FILESYSTEM_PACKAGE_SPEC,
+                    "{flutua}"
+                ),
+                outro => panic!("@{flutua} nao e versao fixada: {outro:?}"),
+            }
+        }
+        for exata in ["2026.8.31", "1.0.0-rc.1", "1.0.0+build.5", "0.6.2-beta-2"] {
+            let spec = format!("@modelcontextprotocol/server-filesystem@{exata}");
+            assert_eq!(
+                versao_do_filesystem_efetivo(&nada, &cfg(Some("npx"), &["-y", spec.as_str()])),
+                VersaoDoFilesystem::Fixada(exata.into()),
+                "{exata}"
+            );
+        }
+        assert_eq!(
+            versao_do_filesystem_efetivo(
+                &nada,
+                &cfg(Some("/usr/local/bin/mcp-server-filesystem"), &["/a"])
+            ),
+            VersaoDoFilesystem::ForaDoNpx
+        );
+        // config.yml vence o mcp.json.
+        let mut yml = HashMap::new();
+        yml.insert(
+            "filesystem".to_string(),
+            serde_json::from_value::<garraia_config::McpServerConfig>(serde_json::json!({
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/b"],
+            }))
+            .expect("entrada de config.yml"),
+        );
+        assert!(matches!(
+            versao_do_filesystem_efetivo(
+                &yml,
+                &cfg(
+                    Some("npx"),
+                    &["-y", "@modelcontextprotocol/server-filesystem@1.0.0"]
+                )
+            ),
+            VersaoDoFilesystem::SemVersao { .. }
+        ));
     }
 }

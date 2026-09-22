@@ -18,7 +18,7 @@ Configure MCP servers in `config.yml`:
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"]
   
   github:
     command: npx
@@ -74,8 +74,22 @@ Access local filesystem:
 mcp:
   filesystem:
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/path/to/directory"]
 ```
+
+Pin the version (`@2026.8.31`). A bare `npx -y @modelcontextprotocol/server-filesystem`
+resolves to whatever is newest on the registry every time the npx cache is
+cold, so the gateway runs a build nobody tested. A dist-tag (`@latest`,
+`@next`) or a range (`@^1`, `@~2026.8`) floats the same way and is not
+counted as pinned. New installs are provisioned with the pinned form (#1346);
+the `mcp.filesystem_pinned` check of `GET /api/diagnostics` warns about an
+existing unpinned entry and prints the exact `args` to paste — `mcp.json`
+itself is never rewritten.
+
+Pinning fixes the top-level package only. Its own dependencies
+(`@modelcontextprotocol/sdk`, `zod`, `glob`, ...) are declared with semver
+ranges and the package ships no lockfile, so a cold `npx -y` still resolves
+the newest versions that match those ranges.
 
 #### Auto-provisioned root
 
@@ -153,7 +167,7 @@ Create `mcp.json` in the active config directory (default
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"]
     }
   }
 }
@@ -216,6 +230,50 @@ Check logs:
 ```bash
 garraia logs | grep mcp
 ```
+
+### Server stuck on `ERR_MODULE_NOT_FOUND` (corrupted npx cache)
+
+`npx -y <package>` installs the package into `<npm cache>/_npx/<16 hex>/` and
+runs it from there. An install that was interrupted (killed boot, full disk,
+registry hiccup) leaves that directory half-populated, and from then on every
+spawn dies with `Error [ERR_MODULE_NOT_FOUND]: Cannot find module
+'.../_npx/<hash>/node_modules/...'` — npx never repairs an entry that exists.
+
+Since v0.4.5 the gateway handles this itself (#1346):
+
+- The child's stderr is captured instead of inherited. It is forwarded at
+  `debug` level only (`RUST_LOG=garraia_agents=debug` to see it), so a failing
+  server no longer floods the log with Node stack traces.
+- When a spawn fails with a missing module inside an npx entry, the gateway
+  removes **that one entry** and retries the connect once — only if the
+  command is `npx`, the path resolves to exactly
+  `<npm cache>/_npx/<16 hex>` of the cache the gateway gave the child
+  (`npm_config_cache` in the server's `env`, else `$HOME/.npm`, or
+  `%LOCALAPPDATA%\npm-cache` on Windows), it is a real directory (no symlink
+  is ever followed), and its `package.json` lists the configured package. It
+  never runs `npm`, never touches anything outside `_npx`, and does it at most
+  once per server per gateway process. A manual restart re-arms it.
+- If the server still cannot start, it keeps the normal backoff
+  (`max_restarts`, default 5). When the retries run out the gateway logs one
+  `error` naming the cause, and stops — later health ticks stay silent.
+
+`GET /api/mcp/health` lists the failed server with `"connected": false`,
+`"status": "retrying"` or `"failed"`, the classified `cause`
+(`npx_cache_corrupt`, `disk_full`, `other`) and a short `last_error`.
+`last_error` names the cause but never a path. `GET /api/diagnostics` has an
+`mcp.servers` row whose `next_step` names the cache directory to remove — only
+when the gateway confirmed it is the entry of the configured package inside
+the npm cache it gave the child; a path the child printed is never repeated.
+To fix it by hand:
+
+```bash
+rm -rf ~/.npm/_npx/<hash>      # the directory named by the diagnostic
+# or: npm cache verify
+curl -X POST localhost:3888/admin/api/mcp/filesystem/restart   # or restart garraia
+```
+
+After the restart the `mcp.servers` row of `GET /api/diagnostics` turns `ok`
+once the handshake succeeds.
 
 ### Tool not found
 

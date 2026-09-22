@@ -63,6 +63,9 @@ metrics-util = { version = "0.20", features = ["debugging"] }
 # producao este crate emite via `garraia_common::metrics`, nao direto.
 metrics = { workspace = true }
 tempfile = "3"
+# #1346: conta eventos de log nos testes de recuperacao do cache npx
+# (o erro de "max restarts" tem de sair UMA vez, nao a cada tick).
+tracing-subscriber = { workspace = true }
 axum = { workspace = true }
 tokio-stream = { workspace = true }
 # #1249: `start_paused` para o teste que conta tentativas ao primario. O
