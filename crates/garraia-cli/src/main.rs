@@ -339,11 +339,13 @@ enum Commands {
     /// Activate GarraMaxPower agent-pipeline mode (GAR-494 / GAR-492 epic).
     ///
     /// Without --goal: prints banner + numbered pipeline menu.
-    /// With --goal: detects the best entry point by keyword matching and
-    /// prints the selected route + rationale.
+    /// With --goal: detects the best entry point by keyword matching, prints
+    /// the selected route + rationale, then runs the agent team over the goal
+    /// (brainstorm → spec → plan → execute → review → merge).
     ///
-    /// Full state-machine execution (brainstorm → spec → plan → execute →
-    /// review → merge) lands in GAR-495..GAR-501.
+    /// Execution is provider-backed when a default LLM provider resolves (the
+    /// same chain as `chat`, one call per pipeline stage), and deterministic
+    /// (offline) otherwise; the output line `execution:` says which one ran.
     MaxPower {
         /// Goal or task description for automatic pipeline routing.
         /// Omit to see the interactive menu.

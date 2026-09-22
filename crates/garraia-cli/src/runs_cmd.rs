@@ -135,10 +135,17 @@ fn open_store(config: &AppConfig) -> Opened {
 
 fn report_no_store(path: &Path) {
     println!("Nenhum run registrado: {} nao existe.", path.display());
-    println!(
-        "O ledger e criado quando o gateway sobe (`garra start`) ou quando o `garra chat`\n\
+    println!("{}", dica_sem_ledger(&crate::binario::nome()));
+}
+
+/// A dica de "como o ledger nasce", com o nome do binario em execucao
+/// (#1228): o literal `garra` e so o alias do instalador e nao existe numa
+/// maquina que so tem `garraia`.
+fn dica_sem_ledger(bin: &str) -> String {
+    format!(
+        "O ledger e criado quando o gateway sobe (`{bin} start`) ou quando o `{bin} chat`\n\
          roda com `--persist` ou `--resume` — uma conversa sem essas flags nao grava nada."
-    );
+    )
 }
 
 /// Um run em JSON. Contrato estavel de chaves — quem pediu `--json` esta
@@ -341,6 +348,15 @@ mod tests {
         assert!(corpo.contains(concat!("NOTA_", "INTERRUPTED")), "{corpo}");
         assert!(NOTA_INTERRUPTED.contains("scheduler"));
         assert!(NOTA_INTERRUPTED.contains("run novo"));
+    }
+
+    /// #1228: a dica nomeia o binario instalado, nunca o alias fixo.
+    #[test]
+    fn dica_sem_ledger_nomeia_o_binario_em_execucao() {
+        let dica = dica_sem_ledger(&crate::binario::nome());
+        assert!(dica.contains("`garraia start`"), "{dica}");
+        assert!(dica.contains("`garraia chat`"), "{dica}");
+        assert!(!dica.contains("`garra "), "{dica}");
     }
 
     #[test]
