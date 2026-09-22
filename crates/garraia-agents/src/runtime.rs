@@ -108,17 +108,7 @@ pub struct ToolInventoryEntry {
 /// marcador o "ok" tambem nao alcanca nenhum pedido mais antigo — aquele o
 /// humano ja respondeu. A janela de 6 continua valendo por cima disso.
 fn detect_confirmation_approval(history: &[ChatMessage], user_text: &str) -> ToolApproval {
-    let text = user_text.trim().to_lowercase();
-    let approval_words = [
-        "sim",
-        "yes",
-        "confirmar",
-        "confirma",
-        "proceed",
-        "ok",
-        "approve",
-    ];
-    if !approval_words.iter().any(|w| text == *w) {
+    if !crate::tools::pending_approval::is_approval_word(user_text) {
         return ToolApproval::None;
     }
 
@@ -291,6 +281,11 @@ pub struct AgentRuntime {
     /// fallback e o runtime — perguntar a config devolveria o configurado, que
     /// a issue distingue explicitamente do efetivo.
     turn_stats: RwLock<crate::turn_stats::TurnStatsRegistry>,
+    /// #1343: pedidos de confirmacao pausados, esperando o "sim" do proximo
+    /// turno. So os turnos com `ExecContext::approval_scope` escrevem e leem
+    /// aqui. Mora no runtime porque ele e o unico ponto que gateway e CLI
+    /// compartilham — um mapa por processo cobre todo caminho.
+    pending_approvals: crate::tools::pending_approval::PendingApprovals,
 }
 
 /// O TEXTO do aviso de ferramenta MCP escondida pelo whitelist (#1264).
@@ -431,9 +426,16 @@ enum DispatchOutcome {
 
     /// A tool pede confirmacao humana (GAR-187): o resultado entra na lista
     /// e o turno pausa, devolvendo `prompt` a quem chama.
+    ///
+    /// `tool` e `fingerprint` existem para o registro entre turnos (#1343):
+    /// a impressao digital sai do PRIMEIRO marcador bem formado da saida do
+    /// pedido — que o #1339 garante ser o verdadeiro. Sem marcador bem
+    /// formado, `None`, e nada e registrado (fail-closed).
     Paused {
         tool_result: ContentBlock,
         prompt: String,
+        tool: String,
+        fingerprint: Option<ApprovalFingerprint>,
     },
 
     /// O `ExecutionBudget` detectou loop por assinatura: o turno inteiro
@@ -737,6 +739,7 @@ impl AgentRuntime {
             noise_policy: crate::memory_noise::NoisePolicy::default(),
             auto_extract: true,
             max_facts: None,
+            pending_approvals: crate::tools::pending_approval::PendingApprovals::new(),
         }
     }
 
@@ -1456,7 +1459,7 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = detect_confirmation_approval(conversation_history, user_text);
+        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -1597,7 +1600,10 @@ impl AgentRuntime {
                         DispatchOutcome::Paused {
                             tool_result,
                             prompt,
+                            tool,
+                            fingerprint,
                         } => {
+                            self.registrar_pausa(exec, session_id, &tool, fingerprint);
                             tool_results.push(tool_result);
                             confirmation_response = Some(prompt);
                             break;
@@ -1714,7 +1720,7 @@ impl AgentRuntime {
         trim_messages_to_budget(&mut messages, &system, &tool_defs, max_ctx);
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = detect_confirmation_approval(conversation_history, user_text);
+        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
 
         // #979: os limites do modo valem, no lugar dos fixos. Precedencia:
         // override explicito do runtime > limites do modo > padrao. Quem passou
@@ -1851,7 +1857,10 @@ impl AgentRuntime {
                         DispatchOutcome::Paused {
                             tool_result,
                             prompt,
+                            tool,
+                            fingerprint,
                         } => {
+                            self.registrar_pausa(exec, session_id, &tool, fingerprint);
                             tool_results.push(tool_result);
                             confirmation_response = Some(prompt);
                             break;
@@ -2146,7 +2155,7 @@ impl AgentRuntime {
         );
 
         // GAR-187: detect if the user approved a pending tool confirmation
-        let aprovacao = detect_confirmation_approval(conversation_history, user_text);
+        let aprovacao = self.aprovacao_do_turno(exec, session_id, conversation_history, user_text);
 
         // GAR-208: apply sliding window before building the message list
         let windowed = self.context_policy.apply_window(conversation_history);
@@ -2463,7 +2472,10 @@ impl AgentRuntime {
                             DispatchOutcome::Paused {
                                 tool_result,
                                 prompt,
+                                tool,
+                                fingerprint,
                             } => {
+                                self.registrar_pausa(exec, session_id, &tool, fingerprint);
                                 tool_results.push(tool_result);
                                 confirmation_response = Some(prompt);
                                 break;
@@ -2615,7 +2627,10 @@ impl AgentRuntime {
                                 DispatchOutcome::Paused {
                                     tool_result,
                                     prompt,
+                                    tool,
+                                    fingerprint,
                                 } => {
+                                    self.registrar_pausa(exec, session_id, &tool, fingerprint);
                                     tool_results.push(tool_result);
                                     confirmation_response = Some(prompt);
                                     break;
@@ -2641,6 +2656,67 @@ impl AgentRuntime {
                 }
             }
         }
+    }
+
+    /// A aprovacao humana que vale neste turno (GAR-187, #1343).
+    ///
+    /// Sem `approval_scope`, a deteccao antiga pelo historico, intacta. Com
+    /// escopo, so o registro do servidor conta, e o historico e ignorado —
+    /// marcador copiado ou forjado nele nao aprova nada. O registro e
+    /// consumido aqui em todo desfecho (ver
+    /// [`crate::tools::pending_approval::PendingApprovals::resolve`]).
+    ///
+    /// Um escopo cuja sessao nao e a do turno e erro de quem chama: nada e
+    /// aprovado (fail-closed), e o registro da sessao do escopo nao e tocado.
+    fn aprovacao_do_turno(
+        &self,
+        exec: &ExecContext,
+        session_id: &str,
+        conversation_history: &[ChatMessage],
+        user_text: &str,
+    ) -> ToolApproval {
+        match exec.approval_scope.as_ref() {
+            None => detect_confirmation_approval(conversation_history, user_text),
+            Some(scope) if scope.session_id() != session_id => {
+                warn!(
+                    channel = %scope.channel(),
+                    "approval_scope de outra sessao: nenhuma aprovacao neste turno"
+                );
+                ToolApproval::None
+            }
+            Some(scope) => {
+                self.pending_approvals
+                    .resolve(scope, user_text, std::time::Instant::now())
+            }
+        }
+    }
+
+    /// Grava o pedido que acabou de pausar o turno (#1343), quando o turno
+    /// tem escopo e o pedido tem impressao digital bem formada. Fora disso
+    /// nao grava nada, e a pausa e terminal como antes.
+    fn registrar_pausa(
+        &self,
+        exec: &ExecContext,
+        session_id: &str,
+        tool: &str,
+        fingerprint: Option<ApprovalFingerprint>,
+    ) {
+        let Some(scope) = exec.approval_scope.as_ref() else {
+            return;
+        };
+        if scope.session_id() != session_id {
+            return;
+        }
+        let Some(fp) = fingerprint else {
+            warn!(
+                channel = %scope.channel(),
+                tool = %tool,
+                "pausa sem marcador bem formado: nada registrado"
+            );
+            return;
+        };
+        self.pending_approvals
+            .register(scope, tool, fp, std::time::Instant::now());
     }
 
     /// O unico ponto de despacho de tool do `AgentRuntime` (#1226 S-A).
@@ -2846,12 +2922,15 @@ impl AgentRuntime {
                 session = %context.session_id,
                 "agent paused: awaiting user confirmation"
             );
+            let fingerprint = ApprovalFingerprint::from_marker(&output.content);
             return DispatchOutcome::Paused {
                 tool_result: ContentBlock::ToolResult {
                     tool_use_id: id.to_string(),
                     content: conteudo_para_o_modelo.unwrap_or_else(|| output.content.clone()),
                 },
                 prompt: output.content,
+                tool: name.to_string(),
+                fingerprint,
             };
         }
 
@@ -6276,6 +6355,7 @@ mod tests {
                     content: para_o_modelo,
                 },
             prompt: para_o_humano,
+            ..
         } = desfecho
         else {
             panic!("esperava pausa, veio {desfecho:?}");
@@ -6369,6 +6449,7 @@ mod tests {
         let DispatchOutcome::Paused {
             tool_result,
             prompt,
+            ..
         } = desfecho
         else {
             panic!("esperava pausa, veio {desfecho:?}");
@@ -7933,6 +8014,427 @@ mod tests {
             achados.iter().any(|m| m.content.contains("Frajola")),
             "a memoria da propria sessao sumiu com a chave ligada: {achados:?}"
         );
+    }
+
+    // ─── #1343: aprovacao retomada entre turnos (registro no servidor) ────
+
+    mod aprovacao_entre_turnos {
+        use super::super::AgentRuntime;
+        use super::ToolQuePedeConfirmacao;
+        use crate::exec_context::ExecContext;
+        use crate::providers::{
+            ChatMessage, ChatRole, ContentBlock, LlmProvider, LlmRequest, LlmResponse, MessagePart,
+            StreamEvent,
+        };
+        use crate::tools::approval::ApprovalFingerprint;
+        use crate::tools::pending_approval::ApprovalScope;
+        use futures::Stream;
+        use garraia_common::Result;
+        use std::collections::VecDeque;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+
+        /// O modelo de cada teste: a cada mensagem HUMANA (texto do lado do
+        /// usuario) pede `precisa_confirmar` com o proximo alvo do roteiro;
+        /// depois de um resultado de tool, encerra com texto. Assim cada
+        /// turno de teste e: o humano fala, o modelo pede a tool, a tool
+        /// pausa ou roda.
+        struct PedeAlvos {
+            alvos: Mutex<VecDeque<String>>,
+            streaming: bool,
+        }
+
+        impl PedeAlvos {
+            fn novo(alvos: &[&str], streaming: bool) -> Arc<Self> {
+                Arc::new(Self {
+                    alvos: Mutex::new(alvos.iter().map(|a| a.to_string()).collect()),
+                    streaming,
+                })
+            }
+
+            /// `Some(alvo)` quando esta volta pede a tool.
+            fn proxima(&self, request: &LlmRequest) -> Option<String> {
+                let humano = matches!(
+                    request.messages.last(),
+                    Some(ChatMessage {
+                        role: ChatRole::User,
+                        content: MessagePart::Text(_),
+                    })
+                );
+                if !humano {
+                    return None;
+                }
+                // Alvo vazio no roteiro: o modelo so responde em texto
+                // neste turno (nao pede a tool de novo).
+                let alvo = self
+                    .alvos
+                    .lock()
+                    .expect("lock")
+                    .pop_front()
+                    .unwrap_or_else(|| "x".to_string());
+                (!alvo.is_empty()).then_some(alvo)
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for PedeAlvos {
+            fn provider_id(&self) -> &str {
+                "pede_alvos"
+            }
+
+            async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+                let content = match self.proxima(request) {
+                    Some(alvo) => vec![ContentBlock::ToolUse {
+                        id: "t-conf".to_string(),
+                        name: "precisa_confirmar".to_string(),
+                        input: serde_json::json!({ "alvo": alvo }),
+                    }],
+                    None => vec![ContentBlock::Text {
+                        text: "concluido".to_string(),
+                    }],
+                };
+                Ok(LlmResponse {
+                    content,
+                    model: "m".to_string(),
+                    stop_reason: None,
+                    usage: None,
+                })
+            }
+
+            async fn stream_complete(
+                &self,
+                request: &LlmRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+                if !self.streaming {
+                    return Err(garraia_common::Error::Agent("sem streaming".into()));
+                }
+                let eventos = match self.proxima(request) {
+                    Some(alvo) => vec![
+                        Ok(StreamEvent::ToolUseStart {
+                            index: 0,
+                            id: "t-conf".to_string(),
+                            name: "precisa_confirmar".to_string(),
+                        }),
+                        Ok(StreamEvent::InputJsonDelta(
+                            serde_json::json!({ "alvo": alvo }).to_string(),
+                        )),
+                        Ok(StreamEvent::ContentBlockStop { index: 0 }),
+                        Ok(StreamEvent::MessageStop),
+                    ],
+                    None => vec![
+                        Ok(StreamEvent::TextDelta("concluido".to_string())),
+                        Ok(StreamEvent::MessageStop),
+                    ],
+                };
+                Ok(Box::pin(futures::stream::iter(eventos)))
+            }
+
+            async fn health_check(&self) -> Result<bool> {
+                Ok(true)
+            }
+        }
+
+        /// Os tres ramos com pausa alcancaveis com `ExecContext`: o
+        /// nao-streaming, o streaming de verdade e o streaming que cai no
+        /// batch porque o provider nao faz streaming. (O quarto, o
+        /// `process_message_impl`, so e alcancado pelo heartbeat, que passa
+        /// `ExecContext::default()` — sem escopo nunca.)
+        #[derive(Clone, Copy, Debug)]
+        enum Caminho {
+            AgentConfig,
+            Streaming,
+            StreamingSemSuporte,
+        }
+
+        const CAMINHOS: [Caminho; 3] = [
+            Caminho::AgentConfig,
+            Caminho::Streaming,
+            Caminho::StreamingSemSuporte,
+        ];
+
+        struct Cenario {
+            rt: AgentRuntime,
+            rodou: Arc<Mutex<Vec<String>>>,
+            caminho: Caminho,
+            /// O historico como os canais de producao guardam: so texto.
+            historico: Vec<ChatMessage>,
+        }
+
+        impl Cenario {
+            fn novo(caminho: Caminho, alvos: &[&str]) -> Self {
+                let rt = AgentRuntime::new();
+                let (tool, rodou) = ToolQuePedeConfirmacao::nova();
+                rt.register_tool(Box::new(tool));
+                let streaming = matches!(caminho, Caminho::Streaming);
+                rt.register_provider(PedeAlvos::novo(alvos, streaming));
+                Self {
+                    rt,
+                    rodou,
+                    caminho,
+                    historico: Vec::new(),
+                }
+            }
+
+            fn rodou(&self) -> Vec<String> {
+                self.rodou.lock().expect("lock").clone()
+            }
+
+            /// Um turno, e o historico cresce so com texto — exatamente o
+            /// `persist_turn`/`hydrate_session_history` do gateway.
+            async fn turno(
+                &mut self,
+                sessao: &str,
+                texto: &str,
+                escopo: Option<ApprovalScope>,
+            ) -> String {
+                let historico = self.historico.clone();
+                self.turno_com_historico(sessao, texto, escopo, &historico)
+                    .await
+            }
+
+            async fn turno_com_historico(
+                &mut self,
+                sessao: &str,
+                texto: &str,
+                escopo: Option<ApprovalScope>,
+                historico: &[ChatMessage],
+            ) -> String {
+                let exec = ExecContext {
+                    approval_scope: escopo,
+                    ..ExecContext::default()
+                };
+                let resposta = match self.caminho {
+                    Caminho::AgentConfig => self
+                        .rt
+                        .process_message_with_agent_config(
+                            sessao, texto, historico, None, None, None, None, None, None, &exec,
+                        )
+                        .await
+                        .expect("turno"),
+                    Caminho::Streaming | Caminho::StreamingSemSuporte => {
+                        let (tx, mut rx) =
+                            tokio::sync::mpsc::channel::<crate::turn_events::TurnEvent>(64);
+                        let dreno = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+                        let r = self
+                            .rt
+                            .process_message_streaming_with_events(
+                                sessao, texto, historico, tx, None, None, None, None, None, None,
+                                &exec,
+                            )
+                            .await
+                            .expect("turno");
+                        dreno.await.expect("dreno");
+                        r
+                    }
+                };
+                self.historico.push(ChatMessage {
+                    role: ChatRole::User,
+                    content: MessagePart::Text(texto.to_string()),
+                });
+                self.historico.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: MessagePart::Text(resposta.clone()),
+                });
+                resposta
+            }
+        }
+
+        fn escopo(canal: &str, sessao: &str, remetente: &str) -> Option<ApprovalScope> {
+            ApprovalScope::new(canal, sessao, remetente)
+        }
+
+        fn e_pedido(resposta: &str) -> bool {
+            ApprovalFingerprint::from_marker(resposta).is_some()
+        }
+
+        /// O bug do #1343 ponta a ponta: com o historico so em texto, o "sim"
+        /// do turno 2 aprova o pedido do turno 1 — uma vez. O terceiro "sim"
+        /// e replay e pausa de novo.
+        #[tokio::test]
+        async fn sim_no_turno_seguinte_roda_o_pedido_uma_vez() {
+            for caminho in CAMINHOS {
+                let mut c = Cenario::novo(caminho, &["x", "x", "x"]);
+                let r1 = c
+                    .turno("s1", "apaga x", escopo("web", "s1", "conn-a"))
+                    .await;
+                assert!(e_pedido(&r1), "{caminho:?}: turno 1 pausa: {r1}");
+                assert!(c.rodou().is_empty(), "{caminho:?}");
+
+                let r2 = c.turno("s1", "sim", escopo("web", "s1", "conn-a")).await;
+                assert_eq!(c.rodou(), vec!["x".to_string()], "{caminho:?}: {r2}");
+                assert!(r2.contains("concluido"), "{caminho:?}: {r2}");
+
+                let r3 = c.turno("s1", "sim", escopo("web", "s1", "conn-a")).await;
+                assert!(e_pedido(&r3), "{caminho:?}: replay pausa de novo: {r3}");
+                assert_eq!(c.rodou(), vec!["x".to_string()], "{caminho:?}: nao roda 2x");
+            }
+        }
+
+        /// Sem escopo, o comportamento de antes: historico em texto nunca
+        /// aprova, a pausa e terminal.
+        #[tokio::test]
+        async fn sem_escopo_historico_em_texto_nao_aprova() {
+            for caminho in CAMINHOS {
+                let mut c = Cenario::novo(caminho, &["x", "x"]);
+                assert!(e_pedido(&c.turno("s1", "apaga x", None).await));
+                let r2 = c.turno("s1", "sim", None).await;
+                assert!(e_pedido(&r2), "{caminho:?}: {r2}");
+                assert!(c.rodou().is_empty(), "{caminho:?}");
+                assert!(c.rt.pending_approvals.is_empty(), "{caminho:?}");
+            }
+        }
+
+        /// Depois do "sim", o modelo pede OUTRO assunto: `covers` recusa, o
+        /// turno pausa de novo, e a aprovacao foi gasta — um novo "sim" nao
+        /// alcanca mais o pedido original.
+        #[tokio::test]
+        async fn assunto_diferente_depois_do_sim_nao_roda_e_gasta_a_aprovacao() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "y", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "s1", "a")).await
+            ));
+            let r2 = c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert!(e_pedido(&r2), "y nao estava aprovado: {r2}");
+            assert!(c.rodou().is_empty());
+            // O pedido pendente agora e o de `y`; `x` no turno 3 nao casa.
+            let r3 = c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert!(e_pedido(&r3), "{r3}");
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Outro remetente na mesma sessao (grupo, ou outra conexao) nao
+        /// aprova — e derruba o pedido: o dono tem de pedir de novo.
+        #[tokio::test]
+        async fn outro_remetente_nao_aprova_nem_mantem_o_pedido() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "x", "x"]);
+            assert!(e_pedido(
+                &c.turno("g1", "apaga x", escopo("telegram", "g1", "user-a"))
+                    .await
+            ));
+            let r2 = c
+                .turno("g1", "sim", escopo("telegram", "g1", "user-b"))
+                .await;
+            assert!(e_pedido(&r2), "{r2}");
+            let r3 = c
+                .turno("g1", "sim", escopo("telegram", "g1", "user-a"))
+                .await;
+            assert!(e_pedido(&r3), "{r3}");
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Outra sessao e outro canal nao alcancam o pedido.
+        #[tokio::test]
+        async fn outra_sessao_e_outro_canal_nao_aprovam() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "x", "x", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "s1", "a")).await
+            ));
+            let r = c.turno("s2", "sim", escopo("web", "s2", "a")).await;
+            assert!(e_pedido(&r));
+            let r = c.turno("s1", "sim", escopo("openai", "s1", "a")).await;
+            assert!(e_pedido(&r));
+            assert!(c.rodou().is_empty());
+            // O pedido original continuou la para o dono.
+            c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert_eq!(c.rodou(), vec!["x".to_string()]);
+        }
+
+        /// "nao" e depois "sim": o "nao" encerrou o pedido (#1340).
+        #[tokio::test]
+        async fn recusado_e_depois_sim_nao_aprova() {
+            // O turno do "nao" o modelo so responde em texto (alvo vazio).
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "s1", "a")).await
+            ));
+            let r = c.turno("s1", "nao", escopo("web", "s1", "a")).await;
+            assert!(!e_pedido(&r), "{r}");
+            let r = c.turno("s1", "sim", escopo("web", "s1", "a")).await;
+            assert!(e_pedido(&r), "{r}");
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Com escopo, o historico nao aprova: um `ToolResult` com marcador
+        /// VERDADEIRO (cunhado neste processo, copiado de outro lugar) no
+        /// fim do historico nao vale sem o registro do servidor. Sem escopo,
+        /// o mesmo historico aprova — e o caminho antigo, intacto.
+        #[tokio::test]
+        async fn com_escopo_marcador_copiado_no_historico_nao_aprova() {
+            let marcador = ApprovalFingerprint::of("precisa_confirmar", "x").marker();
+            let historico = vec![ChatMessage {
+                role: ChatRole::User,
+                content: MessagePart::Parts(vec![ContentBlock::ToolResult {
+                    tool_use_id: "copiado".into(),
+                    content: format!("{marcador} confirme"),
+                }]),
+            }];
+
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x"]);
+            let r = c
+                .turno_com_historico("s1", "sim", escopo("web", "s1", "a"), &historico)
+                .await;
+            assert!(e_pedido(&r), "{r}");
+            assert!(c.rodou().is_empty());
+
+            let mut legado = Cenario::novo(Caminho::AgentConfig, &["x"]);
+            legado
+                .turno_com_historico("s1", "sim", None, &historico)
+                .await;
+            assert_eq!(legado.rodou(), vec!["x".to_string()]);
+        }
+
+        /// Escopo de outra sessao que nao a do turno: nada e aprovado nem
+        /// registrado (fail-closed).
+        #[tokio::test]
+        async fn escopo_de_outra_sessao_nao_registra_nem_aprova() {
+            let mut c = Cenario::novo(Caminho::AgentConfig, &["x", "x"]);
+            assert!(e_pedido(
+                &c.turno("s1", "apaga x", escopo("web", "outra", "a")).await
+            ));
+            assert!(c.rt.pending_approvals.is_empty());
+            let r = c.turno("s1", "sim", escopo("web", "outra", "a")).await;
+            assert!(e_pedido(&r));
+            assert!(c.rodou().is_empty());
+        }
+
+        /// Um `tool_program` cujo passo pausa registra a impressao digital
+        /// do PASSO: o "sim" seguinte aprova aquele `(tool, assunto)`.
+        #[tokio::test]
+        async fn pausa_dentro_de_tool_program_registra_o_pedido_do_passo() {
+            let rt = AgentRuntime::new();
+            let (tool, rodou) = ToolQuePedeConfirmacao::nova();
+            rt.register_tool(Box::new(tool));
+            rt.register_provider(Arc::new(super::RodaPrograma::novo(serde_json::json!({
+                "steps": [ { "tool": "precisa_confirmar", "args": { "alvo": "z" } } ]
+            }))));
+            let exec = ExecContext {
+                approval_scope: escopo("web", "s1", "a"),
+                ..ExecContext::default()
+            };
+            let r = rt
+                .process_message_with_agent_config(
+                    "s1",
+                    "roda",
+                    &[],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &exec,
+                )
+                .await
+                .expect("turno");
+            assert!(e_pedido(&r), "{r}");
+            assert!(rodou.lock().expect("lock").is_empty());
+            let ap = rt.pending_approvals.resolve(
+                exec.approval_scope.as_ref().expect("escopo"),
+                "sim",
+                std::time::Instant::now(),
+            );
+            assert!(ap.covers("precisa_confirmar", "z"));
+        }
     }
 
     // ─── #1078 item 2: aprovacao vinculada ao pedido ──────────────────────
