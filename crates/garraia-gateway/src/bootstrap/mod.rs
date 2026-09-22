@@ -71,6 +71,13 @@ pub use whatsapp_linked::{
     health as whatsapp_linked_health, settings_from_config as whatsapp_linked_settings,
     spawn_whatsapp_linked,
 };
+/// #1345: a normalizacao de identidade do canal, para a CLI
+/// (`garraia whatsapp allow`) gravar no `allow` exatamente a forma que o
+/// portao compara.
+pub use whatsapp_linked::{
+    LinkedSettings as WhatsAppLinkedSettings,
+    normalizar_identidade as whatsapp_linked_normalizar_identidade,
+};
 
 /// ADR 0024 (#1329): a politica derivada de `execution.profile` — perfil e
 /// origem resolvidos, raiz do MCP `filesystem` por perfil (nunca `$HOME`) e o

@@ -310,6 +310,21 @@ pub struct LinkedSettings {
 }
 
 impl LinkedSettings {
+    /// Quantas identidades distintas este canal admite pela config: `allow`
+    /// uniao `owners`, sem repeticao (#1345).
+    ///
+    /// E a mesma uniao que [`PortaoDoCanal::from_settings`] monta, entao um
+    /// `0` aqui e exatamente "ninguem recebera resposta" — o que o `status`
+    /// da CLI, o `/api/diagnostics` e o aviso de boot dizem. Contagem, nunca
+    /// identidade: nenhum dos tres consumidores pode listar numeros.
+    pub fn autorizados(&self) -> usize {
+        self.allow
+            .iter()
+            .chain(self.owners.iter())
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
     /// O `default_mode` que vale para um dado perfil de execucao: o valor
     /// declarado, se houver; senao [`DEFAULT_MODE`] em `standard` e
     /// [`DEFAULT_MODE_DO_DONO_NO_POD`] em `isolated-pod`.
@@ -494,6 +509,71 @@ impl PortaoDoCanal {
     fn parear(&mut self, remetente: &str) {
         self.pareados.insert(remetente.to_string());
     }
+
+    /// Troca a parte que vem da config e **mantem** `pareados` (#1345).
+    ///
+    /// Chamado a cada turno com a config viva: o que entrou no `allow` passa a
+    /// valer na proxima mensagem, e o que saiu deixa de valer — sem restart.
+    /// `pareados` nao vem da config e nao tem como ser relido dela; um codigo
+    /// resgatado continua valendo ate o processo cair, como antes.
+    pub fn recarregar(&mut self, settings: &LinkedSettings) {
+        let pareados = std::mem::take(&mut self.pareados);
+        *self = Self::from_settings(settings);
+        self.pareados = pareados;
+    }
+}
+
+/// A admissao que vale **neste turno**: `boot` com `enabled`, `allow` e
+/// `owners` trocados pelos da config viva (#1345).
+///
+/// # O que recarrega e o que nao
+///
+/// So a **admissao** — quem entra e quem e dono. `default_mode` e
+/// `reply_in_groups` ficam os do boot: o primeiro foi validado por
+/// [`deve_supervisionar`] na subida e o aviso de drift de MCP falou dele; o
+/// segundo decide se o turno nem nasce, no `deliver`. Mudar os dois pede
+/// restart, e a documentacao diz isso.
+///
+/// # Por que `owners` recarrega junto com `allow`
+///
+/// Porque recarregar so o `allow` seria fail-open na revogacao: um dono tirado
+/// de `owners` que continua no `allow` seguiria recebendo o piso do pod
+/// (`code`: filesystem, bash, MCP) ate o proximo restart. Com os dois lidos da
+/// mesma fonte, tirar da lista tira o poder na mensagem seguinte.
+///
+/// # Fail-closed
+///
+/// A config viva sem a secao, com `type` errado ou com `enabled != true`
+/// chega aqui como `LinkedSettings` com `enabled = false` (e o que
+/// [`settings_from_config`] devolve), e o resultado admite **ninguem** —
+/// nem pela config, nem por dono. Quem recusa o turno inteiro, codigo de
+/// pareamento incluso, e o sink, olhando o `enabled` devolvido.
+pub fn admissao_vigente(boot: &LinkedSettings, viva: &LinkedSettings) -> LinkedSettings {
+    let mut vigente = boot.clone();
+    vigente.enabled = viva.enabled;
+    if viva.enabled {
+        vigente.allow = viva.allow.clone();
+        vigente.owners = viva.owners.clone();
+    } else {
+        vigente.allow = Vec::new();
+        vigente.owners = Vec::new();
+    }
+    vigente
+}
+
+/// O aviso de boot de um canal que sobe sem ninguem autorizado (#1345).
+///
+/// `None` quando ha pelo menos uma identidade em `allow` ou `owners`. O texto
+/// cita o comando que resolve e nao carrega numero nenhum. Puro, para o teste
+/// nao depender de capturar `tracing`.
+pub fn aviso_portao_vazio(settings: &LinkedSettings, bin: &str) -> Option<String> {
+    (settings.autorizados() == 0).then(|| {
+        format!(
+            "whatsapp_linked: nenhum numero autorizado em `channels.whatsapp_linked.allow` \
+             (nem em `owners`) — toda mensagem sera descartada em silencio. Rode \
+             `{bin} whatsapp allow <numero>` (vale sem reiniciar)"
+        )
+    })
 }
 
 /// Admite (ou nao) um remetente.
@@ -895,6 +975,25 @@ pub fn deve_responder(msg: &InboundMessage, settings: &LinkedSettings) -> bool {
     msg.text.as_deref().is_some_and(|t| !t.trim().is_empty())
 }
 
+/// Os settings que valem para **um turno** (#1345).
+///
+/// Com o `ConfigWatcher` ligado (o boot liga quando o `config.yml` existe), a
+/// admissao — `enabled`, `allow`, `owners` — e relida da config viva a cada
+/// mensagem, via [`admissao_vigente`]: `garraia whatsapp allow` e a revogacao
+/// por edicao do arquivo valem na mensagem seguinte, sem restart.
+///
+/// Sem watcher a config nao muda durante o processo, e `current_config()`
+/// devolveria a mesma do boot — de onde `boot` ja saiu. Os settings do boot
+/// valem inteiros, e e isso que deixa o harness de teste passar settings
+/// direto ao [`supervisionar`] sem escrever a secao no `AppConfig`.
+fn settings_do_turno(state: &SharedState, boot: &LinkedSettings) -> LinkedSettings {
+    if state.has_config_watcher() {
+        admissao_vigente(boot, &settings_from_config(&state.current_config()))
+    } else {
+        boot.clone()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sink
 // ---------------------------------------------------------------------------
@@ -960,13 +1059,21 @@ impl GatewaySink {
         // codigo do `/pair` vale em qualquer canal, e o docblock dele diz isso.
         // A allowlist **nao** e: ver [`PortaoDoCanal`].
         let (_, pairing) = channel_gates(&state);
-        let admissao = {
+        // #1345: a admissao deste turno sai da config VIVA, nao da do boot.
+        // Ver `admissao_vigente` e `settings_do_turno`.
+        let settings = settings_do_turno(&state, &settings);
+        let admissao = if !settings.enabled {
+            // Canal desligado (ou secao sumida) na config viva: ninguem entra,
+            // nem por codigo de pareamento. Mesmo silencio do `Recusado`.
+            Admissao::Recusado
+        } else {
             // Os dois locks juntos, e soltos antes do `await`: `std::sync::
             // MutexGuard` nao e `Send`.
             let (Ok(mut gate), Ok(mut pair)) = (portao.lock(), pairing.lock()) else {
                 warn!("whatsapp_linked: gate envenenado; recusando por seguranca");
                 return;
             };
+            gate.recarregar(&settings);
             admitir(&mut gate, &mut pair, &remetente, &bruto)
         };
 
@@ -1257,6 +1364,11 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     // sobre o modo que `deve_supervisionar` acabou de validar. Aviso, nao
     // recusa — ver `mcp_liberadas_pelo_perfil`.
     avisar_drift_de_mcp(modo, politica.perfil, &settings, &state.agents);
+    // #1345: sobe assim mesmo (o `allow` recarrega a quente), mas diz que
+    // ninguem vai receber resposta ate alguem ser autorizado.
+    if let Some(aviso) = aviso_portao_vazio(&settings, &garraia_common::executavel::nome()) {
+        warn!("{aviso}");
+    }
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
     // compilador nao sabe disso, e um `unwrap()` em producao e proibido.
     let Some(node) = node else {

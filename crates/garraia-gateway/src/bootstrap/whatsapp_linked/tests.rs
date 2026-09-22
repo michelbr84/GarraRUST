@@ -1655,6 +1655,137 @@ fn fonte_do_canal_nao_tem_a_recusa_por_mcp_nem_deteccao_de_container() {
 }
 
 // ---------------------------------------------------------------------------
+// #1345: admissao recarregada a quente, contagem e aviso de portao vazio
+// ---------------------------------------------------------------------------
+
+/// `autorizados()` e a uniao sem repeticao de `allow` e `owners` — a mesma
+/// que o portao monta. Quem esta nas duas listas conta uma vez.
+#[test]
+fn autorizados_conta_a_uniao_sem_repeticao() {
+    let s = LinkedSettings {
+        allow: vec!["5511900000001".into(), "5511900000002".into()],
+        owners: vec!["5511900000002".into(), "5511900000003".into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(s.autorizados(), 3);
+    assert_eq!(LinkedSettings::default().autorizados(), 0);
+}
+
+/// Recarregar troca a parte da config e mantem quem pareou por codigo: o
+/// codigo e memoria do processo, e a config nao tem como devolve-lo.
+#[test]
+fn recarregar_o_portao_mantem_os_pareados() {
+    let mut portao = portao_com(&["5511900000001"]);
+    let mut pair = pairing();
+    let codigo = pair.generate("whatsapp_linked");
+    assert_eq!(
+        admitir(&mut portao, &mut pair, "5511900000009", &codigo),
+        Admissao::PareadoAgora
+    );
+
+    portao.recarregar(&LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000002".into()],
+        ..LinkedSettings::default()
+    });
+    assert!(
+        !portao.libera("5511900000001"),
+        "saiu do allow: saiu do portao"
+    );
+    assert!(portao.libera("5511900000002"), "entrou no allow: entrou");
+    assert!(portao.libera("5511900000009"), "o pareado continua");
+}
+
+/// Config viva desligada, sem secao ou com `type` errado: a admissao vigente
+/// nao admite ninguem e nao tem dono — mesmo que o boot tivesse os dois.
+#[test]
+fn admissao_vigente_fecha_com_canal_desligado_sem_secao_ou_tipo_errado() {
+    let boot = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000001".into()],
+        owners: vec!["5511900000001".into()],
+        reply_in_groups: true,
+        default_mode: Some("search".into()),
+    };
+    let desligada = settings_from_config(&config_com(Some(secao(
+        Some(false),
+        serde_json::json!({ "allow": ["5511900000001"], "owners": ["5511900000001"] }),
+    ))));
+    let sem_secao = settings_from_config(&config_com(None));
+    let mut tipo_errado = secao(
+        Some(true),
+        serde_json::json!({ "allow": ["5511900000001"] }),
+    );
+    tipo_errado.channel_type = "whatsapp".into();
+    let tipo_errado = settings_from_config(&config_com(Some(tipo_errado)));
+
+    for viva in [desligada, sem_secao, tipo_errado] {
+        let v = admissao_vigente(&boot, &viva);
+        assert!(!v.enabled, "{viva:?}");
+        assert_eq!(v.autorizados(), 0, "ninguem: {viva:?}");
+        assert!(
+            perfil_do_turno(ExecutionProfile::IsolatedPod, &v, "5511900000001", false)
+                == PerfilDoTurno::Padrao,
+            "nem dono"
+        );
+    }
+}
+
+/// O que recarrega e so a admissao: `default_mode` e `reply_in_groups` ficam
+/// os do boot (pedem restart, e a doc diz isso).
+#[test]
+fn admissao_vigente_so_troca_enabled_allow_e_owners() {
+    let boot = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000001".into()],
+        owners: vec!["5511900000001".into()],
+        reply_in_groups: false,
+        default_mode: Some("search".into()),
+    };
+    let viva = LinkedSettings {
+        enabled: true,
+        allow: vec!["5511900000002".into()],
+        owners: Vec::new(),
+        reply_in_groups: true,
+        default_mode: Some("code".into()),
+    };
+    let v = admissao_vigente(&boot, &viva);
+    assert_eq!(v.allow, vec!["5511900000002".to_string()]);
+    assert!(v.owners.is_empty(), "revogacao de dono vale a quente");
+    assert!(!v.reply_in_groups, "reply_in_groups e o do boot");
+    assert_eq!(
+        v.default_mode.as_deref(),
+        Some("search"),
+        "default_mode e o do boot"
+    );
+}
+
+/// O aviso de boot existe so com o portao vazio, cita o comando e nao carrega
+/// numero nenhum.
+#[test]
+fn aviso_de_portao_vazio_cita_o_allow_e_so_existe_quando_vazio() {
+    let aviso = aviso_portao_vazio(&LinkedSettings::default(), "garraia").expect("vazio avisa");
+    assert!(aviso.contains("garraia whatsapp allow <numero>"), "{aviso}");
+    assert!(!aviso.chars().any(|c| c.is_ascii_digit()), "{aviso}");
+
+    let com_um = LinkedSettings {
+        owners: vec!["5511900000001".into()],
+        ..LinkedSettings::default()
+    };
+    assert_eq!(aviso_portao_vazio(&com_um, "garraia"), None);
+}
+
+/// A CLI grava no `allow` o que [`normalizar_identidade`] produz; o
+/// re-export tem de ser a mesma funcao.
+#[test]
+fn o_reexport_da_normalizacao_e_a_mesma_funcao() {
+    assert_eq!(
+        crate::bootstrap::whatsapp_linked_normalizar_identidade("+55 11 99999-8888"),
+        normalizar_identidade("+55 11 99999-8888")
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Ponta a ponta contra a ponte falsa
 // ---------------------------------------------------------------------------
 /// `#[cfg(unix)]` pelo mesmo motivo da suite de `garraia-channels`: a fixture e
@@ -1929,6 +2060,18 @@ mod ponta_a_ponta {
         perfil: ExecutionProfile,
         provider: ProviderDeStub,
     ) -> (SharedState, Arc<ProviderDeStub>) {
+        monta_estado_vivo(dir, perfil, provider, None)
+    }
+
+    /// O mesmo, com um `ConfigWatcher` de mentira (#1345): o teste segura o
+    /// `watch::Sender` e "edita o config.yml" mandando um `AppConfig` novo —
+    /// exatamente o que o watcher de producao faz depois de reler o arquivo.
+    fn monta_estado_vivo(
+        dir: &tempfile::TempDir,
+        perfil: ExecutionProfile,
+        provider: ProviderDeStub,
+        config_viva: Option<watch::Receiver<AppConfig>>,
+    ) -> (SharedState, Arc<ProviderDeStub>) {
         let config = AppConfig {
             data_dir: Some(dir.path().to_path_buf()),
             execution: ExecutionConfig::new(Some(perfil), None),
@@ -1943,11 +2086,12 @@ mod ponta_a_ponta {
             agents.register_tool(Box::new(ToolDeMentira(nome)));
         }
 
-        let state: SharedState = Arc::new(crate::state::AppState::new(
-            config,
-            Arc::new(agents),
-            ChannelRegistry::new(),
-        ));
+        let mut state =
+            crate::state::AppState::new(config, Arc::new(agents), ChannelRegistry::new());
+        if let Some(rx) = config_viva {
+            state.set_config_watcher(rx);
+        }
+        let state: SharedState = Arc::new(state);
         (state, provider)
     }
 
@@ -2145,6 +2289,9 @@ mod ponta_a_ponta {
         reply_in_groups: bool,
         perfil: ExecutionProfile,
         provider: ProviderDeStub,
+        /// #1345: a config viva. `None` = sem watcher (os settings do boot
+        /// valem o processo inteiro).
+        config_viva: Option<watch::Receiver<AppConfig>>,
     }
 
     impl Default for Montagem {
@@ -2156,6 +2303,7 @@ mod ponta_a_ponta {
                 reply_in_groups: false,
                 perfil: ExecutionProfile::Standard,
                 provider: ProviderDeStub::default(),
+                config_viva: None,
             }
         }
     }
@@ -2174,9 +2322,10 @@ mod ponta_a_ponta {
             reply_in_groups,
             perfil,
             provider,
+            config_viva,
         } = m;
         let dir = tempfile::tempdir().expect("tempdir");
-        let (state, provider) = monta_estado_com(&dir, perfil, provider);
+        let (state, provider) = monta_estado_vivo(&dir, perfil, provider, config_viva);
         preparo(&state);
 
         // O `Allowlist` global fica em modo **aberto** de proposito: e o modo em
@@ -2830,5 +2979,231 @@ mod ponta_a_ponta {
             ate(|| state.whatsapp_linked.bridge() == BridgeView::Down).await,
             "ao encerrar, o runtime volta para desconectado"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // #1345: admissao recarregada a quente
+    // -----------------------------------------------------------------------
+
+    /// A config viva do canal: ligado ou nao, com `allow` e `owners`.
+    fn viva(enabled: bool, allow: &[&str], owners: &[&str]) -> AppConfig {
+        config_com(Some(secao(
+            Some(enabled),
+            serde_json::json!({ "allow": allow, "owners": owners }),
+        )))
+    }
+
+    /// Entrega uma mensagem 1:1 de `PEER` pelo sink real e espera o
+    /// `SinkEspiao` registra-la — assim a ausencia de turno depois nao e
+    /// vacua.
+    async fn entrega(c: &Cenario, texto: &str) {
+        let antes = recebidas(c).len();
+        InboundSink::deliver(&*c.espiao, msg(Some(texto)));
+        assert!(
+            ate(|| recebidas(c).len() > antes).await,
+            "a mensagem precisa chegar ao sink"
+        );
+    }
+
+    /// Sobe com a config viva e o eco marcado `from_me` (a resposta do agente
+    /// nao vira outro turno, entao cada `entrega` e no maximo um turno).
+    async fn sobe_vivo(
+        boot_liberado: bool,
+        boot_dono: bool,
+        perfil: ExecutionProfile,
+        rx: watch::Receiver<AppConfig>,
+    ) -> Cenario {
+        let c = Montagem {
+            roteiro: Roteiro::eco().da_propria_conta(),
+            liberado: boot_liberado,
+            dono: boot_dono,
+            perfil,
+            config_viva: Some(rx),
+            ..Montagem::default()
+        }
+        .sobe(|_| {})
+        .await;
+        assert!(
+            ate(|| c.state.whatsapp_linked.bridge() == BridgeView::Connected).await,
+            "a ponte precisa estar de pe"
+        );
+        c
+    }
+
+    /// Espera o provider ver `n` turnos, e depois um respiro para um turno a
+    /// mais (que nao deveria existir) ter chance de aparecer.
+    async fn turnos_estaveis_em(c: &Cenario, n: usize) -> usize {
+        let _ = ate(|| turnos(&c.provider).len() >= n).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        turnos(&c.provider).len()
+    }
+
+    /// Quantas respostas do agente sairam pela ponte (o eco `from_me`).
+    fn respostas(c: &Cenario) -> usize {
+        recebidas(c).iter().filter(|m| m.from_me).count()
+    }
+
+    /// **O defeito da #1345, ponta a ponta.** O canal sobe com o portao vazio
+    /// (o estado exato em que o `garraia whatsapp link` o deixava), o numero
+    /// e recusado sem resposta; o operador roda `garraia whatsapp allow`
+    /// (aqui: o watcher entrega a config nova) e a mensagem SEGUINTE e
+    /// aceita, sem restart. Tirar o numero do `allow` de novo o recusa na
+    /// mensagem seguinte.
+    #[tokio::test]
+    async fn allow_adicionado_e_removido_vale_na_proxima_mensagem_sem_restart() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+
+        entrega(&c, "oi").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            0,
+            "portao vazio: recusado, sem turno"
+        );
+        assert_eq!(respostas(&c), 0, "e sem resposta: a recusa e silenciosa");
+
+        tx.send(viva(true, &[PEER], &[])).expect("watcher");
+        entrega(&c, "oi de novo").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            1,
+            "o `allow` novo vale na mensagem seguinte, sem restart"
+        );
+        assert!(
+            ate(|| respostas(&c) == 1).await,
+            "e a resposta sai pela ponte"
+        );
+
+        tx.send(viva(true, &[], &[])).expect("watcher");
+        entrega(&c, "ainda estou aqui").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            1,
+            "revogado: tirar do `allow` recusa a mensagem seguinte"
+        );
+        assert_eq!(respostas(&c), 1, "e a recusa segue silenciosa");
+
+        encerra(c).await;
+    }
+
+    /// `enabled: false` na config viva fecha o portao para todo mundo —
+    /// inclusive quem ainda esta no `allow` — sem esperar restart. Secao
+    /// sumida do arquivo: o mesmo.
+    #[tokio::test]
+    async fn canal_desligado_na_config_viva_recusa_todo_mundo() {
+        let (tx, rx) = watch::channel(viva(true, &[PEER], &[]));
+        let c = sobe_vivo(true, false, ExecutionProfile::Standard, rx).await;
+
+        entrega(&c, "oi").await;
+        assert_eq!(turnos_estaveis_em(&c, 1).await, 1, "controle: aceito");
+
+        tx.send(viva(false, &[PEER], &[])).expect("watcher");
+        entrega(&c, "oi de novo").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            1,
+            "`enabled = false` recusa mesmo quem esta no `allow`"
+        );
+
+        tx.send(AppConfig::default()).expect("watcher");
+        entrega(&c, "e agora").await;
+        assert_eq!(turnos_estaveis_em(&c, 2).await, 1, "sem secao: ninguem");
+
+        encerra(c).await;
+    }
+
+    /// **A regressao fail-open da revogacao.** Dono no pod, em `allow` E em
+    /// `owners`. Tirado so de `owners`, ele continua admitido — mas o turno
+    /// seguinte tem de cair no piso de `standard`. Com os `owners` do boot o
+    /// canal seguiria oferecendo `bash` a um dono revogado ate o restart.
+    #[tokio::test]
+    async fn dono_revogado_perde_o_piso_do_pod_na_proxima_mensagem() {
+        let (tx, rx) = watch::channel(viva(true, &[PEER], &[PEER]));
+        let c = sobe_vivo(true, true, ExecutionProfile::IsolatedPod, rx).await;
+
+        entrega(&c, "oi").await;
+        assert_eq!(turnos_estaveis_em(&c, 1).await, 1);
+        assert!(
+            turnos(&c.provider)[0]
+                .ferramentas
+                .iter()
+                .any(|f| f == "bash"),
+            "controle: o dono no pod recebe `code`: {:?}",
+            turnos(&c.provider)[0].ferramentas
+        );
+
+        tx.send(viva(true, &[PEER], &[])).expect("watcher");
+        entrega(&c, "oi de novo").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 2).await,
+            2,
+            "ainda no `allow`: admitido"
+        );
+        let t = turnos(&c.provider);
+        assert!(
+            !t[1]
+                .ferramentas
+                .iter()
+                .any(|f| f == "bash" || f == "file_write"),
+            "dono revogado cai no piso `search` na mensagem seguinte: {:?}",
+            t[1].ferramentas
+        );
+
+        encerra(c).await;
+    }
+
+    /// Dono adicionado a quente em `standard` e admitido, e nao ganha poder
+    /// nenhum: o perfil de execucao continua o do boot.
+    #[tokio::test]
+    async fn dono_adicionado_a_quente_em_standard_nao_ganha_poder() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+
+        tx.send(viva(true, &[], &[PEER])).expect("watcher");
+        entrega(&c, "oi").await;
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            1,
+            "dono e admitido (owners entra como allow)"
+        );
+        assert!(
+            !turnos(&c.provider)[0]
+                .ferramentas
+                .iter()
+                .any(|f| f == "bash" || f == "file_write"),
+            "em standard `owners` nao confere poder: {:?}",
+            turnos(&c.provider)[0].ferramentas
+        );
+
+        encerra(c).await;
+    }
+
+    /// Grupo continua exigindo `reply_in_groups`, mesmo para quem entrou no
+    /// `allow` a quente: a mensagem do grupo nem vira turno.
+    #[tokio::test]
+    async fn allow_a_quente_nao_abre_grupo_sem_reply_in_groups() {
+        let (tx, rx) = watch::channel(viva(true, &[], &[]));
+        let c = sobe_vivo(false, false, ExecutionProfile::Standard, rx).await;
+
+        tx.send(viva(true, &[PEER], &[])).expect("watcher");
+        let mut do_grupo = msg(Some("oi grupo"));
+        do_grupo.chat_jid = Jid::new("120363000000000001@g.us");
+        do_grupo.is_group = true;
+        InboundSink::deliver(&*c.espiao, do_grupo);
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem chegou ao sink"
+        );
+        assert_eq!(
+            turnos_estaveis_em(&c, 1).await,
+            0,
+            "grupo sem `reply_in_groups`: sem turno"
+        );
+
+        // Controle: a mesma pessoa em 1:1 e aceita.
+        entrega(&c, "oi").await;
+        assert_eq!(turnos_estaveis_em(&c, 1).await, 1);
+
+        encerra(c).await;
     }
 }

@@ -418,6 +418,34 @@ fn whatsapp_linked_check(
     }
 }
 
+/// #1345: um vinculo saudavel com o portao vazio vira `Warning`.
+///
+/// O canal esta ligado, a ponte conecta, e toda mensagem e descartada em
+/// silencio porque ninguem esta em `allow` nem em `owners`. `Ok` ali era a
+/// mentira que deixava o operador esperando uma resposta que nunca vinha.
+/// So rebaixa `Ok`: `Skipped` (nao vinculado) e `Error` (ponte quebrada) ja
+/// tem o proximo passo certo, e o do portao so importa depois deles.
+///
+/// Contagem, nunca identidade: a rota e auth-free.
+fn whatsapp_linked_portao_vazio(
+    mut check: DiagnosticCheck,
+    settings: &crate::bootstrap::WhatsAppLinkedSettings,
+) -> DiagnosticCheck {
+    if matches!(check.status, CheckStatus::Ok) && settings.enabled && settings.autorizados() == 0 {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — mas nenhum numero esta autorizado (`allow` e `owners` vazios): toda \
+             mensagem e descartada em silencio",
+            check.detail
+        );
+        check.next_step = Some(format!(
+            "rode `{} whatsapp allow <numero>` (com codigo do pais; vale sem reiniciar)",
+            garraia_common::executavel::nome()
+        ));
+    }
+    check
+}
+
 // ─── ADR 0024 (#1329): perfil de execucao e raiz do MCP filesystem ──────────
 
 /// O que o `execution.profile` reporta sobre o canal `whatsapp_linked`: o
@@ -942,8 +970,13 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     //     `whatsapp_linked` do `/api/channels`: `whatsapp_linked::health::
     //     classify`. Duas fontes divergentes sobre o mesmo canal e o defeito
     //     que a #1079 ja custou uma vez.
-    checks.push(whatsapp_linked_check(
-        crate::bootstrap::whatsapp_linked_health(&state.config, &state.whatsapp_linked),
+    checks.push(whatsapp_linked_portao_vazio(
+        whatsapp_linked_check(crate::bootstrap::whatsapp_linked_health(
+            &state.config,
+            &state.whatsapp_linked,
+        )),
+        // #1345: a config VIVA, a mesma que o turno le para admitir.
+        &crate::bootstrap::whatsapp_linked_settings(&state.current_config()),
     ));
 
     // 15. STT server reachable (#1098).
@@ -1045,6 +1078,56 @@ mod tests {
         }
     }
 
+    /// #1345: vinculo saudavel com `allow` e `owners` vazios e `Warning`, com
+    /// o comando que resolve — e sem numero nenhum no corpo auth-free.
+    #[test]
+    fn vinculo_saudavel_com_portao_vazio_e_warning_com_o_allow() {
+        let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        for saude in [LinkHealth::Connected, LinkHealth::Linked] {
+            let c = whatsapp_linked_portao_vazio(wa(saude), &ligado_vazio);
+            assert!(matches!(c.status, CheckStatus::Warning), "{saude:?}");
+            let passo = c.next_step.as_deref().unwrap_or_default();
+            assert!(passo.contains("whatsapp allow <numero>"), "{passo}");
+            assert!(
+                !c.detail.chars().any(|ch| ch.is_ascii_digit()),
+                "{}",
+                c.detail
+            );
+        }
+
+        // Com alguem autorizado, segue `Ok` sem passo.
+        let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        let c = whatsapp_linked_portao_vazio(wa(LinkHealth::Connected), &com_um);
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert!(c.next_step.is_none());
+        let json = serde_json::to_string(&c).expect("serializa");
+        assert!(!json.contains("5511900000001"), "{json}");
+
+        // Nao vinculado e ponte quebrada ficam com o veredito proprio.
+        let c = whatsapp_linked_portao_vazio(wa(LinkHealth::NotLinked), &ligado_vazio);
+        assert!(matches!(c.status, CheckStatus::Skipped));
+        let c = whatsapp_linked_portao_vazio(wa(LinkHealth::BridgeDown), &ligado_vazio);
+        assert!(matches!(c.status, CheckStatus::Error));
+        assert!(
+            !c.next_step.unwrap_or_default().contains("allow"),
+            "consertar a ponte vem antes"
+        );
+
+        // Canal desligado: o portao vazio nao e o problema.
+        let c = whatsapp_linked_portao_vazio(
+            wa(LinkHealth::Linked),
+            &crate::bootstrap::WhatsAppLinkedSettings::default(),
+        );
+        assert!(matches!(c.status, CheckStatus::Ok));
+    }
+
     /// **A fiacao.** Os testes acima exercitam `whatsapp_linked_check`
     /// diretamente; sem este, apagar o `checks.push(...)` do handler deixaria
     /// todos eles verdes e o `/api/diagnostics` sem a linha — o padrao de
@@ -1082,6 +1165,65 @@ mod tests {
         assert_eq!(
             linha.next_step.as_deref(),
             Some("rode `garraia whatsapp link`")
+        );
+    }
+
+    /// #1345, a fiacao: sem o `whatsapp_linked_portao_vazio` no handler, o
+    /// teste de unidade acima continuaria verde e o relatorio diria `ok` para
+    /// um canal que descarta toda mensagem.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn o_relatorio_de_verdade_avisa_o_portao_vazio() {
+        use garraia_agents::AgentRuntime;
+        use garraia_channels::ChannelRegistry;
+        use garraia_channels::whatsapp_linked::{SessionBlob, SessionKey};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _config_dir = ConfigDirDeTeste::apontar_para(dir.path());
+        let mut config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        config.channels.insert(
+            "whatsapp_linked".into(),
+            garraia_config::ChannelConfig {
+                channel_type: "whatsapp_linked".into(),
+                enabled: Some(true),
+                settings: Default::default(),
+            },
+        );
+        let paths = crate::bootstrap::LinkedPaths::from_config(&config).expect("paths");
+        let key = SessionKey::resolve(paths.store.dir(), None).expect("chave");
+        paths
+            .store
+            .save(&SessionBlob::new("eyJhIjoxfQ=="), &key)
+            .expect("sessao");
+        std::fs::create_dir_all(paths.bridge_dir.join("node_modules")).expect("deps");
+
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::new(
+            config,
+            std::sync::Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        ));
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "whatsapp.linked")
+            .expect("linha whatsapp.linked");
+        assert!(
+            matches!(linha.status, CheckStatus::Warning),
+            "vinculado, ligado e ninguem autorizado: {:?} {}",
+            linha.status,
+            linha.detail
+        );
+        assert!(
+            linha
+                .next_step
+                .as_deref()
+                .is_some_and(|p| p.contains("whatsapp allow")),
+            "{:?}",
+            linha.next_step
         );
     }
 
