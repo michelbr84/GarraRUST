@@ -22,6 +22,38 @@ pub struct StoredMessage {
     pub tokens_out: Option<i32>,
 }
 
+/// O que o `sessions.db` registra sobre **quem** ja tocou uma sessao.
+///
+/// E dado, nao politica: quem decide o que fazer com isto e o chamador — hoje,
+/// a readocao de sessao REST do gateway depois de um restart, que so traz de
+/// volta do disco o que so a propria superficie REST gravou. Sao quatro
+/// fontes porque nenhuma sozinha conta a historia inteira:
+///
+/// - `sessions.channel_id` e o **ultimo** a gravar a linha: cada upsert
+///   sobrescreve, entao ele sozinho esquece quem veio antes;
+/// - `chat_session_keys` e a marca persistente de canal do Chat Sync — a
+///   sessao do Telegram resolvida por UUID so e reconhecivel por ela;
+/// - `session_tokens` guarda a superficie que emitiu cada token (`api`, `web`);
+/// - o `metadata.channel_id` e a coluna `source` de cada mensagem so crescem:
+///   sao o registro de toda superficie que ja gravou um turno.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSurfaces {
+    /// `sessions.tenant_id`, para quem recria a sessao nao a mudar de tenant.
+    pub tenant_id: String,
+    /// `sessions.channel_id` — o ultimo a gravar, nao o unico.
+    pub channel_id: String,
+    /// Toda `source` de `chat_session_keys` desta sessao, sem repeticao.
+    pub key_sources: std::collections::BTreeSet<String>,
+    /// Toda `source` de `session_tokens` desta sessao, sem repeticao.
+    pub token_sources: std::collections::BTreeSet<String>,
+    /// Todo canal que uma mensagem gravada declarou — `metadata.channel_id`
+    /// ou a coluna `source` —, sem repeticao.
+    pub message_channels: std::collections::BTreeSet<String>,
+    /// Ha mensagem cujo metadado nao e JSON legivel (ou e `NULL`): dela nao
+    /// da para dizer quem a gravou.
+    pub unreadable_message_metadata: bool,
+}
+
 /// Persistent storage for conversation sessions and message history.
 pub struct SessionStore {
     pub(crate) conn: Connection,
@@ -835,6 +867,105 @@ impl SessionStore {
             )
             .map_err(|e| Error::Database(format!("failed to count messages: {e}")))?;
         Ok(count)
+    }
+
+    /// Quem ja tocou esta sessao, segundo o banco — ver [`SessionSurfaces`].
+    ///
+    /// `None` quando nao ha linha em `sessions`: a sessao nao existe no disco.
+    /// So le; nao cria nem atualiza nada, para que perguntar por um id
+    /// desconhecido nao deixe rastro.
+    ///
+    /// O canal da mensagem sai de `metadata.channel_id` por
+    /// `json_extract`, guardado por `CASE WHEN json_valid(...)`: o `CASE`
+    /// avalia na ordem, entao um metadado quebrado nunca chega ao
+    /// `json_extract` (que falharia a consulta inteira) — ele so liga
+    /// `unreadable_message_metadata`. O `CAST` cobre um `channel_id` gravado
+    /// como numero.
+    pub fn get_session_surfaces(&self, session_id: &str) -> Result<Option<SessionSurfaces>> {
+        let linha: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT tenant_id, channel_id FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| Error::Database(format!("failed to read session row: {e}")))?;
+        let Some((tenant_id, channel_id)) = linha else {
+            return Ok(None);
+        };
+
+        let key_sources = self.distinct_sources(
+            "SELECT DISTINCT source FROM chat_session_keys WHERE session_id = ?1",
+            session_id,
+        )?;
+        let token_sources = self.distinct_sources(
+            "SELECT DISTINCT source FROM session_tokens WHERE session_id = ?1",
+            session_id,
+        )?;
+
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT
+                     CASE WHEN json_valid(metadata)
+                          THEN CAST(json_extract(metadata, '$.channel_id') AS TEXT)
+                     END,
+                     source,
+                     CASE WHEN json_valid(metadata) THEN 0 ELSE 1 END
+                 FROM messages
+                 WHERE session_id = ?1",
+            )
+            .map_err(|e| Error::Database(format!("failed to prepare surfaces query: {e}")))?;
+        let rows = stmt
+            .query_map(params![session_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|e| Error::Database(format!("failed to query message surfaces: {e}")))?;
+
+        let mut message_channels = std::collections::BTreeSet::new();
+        let mut unreadable_message_metadata = false;
+        for row in rows {
+            let (canal, fonte, ilegivel) =
+                row.map_err(|e| Error::Database(format!("failed to read message surface: {e}")))?;
+            message_channels.extend(canal);
+            message_channels.extend(fonte);
+            unreadable_message_metadata |= ilegivel != 0;
+        }
+
+        Ok(Some(SessionSurfaces {
+            tenant_id,
+            channel_id,
+            key_sources,
+            token_sources,
+            message_channels,
+            unreadable_message_metadata,
+        }))
+    }
+
+    /// Uma coluna `source` de uma consulta com `?1 = session_id`, sem
+    /// repeticao. So para as consultas fixas de [`Self::get_session_surfaces`].
+    fn distinct_sources(
+        &self,
+        sql: &'static str,
+        session_id: &str,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(sql)
+            .map_err(|e| Error::Database(format!("failed to prepare source query: {e}")))?;
+        let rows = stmt
+            .query_map(params![session_id], |row| row.get::<_, String>(0))
+            .map_err(|e| Error::Database(format!("failed to query sources: {e}")))?;
+        let mut fontes = std::collections::BTreeSet::new();
+        for row in rows {
+            fontes.insert(row.map_err(|e| Error::Database(format!("failed to read source: {e}")))?);
+        }
+        Ok(fontes)
     }
 
     /// #1300: o alvo do `--resume` sem id — a sessao do canal cuja ultima
@@ -2199,6 +2330,118 @@ mod tests {
         assert_eq!(messages[0].content, "hello");
         assert_eq!(messages[1].direction, "assistant");
         assert_eq!(messages[1].content, "hi there");
+    }
+
+    /// As quatro marcas de superficie de [`super::SessionSurfaces`] voltam
+    /// todas, e perguntar por um id desconhecido nao deixa rastro no banco — e
+    /// o que a readocao de sessao REST depois de um restart consulta antes de
+    /// decidir.
+    #[test]
+    fn superficies_da_sessao_voltam_das_quatro_fontes() {
+        use std::collections::BTreeSet;
+        let conjunto = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        let contar_sessoes = |store: &SessionStore| -> i64 {
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                .expect("contar sessoes")
+        };
+
+        let store = SessionStore::in_memory().expect("store");
+        assert_eq!(
+            store.get_session_surfaces("inexistente").expect("ler"),
+            None
+        );
+        assert_eq!(contar_sessoes(&store), 0, "perguntar nao cria a sessao");
+
+        store
+            .upsert_session_with_tenant("s", "t1", "api", "anonymous", &serde_json::json!({}))
+            .expect("sessao");
+        let s = store
+            .get_session_surfaces("s")
+            .expect("ler")
+            .expect("a sessao existe");
+        assert_eq!(s.tenant_id, "t1");
+        assert_eq!(s.channel_id, "api");
+        assert!(s.key_sources.is_empty(), "{s:?}");
+        assert!(s.token_sources.is_empty(), "{s:?}");
+        assert!(s.message_channels.is_empty(), "{s:?}");
+        assert!(!s.unreadable_message_metadata);
+
+        let agora = chrono::Utc::now();
+        for (texto, meta) in [
+            (
+                "a",
+                serde_json::json!({ "channel_id": "api", "user_id": "anonymous" }),
+            ),
+            ("b", serde_json::json!({ "channel_id": "telegram" })),
+            // Sem canal no metadado (o turno agendado grava o da sessao).
+            (
+                "c",
+                serde_json::json!({ "continuity_key": "bus:shared-global" }),
+            ),
+            // Canal gravado como numero: o CAST o traz como texto.
+            ("d", serde_json::json!({ "channel_id": 42 })),
+        ] {
+            store
+                .append_message("s", "user", texto, agora, &meta)
+                .expect("mensagem");
+        }
+        store
+            .append_message_with_details(
+                "s",
+                "user",
+                "e",
+                agora,
+                &serde_json::json!({}),
+                Some("vscode"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("mensagem com source");
+        store
+            .upsert_session_key("s", "telegram", "123456")
+            .expect("chave");
+        store
+            .create_session_token("s", "web", 60, None, None)
+            .expect("token");
+
+        let s = store
+            .get_session_surfaces("s")
+            .expect("ler")
+            .expect("existe");
+        assert_eq!(
+            s.message_channels,
+            conjunto(&["42", "api", "telegram", "vscode"])
+        );
+        assert_eq!(s.key_sources, conjunto(&["telegram"]));
+        assert_eq!(s.token_sources, conjunto(&["web"]));
+        assert!(!s.unreadable_message_metadata, "todo metadado e JSON");
+
+        // Metadado quebrado e metadado NULL: nao da para dizer quem gravou, e
+        // a consulta nao pode falhar por causa deles.
+        for (id, meta) in [("m-quebrada", Some("{quebrado")), ("m-nula", None)] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO messages (id, session_id, direction, content, timestamp, metadata)
+                     VALUES (?1, 's', 'user', 'x', '2026-01-01T00:00:00Z', ?2)",
+                    params![id, meta],
+                )
+                .expect("mensagem com metadado ilegivel");
+            let s = store
+                .get_session_surfaces("s")
+                .expect("ler")
+                .expect("existe");
+            assert!(s.unreadable_message_metadata, "{id}");
+            store
+                .conn
+                .execute("DELETE FROM messages WHERE id = ?1", params![id])
+                .expect("limpar");
+        }
+        assert_eq!(contar_sessoes(&store), 1, "ler nao cria linha nenhuma");
     }
 
     #[test]

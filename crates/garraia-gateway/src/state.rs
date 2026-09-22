@@ -25,6 +25,58 @@ const SESSION_TTL: Duration = Duration::from_secs(3600); // 1 hour
 /// How often the cleanup task runs.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 
+/// O canal com que a superficie REST de sessoes (`/api/sessions/*`) grava as
+/// dela: e o que `send_message`/`session_history` passam a
+/// [`AppState::hydrate_session_history`] e a [`AppState::persist_turn`], e a
+/// `source` do token que `POST /api/sessions` emite.
+pub const CANAL_DA_API: &str = "api";
+
+/// O tenant de toda sessao que a superficie REST cria: `POST /api/sessions`
+/// passa por [`AppState::create_session`], que usa o de
+/// [`AppState::create_session_with_id`].
+const TENANT_DA_API: &str = "default";
+
+/// O que [`AppState::sessao_da_api`] encontrou.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessaoDaApi {
+    /// Ja estava em memoria: servida como sempre foi.
+    EmMemoria,
+    /// Estava so no `sessions.db`, gravada so pela superficie REST, e voltou
+    /// para a memoria.
+    Readotada,
+    /// Nao existe, ou existe mas nao e so da superficie REST — que a rota
+    /// REST nao alcanca enquanto a sessao nao esta em memoria.
+    NaoEncontrada,
+}
+
+/// Se tudo o que o banco guarda desta sessao e o que a superficie REST
+/// grava — a condicao para a rota REST readota-la do disco.
+///
+/// A superficie REST grava: a linha com canal [`CANAL_DA_API`] no tenant
+/// [`TENANT_DA_API`] (`create_token` e a hidratacao), token com `source`
+/// [`CANAL_DA_API`], e turnos com `metadata.channel_id` [`CANAL_DA_API`]. Ela
+/// **nunca** grava chave do Chat Sync (`chat_session_keys`): chave e sinal de
+/// que um canal externo mapeou a sessao, e basta uma, de qualquer fonte, para
+/// recusar.
+///
+/// Todas as marcas, e nao so `sessions.channel_id`: ele e do ultimo a gravar,
+/// e uma leitura REST de uma sessao do Telegram que estava em memoria ja o
+/// reescreve para `api`. As mensagens, as chaves e os tokens guardam quem
+/// veio antes. Metadado de mensagem ilegivel recusa: nao da para dizer quem a
+/// gravou, e na duvida a sessao fica onde esta. Mensagem **sem** canal no
+/// metadado (a da tarefa agendada, que grava o metadado da sessao) nao conta
+/// nem a favor nem contra: o canal dela e o da linha, ja conferido.
+pub fn sessao_so_da_api(s: &garraia_db::SessionSurfaces) -> bool {
+    s.channel_id == CANAL_DA_API
+        && s.tenant_id == TENANT_DA_API
+        && !s.unreadable_message_metadata
+        && s.key_sources.is_empty()
+        && s.token_sources
+            .iter()
+            .chain(&s.message_channels)
+            .all(|superficie| superficie == CANAL_DA_API)
+}
+
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub config: AppConfig,
@@ -800,6 +852,86 @@ impl AppState {
         }
     }
 
+    /// A sessao que `/api/sessions/{id}/*` pode servir: a que esta em memoria
+    /// ou, fora dela, a que o `sessions.db` diz que **so a superficie REST**
+    /// gravou — e essa volta para a memoria aqui.
+    ///
+    /// # Por que existe
+    ///
+    /// `GET /api/sessions/{id}/history`, `POST .../messages` e `DELETE` so
+    /// olhavam o mapa em memoria, e ele nasce vazio a cada subida: depois de
+    /// qualquer restart toda sessao REST virava `404 session not found` com
+    /// as linhas inteiras no `sessions.db` (a hidratacao que as carregaria
+    /// vinha depois do 404). E o mesmo buraco da #922, na superficie REST.
+    ///
+    /// # O que pode voltar do disco — e o que nao pode
+    ///
+    /// Em memoria, nada muda: a sessao e servida como sempre foi, seja de
+    /// que superficie for. A regra nova vale so para o que **nao** esta em
+    /// memoria, e ela nao pode deixar esta rota alcancar o que ela nao
+    /// alcancava antes do restart. Uma sessao de outra superficie (Telegram,
+    /// WhatsApp, web, mobile, CLI...) so entra na memoria do gateway pela
+    /// propria superficie; trazer ela do disco por aqui seria alcance novo —
+    /// e a do `garra chat --persist` nunca esteve na memoria do gateway. Por
+    /// isso so volta a sessao cujas marcas no banco sao todas as que a
+    /// superficie REST grava (ver [`sessao_so_da_api`]). A de outra
+    /// superficie segue `NaoEncontrada` ate a propria superficie a trazer de
+    /// volta, e dai em diante e tratada exatamente como era em memoria.
+    ///
+    /// A readocao so pos na memoria o que o banco ja dizia — tenant
+    /// [`TENANT_DA_API`] e canal [`CANAL_DA_API`] — e nao escreve no banco:
+    /// quem escreve e a hidratacao do handler, com o mesmo canal que ela ja
+    /// usava. Por isso nada de uma sessao recusada muda, nem a linha, nem as
+    /// marcas que as outras superficies e o `--resume latest` do CLI leem.
+    ///
+    /// # Por que nao pede token, como a #922 no WS
+    ///
+    /// O WS re-adota do disco so com token porque, la, estar em memoria tem
+    /// prazo: sessao desconectada sai pelo TTL, e o token e o que prova dono
+    /// depois disso. Aqui a prova nunca foi o token — nenhuma rota HTTP valida
+    /// token de sessao (ver `refuse_inert_auth_flag` em `server.rs`) — e a
+    /// sessao REST nao desconecta sozinha: so o `DELETE` a marca assim, e ele
+    /// revoga os tokens sem apagar a conversa, que seguia legivel por aqui
+    /// (e cada leitura a reconectava). A unica diferenca e depois do TTL: a
+    /// sessao apagada e esquecida pela memoria dava `404`, e agora volta do
+    /// disco como qualquer sessao REST — o `DELETE` e logout dos tokens, nunca
+    /// foi bloqueio de leitura. O que protege estas rotas e o gate de
+    /// `api_key` (#1045/#1261), que roda antes do handler e nao muda aqui.
+    ///
+    /// `Err` so quando o banco nao pode ser lido: ai nada e readotado, e o
+    /// handler diz que falhou em vez de afirmar que a sessao nao existe.
+    pub async fn sessao_da_api(&self, session_id: &str) -> garraia_common::Result<SessaoDaApi> {
+        if self.sessions.contains_key(session_id) {
+            return Ok(SessaoDaApi::EmMemoria);
+        }
+        let Some(store) = &self.session_store else {
+            return Ok(SessaoDaApi::NaoEncontrada);
+        };
+        let superficies = store.lock().await.get_session_surfaces(session_id)?;
+        let Some(superficies) = superficies else {
+            return Ok(SessaoDaApi::NaoEncontrada);
+        };
+        if !sessao_so_da_api(&superficies) {
+            // Sem o id nem o canal no log: o id de sessao de canal carrega
+            // telefone (`whatsapp-<numero>`), e o `channel_id` que o Chat Sync
+            // grava ao criar a sessao e o id externo (o `chat_id`).
+            tracing::debug!("sessao de outra superficie: a rota REST nao a readota do disco");
+            return Ok(SessaoDaApi::NaoEncontrada);
+        }
+        // Reconfere depois do `await` do lock: outra requisicao pode ter
+        // readotado (ou a hidratacao de um canal, criado) nesse meio tempo,
+        // e recriar apagaria o historico que ela ja carregou. E o mesmo
+        // `contains_key` + insercao da hidratacao, com a mesma janela curta.
+        if !self.sessions.contains_key(session_id) {
+            self.create_session_with_id(session_id.to_string());
+            if let Some(mut sessao) = self.sessions.get_mut(session_id) {
+                sessao.channel_id = Some(CANAL_DA_API.to_string());
+            }
+        }
+        info!("sessao REST readotada do sessions.db");
+        Ok(SessaoDaApi::Readotada)
+    }
+
     /// Remove sessions that have been disconnected longer than the TTL.
     pub fn cleanup_expired_sessions(&self) -> usize {
         self.cleanup_expired_sessions_at(Instant::now())
@@ -1540,6 +1672,122 @@ mod tests {
         st.adopt_verified_session("s-nova");
         assert!(st.resume_session("s-nova"), "agora existe e retoma");
         assert!(st.session_history("s-nova").is_empty());
+    }
+
+    /// A regra de readocao REST: toda marca tem de ser a que a superficie
+    /// REST grava. Cada linha da tabela troca uma marca so, para uma regra que
+    /// olhe menos fontes do que deveria falhar aqui.
+    #[test]
+    fn so_volta_do_disco_a_sessao_que_so_a_api_gravou() {
+        use std::collections::BTreeSet;
+        let um = |s: &str| BTreeSet::from([s.to_string()]);
+        let so_api = garraia_db::SessionSurfaces {
+            tenant_id: TENANT_DA_API.to_string(),
+            channel_id: CANAL_DA_API.to_string(),
+            key_sources: BTreeSet::new(),
+            token_sources: um(CANAL_DA_API),
+            message_channels: um(CANAL_DA_API),
+            unreadable_message_metadata: false,
+        };
+        assert!(sessao_so_da_api(&so_api));
+        assert!(
+            sessao_so_da_api(&garraia_db::SessionSurfaces {
+                token_sources: BTreeSet::new(),
+                message_channels: BTreeSet::new(),
+                ..so_api.clone()
+            }),
+            "sessao da API recem-criada, sem turno nem token"
+        );
+
+        let casos: Vec<(&str, garraia_db::SessionSurfaces)> = vec![
+            (
+                "ultimo canal do cli",
+                garraia_db::SessionSurfaces {
+                    channel_id: "cli".to_string(),
+                    ..so_api.clone()
+                },
+            ),
+            (
+                "prefixo parecido nao e o canal",
+                garraia_db::SessionSurfaces {
+                    channel_id: "api:reachy".to_string(),
+                    ..so_api.clone()
+                },
+            ),
+            (
+                "outro tenant",
+                garraia_db::SessionSurfaces {
+                    tenant_id: "tenant-a".to_string(),
+                    ..so_api.clone()
+                },
+            ),
+            (
+                "chave do Chat Sync",
+                garraia_db::SessionSurfaces {
+                    key_sources: um("telegram"),
+                    ..so_api.clone()
+                },
+            ),
+            (
+                // A REST nunca mapeia chave externa; nem a da fonte `api` do
+                // Chat Sync e dela.
+                "chave do Chat Sync com fonte api",
+                garraia_db::SessionSurfaces {
+                    key_sources: um(CANAL_DA_API),
+                    ..so_api.clone()
+                },
+            ),
+            (
+                "token do WS",
+                garraia_db::SessionSurfaces {
+                    token_sources: um("web"),
+                    ..so_api.clone()
+                },
+            ),
+            (
+                "turno gravado por outro canal",
+                garraia_db::SessionSurfaces {
+                    message_channels: BTreeSet::from([
+                        CANAL_DA_API.to_string(),
+                        "whatsapp".to_string(),
+                    ]),
+                    ..so_api.clone()
+                },
+            ),
+            (
+                "metadado ilegivel",
+                garraia_db::SessionSurfaces {
+                    unreadable_message_metadata: true,
+                    ..so_api.clone()
+                },
+            ),
+        ];
+        for (caso, s) in casos {
+            assert!(!sessao_so_da_api(&s), "{caso}: {s:?}");
+        }
+    }
+
+    /// Em memoria, `sessao_da_api` nao consulta regra nenhuma: a sessao de
+    /// outra superficie e servida como sempre foi.
+    #[tokio::test]
+    async fn sessao_em_memoria_de_qualquer_superficie_segue_servida() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state_with_store(dir.path());
+        st.hydrate_session_history("telegram-7", Some("telegram"), Some("7"))
+            .await;
+        assert_eq!(
+            st.sessao_da_api("telegram-7").await.expect("ler"),
+            SessaoDaApi::EmMemoria
+        );
+        assert_eq!(
+            st.sessao_da_api("nunca-existiu").await.expect("ler"),
+            SessaoDaApi::NaoEncontrada
+        );
+        // Sem banco nao ha de onde readotar.
+        assert_eq!(
+            test_state().sessao_da_api("qualquer").await.expect("ler"),
+            SessaoDaApi::NaoEncontrada
+        );
     }
     use garraia_channels::ChannelRegistry;
     use garraia_config::AppConfig;

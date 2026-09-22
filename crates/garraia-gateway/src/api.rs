@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::agent_router;
 use crate::rate_limiter::{TRUSTED_PROXIES_ENV, parse_trusted_proxies, real_client_ip};
-use crate::state::SharedState;
+use crate::state::{CANAL_DA_API, SessaoDaApi, SharedState};
 
 /// The registry's `(name, description)` list as the HTTP surface sees it.
 ///
@@ -286,7 +286,12 @@ pub async fn create_session(
         let gravado = {
             let store = store.lock().await;
             store
-                .upsert_session(&session_id, "api", "anonymous", &serde_json::json!({}))
+                .upsert_session(
+                    &session_id,
+                    CANAL_DA_API,
+                    "anonymous",
+                    &serde_json::json!({}),
+                )
                 .and_then(|_| store.set_agent_mode(&session_id, nome))
         };
         if let Err(e) = gravado {
@@ -327,7 +332,7 @@ pub async fn create_session(
         if let Ok(token) = manager
             .create_token(
                 &session_id,
-                "api",
+                CANAL_DA_API,
                 cfg.gateway.session_ttl_secs,
                 ip.as_deref(),
                 ua.as_deref(),
@@ -363,12 +368,10 @@ pub async fn delete_session(
     State(state): State<SharedState>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    if !state.sessions.contains_key(&session_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            HeaderMap::new(),
-            Json(serde_json::json!({"error": "session not found"})),
-        );
+    // Depois de um restart a sessao so esta no disco; sem readota-la, o
+    // logout respondia 404 e os tokens dela seguiam validos.
+    if let Err(resposta) = exigir_sessao_da_api(&state, &session_id).await {
+        return resposta;
     }
 
     // Revoke tokens
@@ -387,6 +390,38 @@ pub async fn delete_session(
         headers,
         Json(serde_json::json!({"ok": true, "session_id": session_id})),
     )
+        .into_response()
+}
+
+/// A sessao de `/api/sessions/{id}/*`, em memoria ou readotada do
+/// `sessions.db` — ou a resposta de erro pronta.
+///
+/// As tres rotas por id passam por aqui para a regra de readocao ser uma so:
+/// ela mora em [`crate::state::AppState::sessao_da_api`], que so traz do disco
+/// sessao gravada apenas pela superficie REST. O resto — `404` para o que nao
+/// existe ou e de outra superficie — e o contrato de antes.
+async fn exigir_sessao_da_api(
+    state: &SharedState,
+    session_id: &str,
+) -> Result<(), axum::response::Response> {
+    match state.sessao_da_api(session_id).await {
+        Ok(SessaoDaApi::EmMemoria | SessaoDaApi::Readotada) => Ok(()),
+        Ok(SessaoDaApi::NaoEncontrada) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "session not found" })),
+        )
+            .into_response()),
+        Err(e) => {
+            // O erro do banco vai para o log, nunca para o corpo; e nada foi
+            // readotado.
+            warn!(erro = %e, "falhou ao ler o sessions.db para readotar a sessao");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to read session store" })),
+            )
+                .into_response())
+        }
+    }
 }
 
 /// POST /api/sessions/:id/messages — send a message to a session.
@@ -395,12 +430,8 @@ pub async fn send_message(
     Path(session_id): Path<String>,
     Json(body): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
-    if !state.sessions.contains_key(&session_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "session not found" })),
-        )
-            .into_response();
+    if let Err(resposta) = exigir_sessao_da_api(&state, &session_id).await {
+        return resposta;
     }
 
     // Slash commands never reach the model. Not persisted into history either
@@ -420,7 +451,7 @@ pub async fn send_message(
 
     // Hydrate history
     state
-        .hydrate_session_history(&session_id, Some("api"), None)
+        .hydrate_session_history(&session_id, Some(CANAL_DA_API), None)
         .await;
     let history = state.session_history(&session_id);
     let continuity_key = state.continuity_key();
@@ -495,7 +526,7 @@ pub async fn send_message(
             state
                 .persist_turn(
                     &session_id,
-                    Some("api"),
+                    Some(CANAL_DA_API),
                     None,
                     &body.content,
                     &response_text,
@@ -526,16 +557,12 @@ pub async fn session_history(
     State(state): State<SharedState>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    if !state.sessions.contains_key(&session_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "session not found" })),
-        )
-            .into_response();
+    if let Err(resposta) = exigir_sessao_da_api(&state, &session_id).await {
+        return resposta;
     }
 
     state
-        .hydrate_session_history(&session_id, Some("api"), None)
+        .hydrate_session_history(&session_id, Some(CANAL_DA_API), None)
         .await;
     let history = state.session_history(&session_id);
     let messages: Vec<serde_json::Value> = history
@@ -729,7 +756,12 @@ pub async fn select_mode(
     if let Some(store) = &state.session_store {
         let store = store.lock().await;
         // Upsert session if needed (using default values)
-        let _ = store.upsert_session(&session_id, "api", "anonymous", &serde_json::json!({}));
+        let _ = store.upsert_session(
+            &session_id,
+            CANAL_DA_API,
+            "anonymous",
+            &serde_json::json!({}),
+        );
         // Set the mode
         match store.set_agent_mode(&session_id, &mode_str) {
             Ok(_) => {
@@ -1460,5 +1492,549 @@ mod slash_dispatch_tests {
                 Some(good.to_string())
             );
         }
+    }
+}
+
+/// Sessao REST depois de um restart do gateway (R1 da v0.4.5).
+///
+/// O restart e simulado como no teste da #922 em `state.rs`: um `AppState`
+/// novo sobre o **mesmo** `sessions.db`, com o mapa em memoria vazio. Os
+/// handlers sao chamados como o Axum os chamaria; o gate de `api_key` roda
+/// antes deles e tem os proprios testes (`gateway_auth.rs`,
+/// `tests/api_key_gate.rs`) — e `gate_de_api_key_roda_antes_da_readocao`
+/// confere, no router de verdade, que ele segue na frente da readocao.
+#[cfg(test)]
+mod sessao_apos_restart_tests {
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    use axum::extract::{ConnectInfo, Path, State};
+    use axum::response::IntoResponse;
+    use garraia_agents::{AgentRuntime, ChatRole, LlmProvider, LlmRequest, LlmResponse};
+    use garraia_channels::ChannelRegistry;
+    use garraia_config::AppConfig;
+    use garraia_db::{ChatSessionManager, SessionStore};
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use crate::state::AppState;
+
+    /// Provider que responde sempre o mesmo e guarda o texto de cada
+    /// mensagem que recebeu — e como o teste ve se o historico do disco
+    /// chegou ao modelo.
+    #[derive(Default)]
+    struct ProviderQueAnota {
+        vistas: StdMutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ProviderQueAnota {
+        fn provider_id(&self) -> &str {
+            "anota"
+        }
+        fn configured_model(&self) -> Option<&str> {
+            Some("anota-1")
+        }
+        async fn complete(&self, request: &LlmRequest) -> garraia_common::Result<LlmResponse> {
+            let textos = request
+                .messages
+                .iter()
+                .filter(|m| matches!(m.role, ChatRole::User | ChatRole::Assistant))
+                .map(|m| match &m.content {
+                    MessagePart::Text(t) => t.clone(),
+                    MessagePart::Parts(p) => format!("{p:?}"),
+                })
+                .collect();
+            if let Ok(mut v) = self.vistas.lock() {
+                v.push(textos);
+            }
+            Ok(LlmResponse {
+                content: vec![ContentBlock::Text {
+                    text: "resposta-depois".to_string(),
+                }],
+                model: "anota-1".to_string(),
+                usage: None,
+                stop_reason: Some("end_turn".to_string()),
+            })
+        }
+        async fn health_check(&self) -> garraia_common::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Um "processo" do gateway sobre `dir/sessions.db`. O config dir e do
+    /// tempdir (`with_config_dir`), para nao tocar o do usuario nem a env.
+    fn processo(dir: &std::path::Path, provider: Option<Arc<ProviderQueAnota>>) -> SharedState {
+        processo_com(dir, provider, AppConfig::default())
+    }
+
+    fn processo_com(
+        dir: &std::path::Path,
+        provider: Option<Arc<ProviderQueAnota>>,
+        config: AppConfig,
+    ) -> SharedState {
+        let store = Arc::new(Mutex::new(
+            SessionStore::open(&dir.join("sessions.db")).expect("abrir store"),
+        ));
+        let runtime = AgentRuntime::new();
+        if let Some(p) = provider {
+            runtime.register_provider(p);
+        }
+        let mut st = AppState::with_config_dir(
+            config,
+            Arc::new(runtime),
+            ChannelRegistry::new(),
+            &dir.join("config"),
+        );
+        st.set_session_store(Arc::clone(&store));
+        st.set_chat_session_manager(Arc::new(ChatSessionManager::new(store)));
+        Arc::new(st)
+    }
+
+    async fn em_json(resp: axum::response::Response) -> (StatusCode, serde_json::Value) {
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 256 * 1024)
+            .await
+            .expect("corpo da resposta");
+        (
+            status,
+            serde_json::from_slice(&bytes).expect("resposta em JSON"),
+        )
+    }
+
+    async fn historico(st: &SharedState, id: &str) -> (StatusCode, serde_json::Value) {
+        em_json(
+            session_history(State(Arc::clone(st)), Path(id.to_string()))
+                .await
+                .into_response(),
+        )
+        .await
+    }
+
+    async fn mandar(st: &SharedState, id: &str, texto: &str) -> (StatusCode, serde_json::Value) {
+        let corpo = SendMessageRequest {
+            content: texto.to_string(),
+            agent_id: None,
+            model: None,
+        };
+        em_json(
+            send_message(State(Arc::clone(st)), Path(id.to_string()), Json(corpo))
+                .await
+                .into_response(),
+        )
+        .await
+    }
+
+    async fn apagar(st: &SharedState, id: &str) -> (StatusCode, serde_json::Value) {
+        em_json(
+            delete_session(State(Arc::clone(st)), Path(id.to_string()))
+                .await
+                .into_response(),
+        )
+        .await
+    }
+
+    /// `POST /api/sessions` de verdade: e ele que grava a linha e o token.
+    async fn criar_sessao_rest(st: &SharedState) -> String {
+        let (status, corpo) = em_json(
+            create_session(
+                State(Arc::clone(st)),
+                ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40000))),
+                HeaderMap::new(),
+                Json(serde_json::from_value(serde_json::json!({})).expect("corpo")),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{corpo}");
+        corpo["session_id"]
+            .as_str()
+            .expect("session_id")
+            .to_string()
+    }
+
+    /// `(channel_id, tenant_id, mensagens)` da linha, direto do banco.
+    async fn linha(st: &SharedState, id: &str) -> Option<(String, String, i32)> {
+        let store = st.session_store.as_ref().expect("store").lock().await;
+        let s = store.get_session_surfaces(id).expect("ler")?;
+        let n = store.get_message_count(id).expect("contar");
+        Some((s.channel_id, s.tenant_id, n))
+    }
+
+    /// Tudo o que o banco guarda da sessao que a readocao consulta, mais o
+    /// numero de mensagens: se nada disto muda, a rota nao tocou a sessao.
+    async fn marcas(st: &SharedState, id: &str) -> Option<(garraia_db::SessionSurfaces, i32)> {
+        let store = st.session_store.as_ref().expect("store").lock().await;
+        let s = store.get_session_surfaces(id).expect("ler")?;
+        let n = store.get_message_count(id).expect("contar");
+        Some((s, n))
+    }
+
+    fn textos(corpo: &serde_json::Value) -> Vec<String> {
+        corpo["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// O caso do smoke da v0.4.4: sessao criada e usada pela API, restart,
+    /// e o `GET .../history` dava `404` com as linhas no banco.
+    #[tokio::test]
+    async fn historico_de_sessao_da_api_volta_depois_do_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sid = {
+            let antes = processo(dir.path(), None);
+            let sid = criar_sessao_rest(&antes).await;
+            antes
+                .persist_turn(&sid, Some("api"), None, "pergunta-antes", "resposta-antes")
+                .await;
+            sid
+        }; // o processo morre aqui
+
+        let depois = processo(dir.path(), None);
+        assert!(!depois.sessions.contains_key(&sid), "memoria nasce vazia");
+        let (status, corpo) = historico(&depois, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(
+            textos(&corpo),
+            vec!["pergunta-antes".to_string(), "resposta-antes".to_string()]
+        );
+        assert_eq!(
+            depois.sessions.get(&sid).and_then(|s| s.channel_id.clone()),
+            Some(CANAL_DA_API.to_string()),
+            "volta como sessao da API"
+        );
+    }
+
+    /// `POST .../messages` depois do restart: a sessao volta, o modelo recebe
+    /// o historico do disco, e o turno novo e gravado junto dos antigos.
+    #[tokio::test]
+    async fn send_message_depois_do_restart_continua_a_conversa() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sid = {
+            let antes = processo(dir.path(), None);
+            let sid = criar_sessao_rest(&antes).await;
+            antes
+                .persist_turn(&sid, Some("api"), None, "pergunta-antes", "resposta-antes")
+                .await;
+            sid
+        };
+
+        let provider = Arc::new(ProviderQueAnota::default());
+        let depois = processo(dir.path(), Some(Arc::clone(&provider)));
+        let (status, corpo) = mandar(&depois, &sid, "pergunta-depois").await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(corpo["content"], "resposta-depois");
+
+        let vistas = provider.vistas.lock().expect("lock").clone();
+        let primeira = vistas.first().expect("o modelo foi chamado");
+        assert!(
+            primeira.iter().any(|t| t == "pergunta-antes")
+                && primeira.iter().any(|t| t == "resposta-antes"),
+            "o historico do disco nao chegou ao modelo: {primeira:?}"
+        );
+        assert_eq!(
+            linha(&depois, &sid).await,
+            Some((CANAL_DA_API.to_string(), "default".to_string(), 4)),
+            "o turno novo grava ao lado dos dois antigos, na mesma sessao da API"
+        );
+    }
+
+    /// Id que nao existe em lugar nenhum continua `404` nas tres rotas — e
+    /// perguntar nao cria sessao, nem em memoria nem no banco.
+    #[tokio::test]
+    async fn id_desconhecido_continua_404_sem_deixar_rastro() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = processo(dir.path(), Some(Arc::new(ProviderQueAnota::default())));
+        let id = "nao-existe-em-lugar-nenhum";
+
+        let (status, corpo) = historico(&st, id).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        assert_eq!(corpo["error"], "session not found");
+        let (status, corpo) = mandar(&st, id, "oi").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        let (status, corpo) = apagar(&st, id).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+
+        assert!(
+            !st.sessions.contains_key(id),
+            "404 nao cria sessao em memoria"
+        );
+        assert_eq!(linha(&st, id).await, None, "404 nao cria linha no banco");
+    }
+
+    /// Sessao de outra superficie so no disco: a rota REST nao a alcanca
+    /// depois do restart — nao alcancava antes dele enquanto a propria
+    /// superficie nao a trazia para a memoria — e nao reescreve nada dela.
+    #[tokio::test]
+    async fn sessao_de_outra_superficie_nao_volta_pela_api() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let antes = processo(dir.path(), None);
+            // Canal com prefixo, gravado pela propria superficie.
+            antes
+                .persist_turn(
+                    "whatsapp-5511999990000",
+                    Some("whatsapp"),
+                    Some("5511999990000"),
+                    "oi",
+                    "ola",
+                )
+                .await;
+            let store = antes.session_store.as_ref().expect("store").lock().await;
+            // `garra chat --persist`: nunca esteve na memoria do gateway.
+            store
+                .upsert_session("cli-sessao", "cli", "local", &serde_json::json!({}))
+                .expect("sessao do cli");
+            store
+                .append_message(
+                    "cli-sessao",
+                    "user",
+                    "pergunta do terminal",
+                    chrono::Utc::now(),
+                    &serde_json::json!({ "channel_id": "cli", "user_id": "local" }),
+                )
+                .expect("mensagem do cli");
+            // Chat Sync: sessao por UUID cuja unica marca e a chave externa.
+            store
+                .upsert_session("tg-uuid", "api", "anonymous", &serde_json::json!({}))
+                .expect("sessao do telegram");
+            store
+                .upsert_session_key("tg-uuid", "telegram", "123456")
+                .expect("chave do telegram");
+            // Sessao do WS: o token dela e da superficie `web`.
+            store
+                .upsert_session("ws-sessao", "api", "anonymous", &serde_json::json!({}))
+                .expect("sessao do ws");
+            store
+                .create_session_token("ws-sessao", "web", 3600, None, None)
+                .expect("token do ws");
+            // Turno de API num tenant que a superficie REST nao cria.
+            store
+                .upsert_session_with_tenant(
+                    "outro-tenant",
+                    "tenant-a",
+                    "api",
+                    "anonymous",
+                    &serde_json::json!({}),
+                )
+                .expect("sessao de outro tenant");
+            store
+                .append_message(
+                    "outro-tenant",
+                    "user",
+                    "oi",
+                    chrono::Utc::now(),
+                    &serde_json::json!({ "channel_id": "api", "user_id": "anonymous" }),
+                )
+                .expect("mensagem de outro tenant");
+            // Chave externa, mesmo da fonte `api`: a REST nunca mapeia uma.
+            store
+                .upsert_session("chave-api", "api", "anonymous", &serde_json::json!({}))
+                .expect("sessao com chave");
+            store
+                .upsert_session_key("chave-api", "api", "cliente-externo")
+                .expect("chave api");
+        }
+
+        let depois = processo(dir.path(), Some(Arc::new(ProviderQueAnota::default())));
+        for id in [
+            "whatsapp-5511999990000",
+            "cli-sessao",
+            "tg-uuid",
+            "ws-sessao",
+            "outro-tenant",
+            "chave-api",
+        ] {
+            let antes = marcas(&depois, id).await;
+            assert!(antes.is_some(), "{id}: pre-condicao, a linha existe");
+            for (rota, (status, corpo)) in [
+                ("history", historico(&depois, id).await),
+                ("messages", mandar(&depois, id, "tentativa").await),
+                ("delete", apagar(&depois, id).await),
+            ] {
+                assert_eq!(status, StatusCode::NOT_FOUND, "{id} {rota}: {corpo}");
+            }
+            assert!(
+                !depois.sessions.contains_key(id),
+                "{id}: foi para a memoria"
+            );
+            assert_eq!(
+                marcas(&depois, id).await,
+                antes,
+                "{id}: a linha, as chaves, os tokens ou as mensagens mudaram"
+            );
+        }
+
+        // O `--resume latest` do CLI acha a sessao pelo canal da linha, que a
+        // rota REST nao pode ter reescrito para `api`.
+        let store = depois.session_store.as_ref().expect("store").lock().await;
+        assert_eq!(
+            store.latest_session_id("cli").expect("ler"),
+            Some("cli-sessao".to_string())
+        );
+    }
+
+    /// Uma leitura REST de sessao de outra superficie que estava em memoria
+    /// ja reescreve `sessions.channel_id` para `api` (comportamento de
+    /// antes, que continua). O restart nao pode transformar isso em alcance:
+    /// as mensagens gravadas ainda dizem de quem a sessao e.
+    #[tokio::test]
+    async fn leitura_rest_antes_do_restart_nao_vira_passe_depois() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sid = "telegram-42";
+        {
+            let antes = processo(dir.path(), None);
+            antes
+                .hydrate_session_history(sid, Some("telegram"), Some("42"))
+                .await;
+            antes
+                .persist_turn(sid, Some("telegram"), Some("42"), "oi bot", "ola humano")
+                .await;
+            // Em memoria, a rota REST serve a sessao do Telegram — como
+            // sempre serviu.
+            let (status, corpo) = historico(&antes, sid).await;
+            assert_eq!(status, StatusCode::OK, "{corpo}");
+            assert_eq!(textos(&corpo), vec!["oi bot", "ola humano"]);
+            assert_eq!(
+                linha(&antes, sid).await.map(|l| l.0),
+                Some(CANAL_DA_API.to_string()),
+                "pre-condicao: a leitura reescreveu o ultimo canal"
+            );
+        }
+
+        let depois = processo(dir.path(), None);
+        let (status, corpo) = historico(&depois, sid).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{corpo}");
+        assert!(!depois.sessions.contains_key(sid));
+
+        // Quando o Telegram a traz de volta, a rota REST a serve de novo,
+        // exatamente como antes do restart.
+        depois
+            .hydrate_session_history(sid, Some("telegram"), Some("42"))
+            .await;
+        let (status, corpo) = historico(&depois, sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(textos(&corpo), vec!["oi bot", "ola humano"]);
+    }
+
+    /// `DELETE` depois do restart: antes era `404` e os tokens da sessao
+    /// seguiam validos — o logout nao funcionava.
+    #[tokio::test]
+    async fn delete_depois_do_restart_revoga_os_tokens() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sid = {
+            let antes = processo(dir.path(), None);
+            criar_sessao_rest(&antes).await
+        };
+
+        let depois = processo(dir.path(), None);
+        let tokens = |st: &SharedState| {
+            let st = Arc::clone(st);
+            let sid = sid.clone();
+            async move {
+                let store = st.session_store.as_ref().expect("store").lock().await;
+                store
+                    .get_session_surfaces(&sid)
+                    .expect("ler")
+                    .expect("linha")
+                    .token_sources
+            }
+        };
+        assert!(
+            tokens(&depois).await.contains(CANAL_DA_API),
+            "pre-condicao: o POST emitiu token"
+        );
+        let (status, corpo) = apagar(&depois, &sid).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert!(tokens(&depois).await.is_empty(), "os tokens ficaram");
+    }
+
+    /// Banco ilegivel: nada e readotado e a resposta diz que falhou, sem
+    /// ecoar o erro do banco.
+    #[tokio::test]
+    async fn banco_ilegivel_da_500_sem_readotar() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sid = {
+            let antes = processo(dir.path(), None);
+            criar_sessao_rest(&antes).await
+        };
+        let depois = processo(dir.path(), None);
+        {
+            let store = depois.session_store.as_ref().expect("store").lock().await;
+            store
+                .connection()
+                .execute_batch("DROP TABLE chat_session_keys;")
+                .expect("derrubar a tabela");
+        }
+        let (status, corpo) = historico(&depois, &sid).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{corpo}");
+        assert_eq!(corpo["error"], "failed to read session store");
+        assert!(!depois.sessions.contains_key(&sid));
+    }
+
+    /// No router de verdade, o gate de `gateway.api_key` (#1045) roda antes
+    /// do handler: sem a chave, a sessao que so esta no disco nao e readotada
+    /// nem tem a existencia revelada — `401`, e nada vai para a memoria. Com
+    /// a chave, ela volta; e o id desconhecido segue `404`.
+    #[tokio::test]
+    async fn gate_de_api_key_roda_antes_da_readocao() {
+        use axum::body::Body;
+        use axum::http::{Request, header};
+        use tower::ServiceExt;
+
+        const CHAVE: &str = "chave-de-teste-do-restart";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sid = {
+            let antes = processo(dir.path(), None);
+            let sid = criar_sessao_rest(&antes).await;
+            antes
+                .persist_turn(&sid, Some("api"), None, "pergunta-antes", "resposta-antes")
+                .await;
+            sid
+        };
+
+        let mut config = AppConfig::default();
+        config.gateway.api_key = Some(CHAVE.to_string());
+        let depois = processo_com(dir.path(), None, config);
+        let router = crate::router::build_router(
+            Arc::clone(&depois),
+            crate::push_channels::PushChannelStates::empty(),
+            Arc::new(Mutex::new(
+                crate::admin::store::AdminStore::in_memory().expect("admin store"),
+            )),
+            Arc::new(vec![0u8; 32]),
+        );
+        let pedir = |uri: String, com_chave: bool| {
+            let mut req = Request::builder().method("GET").uri(uri);
+            if com_chave {
+                req = req.header(header::AUTHORIZATION, format!("Bearer {CHAVE}"));
+            }
+            let mut req = req.body(Body::empty()).expect("request");
+            // O rate limiter le o par em `ConnectInfo`; sem ele o pedido
+            // morre em 500 antes do gate (ver `tests/api_key_gate.rs`).
+            req.extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40405))));
+            router.clone().oneshot(req)
+        };
+        let rota = format!("/api/sessions/{sid}/history");
+
+        let resp = pedir(rota.clone(), false).await.expect("resposta");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            !depois.sessions.contains_key(&sid),
+            "sem a chave o handler nem rodou"
+        );
+
+        let (status, corpo) = em_json(pedir(rota, true).await.expect("resposta")).await;
+        assert_eq!(status, StatusCode::OK, "{corpo}");
+        assert_eq!(textos(&corpo), vec!["pergunta-antes", "resposta-antes"]);
+
+        let resp = pedir("/api/sessions/nao-existe/history".to_string(), true)
+            .await
+            .expect("resposta");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
