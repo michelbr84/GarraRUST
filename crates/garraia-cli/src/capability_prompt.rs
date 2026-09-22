@@ -2,13 +2,22 @@
 //!
 //! Builds a provider-agnostic description of what the Garra runtime exposes —
 //! LLM providers, built-in tools, channels, MCP servers — from the loaded
-//! `AppConfig`. Used by `garra max-power` to give situational awareness before
+//! `AppConfig`. Used by `garraia max-power` to give situational awareness before
 //! routing a goal to the appropriate pipeline stage.
 
 use garraia_config::AppConfig;
 
 /// Static built-in tool registry: (name, one-line description).
-/// Mirrors the tool modules in `garraia-agents/src/tools/`.
+///
+/// Lists the tools every runtime session can reach, plus the intrinsic
+/// `tool_program` envelope (#1226 S-B) that `AgentRuntime` itself advertises
+/// in the modes that expose it (see `docs/src/modes.md`).
+///
+/// Deliberately left out: the `device_*` and `schedule_*` tools. They are
+/// registered only in some setups (a hardware registry, a scheduler), so a
+/// static snapshot that listed them would overstate what this install can do.
+/// The order is pinned by `builtin_tools_names_are_pinned`; changing the list
+/// is meant to be a deliberate edit of that test too.
 const BUILTIN_TOOLS: &[(&str, &str)] = &[
     (
         "bash",
@@ -31,6 +40,10 @@ const BUILTIN_TOOLS: &[(&str, &str)] = &[
     (
         "code_review",
         "Automated code review with style/correctness checks",
+    ),
+    (
+        "tool_program",
+        "Run a short sequence of tool calls in one turn; each step is gated like a direct call",
     ),
 ];
 
@@ -292,15 +305,43 @@ mcp:
     }
 
     #[test]
-    fn builtin_tools_count_is_stable() {
+    fn builtin_tools_names_are_pinned() {
         let config = AppConfig::default();
         let snap = build_snapshot(&config);
-        assert_eq!(snap.builtin_tools.len(), BUILTIN_TOOLS.len());
-        // All tool names must be non-empty
+        let names: Vec<&str> = snap.builtin_tools.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            [
+                "bash",
+                "file_read",
+                "file_write",
+                "git_diff",
+                "list_dir",
+                "repo_search",
+                "run_tests",
+                "web_fetch",
+                "web_search",
+                "code_review",
+                "tool_program",
+            ],
+            "a lista de tools do snapshot mudou: atualize este teste de proposito"
+        );
+        let unicos: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unicos.len(), names.len(), "nome de tool duplicado");
         for (name, desc) in &snap.builtin_tools {
             assert!(!name.is_empty());
             assert!(!desc.is_empty());
         }
+    }
+
+    #[test]
+    fn snapshot_anuncia_tool_program() {
+        let snap = build_snapshot(&AppConfig::default());
+        assert!(
+            snap.builtin_tools.iter().any(|(n, _)| *n == "tool_program"),
+            "tool_program (#1226) sumiu do snapshot de capacidades"
+        );
+        assert!(render_prompt(&snap).contains("tool_program"));
     }
 
     #[test]

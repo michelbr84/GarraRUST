@@ -104,6 +104,25 @@ o portão aberto, que expõe. O teste
 `tool_program_exposto_so_nos_perfis_nativos_sem_whitelist` fixa essa tabela —
 mudar a exposição de um modo nativo tem de ser decisão deliberada.
 
+**Decisão (#1226 S-C): os perfis nativos com whitelist ficam sem
+`tool_program`.** `search`, `architect`, `debug`, `orchestrator`, `review` e
+`edit` não ganham `tool_program` em `allowed`, e isso é definitivo, não
+pendência. Os motivos:
+
+- Uma whitelist é o contrato explícito do que o modelo pode chamar naquele
+  modo. Acrescentar um envelope alarga a superfície que o operador aceitou,
+  mesmo com cada passo ainda passando pelo portão.
+- Esses fluxos são majoritariamente de leitura e de poucos passos: ganham
+  pouco com lote, e um lote torna o turno mais difícil de acompanhar.
+- Nos modos que já expõem (`auto`, `code`, `ask`), o gate por passo deixa um
+  programa estritamente equivalente às chamadas avulsas, então a exposição
+  ali não concede privilégio novo.
+
+Quem quiser o envelope num fluxo de whitelist cria um perfil customizado e
+lista `tool_program` em `allowed` (abaixo); `denied` continua vencendo. O
+teste `tool_program_exposto_so_nos_perfis_nativos_sem_whitelist` é a guarda
+de regressão desta decisão.
+
 **Como liberar ou negar num perfil customizado.** Pelo nome, como qualquer
 ferramenta. Num perfil com whitelist, liste `tool_program` em `allowed`; em
 qualquer perfil, `denied: ["tool_program"]` a desliga (e vence tudo):
