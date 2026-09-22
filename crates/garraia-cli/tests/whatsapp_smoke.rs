@@ -184,7 +184,9 @@ fn whatsapp_help_lists_every_subcommand() {
     let out = garra(dir.path(), &["whatsapp", "--help"]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for sub in ["link", "cloud", "status", "logout", "restore", "allow"] {
+    for sub in [
+        "link", "cloud", "status", "logout", "restore", "allow", "users", "remove",
+    ] {
         assert!(stdout.contains(sub), "faltou `{sub}` no --help:\n{stdout}");
     }
 }
@@ -556,4 +558,117 @@ fn link_with_allow_in_a_pipe_still_needs_a_terminal() {
     assert_eq!(out.status.code(), Some(69), "{stdout}");
     assert!(stdout.contains("ssh -t"), "{stdout}");
     assert!(!config_yml(dir.path()).contains("5511999998888"));
+}
+
+// ---------------------------------------------------------------------------
+// #1393/#1394/#1389: listar, remover e o curinga, no binario de verdade
+// ---------------------------------------------------------------------------
+
+/// `users` num pipe: papel e os quatro ultimos digitos, nunca o numero
+/// inteiro — e o `--json` e um documento que um `jq` le direto.
+#[test]
+fn users_lists_the_gate_without_printing_a_full_number() {
+    let dir = tempdir().expect("tempdir");
+    let allow = garra_env(dir.path(), &["whatsapp", "allow", "+55 11 99999-8888"], &[]);
+    assert_eq!(allow.status.code(), Some(0));
+
+    let out = garra_env(dir.path(), &["whatsapp", "users"], &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(stdout.contains("Autorizados: 1"), "{stdout}");
+    assert!(stdout.contains("8888"), "{stdout}");
+    assert!(
+        !stdout.contains("5511999998888") && !stderr.contains("5511999998888"),
+        "numero inteiro nunca vai para a tela:\n{stdout}\n{stderr}"
+    );
+
+    let out = garra_env(dir.path(), &["whatsapp", "users", "--json"], &[]);
+    assert_eq!(out.status.code(), Some(0));
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("o --json e um documento so");
+    assert_eq!(doc["authorized"], 1);
+    assert_eq!(doc["users"][0]["role"], "allow");
+    assert_eq!(doc["users"][0]["last4"], "8888");
+    assert!(
+        !doc.to_string().contains("5511999998888"),
+        "nem o JSON leva a identidade inteira"
+    );
+}
+
+/// `remove` num pipe tira o numero e e idempotente; remover um DONO exige
+/// `--yes`, e sem ele a config fica intacta.
+#[test]
+fn remove_revokes_a_number_and_never_drops_an_owner_silently() {
+    let dir = tempdir().expect("tempdir");
+    assert_eq!(
+        garra_env(dir.path(), &["whatsapp", "allow", "+5511999998888"], &[])
+            .status
+            .code(),
+        Some(0)
+    );
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "remove", "+55 11 99999-8888"],
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("8888"), "{stdout}");
+    assert!(!config_yml(dir.path()).contains("5511999998888"), "saiu");
+    // De novo: quem nao estava na lista nao e erro.
+    assert_eq!(
+        garra_env(dir.path(), &["whatsapp", "remove", "+5511999998888"], &[])
+            .status
+            .code(),
+        Some(0)
+    );
+
+    let pod = [("GARRAIA_EXECUTION_PROFILE", "isolated-pod")];
+    assert_eq!(
+        garra_env(
+            dir.path(),
+            &["whatsapp", "allow", "+5511999998888", "--owner", "--yes"],
+            &pod,
+        )
+        .status
+        .code(),
+        Some(0)
+    );
+    let out = garra_env(dir.path(), &["whatsapp", "remove", "+5511999998888"], &pod);
+    assert_eq!(
+        out.status.code(),
+        Some(64),
+        "dono num pipe precisa de --yes"
+    );
+    assert!(config_yml(dir.path()).contains("5511999998888"), "intacto");
+
+    let out = garra_env(
+        dir.path(),
+        &["whatsapp", "remove", "+5511999998888", "--yes"],
+        &pod,
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!config_yml(dir.path()).contains("5511999998888"));
+}
+
+/// #1389: `allow '*'` continua recusado (65), mas a mensagem diz que "abrir
+/// para todos" nao existe — e nao que o numero tem caractere invalido.
+#[test]
+fn allow_with_a_wildcard_says_the_feature_does_not_exist() {
+    let dir = tempdir().expect("tempdir");
+    let out = garra_env(dir.path(), &["whatsapp", "allow", "*"], &[]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(65), "{stderr}");
+    assert!(stderr.contains("todo mundo"), "{stderr}");
+    assert!(
+        !stderr.contains("só pode ter dígitos"),
+        "a frase generica de caractere nao serve aqui: {stderr}"
+    );
+    assert!(!config_yml(dir.path()).contains("allow"), "nada gravado");
 }

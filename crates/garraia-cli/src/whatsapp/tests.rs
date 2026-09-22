@@ -1409,8 +1409,9 @@ fn restore_refuses_to_enable_the_channel_when_the_blob_no_longer_opens() {
 // ---------------------------------------------------------------------------
 
 use acesso::{
-    Acesso, Gravado, NumeroInvalido, Papel, acesso_da_config, autorizar, dica_do_gateway, final4,
-    normalizar_numero, pos_link,
+    Acesso, Autorizado, Gravado, NumeroInvalido, Papel, acesso_da_config, autorizar,
+    dica_do_gateway, final4, json_de_usuarios, linha_de_nao_estava, linha_de_removido,
+    linhas_de_usuarios, listar, normalizar_numero, pos_link, remover,
 };
 
 const NUMERO: &str = "5511999998888";
@@ -1586,6 +1587,7 @@ fn a_mensagem_de_numero_invalido_nao_repete_a_entrada_e_existe_nas_duas_linguas(
         NumeroInvalido::SemMais,
         NumeroInvalido::Caractere,
         NumeroInvalido::ZeroInicial,
+        NumeroInvalido::Curinga,
         NumeroInvalido::Tamanho(9),
     ] {
         let pt = e.mensagem(Lang::Pt);
@@ -1877,6 +1879,424 @@ fn allow_owner_no_terminal_pergunta_com_default_nao() {
         lista(&ctx, "owners").is_empty(),
         "default nao: nada gravado"
     );
+}
+
+// --- #1389: `allow '*'` nao e erro de digitacao ------------------------------
+
+/// `*` tem erro PROPRIO: o generico `Caractere` dizia "só pode ter dígitos",
+/// o que faz um recurso inexistente parecer erro de digitacao. A semantica de
+/// "abrir para todos" depende da #1388 e **nao** existe — a mensagem diz isso,
+/// e o numero continua sendo recusado.
+#[test]
+fn o_curinga_tem_erro_proprio_e_continua_recusado() {
+    for entrada in ["*", " * ", "**", "+*"] {
+        assert_eq!(
+            normalizar_numero(entrada),
+            Err(NumeroInvalido::Curinga),
+            "{entrada:?}"
+        );
+    }
+    let pt = NumeroInvalido::Curinga.mensagem(Lang::Pt);
+    let en = NumeroInvalido::Curinga.mensagem(Lang::En);
+    assert_ne!(
+        pt,
+        NumeroInvalido::Caractere.mensagem(Lang::Pt),
+        "o `*` nao pode cair de novo na frase generica de caractere"
+    );
+    assert!(pt.contains('*') && en.contains('*'), "{pt} / {en}");
+    // A frase precisa dizer o que NAO existe, e nao so "invalido".
+    assert!(pt.contains("todo mundo"), "{pt}");
+    assert!(en.contains("everyone"), "{en}");
+
+    // E um `*` que se parece com numero continua valendo como numero.
+    assert_eq!(
+        normalizar_numero("+55 11 99999-8888").as_deref(),
+        Ok(NUMERO)
+    );
+}
+
+/// Ponta a ponta do comando: exit 65 (EX_DATAERR), nada escrito na config.
+#[test]
+fn allow_com_curinga_sai_65_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    assert_eq!(
+        run(
+            Action::Allow(pedido("*", false, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        65
+    );
+    assert!(secao_de(&ctx).is_none(), "nenhuma secao nasce de um `*`");
+}
+
+// --- #1393: `garraia whatsapp users` -----------------------------------------
+
+/// A lista traz papel, tipo e SO os quatro ultimos digitos — a mesma regra do
+/// resto do comando. Donos primeiro.
+#[test]
+fn users_lista_o_papel_e_so_o_final_de_cada_identidade() {
+    let config = config_com_linked(
+        None,
+        serde_json::json!({ "allow": [NUMERO, LID], "owners": ["5511977776666"] }),
+    );
+    let usuarios = listar(&config);
+    assert_eq!(
+        usuarios,
+        vec![
+            Autorizado {
+                final4: "6666".into(),
+                papel: Papel::Dono,
+                lid: false,
+            },
+            Autorizado {
+                final4: "8888".into(),
+                papel: Papel::Autorizado,
+                lid: false,
+            },
+            Autorizado {
+                final4: "8765".into(),
+                papel: Papel::Autorizado,
+                lid: true,
+            },
+        ]
+    );
+
+    let acesso = acesso_da_config(&config);
+    let texto = linhas_de_usuarios(Lang::Pt, acesso, &usuarios).join("\n");
+    assert!(texto.contains("Autorizados: 3 · Donos: 1"), "{texto}");
+    assert!(texto.contains("dono"), "{texto}");
+    assert!(texto.contains("autorizado"), "{texto}");
+    assert!(texto.contains("LID terminado em 8765"), "{texto}");
+    assert!(
+        !texto.contains(NUMERO) && !texto.contains("5511977776666") && !texto.contains(LID),
+        "identidade inteira nunca vai para a tela:\n{texto}"
+    );
+    let ingles = linhas_de_usuarios(Lang::En, acesso, &usuarios).join("\n");
+    assert!(ingles.contains("Authorized: 3 · Owners: 1"), "{ingles}");
+    assert!(ingles.contains("owner"), "{ingles}");
+}
+
+/// A mesma identidade em `allow` e em `owners` (ou com e sem o nono digito) e
+/// UMA linha, com o papel que o gateway honra — senao a lista discordaria das
+/// contagens do `status`, que ja fazem a uniao.
+#[test]
+fn users_nao_repete_quem_esta_nas_duas_listas() {
+    let config = config_com_linked(
+        None,
+        serde_json::json!({ "allow": ["5531999998888"], "owners": ["553199998888"] }),
+    );
+    let usuarios = listar(&config);
+    assert_eq!(usuarios.len(), 1, "{usuarios:?}");
+    assert_eq!(usuarios[0].papel, Papel::Dono, "o papel que o portao honra");
+    let a = acesso_da_config(&config);
+    assert_eq!((a.autorizados, a.donos), (1, 1), "bate com o `status`");
+}
+
+/// Portao vazio: a lista nao inventa linha nenhuma e diz o que fazer.
+#[test]
+fn users_com_o_portao_vazio_aponta_o_allow_e_sai_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
+
+    let config = config_com_linked(None, serde_json::json!({}));
+    let linhas = linhas_de_usuarios(Lang::Pt, acesso_da_config(&config), &[]).join("\n");
+    assert!(linhas.contains("Autorizados: 0"), "{linhas}");
+    assert!(linhas.contains("whatsapp allow <"), "{linhas}");
+
+    assert_eq!(
+        run(
+            Action::Users { json: false },
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+}
+
+/// O `--json` e contrato de script: chaves em ingles, papel com o nome da
+/// config (`allow`/`owners`) e `last4` — nunca a identidade inteira.
+#[test]
+fn users_json_usa_as_chaves_da_config_e_so_o_final() {
+    let config = config_com_linked(
+        None,
+        serde_json::json!({ "allow": [NUMERO], "owners": ["5511977776666"] }),
+    );
+    let doc = json_de_usuarios(acesso_da_config(&config), &listar(&config));
+    assert_eq!(doc["authorized"], 2);
+    assert_eq!(doc["owners"], 1);
+    assert_eq!(doc["enabled"], true, "o `enabled` sai do proprio canal");
+    let users = doc["users"].as_array().expect("array");
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[0]["role"], "owners");
+    assert_eq!(users[0]["kind"], "number");
+    assert_eq!(users[0]["last4"], "6666");
+    assert_eq!(users[1]["role"], "allow");
+    assert_eq!(users[1]["last4"], "8888");
+    let texto = doc.to_string();
+    assert!(
+        !texto.contains(NUMERO) && !texto.contains("5511977776666"),
+        "o JSON tambem so leva o final: {texto}"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+    assert_eq!(
+        run(
+            Action::Users { json: true },
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+}
+
+// --- #1394: `garraia whatsapp remove` ----------------------------------------
+
+fn remocao(numero: &str, yes: bool) -> PedidoRemocao {
+    PedidoRemocao {
+        numero: numero.to_string(),
+        yes,
+    }
+}
+
+/// O espelho do `allow`: tira o numero da lista, preserva o resto da secao,
+/// nao desliga o canal — e rodar de novo continua saindo 0.
+#[test]
+fn remove_tira_o_numero_e_e_idempotente() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({
+            "allow": [NUMERO, "5511977776666"],
+            "reply_in_groups": true,
+        })),
+        Some(true),
+    );
+
+    assert_eq!(
+        run(
+            Action::Remove(remocao("+55 11 99999-8888", false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert_eq!(lista(&ctx, "allow"), vec!["5511977776666".to_string()]);
+    let secao = secao_de(&ctx).expect("secao");
+    assert_eq!(
+        secao.enabled,
+        Some(true),
+        "remover nunca desliga o canal — isso e do `logout`"
+    );
+    assert_eq!(
+        secao.settings.get("reply_in_groups"),
+        Some(&serde_json::Value::Bool(true)),
+        "as outras chaves ficam como estavam"
+    );
+
+    // De novo: nada a remover, e isso nao e erro.
+    assert_eq!(
+        run(
+            Action::Remove(remocao(ENTRADA, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert_eq!(lista(&ctx, "allow"), vec!["5511977776666".to_string()]);
+}
+
+/// A chave de comparacao e a do portao: o mesmo celular com e sem o nono
+/// digito sai, senao `remove` nao acharia o que `allow` gravou.
+#[test]
+fn remove_casa_pela_chave_do_portao_e_sai_das_duas_listas() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({
+            "allow": ["5531999998888"],
+            "owners": ["553199998888"],
+        })),
+        None,
+    );
+
+    let fora = remover(loader, "5531999998888").expect("remove");
+    assert_eq!((fora.de_allow, fora.de_owners), (1, 1));
+    assert!(fora.era_dono());
+    assert!(lista(&ctx, "allow").is_empty());
+    assert!(lista(&ctx, "owners").is_empty());
+}
+
+/// Numa config sem a secao, remover nao cria nada e nao escreve no disco.
+#[test]
+fn remover_numa_config_sem_a_secao_nao_cria_nem_escreve() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+
+    let fora = remover(loader, NUMERO).expect("remove");
+    assert_eq!(fora.total(), 0);
+    assert!(secao_de(&ctx).is_none());
+    assert!(
+        !dir.path().join("config.yml").exists(),
+        "sem nada a remover, o arquivo nem nasce"
+    );
+}
+
+/// **A regra do #1394:** dono nunca sai em silencio. Num pipe, sem `--yes`,
+/// o comando sai 64 e a config fica intacta.
+#[test]
+fn remove_de_dono_sem_yes_fora_de_terminal_sai_64_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO] })),
+        None,
+    );
+
+    assert_eq!(
+        run(
+            Action::Remove(remocao(ENTRADA, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        64
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()], "intacto");
+
+    // Com `--yes`, sai.
+    assert_eq!(
+        run(
+            Action::Remove(remocao(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert!(lista(&ctx, "owners").is_empty());
+}
+
+/// No terminal, a pergunta existe e o default e NAO: um Enter distraido nao
+/// revoga o dono.
+#[test]
+fn remove_de_dono_no_terminal_pergunta_com_default_nao() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO] })),
+        None,
+    );
+
+    let p = ScriptedPrompter::default();
+    assert_eq!(run(Action::Remove(remocao(ENTRADA, false)), &ctx, &p), 1);
+    assert!(p.asked("DONO"), "a pergunta precisa nomear o papel");
+    assert_eq!(
+        lista(&ctx, "owners"),
+        vec![NUMERO.to_string()],
+        "default nao: nada removido"
+    );
+
+    // Respondendo sim, sai — e a linha diz que era dono.
+    let p = ScriptedPrompter::default().and_confirms(&[true]);
+    assert_eq!(run(Action::Remove(remocao(ENTRADA, false)), &ctx, &p), 0);
+    assert!(lista(&ctx, "owners").is_empty());
+}
+
+/// Quem nao e dono nao passa por confirmacao nenhuma.
+#[test]
+fn remove_de_autorizado_nao_pergunta_nada() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+
+    let p = ScriptedPrompter::default();
+    assert_eq!(run(Action::Remove(remocao(ENTRADA, false)), &ctx, &p), 0);
+    assert!(!p.asked("DONO"), "so dono e confirmado");
+    assert!(lista(&ctx, "allow").is_empty());
+}
+
+#[test]
+fn remove_com_numero_invalido_sai_65_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+
+    for entrada in ["abc", "11 99999-8888", "*"] {
+        assert_eq!(
+            run(
+                Action::Remove(remocao(entrada, false)),
+                &ctx,
+                &ScriptedPrompter::default()
+            ),
+            65,
+            "{entrada:?}"
+        );
+    }
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+}
+
+/// As duas linhas de desfecho: so o final do numero, nas duas linguas, e a de
+/// dono diz o que aconteceu.
+#[test]
+fn as_linhas_do_remove_nao_repetem_a_identidade() {
+    let so_allow = acesso::Remocao {
+        de_allow: 1,
+        de_owners: 0,
+    };
+    let dono = acesso::Remocao {
+        de_allow: 0,
+        de_owners: 1,
+    };
+    for lang in [Lang::Pt, Lang::En] {
+        for linha in [
+            linha_de_removido(lang, NUMERO, so_allow),
+            linha_de_removido(lang, NUMERO, dono),
+            linha_de_nao_estava(lang, NUMERO),
+            linha_de_removido(lang, LID, so_allow),
+        ] {
+            assert!(!linha.is_empty());
+            assert!(
+                !linha.contains(NUMERO) && !linha.contains("87654321098765"),
+                "{linha}"
+            );
+        }
+        assert!(
+            linha_de_removido(lang, NUMERO, dono).contains("DONO")
+                || linha_de_removido(lang, NUMERO, dono).contains("OWNER"),
+            "a remocao de dono tem de dizer que era dono"
+        );
+        assert!(linha_de_removido(lang, LID, so_allow).contains("LID"));
+    }
+    assert!(linha_de_removido(Lang::Pt, NUMERO, so_allow).contains("8888"));
 }
 
 // --- o passo pos-link --------------------------------------------------------

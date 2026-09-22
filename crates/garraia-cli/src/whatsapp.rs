@@ -28,8 +28,8 @@
 //! |---|---|
 //! | 0 | tudo certo, inclusive o caminho sem TTY |
 //! | 1 | o usuario cancelou (Ctrl+C, resposta "nao") |
-//! | 64 `EX_USAGE` | `allow --owner` fora de `isolated-pod`, ou num pipe sem `--yes` |
-//! | 65 `EX_DATAERR` | `allow <numero>` sem codigo do pais, com letra, zero inicial ou fora de 10-15 digitos |
+//! | 64 `EX_USAGE` | `allow --owner` fora de `isolated-pod`, ou num pipe sem `--yes`; `remove` de um dono num pipe sem `--yes` |
+//! | 65 `EX_DATAERR` | `allow`/`remove <numero>` sem codigo do pais, com letra, curinga (`*`), zero inicial ou fora de 6-15 digitos |
 //! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, nao ha sessao, ou `link`/`cloud` foram chamados sem terminal |
 //! | 70 `EX_SOFTWARE` | erro interno (disco, config ilegivel) |
 
@@ -48,7 +48,7 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 use crate::wizard::prompts::Prompter;
 
 mod acesso;
-pub use acesso::Pedido;
+pub use acesso::{Pedido, PedidoRemocao};
 
 /// De quantos em quantos segundos o `connecting` pulsa na tela.
 const CONNECTING_PULSE_SECS: u64 = 5;
@@ -73,6 +73,14 @@ pub enum Action {
     LinkCom(Pedido),
     /// `allow <numero> [--owner] [--yes]`: autoriza sem terminal (#1345).
     Allow(Pedido),
+    /// `users [--json]`: quem esta autorizado, so pelos quatro ultimos
+    /// digitos (#1393).
+    Users {
+        json: bool,
+    },
+    /// `remove <numero> [--yes]`: revoga o acesso; dono exige confirmacao
+    /// (#1394).
+    Remove(PedidoRemocao),
     Cloud,
     Status,
     Logout,
@@ -267,6 +275,8 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
         Action::Link => link(ctx, prompter, &Pedido::default()),
         Action::LinkCom(pre) => link(ctx, prompter, &pre),
         Action::Allow(pedido) => acesso::allow(ctx, prompter, &pedido),
+        Action::Users { json } => acesso::users(ctx, json),
+        Action::Remove(pedido) => acesso::remove(ctx, prompter, &pedido),
         Action::Cloud => cloud(ctx, prompter),
     }
 }
@@ -298,8 +308,8 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(&tb(
         lang,
-        "Também existem: {bin} whatsapp status | {bin} whatsapp allow <número> | {bin} whatsapp restore | {bin} whatsapp logout",
-        "Also available: {bin} whatsapp status | {bin} whatsapp allow <number> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Também existem: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <número> | {bin} whatsapp remove <número> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Also available: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <number> | {bin} whatsapp remove <number> | {bin} whatsapp restore | {bin} whatsapp logout",
     ));
     out
 }

@@ -66,6 +66,10 @@ pub enum NumeroInvalido {
     SemMais,
     /// Letra ou outro caractere fora de `+ -().` e espaco.
     Caractere,
+    /// `*` (ou `+*`, `**`…): a tentativa de abrir o canal para todo mundo
+    /// (#1389). Nao existe hoje semantica de curinga — e o erro generico de
+    /// caractere fazia parecer erro de digitacao, e nao recurso inexistente.
+    Curinga,
     /// Comeca com `0`: prefixo de discagem local, nao codigo de pais.
     ZeroInicial,
     /// Fora de 6 a 15 digitos.
@@ -95,6 +99,12 @@ impl NumeroInvalido {
                 "The number may only contain digits (and, optionally, +, spaces, dashes, dots and parentheses).",
             )
             .to_string(),
+            Self::Curinga => t(
+                lang,
+                "`*` não é um número: este canal não tem \"autorizar todo mundo\". O portão é fail-closed e cada identidade entra uma a uma, com + e código do país (ex.: +55 11 99999-8888) — ou como LID (`<id>@lid`).",
+                "`*` is not a number: this channel has no \"authorize everyone\". The gate is fail-closed and each identity is listed one by one, with + and the country code (e.g. +1 555 123 4567) — or as a LID (`<id>@lid`).",
+            )
+            .to_string(),
             Self::ZeroInicial => t(
                 lang,
                 "O número começa com 0: use o código do país no lugar do prefixo local (ex.: +55 11 99999-8888).",
@@ -118,6 +128,18 @@ fn separador(c: char) -> bool {
     matches!(c, ' ' | '-' | '.' | '(' | ')')
 }
 
+/// `*`, `**`, `+*`: a tentativa de dizer "todo mundo" (#1389).
+///
+/// So existe para o erro poder ser especifico. **Nao** e um passo em direcao
+/// ao curinga: a semantica de acesso aberto nao existe (depende da #1388), e
+/// enquanto nao existir a resposta certa e recusar dizendo o porque — e nao
+/// o `Caractere` generico, que faz um recurso inexistente parecer erro de
+/// digitacao.
+fn e_curinga(s: &str) -> bool {
+    let corpo = s.strip_prefix('+').unwrap_or(s);
+    !corpo.is_empty() && corpo.chars().all(|c| c == '*')
+}
+
 /// `<digitos>@lid`, exatamente: o LID que a ponte entrega quando o servidor
 /// nao manda o numero junto.
 fn e_lid_valido(s: &str) -> bool {
@@ -135,6 +157,9 @@ pub fn normalizar_numero(raw: &str) -> Result<String, NumeroInvalido> {
     let s = raw.trim();
     if s.is_empty() {
         return Err(NumeroInvalido::Vazio);
+    }
+    if e_curinga(s) {
+        return Err(NumeroInvalido::Curinga);
     }
     if e_lid_valido(s) {
         return Ok(garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(s));
@@ -225,6 +250,69 @@ impl Papel {
             Self::Dono => "owners",
         }
     }
+
+    /// Como o `--json` do `users` nomeia o papel. Contrato de script: o nome
+    /// e o da chave da config (`allow`/`owners`), e nao a palavra traduzida
+    /// que aparece na tela.
+    fn json(self) -> &'static str {
+        self.chave()
+    }
+}
+
+/// A chave que o portao do gateway compara — a MESMA para autorizar, listar e
+/// remover.
+///
+/// Um numero escrito `+55 31 99999-8888` e o mesmo `553199998888` (o nono
+/// digito, ver `whatsapp_linked_chave_do_portao`). Tres copias desta regra
+/// divergiriam no dia em que o gateway mudasse a sua, e ai `remove` nao
+/// acharia o que `allow` gravou.
+fn chave_do_portao(identidade: &str) -> String {
+    garraia_gateway::bootstrap::whatsapp_linked_chave_do_portao(
+        &garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(identidade),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Quem esta na lista (#1393)
+// ---------------------------------------------------------------------------
+
+/// Uma identidade autorizada, **ja mascarada**.
+///
+/// Nao carrega o numero: o unico pedaco que sai deste modulo para qualquer
+/// tela — humana ou JSON — sao os quatro ultimos digitos, como no resto do
+/// comando. Quem quiser o valor inteiro le o `config.yml`, que e 0600.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Autorizado {
+    /// Os quatro ultimos digitos do numero (ou do id, antes do `@lid`).
+    pub final4: String,
+    pub papel: Papel,
+    /// A identidade e um LID (`<id>@lid`), e nao um numero?
+    pub lid: bool,
+}
+
+/// Quem a config autoriza, pelo MESMO leitor que o gateway usa no turno.
+///
+/// Donos primeiro, e a uniao e feita pela chave do portao: o mesmo celular em
+/// `allow` e em `owners` (ou com e sem o nono digito) e **uma** linha, com o
+/// papel `owners` — que e o que o gateway honra. Contar de outro jeito daria
+/// ao operador uma lista que nao bate com as contagens do `status`.
+pub fn listar(config: &AppConfig) -> Vec<Autorizado> {
+    let s = garraia_gateway::bootstrap::whatsapp_linked_settings(config);
+    let mut vistos = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (identidades, papel) in [(&s.owners, Papel::Dono), (&s.allow, Papel::Autorizado)] {
+        for identidade in identidades {
+            if !vistos.insert(chave_do_portao(identidade)) {
+                continue;
+            }
+            out.push(Autorizado {
+                final4: final4(identidade).to_string(),
+                papel,
+                lid: e_lid(identidade),
+            });
+        }
+    }
+    out
 }
 
 /// O desfecho de [`autorizar`].
@@ -248,8 +336,8 @@ pub enum Gravado {
 /// original nao sobrevivem, e secoes com default passam a aparecer. A
 /// documentacao diz isso; quem cura o `config.yml` a mao edita a lista a mao.
 ///
-/// Nunca remove: revogar e editar o arquivo (a documentacao diz como, e o
-/// gateway relê a quente).
+/// Nunca remove: quem revoga e [`remover`] (#1394), e o gateway rele a lista
+/// a quente.
 pub fn autorizar(loader: &ConfigLoader, numero: &str, papel: Papel) -> Result<Gravado> {
     loader.ensure_dirs()?;
     // Sem a env do perfil: ela nao vai ao disco (`#[serde(skip)]`) e nao
@@ -281,23 +369,93 @@ pub fn autorizar(loader: &ConfigLoader, numero: &str, papel: Papel) -> Result<Gr
         bail!("`channels.{CONFIG_KEY}.{chave}` nao e uma lista — corrija o config.yml");
     };
     // A mesma chave que o portao compara: `+55 31 99999-8888` ja cobre
-    // `553199998888` (o nono digito, ver `whatsapp_linked_chave_do_portao`).
-    let chave = |v: &str| {
-        garraia_gateway::bootstrap::whatsapp_linked_chave_do_portao(
-            &garraia_gateway::bootstrap::whatsapp_linked_normalizar_identidade(v),
-        )
-    };
-    let alvo = chave(numero);
+    // `553199998888` (o nono digito, ver [`chave_do_portao`]).
+    let alvo = chave_do_portao(numero);
     let ja_estava = itens
         .iter()
         .filter_map(|v| v.as_str())
-        .any(|v| chave(v) == alvo);
+        .any(|v| chave_do_portao(v) == alvo);
     if ja_estava {
         return Ok(Gravado::JaEstava);
     }
     itens.push(serde_json::Value::String(numero.to_string()));
     loader.save(&config)?;
     Ok(Gravado::Novo)
+}
+
+/// Quantas entradas sairam de cada lista (#1394).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Remocao {
+    pub de_allow: usize,
+    pub de_owners: usize,
+}
+
+impl Remocao {
+    pub fn total(self) -> usize {
+        self.de_allow + self.de_owners
+    }
+
+    /// O numero removido era dono?
+    pub fn era_dono(self) -> bool {
+        self.de_owners > 0
+    }
+}
+
+/// Tira `numero` (ja normalizado) de `allow` **e** de `owners`.
+///
+/// O espelho de [`autorizar`], com as mesmas tres promessas: carrega pelo
+/// `load_sem_env`, mexe so nas duas listas e grava pela escrita atomica
+/// `0600` do [`ConfigLoader::save`]. `enabled` nao e tocado — remover o
+/// ultimo autorizado **nao** desliga o canal, porque desligar e decisao do
+/// `logout`, e um canal ligado com portao vazio e um estado que o `status` ja
+/// sabe explicar.
+///
+/// Sai das DUAS listas de proposito: "remover" para quem digita e revogar o
+/// acesso, e um numero que estivesse em `allow` e em `owners` continuaria
+/// entrando pela outra porta — o portao do gateway admite a uniao.
+///
+/// Compara pela chave do portao, entao remove o que `allow` gravaria: o mesmo
+/// celular com e sem o nono digito, com ou sem separadores. Nada e criado:
+/// numa config sem a secao o resultado e [`Remocao::total`] zero e o arquivo
+/// nao e reescrito. Como todo `save`, comentarios do `config.yml` nao
+/// sobrevivem a uma remocao que de fato grava.
+pub fn remover(loader: &ConfigLoader, numero: &str) -> Result<Remocao> {
+    loader.ensure_dirs()?;
+    let mut config = loader.load_sem_env()?;
+    let Some(secao) = config.channels.get_mut(CONFIG_KEY) else {
+        return Ok(Remocao::default());
+    };
+    if secao.channel_type != CONFIG_KEY {
+        // Mesma recusa do `autorizar`: o gateway ignora a secao inteira, e
+        // dizer "removido" de uma secao que nao vale seria afirmar uma
+        // revogacao que nao aconteceu.
+        bail!(
+            "`channels.{CONFIG_KEY}` existe com `type: {}` — corrija para `type: {CONFIG_KEY}` no config.yml",
+            secao.channel_type
+        );
+    }
+    let alvo = chave_do_portao(numero);
+    let mut fora = Remocao::default();
+    for (chave, conta) in [
+        ("allow", &mut fora.de_allow),
+        ("owners", &mut fora.de_owners),
+    ] {
+        let Some(lista) = secao.settings.get_mut(chave) else {
+            continue;
+        };
+        let Some(itens) = lista.as_array_mut() else {
+            bail!("`channels.{CONFIG_KEY}.{chave}` nao e uma lista — corrija o config.yml");
+        };
+        let antes = itens.len();
+        // Entrada que nao e string fica: ela nao e este numero, e descartar o
+        // que nao se entende seria apagar escolha do operador.
+        itens.retain(|v| v.as_str().is_none_or(|s| chave_do_portao(s) != alvo));
+        *conta = antes - itens.len();
+    }
+    if fora.total() > 0 {
+        loader.save(&config)?;
+    }
+    Ok(fora)
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +704,260 @@ fn imprimir_gravado(lang: Lang, numero: &str, papel: Papel, gravado: Gravado) {
         }
     };
     println!("{linha}");
+}
+
+// ---------------------------------------------------------------------------
+// `garraia whatsapp users [--json]` (#1393)
+// ---------------------------------------------------------------------------
+
+/// `garraia whatsapp users`. So le; funciona sem terminal.
+///
+/// O `status` ja dizia QUANTOS podem falar com o GarraIA, e so isso: quem
+/// tinha autorizado tres numeros meses atras nao tinha como saber quais eram
+/// sem abrir o `config.yml` a mao. Este comando responde "quem", no mesmo
+/// limite do resto do modulo — **quatro ultimos digitos**, nunca a identidade
+/// inteira, nem na tela nem no `--json`.
+pub fn users(ctx: &Context, json: bool) -> i32 {
+    let (_, config) = match carregar(ctx) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let acesso = acesso_da_config(&config);
+    let usuarios = listar(&config);
+    if json {
+        // Nada de cabecalho nem de frase solta: num `--json` a saida inteira
+        // e o documento, para `jq` poder le-la direto.
+        match serde_json::to_string_pretty(&json_de_usuarios(acesso, &usuarios)) {
+            Ok(texto) => println!("{texto}"),
+            Err(e) => {
+                eprintln!("{e}");
+                return EX_SOFTWARE;
+            }
+        }
+        return 0;
+    }
+    super::print_header(ctx);
+    for linha in linhas_de_usuarios(ctx.lang, acesso, &usuarios) {
+        println!("{linha}");
+    }
+    0
+}
+
+/// As linhas do `users`, puras para o teste.
+pub fn linhas_de_usuarios(lang: Lang, acesso: Acesso, usuarios: &[Autorizado]) -> Vec<String> {
+    let mut out = Vec::new();
+    out.push(
+        match (lang, acesso.enabled) {
+            (Lang::Pt, true) => "Canal:    ligado",
+            (Lang::Pt, false) => "Canal:    desligado",
+            (Lang::En, true) => "Channel:  on",
+            (Lang::En, false) => "Channel:  off",
+        }
+        .to_string(),
+    );
+    // A MESMA contagem do `status`, da mesma fonte: duas telas que discordam
+    // sobre quantos donos ha sao piores do que uma so.
+    out.push(match lang {
+        Lang::Pt => format!(
+            "Autorizados: {} · Donos: {}",
+            acesso.autorizados, acesso.donos
+        ),
+        Lang::En => format!(
+            "Authorized: {} · Owners: {}",
+            acesso.autorizados, acesso.donos
+        ),
+    });
+    if usuarios.is_empty() {
+        out.push(aviso_ninguem_autorizado(lang));
+        return out;
+    }
+    out.push(String::new());
+    for u in usuarios {
+        out.push(linha_de_usuario(lang, u));
+    }
+    out
+}
+
+/// Uma linha da lista: papel, tipo e os quatro ultimos digitos.
+fn linha_de_usuario(lang: Lang, u: &Autorizado) -> String {
+    match lang {
+        Lang::Pt => {
+            let papel = match u.papel {
+                Papel::Dono => "dono",
+                Papel::Autorizado => "autorizado",
+            };
+            let tipo = if u.lid { "LID" } else { "número" };
+            format!("  {papel:<10} · {tipo} terminado em {}", u.final4)
+        }
+        Lang::En => {
+            let papel = match u.papel {
+                Papel::Dono => "owner",
+                Papel::Autorizado => "authorized",
+            };
+            let tipo = if u.lid { "LID" } else { "number" };
+            format!("  {papel:<10} · {tipo} ending in {}", u.final4)
+        }
+    }
+}
+
+/// O documento do `--json`. Puro, para o teste afirmar o contrato de script.
+///
+/// As chaves sao as da config (`allow`/`owners`), e nao as palavras da tela:
+/// quem consome isto quer casar com o `config.yml`, e um `dono`/`owner`
+/// traduzido mudaria de valor com o locale da maquina.
+pub fn json_de_usuarios(acesso: Acesso, usuarios: &[Autorizado]) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": acesso.enabled,
+        "authorized": acesso.autorizados,
+        "owners": acesso.donos,
+        "users": usuarios
+            .iter()
+            .map(|u| serde_json::json!({
+                "role": u.papel.json(),
+                "kind": if u.lid { "lid" } else { "number" },
+                // `last4`, e nao `number`: o nome do campo tem de dizer que
+                // ali nunca vai a identidade inteira.
+                "last4": u.final4,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// `garraia whatsapp remove <numero> [--yes]` (#1394)
+// ---------------------------------------------------------------------------
+
+/// O pedido do `remove`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PedidoRemocao {
+    pub numero: String,
+    pub yes: bool,
+}
+
+/// O texto da confirmacao de remocao de dono. Diz o que o dono perde.
+fn pergunta_de_remocao_de_dono(lang: Lang) -> &'static str {
+    t(
+        lang,
+        "Este número é DONO. Remover mesmo assim? Ele perde o acesso e o piso de dono em conversa 1:1",
+        "This number is an OWNER. Remove it anyway? It loses access and the owner floor in 1:1 chats",
+    )
+}
+
+/// O numero esta em `owners`, pela chave do portao?
+fn e_dono_na_config(config: &AppConfig, numero: &str) -> bool {
+    let alvo = chave_do_portao(numero);
+    garraia_gateway::bootstrap::whatsapp_linked_settings(config)
+        .owners
+        .iter()
+        .any(|v| chave_do_portao(v) == alvo)
+}
+
+/// `garraia whatsapp remove`. Funciona sem terminal — menos para dono.
+///
+/// O espelho do [`allow`], com a assimetria que importa: **dono exige
+/// confirmacao explicita**. Tornar alguem dono ja pedia `--yes` fora do
+/// terminal; tirar o dono e a operacao que pode deixar o operador de fora do
+/// proprio GarraIA, entao ela pede o mesmo, e nunca acontece em silencio.
+///
+/// Quem nao estava na lista sai 0: remover e idempotente, como autorizar duas
+/// vezes o mesmo numero — um script que roda de novo nao pode falhar por ter
+/// dado certo antes.
+pub fn remove(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoRemocao) -> i32 {
+    let (loader, config) = match carregar(ctx) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let numero = match normalizar_numero(&pedido.numero) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("{}", e.mensagem(ctx.lang));
+            return EX_DATAERR;
+        }
+    };
+
+    if e_dono_na_config(&config, &numero) && !pedido.yes {
+        if !ctx.interactive {
+            eprintln!(
+                "{}",
+                t(
+                    ctx.lang,
+                    "Este número é DONO: removê-lo sem terminal precisa de `--yes`. Revogar um dono é uma decisão explícita.",
+                    "This number is an OWNER: removing it without a terminal needs `--yes`. Revoking an owner is an explicit decision.",
+                )
+            );
+            return EX_USAGE;
+        }
+        match prompter.confirm(pergunta_de_remocao_de_dono(ctx.lang), false) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                println!("{}", t(ctx.lang, "Cancelado.", "Cancelled."));
+                return EX_CANCELLED;
+            }
+        }
+    }
+
+    let antes = acesso_da_config(&config);
+    let fora = match remover(loader, &numero) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
+    if fora.total() == 0 {
+        println!("{}", linha_de_nao_estava(ctx.lang, &numero));
+        return 0;
+    }
+    println!("{}", linha_de_removido(ctx.lang, &numero, fora));
+
+    // So o canal ligado precisa de dica: num canal desligado nao ha turno em
+    // andamento para a remocao alcancar.
+    if antes.enabled {
+        if loader
+            .load_sem_env()
+            .map(|c| acesso_da_config(&c).autorizados == 0)
+            .unwrap_or(false)
+        {
+            println!("{}", aviso_ninguem_autorizado(ctx.lang));
+        }
+        println!("{}", dica_do_gateway(ctx.lang, true, ctx.gateway_pid));
+    }
+    0
+}
+
+/// A linha do desfecho que gravou. Pura, e so com o final do numero.
+pub fn linha_de_removido(lang: Lang, numero: &str, fora: Remocao) -> String {
+    let fim = final4(numero);
+    let tipo = match (lang, e_lid(numero)) {
+        (Lang::Pt, true) | (Lang::En, true) => "LID",
+        (Lang::Pt, false) => "Número",
+        (Lang::En, false) => "Number",
+    };
+    match (lang, fora.era_dono()) {
+        (Lang::Pt, false) => format!("✓ {tipo} terminado em {fim} removido dos autorizados."),
+        (Lang::Pt, true) => {
+            format!("✓ {tipo} terminado em {fim} removido — ele era DONO e não tem mais acesso.")
+        }
+        (Lang::En, false) => format!("✓ {tipo} ending in {fim} removed from the allow list."),
+        (Lang::En, true) => {
+            format!("✓ {tipo} ending in {fim} removed — it was an OWNER and has no access now.")
+        }
+    }
+}
+
+/// A linha de quem nao estava na lista. Pura.
+pub fn linha_de_nao_estava(lang: Lang, numero: &str) -> String {
+    let fim = final4(numero);
+    match (lang, e_lid(numero)) {
+        (Lang::Pt, true) => format!("O LID terminado em {fim} não estava na lista — nada mudou."),
+        (Lang::Pt, false) => {
+            format!("O número terminado em {fim} não estava na lista — nada mudou.")
+        }
+        (Lang::En, true) => format!("The LID ending in {fim} was not listed — nothing changed."),
+        (Lang::En, false) => {
+            format!("The number ending in {fim} was not listed — nothing changed.")
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
