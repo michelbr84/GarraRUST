@@ -66,6 +66,27 @@ const RETIDOS_NO_TURNO_RESTRITO: &[&str] = &[
     "session.project_id",
 ];
 
+/// O que `withheld` significa, dito DENTRO do proprio relatorio (#1382/#1387).
+///
+/// O relatorio ja trazia a lista `withheld`, mas nada ao lado do dado dizia
+/// como le-la, e um campo retido sai `null` — indistinguivel, para o modelo,
+/// de um campo vazio. O sintoma relatado: com `mcp_servers: null` num turno
+/// restrito, o modelo respondia que este Garra "nao tem MCP", isto e, lia
+/// "ocultado por politica" como "capacidade inexistente".
+///
+/// A frase vive no relatorio, e nao so na [`Tool::description`], porque a
+/// descricao e contexto de sistema — pode ser resumida, truncada ou ficar
+/// muitos turnos atras do JSON que o modelo esta lendo. O relatorio chega
+/// inteiro, junto do campo que causa a confusao.
+///
+/// Texto constante e secret-free por construcao: nao interpola nada do
+/// estado, da config ou da sessao.
+const SENTIDO_DE_WITHHELD: &str = "Os campos nomeados em `withheld` foram OCULTADOS pela \
+politica desta sessao: eles existem neste Garra e aparecem `null` acima apenas por isso. \
+NUNCA leia um campo retido como capacidade ausente, desligada ou nao suportada, e nao \
+responda que o recurso nao existe — diga que o dado nao e divulgado nesta conversa. O \
+operador ve o valor numa superficie local (web chat, CLI ou desktop).";
+
 pub struct GarraStatusTool {
     /// Weak for the same reason `TelegramSendTool` is: `AppState` owns the
     /// runtime, the runtime owns this tool, and a strong handle back would
@@ -141,7 +162,12 @@ impl Tool for GarraStatusTool {
          provider and model, the tools available in this turn, advertised features, \
          each enabled messaging channel with its status (`active` = connected now, \
          `offline` = configured but down), the execution profile, MCP servers, and this \
-         session's channel and mode. Use it whenever the user asks what you are, what \
+         session's channel and mode. Some fields can be held back: every field named in \
+         the report's `withheld` list is HIDDEN BY POLICY in this conversation, not \
+         absent. A withheld field reads as `null` (for example `mcp_servers: null`), and \
+         that never means the capability is missing, disabled or unsupported — say the \
+         detail is not disclosed here, never that the feature does not exist. Use it \
+         whenever the user asks what you are, what \
          you can do, which channels or integrations you have, or how you are configured \
          — instead of guessing or saying you cannot inspect yourself. Takes no input."
     }
@@ -265,6 +291,9 @@ impl Tool for GarraStatusTool {
                 "project_id": project_id,
             },
             "withheld": withheld,
+            // #1382: `null` quando nada foi retido — a chave existe sempre
+            // para o formato do relatorio nao mudar de turno para turno.
+            "withheld_means": (!withheld.is_empty()).then_some(SENTIDO_DE_WITHHELD),
         });
 
         let text = serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string());
@@ -558,6 +587,7 @@ mod tests {
                 "uptime_secs",
                 "version",
                 "withheld",
+                "withheld_means",
             ]
         );
         let mut sessao: Vec<&str> = json["session"]
@@ -865,6 +895,69 @@ mod tests {
         assert!(restrito["channels"].is_array());
         assert!(restrito["tools"].is_array());
         assert_eq!(restrito["execution_profile"], "standard");
+    }
+
+    // ─── #1382/#1387: `withheld` e ocultacao, nao ausencia ────────────────
+
+    /// A `description()` e o unico texto que o modelo ve ANTES de chamar a
+    /// tool, e era onde faltava a explicacao: sem ela, `mcp_servers: null`
+    /// virava "este Garra nao tem MCP". O teste prende as tres partes da
+    /// frase — o nome do campo, que ele foi ocultado por politica, e que isso
+    /// nao e capacidade ausente.
+    #[test]
+    fn description_explica_que_withheld_e_ocultacao_por_politica() {
+        let st = state();
+        let d = tool(&st).description().to_lowercase();
+        assert!(d.contains("`withheld`"), "{d}");
+        assert!(d.contains("hidden by policy"), "{d}");
+        assert!(d.contains("`mcp_servers: null`"), "{d}");
+        for nao_e in ["missing", "disabled", "unsupported"] {
+            assert!(d.contains(nao_e), "falta dizer que nao e {nao_e}: {d}");
+        }
+    }
+
+    /// O mesmo contrato dentro do relatorio: no turno restrito a frase vem
+    /// junto do dado que confunde, e o campo citado em `withheld` esta `null`
+    /// — os dois fatos que o modelo precisa ver na mesma leitura. Num turno
+    /// aberto nao ha nada retido, e a frase sai `null`.
+    #[tokio::test]
+    async fn relatorio_restrito_diz_que_o_campo_retido_nao_e_capacidade_ausente() {
+        let st = state();
+        sessao_local(&st).await;
+        let tool = tool(&st);
+        let ctx = ctx(Some("/home/operador/projeto"));
+
+        let (restrito, _) = relatorio_no_turno(&tool, &ctx, true).await;
+        assert_eq!(
+            restrito["withheld_means"], SENTIDO_DE_WITHHELD,
+            "{restrito}"
+        );
+        assert!(
+            restrito["withheld"]
+                .as_array()
+                .is_some_and(|r| r.iter().any(|c| c == "mcp_servers")),
+            "{restrito}"
+        );
+        assert!(
+            restrito["mcp_servers"].is_null(),
+            "a frase so vale se o campo citado estiver mesmo null: {restrito}"
+        );
+        assert!(
+            SENTIDO_DE_WITHHELD.contains("OCULTADOS"),
+            "{SENTIDO_DE_WITHHELD}"
+        );
+        assert!(
+            SENTIDO_DE_WITHHELD.contains("NUNCA leia um campo retido como capacidade ausente"),
+            "{SENTIDO_DE_WITHHELD}"
+        );
+
+        let (aberto, _) = relatorio_no_turno(&tool, &ctx, false).await;
+        assert_eq!(aberto["withheld"], serde_json::json!([]), "{aberto}");
+        assert!(
+            aberto["withheld_means"].is_null(),
+            "sem nada retido a frase nao tem o que explicar: {aberto}"
+        );
+        assert!(aberto["mcp_servers"].is_array(), "{aberto}");
     }
 
     // ─── #1347 (C1): quem fala na sessao vem do que foi gravado ───────────
