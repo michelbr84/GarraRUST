@@ -726,6 +726,67 @@ fn normalizar_lexico(p: &std::path::Path) -> Option<std::path::PathBuf> {
     Some(out)
 }
 
+/// A linha `files.workspace` (#1378): qual e o workspace efetivo das file
+/// tools nativas e **por que** ele e esse.
+///
+/// As tres fontes mapeiam direto para os tres estados que o operador precisa
+/// distinguir, na linha do que a #1445 fez com o resto do relatorio:
+///
+/// - `Declaradas` → `ok`. O operador escolheu, e a escolha vale.
+/// - `WorkspacePadrao` → `ok`. Nada foi declarado e o Garra usa o proprio
+///   workspace. Nao e aviso: e o default seguro, e chamar de aviso ensinaria o
+///   operador a ignorar avisos.
+/// - `SomenteSessao` → `warning`. E o defeito da #1378 ainda de pe: sessao sem
+///   `working_dir` (toda sessao do WhatsApp recem-vinculada) nao le nem
+///   escreve nada.
+///
+/// As raizes saem relativas a `<data_dir>` quando estao dentro dele — a rota e
+/// auth-free e nao precisa publicar o caminho absoluto do host (F-1 da
+/// auditoria da #1329). Pura: as raizes chegam ja resolvidas.
+fn files_workspace_check(
+    fonte: crate::bootstrap::FonteDasRaizesDasFileTools,
+    raizes: &[std::path::PathBuf],
+    data_dir: &std::path::Path,
+) -> DiagnosticCheck {
+    use crate::bootstrap::FonteDasRaizesDasFileTools as Fonte;
+    let (status, detail, next_step) = match fonte {
+        Fonte::Declaradas => (
+            CheckStatus::Ok,
+            format!(
+                "{} (fonte: agent.file_roots / GARRAIA_FILE_ROOTS)",
+                lista_de_caminhos(raizes, data_dir)
+            ),
+            None,
+        ),
+        Fonte::WorkspacePadrao => (
+            CheckStatus::Ok,
+            format!(
+                "{} (fonte: workspace padrao — nada declarado em agent.file_roots)",
+                lista_de_caminhos(raizes, data_dir)
+            ),
+            None,
+        ),
+        Fonte::SomenteSessao => (
+            CheckStatus::Warning,
+            "sem raiz efetiva: o workspace padrao nao resolveu e nada foi declarado. \
+             file_read, file_write e list_dir negam tudo numa sessao sem working_dir"
+                .to_string(),
+            Some(
+                "confira se o <data_dir> existe e e gravavel, ou declare uma raiz em \
+                 agent.file_roots (ou na env GARRAIA_FILE_ROOTS)"
+                    .to_string(),
+            ),
+        ),
+    };
+    DiagnosticCheck {
+        id: "files.workspace",
+        label: "Workspace das file tools",
+        status,
+        detail,
+        next_step,
+    }
+}
+
 const MCP_ROOT_NEXT_STEP: &str = "edite a entrada `filesystem` (em mcp.json, ou em `mcp:` do \
                                   config.yml, que vence o mcp.json; ou \
                                   GARRAIA_DISABLE_MCP_AUTOPROVISION=1 + remova o servidor) para \
@@ -1041,6 +1102,15 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         politica.is_isolated_pod(),
         persistidas.as_deref(),
         raizes_mcp.caminhos(),
+        &data_dir,
+    ));
+    // #1378: o workspace efetivo das file tools NATIVAS, que e outra coisa da
+    // raiz do servidor MCP acima. Passa pela mesma funcao que o boot usa para
+    // montar o jail, entao a linha nunca descreve um jail que o turno nao tem.
+    let raizes_file_tools = crate::bootstrap::raizes_das_file_tools(&state.config);
+    checks.push(files_workspace_check(
+        raizes_file_tools.fonte,
+        raizes_file_tools.jail.roots(),
         &data_dir,
     ));
     // #1346: servidores MCP que falharam (inclusive no boot) e a versao do
@@ -2861,6 +2931,108 @@ mod tests_mcp_1346 {
                 .iter()
                 .any(|c| c.id == "mcp.filesystem_pinned"),
             "linha mcp.filesystem_pinned"
+        );
+    }
+
+    // ─── #1378: a linha `files.workspace` ─────────────────────────────────
+
+    /// Raiz declarada pelo operador: `ok`, e o detalhe diz que a fonte foi a
+    /// declaracao — nao o default.
+    #[test]
+    fn workspace_declarado_e_ok_e_nomeia_a_fonte() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let raiz = dir.path().join("projeto");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::Declaradas,
+            &[raiz],
+            dir.path(),
+        );
+        assert_eq!(c.id, "files.workspace");
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(c.detail.contains("agent.file_roots"), "{}", c.detail);
+        assert!(c.next_step.is_none(), "{c:?}");
+    }
+
+    /// Workspace padrao: `ok`, com o caminho relativo a `<data_dir>` — a rota
+    /// e auth-free e nao precisa publicar o caminho absoluto do host.
+    #[test]
+    fn workspace_padrao_e_ok_e_sai_relativo_ao_data_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path().join("workspace");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::WorkspacePadrao,
+            &[ws],
+            dir.path(),
+        );
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(
+            c.detail.contains("<data_dir>/workspace"),
+            "o detalhe tem de sair relativo ao data_dir: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains("workspace padrao"),
+            "o detalhe tem de dizer POR QUE a raiz e essa (#1378): {}",
+            c.detail
+        );
+    }
+
+    /// Sem raiz efetiva a linha e `warning` com passo acionavel: e o defeito
+    /// da #1378 ainda de pe, e o operador precisa ver isso no console.
+    #[test]
+    fn sem_raiz_efetiva_a_linha_avisa_com_passo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::SomenteSessao,
+            &[],
+            dir.path(),
+        );
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("file_read"), "{}", c.detail);
+        let passo = c.next_step.expect("a linha tem de dizer o que fazer");
+        assert!(passo.contains("agent.file_roots"), "{passo}");
+    }
+
+    /// **A fiacao.** Sem este teste, apagar o `checks.push` deixaria os tres
+    /// puros acima verdes e o `/api/diagnostics` sem a linha. E ele descreve a
+    /// instalacao limpa da #1378 de ponta a ponta: o boot prepara o workspace,
+    /// e o console reporta esse workspace e a razao dele.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn o_relatorio_de_verdade_inclui_a_linha_do_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        // O passo que o `server.rs` da na subida, antes de montar o runtime.
+        crate::bootstrap::garantir_workspace_padrao(&config).expect("workspace padrao");
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            dir.path(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "files.workspace")
+            .expect("o relatorio precisa carregar a linha `files.workspace` (#1378)");
+        assert!(
+            matches!(linha.status, CheckStatus::Ok),
+            "instalacao limpa com o workspace preparado e `ok`: {linha:?}"
+        );
+        assert!(
+            linha.detail.contains("workspace"),
+            "a linha tem de nomear o workspace efetivo: {}",
+            linha.detail
+        );
+        assert!(
+            linha.detail.contains("workspace padrao"),
+            "a linha tem de dizer de onde veio a decisao: {}",
+            linha.detail
         );
     }
 }

@@ -131,6 +131,88 @@ pub fn raizes_do_mcp_filesystem(config: &AppConfig) -> RaizesDoMcpFilesystem {
     }
 }
 
+/// De onde sairam as raizes efetivas das file tools nativas (#1378).
+///
+/// O boot decide isto uma vez e o `/api/diagnostics` reporta a MESMA decisao,
+/// porque os dois passam por [`crate::bootstrap::raizes_das_file_tools`]. Uma
+/// linha de console que descrevesse um jail diferente do que o turno usa
+/// seria pior que nenhuma linha.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FonteDasRaizesDasFileTools {
+    /// O operador declarou raiz (`agent.file_roots` e/ou a env
+    /// `GARRAIA_FILE_ROOTS`) e ela resolveu. Comportamento anterior a #1378,
+    /// preservado byte a byte: o default nem e consultado.
+    Declaradas,
+    /// Nada declarado: vale o workspace default do perfil — o mesmo conjunto
+    /// que o MCP `filesystem` recebe (ADR 0024).
+    WorkspacePadrao,
+    /// Nada declarado e o default tambem nao resolveu (o diretorio nao existe
+    /// e nao pode ser criado, ou o `execution.pod_root` declarado tem typo).
+    /// Fail-closed: so o `working_dir` da sessao autoriza algo, que e
+    /// exatamente o estado que a #1378 descreve como defeito.
+    SomenteSessao,
+}
+
+impl FonteDasRaizesDasFileTools {
+    /// Rotulo estavel para log e para o `/api/diagnostics`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Declaradas => "declaradas",
+            Self::WorkspacePadrao => "workspace-padrao",
+            Self::SomenteSessao => "somente-sessao",
+        }
+    }
+}
+
+impl std::fmt::Display for FonteDasRaizesDasFileTools {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// As raizes que as file tools nativas recebem quando o operador nao declarou
+/// nenhuma (#1378).
+///
+/// # Por que existe
+///
+/// Uma sessao do WhatsApp recem-vinculada nasce com `working_dir = null`. Com
+/// `agent.file_roots` vazio — o default de toda instalacao limpa — o conjunto
+/// de raizes efetivas de `FileJail::confine` ficava **vazio**, e vazio
+/// significa negar tudo (#1244). O resultado e o que a #1378 relata:
+/// `file_read`, `file_write` e `list_dir` registradas, anunciadas pelo modo, e
+/// recusando toda chamada com `Denial::NoRoots`. A capability existe no papel
+/// e nao existe na pratica.
+///
+/// # Por que e o workspace do Garra, e o mesmo nos dois perfis
+///
+/// O ADR 0024 ja nomeou o diretorio seguro que o Garra usa quando o operador
+/// nao declarou nada: `<data_dir>/workspace`, o unico que o boot cria. Este
+/// default reusa esse endereco, e **nao** o resultado inteiro de
+/// [`raizes_do_mcp_filesystem`].
+///
+/// A diferenca esta no `isolated-pod` com `execution.pod_root` declarado. Ali
+/// o MCP `filesystem` recebe o `pod_root`; se as tools nativas o recebessem
+/// junto, esta correcao teria ampliado, de carona, o alcance das tools
+/// nativas num perfil que nao e o assunto da #1378 — e a regra documentada
+/// ("`execution.pod_root` muda so a raiz do MCP; para as nativas declare
+/// `agent.file_roots`") teria mudado sem que ninguem pedisse. Um P0 de
+/// usabilidade nao e lugar para alargar superficie de acesso a arquivo.
+///
+/// O preco aceito e o oposto do elegante: em `isolated-pod` com `pod_root`,
+/// tools nativas e MCP ficam com raizes diferentes. Isso ja era verdade antes
+/// da #1378 (as nativas ficavam com raiz NENHUMA), ja esta documentado como
+/// pegadinha em `docs/execution-profiles.md`, e continua com a mesma saida:
+/// declarar `agent.file_roots`.
+///
+/// **Nunca** `/` e **nunca** `$HOME`: o caminho e sempre um filho do
+/// `<data_dir>`, e um alcance maior segue sendo escolha explicita do operador.
+///
+/// Pura: nao toca o disco. Quem cria o workspace e
+/// [`crate::bootstrap::garantir_workspace_padrao`], na subida.
+pub fn raizes_default_das_file_tools(config: &AppConfig) -> PathBuf {
+    config.resolved_data_dir().join("workspace")
+}
+
 /// O anuncio de boot. `standard` e um `info!` com perfil e origem;
 /// `isolated-pod` e um unico `warn!` que diz o que foi liberado, o que o
 /// perfil NAO isola por conta propria e como reverter — porque o risco
@@ -388,5 +470,97 @@ mod tests {
                  nunca detectado"
             );
         }
+    }
+
+    // ─── #1378: o default das file tools nativas ──────────────────────────
+
+    /// **A garantia da #1378.** O default das file tools nativas e sempre o
+    /// workspace do Garra — nunca `/`, nunca `$HOME` — e nao muda com perfil,
+    /// `pod_root` nem `agent.file_roots`. E a raiz que a sessao do WhatsApp
+    /// sem projeto passa a enxergar.
+    #[test]
+    fn default_das_file_tools_e_sempre_o_workspace_do_data_dir() {
+        let casos = [
+            config(None, None, &[], Some("/tmp/garra-data")),
+            config(
+                Some(ExecutionProfile::Standard),
+                None,
+                &["/srv/notas"],
+                Some("/tmp/garra-data"),
+            ),
+            config(
+                Some(ExecutionProfile::IsolatedPod),
+                Some("/workspace"),
+                &[],
+                Some("/tmp/garra-data"),
+            ),
+        ];
+        for cfg in casos {
+            let caminho = raizes_default_das_file_tools(&cfg);
+            assert_eq!(caminho, PathBuf::from("/tmp/garra-data/workspace"));
+            assert!(
+                caminho.parent().is_some(),
+                "o default nunca pode ser a raiz do filesystem"
+            );
+            if let Some(home) = dirs::home_dir() {
+                assert_ne!(caminho, home, "o default nunca pode ser o $HOME");
+            }
+        }
+    }
+
+    /// **A fronteira que esta correcao NAO cruza.** Em `isolated-pod` com
+    /// `execution.pod_root`, o MCP `filesystem` recebe o `pod_root` e as tools
+    /// nativas continuam sem receber: quem quiser as duas coisas declara
+    /// `agent.file_roots`, como sempre foi. Se este teste ficar vermelho,
+    /// alguem ampliou o alcance das tools nativas no perfil isolado de carona
+    /// numa correcao de usabilidade.
+    #[test]
+    fn pod_root_nao_vira_raiz_das_file_tools_nativas() {
+        let cfg = config(
+            Some(ExecutionProfile::IsolatedPod),
+            Some("/workspace"),
+            &[],
+            Some("/tmp/garra-data"),
+        );
+        assert_eq!(
+            raizes_do_mcp_filesystem(&cfg),
+            RaizesDoMcpFilesystem::Declaradas(vec![PathBuf::from("/workspace")]),
+            "o MCP continua recebendo o pod_root (ADR 0024)"
+        );
+        assert_eq!(
+            raizes_default_das_file_tools(&cfg),
+            PathBuf::from("/tmp/garra-data/workspace"),
+            "as tools nativas NAO herdam o pod_root (#1378)"
+        );
+    }
+
+    /// Sem declaracao nenhuma os dois coincidem — e ali a #1378 nao inventou
+    /// endereco novo: reusou o `<data_dir>/workspace` que o ADR 0024 ja
+    /// designou como o diretorio seguro do Garra.
+    #[test]
+    fn sem_declaracao_o_default_coincide_com_o_do_mcp() {
+        let cfg = config(None, None, &[], Some("/tmp/garra-data"));
+        assert_eq!(
+            raizes_do_mcp_filesystem(&cfg).caminhos(),
+            [raizes_default_das_file_tools(&cfg)]
+        );
+    }
+
+    /// O rotulo da fonte e estavel: ele sai no log de boot e no JSON do
+    /// `/api/diagnostics`, que o console le.
+    #[test]
+    fn rotulos_da_fonte_sao_estaveis() {
+        assert_eq!(
+            FonteDasRaizesDasFileTools::Declaradas.as_str(),
+            "declaradas"
+        );
+        assert_eq!(
+            FonteDasRaizesDasFileTools::WorkspacePadrao.as_str(),
+            "workspace-padrao"
+        );
+        assert_eq!(
+            FonteDasRaizesDasFileTools::SomenteSessao.as_str(),
+            "somente-sessao"
+        );
     }
 }

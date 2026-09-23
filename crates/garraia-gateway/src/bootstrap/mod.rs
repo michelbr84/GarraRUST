@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use garraia_agents::tools::Tool;
@@ -91,8 +92,8 @@ pub use whatsapp_linked::{
 /// anuncio de boot. Puro; consumido pelo autoprovisionamento do MCP, pelo
 /// canal `whatsapp_linked` e pelas superficies de diagnostico.
 pub use execution::{
-    PoliticaDeExecucao, RaizesDoMcpFilesystem, anunciar_no_boot, politica_de_execucao,
-    raizes_do_mcp_filesystem,
+    FonteDasRaizesDasFileTools, PoliticaDeExecucao, RaizesDoMcpFilesystem, anunciar_no_boot,
+    politica_de_execucao, raizes_default_das_file_tools, raizes_do_mcp_filesystem,
 };
 
 /// #1272: quando a tool `bash` existe numa superficie sem humano no laco
@@ -229,6 +230,112 @@ fn resolve_registered_provider_id(
         .iter()
         .find(|p| p.as_str() == kind)
         .map(|p| p.to_string())
+}
+
+/// A decisao de raizes das file tools nativas: o jail que as tools recebem e
+/// de onde ele saiu (#1378).
+#[derive(Debug, Clone)]
+pub struct RaizesDasFileTools {
+    /// O jail que `file_read`, `file_write`, `list_dir` e `run_tests` usam.
+    /// Vazio (`sessions_only`) so na fonte [`FonteDasRaizesDasFileTools::SomenteSessao`].
+    pub jail: FileJail,
+    /// Qual das tres origens ganhou.
+    pub fonte: FonteDasRaizesDasFileTools,
+}
+
+/// Resolve as raizes das file tools nativas, na ordem de precedencia da #1378.
+///
+/// 1. **Declaradas** — `agent.file_roots` mais a env `GARRAIA_FILE_ROOTS`.
+///    Quando qualquer uma resolve, ela vence sozinha e o default nem e
+///    consultado: era esse o comportamento antes da #1378 e ele fica intacto.
+/// 2. **Workspace padrao** — nada declarado (ou nada declarado *resolveu*):
+///    entra `<data_dir>/workspace`, o diretorio que o Garra cria para si.
+///    Igual nos dois perfis, e deliberadamente sem herdar `execution.pod_root`
+///    — ver [`raizes_default_das_file_tools`].
+/// 3. **Somente sessao** — nem um nem outro resolveu. Fail-closed: o jail
+///    volta a `sessions_only`, exatamente como antes da #1378. Um default que
+///    nao existe nao pode autorizar nada, e inventar uma raiz mais larga para
+///    "fazer funcionar" seria o contrario do que a #1244 comprou.
+///
+/// Em nenhum ramo esta funcao cria diretorio — quem cria e
+/// [`garantir_workspace_padrao`], uma vez na subida. Chamada tanto pelo boot
+/// quanto pelo `/api/diagnostics`, para que o console nunca descreva um jail
+/// diferente do que o turno usa.
+pub fn raizes_das_file_tools(config: &AppConfig) -> RaizesDasFileTools {
+    let declaradas = FileJail::from_config_roots(&config.agent.file_roots);
+    if !declaradas.has_no_configured_roots() {
+        return RaizesDasFileTools {
+            jail: declaradas,
+            fonte: FonteDasRaizesDasFileTools::Declaradas,
+        };
+    }
+    let padrao = FileJail::from_roots([raizes_default_das_file_tools(config)]);
+    if padrao.has_no_configured_roots() {
+        RaizesDasFileTools {
+            jail: FileJail::sessions_only(),
+            fonte: FonteDasRaizesDasFileTools::SomenteSessao,
+        }
+    } else {
+        RaizesDasFileTools {
+            jail: padrao,
+            fonte: FonteDasRaizesDasFileTools::WorkspacePadrao,
+        }
+    }
+}
+
+/// Cria `<data_dir>/workspace` na subida, para que o jail das file tools tenha
+/// uma raiz que **resolve** (#1378).
+///
+/// `FileJail::from_roots` canonicaliza e descarta a raiz que nao resolve — o
+/// que e correto (uma raiz inexistente nao pode autorizar nada) e tambem o que
+/// faria o default da #1378 nascer morto numa instalacao limpa, onde o
+/// diretorio ainda nao existe. Entao o boot o cria, uma vez, antes de montar
+/// o runtime.
+///
+/// **So o workspace.** Nenhum caminho *declarado* pelo operador e criado
+/// aqui — nem `agent.file_roots`, nem `execution.pod_root`. Um caminho
+/// declarado com typo (ou relativo) viraria um diretorio novo no host por
+/// efeito colateral do boot, que e o F-3 da auditoria da #1329; raiz declarada
+/// que nao existe segue sendo "nao autoriza nada", com o aviso de `FileJail`.
+/// `<data_dir>/workspace` e do proprio Garra, e o ADR 0024 ja o descreve como
+/// a unica raiz que o provisionamento cria.
+///
+/// Criar e **incondicional**: mesmo com `agent.file_roots` declarado, um
+/// diretorio vazio dentro do proprio data dir nao custa nada, e faz o default
+/// existir tambem no caso feio — a raiz declarada com typo, que nao resolve.
+/// Ali o agente cai no workspace em vez de ficar sem raiz nenhuma, enquanto o
+/// `FileJail` avisa sobre o caminho que nao resolveu.
+///
+/// Fail-soft: falhar em criar nao derruba a subida. O jail cai em
+/// [`FonteDasRaizesDasFileTools::SomenteSessao`] e `build_agent_runtime`
+/// avisa. Devolve o caminho, ou `None` quando ele nao pode ser criado.
+pub fn garantir_workspace_padrao(config: &AppConfig) -> Option<PathBuf> {
+    let workspace = raizes_default_das_file_tools(config);
+    match std::fs::create_dir_all(&workspace) {
+        Ok(()) => Some(workspace),
+        Err(e) => {
+            warn!(
+                error = %e,
+                workspace = %workspace.display(),
+                "workspace padrao das file tools nao pode ser criado: sessao sem working_dir \
+                 nao vai ler nem escrever (#1378)"
+            );
+            None
+        }
+    }
+}
+
+/// Raizes numa linha de log. `(nenhuma)` quando vazio, para a linha nunca
+/// terminar em dois-pontos sem nada depois.
+fn lista_de_raizes(raizes: &[PathBuf]) -> String {
+    if raizes.is_empty() {
+        return "(nenhuma)".to_string();
+    }
+    raizes
+        .iter()
+        .map(|r| r.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Build a fully-configured `AgentRuntime` from the application config.
@@ -759,26 +866,37 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // liberado, o que NAO e isolado por conta propria e como reverter.
     anunciar_no_boot(&politica_de_execucao(config));
     // #1244: as file tools do gateway recebem um jail obrigatorio. As raizes
-    // sao `agent.file_roots` (vazio por padrao) mais o `working_dir` da
-    // sessao, resolvido por chamada. Sem nenhuma das duas, elas negam tudo —
-    // e um gateway na porta 3888 atende pedido que veio do Telegram.
-    let file_jail = FileJail::from_config_roots(&config.agent.file_roots);
-    if file_jail.has_no_configured_roots() {
-        info!(
-            "file tools confinadas ao working_dir da sessao \
-             (agent.file_roots vazio); sessao sem working_dir nao le nem escreve"
-        );
-    } else {
-        info!(
-            "file tools confinadas a {} raiz(es) de agent.file_roots + working_dir da sessao: {}",
+    // sao as declaradas (`agent.file_roots` + `GARRAIA_FILE_ROOTS`) mais o
+    // `working_dir` da sessao, resolvido por chamada.
+    //
+    // #1378: sem nenhuma das duas o conjunto ficava vazio, e vazio nega tudo —
+    // que e o estado de toda sessao do WhatsApp recem-vinculada, nascida com
+    // `working_dir = null`. Entra o workspace default do perfil (ADR 0024,
+    // `<data_dir>/workspace`), nunca `/` nem `$HOME`. Quem cria o diretorio e
+    // `garantir_workspace_padrao`, na subida, ANTES desta chamada.
+    let RaizesDasFileTools {
+        jail: file_jail,
+        fonte,
+    } = raizes_das_file_tools(config);
+    match fonte {
+        FonteDasRaizesDasFileTools::Declaradas => info!(
+            "file tools confinadas a {} raiz(es) declaradas (agent.file_roots / {}) + \
+             working_dir da sessao: {}",
             file_jail.roots().len(),
-            file_jail
-                .roots()
-                .iter()
-                .map(|r| r.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+            garraia_agents::tools::file_jail::ROOTS_ENV,
+            lista_de_raizes(file_jail.roots()),
+        ),
+        FonteDasRaizesDasFileTools::WorkspacePadrao => info!(
+            "file tools confinadas ao workspace padrao + working_dir da sessao: {} \
+             (nada declarado em agent.file_roots; issue #1378)",
+            lista_de_raizes(file_jail.roots()),
+        ),
+        FonteDasRaizesDasFileTools::SomenteSessao => warn!(
+            workspace = %raizes_default_das_file_tools(config).display(),
+            "file tools sem raiz padrao: o workspace nao resolveu. Sessao sem working_dir nao \
+             le nem escreve — declare agent.file_roots ou confira as permissoes do data_dir \
+             (#1378)"
+        ),
     }
     // #1244: contar raizes nao diz **quais**, e `GARRAIA_FILE_ROOTS=/` nunca
     // passa pelo `config check`. Uma raiz que resolve para `/` ou para o
@@ -2941,13 +3059,21 @@ mod tests {
     #[test]
     fn o_boot_nomeia_as_raizes_de_file_tool() {
         let fonte = include_str!("mod.rs");
-        let trecho = fonte
+        let trecho: String = fonte
             .split("file tools confinadas a {} raiz(es)")
             .nth(1)
-            .expect("a linha de info das raizes sumiu");
+            .expect("a linha de info das raizes sumiu")
+            // A linha quebra com `\` + indentacao no fonte formatado; o que
+            // importa e o texto, nao onde o rustfmt decidiu dobrar.
+            .chars()
+            .take(200)
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
-            trecho.starts_with(" de agent.file_roots + working_dir da sessao: {}"),
-            "o info do boot voltou a contar raizes sem nomea-las (#1244)"
+            trecho.starts_with("declaradas (agent.file_roots / {}) + \\ working_dir da sessao: {}"),
+            "o info do boot voltou a contar raizes sem nomea-las (#1244): {trecho}"
         );
     }
 
@@ -3482,6 +3608,305 @@ Corpo do skill de teste.
             power.risk,
             garraia_hardware::RiskClass::R1,
             "risco do adapter intacto"
+        );
+    }
+
+    // ─── issue #1378: o workspace padrao das file tools ────────────────────
+    //
+    // Mesma disciplina da #1244 acima: estes testes nao montam `FileJail` a
+    // mao. Eles simulam o boot na ordem real — `garantir_workspace_padrao` e
+    // depois `build_agent_runtime` — e pedem a tool ao runtime, que e o mesmo
+    // objeto que o turno do WhatsApp usa.
+    //
+    // Todos carregam `#[serial]` porque a env `GARRAIA_FILE_ROOTS` entra na
+    // decisao: um teste paralelo que a defina mudaria a fonte para
+    // `Declaradas` no meio destes.
+
+    /// Config de instalacao limpa: `data_dir` proprio, nada declarado.
+    fn config_limpa(data_dir: &std::path::Path) -> AppConfig {
+        AppConfig {
+            data_dir: Some(data_dir.to_path_buf()),
+            ..AppConfig::default()
+        }
+    }
+
+    /// O boot, na ordem de `server.rs`.
+    fn boot(config: &AppConfig) -> AgentRuntime {
+        garantir_workspace_padrao(config);
+        build_agent_runtime(config)
+    }
+
+    /// Guarda da env que altera a decisao, restaurada no `Drop` para o teste
+    /// nao vazar estado para o proximo.
+    struct SemFileRootsNaEnv(Option<std::ffi::OsString>);
+
+    impl SemFileRootsNaEnv {
+        fn nova() -> Self {
+            let antes = std::env::var_os(garraia_agents::tools::file_jail::ROOTS_ENV);
+            // SAFETY: os testes desta secao sao `#[serial]`, entao nenhuma
+            // outra thread de teste le a env enquanto ela muda.
+            unsafe { std::env::remove_var(garraia_agents::tools::file_jail::ROOTS_ENV) };
+            Self(antes)
+        }
+    }
+
+    impl Drop for SemFileRootsNaEnv {
+        fn drop(&mut self) {
+            if let Some(v) = self.0.take() {
+                // SAFETY: idem.
+                unsafe { std::env::set_var(garraia_agents::tools::file_jail::ROOTS_ENV, v) };
+            }
+        }
+    }
+
+    /// **O defeito da #1378.** Instalacao limpa, nada declarado: o boot da as
+    /// file tools o workspace do proprio Garra, e a fonte diz que foi o
+    /// default — nao uma declaracao que ninguem escreveu.
+    #[test]
+    #[serial_test::serial]
+    fn instalacao_limpa_ganha_o_workspace_padrao() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = config_limpa(tmp.path());
+
+        let criado = garantir_workspace_padrao(&config).expect("o workspace tem de ser criado");
+        assert!(criado.is_dir(), "{} nao e diretorio", criado.display());
+
+        let raizes = raizes_das_file_tools(&config);
+        assert_eq!(raizes.fonte, FonteDasRaizesDasFileTools::WorkspacePadrao);
+        assert_eq!(
+            raizes.jail.roots(),
+            [std::fs::canonicalize(&criado).expect("canonicalize")],
+            "a unica raiz e o workspace do Garra"
+        );
+    }
+
+    /// E o workspace padrao nunca e `/` nem o `$HOME` — a garantia que o ADR
+    /// 0024 comprou para o MCP e que a #1378 herda para as tools nativas.
+    #[test]
+    #[serial_test::serial]
+    fn o_workspace_padrao_nunca_e_raiz_perigosa() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = config_limpa(tmp.path());
+        garantir_workspace_padrao(&config);
+
+        let raizes = raizes_das_file_tools(&config);
+        assert!(
+            raizes.jail.raizes_perigosas().is_empty(),
+            "o default abriu uma raiz que desliga o jail: {:?}",
+            raizes.jail.raizes_perigosas()
+        );
+    }
+
+    /// **A regressao de instalacao limpa do WhatsApp.** Uma sessao vinculada
+    /// sem projeto (`working_dir = None`) escreve, le e lista dentro do
+    /// workspace — as tres tools que a #1378 cita, pelo runtime de verdade.
+    /// Sem a correcao as tres respondem `Denial::NoRoots`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn sessao_do_whatsapp_sem_working_dir_usa_as_file_tools() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = config_limpa(tmp.path());
+        let workspace = garantir_workspace_padrao(&config).expect("workspace");
+        let workspace = std::fs::canonicalize(&workspace).expect("canonicalize");
+        let runtime = boot(&config);
+        let ctx = ctx_de_sessao(None);
+
+        let alvo = workspace.join("nota.txt");
+        runtime
+            .find_tool("file_write")
+            .expect("file_write registrada")
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "path": alvo.to_str().expect("utf8"),
+                    "content": "oi do whatsapp",
+                }),
+            )
+            .await
+            .expect("file_write dentro do workspace padrao tem de funcionar (#1378)");
+
+        let lido = runtime
+            .find_tool("file_read")
+            .expect("file_read registrada")
+            .execute(
+                &ctx,
+                serde_json::json!({ "path": alvo.to_str().expect("utf8") }),
+            )
+            .await
+            .expect("file_read dentro do workspace padrao tem de funcionar (#1378)");
+        assert!(!lido.is_error, "file_read devolveu erro: {}", lido.content);
+        assert!(
+            lido.content.contains("oi do whatsapp"),
+            "file_read nao devolveu o conteudo: {}",
+            lido.content
+        );
+
+        runtime
+            .find_tool("list_dir")
+            .expect("list_dir registrada")
+            .execute(
+                &ctx,
+                serde_json::json!({ "path": workspace.to_str().expect("utf8") }),
+            )
+            .await
+            .expect("list_dir dentro do workspace padrao tem de funcionar (#1378)");
+    }
+
+    /// E o que esta **fora** do workspace continua negado, com a mesma
+    /// mensagem unica. Um default que abrisse o jail nao seria correcao.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn fora_do_workspace_padrao_continua_negado() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = config_limpa(tmp.path());
+        garantir_workspace_padrao(&config);
+        let runtime = boot(&config);
+
+        // Irmao do workspace, dentro do mesmo data_dir: o vizinho mais
+        // proximo que o jail ainda tem de recusar.
+        let fora = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        let segredo = fora.join("sessions.db");
+        std::fs::write(&segredo, b"dados de sessao").expect("write");
+
+        let erro = runtime
+            .find_tool("file_read")
+            .expect("file_read registrada")
+            .execute(
+                &ctx_de_sessao(None),
+                serde_json::json!({ "path": segredo.to_str().expect("utf8") }),
+            )
+            .await
+            .expect_err("vizinho do workspace tem de ser recusado");
+        assert!(
+            erro.to_string()
+                .ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
+            "{erro}"
+        );
+    }
+
+    /// `agent.file_roots` declarado vence o default: a raiz efetiva e a
+    /// declarada, e so ela. E o "comportamento existente preservado" da #1378.
+    #[test]
+    #[serial_test::serial]
+    fn file_roots_declarado_vence_o_workspace_padrao() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let declarada = tmp.path().join("projeto");
+        std::fs::create_dir_all(&declarada).expect("mkdir");
+        let mut config = config_limpa(tmp.path());
+        config.agent.file_roots = vec![declarada.to_string_lossy().into_owned()];
+        garantir_workspace_padrao(&config);
+
+        let raizes = raizes_das_file_tools(&config);
+        assert_eq!(raizes.fonte, FonteDasRaizesDasFileTools::Declaradas);
+        assert_eq!(
+            raizes.jail.roots(),
+            [std::fs::canonicalize(&declarada).expect("canonicalize")],
+            "a raiz declarada tem de ser a unica: o default nao pode se somar a ela"
+        );
+    }
+
+    /// **A fronteira que esta correcao nao cruza.** Em `isolated-pod` com
+    /// `execution.pod_root`, as tools NATIVAS nao herdam o pod: elas ficam com
+    /// o workspace do Garra, e o `pod_root` segue sendo so do MCP
+    /// `filesystem`. E o boot nao materializa o `pod_root` (F-3 da #1329).
+    #[test]
+    #[serial_test::serial]
+    fn pod_root_nao_alarga_as_file_tools_nativas() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let pod_root = tmp.path().join("pod-nao-declarado-em-disco");
+        let mut config = config_limpa(tmp.path());
+        config.execution = garraia_config::ExecutionConfig::new(
+            Some(garraia_config::ExecutionProfile::IsolatedPod),
+            Some(pod_root.clone()),
+        );
+
+        let workspace = garantir_workspace_padrao(&config).expect("workspace");
+        assert!(
+            !pod_root.exists(),
+            "o boot materializou o pod_root (F-3 da #1329)"
+        );
+
+        let raizes = raizes_das_file_tools(&config);
+        assert_eq!(raizes.fonte, FonteDasRaizesDasFileTools::WorkspacePadrao);
+        assert_eq!(
+            raizes.jail.roots(),
+            [std::fs::canonicalize(&workspace).expect("canonicalize")],
+            "as tools nativas ficam no workspace do Garra, nunca no pod_root"
+        );
+    }
+
+    /// Raiz declarada com typo: o `FileJail` a descarta (ela nao autoriza
+    /// nada), e o agente cai no workspace padrao em vez de ficar sem raiz
+    /// nenhuma. O typo continua visivel no log do `FileJail`.
+    #[test]
+    #[serial_test::serial]
+    fn file_roots_com_typo_cai_no_workspace_padrao() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut config = config_limpa(tmp.path());
+        config.agent.file_roots =
+            vec![tmp.path().join("nao-existe").to_string_lossy().into_owned()];
+        let workspace = garantir_workspace_padrao(&config).expect("workspace");
+
+        let raizes = raizes_das_file_tools(&config);
+        assert_eq!(raizes.fonte, FonteDasRaizesDasFileTools::WorkspacePadrao);
+        assert_eq!(
+            raizes.jail.roots(),
+            [std::fs::canonicalize(&workspace).expect("canonicalize")]
+        );
+    }
+
+    /// Sem o `garantir_workspace_padrao` do boot o workspace nao existe, e o
+    /// jail volta ao fail-closed da #1244 em vez de inventar raiz. E tambem a
+    /// prova de que a criacao esta FORA de `build_agent_runtime`: as duas
+    /// dezenas de testes que chamam `build_agent_runtime` com a config default
+    /// nao podem plantar diretorio no `$HOME` de quem roda a suite.
+    #[test]
+    #[serial_test::serial]
+    fn sem_o_passo_de_boot_o_jail_fica_fail_closed() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = config_limpa(tmp.path());
+
+        let raizes = raizes_das_file_tools(&config);
+        assert_eq!(raizes.fonte, FonteDasRaizesDasFileTools::SomenteSessao);
+        assert!(raizes.jail.roots().is_empty());
+        assert!(
+            !tmp.path().join("workspace").exists(),
+            "build_agent_runtime/raizes_das_file_tools nao podem criar diretorio"
+        );
+
+        let _runtime = build_agent_runtime(&config);
+        assert!(
+            !tmp.path().join("workspace").exists(),
+            "build_agent_runtime criou o workspace: a criacao tem de ficar no boot (#1378)"
+        );
+    }
+
+    /// **A fiacao.** O `server.rs` tem de chamar `garantir_workspace_padrao`
+    /// **antes** de `build_agent_runtime` — depois nao adianta, porque o jail
+    /// ja canonicalizou as raizes. Varredura de fonte porque `GarraIAServer::
+    /// run` faz bind de porta e nao roda em teste unitario; sem isto, apagar a
+    /// chamada deixaria todos os testes acima verdes e a #1378 de volta em
+    /// producao.
+    #[test]
+    fn o_boot_prepara_o_workspace_antes_de_montar_o_runtime() {
+        let servidor = include_str!("../server.rs");
+        let preparo = servidor
+            .find("garantir_workspace_padrao(&self.config)")
+            .expect("server.rs deixou de preparar o workspace padrao das file tools (#1378)");
+        let runtime = servidor
+            .find("build_agent_runtime(&self.config)")
+            .expect("server.rs deixou de montar o runtime");
+        assert!(
+            preparo < runtime,
+            "garantir_workspace_padrao tem de vir ANTES de build_agent_runtime (#1378)"
         );
     }
 }
