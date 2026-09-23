@@ -29,7 +29,7 @@ esses literais.
 | Piso do WhatsApp para remetente admitido que **nao** e dono, ou qualquer mensagem de **grupo** | `default_mode` (default `search`) | **igual ao `standard`** — poder total nunca e herdado por grupo nem por contato so pareado |
 | Remetente fora de `allow`/`owners` e sem codigo de pareamento | recusado em silencio | recusado em silencio (inalterado) |
 | Raiz do MCP `filesystem` autoprovisionado | `agent.file_roots` se houver; senao `<data_dir>/workspace` | `execution.pod_root` se houver; senao `<data_dir>/workspace` |
-| Raiz das file tools nativas quando nada foi declarado (#1378) | `<data_dir>/workspace` | `execution.pod_root` se houver; senao `<data_dir>/workspace` — o mesmo conjunto do MCP `filesystem` |
+| Raiz das file tools nativas quando nada foi declarado (#1378) | `<data_dir>/workspace` | `<data_dir>/workspace` — **igual ao `standard`**; `execution.pod_root` muda so a raiz do MCP `filesystem` |
 | Jail das file tools nativas (`agent.file_roots`), gate de comando arriscado do `bash`, `agent.sandbox` | inalterados | inalterados — o perfil libera *ferramentas*, nao desliga *protecoes* |
 | Log de boot | `INFO` com o perfil e a origem | um `WARN` unico: o que foi liberado, o que o perfil NAO isola, como reverter |
 
@@ -92,10 +92,14 @@ O que **continua ligado** em `isolated-pod`, por desenho:
 
 - O **jail das file tools nativas** (`file_read`, `file_write`, `list_dir`):
   `agent.file_roots` ∪ `working_dir` da sessao, exatamente como em `standard`
-  (#1244). Quando `agent.file_roots` esta vazio, a raiz default e a do perfil
-  — `execution.pod_root`, ou `<data_dir>/workspace` se ele nao foi declarado
-  (#1378) — e nao o pod inteiro. Se quiser que as tools nativas alcancem o pod
-  inteiro, declare isso: `agent.file_roots: ["/workspace"]`.
+  (#1244). Quando `agent.file_roots` esta vazio, a raiz default e
+  `<data_dir>/workspace` (#1378) — o **mesmo** caminho que em `standard`, e
+  nao o pod inteiro. `execution.pod_root` muda so a raiz do MCP `filesystem`:
+  ele **nao** e herdado pelas file tools nativas, para que fechar a #1378 nao
+  alargue de carona o alcance de arquivo num perfil que nao e o assunto dela.
+  Se quiser que as tools nativas alcancem o pod inteiro, declare isso:
+  `agent.file_roots: ["/workspace"]`. A unificacao das duas politicas e a
+  #1383.
 - O **gate de comando arriscado** do `bash` (`rm -rf /`, `git reset --hard`,
   …). Sem canal de confirmacao ele e fail-closed; alargue com
   `agent.bash_allowlist` se o pod for descartavel de verdade.

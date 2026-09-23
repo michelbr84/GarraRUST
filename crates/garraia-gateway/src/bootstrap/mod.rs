@@ -269,7 +269,17 @@ pub fn raizes_das_file_tools(config: &AppConfig) -> RaizesDasFileTools {
             fonte: FonteDasRaizesDasFileTools::Declaradas,
         };
     }
-    let padrao = FileJail::from_roots([raizes_default_das_file_tools(config)]);
+    let caminho = raizes_default_das_file_tools(config);
+    // O symlink precisa ser barrado AQUI, e nao so em
+    // `garantir_workspace_padrao`: e esta funcao que monta o jail, e
+    // `FileJail::from_roots` canonicaliza — um link no lugar do workspace
+    // viraria silenciosamente a raiz do seu ALVO, mesmo com o boot tendo
+    // recusado cria-lo.
+    let padrao = if caminho_de_workspace_confiavel(&caminho) {
+        FileJail::from_roots([caminho])
+    } else {
+        FileJail::sessions_only()
+    };
     if padrao.has_no_configured_roots() {
         RaizesDasFileTools {
             jail: FileJail::sessions_only(),
@@ -280,6 +290,22 @@ pub fn raizes_das_file_tools(config: &AppConfig) -> RaizesDasFileTools {
             jail: padrao,
             fonte: FonteDasRaizesDasFileTools::WorkspacePadrao,
         }
+    }
+}
+
+/// O caminho do workspace padrao pode virar raiz do jail?
+///
+/// So quando ele ja e um diretorio **de verdade**: um symlink seria seguido
+/// por `FileJail::from_roots` (que canonicaliza) e a raiz efetiva passaria a
+/// ser o alvo do link — possivelmente `$HOME` ou `/`, as duas raizes que este
+/// default promete nunca usar. Um caminho que ainda nao existe tambem nao
+/// serve: quem o cria e [`garantir_workspace_padrao`], na subida.
+///
+/// Pura: so le metadado, nao cria nem altera nada.
+fn caminho_de_workspace_confiavel(workspace: &std::path::Path) -> bool {
+    match std::fs::symlink_metadata(workspace) {
+        Ok(meta) => meta.is_dir() && !meta.file_type().is_symlink(),
+        Err(_) => false,
     }
 }
 
@@ -309,10 +335,48 @@ pub fn raizes_das_file_tools(config: &AppConfig) -> RaizesDasFileTools {
 /// Fail-soft: falhar em criar nao derruba a subida. O jail cai em
 /// [`FonteDasRaizesDasFileTools::SomenteSessao`] e `build_agent_runtime`
 /// avisa. Devolve o caminho, ou `None` quando ele nao pode ser criado.
+///
+/// Fail-**closed** num caso especifico: se o caminho ja existe e e um symlink
+/// (ou um arquivo), a funcao recusa em vez de seguir o link. `create_dir_all`
+/// atravessaria e o jail acabaria canonicalizado no alvo — possivelmente
+/// `$HOME` ou `/`, as duas raizes que este default promete nunca usar.
+/// Quando cria de fato, fecha a permissao em `0700`.
 pub fn garantir_workspace_padrao(config: &AppConfig) -> Option<PathBuf> {
     let workspace = raizes_default_das_file_tools(config);
+
+    // Fail-closed contra symlink (ou arquivo) plantado no lugar do workspace.
+    // `create_dir_all` atravessa o link em silencio e o `FileJail` canonicaliza
+    // logo depois, entao o jail viraria o **alvo** do link — que pode ser
+    // `$HOME` ou `/`, as duas raizes que esta correcao promete nunca usar. O
+    // caminho e do proprio Garra: nada legitimo o transforma em link.
+    match std::fs::symlink_metadata(&workspace) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            warn!(
+                workspace = %workspace.display(),
+                "workspace padrao das file tools e um symlink: recusado para o jail nao herdar \
+                 o alvo do link. Remova o link ou declare agent.file_roots (#1378)"
+            );
+            return None;
+        }
+        Ok(meta) if !meta.is_dir() => {
+            warn!(
+                workspace = %workspace.display(),
+                "workspace padrao das file tools existe e nao e diretorio: sessao sem \
+                 working_dir nao vai ler nem escrever (#1378)"
+            );
+            return None;
+        }
+        // Ja e diretorio: nada a criar, e a permissao existente e do operador.
+        Ok(_) => return Some(workspace),
+        // Nao existe (ou nao da para statar): segue para a criacao abaixo.
+        Err(_) => {}
+    }
+
     match std::fs::create_dir_all(&workspace) {
-        Ok(()) => Some(workspace),
+        Ok(()) => {
+            clampar_permissao_do_workspace(&workspace);
+            Some(workspace)
+        }
         Err(e) => {
             warn!(
                 error = %e,
@@ -324,6 +388,34 @@ pub fn garantir_workspace_padrao(config: &AppConfig) -> Option<PathBuf> {
         }
     }
 }
+
+/// Fecha o workspace recem-criado em `0700` (dono apenas).
+///
+/// Ele nasceria com a umask do processo — tipicamente `0755`, legivel por
+/// qualquer usuario local. O diretorio guarda o que o agente escreveu a pedido
+/// de um principal remoto (uma sessao do WhatsApp), entao o mesmo trato que o
+/// `config.yml` recebe vale aqui.
+///
+/// So no caminho de **criacao**: um workspace que ja existia tem a permissao
+/// que o operador escolheu, e a subida nao vai reescreve-la a cada boot.
+/// Fail-soft — nao conseguir fechar a permissao nao derruba o boot nem invalida
+/// o jail, mas fica no log.
+#[cfg(unix)]
+fn clampar_permissao_do_workspace(workspace: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(workspace, std::fs::Permissions::from_mode(0o700)) {
+        warn!(
+            error = %e,
+            workspace = %workspace.display(),
+            "permissao do workspace padrao nao pode ser fechada em 0700 (#1378)"
+        );
+    }
+}
+
+/// Sem equivalente portavel de `0700` fora de unix: o ACL do Windows ja herda
+/// do diretorio pai, que e o `data_dir` do proprio usuario.
+#[cfg(not(unix))]
+fn clampar_permissao_do_workspace(_workspace: &std::path::Path) {}
 
 /// Raizes numa linha de log. `(nenhuma)` quando vazio, para a linha nunca
 /// terminar em dois-pontos sem nada depois.
@@ -3678,6 +3770,76 @@ Corpo do skill de teste.
             raizes.jail.roots(),
             [std::fs::canonicalize(&criado).expect("canonicalize")],
             "a unica raiz e o workspace do Garra"
+        );
+    }
+
+    /// Um symlink plantado no lugar do workspace NAO vira raiz do jail.
+    ///
+    /// `create_dir_all` atravessaria o link e o `FileJail` canonicalizaria em
+    /// seguida, de modo que o jail passaria a ser o **alvo** — aqui, um
+    /// diretorio irmao que o workspace nunca deveria alcancar. Sem esta
+    /// recusa, a promessa "nunca `/`, nunca `$HOME`" vale so ate alguem
+    /// trocar o caminho por um link.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn symlink_no_lugar_do_workspace_e_recusado() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = config_limpa(tmp.path());
+
+        // O alvo do link: fora do workspace, mas existente e gravavel.
+        let alvo = tmp.path().join("alvo-do-link");
+        std::fs::create_dir_all(&alvo).expect("cria o alvo");
+
+        // E o link, exatamente onde o workspace padrao moraria.
+        let workspace = raizes_default_das_file_tools(&config);
+        std::fs::create_dir_all(workspace.parent().expect("pai do workspace")).expect("cria o pai");
+        std::os::unix::fs::symlink(&alvo, &workspace).expect("planta o symlink");
+
+        assert!(
+            garantir_workspace_padrao(&config).is_none(),
+            "symlink no lugar do workspace tem de ser recusado"
+        );
+
+        let raizes = raizes_das_file_tools(&config);
+        assert_eq!(
+            raizes.fonte,
+            FonteDasRaizesDasFileTools::SomenteSessao,
+            "recusado o workspace, o jail volta ao fail-closed — nunca ao alvo do link"
+        );
+        let alvo_canonico = std::fs::canonicalize(&alvo).expect("canonicalize do alvo");
+        assert!(
+            !raizes.jail.roots().contains(&alvo_canonico),
+            "o jail herdou o alvo do symlink: {:?}",
+            raizes.jail.roots()
+        );
+    }
+
+    /// O workspace recem-criado nasce `0700`, e nao com a umask do processo.
+    ///
+    /// Ele guarda o que o agente escreveu a pedido de um principal remoto; um
+    /// `0755` deixaria isso legivel para qualquer usuario local da maquina.
+    #[test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    fn workspace_criado_nasce_fechado_em_0700() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = config_limpa(tmp.path());
+
+        let criado = garantir_workspace_padrao(&config).expect("o workspace tem de ser criado");
+        let modo = std::fs::metadata(&criado)
+            .expect("metadata do workspace")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(
+            modo, 0o700,
+            "workspace criado com {modo:o}, esperado 700 (grupo/outros sem acesso)"
         );
     }
 

@@ -143,13 +143,18 @@ pub enum FonteDasRaizesDasFileTools {
     /// `GARRAIA_FILE_ROOTS`) e ela resolveu. Comportamento anterior a #1378,
     /// preservado byte a byte: o default nem e consultado.
     Declaradas,
-    /// Nada declarado: vale o workspace default do perfil — o mesmo conjunto
-    /// que o MCP `filesystem` recebe (ADR 0024).
+    /// Nada declarado: vale `<data_dir>/workspace`, o workspace do proprio
+    /// Garra (ADR 0024) — o mesmo caminho nos DOIS perfis.
+    ///
+    /// Nao confundir com as raizes do MCP `filesystem`: em `isolated-pod` com
+    /// `execution.pod_root` declarado o MCP recebe o `pod_root` e as file
+    /// tools nativas continuam no workspace. Ver
+    /// [`raizes_default_das_file_tools`].
     WorkspacePadrao,
-    /// Nada declarado e o default tambem nao resolveu (o diretorio nao existe
-    /// e nao pode ser criado, ou o `execution.pod_root` declarado tem typo).
-    /// Fail-closed: so o `working_dir` da sessao autoriza algo, que e
-    /// exatamente o estado que a #1378 descreve como defeito.
+    /// Nada declarado e o default tambem nao resolveu — `<data_dir>/workspace`
+    /// nao existe e nao pode ser criado. Fail-closed: so o `working_dir` da
+    /// sessao autoriza algo, que e exatamente o estado que a #1378 descreve
+    /// como defeito.
     SomenteSessao,
 }
 

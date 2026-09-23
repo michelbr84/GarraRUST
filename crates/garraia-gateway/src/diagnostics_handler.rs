@@ -1083,7 +1083,16 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     // admin API gravou desde entao — sem I/O de disco por request.
     let politica = crate::bootstrap::politica_de_execucao(&state.config);
     let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&state.config);
+    // O `data_dir` precisa vir CANONICO para a relativizacao funcionar: as
+    // raizes que o `FileJail` devolve ja passaram por `canonicalize`, e o valor
+    // cru da config pode ser relativo ou conter symlink (`/var` -> `/private/var`
+    // no macOS, `$TMPDIR` na suite). Comparar cru contra canonico faz o
+    // `strip_prefix` de `exibir_raiz` errar em silencio, e o fallback imprime o
+    // caminho ABSOLUTO do host numa rota auth-free — o oposto do F-1 da #1329.
+    // Se o diretorio ainda nao existe, `canonicalize` falha e sobra o valor cru;
+    // ali nenhuma raiz resolve, entao nao ha caminho para vazar.
     let data_dir = state.config.resolved_data_dir();
+    let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
     let (piso_whatsapp, donos) = piso_e_donos_do_whatsapp(&state.config, politica.perfil);
     checks.push(execution_profile_check(
         &politica,
@@ -3032,6 +3041,57 @@ mod tests_mcp_1346 {
         assert!(
             linha.detail.contains("workspace padrao"),
             "a linha tem de dizer de onde veio a decisao: {}",
+            linha.detail
+        );
+    }
+
+    /// **F-1 da #1329, o caso que escapou.** `/api/diagnostics` e auth-free, e
+    /// a linha do workspace promete sair relativa (`<data_dir>/…`).
+    ///
+    /// A relativizacao e um `strip_prefix` do `data_dir` cru da config contra
+    /// raizes que o `FileJail` ja canonicalizou. Quando o `data_dir` passa por
+    /// symlink (ou e relativo), os dois lados deixam de casar, o `strip_prefix`
+    /// falha em silencio e o fallback imprime o caminho ABSOLUTO do host para
+    /// qualquer um que chame a rota.
+    #[tokio::test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    async fn data_dir_com_symlink_nao_vaza_caminho_do_host() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("data-real");
+        std::fs::create_dir_all(&real).expect("cria o data dir real");
+        let link = dir.path().join("data-link");
+        std::os::unix::fs::symlink(&real, &link).expect("planta o link");
+
+        // O operador configurou o caminho COM o link; o jail vai canonicalizar.
+        let config = garraia_config::AppConfig {
+            data_dir: Some(link),
+            ..Default::default()
+        };
+        crate::bootstrap::garantir_workspace_padrao(&config).expect("workspace padrao");
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            dir.path(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "files.workspace")
+            .expect("o relatorio precisa carregar a linha `files.workspace` (#1378)");
+
+        let real_canonico = std::fs::canonicalize(&real).expect("canonicalize do data dir real");
+        assert!(
+            !linha.detail.contains(&real_canonico.display().to_string()),
+            "a rota auth-free vazou o caminho absoluto do host: {}",
+            linha.detail
+        );
+        assert!(
+            linha.detail.contains("<data_dir>"),
+            "a raiz dentro do data dir tem de sair relativa: {}",
             linha.detail
         );
     }
