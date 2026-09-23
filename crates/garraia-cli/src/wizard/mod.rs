@@ -340,16 +340,23 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
         Some(system_prompt_input)
     };
 
-    // --- 9. Telegram ------------------------------------------------------
+    // --- 9. Channels ------------------------------------------------------
+    // #1430: ate aqui o wizard so sabia oferecer Telegram, e quem instalava o
+    // Garra para usar no WhatsApp precisava adivinhar que existe um comando
+    // separado. O passo agora lista os canais primarios, com "nenhum" como
+    // primeira opcao e default.
     println!();
     println!("  ── Channel Setup ──");
     println!();
 
-    let setup_telegram = Confirm::new()
-        .with_prompt("Do you want to connect GarraIA to Telegram?")
-        .default(false)
+    let escolha = Select::new()
+        .with_prompt(CHANNEL_SETUP_PROMPT)
+        .items(CHANNEL_SETUP_CHOICES)
+        .default(0)
         .interact()
-        .context("telegram prompt cancelled")?;
+        .context("channel setup prompt cancelled")?;
+    let canais = escolha_de_canal(escolha);
+    let setup_telegram = canais.telegram;
 
     let mut telegram_token_plaintext: Option<String> = None;
     let mut telegram_token_for_vault: Option<String> = None;
@@ -470,10 +477,113 @@ pub fn run_wizard(config_dir: &Path) -> Result<()> {
     }
     println!();
 
+    // --- 13. WhatsApp handoff (#1430) --------------------------------------
+    // DEPOIS do `write_config`: `garra whatsapp link` le e escreve o MESMO
+    // `config.yml` (secao `channels.whatsapp_linked`), entao rodar antes seria
+    // deixar o wizard sobrescrever o que o vinculo acabou de gravar. O config
+    // ja esta salvo quando chegamos aqui, entao um vinculo que falhe nao perde
+    // nada do resto da configuracao.
+    if canais.whatsapp {
+        entregar_ao_whatsapp();
+    }
+
     Ok(())
 }
 
 // ---------- helpers -----------------------------------------------------------
+
+// ---------- canais do primeiro uso (#1430) ------------------------------------
+
+/// Pergunta do passo de canal.
+const CHANNEL_SETUP_PROMPT: &str = "Quer conectar o Garra a um canal de mensagens agora?";
+
+/// As opcoes do passo de canal, **na ordem em que aparecem**.
+///
+/// "Nenhum" e a primeira e o default do `Select`: quem apertar Enter sem ler
+/// nao conecta canal nenhum, que e o comportamento que o wizard sempre teve
+/// (o `Confirm` do Telegram tinha `default(false)`).
+///
+/// O rotulo do WhatsApp diz **antes da escolha** que o caminho e o de aparelho
+/// conectado e que ele nao e oficial. A tela de consentimento inteira
+/// (`whatsapp::consent_body`) ainda vem depois, no fluxo entregue — isto aqui
+/// nao a substitui, so evita que a opcao pareca um canal oficial na lista.
+const CHANNEL_SETUP_CHOICES: &[&str] = &[
+    "Nenhum por enquanto — conecto um canal depois",
+    "Telegram (bot criado no @BotFather)",
+    "WhatsApp — meu numero pessoal, por QR (aparelho conectado, cliente NAO oficial)",
+    "Os dois — Telegram agora, WhatsApp no fim",
+];
+
+/// O que o passo de canal decidiu.
+///
+/// Dois `bool` em vez de um enum de quatro estados porque e assim que o corpo
+/// do wizard consome: o Telegram e um bloco no meio (precisa do token antes de
+/// montar o `WizardOutcome`) e o WhatsApp e um passo no fim (precisa do
+/// `config.yml` ja escrito).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct EscolhaDeCanal {
+    telegram: bool,
+    whatsapp: bool,
+}
+
+/// Traduz o indice do `Select` na escolha.
+///
+/// Funcao pura, e o indice e o do [`CHANNEL_SETUP_CHOICES`] — o teste fixa os
+/// dois juntos. Um indice fora da lista e impossivel pelo `Select`, e mesmo
+/// assim cai em "nenhum": fail-closed, nunca ligar um canal por engano.
+fn escolha_de_canal(indice: usize) -> EscolhaDeCanal {
+    match indice {
+        1 => EscolhaDeCanal {
+            telegram: true,
+            whatsapp: false,
+        },
+        2 => EscolhaDeCanal {
+            telegram: false,
+            whatsapp: true,
+        },
+        3 => EscolhaDeCanal {
+            telegram: true,
+            whatsapp: true,
+        },
+        _ => EscolhaDeCanal::default(),
+    }
+}
+
+/// Entrega o wizard ao fluxo de vinculo do WhatsApp que ja existe (#1430).
+///
+/// **Nao reimplementa nada**: chama `whatsapp::run(Action::Link, …)`, o mesmo
+/// caminho de `garra whatsapp link`, com a tela de consentimento (default
+/// **nao**), o QR e a pergunta de quem pode falar intactos. O wizard so deixa
+/// de exigir que a pessoa descubra sozinha que o comando existe.
+///
+/// O codigo de saida do vinculo **nao** vira erro do `init`: o `config.yml` ja
+/// esta salvo, e derrubar o wizard porque falta `node` ou porque a pessoa
+/// desistiu do QR transformaria uma configuracao pronta em "deu erro".
+fn entregar_ao_whatsapp() {
+    let bin = crate::binario::nome();
+    println!("  ── WhatsApp (número pessoal) ──");
+    let ctx = crate::whatsapp::Context::from_env();
+    let code = crate::whatsapp::run(
+        crate::whatsapp::Action::Link,
+        &ctx,
+        &prompts::DialoguerPrompter,
+    );
+    if code != 0 {
+        println!();
+        println!("{}", aviso_whatsapp_nao_vinculou(code, &bin));
+    }
+    println!();
+}
+
+/// A frase que fecha um vinculo que nao completou. Pura, para o teste afirmar
+/// o que a saida interativa nao deixa afirmar.
+fn aviso_whatsapp_nao_vinculou(code: i32, bin: &str) -> String {
+    format!(
+        "  O WhatsApp não foi vinculado (o comando saiu com {code}), mas o resto\n\
+         \x20 da configuração já está salvo — nada do que você respondeu se perdeu.\n\
+         \x20 Quando quiser tentar de novo: `{bin} whatsapp link`."
+    )
+}
 
 /// Aviso de bind exposto impresso no fim do wizard (#1241).
 ///
@@ -1193,6 +1303,146 @@ mod tests {
         assert_eq!(
             DEFAULT_OPENROUTER_MODEL,
             crate::defaults::DEFAULT_CLOUD_MODEL
+        );
+    }
+
+    // ---------- canais do primeiro uso (#1430) --------------------------------
+
+    /// Cada item da lista liga exatamente os canais que o rotulo promete.
+    #[test]
+    fn cada_opcao_de_canal_liga_o_que_o_rotulo_diz() {
+        assert_eq!(CHANNEL_SETUP_CHOICES.len(), 4, "a lista tem quatro itens");
+
+        assert_eq!(escolha_de_canal(0), EscolhaDeCanal::default());
+        assert_eq!(
+            escolha_de_canal(1),
+            EscolhaDeCanal {
+                telegram: true,
+                whatsapp: false
+            }
+        );
+        assert_eq!(
+            escolha_de_canal(2),
+            EscolhaDeCanal {
+                telegram: false,
+                whatsapp: true
+            }
+        );
+        assert_eq!(
+            escolha_de_canal(3),
+            EscolhaDeCanal {
+                telegram: true,
+                whatsapp: true
+            }
+        );
+    }
+
+    /// O default do `Select` e o indice 0, e o indice 0 nao liga canal nenhum:
+    /// Enter sem ler continua sendo "nao conecta nada", como era com o
+    /// `Confirm::default(false)` que este passo substituiu.
+    #[test]
+    fn enter_sem_ler_nao_conecta_canal_nenhum() {
+        let escolha = escolha_de_canal(0);
+        assert!(!escolha.telegram);
+        assert!(!escolha.whatsapp);
+
+        // Fail-closed: indice fora da lista tambem nao liga nada.
+        for fora in [4usize, 99, usize::MAX] {
+            assert_eq!(
+                escolha_de_canal(fora),
+                EscolhaDeCanal::default(),
+                "indice {fora} tem que cair em nenhum canal"
+            );
+        }
+    }
+
+    /// O rotulo do WhatsApp diz, **na propria lista**, que o caminho e o de
+    /// aparelho conectado por um cliente nao oficial. Sem isso a opcao parece
+    /// um canal oficial ao lado do Telegram, e a pessoa so descobre a diferenca
+    /// depois de escolher.
+    #[test]
+    fn o_rotulo_do_whatsapp_avisa_que_nao_e_oficial() {
+        let rotulo = CHANNEL_SETUP_CHOICES[2];
+        assert!(rotulo.contains("WhatsApp"), "{rotulo}");
+        assert!(rotulo.contains("QR"), "{rotulo}");
+        assert!(rotulo.to_uppercase().contains("NAO OFICIAL"), "{rotulo}");
+    }
+
+    /// O aviso de vinculo incompleto diz que a config foi salva e cita o
+    /// binario que esta rodando, nunca um literal `garraia`.
+    #[test]
+    fn o_aviso_de_vinculo_incompleto_nomeia_o_binario_que_roda() {
+        let aviso = aviso_whatsapp_nao_vinculou(69, "garra");
+        assert!(aviso.contains("`garra whatsapp link`"), "{aviso}");
+        assert!(aviso.contains("69"), "{aviso}");
+        assert!(aviso.contains("já está salvo"), "{aviso}");
+    }
+
+    /// Varredura de fonte, o mesmo idioma do teste da credencial acima: o
+    /// `run_wizard` nao e chamavel de um teste (exige TTY e uma dezena de
+    /// prompts), e estas tres propriedades sao exatamente as que uma edicao
+    /// distraida quebra sem derrubar nenhum outro teste.
+    #[test]
+    fn run_wizard_entrega_o_whatsapp_depois_de_salvar_a_config() {
+        let fonte = include_str!("mod.rs");
+        let corpo = fonte
+            .split_once("pub fn run_wizard(")
+            .expect("run_wizard existe neste arquivo")
+            .1
+            .split_once("\n// ---------- helpers")
+            .expect("run_wizard termina antes do bloco de helpers")
+            .0;
+
+        // 1. O guarda de nao-interativo continua sendo a PRIMEIRA coisa do
+        //    wizard: instalacao em container/CI nao pode cair num `Select`.
+        let ate_o_primeiro_prompt = corpo
+            .split_once("Select::new()")
+            .expect("o wizard tem pelo menos um Select")
+            .0;
+        assert!(
+            ate_o_primeiro_prompt.contains("stdin().is_terminal()"),
+            "o guarda de nao-interativo tem que vir antes de qualquer prompt"
+        );
+
+        // 2. A entrega do WhatsApp vem DEPOIS do `write_config`: o vinculo
+        //    escreve na mesma `channels.whatsapp_linked` que o wizard grava.
+        let pos_write = corpo
+            .split_once("let written = write_config(")
+            .expect("run_wizard escreve o config")
+            .1;
+        assert!(
+            pos_write.contains("entregar_ao_whatsapp()"),
+            "a entrega do WhatsApp tem que rodar depois do write_config"
+        );
+        assert!(
+            !corpo
+                .split_once("let written = write_config(")
+                .expect("run_wizard escreve o config")
+                .0
+                .contains("entregar_ao_whatsapp()"),
+            "nada de vincular o WhatsApp antes de o config existir"
+        );
+
+        // 3. A entrega delega ao comando que ja existe, em vez de reimplementar
+        //    consentimento/QR dentro do wizard.
+        let helpers = fonte
+            .split_once("\n// ---------- helpers")
+            .expect("o bloco de helpers existe")
+            .1;
+        let entrega = helpers
+            .split_once("fn entregar_ao_whatsapp()")
+            .expect("o helper existe")
+            .1
+            .split_once("\n}")
+            .expect("o helper fecha")
+            .0;
+        assert!(
+            entrega.contains("crate::whatsapp::Action::Link"),
+            "a entrega tem que chamar o fluxo de link que ja existe:\n{entrega}"
+        );
+        assert!(
+            !entrega.contains("consent_body"),
+            "a tela de consentimento e do comando, nao do wizard:\n{entrega}"
         );
     }
 }
