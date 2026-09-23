@@ -37,14 +37,28 @@ Quem pode falar com o GarraIA por este WhatsApp? Ninguém, até você autorizar.
 Número autorizado, com código do país (ex.: +55 11 99999-8888; vazio = ninguém por enquanto): +55 11 98888-0000
 ✓ Número terminado em 0000 autorizado.
 
+Acesso em vigor neste WhatsApp (o mesmo que `garraia whatsapp users` mostra):
+Canal:    ligado
+Autorizados: 1 · Donos: 0
+  autorizado · número terminado em 0000
+
 ✓ GarraIA está pronto para receber mensagens (inicie o gateway: `garraia start`)
 ```
 
+O resumo antes da ultima linha (#1429) e o **mesmo** do `garraia whatsapp users`
+— canal, contagens e as identidades por papel e pelos quatro ultimos digitos,
+nunca o numero inteiro. Ele sai tambem num re-vinculo que nao mudou nada, para
+o operador nao sair do wizard sem ver o portao que herdou.
+
 O "pronto" so aparece quando ha pelo menos um numero autorizado. Resposta
-vazia deixa o portao fechado (ninguem recebe resposta), e o `link` termina
-com o aviso e o comando que resolve depois — sem terminal inclusive:
+vazia deixa o portao fechado (ninguem recebe resposta), e o resumo termina no
+aviso com o comando que resolve depois — uma vez so, sem repeti-lo como ultima
+linha, e sem terminal inclusive:
 
 ```text
+Acesso em vigor neste WhatsApp (o mesmo que `garraia whatsapp users` mostra):
+Canal:    ligado
+Autorizados: 0 · Donos: 0
 ⚠ Ninguém está autorizado a falar com o GarraIA por este WhatsApp — toda mensagem será ignorada em silêncio. Autorize um número: `garraia whatsapp allow <número>` (com o código do país).
 ```
 
@@ -635,6 +649,7 @@ decidir se confia a propria conta ao GarraIA.
 | `Número autorizado, com código do país (ex.: +55 11 99999-8888; vazio = ninguém por enquanto)` | `Authorized number, with the country code (e.g. +1 555 123 4567; empty = nobody for now)` |
 | `⚠ Ninguém está autorizado a falar com o GarraIA por este WhatsApp — …` | `⚠ Nobody is authorized to talk to GarraIA through this WhatsApp — …` |
 | `Autorizados: N · Donos: M` | `Authorized: N · Owners: M` |
+| `Acesso em vigor neste WhatsApp (o mesmo que `garraia whatsapp users` mostra):` | `Access in effect on this WhatsApp (the same `garraia whatsapp users` shows):` |
 
 ### O que **nao** esta nas duas linguas
 

@@ -1820,6 +1820,8 @@ developers.facebook.com → your app → WhatsApp."
 /// O passo depois do QR (#1345): garante alguem autorizado, ou diz que nao
 /// ha. "Pronto" so sai com pelo menos um autorizado; o link em si valeu nos
 /// dois casos, entao o exit e 0 nos dois.
+///
+/// #1429: e antes de sair mostra o acesso em vigor — ver [`closing_lines`].
 fn after_pairing(
     ctx: &Context,
     prompter: &dyn Prompter,
@@ -1837,16 +1839,44 @@ fn after_pairing(
         Err(code) => return code,
     };
     println!();
-    println!(
-        "{}",
-        final_line(
-            ctx.lang,
-            pos.autorizados,
-            ctx.gateway_pid,
-            ja_supervisionado
-        )
-    );
+    for linha in closing_lines(
+        ctx.lang,
+        &pos.resumo,
+        pos.autorizados,
+        ctx.gateway_pid,
+        ja_supervisionado,
+    ) {
+        println!("{linha}");
+    }
     0
+}
+
+/// O fecho do `link`: o resumo de acesso (#1429) e a linha final. Pura, para
+/// o teste.
+///
+/// O wizard nao sai mais so com "pronto": antes da ultima linha ele mostra o
+/// acesso que fica valendo, nas MESMAS linhas do `whatsapp users` (ver
+/// [`acesso::resumo_de_acesso`]).
+///
+/// Com o portao vazio o resumo ja **termina** no aviso de "ninguem
+/// autorizado" (ver [`acesso::linhas_de_acesso`]), que e palavra por palavra
+/// o que [`final_line`] diria ali — e o mesmo paragrafo duas vezes seguidas
+/// faz o operador duvidar de qual dos dois e o estado. Entao a linha final so
+/// sai quando acrescenta alguma coisa.
+fn closing_lines(
+    lang: Lang,
+    resumo: &[String],
+    autorizados: usize,
+    gateway_pid: Option<u32>,
+    ja_supervisionado: bool,
+) -> Vec<String> {
+    let fim = final_line(lang, autorizados, gateway_pid, ja_supervisionado);
+    let mut out = resumo.to_vec();
+    if !out.contains(&fim) {
+        out.push(String::new());
+        out.push(fim);
+    }
+    out
 }
 
 /// A ultima linha do `link` (#1345): "pronto" so com alguem autorizado;
