@@ -645,7 +645,7 @@ impl PortaoDoCanal {
         let mut pareados = std::mem::take(&mut self.pareados);
         let anterior = std::mem::take(&mut self.da_config);
         *self = Self::from_settings(settings);
-        pareados.retain(|p| !(anterior.contains(p) && !self.da_config.contains(p)));
+        pareados.retain(|p| !anterior.contains(p) || self.da_config.contains(p));
         self.pareados = pareados;
     }
 }
