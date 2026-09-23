@@ -1412,7 +1412,7 @@ use acesso::{
     Acesso, Autorizado, Gravado, NumeroInvalido, Papel, Promovido, Rebaixado, acesso_da_config,
     autorizar, dica_do_gateway, final4, json_de_usuarios, linha_de_nao_estava, linha_de_promovido,
     linha_de_rebaixado, linha_de_removido, linhas_de_usuarios, listar, normalizar_numero, pos_link,
-    promover, rebaixar, remover,
+    promover, rebaixar, remover, resumo_de_acesso,
 };
 
 const NUMERO: &str = "5511999998888";
@@ -3266,6 +3266,169 @@ fn pos_link_com_numero_pre_respondido_nao_pergunta() {
     assert_eq!(pos.autorizados, 2);
     assert!(!p.asked("Número autorizado"));
     assert!(!p.asked("Adicionar outro"));
+}
+
+// --- o resumo de acesso no fim do wizard (#1429, fatia) ----------------------
+
+/// A config depois do passo, pelo MESMO leitor que o `pos_link` usa.
+fn config_gravada(ctx: &Context) -> garraia_config::AppConfig {
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .load_sem_env()
+        .expect("load")
+}
+
+/// O resumo final do `link` e o resumo do `users`, com um cabecalho por cima:
+/// o corpo e literalmente [`linhas_de_usuarios`], e nao uma segunda
+/// formatacao do mesmo estado — duas telas com a propria copia divergem na
+/// primeira que ganhar um campo (o defeito que a #1393 ja pagou no `status`).
+#[test]
+fn o_resumo_final_do_link_repete_as_linhas_do_users() {
+    let config = config_com_linked(
+        None,
+        serde_json::json!({ "allow": [NUMERO, LID], "owners": ["5511977776666"] }),
+    );
+    let a = acesso_da_config(&config);
+    let usuarios = listar(&config);
+    for lang in [Lang::Pt, Lang::En] {
+        let resumo = resumo_de_acesso(lang, a, &usuarios);
+        assert_eq!(
+            resumo[1..],
+            linhas_de_usuarios(lang, a, &usuarios)[..],
+            "o corpo do resumo tem de ser o do `users`"
+        );
+        let cabecalho = &resumo[0];
+        assert!(
+            cabecalho.contains("whatsapp users"),
+            "o cabecalho diz onde rever isto depois: {cabecalho}"
+        );
+        let texto = resumo.join("\n");
+        assert!(
+            texto.contains("Autorizados: 3 · Donos: 1")
+                || texto.contains("Authorized: 3 · Owners: 1"),
+            "{texto}"
+        );
+        assert!(
+            texto.contains("6666") && texto.contains("8888") && texto.contains("8765"),
+            "quem esta autorizado aparece: {texto}"
+        );
+        assert!(
+            !texto.contains(NUMERO) && !texto.contains("5511977776666") && !texto.contains(LID),
+            "identidade inteira nunca vai para a tela:\n{texto}"
+        );
+    }
+    assert_ne!(
+        resumo_de_acesso(Lang::Pt, a, &usuarios)[0],
+        resumo_de_acesso(Lang::En, a, &usuarios)[0]
+    );
+}
+
+/// Esta fatia da #1429 so MOSTRA o que o portao ja aplica. Modo de admissao
+/// (restrito/aberto) e nivel de acesso (Chat/Read/Full/Write) dependem da
+/// #1388/#1390/#1392 e nao existem no canal: prometer qualquer um dos dois na
+/// tela seria dizer ao operador que ha um controle que ninguem aplica.
+#[test]
+fn o_resumo_final_nao_promete_modo_nem_nivel_de_acesso() {
+    let config = config_com_linked(None, serde_json::json!({ "allow": [NUMERO] }));
+    let a = acesso_da_config(&config);
+    let usuarios = listar(&config);
+    for lang in [Lang::Pt, Lang::En] {
+        let texto = resumo_de_acesso(lang, a, &usuarios)
+            .join("\n")
+            .to_lowercase();
+        for palavra in ["restrit", "restrict", "aberto", "open ", "read/", "/write"] {
+            assert!(
+                !texto.contains(palavra),
+                "a fatia nao inventa politica de acesso ({palavra}):\n{texto}"
+            );
+        }
+    }
+}
+
+/// Fim do wizard com dono: o resumo mostra o dono, as contagens e os quatro
+/// ultimos digitos — e e exatamente o que o `users` diria daquela config.
+#[test]
+fn pos_link_termina_mostrando_o_dono_e_as_contagens() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, pod(), Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default()
+        .with_inputs(&[ENTRADA])
+        .and_confirms(&[true]);
+
+    let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    let config = config_gravada(&ctx);
+    assert_eq!(
+        pos.resumo,
+        resumo_de_acesso(Lang::Pt, acesso_da_config(&config), &listar(&config)),
+        "o resumo final e o do `users` sobre a config recem-gravada"
+    );
+    let texto = pos.resumo.join("\n");
+    assert!(texto.contains("Autorizados: 1 · Donos: 1"), "{texto}");
+    assert!(texto.contains("dono"), "o dono aparece: {texto}");
+    assert!(texto.contains("terminado em 8888"), "{texto}");
+    assert!(
+        !texto.contains(NUMERO),
+        "nunca a identidade inteira: {texto}"
+    );
+    assert_eq!(
+        closing_lines(Lang::Pt, &pos.resumo, pos.autorizados, None, false).last(),
+        Some(&final_line(Lang::Pt, 1, None, false)),
+        "com alguem autorizado a linha final continua fechando a tela"
+    );
+}
+
+/// Re-vinculo que nao mexe em nada: o resumo mostra quem JA estava
+/// autorizado. Ate a #1429 o operador saia do wizard sem ver o portao que
+/// acabara de herdar.
+#[test]
+fn pos_link_mostra_no_resumo_quem_ja_estava_autorizado() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": ["5511900000001"] })),
+        Some(true),
+    );
+    let p = ScriptedPrompter::default().with_inputs(&[ENTRADA]);
+
+    let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    let texto = pos.resumo.join("\n");
+    assert!(texto.contains("Autorizados: 1 · Donos: 0"), "{texto}");
+    assert!(
+        texto.contains("autorizado") && texto.contains("terminado em 0001"),
+        "quem ja estava la aparece: {texto}"
+    );
+    assert!(!texto.contains("5511900000001"), "{texto}");
+}
+
+/// Portao vazio: o resumo diz "Autorizados: 0" e termina no aviso — que e
+/// palavra por palavra a linha final, entao ela NAO sai duas vezes.
+#[test]
+fn pos_link_com_o_portao_vazio_nao_repete_o_aviso_no_fecho() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
+    let p = ScriptedPrompter::default().with_inputs(&[""]);
+
+    let pos = pos_link(&ctx, &p, None, &Pedido::default()).expect("ok");
+    assert_eq!(pos.autorizados, 0);
+    let texto = pos.resumo.join("\n");
+    assert!(texto.contains("Autorizados: 0 · Donos: 0"), "{texto}");
+    assert!(texto.contains("whatsapp allow <"), "{texto}");
+
+    let fecho = closing_lines(Lang::Pt, &pos.resumo, 0, None, false);
+    assert_eq!(fecho, pos.resumo, "o resumo ja E a ultima palavra");
+    assert_eq!(
+        fecho
+            .iter()
+            .filter(|l| l.contains("whatsapp allow <"))
+            .count(),
+        1,
+        "o aviso sai uma vez so: {fecho:?}"
+    );
 }
 
 /// `link --owner` em `standard` e `link --allow abc` falham antes do QR.

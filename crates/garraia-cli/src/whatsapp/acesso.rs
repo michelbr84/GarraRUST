@@ -933,21 +933,30 @@ pub fn linhas_de_acesso(lang: Lang, acesso: Acesso) -> Vec<String> {
             (Lang::En, false) => "Channel:  off",
         }
         .to_string(),
-        match lang {
-            Lang::Pt => format!(
-                "Autorizados: {} · Donos: {}",
-                acesso.autorizados, acesso.donos
-            ),
-            Lang::En => format!(
-                "Authorized: {} · Owners: {}",
-                acesso.autorizados, acesso.donos
-            ),
-        },
+        linha_de_contagens(lang, acesso),
     ];
     if acesso.enabled && acesso.autorizados == 0 {
         out.push(aviso_ninguem_autorizado(lang));
     }
     out
+}
+
+/// "Autorizados: N · Donos: M" — a UNICA copia do literal.
+///
+/// O `status`, o `users` e o `link` dizem as contagens; ate a #1429 o `link`
+/// carregava a propria copia do `format!`, e duas copias divergem na primeira
+/// que ganhar um campo.
+fn linha_de_contagens(lang: Lang, acesso: Acesso) -> String {
+    match lang {
+        Lang::Pt => format!(
+            "Autorizados: {} · Donos: {}",
+            acesso.autorizados, acesso.donos
+        ),
+        Lang::En => format!(
+            "Authorized: {} · Owners: {}",
+            acesso.autorizados, acesso.donos
+        ),
+    }
 }
 
 /// As linhas do `users`, puras para o teste.
@@ -1453,11 +1462,36 @@ pub fn validar_pre_link(ctx: &Context, pre: &Pedido) -> Result<(), i32> {
     validar(ctx, pre, &config).map(|_| ())
 }
 
+/// O resumo de acesso que o `link` imprime antes de sair (#1429).
+///
+/// O corpo e o do `garra whatsapp users` — [`linhas_de_usuarios`], sem uma
+/// segunda formatacao do mesmo estado —, com um cabecalho que diz o que
+/// aquelas linhas sao e onde reve-las depois. Ate aqui o fim do wizard so
+/// dizia "pronto": quem tinha acabado de parear saia sem ver quem, afinal,
+/// podia falar com o GarraIA por aquele WhatsApp.
+///
+/// **So mostra o que ja existe** — canal ligado, contagens e as identidades
+/// mascaradas. Modo de admissao (restrito/aberto) e nivel de acesso
+/// (Chat/Read/Full/Write) nao existem no canal, e inventa-los na tela
+/// prometeria um controle que o portao do gateway nao aplica.
+pub fn resumo_de_acesso(lang: Lang, acesso: Acesso, usuarios: &[Autorizado]) -> Vec<String> {
+    let mut out = vec![tb(
+        lang,
+        "Acesso em vigor neste WhatsApp (o mesmo que `{bin} whatsapp users` mostra):",
+        "Access in effect on this WhatsApp (the same `{bin} whatsapp users` shows):",
+    )];
+    out.extend(linhas_de_usuarios(lang, acesso, usuarios));
+    out
+}
+
 /// O desfecho do passo pos-link, para o chamador decidir o que imprimir.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PosLink {
     /// Quantos autorizados ha depois do passo.
     pub autorizados: usize,
+    /// O resumo de acesso a imprimir antes da linha final, ja pronto —
+    /// ver [`resumo_de_acesso`].
+    pub resumo: Vec<String>,
 }
 
 /// Depois de a sessao estar salva e o canal ligado: garante que alguem
@@ -1485,19 +1519,7 @@ pub fn pos_link(
     let quer_adicionar = if pre.numero.is_some() || antes.autorizados == 0 {
         true
     } else {
-        println!(
-            "{}",
-            match ctx.lang {
-                Lang::Pt => format!(
-                    "Autorizados: {} · Donos: {}",
-                    antes.autorizados, antes.donos
-                ),
-                Lang::En => format!(
-                    "Authorized: {} · Owners: {}",
-                    antes.autorizados, antes.donos
-                ),
-            }
-        );
+        println!("{}", linha_de_contagens(ctx.lang, antes));
         prompter
             .confirm(
                 t(
@@ -1532,8 +1554,11 @@ pub fn pos_link(
         }
     }
 
-    let depois = match loader.load_sem_env() {
-        Ok(c) => acesso_da_config(&c),
+    // Relido do arquivo, e nao deduzido do que acabou de ser gravado: o
+    // resumo tem de dizer o que o portao do gateway vai ler, inclusive o que
+    // ja estava la antes deste `link`.
+    let (depois, usuarios) = match loader.load_sem_env() {
+        Ok(c) => (acesso_da_config(&c), listar(&c)),
         Err(e) => {
             eprintln!("{e}");
             return Err(EX_SOFTWARE);
@@ -1541,6 +1566,7 @@ pub fn pos_link(
     };
     Ok(PosLink {
         autorizados: depois.autorizados,
+        resumo: resumo_de_acesso(ctx.lang, depois, &usuarios),
     })
 }
 
