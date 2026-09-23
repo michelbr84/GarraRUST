@@ -229,7 +229,7 @@ probed with a 1.5 s budget:
 
 | Row | Status | Meaning |
 | --- | --- | --- |
-| `voice.tts` / `voice.stt` | `skipped` | Voice mode is off in this process. Nothing is wrong; start with `--with-voice`. |
+| `voice.tts` / `voice.stt` | `disabled` | Voice mode is off in this process. Nothing is wrong; start with `--with-voice`. (Was `skipped` before #1437: `disabled` says the switch exists and is off, and like `skipped` it never colours the report's aggregate status.) |
 | | `ok` | The configured endpoint answered. |
 | | `error` (unreachable) | Configured but did not answer — connection refused or timeout. The row carries the exact start command as `next_step`. |
 | | `error` (unhealthy) | Answered with HTTP 5xx: the server is up but the service is broken. `next_step` says the server's own logs are the next stop. |

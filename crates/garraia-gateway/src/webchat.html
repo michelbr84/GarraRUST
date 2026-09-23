@@ -1467,11 +1467,34 @@ nav.sidebar#sidebar .sidebar-page-btn .page-tag {
 .diagnostic-row.ok .status-icon { background: rgba(32, 232, 135, 0.18); color: var(--garra-success); }
 .diagnostic-row.warning .status-icon { background: rgba(255, 176, 32, 0.18); color: var(--garra-warning); }
 .diagnostic-row.error .status-icon { background: rgba(255, 92, 122, 0.18); color: var(--garra-danger); }
-.diagnostic-row.skipped .status-icon { background: rgba(255, 255, 255, 0.06); color: var(--garra-muted-2); }
+/* #1437: os tres estados neutros usam o mesmo cinza — nem verde (nao esta
+   funcionando), nem amarelo/vermelho (nao ha defeito). O que os separa e o
+   selo textual ao lado do rotulo. */
+.diagnostic-row.skipped .status-icon,
+.diagnostic-row.disabled .status-icon,
+.diagnostic-row.not-configured .status-icon { background: rgba(255, 255, 255, 0.06); color: var(--garra-muted-2); }
 .diagnostic-row .check-label { font-weight: 700; color: var(--garra-text); font-size: 13px; }
+.diagnostic-row .check-state {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--garra-muted-2);
+}
+.diagnostic-row.warning .check-state { background: rgba(255, 176, 32, 0.18); color: var(--garra-warning); }
+.diagnostic-row.error .check-state { background: rgba(255, 92, 122, 0.18); color: var(--garra-danger); }
 .diagnostic-row .check-id { color: var(--garra-muted-2); font-family: var(--garra-mono); font-size: 10px; margin-top: 2px; }
 .diagnostic-row .check-detail { font-size: 12px; color: var(--garra-muted); font-family: var(--garra-mono); }
 .diagnostic-row .check-next-step { font-size: 11px; color: var(--garra-warning); margin-top: 4px; }
+/* Num estado neutro o `next_step` diz como LIGAR, nao como consertar: o
+   amarelo de alerta ali era metade do ruido que a #1437 reporta. */
+.diagnostic-row.skipped .check-next-step,
+.diagnostic-row.disabled .check-next-step,
+.diagnostic-row.not-configured .check-next-step { color: var(--garra-muted); }
 [data-theme="light"] .diagnostic-row .check-label,
 [data-bs-theme="light"] .diagnostic-row .check-label { color: #06142b; }
 
@@ -3552,14 +3575,35 @@ async function loadDiagnosticsPage() {
     summary.innerHTML = '<div class="warning-box">Erro: ' + (e && e.message ? e.message : e) + '</div>';
   }
 }
+// #1437: "nunca ligado" e "ligado e quebrado" deixaram de ser a mesma linha.
+// `ok` nao ganha selo (o ✓ verde ja diz tudo); os demais dizem o estado por
+// extenso, e os tres neutros ficam em cinza — nao ha nada a consertar neles.
+// Um status desconhecido cai no neutro, nao no vermelho: o vocabulario do
+// /api/diagnostics e aditivo, e um cliente antigo nao pode pintar de erro uma
+// variante que ele ainda nao conhece.
+const DIAG_STATUS_META = {
+  ok:             { icon: '✓', klass: 'ok',             label: '' },
+  warning:        { icon: '!', klass: 'warning',        label: 'Atenção' },
+  error:          { icon: '×', klass: 'error',          label: 'Quebrado' },
+  disabled:       { icon: '○', klass: 'disabled',       label: 'Desligado' },
+  not_configured: { icon: '○', klass: 'not-configured', label: 'Não configurado' },
+  skipped:        { icon: '–', klass: 'skipped',        label: 'Não se aplica' },
+};
 function renderDiagnosticRow(c) {
   const status = c.status || 'skipped';
-  const icon = status === 'ok' ? '✓' : status === 'warning' ? '!' : status === 'error' ? '×' : '–';
+  // `hasOwnProperty`, nao `in`: um status chamado `constructor` ou
+  // `__proto__` acharia algo no prototype e renderizaria lixo.
+  const meta = Object.prototype.hasOwnProperty.call(DIAG_STATUS_META, status)
+    ? DIAG_STATUS_META[status]
+    : DIAG_STATUS_META.skipped;
+  const badge = meta.label
+    ? '<span class="check-state">' + escapeHtml(meta.label) + '</span>'
+    : '';
   return `
-    <div class="diagnostic-row ${escapeHtml(status)}">
-      <div class="status-icon">${icon}</div>
+    <div class="diagnostic-row ${escapeHtml(meta.klass)}" data-testid="diagnostic-row" data-status="${escapeHtml(status)}">
+      <div class="status-icon">${meta.icon}</div>
       <div>
-        <div class="check-label">${escapeHtml(c.label || c.id)}</div>
+        <div class="check-label">${escapeHtml(c.label || c.id)}${badge}</div>
         <div class="check-id">${escapeHtml(c.id)}</div>
         ${c.next_step ? '<div class="check-next-step">→ ' + escapeHtml(c.next_step) + '</div>' : ''}
       </div>
