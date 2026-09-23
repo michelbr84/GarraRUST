@@ -22,6 +22,14 @@ Este documento e sobre o **primeiro**. O segundo esta em
 garraia whatsapp
 ```
 
+> Desde a #1430 voce nao precisa saber que este comando existe: o
+> `garraia init` pergunta, no passo de canal, se quer conectar Telegram,
+> **WhatsApp (numero pessoal, por QR)**, os dois ou nenhum — e a opcao do
+> WhatsApp cai exatamente no fluxo descrito abaixo, com a mesma tela de
+> aviso. O default daquele passo e **nenhum**, e um vinculo que nao
+> complete nao derruba o `init`: a config ja esta salva e voce volta aqui
+> quando quiser.
+
 1. Escolha a opção **1) Conectar meu WhatsApp pessoal (ler um QR code)**.
 2. Leia a tela de aviso e confirme.
 3. No celular: **Configurações → Aparelhos conectados → Conectar um aparelho**.
