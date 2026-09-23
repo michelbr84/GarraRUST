@@ -28,8 +28,8 @@
 //! |---|---|
 //! | 0 | tudo certo, inclusive o caminho sem TTY |
 //! | 1 | o usuario cancelou (Ctrl+C, resposta "nao") |
-//! | 64 `EX_USAGE` | `allow --owner` fora de `isolated-pod`, ou num pipe sem `--yes`; `remove` de um dono num pipe sem `--yes` |
-//! | 65 `EX_DATAERR` | `allow`/`remove <numero>` sem codigo do pais, com letra, curinga (`*`), zero inicial ou fora de 6-15 digitos |
+//! | 64 `EX_USAGE` | `allow --owner`/`owner` fora de `isolated-pod`, ou num pipe sem `--yes`; `remove` de um dono e `unowner` do ultimo dono num pipe sem `--yes` |
+//! | 65 `EX_DATAERR` | `allow`/`remove`/`owner`/`unowner <numero>` sem codigo do pais, com letra, curinga (`*`), zero inicial ou fora de 6-15 digitos |
 //! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, nao ha sessao, ou `link`/`cloud` foram chamados sem terminal |
 //! | 70 `EX_SOFTWARE` | erro interno (disco, config ilegivel) |
 
@@ -48,7 +48,7 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 use crate::wizard::prompts::Prompter;
 
 mod acesso;
-pub use acesso::{Pedido, PedidoRemocao};
+pub use acesso::{Pedido, PedidoDePapel, PedidoRemocao};
 
 /// De quantos em quantos segundos o `connecting` pulsa na tela.
 const CONNECTING_PULSE_SECS: u64 = 5;
@@ -81,6 +81,12 @@ pub enum Action {
     /// `remove <numero> [--yes]`: revoga o acesso; dono exige confirmacao
     /// (#1394).
     Remove(PedidoRemocao),
+    /// `owner <numero> [--yes]`: promove a dono; so em `isolated-pod` e so
+    /// com confirmacao (#1395).
+    Owner(PedidoDePapel),
+    /// `unowner <numero> [--yes]`: tira o papel de dono SEM tirar o acesso;
+    /// o ultimo dono exige confirmacao (#1395).
+    Unowner(PedidoDePapel),
     Cloud,
     Status,
     Logout,
@@ -277,6 +283,8 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
         Action::Allow(pedido) => acesso::allow(ctx, prompter, &pedido),
         Action::Users { json } => acesso::users(ctx, json),
         Action::Remove(pedido) => acesso::remove(ctx, prompter, &pedido),
+        Action::Owner(pedido) => acesso::owner(ctx, prompter, &pedido),
+        Action::Unowner(pedido) => acesso::unowner(ctx, prompter, &pedido),
         Action::Cloud => cloud(ctx, prompter),
     }
 }
@@ -308,8 +316,8 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(&tb(
         lang,
-        "Também existem: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <número> | {bin} whatsapp remove <número> | {bin} whatsapp restore | {bin} whatsapp logout",
-        "Also available: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <number> | {bin} whatsapp remove <number> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Também existem: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <número> | {bin} whatsapp remove <número> | {bin} whatsapp owner <número> | {bin} whatsapp unowner <número> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Also available: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <number> | {bin} whatsapp remove <number> | {bin} whatsapp owner <number> | {bin} whatsapp unowner <number> | {bin} whatsapp restore | {bin} whatsapp logout",
     ));
     out
 }

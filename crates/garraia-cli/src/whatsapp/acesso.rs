@@ -322,6 +322,85 @@ pub enum Gravado {
     JaEstava,
 }
 
+// ---------------------------------------------------------------------------
+// A secao do canal, para escrita
+// ---------------------------------------------------------------------------
+
+/// A recusa que `autorizar`, `remover`, `promover` e `rebaixar` fazem IGUAL:
+/// uma secao `channels.whatsapp_linked` com `type:` de outro canal.
+///
+/// O gateway ignora a secao inteira nesse caso, entao escrever nela seria
+/// afirmar uma autorizacao (ou uma revogacao) que nao vale. Trocar o `type` de
+/// uma secao do operador tambem nao e decisao de nenhum destes comandos.
+fn checar_tipo(secao: &ChannelConfig) -> Result<()> {
+    if secao.channel_type != CONFIG_KEY {
+        bail!(
+            "`channels.{CONFIG_KEY}` existe com `type: {}` — corrija para `type: {CONFIG_KEY}` no config.yml",
+            secao.channel_type
+        );
+    }
+    Ok(())
+}
+
+/// A secao do canal para escrita, nascendo com `type: whatsapp_linked` e sem
+/// `enabled` (desligado, ver `settings_from_config`) quando nao existe.
+fn secao_criando(config: &mut AppConfig) -> Result<&mut ChannelConfig> {
+    let secao = config
+        .channels
+        .entry(CONFIG_KEY.to_string())
+        .or_insert_with(|| ChannelConfig {
+            channel_type: CONFIG_KEY.to_string(),
+            enabled: None,
+            settings: Default::default(),
+        });
+    checar_tipo(secao)?;
+    Ok(secao)
+}
+
+/// A secao do canal para escrita, **sem** cria-la: `None` numa config que nao
+/// tem o canal. Quem so tira nome de lista nao inventa secao.
+fn secao_existente(config: &mut AppConfig) -> Result<Option<&mut ChannelConfig>> {
+    let Some(secao) = config.channels.get_mut(CONFIG_KEY) else {
+        return Ok(None);
+    };
+    checar_tipo(secao)?;
+    Ok(Some(secao))
+}
+
+/// A lista `allow` ou `owners` da secao, nascendo vazia quando ausente.
+fn lista_mut<'a>(
+    secao: &'a mut ChannelConfig,
+    chave: &str,
+) -> Result<&'a mut Vec<serde_json::Value>> {
+    let valor = secao
+        .settings
+        .entry(chave.to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let Some(itens) = valor.as_array_mut() else {
+        bail!("`channels.{CONFIG_KEY}.{chave}` nao e uma lista — corrija o config.yml");
+    };
+    Ok(itens)
+}
+
+/// A lista tem `alvo` (ja na chave do portao)?
+fn contem(itens: &[serde_json::Value], alvo: &str) -> bool {
+    itens
+        .iter()
+        .filter_map(|v| v.as_str())
+        .any(|v| chave_do_portao(v) == alvo)
+}
+
+/// A lista `chave` da secao tem `alvo`? Uma lista ausente (ou que nao e lista)
+/// nao tem ninguem — quem precisa recusar o que nao e lista e [`lista_mut`],
+/// na hora de escrever.
+fn contem_em(secao: &ChannelConfig, chave: &str, alvo: &str) -> bool {
+    secao
+        .settings
+        .get(chave)
+        .and_then(|v| v.as_array())
+        .is_some_and(|itens| contem(itens, alvo))
+}
+
 /// Acrescenta `numero` (ja normalizado) a `allow` ou `owners`.
 ///
 /// Carrega, mexe so na lista pedida, e grava pela escrita atomica `0600` do
@@ -343,39 +422,12 @@ pub fn autorizar(loader: &ConfigLoader, numero: &str, papel: Papel) -> Result<Gr
     // Sem a env do perfil: ela nao vai ao disco (`#[serde(skip)]`) e nao
     // decide nada aqui — so o `--owner` depende dela, e ja foi validado.
     let mut config = loader.load_sem_env()?;
-    let secao = config
-        .channels
-        .entry(CONFIG_KEY.to_string())
-        .or_insert_with(|| ChannelConfig {
-            channel_type: CONFIG_KEY.to_string(),
-            enabled: None,
-            settings: Default::default(),
-        });
-    if secao.channel_type != CONFIG_KEY {
-        // Nao e este canal: o gateway ignora a secao inteira, e escrever nela
-        // seria dizer "autorizado" para algo que nao vale. Trocar o `type` de
-        // uma secao do operador tambem nao e decisao deste comando.
-        bail!(
-            "`channels.{CONFIG_KEY}` existe com `type: {}` — corrija para `type: {CONFIG_KEY}` no config.yml",
-            secao.channel_type
-        );
-    }
-    let chave = papel.chave();
-    let lista = secao
-        .settings
-        .entry(chave.to_string())
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-    let Some(itens) = lista.as_array_mut() else {
-        bail!("`channels.{CONFIG_KEY}.{chave}` nao e uma lista — corrija o config.yml");
-    };
+    let secao = secao_criando(&mut config)?;
+    let itens = lista_mut(secao, papel.chave())?;
     // A mesma chave que o portao compara: `+55 31 99999-8888` ja cobre
     // `553199998888` (o nono digito, ver [`chave_do_portao`]).
     let alvo = chave_do_portao(numero);
-    let ja_estava = itens
-        .iter()
-        .filter_map(|v| v.as_str())
-        .any(|v| chave_do_portao(v) == alvo);
-    if ja_estava {
+    if contem(itens, &alvo) {
         return Ok(Gravado::JaEstava);
     }
     itens.push(serde_json::Value::String(numero.to_string()));
@@ -429,41 +481,150 @@ impl Remocao {
 pub fn remover(loader: &ConfigLoader, numero: &str) -> Result<(Remocao, Acesso)> {
     loader.ensure_dirs()?;
     let mut config = loader.load_sem_env()?;
-    let Some(secao) = config.channels.get_mut(CONFIG_KEY) else {
-        return Ok((Remocao::default(), acesso_da_config(&config)));
-    };
-    if secao.channel_type != CONFIG_KEY {
-        // Mesma recusa do `autorizar`: o gateway ignora a secao inteira, e
-        // dizer "removido" de uma secao que nao vale seria afirmar uma
-        // revogacao que nao aconteceu.
-        bail!(
-            "`channels.{CONFIG_KEY}` existe com `type: {}` — corrija para `type: {CONFIG_KEY}` no config.yml",
-            secao.channel_type
-        );
-    }
     let alvo = chave_do_portao(numero);
     let mut fora = Remocao::default();
-    for (chave, conta) in [
-        ("allow", &mut fora.de_allow),
-        ("owners", &mut fora.de_owners),
-    ] {
-        let Some(lista) = secao.settings.get_mut(chave) else {
-            continue;
-        };
-        let Some(itens) = lista.as_array_mut() else {
-            bail!("`channels.{CONFIG_KEY}.{chave}` nao e uma lista — corrija o config.yml");
-        };
-        let antes = itens.len();
-        // Entrada que nao e string fica: ela nao e este numero, e descartar o
-        // que nao se entende seria apagar escolha do operador.
-        itens.retain(|v| v.as_str().is_none_or(|s| chave_do_portao(s) != alvo));
-        *conta = antes - itens.len();
+    if let Some(secao) = secao_existente(&mut config)? {
+        for (chave, conta) in [
+            ("allow", &mut fora.de_allow),
+            ("owners", &mut fora.de_owners),
+        ] {
+            let Some(lista) = secao.settings.get_mut(chave) else {
+                continue;
+            };
+            let Some(itens) = lista.as_array_mut() else {
+                bail!("`channels.{CONFIG_KEY}.{chave}` nao e uma lista — corrija o config.yml");
+            };
+            let antes = itens.len();
+            // Entrada que nao e string fica: ela nao e este numero, e
+            // descartar o que nao se entende seria apagar escolha do operador.
+            itens.retain(|v| v.as_str().is_none_or(|s| chave_do_portao(s) != alvo));
+            *conta = antes - itens.len();
+        }
     }
     if fora.total() > 0 {
         loader.save(&config)?;
     }
     // Do MESMO `config` que foi gravado: e o estado que o gateway vai ler.
     Ok((fora, acesso_da_config(&config)))
+}
+
+// ---------------------------------------------------------------------------
+// Promover e rebaixar (#1395)
+// ---------------------------------------------------------------------------
+
+/// O desfecho de [`promover`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Promovido {
+    /// Entrou em `owners` agora.
+    Novo {
+        /// A identidade NAO estava em `allow`: a promocao tambem abriu o
+        /// portao para ela (o gateway admite a uniao das duas listas), e a
+        /// tela tem de dizer isso — promover nao pode dar acesso em silencio.
+        ganhou_acesso: bool,
+    },
+    /// Ja era dono — promover e idempotente.
+    JaEra,
+}
+
+/// Poe `numero` (ja normalizado) em `owners`.
+///
+/// E a MESMA escrita que `allow --owner` faz — `owners`, e so `owners` (ADR
+/// 0024) —, pela mesma chave do portao e pela mesma escrita atomica `0600` do
+/// [`ConfigLoader::save`]. Nao duplicar a convencao e o ponto: o `owner` e o
+/// caminho dedicado para promover quem ja esta autorizado, nao uma segunda
+/// forma de gravar dono.
+///
+/// `allow` nao e tocado. Quem ja estava la continua la (e o [`listar`] mostra
+/// uma linha so, com o papel `owners`, que e o que o gateway honra); quem nao
+/// estava ganha acesso pela uniao, e o [`Promovido::Novo`] diz isso ao
+/// chamador para a tela avisar.
+///
+/// Devolve o [`Acesso`] **depois**, calculado da config que acabou de ir ao
+/// disco — sem reler o arquivo, pela mesma razao do [`remover`].
+pub fn promover(loader: &ConfigLoader, numero: &str) -> Result<(Promovido, Acesso)> {
+    loader.ensure_dirs()?;
+    let mut config = loader.load_sem_env()?;
+    let alvo = chave_do_portao(numero);
+    let promovido = {
+        let secao = secao_criando(&mut config)?;
+        let ja_autorizado = contem_em(secao, "allow", &alvo);
+        let owners = lista_mut(secao, "owners")?;
+        if contem(owners, &alvo) {
+            Promovido::JaEra
+        } else {
+            owners.push(serde_json::Value::String(numero.to_string()));
+            Promovido::Novo {
+                ganhou_acesso: !ja_autorizado,
+            }
+        }
+    };
+    if matches!(promovido, Promovido::Novo { .. }) {
+        loader.save(&config)?;
+    }
+    Ok((promovido, acesso_da_config(&config)))
+}
+
+/// O desfecho de [`rebaixar`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rebaixado {
+    /// Saiu de `owners`.
+    Feito {
+        /// A entrada foi COPIADA para `allow` porque so existia em `owners`.
+        /// Sem isso, rebaixar teria tirado o acesso junto com o papel — que e
+        /// exatamente o que o `unowner` nao pode fazer.
+        movido_para_allow: bool,
+    },
+    /// Nao era dono — rebaixar e idempotente.
+    NaoEra,
+}
+
+/// Tira `numero` (ja normalizado) de `owners` **preservando o acesso**.
+///
+/// A diferenca inteira entre este comando e o [`remover`]: quem e rebaixado
+/// continua podendo falar com o GarraIA, so perde o piso de dono. Como o
+/// `allow --owner` grava **so** em `owners`, o caso comum e a identidade
+/// existir apenas la — tirar dali e pronto seria revogar o acesso em silencio.
+/// Entao, quando `allow` ainda nao a tem, a entrada e copiada para `allow`
+/// **na mesma escrita** (um `save` so: nao existe instante no disco em que a
+/// pessoa nao esteja em nenhuma das duas listas).
+///
+/// A entrada copiada e a string que estava em `owners`, byte a byte, e nao o
+/// `numero` normalizado: o que o operador gravou (um LID, o celular sem o nono
+/// digito) continua sendo o que o `config.yml` mostra.
+///
+/// Nao cria secao e nao escreve quando nao havia o que rebaixar. `enabled` nao
+/// e tocado, como em [`autorizar`] e [`remover`].
+pub fn rebaixar(loader: &ConfigLoader, numero: &str) -> Result<(Rebaixado, Acesso)> {
+    loader.ensure_dirs()?;
+    let mut config = loader.load_sem_env()?;
+    let alvo = chave_do_portao(numero);
+    let mut rebaixado = Rebaixado::NaoEra;
+    if let Some(secao) = secao_existente(&mut config)? {
+        let owners = lista_mut(secao, "owners")?;
+        // A forma exata que estava gravada, para reescreve-la em `allow`.
+        let gravada = owners
+            .iter()
+            .filter_map(|v| v.as_str())
+            .find(|s| chave_do_portao(s) == alvo)
+            .map(str::to_string);
+        let antes = owners.len();
+        // Entrada que nao e string fica, como no `remover`.
+        owners.retain(|v| v.as_str().is_none_or(|s| chave_do_portao(s) != alvo));
+        if antes != owners.len() {
+            let allow = lista_mut(secao, "allow")?;
+            let movido_para_allow = !contem(allow, &alvo);
+            if movido_para_allow {
+                allow.push(serde_json::Value::String(
+                    gravada.unwrap_or_else(|| numero.to_string()),
+                ));
+            }
+            rebaixado = Rebaixado::Feito { movido_para_allow };
+        }
+    }
+    if matches!(rebaixado, Rebaixado::Feito { .. }) {
+        loader.save(&config)?;
+    }
+    Ok((rebaixado, acesso_da_config(&config)))
 }
 
 // ---------------------------------------------------------------------------
@@ -956,11 +1117,7 @@ pub fn remove(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoRemocao) ->
 /// A linha do desfecho que gravou. Pura, e so com o final do numero.
 pub fn linha_de_removido(lang: Lang, numero: &str, fora: Remocao) -> String {
     let fim = final4(numero);
-    let tipo = match (lang, e_lid(numero)) {
-        (Lang::Pt, true) | (Lang::En, true) => "LID",
-        (Lang::Pt, false) => "Número",
-        (Lang::En, false) => "Number",
-    };
+    let tipo = tipo_da_identidade(lang, numero);
     match (lang, fora.era_dono()) {
         (Lang::Pt, false) => format!("✓ {tipo} terminado em {fim} removido dos autorizados."),
         (Lang::Pt, true) => {
@@ -984,6 +1141,300 @@ pub fn linha_de_nao_estava(lang: Lang, numero: &str) -> String {
         (Lang::En, true) => format!("The LID ending in {fim} was not listed — nothing changed."),
         (Lang::En, false) => {
             format!("The number ending in {fim} was not listed — nothing changed.")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `garraia whatsapp owner|unowner <numero> [--yes]` (#1395)
+// ---------------------------------------------------------------------------
+
+/// O pedido do `owner` e do `unowner`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PedidoDePapel {
+    pub numero: String,
+    pub yes: bool,
+}
+
+/// Como se diz "LID"/"número" na lingua, para as linhas de desfecho.
+fn tipo_da_identidade(lang: Lang, numero: &str) -> &'static str {
+    match (lang, e_lid(numero)) {
+        (_, true) => "LID",
+        (Lang::Pt, false) => "Número",
+        (Lang::En, false) => "Number",
+    }
+}
+
+/// A recusa do `owner` fora de `isolated-pod`.
+///
+/// Mesma regra do `allow --owner`, e pela mesma razao (ADR 0024): em
+/// `standard` o dono nao tem poder nenhum e ganharia tudo em silencio no dia
+/// em que o perfil mudasse. O texto e proprio porque o comando e outro — quem
+/// rodou `whatsapp owner` nao passou flag nenhuma para lhe tirarem.
+fn recusa_de_dono_fora_do_pod(lang: Lang) -> &'static str {
+    t(
+        lang,
+        "`whatsapp owner` só vale com `execution.profile = isolated-pod`. Em `standard` um dono não tem poder nenhum — e ganharia em silêncio no dia em que o perfil mudasse. Para só autorizar o número, use `whatsapp allow`. (O perfil lido aqui vem do config.yml ou de `GARRAIA_EXECUTION_PROFILE` NESTE shell; se o gateway roda com essa env, rode este comando com a mesma env.)",
+        "`whatsapp owner` only applies with `execution.profile = isolated-pod`. In `standard` an owner has no power — and would silently gain it the day the profile changed. To merely authorize the number, use `whatsapp allow`. (The profile read here comes from config.yml or from `GARRAIA_EXECUTION_PROFILE` in THIS shell; if the gateway runs with that env, run this command with the same env.)",
+    )
+}
+
+/// O que o dono ganha, dito depois de uma promocao que de fato gravou.
+///
+/// O `--yes` pula a pergunta, e com ela a unica frase que explicava o poder;
+/// dizer isto no desfecho mantem o aviso no caminho do script tambem.
+fn nota_do_poder_de_dono(lang: Lang) -> &'static str {
+    t(
+        lang,
+        "Em isolated-pod o dono recebe o piso `code` em conversa 1:1: arquivos, bash, ferramentas MCP e subagentes (em grupo, nunca).",
+        "In isolated-pod the owner gets the `code` floor in 1:1 chats: files, bash, MCP tools and subagents (never in groups).",
+    )
+}
+
+/// A pergunta do rebaixamento do ULTIMO dono. Diz o que fica e o que sai.
+fn pergunta_de_ultimo_dono(lang: Lang) -> &'static str {
+    t(
+        lang,
+        "Este é o ÚNICO dono: rebaixá-lo deixa a configuração sem dono nenhum, e ninguém terá o piso `code` em conversa 1:1. O acesso dele é preservado. Rebaixar mesmo assim?",
+        "This is the ONLY owner: demoting it leaves the configuration with no owner at all, and nobody will have the `code` floor in 1:1 chats. Its access is preserved. Demote anyway?",
+    )
+}
+
+/// `garraia whatsapp owner`. Promove quem ja esta autorizado a dono.
+///
+/// As mesmas duas portas do `allow --owner`, porque a escrita e a mesma:
+/// `isolated-pod` obrigatorio (64 fora dele) e confirmacao explicita — `--yes`
+/// num pipe, pergunta com default NAO no terminal. Promover duas vezes sai 0:
+/// e idempotente, como autorizar.
+///
+/// Quem ainda nao estava em `allow` **e** promovido assim mesmo, e nao
+/// recusado: `owners` ja e por si so uma porta do portao (o gateway admite a
+/// uniao), entao e exatamente o que `allow --owner` faz hoje. Inventar aqui um
+/// "primeiro autorize, depois promova" criaria uma segunda convencao para a
+/// mesma escrita. A tela avisa que a promocao tambem deu acesso.
+pub fn owner(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoDePapel) -> i32 {
+    let (loader, config) = match carregar(ctx) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let numero = match normalizar_numero(&pedido.numero) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("{}", e.mensagem(ctx.lang));
+            return EX_DATAERR;
+        }
+    };
+    if !config.execution.perfil().is_isolated_pod() {
+        eprintln!("{}", recusa_de_dono_fora_do_pod(ctx.lang));
+        return EX_USAGE;
+    }
+    if !pedido.yes {
+        if !ctx.interactive {
+            eprintln!(
+                "{}",
+                t(
+                    ctx.lang,
+                    "`whatsapp owner` sem terminal precisa de `--yes`: tornar alguém dono é uma decisão explícita.",
+                    "`whatsapp owner` without a terminal needs `--yes`: making someone an owner is an explicit decision.",
+                )
+            );
+            return EX_USAGE;
+        }
+        match prompter.confirm(pergunta_de_dono(ctx.lang), false) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                println!("{}", t(ctx.lang, "Cancelado.", "Cancelled."));
+                return EX_CANCELLED;
+            }
+        }
+    }
+
+    let (promovido, depois) = match promover(loader, &numero) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
+    println!("{}", linha_de_promovido(ctx.lang, &numero, promovido));
+    if matches!(promovido, Promovido::Novo { .. }) {
+        println!("{}", nota_do_poder_de_dono(ctx.lang));
+    }
+    if depois.enabled {
+        println!("{}", dica_do_gateway(ctx.lang, true, ctx.gateway_pid));
+    } else {
+        println!(
+            "{}",
+            tb(
+                ctx.lang,
+                "O canal ainda não está ligado: vincule o WhatsApp com `{bin} whatsapp link`.",
+                "The channel is not on yet: link WhatsApp with `{bin} whatsapp link`.",
+            )
+        );
+    }
+    0
+}
+
+/// `garraia whatsapp unowner`. Tira o papel de dono, **nunca** o acesso.
+///
+/// Sem porta de perfil, de proposito: rebaixar precisa funcionar em `standard`
+/// tambem. E justamente la que um `owners` esquecido e um privilegio latente,
+/// esperando o dia em que o perfil mude — recusar a limpeza fora do pod
+/// deixaria o operador sem o comando exatamente onde ele mais importa.
+///
+/// A confirmacao explicita — `--yes` num pipe (64 sem ele), pergunta com
+/// default NAO no terminal — vale para o **ultimo** dono, nao para todo
+/// rebaixamento. O precedente do `remove` (#1394) e "nada que mexa com dono
+/// acontece em silencio", mas la a operacao tira o acesso; aqui ela o
+/// preserva, e com outro dono na lista nada fica invalido. O que merece uma
+/// parada e o estado que a issue nomeia: a configuracao ficar sem dono nenhum.
+pub fn unowner(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoDePapel) -> i32 {
+    let (loader, config) = match carregar(ctx) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let numero = match normalizar_numero(&pedido.numero) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("{}", e.mensagem(ctx.lang));
+            return EX_DATAERR;
+        }
+    };
+
+    // Mesma janela documentada no `remove`: o papel sai desta leitura e o
+    // `rebaixar` rele o arquivo antes de gravar. Numa CLI de um usuario so, a
+    // alternativa seria segurar o arquivo aberto durante o prompt.
+    let antes = acesso_da_config(&config);
+    let ultimo_dono = antes.donos == 1 && e_dono_na_config(&config, &numero);
+    if ultimo_dono && !pedido.yes {
+        if !ctx.interactive {
+            eprintln!(
+                "{}",
+                t(
+                    ctx.lang,
+                    "Este é o ÚNICO dono: rebaixá-lo sem terminal precisa de `--yes`. O acesso dele é preservado, mas a configuração fica sem dono nenhum.",
+                    "This is the ONLY owner: demoting it without a terminal needs `--yes`. Its access is preserved, but the configuration is left with no owner at all.",
+                )
+            );
+            return EX_USAGE;
+        }
+        match prompter.confirm(pergunta_de_ultimo_dono(ctx.lang), false) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                println!("{}", t(ctx.lang, "Cancelado.", "Cancelled."));
+                return EX_CANCELLED;
+            }
+        }
+    }
+
+    let (rebaixado, depois) = match rebaixar(loader, &numero) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return EX_SOFTWARE;
+        }
+    };
+    println!("{}", linha_de_rebaixado(ctx.lang, &numero, rebaixado));
+    if !matches!(rebaixado, Rebaixado::Feito { .. }) {
+        // Nada mudou no disco: mandar reiniciar (ou explicar o hot reload)
+        // logo depois de "nada mudou" so sugeriria que havia o que aplicar.
+        // Mesma saida do `remove` quando o numero nao estava na lista.
+        return 0;
+    }
+    if depois.donos == 0 {
+        println!(
+            "{}",
+            aviso_sem_dono(ctx.lang, config.execution.perfil().is_isolated_pod())
+        );
+    }
+    if depois.enabled {
+        println!("{}", dica_do_gateway(ctx.lang, true, ctx.gateway_pid));
+    }
+    0
+}
+
+/// O aviso de `owners` vazio. Nao e um erro: e o estado default do canal.
+///
+/// O texto depende do perfil, e tem de depender. Em `standard` ninguem tinha
+/// o piso `code` para perder — dizer "ninguem recebe mais" ali descreveria uma
+/// consequencia que nao existe —, e pior: mandar promover alguem seria mandar
+/// rodar um comando que naquele perfil sai 64. O aviso do pod e o unico que
+/// aponta o `owner`.
+pub fn aviso_sem_dono(lang: Lang, pod: bool) -> String {
+    if pod {
+        return tb(
+            lang,
+            "Não há mais nenhum dono: ninguém recebe o piso `code` em conversa 1:1. Para promover alguém: `{bin} whatsapp owner <número>`.",
+            "There is no owner left: nobody gets the `code` floor in 1:1 chats. To promote someone: `{bin} whatsapp owner <number>`.",
+        );
+    }
+    t(
+        lang,
+        "Não há mais nenhum dono. Neste perfil (`standard`) isso não muda nada: dono só tem efeito em `isolated-pod`.",
+        "There is no owner left. In this profile (`standard`) that changes nothing: owners only have an effect in `isolated-pod`.",
+    )
+    .to_string()
+}
+
+/// A linha do desfecho do `owner`. Pura, e so com o final do numero.
+pub fn linha_de_promovido(lang: Lang, numero: &str, promovido: Promovido) -> String {
+    let fim = final4(numero);
+    let tipo = tipo_da_identidade(lang, numero);
+    match (lang, promovido) {
+        (Lang::Pt, Promovido::JaEra) => format!("✓ O {tipo} terminado em {fim} já era DONO."),
+        (Lang::Pt, Promovido::Novo { ganhou_acesso }) => {
+            let linha = format!("✓ {tipo} terminado em {fim} promovido a DONO.");
+            if ganhou_acesso {
+                format!(
+                    "{linha} Ele não estava autorizado antes — agora também pode falar com o GarraIA."
+                )
+            } else {
+                linha
+            }
+        }
+        (Lang::En, Promovido::JaEra) => {
+            format!("✓ The {tipo} ending in {fim} was already an OWNER.")
+        }
+        (Lang::En, Promovido::Novo { ganhou_acesso }) => {
+            let linha = format!("✓ {tipo} ending in {fim} promoted to OWNER.");
+            if ganhou_acesso {
+                format!("{linha} It was not authorized before — it can talk to GarraIA now too.")
+            } else {
+                linha
+            }
+        }
+    }
+}
+
+/// A linha do desfecho do `unowner`. Pura, e so com o final do numero.
+///
+/// Diz **sempre** que o acesso continua: e a diferenca que o operador precisa
+/// ver para nao rodar um `remove` achando que rebaixar nao bastou.
+pub fn linha_de_rebaixado(lang: Lang, numero: &str, rebaixado: Rebaixado) -> String {
+    let fim = final4(numero);
+    let tipo = tipo_da_identidade(lang, numero);
+    match (lang, rebaixado) {
+        (Lang::Pt, Rebaixado::NaoEra) => {
+            format!("O {tipo} terminado em {fim} não era DONO — nada mudou.")
+        }
+        (Lang::Pt, Rebaixado::Feito { movido_para_allow }) => {
+            let linha = format!("✓ {tipo} terminado em {fim} não é mais DONO.");
+            if movido_para_allow {
+                format!("{linha} Ele continua autorizado: a entrada passou para `allow`.")
+            } else {
+                format!("{linha} Ele continua autorizado em `allow`.")
+            }
+        }
+        (Lang::En, Rebaixado::NaoEra) => {
+            format!("The {tipo} ending in {fim} was not an OWNER — nothing changed.")
+        }
+        (Lang::En, Rebaixado::Feito { movido_para_allow }) => {
+            let linha = format!("✓ {tipo} ending in {fim} is no longer an OWNER.");
+            if movido_para_allow {
+                format!("{linha} It stays authorized: the entry moved to `allow`.")
+            } else {
+                format!("{linha} It stays authorized in `allow`.")
+            }
         }
     }
 }

@@ -1409,9 +1409,10 @@ fn restore_refuses_to_enable_the_channel_when_the_blob_no_longer_opens() {
 // ---------------------------------------------------------------------------
 
 use acesso::{
-    Acesso, Autorizado, Gravado, NumeroInvalido, Papel, acesso_da_config, autorizar,
-    dica_do_gateway, final4, json_de_usuarios, linha_de_nao_estava, linha_de_removido,
-    linhas_de_usuarios, listar, normalizar_numero, pos_link, remover,
+    Acesso, Autorizado, Gravado, NumeroInvalido, Papel, Promovido, Rebaixado, acesso_da_config,
+    autorizar, dica_do_gateway, final4, json_de_usuarios, linha_de_nao_estava, linha_de_promovido,
+    linha_de_rebaixado, linha_de_removido, linhas_de_usuarios, listar, normalizar_numero, pos_link,
+    promover, rebaixar, remover,
 };
 
 const NUMERO: &str = "5511999998888";
@@ -2364,6 +2365,771 @@ fn as_linhas_do_remove_nao_repetem_a_identidade() {
         assert!(linha_de_removido(lang, LID, so_allow).contains("LID"));
     }
     assert!(linha_de_removido(Lang::Pt, NUMERO, so_allow).contains("8888"));
+}
+
+// --- #1395: `garraia whatsapp owner` / `unowner` -----------------------------
+
+fn papel(numero: &str, yes: bool) -> PedidoDePapel {
+    PedidoDePapel {
+        numero: numero.to_string(),
+        yes,
+    }
+}
+
+/// `promover` escreve em `owners` — a MESMA lista do `allow --owner`, e so
+/// ela —, e nao inventa entrada em `allow`. Rodar de novo nao escreve nada.
+#[test]
+fn promover_grava_em_owners_e_e_idempotente() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "allow": [NUMERO], "reply_in_groups": true })),
+        Some(true),
+    );
+
+    let (promovido, depois) = promover(loader, NUMERO).expect("promover");
+    assert_eq!(
+        promovido,
+        Promovido::Novo {
+            ganhou_acesso: false
+        }
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+    assert_eq!(
+        lista(&ctx, "allow"),
+        vec![NUMERO.to_string()],
+        "promover nao mexe no `allow`"
+    );
+    // A uniao nao conta duas vezes: o `status` e o `users` continuam batendo.
+    assert_eq!((depois.autorizados, depois.donos), (1, 1));
+    assert_eq!(
+        secao_de(&ctx).and_then(|s| s.settings.get("reply_in_groups").cloned()),
+        Some(serde_json::Value::Bool(true)),
+        "as outras chaves da secao ficam como estavam"
+    );
+
+    // De novo, pela chave do portao (com separadores): nada muda.
+    let (de_novo, _) = promover(loader, "5511999998888").expect("promover");
+    assert_eq!(de_novo, Promovido::JaEra);
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+}
+
+/// Promover quem NAO estava autorizado tambem abre o portao — o gateway
+/// admite a uniao de `allow` e `owners`, entao `owners` sozinho ja e acesso.
+/// O `ganhou_acesso` existe para a tela poder dizer isso.
+#[test]
+fn promover_quem_nao_estava_autorizado_avisa_que_deu_acesso() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(&ctx, pod(), None, None);
+
+    let (promovido, depois) = promover(loader, NUMERO).expect("promover");
+    assert_eq!(
+        promovido,
+        Promovido::Novo {
+            ganhou_acesso: true
+        }
+    );
+    assert_eq!((depois.autorizados, depois.donos), (1, 1));
+    let linha = linha_de_promovido(Lang::Pt, NUMERO, promovido);
+    assert!(linha.contains("autorizado"), "{linha}");
+    assert!(
+        linha_de_promovido(Lang::En, NUMERO, promovido).contains("authorized"),
+        "e nas duas linguas"
+    );
+}
+
+/// **A regra do #1395:** rebaixar NUNCA tira o acesso. Como o `allow --owner`
+/// grava so em `owners`, o caso comum e a identidade existir apenas la — e
+/// entao ela e copiada para `allow` na MESMA escrita.
+#[test]
+fn rebaixar_preserva_o_acesso_movendo_a_entrada_para_allow() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO] })),
+        Some(true),
+    );
+
+    let (rebaixado, depois) = rebaixar(loader, NUMERO).expect("rebaixar");
+    assert_eq!(
+        rebaixado,
+        Rebaixado::Feito {
+            movido_para_allow: true
+        }
+    );
+    assert!(lista(&ctx, "owners").is_empty(), "saiu de owners");
+    assert_eq!(
+        lista(&ctx, "allow"),
+        vec![NUMERO.to_string()],
+        "e entrou em allow: o acesso basico nunca cai junto com o papel"
+    );
+    assert_eq!(
+        (depois.autorizados, depois.donos),
+        (1, 0),
+        "continua autorizado, sem ser dono"
+    );
+
+    // E a lista do `users` passa a mostrar o papel `allow`.
+    let config = loader.load().expect("load");
+    let usuarios = listar(&config);
+    assert_eq!(usuarios.len(), 1);
+    assert_eq!(usuarios[0].papel, Papel::Autorizado);
+}
+
+/// A entrada copiada e a que estava gravada, byte a byte — nao a forma
+/// normalizada. Um LID, ou o celular sem o nono digito, continua saindo do
+/// `config.yml` como o operador o escreveu.
+#[test]
+fn rebaixar_copia_a_entrada_como_ela_estava_gravada() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": ["553199998888", LID] })),
+        None,
+    );
+
+    // O pedido chega com o nono digito; a chave do portao casa os dois.
+    let (rebaixado, _) = rebaixar(loader, "5531999998888").expect("rebaixar");
+    assert_eq!(
+        rebaixado,
+        Rebaixado::Feito {
+            movido_para_allow: true
+        }
+    );
+    assert_eq!(
+        lista(&ctx, "allow"),
+        vec!["553199998888".to_string()],
+        "a forma gravada e preservada"
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![LID.to_string()]);
+
+    let (rebaixado, depois) = rebaixar(loader, LID).expect("rebaixar");
+    assert_eq!(
+        rebaixado,
+        Rebaixado::Feito {
+            movido_para_allow: true
+        }
+    );
+    assert_eq!(lista(&ctx, "allow").len(), 2);
+    assert!(lista(&ctx, "allow").contains(&LID.to_string()));
+    assert_eq!((depois.autorizados, depois.donos), (2, 0));
+}
+
+/// Quem ja estava nas DUAS listas so perde o papel: o `allow` nao ganha uma
+/// entrada duplicada.
+#[test]
+fn rebaixar_quem_ja_estava_em_allow_nao_duplica_a_entrada() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "allow": ["5531999998888"], "owners": ["553199998888"] })),
+        None,
+    );
+
+    let (rebaixado, depois) = rebaixar(loader, "553199998888").expect("rebaixar");
+    assert_eq!(
+        rebaixado,
+        Rebaixado::Feito {
+            movido_para_allow: false
+        }
+    );
+    assert_eq!(lista(&ctx, "allow"), vec!["5531999998888".to_string()]);
+    assert!(lista(&ctx, "owners").is_empty());
+    assert_eq!((depois.autorizados, depois.donos), (1, 0));
+}
+
+/// Rebaixar quem nao e dono e idempotente, e numa config sem a secao nada e
+/// criado nem escrito.
+#[test]
+fn rebaixar_quem_nao_e_dono_nao_escreve_nada() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+
+    let (rebaixado, depois) = rebaixar(loader, NUMERO).expect("rebaixar");
+    assert_eq!(rebaixado, Rebaixado::NaoEra);
+    assert_eq!(depois.autorizados, 0);
+    assert!(secao_de(&ctx).is_none());
+    assert!(
+        !dir.path().join("config.yml").exists(),
+        "sem nada a rebaixar, o arquivo nem nasce"
+    );
+
+    // E com a secao, mas sem o numero em `owners`: o `allow` fica intacto.
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+    let (rebaixado, _) = rebaixar(loader, NUMERO).expect("rebaixar");
+    assert_eq!(rebaixado, Rebaixado::NaoEra);
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+    assert!(
+        lista(&ctx, "owners").is_empty(),
+        "nao nasce `owners` de um rebaixamento que nao aconteceu"
+    );
+}
+
+/// **A invariante do #1395 pelo caminho do erro:** se a copia para `allow`
+/// nao puder acontecer, a saida de `owners` NAO acontece tambem.
+///
+/// Com `allow` gravado como escalar (config curada a mao, ou uma chave que
+/// alguem trocou de tipo), o [`lista_mut`] recusa. O teste e sobre a ORDEM da
+/// escrita, nao sobre a mensagem: o `rebaixar` mexe nas duas listas em memoria
+/// e so entao chama UM `save`, entao o erro da segunda lista aborta a primeira
+/// junto. A implementacao ingenua — tira de `owners`, grava, poe em `allow`,
+/// grava — passaria em todos os outros testes deste arquivo e falharia
+/// exatamente aqui, deixando a pessoa fora das DUAS listas no disco: sem papel
+/// e sem acesso, que e o unico desfecho que este comando nao pode produzir.
+#[test]
+fn rebaixar_com_allow_malformado_nao_tira_ninguem_de_owners() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO], "allow": "nao-e-lista" })),
+        Some(true),
+    );
+
+    let erro = rebaixar(loader, NUMERO).expect_err("`allow` escalar tem de recusar");
+    assert!(erro.to_string().contains("allow"), "{erro}");
+    assert!(
+        !erro.to_string().contains(NUMERO),
+        "nem o erro leva a identidade inteira: {erro}"
+    );
+    assert_eq!(
+        lista(&ctx, "owners"),
+        vec![NUMERO.to_string()],
+        "o disco nao mudou: ninguem fica sem papel E sem acesso"
+    );
+    assert_eq!(
+        secao_de(&ctx).and_then(|s| s.settings.get("allow").cloned()),
+        Some(serde_json::json!("nao-e-lista")),
+        "e a chave do operador nao e reescrita as escondidas"
+    );
+
+    // E pelo comando, com `--yes` (o alvo e o unico dono): 70, sem perder o
+    // papel. O `unowner` nao tem um desfecho "meio feito".
+    assert_eq!(
+        run(
+            Action::Unowner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        70
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+}
+
+/// Grava uma secao `whatsapp_linked` com `type:` de OUTRO canal e devolve o
+/// `config.yml` como ficou, para o teste provar que nada foi reescrito.
+fn grava_secao_de_outro_tipo(ctx: &Context, dir: &tempfile::TempDir) -> String {
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+    let mut config = garraia_config::AppConfig::default();
+    config.channels.insert(
+        CONFIG_KEY.to_string(),
+        ChannelConfig {
+            channel_type: "whatsapp".into(),
+            enabled: Some(true),
+            settings: Default::default(),
+        },
+    );
+    loader.save(&config).expect("save");
+    std::fs::read_to_string(dir.path().join("config.yml")).expect("ler")
+}
+
+/// Secao com `type` de outro canal: o gateway a ignora, entao "promovido"
+/// seria mentira. Mesma recusa do `autorizar` — os quatro caminhos de escrita
+/// dividem o `checar_tipo`, e este teste prende o do `promover`.
+#[test]
+fn promover_recusa_secao_de_outro_tipo_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    let antes = grava_secao_de_outro_tipo(&ctx, &dir);
+
+    let erro = promover(loader, NUMERO).expect_err("secao de outro canal tem de recusar");
+    assert!(erro.to_string().contains("type"), "{erro}");
+    assert!(
+        !erro.to_string().contains(NUMERO),
+        "nem o erro leva a identidade inteira: {erro}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.yml")).expect("ler"),
+        antes,
+        "o arquivo do operador fica byte a byte como estava"
+    );
+}
+
+/// E o mesmo pelo `rebaixar`: dizer "nao e mais dono" de uma secao que o
+/// gateway ignora afirmaria um rebaixamento que nao aconteceu.
+#[test]
+fn rebaixar_recusa_secao_de_outro_tipo_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    let antes = grava_secao_de_outro_tipo(&ctx, &dir);
+
+    let erro = rebaixar(loader, NUMERO).expect_err("secao de outro canal tem de recusar");
+    assert!(erro.to_string().contains("type"), "{erro}");
+    assert!(
+        !erro.to_string().contains(NUMERO),
+        "nem o erro leva a identidade inteira: {erro}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.yml")).expect("ler"),
+        antes
+    );
+
+    // E pelo comando: 70, e o arquivo continua intocado.
+    assert_eq!(
+        run(
+            Action::Unowner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        70
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.yml")).expect("ler"),
+        antes
+    );
+}
+
+/// `owner` fora de `isolated-pod` sai 64 sem escrever — a MESMA porta do
+/// `allow --owner`, e pela mesma razao: em `standard` o dono nao tem poder
+/// nenhum e ganharia tudo em silencio no dia em que o perfil mudasse.
+#[test]
+fn owner_em_standard_sai_64_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+
+    assert_eq!(
+        run(
+            Action::Owner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        64,
+        "nem com `--yes`: o perfil manda"
+    );
+    assert!(lista(&ctx, "owners").is_empty(), "nada gravado em `owners`");
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()], "intacto");
+}
+
+/// Em `isolated-pod`: sem terminal exige `--yes` (64), com ele promove (0), e
+/// promover de novo continua 0.
+#[test]
+fn owner_no_pod_exige_yes_fora_de_terminal_e_e_idempotente() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+
+    assert_eq!(
+        run(
+            Action::Owner(papel(ENTRADA, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        64
+    );
+    assert!(lista(&ctx, "owners").is_empty(), "intacto");
+
+    assert_eq!(
+        run(
+            Action::Owner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+
+    assert_eq!(
+        run(
+            Action::Owner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0,
+        "promover duas vezes nao e erro"
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+}
+
+/// No terminal, a pergunta existe e o default e NAO: um Enter distraido nao
+/// cria um dono.
+#[test]
+fn owner_no_terminal_pergunta_com_default_nao() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+
+    let p = ScriptedPrompter::default();
+    assert_eq!(run(Action::Owner(papel(ENTRADA, false)), &ctx, &p), 1);
+    assert!(p.asked("DONO"), "a pergunta precisa nomear o papel");
+    assert!(lista(&ctx, "owners").is_empty(), "default nao");
+
+    let p = ScriptedPrompter::default().and_confirms(&[true]);
+    assert_eq!(run(Action::Owner(papel(ENTRADA, false)), &ctx, &p), 0);
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+}
+
+#[test]
+fn owner_e_unowner_com_numero_invalido_saem_65_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO] })),
+        None,
+    );
+
+    for entrada in ["abc", "11 99999-8888", "*"] {
+        assert_eq!(
+            run(
+                Action::Owner(papel(entrada, true)),
+                &ctx,
+                &ScriptedPrompter::default()
+            ),
+            65,
+            "owner {entrada:?}"
+        );
+        assert_eq!(
+            run(
+                Action::Unowner(papel(entrada, true)),
+                &ctx,
+                &ScriptedPrompter::default()
+            ),
+            65,
+            "unowner {entrada:?}"
+        );
+    }
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+}
+
+/// **A assimetria do #1395:** promover e portao de perfil, rebaixar NAO.
+///
+/// Em `standard` um `owners` esquecido e um privilegio latente — exatamente o
+/// que o `allow --owner` recusa criar. Recusar a limpeza justamente ali
+/// deixaria o operador sem o comando onde ele mais importa, entao o `unowner`
+/// funciona em qualquer perfil.
+#[test]
+fn unowner_funciona_em_standard_mesmo_com_owner_recusado_la() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        None,
+        Some(serde_json::json!({ "owners": [NUMERO] })),
+        Some(true),
+    );
+
+    // O `--yes` aqui e por ser o ultimo dono, nao por causa do perfil.
+    assert_eq!(
+        run(
+            Action::Unowner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert!(lista(&ctx, "owners").is_empty());
+    assert_eq!(
+        lista(&ctx, "allow"),
+        vec![NUMERO.to_string()],
+        "o acesso segue, em `standard` como no pod"
+    );
+}
+
+/// Rebaixar o ULTIMO dono e a parada do comando: num pipe, sem `--yes`, sai
+/// 64 e nada muda. Com outro dono na lista nao ha pergunta nenhuma — o que
+/// merece confirmacao e a configuracao ficar sem dono, nao todo rebaixamento
+/// (o acesso e preservado nos dois casos).
+#[test]
+fn unowner_do_ultimo_dono_exige_yes_fora_de_terminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO, "5511977776666"] })),
+        None,
+    );
+
+    // Dois donos: rebaixar um nao pergunta nada.
+    let p = ScriptedPrompter::default();
+    assert_eq!(run(Action::Unowner(papel(ENTRADA, false)), &ctx, &p), 0);
+    assert!(!p.asked("ÚNICO"), "com outro dono nao ha parada");
+    assert_eq!(lista(&ctx, "owners"), vec!["5511977776666".to_string()]);
+
+    // Agora sobrou um: sem `--yes`, num pipe, nao sai.
+    assert_eq!(
+        run(
+            Action::Unowner(papel("+5511977776666", false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        64
+    );
+    assert_eq!(
+        lista(&ctx, "owners"),
+        vec!["5511977776666".to_string()],
+        "intacto"
+    );
+
+    assert_eq!(
+        run(
+            Action::Unowner(papel("+5511977776666", true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    assert!(lista(&ctx, "owners").is_empty());
+    assert_eq!(lista(&ctx, "allow").len(), 2, "os dois seguem autorizados");
+}
+
+/// No terminal, a pergunta do ultimo dono existe e o default e NAO.
+#[test]
+fn unowner_do_ultimo_dono_no_terminal_pergunta_com_default_nao() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO] })),
+        None,
+    );
+
+    let p = ScriptedPrompter::default();
+    assert_eq!(run(Action::Unowner(papel(ENTRADA, false)), &ctx, &p), 1);
+    assert!(p.asked("ÚNICO"), "a pergunta nomeia o que esta em jogo");
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+    assert!(
+        lista(&ctx, "allow").is_empty(),
+        "cancelar nao move nada para `allow`"
+    );
+
+    let p = ScriptedPrompter::default().and_confirms(&[true]);
+    assert_eq!(run(Action::Unowner(papel(ENTRADA, false)), &ctx, &p), 0);
+    assert!(lista(&ctx, "owners").is_empty());
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+}
+
+/// Rebaixar quem nao e dono sai 0 e nao pergunta nada.
+#[test]
+fn unowner_de_quem_nao_e_dono_sai_zero_em_silencio() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, true);
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "allow": [NUMERO] })),
+        None,
+    );
+
+    let p = ScriptedPrompter::default();
+    assert_eq!(run(Action::Unowner(papel(ENTRADA, false)), &ctx, &p), 0);
+    assert!(!p.asked("ÚNICO"));
+    assert_eq!(lista(&ctx, "allow"), vec![NUMERO.to_string()]);
+    assert!(lista(&ctx, "owners").is_empty());
+}
+
+/// O ciclo inteiro pelos comandos, como o operador o roda: autorizar →
+/// promover → rebaixar. O `users` reflete cada passo, e ao fim a pessoa
+/// continua podendo falar com o GarraIA.
+#[test]
+fn allow_owner_unowner_fecham_o_ciclo_sem_perder_o_acesso() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    grava_config(&ctx, pod(), None, Some(true));
+    let loader = ctx.loader.as_ref().expect("loader");
+
+    assert_eq!(
+        run(
+            Action::Allow(pedido(ENTRADA, false, false)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    let usuarios = listar(&loader.load().expect("load"));
+    assert_eq!(usuarios[0].papel, Papel::Autorizado);
+
+    assert_eq!(
+        run(
+            Action::Owner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    let config = loader.load().expect("load");
+    let usuarios = listar(&config);
+    assert_eq!(usuarios.len(), 1, "uma linha so: {usuarios:?}");
+    assert_eq!(usuarios[0].papel, Papel::Dono);
+    assert_eq!(acesso_da_config(&config).donos, 1);
+
+    assert_eq!(
+        run(
+            Action::Unowner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        0
+    );
+    let config = loader.load().expect("load");
+    let usuarios = listar(&config);
+    assert_eq!(usuarios.len(), 1);
+    assert_eq!(usuarios[0].papel, Papel::Autorizado);
+    let a = acesso_da_config(&config);
+    assert_eq!(
+        (a.autorizados, a.donos),
+        (1, 0),
+        "o acesso sobrevive ao rebaixamento"
+    );
+}
+
+/// As linhas de desfecho nao repetem a identidade, existem nas duas linguas e
+/// a do `unowner` diz SEMPRE que o acesso continua.
+#[test]
+fn as_linhas_de_papel_nao_repetem_a_identidade_e_dizem_o_que_sobra() {
+    for lang in [Lang::Pt, Lang::En] {
+        for linha in [
+            linha_de_promovido(
+                lang,
+                NUMERO,
+                Promovido::Novo {
+                    ganhou_acesso: true,
+                },
+            ),
+            linha_de_promovido(lang, NUMERO, Promovido::JaEra),
+            linha_de_promovido(
+                lang,
+                LID,
+                Promovido::Novo {
+                    ganhou_acesso: false,
+                },
+            ),
+            linha_de_rebaixado(
+                lang,
+                NUMERO,
+                Rebaixado::Feito {
+                    movido_para_allow: true,
+                },
+            ),
+            linha_de_rebaixado(lang, NUMERO, Rebaixado::NaoEra),
+            linha_de_rebaixado(
+                lang,
+                LID,
+                Rebaixado::Feito {
+                    movido_para_allow: false,
+                },
+            ),
+        ] {
+            assert!(!linha.is_empty());
+            assert!(
+                !linha.contains(NUMERO) && !linha.contains("87654321098765"),
+                "{linha}"
+            );
+        }
+        // Rebaixar sempre diz que o acesso fica: quem nao ler isso pode rodar
+        // um `remove` achando que o `unowner` nao bastou.
+        for movido in [true, false] {
+            let linha = linha_de_rebaixado(
+                lang,
+                NUMERO,
+                Rebaixado::Feito {
+                    movido_para_allow: movido,
+                },
+            );
+            assert!(
+                linha.contains("autorizado") || linha.contains("authorized"),
+                "{linha}"
+            );
+            assert!(linha.contains("8888"), "{linha}");
+        }
+        assert!(
+            linha_de_promovido(lang, LID, Promovido::JaEra).contains("LID"),
+            "o tipo da identidade aparece"
+        );
+    }
+    assert_ne!(
+        linha_de_promovido(Lang::Pt, NUMERO, Promovido::JaEra),
+        linha_de_promovido(Lang::En, NUMERO, Promovido::JaEra)
+    );
+    assert_ne!(
+        linha_de_rebaixado(Lang::Pt, NUMERO, Rebaixado::NaoEra),
+        linha_de_rebaixado(Lang::En, NUMERO, Rebaixado::NaoEra)
+    );
+}
+
+/// O aviso de `owners` vazio existe nas duas linguas e nomeia o comando que
+/// resolve — sem nunca citar uma identidade.
+///
+/// E o texto **depende do perfil**. Em `standard` ninguem tinha o piso `code`
+/// para perder, e mandar promover alguem ali seria mandar rodar um comando que
+/// naquele perfil sai 64 — o aviso nao pode terminar num beco sem saida.
+#[test]
+fn o_aviso_de_config_sem_dono_aponta_o_owner_so_no_pod() {
+    for lang in [Lang::Pt, Lang::En] {
+        let no_pod = acesso::aviso_sem_dono(lang, true);
+        assert!(no_pod.contains("whatsapp owner"), "{no_pod}");
+        assert!(!no_pod.contains(NUMERO), "{no_pod}");
+
+        let em_standard = acesso::aviso_sem_dono(lang, false);
+        assert!(
+            !em_standard.contains("whatsapp owner"),
+            "em `standard` o `owner` sai 64: nao se manda rodar: {em_standard}"
+        );
+        assert!(
+            em_standard.contains("standard") || em_standard.contains("isolated-pod"),
+            "o texto tem de dizer por que nao muda nada: {em_standard}"
+        );
+        assert!(!em_standard.contains(NUMERO), "{em_standard}");
+        assert_ne!(no_pod, em_standard);
+    }
+    assert_ne!(
+        acesso::aviso_sem_dono(Lang::Pt, false),
+        acesso::aviso_sem_dono(Lang::En, false)
+    );
 }
 
 // --- o passo pos-link --------------------------------------------------------

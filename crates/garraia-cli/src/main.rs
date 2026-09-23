@@ -512,6 +512,43 @@ enum WhatsAppCommands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Promove um numero a DONO (#1395).
+    ///
+    /// Grava em `channels.whatsapp_linked.owners`, a mesma escrita do
+    /// `allow --owner`. So vale com `execution.profile = isolated-pod`, e
+    /// exige confirmacao — `--yes` fora de terminal. Quem ainda nao estava
+    /// autorizado passa a estar (o portao admite a uniao das duas listas) e a
+    /// tela avisa. Exit codes: 0 ok (inclusive quem ja era dono), 1
+    /// cancelado, 64 fora de `isolated-pod` ou sem terminal e sem `--yes`,
+    /// 65 numero invalido, 70 config ilegivel.
+    Owner {
+        /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
+        /// LID `<id>@lid`.
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        /// Confirma a promocao sem perguntar (obrigatorio fora de terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Tira o papel de DONO sem tirar o acesso (#1395).
+    ///
+    /// Sai de `owners` e, se preciso, a entrada passa para `allow` na mesma
+    /// escrita: rebaixar nunca revoga o acesso — quem revoga e o `remove`.
+    /// Funciona em qualquer perfil, porque um dono esquecido em `standard` e
+    /// justamente o privilegio latente que se quer limpar. Rebaixar o ULTIMO
+    /// dono exige confirmacao — `--yes` fora de terminal. Exit codes: 0 ok
+    /// (inclusive quem nao era dono), 1 cancelado, 64 ultimo dono sem
+    /// terminal e sem `--yes`, 65 numero invalido, 70 config ilegivel.
+    Unowner {
+        /// Numero com + e codigo do pais (ex.: +55 11 99999-8888), ou um
+        /// LID `<id>@lid`.
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        /// Confirma o rebaixamento do ultimo dono sem perguntar (obrigatorio
+        /// fora de terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1376,7 +1413,9 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                 | WhatsAppCommands::Logout
                 | WhatsAppCommands::Restore
                 | WhatsAppCommands::Allow { .. }
-                | WhatsAppCommands::Remove { .. },
+                | WhatsAppCommands::Remove { .. }
+                | WhatsAppCommands::Owner { .. }
+                | WhatsAppCommands::Unowner { .. },
             ) => false,
         },
         Commands::Admin { action } => match action {
@@ -1697,6 +1736,18 @@ fn main() -> Result<()> {
             Some(WhatsAppCommands::Users { json }) => whatsapp::Action::Users { json: *json },
             Some(WhatsAppCommands::Remove { numero, yes }) => {
                 whatsapp::Action::Remove(whatsapp::PedidoRemocao {
+                    numero: numero.clone(),
+                    yes: *yes,
+                })
+            }
+            Some(WhatsAppCommands::Owner { numero, yes }) => {
+                whatsapp::Action::Owner(whatsapp::PedidoDePapel {
+                    numero: numero.clone(),
+                    yes: *yes,
+                })
+            }
+            Some(WhatsAppCommands::Unowner { numero, yes }) => {
+                whatsapp::Action::Unowner(whatsapp::PedidoDePapel {
                     numero: numero.clone(),
                     yes: *yes,
                 })
@@ -3333,6 +3384,8 @@ mod tests {
             &["garra", "skill", "remove", "n"],
             &["garra", "whatsapp", "logout"],
             &["garra", "whatsapp", "remove", "+5511999998888"],
+            &["garra", "whatsapp", "owner", "+5511999998888"],
+            &["garra", "whatsapp", "unowner", "+5511999998888"],
             &["garra", "agents", "status"],
         ] {
             assert!(
