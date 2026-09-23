@@ -638,6 +638,23 @@ body { display: flex; flex-direction: column; }
 [data-theme="light"] .pill.warning, [data-bs-theme="light"] .pill.warning { color: #7a4500; background: rgba(255, 176, 32, 0.24); border-color: rgba(190, 120, 12, 0.45); }
 [data-theme="light"] .pill.danger,  [data-bs-theme="light"] .pill.danger  { color: #7a1a2d; background: rgba(255, 92, 122, 0.22); border-color: rgba(180, 40, 60, 0.45); }
 
+/* Execution profile badge (ADR 0024 / #1410). `standard` is the quiet
+   default and wears the cyan info tone; `isolated-pod` wears the warning
+   tone on purpose — it is the one profile that grants the agent full power
+   inside the pod, and the operator must see that without opening
+   Diagnostics. `unknown` is the fail-visible state (the endpoint did not
+   answer): muted, never silently absent. */
+.pill.exec-profile-pill .profile-value { font-family: var(--garra-mono, monospace); font-weight: 800; }
+.pill.exec-profile-pill[data-profile="standard"] { background: rgba(var(--garra-accent-rgb), 0.14); border-color: rgba(var(--garra-accent-rgb), 0.30); color: var(--garra-accent); }
+.pill.exec-profile-pill[data-profile="isolated-pod"] { background: rgba(255, 176, 32, 0.16); border-color: rgba(255, 176, 32, 0.45); color: var(--garra-warning); }
+.pill.exec-profile-pill[data-profile="unknown"] { color: var(--garra-muted); }
+[data-theme="light"] .pill.exec-profile-pill[data-profile="standard"],
+[data-bs-theme="light"] .pill.exec-profile-pill[data-profile="standard"] { color: #075c72; background: rgba(var(--garra-accent-rgb), 0.20); border-color: rgba(14, 140, 170, 0.45); }
+[data-theme="light"] .pill.exec-profile-pill[data-profile="isolated-pod"],
+[data-bs-theme="light"] .pill.exec-profile-pill[data-profile="isolated-pod"] { color: #7a4500; background: rgba(255, 176, 32, 0.24); border-color: rgba(190, 120, 12, 0.45); }
+[data-theme="light"] .pill.exec-profile-pill[data-profile="unknown"],
+[data-bs-theme="light"] .pill.exec-profile-pill[data-profile="unknown"] { color: #466080; }
+
 .status-dot {
   width: 8px; height: 8px; border-radius: 999px;
   background: var(--garra-success);
@@ -2511,6 +2528,14 @@ nav.sidebar#sidebar .sidebar-footer-btn .icon-svg rect {
     <!-- TODO plan 0117: Dashboard / Providers / Channels / Sessions / Settings / Diagnostics / Logs / Skins -->
   </nav>
   <div class="header-right">
+    <!-- Perfil de execucao (ADR 0024 / #1329, superficie da #1410). Fica no
+         header, sempre visivel: `isolated-pod` da ao agente poder total
+         dentro do pod, e o operador precisava abrir Diagnostics para
+         descobrir isso. Preenchido por loadExecutionProfileBadge(). -->
+    <span class="pill exec-profile-pill" id="execution-profile-badge" data-testid="execution-profile-badge" data-profile="unknown" title="Perfil de execucao: carregando...">
+      <svg class="icon-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c-.69 0-1.843.265-2.928.56-1.11.3-2.229.655-2.887.87a1.54 1.54 0 0 0-1.044 1.262C.545 7.169 1.928 10.487 3.606 12.682a11.777 11.777 0 0 0 2.517 2.453c.386.273.744.482 1.048.625.28.132.581.24.829.24s.548-.108.829-.24a7.159 7.159 0 0 0 1.048-.625 11.775 11.775 0 0 0 2.517-2.453c1.678-2.195 3.061-5.513 2.465-9.99a1.541 1.541 0 0 0-1.044-1.263 62.467 62.467 0 0 0-2.887-.87C9.843.266 8.69 0 8 0z"/></svg>
+      Perfil: <span class="profile-value" id="execution-profile-text">—</span>
+    </span>
     <span class="pill success status-pill-text" title="Gateway status">
       <span class="status-dot"></span>
       Gateway running
@@ -3461,6 +3486,59 @@ async function setDefaultProvider(id) {
       await loadProvidersPage(); // re-render with new default
     }
   } catch (_e) { /* swallow — UI will surface via reload */ }
+}
+
+// ─── Execution profile badge (ADR 0024 / #1329, superficie da #1410) ──
+//
+// O badge le `/api/settings/effective` e nao o check `execution.profile`
+// de `/api/diagnostics` de proposito: a linha `security.execution_profile`
+// carrega o valor do enum verbatim (`standard` | `isolated-pod`) mais a
+// origem (`default` | `file` | `env`), enquanto o check so tem prosa em
+// `detail` — um badge que dependesse dela quebraria na primeira reescrita
+// da frase. As duas rotas sao auth-free e secret-free; nenhuma das duas
+// carrega valor de segredo, e este badge nao mostra nada alem do perfil.
+//
+// O texto de `isolated-pod` e o mesmo do aviso de boot
+// (`bootstrap::execution::anunciar_no_boot`) e do `warning` do schema:
+// poder total dentro do pod, o pod e a fronteira, e como reverter.
+const EXECUTION_PROFILE_WARNING =
+  'isolated-pod: o agente tem PODER TOTAL dentro deste pod para o dono do WhatsApp em conversa 1:1 — filesystem, shell, servidores MCP e subagentes. ' +
+  'O POD e a fronteira de seguranca, nao o Garra: o perfil nao isola nada por conta propria. ' +
+  'Confirme que este processo roda num pod descartavel. Para reverter: execution.profile = standard no config.yml, ou remova a env GARRAIA_EXECUTION_PROFILE (ADR 0024).';
+const EXECUTION_PROFILE_STANDARD =
+  'standard: postura padrao — ToolGate por modo, jail de filesystem e piso `search` no WhatsApp pessoal (ADR 0024).';
+
+function renderExecutionProfileBadge(profile, source) {
+  const badge = document.getElementById('execution-profile-badge');
+  const text = document.getElementById('execution-profile-text');
+  if (!badge) return;
+  // Fail-closed na apresentacao: so os dois valores conhecidos ganham um
+  // rotulo; qualquer outra coisa vira `unknown` em vez de ser exibida como
+  // se fosse um perfil valido.
+  const known = profile === 'standard' || profile === 'isolated-pod';
+  const value = known ? profile : 'desconhecido';
+  badge.setAttribute('data-profile', known ? profile : 'unknown');
+  if (text) text.textContent = value;
+  const origem = source ? ' (fonte: ' + source + ')' : '';
+  badge.title = known
+    ? (profile === 'isolated-pod' ? EXECUTION_PROFILE_WARNING : EXECUTION_PROFILE_STANDARD) + origem
+    : 'Perfil de execucao indisponivel: o gateway nao respondeu /api/settings/effective. Veja Diagnostics > Perfil de execucao.';
+}
+
+async function loadExecutionProfileBadge() {
+  if (!document.getElementById('execution-profile-badge')) return;
+  try {
+    const r = await fetch('/api/settings/effective');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const rows = Array.isArray(j.settings) ? j.settings : [];
+    const row = rows.find(s => s && s.id === 'security.execution_profile');
+    renderExecutionProfileBadge(row && row.value, row && row.source);
+  } catch (_e) {
+    // O badge nunca some: um header sem a linha faria o operador assumir o
+    // default `standard` justamente quando a informacao esta faltando.
+    renderExecutionProfileBadge(null, null);
+  }
 }
 
 // ─── Diagnostics page (plan 0122) ────────────────────────────────────
@@ -5105,6 +5183,9 @@ async function boot() {
   refreshStatus();
   loadExtensions();
   loadSessions();
+  // ADR 0024 / #1410: o perfil de execucao no header, sem esperar o
+  // operador abrir Diagnostics. Nao bloqueia o resto do boot.
+  loadExecutionProfileBadge();
 
   // Plan 0116 T3: header-bound chrome. Bind header theme toggle + sync the
   // gateway-URL pill against the live origin (works for 127.0.0.1, Runpod
