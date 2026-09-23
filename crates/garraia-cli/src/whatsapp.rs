@@ -29,7 +29,7 @@
 //! | 0 | tudo certo, inclusive o caminho sem TTY |
 //! | 1 | o usuario cancelou (Ctrl+C, resposta "nao") |
 //! | 64 `EX_USAGE` | `allow --owner`/`owner` fora de `isolated-pod`, ou num pipe sem `--yes`; `remove` de um dono e `unowner` do ultimo dono num pipe sem `--yes` |
-//! | 65 `EX_DATAERR` | `allow`/`remove <numero>` sem codigo do pais, com letra, curinga (`*`), zero inicial ou fora de 6-15 digitos |
+//! | 65 `EX_DATAERR` | `allow`/`remove`/`owner`/`unowner <numero>` sem codigo do pais, com letra, curinga (`*`), zero inicial ou fora de 6-15 digitos |
 //! | 69 `EX_UNAVAILABLE` | falta Node/npm, o bridge nao sobe, nao ha sessao, ou `link`/`cloud` foram chamados sem terminal |
 //! | 70 `EX_SOFTWARE` | erro interno (disco, config ilegivel) |
 

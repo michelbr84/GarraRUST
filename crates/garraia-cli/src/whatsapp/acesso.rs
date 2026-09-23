@@ -1117,11 +1117,7 @@ pub fn remove(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoRemocao) ->
 /// A linha do desfecho que gravou. Pura, e so com o final do numero.
 pub fn linha_de_removido(lang: Lang, numero: &str, fora: Remocao) -> String {
     let fim = final4(numero);
-    let tipo = match (lang, e_lid(numero)) {
-        (Lang::Pt, true) | (Lang::En, true) => "LID",
-        (Lang::Pt, false) => "Número",
-        (Lang::En, false) => "Number",
-    };
+    let tipo = tipo_da_identidade(lang, numero);
     match (lang, fora.era_dono()) {
         (Lang::Pt, false) => format!("✓ {tipo} terminado em {fim} removido dos autorizados."),
         (Lang::Pt, true) => {
@@ -1339,8 +1335,17 @@ pub fn unowner(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoDePapel) -
         }
     };
     println!("{}", linha_de_rebaixado(ctx.lang, &numero, rebaixado));
-    if matches!(rebaixado, Rebaixado::Feito { .. }) && depois.donos == 0 {
-        println!("{}", aviso_sem_dono(ctx.lang));
+    if !matches!(rebaixado, Rebaixado::Feito { .. }) {
+        // Nada mudou no disco: mandar reiniciar (ou explicar o hot reload)
+        // logo depois de "nada mudou" so sugeriria que havia o que aplicar.
+        // Mesma saida do `remove` quando o numero nao estava na lista.
+        return 0;
+    }
+    if depois.donos == 0 {
+        println!(
+            "{}",
+            aviso_sem_dono(ctx.lang, config.execution.perfil().is_isolated_pod())
+        );
     }
     if depois.enabled {
         println!("{}", dica_do_gateway(ctx.lang, true, ctx.gateway_pid));
@@ -1348,14 +1353,27 @@ pub fn unowner(ctx: &Context, prompter: &dyn Prompter, pedido: &PedidoDePapel) -
     0
 }
 
-/// O aviso de `owners` vazio. Nao e um erro: e o estado default do canal, e o
-/// unico efeito e ninguem ter o piso `code` em conversa 1:1 num pod.
-pub fn aviso_sem_dono(lang: Lang) -> String {
-    tb(
+/// O aviso de `owners` vazio. Nao e um erro: e o estado default do canal.
+///
+/// O texto depende do perfil, e tem de depender. Em `standard` ninguem tinha
+/// o piso `code` para perder — dizer "ninguem recebe mais" ali descreveria uma
+/// consequencia que nao existe —, e pior: mandar promover alguem seria mandar
+/// rodar um comando que naquele perfil sai 64. O aviso do pod e o unico que
+/// aponta o `owner`.
+pub fn aviso_sem_dono(lang: Lang, pod: bool) -> String {
+    if pod {
+        return tb(
+            lang,
+            "Não há mais nenhum dono: ninguém recebe o piso `code` em conversa 1:1. Para promover alguém: `{bin} whatsapp owner <número>`.",
+            "There is no owner left: nobody gets the `code` floor in 1:1 chats. To promote someone: `{bin} whatsapp owner <number>`.",
+        );
+    }
+    t(
         lang,
-        "Não há mais nenhum dono: ninguém recebe o piso `code` em conversa 1:1. Para promover alguém: `{bin} whatsapp owner <número>`.",
-        "There is no owner left: nobody gets the `code` floor in 1:1 chats. To promote someone: `{bin} whatsapp owner <number>`.",
+        "Não há mais nenhum dono. Neste perfil (`standard`) isso não muda nada: dono só tem efeito em `isolated-pod`.",
+        "There is no owner left. In this profile (`standard`) that changes nothing: owners only have an effect in `isolated-pod`.",
     )
+    .to_string()
 }
 
 /// A linha do desfecho do `owner`. Pura, e so com o final do numero.

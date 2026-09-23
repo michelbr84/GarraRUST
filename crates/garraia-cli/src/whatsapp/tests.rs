@@ -2586,6 +2586,135 @@ fn rebaixar_quem_nao_e_dono_nao_escreve_nada() {
     );
 }
 
+/// **A invariante do #1395 pelo caminho do erro:** se a copia para `allow`
+/// nao puder acontecer, a saida de `owners` NAO acontece tambem.
+///
+/// Com `allow` gravado como escalar (config curada a mao, ou uma chave que
+/// alguem trocou de tipo), o [`lista_mut`] recusa. O teste e sobre a ORDEM da
+/// escrita, nao sobre a mensagem: o `rebaixar` mexe nas duas listas em memoria
+/// e so entao chama UM `save`, entao o erro da segunda lista aborta a primeira
+/// junto. A implementacao ingenua — tira de `owners`, grava, poe em `allow`,
+/// grava — passaria em todos os outros testes deste arquivo e falharia
+/// exatamente aqui, deixando a pessoa fora das DUAS listas no disco: sem papel
+/// e sem acesso, que e o unico desfecho que este comando nao pode produzir.
+#[test]
+fn rebaixar_com_allow_malformado_nao_tira_ninguem_de_owners() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    grava_config(
+        &ctx,
+        pod(),
+        Some(serde_json::json!({ "owners": [NUMERO], "allow": "nao-e-lista" })),
+        Some(true),
+    );
+
+    let erro = rebaixar(loader, NUMERO).expect_err("`allow` escalar tem de recusar");
+    assert!(erro.to_string().contains("allow"), "{erro}");
+    assert!(
+        !erro.to_string().contains(NUMERO),
+        "nem o erro leva a identidade inteira: {erro}"
+    );
+    assert_eq!(
+        lista(&ctx, "owners"),
+        vec![NUMERO.to_string()],
+        "o disco nao mudou: ninguem fica sem papel E sem acesso"
+    );
+    assert_eq!(
+        secao_de(&ctx).and_then(|s| s.settings.get("allow").cloned()),
+        Some(serde_json::json!("nao-e-lista")),
+        "e a chave do operador nao e reescrita as escondidas"
+    );
+
+    // E pelo comando, com `--yes` (o alvo e o unico dono): 70, sem perder o
+    // papel. O `unowner` nao tem um desfecho "meio feito".
+    assert_eq!(
+        run(
+            Action::Unowner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        70
+    );
+    assert_eq!(lista(&ctx, "owners"), vec![NUMERO.to_string()]);
+}
+
+/// Grava uma secao `whatsapp_linked` com `type:` de OUTRO canal e devolve o
+/// `config.yml` como ficou, para o teste provar que nada foi reescrito.
+fn grava_secao_de_outro_tipo(ctx: &Context, dir: &tempfile::TempDir) -> String {
+    let loader = ctx.loader.as_ref().expect("loader");
+    loader.ensure_dirs().expect("dirs");
+    let mut config = garraia_config::AppConfig::default();
+    config.channels.insert(
+        CONFIG_KEY.to_string(),
+        ChannelConfig {
+            channel_type: "whatsapp".into(),
+            enabled: Some(true),
+            settings: Default::default(),
+        },
+    );
+    loader.save(&config).expect("save");
+    std::fs::read_to_string(dir.path().join("config.yml")).expect("ler")
+}
+
+/// Secao com `type` de outro canal: o gateway a ignora, entao "promovido"
+/// seria mentira. Mesma recusa do `autorizar` — os quatro caminhos de escrita
+/// dividem o `checar_tipo`, e este teste prende o do `promover`.
+#[test]
+fn promover_recusa_secao_de_outro_tipo_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    let antes = grava_secao_de_outro_tipo(&ctx, &dir);
+
+    let erro = promover(loader, NUMERO).expect_err("secao de outro canal tem de recusar");
+    assert!(erro.to_string().contains("type"), "{erro}");
+    assert!(
+        !erro.to_string().contains(NUMERO),
+        "nem o erro leva a identidade inteira: {erro}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.yml")).expect("ler"),
+        antes,
+        "o arquivo do operador fica byte a byte como estava"
+    );
+}
+
+/// E o mesmo pelo `rebaixar`: dizer "nao e mais dono" de uma secao que o
+/// gateway ignora afirmaria um rebaixamento que nao aconteceu.
+#[test]
+fn rebaixar_recusa_secao_de_outro_tipo_sem_escrever() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    let loader = ctx.loader.as_ref().expect("loader");
+    let antes = grava_secao_de_outro_tipo(&ctx, &dir);
+
+    let erro = rebaixar(loader, NUMERO).expect_err("secao de outro canal tem de recusar");
+    assert!(erro.to_string().contains("type"), "{erro}");
+    assert!(
+        !erro.to_string().contains(NUMERO),
+        "nem o erro leva a identidade inteira: {erro}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.yml")).expect("ler"),
+        antes
+    );
+
+    // E pelo comando: 70, e o arquivo continua intocado.
+    assert_eq!(
+        run(
+            Action::Unowner(papel(ENTRADA, true)),
+            &ctx,
+            &ScriptedPrompter::default()
+        ),
+        70
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("config.yml")).expect("ler"),
+        antes
+    );
+}
+
 /// `owner` fora de `isolated-pod` sai 64 sem escrever — a MESMA porta do
 /// `allow --owner`, e pela mesma razao: em `standard` o dono nao tem poder
 /// nenhum e ganharia tudo em silencio no dia em que o perfil mudasse.
@@ -2974,13 +3103,33 @@ fn as_linhas_de_papel_nao_repetem_a_identidade_e_dizem_o_que_sobra() {
 
 /// O aviso de `owners` vazio existe nas duas linguas e nomeia o comando que
 /// resolve — sem nunca citar uma identidade.
+///
+/// E o texto **depende do perfil**. Em `standard` ninguem tinha o piso `code`
+/// para perder, e mandar promover alguem ali seria mandar rodar um comando que
+/// naquele perfil sai 64 — o aviso nao pode terminar num beco sem saida.
 #[test]
-fn o_aviso_de_config_sem_dono_aponta_o_owner() {
+fn o_aviso_de_config_sem_dono_aponta_o_owner_so_no_pod() {
     for lang in [Lang::Pt, Lang::En] {
-        let aviso = acesso::aviso_sem_dono(lang);
-        assert!(aviso.contains("whatsapp owner"), "{aviso}");
-        assert!(!aviso.contains(NUMERO), "{aviso}");
+        let no_pod = acesso::aviso_sem_dono(lang, true);
+        assert!(no_pod.contains("whatsapp owner"), "{no_pod}");
+        assert!(!no_pod.contains(NUMERO), "{no_pod}");
+
+        let em_standard = acesso::aviso_sem_dono(lang, false);
+        assert!(
+            !em_standard.contains("whatsapp owner"),
+            "em `standard` o `owner` sai 64: nao se manda rodar: {em_standard}"
+        );
+        assert!(
+            em_standard.contains("standard") || em_standard.contains("isolated-pod"),
+            "o texto tem de dizer por que nao muda nada: {em_standard}"
+        );
+        assert!(!em_standard.contains(NUMERO), "{em_standard}");
+        assert_ne!(no_pod, em_standard);
     }
+    assert_ne!(
+        acesso::aviso_sem_dono(Lang::Pt, false),
+        acesso::aviso_sem_dono(Lang::En, false)
+    );
 }
 
 // --- o passo pos-link --------------------------------------------------------

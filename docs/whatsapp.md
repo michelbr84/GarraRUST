@@ -95,6 +95,12 @@ a tem, a entrada passa para `allow` **na mesma escrita** — nao existe instante
 no disco em que a pessoa nao esteja em nenhuma das duas listas. Quem quer
 revogar de fato usa o `remove`.
 
+Por isso **`owner X` seguido de `unowner X` nao e um no-op**: X termina em
+`allow`, autorizado, mesmo que antes dos dois comandos ele nao estivesse em
+lista nenhuma — promover da acesso (o portao e a uniao das duas listas) e
+rebaixar nunca o tira. Para desfazer o acesso e preciso o terceiro comando,
+`garraia whatsapp remove X`.
+
 A assimetria entre os dois comandos e proposital: **promover** exige
 `isolated-pod` (mesma porta do `allow --owner`: em `standard` o dono nao tem
 poder nenhum e ganharia tudo em silencio no dia em que o perfil mudasse),
