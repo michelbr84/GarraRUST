@@ -433,3 +433,86 @@ test.describe('Garra Glass — "Em breve" tags (#1116)', () => {
     await expect(page.locator('#auth-section')).toBeVisible();
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// #1410 — o perfil de execucao (ADR 0024) existia so como uma linha dentro da
+// pagina Diagnostics. `isolated-pod` da ao agente poder total dentro do pod,
+// entao o operador precisa ver o perfil sem navegar. O badge vive no header,
+// le `/api/settings/effective` e troca de tom (cyan/ambar) conforme o perfil.
+//
+// O gateway do CI sobe sem secao `execution:` no config.yml e sem
+// GARRAIA_EXECUTION_PROFILE (`.github/workflows/ci.yml`, passos "Write
+// Playwright gateway config" e "Start gateway"), logo o perfil esperado aqui
+// e `standard`, vindo do default compilado.
+// ────────────────────────────────────────────────────────────────────────────
+
+test.describe('Garra Glass — execution profile badge (#1410)', () => {
+  test('o header mostra o perfil `standard` do gateway do CI', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openWebchat(page);
+
+    const badge = page.getByTestId('execution-profile-badge');
+    await expect(badge).toBeVisible();
+    // O badge nasce em `unknown` e so vira `standard` depois do fetch.
+    await expect(badge).toHaveAttribute('data-profile', 'standard', { timeout: 15_000 });
+    await expect(badge).toContainText('standard');
+    // Em `standard` o tooltip descreve a postura padrao, nao o aviso do pod.
+    await expect(badge).toHaveAttribute('title', /standard: postura padrao/);
+    await expect(badge).not.toHaveAttribute('title', /PODER TOTAL/);
+  });
+
+  test('`isolated-pod` destaca o badge e carrega o aviso do ADR 0024', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // O perfil so muda por config/env no boot do gateway, e o CI roda um
+    // unico gateway `standard`. Interceptar a rota e o que torna testavel o
+    // segundo ramo — o unico que importa para seguranca — sem subir um
+    // segundo processo.
+    await page.route('**/api/settings/effective*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          settings: [
+            { id: 'security.execution_profile', value: 'isolated-pod', configured: null, source: 'env' },
+          ],
+        }),
+      }),
+    );
+
+    await openWebchat(page);
+
+    const badge = page.getByTestId('execution-profile-badge');
+    await expect(badge).toHaveAttribute('data-profile', 'isolated-pod', { timeout: 15_000 });
+    await expect(badge).toContainText('isolated-pod');
+    await expect(badge).toHaveAttribute('title', /PODER TOTAL/);
+    await expect(badge).toHaveAttribute('title', /fronteira de seguranca/);
+    await expect(badge).toHaveAttribute('title', /execution\.profile = standard/);
+    await expect(badge).toHaveAttribute('title', /fonte: env/);
+  });
+
+  test('sem resposta da rota o badge fica `unknown` em vez de sumir', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.route('**/api/settings/effective*', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{}' }),
+    );
+
+    await openWebchat(page);
+
+    const badge = page.getByTestId('execution-profile-badge');
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute('data-profile', 'unknown', { timeout: 15_000 });
+    await expect(badge).toContainText('desconhecido');
+  });
+
+  // A linha que alimenta o badge: valor do enum verbatim, nunca prosa.
+  test('/api/settings/effective carrega security.execution_profile', async ({ request }) => {
+    const r = await request.get('/api/settings/effective');
+    expect(r.status()).toBe(200);
+    const j = await r.json();
+    const rows = j.settings as Array<{ id: string; value: unknown; source: unknown }>;
+    const row = rows.find((s) => s.id === 'security.execution_profile');
+    expect(row).toBeDefined();
+    expect(['standard', 'isolated-pod']).toContain(row!.value);
+    expect(['default', 'file', 'env', 'runtime']).toContain(row!.source);
+  });
+});
