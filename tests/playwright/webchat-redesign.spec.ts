@@ -300,10 +300,41 @@ test.describe('Garra Glass — multi-page router matrix', () => {
     expect(['ok', 'warning', 'error']).toContain(j.status);
     expect(j.checks.length).toBeGreaterThanOrEqual(10);
     // Plan 0122 invariant: every check carries id + label + status.
+    // #1437 added `disabled` and `not_configured` to the vocabulary — both
+    // neutral, and both additive: the four original names are unchanged.
     for (const c of j.checks) {
       expect(typeof c.id).toBe('string');
       expect(typeof c.label).toBe('string');
-      expect(['ok', 'warning', 'error', 'skipped']).toContain(c.status);
+      expect([
+        'ok',
+        'warning',
+        'error',
+        'skipped',
+        'disabled',
+        'not_configured',
+      ]).toContain(c.status);
+    }
+  });
+
+  // #1437: an optional subsystem nobody set up must not colour the report.
+  // A fresh local gateway has no TLS and no linked WhatsApp device, and those
+  // two rows are the ones that used to be indistinguishable from a breakage.
+  test('/api/diagnostics reports unconfigured subsystems as not_configured', async ({ request }) => {
+    const r = await request.get('/api/diagnostics');
+    expect(r.status()).toBe(200);
+    const j = await r.json();
+    const statusById: Record<string, string> = {};
+    for (const c of j.checks as Array<{ id: string; status: string }>) {
+      statusById[c.id] = c.status;
+    }
+    // Neither is configured on the CI gateway, and neither is a defect.
+    for (const id of ['security.tls', 'whatsapp.linked']) {
+      expect(statusById[id]).toBe('not_configured');
+    }
+    // The CI gateway starts without `--with-voice`: there is a switch and it
+    // is off, which is `disabled` — not an unreachable TTS/STT server.
+    for (const id of ['voice.tts', 'voice.stt']) {
+      expect(statusById[id]).toBe('disabled');
     }
   });
 });

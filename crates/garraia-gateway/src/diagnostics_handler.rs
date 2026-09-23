@@ -8,6 +8,11 @@
 //! Secret-free: when reporting on a secret (e.g. JWT_SECRET) we only
 //! emit `configured: true|false`, never the value.
 //!
+//! Honest statuses (#1437): "the operator never set this up" is a different
+//! fact from "this is set up and broken", and the report says which. See
+//! [`CheckStatus`] for the taxonomy and [`status_agregado`] for why the
+//! neutral states never colour the aggregate.
+//!
 //! The two voice checks (#1098) are the only ones that touch the network, and
 //! only when voice mode is on: with TTS/STT down the gateway used to log a
 //! warning nobody read, so `POST /api/tts` answered with a silent text
@@ -30,8 +35,41 @@ use serde::Serialize;
 
 use crate::state::SharedState;
 
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "lowercase")]
+/// Severity of one diagnostic row.
+///
+/// #1437: the four original variants collapsed two very different facts into
+/// the same colour. A subsystem the operator never set up (no Telegram token,
+/// no TLS certificate, no JWT secret on a local single-user gateway) looked
+/// exactly like one that IS set up and is failing — a fresh install lit up
+/// yellow for things nobody asked for, and the rows that matter drowned in it.
+///
+/// The taxonomy, and the line between the three neutral states:
+///
+/// | Variant | Means | Blocks the aggregate? |
+/// |---|---|---|
+/// | `Ok` | working | no |
+/// | `Warning` | working, with a caveat worth reading | **yes** (`warning`) |
+/// | `Error` | configured and **broken** — needs attention | **yes** (`error`) |
+/// | `Disabled` | there is a switch for it and it is off (voice mode) | no |
+/// | `NotConfigured` | optional subsystem this install never set up | no |
+/// | `Skipped` | the check does not apply: nothing was declared to inspect | no |
+///
+/// `Disabled` vs `NotConfigured` vs `Skipped` is a distinction about the
+/// operator's intent, not about severity: all three are neutral and none of
+/// them ever pushes the report's aggregate status off `ok` (see
+/// [`status_agregado`]). What they buy is an honest console: "you turned this
+/// off", "you never set this up" and "there is nothing here to look at" read
+/// differently to the person staring at the page.
+///
+/// **Additive by contract.** The four original variants keep their exact
+/// serialized names (`ok` / `warning` / `error` / `skipped`) — `snake_case`
+/// and `lowercase` agree on every single-word variant, so switching the
+/// rename rule only adds `disabled` and `not_configured` to the vocabulary.
+/// Any consumer must therefore treat an unknown status as neutral rather than
+/// as an error (the Web Console does: unknown falls back to the `skipped`
+/// rendering).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum CheckStatus {
     /// All good.
     Ok,
@@ -39,8 +77,36 @@ enum CheckStatus {
     Warning,
     /// Broken — needs the user's attention.
     Error,
-    /// Not applicable (the subsystem isn't enabled in this build).
+    /// Not applicable: nothing was declared for this check to inspect.
     Skipped,
+    /// Deliberately off: there is a switch for this subsystem and the
+    /// operator left it off. Not a defect (#1437).
+    Disabled,
+    /// Optional subsystem that this install never configured. Not a defect,
+    /// and never the same thing as a configured subsystem that fails (#1437).
+    NotConfigured,
+}
+
+/// The report's aggregate: `error` > `warning` > `ok`.
+///
+/// The three neutral states (`skipped`, `disabled`, `not_configured`) never
+/// contribute — a local single-user install with no Postgres, no object
+/// storage, no voice and no channel tokens must aggregate to `ok`, because
+/// none of those absences is a defect. The match is exhaustive on purpose:
+/// a variant added later has to say out loud which side it is on.
+fn status_agregado(checks: &[DiagnosticCheck]) -> &'static str {
+    let mut pior = "ok";
+    for c in checks {
+        match c.status {
+            CheckStatus::Error => return "error",
+            CheckStatus::Warning => pior = "warning",
+            CheckStatus::Ok
+            | CheckStatus::Skipped
+            | CheckStatus::Disabled
+            | CheckStatus::NotConfigured => {}
+        }
+    }
+    pior
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -263,8 +329,11 @@ fn voice_check(
 ) -> DiagnosticCheck {
     let ep = endpoint_publico(endpoint);
     let (status, detail, next_step) = match probe {
+        // #1437: `disabled`, nao `skipped`. Ha um interruptor para o modo voz
+        // e o operador o deixou desligado — dizer isso e mais honesto do que
+        // "nao se aplica", e continua neutro no agregado.
         VoiceProbe::Disabled => (
-            CheckStatus::Skipped,
+            CheckStatus::Disabled,
             "voice mode not enabled (start the gateway with --with-voice)".to_string(),
             None,
         ),
@@ -369,7 +438,7 @@ async fn sondas_de_voz(cfg: &garraia_config::VoiceConfig) -> (VoiceProbe, VoiceP
 ///
 /// | Veredito | Status | Por que |
 /// |---|---|---|
-/// | `NotLinked` | `skipped` | canal opcional que ninguem ligou — nao e defeito |
+/// | `NotLinked` | `not_configured` | canal opcional que ninguem ligou — nao e defeito (#1437) |
 /// | `MissingDependencies` | `error` | o operador ligou e o canal nao funciona |
 /// | `BridgeDown` | `error` | idem: ha sessao e nao ha canal |
 /// | `Connected` | `ok` | |
@@ -388,7 +457,7 @@ fn whatsapp_linked_check(
 
     let (status, detail) = match saude {
         LinkHealth::NotLinked => (
-            CheckStatus::Skipped,
+            CheckStatus::NotConfigured,
             "nenhum aparelho vinculado (canal opcional)".to_string(),
         ),
         LinkHealth::MissingDependencies => (
@@ -998,6 +1067,11 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
 
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
+    //
+    // #1437: `not_configured`, nao `warning`. Um gateway que recebe as envs do
+    // shell pai (ou que nao precisa de nenhuma) esta certo sem `.env` — o
+    // amarelo ali era ruido permanente numa instalacao local recem-feita. O
+    // `next_step` fica: ele diz como LIGAR, nao como consertar.
     let dotenv = std::path::Path::new(".env").exists();
     checks.push(DiagnosticCheck {
         id: "env.dotenv",
@@ -1005,7 +1079,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         status: if dotenv {
             CheckStatus::Ok
         } else {
-            CheckStatus::Warning
+            CheckStatus::NotConfigured
         },
         detail: if dotenv {
             ".env loaded".to_string()
@@ -1048,10 +1122,12 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     checks.push(DiagnosticCheck {
         id: "channel.telegram",
         label: "Telegram channel",
+        // #1437: um canal opcional sem token nao e "nao se aplica" — e um
+        // subsistema real que esta instalacao nunca configurou.
         status: if tg_configured {
             CheckStatus::Ok
         } else {
-            CheckStatus::Skipped
+            CheckStatus::NotConfigured
         },
         detail: if tg_configured {
             "TELOXIDE_TOKEN configured".to_string()
@@ -1069,7 +1145,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         status: if dc_configured {
             CheckStatus::Ok
         } else {
-            CheckStatus::Skipped
+            CheckStatus::NotConfigured
         },
         detail: if dc_configured {
             "DISCORD_TOKEN configured".to_string()
@@ -1088,10 +1164,15 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     checks.push(DiagnosticCheck {
         id: "secrets.jwt",
         label: "JWT signing secret",
+        // #1437: o proprio `next_step` abaixo diz que este secret e OPCIONAL
+        // num gateway local single-user — e ainda assim a linha saia amarela
+        // em toda instalacao que nunca quis auth. `not_configured` e o fato:
+        // ninguem configurou. Quem LIGA auth descobre o problema pelos 503 do
+        // `/v1/auth/*`, que continuam sendo o comportamento fail-closed.
         status: if jwt_configured {
             CheckStatus::Ok
         } else {
-            CheckStatus::Warning
+            CheckStatus::NotConfigured
         },
         detail: if jwt_configured {
             "configured (value masked)".to_string()
@@ -1137,10 +1218,12 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     checks.push(DiagnosticCheck {
         id: "security.tls",
         label: "TLS",
+        // #1437: sem certificado configurado a linha e `not_configured` — o
+        // gateway nao "pulou" a verificacao, simplesmente nao ha TLS montado.
         status: if tls_on {
             CheckStatus::Ok
         } else {
-            CheckStatus::Skipped
+            CheckStatus::NotConfigured
         },
         detail: if tls_on {
             "TLS enabled".to_string()
@@ -1237,20 +1320,9 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         stt_probe,
     ));
 
-    // Aggregate status: error > warning > ok (skipped is neutral).
-    let status = if checks
-        .iter()
-        .any(|c| matches!(c.status, CheckStatus::Error))
-    {
-        "error"
-    } else if checks
-        .iter()
-        .any(|c| matches!(c.status, CheckStatus::Warning))
-    {
-        "warning"
-    } else {
-        "ok"
-    };
+    // Aggregate status: error > warning > ok. `skipped`, `disabled` e
+    // `not_configured` sao neutros (#1437) — ver `status_agregado`.
+    let status = status_agregado(&checks);
 
     Json(DiagnosticsReport {
         status,
@@ -1309,12 +1381,12 @@ mod tests {
         ))
     }
 
-    /// Canal que ninguem ligou nao e defeito — e `skipped`, como o modo voz
-    /// desligado. Mas o proximo passo existe: e como a pessoa liga.
+    /// Canal que ninguem ligou nao e defeito — e `not_configured` (#1437; era
+    /// `skipped`). Mas o proximo passo existe: e como a pessoa liga.
     #[test]
-    fn nao_vinculado_e_skipped_com_o_comando_de_link() {
+    fn nao_vinculado_e_nao_configurado_com_o_comando_de_link() {
         let c = wa(LinkHealth::NotLinked);
-        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert_eq!(c.status, CheckStatus::NotConfigured);
         // No harness o executavel e `garraia_gateway-<hash>`, que cai no
         // nome canonico: o passo cita `garraia`, nunca o alias fixo (#1329).
         assert_eq!(
@@ -1390,7 +1462,7 @@ mod tests {
 
         // Nao vinculado e ponte quebrada ficam com o veredito proprio.
         let c = acesso(LinkHealth::NotLinked, &ligado_vazio, 0);
-        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert_eq!(c.status, CheckStatus::NotConfigured);
         let c = acesso(LinkHealth::BridgeDown, &ligado_vazio, 0);
         assert!(matches!(c.status, CheckStatus::Error));
         assert!(
@@ -1521,9 +1593,10 @@ mod tests {
             .find(|c| c.id == "whatsapp.linked")
             .expect("o relatorio precisa carregar a linha `whatsapp.linked`");
 
-        assert!(
-            matches!(linha.status, CheckStatus::Skipped),
-            "sem sessao a linha e `skipped`: {:?}",
+        assert_eq!(
+            linha.status,
+            CheckStatus::NotConfigured,
+            "sem sessao a linha e `not_configured` (#1437): {:?}",
             linha.status
         );
         assert_eq!(
@@ -2018,10 +2091,11 @@ mod tests {
         }
     }
 
-    /// #1098: com o modo voz desligado nao ha servidor para alcancar, e isso
-    /// nao e defeito — a linha e `skipped`, nao `error`.
+    /// #1098 + #1437: com o modo voz desligado nao ha servidor para alcancar, e
+    /// isso nao e defeito — a linha e `disabled` (havia um interruptor e ele
+    /// esta desligado), nunca `error` nem `warning`.
     #[test]
-    fn voz_desligada_e_skipped_e_nao_erro() {
+    fn voz_desligada_e_disabled_e_nao_erro() {
         let c = voice_check(
             "voice.tts",
             "TTS server",
@@ -2030,10 +2104,10 @@ mod tests {
             TTS_LOGS_STEP,
             VoiceProbe::Disabled,
         );
-        assert!(matches!(c.status, CheckStatus::Skipped));
+        assert_eq!(c.status, CheckStatus::Disabled);
         assert!(
             c.next_step.is_none(),
-            "skipped nao sugere proximo passo: nao ha nada a consertar"
+            "desligado nao sugere proximo passo: nao ha nada a consertar"
         );
     }
 
@@ -2425,6 +2499,152 @@ mod tests {
         );
 
         *VOICE_PROBE_CACHE.lock().await = None;
+    }
+
+    // ─── #1437: desligado / nao configurado / quebrado ────────────────────
+
+    fn linha(id: &'static str, status: CheckStatus) -> DiagnosticCheck {
+        DiagnosticCheck {
+            id,
+            label: id,
+            status,
+            detail: String::new(),
+            next_step: None,
+        }
+    }
+
+    /// O contrato JSON e **aditivo**: as quatro variantes originais mantem o
+    /// nome serializado que qualquer cliente ja le, e as duas novas entram ao
+    /// lado. Trocar `lowercase` por `snake_case` nao podia mexer em nenhuma
+    /// das quatro — este teste e o que segura isso.
+    #[test]
+    fn o_vocabulario_serializado_e_aditivo() {
+        for (status, esperado) in [
+            (CheckStatus::Ok, "\"ok\""),
+            (CheckStatus::Warning, "\"warning\""),
+            (CheckStatus::Error, "\"error\""),
+            (CheckStatus::Skipped, "\"skipped\""),
+            (CheckStatus::Disabled, "\"disabled\""),
+            (CheckStatus::NotConfigured, "\"not_configured\""),
+        ] {
+            let json = serde_json::to_string(&status).expect("serializa");
+            assert_eq!(json, esperado, "{status:?}");
+        }
+    }
+
+    /// O coracao da #1437: uma instalacao local que nunca ligou Postgres, nem
+    /// storage S3, nem voz, nem canal nenhum tem varias linhas neutras — e o
+    /// relatorio inteiro continua `ok`. `disabled` e `not_configured` sao
+    /// pares de `skipped` para efeito de agregacao.
+    #[test]
+    fn os_tres_estados_neutros_nao_tiram_o_agregado_do_ok() {
+        let checks = vec![
+            linha("gateway.responds", CheckStatus::Ok),
+            linha("workspace.postgres", CheckStatus::NotConfigured),
+            linha("storage.s3", CheckStatus::NotConfigured),
+            linha("secrets.jwt", CheckStatus::NotConfigured),
+            linha("voice.tts", CheckStatus::Disabled),
+            linha("voice.stt", CheckStatus::Disabled),
+            linha("mcp.servers", CheckStatus::Skipped),
+        ];
+        assert_eq!(status_agregado(&checks), "ok");
+        assert_eq!(status_agregado(&[]), "ok");
+    }
+
+    /// E o outro lado da mesma moeda: um subsistema que ESTA configurado e
+    /// falha continua `error`, e continua pintando o agregado de vermelho.
+    /// Amaciar "nao configurado" nao pode amaciar "quebrado".
+    #[test]
+    fn subsistema_configurado_e_quebrado_continua_error() {
+        let quebrado = voice_check(
+            "voice.tts",
+            "TTS server",
+            ENDPOINT,
+            TTS_NEXT_STEP,
+            TTS_LOGS_STEP,
+            VoiceProbe::Unreachable("nothing listening (connection refused)"),
+        );
+        assert_eq!(quebrado.status, CheckStatus::Error);
+        assert!(quebrado.next_step.is_some(), "todo erro tem proximo passo");
+
+        let checks = vec![
+            linha("secrets.jwt", CheckStatus::NotConfigured),
+            linha("voice.stt", CheckStatus::Disabled),
+            quebrado,
+        ];
+        assert_eq!(status_agregado(&checks), "error");
+
+        // E o `warning` segue acima do `ok` e abaixo do `error`.
+        assert_eq!(
+            status_agregado(&[
+                linha("a", CheckStatus::NotConfigured),
+                linha("b", CheckStatus::Warning),
+            ]),
+            "warning"
+        );
+        assert_eq!(
+            status_agregado(&[
+                linha("a", CheckStatus::Warning),
+                linha("b", CheckStatus::Error),
+            ]),
+            "error"
+        );
+    }
+
+    /// **A fiacao.** Uma instalacao local single-user (SQLite, sem Postgres,
+    /// sem S3, sem voz, sem TLS, sem aparelho vinculado) nao pode ganhar
+    /// amarelo nem vermelho por nada disso no relatorio DE VERDADE — era
+    /// exatamente o que a #1437 reporta. Os dois checks que dependem de env do
+    /// host (`secrets.jwt`, `env.dotenv`, tokens de canal) sao aceitos como
+    /// `ok` OU `not_configured`: o que este teste proibe e o amarelo.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn ausencia_de_subsistema_opcional_nunca_pinta_o_relatorio() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let state: SharedState = std::sync::Arc::new(estado_no_config_dir(config, dir.path()));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let acha = |id: &str| {
+            report
+                .checks
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap_or_else(|| panic!("linha `{id}`"))
+                .clone()
+        };
+
+        // Sem interruptor ligado: voz desligada e `disabled`, nao `error`.
+        for id in ["voice.tts", "voice.stt"] {
+            assert_eq!(acha(id).status, CheckStatus::Disabled, "{id}");
+        }
+        // Nunca configurados nesta instalacao.
+        for id in ["security.tls", "whatsapp.linked"] {
+            assert_eq!(acha(id).status, CheckStatus::NotConfigured, "{id}");
+        }
+        // Dependem de env do host: `ok` quando a env existe, `not_configured`
+        // quando nao — nunca `warning`.
+        for id in [
+            "secrets.jwt",
+            "env.dotenv",
+            "channel.telegram",
+            "channel.discord",
+        ] {
+            let c = acha(id);
+            assert!(
+                matches!(c.status, CheckStatus::Ok | CheckStatus::NotConfigured),
+                "{id} nao pode pedir atencao por uma ausencia opcional: {:?}",
+                c.status
+            );
+        }
+
+        // E o vocabulario novo chega mesmo ao corpo da resposta.
+        let json = serde_json::to_string(&report).expect("serializa");
+        assert!(json.contains("\"not_configured\""), "{json}");
+        assert!(json.contains("\"disabled\""), "{json}");
     }
 }
 
