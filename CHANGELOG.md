@@ -6,6 +6,268 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-09-25
+
+Release de estabilizacao depois da v0.4.5. O CI volta a funcionar sem depender
+de registry para o MinIO: o quay.io fechou a distribuicao anonima em 2026-09-24
+e a imagem passa a ser construida a partir do fonte da tag fixada (#1458). Uma
+sessao do WhatsApp sem projeto ganha um workspace padrao seguro **isolado por
+sessao** em vez de `NoRoots` (#1378, #1449); um `X-Session-Id` forjado deixa de
+alcancar a conversa de outra pessoa (#1462); o WhatsApp pessoal ganha `users`,
+`remove`, `owner`/`unowner`, um erro proprio para `allow '*'` e o `link` termina
+mostrando quem pode falar com o Garra; o `garra init` oferece o WhatsApp ao lado
+do Telegram; o diagnostico separa "nunca configurado" de "quebrado" e o console
+mostra o perfil de execucao; servidores MCP deixam de virar slash commands; o
+runbook de release ganha o gate de dogfood manual que faltava. Sem mudanca de
+formato de config nem de sessao: `garraia update` a partir da v0.4.5 e direto.
+
+### Added
+- **`garra whatsapp users` lista quem pode falar com o GarraIA (#1393).** O `status`
+  dizia so QUANTOS estavam autorizados, e quem tinha liberado tres numeros meses
+  atras precisava abrir o `config.yml` a mao para saber quais eram. O comando novo
+  mostra o papel (`allow` ou `owners`) e os quatro ultimos digitos de cada
+  identidade — nunca o numero inteiro, nem na tela nem no `--json`, que sai como
+  documento unico (`{enabled, authorized, owners, users[]}`) para script.
+- **`garra whatsapp remove <numero>` revoga o acesso pela CLI (#1394).** Ate aqui
+  autorizar tinha comando e revogar so existia editando o `config.yml`. O `remove`
+  e o espelho do `allow`: tira a identidade de `allow` e de `owners` pela mesma
+  chave que o portao do gateway compara (o celular com e sem o nono digito e o
+  mesmo), preserva as outras chaves da secao e **nao** desliga o canal. Remover um
+  DONO exige confirmacao explicita — `--yes`/`-y` fora do terminal, pergunta com
+  default NAO dentro dele —, e quem nao estava na lista sai 0, porque revogar e
+  idempotente.
+- **`garra whatsapp owner` / `unowner` administram o papel de dono (#1395).** Ate aqui
+  virar dono so acontecia junto com o `allow --owner` (ou dentro do `link`), e deixar
+  de ser dono so existia editando o `config.yml` a mao — ou passando o `remove`, que
+  tira o acesso junto. O `owner <numero>` grava em `owners` pela mesma escrita do
+  `allow --owner`, com as mesmas duas portas: `execution.profile = isolated-pod`
+  obrigatorio (64 fora dele) e confirmacao explicita, `--yes`/`-y` fora do terminal.
+  O `unowner <numero>` tira o papel **sem nunca tirar o acesso**: quando a identidade
+  so existia em `owners`, a entrada passa para `allow` na mesma escrita, entao nao ha
+  instante no disco em que a pessoa fique fora das duas listas. Rebaixar funciona em
+  qualquer perfil, de proposito — e em `standard` que um dono esquecido e um
+  privilegio latente —, e a confirmacao vale para o **ultimo** dono, o unico
+  rebaixamento que deixa a configuracao sem dono nenhum. Os dois comandos sao
+  idempotentes, so imprimem os quatro ultimos digitos de cada identidade e aparecem
+  no `whatsapp users` e no `status` na mensagem seguinte, sem reiniciar o gateway.
+- **Web Console mostra o perfil de execucao no header (#1410).** O perfil do
+  ADR 0024 (`standard` | `isolated-pod`) so aparecia como uma linha dentro da
+  pagina Diagnostics, e `isolated-pod` e justamente o perfil que da ao agente
+  poder total dentro do pod — o operador precisava navegar para descobrir em
+  qual dos dois o gateway esta. Agora um badge fixo no header le
+  `/api/settings/effective` (auth-free, secret-free), mostra o valor e a
+  origem (`default` | `file` | `env`) e, em `isolated-pod`, muda de tom e
+  carrega no tooltip o mesmo aviso do boot: o pod e a fronteira de seguranca,
+  nao o Garra, e como reverter.
+- **O `garra init` oferece WhatsApp ao lado do Telegram (#1430).** O passo de canal
+  do wizard so sabia perguntar por Telegram, e quem instalava o GarraIA para usar
+  no WhatsApp tinha de adivinhar que existe um `garra whatsapp link` separado. Ele
+  virou uma lista: nenhum canal (o default — Enter sem ler continua nao conectando
+  nada), Telegram, WhatsApp pelo numero pessoal, ou os dois. O rotulo do WhatsApp
+  ja diz na lista que o caminho e o de aparelho conectado por um cliente NAO
+  oficial, e escolher a opcao entrega ao mesmo fluxo de sempre — tela de
+  consentimento com default nao, QR e a pergunta de quem pode falar, nada
+  reimplementado no wizard. A entrega roda DEPOIS de o `config.yml` ser escrito,
+  porque o vinculo grava na mesma secao `channels.whatsapp_linked`; um vinculo que
+  nao complete (sem Node, QR nao lido, desistencia) nao derruba o `init`, que so
+  diz como tentar de novo. Instalacao sem terminal nao chega ao passo.
+- **`scripts/setup-toolchain.sh` fixa a toolchain Rust localmente (#1452).**
+  O workspace exige rustc 1.95+, mas nada instalava/ativava essa versao
+  automaticamente para quem clonava o repo — o sintoma era `cargo
+  check`/`cargo test` falhando com "is not supported" ate rodar `rustup
+  update` manualmente. Um `rust-toolchain.toml` commitado foi tentado (PR
+  #1454) e quebrou os jobs de CI que fazem cross-compile com targets extras
+  (Android, Windows ARM64): o arquivo tem precedencia sobre a toolchain que
+  `dtolnay/rust-toolchain` acabou de instalar com esses targets. O script
+  evita isso: usa `rustup override set`, que grava a preferencia em
+  `~/.rustup/settings.toml` (no HOME de quem roda), nunca em um arquivo do
+  repo, entao o CI nao ve nem herda a mudanca.
+
+### Changed
+- **O `garra whatsapp link` termina mostrando o acesso em vigor (#1429, parcial).** O
+  wizard fechava com "pronto para receber mensagens" sem dizer quem, afinal, podia
+  falar com o GarraIA por aquele WhatsApp: as contagens so apareciam no meio do
+  fluxo, e quem acabara de parear (ou de re-vincular um aparelho com `allow` herdado)
+  saia sem ver o portao. Agora, antes da linha final, ele imprime o MESMO resumo do
+  `garra whatsapp users` — canal ligado ou nao, contagens e as identidades por
+  papel e pelos quatro ultimos digitos, nunca o numero inteiro. E a mesma funcao de
+  formatacao das outras duas telas, e nao uma terceira copia; com o portao vazio o
+  aviso de "ninguem autorizado" sai uma vez so, e nao repetido como linha final.
+  Entrega **parcial** da #1429: modo de admissao (restrito/aberto) e niveis
+  Chat/Read/Full/Write nao entram aqui — dependem da #1388 (WhatsApp Access Policy
+  v2), #1390 e #1392, e mostra-los antes disso prometeria um controle que o portao
+  do gateway nao aplica.
+- **O runbook de release ganha um gate de dogfood manual antes do tag
+  (#1439).** `docs/releasing.md` §1.5 fixa a matriz que alguem com maquina e
+  telefone executa contra o candidato — instalacao limpa nos dois
+  instaladores, WhatsApp de ponta a ponta, restart sem QR, `update` e
+  `rollback`, os bundles do desktop, isolamento do workspace por sessao e
+  diagnostico sem aviso espurio — com data, sistema e executor registrados no
+  corpo da PR de release. Linha sem data, release nao sai. E a resposta ao
+  padrao das v0.4.4/v0.4.5, verdes no CI e quebradas no caminho real; a
+  automacao do que da para automatizar segue na #1426.
+
+### Fixed
+- **Sessao sem projeto ganha um workspace seguro em vez de nenhuma raiz (#1378).** Uma
+  sessao do WhatsApp recem-vinculada nasce com `working_dir = null`. Com
+  `agent.file_roots` vazio — o default de toda instalacao limpa — o conjunto de raizes
+  do jail das file tools ficava vazio, e vazio significa negar tudo (#1244): `file_read`,
+  `file_write` e `list_dir` apareciam registradas, o modo as anunciava, e toda chamada
+  voltava recusada. A capability existia no papel e nao existia na pratica. Agora, quando
+  nada foi declarado, a raiz default e `<data_dir>/workspace/<sessao>` — um subdiretorio
+  **por sessao** dentro do endereco que o ADR 0024 ja nomeia como o workspace do proprio
+  Garra —, igual nos dois perfis de execucao:
+  `execution.pod_root` muda so a raiz do servidor MCP `filesystem` e **nao** e herdado
+  pelas file tools nativas. O boot cria esse diretorio — e **so** ele: uma raiz
+  declarada com typo continua nao sendo materializada, para nao plantar diretorio no host
+  por efeito colateral da subida. **Nunca** `/` e **nunca** o `$HOME`: um caminho mais
+  largo segue sendo escolha explicita do operador. Nada muda para quem declarou raiz em
+  `agent.file_roots` ou em `GARRAIA_FILE_ROOTS` — a declaracao vence e o default nem e
+  consultado —, caminho fora da raiz continua recusado com a mesma mensagem unica, e se
+  o workspace nao puder ser criado o jail volta ao fail-closed anterior, com aviso no
+  boot. O `/api/diagnostics` passou a trazer a linha `files.workspace`, que diz qual e o
+  workspace efetivo e **por que** ele e esse (declaracao do operador, workspace padrao,
+  ou nenhuma raiz). O workspace novo nasce `0700` (so o dono), um symlink plantado no
+  lugar dele e recusado em vez de seguido — senao o jail herdaria o alvo do link, que
+  poderia ser justamente `/` ou o `$HOME` —, e a linha do `/api/diagnostics` relativiza
+  o caminho tambem quando o `data_dir` passa por symlink, onde antes ela caia no
+  fallback e imprimia o caminho absoluto do host numa rota auth-free. Vale notar que
+  este default tambem passa a alcancar a `RunTestsTool`: a combinacao `file_write` +
+  `run_tests` que a #1272 (SANDBOX-1) marca como adjacente ao shell do host agora tem
+  um diretorio onde operar, dentro do jail.
+
+  **O workspace padrao e isolado por sessao (#1449).** A primeira versao desta correcao
+  punha `<data_dir>/workspace` como raiz **fixa** do jail, e raiz fixa e a mesma para
+  toda sessao, canal e principal: um contato do WhatsApp escrevia ali e o turno de outro
+  lia. Isso e disclosure cross-principal, e tambem um vetor persistente de injecao
+  indireta — conteudo escrito por um principal voltando no contexto de outro sem passar
+  pelo guard de entrada. Agora o workspace padrao nao e raiz do jail: ele e o **pai** de
+  um subdiretorio por sessao, e e esse subdiretorio que entra como `working_dir` da
+  chamada, pelo mesmo mecanismo (`session_dir`) que uma sessao com projeto ja usava desde
+  a #1244. No caso "workspace padrao" o jail fica literalmente sem raiz fixa, entao a
+  sessao A nao tem como alcancar o diretorio da sessao B — nem o pai, que enumeraria as
+  sessoes existentes. O nome do subdiretorio e um hash do identificador da sessao, e nao
+  o identificador: hashear e o que impede tanto `..`/separador de caminho vindos de um id
+  nao confiavel quanto gravar em disco (e no log) um identificador que no WhatsApp e o
+  contato. O diretorio de cada sessao nasce preguicosamente, fecha em `0700`, e recusa
+  symlink no lugar dele — inclusive no pai, verificado de novo no momento do uso —, caindo
+  no mesmo fail-closed de sempre em vez de herdar o alvo do link. Raiz declarada em
+  `agent.file_roots`/`GARRAIA_FILE_ROOTS` continua vencendo sozinha, **sem** escopo por
+  sessao: um diretorio compartilhado ali e escolha explicita do operador. A linha
+  `files.workspace` do `/api/diagnostics` passa a mostrar `<data_dir>/workspace/<sessao>`,
+  sem nunca publicar o identificador da sessao.
+
+  O `working_dir` sintetizado alcanca toda invocacao de ferramenta, nao so as quatro file
+  tools: `bash` (sandboxed), `git_diff`, `code_review` e `repo_search` tambem passam a
+  operar dentro do diretorio da sessao. No `bash` sandboxed isso troca a recusa
+  fail-closed de antes (mount vazio sem `working_dir`, #1272 SANDBOX-2/5) por execucao
+  de verdade dentro de um diretorio novo e vazio; fora do sandbox, e nas outras tres
+  tools, o efeito e estritamente mais estreito — antes caiam no CWD do processo do
+  gateway, que expunha o checkout onde o gateway roda.
+- **`repo_search` recusa na hora quando nao ha repositorio ativo (#1380).** Sem
+  `working_dir` a busca herdava o diretorio do processo e varria a arvore inteira ate
+  estourar o timeout de 15s, para no fim nao responder nada util — o caso da sessao
+  remota sem projeto selecionado, em que o diretorio do processo e `/`, o `$HOME` ou o
+  diretorio de dados. Agora a tool usa o `RepoDir::decidir` para separar os dois
+  sentidos de "sem working_dir": o diretorio herdado que E (ou esta dentro de) um
+  repositorio segue sendo buscado, como no `garra chat` local; sem `.git`/`.hg`/`.svn`/
+  `.jj` nele ou acima dele, a resposta sai em milissegundos, dizendo onde a tool olhou
+  e que basta selecionar um projeto. Sessao que escolheu um `working_dir` nao muda de
+  comportamento. Num turno restrito (o piso `search` dos canais remotos, o mesmo em que
+  o `garra_status` retem `session.working_dir`) a recusa nao cita o caminho do host; o
+  operador local continua vendo onde a tool olhou, porque ali o caminho e acionavel.
+  Para isso o runtime passou a publicar o bit de "turno restrito" para toda ferramenta,
+  e nao so para o `garra_status`. Mudanca de
+  comportamento: uma arvore de codigo SEM metadado de VCS no diretorio do processo (por
+  exemplo um `COPY` de container ou um tarball exportado) era buscavel e agora recebe a
+  recusa — selecione o projeto (defina o `working_dir` da sessao) para buscar nela.
+- **`garra_status` explica o que `withheld` significa (#1382, #1387).** O relatorio
+  ja retinha o que so interessa ao operador num turno restrito e listava os campos
+  retidos em `withheld`, mas nada dizia ao modelo como ler isso: um campo retido sai
+  `null`, e com `mcp_servers: null` o modelo respondia que este Garra nao tem MCP. A
+  `description()` da tool e o proprio relatorio (campo `withheld_means`, presente so
+  quando ha algo retido) agora dizem que campo citado em `withheld` esta OCULTO POR
+  POLITICA desta conversa, e nunca deve ser lido como capacidade ausente, desligada ou
+  nao suportada. O texto tambem nao afirma o contrario: `withheld` e lista fixa, entao
+  o `null` significa apenas "nao divulgado nesta conversa" e nao prova que o recurso
+  exista. A nota de sistema que acompanha a tool (`NOTA_GARRA_STATUS_PT`/`EN`, no
+  `runtime.rs`) carregava a mesma afirmacao na forma curta ("e nao esta ausente") e foi
+  corrigida junto, para que prompt e relatorio nao digam coisas diferentes sobre o mesmo
+  campo. Nenhum dado novo e exposto: e so honestidade de texto sobre o que o relatorio
+  ja fazia.
+- **`garra whatsapp allow '*'` diz por que nao vale (#1389).** O curinga caia no
+  erro generico de caractere ("o numero so pode ter digitos"), que faz um recurso
+  inexistente parecer erro de digitacao. Agora ha uma variante propria: a mensagem
+  explica que este canal nao tem "autorizar todo mundo" e que o portao e
+  fail-closed, identidade a identidade. O exit code segue 65 e a semantica de
+  acesso aberto continua NAO implementada.
+- **Diagnostics separa "nunca configurado" de "quebrado" (#1437).** O
+  `GET /api/diagnostics` tinha quatro estados (`ok`/`warning`/`error`/`skipped`)
+  e um subsistema opcional que o operador nunca montou saia igual a um
+  subsistema montado e falhando: uma instalacao local recem-feita acendia
+  amarelo por TLS ausente, por `.env` inexistente e por um `GARRAIA_JWT_SECRET`
+  que o proprio texto da linha chamava de opcional. Entram duas variantes
+  **aditivas** — `disabled` (ha um interruptor e ele esta desligado: modo voz)
+  e `not_configured` (subsistema opcional que esta instalacao nunca montou:
+  TLS, `.env`, secret de JWT, tokens de Telegram/Discord, aparelho de WhatsApp
+  vinculado). As quatro originais mantem nome e significado, e as tres neutras
+  (`skipped`, `disabled`, `not_configured`) nunca tiram o agregado do relatorio
+  de `ok`. O console mostra as neutras em cinza, com o estado por extenso ao
+  lado do rotulo, e trata status desconhecido como neutro — nunca como erro.
+- **`cargo clippy -D warnings` limpo no stable 1.95 (#1447).** Duas
+  expressoes booleanas pre-existentes disparavam `clippy::nonminimal_bool`
+  a partir do rustc 1.95: o predicado de `retain` em
+  `whatsapp_linked.rs` (De Morgan) e uma asserção de teste em
+  `safety_gate.rs` (`!x.is_ok()` → `x.is_err()`). Sem mudanca de
+  comportamento; nenhum `#[allow(...)]` novo.
+- **Hook `pre-tool-use` deixa de bloquear toda remocao por caminho (#1453).**
+  Os padroes `rm -rf /`, `rm -rf ~` e `rm -rf ./` eram casados como substring
+  literal, entao `rm -rf /tmp/scratchpad/x` e `rm -rf ./pintest` — limpezas
+  legitimas de uma rodada autonoma — caiam como "comando perigoso". O `rm`
+  passa a ser julgado por uma regex ancorada no ALVO: raiz, home (`~`,
+  `$HOME`), diretorio atual e pai, sozinhos ou com glob, precedidos de
+  qualquer flag (`-rf`, `-r -f`, `--`) e de `sudo`/`xargs`/`&&`. Um caminho
+  DENTRO desses diretorios nao casa. Os demais padroes literais (fork bomb,
+  `DROP TABLE`, force push em `main`, `dd if=`, `mkfs.`) continuam iguais, e
+  `scripts/test-hooks.sh` ganha os casos dos dois lados.
+- **CI volta a subir o MinIO sem depender de registry (#1458).** O Docker Hub
+  removeu `minio/minio` (#1230), o quay.io passou a exigir login para toda tag
+  em 2026-09-24 e o `dl.min.io` responde 410 — o check obrigatorio `Clippy
+  Linting` falhava no `docker pull` em toda PR, e o retry do #1457 nao tinha
+  como ajudar. Agora `scripts/ci/build-minio-image.sh` compila o `minio` a
+  partir da tag upstream fixada (`RELEASE.2025-02-28T09-55-16Z`, commit
+  conferido antes do build, tag movida e recusada), embala em
+  `debian:bookworm-slim` e etiqueta a imagem com o `nome:tag` que o
+  testcontainer procura — que so faz pull quando a imagem nao existe
+  localmente. O binario compilado fica no cache do Actions por tag, entao so
+  o primeiro run depois de um bump paga o build. O `docker-compose.minio.yml`
+  de dev usa o mesmo script e deixa de depender da imagem do `mc`, tambem
+  fechada: o bucket passa a ser criado com o `aws-cli`.
+
+### Security
+- **Ferramenta MCP nao vira mais slash command, que era bypass do ToolGate (#1386).**
+  O boot registrava um comando `/mcp_<tool>` por ferramenta MCP conectada, e o
+  fechamento desse comando chamava `McpManager::call_tool` direto — sem
+  `ToolGate`, sem o modo da sessao, sem `ToolApproval` e sem `HardwareGate`. O
+  unico controle era o `Role::User` do comando, que todo mundo tem: uma sessao
+  criada em modo `search` (read-only) executava ferramenta de mutacao por
+  `POST /api/sessions/{id}/messages`, e `GET /api/slash-commands` listava os
+  nomes de graca. O caminho legitimo nao muda — as ferramentas MCP continuam
+  chegando ao modelo pelo `AgentRuntime`, despachadas atras do `ToolGate`.
+- **Um `session_id` escolhido pelo cliente deixa de alcancar a sessao de
+  outra superficie (#1462).** `POST /v1/chat/completions` aceitava
+  `X-Session-Id` verbatim e `POST /api/sessions/{id}/messages` aceitava o id
+  no caminho, e nenhum dos dois conferia de quem era a sessao: um id forjado
+  — `whatsapp-linked-<numero>`, `telegram-<chat>`, adivinhaveis por
+  construcao — hidratava a conversa da vitima (resumo + ate 100 turnos) para
+  dentro do request do atacante e gravava o turno dele na conversa dela. Por
+  id, agora so se alcanca sessao das superficies locais do operador (`api`,
+  `vscode`, `web`, `parrot`); sessao de canal com humano do outro lado ou do
+  mobile responde `404 session not found` sem confirmar que existe, e nao e
+  hidratada nem escrita. A leitura `GET /api/sessions/{id}/history`, que o
+  Web Console usa para exportar qualquer sessao, fica como esta — e decisao
+  de produto registrada na issue.
+
 ## [0.4.5] - 2026-09-22
 
 Release que tira o `bash` irrestrito das superficies sem humano no laco e faz
