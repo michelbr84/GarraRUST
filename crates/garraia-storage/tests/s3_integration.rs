@@ -30,8 +30,15 @@ const REGION: &str = "us-east-1";
 
 // `testcontainers-modules` 0.15 fixa `minio/minio`, repositorio removido do
 // Docker Hub (#1230: "object not found" para o repo inteiro, nao so a tag).
-// A MinIO publica a mesma imagem, mesma tag, em quay.io — troca de registry,
-// sem mudanca de conteudo ou de comportamento.
+// A troca para o quay.io durou ate 2026-09-24, quando ele passou a exigir
+// login para toda tag (#1458). Hoje NENHUM registry serve esta imagem: quem a
+// materializa e `scripts/ci/build-minio-image.sh`, que compila o `minio` a
+// partir desta mesma tag upstream (fonte publico no GitHub, commit conferido)
+// e etiqueta a imagem local com exatamente este `nome:tag`. O testcontainers
+// so faz pull quando o `create` devolve 404, entao a imagem local basta. O
+// nome continua `quay.io/…` de proposito: e o que o CI, o compose de dev e
+// este teste compartilham, e mudar um sem os outros e o que este comentario
+// existe para evitar (o step do CI confere a tag contra esta linha).
 const MINIO_IMAGE: &str = "quay.io/minio/minio";
 const MINIO_TAG: &str = "RELEASE.2025-02-28T09-55-16Z";
 

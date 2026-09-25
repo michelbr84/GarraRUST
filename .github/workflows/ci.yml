@@ -398,6 +398,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Tag do MinIO que o step `storage-s3` constroi a partir do fonte
+      # (#1458). Tem de ser a mesma que `tests/s3_integration.rs` fixa — o
+      # step confere. Bump aqui, no teste e no `docker-compose.minio.yml`
+      # juntos; o script `scripts/ci/build-minio-image.sh` recebe por env.
+      MINIO_TAG: RELEASE.2025-02-28T09-55-16Z
     # Plan 0049 (GAR-429 Lote Q.1, 2026-04-22) limpou os 26 warnings
     # pré-existentes (too_many_arguments, collapsible_if, explicit_auto_deref,
     # assertions_on_constants, new_without_default, items_after_test_module,
@@ -608,16 +614,38 @@ jobs:
       # feature ligada chegou a falhar sem ninguem ver. Step proprio, e nao
       # mais um bloco no step dos canais, pelo que os steps abaixo explicam
       # sobre o alcance real deste gate.
-      - name: Pre-pull MinIO image for testcontainers
-        # Dois motivos, na ordem de importancia. (1) Se o registry parar de
-        # servir a imagem — foi o que o Docker Hub fez com `minio/minio`,
-        # #1230 — a falha aparece AQUI, com o erro do registry no log, em vez
-        # de virar um timeout opaco dentro do testcontainer. (2) Mesmo
-        # racional do pre-pull do job auth-integration: warm pull de poucos
-        # segundos em vez do cold start dentro do teste. O job roda so em
-        # ubuntu-latest (sem matriz de OS), onde o Docker vem pre-instalado,
-        # entao nao ha o que condicionar por `runner.os` aqui.
-        run: docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+      # #1458: nao ha mais registry gratuito servindo `minio/minio` — o Docker
+      # Hub removeu o repositorio (#1230), o quay.io passou a exigir login para
+      # toda tag em 2026-09-24 (401 sustentado; o retry do #1457 nao muda
+      # nada) e o dl.min.io responde 410. O que segue publico e o FONTE, no
+      # GitHub. Entao a imagem que o testcontainer procura e CONSTRUIDA aqui:
+      # `scripts/ci/build-minio-image.sh` compila o `minio` a partir da tag
+      # upstream fixada (recusa se a tag nao apontar mais para o commit
+      # esperado), embala em debian:bookworm-slim e etiqueta a imagem com o
+      # nome:tag que `tests/s3_integration.rs` pede. O testcontainers 0.27 so
+      # faz pull quando o `create` devolve 404, entao a imagem local basta e
+      # nenhum registry entra no caminho. O binario compilado fica no cache
+      # do Actions, chaveado pela tag: so o primeiro run depois de um bump
+      # paga o `go build`. A falha, se houver, continua aparecendo AQUI, com
+      # o erro no log, e nao como timeout opaco dentro do teste.
+      - name: Restore the MinIO binary built from source
+        id: minio-bin
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/minio-bin
+          key: minio-bin-${{ env.MINIO_TAG }}-${{ runner.os }}-${{ runner.arch }}-1
+
+      - name: Build the MinIO image the testcontainer expects (no registry)
+        env:
+          MINIO_BIN_DIR: ${{ runner.temp }}/minio-bin
+        run: |
+          set -euo pipefail
+          # A tag vive em tres lugares — este env, o script (default) e o
+          # teste. O script le este env; o teste e conferido aqui, para o
+          # cache e o container nunca divergirem do que a suite pede.
+          grep -q "const MINIO_TAG: &str = \"${MINIO_TAG}\";" crates/garraia-storage/tests/s3_integration.rs \
+            || { echo "::error ::MINIO_TAG do workflow (${MINIO_TAG}) difere do que tests/s3_integration.rs fixa — alinhar os dois"; exit 1; }
+          scripts/ci/build-minio-image.sh
 
       - name: Run clippy + tests (storage-s3)
         # ATENCAO ao ler um verde daqui: este step cobre COMPILACAO, clippy e
