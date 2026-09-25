@@ -315,3 +315,29 @@ async fn post_messages_em_sessao_da_api_continua_valendo() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(gw.state.session_history(sid).len(), 2, "turno gravado");
 }
+
+/// `POST /api/sessions` com `agent_id` etiqueta a sessao em memoria como
+/// `api:<agent>` (`api.rs`, `projects_handler.rs`). E a MESMA superficie
+/// REST, e a rota de mensagens dela nao pode recusar a propria sessao —
+/// achado da revisao independente da PR #1468.
+#[tokio::test]
+async fn post_messages_em_sessao_da_api_com_agent_id_continua_valendo() {
+    let gw = subir().await;
+    let sid = "sessao-da-api-com-agente";
+    gw.state
+        .hydrate_session_history(sid, Some(garraia_gateway::state::CANAL_DA_API), None)
+        .await;
+    gw.state
+        .sessions
+        .get_mut(sid)
+        .expect("sessao em memoria")
+        .channel_id = Some("api:reachy_voice".to_string());
+
+    let (status, body) = mensagem_rest(&gw, sid).await;
+
+    assert_eq!(
+        status, 200,
+        "sessao REST com agent_id e do proprio chamador: {body}"
+    );
+    assert_eq!(gw.state.session_history(sid).len(), 2, "turno gravado");
+}
