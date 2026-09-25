@@ -756,11 +756,20 @@ fn files_workspace_check(
 ) -> DiagnosticCheck {
     use crate::bootstrap::FonteDasRaizesDasFileTools as Fonte;
     let (status, detail, next_step) = match fonte {
+        // Achado da revisao independente de seguranca (#1449): diferente das
+        // outras fontes desta linha, uma raiz DECLARADA pode estar fora do
+        // `data_dir` (e' o caso comum — o operador aponta para um repositorio
+        // ou projeto em outro lugar do disco), entao `lista_de_caminhos`
+        // cairia no fallback de `exibir_raiz` e publicaria o caminho absoluto
+        // do host (nome de usuario incluido) numa rota auth-free. So a
+        // contagem sai aqui; o operador ja sabe o que declarou em
+        // `agent.file_roots`/`GARRAIA_FILE_ROOTS`, e nao precisa reler pela
+        // rota.
         Fonte::Declaradas => (
             CheckStatus::Ok,
             format!(
-                "{} (fonte: agent.file_roots / GARRAIA_FILE_ROOTS)",
-                lista_de_caminhos(raizes, data_dir)
+                "{} raiz(es) declarada(s) (fonte: agent.file_roots / GARRAIA_FILE_ROOTS)",
+                raizes.len()
             ),
             None,
         ),
@@ -2977,6 +2986,33 @@ mod tests_mcp_1346 {
         assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
         assert!(c.detail.contains("agent.file_roots"), "{}", c.detail);
         assert!(c.next_step.is_none(), "{c:?}");
+    }
+
+    /// Achado da revisao independente de seguranca (#1449): uma raiz
+    /// DECLARADA fora do `data_dir` (o caso comum) nao pode sair como
+    /// caminho absoluto do host nesta rota auth-free — mesmo invariante que
+    /// `data_dir_com_symlink_nao_vaza_caminho_do_host` ja prova para o
+    /// workspace padrao.
+    #[test]
+    fn workspace_declarado_fora_do_data_dir_nao_vaza_caminho_do_host() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let raiz = std::path::PathBuf::from("/home/alguem/projetos/cliente-x");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::Declaradas,
+            &[raiz],
+            None,
+            dir.path(),
+        );
+        assert!(
+            !c.detail.contains("/home/alguem"),
+            "caminho absoluto do host vazou na rota auth-free: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains('1'),
+            "a contagem tem de aparecer: {}",
+            c.detail
+        );
     }
 
     /// Workspace padrao: `ok`, com o caminho relativo a `<data_dir>` — a rota

@@ -46,3 +46,11 @@
   sessao: um diretorio compartilhado ali e escolha explicita do operador. A linha
   `files.workspace` do `/api/diagnostics` passa a mostrar `<data_dir>/workspace/<sessao>`,
   sem nunca publicar o identificador da sessao.
+
+  O `working_dir` sintetizado alcanca toda invocacao de ferramenta, nao so as quatro file
+  tools: `bash` (sandboxed), `git_diff`, `code_review` e `repo_search` tambem passam a
+  operar dentro do diretorio da sessao. No `bash` sandboxed isso troca a recusa
+  fail-closed de antes (mount vazio sem `working_dir`, #1272 SANDBOX-2/5) por execucao
+  de verdade dentro de um diretorio novo e vazio; fora do sandbox, e nas outras tres
+  tools, o efeito e estritamente mais estreito — antes caiam no CWD do processo do
+  gateway, que expunha o checkout onde o gateway roda.

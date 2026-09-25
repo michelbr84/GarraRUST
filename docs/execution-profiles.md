@@ -105,7 +105,13 @@ O que **continua ligado** em `isolated-pod`, por desenho:
   alargue de carona o alcance de arquivo num perfil que nao e o assunto dela.
   Se quiser que as tools nativas alcancem o pod inteiro, declare isso:
   `agent.file_roots: ["/workspace"]`. A unificacao das duas politicas e a
-  #1383.
+  #1383. O `working_dir` sintetizado por sessao nao fica so nas tres file
+  tools: `bash` (sandboxed), `git_diff`, `code_review` e `repo_search`
+  tambem passam a operar dentro dele. No `bash` sandboxed isso troca a
+  recusa fail-closed de antes (mount vazio sem `working_dir`) por execucao
+  de verdade num diretorio novo e vazio; nas outras tres o efeito e
+  estritamente mais estreito que o CWD do processo do gateway que usavam
+  antes.
 - O **gate de comando arriscado** do `bash` (`rm -rf /`, `git reset --hard`,
   …). Sem canal de confirmacao ele e fail-closed; alargue com
   `agent.bash_allowlist` se o pod for descartavel de verdade.

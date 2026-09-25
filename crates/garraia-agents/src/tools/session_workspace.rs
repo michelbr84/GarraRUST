@@ -53,7 +53,17 @@
 //! O escopo e a chave de sessao que o canal ja usa para o historico da
 //! conversa — no `whatsapp_linked`, `whatsapp-linked-<chat_jid>`, derivada
 //! pelo servidor a partir do JID da conversa, nunca de conteudo que o
-//! remetente escolhe. Duas consequencias, e as duas sao deliberadas:
+//! remetente escolhe. **Essa garantia vale pela forca da identidade de
+//! sessao na superficie de entrada, nao e universal:** a rota compativel com
+//! OpenAI (`crates/garraia-gateway/src/openai_api.rs`, header
+//! `X-Session-Id`) aceita o id verbatim, sem token, entao quem alcanca esse
+//! endpoint escolhe o proprio `session_id` — inclusive o de uma conversa de
+//! outro canal. Isso nao e uma regressao de classe (forjar o `session_id`
+//! ja da acesso ao historico daquela conversa; o acesso a arquivo so herda
+//! a mesma identidade), mas o isolamento por sessao e tao forte quanto a
+//! identidade de sessao naquela rota especifica — nao mais forte. Duas
+//! consequencias na fronteira server-derived (`whatsapp_linked` e as demais
+//! integracoes de canal), e as duas sao deliberadas:
 //!
 //! - Conversas diferentes (contatos diferentes, canais diferentes) nunca se
 //!   alcancam. E o que a #1449 pede.
@@ -137,11 +147,18 @@ impl SessionWorkspace {
     /// que duas sessoes distintas recebem diretorios distintos.
     pub fn nome_do_subdiretorio(session_id: &str) -> Option<String> {
         use sha2::{Digest, Sha256};
-        let id = session_id.trim();
-        if id.is_empty() {
+        // `trim()` so decide "vazio" — o digest e sobre os bytes CRUS do
+        // `session_id`. Hashear o trimado quebraria a injetividade que este
+        // modulo promete: dois ids que diferem so por espaco (inclusive um
+        // NBSP invisivel) colidiriam no mesmo diretorio, e essa e exatamente
+        // a colisao cross-sessao que a #1449 existe para fechar (achado da
+        // revisao independente de seguranca: `session_key` do iMessage de
+        // grupo e o `group_name`, texto livre renomeavel por qualquer
+        // participante).
+        if session_id.trim().is_empty() {
             return None;
         }
-        let digest = Sha256::digest(id.as_bytes());
+        let digest = Sha256::digest(session_id.as_bytes());
         Some(
             digest
                 .iter()
@@ -322,6 +339,26 @@ mod tests {
         let barra = SessionWorkspace::nome_do_subdiretorio("a/b").expect("barra");
         let sublinha = SessionWorkspace::nome_do_subdiretorio("a_b").expect("sublinha");
         assert_ne!(barra, sublinha);
+    }
+
+    /// Achado da revisao independente de seguranca (#1449): o digest tem de
+    /// ser sobre os bytes crus do `session_id`, nao sobre `session_id.trim()`
+    /// — senao dois ids que so diferem por espaco (inclusive um NBSP
+    /// invisivel) colidem no mesmo diretorio. Caminho de exploracao real: a
+    /// `session_key` de um grupo do iMessage e o `group_name`, texto livre
+    /// que qualquer participante pode renomear para o nome do grupo da
+    /// vitima mais um espaco.
+    #[test]
+    fn ids_que_diferem_so_por_espaco_seguem_distintos() {
+        let base = SessionWorkspace::nome_do_subdiretorio("s").expect("base");
+        for variante in ["s ", " s", "s\u{a0}", " s "] {
+            let outro = SessionWorkspace::nome_do_subdiretorio(variante)
+                .unwrap_or_else(|| panic!("{variante:?} nao deveria ser vazio"));
+            assert_ne!(
+                base, outro,
+                "{variante:?} colidiu com \"s\" — hash caiu sobre o id trimado"
+            );
+        }
     }
 
     /// E o caminho montado nunca escapa do pai, nem com `..` no id.
