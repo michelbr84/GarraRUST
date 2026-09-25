@@ -58,22 +58,34 @@
 //! OpenAI (`crates/garraia-gateway/src/openai_api.rs`, header
 //! `X-Session-Id`) aceita o id verbatim, sem token, entao quem alcanca esse
 //! endpoint escolhe o proprio `session_id` — inclusive o de uma conversa de
-//! outro canal. Isso nao e uma regressao de classe: um `session_id` forjado
-//! ali ja herda o `ExecContext` da sessao alvo — `working_dir` e modo —,
-//! entao o acesso a arquivo desta correcao so segue a mesma identidade que
-//! o request ja carregava, nao abre nada que o forjador nao tivesse. A rota
-//! e coberta pelo mesmo gate de `gateway.api_key` das demais rotas de
-//! conversa quando configurado, e o bind nao-loopback recusa subir sem
-//! credencial — o caso sem credencial nenhuma e loopback-only, nao
-//! "qualquer um na rede". Dito isso, esta correcao alarga levemente o raio
-//! de um `session_id` forjado: antes da #1378 uma sessao sem projeto
+//! outro canal. **Isso nao e uma regressao de classe introduzida por esta
+//! correcao, mas tambem nao e inocuo: um `session_id` forjado naquela rota
+//! ja da acesso ao HISTORICO da sessao alvo.** `hydrate_session_history`
+//! (`crates/garraia-gateway/src/state.rs`) carrega o resumo mais ate 100
+//! turnos recentes olhando **so** o `session_id` — `user_id` e gravado na
+//! sessao em memoria, nunca usado como filtro de dono na leitura do store —,
+//! e o handler prefere esse historico persistido ao corpo do request sempre
+//! que ele nao esta vazio (`openai_api.rs`: `db_history` vence
+//! `body.messages` exceto na primeira mensagem de uma sessao nova). O mesmo
+//! `session_id` forjado tambem herda o `ExecContext` da sessao alvo —
+//! `working_dir` e modo. O acesso a arquivo que esta correcao adiciona segue
+//! exatamente essa mesma identidade: nao abre nada que o forjador ja nao
+//! tivesse por essas duas portas mais antigas. A rota e coberta pelo mesmo
+//! gate de `gateway.api_key` das demais rotas de conversa **quando
+//! configurado** — sem chave configurada o gate nao fecha nada por padrao
+//! (`gateway_auth.rs`) —, e um bind nao-loopback sem credencial recusa
+//! subir por padrao (`server::refuse_exposed_bind`), salvo o opt-out
+//! explicito `gateway.allow_unauthenticated_network_bind`, que ainda sobe
+//! exposto com aviso alto no boot. Dito isso, esta correcao alarga levemente
+//! o raio de um `session_id` forjado: antes da #1378 uma sessao sem projeto
 //! declarado nao tinha raiz nenhuma (`NoRoots`), e agora tem o workspace da
 //! sessao que o forjador escolheu. Aceitavel — e a mesma identidade de
 //! sempre, so que agora com algo para alcancar —, mas vale estar dito. O
 //! isolamento por sessao e tao forte quanto a identidade de sessao naquela
-//! rota especifica — nao mais forte. Duas consequencias na fronteira
-//! server-derived (`whatsapp_linked` e as demais integracoes de canal), e
-//! as duas sao deliberadas:
+//! rota especifica — nao mais forte, e ali ja nao e forte contra um
+//! `session_id` adivinhado ou vazado (ver #1461 para o caso do iMessage).
+//! Duas consequencias na fronteira server-derived (`whatsapp_linked` e as
+//! demais integracoes de canal), e as duas sao deliberadas:
 //!
 //! - Conversas diferentes (contatos diferentes, canais diferentes) nunca se
 //!   alcancam. E o que a #1449 pede.
