@@ -4,8 +4,9 @@
   do jail das file tools ficava vazio, e vazio significa negar tudo (#1244): `file_read`,
   `file_write` e `list_dir` apareciam registradas, o modo as anunciava, e toda chamada
   voltava recusada. A capability existia no papel e nao existia na pratica. Agora, quando
-  nada foi declarado, a raiz default e `<data_dir>/workspace` — o endereco que o ADR 0024
-  ja nomeia como o workspace do proprio Garra —, igual nos dois perfis de execucao:
+  nada foi declarado, a raiz default e `<data_dir>/workspace/<sessao>` — um subdiretorio
+  **por sessao** dentro do endereco que o ADR 0024 ja nomeia como o workspace do proprio
+  Garra —, igual nos dois perfis de execucao:
   `execution.pod_root` muda so a raiz do servidor MCP `filesystem` e **nao** e herdado
   pelas file tools nativas. O boot cria esse diretorio — e **so** ele: uma raiz
   declarada com typo continua nao sendo materializada, para nao plantar diretorio no host
@@ -24,3 +25,24 @@
   este default tambem passa a alcancar a `RunTestsTool`: a combinacao `file_write` +
   `run_tests` que a #1272 (SANDBOX-1) marca como adjacente ao shell do host agora tem
   um diretorio onde operar, dentro do jail.
+
+  **O workspace padrao e isolado por sessao (#1449).** A primeira versao desta correcao
+  punha `<data_dir>/workspace` como raiz **fixa** do jail, e raiz fixa e a mesma para
+  toda sessao, canal e principal: um contato do WhatsApp escrevia ali e o turno de outro
+  lia. Isso e disclosure cross-principal, e tambem um vetor persistente de injecao
+  indireta — conteudo escrito por um principal voltando no contexto de outro sem passar
+  pelo guard de entrada. Agora o workspace padrao nao e raiz do jail: ele e o **pai** de
+  um subdiretorio por sessao, e e esse subdiretorio que entra como `working_dir` da
+  chamada, pelo mesmo mecanismo (`session_dir`) que uma sessao com projeto ja usava desde
+  a #1244. No caso "workspace padrao" o jail fica literalmente sem raiz fixa, entao a
+  sessao A nao tem como alcancar o diretorio da sessao B — nem o pai, que enumeraria as
+  sessoes existentes. O nome do subdiretorio e um hash do identificador da sessao, e nao
+  o identificador: hashear e o que impede tanto `..`/separador de caminho vindos de um id
+  nao confiavel quanto gravar em disco (e no log) um identificador que no WhatsApp e o
+  contato. O diretorio de cada sessao nasce preguicosamente, fecha em `0700`, e recusa
+  symlink no lugar dele — inclusive no pai, verificado de novo no momento do uso —, caindo
+  no mesmo fail-closed de sempre em vez de herdar o alvo do link. Raiz declarada em
+  `agent.file_roots`/`GARRAIA_FILE_ROOTS` continua vencendo sozinha, **sem** escopo por
+  sessao: um diretorio compartilhado ali e escolha explicita do operador. A linha
+  `files.workspace` do `/api/diagnostics` passa a mostrar `<data_dir>/workspace/<sessao>`,
+  sem nunca publicar o identificador da sessao.

@@ -735,7 +735,12 @@ fn normalizar_lexico(p: &std::path::Path) -> Option<std::path::PathBuf> {
 /// - `Declaradas` → `ok`. O operador escolheu, e a escolha vale.
 /// - `WorkspacePadrao` → `ok`. Nada foi declarado e o Garra usa o proprio
 ///   workspace. Nao e aviso: e o default seguro, e chamar de aviso ensinaria o
-///   operador a ignorar avisos.
+///   operador a ignorar avisos. Aqui a linha mostra o diretorio **pai** com o
+///   `<sessao>` explicito no fim, porque desde a #1449 a raiz efetiva de uma
+///   chamada e `<data_dir>/workspace/<sessao>` e nao o pai: dizer so o pai
+///   faria o console prometer mais alcance do que o turno tem. O identificador
+///   da sessao nunca sai daqui — a rota e auth-free, e o nome do subdiretorio
+///   e derivado do `session_id`, que pode ser PII.
 /// - `SomenteSessao` → `warning`. E o defeito da #1378 ainda de pe: sessao sem
 ///   `working_dir` (toda sessao do WhatsApp recem-vinculada) nao le nem
 ///   escreve nada.
@@ -746,6 +751,7 @@ fn normalizar_lexico(p: &std::path::Path) -> Option<std::path::PathBuf> {
 fn files_workspace_check(
     fonte: crate::bootstrap::FonteDasRaizesDasFileTools,
     raizes: &[std::path::PathBuf],
+    workspace_por_sessao: Option<&std::path::Path>,
     data_dir: &std::path::Path,
 ) -> DiagnosticCheck {
     use crate::bootstrap::FonteDasRaizesDasFileTools as Fonte;
@@ -761,8 +767,11 @@ fn files_workspace_check(
         Fonte::WorkspacePadrao => (
             CheckStatus::Ok,
             format!(
-                "{} (fonte: workspace padrao — nada declarado em agent.file_roots)",
-                lista_de_caminhos(raizes, data_dir)
+                "{}/<sessao> (fonte: workspace padrao — nada declarado em agent.file_roots; \
+                 um subdiretorio por sessao)",
+                workspace_por_sessao
+                    .map(|raiz| exibir_raiz(raiz, data_dir))
+                    .unwrap_or_else(|| "(nenhuma)".to_string())
             ),
             None,
         ),
@@ -1120,6 +1129,12 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     checks.push(files_workspace_check(
         raizes_file_tools.fonte,
         raizes_file_tools.jail.roots(),
+        // #1449: no workspace padrao o jail nao tem raiz fixa — a raiz da
+        // chamada e o subdiretorio da sessao. O que a linha mostra e o PAI.
+        raizes_file_tools
+            .workspace_por_sessao
+            .as_ref()
+            .map(|w| w.raiz()),
         &data_dir,
     ));
     // #1346: servidores MCP que falharam (inclusive no boot) e a versao do
@@ -2954,6 +2969,8 @@ mod tests_mcp_1346 {
         let c = files_workspace_check(
             crate::bootstrap::FonteDasRaizesDasFileTools::Declaradas,
             &[raiz],
+            // Raiz declarada nao tem escopo por sessao (#1449).
+            None,
             dir.path(),
         );
         assert_eq!(c.id, "files.workspace");
@@ -2964,19 +2981,29 @@ mod tests_mcp_1346 {
 
     /// Workspace padrao: `ok`, com o caminho relativo a `<data_dir>` — a rota
     /// e auth-free e nao precisa publicar o caminho absoluto do host.
+    ///
+    /// #1449: o jail nao tem raiz fixa nesta fonte (`raizes` chega vazio), e a
+    /// linha descreve `<data_dir>/workspace/<sessao>` — nao o pai sozinho, que
+    /// prometeria mais alcance do que o turno tem.
     #[test]
     fn workspace_padrao_e_ok_e_sai_relativo_ao_data_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ws = dir.path().join("workspace");
         let c = files_workspace_check(
             crate::bootstrap::FonteDasRaizesDasFileTools::WorkspacePadrao,
-            &[ws],
+            &[],
+            Some(&ws),
             dir.path(),
         );
         assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
         assert!(
             c.detail.contains("<data_dir>/workspace"),
             "o detalhe tem de sair relativo ao data_dir: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains("<data_dir>/workspace/<sessao>"),
+            "o detalhe tem de dizer que a raiz efetiva e por sessao (#1449): {}",
             c.detail
         );
         assert!(
@@ -2994,6 +3021,7 @@ mod tests_mcp_1346 {
         let c = files_workspace_check(
             crate::bootstrap::FonteDasRaizesDasFileTools::SomenteSessao,
             &[],
+            None,
             dir.path(),
         );
         assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");

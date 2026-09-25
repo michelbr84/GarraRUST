@@ -286,6 +286,18 @@ pub struct AgentRuntime {
     /// aqui. Mora no runtime porque ele e o unico ponto que gateway e CLI
     /// compartilham — um mapa por processo cobre todo caminho.
     pending_approvals: crate::tools::pending_approval::PendingApprovals,
+    /// #1449: o workspace padrao das file tools, **escopado por sessao**.
+    ///
+    /// `Some` so quando quem montou o runtime decidiu que a fonte das raizes e
+    /// o workspace padrao (nada declarado em `agent.file_roots` / na env). Com
+    /// raiz declarada e `None`: a declaracao vence sozinha e nao ha escopo por
+    /// sessao nenhum, como antes da #1378. A CLI nunca o preenche — lá o jail
+    /// ja soma o CWD de quem rodou o binario.
+    ///
+    /// Mora no runtime porque e aqui que o `working_dir` efetivo de cada turno
+    /// e decidido, no mesmo ponto em que o [`crate::tools::ToolContext`] e
+    /// montado. Ver [`AgentRuntime::working_dir_efetivo`].
+    workspace_padrao: Option<crate::tools::SessionWorkspace>,
 }
 
 /// O TEXTO do aviso de ferramenta MCP escondida pelo whitelist (#1264).
@@ -865,6 +877,78 @@ impl AgentRuntime {
             auto_extract: true,
             max_facts: None,
             pending_approvals: crate::tools::pending_approval::PendingApprovals::new(),
+            workspace_padrao: None,
+        }
+    }
+
+    /// #1449: liga o workspace padrao escopado por sessao.
+    ///
+    /// Chamado pelo boot do gateway **so** quando nada foi declarado em
+    /// `agent.file_roots` / `GARRAIA_FILE_ROOTS` — com raiz declarada a
+    /// declaracao vence sozinha e este campo fica `None`.
+    pub fn set_workspace_padrao(&mut self, workspace: Option<crate::tools::SessionWorkspace>) {
+        self.workspace_padrao = workspace;
+    }
+
+    /// O workspace padrao em vigor, se ha um.
+    pub fn workspace_padrao(&self) -> Option<&crate::tools::SessionWorkspace> {
+        self.workspace_padrao.as_ref()
+    }
+
+    /// O `working_dir` efetivo deste turno (#1449).
+    ///
+    /// Precedencia, e ela importa:
+    ///
+    /// 1. O `working_dir` que a sessao declara ([`ExecContext::working_dir`]) —
+    ///    uma sessao com projeto ja passou por `project_root::confine` e nao
+    ///    muda de lugar por causa desta correcao.
+    /// 2. Senao, e so se houver workspace padrao, o subdiretorio **desta
+    ///    sessao** dentro dele, criado preguicosamente.
+    /// 3. Senao, `None` — e o fail-closed da #1244: sem raiz efetiva,
+    ///    `file_read`, `file_write` e `list_dir` recusam com a mensagem unica.
+    ///
+    /// O valor vira o `session_dir` da chamada a
+    /// [`crate::tools::FileJail::confine`], que e o mecanismo de isolamento por
+    /// sessao que o projeto ja usava — nao ha um segundo caminho de
+    /// confinamento aqui.
+    pub fn working_dir_efetivo(&self, exec: &ExecContext, session_id: &str) -> Option<String> {
+        if let Some(declarado) = exec
+            .working_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+        {
+            return Some(declarado.to_string());
+        }
+        let caminho = self
+            .workspace_padrao
+            .as_ref()?
+            .garantir_para_sessao(session_id)?;
+        Some(caminho.to_string_lossy().into_owned())
+    }
+
+    /// O [`crate::tools::ToolContext`] de uma invocacao de ferramenta.
+    ///
+    /// **Ponto unico de montagem** nos caminhos de execucao do runtime: e o que
+    /// garante que todo turno passe por [`Self::working_dir_efetivo`], em vez
+    /// de um dos quatro lacos de tool-call lembrar do escopo por sessao e outro
+    /// esquecer (#1449). Um teste varre este fonte para que nao volte a haver
+    /// um `ToolContext` montado a mao aqui.
+    pub fn contexto_de_ferramenta(
+        &self,
+        exec: &ExecContext,
+        session_id: &str,
+        user_id: Option<&str>,
+        approval: crate::tools::approval::ToolApproval,
+        is_heartbeat: bool,
+    ) -> crate::tools::ToolContext {
+        crate::tools::ToolContext {
+            session_id: session_id.to_string(),
+            user_id: user_id.map(|s| s.to_string()),
+            is_heartbeat,
+            approval,
+            working_dir: self.working_dir_efetivo(exec, session_id),
+            project_id: None,
         }
     }
 
@@ -1709,14 +1793,13 @@ impl AgentRuntime {
             let mut confirmation_response: Option<String> = None;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
-                    let context = crate::tools::ToolContext {
-                        session_id: session_id.to_string(),
-                        user_id: user_id.map(|s| s.to_string()),
-                        is_heartbeat: false,
-                        approval: aprovacao.clone(),
-                        working_dir: exec.working_dir.clone(),
-                        project_id: None,
-                    };
+                    let context = self.contexto_de_ferramenta(
+                        exec,
+                        session_id,
+                        user_id,
+                        aprovacao.clone(),
+                        false,
+                    );
 
                     match self
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
@@ -1971,14 +2054,13 @@ impl AgentRuntime {
             let mut confirmation_response: Option<String> = None;
             for block in &response.content {
                 if let ContentBlock::ToolUse { id, name, input } = block {
-                    let context = ToolContext {
-                        session_id: session_id.to_string(),
-                        user_id: user_id.map(|s| s.to_string()),
+                    let context = self.contexto_de_ferramenta(
+                        exec,
+                        session_id,
+                        user_id,
+                        aprovacao.clone(),
                         is_heartbeat,
-                        approval: aprovacao.clone(),
-                        working_dir: exec.working_dir.clone(),
-                        project_id: None,
-                    };
+                    );
 
                     match self
                         .dispatch_tool_call(&portao, &mut budget, None, &context, id, name, input)
@@ -2596,14 +2678,13 @@ impl AgentRuntime {
                     for (id, name, input_json) in &tool_uses {
                         let input: serde_json::Value =
                             serde_json::from_str(input_json).unwrap_or_default();
-                        let context = ToolContext {
-                            session_id: session_id.to_string(),
-                            user_id: user_id.map(|s| s.to_string()),
-                            is_heartbeat: false,
-                            approval: aprovacao.clone(),
-                            working_dir: exec.working_dir.clone(),
-                            project_id: None,
-                        };
+                        let context = self.contexto_de_ferramenta(
+                            exec,
+                            session_id,
+                            user_id,
+                            aprovacao.clone(),
+                            false,
+                        );
 
                         match self
                             .dispatch_tool_call(
@@ -2752,14 +2833,13 @@ impl AgentRuntime {
                     let mut confirmation_response: Option<String> = None;
                     for block in &response.content {
                         if let ContentBlock::ToolUse { id, name, input } = block {
-                            let context = ToolContext {
-                                session_id: session_id.to_string(),
-                                user_id: user_id.map(|s| s.to_string()),
-                                is_heartbeat: false,
-                                approval: aprovacao.clone(),
-                                working_dir: exec.working_dir.clone(),
-                                project_id: None,
-                            };
+                            let context = self.contexto_de_ferramenta(
+                                exec,
+                                session_id,
+                                user_id,
+                                aprovacao.clone(),
+                                false,
+                            );
 
                             match self
                                 .dispatch_tool_call(
@@ -7226,6 +7306,153 @@ mod tests {
         let exec = ExecContext::with_working_dir(Some("/tmp/projeto".to_string()));
         assert_eq!(exec.working_dir.as_deref(), Some("/tmp/projeto"));
         assert_eq!(exec.agent_mode, None, "working_dir nao pode implicar modo");
+    }
+
+    // ─── #1449: o workspace padrao escopado por sessao ─────────────────────
+
+    /// Sem workspace padrao ligado, nada muda: o `working_dir` da sessao passa
+    /// como esta, e a ausencia dele continua sendo ausencia (fail-closed da
+    /// #1244). E o caso da CLI, que nunca liga o workspace.
+    #[test]
+    fn sem_workspace_padrao_o_working_dir_passa_como_esta() {
+        use crate::exec_context::ExecContext;
+
+        let rt = AgentRuntime::new();
+        assert_eq!(
+            rt.working_dir_efetivo(
+                &ExecContext::with_working_dir(Some("/tmp/projeto".to_string())),
+                "sessao-1"
+            )
+            .as_deref(),
+            Some("/tmp/projeto")
+        );
+        assert_eq!(
+            rt.working_dir_efetivo(&ExecContext::default(), "sessao-1"),
+            None,
+            "sem workspace padrao a sessao sem projeto nao ganha raiz nenhuma"
+        );
+    }
+
+    /// **O achado R4 da #1449.** Com o workspace padrao ligado, duas sessoes
+    /// sem projeto recebem diretorios DIFERENTES — e nenhuma recebe o pai.
+    #[test]
+    fn com_workspace_padrao_cada_sessao_ganha_o_seu_diretorio() {
+        use crate::exec_context::ExecContext;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let raiz = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        let mut rt = AgentRuntime::new();
+        rt.set_workspace_padrao(Some(crate::tools::SessionWorkspace::nova(raiz.clone())));
+
+        let a = rt
+            .working_dir_efetivo(&ExecContext::default(), "sessao-A")
+            .expect("A");
+        let b = rt
+            .working_dir_efetivo(&ExecContext::default(), "sessao-B")
+            .expect("B");
+
+        assert_ne!(a, b, "duas sessoes no mesmo diretorio (#1449)");
+        for dir in [&a, &b] {
+            let p = std::path::Path::new(dir);
+            assert!(p.is_dir(), "{dir} nao foi criado");
+            assert_eq!(p.parent(), Some(raiz.as_path()));
+            assert_ne!(p, raiz.as_path(), "a sessao recebeu o PAI como raiz");
+        }
+    }
+
+    /// O `working_dir` declarado pela sessao continua vencendo o workspace
+    /// padrao: uma sessao com projeto nao muda de lugar por causa da #1449.
+    #[test]
+    fn o_working_dir_declarado_vence_o_workspace_padrao() {
+        use crate::exec_context::ExecContext;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut rt = AgentRuntime::new();
+        rt.set_workspace_padrao(Some(crate::tools::SessionWorkspace::nova(
+            tmp.path().to_path_buf(),
+        )));
+
+        assert_eq!(
+            rt.working_dir_efetivo(
+                &ExecContext::with_working_dir(Some("/tmp/projeto".to_string())),
+                "sessao-1"
+            )
+            .as_deref(),
+            Some("/tmp/projeto")
+        );
+        // E um `working_dir` so de espaco conta como ausente, como no jail.
+        assert_ne!(
+            rt.working_dir_efetivo(
+                &ExecContext::with_working_dir(Some("   ".to_string())),
+                "sessao-1"
+            )
+            .as_deref(),
+            Some("   ")
+        );
+    }
+
+    /// O `ToolContext` que o runtime monta carrega o diretorio da sessao.
+    #[test]
+    fn o_contexto_de_ferramenta_carrega_o_diretorio_da_sessao() {
+        use crate::exec_context::ExecContext;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let raiz = std::fs::canonicalize(tmp.path()).expect("canonicalize");
+        let mut rt = AgentRuntime::new();
+        rt.set_workspace_padrao(Some(crate::tools::SessionWorkspace::nova(raiz.clone())));
+
+        let ctx = rt.contexto_de_ferramenta(
+            &ExecContext::default(),
+            "sessao-1",
+            Some("u1"),
+            crate::tools::approval::ToolApproval::None,
+            false,
+        );
+        assert_eq!(ctx.session_id, "sessao-1");
+        assert_eq!(ctx.user_id.as_deref(), Some("u1"));
+        let dir = std::path::PathBuf::from(ctx.working_dir.expect("working_dir"));
+        assert_eq!(dir.parent(), Some(raiz.as_path()));
+    }
+
+    /// **A fiacao.** O escopo por sessao so vale se TODO laco de tool-call
+    /// passar por `contexto_de_ferramenta`. Sao quatro lacos neste arquivo, e
+    /// um deles montando o `ToolContext` a mao reabriria a #1449 em silencio —
+    /// nenhum dos testes acima ficaria vermelho. Varredura do proprio fonte,
+    /// na disciplina dos guards de `spinner.rs` e `detect.rs`.
+    #[test]
+    fn nenhum_tool_context_montado_a_mao_neste_runtime() {
+        let fonte = include_str!("runtime.rs");
+        // So o codigo de producao: o proprio `mod tests` monta contextos a mao
+        // de proposito, para exercitar tool por tool.
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+
+        let literais: Vec<usize> = producao
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                let t = l.trim();
+                t == "ToolContext {" || t == "crate::tools::ToolContext {"
+            })
+            .map(|(n, _)| n + 1)
+            .collect();
+
+        assert_eq!(
+            literais.len(),
+            1,
+            "ha {} literais `ToolContext {{` no codigo de producao deste arquivo (linhas {:?}), e \
+             tem de haver exatamente 1 — o de `contexto_de_ferramenta`. Os quatro lacos de \
+             tool-call passam por ele; um montado a mao reabriria a #1449 (workspace padrao \
+             compartilhado entre sessoes) sem deixar nenhum outro teste vermelho",
+            literais.len(),
+            literais
+        );
+        assert!(
+            producao.contains("working_dir: self.working_dir_efetivo(exec, session_id)"),
+            "o construtor deixou de escopar o workspace padrao por sessao (#1449)"
+        );
     }
 
     /// Nenhuma label pode carregar id de sessao, de usuario ou conteudo — e a
