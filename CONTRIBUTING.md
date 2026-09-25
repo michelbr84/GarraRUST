@@ -33,13 +33,33 @@ cd GarraRUST
 git remote add upstream https://github.com/michelbr84/GarraRUST.git
 ```
 
-### 2. Compilar o workspace
+### 2. Fixar a toolchain Rust localmente (recomendado)
+
+O workspace exige Rust 1.95+ (ver a tabela de pré-requisitos e o job "MSRV
+check (1.95)" do CI). Sem isso declarado em algum lugar, `rustup` usa
+qualquer `stable` que já estiver instalada — mesmo abaixo do piso — e o erro
+só aparece depois, no meio de um `cargo check`.
+
+```bash
+bash scripts/setup-toolchain.sh
+```
+
+O script instala a 1.95 (se faltar) e roda `rustup override set 1.95` **só
+para este diretório**. Note que isso não é um `rust-toolchain.toml`
+commitado no repo — essa abordagem foi tentada (issue #1452, PR #1454) e
+quebrou os jobs de CI que fazem cross-compile com targets extras (Android,
+Windows ARM64), porque o arquivo tem precedência sobre a toolchain que
+`dtolnay/rust-toolchain` acabou de instalar com esses targets. O override do
+`rustup` fica em `~/.rustup/settings.toml`, no seu `HOME` — nunca alcança o
+CI.
+
+### 3. Compilar o workspace
 
 ```bash
 cargo build --workspace
 ```
 
-### 3. Executar os testes
+### 4. Executar os testes
 
 ```bash
 # Suite completa
@@ -52,21 +72,21 @@ cargo test -p garraia-gateway
 cargo test --workspace -- --nocapture
 ```
 
-### 4. Rodar o servidor localmente
+### 5. Rodar o servidor localmente
 
 ```bash
 cargo run --package garraia-cli -- init
 cargo run --package garraia-cli -- start
 ```
 
-### 5. Verificar saúde do servidor
+### 6. Verificar saúde do servidor
 
 ```bash
 curl http://127.0.0.1:3888/health
 # {"status":"ok","version":"0.9.0-dev"}
 ```
 
-### 6. Construir a documentação
+### 7. Construir a documentação
 
 ```bash
 # Instalar mdBook

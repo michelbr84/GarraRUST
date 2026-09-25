@@ -457,6 +457,34 @@ pub async fn send_message(
     if let Err(resposta) = exigir_sessao_da_api(&state, &session_id).await {
         return *resposta;
     }
+    // #1462: `exigir_sessao_da_api` deixa passar qualquer sessao que esteja
+    // em memoria — e a de um canal esta, porque a hidratacao do canal a poe
+    // la. Escrever nela e gravar um turno do chamador na conversa de outra
+    // pessoa e correr o agente com o historico dela. Por id, so as
+    // superficies locais do operador; o resto e inexistente. A leitura
+    // (`GET …/history`) fica como esta: o Web Console exporta qualquer sessao
+    // por ela, e mudar isso e decisao de produto (registrada na issue).
+    match state.id_de_sessao_do_cliente_alcanca(&session_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(
+                "POST /api/sessions/{{id}}/messages numa sessao de outra superficie; recusada como inexistente"
+            );
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "session not found" })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            warn!(erro = %e, "falhou ao ler o sessions.db para conferir a sessao");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to read session store" })),
+            )
+                .into_response();
+        }
+    }
 
     // Slash commands never reach the model. Not persisted into history either
     // (same as Telegram): `/help` output is not conversation, and it would

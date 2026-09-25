@@ -44,12 +44,15 @@ log() {
 log "CMD${TOOL_NAME:+($TOOL_NAME)}: $CMD"
 
 # ── Padroes bloqueados (exit 2 = bloquear) ────────────────────────────────
+#
+# Duas listas, de proposito (#1453). A primeira e casada como SUBSTRING
+# literal (`grep -F`): sao frases que nao aparecem em comando legitimo. A
+# segunda e uma regex ANCORADA no alvo: `rm -rf /` como substring bloqueava
+# `rm -rf /tmp/qualquer-coisa` e `rm -rf ./` bloqueava `rm -rf ./pintest` —
+# toda remocao por caminho absoluto ou relativo, inclusive as que uma rodada
+# autonoma faz no proprio scratchpad. O perigo nunca foi o prefixo: e o alvo
+# ser a raiz, o home, o diretorio atual ou o pai — sozinhos ou com glob.
 BLOCKED=(
-  "rm -rf /"
-  "rm -rf ~"
-  "rm -rf ./"
-  "rm -rf ./*"
-  "rm -rf .*"
   "rm --no-preserve-root"
   ":(){ :|:& };:"
   "DROP TABLE"
@@ -74,6 +77,26 @@ for pattern in "${BLOCKED[@]}"; do
     exit 2
   fi
 done
+
+# `rm` com alvo catastrofico. Le-se: um `rm` no inicio ou depois de `;`,
+# `&`, `|` ou espaco (cobre `sudo rm`, `xargs rm`, `&& rm`); zero ou mais
+# flags (`-rf`, `-r -f`, `--recursive`, `--`); e o ALVO, opcionalmente entre
+# aspas, seguido de fim de linha, espaco ou separador de comando. Os alvos
+# sao a raiz (`/`, `/*`), o home (`~`, `~/`, `~/*`, `$HOME`, `${HOME}`), o
+# diretorio atual (`.`, `./`, `./*`, `.*`) e o pai (`..`, `../`, `../*`).
+# `rm -rf /tmp/x`, `rm -rf ./pintest` e `rm -rf ~/.cache/x` NAO casam: depois
+# do alvo vem outro caractere, nao um limite. Flags nao decidem nada — `rm /`
+# sem `-r` ja falha sozinho, e tratar igual e mais simples do que enumerar.
+RM_ALVOS='(/|/\*|~|~/|~/\*|\$HOME|\$\{HOME\}|\.|\./|\./\*|\.\*|\.\.|\.\./|\.\./\*)'
+RM_FLAGS='([[:space:]]+(--|--?[[:alnum:]][[:alnum:]=-]*))*'
+RM_CATASTROFICO="(^|[;&|[:space:]])rm${RM_FLAGS}[[:space:]]+[\"']?${RM_ALVOS}[\"']?([[:space:]]|\$|[;&|)])"
+
+if echo "$CMD" | grep -qE "$RM_CATASTROFICO"; then
+  echo "BLOQUEADO: comando perigoso detectado — 'rm' com alvo raiz, home, diretorio atual ou pai" >&2
+  log "BLOQUEADO: $CMD"
+  echo '{"hookSpecificOutput":{"permissionDecision":"deny"},"systemMessage":"Dangerous command pattern blocked by GarraIA pre-tool-use hook"}' >&2
+  exit 2
+fi
 
 # ── Avisos (nao bloqueiam, apenas registram) ──────────────────────────────
 WARNINGS=(

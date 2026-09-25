@@ -507,6 +507,13 @@ Apenas retorne o JSON, sem explicações."#,
             .ok_or_else(|| format!("Tool not found: {}", step.tool_name))?;
 
         // Criar contexto
+        //
+        // #1449: sem `working_dir`, e de proposito. O `Orchestrator` nao e
+        // montado em nenhum caminho de producao (nenhum `Orchestrator::new`
+        // fora deste modulo) e nao carrega o workspace padrao escopado por
+        // sessao que o `AgentRuntime` recebe do boot. Sem raiz efetiva, as
+        // file tools recusam com a mensagem unica — o fail-closed da #1244, e
+        // nao um workspace compartilhado entre sessoes.
         let context = ToolContext {
             session_id: session_id.to_string(),
             user_id: None,

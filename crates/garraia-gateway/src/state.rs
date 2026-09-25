@@ -91,6 +91,57 @@ pub fn sessao_readotavel_pela_api(s: &garraia_db::SessionSurfaces) -> bool {
     sessao_so_da_api(s) && !s.api_logout && !s.unreadable_session_metadata
 }
 
+/// As superficies **locais do operador** — as unicas que um `session_id`
+/// escolhido pelo cliente pode alcancar (#1462).
+///
+/// `X-Session-Id` em `/v1/chat/completions` e o `{id}` de
+/// `POST /api/sessions/{id}/messages` sao valores que quem chama inventa. Os
+/// ids de canal sao adivinhaveis por construcao (`whatsapp-linked-<numero>`,
+/// `telegram-<chat>`), e a sessao do mobile deriva do `sub` do JWT: alcancar
+/// qualquer uma delas por id e ler a conversa de outra pessoa para dentro do
+/// proprio request e gravar o proprio turno na conversa dela. As quatro aqui
+/// sao as superficies sem humano de terceiro do outro lado — o REST, o VS
+/// Code, o chat web e o overlay do desktop —, que compartilham sessao entre
+/// si por desenho (o operador continua no VS Code o que comecou no console).
+pub const SUPERFICIES_LOCAIS: &[&str] = &[
+    CANAL_DA_API,
+    "vscode",
+    crate::approval_scope::CANAL_WEB,
+    crate::approval_scope::CANAL_PARROT,
+];
+
+/// `superficie` esta em [`SUPERFICIES_LOCAIS`]?
+///
+/// Compara o nome **antes do primeiro `:`**: `POST /api/sessions` com
+/// `agent_id` etiqueta a sessao em memoria como `api:<agent>` (`api.rs`,
+/// `projects_handler.rs`), e essa etiqueta e a mesma superficie REST — uma
+/// comparacao exata recusava a sessao para o proprio chamador (achado da
+/// revisao independente da PR #1468). O corte nao alarga nada: um
+/// `telegram:<id>` continua sendo `telegram`, e fechado.
+pub fn superficie_e_local(superficie: &str) -> bool {
+    let base = superficie.split(':').next().unwrap_or(superficie);
+    SUPERFICIES_LOCAIS.contains(&base)
+}
+
+/// Uma sessao gravada no `sessions.db` pode ser alcancada por um id que o
+/// cliente escolheu (#1462)?
+///
+/// Mesma leitura de marcas de [`sessao_so_da_api`], com a allowlist de
+/// [`SUPERFICIES_LOCAIS`] no lugar de "so `api`": toda superficie que ja tocou
+/// a sessao — a linha, os tokens, as mensagens — tem de ser local, e nenhuma
+/// chave do Chat Sync pode existir (chave e sinal de canal externo). Metadado
+/// ilegivel recusa: sem saber quem gravou, a sessao fica fechada.
+pub fn sessao_alcancavel_por_id_do_cliente(s: &garraia_db::SessionSurfaces) -> bool {
+    superficie_e_local(&s.channel_id)
+        && !s.unreadable_session_metadata
+        && !s.unreadable_message_metadata
+        && s.key_sources.is_empty()
+        && s.token_sources
+            .iter()
+            .chain(&s.message_channels)
+            .all(|superficie| superficie_e_local(superficie))
+}
+
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub config: AppConfig,
@@ -955,6 +1006,43 @@ impl AppState {
         Ok(SessaoDaApi::Readotada)
     }
 
+    /// Um `session_id` que o **cliente escolheu** pode alcancar esta sessao
+    /// (#1462)?
+    ///
+    /// `Ok(true)`: a sessao nao existe (vai nascer agora, da superficie de
+    /// quem chama) ou so foi tocada por [`SUPERFICIES_LOCAIS`]. `Ok(false)`:
+    /// e de um canal com humano do outro lado, ou do mobile — o chamador
+    /// responde como se nao existisse, sem confirmar que existe. `Err`: o
+    /// `sessions.db` nao pode ser lido; nada e afirmado.
+    ///
+    /// Le a memoria primeiro, pelo mesmo motivo do `EmMemoria` de
+    /// [`Self::sessao_da_api`]: uma sessao de canal esta em memoria no caso
+    /// normal, porque a hidratacao do canal a poe la. Depois o disco, para a
+    /// sessao que um restart tirou da memoria — e e por isso que a checagem
+    /// vem **antes** de [`Self::hydrate_session_history`]: hidratar primeiro
+    /// traria o historico da vitima e gravaria a superficie do atacante na
+    /// linha dela.
+    pub async fn id_de_sessao_do_cliente_alcanca(
+        &self,
+        session_id: &str,
+    ) -> garraia_common::Result<bool> {
+        if let Some(sessao) = self.sessions.get(session_id) {
+            let canal_local = sessao.channel_id.as_deref().is_none_or(superficie_e_local);
+            let turnos_locais = sessao
+                .canais_dos_turnos
+                .iter()
+                .all(|canal| superficie_e_local(canal));
+            return Ok(canal_local && turnos_locais);
+        }
+        let Some(store) = &self.session_store else {
+            return Ok(true);
+        };
+        let superficies = store.lock().await.get_session_surfaces(session_id)?;
+        Ok(superficies
+            .as_ref()
+            .is_none_or(sessao_alcancavel_por_id_do_cliente))
+    }
+
     /// Grava no `sessions.db` que o `DELETE /api/sessions/{id}` encerrou esta
     /// sessao — a marca que [`Self::sessao_da_api`] recusa depois que a
     /// memoria a esquece.
@@ -1446,6 +1534,136 @@ mod tests {
 
     use super::*;
     use garraia_agents::AgentRuntime;
+
+    // ─── #1462: id escolhido pelo cliente so alcanca superficie local ───
+
+    fn superficies(canal: &str, tocaram: &[&str]) -> garraia_db::SessionSurfaces {
+        garraia_db::SessionSurfaces {
+            tenant_id: TENANT_DA_API.to_string(),
+            channel_id: canal.to_string(),
+            key_sources: Default::default(),
+            token_sources: Default::default(),
+            message_channels: tocaram.iter().map(|s| s.to_string()).collect(),
+            unreadable_message_metadata: false,
+            api_logout: false,
+            unreadable_session_metadata: false,
+        }
+    }
+
+    /// Tabela da regra: so as quatro superficies locais passam, em qualquer
+    /// combinacao; qualquer canal de terceiro, o mobile, uma chave do Chat
+    /// Sync ou um metadado ilegivel fecham a sessao.
+    #[test]
+    fn id_do_cliente_alcanca_so_superficies_locais() {
+        for canal in ["api", "vscode", "web", "parrot"] {
+            assert!(
+                sessao_alcancavel_por_id_do_cliente(&superficies(canal, &[canal])),
+                "{canal} sozinho e local"
+            );
+        }
+        assert!(sessao_alcancavel_por_id_do_cliente(&superficies(
+            "vscode",
+            &["web", "api", "parrot"]
+        )));
+
+        for canal in [
+            "telegram",
+            "whatsapp",
+            "whatsapp_linked",
+            "discord",
+            "imessage",
+            "mobile",
+            "a2a",
+            "openclaw",
+        ] {
+            assert!(
+                !sessao_alcancavel_por_id_do_cliente(&superficies(canal, &[canal])),
+                "{canal} na linha fecha"
+            );
+            assert!(
+                !sessao_alcancavel_por_id_do_cliente(&superficies("api", &["api", canal])),
+                "{canal} num turno fecha, mesmo com a linha em api"
+            );
+        }
+
+        let mut com_chave = superficies("api", &["api"]);
+        com_chave.key_sources.insert("telegram".to_string());
+        assert!(!sessao_alcancavel_por_id_do_cliente(&com_chave));
+
+        let mut token_de_canal = superficies("web", &["web"]);
+        token_de_canal.token_sources.insert("mobile".to_string());
+        assert!(!sessao_alcancavel_por_id_do_cliente(&token_de_canal));
+
+        let mut ilegivel = superficies("api", &["api"]);
+        ilegivel.unreadable_message_metadata = true;
+        assert!(!sessao_alcancavel_por_id_do_cliente(&ilegivel));
+        let mut ilegivel = superficies("api", &["api"]);
+        ilegivel.unreadable_session_metadata = true;
+        assert!(!sessao_alcancavel_por_id_do_cliente(&ilegivel));
+    }
+
+    /// Em memoria a regra le `channel_id` e `canais_dos_turnos`; sem sessao
+    /// e sem store, o id e novo e passa.
+    #[tokio::test]
+    async fn id_do_cliente_em_memoria_le_os_canais_dos_turnos() {
+        let st = AppState::new(
+            AppConfig::default(),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+        );
+        assert!(st.id_de_sessao_do_cliente_alcanca("nova").await.unwrap());
+
+        st.hydrate_session_history("do-web", Some("web"), None)
+            .await;
+        assert!(st.id_de_sessao_do_cliente_alcanca("do-web").await.unwrap());
+
+        st.hydrate_session_history("do-telegram", Some("telegram"), Some("7"))
+            .await;
+        assert!(
+            !st.id_de_sessao_do_cliente_alcanca("do-telegram")
+                .await
+                .unwrap()
+        );
+
+        // Uma sessao compartilhada (VS Code + Telegram) guarda os dois nomes:
+        // o turno remoto fecha, mesmo que o ultimo a escrever seja local.
+        st.hydrate_session_history("do-telegram", Some("vscode"), None)
+            .await;
+        assert!(
+            !st.id_de_sessao_do_cliente_alcanca("do-telegram")
+                .await
+                .unwrap()
+        );
+
+        // `POST /api/sessions` com `agent_id` etiqueta a sessao em memoria
+        // como `api:<agent>` (`api.rs`, `projects_handler.rs`): continua
+        // sendo a superficie REST. A regra le a superficie ANTES do `:`.
+        st.hydrate_session_history("do-api-com-agente", Some("api"), None)
+            .await;
+        st.sessions
+            .get_mut("do-api-com-agente")
+            .expect("sessao")
+            .channel_id = Some("api:reachy_voice".to_string());
+        assert!(
+            st.id_de_sessao_do_cliente_alcanca("do-api-com-agente")
+                .await
+                .unwrap(),
+            "api:<agent> e a superficie REST"
+        );
+
+        // O mesmo corte NAO alarga nada: um prefixo de canal segue fechado.
+        st.hydrate_session_history("do-telegram-etiquetado", Some("api"), None)
+            .await;
+        st.sessions
+            .get_mut("do-telegram-etiquetado")
+            .expect("sessao")
+            .channel_id = Some("telegram:123".to_string());
+        assert!(
+            !st.id_de_sessao_do_cliente_alcanca("do-telegram-etiquetado")
+                .await
+                .unwrap()
+        );
+    }
 
     // ─── issue #922: continuidade sobrevive à perda da sessão em memória ───
 
