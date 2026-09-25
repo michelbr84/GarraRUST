@@ -111,8 +111,16 @@ pub const SUPERFICIES_LOCAIS: &[&str] = &[
 ];
 
 /// `superficie` esta em [`SUPERFICIES_LOCAIS`]?
+///
+/// Compara o nome **antes do primeiro `:`**: `POST /api/sessions` com
+/// `agent_id` etiqueta a sessao em memoria como `api:<agent>` (`api.rs`,
+/// `projects_handler.rs`), e essa etiqueta e a mesma superficie REST — uma
+/// comparacao exata recusava a sessao para o proprio chamador (achado da
+/// revisao independente da PR #1468). O corte nao alarga nada: um
+/// `telegram:<id>` continua sendo `telegram`, e fechado.
 pub fn superficie_e_local(superficie: &str) -> bool {
-    SUPERFICIES_LOCAIS.contains(&superficie)
+    let base = superficie.split(':').next().unwrap_or(superficie);
+    SUPERFICIES_LOCAIS.contains(&base)
 }
 
 /// Uma sessao gravada no `sessions.db` pode ser alcancada por um id que o
@@ -1623,6 +1631,35 @@ mod tests {
             .await;
         assert!(
             !st.id_de_sessao_do_cliente_alcanca("do-telegram")
+                .await
+                .unwrap()
+        );
+
+        // `POST /api/sessions` com `agent_id` etiqueta a sessao em memoria
+        // como `api:<agent>` (`api.rs`, `projects_handler.rs`): continua
+        // sendo a superficie REST. A regra le a superficie ANTES do `:`.
+        st.hydrate_session_history("do-api-com-agente", Some("api"), None)
+            .await;
+        st.sessions
+            .get_mut("do-api-com-agente")
+            .expect("sessao")
+            .channel_id = Some("api:reachy_voice".to_string());
+        assert!(
+            st.id_de_sessao_do_cliente_alcanca("do-api-com-agente")
+                .await
+                .unwrap(),
+            "api:<agent> e a superficie REST"
+        );
+
+        // O mesmo corte NAO alarga nada: um prefixo de canal segue fechado.
+        st.hydrate_session_history("do-telegram-etiquetado", Some("api"), None)
+            .await;
+        st.sessions
+            .get_mut("do-telegram-etiquetado")
+            .expect("sessao")
+            .channel_id = Some("telegram:123".to_string());
+        assert!(
+            !st.id_de_sessao_do_cliente_alcanca("do-telegram-etiquetado")
                 .await
                 .unwrap()
         );
