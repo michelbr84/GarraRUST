@@ -128,7 +128,7 @@ vier do **mesmo remetente**, na **mesma sessao** e no **mesmo canal**:
 | Caminho | Quem pode aprovar |
 |---|---|
 | Web Console (`/ws`) e desktop (`/ws/parrot`) | a mesma conexao WebSocket — reconectou (ou retomou a sessao em outra aba), pergunta de novo |
-| `/v1/chat/completions` | o dono da allowlist **com o mesmo** `Authorization` **e a mesma** `X-Session-Id` nos dois requests — sem `X-Session-Id` cada request e uma sessao nova e o "sim" nao retoma; sem dono reivindicado, a pausa e terminal. Vale igual com e sem `"stream": true` |
+| `/v1/chat/completions` | o dono da allowlist **com o mesmo** `Authorization` **e a mesma** `X-Session-Id` nos dois requests — sem `X-Session-Id` cada request e uma sessao nova e o "sim" nao retoma; sem dono reivindicado, a pausa e terminal. Vale igual com e sem `"stream": true`. A `X-Session-Id` so alcanca sessao das superficies locais do operador (`api`, `vscode`, `web`, `parrot`): o id de uma sessao de canal ou do mobile responde `404` e nao e tocado (#1462) |
 | App mobile (`POST /chat`) | o `sub` do JWT |
 | Telegram, Discord, Slack, WhatsApp Cloud, Matrix, IRC, Signal, LINE, Teams, Google Chat, iMessage, WhatsApp pessoal | o id do usuario na plataforma; em grupo, o "sim" de outro membro nao aprova e encerra o pedido |
 | `garraia chat` | o proprio terminal, na mesma sessao |
