@@ -58,12 +58,22 @@
 //! OpenAI (`crates/garraia-gateway/src/openai_api.rs`, header
 //! `X-Session-Id`) aceita o id verbatim, sem token, entao quem alcanca esse
 //! endpoint escolhe o proprio `session_id` — inclusive o de uma conversa de
-//! outro canal. Isso nao e uma regressao de classe (forjar o `session_id`
-//! ja da acesso ao historico daquela conversa; o acesso a arquivo so herda
-//! a mesma identidade), mas o isolamento por sessao e tao forte quanto a
-//! identidade de sessao naquela rota especifica — nao mais forte. Duas
-//! consequencias na fronteira server-derived (`whatsapp_linked` e as demais
-//! integracoes de canal), e as duas sao deliberadas:
+//! outro canal. Isso nao e uma regressao de classe: um `session_id` forjado
+//! ali ja herda o `ExecContext` da sessao alvo — `working_dir` e modo —,
+//! entao o acesso a arquivo desta correcao so segue a mesma identidade que
+//! o request ja carregava, nao abre nada que o forjador nao tivesse. A rota
+//! e coberta pelo mesmo gate de `gateway.api_key` das demais rotas de
+//! conversa quando configurado, e o bind nao-loopback recusa subir sem
+//! credencial — o caso sem credencial nenhuma e loopback-only, nao
+//! "qualquer um na rede". Dito isso, esta correcao alarga levemente o raio
+//! de um `session_id` forjado: antes da #1378 uma sessao sem projeto
+//! declarado nao tinha raiz nenhuma (`NoRoots`), e agora tem o workspace da
+//! sessao que o forjador escolheu. Aceitavel — e a mesma identidade de
+//! sempre, so que agora com algo para alcancar —, mas vale estar dito. O
+//! isolamento por sessao e tao forte quanto a identidade de sessao naquela
+//! rota especifica — nao mais forte. Duas consequencias na fronteira
+//! server-derived (`whatsapp_linked` e as demais integracoes de canal), e
+//! as duas sao deliberadas:
 //!
 //! - Conversas diferentes (contatos diferentes, canais diferentes) nunca se
 //!   alcancam. E o que a #1449 pede.
