@@ -5,12 +5,48 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-22 (America/New_York)
+**Atualizado:** 2026-09-25 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-25 — release v0.4.6: estabilização (CI sem registry, workspace por sessão, X-Session-Id)
+
+Pré-voo, inventário das 64 issues e diário de execução em
+[`plans/0364-release-v0.4.6-preflight.md`](plans/0364-release-v0.4.6-preflight.md).
+
+- **CI destravado** (#1458 via #1466): o quay.io passou a exigir login em
+  2026-09-24 e o check obrigatório `Clippy Linting` falhava em toda PR;
+  `scripts/ci/build-minio-image.sh` constrói a imagem do MinIO do fonte da tag
+  fixada, sem registry. #1456/#1457 (retry) fechadas como superadas.
+- **Workspace padrão por sessão** (#1378 via #1448; achado R4 da #1449
+  corrigido estruturalmente — a #1449 fica aberta para o "ok" do dono).
+- **`X-Session-Id` e `POST /api/sessions/{id}/messages` não alcançam sessão de
+  canal nem do mobile** (#1462 via #1468, via 1 + escrita; via 2 — leitura
+  `GET …/history` — é decisão de produto e a issue segue aberta).
+- **Hook `pre-tool-use` sem falsos positivos em `rm`** (#1453 via #1467);
+  `scripts/setup-toolchain.sh` (#1452 via #1455); gate de dogfood manual no
+  runbook (#1439 parcial via #1469).
+- **Trem de merge #1470** (#1448 #1455 #1467 #1468 #1469) depois do
+  desbloqueio, com o auto-merge da #1448 desligado — a automação cloud o
+  reativou no meio e o trem teve de absorver o head novo.
+- **Dogfood local (Linux) contra o candidato**: `config check`/`doctor` exit 0
+  numa instalação limpa, gateway `healthy`, turno real respondido via API REST
+  com Ollama local; dois avisos não acionáveis no `/api/diagnostics` viraram a
+  #1471. WhatsApp/telefone, Windows e macOS: pendentes do dono (§6 do plan).
+
+### Fica aberto, com bloqueio nomeado
+
+| Item | Bloqueio |
+| --- | --- |
+| #1449 | decisão do dono: aceitar a opção 2 (escopo por `session_id`) já implementada na #1448 |
+| #1462 | decisão de produto sobre a leitura `GET /api/sessions/{id}/history` (console × isolamento) |
+| #1461 | provável não-procede (`cache_roomnames` é o id da sala); confirmar num `chat.db` real |
+| #1390, #1429, #1387 | atendidas em parte; o restante é o épico Access Policy v2 (#1388) |
+| 43 issues de v0.5.0 | três épicos (Policy v2, Capability Registry, WhatsApp no Web Console) + onboarding desktop (plan 0363) — milestone a criar pelo dono |
+| Release | tag pelo dono depois da tabela de dogfood D1–D9 preenchida (§1.5 do runbook) |
 
 ## Concluído em 2026-09-22 — release v0.4.5: bash fail-closed, aprovação nos canais, onboarding do WhatsApp
 
