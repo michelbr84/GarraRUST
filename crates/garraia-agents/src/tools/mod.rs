@@ -12,6 +12,7 @@ pub mod repo_dir;
 pub mod repo_search_tool;
 pub mod run_tests_tool;
 pub mod schedule;
+pub mod session_workspace;
 pub mod tool_context;
 pub mod turn_tools;
 pub mod web_fetch_tool;
@@ -33,6 +34,7 @@ pub use schedule::{
     EventTrigger, EventType, ScheduledTask, TaskStatus, TriggerRegistry, WebhookTrigger,
 };
 pub use schedule::{ScheduleHeartbeat, ScheduleRecurring};
+pub use session_workspace::SessionWorkspace;
 pub use tool_context::ProjectToolContext;
 pub use web_fetch_tool::WebFetchTool;
 pub use web_search_tool::WebSearchTool;

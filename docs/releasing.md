@@ -23,6 +23,45 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
    ver CLAUDE.md §Convenção de datas). `[Unreleased]` volta vazio.
 5. Abrir PR, aguardar CI verde (6 checks obrigatórios da ruleset: Format Check, Clippy Linting, Test ubuntu e windows, Security Gate, Auth Integration) e mergear.
 
+## 1.5 Gate de dogfood — obrigatório antes do tag (#1439)
+
+O CI prova que o código compila e que os testes passam; **não** prova que uma
+instalação limpa funciona para uma pessoa. A v0.4.4 e a v0.4.5 saíram verdes
+e quebraram no caminho real (WhatsApp numa instalação nova, `NoRoots`,
+status que mentia). Por isso, antes de empurrar o tag, alguém com máquina e
+telefone executa a matriz abaixo **contra o candidato** (o binário da PR de
+release, ou os assets de um `workflow_dispatch` de teste do `release.yml`) e
+registra data, sistema e quem executou. Linha sem data = release não sai.
+
+| # | Cenário | Onde | O que prova | Automatizado? |
+|---|---|---|---|---|
+| D1 | Instalação limpa da CLI (`curl \| sh`), `garraia init` com um provedor, `garraia whatsapp link`, um número autorizado, "oi" → resposta real | Ubuntu 22.04 limpo, com Node 20+ | o caminho que o usuário faz | parcial (#1426: container + ponte falsa cobre até "conectado") |
+| D2 | Mesmo cenário via `irm \| iex` | Windows 10/11 | paridade dos instaladores (regra 16) | não |
+| D3 | `garraia restart` → nova mensagem responde **sem** QR; `allow` sobrevive | Ubuntu + Windows | persistência da sessão e da política | fixture `serve-echo` + manual |
+| D4 | `garraia update` da release anterior para o candidato; `garraia rollback` | Ubuntu | o contrato dos assets crus (regra 15) e o `.old` | não |
+| D5 | Desktop: MSI instala, papagaio e Chat Bar aparecem, `garraia status` no terminal mostra o sidecar, sair encerra o sidecar | Windows 11 | o bundle e o sidecar | não |
+| D6 | Desktop: `.deb` idem | Ubuntu 22.04 (X11) | idem | não |
+| D7 | Duas identidades autorizadas pedem `list_dir`; nenhuma vê os arquivos da outra | Ubuntu | isolamento do workspace por sessão (#1449) | teste de integração + manual |
+| D8 | `install-endpoints.yml` verde depois de publicar | — | `garraia.org` serve os instaladores (regra 17) | sim (workflow) |
+| D9 | `GET /api/diagnostics` numa instalação limpa sem nenhum aviso espúrio; `garraia doctor` exit 0 | Ubuntu + Windows | honestidade do status (#1437, #1387) | parcial |
+
+Regras do gate:
+
+- **Contra o candidato, não contra `main`**: o que se testa é o que vai ser
+  publicado.
+- **Segredos fora da evidência**: transcrições redigidas, telefones só pelos
+  quatro últimos dígitos, nenhuma chave em screenshot.
+- **Falhou, não sai**: uma linha vermelha vira issue com o log e a release
+  espera a correção — nunca "sai e conserta na próxima".
+- A tabela preenchida vai no corpo da PR de release (bump + CHANGELOG), para
+  ficar ao lado do que ela libera.
+
+A automação do que dá para automatizar (D1 com ponte falsa, D3, D7, D9) é a
+issue #1426; enquanto ela não fecha, o gate é manual e está aqui de propósito
+— um gate que só existe numa issue não gateia nada. O desenho completo, com
+o que o CI cobre e o que só pessoa cobre, está em
+[`plans/0364-release-v0.4.6-preflight.md`](../plans/0364-release-v0.4.6-preflight.md) §6.
+
 ## 2. Tag
 
 ```bash

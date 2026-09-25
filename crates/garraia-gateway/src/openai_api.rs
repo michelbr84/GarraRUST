@@ -240,6 +240,50 @@ pub async fn chat_completions(
     let session_id = resolve_session_id(&headers)
         .await
         .unwrap_or_else(|_| Uuid::new_v4().to_string());
+
+    // #1462: uma `X-Session-Id` escolhida pelo cliente so alcanca sessao das
+    // superficies locais do operador. O id de uma sessao de canal
+    // (`whatsapp-linked-<numero>`, `telegram-<chat>` — adivinhaveis por
+    // construcao) ou do mobile responde como inexistente, e a sessao nao e
+    // tocada: a checagem vem ANTES de `hydrate_session_history`, que
+    // carregaria a conversa da vitima para este request e anotaria `vscode`
+    // na linha dela. Sem header o id e um UUID novo e nao ha o que conferir.
+    // O log nao leva o id: o de canal carrega telefone.
+    if headers.contains_key("x-session-id") {
+        match state.id_de_sessao_do_cliente_alcanca(&session_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!(
+                    request_id = %request_id,
+                    "X-Session-Id aponta para sessao de outra superficie; recusada como inexistente"
+                );
+                return (
+                    axum::http::StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "session not found",
+                            "type": "invalid_request_error",
+                            "code": "session_not_found",
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                warn!(request_id = %request_id, erro = %e, "falhou ao ler o sessions.db para conferir a X-Session-Id");
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "failed to read session store",
+                            "type": "server_error",
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
     let is_streaming = body.stream.unwrap_or(false);
 
     // Resolve user identity from Authorization header
