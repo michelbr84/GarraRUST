@@ -18,11 +18,18 @@
 
 services:
   minio:
-    # quay.io, nao Docker Hub: o repositorio `minio/minio` foi REMOVIDO de la
-    # (o registry responde "object not found" e o pull morre com "pull access
-    # denied") — #1230. Tag fixado no mesmo release que o testcontainer da
-    # suite de integracao usa, para que dev local e CI subam o mesmo binario.
+    # Esta imagem NAO vem de registry nenhum (#1458): o Docker Hub removeu
+    # `minio/minio` (#1230) e o quay.io passou a exigir login em 2026-09-24.
+    # Ela e construida localmente, a partir do fonte da mesma tag que o
+    # testcontainer da suite de integracao usa, por:
+    #
+    #   scripts/ci/build-minio-image.sh
+    #
+    # Rode isso UMA vez antes do `docker compose up` (precisa so de Docker; o
+    # Go roda dentro de um container). `pull_policy: never` faz o compose
+    # dizer "imagem nao encontrada" em vez de morrer num 401 do quay.io.
     image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    pull_policy: never
     container_name: garraia-minio
     command: server /data --console-address ":9001"
     ports:
@@ -40,11 +47,11 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      # `mc` vem dentro da imagem do servidor; mantido como estava porque nao
-      # houve como confirmar o conteudo deste tag sem um daemon Docker. Se
-      # falhar como "executable not found", trocar por
-      # `curl -f http://localhost:9000/minio/health/live`.
-      test: ["CMD", "mc", "ready", "local"]
+      # A imagem construida pelo script traz so o `minio` sobre
+      # debian:bookworm-slim — sem `mc` e sem `curl`. O bash da base abre um
+      # socket TCP na porta da API: e prova de que o servidor esta ouvindo,
+      # suficiente para o `depends_on` do init.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -52,21 +59,24 @@ services:
 
   # One-shot: creates the `garraia-dev` bucket on boot.
   minio-init:
-    # Idem quay.io. O `mc` tem ciclo de release proprio, com tags de data
-    # diferentes das do servidor, entao aqui fica `latest`: fixar o tag do
-    # servidor apontaria para uma tag que nao existe neste repositorio.
-    image: quay.io/minio/mc:latest
+    # `quay.io/minio/mc` fechou junto com o servidor (#1458). O `aws-cli`
+    # oficial da Amazon continua publico no Docker Hub e fala S3 com qualquer
+    # endpoint; `latest` pelo mesmo motivo que o `mc:latest` de antes — o
+    # ciclo de release dele nao tem relacao com a tag do servidor.
+    image: amazon/aws-cli:latest
     container_name: garraia-minio-init
     depends_on:
       minio:
         condition: service_healthy
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://minio:9000
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
-      mc mb --ignore-existing local/garraia-dev &&
+      aws s3api head-bucket --bucket garraia-dev 2>/dev/null ||
+      aws s3api create-bucket --bucket garraia-dev &&
       echo 'bucket garraia-dev ready'"
 
 volumes:
