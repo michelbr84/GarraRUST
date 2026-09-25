@@ -789,8 +789,12 @@ fn default_mode_desconhecido_nao_vira_portao_aberto_no_turno() {
 /// Este e o teste que substituiu a recusa `FerramentaMcpRegistrada`. A recusa
 /// nasceu quando `ToolGate::permite` isentava do whitelist qualquer nome com
 /// `__`; a #1288 fechou a isencao, e desde entao ferramenta MCP so passa pelo
-/// whitelist quando `allowed` a declara (`servidor/*` ou nome completo). Se
-/// este teste reprovar, a recusa tem de voltar — e o bug e no portao.
+/// whitelist quando `allowed` a declara (`servidor/*`, `*/<operacao>` ou nome
+/// completo). Desde a #1384 o `search` declara a **leitura** do `filesystem`
+/// (`*/read_file`…), entao a leitura passa e a escrita continua negada por
+/// nome — o piso distingue leitura de escrita pela `allowed`, nao por
+/// inventario. Se este teste reprovar, a recusa tem de voltar — e o bug e no
+/// portao.
 ///
 /// O portao e montado **exatamente** como o `turno` monta o seu:
 /// `piso_somente_leitura` sobre um `ExecContext` sem modo, e depois
@@ -799,7 +803,7 @@ fn default_mode_desconhecido_nao_vira_portao_aberto_no_turno() {
 /// entao a heuristica do roteador nao entra — se um dia o piso virar `auto`,
 /// e este teste que vai dizer.
 #[test]
-fn o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao() {
+fn o_portao_do_turno_so_libera_a_leitura_mcp_declarada_no_perfil_padrao() {
     use garraia_agents::AgentRuntime;
     use garraia_agents::modes::ToolGate;
 
@@ -821,8 +825,10 @@ fn o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao() {
     let exec = piso_somente_leitura(ExecContext::default(), DEFAULT_MODE);
     let gate = ToolGate::para_o_turno(&exec, "oi");
 
-    // Toda ferramenta de origem MCP do inventario VIVO e negada — por nome,
-    // porque nenhuma esta declarada na `allowed` do `search`.
+    // O inventario VIVO nao e entrada da decisao: quem libera e a `allowed`
+    // do `search`, por nome. Ela declara a leitura do `filesystem`
+    // (`*/read_file`, #1384) e nada mais — a escrita nao esta declarada, entao
+    // o portao a nega, mesmo registrada.
     let mcp: Vec<String> = agents
         .tool_inventory()
         .into_iter()
@@ -834,16 +840,13 @@ fn o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao() {
         2,
         "premissa: as duas ferramentas MCP estao registradas"
     );
-    for nome in &mcp {
-        assert!(
-            !gate.permite(nome),
-            "`{nome}` nao esta declarada na `allowed` do `search`, entao o portao a nega"
-        );
-    }
-    assert!(!gate.permite("filesystem__write_file"));
     assert!(
-        !gate.permite("filesystem__read_file"),
-        "leitura MCP tambem: o piso nao distingue leitura de escrita, quem libera e a `allowed`"
+        gate.permite("filesystem__read_file"),
+        "`*/read_file` esta na `allowed` do `search` (#1384), entao a leitura MCP passa"
+    );
+    assert!(
+        !gate.permite("filesystem__write_file"),
+        "`filesystem__write_file` nao esta declarada na `allowed` do `search`, entao o portao a nega"
     );
 
     // E o resto do perfil continua valendo: leitura nativa passa, escrita e
@@ -911,7 +914,7 @@ fn midia_e_texto_vazio_nao_geram_turno() {
 /// Ate a #1327 havia uma entrada `FerramentaMcpRegistrada`, que recusava a
 /// subida com qualquer servidor MCP registrado. Ela saiu porque o piso `search`
 /// nega ferramenta MCP por nome desde a #1288 (ver
-/// `o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao`) — e o
+/// `o_portao_do_turno_so_libera_a_leitura_mcp_declarada_no_perfil_padrao`) — e o
 /// inventario de ferramentas deixou de ser entrada desta decisao. A revisao da
 /// #1327 trouxe a entrada que faltava: `default_mode` que nao e modo nativo
 /// virava portao ABERTO em `ToolGate::for_mode_name`, e a recusa por MCP era o
@@ -1161,9 +1164,11 @@ fn cada_motivo_de_nao_subir_diz_o_que_fazer() {
 /// portao e `ToolGate::for_mode_name(<modo validado>)` — o que
 /// `avisar_drift_de_mcp` monta e o que o turno monta —, e como `default_mode`
 /// so aceita modo nativo, ele e sempre o de um perfil nativo. Dai as duas
-/// metades deste teste: **todo** nativo com whitelist devolve vazio (nenhum
-/// declara `servidor/*`), e um nativo **sem** whitelist (`ask`, `code`) lista
-/// todo servidor registrado, porque nele passa tudo que o `denied` nao nomeia.
+/// metades deste teste: nativo com whitelist devolve vazio — menos o `search`,
+/// que desde a #1384 declara a **leitura** do `filesystem` (`*/read_file`…),
+/// e por isso o aviso ignora perfil com whitelist: e declaracao, nao drift —,
+/// e um nativo **sem** whitelist (`ask`, `code`) lista todo servidor
+/// registrado, porque nele passa tudo que o `denied` nao nomeia.
 ///
 /// A versao anterior deste teste montava `ToolGate::from_profile` de um perfil
 /// customizado com `allowed: ["filesystem/*"]` — um portao que a producao
@@ -1173,7 +1178,7 @@ fn cada_motivo_de_nao_subir_diz_o_que_fazer() {
 /// Devolve **servidores**, deduplicados: e o que o operador reconhece no
 /// `mcp.json`, e nunca carrega argumento nem segredo de ferramenta.
 #[test]
-fn mcp_liberadas_pelo_perfil_e_vazia_nos_nativos_com_whitelist_e_lista_tudo_nos_sem() {
+fn mcp_liberadas_pelo_perfil_so_leitura_no_search_vazia_nos_outros_com_whitelist_e_tudo_nos_sem() {
     use garraia_agents::AgentRuntime;
     use garraia_agents::modes::{AgentMode, ToolGate};
 
@@ -1192,15 +1197,22 @@ fn mcp_liberadas_pelo_perfil_e_vazia_nos_nativos_com_whitelist_e_lista_tudo_nos_
     );
     let inventario = agents.tool_inventory();
 
-    // O piso do canal: nada liberado, nada a avisar.
+    // O piso do canal: so a LEITURA do `filesystem` passa (#1384) — o
+    // servidor aparece na lista porque `read_file` esta no inventario —, e
+    // isso e declaracao da whitelist, nao drift: `avisar_drift_de_mcp` nao
+    // avisa para perfil com whitelist (ver `avisar_escolha_do_operador`).
     let search = ToolGate::for_mode_name(DEFAULT_MODE);
-    assert!(
-        mcp_liberadas_pelo_perfil(&search, &inventario).is_empty(),
-        "o `search` nativo nao declara servidor nenhum"
+    assert_eq!(
+        mcp_liberadas_pelo_perfil(&search, &inventario),
+        vec!["filesystem".to_string()],
+        "o `search` nativo declara so a leitura do filesystem"
     );
+    assert!(search.permite("filesystem__read_file"));
+    assert!(!search.permite("filesystem__write_file"));
+    assert!(!search.permite("github__create_issue"));
 
-    // E nenhum outro nativo com whitelist declara: o aviso so tem o que dizer
-    // quando o operador escolheu um perfil sem whitelist.
+    // Os outros nativos com whitelist nao declaram servidor nenhum; o aviso
+    // so tem o que dizer quando o operador escolheu um perfil sem whitelist.
     let mut com_whitelist = 0;
     let mut sem_whitelist = Vec::new();
     for modo in AgentMode::all_modes() {
@@ -1210,6 +1222,9 @@ fn mcp_liberadas_pelo_perfil_e_vazia_nos_nativos_com_whitelist_e_lista_tudo_nos_
         let gate = ToolGate::for_mode_name(modo.as_str());
         if gate.restringe_por_whitelist() {
             com_whitelist += 1;
+            if modo.as_str() == DEFAULT_MODE {
+                continue; // coberto acima
+            }
             assert!(
                 mcp_liberadas_pelo_perfil(&gate, &inventario).is_empty(),
                 "`{modo}` tem whitelist e nao declara servidor: nada a avisar"

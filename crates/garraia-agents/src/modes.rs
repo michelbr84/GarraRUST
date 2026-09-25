@@ -311,6 +311,36 @@ const SEPARADOR_MCP: &str = "__";
 /// [`ToolGate::prefixo_de_servidor`] e o docblock de [`ToolGate`].
 const CORINGA_DE_SERVIDOR: &str = "/*";
 
+/// Prefixo da terceira forma de entrada da `allowed` (#1384): `*/<operacao>`
+/// cobre `<qualquer servidor>__<operacao>` — a operacao exata, em qualquer
+/// servidor MCP. E o que deixa um modo somente-leitura enxergar
+/// `read_text_file` e `list_directory` do `filesystem` sem liberar o servidor
+/// inteiro (`filesystem/*` traria `write_file` e `move_file` junto).
+const CORINGA_DE_OPERACAO: &str = "*/";
+
+/// As operacoes **somente-leitura** do `@modelcontextprotocol/server-filesystem`
+/// (o servidor que o gateway provisiona), na forma `*/<operacao>` da
+/// `allowed` (#1384).
+///
+/// Lista **fechada**, por nome: e o que mantem o portao fail-closed —
+/// `write_file`, `edit_file`, `create_directory`, `move_file` e qualquer
+/// operacao desconhecida continuam barradas num modo que so lista estas. Um
+/// servidor que chame uma operacao mutante por um destes nomes estaria
+/// mentindo sobre o proprio contrato; a classificacao por capability declarada
+/// (#1385) e o que fecha esse residual, e nao existe ainda.
+pub const LEITURA_MCP_FILESYSTEM: &[&str] = &[
+    "*/read_file",
+    "*/read_text_file",
+    "*/read_media_file",
+    "*/read_multiple_files",
+    "*/list_directory",
+    "*/list_directory_with_sizes",
+    "*/directory_tree",
+    "*/search_files",
+    "*/get_file_info",
+    "*/list_allowed_directories",
+];
+
 impl ToolGate {
     /// O portao aberto: nenhuma politica, tudo permitido.
     pub fn sem_politica() -> Self {
@@ -432,6 +462,18 @@ impl ToolGate {
         tool_name.contains(SEPARADOR_MCP)
     }
 
+    /// A operacao que uma entrada `*/<operacao>` da `allowed` libera em
+    /// qualquer servidor (#1384) — `None` para as outras duas formas e para
+    /// o coringa vazio (`*/` sozinho nao e uma operacao que alguem declarou).
+    ///
+    /// Publica pelo mesmo motivo de [`Self::prefixo_de_servidor`]: a sintaxe
+    /// tem um unico interprete, e documentacao, UI de modo e teste leem daqui.
+    pub fn operacao_em_qualquer_servidor(entrada: &str) -> Option<&str> {
+        entrada
+            .strip_prefix(CORINGA_DE_OPERACAO)
+            .filter(|operacao| !operacao.is_empty())
+    }
+
     /// A traducao da sintaxe **declarada** para a **interna** (#1264).
     ///
     /// `meu-servidor/*` — o que o operador escreve na `allowed` — vira
@@ -542,19 +584,31 @@ impl ToolGate {
     }
 }
 
-/// Uma entrada de `allowed` cobre este nome de ferramenta? (#1264)
+/// Uma entrada de `allowed` cobre este nome de ferramenta? (#1264, #1384)
 ///
-/// Duas formas, e so duas:
+/// Tres formas, e so tres:
 ///
 /// - **nome exato** — `file_read` cobre `file_read`; `servidor__consulta` cobre
 ///   aquela ferramenta MCP, e nenhuma outra;
 /// - **prefixo de servidor** — `servidor/*` cobre `servidor__<qualquer coisa>`,
-///   pela traducao de [`ToolGate::prefixo_de_servidor`].
+///   pela traducao de [`ToolGate::prefixo_de_servidor`];
+/// - **operacao em qualquer servidor** — `*/<operacao>` cobre
+///   `<servidor>__<operacao>`, com a operacao **exata** (nem prefixo, nem
+///   sufixo) e um servidor nao vazio antes do separador, pela traducao de
+///   [`ToolGate::operacao_em_qualquer_servidor`]. Um nome sem separador
+///   (`read_text_file` nativo) nao e coberto: a forma e de MCP.
 ///
 /// O prefixo exige que sobre nome de ferramenta depois dele (`len >`): o nome
 /// nu `servidor__`, sem ferramenta nenhuma, nao e uma ferramenta que alguem
-/// declarou.
+/// declarou. Servidor cujo nome contenha `__` fica fora da terceira forma
+/// (o `split_once` corta no primeiro separador) — fail-closed, e um nome de
+/// servidor assim nao existe na configuracao provisionada.
 fn entrada_cobre(entrada: &str, tool_name: &str) -> bool {
+    if let Some(operacao) = ToolGate::operacao_em_qualquer_servidor(entrada) {
+        return tool_name
+            .split_once(SEPARADOR_MCP)
+            .is_some_and(|(servidor, op)| !servidor.is_empty() && op == operacao);
+    }
     match ToolGate::prefixo_de_servidor(entrada) {
         Some(prefixo) => tool_name.len() > prefixo.len() && tool_name.starts_with(&prefixo),
         None => entrada == tool_name,
@@ -673,25 +727,35 @@ impl ModeProfile {
             name: "search".to_string(),
             description: "Busca e inspeção sem modificar arquivos".to_string(),
             system_prompt_template: Some(
-                "You are a search assistant. Your goal is to find information in the codebase without making any modifications. Use read-only tools like file_search, repo_search, and list_dir. Never use file_write or bash commands that modify files.".to_string(),
+                "You are a search assistant. Your goal is to find information in the codebase without making any modifications. Use read-only tools like file_search, repo_search, list_dir, and the read-only filesystem MCP tools (read_text_file, list_directory, search_files) when they are available. Never use file_write, MCP write/edit/move tools, or bash commands that modify files.".to_string(),
             ),
             tool_policy: ToolPolicy {
-                allowed: vec![
-                    "file_read".to_string(),
-                    "repo_search".to_string(),
-                    "list_dir".to_string(),
-                    "web_search".to_string(),
-                    "web_fetch".to_string(),
+                allowed: [
+                    "file_read",
+                    "repo_search",
+                    "list_dir",
+                    "web_search",
+                    "web_fetch",
                     // #1129: descoberta/leitura de hardware é R0 (auto) — o
                     // agente pode VER o mundo físico em qualquer modo que vê
                     // o sistema de arquivos. Executar (R1+) é a linha abaixo.
-                    "device_list".to_string(),
-                    "device_read".to_string(),
+                    "device_list",
+                    "device_read",
                     // #1347: autoinspecao R0 (so le o proprio runtime, sem
                     // I/O nem rede) — o modelo precisa dela para nao negar
                     // um canal em que esta conectado.
-                    "garra_status".to_string(),
-                ],
+                    "garra_status",
+                ]
+                .iter()
+                // #1384: a leitura do MCP `filesystem` (lista fechada de
+                // operacoes, em qualquer servidor). Sem isto o piso do
+                // WhatsApp pessoal escondia um servidor conectado e o modelo
+                // dizia nao ter como ler arquivo — mentira que a #1387
+                // rastreia. Escrita e mudanca ficam fora, e `denied` abaixo
+                // continua vencendo qualquer entrada.
+                .chain(LEITURA_MCP_FILESYSTEM.iter())
+                .map(|s| s.to_string())
+                .collect(),
                 denied: vec![
                     "file_write".to_string(),
                     "bash".to_string(),
@@ -1478,6 +1542,80 @@ mod tests {
         }
     }
 
+    /// **`search` enxerga a leitura do MCP `filesystem`, e so ela (#1384).**
+    ///
+    /// Na v0.4.5 o modo `search` — o piso de todo remetente do WhatsApp
+    /// pessoal — escondia TODA ferramenta do servidor `filesystem`, inclusive
+    /// `read_text_file` e `list_directory`, porque a whitelist so listava as
+    /// nativas. Resultado: o MCP estava conectado e o modelo dizia que nao
+    /// tinha como ler arquivo nenhum. A regra nova e por NOME DA OPERACAO, em
+    /// qualquer servidor (`*/read_text_file`), com a lista fechada dos verbos
+    /// somente-leitura do `@modelcontextprotocol/server-filesystem`; escrita,
+    /// mudanca e qualquer nome desconhecido continuam fail-closed.
+    #[test]
+    fn search_permite_leitura_do_filesystem_mcp_e_so_leitura() {
+        let g = ToolGate::for_mode_name("search");
+        for leitura in [
+            "filesystem__read_file",
+            "filesystem__read_text_file",
+            "filesystem__read_media_file",
+            "filesystem__read_multiple_files",
+            "filesystem__list_directory",
+            "filesystem__list_directory_with_sizes",
+            "filesystem__directory_tree",
+            "filesystem__search_files",
+            "filesystem__get_file_info",
+            "filesystem__list_allowed_directories",
+            // O nome do servidor nao importa: e a operacao que e de leitura.
+            "arquivos__read_text_file",
+        ] {
+            assert!(g.permite(leitura), "search barrou a leitura MCP {leitura}");
+        }
+        for mutacao in [
+            "filesystem__write_file",
+            "filesystem__edit_file",
+            "filesystem__create_directory",
+            "filesystem__move_file",
+            // Nome desconhecido continua barrado (#1264): a lista e fechada.
+            "filesystem__consulta",
+            "filesystem__read_file_and_delete",
+            // A operacao de leitura NAO libera a ferramenta nativa homonima
+            // nem um nome sem servidor.
+            "read_text_file",
+        ] {
+            assert!(!g.permite(mutacao), "search deixou passar {mutacao}");
+        }
+    }
+
+    /// A terceira forma de entrada da `allowed`: `*/<operacao>` cobre
+    /// `<qualquer servidor>__<operacao>`, e nada alem disso.
+    #[test]
+    fn entrada_com_servidor_coringa_cobre_a_operacao_em_qualquer_servidor() {
+        assert!(entrada_cobre(
+            "*/read_text_file",
+            "filesystem__read_text_file"
+        ));
+        assert!(entrada_cobre("*/read_text_file", "outro__read_text_file"));
+        // Exato na operacao: prefixo e sufixo nao servem.
+        assert!(!entrada_cobre(
+            "*/read_text_file",
+            "filesystem__read_text_file_x"
+        ));
+        assert!(!entrada_cobre(
+            "*/read_text_file",
+            "filesystem__xread_text_file"
+        ));
+        // Sem servidor nao e ferramenta MCP.
+        assert!(!entrada_cobre("*/read_text_file", "read_text_file"));
+        // Coringa vazio nao cobre nada.
+        assert!(!entrada_cobre("*/", "filesystem__read_text_file"));
+        assert!(!entrada_cobre("*/", "filesystem__"));
+        // As duas formas antigas continuam iguais.
+        assert!(entrada_cobre("filesystem/*", "filesystem__write_file"));
+        assert!(entrada_cobre("file_read", "file_read"));
+        assert!(!entrada_cobre("file_read", "file_read_x"));
+    }
+
     /// Mas `denied` vale para MCP tambem — a lista explicita ganha.
     #[test]
     fn denied_vale_inclusive_para_mcp() {
@@ -1779,9 +1917,11 @@ mod tests {
             "e nao libera servidor que nao foi declarado"
         );
 
-        // Sem a declaracao, o `search` nativo nega pelo nome — o piso do canal.
+        // Sem a declaracao, o `search` nativo — o piso do canal — so deixa
+        // passar a LEITURA do `filesystem` (#1384, lista fechada de
+        // operacoes); a escrita continua negada pelo nome.
         let g = ToolGate::for_mode_name("search");
-        assert!(!g.permite("filesystem__read_file"));
+        assert!(g.permite("filesystem__read_file"));
         assert!(!g.permite("filesystem__write_file"));
     }
 

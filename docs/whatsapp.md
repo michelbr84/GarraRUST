@@ -268,8 +268,9 @@ camadas, e nenhuma substitui a outra.
   resolve para `search`, e nao para "sem politica de ferramenta":
   `whitelist_mode` ligado, `allowed` so de leitura (`file_read`, `repo_search`,
   `list_dir`, `web_search`, `web_fetch`, `device_list`, `device_read`,
-  `garra_status` — que descreve o proprio runtime, sem segredo, #1347) e
-  `denied` para `file_write`, `bash` e `device_execute`.
+  `garra_status` — que descreve o proprio runtime, sem segredo, #1347 — e as
+  dez operacoes somente-leitura do MCP `filesystem`, na forma `*/<operacao>`,
+  #1384) e `denied` para `file_write`, `bash` e `device_execute`.
   O `garra_status` e o que responde "voce tem acesso ao WhatsApp?": a lista
   `channels` dele sai da mesma funcao do `/api/channels`, entao este canal
   aparece `active` com a ponte conectada e `offline` com ela caida. Numa
@@ -298,23 +299,30 @@ camadas, e nenhuma substitui a outra.
   lista. **Nao ha recusa de subida por "existe servidor MCP"**: ela existiu
   (ate a #1327) para compensar uma isencao do portao que a #1288 fechou, e o
   efeito que sobrou era o canal nunca subir em instalacao padrao.
-- **Como uma ferramenta MCP chega ao modelo neste canal.** Pelo piso, nunca:
-  `default_mode` so aceita modo nativo, e nenhum nativo com whitelist declara
-  servidor (`servidor/*` libera o servidor inteiro, leitura **e** escrita;
-  `servidor__ferramenta` libera uma so — e a unica forma de MCP passar por um
-  perfil com whitelist). Ela chega por dois caminhos, os dois escolhidos por
-  alguem: o operador poe em `default_mode` um nativo **sem** whitelist (`ask`,
-  `code`), em que passa tudo que o `denied` nao nomeia; ou a sessao escolhe,
-  com `/mode`, um modo customizado cujo `allowed` declara `servidor/*` (ou tem
-  `allowed` vazia com `whitelist_mode` ligado, que permite tudo — comportamento
-  preservado da #1264). Num canal exposto ao mundo, qualquer dos dois quer
-  dizer "quem estiver na allowlist do WhatsApp pode acionar esse servidor".
+- **Como uma ferramenta MCP chega ao modelo neste canal.** Pelo piso, so a
+  **leitura** do `filesystem` (#1384): o `search` nativo declara, na forma
+  `*/<operacao>`, as dez operacoes somente-leitura do
+  `@modelcontextprotocol/server-filesystem` (`read_text_file`,
+  `list_directory`, `search_files`, `get_file_info`…) — entao um remetente
+  admitido le e lista o workspace **da propria sessao** (#1448), e nada mais:
+  `write_file`, `edit_file`, `create_directory`, `move_file` e qualquer
+  operacao fora da lista continuam negadas pelo nome, e nenhum outro servidor
+  passa (`servidor/*` libera o servidor inteiro, leitura **e** escrita;
+  `servidor__ferramenta` libera uma so). Qualquer coisa alem disso chega por
+  dois caminhos, os dois escolhidos por alguem: o operador poe em
+  `default_mode` um nativo **sem** whitelist (`ask`, `code`), em que passa
+  tudo que o `denied` nao nomeia; ou a sessao escolhe, com `/mode`, um modo
+  customizado cujo `allowed` declara `servidor/*` (ou tem `allowed` vazia com
+  `whitelist_mode` ligado, que permite tudo — comportamento preservado da
+  #1264). Num canal exposto ao mundo, qualquer dos dois quer dizer "quem
+  estiver na allowlist do WhatsApp pode acionar esse servidor".
 - **O aviso de drift.** Na subida do canal o gateway monta o portao do perfil
   padrao — pelo mesmo caminho que o turno monta o seu, sobre o `default_mode`
-  ja validado — e percorre o inventario MCP. Como nenhum nativo com whitelist
-  declara servidor, o aviso so tem o que dizer quando o `default_mode` e um
-  perfil **sem** whitelist (`ask`, `code`): sai **um** `WARN` nomeando os
-  servidores e o motivo (nunca argumento nem segredo):
+  ja validado — e percorre o inventario MCP. A leitura do `filesystem` que o
+  `search` libera por desenho **nao** e drift e nao gera aviso; ele so tem o
+  que dizer quando o `default_mode` e um perfil **sem** whitelist (`ask`,
+  `code`): sai **um** `WARN` nomeando os servidores e o motivo (nunca
+  argumento nem segredo):
 
   ```text
   WARN whatsapp_linked: o perfil `ask` (`channels.whatsapp_linked.default_mode`) libera ferramentas MCP dos servidores filesystem a quem manda mensagem para este numero — o perfil nao tem whitelist de ferramenta, entao passa tudo que o `denied` nao nomeia; use `search` para um piso somente-leitura, ou confirme que e intencional
