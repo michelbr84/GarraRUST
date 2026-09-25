@@ -373,3 +373,5 @@ Este diretório contém os planos de implementação para o projeto GarraRUST.
 | 0360 | [`garra agents setup`: provisionamento e roteamento multi-agente](0360-garra-agents-setup.md) | pedido direto | ✅ Entregue 2026-08-30 (ADR 0014) |
 | 0361 | [Pacotes Linux `.deb`/`.rpm`/AppImage + Windows ARM64 nativo + release v0.3.4](0361-linux-packages-and-windows-arm64.md) | pedido direto | ✅ Entregue 2026-08-31 (ADR 0015) |
 | 0362 | [Papagaio de volta, Garra Chat Bar e desktop Linux](0362-garra-chat-bar-e-desktop-linux.md) | pedido direto | ✅ Entregue 2026-09-01 (v0.3.5, Amendment do ADR 0015) |
+| 0363 | [GarraIA Desktop: instalar, configurar e conectar ao WhatsApp sem terminal](0363-desktop-whatsapp-sem-terminal.md) | pedido direto | 📝 Proposta 2026-09-25 — diagnóstico + arquitetura + plano E0–E7; decisões R5 em §9 |
+| 0364 | [Release v0.4.6: pré-voo, inventário e gate](0364-release-v0.4.6-preflight.md) | prompt de missão | ⏸️ Parado no gate 2026-09-25 — 64 issues + 3 PRs inventariadas; CI bloqueado pelo MinIO (#1458); decisões do dono em §8 |
