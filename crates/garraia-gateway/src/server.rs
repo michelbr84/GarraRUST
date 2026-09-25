@@ -202,6 +202,15 @@ impl GatewayServer {
         let tls_cert = self.config.gateway.tls_cert_path.clone();
         let tls_key = self.config.gateway.tls_key_path.clone();
 
+        // #1378: o workspace padrao das file tools nativas precisa EXISTIR
+        // antes do runtime ser montado — `build_agent_runtime` canonicaliza as
+        // raizes, e uma raiz que nao resolve e descartada. Fora de
+        // `build_agent_runtime` de proposito: aquela funcao e chamada por duas
+        // dezenas de testes unitarios com a config default, e criar diretorio
+        // a partir dela plantaria `<config_dir>/data/workspace` no `$HOME` de
+        // quem roda a suite. Um teste de fonte (`bootstrap::tests`) garante
+        // que esta chamada continue aqui, e antes.
+        crate::bootstrap::garantir_workspace_padrao(&self.config);
         let agents = build_agent_runtime(&self.config);
         // `build_agent_runtime` e sincrono; o health check do provider de
         // embeddings precisa de await, entao acontece aqui (#951).
