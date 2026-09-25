@@ -40,9 +40,17 @@
 //!   diretorio, que e exatamente a colisao cross-sessao que esta correcao
 //!   existe para fechar. Um hash e injetivo na pratica, e o conjunto de
 //!   caracteres que ele produz (`[0-9a-f]`) nao tem como escapar do pai.
-//! - **O `session_id` pode ser PII.** No WhatsApp ele carrega identificador de
-//!   contato; gravar isso como nome de diretorio deixaria a lista de quem
-//!   falou com o gateway legivel no disco, e nos logs que citam o caminho.
+//! - **O `session_id` pode ser PII, e nao gravar em claro no caminho ajuda —
+//!   mas nao e uma protecao forte por si so.** No WhatsApp ele carrega
+//!   identificador de contato; gravar isso como nome de diretorio deixaria a
+//!   lista de quem falou com o gateway legivel no disco. O hash **nao** e
+//!   salgado, e um `session_id` de formato previsivel (`whatsapp-linked-
+//!   <numero>`) e reversivel por forca bruta contra o espaco de numeros de
+//!   telefone; alem disso o mesmo id ja aparece em claro em outros lugares do
+//!   mesmo `data_dir` (`chat_session_keys` do `SessionStore`) e nos logs das
+//!   proprias file tools (`session_id` como campo estruturado). A razao que
+//!   sozinha justifica o hash e a de cima — path safety —; esta e um
+//!   beneficio incidental, nao uma garantia.
 //!
 //! O tamanho (128 bits de SHA-256, 32 caracteres hex) e folgado contra
 //! colisao e curto o suficiente para nao esbarrar em limite de caminho no
