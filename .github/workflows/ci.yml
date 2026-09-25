@@ -617,7 +617,24 @@ jobs:
         # segundos em vez do cold start dentro do teste. O job roda so em
         # ubuntu-latest (sem matriz de OS), onde o Docker vem pre-instalado,
         # entao nao ha o que condicionar por `runner.os` aqui.
-        run: docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+        #
+        # Retry com backoff (#1456): sem isso, um hiccup transiente do
+        # quay.io (`unauthorized: access to the requested resource is not
+        # authorized`, reproduzido na PR #1455 duas vezes seguidas, com o
+        # mesmo commit passando no run anterior de `main`) derruba o job
+        # inteiro, inclusive os steps de `storage-s3` que nem tocam MinIO.
+        # 3 tentativas, backoff fixo curto — ainda falha o job (`exit 1`) se
+        # todas esgotarem, nenhum gate fica mais fraco.
+        run: |
+          for attempt in 1 2 3; do
+            if docker pull quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z; then
+              exit 0
+            fi
+            echo "::warning::docker pull falhou (tentativa ${attempt}/3)"
+            [ "$attempt" -lt 3 ] && sleep $((attempt * 5))
+          done
+          echo "::error::docker pull do MinIO falhou em 3 tentativas"
+          exit 1
 
       - name: Run clippy + tests (storage-s3)
         # ATENCAO ao ler um verde daqui: este step cobre COMPILACAO, clippy e
