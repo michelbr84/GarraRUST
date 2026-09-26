@@ -91,6 +91,12 @@ pub use whatsapp_linked::{
     LinkedSettings as WhatsAppLinkedSettings, chave_do_portao as whatsapp_linked_chave_do_portao,
     normalizar_identidade as whatsapp_linked_normalizar_identidade,
 };
+/// #1409: o piso de modo do turno por principal, para o admin dizer o modo
+/// EFETIVO de uma sessao do WhatsApp (o mesmo que `turno` calcula).
+pub use whatsapp_linked::{
+    modo_do_piso as whatsapp_linked_modo_do_piso,
+    perfil_do_turno as whatsapp_linked_perfil_do_turno,
+};
 
 /// ADR 0024 (#1329): a politica derivada de `execution.profile` — perfil e
 /// origem resolvidos, raiz do MCP `filesystem` por perfil (nunca `$HOME`) e o

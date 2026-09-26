@@ -11,6 +11,8 @@ pub mod rbac;
 pub mod recovery;
 pub mod routes;
 pub mod secrets;
+/// #1409: principal, modo efetivo e projeto por sessao, para o admin.
+pub mod sessoes;
 pub mod shared;
 pub mod store;
 pub mod totp;
