@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use rmcp::model::{CallToolRequestParams, CallToolResponse, ContentBlock};
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 
+use super::confinamento::{Confinado, confinar_argumentos};
 use super::manager::McpManager;
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
@@ -101,6 +102,34 @@ impl Tool for McpTool {
                 map.insert("input".to_string(), outro);
                 Some(map)
             }
+        };
+
+        // #1482: as operacoes de filesystem passam pelo MESMO jail das file
+        // tools nativas, com o diretorio DESTA sessao. O portao de nomes ja
+        // decidiu que a operacao roda; aqui decide-se ONDE ela pode tocar.
+        // Fora do jail, a recusa e a frase unica das tools nativas — nao
+        // nomeia caminho nem causa. Sem jail entregue (CLI local), passa.
+        let argumentos = match self.manager.jail_das_file_tools() {
+            Some(jail) => match confinar_argumentos(
+                &self.nome_original,
+                argumentos,
+                &jail,
+                context.working_dir.as_deref(),
+            ) {
+                Ok(Confinado::Passa(a)) => a,
+                Ok(Confinado::Reescrito(mapa)) => Some(mapa),
+                Ok(Confinado::RespondeLocal(texto)) => return Ok(ToolOutput::success(texto)),
+                Err(recusa) => {
+                    warn!(
+                        tool = %self.nome_completo,
+                        session = %context.session_id,
+                        recusa = ?recusa,
+                        "mcp filesystem: caminho fora do jail da sessao (#1482)"
+                    );
+                    return Ok(ToolOutput::error(recusa.message()));
+                }
+            },
+            None => argumentos,
         };
 
         let mut params = CallToolRequestParams::new(self.nome_original.clone());

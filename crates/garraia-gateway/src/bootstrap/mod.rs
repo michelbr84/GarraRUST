@@ -2108,6 +2108,11 @@ pub async fn build_mcp_tools(
     }
 
     let manager = Arc::new(McpManager::new());
+    // #1482: o MESMO jail das file tools nativas, entregue ao manager antes
+    // de qualquer servidor subir. Em `standard` a raiz do servidor
+    // `filesystem` e `<data_dir>/workspace`, o PAI de todo diretorio de
+    // sessao (#1449); sem isto uma sessao lia a outra pelo MCP.
+    manager.set_jail_das_file_tools(raizes_das_file_tools(config).jail.clone());
     let mut all_tools: Vec<Box<dyn Tool>> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
 
@@ -4412,6 +4417,35 @@ Corpo do skill de teste.
         assert!(
             preparo < runtime,
             "garantir_workspace_padrao tem de vir ANTES de build_agent_runtime (#1378)"
+        );
+    }
+
+    /// **#1482, a fiacao.** O boot entrega ao `McpManager` o MESMO jail das
+    /// file tools antes de subir servidor algum: sem isto o confinamento das
+    /// chamadas MCP de filesystem nao existe e uma sessao le a outra pelo
+    /// `filesystem` (raiz = pai de todo diretorio de sessao).
+    #[test]
+    fn o_boot_entrega_o_jail_das_file_tools_ao_manager_mcp() {
+        let fonte = include_str!("mod.rs");
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+        let inicio = producao
+            .find("pub async fn build_mcp_tools(")
+            .expect("a funcao");
+        let corpo = &producao[inicio..];
+        let entrega = corpo
+            .find("set_jail_das_file_tools(raizes_das_file_tools(config).jail")
+            .expect("build_mcp_tools deixou de entregar o jail ao McpManager (#1482)");
+        let primeiro_servidor = corpo
+            .find("register_pending_stdio")
+            .or_else(|| corpo.find("connect_stdio"))
+            .or_else(|| corpo.find("take_tools"))
+            .expect("build_mcp_tools sobe servidores");
+        assert!(
+            entrega < primeiro_servidor,
+            "o jail tem de ser entregue ANTES de qualquer servidor subir (#1482)"
         );
     }
 

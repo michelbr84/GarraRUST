@@ -296,6 +296,13 @@ struct StdioFailure {
 /// Manages the lifecycle of MCP server connections.
 pub struct McpManager {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
+    /// #1482: o jail das file tools nativas, para as chamadas MCP de
+    /// filesystem passarem pelo MESMO confinamento por sessao
+    /// (`mcp::confinamento`). `None` ate o dono do processo entregar um — o
+    /// gateway o faz no boot; a CLI local (`garraia mcp call`) nao, e ali ha
+    /// um humano no laco. Lock sincrono de proposito: leitura por chamada,
+    /// nunca cruza um `await`.
+    jail_das_file_tools: Arc<std::sync::RwLock<Option<crate::tools::FileJail>>>,
     /// GAR-293: per-server restart state (survives connection removal).
     restart_states: Arc<RwLock<HashMap<String, RestartState>>>,
     /// Servers that failed to connect at boot. They never entered
@@ -340,12 +347,33 @@ impl McpManager {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
+            jail_das_file_tools: Arc::new(std::sync::RwLock::new(None)),
             restart_states: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
             inherit_env_warned: Arc::new(RwLock::new(HashSet::new())),
             failures: Arc::new(RwLock::new(HashMap::new())),
             npx_recovered: Arc::new(RwLock::new(HashSet::new())),
             exhausted_reported: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+
+    /// Entrega o jail das file tools para o confinamento das chamadas MCP de
+    /// filesystem (#1482). O gateway chama uma vez no boot, com o MESMO jail
+    /// que `file_read`/`file_write`/`list_dir` recebem; a partir dai toda
+    /// [`McpTool`] deste manager confina `path`/`paths`/`source`/`destination`
+    /// ao diretorio da sessao (mais as raizes declaradas).
+    pub fn set_jail_das_file_tools(&self, jail: crate::tools::FileJail) {
+        match self.jail_das_file_tools.write() {
+            Ok(mut slot) => *slot = Some(jail),
+            Err(envenenado) => *envenenado.into_inner() = Some(jail),
+        }
+    }
+
+    /// O jail entregue por [`Self::set_jail_das_file_tools`], se houver.
+    pub fn jail_das_file_tools(&self) -> Option<crate::tools::FileJail> {
+        match self.jail_das_file_tools.read() {
+            Ok(slot) => slot.clone(),
+            Err(envenenado) => envenenado.into_inner().clone(),
         }
     }
 
