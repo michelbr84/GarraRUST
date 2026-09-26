@@ -607,6 +607,17 @@ channels:
   `…1234`: para agir numa linha manda `identity_last4`, que o gateway
   resolve entre as identidades declaradas (ambiguo = 409). A API tambem
   aceita `owner`, `unowner` e `remove`.
+- **Comandos de barra e projeto (#1379, #1424).** No WhatsApp pessoal uma
+  mensagem que comeca com `/` e decidida por principal antes de ir ao
+  modelo: `/help` para todo admitido; `/project [list|<nome ou id>|clear]`
+  para dono e usuario — seleciona um projeto cadastrado (console → Projects,
+  ou `POST /api/projects`), confinado pelas raizes de projeto do operador
+  (`GARRAIA_PROJECT_ROOTS`), que vira o `working_dir` das file tools e fica
+  gravado no `sessions.db` (sobrevive a `garraia restart`; um projeto que
+  ficou fora das raizes nao volta); `/mode` e `/goal` so para o dono (o nivel
+  dos demais vem desta politica). Comando registrado fora dessas listas e
+  recusado com motivo; o que nao e comando segue como texto. Selecionar
+  projeto nao muda poder: o portao do turno (modo e teto) continua valendo.
 - **A quente.** A secao inteira e relida a cada mensagem (como `allow` e
   `owners` ja eram): um `blocked: true` vale na mensagem seguinte, sem
   restart. `access.groups.enabled` tambem; o `reply_in_groups` legado segue
