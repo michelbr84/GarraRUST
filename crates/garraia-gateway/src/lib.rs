@@ -45,6 +45,8 @@ pub mod path_validation;
 pub mod plugins_handler;
 pub mod project_root;
 pub mod projects_handler;
+/// #1379: o projeto ativo por sessao (persistido) e os comandos de barra por principal.
+pub mod projetos_da_sessao;
 pub mod push_channels;
 pub mod rate_limiter;
 pub mod rest_v1;

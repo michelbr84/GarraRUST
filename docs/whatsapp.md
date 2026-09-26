@@ -286,6 +286,39 @@ Detalhes do que e feito:
 > `agent.file_roots`) recebe uma recusa propria e acionavel — "selecione um
 > projeto com `/project <nome>`" — em vez da recusa generica de caminho fora
 > das raizes (#1418).
+>
+> **No Web Console, por conversa (#1409, #1415).** A pagina *Sessions* mostra,
+> para cada sessao do WhatsApp pessoal, o **principal** (dono, usuario com nivel
+> e escrita, pareado, grupo, desconhecido), o **modo efetivo** do turno — o que
+> a sessao escolheu com `/mode`, ou o piso do canal quando nao escolheu — e o
+> **projeto ativo** pelo nome, nunca pelo caminho. O botao *Capabilities* de
+> uma sessao abre o painel daquela conversa: o mesmo registro do
+> `garra_status`, mas com o portao real do turno (piso ∧ teto do principal),
+> entao um usuario `read` ve `file_write` como `denied` e a operadora sabe,
+> antes de a pessoa reclamar, o que esta liberado, negado, indisponivel, fora
+> do ar ou nao configurado — e o passo para cada caso. Os mesmos campos saem em
+> `GET /admin/api/sessions` (`principal`, `level`, `write`, `chosen_mode`,
+> `effective_mode`, `project_name`, `has_workspace`) e o painel em
+> `GET /admin/api/capabilities?session_id=<id>`.
+
+> **Falha repetida abre o breaker (#1417).** Cada sessao tem um circuit
+> breaker por ferramenta, no unico ponto de despacho do runtime. Uma falha
+> **deterministica** — sem raiz para as file tools, `repo_search` sem
+> repositorio — poe a ferramenta em pausa ate o fim do turno: se o modelo a
+> pedir de novo, ela nao roda, e volta um resultado de ferramenta com o
+> motivo (`no_roots`, `no_repository`) e a instrucao de nao repetir. Um
+> **timeout** abre um cooldown que dobra a cada timeout seguido (15s, 30s,
+> 60s, teto de 120s) e atravessa turnos; um erro generico so abre depois de
+> tres iguais no mesmo turno (`repeated_error`). A recusa de caminho **fora
+> das raizes** e generica de proposito: vale para aquele caminho, nao para a
+> ferramenta — o modelo pede `/etc/x`, le a recusa, corrige para `./src/x` e
+> a segunda chamada roda; so tres recusas iguais no turno pausam.
+> Uma chamada bem-sucedida fecha o breaker daquela ferramenta; um turno com
+> `working_dir` diferente limpa a sessao inteira. Ferramenta indisponivel
+> (#1425) nao chega ao breaker: e recusada antes. O `garra_status` lista o que
+> esta em pausa nesta sessao em `breaker` (`tool`, `reason_code`, `reason`),
+> texto constante, sem caminho nem saida crua; o agregado por instalacao no
+> `/api/diagnostics` fica para a #1438.
 
 Quem manda mensagem para o numero vinculado e, para o agente, um remetente
 **nao autenticado**: a allowlist do canal decide quem entra, e o que ele pode
@@ -415,6 +448,23 @@ garraia whatsapp allow +55 11 98888-0000
   codigo com `/pair` e peca para a pessoa manda-lo por WhatsApp (vale ate o
   gateway reiniciar), ou autorize o LID inteiro com
   `garraia whatsapp allow <id>@lid`, gravado como veio.
+- **Mensagens recusadas, por motivo (#1422).** Tudo o que o portao recusa e
+  contado no gateway, por motivo — `restricted_policy` (admissao restrita e
+  remetente nao declarado), `unresolved_lid` (LID sem numero), `blocked_user`
+  (`blocked: true` na politica), `channel_disabled` (canal desligado na config
+  viva), `prompt_injection` (admitido, texto recusado) — com o **final** da
+  identidade (`…1234`) e o instante (UTC), nunca o numero inteiro nem o texto.
+  A pagina *WhatsApp Access* do Web Console mostra as contagens e as ultimas
+  50, e cada linha traz a acao do seu motivo: autorizar (abre o formulario de
+  adicionar), parear (o `/pair`), desbloquear (leva a linha da pessoa) ou
+  ligar o canal; o botao *Reset* zera tudo, em dois cliques e com audit. A
+  API admin devolve o mesmo em `rejections` (`GET /admin/api/whatsapp/access`)
+  e zera por `POST /admin/api/whatsapp/access/rejections/reset`
+  (Channels/Update). O `/api/diagnostics`, sem autenticacao, ve **so as
+  contagens** (`whatsapp.linked`), nunca os finais. **Retencao:** contadores
+  desde o boot; recentes com teto de 50; tudo zera num restart ou no reset —
+  nada e gravado em disco alem do arquivo de `@lid` que o `status` da CLI ja
+  lia (contagem e final do ultimo).
 - **O celular vinculado nao conversa com o GarraIA.** Mensagens que ele envia
   saem da propria conta (`from_me`) e sao ignoradas, senao o canal responderia
   a si mesmo. O `link` avisa quando o numero digitado termina como o do
@@ -613,6 +663,17 @@ channels:
   `…1234`: para agir numa linha manda `identity_last4`, que o gateway
   resolve entre as identidades declaradas (ambiguo = 409). A API tambem
   aceita `owner`, `unowner` e `remove`.
+- **Comandos de barra e projeto (#1379, #1424).** No WhatsApp pessoal uma
+  mensagem que comeca com `/` e decidida por principal antes de ir ao
+  modelo: `/help` para todo admitido; `/project [list|<nome ou id>|clear]`
+  para dono e usuario — seleciona um projeto cadastrado (console → Projects,
+  ou `POST /api/projects`), confinado pelas raizes de projeto do operador
+  (`GARRAIA_PROJECT_ROOTS`), que vira o `working_dir` das file tools e fica
+  gravado no `sessions.db` (sobrevive a `garraia restart`; um projeto que
+  ficou fora das raizes nao volta); `/mode` e `/goal` so para o dono (o nivel
+  dos demais vem desta politica). Comando registrado fora dessas listas e
+  recusado com motivo; o que nao e comando segue como texto. Selecionar
+  projeto nao muda poder: o portao do turno (modo e teto) continua valendo.
 - **A quente.** A secao inteira e relida a cada mensagem (como `allow` e
   `owners` ja eram): um `blocked: true` vale na mensagem seguinte, sem
   restart. `access.groups.enabled` tambem; o `reply_in_groups` legado segue

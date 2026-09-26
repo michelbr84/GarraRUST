@@ -262,6 +262,9 @@ fn documento(state: &AdminState, config: &AppConfig) -> Value {
     json!({
         "policy": visao::documento(config, perfil, false),
         "hot_reload": state.app_state.has_config_watcher(),
+        // #1422: o que o portao recusou desde o boot — por motivo, com o
+        // final apenas. Rota autenticada (Channels/Read).
+        "rejections": state.app_state.whatsapp_linked.rejeicoes(),
     })
 }
 
@@ -367,11 +370,13 @@ pub async fn admin_whatsapp_access_mutate(
         // A trilha do proprio admin tambem, com o alvo mascarado.
         let alvo = mutacao.alvo().map(mascarar);
         let guard = state.store.lock().await;
+        // (action, resource_type), como `("login", "auth")` e `("save",
+        // "config")` nos outros handlers — estava invertido.
         let _ = guard.append_audit(
             Some(&admin.user_id),
             Some(&admin.username),
-            "whatsapp_access",
             mutacao.acao(),
+            "whatsapp_access",
             alvo.as_deref(),
             None,
             extract_ip(&headers, None).as_deref(),
@@ -431,5 +436,38 @@ pub async fn admin_whatsapp_access_audit(
     (
         StatusCode::OK,
         Json(json!({ "events": events, "limit": limite })),
+    )
+}
+
+/// `POST /admin/api/whatsapp/access/rejections/reset` — zera as mensagens
+/// recusadas (#1422). Channels/Update; auditado no proprio admin.
+pub async fn admin_whatsapp_access_rejections_reset(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+) -> impl IntoResponse {
+    if !check_permission(admin.role, Resource::Channels, Action::Update) {
+        return proibido();
+    }
+    let apagadas = state.app_state.whatsapp_linked.zerar_rejeicoes();
+    {
+        let guard = state.store.lock().await;
+        let _ = guard.append_audit(
+            Some(&admin.user_id),
+            Some(&admin.username),
+            "rejections_reset",
+            "whatsapp_access",
+            None,
+            Some(&format!("cleared={apagadas}")),
+            extract_ip(&headers, None).as_deref(),
+            "success",
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "cleared": apagadas,
+            "rejections": state.app_state.whatsapp_linked.rejeicoes(),
+        })),
     )
 }

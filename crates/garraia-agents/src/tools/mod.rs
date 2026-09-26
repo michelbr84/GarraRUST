@@ -1,5 +1,6 @@
 pub mod approval;
 pub mod bash_tool;
+pub mod breaker;
 pub mod code_review_tool;
 pub mod device_tools;
 pub mod file_jail;
