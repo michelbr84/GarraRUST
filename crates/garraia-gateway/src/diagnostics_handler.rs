@@ -736,6 +736,58 @@ fn runtime_channels_check(canais: &[String]) -> DiagnosticCheck {
 /// backend, ssh, tool elevada ou fora da allowlist) continua `warning`:
 /// configurado e quebrado nunca e neutro (#1437). O detalhe nunca carrega
 /// valor de config (imagem, host, caminho). Pura.
+/// #1381: a linha `tools.capabilities` — o registro de capacidades sem
+/// portao de sessao. `ok` quando tudo que existe esta visivel (o `bash` nao
+/// configurado ja tem a linha `tools.bash`); `warning` quando algo esta
+/// indisponivel ou fora do ar, nomeando o que e por que. Puro.
+fn tools_capabilities_check(
+    registro: &[crate::capacidades_registro::Capacidade],
+) -> DiagnosticCheck {
+    use crate::capacidades_registro::{Estado, contagens};
+    let c = contagens(registro);
+    let nomeia = |estado: Estado| -> String {
+        registro
+            .iter()
+            .filter(|l| l.state == estado)
+            .map(|l| format!("{} ({})", l.name, l.reason_code))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut partes = vec![format!("{} visivel(is)", c.visible)];
+    if c.unavailable > 0 {
+        partes.push(format!("indisponivel: {}", nomeia(Estado::Unavailable)));
+    }
+    if c.unhealthy > 0 {
+        partes.push(format!("fora do ar: {}", nomeia(Estado::Unhealthy)));
+    }
+    if c.not_configured > 0 {
+        partes.push(format!(
+            "nao configurado: {}",
+            nomeia(Estado::NotConfigured)
+        ));
+    }
+    let (status, next_step) = if c.unavailable > 0 || c.unhealthy > 0 {
+        let bin = garraia_common::executavel::nome();
+        (
+            CheckStatus::Warning,
+            Some(format!(
+                "cada item traz o motivo; numa conversa, `garra_status` mostra o mesmo registro. \
+                 Servidor MCP fora do ar: `{bin} mcp restart <nome>`; canal desconectado: veja \
+                 `runtime.channels`"
+            )),
+        )
+    } else {
+        (CheckStatus::Ok, None)
+    };
+    DiagnosticCheck {
+        id: "tools.capabilities",
+        label: "Capability registry",
+        status,
+        detail: partes.join(" · "),
+        next_step,
+    }
+}
+
 fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
     use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
     let (status, next_step) = match exposicao {
@@ -1269,6 +1321,39 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
     )));
 
+    // #1381: o registro de capacidades, sem portao de sessao (aqui nao ha
+    // conversa): o que esta indisponivel, fora do ar ou nao configurado.
+    {
+        let inventario = state.agents.tool_inventory();
+        let permite = |_: &str| true;
+        let disponibilidade = |n: &str| state.agents.disponibilidade_de(n);
+        let mcp: Vec<garraia_agents::McpServerStatus> = match &state.mcp_manager_arc {
+            Some(mgr) => mgr.server_statuses().await,
+            None => Vec::new(),
+        };
+        let exposicao = crate::bootstrap::exposicao_do_bash(
+            politica.perfil,
+            &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+        );
+        let bash_desligado = match exposicao {
+            crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((
+                exposicao.descricao(),
+                crate::bootstrap::COMO_LIGAR_O_BASH.to_string(),
+            )),
+            _ => None,
+        };
+        let registro =
+            crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
+                inventario: &inventario,
+                permite: &permite,
+                disponibilidade: &disponibilidade,
+                mcp: &mcp,
+                bash_desligado,
+                restrito: false,
+            });
+        checks.push(tools_capabilities_check(&registro));
+    }
+
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
     //
@@ -1521,6 +1606,53 @@ mod tests {
     use super::*;
 
     const ENDPOINT: &str = "http://127.0.0.1:7860";
+
+    // ─── #1381: tools.capabilities ───────────────────────────────────────
+    #[test]
+    fn tools_capabilities_e_warning_so_com_indisponivel_ou_fora_do_ar() {
+        use crate::capacidades_registro::{Capacidade, Estado};
+        let linha = |name: &str, state: Estado, code: &'static str| Capacidade {
+            name: name.into(),
+            source: "native",
+            server: None,
+            classes: vec![],
+            state,
+            reason_code: code,
+            reason: String::new(),
+            remediation: None,
+        };
+        let so_visiveis = [
+            linha("file_read", Estado::Visible, "ok"),
+            linha("bash", Estado::NotConfigured, "not_configured"),
+        ];
+        let c = tools_capabilities_check(&so_visiveis);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(c.detail.contains("1 visivel"), "{}", c.detail);
+        assert!(
+            c.detail.contains("nao configurado: bash (not_configured)"),
+            "{}",
+            c.detail
+        );
+        let com_problema = [
+            linha("telegram_send", Estado::Unavailable, "channel_offline"),
+            linha("memoria/*", Estado::Unhealthy, "retrying"),
+        ];
+        let c = tools_capabilities_check(&com_problema);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(
+            c.detail.contains("telegram_send (channel_offline)"),
+            "{}",
+            c.detail
+        );
+        assert!(c.detail.contains("memoria/* (retrying)"), "{}", c.detail);
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("mcp restart"),
+            "{c:?}"
+        );
+    }
 
     // ─── #1272: tools.bash ─────────────────────────────────────────────────
 

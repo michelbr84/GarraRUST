@@ -10,6 +10,9 @@ pub mod auth_routes;
 pub mod billing;
 pub mod bootstrap;
 pub mod capabilities;
+/// ADR 0025 / #1381: o registro de capacidades do runtime — uma visao so para
+/// `garra_status`, `/api/diagnostics` e o console.
+pub mod capacidades_registro;
 pub mod channel_send;
 pub(crate) mod channels_view;
 pub mod cluster;

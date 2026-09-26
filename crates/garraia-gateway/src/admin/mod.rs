@@ -1,4 +1,6 @@
 pub mod audit;
+/// #1381: o registro de capacidades para o console.
+pub mod capabilities;
 pub mod handlers;
 pub mod mcp;
 pub mod mcp_templates;
