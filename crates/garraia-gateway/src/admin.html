@@ -2119,6 +2119,9 @@ function waAccessView(data) {
   card.appendChild(table);
   frag.appendChild(card);
 
+  // ── Rejected messages (#1422) ──
+  frag.appendChild(waRejectionsCard(data.rejections || {}, canEdit));
+
   // ── Audit (#1414) ──
   var audit = el('div', { className: 'card', 'data-testid': 'wa-access-audit' });
   audit.appendChild(el('h3', { textContent: 'Access policy audit (latest first)' }));
@@ -2132,6 +2135,106 @@ function waAccessView(data) {
 // DECLARADAS (unica por construcao, senao 409). A identidade inteira nunca
 // desce ao navegador.
 function waIdentityOf(p) { return { last4: p.last4 }; }
+
+// #1422: o que o portao recusou desde o boot — contagens por motivo e as
+// ultimas N, so com o final (`…1234`). Cada motivo tem UMA acao, a do proprio
+// motivo; o reset e em dois cliques e auditado no gateway.
+var WA_REASON_LABEL = {
+  restricted_policy: 'Restricted policy (not allowed)',
+  unresolved_lid: 'Unresolved LID (no number)',
+  blocked_user: 'Blocked user',
+  channel_disabled: 'Channel disabled',
+  prompt_injection: 'Prompt injection (text refused)',
+  policy_not_admitted: 'Policy did not admit',
+};
+function waRejectionsCard(rej, canEdit) {
+  var card = el('div', { className: 'card', 'data-testid': 'wa-rejections' });
+  var head = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;' });
+  head.appendChild(el('h3', { textContent: 'Rejected messages (since boot)' }));
+  var total = Number(rej.total || 0);
+  head.appendChild(el('span', { className: 'badge ' + (total ? 'badge-warning' : 'badge-neutral'), 'data-testid': 'wa-rejections-total', textContent: total + ' rejected' }));
+  card.appendChild(head);
+  var ret = rej.retention || {};
+  card.appendChild(el('div', { className: 'wa-hint', 'data-testid': 'wa-rejections-retention', textContent: 'Counters since the gateway booted' + (rej.last_reset ? ' (reset at ' + rej.last_reset + ')' : '') + '; last ' + (ret.recent_max || 50) + ' kept in memory; nothing but the last 4 digits is stored. Reset: gateway restart or the button below.' }));
+  var by = rej.by_reason || {};
+  var reasons = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;' });
+  Object.keys(WA_REASON_LABEL).forEach(function (r) {
+    reasons.appendChild(el('span', { className: 'badge ' + (Number(by[r] || 0) ? 'badge-warning' : 'badge-neutral'), 'data-testid': 'wa-rejection-count', 'data-reason': r, textContent: WA_REASON_LABEL[r] + ': ' + Number(by[r] || 0) }));
+  });
+  card.appendChild(reasons);
+  var recent = rej.recent || [];
+  if (!recent.length) {
+    card.appendChild(el('div', { className: 'empty-state', 'data-testid': 'wa-rejections-empty', textContent: 'No rejected message since boot.' }));
+  } else {
+    var t = el('table', { className: 'wa-table' });
+    t.innerHTML = '<thead><tr><th>When (UTC)</th><th>Reason</th><th>Identity</th><th>Where</th><th>Action</th></tr></thead>';
+    var tb = el('tbody');
+    recent.forEach(function (x) {
+      var tr = el('tr', { 'data-testid': 'wa-rejection-row', 'data-reason': x.reason, 'data-last4': x.identity_last4 });
+      tr.appendChild(el('td', { textContent: x.at }));
+      tr.appendChild(el('td', { textContent: WA_REASON_LABEL[x.reason] || x.reason, title: (rej.remediation || {})[x.reason] || '' }));
+      tr.appendChild(el('td', null, [el('code', { textContent: x.identity_last4 })]));
+      tr.appendChild(el('td', { textContent: x.group ? 'group' : '1:1' }));
+      var act = el('td');
+      var btn = waRejectionAction(x, canEdit);
+      if (btn) act.appendChild(btn);
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    card.appendChild(t);
+  }
+  if (canEdit) {
+    var foot = el('div', { style: 'margin-top:8px;display:flex;gap:8px;align-items:center;' });
+    var resetBtn = el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-rejections-reset', textContent: 'Reset counters', disabled: total === 0 });
+    resetBtn.onclick = function () {
+      clearEl(foot);
+      foot.appendChild(el('span', { className: 'wa-hint', textContent: 'Clear ' + total + ' rejection(s)? This is audited and cannot be undone.' }));
+      foot.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-rejections-reset-confirm', textContent: 'Confirm reset', onClick: async function () {
+        try { var d = await apiPost('/whatsapp/access/rejections/reset', {}); toast('Cleared ' + (d.cleared || 0) + ' rejection(s)', 'success'); pageWhatsappAccess(); }
+        catch (e) { toast(e.message, 'error'); }
+      } }));
+      foot.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-rejections-reset-cancel', textContent: 'Cancel', onClick: function () { pageWhatsappAccess(); } }));
+    };
+    foot.appendChild(resetBtn);
+    card.appendChild(foot);
+  }
+  return card;
+}
+// A acao de cada motivo. O gateway so conhece o final: para autorizar e
+// preciso digitar o numero inteiro, entao o botao leva ao formulario com a
+// dica; para desbloquear, leva a linha da pessoa (que a matriz ja mostra).
+function waRejectionAction(x, canEdit) {
+  var label = null, run = null;
+  if (x.reason === 'restricted_policy') {
+    label = 'Allow…';
+    run = function () {
+      var input = document.querySelector('[data-testid="wa-access-add-identity"]');
+      if (!input) { toast('You cannot edit the policy with your role.', 'info'); return; }
+      input.placeholder = 'full number ending in ' + String(x.identity_last4).replace('…', '');
+      input.focus(); input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast('Type the full number (with country code) ending in ' + String(x.identity_last4).replace('…', '') + ' and choose a level.', 'info');
+    };
+  } else if (x.reason === 'blocked_user') {
+    label = 'Go to user';
+    run = function () {
+      var row = document.querySelector('[data-testid="wa-access-principal-row"][data-last4="' + x.identity_last4 + '"]');
+      if (!row) { toast('This identity is no longer in the policy.', 'info'); return; }
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      row.style.outline = '2px solid var(--garra-gold, #ffd400)';
+      setTimeout(function () { row.style.outline = ''; }, 2500);
+    };
+  } else if (x.reason === 'unresolved_lid') {
+    label = 'How to pair';
+    run = function () { toast('Ask the person to send a /pair code, or allow the full <id>@lid from the CLI (garraia whatsapp allow <id>@lid).', 'info'); };
+  } else if (x.reason === 'channel_disabled') {
+    label = 'Channels';
+    run = function () { navigate('channels'); };
+  }
+  if (!label) return null;
+  if (!canEdit && (x.reason === 'restricted_policy' || x.reason === 'blocked_user')) return null;
+  return el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-rejection-action', 'data-action': x.reason, textContent: label, onClick: run });
+}
 
 async function waPreview(req, warning, followUp) {
   var body = Object.assign({}, req);

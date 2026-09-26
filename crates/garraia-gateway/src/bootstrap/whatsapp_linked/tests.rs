@@ -3735,6 +3735,94 @@ mod ponta_a_ponta {
         encerra(c).await;
     }
 
+    // -----------------------------------------------------------------------
+    // #1422: rejeicoes contadas por motivo, com o final apenas
+    // -----------------------------------------------------------------------
+
+    /// `PEER` fora do `allow` (admissao restrita): recusado em silencio, e a
+    /// recusa entra em `rejeicoes()` como `restricted_policy`, com `…0000` e
+    /// o instante — nunca o numero. O contador legado de LID nao mexe.
+    #[tokio::test]
+    async fn remetente_fora_da_politica_restrita_e_contado_como_restricted_policy() {
+        let c = sobe_com(Roteiro::empurra("oi"), false).await;
+
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem precisa chegar para o teste ter o que provar"
+        );
+        assert!(
+            ate(|| c.state.whatsapp_linked.rejeicoes().total == 1).await,
+            "a recusa tem de ser contada: {:?}",
+            c.state.whatsapp_linked.rejeicoes()
+        );
+        let resumo = c.state.whatsapp_linked.rejeicoes();
+        assert_eq!(resumo.de(rejeicoes::Motivo::Restrita), 1);
+        assert_eq!(resumo.de(rejeicoes::Motivo::LidSemNumero), 0);
+        assert_eq!(c.state.whatsapp_linked.recusas_lid(), 0);
+        assert_eq!(resumo.recent.len(), 1);
+        assert_eq!(resumo.recent[0].identity_last4, "…0000");
+        assert!(!resumo.recent[0].group);
+        assert!(resumo.recent[0].at.ends_with('Z'));
+        let json = serde_json::to_string(&resumo).expect("serializa");
+        assert!(
+            !json.contains(PEER),
+            "o numero inteiro nao pode sair: {json}"
+        );
+        assert!(
+            !ate(|| !turnos(&c.provider).is_empty()).await,
+            "recusado nao chega ao modelo"
+        );
+
+        encerra(c).await;
+    }
+
+    /// A classificacao da recusa e pura e fail-closed: bloqueio vence a
+    /// admissao aberta; LID sem numero e o segundo; o resto e politica
+    /// restrita. E o `zerar` apaga tudo e devolve quantas apagou.
+    #[test]
+    fn motivo_da_recusa_distingue_bloqueado_lid_e_restrito() {
+        use rejeicoes::Motivo;
+        let secao = |access: serde_json::Value| {
+            let mut settings = std::collections::HashMap::new();
+            settings.insert("allow".to_string(), serde_json::json!([PEER]));
+            settings.insert("access".to_string(), access);
+            settings_da_secao(&garraia_config::ChannelConfig {
+                channel_type: CONFIG_KEY.to_string(),
+                enabled: Some(true),
+                settings,
+            })
+        };
+        let restrita = secao(serde_json::json!({
+            "users": { OUTRO: { "blocked": true } }
+        }));
+        let portao = PortaoDoCanal::from_settings(&restrita);
+        assert_eq!(motivo_da_recusa(&portao, OUTRO), Motivo::Bloqueado);
+        assert_eq!(motivo_da_recusa(&portao, LID), Motivo::LidSemNumero);
+        assert_eq!(motivo_da_recusa(&portao, "5531944443333"), Motivo::Restrita);
+        assert!(portao.libera(PEER), "premissa: PEER segue admitido");
+
+        let aberta = secao(serde_json::json!({
+            "admission": "open",
+            "users": { OUTRO: { "blocked": true } }
+        }));
+        let portao = PortaoDoCanal::from_settings(&aberta);
+        assert!(!portao.libera(OUTRO), "bloqueio vence admissao aberta");
+        assert_eq!(motivo_da_recusa(&portao, OUTRO), Motivo::Bloqueado);
+        assert!(
+            portao.libera("5531944443333"),
+            "aberta admite o desconhecido"
+        );
+
+        let runtime = WhatsAppLinkedRuntime::default();
+        runtime.registrar_rejeicao(Motivo::Bloqueado, OUTRO, false);
+        runtime.registrar_recusa_lid(LID);
+        assert_eq!(runtime.recusas_lid(), 1);
+        assert_eq!(runtime.rejeicoes().total, 2);
+        assert_eq!(runtime.zerar_rejeicoes(), 2);
+        assert_eq!(runtime.rejeicoes().total, 0);
+        assert_eq!(runtime.recusas_lid(), 0, "o contador legado zera junto");
+    }
+
     /// #1347 (fatia 3), o relato de ponta a ponta: conectado ao WhatsApp, o
     /// Garra respondia que nao tinha acesso ao WhatsApp. Aqui o modelo e um
     /// stub que faz o que a nota do runtime manda — chama `garra_status` e
