@@ -11,6 +11,7 @@
 |---|---|---|---|---|---|
 | 26/09 01:40 (início da missão) | 51 | 0 | 0 (#176 dismissed 00:35Z) | 6/6 verdes em `e1d62523` | 0 |
 | 26/09 06:45 | 51 | 4 (#1484, #1486, #1487, #1488 trem) | 0 | `e9e97673`: 6/6 verdes na #1483 antes do merge; run de `main` em curso | 0 |
+| 26/09 09:10 | 50 | 0 | 0 (code scanning 0, dependabot 0) | `87c66ec3`: Format verde, 5 obrigatórios em curso | 0 |
 
 ## 1. Lotes e dependências
 
@@ -72,7 +73,7 @@
 | #1438 | P2 | local-only reliability observability for tools and channels | L2-reg | observabilidade local | — | — | aberta |
 | #1439 | P2 | mandatory AAA dogfood gate before release tags | L2-e2e | gate de dogfood automatizado + manual | — | — | aberta |
 | #1461 | security,P1 | security: iMessage usa group_name cru (renomeavel por qualquer partici | L3 | iMessage: revalidar e fechar com prova | — | — | aberta |
-| #1462 | security,P1 | security: X-Session-Id forjado na rota compat OpenAI le resumo + ate 1 | L3 | X-Session-Id opcao 3 | `sec/1462-leitura-de-sessao-opcao-3` | `leitura_de_sessao_por_id_do_cliente.rs` 12/12 | PR #1484 (revisada) → trem #1488 |
+| #1462 | security,P1 | security: X-Session-Id forjado na rota compat OpenAI le resumo + ate 1 | L3 | X-Session-Id opcao 3 | `sec/1462-leitura-de-sessao-opcao-3` | `leitura_de_sessao_por_id_do_cliente.rs` 12/12 | **fechada** (PR #1484 via trem #1488, `87c66ec3`) |
 
 Bugs/regressões descobertos na missão entram aqui como linhas novas (com issue própria quando
 não houver uma que os cubra).
@@ -95,3 +96,5 @@ não houver uma que os cubra).
 | 26/09 06:35 | Dogfood: run final `2026-09-26-0347` (candidato `846e96c1`, `.deb` local via nfpm pinado, ubuntu:24.04 limpo) **13/13 PASSOU** em 370 s, resposta real do `qwen3.5:0.8b`. RED do zumbi: run `0331` (`.deb` v0.4.5, PID 1 = `sleep`): "Process 127 survived SIGTERM and SIGKILL". Prova do fix pelo integrador **sem `--init`** com o `.deb` do 0347: daemon PID 64 vira `Z`, `garraia stop` → "GarraIA stopped." em 0 s. Unitário `zumbi_nao_conta_como_processo_rodando` re-executado: 1 passed. **PR #1487** aberta | `dogfood/linux/2026-09-26-0347/{resumo.txt,repro-zumbi-sem-init/}` na worktree do agente |
 | 26/09 06:40 | **Trem `train/v046-c` → PR #1488** (`--no-ff`: #1484 + #1486 + #1487; base `e9e97673`; sem conflito; `cargo check` da união exit 0). Auto-merge desligado nas três | `gh pr view 1488` |
 | 26/09 07:00 | **L1-c em curso** na worktree `GarraRUST-l1c`, branch `feat/1388-access-policy-v2` (empilhada no trem): `bootstrap/whatsapp_linked/politica.rs` (`PoliticaDeAcesso::da_secao` fail-closed, `Principal {Dono,Usuario,Pareado,Desconhecido,Grupo,Bloqueado,Estranho}`, `principal_do_turno`, `teto_do_principal`), `LinkedSettings.access` + `entrada_de`/`e_dono`/`responde_em_grupo`, `PortaoDoCanal` com `bloqueados`/`aberto`/`pareado()`, `admissao_vigente` relê a política inteira, `turno` põe `exec.teto` e loga `principal`/`alcance`. Decisão de compat: `allow` legado e grupo sem política ficam **sem teto** (o piso de modo decide, como sempre); nível/`write` só onde declarado; pareado por código = `read`. RED 16/17 → GREEN 114/114 no módulo | `tests/politica.rs` (17 testes) |
+| 26/09 09:05 | PC reiniciou sozinho (~07:10–09:04 EDT); worktrees, commit do ledger e o L1-c não commitado sobreviveram. **Trem #1488 MERGED** (`87c66ec3`) com 12/12 checks verdes → #1484, #1486, #1487 `MERGED`; #1462 fechada pelo `Closes` | `gh pr view`, `git status` |
+| 26/09 09:20 | L1-c: aviso único por mudança da política normalizada (`avisar_politica_normalizada`, boot + turno), docs `docs/whatsapp.md` §"Politica de acesso por principal", ADR 0025 §4 emendada (legado sem teto; grupo declarado honrado; pareado `read`), fragmento `changelog.d/added/1388-access-policy-v2.md` | worktree `GarraRUST-l1c` |
