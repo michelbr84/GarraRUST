@@ -215,11 +215,11 @@ Mergeadas nesta sessão: **#1466** (MinIO do fonte, `c4d7f1ba`, 18:19), **#1470*
 | PR | Fecha | Base | Estado | Entrada prevista |
 |---|---|---|---|---|
 | #1473 | #1384 (search enxerga leitura do MCP) | main | **mergeada 22:03** (`8f088c15`); #1384 fechada | — |
-| #1474 | #1460, #1463, #1464 (workspace nasce 0700, uma função) | main | CI verde 31/31 | **trem #1479** |
-| #1475 | #1465, #1471 (diagnostics sem caminho do host, sem aviso espúrio) | main | CI verde 31/31 | **trem #1479** |
-| #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | CI verde 34/34 | **trem #1479** |
-| #1477 | #1419 `garraia doctor whatsapp` | main (atualizada 22:05) | CI em curso | merge direto quando verde |
-| #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | CI verde 31/31 | **trem #1479** |
+| #1474 | #1460, #1463, #1464 (workspace nasce 0700, uma função) | main | **mergeada 23:13** via trem #1479 | — |
+| #1475 | #1465, #1471 (diagnostics sem caminho do host, sem aviso espúrio) | main | **mergeada 23:13** via trem #1479 | — |
+| #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | **mergeada 23:13** via trem #1479 | — |
+| #1477 | #1419 `garraia doctor whatsapp` | main (atualizada 23:15) | CI reiniciado após o trem | merge direto quando verde |
+| #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | **mergeada 23:13** via trem #1479 | — |
 
 Cada merge em `main` deixa as outras BEHIND (checks estritos); por isso as cinco de
 `main` entram num **trem único** quando os seus CIs individuais terminarem — um ciclo
@@ -453,6 +453,9 @@ primeira versão desta tabela tinha horários estimados; corrigida).
 | 22:10 | CI individual das quatro candidatas ao trem **verde** (31/31, 31/31, 34/34, 31/31); #1478 DIRTY contra `main` (mesmo item de `docs/whatsapp.md` que a #1384) | GitHub |
 | 22:15 | Trem `train/v046-b` = `main` + #1474 + #1476 + #1475 + #1478, `--no-ff`; um conflito só (docs), resolvido movendo a frase do `file_tools` para o item do `garra_status`; local: fmt, clippy (3 crates), agents 707, gateway 1 457, doctor 18, ratchet `max=6901 over700=112` | **PR #1479** |
 | 22:17 | Comentário nas quatro PRs carregadas (não religar auto-merge); auto-merge conferido desligado | |
+| 22:51 | #1477 verde nos 33 checks (CLEAN); merge **segurado** para não deixar o trem BEHIND | comentário na #1477 |
+| 23:13 | **Trem #1479 mergeado** (`7607b28f`) com os 6 obrigatórios verdes; #1474 #1475 #1476 #1478 marcadas merged; **#1460 #1463 #1464 #1465 #1471 fechadas**. `open_issues=53 open_prs=1` | GitHub |
+| 23:15 | #1477 atualizada com `main` (BEHIND pelo trem); CI reinicia; monitor de fundo para o merge | |
 
 Depois do trem entrar: empurrar `release/v0.4.6`, abrir a PR em **rascunho**
 com a tabela de dogfood de §6 preenchida no que foi executado (D1 parcial e
@@ -483,6 +486,7 @@ preenchida**, a data da seção acompanha o dia do tag, e o tag é do dono.
 | C1 (pré-voo) | 15:40 | 64 | 3 | 1 (#176) | **vermelho repo-wide** (MinIO) | ratchet regredido (#1448) | não |
 | C1.5 (após #1466) | 18:19 | 62 | 3 (+#1467/#1468/#1469 abertas) | 1 | verde | idem | não |
 | C2 | 20:55 | **59** | **6** (todas desta sessão) | **0** | verde nas mergeadas; 6 runs em curso | 0 novas; a do ratchet revertida na #1476 | não (regra do prompt) |
+| C3 (trem entrou) | 23:15 | **53** | **1** (#1477, CI reiniciado) | **0** | verde em `main` (#1473, #1479) | 0; ratchet `max=6901 over700=112` em `main` | não (regra do prompt) |
 
 ## 10. Artefatos de release
 
