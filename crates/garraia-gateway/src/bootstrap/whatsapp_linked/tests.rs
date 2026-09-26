@@ -2417,6 +2417,10 @@ mod ponta_a_ponta {
     // linhas com o resto desta suite.
     mod preparo_da_ponte;
 
+    // #1427: o modelo multi-principal (ADR 0025) provado na fiacao inteira,
+    // com a config viva. Em arquivo proprio pelo mesmo motivo.
+    mod permissoes_multiusuario;
+
     // -----------------------------------------------------------------------
     // O circuito da mensagem (sink + gates)
     // -----------------------------------------------------------------------
