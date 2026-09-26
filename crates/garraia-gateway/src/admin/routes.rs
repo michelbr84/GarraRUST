@@ -158,6 +158,11 @@ pub fn build_admin_router(
             "/api/whatsapp/access/audit",
             get(super::whatsapp_access::admin_whatsapp_access_audit),
         )
+        // #1422: o reset das mensagens recusadas (contadores em memoria).
+        .route(
+            "/api/whatsapp/access/rejections/reset",
+            post(super::whatsapp_access::admin_whatsapp_access_rejections_reset),
+        )
         .route("/api/sessions", get(handlers::admin_list_sessions))
         .route(
             "/api/sessions/{id}",
