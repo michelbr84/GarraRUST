@@ -220,7 +220,7 @@ Mergeadas nesta sessão: **#1466** (MinIO do fonte, `c4d7f1ba`, 18:19), **#1470*
 | #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | **mergeada 23:13** via trem #1479 | — |
 | #1477 | #1419 `garraia doctor whatsapp` | main | **mergeada 00:07 (26/09)** (`7b91a993`); #1419 fechada | — |
 | #1480 | #1459 raízes das file tools resolvidas uma vez, no boot | main (pós-trem) | CI em curso | merge direto quando verde |
-| #1481 | higiene da #1461: `room_id` no iMessage (não fecha a issue) | main (pós-trem) | CI em curso; conferir o job macOS | merge direto quando verde |
+| #1481 | higiene da #1461: `room_id` no iMessage (não fecha a issue) | main | **mergeada 00:52 (26/09)** (`0dcfa2e6`); macOS verde | — |
 | #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | **mergeada 23:13** via trem #1479 | — |
 
 Cada merge em `main` deixa as outras BEHIND (checks estritos); por isso as cinco de
@@ -461,6 +461,7 @@ primeira versão desta tabela tinha horários estimados; corrigida).
 | 23:19 | #1459 por TDD (3 RED: linha do workspace seguia o disco, nao o boot; duas guardas de fonte): `AppState.raizes_das_file_tools` resolvido uma vez em `with_config_dir`; gateway 1 649 verdes, clippy, fmt | **PR #1480** |
 | 23:3x | Follow-up de higiene da #1461: `IncomingMessage.group_name` → `room_id` (rename puro, doc do campo diz que é `cache_roomnames`); módulo só compila em macOS + feature `imessage`, evidência = job `Test (macos-latest)` | **PR #1481** |
 | 00:07 (26/09) | **#1477 mergeada** (`7b91a993`, por michelbr84 2026-09-26T04:05:21Z) com os 6 obrigatórios verdes; **#1419 fechada**. `open_issues=52 open_prs=2` (#1480, #1481, agora BEHIND; CI individual em curso → trem quando terminarem) | GitHub |
+| 00:52 (26/09) | **#1481 mergeada** (`0dcfa2e6`) com 31/31 checks, inclusive `Test (macos-latest)`, que é onde o módulo iMessage compila. `open_prs=1` (#1480, BEHIND de novo; a automação do dono costuma mergear `main` nela em minutos — monitor faz isso após 10 min se ninguém fizer) | GitHub |
 
 Depois do trem entrar: empurrar `release/v0.4.6`, abrir a PR em **rascunho**
 com a tabela de dogfood de §6 preenchida no que foi executado (D1 parcial e
