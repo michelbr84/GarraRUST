@@ -101,6 +101,15 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia whatsapp remove <numero> [--yes]` | revoga o acesso: tira a identidade de `allow` **e** de `owners`; dono exige confirmacao | 0 (inclusive quem nao estava na lista) · 1 cancelado · 64 dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
 | `garraia whatsapp owner <numero> [--yes]` | promove a DONO: grava em `owners`, a mesma escrita do `allow --owner` | 0 (inclusive quem ja era dono) · 1 cancelado · 64 fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
 | `garraia whatsapp unowner <numero> [--yes]` | tira o papel de DONO **sem** tirar o acesso; o ultimo dono exige confirmacao | 0 (inclusive quem nao era dono) · 1 cancelado · 64 ultimo dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
+| `garraia whatsapp access [--json] [--reveal]` | a politica efetiva inteira (ADR 0025): admissao, default do desconhecido, grupos e cada principal com piso, nivel e o que pode de fato — pelo MESMO `ToolGate` do turno; identidades so por `…1234`, `--reveal` mostra os valores da config (local) | 0 · 70 config ilegivel |
+| `garraia whatsapp access open [--yes] [--dry-run]` / `access restricted` | troca a admissao; `open` avisa (QUALQUER numero passa a entrar, com o default) e pede confirmacao | 0 · 1 cancelado · 64 `open` sem terminal e sem `--yes` · 70 |
+| `garraia whatsapp access default chat\|read [--write] [--dry-run]` | o que um desconhecido recebe em `open` (`full` e recusado; guardado mesmo em `restricted`) | 0 · 65 combinacao invalida · 70 |
+| `garraia whatsapp level <numero> chat\|read\|full [--dry-run]` | o nivel (teto) de uma identidade; no dono e recusado (use `unowner` antes) | 0 · 65 numero/combinacao invalida · 70 · 73 gravou mas o audit falhou |
+| `garraia whatsapp write <numero> on\|off [--dry-run]` | escrita de arquivo (nativa e MCP) de uma identidade — e SO isso | 0 · 65 (tambem para quem nao esta autorizado ou esta em `chat`) · 70 · 73 |
+| `garraia whatsapp block <numero>` / `unblock <numero>` | bloqueia (vence `open`, `allow` e pareamento; vale na mensagem seguinte) / desbloqueia | 0 · 65 · 70 · 73 |
+| `garraia whatsapp access groups on\|off\|default <nivel>` / `access group <jid> <nivel> [--write]` | grupos: liga/desliga, o default e a politica por JID (`<digitos>@g.us`) | 0 · 65 · 70 · 73 |
+| `garraia whatsapp access reset [--yes] [--dry-run]` | volta ao seguro: `restricted`, default `chat`, grupos desligados e sem politica, niveis/write removidos; donos e bloqueios ficam; idempotente | 0 · 1 cancelado · 64 sem terminal e sem `--yes` · 70 |
+| `garraia whatsapp access audit [--json] [--limit N]` | a trilha local de mudancas (`<data_dir>/audit/whatsapp-access.jsonl`), mais recente primeiro | 0 · 70 |
 
 O `users` nunca imprime a identidade inteira — nem na tela, nem no `--json`,
 cujo documento e `{enabled, authorized, owners, users[{role, kind, last4}]}`.
@@ -548,6 +557,20 @@ channels:
   vale `chat`; `admission` desconhecida vale `restricted`; o `default` de
   `open` nunca chega a `full`. Cada normalizacao gera um aviso sem numero no
   log do boot (e uma vez por mudanca da config viva).
+- **Pela CLI.** `garraia whatsapp access` mostra a matriz efetiva; `access
+  open|restricted`, `access default`, `level`, `write`, `block`/`unblock`,
+  `access groups`/`group` e `access reset` mudam a politica pelo **mesmo
+  caminho** que a API admin e o Web Console usam
+  (`whatsapp_linked_politica::mutacao`): validacao antes de gravar (`full`
+  para desconhecido e `chat` com `write` sao recusados com exit 65), escrita
+  atomica `0600`, e cada mudanca aplicada vai para
+  `<data_dir>/audit/whatsapp-access.jsonl` (quando, quem, por onde, acao,
+  alvo `…1234`, resumo antes/depois — nunca identidade inteira, chave ou
+  mensagem; rotacao por tamanho, `audit_max_bytes` na secao). Toda mutacao
+  aceita `--dry-run`: imprime o que mudaria e o **impacto por principal**
+  (o que ganha e perde: escrita de arquivo, shell, dispositivo, mensagem,
+  MCP), calculado pelo motor real, sem gravar nem auditar. `access audit`
+  le a trilha.
 - **A quente.** A secao inteira e relida a cada mensagem (como `allow` e
   `owners` ja eram): um `blocked: true` vale na mensagem seguinte, sem
   restart. `access.groups.enabled` tambem; o `reply_in_groups` legado segue

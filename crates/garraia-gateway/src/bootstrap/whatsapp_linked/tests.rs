@@ -10,6 +10,8 @@ use super::*;
 
 // ADR 0025: Access Policy v2 (principal, nivel, teto).
 mod politica;
+// ADR 0025: mutacao, impacto e auditoria da politica (#1412, #1413, #1414).
+mod politica_mutacao;
 // O par que extrai chamada de log e separa o que pode carregar valor mora em
 // `garraia-channels` (a crate que possui o segredo da sessao) e serve as duas
 // varreduras — esta e a de `whatsapp_linked/source_scan.rs`. Duas copias com

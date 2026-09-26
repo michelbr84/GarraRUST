@@ -344,7 +344,7 @@ fn checar_tipo(secao: &ChannelConfig) -> Result<()> {
 
 /// A secao do canal para escrita, nascendo com `type: whatsapp_linked` e sem
 /// `enabled` (desligado, ver `settings_from_config`) quando nao existe.
-fn secao_criando(config: &mut AppConfig) -> Result<&mut ChannelConfig> {
+pub(crate) fn secao_criando(config: &mut AppConfig) -> Result<&mut ChannelConfig> {
     let secao = config
         .channels
         .entry(CONFIG_KEY.to_string())
@@ -740,7 +740,7 @@ fn carregar_com_env(ctx: &Context, loader: &ConfigLoader) -> garraia_common::Res
     Ok(config)
 }
 
-fn carregar(ctx: &Context) -> Result<(&ConfigLoader, AppConfig), i32> {
+pub(crate) fn carregar(ctx: &Context) -> Result<(&ConfigLoader, AppConfig), i32> {
     let Some(loader) = ctx.loader.as_ref() else {
         eprintln!(
             "{}",

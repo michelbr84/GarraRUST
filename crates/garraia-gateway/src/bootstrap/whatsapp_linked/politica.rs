@@ -48,6 +48,14 @@ use serde_json::Value;
 
 use super::{LinkedSettings, chave_do_portao, normalizar_identidade};
 
+/// A trilha local de mudancas (#1414).
+pub mod auditoria;
+/// O efetivo por principal e o preview de impacto, pelo `ToolGate` real
+/// (#1400, #1413).
+pub mod impacto;
+/// O caminho unico de mutacao da secao (#1412).
+pub mod mutacao;
+
 /// Quem entra sem estar declarado nem pareado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Admission {

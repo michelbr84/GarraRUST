@@ -511,6 +511,13 @@ pub fn settings_from_config(config: &AppConfig) -> LinkedSettings {
     let Some(section) = config.channels.get(CONFIG_KEY) else {
         return LinkedSettings::default();
     };
+    settings_da_secao(section)
+}
+
+/// Le a secao ja em maos (a mesma leitura de [`settings_from_config`]): e o
+/// que o caminho de mutacao da politica (ADR 0025) usa para calcular o antes
+/// e o depois sem montar um `AppConfig`.
+pub fn settings_da_secao(section: &garraia_config::ChannelConfig) -> LinkedSettings {
     // Uma secao cuja `type` nao e `whatsapp_linked` nao e este canal. O
     // `ChannelConfig` guarda o tipo separado da chave, entao a checagem existe.
     if section.channel_type != CONFIG_KEY {
