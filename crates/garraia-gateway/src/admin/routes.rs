@@ -141,6 +141,11 @@ pub fn build_admin_router(
         .route("/api/tools", get(handlers::admin_list_tools))
         // ── Phase 5: Channels & Sessions ──
         .route("/api/channels", get(handlers::admin_list_channels))
+        // #1381: o registro de capacidades (Tools/Read).
+        .route(
+            "/api/capabilities",
+            get(super::capabilities::admin_capabilities),
+        )
         // ADR 0025 (#1402): a politica de acesso do WhatsApp pessoal, pelo
         // mesmo motor da CLI; leitura com Channels/Read, mutacao com
         // Channels/Write (o layer de CSRF cobre o POST).

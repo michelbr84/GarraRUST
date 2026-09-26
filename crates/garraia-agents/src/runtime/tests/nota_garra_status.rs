@@ -51,8 +51,11 @@ pub(super) fn nota_sem_prompt_e_a_lingua_da_persona() {
 
 /// Revisao da onda A: a nota descreve o relatorio que existe — a
 /// lista `channels` — e o `status` com `active`/`offline` que a
-/// fatia do gateway acrescenta, e nao fala de ferramentas: para elas
-/// a lista do turno e a fonte, e o relatorio listava tools negadas.
+/// fatia do gateway acrescenta. Desde #1381 descreve tambem a lista
+/// `capabilities` e os seus estados; o que ela continua NAO fazendo e
+/// chamar isso de "ferramenta"/"tool": a palavra remete a lista de
+/// funcoes oferecidas no turno, e e exatamente dela que o modelo nao
+/// pode inferir ausencia.
 #[test]
 pub(super) fn nota_casa_com_o_formato_do_relatorio_e_nao_fala_de_ferramenta() {
     for nota in [NOTA_GARRA_STATUS_PT, NOTA_GARRA_STATUS_EN] {
@@ -62,6 +65,14 @@ pub(super) fn nota_casa_com_o_formato_do_relatorio_e_nao_fala_de_ferramenta() {
             "`active`",
             "`offline`",
             "`session.channel`",
+            // #1381/#1387: o registro de capacidades e os seus estados.
+            "`capabilities`",
+            "`visible`",
+            "`denied`",
+            "`unavailable`",
+            "`unhealthy`",
+            "`not_configured`",
+            "`remediation`",
         ] {
             assert!(nota.contains(campo), "{campo} ausente: {nota}");
         }

@@ -447,7 +447,14 @@ neste Garra. O web chat e a API (`web`, `api`) e a CLI e o servidor MCP (`cli`, 
 `mcp`) nunca aparecem nela, e a ausencia deles nao diz nada; o canal desta conversa \
 esta em `session.channel`. Um campo citado em `withheld` foi retido nesta conversa: o \
 dado nao e divulgado aqui, e isso nao diz se o recurso existe ou nao — nunca leia um \
-campo retido como capacidade ausente.";
+campo retido como capacidade ausente. A lista `capabilities` do relatorio diz o estado de \
+cada capacidade: `visible` voce pode usar agora; `denied` existe e opera, mas a politica \
+desta conversa nao a libera — diga que existe e nao esta liberada, nunca que nao existe; \
+`unavailable` existe e falta contexto (sem workspace, canal desconectado) — repita a \
+remediacao do campo `remediation`; `unhealthy` e um servidor MCP conhecido que esta fora \
+do ar; `not_configured` e algo que este Garra sabe fazer mas nao foi configurado. Nunca \
+conclua que uma capacidade nao existe a partir da lista de funcoes oferecidas no turno: \
+consulte `capabilities`.";
 
 /// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
 pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
@@ -459,7 +466,14 @@ Garra. The web chat and the API (`web`, `api`) and the CLI and the MCP server \
 (`cli`, `mcp`) never appear in it, and their absence says nothing; the channel of \
 this conversation is in `session.channel`. A field named in `withheld` was held \
 back in this conversation: the data is not disclosed here, which tells you nothing \
-about whether the thing exists — never read a withheld field as a missing capability.";
+about whether the thing exists — never read a withheld field as a missing capability. \
+The report's `capabilities` list gives the state of each capability: `visible` you can \
+use now; `denied` exists and works but this conversation's policy does not allow it — say \
+it exists and is not allowed here, never that it does not exist; `unavailable` exists but \
+lacks context (no workspace, channel disconnected) — repeat the `remediation` field; \
+`unhealthy` is a known MCP server that is down; `not_configured` is something this Garra \
+can do but was not set up. Never conclude a capability does not exist from the turn's \
+list of offered functions: check `capabilities`.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
 /// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.

@@ -120,6 +120,15 @@ const SENTIDO_DE_WITHHELD: &str = sentido_de_withheld!();
 /// negam todo caminho com a MESMA frase — e o modelo, sem este bloco,
 /// prometia ler arquivo e depois inventava por que nao dava. So sai quando
 /// nao esta pronto; constante e secret-free, como [`SENTIDO_DE_WITHHELD`].
+/// O que `capabilities` significa, dito DENTRO do relatorio (#1381/#1387):
+/// a lista de funcoes do turno nao e a lista do que existe.
+const SENTIDO_DE_CAPABILITIES: &str = "each entry is a capability of this Garra with its state \
+in THIS conversation: `visible` = you can call it now; `denied` = it exists and works, but this \
+conversation's policy does not allow it (say so; never say it does not exist); `unavailable` = \
+it exists but lacks context or an integration right now (follow `remediation`); `unhealthy` = a \
+known MCP server is down; `not_configured` = this Garra can do it but it was not set up. \
+`reason_code` is machine-readable; `reason` and `remediation` are safe to repeat to the user.";
+
 const SENTIDO_DE_FILE_TOOLS_SEM_RAIZ: &str = "file_read, file_write and list_dir deny every path in this conversation: the session has no working directory and the operator declared no root. Say so instead of promising to read or write files. The operator can select a project for this session, or declare a root in agent.file_roots (or the GARRAIA_FILE_ROOTS env var) and restart.";
 
 pub struct GarraStatusTool {
@@ -343,6 +352,40 @@ impl Tool for GarraStatusTool {
             })
         };
 
+        // #1381: o registro de capacidades — a MESMA visao do `/api/diagnostics`
+        // e do console, com o portao deste turno (a lista que o runtime
+        // publicou) e a disponibilidade de cada ferramenta.
+        let capabilities = {
+            let inventario = state.agents.tool_inventory();
+            let liberadas = garraia_agents::tools::turn_tools::ferramentas_do_turno();
+            let permite = |n: &str| liberadas.as_ref().is_none_or(|l| l.iter().any(|x| x == n));
+            let disponibilidade = |n: &str| state.agents.disponibilidade_de(n);
+            let mcp: Vec<garraia_agents::McpServerStatus> = match &state.mcp_manager_arc {
+                Some(mgr) => mgr.server_statuses().await,
+                None => Vec::new(),
+            };
+            let politica = crate::bootstrap::politica_de_execucao(&state.config);
+            let exposicao = crate::bootstrap::exposicao_do_bash(
+                politica.perfil,
+                &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+            );
+            let bash_desligado = match exposicao {
+                crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((
+                    exposicao.descricao(),
+                    crate::bootstrap::COMO_LIGAR_O_BASH.to_string(),
+                )),
+                _ => None,
+            };
+            crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
+                inventario: &inventario,
+                permite: &permite,
+                disponibilidade: &disponibilidade,
+                mcp: &mcp,
+                bash_desligado,
+                restrito,
+            })
+        };
+
         let report = serde_json::json!({
             "version": version,
             "uptime_secs": state.boot_time.elapsed().as_secs(),
@@ -367,6 +410,8 @@ impl Tool for GarraStatusTool {
             // #1382: `null` quando nada foi retido — a chave existe sempre
             // para o formato do relatorio nao mudar de turno para turno.
             "withheld_means": (!withheld.is_empty()).then_some(SENTIDO_DE_WITHHELD),
+            "capabilities": capabilities,
+            "capabilities_means": SENTIDO_DE_CAPABILITIES,
         });
 
         let text = serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string());
@@ -647,6 +692,8 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "capabilities",
+                "capabilities_means",
                 "channels",
                 "execution_profile",
                 "features",
@@ -1473,5 +1520,58 @@ mod tests {
             .expect("executa");
         assert!(out.is_error);
         assert!(out.content.contains("gateway state is gone"));
+    }
+    /// #1381/#1387: `capabilities` distingue negada, indisponivel e visivel —
+    /// e a ferramenta indisponivel nao aparece em `tools` (a lista chamavel),
+    /// mas aparece aqui, com o motivo. Sem isso o modelo dizia "nao tenho
+    /// Telegram" (registrado e nao configurado) ou "nao tenho escrita"
+    /// (negada pelo piso `search`).
+    #[tokio::test]
+    async fn capabilities_distingue_negada_indisponivel_e_visivel() {
+        let st = state();
+        st.agents
+            .register_tool(Box::new(crate::tools::TelegramSendTool::new(&st)));
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileReadTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileWriteTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        let tool = tool(&st);
+        // No turno, o piso `search` libera file_read e nao file_write.
+        let (json, _texto) = relatorio_no_turno(&tool, &ctx(None), false).await;
+        let caps = json["capabilities"].as_array().expect("lista");
+        let de = |nome: &str| {
+            caps.iter()
+                .find(|c| c["name"] == nome)
+                .unwrap_or_else(|| panic!("{nome} ausente: {caps:?}"))
+                .clone()
+        };
+        assert_eq!(de("file_read")["state"], serde_json::json!("visible"));
+        assert_eq!(de("file_write")["state"], serde_json::json!("denied"));
+        assert_eq!(de("file_write")["reason_code"], serde_json::json!("policy"));
+        let tg = de("telegram_send");
+        assert_eq!(tg["state"], serde_json::json!("not_configured"), "{tg}");
+        assert_eq!(tg["reason_code"], serde_json::json!("not_configured"));
+        assert!(
+            tg["remediation"]
+                .as_str()
+                .is_some_and(|r| r.contains("channels"))
+        );
+        let tools: Vec<String> = json["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|t| t.as_str().map(str::to_string))
+            .collect();
+        assert!(!tools.contains(&"telegram_send".to_string()), "{tools:?}");
+        assert!(
+            json["capabilities_means"]
+                .as_str()
+                .is_some_and(|m| m.contains("never say it does not exist")),
+            "{json}"
+        );
     }
 }

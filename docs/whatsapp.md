@@ -275,7 +275,13 @@ Detalhes do que e feito:
 > e que a mostram, com o motivo (`not_configured`, `channel_offline`). Se o
 > modelo a pedir pelo nome mesmo assim, ela nao roda e a explicacao volta como
 > resultado de ferramenta, distinta de "negada pela politica". Desligar o
-> canal na config tira a tool na mensagem seguinte, sem restart. E uma sessao
+> canal na config tira a tool na mensagem seguinte, sem restart. O
+> `garra_status` devolve a lista `capabilities` — cada capacidade com o seu
+> estado nesta conversa (`visible`, `denied`, `unavailable`, `unhealthy`,
+> `not_configured`), motivo e remediacao — e o prompt manda o modelo
+> responder a partir dela: `denied` e "existe e nao esta liberada aqui",
+> nunca "nao existe". O mesmo registro sai em `tools.capabilities` no
+> `/api/diagnostics` e em `GET /admin/api/capabilities` (#1381, #1387). E uma sessao
 > **sem raiz nenhuma** para as file tools (sem diretorio de trabalho nem
 > `agent.file_roots`) recebe uma recusa propria e acionavel — "selecione um
 > projeto com `/project <nome>`" — em vez da recusa generica de caminho fora
