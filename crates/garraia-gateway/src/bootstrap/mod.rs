@@ -2484,6 +2484,14 @@ pub(crate) fn select_web_search_backend(
 mod tests {
     use super::*;
 
+    /// Uma recusa do jail das file tools: `DENIAL_MESSAGE` (caminho fora das
+    /// raizes / nao resolveu) ou `NO_ROOTS_MESSAGE` (#1418: nenhuma raiz na
+    /// sessao). As duas sao recusa; nenhuma carrega caminho.
+    fn recusa_do_jail(texto: &str) -> bool {
+        texto.ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE)
+            || texto.ends_with(garraia_agents::tools::file_jail::NO_ROOTS_MESSAGE)
+    }
+
     // ─── issue #1244: o jail chega ao ponto de registro ────────────────────
     //
     // Este repositorio ja errou cinco vezes o mesmo defeito: funcao pura bem
@@ -2531,10 +2539,9 @@ mod tests {
             .expect_err("caminho fora da raiz deve ser recusado");
 
         let msg = erro.to_string();
-        assert!(
-            msg.ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
-            "{msg}"
-        );
+        // #1418: sem diretorio de sessao nem `agent.file_roots`, a recusa e a
+        // de `NoRoots` (acionavel); com raiz e caminho fora, a generica.
+        assert!(recusa_do_jail(&msg), "{msg}");
         assert!(
             !msg.contains("config.yml"),
             "a recusa vazou o caminho: {msg}"
@@ -2587,11 +2594,7 @@ mod tests {
             .await
             .expect_err("escrita fora da raiz deve ser recusada");
 
-        assert!(
-            erro.to_string()
-                .ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
-            "{erro}"
-        );
+        assert!(recusa_do_jail(&erro.to_string()), "{erro}");
         assert!(!alvo.exists(), "o arquivo foi criado fora da raiz");
     }
 
@@ -2645,11 +2648,7 @@ mod tests {
             .expect_err("symlink para fora deve ser recusado");
 
         assert!(!erro.to_string().contains("PRIVATE KEY"), "{erro}");
-        assert!(
-            erro.to_string()
-                .ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
-            "{erro}"
-        );
+        assert!(recusa_do_jail(&erro.to_string()), "{erro}");
     }
 
     /// #1034: a regra de escolha do backend de busca, sem subir gateway.
@@ -4035,10 +4034,7 @@ Corpo do skill de teste.
                 .await,
             "a escrita atravessou o symlink (#1449)",
         );
-        assert!(
-            recusa.ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
-            "{recusa}"
-        );
+        assert!(recusa_do_jail(&recusa), "{recusa}");
         assert!(
             !alvo.join("fuga.txt").exists(),
             "o byte caiu fora do workspace"
@@ -4234,11 +4230,7 @@ Corpo do skill de teste.
             )
             .await
             .expect_err("vizinho do workspace tem de ser recusado");
-        assert!(
-            erro.to_string()
-                .ends_with(garraia_agents::tools::file_jail::DENIAL_MESSAGE),
-            "{erro}"
-        );
+        assert!(recusa_do_jail(&erro.to_string()), "{erro}");
     }
 
     /// `agent.file_roots` declarado vence o default: a raiz efetiva e a

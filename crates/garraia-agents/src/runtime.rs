@@ -1479,6 +1479,36 @@ impl AgentRuntime {
         portao.permite_com_capacidades(name, self.capacidades_de(name))
     }
 
+    /// #1425: a ferramenta esta operacional agora? Nome desconhecido e
+    /// "disponivel" — quem recusa nome desconhecido e o portao.
+    pub fn disponibilidade_de(&self, name: &str) -> crate::tools::Disponibilidade {
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|r| r.tool.name() == name)
+            .map(|r| r.tool.disponibilidade())
+            .unwrap_or(crate::tools::Disponibilidade::Disponivel)
+    }
+
+    /// A lista que o modelo ve neste turno: o que o portao deixa (nome E
+    /// classe, #1385) E o que esta operacional agora (#1425). Uma ferramenta
+    /// registrada mas indisponivel (canal desligado, sem raiz, MCP caido)
+    /// fica FORA da lista chamavel — o `garra_status` e os diagnosticos a
+    /// mostram como indisponivel, com o motivo. As tres listas do runtime
+    /// passam por aqui, e por mais nenhum filtro.
+    fn definicoes_do_turno(
+        &self,
+        portao: &crate::modes::ToolGate,
+        todas: Vec<ToolDefinition>,
+    ) -> Vec<ToolDefinition> {
+        todas
+            .into_iter()
+            .filter(|d| self.portao_permite(portao, &d.name))
+            .filter(|d| self.disponibilidade_de(&d.name).e_disponivel())
+            .collect()
+    }
+
     pub fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .read()
@@ -1677,10 +1707,7 @@ impl AgentRuntime {
         // sobre o que o filtro tirou que eles falam.
         avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
         avisar_whitelist_vazia(&portao);
-        let tool_defs: Vec<_> = todas_as_tools
-            .into_iter()
-            .filter(|d| self.portao_permite(&portao, &d.name))
-            .collect();
+        let tool_defs = self.definicoes_do_turno(&portao, todas_as_tools);
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
         let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
@@ -1936,10 +1963,7 @@ impl AgentRuntime {
         // sobre o que o filtro tirou que eles falam.
         avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
         avisar_whitelist_vazia(&portao);
-        let tool_defs: Vec<_> = todas_as_tools
-            .into_iter()
-            .filter(|d| self.portao_permite(&portao, &d.name))
-            .collect();
+        let tool_defs = self.definicoes_do_turno(&portao, todas_as_tools);
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
         let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
@@ -2394,10 +2418,7 @@ impl AgentRuntime {
         // sobre o que o filtro tirou que eles falam.
         avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
         avisar_whitelist_vazia(&portao);
-        let tool_defs: Vec<_> = todas_as_tools
-            .into_iter()
-            .filter(|d| self.portao_permite(&portao, &d.name))
-            .collect();
+        let tool_defs = self.definicoes_do_turno(&portao, todas_as_tools);
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
         let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
@@ -3061,6 +3082,30 @@ impl AgentRuntime {
             // streaming herdava uma linha aberta, o mesmo sintoma que o F-4
             // corrigiu para o programa. A recusa e texto do runtime (nome da
             // tool + nome do modo), sem saida de ferramenta.
+            if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+                sink.tool_finished(
+                    name,
+                    iniciado_em.elapsed(),
+                    false,
+                    summarize_tool_output(&recusa, false),
+                    String::new(),
+                )
+                .await;
+            }
+            return DispatchOutcome::Denied(ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: recusa,
+            });
+        }
+        // #1425: o portao deixou, mas a ferramenta nao esta operacional agora
+        // (canal desligado/desconectado, sem raiz, MCP caido). Ela nao estava
+        // na lista do turno; se o modelo a pediu pelo nome mesmo assim, nao
+        // roda — e a explicacao volta como resultado de ferramenta, com o
+        // codigo e o motivo, para ele nao repetir a chamada nem dizer que a
+        // ferramenta "nao existe".
+        let disponibilidade = self.disponibilidade_de(name);
+        if !disponibilidade.e_disponivel() {
+            let recusa = neutralizar_marcadores(&disponibilidade.explicacao(name));
             if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                 sink.tool_finished(
                     name,

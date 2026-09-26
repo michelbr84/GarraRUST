@@ -38,9 +38,15 @@ fn todo_filtro_e_despacho_do_runtime_passa_por_portao_permite() {
     let fonte = include_str!("../../runtime.rs");
     let por_nome = fonte.matches("portao.permite(").count();
     let por_classe = fonte.matches("self.portao_permite(").count();
+    // #1425: as tres listas passaram a um helper so (`definicoes_do_turno`),
+    // entao os pontos por classe sao: o helper, o despacho e o `garra_status`.
     assert!(
-        por_classe >= 5,
-        "esperava >= 5 pontos por classe (3 listas + despacho + garra_status), achei {por_classe}"
+        por_classe >= 3,
+        "esperava >= 3 pontos por classe (helper das listas + despacho + garra_status), achei {por_classe}"
+    );
+    assert!(
+        fonte.matches("self.definicoes_do_turno(&portao").count() >= 3,
+        "as tres listas do modelo passam pelo helper"
     );
     assert!(
         por_nome <= 1,
