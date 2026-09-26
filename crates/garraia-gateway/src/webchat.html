@@ -3845,20 +3845,46 @@ function renderChannelCard(c, i) {
 }
 
 // ─── Sessions page (plan 0120) ───────────────────────────────────────
+//
+// #1462: duas leituras, duas credenciais. `GET /api/sessions*` e a leitura de
+// CLIENTE e so alcanca as sessoes das superficies locais do operador (`api`,
+// `vscode`, `web`, `parrot`); sessao de canal (WhatsApp, Telegram, ...) e do
+// mobile respondem 404 ali e nem aparecem na lista. A leitura ADMINISTRATIVA
+// — listar e exportar qualquer sessao — e `/admin/api/sessions*`, com o
+// cookie de sessao do `/admin` (Path=/, entao o navegador o manda daqui
+// tambem) e a permissao `manage_sessions`. O console usa a administrativa
+// quando o navegador esta logado no `/admin`, e a de cliente, com a dica de
+// onde entrar, quando nao esta. O shim de `Authorization` acima so toca
+// `/api/`, entao `/admin/api/` vai so com o cookie, como deve.
+let adminDasSessoes = null; // { csrf } quando logado no /admin; senao null
+async function sessaoDeAdmin() {
+  try {
+    const r = await fetch('/admin/api/me');
+    if (!r.ok) return null;
+    const j = await r.json();
+    return { csrf: (j && j.csrf_token) || '' };
+  } catch (_e) { return null; }
+}
 async function loadSessionsPage() {
   const body = document.getElementById('sessions-table-body');
   if (!body) return;
   body.innerHTML = '<tr><td colspan="5" style="color:var(--garra-muted);text-align:center;padding:20px;">Carregando sessions…</td></tr>';
   try {
-    const r = await fetch('/api/sessions');
+    adminDasSessoes = await sessaoDeAdmin();
+    const r = await fetch(adminDasSessoes ? '/admin/api/sessions' : '/api/sessions');
     if (!r.ok) { renderFetchError(body, r.status, 'sessions', 5); return; }
     const j = await r.json();
     const items = Array.isArray(j) ? j : (Array.isArray(j.sessions) ? j.sessions : []);
+    const dica = adminDasSessoes ? '' :
+      '<tr data-testid="sessions-admin-hint"><td colspan="5" style="color:var(--garra-muted);font-size:12px;padding:10px 12px;">' +
+      'Mostrando so as sessions desta superficie (API, VS Code, web, desktop). ' +
+      'Sessions de canal e do app mobile: entre em <a href="/admin" target="_blank" rel="noopener">/admin</a> e recarregue esta pagina.' +
+      '</td></tr>';
     if (!items.length) {
-      body.innerHTML = '<tr><td colspan="5" style="color:var(--garra-muted);text-align:center;padding:24px;">Nenhuma session ainda.</td></tr>';
+      body.innerHTML = dica + '<tr><td colspan="5" style="color:var(--garra-muted);text-align:center;padding:24px;">Nenhuma session ainda.</td></tr>';
       return;
     }
-    body.innerHTML = items.map(s => renderSessionRow(s)).join('');
+    body.innerHTML = dica + items.map(s => renderSessionRow(s)).join('');
     body.querySelectorAll('[data-session-open]').forEach(el => el.addEventListener('click', () => openSession(el.dataset.sessionOpen)));
     body.querySelectorAll('[data-session-export]').forEach(el => el.addEventListener('click', () => exportSession(el.dataset.sessionExport)));
     body.querySelectorAll('[data-session-delete]').forEach(el => el.addEventListener('click', () => deleteSession(el.dataset.sessionDelete)));
@@ -3868,19 +3894,20 @@ async function loadSessionsPage() {
 }
 function renderSessionRow(s) {
   const id = s.id || s.session_id || s.sessionId || '';
-  const channel = s.channel || s.source || '—';
+  // `channel_id` e o campo das duas listagens (cliente e admin).
+  const channel = s.channel_id || s.channel || s.source || '—';
   const provider = s.provider || (s.providers && s.providers[0]) || '—';
   const updated = s.updated_at || s.last_activity || s.created_at || '—';
   return `
-    <tr>
+    <tr data-testid="session-row" data-session-id="${escapeHtml(id)}">
       <td><code>${escapeHtml(id)}</code></td>
       <td>${escapeHtml(channel)}</td>
       <td>${escapeHtml(provider)}</td>
       <td>${escapeHtml(updated)}</td>
       <td><div class="row-actions">
-        <button data-session-open="${escapeHtml(id)}">Open</button>
-        <button data-session-export="${escapeHtml(id)}">Export</button>
-        <button class="danger" data-session-delete="${escapeHtml(id)}">Delete</button>
+        <button data-testid="session-open" data-session-open="${escapeHtml(id)}">Open</button>
+        <button data-testid="session-export" data-session-export="${escapeHtml(id)}">Export</button>
+        <button class="danger" data-testid="session-delete" data-session-delete="${escapeHtml(id)}">Delete</button>
       </div></td>
     </tr>
   `;
@@ -3894,7 +3921,12 @@ function openSession(id) {
 async function exportSession(id) {
   if (!id) return;
   try {
-    const r = await fetch('/api/sessions/' + encodeURIComponent(id) + '/history');
+    // Logado no /admin, a rota administrativa le qualquer sessao (canal e
+    // mobile inclusive); sem login, a de cliente so alcanca as locais.
+    const rota = adminDasSessoes
+      ? '/admin/api/sessions/' + encodeURIComponent(id) + '/history'
+      : '/api/sessions/' + encodeURIComponent(id) + '/history';
+    const r = await fetch(rota);
     if (!r.ok) return;
     const j = await r.json();
     const blob = new Blob([JSON.stringify(j, null, 2)], { type: 'application/json' });
@@ -3910,7 +3942,16 @@ async function deleteSession(id) {
   if (!id) return;
   if (!confirm('Delete session ' + id + '?')) return;
   try {
-    const r = await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+    // A rota de cliente encerra (logout) a sessao das superficies locais e
+    // responde 404 para a de canal; logado no /admin, essa cai na
+    // desconexao administrativa (que exige o token CSRF da sessao).
+    let r = await fetch('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (r.status === 404 && adminDasSessoes) {
+      r = await fetch('/admin/api/sessions/' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: { 'x-csrf-token': adminDasSessoes.csrf },
+      });
+    }
     if (r.ok) loadSessionsPage();
   } catch (_e) { /* swallow */ }
 }

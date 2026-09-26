@@ -38,14 +38,15 @@ pub(crate) const TENANT_DA_API: &str = "default";
 /// O que [`AppState::sessao_da_api`] encontrou.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessaoDaApi {
-    /// Ja estava em memoria: servida como sempre foi.
+    /// Ja estava em memoria, e so foi tocada pelas superficies locais do
+    /// operador ([`SUPERFICIES_LOCAIS`]).
     EmMemoria,
     /// Estava so no `sessions.db`, gravada so pela superficie REST, e voltou
     /// para a memoria.
     Readotada,
-    /// Nao existe, existe mas nao e so da superficie REST — que a rota REST
-    /// nao alcanca enquanto a sessao nao esta em memoria —, ou foi encerrada
-    /// pelo `DELETE`: nos tres casos, o mesmo `404` de id desconhecido.
+    /// Nao existe; existe mas e de outra superficie — canal com humano do
+    /// outro lado, mobile —, em memoria ou no disco (#1462); ou foi encerrada
+    /// pelo `DELETE`: em todos os casos, o mesmo `404` de id desconhecido.
     NaoEncontrada,
 }
 
@@ -140,6 +141,65 @@ pub fn sessao_alcancavel_por_id_do_cliente(s: &garraia_db::SessionSurfaces) -> b
             .iter()
             .chain(&s.message_channels)
             .all(|superficie| superficie_e_local(superficie))
+}
+
+/// A sessao **em memoria** so foi tocada por [`SUPERFICIES_LOCAIS`] (#1462)?
+///
+/// A leitura em memoria de [`sessao_alcancavel_por_id_do_cliente`]:
+/// `channel_id` e o ultimo a gravar e `canais_dos_turnos` guarda todos os que
+/// ja atenderam um turno — basta um de fora para a sessao ser de outra
+/// pessoa. Sessao recem-criada (sem canal ainda) e local: vai nascer da
+/// superficie de quem chama.
+pub fn sessao_em_memoria_e_local(s: &SessionState) -> bool {
+    s.channel_id.as_deref().is_none_or(superficie_e_local)
+        && s.canais_dos_turnos
+            .iter()
+            .all(|canal| superficie_e_local(canal))
+}
+
+/// O que o `sessions.db` guarda de uma sessao, no formato do historico em
+/// memoria: o ultimo resumo (GAR-208) como mensagem de sistema, e depois os
+/// ultimos 100 turnos `user`/`assistant`.
+///
+/// E o que [`AppState::hydrate_session_history`] carrega na primeira
+/// hidratacao e o que [`AppState::historico_de_qualquer_sessao`] le para o
+/// operador sem hidratar. Erro de leitura vira aviso e lista vazia, como a
+/// hidratacao sempre fez.
+fn historico_gravado(guard: &SessionStore, session_id: &str) -> Vec<ChatMessage> {
+    let mut historico = Vec::new();
+    // GAR-208: prepend latest summary (if any) as a System message so the
+    // LLM has context about turns that fall outside the sliding window.
+    if let Ok(Some((summary_text, _))) = guard.get_latest_session_summary(session_id) {
+        historico.push(ChatMessage {
+            role: garraia_agents::ChatRole::System,
+            content: garraia_agents::MessagePart::Text(format!(
+                "[Conversation summary up to this point]\n{summary_text}"
+            )),
+        });
+    }
+
+    match guard.load_recent_messages(session_id, 100) {
+        Ok(messages) => {
+            let recent = messages
+                .into_iter()
+                .filter_map(|m| match m.direction.as_str() {
+                    "user" => Some(ChatMessage {
+                        role: garraia_agents::ChatRole::User,
+                        content: garraia_agents::MessagePart::Text(m.content),
+                    }),
+                    "assistant" => Some(ChatMessage {
+                        role: garraia_agents::ChatRole::Assistant,
+                        content: garraia_agents::MessagePart::Text(m.content),
+                    }),
+                    _ => None,
+                });
+            historico.extend(recent);
+        }
+        Err(e) => {
+            warn!("failed to load session history for {session_id}: {e}");
+        }
+    }
+    historico
 }
 
 /// Shared application state accessible from all request handlers.
@@ -772,39 +832,7 @@ impl AppState {
             }
 
             if should_load {
-                // GAR-208: prepend latest summary (if any) as a System message so the
-                // LLM has context about turns that fall outside the sliding window.
-                if let Ok(Some((summary_text, _))) = guard.get_latest_session_summary(session_id) {
-                    loaded_history.push(ChatMessage {
-                        role: garraia_agents::ChatRole::System,
-                        content: garraia_agents::MessagePart::Text(format!(
-                            "[Conversation summary up to this point]\n{summary_text}"
-                        )),
-                    });
-                }
-
-                match guard.load_recent_messages(session_id, 100) {
-                    Ok(messages) => {
-                        let recent: Vec<ChatMessage> = messages
-                            .into_iter()
-                            .filter_map(|m| match m.direction.as_str() {
-                                "user" => Some(ChatMessage {
-                                    role: garraia_agents::ChatRole::User,
-                                    content: garraia_agents::MessagePart::Text(m.content),
-                                }),
-                                "assistant" => Some(ChatMessage {
-                                    role: garraia_agents::ChatRole::Assistant,
-                                    content: garraia_agents::MessagePart::Text(m.content),
-                                }),
-                                _ => None,
-                            })
-                            .collect();
-                        loaded_history.extend(recent);
-                    }
-                    Err(e) => {
-                        warn!("failed to load session history for {session_id}: {e}");
-                    }
-                }
+                loaded_history = historico_gravado(&guard, session_id);
             }
         }
 
@@ -945,11 +973,25 @@ impl AppState {
     /// as linhas inteiras no `sessions.db` (a hidratacao que as carregaria
     /// vinha depois do 404). E o mesmo buraco da #922, na superficie REST.
     ///
+    /// # Em memoria: so as superficies locais do operador (#1462)
+    ///
+    /// Ate a #1462 o ramo em memoria nao consultava regra nenhuma, e a
+    /// sessao de um canal esta em memoria no caso normal — a hidratacao do
+    /// canal a poe la. `GET /api/sessions/{id}/history` devolvia entao a
+    /// transcricao de qualquer conversa de canal, verbatim, por um id
+    /// adivinhavel por construcao (`whatsapp-linked-<numero>`,
+    /// `telegram-<chat>`), numa rota auth-free por padrao e sem LLM no meio.
+    /// Agora vale aqui a mesma regra da escrita por id
+    /// ([`sessao_em_memoria_e_local`]): so sessao tocada apenas por
+    /// [`SUPERFICIES_LOCAIS`]; a de canal ou do mobile e `NaoEncontrada` —
+    /// o mesmo `404` de id inexistente, sem confirmar que existe — e **nao e
+    /// tocada**: quem chama ainda nao hidratou nada. A leitura de qualquer
+    /// sessao e do operador autenticado, em
+    /// [`Self::historico_de_qualquer_sessao`].
+    ///
     /// # O que pode voltar do disco — e o que nao pode
     ///
-    /// Em memoria, nada muda: a sessao e servida como sempre foi, seja de
-    /// que superficie for. A regra nova vale so para o que **nao** esta em
-    /// memoria, e ela nao pode deixar esta rota alcancar o que ela nao
+    /// A regra do disco nao pode deixar esta rota alcancar o que ela nao
     /// alcancava antes do restart. Uma sessao de outra superficie (Telegram,
     /// WhatsApp, web, mobile, CLI...) so entra na memoria do gateway pela
     /// propria superficie; trazer ela do disco por aqui seria alcance novo —
@@ -957,8 +999,7 @@ impl AppState {
     /// isso so volta a sessao cujas marcas no banco sao todas as que a
     /// superficie REST grava e que o `DELETE` nao encerrou (ver
     /// [`sessao_readotavel_pela_api`]). A de outra superficie segue
-    /// `NaoEncontrada` ate a propria superficie a trazer de volta, e dai em
-    /// diante e tratada exatamente como era em memoria.
+    /// `NaoEncontrada` ate a propria superficie a trazer de volta.
     ///
     /// A readocao so pos na memoria o que o banco ja dizia — tenant
     /// [`TENANT_DA_API`] e canal [`CANAL_DA_API`] — e nao escreve no banco:
@@ -984,8 +1025,13 @@ impl AppState {
     /// `Err` so quando o banco nao pode ser lido: ai nada e readotado, e o
     /// handler diz que falhou em vez de afirmar que a sessao nao existe.
     pub async fn sessao_da_api(&self, session_id: &str) -> garraia_common::Result<SessaoDaApi> {
-        if self.sessions.contains_key(session_id) {
-            return Ok(SessaoDaApi::EmMemoria);
+        if let Some(sessao) = self.sessions.get(session_id) {
+            if sessao_em_memoria_e_local(&sessao) {
+                return Ok(SessaoDaApi::EmMemoria);
+            }
+            // Sem o id no log: o de sessao de canal carrega telefone.
+            warn!("sessao de outra superficie em memoria: a rota REST por id nao a alcanca");
+            return Ok(SessaoDaApi::NaoEncontrada);
         }
         let Some(store) = &self.session_store else {
             return Ok(SessaoDaApi::NaoEncontrada);
@@ -1039,12 +1085,7 @@ impl AppState {
         session_id: &str,
     ) -> garraia_common::Result<bool> {
         if let Some(sessao) = self.sessions.get(session_id) {
-            let canal_local = sessao.channel_id.as_deref().is_none_or(superficie_e_local);
-            let turnos_locais = sessao
-                .canais_dos_turnos
-                .iter()
-                .all(|canal| superficie_e_local(canal));
-            return Ok(canal_local && turnos_locais);
+            return Ok(sessao_em_memoria_e_local(&sessao));
         }
         let Some(store) = &self.session_store else {
             return Ok(true);
@@ -1053,6 +1094,40 @@ impl AppState {
         Ok(superficies
             .as_ref()
             .is_none_or(sessao_alcancavel_por_id_do_cliente))
+    }
+
+    /// O historico de **qualquer** sessao, para a leitura do operador
+    /// autenticado (`GET /admin/api/sessions/{id}/history`, #1462).
+    ///
+    /// Memoria primeiro; se ela nao tem a sessao (ou a tem vazia, recem
+    /// readotada), o `sessions.db` — **sem hidratar**. A hidratacao gravaria
+    /// `channel_id = api` por cima da linha do canal e anotaria a superficie
+    /// REST em `canais_dos_turnos`: exatamente as marcas que
+    /// [`sessao_alcancavel_por_id_do_cliente`] e [`sessao_em_memoria_e_local`]
+    /// leem para decidir quem alcanca a sessao. Uma leitura administrativa
+    /// nao pode reetiquetar a conversa de um terceiro como do operador.
+    ///
+    /// `Ok(None)`: a sessao nao existe em lugar nenhum. `Err`: o banco nao
+    /// pode ser lido; nada e afirmado. Quem chama e que prova a credencial —
+    /// esta funcao nao decide autorizacao.
+    pub async fn historico_de_qualquer_sessao(
+        &self,
+        session_id: &str,
+    ) -> garraia_common::Result<Option<Vec<ChatMessage>>> {
+        let em_memoria = self.sessions.get(session_id).map(|s| s.history.clone());
+        if let Some(historico) = &em_memoria
+            && !historico.is_empty()
+        {
+            return Ok(em_memoria);
+        }
+        let Some(store) = &self.session_store else {
+            return Ok(em_memoria);
+        };
+        let guard = store.lock().await;
+        if guard.get_session_surfaces(session_id)?.is_none() {
+            return Ok(em_memoria);
+        }
+        Ok(Some(historico_gravado(&guard, session_id)))
     }
 
     /// Grava no `sessions.db` que o `DELETE /api/sessions/{id}` encerrou esta
@@ -2077,16 +2152,40 @@ mod tests {
         }
     }
 
-    /// Em memoria, `sessao_da_api` nao consulta regra nenhuma: a sessao de
-    /// outra superficie e servida como sempre foi.
+    /// #1462: em memoria, `sessao_da_api` aplica a regra das superficies
+    /// locais. Ate entao o ramo retornava cedo sem olhar superficie, e a
+    /// sessao de um canal — que esta em memoria no caso normal — era servida
+    /// pela rota REST por id.
     #[tokio::test]
-    async fn sessao_em_memoria_de_qualquer_superficie_segue_servida() {
+    async fn sessao_em_memoria_de_outra_superficie_nao_e_da_api() {
         let dir = tempfile::tempdir().unwrap();
         let st = state_with_store(dir.path());
         st.hydrate_session_history("telegram-7", Some("telegram"), Some("7"))
             .await;
         assert_eq!(
             st.sessao_da_api("telegram-7").await.expect("ler"),
+            SessaoDaApi::NaoEncontrada,
+            "sessao de canal em memoria: o mesmo 404 de id inexistente"
+        );
+        st.hydrate_session_history("mobile-u1", Some("mobile"), Some("u1"))
+            .await;
+        assert_eq!(
+            st.sessao_da_api("mobile-u1").await.expect("ler"),
+            SessaoDaApi::NaoEncontrada
+        );
+        // Sessao local em memoria segue servida — inclusive a etiquetada com
+        // `agent_id` (`api:<agent>`), que e a mesma superficie REST.
+        st.hydrate_session_history("do-web", Some("web"), None)
+            .await;
+        assert_eq!(
+            st.sessao_da_api("do-web").await.expect("ler"),
+            SessaoDaApi::EmMemoria
+        );
+        st.hydrate_session_history("do-api", Some("api"), None)
+            .await;
+        st.sessions.get_mut("do-api").unwrap().channel_id = Some("api:reachy".to_string());
+        assert_eq!(
+            st.sessao_da_api("do-api").await.expect("ler"),
             SessaoDaApi::EmMemoria
         );
         assert_eq!(
@@ -2097,6 +2196,61 @@ mod tests {
         assert_eq!(
             test_state().sessao_da_api("qualquer").await.expect("ler"),
             SessaoDaApi::NaoEncontrada
+        );
+    }
+
+    /// #1462: a leitura do operador le de qualquer sessao, em memoria ou so
+    /// no disco, e nao hidrata — a linha do canal fica como estava.
+    #[tokio::test]
+    async fn historico_de_qualquer_sessao_le_memoria_e_disco_sem_hidratar() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state_with_store(dir.path());
+        let sid = "telegram-77";
+        st.hydrate_session_history(sid, Some("telegram"), Some("77"))
+            .await;
+        st.persist_turn(sid, Some("telegram"), Some("77"), "oi", "ola")
+            .await;
+
+        let em_memoria = st
+            .historico_de_qualquer_sessao(sid)
+            .await
+            .expect("ler")
+            .expect("existe");
+        assert_eq!(em_memoria.len(), 2);
+
+        st.sessions.remove(sid);
+        let do_disco = st
+            .historico_de_qualquer_sessao(sid)
+            .await
+            .expect("ler")
+            .expect("existe no disco");
+        assert_eq!(do_disco.len(), 2);
+        assert!(!st.sessions.contains_key(sid), "nao hidratou");
+        let superficies = st
+            .session_store
+            .as_ref()
+            .unwrap()
+            .lock()
+            .await
+            .get_session_surfaces(sid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(superficies.channel_id, "telegram", "linha intacta");
+
+        assert!(
+            st.historico_de_qualquer_sessao("nunca-existiu")
+                .await
+                .expect("ler")
+                .is_none()
+        );
+        // Sem banco: so o que estiver em memoria.
+        let sem_banco = test_state();
+        assert!(
+            sem_banco
+                .historico_de_qualquer_sessao("x")
+                .await
+                .expect("ler")
+                .is_none()
         );
     }
     use garraia_channels::ChannelRegistry;
