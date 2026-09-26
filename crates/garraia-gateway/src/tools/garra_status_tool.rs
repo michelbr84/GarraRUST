@@ -136,8 +136,9 @@ const SENTIDO_DE_FILE_TOOLS_SEM_RAIZ: &str = "file_read, file_write and list_dir
 /// que a lista carrega vem de `garraia_agents::tools::breaker`, texto do
 /// modulo, nunca a saida crua da ferramenta nem caminho.
 const SENTIDO_DE_BREAKER: &str = "each entry is a tool that failed in THIS conversation and \
-is paused: a deterministic failure (no workspace, path outside the roots, no repository) or \
-a repeated error pauses it until the end of the turn; a timeout pauses it for a growing \
+is paused: a deterministic failure (no workspace, no repository) or a repeated error (the \
+same error three times, a denied path included) pauses it until the end of the turn; a \
+timeout pauses it for a growing \
 cooldown. `reason_code` is machine-readable and `reason` is safe to repeat. In this turn, do \
 not call a paused tool again: tell the user the reason and continue without it.";
 

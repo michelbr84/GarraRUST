@@ -14,16 +14,21 @@
 //! Um [`Breaker`] por sessao, com um registro por ferramenta. Toda saida de
 //! ferramenta passa por [`classificar`]:
 //!
-//! - **Deterministica** — a frase unica do jail (`NO_ROOTS_MESSAGE`,
-//!   `DENIAL_MESSAGE`) ou a recusa sem repositorio do `repo_search`: repetir
-//!   nao muda nada dentro do turno, entao abre **ate o fim do turno**. O turno
-//!   seguinte sonda de novo (o usuario pode ter selecionado um projeto).
+//! - **Deterministica** — a frase de sessao sem raiz do jail
+//!   (`NO_ROOTS_MESSAGE`) ou a recusa sem repositorio do `repo_search`: nao
+//!   dependem do input, entao repetir nao muda nada dentro do turno, e abre
+//!   **ate o fim do turno**. O turno seguinte sonda de novo (o usuario pode
+//!   ter selecionado um projeto).
 //! - **Transitoria** — o timeout do despacho: abre por um cooldown que dobra a
 //!   cada timeout seguido ([`COOLDOWN_BASE`] ate [`COOLDOWN_TETO`]) e que
 //!   ATRAVESSA turnos — uma mensagem nova um segundo depois nao e motivo para
 //!   esperar outros 30s.
 //! - **Generica** — qualquer outro erro: conta, e so abre depois de
-//!   [`REPETICOES_PARA_ABRIR`] erros IGUAIS no mesmo turno.
+//!   [`REPETICOES_PARA_ABRIR`] erros IGUAIS no mesmo turno. A recusa de
+//!   caminho fora das raizes (`DENIAL_MESSAGE`) e generica DE PROPOSITO: ela
+//!   vale para AQUELE caminho, nao para a ferramenta — o padrao legitimo e
+//!   o modelo pedir `/etc/x`, ler a recusa, corrigir para `./src/x` e
+//!   acertar. Uma recusa so nunca abre; tres iguais no turno, sim.
 //!
 //! Uma chamada bem-sucedida fecha o breaker daquela ferramenta e zera a serie
 //! de timeouts. Um turno com `working_dir` diferente e outro contexto: limpa a
@@ -46,7 +51,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::ToolOutput;
-use super::file_jail::{DENIAL_MESSAGE, NO_ROOTS_MESSAGE};
+use super::file_jail::NO_ROOTS_MESSAGE;
 use super::repo_search_tool::SEM_REPOSITORIO;
 
 /// O prefixo da saida de erro que o despacho monta quando a ferramenta
@@ -76,9 +81,9 @@ pub const MAX_SESSOES: usize = 512;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deterministica {
     /// `NO_ROOTS_MESSAGE`: a sessao nao tem raiz nenhuma para as file tools.
+    /// (A recusa de caminho FORA das raizes, `DENIAL_MESSAGE`, nao entra
+    /// aqui: vale para um caminho, e nao para a ferramenta — e generica.)
     SemRaiz,
-    /// `DENIAL_MESSAGE`: o caminho pedido esta fora das raizes.
-    ForaDasRaizes,
     /// A recusa do `repo_search` sem repositorio ativo (#1380).
     SemRepositorio,
 }
@@ -88,7 +93,6 @@ impl Deterministica {
     pub fn codigo(self) -> &'static str {
         match self {
             Self::SemRaiz => "no_roots",
-            Self::ForaDasRaizes => "outside_roots",
             Self::SemRepositorio => "no_repository",
         }
     }
@@ -99,10 +103,6 @@ impl Deterministica {
             Self::SemRaiz => {
                 "a sessao nao tem raiz para as file tools (sem diretorio de trabalho nem \
                  `agent.file_roots`), e todo caminho e negado ate o usuario selecionar um projeto"
-            }
-            Self::ForaDasRaizes => {
-                "o caminho pedido esta fora das raizes permitidas nesta sessao, e caminhos \
-                 parecidos vao falhar igual"
             }
             Self::SemRepositorio => {
                 "nao ha repositorio ativo para buscar nesta sessao (sem diretorio de trabalho, e \
@@ -148,10 +148,11 @@ pub fn classificar(saida: &ToolOutput) -> Veredito {
         return Veredito::Sucesso;
     }
     let texto = saida.content.as_str();
+    // `DENIAL_MESSAGE` (caminho fora das raizes) cai de proposito no ramo
+    // generico: e recusa de UM caminho, e o modelo corrige o caminho na
+    // tentativa seguinte. So tres iguais no turno abrem.
     let classe = if texto.contains(NO_ROOTS_MESSAGE) {
         Classe::Deterministica(Deterministica::SemRaiz)
-    } else if texto.contains(DENIAL_MESSAGE) {
-        Classe::Deterministica(Deterministica::ForaDasRaizes)
     } else if texto.contains(SEM_REPOSITORIO) {
         Classe::Deterministica(Deterministica::SemRepositorio)
     } else if texto.starts_with(TIMEOUT_PREFIXO) {

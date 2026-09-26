@@ -7,7 +7,7 @@
 //! segunda vez — o motivo estruturado, e nao mais uma execucao.
 
 use super::*;
-use crate::tools::file_jail::NO_ROOTS_MESSAGE;
+use crate::tools::file_jail::{DENIAL_MESSAGE, NO_ROOTS_MESSAGE};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
@@ -118,6 +118,129 @@ impl Tool for SemRaiz {
         self.executou.fetch_add(1, SeqCst);
         Ok(ToolOutput::error(NO_ROOTS_MESSAGE))
     }
+}
+
+/// Provider que pede `file_read` com UM caminho por volta, na ordem dada, e
+/// depois encerra com texto. Anota os `ToolResult` que recebe.
+struct SegueOsCaminhos {
+    caminhos: Vec<&'static str>,
+    volta: AtomicUsize,
+    resultados: std::sync::Mutex<Vec<String>>,
+}
+
+impl SegueOsCaminhos {
+    fn novo(caminhos: &[&'static str]) -> Self {
+        Self {
+            caminhos: caminhos.to_vec(),
+            volta: AtomicUsize::new(0),
+            resultados: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn resultados(&self) -> Vec<String> {
+        self.resultados.lock().expect("lock").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for SegueOsCaminhos {
+    fn provider_id(&self) -> &str {
+        "segue_os_caminhos"
+    }
+
+    async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+        if let Some(MessagePart::Parts(blocos)) = request.messages.last().map(|m| &m.content) {
+            for b in blocos {
+                if let ContentBlock::ToolResult { content, .. } = b {
+                    self.resultados.lock().expect("lock").push(content.clone());
+                }
+            }
+        }
+        let i = self.volta.fetch_add(1, SeqCst);
+        let content = match self.caminhos.get(i) {
+            Some(caminho) => vec![ContentBlock::ToolUse {
+                id: format!("chamada-{i}"),
+                name: "file_read".to_string(),
+                input: serde_json::json!({ "path": caminho }),
+            }],
+            None => vec![ContentBlock::Text {
+                text: "li".to_string(),
+            }],
+        };
+        Ok(LlmResponse {
+            content,
+            model: "modelo-de-teste".to_string(),
+            stop_reason: None,
+            usage: None,
+        })
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+/// Um `file_read` com jail de mentira: caminho sob `/etc` e negado com a
+/// frase unica do jail; qualquer outro le. Conta as execucoes.
+struct JailDeMentira {
+    executou: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for JailDeMentira {
+    fn name(&self) -> &str {
+        "file_read"
+    }
+    fn description(&self) -> &str {
+        "le arquivo dentro das raizes"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(&self, _c: &ToolContext, i: serde_json::Value) -> Result<ToolOutput> {
+        self.executou.fetch_add(1, SeqCst);
+        let caminho = i.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+        if caminho.starts_with("/etc") {
+            Ok(ToolOutput::error(format!("file_read: {DENIAL_MESSAGE}")))
+        } else {
+            Ok(ToolOutput::success("conteudo do arquivo"))
+        }
+    }
+}
+
+/// Revisao do integrador em #1417: a recusa de caminho fora das raizes vale
+/// para AQUELE caminho, nao para a ferramenta. O padrao legitimo — pedir
+/// `/etc/x`, ler a recusa, corrigir para `./src/x` — tem de rodar a segunda
+/// chamada; uma recusa so nao pode pausar `file_read`.
+#[tokio::test]
+async fn recusa_fora_das_raizes_nao_abre_e_o_caminho_corrigido_executa() {
+    let rt = AgentRuntime::new();
+    let provider = Arc::new(SegueOsCaminhos::novo(&["/etc/passwd", "./src/main.rs"]));
+    rt.register_provider(provider.clone());
+    let executou = Arc::new(AtomicUsize::new(0));
+    rt.register_tool(Box::new(JailDeMentira {
+        executou: Arc::clone(&executou),
+    }));
+
+    let resposta = turno(&rt, "sessao-1417-jail", &ExecContext::default()).await;
+
+    assert_eq!(
+        executou.load(SeqCst),
+        2,
+        "a segunda chamada, com caminho dentro da raiz, tem de rodar"
+    );
+    let resultados = provider.resultados();
+    assert_eq!(resultados.len(), 2, "{resultados:?}");
+    assert!(resultados[0].contains(DENIAL_MESSAGE), "{}", resultados[0]);
+    assert_eq!(
+        resultados[1], "conteudo do arquivo",
+        "a correcao de caminho nao pode receber a recusa do breaker"
+    );
+    assert_eq!(resposta, "li");
+    assert!(
+        rt.estado_do_breaker("sessao-1417-jail").is_empty(),
+        "o sucesso fechou o que a recusa contou"
+    );
 }
 
 /// Dorme `segundos` (bem alem do timeout do orcamento) e conta quantas vezes

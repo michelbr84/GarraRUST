@@ -289,13 +289,16 @@ Detalhes do que e feito:
 
 > **Falha repetida abre o breaker (#1417).** Cada sessao tem um circuit
 > breaker por ferramenta, no unico ponto de despacho do runtime. Uma falha
-> **deterministica** — sem raiz para as file tools, caminho fora das raizes,
-> `repo_search` sem repositorio — poe a ferramenta em pausa ate o fim do
-> turno: se o modelo a pedir de novo, ela nao roda, e volta um resultado de
-> ferramenta com o motivo (`no_roots`, `outside_roots`, `no_repository`) e a
-> instrucao de nao repetir. Um **timeout** abre um cooldown que dobra a cada
-> timeout seguido (15s, 30s, 60s, teto de 120s) e atravessa turnos; um erro
-> generico so abre depois de tres iguais no mesmo turno (`repeated_error`).
+> **deterministica** — sem raiz para as file tools, `repo_search` sem
+> repositorio — poe a ferramenta em pausa ate o fim do turno: se o modelo a
+> pedir de novo, ela nao roda, e volta um resultado de ferramenta com o
+> motivo (`no_roots`, `no_repository`) e a instrucao de nao repetir. Um
+> **timeout** abre um cooldown que dobra a cada timeout seguido (15s, 30s,
+> 60s, teto de 120s) e atravessa turnos; um erro generico so abre depois de
+> tres iguais no mesmo turno (`repeated_error`). A recusa de caminho **fora
+> das raizes** e generica de proposito: vale para aquele caminho, nao para a
+> ferramenta — o modelo pede `/etc/x`, le a recusa, corrige para `./src/x` e
+> a segunda chamada roda; so tres recusas iguais no turno pausam.
 > Uma chamada bem-sucedida fecha o breaker daquela ferramenta; um turno com
 > `working_dir` diferente limpa a sessao inteira. Ferramenta indisponivel
 > (#1425) nao chega ao breaker: e recusada antes. O `garra_status` lista o que

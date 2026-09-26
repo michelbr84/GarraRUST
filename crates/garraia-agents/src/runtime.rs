@@ -3179,9 +3179,10 @@ impl AgentRuntime {
             });
         }
         // #1417: disponivel e permitida, mas ja falhou nesta sessao por um
-        // motivo que repetir nao muda (sem raiz, fora das raizes, sem
-        // repositorio, tres erros iguais no turno) ou esta em cooldown de
-        // timeout. Nao roda; volta o motivo estruturado como resultado de
+        // motivo que repetir nao muda (sem raiz, sem repositorio, tres erros
+        // iguais no turno — a recusa de UM caminho fora das raizes conta como
+        // erro generico, porque o modelo corrige o caminho) ou esta em
+        // cooldown de timeout. Nao roda; volta o motivo estruturado como resultado de
         // ferramenta — e o mesmo texto que `garra_status` lista em `breaker`.
         // Depois da disponibilidade de proposito: indisponivel nao e falha
         // repetida, e nunca chega a alimentar o breaker.

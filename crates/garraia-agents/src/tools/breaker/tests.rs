@@ -85,7 +85,7 @@ fn sucesso_fecha_e_zera_a_serie_de_timeouts() {
     // deterministica.
     b.registrar_falha(
         "file_read",
-        Classe::Deterministica(Deterministica::ForaDasRaizes),
+        Classe::Deterministica(Deterministica::SemRaiz),
         t,
     );
     assert!(b.estado("file_read", t).esta_aberto());
@@ -165,9 +165,12 @@ fn classificar_reconhece_as_frases_das_tools_e_ignora_pedido_de_confirmacao() {
         classificar(&ToolOutput::error(NO_ROOTS_MESSAGE)),
         Veredito::Falha(Classe::Deterministica(Deterministica::SemRaiz))
     );
+    // Caminho fora das raizes e GENERICA: a recusa e de um caminho, nao da
+    // ferramenta (revisao do integrador em #1417).
+    let fora = format!("file_read: {DENIAL_MESSAGE}");
     assert_eq!(
-        classificar(&ToolOutput::error(format!("file_read: {DENIAL_MESSAGE}"))),
-        Veredito::Falha(Classe::Deterministica(Deterministica::ForaDasRaizes))
+        classificar(&ToolOutput::error(fora.clone())),
+        Veredito::Falha(Classe::Generica(fora))
     );
     assert_eq!(
         classificar(&ToolOutput::error(format!(
@@ -186,6 +189,34 @@ fn classificar_reconhece_as_frases_das_tools_e_ignora_pedido_de_confirmacao() {
         }
         outro => panic!("{outro:?}"),
     }
+}
+
+/// Uma recusa de caminho fora das raizes NAO abre o breaker: o modelo
+/// corrige o caminho na tentativa seguinte, e isso tem de rodar. Tres
+/// recusas iguais no mesmo turno abrem, como qualquer erro generico.
+#[test]
+fn recusa_fora_das_raizes_so_abre_depois_de_tres_iguais_no_turno() {
+    let mut b = Breaker::new();
+    let t = t0();
+    b.abrir_turno(None);
+    let negada = ToolOutput::error(format!("file_read: {DENIAL_MESSAGE}"));
+    b.registrar("file_read", &negada, t);
+    assert_eq!(
+        b.estado("file_read", t),
+        Estado::Fechado,
+        "uma recusa de caminho nao pode pausar a ferramenta"
+    );
+    b.registrar("file_read", &negada, t);
+    assert_eq!(b.estado("file_read", t), Estado::Fechado);
+    b.registrar("file_read", &negada, t);
+    match b.estado("file_read", t) {
+        Estado::Aberto {
+            motivo: Motivo::Repetida { vezes: 3 },
+            ate: Ate::FimDoTurno,
+        } => {}
+        outro => panic!("tres iguais abrem: {outro:?}"),
+    }
+    assert_eq!(b.abertas(t)[0].codigo, "repeated_error");
 }
 
 #[test]
