@@ -1300,22 +1300,19 @@ pub async fn admin_list_sessions(
         );
     }
 
-    let sessions: Vec<serde_json::Value> = state
+    // #1409: por sessao, o modo escolhido, o projeto ativo (nome, nunca o
+    // caminho) e — no WhatsApp pessoal — o principal e o modo EFETIVO do
+    // turno, calculados pelo mesmo motor que o `turno` usa.
+    let resumos: Vec<crate::admin::sessoes::ResumoDaSessao> = state
         .app_state
         .sessions
         .iter()
-        .map(|entry| {
-            let s = entry.value();
-            serde_json::json!({
-                "id": s.id,
-                "tenant_id": s.tenant_id,
-                "user_id": s.user_id,
-                "channel_id": s.channel_id,
-                "connected": s.connected,
-                "history_len": s.history.len(),
-            })
-        })
+        .map(|entry| crate::admin::sessoes::ResumoDaSessao::de(entry.value()))
         .collect();
+    let mut sessions: Vec<serde_json::Value> = Vec::with_capacity(resumos.len());
+    for resumo in resumos {
+        sessions.push(crate::admin::sessoes::sessao_em_json(&state.app_state, resumo).await);
+    }
 
     (
         StatusCode::OK,

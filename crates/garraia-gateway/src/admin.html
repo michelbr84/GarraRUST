@@ -546,7 +546,7 @@ tr:hover { background: var(--bg-hover); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
           <span class="nav-label">Channels</span>
         </div>
-        <div class="nav-item" data-page="sessions">
+        <div class="nav-item" data-page="sessions" data-testid="nav-sessions">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
           <span class="nav-label">Sessions</span>
         </div>
@@ -1267,6 +1267,53 @@ function showAddChannelForm() {
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────
+// #1415: o painel de capacidades de UMA conversa — o mesmo registro do
+// `garra_status`, com o portao daquela sessao (piso do canal ∧ teto).
+async function showSessionCapabilities(sessionId) {
+  var area = document.getElementById('session-capabilities-panel');
+  if (!area) {
+    area = el('div', { id: 'session-capabilities-panel', 'data-testid': 'session-capabilities-panel' });
+    document.getElementById('content-area').prepend(area);
+  }
+  clearEl(area);
+  area.appendChild(el('div', { className: 'card', textContent: 'Loading capabilities…' }));
+  try {
+    var data = await apiGet('/capabilities?session_id=' + encodeURIComponent(sessionId));
+    clearEl(area);
+    var card = el('div', { className: 'card' });
+    var head = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;' });
+    var sess = data.session || {};
+    var titulo = 'Capabilities of ' + truncate(sessionId, 28);
+    if (sess.principal) titulo += ' · ' + sess.principal + (sess.level ? ' (' + sess.level + (sess.write ? ', write on' : ', write off') + ')' : '');
+    if (sess.effective_mode) titulo += ' · mode ' + sess.effective_mode;
+    head.appendChild(el('h3', { 'data-testid': 'session-capabilities-title', textContent: titulo }));
+    head.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'session-capabilities-close', textContent: 'Close', onClick: function () { clearEl(area); } }));
+    card.appendChild(head);
+    var counts = data.counts || {};
+    card.appendChild(el('div', { className: 'wa-hint', 'data-testid': 'session-capabilities-counts', textContent: 'visible ' + (counts.visible || 0) + ' · denied ' + (counts.denied || 0) + ' · unavailable ' + (counts.unavailable || 0) + ' · unhealthy ' + (counts.unhealthy || 0) + ' · not configured ' + (counts.not_configured || 0) }));
+    var t = el('table', { className: 'wa-table' });
+    t.innerHTML = '<thead><tr><th>Capability</th><th>Source</th><th>State</th><th>Reason</th><th>Remediation</th></tr></thead>';
+    var tb = el('tbody');
+    var cls = { visible: 'badge-success', denied: 'badge-error', unavailable: 'badge-neutral', unhealthy: 'badge-error', not_configured: 'badge-neutral' };
+    (data.capabilities || []).forEach(function (c) {
+      var tr = el('tr', { 'data-testid': 'session-capability-row', 'data-capability': c.name, 'data-state': c.state });
+      tr.appendChild(el('td', null, [el('code', { textContent: c.name })]));
+      tr.appendChild(el('td', { textContent: c.source + (c.server ? ' (' + c.server + ')' : '') }));
+      tr.appendChild(el('td', null, [el('span', { className: 'badge ' + (cls[c.state] || 'badge-neutral'), textContent: c.state })]));
+      tr.appendChild(el('td', { textContent: c.reason || '' }));
+      tr.appendChild(el('td', { textContent: c.remediation || '' }));
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    card.appendChild(t);
+    area.appendChild(card);
+    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    clearEl(area);
+    area.appendChild(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
+  }
+}
+
 async function pageSessions() {
   try {
     var data = await apiGet('/sessions');
@@ -1281,12 +1328,18 @@ async function pageSessions() {
     if (sessions.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No active sessions.' })); }
     else {
       var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Session ID' }), el('th', { textContent: 'Tenant' }), el('th', { textContent: 'User' }), el('th', { textContent: 'Channel' }), el('th', { textContent: 'Status' }), el('th', { textContent: 'History' }), el('th', { textContent: 'Actions' })])]));
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Session ID' }), el('th', { textContent: 'Tenant' }), el('th', { textContent: 'User' }), el('th', { textContent: 'Channel' }), el('th', { textContent: 'Status' }), el('th', { textContent: 'History' }), el('th', { textContent: 'Principal' }), el('th', { textContent: 'Effective mode' }), el('th', { textContent: 'Project' }), el('th', { textContent: 'Actions' })])]));
       var tbody = el('tbody');
       sessions.forEach(s => {
         var actions = el('td');
+        // #1415: o painel de capacidades DESTA conversa (piso do canal + teto do principal).
+        actions.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'session-capabilities', textContent: 'Capabilities', onClick: () => showSessionCapabilities(s.id) }));
         if (can('sessions', 'delete')) actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Disconnect', onClick: () => disconnectSession(s.id) }));
-        tbody.appendChild(el('tr', null, [el('td', null, [el('code', { textContent: truncate(s.id, 20) })]), el('td', { textContent: s.tenant_id || '-' }), el('td', { textContent: s.user_id || '-' }), el('td', { textContent: s.channel_id || '-' }), el('td', null, [badgeFor(s.connected, 'Connected', 'Disconnected')]), el('td', { textContent: String(s.history_len || 0) }), actions]));
+        // #1409: principal, nivel e modo efetivo (WhatsApp pessoal); projeto ativo sem caminho.
+        var principal = s.principal ? (s.principal + (s.level ? ' · ' + s.level + (s.write === true ? ' · write on' : (s.write === false ? ' · write off' : '')) : '')) : '—';
+        var modo = s.effective_mode || s.chosen_mode || '—';
+        var projeto = s.project_name ? (s.project_name + (s.has_workspace ? '' : ' (sem workspace)')) : (s.has_workspace ? 'workspace' : '—');
+        tbody.appendChild(el('tr', { 'data-testid': 'session-row', 'data-session-id': s.id }, [el('td', null, [el('code', { textContent: truncate(s.id, 20) })]), el('td', { textContent: s.tenant_id || '-' }), el('td', { textContent: s.user_id || '-' }), el('td', { textContent: s.channel_id || '-' }), el('td', null, [badgeFor(s.connected, 'Connected', 'Disconnected')]), el('td', { textContent: String(s.history_len || 0) }), el('td', { 'data-testid': 'session-principal', textContent: principal }), el('td', { 'data-testid': 'session-effective-mode', textContent: modo }), el('td', { 'data-testid': 'session-project', textContent: projeto }), actions]));
       });
       tbl.appendChild(tbody); card.appendChild(tbl);
     }
