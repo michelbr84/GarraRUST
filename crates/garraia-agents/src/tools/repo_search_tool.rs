@@ -150,6 +150,11 @@ fn pode_revelar_caminho() -> bool {
     !crate::tools::turn_tools::turno_restrito().unwrap_or(true)
 }
 
+/// O inicio da recusa sem repositorio (#1380), como constante: o circuit
+/// breaker (#1417, `tools::breaker`) reconhece esta frase para classificar a
+/// falha como deterministica — repetir a busca no mesmo turno nao muda nada.
+pub const SEM_REPOSITORIO: &str = "No active repository to search.";
+
 /// A recusa rapida da #1380, ou `None` quando ha onde buscar.
 ///
 /// ## O defeito
@@ -194,7 +199,7 @@ fn recusa_sem_repositorio(
                 "the process directory".to_string()
             };
             Some(format!(
-                "No active repository to search. This session has no working directory, and {onde} \
+                "{SEM_REPOSITORIO} This session has no working directory, and {onde} \
                  is not inside a repository (no {} found in it or above it). Select a project for \
                  this session (set its working directory) and search again. Refused immediately \
                  instead of scanning unrelated directories for {}s and timing out — the answer \
@@ -203,12 +208,11 @@ fn recusa_sem_repositorio(
                 timeout.as_secs()
             ))
         }
-        None => Some(
-            "No active repository to search. This session has no working directory and the \
+        None => Some(format!(
+            "{SEM_REPOSITORIO} This session has no working directory and the \
              process directory cannot be read, so there is nowhere to search. Select a project \
              for this session (set its working directory) and search again."
-                .to_string(),
-        ),
+        )),
     }
 }
 
