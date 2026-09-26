@@ -44,6 +44,7 @@ fn pedido(action: &str) -> AccessMutationRequest {
     AccessMutationRequest {
         action: action.to_string(),
         identity: None,
+        identity_last4: None,
         jid: None,
         level: None,
         write: None,
@@ -359,6 +360,131 @@ async fn a_api_admin_le_muda_e_audita_pelo_mesmo_motor_da_cli() {
             .expect("ler")
             .len();
     assert_eq!(antes, depois);
+
+    // ── identity_last4 (o que o console manda), owner/unowner/remove ──
+    let mut req = pedido("level");
+    req.identity_last4 = Some("…8888".to_string());
+    req.level = Some("read".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut req = pedido("owner");
+    req.identity_last4 = Some("8888".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let relido = ConfigLoader::with_dir(dir.path())
+        .load_sem_env()
+        .expect("load");
+    let s = garraia_gateway::bootstrap::whatsapp_linked_settings(&relido);
+    assert!(s.e_dono(NUMERO), "virou dono por role");
+    // Duas identidades com o mesmo final: 409, e nada muda.
+    let mut req = pedido("level");
+    req.identity = Some("5521999998888".to_string());
+    req.level = Some("chat".to_string());
+    let (status, _) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut req = pedido("block");
+    req.identity_last4 = Some("8888".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{doc}");
+    let mut req = pedido("block");
+    req.identity_last4 = Some("0000".to_string());
+    let (status, _) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "final que ninguem tem");
+    // unowner preserva o acesso; remove tira de tudo.
+    let mut req = pedido("unowner");
+    req.identity = Some(NUMERO.to_string());
+    let (status, _) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut req = pedido("remove");
+    req.identity = Some(NUMERO.to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let relido = ConfigLoader::with_dir(dir.path())
+        .load_sem_env()
+        .expect("load");
+    let s = garraia_gateway::bootstrap::whatsapp_linked_settings(&relido);
+    assert_eq!(
+        garraia_gateway::bootstrap::whatsapp_linked_politica::principal_do_turno(
+            &s, NUMERO, "x", false, false,
+        ),
+        garraia_gateway::bootstrap::whatsapp_linked_politica::Principal::Estranho
+    );
+    assert!(!s.allow.iter().any(|a| a == NUMERO), "saiu do allow");
+    let eventos =
+        garraia_gateway::bootstrap::whatsapp_linked_politica::auditoria::ler(&data_dir, 10)
+            .expect("ler");
+    assert_eq!(eventos[0].acao, "remove");
+    assert_eq!(eventos[1].acao, "unowner");
 
     unsafe {
         std::env::remove_var("GARRAIA_CONFIG_DIR");

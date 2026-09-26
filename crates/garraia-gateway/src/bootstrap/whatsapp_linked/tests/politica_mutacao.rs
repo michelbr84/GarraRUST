@@ -624,3 +624,148 @@ fn auditoria_falha_de_forma_segura_quando_nao_consegue_gravar() {
     let evento = Evento::novo("cli", "x", "open", None, &antes, &antes);
     assert!(auditoria::registrar(dir.path(), &evento, 1 << 20).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Papel (dono) e remocao — as acoes que faltavam ao console (#1404)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn papel_de_dono_liga_e_desliga_preservando_o_acesso() {
+    let mut s = legado();
+    // Promover quem esta no `allow`: `role: owner` em access.users.
+    let a = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Papel {
+            identidade: USUARIO.to_string(),
+            dono: true,
+        },
+    )
+    .expect("aplica");
+    assert!(a.mudou);
+    assert_eq!(principal(&s, USUARIO), Principal::Dono);
+    assert_eq!(
+        s.settings["access"]["users"][USUARIO]["role"],
+        json!("owner")
+    );
+    // Rebaixar o dono LEGADO (so em `owners`): sai de `owners`, entra em
+    // `allow` — o acesso e preservado, como `garraia whatsapp unowner` faz.
+    let b = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Papel {
+            identidade: DONO.to_string(),
+            dono: false,
+        },
+    )
+    .expect("aplica");
+    assert!(b.mudou);
+    assert_eq!(
+        principal(&s, DONO),
+        Principal::Usuario(Alcance::COMPLETO),
+        "acesso preservado"
+    );
+    let owners = s.settings["owners"].as_array().cloned().unwrap_or_default();
+    assert!(owners.is_empty(), "{owners:?}");
+    // Rebaixar quem virou dono por `role`: a chave some, o resto da entrada fica.
+    mutacao::aplicar(
+        &mut s,
+        &Mutacao::Nivel {
+            identidade: USUARIO.to_string(),
+            nivel: Nivel::Read,
+        },
+    )
+    .unwrap_err();
+    let c = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Papel {
+            identidade: USUARIO.to_string(),
+            dono: false,
+        },
+    )
+    .expect("aplica");
+    assert!(c.mudou);
+    assert_eq!(
+        principal(&s, USUARIO),
+        Principal::Usuario(Alcance::COMPLETO)
+    );
+    assert!(s.settings["access"]["users"][USUARIO].get("role").is_none());
+    // Idempotente nas duas direcoes; bloqueado nao vira dono.
+    assert!(
+        !mutacao::aplicar(
+            &mut s,
+            &Mutacao::Papel {
+                identidade: USUARIO.to_string(),
+                dono: false
+            }
+        )
+        .expect("aplica")
+        .mudou
+    );
+    mutacao::aplicar(&mut s, &Mutacao::Bloquear(OUTRO.to_string())).expect("aplica");
+    let e = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Papel {
+            identidade: OUTRO.to_string(),
+            dono: true,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(e, MutacaoInvalida::Bloqueada), "{e:?}");
+    assert!(e.to_string().contains("unblock"), "{e}");
+    for m in a.mudancas.iter().chain(b.mudancas.iter()) {
+        assert!(
+            !m.contains("9999") && !m.contains("7777"),
+            "mudanca com numero: {m}"
+        );
+    }
+}
+
+#[test]
+fn remover_tira_de_todas_as_listas_e_e_idempotente() {
+    let mut s = secao(json!({
+        "allow": [USUARIO, "+55 11 99999-8888"],
+        "owners": [DONO],
+        "access": { "users": { USUARIO: { "level": "read" }, OUTRO: { "blocked": true } } }
+    }));
+    let a = mutacao::aplicar(&mut s, &Mutacao::Remover(USUARIO.to_string())).expect("aplica");
+    assert!(a.mudou);
+    assert_eq!(principal(&s, USUARIO), Principal::Estranho);
+    assert!(
+        s.settings["allow"].as_array().expect("lista").is_empty(),
+        "as duas grafias sairam"
+    );
+    assert!(s.settings["access"]["users"].get(USUARIO).is_none());
+    assert_eq!(principal(&s, DONO), Principal::Dono, "os outros ficam");
+    assert_eq!(
+        principal(&s, OUTRO),
+        Principal::Bloqueado,
+        "bloqueio de outro fica"
+    );
+    // Remover o dono legado.
+    let b = mutacao::aplicar(&mut s, &Mutacao::Remover(DONO.to_string())).expect("aplica");
+    assert!(b.mudou);
+    assert_eq!(principal(&s, DONO), Principal::Estranho);
+    // Remover quem esta bloqueado remove o bloqueio tambem (a entrada inteira).
+    mutacao::aplicar(&mut s, &Mutacao::Remover(OUTRO.to_string())).expect("aplica");
+    assert_eq!(principal(&s, OUTRO), Principal::Estranho);
+    // Idempotente: quem nao esta em lugar nenhum.
+    let c = mutacao::aplicar(&mut s, &Mutacao::Remover(USUARIO.to_string())).expect("aplica");
+    assert!(!c.mudou);
+    assert!(c.mudancas.is_empty());
+    assert_eq!(Mutacao::Remover(USUARIO.to_string()).acao(), "remove");
+    assert_eq!(
+        Mutacao::Papel {
+            identidade: USUARIO.to_string(),
+            dono: true
+        }
+        .acao(),
+        "owner"
+    );
+    assert_eq!(
+        Mutacao::Papel {
+            identidade: USUARIO.to_string(),
+            dono: false
+        }
+        .acao(),
+        "unowner"
+    );
+}

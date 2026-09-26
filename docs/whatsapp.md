@@ -583,6 +583,17 @@ channels:
   `Channels/Update`. A API nunca revela identidade. O `/api/diagnostics`
   (`whatsapp.access`) avisa quando a admissao esta `open` e quando a secao
   tem valor invalido.
+- **Pelo Web Console.** A pagina **WhatsApp Access** (`/admin` → sidebar)
+  mostra o resumo, a admissao, o default do desconhecido, os grupos, o
+  formulario "Add phone / identity" e a matriz por principal (piso, nivel,
+  write, o que pode de fato), com seletor de nivel, toggle de write,
+  Block/Unblock, Make owner/Demote, Remove e "Reset to safe defaults" — e
+  a trilha de audit. **Toda mudanca passa por um preview** (as mudancas e
+  o que cada principal ganha e perde, calculados pelo motor) antes de
+  confirmar; `open`, owner e reset trazem aviso. A pagina so conhece
+  `…1234`: para agir numa linha manda `identity_last4`, que o gateway
+  resolve entre as identidades declaradas (ambiguo = 409). A API tambem
+  aceita `owner`, `unowner` e `remove`.
 - **A quente.** A secao inteira e relida a cada mensagem (como `allow` e
   `owners` ja eram): um `blocked: true` vale na mensagem seguinte, sem
   restart. `access.groups.enabled` tambem; o `reply_in_groups` legado segue
