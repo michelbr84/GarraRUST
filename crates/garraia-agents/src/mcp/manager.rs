@@ -78,6 +78,10 @@ pub struct McpToolInfo {
     pub name: String,
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    /// `annotations.readOnlyHint` do servidor (#1385): leitura declarada.
+    pub read_only_hint: Option<bool>,
+    /// `annotations.destructiveHint` do servidor (#1385).
+    pub destructive_hint: Option<bool>,
 }
 
 /// Cached info about a resource from an MCP server.
@@ -823,6 +827,8 @@ impl McpManager {
                 name: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()),
                 input_schema: serde_json::to_value(&*t.input_schema).unwrap_or_default(),
+                read_only_hint: t.annotations.as_ref().and_then(|a| a.read_only_hint),
+                destructive_hint: t.annotations.as_ref().and_then(|a| a.destructive_hint),
             })
             .collect();
 
@@ -983,6 +989,8 @@ impl McpManager {
                 name: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()),
                 input_schema: serde_json::to_value(&*t.input_schema).unwrap_or_default(),
+                read_only_hint: t.annotations.as_ref().and_then(|a| a.read_only_hint),
+                destructive_hint: t.annotations.as_ref().and_then(|a| a.destructive_hint),
             })
             .collect();
 
@@ -1170,6 +1178,7 @@ impl McpManager {
                     t.description.clone(),
                     t.input_schema.clone(),
                     timeout,
+                    (t.read_only_hint, t.destructive_hint),
                 )) as Box<dyn Tool>
             })
             .collect()
@@ -1556,6 +1565,7 @@ impl McpManager {
             tool_info.description.clone(),
             tool_info.input_schema.clone(),
             Duration::from_secs(timeout_secs),
+            (tool_info.read_only_hint, tool_info.destructive_hint),
         );
 
         // Execute the tool

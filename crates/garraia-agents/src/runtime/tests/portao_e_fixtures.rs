@@ -47,7 +47,7 @@ pub(super) fn sem_modo_o_portao_nao_muda_nada() {
 #[test]
 pub(super) fn despacho_de_tool_tem_um_unico_ponto_de_gate() {
     let src = include_str!("../../runtime.rs");
-    let alvo = concat!("portao.permite", "(name)");
+    let alvo = concat!("self.portao_permite(portao", ", name)");
     let copias = src.matches(alvo).count();
     assert_eq!(copias, 1, "esperava 1 ponto de despacho, achei {copias}");
 }

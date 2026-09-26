@@ -125,6 +125,151 @@ pub struct ToolPolicy {
     /// Se true, nega todas as ferramentas não listadas em `allowed`
     #[serde(default)]
     pub whitelist_mode: bool,
+    /// #1385: classes permitidas. Com `whitelist_mode`, a ferramenta passa se
+    /// o nome esta em `allowed` OU se ela tem pelo menos uma classe e TODAS
+    /// estao aqui. Sem classe, so por nome (fail-closed).
+    #[serde(default)]
+    pub allowed_capabilities: Vec<crate::capacidades::Capacidade>,
+    /// #1385/#1392: classes negadas. Vence tudo, como `denied` por nome.
+    #[serde(default)]
+    pub denied_capabilities: Vec<crate::capacidades::Capacidade>,
+    /// Nivel `chat` (#1398): nenhuma ferramenta, de nenhuma forma — nem por
+    /// nome, nem por classe. `whitelist_mode` com listas vazias NAO e isto
+    /// (aquilo permite tudo, #1264); isto e a negacao total explicita.
+    #[serde(default)]
+    pub no_tools: bool,
+}
+
+/// O teto de um principal (#1391/#1392): a politica que o modo escolhido pela
+/// sessao **nao pode exceder**. Composto por E com o perfil do turno em
+/// [`ToolGate`]: o modo libera o que o teto tambem libera, e nada alem. O
+/// `nome` e o que a recusa cita (`acesso read do WhatsApp`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TetoDeCapacidades {
+    pub nome: String,
+    pub politica: ToolPolicy,
+}
+
+/// Os niveis de acesso do WhatsApp (#1398), compilados em [`ToolPolicy`] por
+/// [`politica_do_nivel`]. Presets, nao modos: valem como **teto** sobre o
+/// modo que a sessao escolher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Nivel {
+    /// So conversa: nenhuma ferramenta.
+    Chat,
+    /// Leitura: arquivo, web, dispositivo, memoria, inspecao do runtime, MCP
+    /// declarado somente-leitura.
+    Read,
+    /// Tudo que o modo e o perfil de execucao liberarem — e so isso: o teto
+    /// nao acrescenta nada.
+    Full,
+}
+
+impl Nivel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Read => "read",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "chat" => Some(Self::Chat),
+            "read" => Some(Self::Read),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
+/// A politica de um nivel com o `write` ligado ou desligado (#1392): `write`
+/// so mexe em [`crate::capacidades::Capacidade::ESCRITA_DE_ARQUIVO`]; shell,
+/// dispositivo, mensagem e agenda sao controles independentes e ficam como o
+/// nivel os deixa.
+pub fn politica_do_nivel(nivel: Nivel, write: bool) -> ToolPolicy {
+    use crate::capacidades::Capacidade as C;
+    match nivel {
+        Nivel::Chat => ToolPolicy {
+            no_tools: true,
+            ..Default::default()
+        },
+        Nivel::Read => {
+            let mut allowed_capabilities = C::LEITURA.to_vec();
+            let mut denied_capabilities = vec![
+                C::ProcessExecute,
+                C::DeviceExecute,
+                C::MessageSend,
+                C::MemoryWrite,
+                C::Scheduling,
+            ];
+            if write {
+                allowed_capabilities.extend_from_slice(C::ESCRITA_DE_ARQUIVO);
+            } else {
+                denied_capabilities.extend_from_slice(C::ESCRITA_DE_ARQUIVO);
+            }
+            ToolPolicy {
+                whitelist_mode: true,
+                allowed_capabilities,
+                denied_capabilities,
+                ..Default::default()
+            }
+        }
+        // `full` nao acrescenta nada: o modo e o perfil de execucao decidem.
+        // `write off` tira so a escrita de arquivo, nativa e MCP.
+        Nivel::Full => ToolPolicy {
+            denied_capabilities: if write {
+                Vec::new()
+            } else {
+                C::ESCRITA_DE_ARQUIVO.to_vec()
+            },
+            ..Default::default()
+        },
+    }
+}
+
+/// Uma politica deixa esta ferramenta rodar? Nome e classe somam no
+/// `allowed`; `denied` (por nome ou por classe) e `no_tools` vencem tudo;
+/// sem classe, so o nome libera num whitelist (fail-closed).
+fn politica_permite(
+    p: &ToolPolicy,
+    tool_name: &str,
+    capacidades: &[crate::capacidades::Capacidade],
+) -> bool {
+    if p.no_tools {
+        return false;
+    }
+    // `denied` vale sempre, inclusive para MCP — e vence tudo, prefixo
+    // declarado incluso.
+    if p.denied.iter().any(|t| t == tool_name) {
+        return false;
+    }
+    if capacidades
+        .iter()
+        .any(|c| p.denied_capabilities.contains(c))
+    {
+        return false;
+    }
+    if p.whitelist_mode {
+        // Whitelist vazia nao quer dizer "nada permitido" — quer dizer que
+        // o perfil nao restringiu (#1264). Ver o docblock do tipo.
+        if p.allowed.is_empty() && p.allowed_capabilities.is_empty() {
+            return true;
+        }
+        // #1264: ferramenta MCP passa por aqui como qualquer outra.
+        if p.allowed.iter().any(|e| entrada_cobre(e, tool_name)) {
+            return true;
+        }
+        // #1385: pela classe — todas as classes da ferramenta liberadas, e
+        // pelo menos uma. Sem classe, nada a liberar.
+        return !capacidades.is_empty()
+            && capacidades
+                .iter()
+                .all(|c| p.allowed_capabilities.contains(c));
+    }
+    true
 }
 
 /// Configurações de LLM específicas por modo
@@ -289,6 +434,9 @@ pub struct ModeProfile {
 /// perfil).
 #[derive(Debug, Clone)]
 pub struct ToolGate {
+    /// O teto do principal (#1391/#1392), composto por E com o perfil: o
+    /// modo libera o que o teto tambem libera. `None` = sem teto.
+    teto: Option<TetoDeCapacidades>,
     /// O perfil que vale neste turno, se algum vale.
     ///
     /// Guarda o perfil inteiro, e nao so a `ToolPolicy`, porque o mesmo perfil
@@ -345,6 +493,7 @@ impl ToolGate {
     /// O portao aberto: nenhuma politica, tudo permitido.
     pub fn sem_politica() -> Self {
         Self {
+            teto: None,
             profile: None,
             nome: None,
         }
@@ -353,8 +502,45 @@ impl ToolGate {
     /// O portao do perfil de um modo.
     pub fn from_profile(profile: &ModeProfile) -> Self {
         Self {
+            teto: None,
             nome: Some(profile.name.clone()),
             profile: Some(profile.clone()),
+        }
+    }
+    /// O mesmo portao, com o teto do principal por cima (#1391/#1392).
+    pub fn com_teto(mut self, teto: Option<TetoDeCapacidades>) -> Self {
+        self.teto = teto;
+        self
+    }
+    /// A ferramenta pode rodar, dadas as classes dela? (#1385)
+    ///
+    /// E [`Self::permite`] com as classes: nome e classe somam no `allowed`,
+    /// e `denied` (por nome ou por classe) vence tudo. Depois, o teto.
+    pub fn permite_com_capacidades(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> bool {
+        self.modo_permite(tool_name, capacidades) && self.teto_permite(tool_name, capacidades)
+    }
+    /// Por que a ferramenta foi barrada — o modo, ou o teto do principal.
+    /// O modo e citado primeiro: quem escolheu `/mode` entende; o teto e
+    /// citado quando so ele barrou, porque ai trocar de modo nao resolve.
+    pub fn explica_recusa(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> String {
+        if !self.modo_permite(tool_name, capacidades) {
+            return Self::recusa(tool_name, self.nome_do_modo().unwrap_or(""));
+        }
+        match self.teto.as_ref() {
+            Some(t) if !politica_permite(&t.politica, tool_name, capacidades) => format!(
+                "A ferramenta `{tool_name}` nao e permitida pela politica de acesso `{}` de quem \
+                 fala nesta conversa. Siga sem ela, ou peca ao administrador do canal.",
+                t.nome
+            ),
+            _ => Self::recusa(tool_name, self.nome_do_modo().unwrap_or("")),
         }
     }
 
@@ -368,6 +554,7 @@ impl ToolGate {
             Some(nome) => Self::for_mode_name(nome),
             None => Self::sem_politica(),
         }
+        .com_teto(exec.teto.clone())
     }
 
     /// O portao do turno: igual ao [`Self::from_exec`], exceto em `auto`.
@@ -393,6 +580,9 @@ impl ToolGate {
     /// antes de chamar e passar esse nome no `ExecContext`; este caminho e o
     /// piso, e vale para a CLI, que monta o proprio runtime.
     pub fn para_o_turno(exec: &crate::exec_context::ExecContext, user_text: &str) -> Self {
+        Self::para_o_turno_sem_teto(exec, user_text).com_teto(exec.teto.clone())
+    }
+    fn para_o_turno_sem_teto(exec: &crate::exec_context::ExecContext, user_text: &str) -> Self {
         // Modo customizado (#986) chega com o perfil pronto de quem tem banco.
         // Vence o nome: o perfil ja e o do `base_mode` com os overrides
         // aplicados, e reinterpretar o nome desfaria a customizacao.
@@ -439,9 +629,15 @@ impl ToolGate {
     /// defeito que sustentava a escapatoria antiga. Ver
     /// `runtime::avisar_mcp_fora_da_whitelist`.
     pub fn restringe_por_whitelist(&self) -> bool {
+        fn restringe(p: &ToolPolicy) -> bool {
+            p.no_tools
+                || (p.whitelist_mode
+                    && (!p.allowed.is_empty() || !p.allowed_capabilities.is_empty()))
+        }
         self.profile
             .as_ref()
-            .is_some_and(|p| p.tool_policy.whitelist_mode && !p.tool_policy.allowed.is_empty())
+            .is_some_and(|p| restringe(&p.tool_policy))
+            || self.teto.as_ref().is_some_and(|t| restringe(&t.politica))
     }
 
     /// O perfil ligou `whitelist_mode` e deixou `allowed` vazia?
@@ -452,9 +648,11 @@ impl ToolGate {
     /// este predicado existe para que alguem possa avisar. Ele nao muda
     /// decisao nenhuma.
     pub fn whitelist_ligada_mas_vazia(&self) -> bool {
-        self.profile
-            .as_ref()
-            .is_some_and(|p| p.tool_policy.whitelist_mode && p.tool_policy.allowed.is_empty())
+        self.profile.as_ref().is_some_and(|p| {
+            p.tool_policy.whitelist_mode
+                && p.tool_policy.allowed.is_empty()
+                && p.tool_policy.allowed_capabilities.is_empty()
+        })
     }
 
     /// A ferramenta e de servidor MCP?
@@ -538,33 +736,29 @@ impl ToolGate {
         self.nome.as_deref()
     }
 
-    /// A ferramenta pode rodar?
+    /// A ferramenta pode rodar? (So pelo nome: classes vazias.)
     pub fn permite(&self, tool_name: &str) -> bool {
-        let Some(p) = self.profile.as_ref().map(|p| &p.tool_policy) else {
-            return true;
-        };
-
-        // `denied` vale sempre, inclusive para MCP — e vence tudo, prefixo
-        // declarado incluso.
-        if p.denied.iter().any(|t| t == tool_name) {
-            return false;
+        self.permite_com_capacidades(tool_name, &[])
+    }
+    fn modo_permite(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> bool {
+        match self.profile.as_ref() {
+            Some(p) => politica_permite(&p.tool_policy, tool_name, capacidades),
+            None => true,
         }
-
-        if p.whitelist_mode {
-            // Whitelist vazia nao quer dizer "nada permitido" — quer dizer que
-            // o perfil nao restringiu. Ver o docblock do tipo: quem avisa que a
-            // restricao esta ligada e nao restringe nada e
-            // `whitelist_ligada_mas_vazia`.
-            if p.allowed.is_empty() {
-                return true;
-            }
-            // #1264: ferramenta MCP passa por aqui como qualquer outra. Nao ha
-            // mais o `contains(SEPARADOR_MCP) -> true` que isentava todo nome
-            // de servidor MCP da lista.
-            return p.allowed.iter().any(|e| entrada_cobre(e, tool_name));
+    }
+    fn teto_permite(
+        &self,
+        tool_name: &str,
+        capacidades: &[crate::capacidades::Capacidade],
+    ) -> bool {
+        match self.teto.as_ref() {
+            Some(t) => politica_permite(&t.politica, tool_name, capacidades),
+            None => true,
         }
-
-        true
     }
 
     /// A mensagem que o modelo recebe quando pede uma ferramenta barrada.
@@ -767,6 +961,7 @@ impl ModeProfile {
                 ],
                 required: vec![],
                 whitelist_mode: true,
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.3,
@@ -814,6 +1009,7 @@ impl ModeProfile {
                 ],
                 required: vec![],
                 whitelist_mode: true,
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.5,
@@ -843,6 +1039,7 @@ impl ModeProfile {
                 denied: vec![],
                 required: vec![],
                 whitelist_mode: false, // Permite tudo por padrão
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.4,
@@ -885,6 +1082,7 @@ impl ModeProfile {
                 ],
                 required: vec![],
                 whitelist_mode: false,
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.7,
@@ -931,6 +1129,7 @@ impl ModeProfile {
                 ],
                 required: vec![],
                 whitelist_mode: true,
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.3,
@@ -975,6 +1174,7 @@ impl ModeProfile {
                 // ferramenta e a lista nunca era lida — contrariando o proprio
                 // prompt do modo, que anuncia exatamente essas seis.
                 whitelist_mode: true,
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.5,
@@ -1021,6 +1221,7 @@ impl ModeProfile {
                 ],
                 required: vec![],
                 whitelist_mode: true,
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.4,
@@ -1059,6 +1260,7 @@ impl ModeProfile {
                 denied: vec![],
                 required: vec![],
                 whitelist_mode: true,
+                ..Default::default()
             },
             llm_config: ModeLlmConfig {
                 temperature: 0.3,
@@ -1616,6 +1818,235 @@ mod tests {
         assert!(!entrada_cobre("file_read", "file_read_x"));
     }
 
+    // ─── #1385/#1392: classes de capacidade e teto do principal ──────────
+
+    fn perfil_com(policy: ToolPolicy) -> ModeProfile {
+        let mut perfil = ModeProfile::default_search();
+        perfil.name = "teste".into();
+        perfil.tool_policy = policy;
+        perfil
+    }
+
+    /// Whitelist por CLASSE: uma ferramenta passa pela classe sem entrada
+    /// por nome; classe fora fica fora; sem classe e fail-closed; e a
+    /// entrada por nome continua valendo ao lado.
+    #[test]
+    fn whitelist_por_classe_libera_sem_nome_e_e_fail_closed_sem_classe() {
+        use crate::capacidades::Capacidade as C;
+        let g = ToolGate::from_profile(&perfil_com(ToolPolicy {
+            whitelist_mode: true,
+            allowed: vec!["ferramenta_por_nome".into()],
+            allowed_capabilities: vec![C::FilesystemRead, C::McpRead],
+            ..Default::default()
+        }));
+        assert!(g.permite_com_capacidades("github__search_issues", &[C::McpRead]));
+        assert!(g.permite_com_capacidades("qualquer__read_file", &[C::FilesystemRead]));
+        assert!(!g.permite_com_capacidades("qualquer__write_file", &[C::FilesystemWrite]));
+        // Duas classes: TODAS precisam estar liberadas.
+        assert!(!g.permite_com_capacidades("mista", &[C::FilesystemRead, C::FilesystemWrite]));
+        // Sem classe: so por nome.
+        assert!(
+            !g.permite_com_capacidades("misterio", &[]),
+            "sem classe e fail-closed"
+        );
+        assert!(g.permite_com_capacidades("ferramenta_por_nome", &[]));
+        // A forma antiga (so nome) continua a mesma coisa que classes vazias.
+        assert_eq!(
+            g.permite("misterio"),
+            g.permite_com_capacidades("misterio", &[])
+        );
+    }
+
+    /// `denied_capabilities` vence o nome permitido, como `denied` por nome.
+    #[test]
+    fn classe_negada_vence_o_nome_permitido() {
+        use crate::capacidades::Capacidade as C;
+        let g = ToolGate::from_profile(&perfil_com(ToolPolicy {
+            allowed: vec!["file_write".into()],
+            denied_capabilities: vec![C::FilesystemWrite],
+            ..Default::default()
+        }));
+        assert!(!g.permite_com_capacidades("file_write", &[C::FilesystemWrite]));
+        assert!(g.permite_com_capacidades("file_read", &[C::FilesystemRead]));
+    }
+
+    /// `no_tools` nega tudo — por nome, por classe, com ou sem whitelist.
+    #[test]
+    fn no_tools_nega_tudo() {
+        use crate::capacidades::Capacidade as C;
+        let g = ToolGate::from_profile(&perfil_com(ToolPolicy {
+            no_tools: true,
+            allowed: vec!["file_read".into()],
+            allowed_capabilities: vec![C::FilesystemRead],
+            ..Default::default()
+        }));
+        assert!(!g.permite("file_read"));
+        assert!(!g.permite_com_capacidades("file_read", &[C::FilesystemRead]));
+        assert!(!g.permite_com_capacidades("garra_status", &[C::RuntimeInspect]));
+        assert!(
+            g.restringe_por_whitelist(),
+            "chat e restricao, e o garra_status tem de saber"
+        );
+    }
+
+    /// O teto do principal nega o que o modo liberaria, e a recusa diz que
+    /// foi o teto — nao o modo.
+    #[test]
+    fn teto_do_principal_nega_o_que_o_modo_liberaria_e_explica() {
+        use crate::capacidades::Capacidade as C;
+        let teto = TetoDeCapacidades {
+            nome: "acesso read do WhatsApp".into(),
+            politica: politica_do_nivel(Nivel::Read, false),
+        };
+        let g = ToolGate::for_mode_name("code").com_teto(Some(teto));
+        assert!(g.permite_com_capacidades("file_read", &[C::FilesystemRead]));
+        assert!(!g.permite_com_capacidades("file_write", &[C::FilesystemWrite]));
+        assert!(!g.permite_com_capacidades("bash", &[C::ProcessExecute]));
+        let motivo = g.explica_recusa("file_write", &[C::FilesystemWrite]);
+        assert!(motivo.contains("acesso read do WhatsApp"), "{motivo}");
+        assert!(!motivo.contains("modo `code`"), "{motivo}");
+        // Sem teto, a recusa e a do modo, como antes.
+        let g = ToolGate::for_mode_name("search");
+        let motivo = g.explica_recusa("file_write", &[C::FilesystemWrite]);
+        assert!(motivo.contains("modo `search`"), "{motivo}");
+        // O teto nunca ACRESCENTA: `search` + teto full continua sem escrita.
+        let g = ToolGate::for_mode_name("search").com_teto(Some(TetoDeCapacidades {
+            nome: "full".into(),
+            politica: politica_do_nivel(Nivel::Full, true),
+        }));
+        assert!(!g.permite_com_capacidades("file_write", &[C::FilesystemWrite]));
+    }
+
+    /// Os niveis (#1398) x `write` (#1392), tabela fechada.
+    #[test]
+    fn niveis_chat_read_full_com_write_ligado_e_desligado() {
+        use crate::capacidades::Capacidade as C;
+        // (ferramenta, classes)
+        let file_read = ("file_read", &[C::FilesystemRead][..]);
+        let file_write = ("file_write", &[C::FilesystemWrite][..]);
+        let bash = ("bash", &[C::ProcessExecute][..]);
+        let mcp_read = ("filesystem__read_text_file", &[C::FilesystemRead][..]);
+        let mcp_write = ("filesystem__write_file", &[C::FilesystemWrite][..]);
+        let mcp_misterio = ("github__algo", &[][..]);
+        let status = ("garra_status", &[C::RuntimeInspect][..]);
+        let send = ("telegram_send", &[C::MessageSend][..]);
+        let device_exec = ("device_execute", &[C::DeviceExecute][..]);
+        type Ferramentas<'a> = &'a [(&'a str, &'a [C])];
+        let casos: &[(Nivel, bool, Ferramentas<'_>, Ferramentas<'_>)] = &[
+            // chat: nada
+            (
+                Nivel::Chat,
+                false,
+                &[],
+                &[
+                    file_read,
+                    file_write,
+                    bash,
+                    mcp_read,
+                    mcp_write,
+                    mcp_misterio,
+                    status,
+                    send,
+                    device_exec,
+                ],
+            ),
+            (Nivel::Chat, true, &[], &[file_read, file_write, status]),
+            // read: leitura, status; nada de escrita/shell/envio/dispositivo/misterio
+            (
+                Nivel::Read,
+                false,
+                &[file_read, mcp_read, status],
+                &[file_write, bash, mcp_write, mcp_misterio, send, device_exec],
+            ),
+            // read + write: ganha escrita de arquivo (nativa e MCP), e so ela
+            (
+                Nivel::Read,
+                true,
+                &[file_read, mcp_read, status, file_write, mcp_write],
+                &[bash, mcp_misterio, send, device_exec],
+            ),
+            // full: o teto nao restringe (o modo e o perfil decidem); write off tira so a escrita de arquivo
+            (
+                Nivel::Full,
+                true,
+                &[
+                    file_read,
+                    file_write,
+                    bash,
+                    mcp_read,
+                    mcp_write,
+                    mcp_misterio,
+                    status,
+                    send,
+                    device_exec,
+                ],
+                &[],
+            ),
+            (
+                Nivel::Full,
+                false,
+                &[
+                    file_read,
+                    bash,
+                    mcp_read,
+                    mcp_misterio,
+                    status,
+                    send,
+                    device_exec,
+                ],
+                &[file_write, mcp_write],
+            ),
+        ];
+        for (nivel, write, passam, barram) in casos {
+            let g = ToolGate::sem_politica().com_teto(Some(TetoDeCapacidades {
+                nome: format!("{}/{}", nivel.as_str(), write),
+                politica: politica_do_nivel(*nivel, *write),
+            }));
+            for (nome, caps) in *passam {
+                assert!(
+                    g.permite_com_capacidades(nome, caps),
+                    "{nivel:?} write={write}: {nome} devia passar"
+                );
+            }
+            for (nome, caps) in *barram {
+                assert!(
+                    !g.permite_com_capacidades(nome, caps),
+                    "{nivel:?} write={write}: {nome} devia ser barrada"
+                );
+            }
+        }
+        assert_eq!(Nivel::parse("READ"), Some(Nivel::Read));
+        assert_eq!(Nivel::parse("dono"), None);
+        assert_eq!(
+            serde_json::to_string(&Nivel::Chat).expect("json"),
+            "\"chat\""
+        );
+    }
+
+    /// O teto chega pelo `ExecContext` e vale nos dois construtores do portao.
+    #[test]
+    fn o_teto_do_exec_context_e_composto_pelos_dois_construtores() {
+        use crate::capacidades::Capacidade as C;
+        let mut exec = crate::exec_context::ExecContext::with_mode(Some("code".to_string()));
+        exec.teto = Some(TetoDeCapacidades {
+            nome: "chat".into(),
+            politica: politica_do_nivel(Nivel::Chat, false),
+        });
+        assert!(
+            !ToolGate::from_exec(&exec).permite_com_capacidades("file_read", &[C::FilesystemRead])
+        );
+        assert!(
+            !ToolGate::para_o_turno(&exec, "oi")
+                .permite_com_capacidades("file_read", &[C::FilesystemRead])
+        );
+        // Modo customizado tambem fica sob o teto (o teto e do principal, nao do modo).
+        exec.custom_profile = Some(ModeProfile::default_code());
+        assert!(
+            !ToolGate::para_o_turno(&exec, "oi")
+                .permite_com_capacidades("file_read", &[C::FilesystemRead])
+        );
+    }
+
     /// Mas `denied` vale para MCP tambem — a lista explicita ganha.
     #[test]
     fn denied_vale_inclusive_para_mcp() {
@@ -1625,6 +2056,7 @@ mod tests {
                 denied: vec!["servidor__perigosa".to_string()],
                 required: vec![],
                 whitelist_mode: true,
+                ..Default::default()
             },
             ..ModeProfile::from_mode(AgentMode::Code)
         });
@@ -1649,6 +2081,7 @@ mod tests {
                 denied: vec![],
                 required: vec![],
                 whitelist_mode: true,
+                ..Default::default()
             },
             ..ModeProfile::from_mode(AgentMode::Code)
         });

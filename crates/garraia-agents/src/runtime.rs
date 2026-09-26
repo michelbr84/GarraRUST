@@ -64,6 +64,9 @@ pub struct ToolInventoryEntry {
     /// The MCP server this tool came from, when `source == "mcp"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server: Option<String>,
+    /// #1385: as classes da ferramenta (`filesystem.read`…); vazio = sem
+    /// classe, que e fail-closed em modo restrito por classe.
+    pub capacidades: Vec<&'static str>,
 }
 
 /// GAR-187 + #1078 item 2: a aprovacao humana de UM pedido pendente.
@@ -653,7 +656,7 @@ const PROGRAM_AGGREGATE_TIMEOUT_SECS: u64 = 120;
 /// tool_definitions` so a anexa quando ha ao menos uma tool real registrada
 /// (achado de revisao — anexar sempre fazia um runtime sem tool nenhuma
 /// deixar de bater no `tool_count == 0` de `apply_tools_model_override`), e
-/// o MESMO filtro `portao.permite(&d.name)` que ja roda nos tres pontos de
+/// o MESMO filtro `self.portao_permite(&portao, &d.name)` que ja roda nos tres pontos de
 /// montagem do turno decide se o modelo chega a ve-la.
 fn definicao_tool_program() -> ToolDefinition {
     ToolDefinition {
@@ -1423,6 +1426,7 @@ impl AgentRuntime {
                     ToolSource::Native => None,
                     ToolSource::Mcp { server } => Some(server.clone()),
                 },
+                capacidades: r.tool.capacidades().iter().map(|c| c.as_str()).collect(),
             })
             .collect()
     }
@@ -1456,6 +1460,25 @@ impl AgentRuntime {
     /// Publica desde a #1244: um teste precisa alcancar a tool **como o
     /// runtime a registrou** — e o ponto de chamada de producao, nao o
     /// construtor, que este repositorio ja errou cinco vezes.
+    /// As classes (#1385) da ferramenta registrada com este nome; vazio para
+    /// nome desconhecido ou sem classe.
+    pub fn capacidades_de(&self, name: &str) -> &'static [crate::capacidades::Capacidade] {
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|r| r.tool.name() == name)
+            .map(|r| r.tool.capacidades())
+            .unwrap_or(&[])
+    }
+
+    /// O portao do turno decide por nome E por classe (#1385): e por aqui
+    /// que todo ponto do runtime pergunta — a lista que o modelo ve, o
+    /// despacho e o `garra_status`.
+    pub fn portao_permite(&self, portao: &crate::modes::ToolGate, name: &str) -> bool {
+        portao.permite_com_capacidades(name, self.capacidades_de(name))
+    }
+
     pub fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .read()
@@ -1656,7 +1679,7 @@ impl AgentRuntime {
         avisar_whitelist_vazia(&portao);
         let tool_defs: Vec<_> = todas_as_tools
             .into_iter()
-            .filter(|d| portao.permite(&d.name))
+            .filter(|d| self.portao_permite(&portao, &d.name))
             .collect();
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
@@ -1915,7 +1938,7 @@ impl AgentRuntime {
         avisar_whitelist_vazia(&portao);
         let tool_defs: Vec<_> = todas_as_tools
             .into_iter()
-            .filter(|d| portao.permite(&d.name))
+            .filter(|d| self.portao_permite(&portao, &d.name))
             .collect();
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
@@ -2373,7 +2396,7 @@ impl AgentRuntime {
         avisar_whitelist_vazia(&portao);
         let tool_defs: Vec<_> = todas_as_tools
             .into_iter()
-            .filter(|d| portao.permite(&d.name))
+            .filter(|d| self.portao_permite(&portao, &d.name))
             .collect();
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
@@ -3019,17 +3042,19 @@ impl AgentRuntime {
         // solicitada pelo LLM**". A recusa volta como saida de
         // ferramenta, e nao como erro do turno: o modelo le, e
         // segue sem ela.
-        if !portao.permite(name) {
-            // O nome vem do portao, e nao do `exec`: com `auto`
+        if !self.portao_permite(portao, name) {
+            // O motivo vem do portao, e nao do `exec`: com `auto`
             // escolhido, quem barrou foi o modo **deduzido**, e
             // dizer "nao e permitida no modo `auto`" nao explica
-            // nada a quem le.
-            let modo = portao.nome_do_modo().unwrap_or("");
+            // nada a quem le; e quando quem barrou foi o TETO do
+            // principal (#1392), trocar de modo nao resolve, e a
+            // frase diz isso.
             // #1339 (revisao do #1337): a recusa repete o nome da tool como o
             // MODELO mandou. Um "nome" com a copia de um marcador verdadeiro
             // entraria no historico intacto por este caminho, que volta antes
             // de `saida_sem_marcador_alheio`.
-            let recusa = neutralizar_marcadores(&crate::modes::ToolGate::recusa(name, modo));
+            let recusa =
+                neutralizar_marcadores(&portao.explica_recusa(name, self.capacidades_de(name)));
             // #1226 (achado de revisao): fecha o `tool_started` de cima.
             // Sem isto, um passo negado dentro de um `tool_program` deixava
             // um inicio sem fim entre o par do proprio programa — a UI de
@@ -3147,7 +3172,7 @@ impl AgentRuntime {
                             let liberadas: Vec<String> = self
                                 .tool_names()
                                 .into_iter()
-                                .filter(|n| portao.permite(n))
+                                .filter(|n| self.portao_permite(portao, n))
                                 .collect();
                             crate::tools::turn_tools::com_ferramentas_do_turno(
                                 liberadas,
