@@ -13,6 +13,7 @@ mod config_cmd;
 mod defaults;
 mod desktop;
 mod doctor;
+mod doctor_whatsapp;
 mod glob_cmd;
 mod logs_cmd;
 mod max_power;
@@ -160,12 +161,16 @@ enum Commands {
     /// Diagnose the installation (platform, dirs, config, providers, daemon)
     Doctor {
         /// Emit a machine-readable JSON report instead of human output
-        #[arg(long)]
+        #[arg(long, global = true)]
         json: bool,
 
         /// Treat config warnings as errors (exit 2)
-        #[arg(long)]
+        #[arg(long, global = true)]
         strict: bool,
+
+        /// One area end to end instead of the whole installation
+        #[command(subcommand)]
+        area: Option<DoctorArea>,
     },
 
     /// Run the onboarding wizard
@@ -586,6 +591,14 @@ enum RecoveryCommands {
         #[arg(long)]
         new_password: Option<String>,
     },
+}
+
+/// `garraia doctor <area>`: a same-vocabulary report for one path.
+#[derive(Subcommand)]
+enum DoctorArea {
+    /// The personal-WhatsApp path end to end: link, session key, gateway,
+    /// access, execution profile, workspace, MCP visibility, provider (#1419)
+    Whatsapp,
 }
 
 #[derive(Subcommand)]
@@ -1596,8 +1609,11 @@ fn main() -> Result<()> {
     // (install.sh → doctor → chat), então como o `config check` precisa
     // sobreviver a config ausente/não-parseável e reportar sysexits em vez
     // de estourar no `load()` global.
-    if let Commands::Doctor { json, strict } = cli.command {
-        let code = doctor::run_doctor(json, strict)?;
+    if let Commands::Doctor { json, strict, area } = cli.command {
+        let code = match area {
+            Some(DoctorArea::Whatsapp) => doctor_whatsapp::run(json, strict)?,
+            None => doctor::run_doctor(json, strict)?,
+        };
         if code != 0 {
             std::process::exit(code);
         }
