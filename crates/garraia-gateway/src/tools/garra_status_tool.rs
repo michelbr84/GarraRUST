@@ -46,6 +46,7 @@
 //!
 //! [`turno_restrito`]: garraia_agents::tools::turn_tools::turno_restrito
 
+use std::path::Path;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
@@ -113,6 +114,13 @@ macro_rules! sentido_de_withheld {
 
 /// A frase acima, como constante, para o campo `withheld_means` do relatorio.
 const SENTIDO_DE_WITHHELD: &str = sentido_de_withheld!();
+
+/// O que `file_tools.ready = false` significa, dito DENTRO do relatorio
+/// (#1416, criterio 5 da #1418, #1387): sem raiz efetiva as tres file tools
+/// negam todo caminho com a MESMA frase — e o modelo, sem este bloco,
+/// prometia ler arquivo e depois inventava por que nao dava. So sai quando
+/// nao esta pronto; constante e secret-free, como [`SENTIDO_DE_WITHHELD`].
+const SENTIDO_DE_FILE_TOOLS_SEM_RAIZ: &str = "file_read, file_write and list_dir deny every path in this conversation: the session has no working directory and the operator declared no root. Say so instead of promising to read or write files. The operator can select a project for this session, or declare a root in agent.file_roots (or the GARRAIA_FILE_ROOTS env var) and restart.";
 
 pub struct GarraStatusTool {
     /// Weak for the same reason `TelegramSendTool` is: `AppState` owns the
@@ -191,8 +199,10 @@ impl Tool for GarraStatusTool {
             "Describes the Garra runtime you are running in: version, uptime, active ",
             "provider and model, the tools available in this turn, advertised features, ",
             "each enabled messaging channel with its status (`active` = connected now, ",
-            "`offline` = configured but down), the execution profile, MCP servers, and this ",
-            "session's channel and mode. Some fields can be held back, and the report names ",
+            "`offline` = configured but down), the execution profile, MCP servers, whether ",
+            "the file tools have a root in this session (`file_tools.ready`; when false, ",
+            "`file_tools.means` says what to tell the user), and this session's channel and ",
+            "mode. Some fields can be held back, and the report names ",
             "them in its `withheld` list. ",
             sentido_de_withheld!(),
             " Use it whenever the user asks what you are, what you can do, which channels ",
@@ -300,6 +310,39 @@ impl Tool for GarraStatusTool {
         let working_dir = (!restrito).then_some(ctx.working_dir.as_deref()).flatten();
         let project_id = (!restrito).then_some(ctx.project_id.as_deref()).flatten();
 
+        // #1416/#1418: as file tools tem raiz NESTA sessao? Bit e origem,
+        // nunca caminho — por isso o bloco sai inteiro tambem no turno
+        // restrito, onde `session.working_dir` e retido. O resolvedor e o do
+        // boot e do `/api/diagnostics` (`raizes_das_file_tools`): so le
+        // metadado, nao cria nada, e e o unico que sabe se ha raiz declarada.
+        let file_tools = {
+            use crate::bootstrap::FonteDasRaizesDasFileTools as Fonte;
+            let raizes = crate::bootstrap::raizes_das_file_tools(&state.config);
+            // O diretorio da sessao mora DEBAIXO do workspace padrao: o pai
+            // canonicalizado e a raiz (o proprio diretorio pode ainda nao
+            // existir — ele nasce no primeiro uso, #1449).
+            let no_workspace = ctx.working_dir.as_deref().is_some_and(|wd| {
+                raizes.workspace_por_sessao.as_ref().is_some_and(|ws| {
+                    Path::new(wd)
+                        .parent()
+                        .and_then(|pai| std::fs::canonicalize(pai).ok())
+                        .is_some_and(|pai| pai == ws.raiz())
+                })
+            });
+            let (ready, source, roots) = match (ctx.working_dir.is_some(), raizes.fonte) {
+                (true, Fonte::WorkspacePadrao) if no_workspace => (true, "session_workspace", None),
+                (true, _) => (true, "session_working_dir", None),
+                (false, Fonte::Declaradas) => (true, "declared", Some(raizes.jail.roots().len())),
+                (false, _) => (false, "none", None),
+            };
+            serde_json::json!({
+                "ready": ready,
+                "source": source,
+                "roots": roots,
+                "means": (!ready).then_some(SENTIDO_DE_FILE_TOOLS_SEM_RAIZ),
+            })
+        };
+
         let report = serde_json::json!({
             "version": version,
             "uptime_secs": state.boot_time.elapsed().as_secs(),
@@ -312,6 +355,7 @@ impl Tool for GarraStatusTool {
             "execution_profile": execution_profile,
             "mcp_servers": mcp_servers,
             "memory_enabled": state.agents.memory_provider().is_some(),
+            "file_tools": file_tools,
             "session": {
                 "id": mascarar_digitos(&ctx.session_id),
                 "channel": canal_da_sessao,
@@ -606,6 +650,7 @@ mod tests {
                 "channels",
                 "execution_profile",
                 "features",
+                "file_tools",
                 "mcp_servers",
                 "memory_enabled",
                 "model",
@@ -633,6 +678,84 @@ mod tests {
         assert!(json["provider"].is_null());
         assert!(json["model"].is_null());
         assert!(json["session"]["working_dir"].is_null());
+    }
+
+    // ─── #1416/#1418: as file tools tem raiz nesta sessao? ────────────────
+
+    /// Sessao sem `working_dir` numa instalacao sem workspace e sem raiz
+    /// declarada: `file_read`/`file_write`/`list_dir` negam tudo, e o modelo
+    /// precisa saber ANTES de prometer que le arquivo — e o criterio 5 da
+    /// #1418, e a honestidade da #1387. Sem caminho nenhum: so o bit e a
+    /// origem.
+    #[tokio::test]
+    async fn file_tools_sem_raiz_nenhuma_sai_ready_false_com_o_motivo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com(config_no(dir.path()));
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], false, "{ft}");
+        assert_eq!(ft["source"], "none", "{ft}");
+        assert!(ft["roots"].is_null(), "{ft}");
+        let means = ft["means"].as_str().expect("means");
+        assert!(means.contains("deny"), "{means}");
+        assert!(means.contains("agent.file_roots"), "{means}");
+    }
+
+    /// Com o workspace padrao no disco e o diretorio da sessao debaixo dele,
+    /// a origem e o workspace por sessao (#1378/#1449).
+    #[tokio::test]
+    async fn file_tools_no_workspace_padrao_sai_ready_true_com_a_origem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("mkdir");
+        let st = state_com(config_no(dir.path()));
+        let sessao = workspace.join("abc123");
+        let json = relatorio(&tool(&st), &ctx(Some(&sessao.to_string_lossy()))).await;
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], true, "{ft}");
+        assert_eq!(ft["source"], "session_workspace", "{ft}");
+        assert!(ft["means"].is_null(), "so quando nao esta pronto: {ft}");
+    }
+
+    /// Raiz declarada em `agent.file_roots`: pronta mesmo sem `working_dir`,
+    /// e sai a CONTAGEM, nunca o caminho.
+    #[tokio::test]
+    async fn file_tools_com_raiz_declarada_sai_ready_true_com_a_contagem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let declarada = dir.path().join("projeto");
+        std::fs::create_dir_all(&declarada).expect("mkdir");
+        let mut config = config_no(dir.path());
+        config.agent.file_roots = vec![declarada.to_string_lossy().into_owned()];
+        let st = state_com(config);
+        let (json, texto) = relatorio_no_turno(&tool(&st), &ctx(None), true).await;
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], true, "{ft}");
+        assert_eq!(ft["source"], "declared", "{ft}");
+        assert_eq!(ft["roots"], 1, "{ft}");
+        assert!(
+            !texto.contains("projeto"),
+            "o caminho declarado vazou: {texto}"
+        );
+    }
+
+    /// Um `working_dir` de projeto (fora do workspace padrao) e a terceira
+    /// origem — e no turno restrito o bloco continua inteiro: ele nao tem
+    /// caminho, so o que o modelo precisa para nao mentir.
+    #[tokio::test]
+    async fn file_tools_com_working_dir_de_projeto_sai_no_turno_restrito_sem_caminho() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com(config_no(dir.path()));
+        let (json, texto) = relatorio_no_turno(
+            &tool(&st),
+            &ctx(Some("/home/operador/projeto-plantado")),
+            true,
+        )
+        .await;
+        assert!(e_restrito(&json, &texto));
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], true, "{ft}");
+        assert_eq!(ft["source"], "session_working_dir", "{ft}");
+        assert!(!texto.contains("projeto-plantado"), "{texto}");
     }
 
     // ─── #1347: o `whatsapp_linked` no relatorio ──────────────────────────

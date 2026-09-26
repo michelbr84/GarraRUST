@@ -575,29 +575,47 @@ fn piso_e_donos_do_whatsapp(
     (settings.modo_padrao_efetivo(perfil), settings.owners.len())
 }
 
+/// O que a rota mostra no lugar de um caminho fora do `data_dir` (#1465).
+const FORA_DO_DATA_DIR: &str = "<fora do data_dir>";
+
 /// Um caminho como o console o mostra: relativo a `<data_dir>` quando esta
 /// dentro dele. A rota e auth-free, e as raizes de politica (o workspace
 /// default, `agent.file_roots`) nao precisam expor o caminho absoluto do
-/// host para o operador entender a linha (F-1 da auditoria da #1329). Uma
-/// raiz **fora** do `data_dir` sai como esta — e o que o operador precisa
-/// ver para consertar.
+/// host para o operador entender a linha (F-1 da auditoria da #1329).
+///
+/// Uma raiz **fora** do `data_dir` tambem nao sai (#1465): no caso legado
+/// mais comum ela e o proprio `$HOME` do host, nome de usuario incluido, e a
+/// rota nao pede credencial. Sai so que esta fora. E a mesma regra que a
+/// linha `files.workspace` ja aplica a raiz declarada (I-4 da #1449). O
+/// operador nao precisa reler o caminho pela rota — ele o escreveu no
+/// `mcp.json`/`config.yml`, e o log de boot o anuncia.
 fn exibir_raiz(raiz: &std::path::Path, data_dir: &std::path::Path) -> String {
     match raiz.strip_prefix(data_dir) {
         Ok(rel) if rel.as_os_str().is_empty() => "<data_dir>".to_string(),
         Ok(rel) => format!("<data_dir>/{}", rel.display()),
-        Err(_) => raiz.display().to_string(),
+        Err(_) => FORA_DO_DATA_DIR.to_string(),
     }
 }
 
+/// As raizes numa frase: as de dentro do `data_dir` nomeadas, as de fora so
+/// contadas (`2 fora do data_dir`) — repetir `<fora do data_dir>` N vezes nao
+/// diria mais nada.
 fn lista_de_caminhos(raizes: &[std::path::PathBuf], data_dir: &std::path::Path) -> String {
     if raizes.is_empty() {
         return "(nenhuma)".to_string();
     }
-    raizes
-        .iter()
-        .map(|r| exibir_raiz(r, data_dir))
-        .collect::<Vec<_>>()
-        .join(", ")
+    let mut partes: Vec<String> = Vec::new();
+    let mut fora = 0usize;
+    for raiz in raizes {
+        match exibir_raiz(raiz, data_dir) {
+            exibida if exibida == FORA_DO_DATA_DIR => fora += 1,
+            exibida => partes.push(exibida),
+        }
+    }
+    if fora > 0 {
+        partes.push(format!("{fora} fora do data_dir"));
+    }
+    partes.join(", ")
 }
 
 /// A linha `execution.profile`. `standard` e `ok`; `isolated-pod` e SEMPRE
@@ -643,18 +661,64 @@ fn execution_profile_check(
     }
 }
 
-/// #1272: a linha `tools.bash`. `ok` quando o `bash` esta registrado (num
-/// sandbox docker/podman, ou no host de um `isolated-pod` explicito);
-/// `warning` com o passo acionavel quando ele ficou de fora em `standard`.
-/// O detalhe nunca carrega valor de config (imagem, host, caminho). Pura.
-fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
-    let (status, next_step) = if exposicao.registra_bash() {
-        (CheckStatus::Ok, None)
-    } else {
+/// #1471: a linha `runtime.channels`. Lista o `ChannelRegistry` — so canais
+/// de mensageria (Telegram, Discord, Slack, WhatsApp Cloud, iMessage). O chat
+/// web, a CLI e a API nao entram nele, e o WhatsApp vinculado tem supervisao e
+/// linha proprias (`whatsapp.linked`). Entao "nenhum" e o estado normal de uma
+/// instalacao local que so conversa pelo navegador: neutro, com o passo de
+/// como adicionar um canal — e nao o aviso antigo, que mandava procurar erro
+/// de registro de um canal `web` que nunca existiu neste registry. Pura.
+fn runtime_channels_check(canais: &[String]) -> DiagnosticCheck {
+    let (status, detail, next_step) = if canais.is_empty() {
         (
+            CheckStatus::NotConfigured,
+            "none (nenhum canal de mensageria configurado; chat web, CLI e API nao entram \
+             aqui, e o WhatsApp vinculado aparece em whatsapp.linked)"
+                .to_string(),
+            Some(
+                "para conversar por um mensageiro, declare um canal em `channels:` no \
+                 config.yml (telegram, discord, slack, whatsapp, imessage) ou rode `garraia \
+                 init`"
+                    .to_string(),
+            ),
+        )
+    } else {
+        (CheckStatus::Ok, canais.join(", "), None)
+    };
+    DiagnosticCheck {
+        id: "runtime.channels",
+        label: "Active channels",
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// #1272: a linha `tools.bash`. `ok` quando o `bash` esta registrado (num
+/// sandbox docker/podman, ou no host de um `isolated-pod` explicito). Quando
+/// ficou de fora, o status depende do **motivo** (#1471): sandbox desligado e
+/// o default documentado do perfil `standard` (ADR 0024) — uma instalacao
+/// exatamente como o projeto manda nao acende amarelo, entao e o estado
+/// neutro `not_configured`, com o passo de como ligar; fora de unix, onde nao
+/// ha sandbox, idem. Sandbox **configurado** e inutilizavel (sem binario, sem
+/// backend, ssh, tool elevada ou fora da allowlist) continua `warning`:
+/// configurado e quebrado nunca e neutro (#1437). O detalhe nunca carrega
+/// valor de config (imagem, host, caminho). Pura.
+fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
+    use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
+    let (status, next_step) = match exposicao {
+        ExposicaoDoBash::Sandbox { .. } | ExposicaoDoBash::HostDoPod => (CheckStatus::Ok, None),
+        ExposicaoDoBash::Desligado {
+            motivo:
+                MotivoDoBashDesligado::SandboxDesligado | MotivoDoBashDesligado::PlataformaNaoUnix,
+        } => (
+            CheckStatus::NotConfigured,
+            Some(crate::bootstrap::COMO_LIGAR_O_BASH.to_string()),
+        ),
+        ExposicaoDoBash::Desligado { .. } => (
             CheckStatus::Warning,
             Some(crate::bootstrap::COMO_LIGAR_O_BASH.to_string()),
-        )
+        ),
     };
     DiagnosticCheck {
         id: "tools.bash",
@@ -821,10 +885,12 @@ const MCP_ROOT_NEXT_STEP: &str = "edite a entrada `filesystem` (em mcp.json, ou 
 /// conjunto que o autoprovisionamento escreve; a env `GARRAIA_FILE_ROOTS` e
 /// o `working_dir` da sessao, que alargam o jail das file tools nativas,
 /// NAO entram aqui de proposito (ver `bootstrap::raizes_do_mcp_filesystem`).
-/// A primeira raiz fora vira `warning` nomeando-a, como esta — e a entrada
-/// legada com `$HOME` que instalacoes anteriores a #1329 ainda carregam.
+/// A primeira raiz fora vira `warning` apontando a **posicao** dela na lista
+/// do servidor (`raiz #2`), nunca o caminho (#1465): no caso comum — a
+/// entrada legada com `$HOME` que instalacoes anteriores a #1329 ainda
+/// carregam — o caminho e o nome de usuario do host, e a rota e auth-free.
 /// As raizes permitidas saem relativas a `<data_dir>` quando estao dentro
-/// dele. Puro.
+/// dele, e so contadas quando fora. Puro.
 fn mcp_filesystem_root_check(
     perfil_isolado: bool,
     persistidas: Option<&[std::path::PathBuf]>,
@@ -853,14 +919,15 @@ fn mcp_filesystem_root_check(
         Some(raizes) => {
             let fora = raizes
                 .iter()
-                .find(|r| !permitidas.iter().any(|p| dentro_de(r, p)));
+                .position(|r| !permitidas.iter().any(|p| dentro_de(r, p)));
             match fora {
-                Some(raiz) => (
+                Some(posicao) => (
                     CheckStatus::Warning,
                     format!(
-                        "{} esta fora das raizes declaradas (agent.file_roots / \
-                         <data_dir>/workspace): {}",
-                        raiz.display(),
+                        "raiz #{} do servidor `filesystem` (de {}) esta fora das raizes \
+                         declaradas (agent.file_roots / <data_dir>/workspace): {}",
+                        posicao + 1,
+                        raizes.len(),
                         lista_de_caminhos(permitidas, data_dir)
                     ),
                     Some(MCP_ROOT_NEXT_STEP.to_string()),
@@ -1345,28 +1412,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-    checks.push(DiagnosticCheck {
-        id: "runtime.channels",
-        label: "Active channels",
-        status: if channels.is_empty() {
-            CheckStatus::Warning
-        } else {
-            CheckStatus::Ok
-        },
-        detail: if channels.is_empty() {
-            "none".to_string()
-        } else {
-            channels.join(", ")
-        },
-        next_step: if channels.is_empty() {
-            Some(
-                "At least 'web' is expected. Check the bootstrap log for channel registration errors."
-                    .to_string(),
-            )
-        } else {
-            None
-        },
-    });
+    checks.push(runtime_channels_check(&channels));
 
     // 12. Active sessions count.
     checks.push(DiagnosticCheck {
@@ -1444,18 +1490,53 @@ mod tests {
 
     // ─── #1272: tools.bash ─────────────────────────────────────────────────
 
+    /// #1471: `agent.sandbox.mode = off` e o DEFAULT documentado do perfil
+    /// `standard` (ADR 0024) — sem sandbox nao ha `bash`. Uma instalacao que
+    /// esta exatamente como o projeto manda nao acende amarelo: e o estado
+    /// neutro, com o passo de como ligar. Fora de unix, idem.
     #[test]
-    fn tools_bash_desligado_e_warning_com_passo() {
+    fn tools_bash_sem_sandbox_e_not_configured_com_passo() {
         use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
-        let c = tools_bash_check(&ExposicaoDoBash::Desligado {
-            motivo: MotivoDoBashDesligado::SandboxDesligado,
-        });
-        assert_eq!(c.id, "tools.bash");
-        assert!(matches!(c.status, CheckStatus::Warning));
-        let passo = c.next_step.expect("desligado precisa de passo");
-        assert!(passo.contains("agent.sandbox"), "{passo}");
-        assert!(passo.contains("execution.profile"), "{passo}");
-        assert!(c.detail.contains("DESLIGADO"), "{}", c.detail);
+        for motivo in [
+            MotivoDoBashDesligado::SandboxDesligado,
+            MotivoDoBashDesligado::PlataformaNaoUnix,
+        ] {
+            let c = tools_bash_check(&ExposicaoDoBash::Desligado { motivo });
+            assert_eq!(c.id, "tools.bash");
+            assert!(
+                matches!(c.status, CheckStatus::NotConfigured),
+                "{motivo:?}: {:?}",
+                c.status
+            );
+            let passo = c.next_step.expect("desligado precisa de passo");
+            assert!(passo.contains("agent.sandbox"), "{passo}");
+            assert!(passo.contains("execution.profile"), "{passo}");
+            assert!(c.detail.contains("DESLIGADO"), "{}", c.detail);
+        }
+    }
+
+    /// Mas sandbox CONFIGURADO e inutilizavel e aviso (#1437: configurado e
+    /// quebrado nunca e neutro): backend sem binario, sem backend, ssh, tool
+    /// elevada ou fora da allowlist.
+    #[test]
+    fn tools_bash_com_sandbox_configurado_mas_inutilizavel_e_warning() {
+        use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado as M};
+        for motivo in [
+            M::BackendIndisponivel,
+            M::SemBackend,
+            M::BackendSsh,
+            M::BashElevado,
+            M::BashForaDaAllowlist,
+            M::ToolSemSandbox,
+        ] {
+            let c = tools_bash_check(&ExposicaoDoBash::Desligado { motivo });
+            assert!(
+                matches!(c.status, CheckStatus::Warning),
+                "{motivo:?}: {:?}",
+                c.status
+            );
+            assert!(c.next_step.is_some(), "{motivo:?}");
+        }
     }
 
     #[test]
@@ -1471,6 +1552,36 @@ mod tests {
             assert!(matches!(c.status, CheckStatus::Ok), "{e:?}");
             assert!(c.next_step.is_none());
         }
+    }
+
+    // ─── #1471: runtime.channels ──────────────────────────────────────────
+
+    /// Nenhum canal de mensageria configurado e o estado normal de quem so
+    /// usa o chat web, a CLI ou a API — nenhum deles entra no
+    /// `ChannelRegistry`, e o WhatsApp vinculado tem linha propria
+    /// (`whatsapp.linked`). Neutro, com o passo de como adicionar um.
+    #[test]
+    fn runtime_channels_sem_canal_e_not_configured_e_com_canal_e_ok() {
+        let c = runtime_channels_check(&[]);
+        assert_eq!(c.id, "runtime.channels");
+        assert!(
+            matches!(c.status, CheckStatus::NotConfigured),
+            "{:?}",
+            c.status
+        );
+        assert!(c.detail.contains("none"), "{}", c.detail);
+        assert!(c.detail.contains("whatsapp.linked"), "{}", c.detail);
+        let passo = c.next_step.expect("sem canal precisa de passo");
+        assert!(passo.contains("channels:"), "{passo}");
+        assert!(passo.contains("garraia init"), "{passo}");
+        // O passo antigo mandava procurar erro de registro de um canal `web`
+        // que nunca entra neste registry.
+        assert!(!passo.contains("'web'"), "{passo}");
+
+        let c = runtime_channels_check(&["telegram".to_string(), "discord".to_string()]);
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert_eq!(c.detail, "telegram, discord");
+        assert!(c.next_step.is_none());
     }
 
     // ─── #1238: WhatsApp vinculado ────────────────────────────────────────
@@ -1838,9 +1949,12 @@ mod tests {
             Path::new("/tmp/data"),
         );
         assert!(matches!(c.status, CheckStatus::Warning));
-        for esperado in ["isolated-pod", "env", "code", "2", "/workspace"] {
+        for esperado in ["isolated-pod", "env", "code", "2", "fora do data_dir"] {
             assert!(c.detail.contains(esperado), "{esperado:?} em {}", c.detail);
         }
+        // #1465: a raiz do pod fica FORA do data_dir por definicao, e a rota
+        // e auth-free — o caminho do host nao sai, so que esta fora.
+        assert!(!c.detail.contains("/workspace"), "{}", c.detail);
 
         // F-1: a raiz de politica dentro do `data_dir` sai relativa — a rota
         // e auth-free e o caminho absoluto do host nao acrescenta nada.
@@ -1937,7 +2051,7 @@ mod tests {
     /// em `standard` — fora do jail, `warning`, nomeando a raiz e os dois
     /// caminhos de saida.
     #[test]
-    fn mcp_root_fora_do_jail_em_standard_e_warning_nomeando_a_raiz() {
+    fn mcp_root_fora_do_jail_em_standard_e_warning_apontando_a_posicao_da_raiz() {
         let dir = tempfile::tempdir().expect("tempdir");
         let jail = dir.path().join("workspace");
         std::fs::create_dir_all(&jail).expect("mkdir");
@@ -1951,11 +2065,15 @@ mod tests {
             dir.path(),
         );
         assert!(matches!(c.status, CheckStatus::Warning));
+        // #1465: a rota e auth-free — a raiz ofensora sai pela POSICAO na
+        // lista de raizes do servidor, nunca pelo caminho (que no caso legado
+        // mais comum e o `$HOME` do host, nome de usuario incluido).
         assert!(
-            c.detail.contains(&home.display().to_string()),
-            "o detalhe nomeia a raiz ofensora como esta: {}",
+            !c.detail.contains(&home.display().to_string()),
+            "o caminho do host vazou: {}",
             c.detail
         );
+        assert!(c.detail.contains("raiz #1"), "{}", c.detail);
         // C1/C6/C14: o texto nomeia o que foi comparado — as raizes
         // declaradas — e nao "o jail", que e mais largo (env + working_dir).
         assert!(
@@ -1974,17 +2092,19 @@ mod tests {
         );
         assert!(passo.contains("isolated-pod"), "{passo}");
 
-        // Uma raiz dentro e outra fora: a fora e a que aparece.
+        // Uma raiz dentro e outra fora: a fora e a que e apontada — pela
+        // posicao dela, a segunda.
         let dentro = jail.join("sub");
         std::fs::create_dir_all(&dentro).expect("mkdir");
         let c =
             mcp_filesystem_root_check(false, Some(&[dentro, home.clone()]), &[jail], dir.path());
         assert!(matches!(c.status, CheckStatus::Warning));
         assert!(
-            c.detail.contains(&home.display().to_string()),
+            !c.detail.contains(&home.display().to_string()),
             "{}",
             c.detail
         );
+        assert!(c.detail.contains("raiz #2"), "{}", c.detail);
     }
 
     /// Raiz dentro do jail (igual ou subdiretorio, em qualquer das
@@ -2047,6 +2167,8 @@ mod tests {
         );
         assert!(matches!(c.status, CheckStatus::Ok), "{}", c.detail);
         assert!(c.detail.contains("isolated-pod"), "{}", c.detail);
+        // #1465: `/` esta fora do data_dir e nao sai em claro.
+        assert!(c.detail.contains("fora do data_dir"), "{}", c.detail);
 
         let c = mcp_filesystem_root_check(
             false,
@@ -2101,17 +2223,30 @@ mod tests {
     /// F-1: caminhos de politica saem relativos a `<data_dir>` quando estao
     /// dentro dele; fora dele saem como estao.
     #[test]
-    fn exibir_raiz_relativiza_so_o_que_esta_no_data_dir() {
+    fn exibir_raiz_relativiza_o_data_dir_e_nao_publica_o_que_esta_fora() {
         let data = Path::new("/home/ana/.garraia/data");
         assert_eq!(
             exibir_raiz(&data.join("workspace"), data),
             "<data_dir>/workspace"
         );
         assert_eq!(exibir_raiz(data, data), "<data_dir>");
-        assert_eq!(exibir_raiz(Path::new("/srv/projeto"), data), "/srv/projeto");
+        // #1465: fora do data_dir e caminho do host (nome de usuario incluido)
+        // numa rota auth-free — sai so que esta fora.
+        assert_eq!(
+            exibir_raiz(Path::new("/srv/projeto"), data),
+            "<fora do data_dir>"
+        );
+        assert_eq!(
+            exibir_raiz(Path::new("/home/ana"), data),
+            "<fora do data_dir>"
+        );
         assert_eq!(
             lista_de_caminhos(&[data.join("workspace"), PathBuf::from("/srv/p")], data),
-            "<data_dir>/workspace, /srv/p"
+            "<data_dir>/workspace, 1 fora do data_dir"
+        );
+        assert_eq!(
+            lista_de_caminhos(&[PathBuf::from("/a"), PathBuf::from("/b")], data),
+            "2 fora do data_dir"
         );
         assert_eq!(lista_de_caminhos(&[], data), "(nenhuma)");
     }
