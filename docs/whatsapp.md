@@ -415,6 +415,23 @@ garraia whatsapp allow +55 11 98888-0000
   codigo com `/pair` e peca para a pessoa manda-lo por WhatsApp (vale ate o
   gateway reiniciar), ou autorize o LID inteiro com
   `garraia whatsapp allow <id>@lid`, gravado como veio.
+- **Mensagens recusadas, por motivo (#1422).** Tudo o que o portao recusa e
+  contado no gateway, por motivo — `restricted_policy` (admissao restrita e
+  remetente nao declarado), `unresolved_lid` (LID sem numero), `blocked_user`
+  (`blocked: true` na politica), `channel_disabled` (canal desligado na config
+  viva), `prompt_injection` (admitido, texto recusado) — com o **final** da
+  identidade (`…1234`) e o instante (UTC), nunca o numero inteiro nem o texto.
+  A pagina *WhatsApp Access* do Web Console mostra as contagens e as ultimas
+  50, e cada linha traz a acao do seu motivo: autorizar (abre o formulario de
+  adicionar), parear (o `/pair`), desbloquear (leva a linha da pessoa) ou
+  ligar o canal; o botao *Reset* zera tudo, em dois cliques e com audit. A
+  API admin devolve o mesmo em `rejections` (`GET /admin/api/whatsapp/access`)
+  e zera por `POST /admin/api/whatsapp/access/rejections/reset`
+  (Channels/Update). O `/api/diagnostics`, sem autenticacao, ve **so as
+  contagens** (`whatsapp.linked`), nunca os finais. **Retencao:** contadores
+  desde o boot; recentes com teto de 50; tudo zera num restart ou no reset —
+  nada e gravado em disco alem do arquivo de `@lid` que o `status` da CLI ja
+  lia (contagem e final do ultimo).
 - **O celular vinculado nao conversa com o GarraIA.** Mensagens que ele envia
   saem da propria conta (`from_me`) e sao ignoradas, senao o canal responderia
   a si mesmo. O `link` avisa quando o numero digitado termina como o do

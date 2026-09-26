@@ -73,6 +73,7 @@ use super::execution::politica_de_execucao;
 
 // ADR 0025 §4: Access Policy v2 — principal, nivel, teto.
 pub mod politica;
+pub mod rejeicoes;
 pub use politica::{
     Admission, Alcance, EntradaDeUsuario, PoliticaDeAcesso, principal_do_turno, teto_do_principal,
 };
@@ -146,6 +147,11 @@ pub struct WhatsAppLinkedRuntime {
     /// (auth-free) mostra para o operador entender por que um numero que ele
     /// autorizou nao recebe resposta.
     recusas_lid: AtomicU64,
+    /// #1422: toda mensagem recusada, por motivo, com o final da identidade
+    /// e o instante — o que o Web Console mostra. Retencao em
+    /// [`rejeicoes`]; envenenado, recupera-se o interior (contagem de apoio,
+    /// nunca motivo de recusa).
+    rejeicoes: std::sync::Mutex<rejeicoes::Rejeicoes>,
 }
 
 impl Default for WhatsAppLinkedRuntime {
@@ -154,6 +160,7 @@ impl Default for WhatsAppLinkedRuntime {
             bridge: AtomicU8::new(view_to_u8(BridgeView::Unknown)),
             cancel: std::sync::Mutex::new(None),
             recusas_lid: AtomicU64::new(0),
+            rejeicoes: std::sync::Mutex::new(rejeicoes::Rejeicoes::default()),
         }
     }
 }
@@ -200,10 +207,44 @@ impl WhatsAppLinkedRuntime {
     }
 
     /// Conta mais uma recusa de `@lid` sem numero; devolve o total novo.
-    pub fn registrar_recusa_lid(&self) -> u64 {
+    /// Tambem entra em [`Self::rejeicoes`] como `unresolved_lid` (#1422).
+    pub fn registrar_recusa_lid(&self, identidade: &str) -> u64 {
+        self.registrar_rejeicao(rejeicoes::Motivo::LidSemNumero, identidade, false);
         self.recusas_lid
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1)
+    }
+
+    /// #1422: conta uma mensagem recusada. So o final da identidade fica
+    /// guardado (ver `rejeicoes::so_final4`). Devolve o total do motivo.
+    pub fn registrar_rejeicao(
+        &self,
+        motivo: rejeicoes::Motivo,
+        identidade: &str,
+        grupo: bool,
+    ) -> u64 {
+        let mut r = self.rejeicoes.lock().unwrap_or_else(|e| e.into_inner());
+        r.registrar(motivo, identidade, grupo, &rejeicoes::agora())
+    }
+
+    /// #1422: o resumo das rejeicoes (contagens por motivo, recentes
+    /// mascaradas, retencao). Snapshot: nao segura o lock.
+    pub fn rejeicoes(&self) -> rejeicoes::Resumo {
+        self.rejeicoes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .resumo()
+    }
+
+    /// #1422: zera contadores e recentes; devolve quantas apagou. O contador
+    /// legado de `@lid` (`recusas_lid`) zera junto, para o `status` da CLI e
+    /// o console contarem a mesma coisa.
+    pub fn zerar_rejeicoes(&self) -> u64 {
+        self.recusas_lid.store(0, Ordering::Relaxed);
+        self.rejeicoes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .zerar(&rejeicoes::agora())
     }
 
     /// Estaciona o cancelamento do supervisor que acabou de subir.
@@ -719,6 +760,12 @@ impl PortaoDoCanal {
         self.aberto || self.da_config.contains(&chave) || self.pareados.contains(&chave)
     }
 
+    /// `blocked: true` na politica para este remetente (#1422: e o que
+    /// distingue "bloqueado" de "fora da allowlist" na contagem de recusas).
+    pub fn bloqueado(&self, remetente: &str) -> bool {
+        self.bloqueados.contains(&chave_do_portao(remetente))
+    }
+
     /// Este remetente entrou por codigo (e nao pela config)?
     pub fn pareado(&self, remetente: &str) -> bool {
         let chave = chave_do_portao(remetente);
@@ -861,6 +908,20 @@ pub fn admitir(
         }
     }
     Admissao::Recusado
+}
+
+/// #1422: por que o portao recusou `remetente` — a classificacao que vai para
+/// a contagem de rejeicoes. Bloqueio vence (e o unico motivo que sobrevive a
+/// admissao aberta); depois o LID sem numero (um numero no `allow` nunca casa
+/// com ele); o resto e "fora da politica restrita". Puro.
+pub fn motivo_da_recusa(portao: &PortaoDoCanal, remetente: &str) -> rejeicoes::Motivo {
+    if portao.bloqueado(remetente) {
+        rejeicoes::Motivo::Bloqueado
+    } else if e_lid(remetente) {
+        rejeicoes::Motivo::LidSemNumero
+    } else {
+        rejeicoes::Motivo::Restrita
+    }
 }
 
 /// O que fazer com uma mensagem antes de ela chegar perto do modelo.
@@ -1324,7 +1385,7 @@ impl GatewaySink {
     /// `/api/diagnostics`) e no [`ARQUIVO_RECUSAS_LID`] (para o `status` da
     /// CLI). Best-effort: falhar ao gravar nao muda a recusa.
     fn registrar_recusa_lid(state: &SharedState, final4: &str) {
-        let recusas = state.whatsapp_linked.registrar_recusa_lid();
+        let recusas = state.whatsapp_linked.registrar_recusa_lid(final4);
         let Ok(paths) = LinkedPaths::from_config(&state.config) else {
             return;
         };
@@ -1359,42 +1420,63 @@ impl GatewaySink {
         // #1345: a admissao deste turno sai da config VIVA, nao da do boot.
         // Ver `admissao_vigente` e `settings_do_turno`.
         let settings = settings_do_turno(&state, &settings);
-        let (admissao, pareado) = if !settings.enabled {
+        // #1422: toda recusa e contada por MOTIVO (so o final da identidade),
+        // para o console dizer por que alguem nao recebe resposta.
+        let (admissao, pareado, motivo) = if !settings.enabled {
             // Canal desligado (ou secao sumida) na config viva: ninguem entra,
             // nem por codigo de pareamento. Mesmo silencio do `Recusado`.
-            (Admissao::Recusado, false)
+            (Admissao::Recusado, false, rejeicoes::Motivo::CanalDesligado)
         } else {
             // Os dois locks juntos, e soltos antes do `await`: `std::sync::
             // MutexGuard` nao e `Send`.
             let (Ok(mut gate), Ok(mut pair)) = (portao.lock(), pairing.lock()) else {
                 warn!("whatsapp_linked: gate envenenado; recusando por seguranca");
+                state.whatsapp_linked.registrar_rejeicao(
+                    rejeicoes::Motivo::Politica,
+                    &last4,
+                    msg.is_group,
+                );
                 return;
             };
             gate.recarregar(&settings);
             let admissao = admitir(&mut gate, &mut pair, &remetente, &bruto);
             // O que o portao sabe e que a config nao diz: entrou por codigo.
-            (admissao, gate.pareado(&remetente))
+            (
+                admissao,
+                gate.pareado(&remetente),
+                motivo_da_recusa(&gate, &remetente),
+            )
         };
 
         match admissao {
             Admissao::Recusado => {
                 // Nao ha resposta: responder confirmaria ao estranho que o
                 // numero roda um bot. Fica o log, com os 4 digitos apenas.
-                if e_lid(&remetente) {
-                    // #1345: remetente so com LID, sem numero. Um numero no
-                    // `allow` nunca casa com ele — o operador precisa saber
-                    // que e ESTE o caso, e nao "o numero esta errado".
-                    Self::registrar_recusa_lid(&state, &last4);
-                    warn!(
-                        lid_last4 = %last4,
-                        "whatsapp_linked: remetente @lid sem numero fora da allowlist, \
-                         mensagem descartada (um numero no `allow` nao casa com LID)"
-                    );
-                } else {
-                    warn!(
-                        phone_last4 = %last4,
-                        "whatsapp_linked: remetente fora da allowlist, mensagem descartada"
-                    );
+                match motivo {
+                    rejeicoes::Motivo::LidSemNumero => {
+                        // #1345: remetente so com LID, sem numero. Um numero
+                        // no `allow` nunca casa com ele — o operador precisa
+                        // saber que e ESTE o caso, e nao "o numero esta
+                        // errado". Conta no runtime E no arquivo do `status`.
+                        Self::registrar_recusa_lid(&state, &last4);
+                        warn!(
+                            lid_last4 = %last4,
+                            "whatsapp_linked: remetente @lid sem numero fora da allowlist, \
+                             mensagem descartada (um numero no `allow` nao casa com LID)"
+                        );
+                    }
+                    outro => {
+                        state
+                            .whatsapp_linked
+                            .registrar_rejeicao(outro, &last4, msg.is_group);
+                        // Etiqueta fixa do motivo, nunca identidade.
+                        let codigo = outro.as_str();
+                        warn!(
+                            phone_last4 = %last4,
+                            motivo = codigo,
+                            "whatsapp_linked: mensagem descartada pelo portao"
+                        );
+                    }
                 }
                 return;
             }
@@ -1412,6 +1494,11 @@ impl GatewaySink {
         }
 
         let Entrada::Entregar { texto } = preparar_entrada(&bruto) else {
+            state.whatsapp_linked.registrar_rejeicao(
+                rejeicoes::Motivo::Injecao,
+                &last4,
+                msg.is_group,
+            );
             warn!(
                 phone_last4 = %last4,
                 "whatsapp_linked: entrada recusada por suspeita de injecao de prompt"
@@ -1445,6 +1532,14 @@ impl GatewaySink {
         // Etiqueta fixa (`dono`, `usuario`, ...), nunca identidade.
         let quem = principal.as_str();
         if !principal.admitido() {
+            let motivo = if matches!(principal, politica::Principal::Bloqueado) {
+                rejeicoes::Motivo::Bloqueado
+            } else {
+                rejeicoes::Motivo::Politica
+            };
+            state
+                .whatsapp_linked
+                .registrar_rejeicao(motivo, &last4, msg.is_group);
             warn!(
                 phone_last4 = %last4,
                 principal = quem,
