@@ -510,10 +510,14 @@ fn whatsapp_linked_portao_vazio(
     mut check: DiagnosticCheck,
     saude: garraia_channels::whatsapp_linked::health::LinkHealth,
     settings: &crate::bootstrap::WhatsAppLinkedSettings,
-    recusas_lid: u64,
+    rejeicoes: &crate::bootstrap::whatsapp_linked_rejeicoes::Resumo,
     a_quente: bool,
 ) -> DiagnosticCheck {
     use garraia_channels::whatsapp_linked::health::LinkHealth;
+
+    use crate::bootstrap::whatsapp_linked_rejeicoes::Motivo;
+
+    let recusas_lid = rejeicoes.de(Motivo::LidSemNumero);
 
     let bin = garraia_common::executavel::nome();
     if matches!(check.status, CheckStatus::Ok)
@@ -538,6 +542,27 @@ fn whatsapp_linked_portao_vazio(
              boot: um numero no `allow` nao casa com LID (`{bin} whatsapp status` mostra o final)",
             check.detail
         );
+    }
+    // #1422: as demais recusas (politica restrita, bloqueio, canal desligado,
+    // injecao) entram como CONTAGEM por motivo. A rota e auth-free: nenhum
+    // final aqui — os finais e a acao de cada motivo ficam no console.
+    if matches!(check.status, CheckStatus::Ok) && rejeicoes.total > recusas_lid {
+        let por_motivo: Vec<String> = rejeicoes
+            .by_reason
+            .iter()
+            .filter(|(_, n)| **n > 0)
+            .map(|(m, n)| format!("{m}: {n}"))
+            .collect();
+        check.detail = format!(
+            "{} — {} mensagem(ns) recusada(s) desde o boot ({})",
+            check.detail,
+            rejeicoes.total,
+            por_motivo.join(", ")
+        );
+        check.next_step = Some(format!(
+            "a pagina WhatsApp Access do Web Console mostra o final de cada uma e a acao do \
+             motivo; `{bin} whatsapp access` mostra a politica efetiva"
+        ));
     }
     // ADR 0025 (#1396): admissao aberta e escolha declarada, mas e a que muda
     // quem fala com o numero — o diagnostico avisa sempre, com o passo para
@@ -1573,7 +1598,8 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         saude_wa,
         // #1345: a config VIVA, a mesma que o turno le para admitir.
         &crate::bootstrap::whatsapp_linked_settings(&state.current_config()),
-        state.whatsapp_linked.recusas_lid(),
+        // #1422: contagens por motivo (nunca finais: a rota e auth-free).
+        &state.whatsapp_linked.rejeicoes(),
         state.has_config_watcher(),
     ));
 
@@ -1862,12 +1888,99 @@ mod tests {
         assert!(matches!(c.status, CheckStatus::Ok));
     }
 
+    /// `n` recusas de `@lid` sem numero (#1345), como o runtime as contaria.
+    fn so_lid(n: u64) -> crate::bootstrap::whatsapp_linked_rejeicoes::Resumo {
+        use crate::bootstrap::whatsapp_linked_rejeicoes::{Motivo, Rejeicoes};
+        let mut r = Rejeicoes::default();
+        for _ in 0..n {
+            r.registrar(Motivo::LidSemNumero, "…9999", false, "2026-09-26T00:00:00Z");
+        }
+        r.resumo()
+    }
+
     fn acesso(
         saude: LinkHealth,
         settings: &crate::bootstrap::WhatsAppLinkedSettings,
         recusas_lid: u64,
     ) -> DiagnosticCheck {
-        whatsapp_linked_portao_vazio(wa(saude), saude, settings, recusas_lid, true)
+        whatsapp_linked_portao_vazio(wa(saude), saude, settings, &so_lid(recusas_lid), true)
+    }
+
+    /// #1422: recusas por politica/bloqueio aparecem na linha `whatsapp.linked`
+    /// como CONTAGEM por motivo — a rota e auth-free, entao nunca o final.
+    #[test]
+    fn rejeicoes_por_motivo_entram_como_contagem_sem_final() {
+        use crate::bootstrap::whatsapp_linked_rejeicoes::{Motivo, Rejeicoes};
+        let ligado = crate::bootstrap::WhatsAppLinkedSettings {
+            allow: vec!["5511999998888".to_string()],
+            enabled: true,
+            ..Default::default()
+        };
+        let mut r = Rejeicoes::default();
+        r.registrar(
+            Motivo::Restrita,
+            "5521955554444",
+            false,
+            "2026-09-26T00:00:00Z",
+        );
+        r.registrar(
+            Motivo::Restrita,
+            "5521955554444",
+            false,
+            "2026-09-26T00:00:01Z",
+        );
+        r.registrar(
+            Motivo::Bloqueado,
+            "5511966665555",
+            true,
+            "2026-09-26T00:00:02Z",
+        );
+        let c = whatsapp_linked_portao_vazio(
+            wa(LinkHealth::Connected),
+            LinkHealth::Connected,
+            &ligado,
+            &r.resumo(),
+            true,
+        );
+        assert!(
+            matches!(c.status, CheckStatus::Ok),
+            "recusa nao e defeito: {c:?}"
+        );
+        assert!(
+            c.detail.contains("3 mensagem(ns) recusada(s)"),
+            "a contagem total entra no detalhe: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains("restricted_policy: 2") && c.detail.contains("blocked_user: 1"),
+            "por motivo: {}",
+            c.detail
+        );
+        for vazamento in ["4444", "5555", "…"] {
+            assert!(
+                !c.detail.contains(vazamento),
+                "final vazou na rota auth-free: {}",
+                c.detail
+            );
+        }
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("WhatsApp Access"),
+            "o passo aponta para onde a operadora age: {:?}",
+            c.next_step
+        );
+
+        // Sem rejeicao nenhuma o detalhe nao muda.
+        let c = whatsapp_linked_portao_vazio(
+            wa(LinkHealth::Connected),
+            LinkHealth::Connected,
+            &ligado,
+            &Rejeicoes::default().resumo(),
+            true,
+        );
+        assert!(!c.detail.contains("recusada(s)"), "{}", c.detail);
     }
 
     /// Sem `ConfigWatcher` o `allow` nao recarrega: o passo manda reiniciar
@@ -1883,7 +1996,7 @@ mod tests {
             wa(LinkHealth::Connected),
             LinkHealth::Connected,
             &ligado_vazio,
-            0,
+            &so_lid(0),
             false,
         );
         let passo = c.next_step.as_deref().unwrap_or_default();
