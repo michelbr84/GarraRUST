@@ -40,14 +40,14 @@ use serde::Serialize;
 
 /// Budget de cada probe TCP. Mesmo valor que o boot loop usa para os
 /// daemons locais — 2s é generoso para loopback/LAN.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Política do probe de daemon local: plaintext é a escolha legítima do
 /// operador (llama-server/ollama servem HTTP cru na LAN), escopo
 /// AllowPrivate porque o alvo **é** suposto ser local — o que o guard ainda
 /// bloqueia (link-local = metadata de cloud, CGNAT, multicast, unspecified)
 /// continua bloqueado.
-fn daemon_probe_policy() -> UrlPolicy {
+pub(crate) fn daemon_probe_policy() -> UrlPolicy {
     UrlPolicy {
         allowed_schemes: &["http", "https"],
         host_allowlist: None,
@@ -383,7 +383,7 @@ enum KeylessOrCredential {
 
 /// Ordem determinística (chave ordenada) porque `config.llm` é map não-ordenado
 /// e a saída humana/JSON do doctor é afirmável em teste.
-fn collect_provider_checks(config: &AppConfig) -> Vec<ProviderCheck> {
+pub(crate) fn collect_provider_checks(config: &AppConfig) -> Vec<ProviderCheck> {
     let mut names: Vec<&str> = config.llm.keys().map(|k| k.as_str()).collect();
     names.sort_unstable();
 
@@ -435,7 +435,7 @@ fn tcp_reachable(host: &str, port: u16, timeout: Duration) -> bool {
     }
 }
 
-fn check_daemon(gateway_host: &str, gateway_port: u16) -> DaemonCheck {
+pub(crate) fn check_daemon(gateway_host: &str, gateway_port: u16) -> DaemonCheck {
     let pid = crate::read_pid();
     let pid_file_present = pid.is_some();
     let process_alive = pid.map(crate::is_process_running).unwrap_or(false);

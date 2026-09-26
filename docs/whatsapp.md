@@ -93,6 +93,7 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia whatsapp link` | vincula por QR | 0 · 1 cancelado · 69 sem Node / QR nao lido · 70 erro interno |
 | `garraia whatsapp cloud` | wizard da Cloud API | 0 · 1 cancelado · 70 erro interno |
 | `garraia whatsapp status` | diz se ha vinculo e se a sessao abre | 0 vinculado · 69 nao vinculado ou ilegivel |
+| `garraia doctor whatsapp [--json] [--strict]` | o caminho inteiro numa passada: vinculo, chave da sessao, gateway e ponte, acesso, perfil de execucao, workspace, MCP visivel no piso, provider — cada linha com o proximo passo, no vocabulario do `/api/diagnostics` (#1419) | 0 tudo verde · 2 aviso com `--strict` · 69 algo vermelho |
 | `garraia whatsapp logout` | apaga a sessao e desliga o canal | 0 · 1 cancelado |
 | `garraia whatsapp restore` | devolve o `session.enc.prev` ao lugar | 0 · 69 nao ha arquivada, ou ha sessao em uso · 70 erro interno |
 | `garraia whatsapp allow <numero> [--owner] [--yes]` | autoriza um numero a falar com o GarraIA; funciona sem terminal | 0 · 1 cancelado · 64 `--owner` fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido (inclusive `*`, ver abaixo) · 70 config ilegivel |
@@ -585,6 +586,13 @@ Como o filho e contido:
 
 ## Troubleshooting
 
+Comece por `garraia doctor whatsapp`: ele percorre o caminho inteiro (vinculo,
+chave, gateway e ponte, acesso, perfil, workspace, MCP, provider) e cada linha
+vermelha ou amarela traz o proximo passo. Com o gateway de pe, a ponte e o
+provider sao o que o `/api/diagnostics` diz; sem ele, a linha diz que nao sabe
+em vez de inventar. `--json` para scripts; nenhuma linha carrega numero, LID,
+chave ou URL com credencial.
+
 | Sintoma | O que fazer |
 |---|---|
 | **QR sai embaralhado / quadrado** | O terminal precisa de **pelo menos 60 colunas** e UTF-8. Abaixo disso o GarraIA imprime a string crua em vez de um QR que nao le. |
@@ -651,7 +659,9 @@ verdade — e o comportamento nos codigos 401/403/419 e no `restart_required`
 O comando responde em pt-BR por padrao e em ingles quando `GARRAIA_LANG`,
 `LC_ALL`, `LC_MESSAGES` ou `LANG` comecam com `en`. O resto da CLI segue em
 pt-BR: a traducao existe aqui porque estas sao as frases que alguem le antes de
-decidir se confia a propria conta ao GarraIA.
+decidir se confia a propria conta ao GarraIA. O `garraia doctor whatsapp` segue
+a mesma regra (toda linha e todo passo nas duas linguas) sem entrar na tabela
+abaixo, que e das frases do pareamento.
 
 | pt-BR | en |
 |---|---|
