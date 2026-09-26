@@ -447,6 +447,9 @@ primeira versão desta tabela tinha horários estimados; corrigida).
 | 20:47 · 20:49 | Análises por critério em #1418 e #1425, com proposta de decisão | comentários |
 | 20:53 | `garra_status.file_tools` (#1416 parte, #1418 c5, #1387): 5 RED → 29 verdes; gateway 1 453 | **PR #1478** |
 | 20:55 | **Checkpoint 2**: `open_issues=59 open_prs=6 alerts=0`; este plano atualizado (§0.1, §3.5, §3.7, §8, §9, §10) | local |
+| 21:03 | Evidência externa na #1461: `cache_roomnames` = id da sala (`chat<digitos>`), `display_name` é outra coluna que o canal nunca lê → proposta de fechar como não procede + rename de higiene | comentário na #1461 |
+| 22:03 | **#1473 mergeada** (`8f088c15`) com os 6 checks obrigatórios verdes; **#1384 fechada**. `open_issues=58 open_prs=5` | GitHub |
+| 22:05 | #1477 (empilhada na #1473) atualizada com `main`; fila do Actions caiu de 15 para 5 jobs | |
 
 Depois do trem entrar: empurrar `release/v0.4.6`, abrir a PR em **rascunho**
 com a tabela de dogfood de §6 preenchida no que foi executado (D1 parcial e
