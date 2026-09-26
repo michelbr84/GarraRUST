@@ -292,6 +292,10 @@ camadas, e nenhuma substitui a outra.
   no banco e so e resolvido para o modo que a **sessao** escolheu; quem quiser
   um customizado neste canal o escolhe com `/mode`, que e escolha explicita e
   resolve o perfil.
+  E o bloco `file_tools` do mesmo relatorio diz se as file tools tem raiz NESTA
+  sessao (`ready`, `source`: workspace por sessao, `working_dir` de projeto,
+  raiz declarada ou nenhuma) — sem caminho, e com a frase que o modelo deve
+  dizer quando nao ha raiz (#1416, #1418).
 - **Ferramenta MCP passa pelo mesmo portao.** Um servidor MCP registrado — o
   `filesystem` que toda instalacao nova ganha no primeiro boot, por exemplo —
   expoe ferramentas com nome `servidor__ferramenta`, e o whitelist as trata

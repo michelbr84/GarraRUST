@@ -143,8 +143,10 @@ docker/podman o cobre (`mode: all` sem ele em `elevated`, ou `allowlist` com
 do pod.
 
 O boot avisa uma vez quando o `bash` fica de fora, o `/api/diagnostics`
-mostra o check `tools.bash` com o passo, e o modelo e avisado no system prompt
-de que nao ha shell. `garraia chat` nao muda: la o humano confirma no
+mostra o check `tools.bash` com o passo (`not_configured` quando o motivo e o
+proprio default `agent.sandbox.mode = off`, que nao e defeito; `warning`
+quando ha sandbox configurado e inutilizavel — #1471), e o modelo e avisado
+no system prompt de que nao ha shell. `garraia chat` nao muda: la o humano confirma no
 terminal.
 
 ## O que o perfil NAO isola
@@ -235,7 +237,7 @@ por completo.
 |---|---|
 | Log de boot | `standard`: `INFO execution profile = standard (fonte: …)`. `isolated-pod`: um `WARN` unico com origem, `pod_root`, o que foi liberado, a lista do que nao e isolado e como reverter. |
 | `garra config check` | `execution profile  : isolated-pod (source: env)` no sumario; `Error` em valor invalido; `Warning` para `execution.pod_root` fora de `isolated-pod` ou relativo, e para `channels.whatsapp_linked.owners` fora de `isolated-pod` (so a contagem, nunca as identidades). |
-| `GET /api/diagnostics` | Check `execution.profile`: `Ok` em `standard`; em `isolated-pod` **`Warning`** com origem, piso do dono, numero de donos, raiz do MCP e `next_step` ("confirme que este processo roda num pod isolado; para reverter: `execution.profile = standard`"). Check `mcp.filesystem_root` (le o `mcp.json` e a secao `mcp:` do `config.yml`, que vence): `Warning` em `standard` quando o `filesystem` aponta para fora das raizes declaradas (`agent.file_roots` / `<data_dir>/workspace`); `Ok` em `isolated-pod`. Caminhos dentro do data dir aparecem como `<data_dir>/…`. |
+| `GET /api/diagnostics` | Check `execution.profile`: `Ok` em `standard`; em `isolated-pod` **`Warning`** com origem, piso do dono, numero de donos, raiz do MCP e `next_step` ("confirme que este processo roda num pod isolado; para reverter: `execution.profile = standard`"). Check `mcp.filesystem_root` (le o `mcp.json` e a secao `mcp:` do `config.yml`, que vence): `Warning` em `standard` quando o `filesystem` aponta para fora das raizes declaradas (`agent.file_roots` / `<data_dir>/workspace`); `Ok` em `isolated-pod`. Caminhos dentro do data dir aparecem como `<data_dir>/…`; os de fora **nao saem** (a rota e auth-free e o caso legado e o `$HOME` do host) — a linha aponta a posicao da raiz ofensora na lista do servidor (`raiz #2`), e o caminho esta no `mcp.json`/`config.yml` e no log de boot (#1465). |
 | `GET /api/diagnostics` (cont.) | Check `files.workspace` (#1378, #1449): o workspace efetivo das file tools **nativas** e de onde veio a decisao — `Ok` com `(fonte: agent.file_roots / GARRAIA_FILE_ROOTS)` quando o operador declarou, `Ok` com `<data_dir>/workspace/<sessao> (fonte: workspace padrao — nada declarado em agent.file_roots; um subdiretorio por sessao)` numa instalacao limpa, e `Warning` quando nada resolveu (a sessao sem `working_dir` nao le nem escreve). Caminhos dentro do data dir aparecem como `<data_dir>/…`, e o identificador da sessao **nunca** sai na rota (ela e auth-free, e o nome do subdiretorio deriva do `session_id`, que pode ser PII). |
 | `GET /api/settings/effective` | Linha read-only `security.execution_profile` (valor + origem), no molde de `security.sandbox_mode`. |
 | Web Console (header) | Badge fixo `data-testid="execution-profile-badge"` no header, alimentado pela linha `security.execution_profile` acima: mostra o perfil e a origem sem o operador abrir Diagnostics. `standard` sai no tom cyan de informacao; `isolated-pod` sai no tom de alerta, com o aviso do ADR 0024 no tooltip (poder total dentro do pod, o pod e a fronteira, como reverter). Sem resposta da rota o badge fica `desconhecido` — nunca some, para nao passar por `standard`. |

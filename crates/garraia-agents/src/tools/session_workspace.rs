@@ -128,17 +128,59 @@
 //!
 //! ## Residual conhecido: TOCTOU no pai
 //!
-//! A checagem de que o pai e um diretorio real acontece antes do
-//! `create_dir_all`. Entre um e outro, quem tem escrita no `data_dir` pode
-//! trocar o pai por um symlink e o subdiretorio nasceria no alvo. E a mesma
-//! janela — e a mesma pre-condicao, escrita dentro do diretorio do proprio
-//! Garra — que o [`super::file_jail`] declara para o caminho do arquivo.
-//! Fechar exigiria `openat2`/`mkdirat` com `RESOLVE_BENEATH`, sem equivalente
-//! portatil nos tres sistemas que o projeto suporta.
+//! A checagem de que o pai e um diretorio real acontece antes do `mkdir`.
+//! Entre um e outro, quem tem escrita no `data_dir` pode trocar o pai por um
+//! symlink e o subdiretorio nasceria no alvo. E a mesma janela — e a mesma
+//! pre-condicao, escrita dentro do diretorio do proprio Garra — que o
+//! [`super::file_jail`] declara para o caminho do arquivo. Fechar exigiria
+//! `openat2`/`mkdirat` com `RESOLVE_BENEATH`, sem equivalente portatil nos
+//! tres sistemas que o projeto suporta.
+//!
+//! O que NAO e residual (#1463): o `mkdir` e de um componente so e nasce
+//! `0700` — nao existe mais a janela entre um `create_dir_all` com a umask do
+//! processo e um `set_permissions` depois, nem o caso em que o `create_dir_all`
+//! seguia um link plantado no proprio caminho e devolvia Ok. Um link ali agora
+//! faz o `mkdir` falhar com EEXIST, e a sessao fica sem raiz.
+//!
+//! ## Uma funcao, dois chamadores (#1460)
+//!
+//! A sequencia symlink → nao-diretorio → `mkdir` fechado e
+//! [`SessionWorkspace::garantir_raiz`], e o boot do gateway a chama para criar
+//! o **pai** (`<data_dir>/workspace`) exatamente como este modulo a chama para
+//! o subdiretorio da sessao. Antes eram duas copias, uma em cada crate, e quem
+//! endurecesse uma sem a outra enfraquecia a garantia em silencio.
 
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
+
+/// O que [`SessionWorkspace::garantir_raiz`] encontrou — ou fez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaizGarantida {
+    /// Ja era um diretorio de verdade. A permissao e a que ele tinha: quem
+    /// a escolheu foi o operador (ou o `mkdir` de uma subida anterior), e
+    /// ninguem a reescreve a cada uso.
+    JaExistia,
+    /// Nao existia e nasceu agora, fechado em `0700` em unix.
+    Criada,
+}
+
+/// Por que [`SessionWorkspace::garantir_raiz`] recusou o caminho. Quem chama
+/// escolhe a frase de log — o que dizer e onde (o boot nomeia o workspace; o
+/// turno so nomeia o hash da sessao) muda por chamador, a regra nao.
+#[derive(Debug)]
+pub enum RecusaDaRaiz {
+    /// Existe e e um symlink: seguir o link poria a raiz no alvo — que pode
+    /// ser `$HOME` ou `/`, as duas raizes que este workspace promete nunca
+    /// usar. Vale para link pendurado tambem.
+    Symlink,
+    /// Existe e nao e diretorio (um arquivo, um socket).
+    NaoEDiretorio,
+    /// O `mkdir` falhou: pai inexistente, sem permissao, ou algo apareceu no
+    /// caminho entre a checagem e a criacao (EEXIST) — em todos os casos a
+    /// resposta e nao ter raiz, nunca criar em cascata.
+    NaoCriada(std::io::Error),
+}
 
 /// A raiz dentro da qual cada sessao ganha o seu proprio diretorio.
 ///
@@ -211,19 +253,19 @@ impl SessionWorkspace {
     /// diretorio por sessao historica na subida.
     ///
     /// Fail-closed em todos os desvios — ver o doc do modulo. Em unix o
-    /// diretorio criado fecha em `0700`, a mesma disciplina que o pai recebe
-    /// no boot: ele guarda o que o agente escreveu a pedido de um principal
-    /// remoto.
+    /// diretorio **nasce** em `0700` (#1463), a mesma disciplina que o pai
+    /// recebe no boot, pela mesma funcao ([`Self::garantir_raiz`], #1460): ele
+    /// guarda o que o agente escreveu a pedido de um principal remoto.
     pub fn garantir_para_sessao(&self, session_id: &str) -> Option<PathBuf> {
         let caminho = self.caminho_da_sessao(session_id)?;
 
         // O pai foi verificado e canonicalizado no boot, mas o processo vive
         // por semanas: se alguem trocou `<data_dir>/workspace` por um symlink
-        // depois disso, o `create_dir_all` abaixo atravessaria o link e o
+        // depois disso, um `mkdir` do subdiretorio atravessaria o link e o
         // diretorio da sessao — que e a UNICA raiz efetiva da chamada —
         // nasceria onde o link aponta. E a mesma recusa que o boot faz, no
         // momento do uso.
-        if !diretorio_de_verdade(&self.raiz) {
+        if !Self::diretorio_de_verdade(&self.raiz) {
             warn!(
                 workspace = %self.raiz.display(),
                 "workspace padrao das file tools nao e mais um diretorio de verdade: a sessao \
@@ -232,36 +274,26 @@ impl SessionWorkspace {
             return None;
         }
 
-        match std::fs::symlink_metadata(&caminho) {
+        match Self::garantir_raiz(&caminho) {
+            Ok(_) => Some(caminho),
             // Symlink no lugar do diretorio da sessao: mesma logica do pai.
-            Ok(meta) if meta.file_type().is_symlink() => {
+            Err(RecusaDaRaiz::Symlink) => {
                 warn!(
                     sessao = %nome_para_log(&caminho),
                     "diretorio da sessao no workspace padrao e um symlink: recusado para o jail \
                      nao herdar o alvo do link (#1449)"
                 );
-                return None;
+                None
             }
-            Ok(meta) if !meta.is_dir() => {
+            Err(RecusaDaRaiz::NaoEDiretorio) => {
                 warn!(
                     sessao = %nome_para_log(&caminho),
                     "diretorio da sessao no workspace padrao existe e nao e diretorio: as file \
                      tools desta sessao negam tudo (#1449)"
                 );
-                return None;
+                None
             }
-            // Ja existe e e diretorio: a permissao e a que ele recebeu quando
-            // foi criado, e a subida nao a reescreve a cada turno.
-            Ok(_) => return Some(caminho),
-            Err(_) => {}
-        }
-
-        match std::fs::create_dir_all(&caminho) {
-            Ok(()) => {
-                clampar_permissao(&caminho);
-                Some(caminho)
-            }
-            Err(e) => {
+            Err(RecusaDaRaiz::NaoCriada(e)) => {
                 warn!(
                     error = %e,
                     sessao = %nome_para_log(&caminho),
@@ -272,15 +304,59 @@ impl SessionWorkspace {
             }
         }
     }
+
+    /// `true` so quando o caminho e um diretorio e **nao** e symlink.
+    /// `symlink_metadata` nao segue o link, que e o ponto. Publica porque o
+    /// boot do gateway decide com a MESMA resposta se o workspace padrao pode
+    /// virar raiz (#1460).
+    pub fn diretorio_de_verdade(caminho: &Path) -> bool {
+        match std::fs::symlink_metadata(caminho) {
+            Ok(meta) => meta.is_dir() && !meta.file_type().is_symlink(),
+            Err(_) => false,
+        }
+    }
+
+    /// Garante que `caminho` e um diretorio de verdade, criando-o **fechado**
+    /// quando nao existe. A unica implementacao da sequencia, para o pai (o
+    /// boot do gateway) e para o subdiretorio da sessao (este modulo) — #1460.
+    ///
+    /// - symlink (pendurado inclusive) → [`RecusaDaRaiz::Symlink`];
+    /// - existe e nao e diretorio → [`RecusaDaRaiz::NaoEDiretorio`];
+    /// - ja e diretorio → [`RaizGarantida::JaExistia`], permissao intocada;
+    /// - nao existe → `mkdir` de **um** componente, em unix ja com `0700`
+    ///   (#1463): a umask so pode fechar mais, nunca abrir, e nao ha segundo
+    ///   passo de `chmod` — logo nao ha janela em que o diretorio esteja
+    ///   legivel por outro usuario. Pai inexistente e recusa, nao cascata; e
+    ///   um link plantado entre a checagem e o `mkdir` faz o `mkdir` falhar
+    ///   com EEXIST em vez de ser seguido → [`RecusaDaRaiz::NaoCriada`].
+    ///
+    /// Nao loga: cada chamador tem a sua frase e o seu nivel de detalhe.
+    pub fn garantir_raiz(caminho: &Path) -> Result<RaizGarantida, RecusaDaRaiz> {
+        match std::fs::symlink_metadata(caminho) {
+            Ok(meta) if meta.file_type().is_symlink() => return Err(RecusaDaRaiz::Symlink),
+            Ok(meta) if !meta.is_dir() => return Err(RecusaDaRaiz::NaoEDiretorio),
+            Ok(_) => return Ok(RaizGarantida::JaExistia),
+            Err(_) => {}
+        }
+        criar_fechado(caminho)
+            .map(|()| RaizGarantida::Criada)
+            .map_err(RecusaDaRaiz::NaoCriada)
+    }
 }
 
-/// `true` so quando o caminho e um diretorio e **nao** e symlink.
-/// `symlink_metadata` nao segue o link, que e o ponto.
-fn diretorio_de_verdade(caminho: &Path) -> bool {
-    match std::fs::symlink_metadata(caminho) {
-        Ok(meta) => meta.is_dir() && !meta.file_type().is_symlink(),
-        Err(_) => false,
-    }
+/// `mkdir` de um componente, nascendo `0700`. `DirBuilder` sem `recursive`
+/// de proposito: e o que faz pai inexistente e link plantado virarem erro.
+#[cfg(unix)]
+fn criar_fechado(caminho: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(caminho)
+}
+
+/// Sem equivalente portavel de `0700` fora de unix: o ACL do Windows herda do
+/// pai, que ja e o `data_dir` do proprio usuario. Continua um componente so.
+#[cfg(not(unix))]
+fn criar_fechado(caminho: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new().create(caminho)
 }
 
 /// So o nome do subdiretorio (o hash) para o log. O caminho completo diria
@@ -291,25 +367,6 @@ fn nome_para_log(caminho: &Path) -> String {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
-
-/// Fecha o diretorio recem-criado em `0700`. Fail-soft: nao conseguir nao
-/// invalida a raiz, mas fica no log.
-#[cfg(unix)]
-fn clampar_permissao(caminho: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Err(e) = std::fs::set_permissions(caminho, std::fs::Permissions::from_mode(0o700)) {
-        warn!(
-            error = %e,
-            sessao = %nome_para_log(caminho),
-            "permissao do diretorio da sessao nao pode ser fechada em 0700 (#1449)"
-        );
-    }
-}
-
-/// Sem equivalente portavel de `0700` fora de unix: o ACL do Windows herda do
-/// pai, que ja e o `data_dir` do proprio usuario.
-#[cfg(not(unix))]
-fn clampar_permissao(_caminho: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -508,5 +565,128 @@ mod tests {
         let ws = SessionWorkspace::nova(pai.clone());
         assert!(ws.garantir_para_sessao("sessao-1").is_none());
         assert!(!pai.exists(), "o pai foi materializado pelo uso");
+    }
+
+    // ─── #1460/#1463: a raiz nasce fechada, por uma unica funcao ──────────
+
+    /// **#1463.** O diretorio nasce `0700` no proprio `mkdir`, e nao com a
+    /// umask do processo para depois ser fechado: entre o `create_dir_all` e
+    /// o `set_permissions` havia uma janela em que ele era legivel por
+    /// qualquer usuario local.
+    #[test]
+    #[cfg(unix)]
+    fn garantir_raiz_cria_o_diretorio_ja_fechado_em_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let caminho = tmp.path().join("raiz");
+        let resultado = SessionWorkspace::garantir_raiz(&caminho).expect("cria");
+        assert!(matches!(resultado, RaizGarantida::Criada), "{resultado:?}");
+        let modo = std::fs::metadata(&caminho)
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(modo, 0o700, "criado com {modo:o}, esperado 700");
+    }
+
+    /// Um diretorio que ja existia tem a permissao que o operador escolheu; a
+    /// funcao nao a reescreve, e diz que ele ja existia.
+    #[test]
+    #[cfg(unix)]
+    fn garantir_raiz_nao_reescreve_a_permissao_de_diretorio_existente() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let caminho = tmp.path().join("raiz");
+        std::fs::create_dir(&caminho).expect("mkdir");
+        std::fs::set_permissions(&caminho, std::fs::Permissions::from_mode(0o750)).expect("chmod");
+        let resultado = SessionWorkspace::garantir_raiz(&caminho).expect("ja existe");
+        assert!(
+            matches!(resultado, RaizGarantida::JaExistia),
+            "{resultado:?}"
+        );
+        let modo = std::fs::metadata(&caminho)
+            .expect("meta")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(modo, 0o750);
+    }
+
+    /// **Sem `create_dir_all`.** A funcao cria SO o ultimo componente: pai que
+    /// nao existe e recusa, nao criacao em cascata com a umask do processo. E
+    /// o que fecha tambem o symlink plantado entre a checagem e a criacao —
+    /// `mkdir(2)` sobre um caminho que ja existe (link inclusive) falha com
+    /// EEXIST, enquanto `create_dir_all` seguiria o link e devolveria Ok.
+    #[test]
+    fn garantir_raiz_nao_cria_o_pai() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let caminho = tmp.path().join("pai-inexistente").join("raiz");
+        let erro = SessionWorkspace::garantir_raiz(&caminho).expect_err("pai nao existe");
+        assert!(matches!(erro, RecusaDaRaiz::NaoCriada(_)), "{erro:?}");
+        assert!(!tmp.path().join("pai-inexistente").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn garantir_raiz_recusa_symlink_e_arquivo() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let alvo = tmp.path().join("alvo");
+        std::fs::create_dir(&alvo).expect("cria o alvo");
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&alvo, &link).expect("planta o link");
+        assert!(matches!(
+            SessionWorkspace::garantir_raiz(&link),
+            Err(RecusaDaRaiz::Symlink)
+        ));
+        // Link pendurado tambem: `mkdir` sobre ele falharia com EEXIST, e a
+        // checagem antes diz o motivo certo.
+        let pendurado = tmp.path().join("pendurado");
+        std::os::unix::fs::symlink(tmp.path().join("nao-existe"), &pendurado).expect("link");
+        assert!(matches!(
+            SessionWorkspace::garantir_raiz(&pendurado),
+            Err(RecusaDaRaiz::Symlink)
+        ));
+        let arquivo = tmp.path().join("arquivo");
+        std::fs::write(&arquivo, b"x").expect("escreve");
+        assert!(matches!(
+            SessionWorkspace::garantir_raiz(&arquivo),
+            Err(RecusaDaRaiz::NaoEDiretorio)
+        ));
+    }
+
+    /// `diretorio_de_verdade` e publico porque o boot do gateway usa a MESMA
+    /// resposta para decidir se o workspace padrao pode virar raiz (#1460).
+    #[test]
+    #[cfg(unix)]
+    fn diretorio_de_verdade_e_so_diretorio_que_nao_e_link() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(SessionWorkspace::diretorio_de_verdade(tmp.path()));
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(tmp.path(), &link).expect("link");
+        assert!(!SessionWorkspace::diretorio_de_verdade(&link));
+        let arquivo = tmp.path().join("arquivo");
+        std::fs::write(&arquivo, b"x").expect("escreve");
+        assert!(!SessionWorkspace::diretorio_de_verdade(&arquivo));
+        assert!(!SessionWorkspace::diretorio_de_verdade(
+            &tmp.path().join("nada")
+        ));
+    }
+
+    /// **#1463, a fiacao.** Nenhum `set_permissions` no codigo de producao
+    /// deste modulo: a permissao e do `mkdir`, nao de um segundo passo. E
+    /// nenhum `create_dir_all`: o pai e verificado, nunca criado em cascata.
+    #[test]
+    fn a_permissao_e_do_mkdir_e_nao_de_um_segundo_passo() {
+        let fonte = include_str!("session_workspace.rs");
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+        for proibido in ["set_permissions(", "create_dir_all("] {
+            assert!(
+                !producao.contains(proibido),
+                "`{proibido}` no codigo de producao de session_workspace.rs (#1463)"
+            );
+        }
     }
 }

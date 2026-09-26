@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use garraia_agents::tools::{SessionWorkspace, Tool};
+use garraia_agents::tools::{RecusaDaRaiz, SessionWorkspace, Tool};
 use garraia_agents::{
     AgentRuntime, AnthropicProvider, BashTool, CodeReviewTool, CohereEmbeddingProvider,
     DeviceExecuteTool, DeviceListTool, DeviceReadTool, DeviceToolsConfig, EmbeddingProvider,
@@ -303,7 +303,7 @@ pub fn raizes_das_file_tools(config: &AppConfig) -> RaizesDasFileTools {
     // `/api/diagnostics` relativiza o caminho contra um `data_dir` tambem
     // canonicalizado (B-2 da auditoria — sem isto a rota auth-free volta a
     // imprimir o caminho absoluto do host quando o `data_dir` passa por link).
-    let workspace = if caminho_de_workspace_confiavel(&caminho) {
+    let workspace = if SessionWorkspace::diretorio_de_verdade(&caminho) {
         std::fs::canonicalize(&caminho)
             .ok()
             .map(SessionWorkspace::nova)
@@ -322,22 +322,6 @@ pub fn raizes_das_file_tools(config: &AppConfig) -> RaizesDasFileTools {
             fonte: FonteDasRaizesDasFileTools::SomenteSessao,
             workspace_por_sessao: None,
         },
-    }
-}
-
-/// O caminho do workspace padrao pode virar raiz do jail?
-///
-/// So quando ele ja e um diretorio **de verdade**: um symlink seria seguido
-/// por `FileJail::from_roots` (que canonicaliza) e a raiz efetiva passaria a
-/// ser o alvo do link — possivelmente `$HOME` ou `/`, as duas raizes que este
-/// default promete nunca usar. Um caminho que ainda nao existe tambem nao
-/// serve: quem o cria e [`garantir_workspace_padrao`], na subida.
-///
-/// Pura: so le metadado, nao cria nem altera nada.
-fn caminho_de_workspace_confiavel(workspace: &std::path::Path) -> bool {
-    match std::fs::symlink_metadata(workspace) {
-        Ok(meta) => meta.is_dir() && !meta.file_type().is_symlink(),
-        Err(_) => false,
     }
 }
 
@@ -369,47 +353,54 @@ fn caminho_de_workspace_confiavel(workspace: &std::path::Path) -> bool {
 /// avisa. Devolve o caminho, ou `None` quando ele nao pode ser criado.
 ///
 /// Fail-**closed** num caso especifico: se o caminho ja existe e e um symlink
-/// (ou um arquivo), a funcao recusa em vez de seguir o link. `create_dir_all`
-/// atravessaria e o jail acabaria canonicalizado no alvo — possivelmente
-/// `$HOME` ou `/`, as duas raizes que este default promete nunca usar.
-/// Quando cria de fato, fecha a permissao em `0700`.
+/// (ou um arquivo), a funcao recusa em vez de seguir o link — o jail acabaria
+/// canonicalizado no alvo, possivelmente `$HOME` ou `/`, as duas raizes que
+/// este default promete nunca usar.
+///
+/// A sequencia (symlink → nao-diretorio → `mkdir` de um componente, ja em
+/// `0700`) e [`SessionWorkspace::garantir_raiz`] — a MESMA que cria o
+/// subdiretorio de cada sessao (#1460). Nao ha `create_dir_all` do workspace
+/// nem `set_permissions` depois: ele nasce fechado (#1463). O que esta funcao
+/// acrescenta e o pai — numa instalacao limpa o `data_dir` ainda nao existe
+/// neste ponto do boot (quem o criava era `build_agent_runtime`, depois, para
+/// a memoria) — e as frases de log que nomeiam o workspace, porque este e o
+/// log de boot do operador e o caminho e do proprio Garra.
 pub fn garantir_workspace_padrao(config: &AppConfig) -> Option<PathBuf> {
     let workspace = raizes_default_das_file_tools(config);
 
-    // Fail-closed contra symlink (ou arquivo) plantado no lugar do workspace.
-    // `create_dir_all` atravessa o link em silencio e o `FileJail` canonicaliza
-    // logo depois, entao o jail viraria o **alvo** do link — que pode ser
-    // `$HOME` ou `/`, as duas raizes que esta correcao promete nunca usar. O
-    // caminho e do proprio Garra: nada legitimo o transforma em link.
-    match std::fs::symlink_metadata(&workspace) {
-        Ok(meta) if meta.file_type().is_symlink() => {
+    // O pai (`data_dir`) primeiro, em cascata como o resto do boot ja faz com
+    // ele. `garantir_raiz` cria SO o ultimo componente, de proposito.
+    if let Some(pai) = workspace.parent()
+        && let Err(e) = std::fs::create_dir_all(pai)
+    {
+        warn!(
+            error = %e,
+            data_dir = %pai.display(),
+            "data_dir nao pode ser criado: o workspace padrao das file tools fica sem existir e \
+             sessao sem working_dir nao vai ler nem escrever (#1378)"
+        );
+        return None;
+    }
+
+    match SessionWorkspace::garantir_raiz(&workspace) {
+        Ok(_) => Some(workspace),
+        Err(RecusaDaRaiz::Symlink) => {
             warn!(
                 workspace = %workspace.display(),
                 "workspace padrao das file tools e um symlink: recusado para o jail nao herdar \
                  o alvo do link. Remova o link ou declare agent.file_roots (#1378)"
             );
-            return None;
+            None
         }
-        Ok(meta) if !meta.is_dir() => {
+        Err(RecusaDaRaiz::NaoEDiretorio) => {
             warn!(
                 workspace = %workspace.display(),
                 "workspace padrao das file tools existe e nao e diretorio: sessao sem \
                  working_dir nao vai ler nem escrever (#1378)"
             );
-            return None;
+            None
         }
-        // Ja e diretorio: nada a criar, e a permissao existente e do operador.
-        Ok(_) => return Some(workspace),
-        // Nao existe (ou nao da para statar): segue para a criacao abaixo.
-        Err(_) => {}
-    }
-
-    match std::fs::create_dir_all(&workspace) {
-        Ok(()) => {
-            clampar_permissao_do_workspace(&workspace);
-            Some(workspace)
-        }
-        Err(e) => {
+        Err(RecusaDaRaiz::NaoCriada(e)) => {
             warn!(
                 error = %e,
                 workspace = %workspace.display(),
@@ -420,34 +411,6 @@ pub fn garantir_workspace_padrao(config: &AppConfig) -> Option<PathBuf> {
         }
     }
 }
-
-/// Fecha o workspace recem-criado em `0700` (dono apenas).
-///
-/// Ele nasceria com a umask do processo — tipicamente `0755`, legivel por
-/// qualquer usuario local. O diretorio guarda o que o agente escreveu a pedido
-/// de um principal remoto (uma sessao do WhatsApp), entao o mesmo trato que o
-/// `config.yml` recebe vale aqui.
-///
-/// So no caminho de **criacao**: um workspace que ja existia tem a permissao
-/// que o operador escolheu, e a subida nao vai reescreve-la a cada boot.
-/// Fail-soft — nao conseguir fechar a permissao nao derruba o boot nem invalida
-/// o jail, mas fica no log.
-#[cfg(unix)]
-fn clampar_permissao_do_workspace(workspace: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Err(e) = std::fs::set_permissions(workspace, std::fs::Permissions::from_mode(0o700)) {
-        warn!(
-            error = %e,
-            workspace = %workspace.display(),
-            "permissao do workspace padrao nao pode ser fechada em 0700 (#1378)"
-        );
-    }
-}
-
-/// Sem equivalente portavel de `0700` fora de unix: o ACL do Windows ja herda
-/// do diretorio pai, que e o `data_dir` do proprio usuario.
-#[cfg(not(unix))]
-fn clampar_permissao_do_workspace(_workspace: &std::path::Path) {}
 
 /// Raizes numa linha de log. `(nenhuma)` quando vazio, para a linha nunca
 /// terminar em dois-pontos sem nada depois.
@@ -4450,5 +4413,74 @@ Corpo do skill de teste.
             preparo < runtime,
             "garantir_workspace_padrao tem de vir ANTES de build_agent_runtime (#1378)"
         );
+    }
+
+    /// **#1460/#1463, a fiacao.** O boot cria o workspace padrao pela MESMA
+    /// funcao que cria o diretorio de uma sessao —
+    /// `SessionWorkspace::garantir_raiz` — e nao por uma segunda implementacao
+    /// da sequencia symlink → nao-diretorio → mkdir. Duas copias divergem em
+    /// silencio: quem endurecer uma e nao a outra enfraquece a garantia sem
+    /// nenhum teste ficar vermelho. E nao ha `set_permissions` aqui: a
+    /// permissao e do `mkdir` (#1463).
+    #[test]
+    fn o_boot_cria_o_workspace_pela_funcao_compartilhada() {
+        let fonte = include_str!("mod.rs");
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+        let inicio = producao
+            .find("pub fn garantir_workspace_padrao(")
+            .expect("a funcao");
+        let corpo = &producao[inicio..];
+        let fim = corpo.find("\n}\n").expect("fim da funcao");
+        let corpo = &corpo[..fim];
+        assert!(
+            corpo.contains("SessionWorkspace::garantir_raiz("),
+            "o boot tem de delegar a criacao ao SessionWorkspace (#1460)"
+        );
+        for proibido in [
+            "symlink_metadata(",
+            "set_permissions(",
+            "create_dir_all(&workspace)",
+        ] {
+            assert!(
+                !corpo.contains(proibido),
+                "`{proibido}` em garantir_workspace_padrao: segunda implementacao (#1460)"
+            );
+        }
+        assert!(
+            !producao.contains("fn clampar_permissao_do_workspace"),
+            "a permissao e do mkdir, nao de um segundo passo (#1463)"
+        );
+        assert!(
+            !producao.contains("fn caminho_de_workspace_confiavel"),
+            "use SessionWorkspace::diretorio_de_verdade (#1460)"
+        );
+    }
+
+    /// Instalacao limpa de verdade: nem o `data_dir` existe ainda quando o
+    /// boot prepara o workspace (quem o cria e `build_agent_runtime`, depois).
+    /// O boot cria o pai — e o workspace nasce fechado do mesmo jeito.
+    #[test]
+    #[serial_test::serial]
+    fn o_workspace_nasce_mesmo_sem_data_dir_previo() {
+        let _env = SemFileRootsNaEnv::nova();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_dir = tmp.path().join("ainda-nao-existe").join("data");
+        let config = config_limpa(&data_dir);
+        let criado = garantir_workspace_padrao(&config).expect("o workspace tem de ser criado");
+        assert!(criado.is_dir(), "{} nao e diretorio", criado.display());
+        assert_eq!(criado.parent(), Some(data_dir.as_path()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let modo = std::fs::metadata(&criado)
+                .expect("meta")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(modo, 0o700, "criado com {modo:o}, esperado 700");
+        }
     }
 }
