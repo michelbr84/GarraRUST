@@ -268,6 +268,19 @@ Detalhes do que e feito:
 
 ### Ferramentas e servidores MCP
 
+> **Registrada nao e utilizavel (#1425).** Uma ferramenta que existe no
+> gateway mas nao esta operacional agora — `telegram_send` sem o Telegram
+> configurado na config viva ou com o canal fora do ar — fica **fora** da
+> lista que o modelo recebe no turno; o `garra_status` e o `/api/diagnostics`
+> e que a mostram, com o motivo (`not_configured`, `channel_offline`). Se o
+> modelo a pedir pelo nome mesmo assim, ela nao roda e a explicacao volta como
+> resultado de ferramenta, distinta de "negada pela politica". Desligar o
+> canal na config tira a tool na mensagem seguinte, sem restart. E uma sessao
+> **sem raiz nenhuma** para as file tools (sem diretorio de trabalho nem
+> `agent.file_roots`) recebe uma recusa propria e acionavel — "selecione um
+> projeto com `/project <nome>`" — em vez da recusa generica de caminho fora
+> das raizes (#1418).
+
 Quem manda mensagem para o numero vinculado e, para o agente, um remetente
 **nao autenticado**: a allowlist do canal decide quem entra, e o que ele pode
 fazer depois de entrar e decidido pelo `ToolGate` do modo — por **nome de

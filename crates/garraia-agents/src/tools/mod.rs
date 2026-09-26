@@ -101,6 +101,77 @@ pub trait Tool: Send + Sync {
     fn capacidades(&self) -> &'static [crate::capacidades::Capacidade] {
         crate::capacidades::capacidades_nativas(self.name())
     }
+
+    /// A ferramenta esta **operacional agora** (#1425)? Registrada nao e o
+    /// mesmo que utilizavel: `telegram_send` registrado num Garra em que o
+    /// Telegram nao esta configurado (ou esta fora do ar) nao pode aparecer na
+    /// lista chamavel do modelo — ela aparece como indisponivel, com o motivo,
+    /// fora da lista (opcao B da #1425). O runtime consulta isto ao montar a
+    /// lista do turno e antes de despachar; o default e "disponivel".
+    ///
+    /// Sincrona e barata por contrato: e chamada a cada turno, para cada
+    /// ferramenta. Quem precisa de estado vivo le um snapshot (config viva,
+    /// `try_read` num lock), nunca faz I/O.
+    fn disponibilidade(&self) -> Disponibilidade {
+        Disponibilidade::Disponivel
+    }
+}
+
+/// O que [`Tool::disponibilidade`] responde.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Disponibilidade {
+    /// Operacional: entra na lista chamavel (se o portao deixar).
+    Disponivel,
+    /// Registrada mas nao utilizavel agora. Fica FORA da lista chamavel; o
+    /// `garra_status` e os diagnosticos a mostram com o motivo.
+    Indisponivel {
+        /// Legivel por maquina: `not_configured` | `channel_offline` |
+        /// `no_roots` | `no_devices` | `mcp_disconnected` | ...
+        codigo: &'static str,
+        /// Legivel por humano, sem segredo nem caminho do host.
+        motivo: String,
+        /// O que fazer, quando ha o que fazer.
+        remediacao: Option<String>,
+    },
+}
+
+impl Disponibilidade {
+    pub fn indisponivel(
+        codigo: &'static str,
+        motivo: impl Into<String>,
+        remediacao: Option<String>,
+    ) -> Self {
+        Self::Indisponivel {
+            codigo,
+            motivo: motivo.into(),
+            remediacao,
+        }
+    }
+
+    pub fn e_disponivel(&self) -> bool {
+        matches!(self, Self::Disponivel)
+    }
+
+    /// O texto que volta ao modelo quando ele pede a ferramenta mesmo assim.
+    pub fn explicacao(&self, nome: &str) -> String {
+        match self {
+            Self::Disponivel => format!("A ferramenta `{nome}` esta disponivel."),
+            Self::Indisponivel {
+                codigo,
+                motivo,
+                remediacao,
+            } => {
+                let mut texto = format!(
+                    "A ferramenta `{nome}` existe, mas esta indisponivel agora ({codigo}): {motivo}"
+                );
+                if let Some(r) = remediacao {
+                    texto.push_str(&format!(" {r}"));
+                }
+                texto.push_str(" Nao repita a chamada neste turno; diga ao usuario o motivo.");
+                texto
+            }
+        }
+    }
 }
 
 /// Resultado retornado por uma ferramenta.
