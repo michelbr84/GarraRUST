@@ -58,11 +58,24 @@ Cada modo tem uma política de ferramentas que define:
 - **Whitelist Mode**: Se `true`, nega tudo que não está na lista de allowed
 
 A whitelist cobre **ferramenta MCP também** (#1264). Uma ferramenta de
-servidor MCP se chama `servidor__ferramenta`; para liberar um servidor
-inteiro sem listar ferramenta por ferramenta, declare o prefixo na
-`allowed` com a sintaxe `servidor/*` — `meu-servidor/*` cobre
-`meu-servidor__<qualquer nome>`, e só ele. Nome completo na lista
-(`meu-servidor__consulta`) libera só aquela. `denied` vence o prefixo.
+servidor MCP se chama `servidor__ferramenta`, e a `allowed` aceita três
+formas de nomeá-la:
+
+- **nome completo** — `meu-servidor__consulta` libera só aquela;
+- **servidor inteiro** — `meu-servidor/*` cobre `meu-servidor__<qualquer
+  nome>`, e só ele;
+- **operação em qualquer servidor** (#1384) — `*/read_text_file` cobre
+  `<qualquer servidor>__read_text_file`, com a operação exata. É a forma que
+  um modo somente-leitura usa para enxergar a leitura do MCP `filesystem` sem
+  liberar o servidor inteiro: o `search` nativo declara as dez operações de
+  leitura do `@modelcontextprotocol/server-filesystem` (`read_file`,
+  `read_text_file`, `read_media_file`, `read_multiple_files`,
+  `list_directory`, `list_directory_with_sizes`, `directory_tree`,
+  `search_files`, `get_file_info`, `list_allowed_directories`); `write_file`,
+  `edit_file`, `create_directory`, `move_file` e qualquer nome fora da lista
+  continuam barrados.
+
+`denied` vence qualquer uma das três.
 
 Aviso importante: `whitelist_mode: true` com `allowed` vazia **permite
 tudo** — é compatibilidade preservada, não proteção. O runtime emite um

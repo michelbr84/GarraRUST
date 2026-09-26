@@ -1002,7 +1002,7 @@ pub fn motivo_da_liberacao(gate: &ToolGate) -> &'static str {
     } else if gate.whitelist_ligada_mas_vazia() {
         "o perfil liga `whitelist_mode` com `allowed` vazia, o que permite tudo"
     } else if gate.restringe_por_whitelist() {
-        "a `allowed` do perfil declara esses servidores (`servidor/*` ou nome completo)"
+        "a `allowed` do perfil declara essas ferramentas (`servidor/*`, `*/<operacao>` ou nome completo)"
     } else {
         "o perfil nao tem whitelist de ferramenta, entao passa tudo que o `denied` nao nomeia"
     }
@@ -1055,6 +1055,11 @@ fn avisar_drift_de_mcp(
         ExecutionProfile::IsolatedPod => {
             let nome = modo.as_str();
             let gate = ToolGate::for_mode_name(nome);
+            if gate.restringe_por_whitelist() {
+                // Ver `avisar_escolha_do_operador`: whitelist e declaracao,
+                // nao drift.
+                return;
+            }
             let liberadas = mcp_liberadas_pelo_perfil(&gate, &inventario);
             if liberadas.is_empty() {
                 return;
@@ -1082,6 +1087,14 @@ fn avisar_escolha_do_operador(
 ) {
     let nome = modo.as_str();
     let gate = ToolGate::for_mode_name(nome);
+    // #1384: um perfil com whitelist libera exatamente o que a `allowed`
+    // nomeia — no `search` nativo, a leitura do MCP `filesystem`, por
+    // desenho. Isso e declaracao, nao drift: o aviso existe para o perfil
+    // que passa "tudo que o `denied` nao nomeia" (`ask`, `code`), onde a
+    // exposicao de um servidor e efeito colateral e nao escolha nomeada.
+    if gate.restringe_por_whitelist() {
+        return;
+    }
     let liberadas = mcp_liberadas_pelo_perfil(&gate, inventario);
     if liberadas.is_empty() {
         return;
