@@ -1649,6 +1649,7 @@ mod tests {
     #[test]
     fn vinculo_saudavel_com_portao_vazio_e_warning_com_o_allow() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             ..Default::default()
         };
@@ -1666,6 +1667,7 @@ mod tests {
 
         // Com alguem autorizado, segue `Ok` sem passo.
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
             ..Default::default()
@@ -1709,6 +1711,7 @@ mod tests {
     #[test]
     fn portao_vazio_sem_watcher_manda_reiniciar() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             ..Default::default()
         };
@@ -1738,6 +1741,7 @@ mod tests {
     #[test]
     fn ponte_conectada_com_canal_desligado_na_config_viva_e_warning() {
         let desligado_com_gente = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: false,
             allow: vec!["5511900000001".into()],
             ..Default::default()
@@ -1770,6 +1774,7 @@ mod tests {
     #[test]
     fn recusas_de_lid_sem_numero_aparecem_no_detalhe_como_contagem() {
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
             ..Default::default()
