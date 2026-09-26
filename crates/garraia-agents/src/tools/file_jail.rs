@@ -113,8 +113,11 @@ use tracing::warn;
 /// Formato de `PATH`: `GARRAIA_FILE_ROOTS=/srv/dados:/opt/notas`.
 pub const ROOTS_ENV: &str = "GARRAIA_FILE_ROOTS";
 
-/// Por que um caminho foi recusado. Diagnostico interno: as tres variantes
-/// produzem a **mesma** mensagem para o modelo, de proposito.
+/// Por que um caminho foi recusado. `Outside` e `Unresolvable` produzem a
+/// **mesma** mensagem para o modelo, de proposito (nada de oraculo de
+/// existencia). `NoRoots` (#1418) e distinta: nao ha raiz nenhuma nesta
+/// sessao, TODO caminho e recusado, e dizer isso nao revela nada sobre
+/// caminho algum — e e o que o usuario precisa ouvir para agir.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Denial {
     /// Nenhuma raiz efetiva — nem config, nem `working_dir` de sessao.
@@ -125,21 +128,34 @@ pub enum Denial {
     Outside,
 }
 
-/// A frase unica que volta ao modelo. Nao nomeia caminho, raiz nem causa.
+/// A frase que volta ao modelo para `Outside` e `Unresolvable`. Nao nomeia
+/// caminho, raiz nem causa.
 pub const DENIAL_MESSAGE: &str = "acesso negado: o caminho esta fora das raizes \
 permitidas para as file tools (confinamento do agente, issue #1244). Peca um \
 caminho dentro do diretorio de trabalho da sessao.";
 
+/// A frase de `NoRoots` (#1418): acionavel, sem caminho. O `/project` e o
+/// comando de sessao que da um diretorio de trabalho; `agent.file_roots` e a
+/// config do operador.
+pub const NO_ROOTS_MESSAGE: &str = "sem acesso a arquivos: nenhuma raiz esta \
+configurada para esta sessao (nao ha diretorio de trabalho nem `agent.file_roots`). \
+Nao e um caminho errado — e a sessao sem workspace. Selecione um projeto com \
+`/project <nome>` (ou peca ao operador para configurar `agent.file_roots`) e tente de novo.";
+
 impl Denial {
-    /// Sempre a mesma string. Ver [`DENIAL_MESSAGE`].
+    /// [`NO_ROOTS_MESSAGE`] para `NoRoots`; [`DENIAL_MESSAGE`] para as outras
+    /// duas, identicas de proposito.
     pub fn message(self) -> &'static str {
-        DENIAL_MESSAGE
+        match self {
+            Self::NoRoots => NO_ROOTS_MESSAGE,
+            Self::Unresolvable | Self::Outside => DENIAL_MESSAGE,
+        }
     }
 }
 
 impl std::fmt::Display for Denial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(DENIAL_MESSAGE)
+        f.write_str(self.message())
     }
 }
 
@@ -592,11 +608,31 @@ mod tests {
         assert_eq!(jail.confine(&alvo, Some("   ")), Err(Denial::NoRoots));
     }
 
-    /// A mensagem e a mesma nas tres recusas: nada de oraculo de existencia.
+    /// `Outside` e `Unresolvable` dizem a MESMA coisa: nada de oraculo de
+    /// existencia entre "caiu fora" e "nao resolveu". `NoRoots` e outra
+    /// situacao (#1418): nao ha raiz nenhuma, TODO caminho e recusado, e por
+    /// isso dizer isso nao revela nada sobre caminho algum — e e o que o
+    /// usuario precisa ouvir para agir (selecionar um projeto/workspace).
     #[test]
-    fn as_tres_recusas_dizem_a_mesma_coisa() {
-        assert_eq!(Denial::NoRoots.message(), Denial::Outside.message());
+    fn fora_e_nao_resolvido_dizem_a_mesma_coisa_e_sem_raiz_e_distinto_e_acionavel() {
         assert_eq!(Denial::Outside.message(), Denial::Unresolvable.message());
+        assert_ne!(Denial::NoRoots.message(), Denial::Outside.message());
+        let sem_raiz = Denial::NoRoots.message();
+        assert!(sem_raiz.contains("nenhuma raiz"), "{sem_raiz}");
+        assert!(
+            sem_raiz.contains("/project") || sem_raiz.contains("projeto"),
+            "diz como resolver: {sem_raiz}"
+        );
+        assert!(sem_raiz.contains("agent.file_roots"), "{sem_raiz}");
+        assert!(
+            !sem_raiz.contains('/') || sem_raiz.contains("/project"),
+            "sem caminho: {sem_raiz}"
+        );
+        assert_eq!(Denial::NoRoots.to_string(), sem_raiz);
+        assert_eq!(
+            garraia_common::Error::from(Denial::NoRoots).to_string(),
+            garraia_common::Error::Security(sem_raiz.to_string()).to_string()
+        );
     }
 
     /// E ela nao carrega caminho nem raiz.

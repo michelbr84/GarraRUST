@@ -166,6 +166,51 @@ impl Tool for TelegramSendTool {
         "telegram_send"
     }
 
+    /// #1425 (opcao B): chamavel so com o Telegram configurado na config VIVA
+    /// e conectado no registry. Fora disso, indisponivel com o motivo — e a
+    /// tool some da lista do modelo sem restart (a config viva e relida a
+    /// cada turno). Snapshot barato: `current_config()` e `try_read` no
+    /// registry; com o lock ocupado (raro: registro no boot/reconexao), vale
+    /// a config, para a tool nao piscar.
+    fn disponibilidade(&self) -> garraia_agents::tools::Disponibilidade {
+        use garraia_agents::tools::Disponibilidade;
+        let Some(state) = self.state() else {
+            return Disponibilidade::indisponivel(
+                "gateway_down",
+                "o gateway esta encerrando.",
+                None,
+            );
+        };
+        let config = state.current_config();
+        let configurado = config
+            .channels
+            .values()
+            .any(|c| c.channel_type == "telegram" && c.enabled.unwrap_or(true));
+        if !configurado {
+            return Disponibilidade::indisponivel(
+                "not_configured",
+                "o canal Telegram nao esta configurado (ou esta desligado) neste Garra.",
+                Some(
+                    "Configure `channels.<nome>` com `type: telegram` e o token do bot \
+                     (`garraia channel add telegram`) e reinicie."
+                        .to_string(),
+                ),
+            );
+        }
+        let conectado = match state.channels.try_read() {
+            Ok(registry) => registry.list().contains(&"telegram"),
+            Err(_) => true,
+        };
+        if !conectado {
+            return Disponibilidade::indisponivel(
+                "channel_offline",
+                "o canal Telegram esta configurado, mas nao esta conectado agora.",
+                Some("Veja `garra_status` (lista `channels`) e o log do gateway.".to_string()),
+            );
+        }
+        Disponibilidade::Disponivel
+    }
+
     fn description(&self) -> &str {
         "Envia uma mensagem no Telegram por iniciativa própria (notificação, lembrete, \
          aviso de tarefa concluída). Sem `chat_id`, responde no chat desta conversa. \
@@ -414,6 +459,116 @@ mod tests {
     /// Finding MEDIUM: o teto por sessão existe e é cobrado. Um alvo recusado
     /// **não** consome cota — senão um modelo sondando chat_ids trancaria o
     /// usuário fora das próprias notificações.
+    /// Um canal falso para o registry: e o que "conectado" significa para
+    /// `channel_rows` e, agora, para a disponibilidade do `telegram_send`.
+    struct TelegramFalso;
+
+    #[async_trait]
+    impl garraia_channels::Channel for TelegramFalso {
+        fn channel_type(&self) -> &str {
+            "telegram"
+        }
+        fn display_name(&self) -> &str {
+            "Telegram (falso)"
+        }
+        async fn connect(&mut self) -> garraia_common::Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&mut self) -> garraia_common::Result<()> {
+            Ok(())
+        }
+        async fn send_message(&self, _m: &garraia_common::Message) -> garraia_common::Result<()> {
+            Ok(())
+        }
+        fn status(&self) -> garraia_channels::ChannelStatus {
+            garraia_channels::ChannelStatus::Connected
+        }
+    }
+
+    fn config_com_telegram() -> garraia_config::AppConfig {
+        let mut config = garraia_config::AppConfig::default();
+        config.channels.insert(
+            "tg".to_string(),
+            garraia_config::model::ChannelConfig {
+                channel_type: "telegram".into(),
+                enabled: Some(true),
+                settings: std::collections::HashMap::new(),
+            },
+        );
+        config
+    }
+
+    /// #1425 (opcao B): `telegram_send` so e chamavel quando o Telegram esta
+    /// configurado E conectado; fora disso e indisponivel, com o motivo
+    /// certo — e o motivo nunca carrega token nem chat id.
+    #[tokio::test]
+    async fn disponibilidade_segue_configuracao_e_conexao_do_telegram() {
+        use garraia_agents::tools::Disponibilidade;
+        let (_estado_vivo, sem_telegram) = tool();
+        match sem_telegram.disponibilidade() {
+            Disponibilidade::Indisponivel {
+                codigo,
+                motivo,
+                remediacao,
+            } => {
+                assert_eq!(codigo, "not_configured");
+                assert!(motivo.contains("nao esta configurado"), "{motivo}");
+                assert!(
+                    remediacao.is_some_and(|r| r.contains("channels")),
+                    "diz onde configurar"
+                );
+            }
+            Disponibilidade::Disponivel => {
+                panic!("sem Telegram configurado nao pode estar disponivel")
+            }
+        }
+
+        let configurado = Arc::new(crate::state::AppState::new(
+            config_com_telegram(),
+            Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+        ));
+        let t = TelegramSendTool::new(&configurado);
+        match t.disponibilidade() {
+            Disponibilidade::Indisponivel { codigo, motivo, .. } => {
+                assert_eq!(codigo, "channel_offline");
+                assert!(motivo.contains("nao esta conectado"), "{motivo}");
+            }
+            Disponibilidade::Disponivel => {
+                panic!("configurado mas desconectado nao pode estar disponivel")
+            }
+        }
+
+        let mut registry = garraia_channels::ChannelRegistry::new();
+        registry.register(Box::new(TelegramFalso));
+        let mut estado = crate::state::AppState::new(
+            config_com_telegram(),
+            Arc::new(garraia_agents::AgentRuntime::new()),
+            registry,
+        );
+        // A config VIVA e a que manda (como no turno): um watcher de teste.
+        let (tx, rx) = tokio::sync::watch::channel(config_com_telegram());
+        estado.set_config_watcher(rx);
+        let conectado = Arc::new(estado);
+        let t = TelegramSendTool::new(&conectado);
+        assert!(
+            t.disponibilidade().e_disponivel(),
+            "configurado e conectado: chamavel"
+        );
+
+        // Desligar o canal na config viva tira a tool da lista na mensagem
+        // seguinte, sem restart (o registry ainda o tem).
+        let mut desligada = config_com_telegram();
+        desligada.channels.get_mut("tg").expect("tg").enabled = Some(false);
+        tx.send(desligada).expect("watcher vivo");
+        match t.disponibilidade() {
+            Disponibilidade::Indisponivel { codigo, .. } => assert_eq!(codigo, "not_configured"),
+            Disponibilidade::Disponivel => {
+                panic!("canal desligado na config viva continua chamavel")
+            }
+        }
+    }
+
     #[tokio::test]
     async fn refused_sends_do_not_burn_the_budget() {
         let (_state, t) = tool();

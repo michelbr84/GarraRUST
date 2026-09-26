@@ -447,7 +447,14 @@ neste Garra. O web chat e a API (`web`, `api`) e a CLI e o servidor MCP (`cli`, 
 `mcp`) nunca aparecem nela, e a ausencia deles nao diz nada; o canal desta conversa \
 esta em `session.channel`. Um campo citado em `withheld` foi retido nesta conversa: o \
 dado nao e divulgado aqui, e isso nao diz se o recurso existe ou nao — nunca leia um \
-campo retido como capacidade ausente.";
+campo retido como capacidade ausente. A lista `capabilities` do relatorio diz o estado de \
+cada capacidade: `visible` voce pode usar agora; `denied` existe e opera, mas a politica \
+desta conversa nao a libera — diga que existe e nao esta liberada, nunca que nao existe; \
+`unavailable` existe e falta contexto (sem workspace, canal desconectado) — repita a \
+remediacao do campo `remediation`; `unhealthy` e um servidor MCP conhecido que esta fora \
+do ar; `not_configured` e algo que este Garra sabe fazer mas nao foi configurado. Nunca \
+conclua que uma capacidade nao existe a partir da lista de funcoes oferecidas no turno: \
+consulte `capabilities`.";
 
 /// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
 pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
@@ -459,7 +466,14 @@ Garra. The web chat and the API (`web`, `api`) and the CLI and the MCP server \
 (`cli`, `mcp`) never appear in it, and their absence says nothing; the channel of \
 this conversation is in `session.channel`. A field named in `withheld` was held \
 back in this conversation: the data is not disclosed here, which tells you nothing \
-about whether the thing exists — never read a withheld field as a missing capability.";
+about whether the thing exists — never read a withheld field as a missing capability. \
+The report's `capabilities` list gives the state of each capability: `visible` you can \
+use now; `denied` exists and works but this conversation's policy does not allow it — say \
+it exists and is not allowed here, never that it does not exist; `unavailable` exists but \
+lacks context (no workspace, channel disconnected) — repeat the `remediation` field; \
+`unhealthy` is a known MCP server that is down; `not_configured` is something this Garra \
+can do but was not set up. Never conclude a capability does not exist from the turn's \
+list of offered functions: check `capabilities`.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
 /// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.
@@ -1479,6 +1493,36 @@ impl AgentRuntime {
         portao.permite_com_capacidades(name, self.capacidades_de(name))
     }
 
+    /// #1425: a ferramenta esta operacional agora? Nome desconhecido e
+    /// "disponivel" — quem recusa nome desconhecido e o portao.
+    pub fn disponibilidade_de(&self, name: &str) -> crate::tools::Disponibilidade {
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|r| r.tool.name() == name)
+            .map(|r| r.tool.disponibilidade())
+            .unwrap_or(crate::tools::Disponibilidade::Disponivel)
+    }
+
+    /// A lista que o modelo ve neste turno: o que o portao deixa (nome E
+    /// classe, #1385) E o que esta operacional agora (#1425). Uma ferramenta
+    /// registrada mas indisponivel (canal desligado, sem raiz, MCP caido)
+    /// fica FORA da lista chamavel — o `garra_status` e os diagnosticos a
+    /// mostram como indisponivel, com o motivo. As tres listas do runtime
+    /// passam por aqui, e por mais nenhum filtro.
+    fn definicoes_do_turno(
+        &self,
+        portao: &crate::modes::ToolGate,
+        todas: Vec<ToolDefinition>,
+    ) -> Vec<ToolDefinition> {
+        todas
+            .into_iter()
+            .filter(|d| self.portao_permite(portao, &d.name))
+            .filter(|d| self.disponibilidade_de(&d.name).e_disponivel())
+            .collect()
+    }
+
     pub fn find_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .read()
@@ -1677,10 +1721,7 @@ impl AgentRuntime {
         // sobre o que o filtro tirou que eles falam.
         avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
         avisar_whitelist_vazia(&portao);
-        let tool_defs: Vec<_> = todas_as_tools
-            .into_iter()
-            .filter(|d| self.portao_permite(&portao, &d.name))
-            .collect();
+        let tool_defs = self.definicoes_do_turno(&portao, todas_as_tools);
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
         let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
@@ -1936,10 +1977,7 @@ impl AgentRuntime {
         // sobre o que o filtro tirou que eles falam.
         avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
         avisar_whitelist_vazia(&portao);
-        let tool_defs: Vec<_> = todas_as_tools
-            .into_iter()
-            .filter(|d| self.portao_permite(&portao, &d.name))
-            .collect();
+        let tool_defs = self.definicoes_do_turno(&portao, todas_as_tools);
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
         let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
@@ -2394,10 +2432,7 @@ impl AgentRuntime {
         // sobre o que o filtro tirou que eles falam.
         avisar_mcp_fora_da_whitelist(&portao, &todas_as_tools);
         avisar_whitelist_vazia(&portao);
-        let tool_defs: Vec<_> = todas_as_tools
-            .into_iter()
-            .filter(|d| self.portao_permite(&portao, &d.name))
-            .collect();
+        let tool_defs = self.definicoes_do_turno(&portao, todas_as_tools);
         // #1347: depois do filtro, porque a nota so entra quando
         // `garra_status` esta entre as tools que o modelo vai ver.
         let system = com_nota_de_capacidades(system, &tool_defs, self.persona_lang);
@@ -3061,6 +3096,30 @@ impl AgentRuntime {
             // streaming herdava uma linha aberta, o mesmo sintoma que o F-4
             // corrigiu para o programa. A recusa e texto do runtime (nome da
             // tool + nome do modo), sem saida de ferramenta.
+            if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+                sink.tool_finished(
+                    name,
+                    iniciado_em.elapsed(),
+                    false,
+                    summarize_tool_output(&recusa, false),
+                    String::new(),
+                )
+                .await;
+            }
+            return DispatchOutcome::Denied(ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: recusa,
+            });
+        }
+        // #1425: o portao deixou, mas a ferramenta nao esta operacional agora
+        // (canal desligado/desconectado, sem raiz, MCP caido). Ela nao estava
+        // na lista do turno; se o modelo a pediu pelo nome mesmo assim, nao
+        // roda — e a explicacao volta como resultado de ferramenta, com o
+        // codigo e o motivo, para ele nao repetir a chamada nem dizer que a
+        // ferramenta "nao existe".
+        let disponibilidade = self.disponibilidade_de(name);
+        if !disponibilidade.e_disponivel() {
+            let recusa = neutralizar_marcadores(&disponibilidade.explicacao(name));
             if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
                 sink.tool_finished(
                     name,

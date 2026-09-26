@@ -70,7 +70,7 @@ channels:
   whatsapp_linked:
     type: whatsapp_linked
     enabled: true
-    allow: ["+5511999998888"]        # legado, continua valendo (= usuario read, write off)
+    allow: ["+5511999998888"]        # legado, continua valendo (= usuario sem teto)
     owners: ["+5511977776666"]       # legado, continua valendo (= dono)
     reply_in_groups: false           # legado (= access.groups.enabled)
     access:
@@ -88,14 +88,18 @@ channels:
 
 - **Principais** (resolvidos por turno, pela `chave_do_portao` de sempre): `Dono`, `Usuario`,
   `Pareado` (codigo, memoria do processo), `Desconhecido` (so com `admission: open`), `Bloqueado`
-  (nega mesmo em `open`), `ParticipanteDeGrupo` (politica do grupo; identidade do remetente so para
-  aprovacoes). Grupo **nunca** herda dono.
+  (nega mesmo em `open`), `Grupo` (politica do grupo; identidade do remetente so para aprovacoes) e
+  `Estranho` (ninguem o conhece em `restricted`: nao e admitido). Grupo **nunca** herda dono.
 - **Efetivo** = nivel/write do principal → `politica_do_nivel` → teto; o piso de modo continua o de
   hoje (`search`; dono em pod `code`); `full` do dono em `standard` e `code` sem `bash` (o runtime nao
   registra `bash` sem sandbox, ADR 0024). `open` nunca da `full` por default (#1390); `chat` com
-  `write: true` e invalido e cai em `chat`.
-- **Compatibilidade:** `allow`/`owners`/`reply_in_groups` sem `access:` produzem exatamente o
-  comportamento da v0.4.5. `access.users` vence o legado para a mesma identidade.
+  `write: true` e invalido e cai em `chat`. Nivel e `write` so existem onde foram **declarados**
+  (`access.users`, `access.default`, `access.groups`): `allow` legado e grupo sem politica ficam
+  **sem teto** — o piso de modo decide sozinho, como sempre decidiu. A unica excecao e o pareado por
+  codigo, que passa a ter teto `read` (credencial fraca). Nivel declarado em grupo e honrado (inclusive
+  `full`), mas o grupo continua no piso de grupo: nunca o perfil `Completo` do dono.
+- **Compatibilidade:** `allow`/`owners`/`reply_in_groups` sem `access:` produzem o comportamento da
+  v0.4.5 (a menos do pareado, acima). `access.users` vence o legado para a mesma identidade.
 - **Hot reload (#1412):** a secao inteira e relida por turno da config viva (como `allow`/`owners`
   hoje); cada turno ve um snapshot consistente; config semanticamente invalida normaliza fail-closed
   com um `warn!` unico.

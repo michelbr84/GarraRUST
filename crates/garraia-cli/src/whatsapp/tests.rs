@@ -3724,3 +3724,6 @@ fn o_link_de_verdade_num_upgrade_preserva_o_allow() {
         Some(&serde_json::json!(true))
     );
 }
+
+// ADR 0025: `garraia whatsapp access ...`.
+mod politica;

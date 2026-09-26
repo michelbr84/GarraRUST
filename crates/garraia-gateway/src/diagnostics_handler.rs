@@ -539,6 +539,38 @@ fn whatsapp_linked_portao_vazio(
             check.detail
         );
     }
+    // ADR 0025 (#1396): admissao aberta e escolha declarada, mas e a que muda
+    // quem fala com o numero — o diagnostico avisa sempre, com o passo para
+    // fechar. Contagem e nivel, nunca identidade.
+    if matches!(check.status, CheckStatus::Ok)
+        && settings.enabled
+        && settings.access.admission == crate::bootstrap::whatsapp_linked_politica::Admission::Open
+    {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — admissao ABERTA (`access.admission: open`): qualquer numero entra, com o \
+             default do desconhecido ({})",
+            check.detail, settings.access.default
+        );
+        check.next_step = Some(format!(
+            "se nao foi intencional, `{bin} whatsapp access restricted`; `{bin} whatsapp access` \
+             mostra a politica efetiva"
+        ));
+        return check;
+    }
+    if matches!(check.status, CheckStatus::Ok) && !settings.access.avisos.is_empty() {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — a secao `access` tem {} valor(es) invalido(s), normalizado(s) fail-closed",
+            check.detail,
+            settings.access.avisos.len()
+        );
+        check.next_step = Some(format!(
+            "`{bin} whatsapp access` lista os avisos; corrija `channels.whatsapp_linked.access` \
+             no config.yml"
+        ));
+        return check;
+    }
     if matches!(check.status, CheckStatus::Ok) && settings.enabled && settings.autorizados() == 0 {
         check.status = CheckStatus::Warning;
         check.detail = format!(
@@ -704,6 +736,58 @@ fn runtime_channels_check(canais: &[String]) -> DiagnosticCheck {
 /// backend, ssh, tool elevada ou fora da allowlist) continua `warning`:
 /// configurado e quebrado nunca e neutro (#1437). O detalhe nunca carrega
 /// valor de config (imagem, host, caminho). Pura.
+/// #1381: a linha `tools.capabilities` — o registro de capacidades sem
+/// portao de sessao. `ok` quando tudo que existe esta visivel (o `bash` nao
+/// configurado ja tem a linha `tools.bash`); `warning` quando algo esta
+/// indisponivel ou fora do ar, nomeando o que e por que. Puro.
+fn tools_capabilities_check(
+    registro: &[crate::capacidades_registro::Capacidade],
+) -> DiagnosticCheck {
+    use crate::capacidades_registro::{Estado, contagens};
+    let c = contagens(registro);
+    let nomeia = |estado: Estado| -> String {
+        registro
+            .iter()
+            .filter(|l| l.state == estado)
+            .map(|l| format!("{} ({})", l.name, l.reason_code))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut partes = vec![format!("{} visivel(is)", c.visible)];
+    if c.unavailable > 0 {
+        partes.push(format!("indisponivel: {}", nomeia(Estado::Unavailable)));
+    }
+    if c.unhealthy > 0 {
+        partes.push(format!("fora do ar: {}", nomeia(Estado::Unhealthy)));
+    }
+    if c.not_configured > 0 {
+        partes.push(format!(
+            "nao configurado: {}",
+            nomeia(Estado::NotConfigured)
+        ));
+    }
+    let (status, next_step) = if c.unavailable > 0 || c.unhealthy > 0 {
+        let bin = garraia_common::executavel::nome();
+        (
+            CheckStatus::Warning,
+            Some(format!(
+                "cada item traz o motivo; numa conversa, `garra_status` mostra o mesmo registro. \
+                 Servidor MCP fora do ar: `{bin} mcp restart <nome>`; canal desconectado: veja \
+                 `runtime.channels`"
+            )),
+        )
+    } else {
+        (CheckStatus::Ok, None)
+    };
+    DiagnosticCheck {
+        id: "tools.capabilities",
+        label: "Capability registry",
+        status,
+        detail: partes.join(" · "),
+        next_step,
+    }
+}
+
 fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
     use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
     let (status, next_step) = match exposicao {
@@ -1237,6 +1321,39 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
     )));
 
+    // #1381: o registro de capacidades, sem portao de sessao (aqui nao ha
+    // conversa): o que esta indisponivel, fora do ar ou nao configurado.
+    {
+        let inventario = state.agents.tool_inventory();
+        let permite = |_: &str| true;
+        let disponibilidade = |n: &str| state.agents.disponibilidade_de(n);
+        let mcp: Vec<garraia_agents::McpServerStatus> = match &state.mcp_manager_arc {
+            Some(mgr) => mgr.server_statuses().await,
+            None => Vec::new(),
+        };
+        let exposicao = crate::bootstrap::exposicao_do_bash(
+            politica.perfil,
+            &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+        );
+        let bash_desligado = match exposicao {
+            crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((
+                exposicao.descricao(),
+                crate::bootstrap::COMO_LIGAR_O_BASH.to_string(),
+            )),
+            _ => None,
+        };
+        let registro =
+            crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
+                inventario: &inventario,
+                permite: &permite,
+                disponibilidade: &disponibilidade,
+                mcp: &mcp,
+                bash_desligado,
+                restrito: false,
+            });
+        checks.push(tools_capabilities_check(&registro));
+    }
+
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
     //
@@ -1490,6 +1607,53 @@ mod tests {
 
     const ENDPOINT: &str = "http://127.0.0.1:7860";
 
+    // ─── #1381: tools.capabilities ───────────────────────────────────────
+    #[test]
+    fn tools_capabilities_e_warning_so_com_indisponivel_ou_fora_do_ar() {
+        use crate::capacidades_registro::{Capacidade, Estado};
+        let linha = |name: &str, state: Estado, code: &'static str| Capacidade {
+            name: name.into(),
+            source: "native",
+            server: None,
+            classes: vec![],
+            state,
+            reason_code: code,
+            reason: String::new(),
+            remediation: None,
+        };
+        let so_visiveis = [
+            linha("file_read", Estado::Visible, "ok"),
+            linha("bash", Estado::NotConfigured, "not_configured"),
+        ];
+        let c = tools_capabilities_check(&so_visiveis);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(c.detail.contains("1 visivel"), "{}", c.detail);
+        assert!(
+            c.detail.contains("nao configurado: bash (not_configured)"),
+            "{}",
+            c.detail
+        );
+        let com_problema = [
+            linha("telegram_send", Estado::Unavailable, "channel_offline"),
+            linha("memoria/*", Estado::Unhealthy, "retrying"),
+        ];
+        let c = tools_capabilities_check(&com_problema);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(
+            c.detail.contains("telegram_send (channel_offline)"),
+            "{}",
+            c.detail
+        );
+        assert!(c.detail.contains("memoria/* (retrying)"), "{}", c.detail);
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("mcp restart"),
+            "{c:?}"
+        );
+    }
+
     // ─── #1272: tools.bash ─────────────────────────────────────────────────
 
     /// #1471: `agent.sandbox.mode = off` e o DEFAULT documentado do perfil
@@ -1649,6 +1813,7 @@ mod tests {
     #[test]
     fn vinculo_saudavel_com_portao_vazio_e_warning_com_o_allow() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             ..Default::default()
         };
@@ -1666,6 +1831,7 @@ mod tests {
 
         // Com alguem autorizado, segue `Ok` sem passo.
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
             ..Default::default()
@@ -1709,6 +1875,7 @@ mod tests {
     #[test]
     fn portao_vazio_sem_watcher_manda_reiniciar() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             ..Default::default()
         };
@@ -1732,12 +1899,61 @@ mod tests {
         );
     }
 
+    /// ADR 0025 (#1396): `access.admission: open` e uma secao `access` com
+    /// valor invalido sao visiveis no diagnostico, com o passo para agir.
+    #[test]
+    fn admissao_aberta_e_secao_invalida_sao_warning_com_passo() {
+        let mut aberto = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        aberto.access.admission = crate::bootstrap::whatsapp_linked_politica::Admission::Open;
+        let c = acesso(LinkHealth::Connected, &aberto, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("ABERTA"), "{c:?}");
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("access restricted"),
+            "{c:?}"
+        );
+        assert!(
+            !format!("{c:?}").contains("5511900000001"),
+            "identidade no check: {c:?}"
+        );
+
+        let mut invalida = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        invalida
+            .access
+            .avisos
+            .push("`access.users.<identidade>`: nivel desconhecido".into());
+        let c = acesso(LinkHealth::Connected, &invalida, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("invalido"), "{c:?}");
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("whatsapp access"),
+            "{c:?}"
+        );
+    }
+
     /// #1345 (review WHATSAPP-10/14): a ponte do boot segue conectada, a config
     /// viva desligou o canal, e o turno recusa todo mundo. `Ok` "conectado"
     /// ali mentia.
     #[test]
     fn ponte_conectada_com_canal_desligado_na_config_viva_e_warning() {
         let desligado_com_gente = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: false,
             allow: vec!["5511900000001".into()],
             ..Default::default()
@@ -1770,6 +1986,7 @@ mod tests {
     #[test]
     fn recusas_de_lid_sem_numero_aparecem_no_detalhe_como_contagem() {
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
             ..Default::default()

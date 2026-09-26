@@ -7,6 +7,11 @@
 //! dependente do `python3` na PATH.
 
 use super::*;
+
+// ADR 0025: Access Policy v2 (principal, nivel, teto).
+mod politica;
+// ADR 0025: mutacao, impacto e auditoria da politica (#1412, #1413, #1414).
+mod politica_mutacao;
 // O par que extrai chamada de log e separa o que pode carregar valor mora em
 // `garraia-channels` (a crate que possui o segredo da sessao) e serve as duas
 // varreduras — esta e a de `whatsapp_linked/source_scan.rs`. Duas copias com
@@ -209,6 +214,7 @@ fn modo_padrao_efetivo_declarado_vence_e_ausente_depende_do_perfil() {
     );
 
     let declarado = LinkedSettings {
+        access: Default::default(),
         default_mode: Some("ask".into()),
         ..LinkedSettings::default()
     };
@@ -291,6 +297,7 @@ fn pairing() -> PairingManager {
 
 fn portao_com(allow: &[&str]) -> PortaoDoCanal {
     PortaoDoCanal::from_settings(&LinkedSettings {
+        access: Default::default(),
         allow: allow.iter().map(|s| s.to_string()).collect(),
         ..LinkedSettings::default()
     })
@@ -448,6 +455,7 @@ fn parear_neste_canal_nao_escreve_na_allowlist_global() {
 #[test]
 fn quem_esta_em_owners_e_admitido_sem_precisar_do_allow() {
     let com_dono = PortaoDoCanal::from_settings(&LinkedSettings {
+        access: Default::default(),
         owners: vec!["5511888880000".into()],
         ..LinkedSettings::default()
     });
@@ -479,6 +487,7 @@ fn perfil_do_turno_exige_isolated_pod_conversa_1_a_1_e_dono_declarado() {
     const DONO: &str = "5511888880000";
     const CONTATO: &str = "5511777770000";
     let settings = LinkedSettings {
+        access: Default::default(),
         allow: vec![CONTATO.into()],
         owners: vec![DONO.into()],
         ..LinkedSettings::default()
@@ -533,6 +542,7 @@ fn perfil_do_turno_exige_isolated_pod_conversa_1_a_1_e_dono_declarado() {
 
     // `owners` vazio em isolated-pod: ninguem e dono, o perfil nao muda nada.
     let sem_dono = LinkedSettings {
+        access: Default::default(),
         allow: vec![DONO.into()],
         ..LinkedSettings::default()
     };
@@ -582,6 +592,7 @@ fn modo_do_piso_do_perfil_padrao_e_o_de_standard_mesmo_no_pod() {
     );
 
     let declarado = LinkedSettings {
+        access: Default::default(),
         default_mode: Some("ask".into()),
         ..LinkedSettings::default()
     };
@@ -884,6 +895,7 @@ fn grupo_so_com_opt_in_explicito() {
         "responder sozinho no grupo da familia do operador e incidente, nao recurso"
     );
     let com_grupos = LinkedSettings {
+        access: Default::default(),
         reply_in_groups: true,
         ..LinkedSettings::default()
     };
@@ -926,11 +938,13 @@ fn tabela_do_que_impede_a_supervisao() {
     const STANDARD: ExecutionProfile = ExecutionProfile::Standard;
 
     let ligado = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         ..LinkedSettings::default()
     };
     let desligado = LinkedSettings::default();
     let modo_errado = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         default_mode: Some("pesquisa".into()),
         ..LinkedSettings::default()
@@ -951,6 +965,7 @@ fn tabela_do_que_impede_a_supervisao() {
     assert_eq!(
         deve_supervisionar(
             &LinkedSettings {
+                access: Default::default(),
                 default_mode: Some("pesquisa".into()),
                 ..LinkedSettings::default()
             },
@@ -995,6 +1010,7 @@ fn tabela_do_que_impede_a_supervisao() {
     assert_eq!(
         deve_supervisionar(
             &LinkedSettings {
+                access: Default::default(),
                 enabled: true,
                 default_mode: Some("code".into()),
                 ..LinkedSettings::default()
@@ -1019,6 +1035,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
     const POD: ExecutionProfile = ExecutionProfile::IsolatedPod;
 
     let ligado = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         owners: vec!["5511888880000".into()],
         ..LinkedSettings::default()
@@ -1035,6 +1052,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
     );
 
     let declarado = LinkedSettings {
+        access: Default::default(),
         default_mode: Some("ask".into()),
         ..ligado.clone()
     };
@@ -1046,6 +1064,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
 
     for invalido in ["pesquisa", "auto", "meu-modo"] {
         let errado = LinkedSettings {
+            access: Default::default(),
             default_mode: Some(invalido.into()),
             ..ligado.clone()
         };
@@ -1062,6 +1081,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
     // neste canal); o que impede a subida continua sendo so as tres
     // condicoes de sempre.
     let sem_dono = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         ..LinkedSettings::default()
     };
@@ -1090,11 +1110,13 @@ fn avisar_drift_de_mcp_cobre_os_tres_ramos() {
         vec![Box::new(ToolDeMentira("filesystem__write_file"))],
     );
     let com_dono = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         owners: vec!["5511888880000".into()],
         ..LinkedSettings::default()
     };
     let sem_dono = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         default_mode: Some("code".into()),
         ..LinkedSettings::default()
@@ -1678,6 +1700,7 @@ fn fonte_do_canal_nao_tem_a_recusa_por_mcp_nem_deteccao_de_container() {
 #[test]
 fn autorizados_conta_a_uniao_sem_repeticao() {
     let s = LinkedSettings {
+        access: Default::default(),
         allow: vec!["5511900000001".into(), "5511900000002".into()],
         owners: vec!["5511900000002".into(), "5511900000003".into()],
         ..LinkedSettings::default()
@@ -1699,6 +1722,7 @@ fn recarregar_o_portao_mantem_os_pareados() {
     );
 
     portao.recarregar(&LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000002".into()],
         ..LinkedSettings::default()
@@ -1716,6 +1740,7 @@ fn recarregar_o_portao_mantem_os_pareados() {
 #[test]
 fn admissao_vigente_fecha_com_canal_desligado_sem_secao_ou_tipo_errado() {
     let boot = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000001".into()],
         owners: vec!["5511900000001".into()],
@@ -1751,6 +1776,7 @@ fn admissao_vigente_fecha_com_canal_desligado_sem_secao_ou_tipo_errado() {
 #[test]
 fn admissao_vigente_so_troca_enabled_allow_e_owners() {
     let boot = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000001".into()],
         owners: vec!["5511900000001".into()],
@@ -1758,6 +1784,7 @@ fn admissao_vigente_so_troca_enabled_allow_e_owners() {
         default_mode: Some("search".into()),
     };
     let viva = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000002".into()],
         owners: Vec::new(),
@@ -1792,6 +1819,7 @@ fn aviso_de_portao_vazio_cita_o_allow_e_so_existe_quando_vazio() {
     assert!(frio.contains("garraia restart"), "{frio}");
 
     let com_um = LinkedSettings {
+        access: Default::default(),
         owners: vec!["5511900000001".into()],
         ..LinkedSettings::default()
     };
@@ -1839,6 +1867,7 @@ fn celular_brasileiro_casa_com_e_sem_o_nono_digito() {
 
     // A contagem e a mesma do portao: as duas formas contam um.
     let s = LinkedSettings {
+        access: Default::default(),
         allow: vec!["5531999998888".into()],
         owners: vec!["553199998888".into()],
         ..LinkedSettings::default()
@@ -1868,6 +1897,7 @@ fn sair_do_allow_revoga_tambem_o_pareamento() {
         );
     }
     let com_os_dois = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000001".into()],
         ..LinkedSettings::default()
@@ -1877,6 +1907,7 @@ fn sair_do_allow_revoga_tambem_o_pareamento() {
     assert!(portao.libera("5511900000001"));
 
     portao.recarregar(&LinkedSettings {
+        access: Default::default(),
         enabled: true,
         ..LinkedSettings::default()
     });
@@ -2297,6 +2328,7 @@ mod ponta_a_ponta {
         let (store, key) = grava_sessao(&state);
 
         let settings = LinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec![PEER.to_string()],
             ..LinkedSettings::default()
@@ -2355,6 +2387,7 @@ mod ponta_a_ponta {
         supervisionar(
             &state,
             LinkedSettings {
+                access: Default::default(),
                 enabled: true,
                 ..LinkedSettings::default()
             },
@@ -2518,6 +2551,7 @@ mod ponta_a_ponta {
         let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
 
         let settings = LinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: if liberado {
                 vec![PEER.to_string()]
@@ -3957,6 +3991,7 @@ mod ponta_a_ponta {
             supervisionar(
                 &state,
                 LinkedSettings {
+                    access: Default::default(),
                     enabled: true,
                     allow: vec![PEER.to_string()],
                     ..LinkedSettings::default()

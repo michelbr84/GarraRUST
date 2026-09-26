@@ -274,6 +274,10 @@ Arquivo completo comentado, validado com `garra config check`:
    de `gateway.api_key` continua sendo a fronteira de rede do `/api/*`, mas
    não substitui esta regra: é uma chave única compartilhada por toda a
    LAN, e os ids de canal são adivinháveis por construção.
+   A politica de acesso do WhatsApp pessoal segue o mesmo desenho: `GET|POST
+   /admin/api/whatsapp/access` e `GET /admin/api/whatsapp/access/audit` (cookie +
+   CSRF; leitura `Channels/Read`, mutacao `Channels/Update`), pelo mesmo motor e
+   com o mesmo audit da CLI (ADR 0025). A API nunca revela identidade.
 
    **A #1240 não fechou nada por default.** Sem a chave configurada, todas
    essas rotas respondem exatamente como antes.

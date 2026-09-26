@@ -101,6 +101,15 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia whatsapp remove <numero> [--yes]` | revoga o acesso: tira a identidade de `allow` **e** de `owners`; dono exige confirmacao | 0 (inclusive quem nao estava na lista) · 1 cancelado · 64 dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
 | `garraia whatsapp owner <numero> [--yes]` | promove a DONO: grava em `owners`, a mesma escrita do `allow --owner` | 0 (inclusive quem ja era dono) · 1 cancelado · 64 fora de `isolated-pod`, ou sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
 | `garraia whatsapp unowner <numero> [--yes]` | tira o papel de DONO **sem** tirar o acesso; o ultimo dono exige confirmacao | 0 (inclusive quem nao era dono) · 1 cancelado · 64 ultimo dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel |
+| `garraia whatsapp access [--json] [--reveal]` | a politica efetiva inteira (ADR 0025): admissao, default do desconhecido, grupos e cada principal com piso, nivel e o que pode de fato — pelo MESMO `ToolGate` do turno; identidades so por `…1234`, `--reveal` mostra os valores da config (local) | 0 · 70 config ilegivel |
+| `garraia whatsapp access open [--yes] [--dry-run]` / `access restricted` | troca a admissao; `open` avisa (QUALQUER numero passa a entrar, com o default) e pede confirmacao | 0 · 1 cancelado · 64 `open` sem terminal e sem `--yes` · 70 |
+| `garraia whatsapp access default chat\|read [--write] [--dry-run]` | o que um desconhecido recebe em `open` (`full` e recusado; guardado mesmo em `restricted`) | 0 · 65 combinacao invalida · 70 |
+| `garraia whatsapp level <numero> chat\|read\|full [--dry-run]` | o nivel (teto) de uma identidade; no dono e recusado (use `unowner` antes) | 0 · 65 numero/combinacao invalida · 70 · 73 gravou mas o audit falhou |
+| `garraia whatsapp write <numero> on\|off [--dry-run]` | escrita de arquivo (nativa e MCP) de uma identidade — e SO isso | 0 · 65 (tambem para quem nao esta autorizado ou esta em `chat`) · 70 · 73 |
+| `garraia whatsapp block <numero>` / `unblock <numero>` | bloqueia (vence `open`, `allow` e pareamento; vale na mensagem seguinte) / desbloqueia | 0 · 65 · 70 · 73 |
+| `garraia whatsapp access groups on\|off\|default <nivel>` / `access group <jid> <nivel> [--write]` | grupos: liga/desliga, o default e a politica por JID (`<digitos>@g.us`) | 0 · 65 · 70 · 73 |
+| `garraia whatsapp access reset [--yes] [--dry-run]` | volta ao seguro: `restricted`, default `chat`, grupos desligados e sem politica, niveis/write removidos; donos e bloqueios ficam; idempotente | 0 · 1 cancelado · 64 sem terminal e sem `--yes` · 70 |
+| `garraia whatsapp access audit [--json] [--limit N]` | a trilha local de mudancas (`<data_dir>/audit/whatsapp-access.jsonl`), mais recente primeiro | 0 · 70 |
 
 O `users` nunca imprime a identidade inteira — nem na tela, nem no `--json`,
 cujo documento e `{enabled, authorized, owners, users[{role, kind, last4}]}`.
@@ -258,6 +267,25 @@ Detalhes do que e feito:
   ultimos digitos e `InboundMessage` imprime forma, nunca texto.
 
 ### Ferramentas e servidores MCP
+
+> **Registrada nao e utilizavel (#1425).** Uma ferramenta que existe no
+> gateway mas nao esta operacional agora — `telegram_send` sem o Telegram
+> configurado na config viva ou com o canal fora do ar — fica **fora** da
+> lista que o modelo recebe no turno; o `garra_status` e o `/api/diagnostics`
+> e que a mostram, com o motivo (`not_configured`, `channel_offline`). Se o
+> modelo a pedir pelo nome mesmo assim, ela nao roda e a explicacao volta como
+> resultado de ferramenta, distinta de "negada pela politica". Desligar o
+> canal na config tira a tool na mensagem seguinte, sem restart. O
+> `garra_status` devolve a lista `capabilities` — cada capacidade com o seu
+> estado nesta conversa (`visible`, `denied`, `unavailable`, `unhealthy`,
+> `not_configured`), motivo e remediacao — e o prompt manda o modelo
+> responder a partir dela: `denied` e "existe e nao esta liberada aqui",
+> nunca "nao existe". O mesmo registro sai em `tools.capabilities` no
+> `/api/diagnostics` e em `GET /admin/api/capabilities` (#1381, #1387). E uma sessao
+> **sem raiz nenhuma** para as file tools (sem diretorio de trabalho nem
+> `agent.file_roots`) recebe uma recusa propria e acionavel — "selecione um
+> projeto com `/project <nome>`" — em vez da recusa generica de caminho fora
+> das raizes (#1418).
 
 Quem manda mensagem para o numero vinculado e, para o agente, um remetente
 **nao autenticado**: a allowlist do canal decide quem entra, e o que ele pode
@@ -495,6 +523,100 @@ donos; o check `execution.profile` do `/api/diagnostics` tambem. Sem
 
 Detalhes do perfil, a lista do que ele **nao** isola e o exemplo para pod:
 [`execution-profiles.md`](execution-profiles.md).
+
+### Politica de acesso por principal (`access`, ADR 0025)
+
+`allow` e `owners` respondem "quem entra". Desde a v0.4.6 a secao `access`
+responde tambem "ate onde cada um vai", por **principal** — e o que
+`garraia whatsapp` e o Web Console passam a editar:
+
+```yaml
+channels:
+  whatsapp_linked:
+    type: whatsapp_linked
+    enabled: true
+    allow: ["5511888880000"]       # continua valendo: admitido, sem teto
+    owners: ["5511999998888"]      # continua valendo: dono
+    access:
+      admission: restricted        # restricted (default) | open
+      default: { level: chat, write: false }   # o DESCONHECIDO, so com open
+      users:
+        "5511888880000": { level: read, write: false }
+        "5511999998888": { role: owner }
+        "5521955554444": { blocked: true }
+      groups:
+        enabled: false             # ou o `reply_in_groups` legado
+        default: { level: read, write: false }
+        "120363000000000000@g.us": { level: chat }
+```
+
+- **Niveis.** `chat` = nenhuma ferramenta; `read` = so leitura (`file_read`,
+  `web_search`, `device_read`, MCP de leitura...), nunca shell, dispositivo,
+  mensagem nem agenda; `full` = sem teto proprio (o modo e o perfil de
+  execucao decidem). `write: true` libera **so** escrita de arquivo (nativa e
+  MCP) — nao liga `bash`, nao desliga sandbox, jail nem a confirmacao de
+  ferramenta perigosa. O nivel e um **teto** composto por E com o modo da
+  sessao (`/mode` continua valendo, mas nunca acima do teto); a recusa diz
+  se foi o modo ou a politica de acesso de quem fala.
+- **Principais.** `dono` (`owners` ou `role: owner`, em conversa 1:1: sem
+  teto; em `isolated-pod`, piso `code`), `usuario` (`allow` ou
+  `access.users`), `pareado` (codigo do `/pair`: teto `read`, credencial
+  fraca), `desconhecido` (so com `admission: open`, com o `default`),
+  `grupo` (a politica e do grupo — o dono no grupo e o grupo), `bloqueado`
+  (`blocked: true`: recusado mesmo em `open`, mesmo em `allow`, mesmo
+  pareado). Cada turno loga `principal` e `alcance` (etiquetas fixas, nunca
+  identidade).
+- **Compatibilidade.** Sem `access:` nada muda: `allow` e usuario **sem
+  teto** (o piso `default_mode` decide, como sempre), `owners` e dono,
+  `reply_in_groups` liga grupos. Nivel e `write` so existem onde foram
+  declarados; `access.users` vence o legado para a mesma identidade. As
+  chaves de `users` aceitam qualquer grafia do numero (a comparacao e a
+  mesma do `allow`, nono digito incluso) ou o JID `@lid`.
+- **Fail-closed.** Nivel desconhecido vale `chat`; `chat` com `write: true`
+  vale `chat`; `admission` desconhecida vale `restricted`; o `default` de
+  `open` nunca chega a `full`. Cada normalizacao gera um aviso sem numero no
+  log do boot (e uma vez por mudanca da config viva).
+- **Pela CLI.** `garraia whatsapp access` mostra a matriz efetiva; `access
+  open|restricted`, `access default`, `level`, `write`, `block`/`unblock`,
+  `access groups`/`group` e `access reset` mudam a politica pelo **mesmo
+  caminho** que a API admin e o Web Console usam
+  (`whatsapp_linked_politica::mutacao`): validacao antes de gravar (`full`
+  para desconhecido e `chat` com `write` sao recusados com exit 65), escrita
+  atomica `0600`, e cada mudanca aplicada vai para
+  `<data_dir>/audit/whatsapp-access.jsonl` (quando, quem, por onde, acao,
+  alvo `…1234`, resumo antes/depois — nunca identidade inteira, chave ou
+  mensagem; rotacao por tamanho, `audit_max_bytes` na secao). Toda mutacao
+  aceita `--dry-run`: imprime o que mudaria e o **impacto por principal**
+  (o que ganha e perde: escrita de arquivo, shell, dispositivo, mensagem,
+  MCP), calculado pelo motor real, sem gravar nem auditar. `access audit`
+  le a trilha.
+- **Pela API admin (e o Web Console).** `GET /admin/api/whatsapp/access`
+  devolve o mesmo documento de `access --json` (mais `hot_reload`);
+  `POST /admin/api/whatsapp/access` com `{ "action": "level", "identity":
+  "+55...", "level": "read", "dry_run": true }` (acoes: `open`, `restricted`,
+  `default`, `level`, `write`, `block`, `unblock`, `groups`, `group-default`,
+  `group`, `reset`) aplica pelo mesmo motor e devolve `changed`, `changes`,
+  `impact` (o que cada principal ganha e perde), `audit` e a politica
+  resultante; `GET /admin/api/whatsapp/access/audit?limit=N` le a trilha.
+  Cookie do `/admin` + CSRF; leitura para `viewer`, mutacao para quem tem
+  `Channels/Update`. A API nunca revela identidade. O `/api/diagnostics`
+  (`whatsapp.access`) avisa quando a admissao esta `open` e quando a secao
+  tem valor invalido.
+- **Pelo Web Console.** A pagina **WhatsApp Access** (`/admin` → sidebar)
+  mostra o resumo, a admissao, o default do desconhecido, os grupos, o
+  formulario "Add phone / identity" e a matriz por principal (piso, nivel,
+  write, o que pode de fato), com seletor de nivel, toggle de write,
+  Block/Unblock, Make owner/Demote, Remove e "Reset to safe defaults" — e
+  a trilha de audit. **Toda mudanca passa por um preview** (as mudancas e
+  o que cada principal ganha e perde, calculados pelo motor) antes de
+  confirmar; `open`, owner e reset trazem aviso. A pagina so conhece
+  `…1234`: para agir numa linha manda `identity_last4`, que o gateway
+  resolve entre as identidades declaradas (ambiguo = 409). A API tambem
+  aceita `owner`, `unowner` e `remove`.
+- **A quente.** A secao inteira e relida a cada mensagem (como `allow` e
+  `owners` ja eram): um `blocked: true` vale na mensagem seguinte, sem
+  restart. `access.groups.enabled` tambem; o `reply_in_groups` legado segue
+  sendo lido no boot.
 
 ### Confirmacao de ferramenta perigosa ("sim")
 
