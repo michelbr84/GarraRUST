@@ -1199,9 +1199,11 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         &data_dir,
     ));
     // #1378: o workspace efetivo das file tools NATIVAS, que e outra coisa da
-    // raiz do servidor MCP acima. Passa pela mesma funcao que o boot usa para
-    // montar o jail, entao a linha nunca descreve um jail que o turno nao tem.
-    let raizes_file_tools = crate::bootstrap::raizes_das_file_tools(&state.config);
+    // raiz do servidor MCP acima. E o que o boot resolveu e guardou no estado
+    // (#1459) — pela mesma funcao que monta o jail, entao a linha nunca
+    // descreve um jail que o turno nao tem, e a rota auth-free nao resolve
+    // (nem loga) raiz nenhuma por request.
+    let raizes_file_tools = &state.raizes_das_file_tools;
     checks.push(files_workspace_check(
         raizes_file_tools.fonte,
         raizes_file_tools.jail.roots(),
@@ -3241,6 +3243,59 @@ mod tests_mcp_1346 {
             linha.detail.contains("workspace padrao"),
             "a linha tem de dizer de onde veio a decisao: {}",
             linha.detail
+        );
+    }
+
+    /// **#1459.** As raizes das file tools sao resolvidas UMA vez, no boot, e
+    /// o `/api/diagnostics` descreve o jail que o turno usa — nao o disco do
+    /// momento da request. Antes o handler chamava `raizes_das_file_tools` a
+    /// cada request (rota auth-free): `canonicalize` por raiz e um `warn!`
+    /// por raiz que nao resolve, amplificados por quem quisesse. A prova: o
+    /// workspace some do disco depois do boot e a linha continua a do boot.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_linha_do_workspace_descreve_o_jail_do_boot_nao_o_disco_de_agora() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let workspace =
+            crate::bootstrap::garantir_workspace_padrao(&config).expect("workspace padrao");
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            dir.path(),
+        ));
+        // O disco muda depois do boot; o jail do runtime, nao.
+        std::fs::remove_dir_all(&workspace).expect("apaga o workspace");
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "files.workspace")
+            .expect("linha files.workspace");
+        assert!(
+            matches!(linha.status, CheckStatus::Ok) && linha.detail.contains("workspace padrao"),
+            "a linha tem de descrever o jail do boot (workspace padrao), nao o disco de agora: {linha:?}"
+        );
+    }
+
+    /// A fiacao da #1459: nenhum ponto de producao deste arquivo resolve as
+    /// raizes por conta propria — ele le o que o boot guardou no `AppState`.
+    #[test]
+    fn o_handler_nao_resolve_as_raizes_das_file_tools_por_request() {
+        let fonte = include_str!("diagnostics_handler.rs");
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+        assert!(
+            !producao.contains("raizes_das_file_tools("),
+            "o /api/diagnostics voltou a resolver as raizes por request (#1459): use \
+             `state.raizes_das_file_tools`"
         );
     }
 
