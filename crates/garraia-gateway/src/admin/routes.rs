@@ -141,6 +141,18 @@ pub fn build_admin_router(
         .route("/api/tools", get(handlers::admin_list_tools))
         // ── Phase 5: Channels & Sessions ──
         .route("/api/channels", get(handlers::admin_list_channels))
+        // ADR 0025 (#1402): a politica de acesso do WhatsApp pessoal, pelo
+        // mesmo motor da CLI; leitura com Channels/Read, mutacao com
+        // Channels/Write (o layer de CSRF cobre o POST).
+        .route(
+            "/api/whatsapp/access",
+            get(super::whatsapp_access::admin_whatsapp_access)
+                .post(super::whatsapp_access::admin_whatsapp_access_mutate),
+        )
+        .route(
+            "/api/whatsapp/access/audit",
+            get(super::whatsapp_access::admin_whatsapp_access_audit),
+        )
         .route("/api/sessions", get(handlers::admin_list_sessions))
         .route(
             "/api/sessions/{id}",

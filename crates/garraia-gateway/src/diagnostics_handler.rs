@@ -539,6 +539,38 @@ fn whatsapp_linked_portao_vazio(
             check.detail
         );
     }
+    // ADR 0025 (#1396): admissao aberta e escolha declarada, mas e a que muda
+    // quem fala com o numero — o diagnostico avisa sempre, com o passo para
+    // fechar. Contagem e nivel, nunca identidade.
+    if matches!(check.status, CheckStatus::Ok)
+        && settings.enabled
+        && settings.access.admission == crate::bootstrap::whatsapp_linked_politica::Admission::Open
+    {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — admissao ABERTA (`access.admission: open`): qualquer numero entra, com o \
+             default do desconhecido ({})",
+            check.detail, settings.access.default
+        );
+        check.next_step = Some(format!(
+            "se nao foi intencional, `{bin} whatsapp access restricted`; `{bin} whatsapp access` \
+             mostra a politica efetiva"
+        ));
+        return check;
+    }
+    if matches!(check.status, CheckStatus::Ok) && !settings.access.avisos.is_empty() {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — a secao `access` tem {} valor(es) invalido(s), normalizado(s) fail-closed",
+            check.detail,
+            settings.access.avisos.len()
+        );
+        check.next_step = Some(format!(
+            "`{bin} whatsapp access` lista os avisos; corrija `channels.whatsapp_linked.access` \
+             no config.yml"
+        ));
+        return check;
+    }
     if matches!(check.status, CheckStatus::Ok) && settings.enabled && settings.autorizados() == 0 {
         check.status = CheckStatus::Warning;
         check.detail = format!(
@@ -1731,6 +1763,54 @@ mod tests {
                 .as_deref()
                 .unwrap_or_default()
                 .contains("sem reiniciar"),
+            "{c:?}"
+        );
+    }
+
+    /// ADR 0025 (#1396): `access.admission: open` e uma secao `access` com
+    /// valor invalido sao visiveis no diagnostico, com o passo para agir.
+    #[test]
+    fn admissao_aberta_e_secao_invalida_sao_warning_com_passo() {
+        let mut aberto = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        aberto.access.admission = crate::bootstrap::whatsapp_linked_politica::Admission::Open;
+        let c = acesso(LinkHealth::Connected, &aberto, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("ABERTA"), "{c:?}");
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("access restricted"),
+            "{c:?}"
+        );
+        assert!(
+            !format!("{c:?}").contains("5511900000001"),
+            "identidade no check: {c:?}"
+        );
+
+        let mut invalida = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        invalida
+            .access
+            .avisos
+            .push("`access.users.<identidade>`: nivel desconhecido".into());
+        let c = acesso(LinkHealth::Connected, &invalida, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("invalido"), "{c:?}");
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("whatsapp access"),
             "{c:?}"
         );
     }

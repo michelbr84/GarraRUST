@@ -13,3 +13,5 @@ pub mod shared;
 pub mod store;
 pub mod totp;
 pub mod users;
+/// ADR 0025: a Access Policy v2 do WhatsApp pela API admin (#1402).
+pub mod whatsapp_access;
