@@ -215,6 +215,33 @@ impl SessionStore {
     }
 
     /// Associate an existing session with a project.
+    /// #1379: o projeto vinculado a uma sessao, se houver.
+    pub fn session_project_id(&self, session_id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        self.connection()
+            .query_row(
+                "SELECT project_id FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(|r| r.flatten())
+            .map_err(|e| Error::Database(format!("failed to read session project: {e}")))
+    }
+
+    /// #1379: desfaz o vinculo sessao → projeto.
+    pub fn dissociate_session_from_project(&self, session_id: &str) -> Result<()> {
+        self.connection()
+            .execute(
+                "UPDATE sessions SET project_id = NULL, updated_at = datetime('now') WHERE id = ?1",
+                params![session_id],
+            )
+            .map_err(|e| {
+                Error::Database(format!("failed to dissociate session from project: {e}"))
+            })?;
+        Ok(())
+    }
+
     pub fn associate_session_to_project(&self, session_id: &str, project_id: &str) -> Result<()> {
         self.connection()
             .execute(

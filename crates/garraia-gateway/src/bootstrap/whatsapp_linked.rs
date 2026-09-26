@@ -1452,6 +1452,42 @@ impl GatewaySink {
             );
             return;
         }
+        // #1379/#1424: comando de barra, decidido por PRINCIPAL antes de
+        // qualquer coisa ir ao modelo. `/mode` e do dono (o nivel dos demais
+        // vem da politica de acesso), `/project` e de dono e usuario, `/help`
+        // de todo admitido; o resto registrado e recusado com motivo, e o que
+        // nao e comando segue como texto (como sempre foi).
+        {
+            let registrado = |nome: &str| {
+                state
+                    .command_registry
+                    .read()
+                    .map(|r| r.resolve(&format!("/{nome}")).is_some())
+                    .unwrap_or(false)
+            };
+            use crate::projetos_da_sessao::{DecisaoDeComando, decidir_comando};
+            match decidir_comando(principal, &bruto, registrado) {
+                DecisaoDeComando::NaoEComando => {}
+                DecisaoDeComando::Negado(motivo) => {
+                    info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando recusado");
+                    Self::responder(&outbound, &msg.chat_jid, motivo).await;
+                    return;
+                }
+                DecisaoDeComando::Roteia => {
+                    let sid = session_id(&msg);
+                    state
+                        .hydrate_session_history(&sid, Some(CONFIG_KEY), Some(&remetente))
+                        .await;
+                    let resposta = crate::api::dispatch_slash_command(&state, &sid, bruto.trim())
+                        .map(|r| r.content)
+                        .unwrap_or_else(|| "Comando nao reconhecido.".to_string());
+                    info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando roteado");
+                    Self::responder(&outbound, &msg.chat_jid, resposta).await;
+                    return;
+                }
+            }
+        }
+
         let politica = politica_de_execucao(&state.config);
         let perfil_turno = perfil_do_turno(politica.perfil, &settings, &remetente, msg.is_group);
         let modo_do_piso = modo_do_piso(perfil_turno, &settings);

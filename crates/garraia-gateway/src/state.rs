@@ -842,6 +842,9 @@ impl AppState {
         {
             session.history = loaded_history;
         }
+        // #1379: o projeto que a sessao tinha antes do restart volta do banco,
+        // confinado de novo pelas raizes de projeto do operador.
+        crate::projetos_da_sessao::restaurar(self, session_id).await;
     }
 
     /// Append a user/assistant turn to in-memory state and persistent session storage.
