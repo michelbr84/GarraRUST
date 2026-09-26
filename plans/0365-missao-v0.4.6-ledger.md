@@ -23,7 +23,7 @@
 |---|---|---|---|---|---|---|---|
 | #1379 | P0 | persist project/workspace selection per remote session | L2-sess | projeto ativo por sessao remota (/project) | — | — | aberta |
 | #1381 | P0 | add a Runtime Capability Registry as the single source of truth | L2-reg | Capability Registry | — | — | aberta |
-| #1383 | P0 | unify native file-tool and filesystem-MCP workspace policy | L1-a | confinamento MCP filesystem ao jail da sessao (achado: raiz = pai dos workspaces) | — | — | aberta |
+| #1383 | P0 | unify native file-tool and filesystem-MCP workspace policy | L1-a | nucleo entregue pelo confinamento (#1482); restam: override explicito visivel em diagnostics, migracao, testes de paridade cruzada | `sec/mcp-filesystem-confinado-ao-jail` | `mcp::confinamento::tests` (11) | em curso |
 | #1385 | P0 | classify tools by capabilities instead of relying only on tool nam | L1-b | classes de capacidade no Tool + ToolPolicy | — | — | aberta |
 | #1387 | P0 | runtime honesty — distinguish hidden, denied, unavailable and not  | L2-reg | honestidade do runtime (prompt + estados) | — | — | aberta |
 | #1388 | P0 | WhatsApp Access Policy v2 with explicit restricted/open modes | L1-c | modelo/engine Access Policy v2 (restricted|open, users, default, groups) | — | — | aberta |
@@ -82,3 +82,4 @@ não houver uma que os cubra).
 |---|---|---|
 | 26/09 01:40 | Revalidação: 51/0/0, #176 dismissed, `e1d62523` 6/6 verdes; critérios das 51 lidos; código do portão lido | consultas `gh` nesta sessão |
 | 26/09 01:55 | Achado: raiz do MCP `filesystem` = `<data_dir>/workspace` (pai das sessões) + leitura MCP no `search` (#1384) → leitura cruzada; vira L1-a | `bootstrap/execution.rs:108-131` |
+| 26/09 02:05 | Issue **#1482** aberta para o achado (security, P0). RED: 10 testes de `mcp::confinamento` (todo!). GREEN: `confinar_argumentos` + `McpManager::set_jail_das_file_tools` + `McpTool::execute` confina antes de `call_tool_once` + boot entrega o jail; duas guardas de fonte; agents 756 (`--features mcp`), gateway bootstrap 65, clippy limpo | branch `sec/mcp-filesystem-confinado-ao-jail` |
