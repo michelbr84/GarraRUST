@@ -46,6 +46,17 @@ O que precisa do dono **antes** de qualquer passo está em §8.
 
 ---
 
+### 0.1 Definition of Done do prompt estrito — estado em 2026-09-25 20:55 EDT
+
+| Critério | Meta | Agora | Como chegou |
+|---|---|---|---|
+| `open_issues` | 0 | **59** | 64 → 59 (#1378, #1449, #1452, #1453, #1456, #1458 fechadas); 6 PRs abertas fecham mais 8 ao entrar (#1384, #1460, #1463, #1464, #1465, #1471, #1419 e parte de #1416); **43 são épicos de v0.5.0** e 3 pedem decisão do dono (§8) |
+| `open_PRs` | 0 | **6** (todas desta sessão, CI em curso) | #1473, #1474, #1475, #1476, #1477, #1478 — plano de entrada em §3.5 |
+| `code_scanning_alerts` | 0 | **0** | #176 baixado às 20:30 EDT (PR #1472 + workflow `codeql-apply-dismissals`) |
+| `mandatory_CI_failures` | 0 | **0** nas mergeadas; 6 runs em curso | trem #1470 verde nos 6 checks; #1472 verde |
+| `known_regressions_introduced` | 0 | **0 novas**; a do ratchet está revertida na PR #1476 | `max_file_lines` 10 881 → 6 901; `files_over_700` 114 → 112; `files_over_1500/2500` seguem +1 (decisão em §8) |
+| Instaladores construídos e testados | sim | **não** | a regra do prompt ("nada de release antes do backlog zero") mantém o `release/v0.4.6` local; D1-lite e D9 feitos em Linux (§7.5) |
+
 ## 1. Gate de permissões e credenciais (o prompt manda checar primeiro)
 
 | Requisito | Estado | Evidência / consequência |
@@ -195,13 +206,24 @@ Bloqueadores de release e itens de segurança marcados com **🔴**.
 | #1436 | retenção de memória/ledger no console | P2 | backlog |
 | #1431 | cofre para a sessão do WhatsApp no onboarding | P2 | v0.5.0 junto do plan 0363 (follow-up 3 do ADR 0023) |
 
-### 3.5 PRs abertas
+### 3.5 PRs (estado em 2026-09-25 20:55 EDT)
 
-| PR | Título | Estado | Ação |
-|---|---|---|---|
-| #1448 | workspace padrão seguro por sessão (fecha #1378) | mergeável; `Clippy` vermelho só pelo MinIO | revisão R4 (`security-auditor`) + dono → **merge na v0.4.6** |
-| #1457 | retry no pull do MinIO (fecha #1456) | idem | **merge depois** da correção da #1458 |
-| #1455 | script `setup-toolchain.sh` | idem | decidir com a #1452: se entrar `rust-toolchain.toml`, o script vira opcional ou fecha como superseded |
+Mergeadas nesta sessão: **#1466** (MinIO do fonte, `c4d7f1ba`, 18:19), **#1470** trem
+(#1448 + #1455 + #1467 + #1468 + #1469, `b61ece48`, mergeado pelo **dono** às 19:40),
+**#1472** (ledger CodeQL, `31e7824d`, 20:27). Abertas:
+
+| PR | Fecha | Base | Estado | Entrada prevista |
+|---|---|---|---|---|
+| #1473 | #1384 (search enxerga leitura do MCP) | main | atualizada com main 20:33; CI em curso | merge direto quando verde |
+| #1474 | #1460, #1463, #1464 (workspace nasce 0700, uma função) | main | BEHIND (main andou com #1472); CI em curso | trem com #1475/#1476 |
+| #1475 | #1465, #1471 (diagnostics sem caminho do host, sem aviso espúrio) | main | idem | trem |
+| #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | idem | trem, depois da #1474 |
+| #1477 | #1419 `garraia doctor whatsapp` | **empilhada em #1473** | CI em curso | depois da #1473 |
+| #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | CI em curso | trem |
+
+Cada merge em `main` deixa as outras BEHIND (checks estritos); por isso as cinco de
+`main` entram num **trem único** quando os seus CIs individuais terminarem — um ciclo
+de CI em vez de cinco. Auto-merge desligado em todas.
 
 **Contagem honesta:** das 64 issues, **~21** entram ou são verificadas na
 v0.4.6 (3.1), **~43** vão para os três épicos de v0.5.0 (3.2–3.4). Nenhuma é
@@ -216,6 +238,34 @@ fechada "por decreto": as de v0.5.0 recebem milestone e o link do épico, que
 | **Melhoria** (entra se couber antes do tag; nunca antes dos bloqueadores) | correção pequena, dívida deixada pela #1448, processo | #1463, #1464, #1465, #1459 (verificar), #1460, #1453, #1439 (checklist manual), #1418 (parcial), #1426 (manual nesta release), #1419 e #1384 (candidatas) |
 | **Melhoria — verificar e fechar** (já atendidas em parte por commits pós-v0.4.5) | conferir critérios restantes | #1429, #1387, #1390 |
 | **Opcional** (funcionalidade nova; milestone v0.5.0 com épico) | Access Policy v2, Capability Registry, WhatsApp no Web Console, onboarding desktop (plan 0363) | as 43 issues de §3.2–§3.4 |
+
+### 3.7 Estado do inventário de §3.1 — Checkpoint 2 (2026-09-25 20:55 EDT)
+
+| # | Estado | Evidência |
+|---|---|---|
+| #1458 | ✅ fechada | PR #1466: imagem do MinIO construída **do fonte** no runner (sem registry, sem PAT); `storage-s3` verde |
+| #1456 / #1457 | ✅ fechadas (superadas) | pull removido; `pull_policy: never` |
+| #1378 | ✅ fechada | #1448 via trem #1470 |
+| #1449 | ✅ fechada pelo dono | trem #1470 (23:40Z) |
+| #1459 | ⏳ aberta | o `/api/diagnostics` ainda chama `raizes_das_file_tools` por request (`diagnostics_handler.rs:1137`); P2, baixa |
+| #1463 / #1460 / #1464 | 🔁 PR #1474 | `SessionWorkspace::garantir_raiz` (mkdir 0700 de um componente), boot delega, guarda por substring |
+| #1465 / #1471 | 🔁 PR #1475 | raiz fora do `data_dir` só como contagem/posição; `tools.bash` e `runtime.channels` neutros |
+| #1462 | ◐ parcial | via 1 + escrita REST fechadas na #1468 (trem); via 2 (leitura por `X-Session-Id`) é **decisão de produto** (comentário 18:11) |
+| #1461 | ◐ análise | `cache_roomnames` é o id da sala — provável não-procede; confirmação exige `chat.db` real (dono) |
+| #1452 | ✅ fechada | script `setup-toolchain.sh` (#1455) no trem |
+| #1453 | ✅ fechada | hook ancorado (#1467) no trem |
+| #1439 | ◐ parcial | runbook §1.5 (#1469) mergeado; D1-lite e D9 executados em Linux; D1–D8 com telefone/Windows/macOS = dono |
+| #1429 | ◐ análise | 3 de 6 critérios entregues; os 3 restantes dependem da #1388 (comentário 18:14) |
+| #1387 | ◐ parcial | #1382 (`withheld_means`), #1475 (diagnostics honestos), #1478 (`file_tools`); prompt de sistema → Registry |
+| #1390 | ✅ por construção | comentário 18:14; fechar é decisão do dono |
+| #1418 | ◐ análise | tabela por critério (20:47): operacional entregue por #1448/#1475/#1477; c1 colide com anti-enumeração; c5 → #1387 |
+| #1426 | ⏳ manual | matriz D1–D9 no runbook; automação é v0.5.0 |
+| #1419 | 🔁 PR #1477 | `garraia doctor whatsapp` |
+| #1384 | 🔁 PR #1473 | `*/<operacao>`; `search` lê o `filesystem` |
+| #1416 | ◐ PR #1478 | `garra_status.file_tools`; saúde de repo_search/devices/canais fica |
+| #1425 | ◐ análise | opção A (#921, hoje) × B (esta issue); decidir com #1381/#1387 (comentário 20:49) |
+| ratchet (#1254) | 🔁 PR #1476 | `max_file_lines` de volta sob a baseline; `files_over_1500/2500` +1 por `acesso.rs`/`whatsapp/tests.rs` → §8 |
+| code scanning | ✅ 0 alertas | #1472 + workflow de baixa (20:28–20:30) |
 
 ---
 
@@ -383,31 +433,64 @@ primeira versão desta tabela tinha horários estimados; corrigida).
 | 18:34 | **D1-lite local**: mesma instalação limpa + `llm.ollama` (`qwen3.5:0.8b`, Ollama da máquina); `/api/health` `healthy` com provider/model; diagnostics agregado `warning` só pelos dois de #1471; `POST /api/sessions` + `/messages` → **resposta real do modelo** em 15 s. Sem WhatsApp, sem telefone, sem chave paga. Daemon do dono em 3888 (v0.4.4) intocado | `scratchpad/d1-lite.sh` |
 | 18:29 | Revisão independente da automação do dono na #1468 acha um **falso negativo**: sessão REST criada com `agent_id` fica etiquetada `api:<agent>` em memória e a comparação exata a recusava (404 na própria sessão). Confirmado por TDD (vermelho: 404 e `false`), corrigido em `77400cbd` (`superficie_e_local` compara antes do `:`; `telegram:<id>` segue fechado); 7/7 + 2/2, clippy limpo | comentário na #1468 |
 | 18:40 | Head novo da #1468 no trem (`e18b38fc`) e no branch local de release; CI do trem reinicia | #1470 |
+| 19:15 | Ledger CodeQL: `codeql-rekey-ledger.py` casa o sink **dentro do span** do alerta (a linha exata mudava com o `fmt`), ledger #173 → #176, 14/14 testes | **PR #1472** |
+| 19:23 | **O PC desligou** (o dono avisou). Sessão retomada; árvore de trabalho da #1384 intacta | esta sessão |
+| 19:33 | #1384 por TDD: terceira forma de `allowed` (`*/<operacao>`), lista fechada das 10 leituras do `filesystem`, drift não avisa para whitelist; agents 681 + gateway 1 422 verdes | **PR #1473** |
+| 19:40 | **Dono mergeou o trem #1470** (`b61ece48`): #1448 #1455 #1467 #1468 #1469 entram; #1378 #1449 #1452 #1453 fecham | GitHub 23:40Z |
+| 19:52 | #1472 e #1473 atualizadas com `main` (BEHIND) | |
+| 19:53 | #1460/#1463/#1464 por TDD: `SessionWorkspace::garantir_raiz` (mkdir de um componente já em 0700; pai inexistente e link plantado viram erro), boot delega, guarda de `ToolContext` por substring com teste do filtro; agents 705 + gateway 1 640 | **PR #1474** |
+| 20:02 | #1465/#1471: raiz fora do `data_dir` não sai (posição `raiz #2`), `tools.bash`/`runtime.channels` neutros; 5 RED → 59 verdes; gateway 1 640 | **PR #1475** |
+| 20:19 | Ratchet: `mod tests` do `runtime.rs` (6 763 linhas) vira `runtime/tests/` em 20 arquivos ≤ 528; `repo_search_tool.rs` e `whatsapp_smoke.rs` divididos; `max_file_lines` 10 881 → 6 901, `files_over_700` 114 → 112; 705 + 21 testes intactos | **PR #1476** |
+| 20:27 | **#1472 mergeada** (`31e7824d`); `codeql-apply-dismissals` disparado 20:28 → sucesso 20:30; **0 alertas abertos** | run 36204958860 |
+| 20:33 | #1473 atualizada com `main` de novo (o merge da #1472 a deixou BEHIND) | |
+| 20:46 | `garraia doctor whatsapp` (#1419) por TDD (14 RED → 16 verdes + 2 smoke; CLI 828 verdes); execução real contra o daemon do dono revelou o **401** (chave de API) → a CLI manda o mesmo `Bearer` do `status` | **PR #1477** |
+| 20:47 · 20:49 | Análises por critério em #1418 e #1425, com proposta de decisão | comentários |
+| 20:53 | `garra_status.file_tools` (#1416 parte, #1418 c5, #1387): 5 RED → 29 verdes; gateway 1 453 | **PR #1478** |
+| 20:55 | **Checkpoint 2**: `open_issues=59 open_prs=6 alerts=0`; este plano atualizado (§0.1, §3.5, §3.7, §8, §9, §10) | local |
 
 Depois do trem entrar: empurrar `release/v0.4.6`, abrir a PR em **rascunho**
 com a tabela de dogfood de §6 preenchida no que foi executado (D1 parcial e
 D9 locais, Linux) e vazia no resto — **não se mergeia antes de ela estar
 preenchida**, a data da seção acompanha o dia do tag, e o tag é do dono.
 
-## 8. O que só o dono decide (gate)
+## 8. O que só o dono decide (gate) — atualizado 2026-09-25 20:55 EDT
 
-1. **MinIO:** autorizar o espelho `ghcr.io/michelbr84/minio` a partir da
-   imagem em cache nesta máquina (digest `sha256:a1ea29fa2835…`) — o push
-   exige um PAT com `write:packages`, que o token atual não tem. Sem isso,
-   nenhuma PR entra.
-2. **Escopo:** aceitar a divisão v0.4.6 (estabilização, §3.1) / v0.5.0 (três
-   épicos + plan 0363) e a criação dos milestones e das três issues-épico.
-   Alternativa: insistir em "tudo na v0.4.6", que este pré-voo considera
-   irrealista e não recomenda.
-3. **R4:** revisão e aprovação de #1448/#1449, #1461 e #1462 (o
-   `security-auditor` roda com o modelo da sessão; sem Opus 5 pago).
-4. **Toolchain:** `rust-toolchain.toml` (recomendado) ou o script da #1455.
-5. **Dogfood:** quem executa a matriz de §6 (telefones, Windows, macOS) e
-   confirma saldo na chave OpenRouter.
-6. **Tag e push:** feitos pelo dono, da máquina local, como nas últimas
-   releases.
-7. **Assinatura/notarização/updater:** confirmar que ficam fora da v0.4.6.
+| # | Decisão | Estado |
+|---|---|---|
+| 1 | MinIO: espelho no GHCR (exigia PAT `write:packages`) | **resolvida sem PAT**: imagem construída do fonte no runner (PR #1466) |
+| 2 | Escopo v0.4.6 (estabilização) × v0.5.0 (três épicos + plan 0363), milestones e issues-épico | **pendente** — sem isso `open_issues = 0` é inalcançável: 43 issues são funcionalidade nova |
+| 3 | R4: #1448/#1449 | **feita pelo dono** (trem mergeado; #1449 fechada) |
+| 3b | R4: #1461 (provável não-procede; exige `chat.db`) e #1462 via 2 (leitura por `X-Session-Id`: produto) | **pendente** |
+| 4 | Toolchain: `rust-toolchain.toml` × script | **decidida de fato**: script (#1455) mergeado, #1452 fechada; `rust-toolchain.toml` fica como opção futura |
+| 5 | Dogfood D1–D8 (telefones, Windows, macOS) e saldo OpenRouter | **pendente** (D1-lite e D9 feitos em Linux) |
+| 6 | Tag e push | **pendente**; a regra do prompt estrito adia até o backlog zerar |
+| 7 | Assinatura/notarização/updater fora da v0.4.6 | **pendente** (builds não assinados autorizados pelo prompt revisado) |
+| 8 | Ratchet: `files_over_1500` (`garraia-cli/src/whatsapp/acesso.rs`, 1 650) e `files_over_2500` (`garraia-cli/src/whatsapp/tests.rs`, 3 726) — dividir em ≤ 700 ou re-baseline via `freeze-baseline.py` (R5) | **pendente** |
+| 9 | #1425: opção A (tool sempre registrada, #921) × B (só com canal operacional + `withheld`) — junto com #1381/#1387 | **pendente** |
+| 10 | Fechar/estreitar as verificadas: #1390 (por construção), #1429 (3/6 → #1388), #1418 (operacional entregue; c5 → #1387) | **pendente** |
+| 11 | Entrada das 6 PRs: #1473 direto quando verde; trem com #1474 #1475 #1476 #1478 (+ #1477 depois da #1473) | **proposta**; o dono mergeou o último trem |
 
-Com o item 1 e o item 2 respondidos, o agente pode abrir a PR do `ci.yml`,
-os PRs das correções de §3.1 e a PR de release, nessa ordem, cada um com
-fragmento de changelog e evidência de CI anexada aqui.
+## 9. Ledger de checkpoints
+
+| Checkpoint | Hora (EDT) | `open_issues` | `open_PRs` | Alertas | CI obrigatório | Regressões | Instaladores |
+|---|---|---|---|---|---|---|---|
+| C1 (pré-voo) | 15:40 | 64 | 3 | 1 (#176) | **vermelho repo-wide** (MinIO) | ratchet regredido (#1448) | não |
+| C1.5 (após #1466) | 18:19 | 62 | 3 (+#1467/#1468/#1469 abertas) | 1 | verde | idem | não |
+| C2 | 20:55 | **59** | **6** (todas desta sessão) | **0** | verde nas mergeadas; 6 runs em curso | 0 novas; a do ratchet revertida na #1476 | não (regra do prompt) |
+
+## 10. Artefatos de release
+
+| Artefato | Estado em 20:55 EDT |
+|---|---|
+| Tag `v0.4.6` | não criada (regra: só com backlog zero; tag é do dono) |
+| Branch `release/v0.4.6` | **local**, 5 commits sobre o trem (`4700afcb` bump, `fcf0c5af` CHANGELOG, `a0b2d68c`, `5b61ac5f` wiki/TODO/ROADMAP, `214d9c63` plans + este); precisa rebase sobre `main` atual e remontagem do CHANGELOG com os 9 fragmentos novos |
+| `CHANGELOG.md` `[0.4.6]` | montado localmente com 18 fragmentos; **desatualizado** em relação às PRs abertas |
+| Binário candidato | `target/release/garra` do trem (64 MB, ainda `0.4.5`); D1-lite e D9 feitos com ele |
+| Instaladores Linux (`.deb`/AppImage), Windows (MSI/NSIS), macOS | **não construídos** |
+| Imagem Docker | não |
+| Wiki Novidades/What's New | rascunho no branch local |
+
+O item 1 foi resolvido sem o dono (MinIO do fonte); as PRs de correção de §3.1 estão
+abertas com fragmento e evidência (§7.5). A PR de release **não** será aberta enquanto
+as decisões 2, 3b, 8, 9 e 10 não zerarem o que resta do backlog — é a regra do prompt
+estrito, e este plano a segue.
