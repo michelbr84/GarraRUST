@@ -10,6 +10,7 @@
 | Quando (EDT) | `open_issues` | `open_PRs` | alertas | checks obrigatórios do SHA de `main` | regressões |
 |---|---|---|---|---|---|
 | 26/09 01:40 (início da missão) | 51 | 0 | 0 (#176 dismissed 00:35Z) | 6/6 verdes em `e1d62523` | 0 |
+| 26/09 06:45 | 51 | 4 (#1484, #1486, #1487, #1488 trem) | 0 | `e9e97673`: 6/6 verdes na #1483 antes do merge; run de `main` em curso | 0 |
 
 ## 1. Lotes e dependências
 
@@ -71,7 +72,7 @@
 | #1438 | P2 | local-only reliability observability for tools and channels | L2-reg | observabilidade local | — | — | aberta |
 | #1439 | P2 | mandatory AAA dogfood gate before release tags | L2-e2e | gate de dogfood automatizado + manual | — | — | aberta |
 | #1461 | security,P1 | security: iMessage usa group_name cru (renomeavel por qualquer partici | L3 | iMessage: revalidar e fechar com prova | — | — | aberta |
-| #1462 | security,P1 | security: X-Session-Id forjado na rota compat OpenAI le resumo + ate 1 | L3 | X-Session-Id opcao 3 | — | — | aberta |
+| #1462 | security,P1 | security: X-Session-Id forjado na rota compat OpenAI le resumo + ate 1 | L3 | X-Session-Id opcao 3 | `sec/1462-leitura-de-sessao-opcao-3` | `leitura_de_sessao_por_id_do_cliente.rs` 12/12 | PR #1484 (revisada) → trem #1488 |
 
 Bugs/regressões descobertos na missão entram aqui como linhas novas (com issue própria quando
 não houver uma que os cubra).
@@ -86,3 +87,11 @@ não houver uma que os cubra).
 | 26/09 02:15 | **PR #1483** aberta (Closes #1482). Prova ao vivo opt-in contra o `server-filesystem` real: sem jail serve a outra sessao; com jail recusa; 1/1 em 0,65 s | comentário na #1483 |
 | 26/09 02:25 | Delegação em worktrees (concorrência 2): agente **instaladores/dogfood Linux** (pacote candidato + container limpo) e agente **#1462 opção 3** (leitura do cliente restrita às sessões alcançáveis; export do console por rota admin autenticada; mobile próprio) | Agent tool |
 | 26/09 02:50 | L1-b em curso na branch `feat/1385-classes-de-capacidade` (empilhada na #1483): `capacidades.rs` (13 classes, tabela fechada das nativas, MCP por operacao/anotacoes `readOnlyHint`/`destructiveHint`), `Tool::capacidades()`, `ToolPolicy.{allowed,denied}_capabilities`+`no_tools`, `TetoDeCapacidades` composto no `ToolGate` (`permite_com_capacidades`, `explica_recusa`), `Nivel {chat,read,full}` + `politica_do_nivel(nivel, write)`, `ExecContext.teto`, runtime pergunta por nome+classe em todos os pontos (`portao_permite`), inventario com classes. RED 8 → GREEN 9 (incl. guarda dos call sites) | testes `modes::tests::{whitelist_por_classe…,niveis_chat_read_full…,teto_do_principal…}`, `runtime/tests/teto_por_capacidade.rs` |
+| 26/09 03:52 | L1-b verificado: agents 768 (lib, +mcp) / 796 (todos os alvos), gateway 1650, cli 829, clippy limpo, fmt ok. ADR 0025 escrita e indexada; fragmento `changelog.d/added/1385-classes-de-capacidade.md` | `cargo test` nesta sessão |
+| 26/09 06:2x | Sessão cortada pelo limite de uso (5 h) com os dois subagentes ainda rodando; retomada 06:20 EDT. Commit `0e885516` (L1-b) empurrado; PR #1485 aberta empilhada na #1483 | `git log` |
+| 26/09 06:22 | **#1483 MERGED** (`e9e97673`; 6/6 obrigatórios verdes). O `--delete-branch` fez o GitHub **fechar** a #1485 (base apagada) — reaberta como **#1486** contra `main` (1 commit) | `gh pr view 1483/1485/1486` |
+| 26/09 06:25 | Subagentes cortados pelo mesmo limite: **#1462 opção 3** já tinha aberto a **PR #1484** (`154012b9`, 6/6 verdes + macOS; worktree limpa); **dogfood Linux** tinha 2 commits empurrados em `feat/1426-dogfood-linux-limpo` (script + fix do zumbi) sem PR | notificações das tasks; `git -C .claude/worktrees/... status` |
+| 26/09 06:30 | Revisão do integrador da #1484 (diff inteiro: `state.rs`, `api.rs`, `ws.rs`, `admin/*`, trechos do `webchat.html`): pronto — regra única em `sessao_da_api`, recusa antes de hidratar, rota admin em `auth_routes` + `ManageSessions` + audit, `/ws` resume fechado, mobile pelo `sub`. Comentário postado na PR | `gh pr review 1484 --comment` |
+| 26/09 06:35 | Dogfood: run final `2026-09-26-0347` (candidato `846e96c1`, `.deb` local via nfpm pinado, ubuntu:24.04 limpo) **13/13 PASSOU** em 370 s, resposta real do `qwen3.5:0.8b`. RED do zumbi: run `0331` (`.deb` v0.4.5, PID 1 = `sleep`): "Process 127 survived SIGTERM and SIGKILL". Prova do fix pelo integrador **sem `--init`** com o `.deb` do 0347: daemon PID 64 vira `Z`, `garraia stop` → "GarraIA stopped." em 0 s. Unitário `zumbi_nao_conta_como_processo_rodando` re-executado: 1 passed. **PR #1487** aberta | `dogfood/linux/2026-09-26-0347/{resumo.txt,repro-zumbi-sem-init/}` na worktree do agente |
+| 26/09 06:40 | **Trem `train/v046-c` → PR #1488** (`--no-ff`: #1484 + #1486 + #1487; base `e9e97673`; sem conflito; `cargo check` da união exit 0). Auto-merge desligado nas três | `gh pr view 1488` |
+| 26/09 07:00 | **L1-c em curso** na worktree `GarraRUST-l1c`, branch `feat/1388-access-policy-v2` (empilhada no trem): `bootstrap/whatsapp_linked/politica.rs` (`PoliticaDeAcesso::da_secao` fail-closed, `Principal {Dono,Usuario,Pareado,Desconhecido,Grupo,Bloqueado,Estranho}`, `principal_do_turno`, `teto_do_principal`), `LinkedSettings.access` + `entrada_de`/`e_dono`/`responde_em_grupo`, `PortaoDoCanal` com `bloqueados`/`aberto`/`pareado()`, `admissao_vigente` relê a política inteira, `turno` põe `exec.teto` e loga `principal`/`alcance`. Decisão de compat: `allow` legado e grupo sem política ficam **sem teto** (o piso de modo decide, como sempre); nível/`write` só onde declarado; pareado por código = `read`. RED 16/17 → GREEN 114/114 no módulo | `tests/politica.rs` (17 testes) |
