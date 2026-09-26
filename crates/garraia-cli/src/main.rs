@@ -1127,7 +1127,34 @@ pub(crate) fn read_pid() -> Option<u32> {
 #[cfg(unix)]
 pub(crate) fn is_process_running(pid: u32) -> bool {
     // Signal 0 checks existence without sending a signal
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    let existe = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+    existe && !e_zumbi(pid)
+}
+
+/// #1426: `kill(pid, 0)` devolve 0 para um zumbi — o processo ja saiu, so
+/// falta o pai colher a saida. Um daemon cujo pai nao colhe filhos (um
+/// container cujo PID 1 e `sleep`, um `docker exec` sem `--init`) encerra
+/// limpo no SIGTERM e mesmo assim o `stop` esperava os 5 s, mandava SIGKILL e
+/// anunciava "survived SIGTERM and SIGKILL" de um processo morto. Um zumbi
+/// nao esta rodando. So o Linux tem `/proc/<pid>/stat`; fora dele fica o
+/// `kill`, que e o que sempre foi.
+#[cfg(target_os = "linux")]
+fn e_zumbi(pid: u32) -> bool {
+    // Formato: `pid (comm) estado ...` — `comm` pode ter espaco e parentese,
+    // por isso o estado e o que vem depois do ULTIMO `)`.
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit(')')
+                .next()
+                .map(|depois| depois.trim_start().starts_with('Z'))
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn e_zumbi(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -3467,5 +3494,42 @@ mod tests {
             );
         }
         assert!(variantes >= 40, "varredura achou so {variantes} variantes");
+    }
+
+    /// #1426 (dogfood em container limpo): o pai do daemon nem sempre colhe
+    /// filhos — um container cujo PID 1 e `sleep`, um `docker exec` sem
+    /// `--init`. Ai o gateway encerra limpo no SIGTERM, vira zumbi, e
+    /// `kill(pid, 0)` continua devolvendo 0: o `stop` esperava 5 s, mandava
+    /// SIGKILL e dizia "survived SIGTERM and SIGKILL" de um processo que ja
+    /// tinha morrido. Um zumbi nao esta rodando.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zumbi_nao_conta_como_processo_rodando() {
+        // SAFETY: o filho so chama `_exit`, que e async-signal-safe; o pai
+        // nao compartilha nada com ele e o colhe com `waitpid` antes de
+        // qualquer assert, para nao deixar zumbi no harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork falhou");
+        if pid == 0 {
+            unsafe { libc::_exit(0) };
+        }
+        // Espera o filho virar zumbi DE FATO (estado `Z` no /proc), sem colher.
+        let stat = format!("/proc/{pid}/stat");
+        let virou_zumbi = (0..200).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::read_to_string(&stat)
+                .ok()
+                .and_then(|s| {
+                    s.rsplit(')')
+                        .next()
+                        .map(|depois| depois.trim_start().starts_with('Z'))
+                })
+                .unwrap_or(false)
+        });
+        let resultado = is_process_running(pid as u32);
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert!(virou_zumbi, "o filho nao virou zumbi em 2 s");
+        assert!(!resultado, "zumbi tratado como processo vivo");
     }
 }
