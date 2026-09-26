@@ -34,7 +34,7 @@ pub use schedule::{
     EventTrigger, EventType, ScheduledTask, TaskStatus, TriggerRegistry, WebhookTrigger,
 };
 pub use schedule::{ScheduleHeartbeat, ScheduleRecurring};
-pub use session_workspace::SessionWorkspace;
+pub use session_workspace::{RaizGarantida, RecusaDaRaiz, SessionWorkspace};
 pub use tool_context::ProjectToolContext;
 pub use web_fetch_tool::WebFetchTool;
 pub use web_search_tool::WebSearchTool;

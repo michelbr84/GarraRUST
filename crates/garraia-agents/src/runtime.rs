@@ -7432,10 +7432,7 @@ mod tests {
         let literais: Vec<usize> = producao
             .lines()
             .enumerate()
-            .filter(|(_, l)| {
-                let t = l.trim();
-                t == "ToolContext {" || t == "crate::tools::ToolContext {"
-            })
+            .filter(|(_, l)| parece_construtor_de_tool_context(l))
             .map(|(n, _)| n + 1)
             .collect();
 
@@ -7453,6 +7450,64 @@ mod tests {
             producao.contains("working_dir: self.working_dir_efetivo(exec, session_id)"),
             "o construtor deixou de escopar o workspace padrao por sessao (#1449)"
         );
+    }
+
+    /// Uma linha de fonte monta um `ToolContext`? (#1464)
+    ///
+    /// Substring, e nao igualdade da linha inteira: a forma anterior
+    /// (`t == "ToolContext {"`) deixava passar `let c = ToolContext { .. };`
+    /// numa linha so, `garraia_agents::ToolContext {` com caminho e
+    /// `ToolContext { ..base }` — exatamente as formas que um contribuidor
+    /// escreveria ao reabrir a #1449 sem querer. O que nao monta nada fica
+    /// fora: comentario, assinatura que devolve o tipo, `impl`/`struct`.
+    fn parece_construtor_de_tool_context(linha: &str) -> bool {
+        let t = linha.trim();
+        if t.starts_with("//") || t.starts_with("impl ") || t.contains("struct ToolContext") {
+            return false;
+        }
+        // Assinatura que devolve o tipo — `) -> ToolContext {`, com ou sem
+        // caminho de modulo na frente. O que vem depois da seta e SO o tipo.
+        if let Some((_, depois)) = t.split_once("->") {
+            let tipo = depois.trim().trim_end_matches('{').trim();
+            if tipo.rsplit("::").next() == Some("ToolContext") {
+                return false;
+            }
+        }
+        t.contains("ToolContext {")
+    }
+
+    /// O filtro do guard acima (#1464). Casa o literal em qualquer forma que
+    /// o rustfmt — ou um contribuidor — produza: numa linha so, com caminho de
+    /// modulo, com `..base`. E NAO casa o que nao monta nada: comentario,
+    /// assinatura que devolve o tipo, `impl`/`struct` do tipo.
+    #[test]
+    fn o_filtro_do_guard_casa_qualquer_forma_do_construtor() {
+        for monta in [
+            "ToolContext {",
+            "crate::tools::ToolContext {",
+            "let context = ToolContext { session_id, user_id, working_dir: None };",
+            "garraia_agents::ToolContext { ..base }",
+            "    Some(ToolContext { ..ctx })",
+        ] {
+            assert!(parece_construtor_de_tool_context(monta), "{monta:?}");
+        }
+        for nao_monta in [
+            "// ToolContext { ... }",
+            "/// monta um `ToolContext { .. }` por sessao",
+            "//! ToolContext {",
+            "ToolContext::new(",
+            "    ) -> ToolContext {",
+            "    ) -> crate::tools::ToolContext {",
+            "fn contexto_de_ferramenta(&self) -> ToolContext {",
+            "pub fn ctx() -> garraia_agents::ToolContext {",
+            "impl ToolContext {",
+            "pub struct ToolContext {",
+        ] {
+            assert!(
+                !parece_construtor_de_tool_context(nao_monta),
+                "{nao_monta:?}"
+            );
+        }
     }
 
     /// Nenhuma label pode carregar id de sessao, de usuario ou conteudo — e a
