@@ -219,6 +219,7 @@ Mergeadas nesta sessão: **#1466** (MinIO do fonte, `c4d7f1ba`, 18:19), **#1470*
 | #1475 | #1465, #1471 (diagnostics sem caminho do host, sem aviso espúrio) | main | **mergeada 23:13** via trem #1479 | — |
 | #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | **mergeada 23:13** via trem #1479 | — |
 | #1477 | #1419 `garraia doctor whatsapp` | main (atualizada 23:15) | CI reiniciado após o trem | merge direto quando verde |
+| #1480 | #1459 raízes das file tools resolvidas uma vez, no boot | main (pós-trem) | CI em curso | merge direto quando verde |
 | #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | **mergeada 23:13** via trem #1479 | — |
 
 Cada merge em `main` deixa as outras BEHIND (checks estritos); por isso as cinco de
@@ -456,6 +457,7 @@ primeira versão desta tabela tinha horários estimados; corrigida).
 | 22:51 | #1477 verde nos 33 checks (CLEAN); merge **segurado** para não deixar o trem BEHIND | comentário na #1477 |
 | 23:13 | **Trem #1479 mergeado** (`7607b28f`) com os 6 obrigatórios verdes; #1474 #1475 #1476 #1478 marcadas merged; **#1460 #1463 #1464 #1465 #1471 fechadas**. `open_issues=53 open_prs=1` | GitHub |
 | 23:15 | #1477 atualizada com `main` (BEHIND pelo trem); CI reinicia; monitor de fundo para o merge | |
+| 23:19 | #1459 por TDD (3 RED: linha do workspace seguia o disco, nao o boot; duas guardas de fonte): `AppState.raizes_das_file_tools` resolvido uma vez em `with_config_dir`; gateway 1 649 verdes, clippy, fmt | **PR #1480** |
 
 Depois do trem entrar: empurrar `release/v0.4.6`, abrir a PR em **rascunho**
 com a tabela de dogfood de §6 preenchida no que foi executado (D1 parcial e
