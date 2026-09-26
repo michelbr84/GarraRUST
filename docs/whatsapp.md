@@ -286,6 +286,20 @@ Detalhes do que e feito:
 > `agent.file_roots`) recebe uma recusa propria e acionavel — "selecione um
 > projeto com `/project <nome>`" — em vez da recusa generica de caminho fora
 > das raizes (#1418).
+>
+> **No Web Console, por conversa (#1409, #1415).** A pagina *Sessions* mostra,
+> para cada sessao do WhatsApp pessoal, o **principal** (dono, usuario com nivel
+> e escrita, pareado, grupo, desconhecido), o **modo efetivo** do turno — o que
+> a sessao escolheu com `/mode`, ou o piso do canal quando nao escolheu — e o
+> **projeto ativo** pelo nome, nunca pelo caminho. O botao *Capabilities* de
+> uma sessao abre o painel daquela conversa: o mesmo registro do
+> `garra_status`, mas com o portao real do turno (piso ∧ teto do principal),
+> entao um usuario `read` ve `file_write` como `denied` e a operadora sabe,
+> antes de a pessoa reclamar, o que esta liberado, negado, indisponivel, fora
+> do ar ou nao configurado — e o passo para cada caso. Os mesmos campos saem em
+> `GET /admin/api/sessions` (`principal`, `level`, `write`, `chosen_mode`,
+> `effective_mode`, `project_name`, `has_workspace`) e o painel em
+> `GET /admin/api/capabilities?session_id=<id>`.
 
 Quem manda mensagem para o numero vinculado e, para o agente, um remetente
 **nao autenticado**: a allowlist do canal decide quem entra, e o que ele pode
