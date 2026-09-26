@@ -47,7 +47,7 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 
 use crate::wizard::prompts::Prompter;
 
-mod acesso;
+pub(crate) mod acesso;
 pub use acesso::{Pedido, PedidoDePapel, PedidoRemocao};
 
 /// De quantos em quantos segundos o `connecting` pulsa na tela.
@@ -134,7 +134,7 @@ impl Lang {
 }
 
 /// Escolhe entre as duas versoes de uma frase.
-fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
+pub(crate) fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
     match lang {
         Lang::Pt => pt,
         Lang::En => en,
@@ -148,7 +148,7 @@ fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
 /// `cargo install`, `install.sh` sem o alias — manda o usuario rodar um
 /// comando que nao existe. A instrucao tem de nomear o binario que esta na
 /// maquina, e um teste varre este arquivo atras do literal antigo.
-fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
+pub(crate) fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
     t(lang, pt, en).replace("{bin}", &crate::binario::nome())
 }
 
@@ -254,15 +254,19 @@ impl Context {
     /// inalcancavel hoje. Ele e propagado assim mesmo: `unwrap()` em codigo de
     /// producao e proibido, e o dia em que a CLI aprender a escolher conta e
     /// exatamente o dia em que este erro passa a valer.
-    fn store(&self) -> Result<SessionStore, garraia_channels::whatsapp_linked::SessionError> {
+    pub(crate) fn store(
+        &self,
+    ) -> Result<SessionStore, garraia_channels::whatsapp_linked::SessionError> {
         SessionStore::for_data_dir(&self.data_dir, DEFAULT_ACCOUNT)
     }
 
-    fn bridge_dir(&self) -> PathBuf {
+    pub(crate) fn bridge_dir(&self) -> PathBuf {
         self.data_dir.join("whatsapp").join("bridge")
     }
 
-    fn key(&self) -> Result<SessionKey, garraia_channels::whatsapp_linked::SessionError> {
+    pub(crate) fn key(
+        &self,
+    ) -> Result<SessionKey, garraia_channels::whatsapp_linked::SessionError> {
         SessionKey::resolve(self.store()?.dir(), self.vault_passphrase.as_deref())
     }
 }
