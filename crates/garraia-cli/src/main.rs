@@ -499,6 +499,67 @@ enum WhatsAppCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Politica de acesso v2 (ADR 0025): quem entra e ate onde cada um vai.
+    ///
+    /// Sem subcomando imprime a politica EFETIVA (admissao, default do
+    /// desconhecido, grupos e cada principal com piso, nivel e o que pode de
+    /// fato, pelo mesmo motor do turno). Identidades so por `...1234`;
+    /// `--reveal` mostra os valores da config, localmente. Exit codes: 0 ok,
+    /// 70 config ilegivel.
+    Access {
+        #[command(subcommand)]
+        cmd: Option<AccessCommands>,
+        /// Saida em JSON (so sem subcomando).
+        #[arg(long)]
+        json: bool,
+        /// Mostra as identidades inteiras (valores da config), nao so `...1234`.
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// Nivel de acesso de um numero: chat | read | full (#1398).
+    ///
+    /// O nivel e um TETO composto com o modo da sessao: so tira, nunca poe.
+    /// `--dry-run` mostra o impacto sem gravar. Exit codes: 0 ok, 65 numero
+    /// ou combinacao invalida (nivel no dono: use `unowner`), 70 config,
+    /// 73 gravou mas o audit falhou.
+    Level {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
+        nivel: String,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Escrita de arquivo (nativa e MCP) de um numero: on | off (#1397).
+    ///
+    /// Mexe SO em escrita de arquivo: nao liga `bash`, nao desliga sandbox,
+    /// jail nem confirmacao. Exit codes como `level` (65 tambem para quem
+    /// nao esta autorizado ou esta em `chat`).
+    Write {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(value_name = "ESTADO", value_parser = ["on", "off"])]
+        estado: String,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Bloqueia um numero: vence `open`, `allow` e pareamento. Vale na
+    /// mensagem seguinte, sem restart.
+    Block {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Desbloqueia um numero (volta ao que a config diz dele).
+    Unblock {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Remove um numero da lista de autorizados (#1394).
     ///
     /// O espelho do `allow`: tira de `channels.whatsapp_linked.allow` e de
@@ -554,6 +615,94 @@ enum WhatsAppCommands {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+}
+
+/// `garraia whatsapp access <subcomando>` (ADR 0025).
+#[derive(Subcommand)]
+enum AccessCommands {
+    /// Admite QUALQUER numero, com o default do desconhecido (pede confirmacao).
+    Open {
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// So quem esta declarado ou pareou por codigo (o default).
+    Restricted {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// O que um desconhecido recebe em `open`: chat | read (nunca full).
+    Default {
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read"])]
+        nivel: String,
+        /// Libera escrita de arquivo (so com `read`).
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Grupos: on | off | default <nivel>.
+    Groups {
+        #[command(subcommand)]
+        cmd: GroupsCommands,
+    },
+    /// Politica de um grupo pelo JID (`<digitos>@g.us`).
+    Group {
+        #[arg(value_name = "JID")]
+        jid: String,
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
+        nivel: String,
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Volta a politica ao seguro; donos e bloqueios ficam (pede confirmacao).
+    Reset {
+        #[arg(long, short = 'y')]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Trilha local de mudancas na politica, mais recente primeiro.
+    Audit {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+}
+
+/// `garraia whatsapp access groups <subcomando>`.
+#[derive(Subcommand)]
+enum GroupsCommands {
+    /// Responder em grupos.
+    On {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Nao responder em grupos.
+    Off {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// O nivel de um grupo sem politica propria.
+    Default {
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
+        nivel: String,
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// `chat|read|full` da linha de comando — o `value_parser` ja garantiu o
+/// valor; o fallback e fail-closed por principio.
+fn nivel_de(nome: &str) -> garraia_agents::modes::Nivel {
+    garraia_agents::modes::Nivel::parse(nome).unwrap_or(garraia_agents::modes::Nivel::Chat)
 }
 
 #[derive(Subcommand)]
@@ -1445,6 +1594,22 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
         Commands::WhatsApp { action } => match action {
             // `users` so le a config e imprime, como o `status`.
             Some(WhatsAppCommands::Status | WhatsAppCommands::Users { .. }) => true,
+            // `access` e `access audit` so leem e imprimem; o resto grava.
+            Some(WhatsAppCommands::Access { cmd, .. }) => match cmd {
+                None | Some(AccessCommands::Audit { .. }) => true,
+                Some(
+                    AccessCommands::Open { .. }
+                    | AccessCommands::Restricted { .. }
+                    | AccessCommands::Default { .. }
+                    | AccessCommands::Group { .. }
+                    | AccessCommands::Reset { .. },
+                ) => false,
+                Some(AccessCommands::Groups { cmd }) => match cmd {
+                    GroupsCommands::On { .. }
+                    | GroupsCommands::Off { .. }
+                    | GroupsCommands::Default { .. } => false,
+                },
+            },
             // Sem subcomando e o menu interativo.
             None
             | Some(
@@ -1455,7 +1620,11 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                 | WhatsAppCommands::Allow { .. }
                 | WhatsAppCommands::Remove { .. }
                 | WhatsAppCommands::Owner { .. }
-                | WhatsAppCommands::Unowner { .. },
+                | WhatsAppCommands::Unowner { .. }
+                | WhatsAppCommands::Level { .. }
+                | WhatsAppCommands::Write { .. }
+                | WhatsAppCommands::Block { .. }
+                | WhatsAppCommands::Unblock { .. },
             ) => false,
         },
         Commands::Admin { action } => match action {
@@ -1793,6 +1962,99 @@ fn main() -> Result<()> {
                 whatsapp::Action::Unowner(whatsapp::PedidoDePapel {
                     numero: numero.clone(),
                     yes: *yes,
+                })
+            }
+            Some(WhatsAppCommands::Access { cmd, json, reveal }) => {
+                use whatsapp::ComandoDeAcesso as C;
+                whatsapp::Action::Access(match cmd {
+                    None => C::Mostrar {
+                        json: *json,
+                        revelar: *reveal,
+                    },
+                    Some(AccessCommands::Open { yes, dry_run }) => C::Abrir {
+                        yes: *yes,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Restricted { dry_run }) => {
+                        C::Restringir { dry_run: *dry_run }
+                    }
+                    Some(AccessCommands::Default {
+                        nivel,
+                        write,
+                        dry_run,
+                    }) => C::Default {
+                        nivel: nivel_de(nivel),
+                        write: *write,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Groups { cmd }) => match cmd {
+                        GroupsCommands::On { dry_run } => C::Grupos {
+                            ligados: true,
+                            dry_run: *dry_run,
+                        },
+                        GroupsCommands::Off { dry_run } => C::Grupos {
+                            ligados: false,
+                            dry_run: *dry_run,
+                        },
+                        GroupsCommands::Default {
+                            nivel,
+                            write,
+                            dry_run,
+                        } => C::GrupoDefault {
+                            nivel: nivel_de(nivel),
+                            write: *write,
+                            dry_run: *dry_run,
+                        },
+                    },
+                    Some(AccessCommands::Group {
+                        jid,
+                        nivel,
+                        write,
+                        dry_run,
+                    }) => C::Grupo {
+                        jid: jid.clone(),
+                        nivel: nivel_de(nivel),
+                        write: *write,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Reset { yes, dry_run }) => C::Reset {
+                        yes: *yes,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Audit { json, limit }) => C::Audit {
+                        json: *json,
+                        limit: *limit,
+                    },
+                })
+            }
+            Some(WhatsAppCommands::Level {
+                numero,
+                nivel,
+                dry_run,
+            }) => whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Nivel {
+                numero: numero.clone(),
+                nivel: nivel_de(nivel),
+                dry_run: *dry_run,
+            }),
+            Some(WhatsAppCommands::Write {
+                numero,
+                estado,
+                dry_run,
+            }) => whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Write {
+                numero: numero.clone(),
+                on: estado == "on",
+                dry_run: *dry_run,
+            }),
+            Some(WhatsAppCommands::Block { numero, dry_run }) => {
+                whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Bloquear {
+                    numero: numero.clone(),
+                    dry_run: *dry_run,
+                })
+            }
+            Some(WhatsAppCommands::Unblock { numero, dry_run }) => {
+                whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Desbloquear {
+                    numero: numero.clone(),
+                    dry_run: *dry_run,
                 })
             }
         };

@@ -48,7 +48,10 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 use crate::wizard::prompts::Prompter;
 
 pub(crate) mod acesso;
+/// ADR 0025: `garraia whatsapp access ...` (#1396-#1401, #1413, #1414).
+pub(crate) mod politica;
 pub use acesso::{Pedido, PedidoDePapel, PedidoRemocao};
+pub use politica::ComandoDeAcesso;
 
 /// De quantos em quantos segundos o `connecting` pulsa na tela.
 const CONNECTING_PULSE_SECS: u64 = 5;
@@ -87,6 +90,9 @@ pub enum Action {
     /// `unowner <numero> [--yes]`: tira o papel de dono SEM tirar o acesso;
     /// o ultimo dono exige confirmacao (#1395).
     Unowner(PedidoDePapel),
+    /// `access ...`, `level`, `write`, `block`, `unblock`: a Access Policy v2
+    /// (ADR 0025), pelo motor do gateway.
+    Access(ComandoDeAcesso),
     Cloud,
     Status,
     Logout,
@@ -289,6 +295,7 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
         Action::Remove(pedido) => acesso::remove(ctx, prompter, &pedido),
         Action::Owner(pedido) => acesso::owner(ctx, prompter, &pedido),
         Action::Unowner(pedido) => acesso::unowner(ctx, prompter, &pedido),
+        Action::Access(comando) => politica::access(ctx, prompter, &comando),
         Action::Cloud => cloud(ctx, prompter),
     }
 }
@@ -320,8 +327,8 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(&tb(
         lang,
-        "Também existem: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <número> | {bin} whatsapp remove <número> | {bin} whatsapp owner <número> | {bin} whatsapp unowner <número> | {bin} whatsapp restore | {bin} whatsapp logout",
-        "Also available: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <number> | {bin} whatsapp remove <number> | {bin} whatsapp owner <number> | {bin} whatsapp unowner <number> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Também existem: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp access | {bin} whatsapp allow <número> | {bin} whatsapp level <número> chat|read|full | {bin} whatsapp write <número> on|off | {bin} whatsapp block <número> | {bin} whatsapp remove <número> | {bin} whatsapp owner <número> | {bin} whatsapp unowner <número> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Also available: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp access | {bin} whatsapp allow <number> | {bin} whatsapp level <number> chat|read|full | {bin} whatsapp write <number> on|off | {bin} whatsapp block <number> | {bin} whatsapp remove <number> | {bin} whatsapp owner <number> | {bin} whatsapp unowner <number> | {bin} whatsapp restore | {bin} whatsapp logout",
     ));
     out
 }
