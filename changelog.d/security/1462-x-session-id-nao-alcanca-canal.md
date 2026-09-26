@@ -8,6 +8,5 @@
   id, agora so se alcanca sessao das superficies locais do operador (`api`,
   `vscode`, `web`, `parrot`); sessao de canal com humano do outro lado ou do
   mobile responde `404 session not found` sem confirmar que existe, e nao e
-  hidratada nem escrita. A leitura `GET /api/sessions/{id}/history`, que o
-  Web Console usa para exportar qualquer sessao, fica como esta — e decisao
-  de produto registrada na issue.
+  hidratada nem escrita. (A leitura por id, `GET /api/sessions/{id}/history`,
+  foi fechada em seguida pela opcao 3 — ver o item irmao desta secao.)
