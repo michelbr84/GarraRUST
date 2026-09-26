@@ -86,7 +86,10 @@ fn reject_path() -> (StatusCode, Json<serde_json::Value>) {
 }
 
 /// POST /api/projects — create a new project.
-pub async fn create_project(Json(body): Json<CreateProjectRequest>) -> impl IntoResponse {
+pub async fn create_project(
+    State(state): State<crate::state::SharedState>,
+    Json(body): Json<CreateProjectRequest>,
+) -> impl IntoResponse {
     // Confina ANTES de guardar, e guarda o caminho já resolvido: é o resolvido
     // que `list_project_files` vai percorrer.
     let Ok(path) = project_root::confine(&body.path) else {
@@ -98,8 +101,26 @@ pub async fn create_project(Json(body): Json<CreateProjectRequest>) -> impl Into
     };
 
     let now = chrono::Utc::now().to_rfc3339();
+    // #1379: com `sessions.db`, o projeto e persistido (e `/project` o acha
+    // depois de um restart); sem banco, fica so em memoria como antes.
+    let id = match &state.session_store {
+        Some(store) => match store.lock().await.create_project(
+            &body.name,
+            &path.to_string_lossy(),
+            body.description.as_deref(),
+            None,
+            None,
+        ) {
+            Ok(p) => p.id,
+            Err(e) => {
+                warn!(erro = %e, "POST /api/projects: nao gravou no sessions.db; fica em memoria");
+                Uuid::new_v4().to_string()
+            }
+        },
+        None => Uuid::new_v4().to_string(),
+    };
     let project = Project {
-        id: Uuid::new_v4().to_string(),
+        id,
         name: body.name,
         path: path.to_string_lossy().into_owned(),
         description: body.description,
@@ -116,8 +137,25 @@ pub async fn create_project(Json(body): Json<CreateProjectRequest>) -> impl Into
 }
 
 /// GET /api/projects — list all projects.
-pub async fn list_projects() -> impl IntoResponse {
-    let projects: Vec<Project> = PROJECTS.iter().map(|e| e.value().clone()).collect();
+pub async fn list_projects(State(state): State<crate::state::SharedState>) -> impl IntoResponse {
+    let mut projects: Vec<Project> = PROJECTS.iter().map(|e| e.value().clone()).collect();
+    // #1379: os persistidos tambem (sem repetir os que ja estao em memoria).
+    if let Some(store) = &state.session_store
+        && let Ok(persistidos) = store.lock().await.list_projects(None)
+    {
+        for p in persistidos {
+            if !projects.iter().any(|x| x.id == p.id) {
+                projects.push(Project {
+                    id: p.id,
+                    name: p.name,
+                    path: p.path,
+                    description: p.description,
+                    created_at: p.created_at,
+                    updated_at: p.updated_at.unwrap_or_default(),
+                });
+            }
+        }
+    }
     Json(serde_json::json!({ "projects": projects }))
 }
 
