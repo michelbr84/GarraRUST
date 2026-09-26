@@ -301,6 +301,13 @@ pub struct AgentRuntime {
     /// e decidido, no mesmo ponto em que o [`crate::tools::ToolContext`] e
     /// montado. Ver [`AgentRuntime::working_dir_efetivo`].
     workspace_padrao: Option<crate::tools::SessionWorkspace>,
+    /// #1417: o circuit breaker das ferramentas, um por sessao. Consultado
+    /// em [`Self::dispatch_tool_call`] antes de executar e alimentado com
+    /// toda saida; cada turno o abre em [`Self::abrir_turno_do_breaker`].
+    /// Mora no runtime pela mesma razao das aprovacoes pendentes: e o unico
+    /// ponto que gateway e CLI compartilham. Toda a logica vive em
+    /// `tools::breaker`; aqui so as chamadas.
+    breakers: crate::tools::breaker::Breakers,
 }
 
 /// O TEXTO do aviso de ferramenta MCP escondida pelo whitelist (#1264).
@@ -454,7 +461,9 @@ desta conversa nao a libera — diga que existe e nao esta liberada, nunca que n
 remediacao do campo `remediation`; `unhealthy` e um servidor MCP conhecido que esta fora \
 do ar; `not_configured` e algo que este Garra sabe fazer mas nao foi configurado. Nunca \
 conclua que uma capacidade nao existe a partir da lista de funcoes oferecidas no turno: \
-consulte `capabilities`.";
+consulte `capabilities`. A lista `breaker` traz o que falhou repetidamente nesta conversa e \
+esta em pausa, com `reason_code` e `reason`: nao insista nisso neste turno; diga ao usuario \
+o motivo e siga sem.";
 
 /// A mesma instrucao em EN. Mesmo contrato de [`NOTA_GARRA_STATUS_PT`].
 pub const NOTA_GARRA_STATUS_EN: &str = "Before saying you do not have access to a \
@@ -473,7 +482,9 @@ it exists and is not allowed here, never that it does not exist; `unavailable` e
 lacks context (no workspace, channel disconnected) — repeat the `remediation` field; \
 `unhealthy` is a known MCP server that is down; `not_configured` is something this Garra \
 can do but was not set up. Never conclude a capability does not exist from the turn's \
-list of offered functions: check `capabilities`.";
+list of offered functions: check `capabilities`. The `breaker` list holds what failed \
+repeatedly in this conversation and is paused, with `reason_code` and `reason`: do not \
+insist on it in this turn; tell the user the reason and move on without it.";
 
 /// Acrescenta a instrucao de consultar `garra_status` ao prompt de sistema
 /// que venceu (#1347) — so quando a tool esta entre as oferecidas no turno.
@@ -895,6 +906,7 @@ impl AgentRuntime {
             max_facts: None,
             pending_approvals: crate::tools::pending_approval::PendingApprovals::new(),
             workspace_padrao: None,
+            breakers: crate::tools::breaker::Breakers::new(),
         }
     }
 
@@ -1505,6 +1517,31 @@ impl AgentRuntime {
             .unwrap_or(crate::tools::Disponibilidade::Disponivel)
     }
 
+    /// #1417: turno novo para o breaker desta sessao. O contexto e o
+    /// `working_dir` que a sessao DECLARA: mudou de projeto, o breaker limpa
+    /// tudo; o mesmo projeto zera so a parte que vale por turno (a
+    /// deterministica), e o cooldown de timeout continua. E o declarado, e
+    /// nao o efetivo de [`Self::working_dir_efetivo`], de proposito: o
+    /// efetivo cria o diretorio da sessao preguicosamente, e abrir o turno
+    /// nao pode ter esse efeito colateral num turno sem ferramenta.
+    fn abrir_turno_do_breaker(&self, session_id: &str, exec: &ExecContext) {
+        self.breakers
+            .abrir_turno(session_id, exec.working_dir.as_deref());
+    }
+
+    /// O registro de breakers, para quem precisa de mais do que a lista de
+    /// abertas (testes do gateway, diagnosticos futuros — #1438).
+    pub fn breakers(&self) -> &crate::tools::breaker::Breakers {
+        &self.breakers
+    }
+
+    /// #1417: as ferramentas em pausa nesta sessao AGORA, com codigo e
+    /// motivo — o que o `garra_status` relata em `breaker`. Texto constante
+    /// do modulo, sem caminho nem saida crua.
+    pub fn estado_do_breaker(&self, session_id: &str) -> Vec<crate::tools::breaker::ToolAberta> {
+        self.breakers.abertas(session_id, std::time::Instant::now())
+    }
+
     /// A lista que o modelo ve neste turno: o que o portao deixa (nome E
     /// classe, #1385) E o que esta operacional agora (#1425). Uma ferramenta
     /// registrada mas indisponivel (canal desligado, sem raiz, MCP caido)
@@ -1759,6 +1796,8 @@ impl AgentRuntime {
 
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
+        // #1417: turno novo tambem para o breaker da sessao.
+        self.abrir_turno_do_breaker(session_id, exec);
 
         // #984: o que o turno realmente usar. Acumula ao longo do loop porque
         // um turno com ferramenta faz varias chamadas ao LLM, e o `/stats`
@@ -2010,6 +2049,8 @@ impl AgentRuntime {
 
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
+        // #1417: turno novo tambem para o breaker da sessao.
+        self.abrir_turno_do_breaker(session_id, exec);
 
         loop {
             // Check if turn or task limit reached
@@ -2472,6 +2513,8 @@ impl AgentRuntime {
 
         // Reset turn counter at the start of processing a new user message
         budget.resetar_turno();
+        // #1417: turno novo tambem para o breaker da sessao.
+        self.abrir_turno_do_breaker(session_id, exec);
 
         // #984: mesmo registro do caminho nao-streaming. O `/stats` nao pode
         // saber menos sobre um turno so porque ele veio em pedacos.
@@ -3135,6 +3178,31 @@ impl AgentRuntime {
                 content: recusa,
             });
         }
+        // #1417: disponivel e permitida, mas ja falhou nesta sessao por um
+        // motivo que repetir nao muda (sem raiz, fora das raizes, sem
+        // repositorio, tres erros iguais no turno) ou esta em cooldown de
+        // timeout. Nao roda; volta o motivo estruturado como resultado de
+        // ferramenta — e o mesmo texto que `garra_status` lista em `breaker`.
+        // Depois da disponibilidade de proposito: indisponivel nao e falha
+        // repetida, e nunca chega a alimentar o breaker.
+        let breaker = self.breakers.estado(&context.session_id, name, iniciado_em);
+        if let Some(recusa) = breaker.explicacao(name, iniciado_em) {
+            let recusa = neutralizar_marcadores(&recusa);
+            if let Some(sink) = sink.filter(|s| s.wants_tool_events()) {
+                sink.tool_finished(
+                    name,
+                    iniciado_em.elapsed(),
+                    false,
+                    summarize_tool_output(&recusa, false),
+                    String::new(),
+                )
+                .await;
+            }
+            return DispatchOutcome::Denied(ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: recusa,
+            });
+        }
 
         // So o `tool_program` pausado preenche isto: o `ToolResult` do
         // modelo leva o relatorio parcial, e o `prompt` do humano fica curto
@@ -3257,7 +3325,12 @@ impl AgentRuntime {
                     );
                     match timeout(budget.timeout(), execucao).await {
                         Ok(result) => result.unwrap_or_else(|e| ToolOutput::error(e.to_string())),
-                        Err(_) => ToolOutput::error(format!("tool timeout: {}", name)),
+                        // #1417: o prefixo e o que o breaker reconhece
+                        // como falha transitoria.
+                        Err(_) => ToolOutput::error(format!(
+                            "{}{name}",
+                            crate::tools::breaker::TIMEOUT_PREFIXO
+                        )),
                     }
                 }
                 None => ToolOutput::error(format!("unknown tool: {}", name)),
@@ -3265,6 +3338,14 @@ impl AgentRuntime {
         };
         info!("tool '{}' result: is_error={}", name, output.is_error);
         let output = saida_sem_marcador_alheio(output);
+        // #1417: toda saida alimenta o breaker da sessao — sucesso fecha,
+        // falha classificada abre (ou conta). Pedido de confirmacao e neutro.
+        self.breakers.registrar(
+            &context.session_id,
+            name,
+            &output,
+            std::time::Instant::now(),
+        );
 
         // W3 (v0.4.5): o texto de um pedido de confirmacao como o HUMANO o le,
         // sem o marcador interno. Calculado uma vez e usado nos dois lugares

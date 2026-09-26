@@ -131,6 +131,16 @@ known MCP server is down; `not_configured` = this Garra can do it but it was not
 
 const SENTIDO_DE_FILE_TOOLS_SEM_RAIZ: &str = "file_read, file_write and list_dir deny every path in this conversation: the session has no working directory and the operator declared no root. Say so instead of promising to read or write files. The operator can select a project for this session, or declare a root in agent.file_roots (or the GARRAIA_FILE_ROOTS env var) and restart.";
 
+/// O que `breaker` significa (#1417), dito DENTRO do relatorio — so quando a
+/// lista nao esta vazia, como `withheld_means`. Constante e secret-free: o
+/// que a lista carrega vem de `garraia_agents::tools::breaker`, texto do
+/// modulo, nunca a saida crua da ferramenta nem caminho.
+const SENTIDO_DE_BREAKER: &str = "each entry is a tool that failed in THIS conversation and \
+is paused: a deterministic failure (no workspace, path outside the roots, no repository) or \
+a repeated error pauses it until the end of the turn; a timeout pauses it for a growing \
+cooldown. `reason_code` is machine-readable and `reason` is safe to repeat. In this turn, do \
+not call a paused tool again: tell the user the reason and continue without it.";
+
 pub struct GarraStatusTool {
     /// Weak for the same reason `TelegramSendTool` is: `AppState` owns the
     /// runtime, the runtime owns this tool, and a strong handle back would
@@ -386,6 +396,23 @@ impl Tool for GarraStatusTool {
             })
         };
 
+        // #1417: as ferramentas em pausa NESTA sessao (o breaker do runtime),
+        // com codigo e motivo. Sai tambem no turno restrito: e texto
+        // constante do modulo do breaker, sem caminho nem saida crua. O
+        // agregado por instalacao fica para o `/api/diagnostics` (#1438).
+        let breaker = state.agents.estado_do_breaker(&ctx.session_id);
+        let breaker_means = (!breaker.is_empty()).then_some(SENTIDO_DE_BREAKER);
+        let breaker: Vec<serde_json::Value> = breaker
+            .into_iter()
+            .map(|aberta| {
+                serde_json::json!({
+                    "tool": aberta.tool,
+                    "reason_code": aberta.codigo,
+                    "reason": aberta.motivo,
+                })
+            })
+            .collect();
+
         let report = serde_json::json!({
             "version": version,
             "uptime_secs": state.boot_time.elapsed().as_secs(),
@@ -412,6 +439,9 @@ impl Tool for GarraStatusTool {
             "withheld_means": (!withheld.is_empty()).then_some(SENTIDO_DE_WITHHELD),
             "capabilities": capabilities,
             "capabilities_means": SENTIDO_DE_CAPABILITIES,
+            "breaker": breaker,
+            // #1417: `null` quando nada esta em pausa, como `withheld_means`.
+            "breaker_means": breaker_means,
         });
 
         let text = serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string());
@@ -692,6 +722,8 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "breaker",
+                "breaker_means",
                 "capabilities",
                 "capabilities_means",
                 "channels",
@@ -1573,5 +1605,49 @@ mod tests {
                 .is_some_and(|m| m.contains("never say it does not exist")),
             "{json}"
         );
+    }
+
+    /// #1417: `breaker` lista as ferramentas em pausa NESTA sessao (falha
+    /// repetida ou deterministica no turno, timeout em cooldown), com codigo
+    /// e motivo — nunca caminho nem saida crua. Vazio, e `breaker_means`
+    /// nulo, quando nada esta aberto; e o que abriu em OUTRA sessao nao
+    /// aparece.
+    #[tokio::test]
+    async fn breaker_lista_as_ferramentas_em_pausa_nesta_sessao() {
+        use garraia_agents::tools::breaker::{Classe, Deterministica};
+        let st = state();
+        let agora = std::time::Instant::now();
+        st.agents.breakers().registrar_falha(
+            "sessao-teste",
+            "repo_search",
+            Classe::Deterministica(Deterministica::SemRepositorio),
+            agora,
+        );
+        st.agents.breakers().registrar_falha(
+            "outra-sessao",
+            "file_read",
+            Classe::Deterministica(Deterministica::SemRaiz),
+            agora,
+        );
+
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let breaker = json["breaker"].as_array().expect("lista");
+        assert_eq!(breaker.len(), 1, "{breaker:?}");
+        assert_eq!(breaker[0]["tool"], "repo_search");
+        assert_eq!(breaker[0]["reason_code"], "no_repository");
+        assert!(
+            breaker[0]["reason"].as_str().is_some_and(|r| !r.is_empty()),
+            "{breaker:?}"
+        );
+        assert!(
+            json["breaker_means"]
+                .as_str()
+                .is_some_and(|m| m.contains("do not call")),
+            "{json}"
+        );
+
+        let json = relatorio(&tool(&st), &ctx_na_sessao("sessao-limpa", None)).await;
+        assert_eq!(json["breaker"], serde_json::json!([]));
+        assert!(json["breaker_means"].is_null(), "{json}");
     }
 }
