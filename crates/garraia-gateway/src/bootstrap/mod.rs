@@ -63,6 +63,11 @@ pub use slack::build_slack_channels;
 // Slice 10.e (GAR-479): WhatsApp wiring extracted to `bootstrap::whatsapp`.
 pub use whatsapp::build_whatsapp_channels;
 
+/// ADR 0025 (#1388): a Access Policy v2 do canal — `PoliticaDeAcesso`,
+/// `Principal`, `Alcance`, `principal_do_turno`, `teto_do_principal`. E o
+/// MESMO motor que o turno usa; a CLI, a API admin e o Web Console leem e
+/// mostram a politica efetiva por aqui, nunca por um parser paralelo (#1400).
+pub use whatsapp_linked::politica as whatsapp_linked_politica;
 /// #1345: as recusas de remetente `@lid` sem numero, que o gateway conta e o
 /// `garraia whatsapp status` le do diretorio da sessao.
 pub use whatsapp_linked::{

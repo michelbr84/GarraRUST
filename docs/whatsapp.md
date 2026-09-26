@@ -496,6 +496,63 @@ donos; o check `execution.profile` do `/api/diagnostics` tambem. Sem
 Detalhes do perfil, a lista do que ele **nao** isola e o exemplo para pod:
 [`execution-profiles.md`](execution-profiles.md).
 
+### Politica de acesso por principal (`access`, ADR 0025)
+
+`allow` e `owners` respondem "quem entra". Desde a v0.4.6 a secao `access`
+responde tambem "ate onde cada um vai", por **principal** — e o que
+`garraia whatsapp` e o Web Console passam a editar:
+
+```yaml
+channels:
+  whatsapp_linked:
+    type: whatsapp_linked
+    enabled: true
+    allow: ["5511888880000"]       # continua valendo: admitido, sem teto
+    owners: ["5511999998888"]      # continua valendo: dono
+    access:
+      admission: restricted        # restricted (default) | open
+      default: { level: chat, write: false }   # o DESCONHECIDO, so com open
+      users:
+        "5511888880000": { level: read, write: false }
+        "5511999998888": { role: owner }
+        "5521955554444": { blocked: true }
+      groups:
+        enabled: false             # ou o `reply_in_groups` legado
+        default: { level: read, write: false }
+        "120363000000000000@g.us": { level: chat }
+```
+
+- **Niveis.** `chat` = nenhuma ferramenta; `read` = so leitura (`file_read`,
+  `web_search`, `device_read`, MCP de leitura...), nunca shell, dispositivo,
+  mensagem nem agenda; `full` = sem teto proprio (o modo e o perfil de
+  execucao decidem). `write: true` libera **so** escrita de arquivo (nativa e
+  MCP) — nao liga `bash`, nao desliga sandbox, jail nem a confirmacao de
+  ferramenta perigosa. O nivel e um **teto** composto por E com o modo da
+  sessao (`/mode` continua valendo, mas nunca acima do teto); a recusa diz
+  se foi o modo ou a politica de acesso de quem fala.
+- **Principais.** `dono` (`owners` ou `role: owner`, em conversa 1:1: sem
+  teto; em `isolated-pod`, piso `code`), `usuario` (`allow` ou
+  `access.users`), `pareado` (codigo do `/pair`: teto `read`, credencial
+  fraca), `desconhecido` (so com `admission: open`, com o `default`),
+  `grupo` (a politica e do grupo — o dono no grupo e o grupo), `bloqueado`
+  (`blocked: true`: recusado mesmo em `open`, mesmo em `allow`, mesmo
+  pareado). Cada turno loga `principal` e `alcance` (etiquetas fixas, nunca
+  identidade).
+- **Compatibilidade.** Sem `access:` nada muda: `allow` e usuario **sem
+  teto** (o piso `default_mode` decide, como sempre), `owners` e dono,
+  `reply_in_groups` liga grupos. Nivel e `write` so existem onde foram
+  declarados; `access.users` vence o legado para a mesma identidade. As
+  chaves de `users` aceitam qualquer grafia do numero (a comparacao e a
+  mesma do `allow`, nono digito incluso) ou o JID `@lid`.
+- **Fail-closed.** Nivel desconhecido vale `chat`; `chat` com `write: true`
+  vale `chat`; `admission` desconhecida vale `restricted`; o `default` de
+  `open` nunca chega a `full`. Cada normalizacao gera um aviso sem numero no
+  log do boot (e uma vez por mudanca da config viva).
+- **A quente.** A secao inteira e relida a cada mensagem (como `allow` e
+  `owners` ja eram): um `blocked: true` vale na mensagem seguinte, sem
+  restart. `access.groups.enabled` tambem; o `reply_in_groups` legado segue
+  sendo lido no boot.
+
 ### Confirmacao de ferramenta perigosa ("sim")
 
 Quando uma ferramenta pede confirmacao (o `bash` num comando arriscado com
