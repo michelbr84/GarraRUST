@@ -50,11 +50,11 @@ O que precisa do dono **antes** de qualquer passo está em §8.
 
 | Critério | Meta | Agora | Como chegou |
 |---|---|---|---|
-| `open_issues` | 0 | **59** | 64 → 59 (#1378, #1449, #1452, #1453, #1456, #1458 fechadas); 6 PRs abertas fecham mais 8 ao entrar (#1384, #1460, #1463, #1464, #1465, #1471, #1419 e parte de #1416); **43 são épicos de v0.5.0** e 3 pedem decisão do dono (§8) |
-| `open_PRs` | 0 | **6** (todas desta sessão, CI em curso) | #1473, #1474, #1475, #1476, #1477, #1478 — plano de entrada em §3.5 |
+| `open_issues` | 0 | **51** (01:22, 26/09) | 64 → 51: #1378 #1384 #1419 #1449 #1452 #1453 #1456 #1458 #1459 #1460 #1463 #1464 #1465 #1471 fechadas nesta sessão; das 51, **43 são épicos de v0.5.0** (§3.2–3.4) e 8 pedem decisão do dono ou dogfood com telefone (§8) |
+| `open_PRs` | 0 | **0** | 12 PRs desta sessão mergeadas (#1466 #1467 #1468 #1469 #1470 #1472 #1473 #1474 #1475 #1476 #1477 #1478 #1479 #1480 #1481) |
 | `code_scanning_alerts` | 0 | **0** | #176 baixado às 20:30 EDT (PR #1472 + workflow `codeql-apply-dismissals`) |
-| `mandatory_CI_failures` | 0 | **0** nas mergeadas; 6 runs em curso | trem #1470 verde nos 6 checks; #1472 verde |
-| `known_regressions_introduced` | 0 | **0 novas**; a do ratchet está revertida na PR #1476 | `max_file_lines` 10 881 → 6 901; `files_over_700` 114 → 112; `files_over_1500/2500` seguem +1 (decisão em §8) |
+| `mandatory_CI_failures` | 0 | **0** | todo merge com os 6 checks obrigatórios verdes; nenhum `continue-on-error`, nenhum gate desligado |
+| `known_regressions_introduced` | 0 | **0** | ratchet em `main`: `max_file_lines` 10 881 → 6 901 e `files_over_700` 114 → 112 (baseline); `files_over_1500/2500` seguem +1 por dois arquivos da CLI (decisão em §8) |
 | Instaladores construídos e testados | sim | **não** | a regra do prompt ("nada de release antes do backlog zero") mantém o `release/v0.4.6` local; D1-lite e D9 feitos em Linux (§7.5) |
 
 ## 1. Gate de permissões e credenciais (o prompt manda checar primeiro)
@@ -219,7 +219,7 @@ Mergeadas nesta sessão: **#1466** (MinIO do fonte, `c4d7f1ba`, 18:19), **#1470*
 | #1475 | #1465, #1471 (diagnostics sem caminho do host, sem aviso espúrio) | main | **mergeada 23:13** via trem #1479 | — |
 | #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | **mergeada 23:13** via trem #1479 | — |
 | #1477 | #1419 `garraia doctor whatsapp` | main | **mergeada 00:07 (26/09)** (`7b91a993`); #1419 fechada | — |
-| #1480 | #1459 raízes das file tools resolvidas uma vez, no boot | main (pós-trem) | CI em curso | merge direto quando verde |
+| #1480 | #1459 raízes das file tools resolvidas uma vez, no boot | main | **mergeada 01:22 (26/09)** (`e1d62523`); #1459 fechada | — |
 | #1481 | higiene da #1461: `room_id` no iMessage (não fecha a issue) | main | **mergeada 00:52 (26/09)** (`0dcfa2e6`); macOS verde | — |
 | #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | **mergeada 23:13** via trem #1479 | — |
 
@@ -462,6 +462,8 @@ primeira versão desta tabela tinha horários estimados; corrigida).
 | 23:3x | Follow-up de higiene da #1461: `IncomingMessage.group_name` → `room_id` (rename puro, doc do campo diz que é `cache_roomnames`); módulo só compila em macOS + feature `imessage`, evidência = job `Test (macos-latest)` | **PR #1481** |
 | 00:07 (26/09) | **#1477 mergeada** (`7b91a993`, por michelbr84 2026-09-26T04:05:21Z) com os 6 obrigatórios verdes; **#1419 fechada**. `open_issues=52 open_prs=2` (#1480, #1481, agora BEHIND; CI individual em curso → trem quando terminarem) | GitHub |
 | 00:52 (26/09) | **#1481 mergeada** (`0dcfa2e6`) com 31/31 checks, inclusive `Test (macos-latest)`, que é onde o módulo iMessage compila. `open_prs=1` (#1480, BEHIND de novo; a automação do dono costuma mergear `main` nela em minutos — monitor faz isso após 10 min se ninguém fizer) | GitHub |
+| 00:57 (26/09) | #1480 atualizada com `main` (o run anterior já tinha terminado 31/31, então sem desperdício) | |
+| 01:22 (26/09) | **#1480 mergeada** (`e1d62523`) com os 6 obrigatórios verdes; **#1459 fechada**. **Checkpoint 4: `open_issues=51 open_prs=0 alerts=0`** — todas as PRs desta sessão entraram | GitHub |
 
 Depois do trem entrar: empurrar `release/v0.4.6`, abrir a PR em **rascunho**
 com a tabela de dogfood de §6 preenchida no que foi executado (D1 parcial e
@@ -493,6 +495,7 @@ preenchida**, a data da seção acompanha o dia do tag, e o tag é do dono.
 | C1.5 (após #1466) | 18:19 | 62 | 3 (+#1467/#1468/#1469 abertas) | 1 | verde | idem | não |
 | C2 | 20:55 | **59** | **6** (todas desta sessão) | **0** | verde nas mergeadas; 6 runs em curso | 0 novas; a do ratchet revertida na #1476 | não (regra do prompt) |
 | C3 (trem entrou) | 23:15 | **53** | **1** (#1477, CI reiniciado) | **0** | verde em `main` (#1473, #1479) | 0; ratchet `max=6901 over700=112` em `main` | não (regra do prompt) |
+| C4 (zero PRs) | 01:22 (26/09) | **51** | **0** | **0** | verde em `main` (#1477, #1481, #1480) | 0; ratchet como em C3 | não (regra do prompt) |
 
 ## 10. Artefatos de release
 
