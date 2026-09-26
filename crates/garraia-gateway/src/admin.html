@@ -550,6 +550,10 @@ tr:hover { background: var(--bg-hover); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
           <span class="nav-label">Sessions</span>
         </div>
+        <div class="nav-item" data-page="whatsapp_access" data-testid="nav-whatsapp-access">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1.5"/></svg>
+          <span class="nav-label">WhatsApp Access</span>
+        </div>
       </div>
       <div class="nav-section">
         <div class="nav-section-title">System</div>
@@ -747,7 +751,7 @@ var mcpRefreshTimer = null;
 var pages = {
   dashboard: pageDashboard, mcp: pageMcp, providers: pageProviders, secrets: pageSecrets,
   config: pageConfig, memory: pageMemory, tools: pageTools, channels: pageChannels,
-  sessions: pageSessions, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
+  sessions: pageSessions, whatsapp_access: pageWhatsappAccess, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
   templates: pageTemplates, audit: pageAudit, security: pageSecurity, users: pageUsers,
   about: pageAbout, account: pageAccount
 };
@@ -770,7 +774,7 @@ function pageTitle(page) {
   var titles = {
     dashboard:'Dashboard', mcp:'MCP Servers', providers:'Providers', secrets:'Secrets',
     config:'Configuration', memory:'Memory', tools:'Tools', channels:'Channels',
-    sessions:'Sessions', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
+    sessions:'Sessions', whatsapp_access:'WhatsApp Access', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
     templates:'Templates', audit:'Audit Log', security:'Security', users:'Users',
     about:'About', account:'Account'
   };
@@ -1882,6 +1886,270 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   currentUser = null; csrfToken = ''; permissions = null; showLogin();
 });
 document.getElementById('sidebar-toggle').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
+// ─── WhatsApp Access & Permissions (ADR 0025; #1402–#1408, #1411, #1413) ────
+// Terceiro consumidor do caminho unico: le `GET /admin/api/whatsapp/access`
+// (o mesmo documento de `garraia whatsapp access --json`) e muda por
+// `POST /admin/api/whatsapp/access`. Toda mutacao passa por um PREVIEW
+// (`dry_run: true` → mudancas + impacto por principal) antes de confirmar.
+// Identidades so por `…1234`; a API nunca revela. `data-testid` estaveis:
+// sao o contrato do spec Playwright (plan 0052).
+var waAccessState = { doc: null, pending: null };
+
+function waLevelLabel(level, write) {
+  if (!level) return '—';
+  return level + (level === 'chat' ? '' : (write ? ' · write on' : ' · write off'));
+}
+
+function waPrincipalLabel(p) {
+  var map = { dono: 'Owner', usuario: 'User', pareado: 'Paired (code)', desconhecido: 'Unknown (open)', grupo: 'Group', bloqueado: 'Blocked', estranho: 'Not admitted' };
+  return map[p] || p;
+}
+
+async function pageWhatsappAccess() {
+  try {
+    var data = await apiGet('/whatsapp/access');
+    waAccessState.doc = data;
+    renderContent(waAccessView(data));
+    waLoadAudit();
+  } catch (e) {
+    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
+  }
+}
+
+function waAccessView(data) {
+  var pol = data.policy || {};
+  var frag = document.createDocumentFragment();
+  var canEdit = can('channels', 'update');
+
+  // ── Resumo + admissao ──
+  var head = el('div', { className: 'card', 'data-testid': 'wa-access-summary' });
+  head.appendChild(el('h3', { textContent: 'WhatsApp (linked device) — access policy' }));
+  var meta = el('div', { style: 'display:flex;gap:16px;flex-wrap:wrap;margin:8px 0;' });
+  meta.appendChild(badgeFor(pol.enabled, 'Channel on', 'Channel off'));
+  meta.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'wa-access-profile', textContent: 'profile: ' + (pol.execution_profile || '?') + ' · owner floor: ' + (pol.owner_floor_mode || '?') + ' · default floor: ' + (pol.default_mode || '?') }));
+  meta.appendChild(el('span', { className: 'badge ' + (data.hot_reload ? 'badge-success' : 'badge-neutral'), 'data-testid': 'wa-access-hot-reload', textContent: data.hot_reload ? 'hot reload: next message' : 'hot reload: off (restart applies)' }));
+  var counts = pol.counts || {};
+  meta.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'wa-access-counts', textContent: 'authorized ' + (counts.authorized || 0) + ' · owners ' + (counts.owners || 0) + ' · blocked ' + (counts.blocked || 0) }));
+  head.appendChild(meta);
+
+  var adm = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:10px 0;' });
+  adm.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Admission:' }));
+  var isOpen = pol.admission === 'open';
+  adm.appendChild(el('span', { className: 'badge ' + (isOpen ? 'badge-error' : 'badge-success'), 'data-testid': 'wa-access-admission', textContent: pol.admission || '?' }));
+  if (canEdit) {
+    adm.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-admission-restricted', disabled: !isOpen ? 'disabled' : null, textContent: 'Restricted', onClick: function () { waPreview({ action: 'restricted' }, 'Only declared identities (and code pairing) get in.'); } }));
+    adm.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-admission-open', disabled: isOpen ? 'disabled' : null, textContent: 'Anyone (open)', onClick: function () { waPreview({ action: 'open' }, 'ANYONE who messages this number will talk to GarraIA, with the unknown-sender default below.'); } }));
+  }
+  head.appendChild(adm);
+
+  var def = pol['default'] || {};
+  var defRow = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0;' });
+  defRow.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Unknown-sender default (only with open):' }));
+  defRow.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'wa-access-default', textContent: waLevelLabel(def.level, def.write) }));
+  if (canEdit) {
+    var defLevel = el('select', { 'data-testid': 'wa-access-default-level' });
+    ['chat', 'read'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if (def.level === l) o.selected = true; defLevel.appendChild(o); });
+    var defWrite = el('input', { type: 'checkbox', 'data-testid': 'wa-access-default-write' }); defWrite.checked = !!def.write;
+    defRow.appendChild(defLevel);
+    defRow.appendChild(el('label', {}, [defWrite, ' write']));
+    defRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-default-apply', textContent: 'Apply', onClick: function () { waPreview({ action: 'default', level: defLevel.value, write: defWrite.checked }); } }));
+  }
+  head.appendChild(defRow);
+
+  var grp = pol.groups || {};
+  var grpRow = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap;' });
+  grpRow.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Groups:' }));
+  grpRow.appendChild(el('span', { className: 'badge ' + (grp.enabled ? 'badge-success' : 'badge-neutral'), 'data-testid': 'wa-access-groups', textContent: (grp.enabled ? 'on' : 'off') + ' · default ' + waLevelLabel((grp['default'] || {}).level, (grp['default'] || {}).write) + ' · ' + (grp.declared || 0) + ' with own policy' }));
+  if (canEdit) {
+    grpRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-groups-toggle', textContent: grp.enabled ? 'Turn off' : 'Turn on', onClick: function () { waPreview({ action: 'groups', enabled: !grp.enabled }); } }));
+    var gLevel = el('select', { 'data-testid': 'wa-access-groups-default-level' });
+    ['chat', 'read', 'full'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if ((grp['default'] || {}).level === l) o.selected = true; gLevel.appendChild(o); });
+    var gWrite = el('input', { type: 'checkbox', 'data-testid': 'wa-access-groups-default-write' }); gWrite.checked = !!(grp['default'] || {}).write;
+    grpRow.appendChild(gLevel);
+    grpRow.appendChild(el('label', {}, [gWrite, ' write']));
+    grpRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-groups-default-apply', textContent: 'Set default', onClick: function () { waPreview({ action: 'group-default', level: gLevel.value, write: gWrite.checked }); } }));
+    var gJid = el('input', { type: 'text', placeholder: '1203630000@g.us', 'data-testid': 'wa-access-group-jid', style: 'width:200px;' });
+    var gjLevel = el('select', { 'data-testid': 'wa-access-group-level' });
+    ['chat', 'read', 'full'].forEach(function (l) { gjLevel.appendChild(el('option', { value: l, textContent: l })); });
+    grpRow.appendChild(gJid);
+    grpRow.appendChild(gjLevel);
+    grpRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-group-add', textContent: 'Set group', onClick: function () { waPreview({ action: 'group', jid: gJid.value, level: gjLevel.value, write: false }); } }));
+  }
+  head.appendChild(grpRow);
+
+  if ((pol.warnings || []).length) {
+    var warn = el('div', { className: 'wa-alert wa-alert-warning', 'data-testid': 'wa-access-warnings' });
+    (pol.warnings || []).forEach(function (w) { warn.appendChild(el('div', { textContent: '! ' + w })); });
+    head.appendChild(warn);
+  }
+  if (canEdit) {
+    var tools = el('div', { className: 'toolbar', style: 'margin-top:10px;' });
+    tools.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-reset', textContent: 'Reset to safe defaults', onClick: function () { waPreview({ action: 'reset' }, 'Restricted admission, chat default, groups off and without policy, every declared level/write removed. Owners and blocks stay.'); } }));
+    head.appendChild(tools);
+  }
+  frag.appendChild(head);
+
+  // ── Preview / confirm (preenchido por waPreview) ──
+  frag.appendChild(el('div', { id: 'wa-access-preview', 'data-testid': 'wa-access-preview', style: 'display:none;' }));
+
+  // ── Adicionar numero (#1403) ──
+  if (canEdit) {
+    var add = el('div', { className: 'card', 'data-testid': 'wa-access-add-card' });
+    add.appendChild(el('h3', { textContent: 'Add phone / identity' }));
+    var addRow = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;' });
+    var addId = el('input', { type: 'text', placeholder: '+55 11 99999-8888 or 1234@lid', 'data-testid': 'wa-access-add-identity', style: 'width:220px;' });
+    var addLevel = el('select', { 'data-testid': 'wa-access-add-level' });
+    ['chat', 'read', 'full'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if (l === 'read') o.selected = true; addLevel.appendChild(o); });
+    var addWrite = el('input', { type: 'checkbox', 'data-testid': 'wa-access-add-write' });
+    addRow.appendChild(addId); addRow.appendChild(addLevel); addRow.appendChild(el('label', {}, [addWrite, ' write']));
+    addRow.appendChild(el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-access-add', textContent: 'Add', onClick: function () {
+      waPreview({ action: 'level', identity: addId.value, level: addLevel.value }, null, addWrite.checked ? { action: 'write', identity: addId.value, write: true } : null);
+    } }));
+    add.appendChild(addRow);
+    add.appendChild(el('div', { className: 'wa-hint', textContent: 'Level is a ceiling combined with the session mode: it only removes, never adds. "write" is file writing only (native and MCP) — never shell.' }));
+    frag.appendChild(add);
+  }
+
+  // ── Matriz por principal (#1411) ──
+  var card = el('div', { className: 'card' });
+  card.appendChild(el('h3', { textContent: 'Effective capabilities per principal' }));
+  var table = el('table', { className: 'wa-table', 'data-testid': 'wa-access-principals' });
+  var thead = el('thead'); thead.innerHTML = '<tr><th>Principal</th><th>Identity</th><th>Floor</th><th>Level</th><th>Write</th><th>Can</th><th></th></tr>';
+  table.appendChild(thead);
+  var tbody = el('tbody');
+  (pol.principals || []).forEach(function (p) {
+    var tr = el('tr', { 'data-testid': 'wa-access-principal-row', 'data-principal': p.principal, 'data-last4': p.last4 || '' });
+    tr.appendChild(el('td', { textContent: waPrincipalLabel(p.principal) }));
+    tr.appendChild(el('td', { textContent: p.last4 || '—' }));
+    tr.appendChild(el('td', { textContent: p.mode || '—' }));
+    var levelTd = el('td');
+    var editable = canEdit && p.last4 && (p.principal === 'usuario' || p.principal === 'bloqueado') && !(p.last4 || '').startsWith('grupo');
+    if (editable && p.principal === 'usuario') {
+      var sel = el('select', { 'data-testid': 'wa-access-level' });
+      ['chat', 'read', 'full'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if (p.level === l) o.selected = true; sel.appendChild(o); });
+      sel.addEventListener('change', function () { waPreview({ action: 'level', identity: waIdentityOf(p), level: sel.value }); });
+      levelTd.appendChild(sel);
+    } else {
+      levelTd.textContent = p.level || (p.principal === 'dono' ? 'no ceiling' : '—');
+    }
+    tr.appendChild(levelTd);
+    var writeTd = el('td');
+    if (editable && p.principal === 'usuario' && p.level !== 'chat') {
+      var cb = el('input', { type: 'checkbox', 'data-testid': 'wa-access-write' }); cb.checked = !!p.write;
+      cb.addEventListener('change', function () { waPreview({ action: 'write', identity: waIdentityOf(p), write: cb.checked }); });
+      writeTd.appendChild(cb);
+    } else {
+      writeTd.textContent = p.write === null || p.write === undefined ? '—' : (p.write ? 'on' : 'off');
+    }
+    tr.appendChild(writeTd);
+    var capTd = el('td');
+    (p.capabilities || []).forEach(function (c) { capTd.appendChild(el('span', { className: 'badge badge-neutral', style: 'margin:1px;', textContent: c })); });
+    if (!(p.capabilities || []).length) capTd.textContent = p.admitted === false ? 'not admitted' : 'no tools';
+    tr.appendChild(capTd);
+    var actTd = el('td', { style: 'white-space:nowrap;' });
+    if (editable) {
+      if (p.principal === 'bloqueado') {
+        actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-unblock', textContent: 'Unblock', onClick: function () { waPreview({ action: 'unblock', identity: waIdentityOf(p) }); } }));
+      } else {
+        actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-block', textContent: 'Block', onClick: function () { waPreview({ action: 'block', identity: waIdentityOf(p) }); } }));
+        actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-owner', textContent: 'Make owner', onClick: function () { waPreview({ action: 'owner', identity: waIdentityOf(p) }, 'In isolated-pod the owner gets the `code` floor in 1:1 chats: files, shell, MCP tools.'); } }));
+      }
+      actTd.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-remove', textContent: 'Remove', onClick: function () { waPreview({ action: 'remove', identity: waIdentityOf(p) }); } }));
+    } else if (canEdit && p.principal === 'dono' && p.last4) {
+      actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-unowner', textContent: 'Demote', onClick: function () { waPreview({ action: 'unowner', identity: waIdentityOf(p) }); } }));
+      actTd.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-remove', textContent: 'Remove', onClick: function () { waPreview({ action: 'remove', identity: waIdentityOf(p) }); } }));
+    }
+    tr.appendChild(actTd);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  card.appendChild(table);
+  frag.appendChild(card);
+
+  // ── Audit (#1414) ──
+  var audit = el('div', { className: 'card', 'data-testid': 'wa-access-audit' });
+  audit.appendChild(el('h3', { textContent: 'Access policy audit (latest first)' }));
+  audit.appendChild(el('div', { id: 'wa-access-audit-body', textContent: 'Loading…' }));
+  frag.appendChild(audit);
+  return frag;
+}
+
+// A API so conhece `…1234`; para agir sobre uma linha, o console manda o
+// `last4` como `identity_last4` e o gateway resolve entre as identidades
+// DECLARADAS (unica por construcao, senao 409). A identidade inteira nunca
+// desce ao navegador.
+function waIdentityOf(p) { return { last4: p.last4 }; }
+
+async function waPreview(req, warning, followUp) {
+  var body = Object.assign({}, req);
+  if (body.identity && typeof body.identity === 'object') { body.identity_last4 = body.identity.last4; delete body.identity; }
+  var panel = document.getElementById('wa-access-preview');
+  if (!panel) return;
+  clearEl(panel); panel.style.display = 'block';
+  panel.appendChild(el('div', { className: 'card', textContent: 'Computing impact…' }));
+  try {
+    var preview = await apiPost('/whatsapp/access', Object.assign({}, body, { dry_run: true }));
+    clearEl(panel);
+    var card = el('div', { className: 'card' });
+    card.appendChild(el('h3', { textContent: 'Preview: ' + body.action }));
+    if (warning) card.appendChild(el('div', { className: 'wa-alert wa-alert-warning', 'data-testid': 'wa-access-preview-warning', textContent: warning }));
+    var changes = el('div', { 'data-testid': 'wa-access-preview-changes' });
+    if (!preview.changed) changes.appendChild(el('div', { textContent: 'Nothing to change: the policy is already like that.' }));
+    (preview.changes || []).forEach(function (c) { changes.appendChild(el('div', { textContent: '• ' + c })); });
+    card.appendChild(changes);
+    var impact = el('div', { 'data-testid': 'wa-access-preview-impact', style: 'margin-top:8px;' });
+    if (!(preview.impact || []).length) impact.appendChild(el('div', { className: 'wa-hint', textContent: 'Impact: no principal gains or loses any tool.' }));
+    (preview.impact || []).forEach(function (d) {
+      var who = d.principal + (d.target ? ' ' + d.target : '');
+      var parts = [];
+      if ((d.gains || []).length) parts.push('gains ' + d.gains.join(', '));
+      if ((d.loses || []).length) parts.push('loses ' + d.loses.join(', '));
+      impact.appendChild(el('div', { textContent: '• ' + who + ': ' + parts.join(' · ') }));
+    });
+    card.appendChild(impact);
+    var btns = el('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:10px;' });
+    btns.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-cancel', textContent: 'Cancel', onClick: function () { clearEl(panel); panel.style.display = 'none'; } }));
+    if (preview.changed) {
+      btns.appendChild(el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-access-confirm', textContent: 'Confirm', onClick: async function () {
+        try {
+          var res = await apiPost('/whatsapp/access', body);
+          if (followUp) { var f = Object.assign({}, followUp); if (f.identity && typeof f.identity === 'object') { f.identity_last4 = f.identity.last4; delete f.identity; } await apiPost('/whatsapp/access', f); }
+          toast(res.written ? 'Policy updated' + (res.hot_reload ? ' (applies on the next message)' : ' (applies after restart)') : 'Nothing changed', 'success');
+          if (res.audit && res.audit.written === false && res.audit.error) toast('Audit not written: ' + res.audit.error, 'error');
+          pageWhatsappAccess();
+        } catch (e) { toast('Failed: ' + e.message, 'error'); }
+      } }));
+    }
+    card.appendChild(btns);
+    panel.appendChild(card);
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) {
+    clearEl(panel);
+    panel.appendChild(el('div', { className: 'card wa-alert wa-alert-error', 'data-testid': 'wa-access-preview-error', textContent: 'Rejected: ' + e.message }));
+  }
+}
+
+async function waLoadAudit() {
+  var body = document.getElementById('wa-access-audit-body');
+  if (!body) return;
+  try {
+    var data = await apiGet('/whatsapp/access/audit?limit=20');
+    clearEl(body);
+    var events = data.events || [];
+    if (!events.length) { body.appendChild(el('div', { className: 'empty-state', textContent: 'No audited change yet.' })); return; }
+    var t = el('table', { className: 'wa-table' });
+    t.innerHTML = '<thead><tr><th>When (UTC)</th><th>Action</th><th>Target</th><th>Source</th><th>Actor</th></tr></thead>';
+    var tb = el('tbody');
+    events.forEach(function (ev) {
+      var tr = el('tr', { 'data-testid': 'wa-access-audit-row' });
+      [ev.ts, ev.action, ev.target || '—', ev.source, ev.actor].forEach(function (v) { tr.appendChild(el('td', { textContent: String(v) })); });
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    body.appendChild(t);
+  } catch (e) { clearEl(body); body.appendChild(el('div', { textContent: 'Failed: ' + e.message })); }
+}
+
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => { var page = item.getAttribute('data-page'); if (page) navigate(page); });
 });

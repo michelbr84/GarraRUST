@@ -48,6 +48,12 @@ pub enum Mutacao {
     /// desligados e sem politica, overrides de nivel/write removidos.
     /// Preserva donos e bloqueios.
     Reset,
+    /// `role: owner` liga/desliga (#1404). Desligar o dono LEGADO (so em
+    /// `owners`) o move para `allow`: o acesso e preservado, como
+    /// `garraia whatsapp unowner` faz.
+    Papel { identidade: String, dono: bool },
+    /// Tira a identidade de `allow`, `owners` e `access.users` (#1404).
+    Remover(String),
 }
 
 impl Mutacao {
@@ -65,6 +71,9 @@ impl Mutacao {
             Self::DefaultDeGrupo(_) => "group-default",
             Self::Grupo { .. } => "group",
             Self::Reset => "reset",
+            Self::Papel { dono: true, .. } => "owner",
+            Self::Papel { dono: false, .. } => "unowner",
+            Self::Remover(_) => "remove",
         }
     }
 
@@ -74,7 +83,9 @@ impl Mutacao {
             Self::Nivel { identidade, .. }
             | Self::Write { identidade, .. }
             | Self::Bloquear(identidade)
-            | Self::Desbloquear(identidade) => Some(identidade),
+            | Self::Desbloquear(identidade)
+            | Self::Papel { identidade, .. }
+            | Self::Remover(identidade) => Some(identidade),
             Self::Grupo { jid, .. } => Some(jid),
             _ => None,
         }
@@ -94,6 +105,8 @@ pub enum MutacaoInvalida {
     EDono,
     /// Identidade ou JID em branco.
     IdentidadeVazia,
+    /// Tornar dono quem esta bloqueado: desbloqueie antes.
+    Bloqueada,
     /// A secao `channels.whatsapp_linked` tem `type:` de outro canal.
     SecaoDeOutroCanal(String),
     /// Uma chave que devia ser mapa nao e (`access`, `access.users`,
@@ -121,6 +134,10 @@ impl fmt::Display for MutacaoInvalida {
                 "esta identidade e DONO e o dono nao tem teto: para limitar, tire o papel com `whatsapp unowner <numero>` e depois de um nivel"
             ),
             Self::IdentidadeVazia => write!(f, "identidade em branco"),
+            Self::Bloqueada => write!(
+                f,
+                "esta identidade esta bloqueada: `whatsapp unblock <numero>` antes de torna-la dono"
+            ),
             Self::SecaoDeOutroCanal(tipo) => write!(
                 f,
                 "`channels.{CONFIG_KEY}` existe com `type: {tipo}` — corrija para `type: {CONFIG_KEY}` no config.yml"
@@ -160,7 +177,9 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
         Mutacao::Nivel { identidade, .. }
         | Mutacao::Write { identidade, .. }
         | Mutacao::Bloquear(identidade)
-        | Mutacao::Desbloquear(identidade) => {
+        | Mutacao::Desbloquear(identidade)
+        | Mutacao::Papel { identidade, .. }
+        | Mutacao::Remover(identidade) => {
             let id = normalizar_identidade(identidade);
             if id.is_empty() {
                 return Err(MutacaoInvalida::IdentidadeVazia);
@@ -192,6 +211,11 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
                 return Err(MutacaoInvalida::EDono);
             }
         }
+        Mutacao::Papel { dono: true, .. } => {
+            if antes.entrada_de(id).is_some_and(|e| e.bloqueado) {
+                return Err(MutacaoInvalida::Bloqueada);
+            }
+        }
         Mutacao::Write { on, .. } => {
             if antes.e_dono(id) {
                 return Err(MutacaoInvalida::EDono);
@@ -216,6 +240,9 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
         .entrada_de(id)
         .map_or(Nivel::Chat, |e| e.alcance.nivel);
     let mut desligar_legado_de_grupo = false;
+    let mut tirar_de_owners = false;
+    let mut remover_das_listas = false;
+    let chave = chave_do_portao(id);
     {
         let access = secao
             .settings
@@ -278,6 +305,35 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
             Mutacao::Grupo { jid, alcance } => {
                 groups_mut(access)?.insert(jid.trim().to_string(), alcance_json(*alcance));
             }
+            Mutacao::Papel { dono: true, .. } => {
+                entrada_mut(users_mut(access)?, id)?.insert("role".to_string(), json!("owner"));
+            }
+            Mutacao::Papel { dono: false, .. } => {
+                let users = users_mut(access)?;
+                if let Some(k) = users
+                    .keys()
+                    .find(|k| chave_do_portao(&normalizar_identidade(k)) == chave)
+                    .cloned()
+                {
+                    let vazia = users
+                        .get_mut(&k)
+                        .and_then(Value::as_object_mut)
+                        .map(|obj| {
+                            obj.remove("role");
+                            obj.is_empty()
+                        })
+                        .unwrap_or(false);
+                    if vazia {
+                        users.remove(&k);
+                    }
+                }
+                tirar_de_owners = true;
+            }
+            Mutacao::Remover(_) => {
+                users_mut(access)?
+                    .retain(|k, _| chave_do_portao(&normalizar_identidade(k)) != chave);
+                remover_das_listas = true;
+            }
             Mutacao::Reset => {
                 access.insert(
                     "admission".to_string(),
@@ -302,6 +358,36 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
     if desligar_legado_de_grupo && let Some(v) = secao.settings.get_mut("reply_in_groups") {
         *v = json!(false);
     }
+    if tirar_de_owners {
+        // O dono legado sai de `owners`; se so existia la, entra em `allow`:
+        // o acesso e preservado, como `garraia whatsapp unowner` faz. Quem
+        // ainda tem entrada em `access.users` ja continua admitido por ela.
+        let saiu = retirar_da_lista(&mut secao.settings, "owners", &chave);
+        let ainda_declarado = lista_contem(&secao.settings, "allow", &chave)
+            || secao
+                .settings
+                .get("access")
+                .and_then(|a| a.get("users"))
+                .and_then(Value::as_object)
+                .is_some_and(|users| {
+                    users
+                        .keys()
+                        .any(|k| chave_do_portao(&normalizar_identidade(k)) == chave)
+                });
+        if saiu && !ainda_declarado {
+            secao
+                .settings
+                .entry("allow".to_string())
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| MutacaoInvalida::NaoEMapa("allow".to_string()))?
+                .push(Value::String(id.to_string()));
+        }
+    }
+    if remover_das_listas {
+        retirar_da_lista(&mut secao.settings, "allow", &chave);
+        retirar_da_lista(&mut secao.settings, "owners", &chave);
+    }
 
     let depois = settings_da_secao(secao);
     let mudou = antes != depois;
@@ -316,6 +402,41 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
         depois: depois.access,
         mudancas,
     })
+}
+
+/// Tira toda grafia de `chave` da lista legada (`allow` | `owners`).
+/// Devolve se algo saiu. Lista ausente ou que nao e lista: nada sai.
+fn retirar_da_lista(
+    settings: &mut std::collections::HashMap<String, Value>,
+    lista: &str,
+    chave: &str,
+) -> bool {
+    let Some(itens) = settings.get_mut(lista).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let antes = itens.len();
+    itens.retain(|v| {
+        v.as_str()
+            .map(|s| chave_do_portao(&normalizar_identidade(s)) != chave)
+            .unwrap_or(true)
+    });
+    itens.len() != antes
+}
+
+fn lista_contem(
+    settings: &std::collections::HashMap<String, Value>,
+    lista: &str,
+    chave: &str,
+) -> bool {
+    settings
+        .get(lista)
+        .and_then(Value::as_array)
+        .is_some_and(|itens| {
+            itens
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|s| chave_do_portao(&normalizar_identidade(s)) == chave)
+        })
 }
 
 /// `…1234`: os quatro ultimos digitos de um numero, do id de um `@lid` ou do

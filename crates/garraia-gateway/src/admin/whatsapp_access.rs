@@ -46,9 +46,14 @@ use crate::bootstrap::{
 pub struct AccessMutationRequest {
     pub action: String,
     /// Numero (com ou sem `+`) ou JID `@lid`: `level`, `write`, `block`,
-    /// `unblock`.
+    /// `unblock`, `owner`, `unowner`, `remove`.
     #[serde(default)]
     pub identity: Option<String>,
+    /// Em vez de `identity`: os quatro ultimos digitos (`1234` ou `…1234`)
+    /// de uma identidade **declarada**. E o que o Web Console manda — ele so
+    /// conhece `…1234`. Zero candidatas = 400; mais de uma = 409.
+    #[serde(default)]
+    pub identity_last4: Option<String>,
     /// JID de grupo (`<digitos>@g.us`): `group`.
     #[serde(default)]
     pub jid: Option<String>,
@@ -74,8 +79,57 @@ pub struct AuditQuery {
 
 const ACOES: &str = "open | restricted | default | level | write | block | unblock | groups | group-default | group | reset";
 
+/// Resolve `identity_last4` entre as identidades **declaradas** na politica
+/// (`allow`, `owners`, `access.users`): exatamente uma, ou erro (400 para
+/// nenhuma, 409 para mais de uma). O `…1234` nunca vira identidade por
+/// adivinhacao.
+pub fn identidade_por_last4(
+    settings: &crate::bootstrap::WhatsAppLinkedSettings,
+    last4: &str,
+) -> Result<String, (StatusCode, String)> {
+    let alvo = last4.trim().trim_start_matches('…');
+    let alvo = if alvo.is_empty() {
+        alvo
+    } else {
+        alvo.trim_start_matches("...")
+    };
+    if alvo.len() != 4 || !alvo.chars().all(|c| c.is_ascii_digit()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "`identity_last4` sao quatro digitos".to_string(),
+        ));
+    }
+    let mut candidatas: Vec<String> = settings
+        .allow
+        .iter()
+        .chain(settings.owners.iter())
+        .cloned()
+        .chain(settings.access.users.keys().cloned())
+        .filter(|id| mascarar(id) == format!("…{alvo}"))
+        .collect();
+    // A mesma pessoa em varias grafias e UMA candidata.
+    candidatas.sort_by_key(|id| crate::bootstrap::whatsapp_linked_chave_do_portao(id));
+    candidatas.dedup_by_key(|id| crate::bootstrap::whatsapp_linked_chave_do_portao(id));
+    match candidatas.len() {
+        0 => Err((
+            StatusCode::BAD_REQUEST,
+            "nenhuma identidade declarada termina assim".to_string(),
+        )),
+        1 => Ok(candidatas.remove(0)),
+        n => Err((
+            StatusCode::CONFLICT,
+            format!("{n} identidades declaradas terminam assim; use `identity`"),
+        )),
+    }
+}
+
 /// O que a API muda, traduzido para o motor. Puro; `Err` e o texto do 400.
-pub fn mutacao_do_pedido(req: &AccessMutationRequest) -> Result<Mutacao, String> {
+/// `identidade_resolvida` e o que [`identidade_por_last4`] achou quando o
+/// pedido veio por `identity_last4`.
+pub fn mutacao_do_pedido(
+    req: &AccessMutationRequest,
+    identidade_resolvida: Option<&str>,
+) -> Result<Mutacao, String> {
     let nivel = || -> Result<Nivel, String> {
         let s = req
             .level
@@ -96,6 +150,7 @@ pub fn mutacao_do_pedido(req: &AccessMutationRequest) -> Result<Mutacao, String>
         let raw = req
             .identity
             .as_deref()
+            .or(identidade_resolvida)
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
@@ -148,6 +203,15 @@ pub fn mutacao_do_pedido(req: &AccessMutationRequest) -> Result<Mutacao, String>
         }),
         "block" => Ok(Mutacao::Bloquear(identidade()?)),
         "unblock" => Ok(Mutacao::Desbloquear(identidade()?)),
+        "owner" => Ok(Mutacao::Papel {
+            identidade: identidade()?,
+            dono: true,
+        }),
+        "unowner" => Ok(Mutacao::Papel {
+            identidade: identidade()?,
+            dono: false,
+        }),
+        "remove" => Ok(Mutacao::Remover(identidade()?)),
         "groups" => Ok(Mutacao::Grupos(obrigatorio("enabled", req.enabled)?)),
         "group-default" => Ok(Mutacao::DefaultDeGrupo(alcance()?)),
         "group" => Ok(Mutacao::Grupo {
@@ -226,15 +290,24 @@ pub async fn admin_whatsapp_access_mutate(
     if !check_permission(admin.role, Resource::Channels, Action::Update) {
         return proibido();
     }
-    let mutacao = match mutacao_do_pedido(&req) {
-        Ok(m) => m,
-        Err(texto) => return erro(StatusCode::BAD_REQUEST, texto),
-    };
     let (loader, config) = match carregar() {
         Ok(v) => v,
         Err(e) => return falha_de_config(e),
     };
     let original = config.clone();
+    let resolvida = match (&req.identity, &req.identity_last4) {
+        (None, Some(last4)) => {
+            match identidade_por_last4(&whatsapp_linked_settings(&original), last4) {
+                Ok(id) => Some(id),
+                Err((status, texto)) => return erro(status, texto),
+            }
+        }
+        _ => None,
+    };
+    let mutacao = match mutacao_do_pedido(&req, resolvida.as_deref()) {
+        Ok(m) => m,
+        Err(texto) => return erro(StatusCode::BAD_REQUEST, texto),
+    };
     let mut config = config;
     let secao = config
         .channels
