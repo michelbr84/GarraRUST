@@ -35,7 +35,7 @@ registra data, sistema e quem executou. Linha sem data = release não sai.
 
 | # | Cenário | Onde | O que prova | Automatizado? |
 |---|---|---|---|---|
-| D1 | Instalação limpa da CLI (`curl \| sh`), `garraia init` com um provedor, `garraia whatsapp link`, um número autorizado, "oi" → resposta real | Ubuntu 22.04 limpo, com Node 20+ | o caminho que o usuário faz | parcial (#1426: container + ponte falsa cobre até "conectado") |
+| D1 | Instalação limpa da CLI (`curl \| sh`), `garraia init` com um provedor, `garraia whatsapp link`, um número autorizado, "oi" → resposta real | Ubuntu 22.04 limpo, com Node 20+ | o caminho que o usuário faz | parcial — **Linux automatizado até "resposta real"** por `scripts/dogfood/linux-clean-install.sh` (`.deb` num `ubuntu:24.04` cru, provedor Ollama local, sessão REST, `restart`, `stop`); o `whatsapp link` e o número autorizado continuam manuais |
 | D2 | Mesmo cenário via `irm \| iex` | Windows 10/11 | paridade dos instaladores (regra 16) | não |
 | D3 | `garraia restart` → nova mensagem responde **sem** QR; `allow` sobrevive | Ubuntu + Windows | persistência da sessão e da política | fixture `serve-echo` + manual |
 | D4 | `garraia update` da release anterior para o candidato; `garraia rollback` | Ubuntu | o contrato dos assets crus (regra 15) e o `.old` | não |
@@ -43,7 +43,28 @@ registra data, sistema e quem executou. Linha sem data = release não sai.
 | D6 | Desktop: `.deb` idem | Ubuntu 22.04 (X11) | idem | não |
 | D7 | Duas identidades autorizadas pedem `list_dir`; nenhuma vê os arquivos da outra | Ubuntu | isolamento do workspace por sessão (#1449) | teste de integração + manual |
 | D8 | `install-endpoints.yml` verde depois de publicar | — | `garraia.org` serve os instaladores (regra 17) | sim (workflow) |
-| D9 | `GET /api/diagnostics` numa instalação limpa sem nenhum aviso espúrio; `garraia doctor` exit 0 | Ubuntu + Windows | honestidade do status (#1437, #1387) | parcial |
+| D9 | `GET /api/diagnostics` numa instalação limpa sem nenhum aviso espúrio; `garraia doctor` exit 0 | Ubuntu + Windows | honestidade do status (#1437, #1387) | parcial — **Linux automatizado** pelo mesmo script (`doctor --json` exit 0, `doctor whatsapp --json` exit 69 com a linha `whatsapp.linked`, `/api/health` `healthy`); Windows manual |
+
+**D1/D9 Linux — como rodar a automação (#1426).** Numa máquina com
+Docker e Ollama (`ollama pull qwen3.5:0.8b`), a partir do checkout do
+candidato:
+
+```bash
+scripts/dogfood/linux-clean-install.sh --source local        # empacota este checkout com o nfpm da release
+scripts/dogfood/linux-clean-install.sh --run-id <run-id>     # ou o artefato de um workflow_dispatch de teste
+```
+
+O script sobe um `ubuntu:24.04` sem nada de desenvolvimento, instala o
+`.deb` com `apt-get install`, roda os doctors, aponta o provedor para o
+Ollama do host (sem chave paga), sobe o gateway na **3899** (nunca na 3888
+do host), exige uma resposta real do modelo por REST, reinicia e prova que
+a sessão e a config sobreviveram, e encerra com `garraia stop`. A evidência
+inteira (logs, JSONs, resposta do modelo, `.deb` testado) fica em
+`dogfood/linux/<data-hora>/` (gitignored) com um `resumo.txt` PASSOU/FALHOU
+por passo — é esse resumo que vai na tabela da PR de release. Sem
+`--source`/`--run-id`, o default baixa o pacote do **último run verde do
+`release.yml`**, o que testa a release anterior e não o candidato: serve
+para reproduzir um bug de campo, não para o gate.
 
 Regras do gate:
 
@@ -57,7 +78,8 @@ Regras do gate:
   ficar ao lado do que ela libera.
 
 A automação do que dá para automatizar (D1 com ponte falsa, D3, D7, D9) é a
-issue #1426; enquanto ela não fecha, o gate é manual e está aqui de propósito
+issue #1426; a parte Linux de D1/D9 já roda pelo script acima, o resto (D2,
+D4, D5, D6 e o trecho WhatsApp de D1) segue manual e está aqui de propósito
 — um gate que só existe numa issue não gateia nada. O desenho completo, com
 o que o CI cobre e o que só pessoa cobre, está em
 [`plans/0364-release-v0.4.6-preflight.md`](../plans/0364-release-v0.4.6-preflight.md) §6.
