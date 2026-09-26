@@ -146,6 +146,12 @@ pub fn build_admin_router(
             "/api/sessions/{id}",
             delete(handlers::admin_disconnect_session),
         )
+        // #1462: a leitura de qualquer sessao e do operador, com cookie e
+        // `manage_sessions`; a rota de cliente so alcanca as locais.
+        .route(
+            "/api/sessions/{id}/history",
+            get(handlers::admin_session_history),
+        )
         // ── Phase 6: Observability ──
         .route("/api/logs", get(handlers::admin_logs))
         .route("/api/metrics", get(handlers::admin_metrics))

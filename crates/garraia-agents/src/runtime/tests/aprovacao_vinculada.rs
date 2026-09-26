@@ -106,8 +106,8 @@ pub(super) fn o_despacho_neutraliza_a_saida_de_toda_tool() {
     assert_eq!(fonte.matches(alvo).count(), 1, "{alvo}");
     // O caminho da recusa volta antes daquele ponto e tem o proprio.
     let recusa = concat!(
-        "let recusa = neutralizar_marcadores(",
-        "&crate::modes::ToolGate::recusa(name, modo));"
+        "neutralizar_marcadores(&portao.explica_recusa(",
+        "name, self.capacidades_de(name)));"
     );
     assert_eq!(fonte.matches(recusa).count(), 1, "{recusa}");
 }

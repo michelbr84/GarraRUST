@@ -260,6 +260,21 @@ Arquivo completo comentado, validado com `garra config check`:
    eixo — têm autenticação JWT própria, e `/admin/*` tem cookie de
    sessão.
 
+   **Sessão por id — duas leituras, duas credenciais (#1462).** Um id de
+   sessão que o cliente escolhe (`X-Session-Id`, o `{id}` de
+   `/api/sessions/{id}/*`, o `resume` sem token do `/ws`) só alcança sessão
+   das superfícies locais do operador (`api`, `vscode`, `web`, `parrot`);
+   sessão de canal (WhatsApp, Telegram, Discord…) ou do mobile responde o
+   mesmo `404` de id inexistente — na leitura e na escrita, em memória e no
+   `sessions.db` — e `GET /api/sessions` só lista as locais. Quem precisa
+   ler qualquer sessão (o Export do Web Console, por exemplo) usa
+   `GET /admin/api/sessions/{id}/history`, com o cookie de sessão do
+   `/admin` e a permissão `manage_sessions` (`admin` e `operator`; `viewer`
+   recebe 403), que lê sem hidratar e deixa registro na auditoria. A chave
+   de `gateway.api_key` continua sendo a fronteira de rede do `/api/*`, mas
+   não substitui esta regra: é uma chave única compartilhada por toda a
+   LAN, e os ids de canal são adivinháveis por construção.
+
    **A #1240 não fechou nada por default.** Sem a chave configurada, todas
    essas rotas respondem exatamente como antes.
 

@@ -93,6 +93,14 @@ pub trait Tool: Send + Sync {
 
     /// Executa a ferramenta com o contexto e entrada fornecidos.
     async fn execute(&self, context: &ToolContext, input: serde_json::Value) -> Result<ToolOutput>;
+
+    /// O que esta ferramenta **faz**, em classes (#1385). O default consulta a
+    /// tabela fechada das nativas pelo nome; uma tool fora dela — ou um
+    /// servidor MCP sem anotacao — nao tem classe, e sem classe nao passa em
+    /// modo que restringe por classe (fail-closed).
+    fn capacidades(&self) -> &'static [crate::capacidades::Capacidade] {
+        crate::capacidades::capacidades_nativas(self.name())
+    }
 }
 
 /// Resultado retornado por uma ferramenta.

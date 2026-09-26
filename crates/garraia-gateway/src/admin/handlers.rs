@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 
 use super::audit::log_auth_failure;
 use super::middleware::{AuthenticatedAdmin, build_clear_cookie, build_session_cookie, extract_ip};
-use super::rbac::{Action, Resource, Role, check_permission};
+use super::rbac::{Action, Permission, Resource, Role, check_permission, has_permission};
 use super::secrets::redact_config_secrets;
 
 // Slice 9.a (GAR-439): `AdminState` and the master-key derivation extracted to
@@ -1324,6 +1324,73 @@ pub async fn admin_list_sessions(
             "count": sessions.len(),
         })),
     )
+}
+
+/// GET /admin/api/sessions/{id}/history — o historico de **qualquer** sessao
+/// (#1462, opcao 3).
+///
+/// E a leitura do **operador**. A de cliente (`GET /api/sessions/{id}/history`)
+/// so alcanca sessao das superficies locais dele; a de canal (WhatsApp,
+/// Telegram, Discord...) e a do mobile respondem `404` la. O Export da pagina
+/// Sessions do Web Console — que exporta sessao de canal — passa a vir por
+/// aqui, com o cookie de sessao do `/admin` e `Permission::ManageSessions`
+/// ("inspect"; `viewer` nao tem, e recebe 403).
+///
+/// Le sem hidratar ([`crate::state::AppState::historico_de_qualquer_sessao`]):
+/// a sessao nao entra em memoria nem tem a linha reescrita com a superficie
+/// REST. Toda leitura servida vai para a auditoria — e a transcricao de uma
+/// conversa de terceiro. O corpo tem o formato da rota de cliente.
+pub async fn admin_session_history(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if !has_permission(admin.role, Permission::ManageSessions) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "insufficient permissions"})),
+        );
+    }
+
+    match state
+        .app_state
+        .historico_de_qualquer_sessao(&session_id)
+        .await
+    {
+        Ok(Some(history)) => {
+            let guard = state.store.lock().await;
+            let _ = guard.append_audit(
+                Some(&admin.user_id),
+                Some(&admin.username),
+                "read_history",
+                "session",
+                Some(&session_id),
+                None,
+                extract_ip(&headers, None).as_deref(),
+                "success",
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "session_id": session_id,
+                    "messages": crate::api::mensagens_em_json(&history),
+                })),
+            )
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "session not found"})),
+        ),
+        Err(e) => {
+            // O erro do banco vai para o log, nunca para o corpo.
+            tracing::warn!(erro = %e, "falhou ao ler o sessions.db para a leitura administrativa");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "failed to read session store"})),
+            )
+        }
+    }
 }
 
 /// DELETE /admin/api/sessions/{id} — disconnect a session

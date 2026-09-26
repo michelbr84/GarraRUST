@@ -39,6 +39,8 @@ pub struct McpTool {
 
     /// Timeout máximo para execução da ferramenta
     timeout: Duration,
+    /// `readOnlyHint`/`destructiveHint` declarados pelo servidor (#1385).
+    anotacoes: (Option<bool>, Option<bool>),
 }
 
 impl McpTool {
@@ -49,8 +51,10 @@ impl McpTool {
         descricao: Option<String>,
         schema_entrada: Value,
         timeout: Duration,
+        anotacoes: (Option<bool>, Option<bool>),
     ) -> Self {
         Self {
+            anotacoes,
             // Use "__" instead of "." — OpenAI/Anthropic APIs reject dots in tool names
             // (pattern: ^[a-zA-Z0-9_-]+$). The MCP call itself uses `nome_original`.
             nome_completo: format!("{nome_servidor}__{nome_original}"),
@@ -78,6 +82,15 @@ impl Tool for McpTool {
 
     fn input_schema(&self) -> Value {
         self.schema_entrada.clone()
+    }
+    /// #1385: operacao de filesystem por nome (em qualquer servidor), senao
+    /// as anotacoes do servidor; sem anotacao, sem classe.
+    fn capacidades(&self) -> &'static [crate::capacidades::Capacidade] {
+        crate::capacidades::capacidades_da_operacao_mcp(
+            &self.nome_original,
+            self.anotacoes.0,
+            self.anotacoes.1,
+        )
     }
 
     async fn execute(&self, context: &ToolContext, input: Value) -> Result<ToolOutput> {

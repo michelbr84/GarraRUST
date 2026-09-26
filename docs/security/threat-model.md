@@ -1103,6 +1103,62 @@ esperado, não que a plataforma o entrega autenticado.
 
 ---
 
+## 5.17. Sessão por id — leitura de cliente vs. leitura do operador (#1462)
+
+Fechado em 2026-09-26 (opção 3, decisão do dono). Achado da revisão
+independente da PR #1448: `session_id` era uma fronteira furada por mais de
+uma porta. A PR #1468 fechou a **escrita** (`X-Session-Id` em
+`/v1/chat/completions` e `POST /api/sessions/{id}/messages`). Restava a
+**leitura direta**: `GET /api/sessions/{id}/history` devolvia o histórico
+verbatim (`{role, content}`) de qualquer sessão em memória — sem LLM no meio,
+parseável por script, enumerável em loop —, porque o ramo `EmMemoria` de
+`AppState::sessao_da_api` retornava cedo sem olhar a superfície. Uma sessão
+de canal está em memória no caso normal: é a hidratação do canal que a põe
+lá. Com `gateway.api_key` configurada o gate cobre a rota, mas a chave é
+única e compartilhada por toda a LAN, e os ids são adivinháveis por
+construção (`whatsapp-linked-<numero>`, `telegram-<chat>`): é um gap de
+**authz horizontal**, não de autenticação.
+
+**Desenho.** Duas leituras, duas credenciais. A regra do cliente mora num
+lugar só — `sessao_da_api` aplica `sessao_em_memoria_e_local` no ramo em
+memória e `sessao_readotavel_pela_api` no do disco —, e é o que
+`exigir_sessao_da_api` consulta para as três rotas por id:
+
+| Rota | Antes | Depois |
+|---|---|---|
+| `GET /api/sessions/{id}/history` | qualquer sessão em memória; do disco, só a REST | só sessão das superfícies locais (`api`, `vscode`, `web`, `parrot`), em memória ou readotada do disco; canal/mobile → `404` byte-idêntico ao de id inexistente, sem hidratar |
+| `GET /api/sessions` | toda sessão em memória (id + canal) | só as locais — o id de canal carrega telefone/chat id, e nomeá-lo já confirma que a conversa existe |
+| `DELETE /api/sessions/{id}` | desconectava, revogava e gravava `api_logout` em qualquer sessão em memória | só as locais; canal/mobile → `404`, sem tocar a sessão nem a linha |
+| `POST /api/sessions/{id}/messages`, `X-Session-Id` | só as locais (PR #1468) | idem; a checagem extra do handler saiu, a regra é a de `sessao_da_api` |
+| `/ws`, `resume` sem token | qualquer sessão em memória | só as locais; com token válido, o de sempre (o token prova o dono) |
+| `GET /admin/api/sessions/{id}/history` | — | **nova**: qualquer sessão, em memória ou só no `sessions.db`; cookie do `/admin` + `Permission::ManageSessions` (`viewer` → 403, sem cookie → 401); lê **sem hidratar**; cada leitura vai para a auditoria (`read_history` / `session`) |
+| `GET /chat/history` (mobile) | sessão derivada do `sub` do JWT | inalterada — nunca recebe id do cliente |
+
+O Web Console usa a leitura administrativa (listagem e Export) quando o
+navegador está logado no `/admin`; sem login, mostra só as sessões locais e
+diz onde entrar (`data-testid="sessions-admin-hint"`). A leitura do operador
+não hidrata de propósito: `hydrate_session_history(id, Some("api"))`
+reescreveria o `channel_id` da linha e anotaria a superfície REST na sessão
+— exatamente as marcas que `sessao_alcancavel_por_id_do_cliente` lê para
+decidir.
+
+| STRIDE | Ameaça | Mitigação | Residual |
+|---|---|---|---|
+| **I** Information disclosure | `GET /api/sessions/{id}/history` com id de canal lê a transcrição da vítima, sem LLM. | Regra única em `sessao_da_api` (memória e disco); `404` idêntico ao de id inexistente; a sessão não é hidratada nem reetiquetada. | As superfícies locais compartilham sessão por desenho (o VS Code continua o que começou no console) — é o operador dos dois lados. |
+| **I** Information disclosure | `GET /api/sessions` nomeia `whatsapp-linked-<telefone>` e `telegram-<chat>`. | A listagem de cliente filtra pela mesma regra. | O operador logado vê tudo — por definição. |
+| **T** Tampering | `DELETE /api/sessions/{id}` desconecta a sessão de um canal e grava `api_logout` na linha dela. | Mesma regra; a desconexão administrativa continua em `DELETE /admin/api/sessions/{id}` (cookie + CSRF). | — |
+| **S** Spoofing | `resume` sem token no `/ws` com id de canal em memória anexa o chat web à conversa do canal. | Sem token, só sessão local; o token continua sendo a prova de dono para o resto. | Entre sessões locais, o `resume` sem token segue permissivo, como antes (#922). |
+| **E** Elevation of privilege | `viewer` exporta transcrições pela rota administrativa. | `has_permission(role, ManageSessions)`; `viewer` não tem. | Papel custom herda o que declarar. |
+
+Testes: `crates/garraia-gateway/tests/leitura_de_sessao_por_id_do_cliente.rs`
+— 12 cenários sobre o `build_router` real com `sessions.db` real (memória e
+disco para cliente e operador, 401/403 da admin, auditoria, mobile por JWT,
+listagem, `DELETE`, `resume` do `/ws`, varredura do `webchat.html`) —, mais
+`x_session_id_nao_alcanca_sessao_de_canal.rs` (PR #1468) e a tabela unitária
+de `state.rs`.
+
+---
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.

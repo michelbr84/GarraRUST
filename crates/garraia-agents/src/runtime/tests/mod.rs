@@ -58,6 +58,7 @@ mod roteamento_e_fatos;
 mod streaming_quebra_no_meio;
 mod streaming_redo;
 mod telemetria_e_ruido;
+mod teto_por_capacidade;
 mod tool_program_basico;
 mod tool_program_gate_e_orcamento;
 mod tool_program_loop_e_streaming;
