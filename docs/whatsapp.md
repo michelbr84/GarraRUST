@@ -314,7 +314,7 @@ camadas, e nenhuma substitui a outra.
   ja validado — e percorre o inventario MCP. Como nenhum nativo com whitelist
   declara servidor, o aviso so tem o que dizer quando o `default_mode` e um
   perfil **sem** whitelist (`ask`, `code`): sai **um** `WARN` nomeando os
-  servidores e o motivo (nunca argumento nem segredo):
+  servidores e o motivo (nunca argumento nem segredo): E o bloco `file_tools` do mesmo relatorio diz se as file tools tem raiz NESTA sessao (`ready`, `source`: workspace por sessao, `working_dir` de projeto, raiz declarada ou nenhuma) — sem caminho, e com a frase que o modelo deve dizer quando nao ha raiz (#1416, #1418).
 
   ```text
   WARN whatsapp_linked: o perfil `ask` (`channels.whatsapp_linked.default_mode`) libera ferramentas MCP dos servidores filesystem a quem manda mensagem para este numero — o perfil nao tem whitelist de ferramenta, entao passa tudo que o `denied` nao nomeia; use `search` para um piso somente-leitura, ou confirme que e intencional
