@@ -571,6 +571,18 @@ channels:
   (o que ganha e perde: escrita de arquivo, shell, dispositivo, mensagem,
   MCP), calculado pelo motor real, sem gravar nem auditar. `access audit`
   le a trilha.
+- **Pela API admin (e o Web Console).** `GET /admin/api/whatsapp/access`
+  devolve o mesmo documento de `access --json` (mais `hot_reload`);
+  `POST /admin/api/whatsapp/access` com `{ "action": "level", "identity":
+  "+55...", "level": "read", "dry_run": true }` (acoes: `open`, `restricted`,
+  `default`, `level`, `write`, `block`, `unblock`, `groups`, `group-default`,
+  `group`, `reset`) aplica pelo mesmo motor e devolve `changed`, `changes`,
+  `impact` (o que cada principal ganha e perde), `audit` e a politica
+  resultante; `GET /admin/api/whatsapp/access/audit?limit=N` le a trilha.
+  Cookie do `/admin` + CSRF; leitura para `viewer`, mutacao para quem tem
+  `Channels/Update`. A API nunca revela identidade. O `/api/diagnostics`
+  (`whatsapp.access`) avisa quando a admissao esta `open` e quando a secao
+  tem valor invalido.
 - **A quente.** A secao inteira e relida a cada mensagem (como `allow` e
   `owners` ja eram): um `blocked: true` vale na mensagem seguinte, sem
   restart. `access.groups.enabled` tambem; o `reply_in_groups` legado segue

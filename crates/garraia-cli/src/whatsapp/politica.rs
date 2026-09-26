@@ -19,11 +19,14 @@ use garraia_agents::modes::Nivel;
 use garraia_config::{AppConfig, ExecutionProfile};
 use garraia_gateway::bootstrap::whatsapp_linked_politica::impacto::{self, Diferenca};
 use garraia_gateway::bootstrap::whatsapp_linked_politica::mutacao::{
-    self, Aplicada, Mutacao, MutacaoInvalida, mascarar,
+    self, Aplicada, Mutacao, MutacaoInvalida,
+};
+use garraia_gateway::bootstrap::whatsapp_linked_politica::visao::{
+    self, mapa_de_revelacao, nome_do_perfil,
 };
 use garraia_gateway::bootstrap::whatsapp_linked_politica::{Admission, Alcance, auditoria};
 use garraia_gateway::bootstrap::{
-    WHATSAPP_LINKED_CONFIG_KEY as CONFIG_KEY, WhatsAppLinkedSettings, whatsapp_linked_settings,
+    WHATSAPP_LINKED_CONFIG_KEY as CONFIG_KEY, whatsapp_linked_settings,
 };
 
 use super::acesso::{
@@ -103,14 +106,6 @@ pub struct Aplicacao {
     pub audit_falhou: Option<String>,
 }
 
-fn nome_do_perfil(perfil: ExecutionProfile) -> &'static str {
-    if perfil.is_isolated_pod() {
-        "isolated-pod"
-    } else {
-        "standard"
-    }
-}
-
 /// Quem rodou o comando, para o audit: o usuario do SO. Nunca segredo.
 fn ator() -> String {
     std::env::var("USER")
@@ -185,87 +180,14 @@ pub fn aplicar(ctx: &Context, mutacao: &Mutacao, dry_run: bool) -> Result<Aplica
     Ok(aplicacao)
 }
 
-/// A identidade inteira por `…1234`, para `--reveal` (valores da config,
-/// lidos localmente por quem ja pode ler o `config.yml`).
-fn mapa_de_revelacao(s: &WhatsAppLinkedSettings) -> std::collections::HashMap<String, String> {
-    let mut mapa = std::collections::HashMap::new();
-    for id in s.allow.iter().chain(s.owners.iter()) {
-        mapa.entry(mascarar(id)).or_insert_with(|| id.clone());
-    }
-    for chave in s.access.users.keys() {
-        mapa.entry(mascarar(chave)).or_insert_with(|| chave.clone());
-    }
-    for jid in s.access.groups.por_grupo.keys() {
-        mapa.entry(mascarar(jid)).or_insert_with(|| jid.clone());
-    }
-    mapa
-}
-
-fn alcance_json(a: Option<Alcance>) -> (serde_json::Value, serde_json::Value) {
-    match a {
-        Some(a) => (
-            serde_json::json!(a.nivel.as_str()),
-            serde_json::json!(a.write),
-        ),
-        None => (serde_json::Value::Null, serde_json::Value::Null),
-    }
-}
-
-/// O documento de `access --json`.
+/// O documento de `access --json`: o MESMO que a API admin devolve
+/// (`whatsapp_linked_politica::visao::documento`), com `--reveal` local.
 pub fn json_da_politica(
     config: &AppConfig,
     perfil: ExecutionProfile,
     revelar: bool,
 ) -> serde_json::Value {
-    let s = whatsapp_linked_settings(config);
-    let revelacao = mapa_de_revelacao(&s);
-    let principals: Vec<serde_json::Value> = impacto::matriz(&s, perfil)
-        .into_iter()
-        .map(|l| {
-            let (level, write) = alcance_json(l.efetivo.alcance);
-            let c = l.efetivo.capacidades;
-            let mut obj = serde_json::Map::new();
-            obj.insert("principal".into(), serde_json::json!(l.principal));
-            obj.insert("last4".into(), serde_json::json!(l.alvo));
-            if revelar
-                && let Some(alvo) = &l.alvo
-                && let Some(id) = revelacao.get(alvo)
-            {
-                obj.insert("identity".into(), serde_json::json!(id));
-            }
-            obj.insert("level".into(), level);
-            obj.insert("write".into(), write);
-            obj.insert("mode".into(), serde_json::json!(l.efetivo.modo));
-            obj.insert("capabilities".into(), serde_json::json!(c.ligadas()));
-            obj.insert(
-                "can".into(),
-                serde_json::json!({
-                    "read": c.leitura, "write": c.escrita, "shell": c.shell,
-                    "device_execute": c.dispositivo, "message_send": c.mensagem,
-                    "mcp_read": c.mcp_leitura, "mcp_write": c.mcp_escrita,
-                }),
-            );
-            serde_json::Value::Object(obj)
-        })
-        .collect();
-    let bloqueados = s.access.users.values().filter(|u| u.bloqueado).count();
-    serde_json::json!({
-        "channel": CONFIG_KEY,
-        "enabled": s.enabled,
-        "execution_profile": nome_do_perfil(perfil),
-        "owner_floor_mode": s.modo_padrao_efetivo(if perfil.is_isolated_pod() { ExecutionProfile::IsolatedPod } else { ExecutionProfile::Standard }),
-        "default_mode": s.modo_padrao_efetivo(ExecutionProfile::Standard),
-        "admission": s.access.admission.as_str(),
-        "default": { "level": s.access.default.nivel.as_str(), "write": s.access.default.write },
-        "groups": {
-            "enabled": s.responde_em_grupo(),
-            "default": { "level": s.access.groups.default.nivel.as_str(), "write": s.access.groups.default.write },
-            "declared": s.access.groups.por_grupo.len(),
-        },
-        "counts": { "authorized": s.autorizados(), "owners": s.donos(), "blocked": bloqueados },
-        "warnings": s.access.avisos,
-        "principals": principals,
-    })
+    visao::documento(config, perfil, revelar)
 }
 
 fn linha_de_principal(
