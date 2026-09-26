@@ -107,8 +107,8 @@ impl Channel for IMessageChannel {
                         }
 
                         for msg in messages {
-                            let is_group = msg.group_name.is_some();
-                            let session_key = if let Some(ref group) = msg.group_name {
+                            let is_group = msg.room_id.is_some();
+                            let session_key = if let Some(ref group) = msg.room_id {
                                 format!("imessage-group-{group}")
                             } else {
                                 format!("imessage-{}", msg.sender)
@@ -120,7 +120,7 @@ impl Channel for IMessageChannel {
                                 msg.text.len(),
                                 msg.rowid,
                                 if is_group {
-                                    format!(", group={}", msg.group_name.as_deref().unwrap_or(""))
+                                    format!(", room={}", msg.room_id.as_deref().unwrap_or(""))
                                 } else {
                                     String::new()
                                 },
@@ -130,12 +130,12 @@ impl Channel for IMessageChannel {
                             let on_message = Arc::clone(&on_message);
                             let sender = msg.sender.clone();
                             let text = msg.text;
-                            let group_name = msg.group_name.clone();
+                            let room_id = msg.room_id.clone();
 
                             tokio::spawn(async move {
-                                // First arg = session key (group_name for groups, sender for DMs)
+                                // First arg = session key (room_id for groups, sender for DMs)
                                 // Second arg = actual sender identity (always the person)
-                                let session_key = if let Some(ref group) = group_name {
+                                let session_key = if let Some(ref group) = room_id {
                                     group.clone()
                                 } else {
                                     sender.clone()
@@ -146,7 +146,7 @@ impl Channel for IMessageChannel {
 
                                 match result {
                                     Ok(response) => {
-                                        let send_result = if let Some(ref group) = group_name {
+                                        let send_result = if let Some(ref group) = room_id {
                                             sender::send_imessage_group(group, &response).await
                                         } else {
                                             sender::send_imessage(&sender, &response).await
@@ -154,7 +154,7 @@ impl Channel for IMessageChannel {
                                         if let Err(e) = send_result {
                                             error!(
                                                 "imessage: failed to send reply to {}: {e}",
-                                                group_name.as_deref().unwrap_or(&sender)
+                                                room_id.as_deref().unwrap_or(&sender)
                                             );
                                         }
                                     }
@@ -164,7 +164,7 @@ impl Channel for IMessageChannel {
                                     Err(e) => {
                                         warn!("imessage: agent error for {sender}: {e}");
                                         let error_msg = format!("Sorry, an error occurred: {e}");
-                                        let send_result = if let Some(ref group) = group_name {
+                                        let send_result = if let Some(ref group) = room_id {
                                             sender::send_imessage_group(group, &error_msg).await
                                         } else {
                                             sender::send_imessage(&sender, &error_msg).await
