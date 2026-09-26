@@ -214,12 +214,12 @@ Mergeadas nesta sessão: **#1466** (MinIO do fonte, `c4d7f1ba`, 18:19), **#1470*
 
 | PR | Fecha | Base | Estado | Entrada prevista |
 |---|---|---|---|---|
-| #1473 | #1384 (search enxerga leitura do MCP) | main | atualizada com main 20:33; CI em curso | merge direto quando verde |
-| #1474 | #1460, #1463, #1464 (workspace nasce 0700, uma função) | main | BEHIND (main andou com #1472); CI em curso | trem com #1475/#1476 |
-| #1475 | #1465, #1471 (diagnostics sem caminho do host, sem aviso espúrio) | main | idem | trem |
-| #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | idem | trem, depois da #1474 |
-| #1477 | #1419 `garraia doctor whatsapp` | **empilhada em #1473** | CI em curso | depois da #1473 |
-| #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | CI em curso | trem |
+| #1473 | #1384 (search enxerga leitura do MCP) | main | **mergeada 22:03** (`8f088c15`); #1384 fechada | — |
+| #1474 | #1460, #1463, #1464 (workspace nasce 0700, uma função) | main | CI verde 31/31 | **trem #1479** |
+| #1475 | #1465, #1471 (diagnostics sem caminho do host, sem aviso espúrio) | main | CI verde 31/31 | **trem #1479** |
+| #1476 | ratchet: testes do runtime por tema (#1254) | **empilhada em #1474** | CI verde 34/34 | **trem #1479** |
+| #1477 | #1419 `garraia doctor whatsapp` | main (atualizada 22:05) | CI em curso | merge direto quando verde |
+| #1478 | #1416 (parte) + #1418 c5: `garra_status.file_tools` | main | CI verde 31/31 | **trem #1479** |
 
 Cada merge em `main` deixa as outras BEHIND (checks estritos); por isso as cinco de
 `main` entram num **trem único** quando os seus CIs individuais terminarem — um ciclo
@@ -450,6 +450,9 @@ primeira versão desta tabela tinha horários estimados; corrigida).
 | 21:03 | Evidência externa na #1461: `cache_roomnames` = id da sala (`chat<digitos>`), `display_name` é outra coluna que o canal nunca lê → proposta de fechar como não procede + rename de higiene | comentário na #1461 |
 | 22:03 | **#1473 mergeada** (`8f088c15`) com os 6 checks obrigatórios verdes; **#1384 fechada**. `open_issues=58 open_prs=5` | GitHub |
 | 22:05 | #1477 (empilhada na #1473) atualizada com `main`; fila do Actions caiu de 15 para 5 jobs | |
+| 22:10 | CI individual das quatro candidatas ao trem **verde** (31/31, 31/31, 34/34, 31/31); #1478 DIRTY contra `main` (mesmo item de `docs/whatsapp.md` que a #1384) | GitHub |
+| 22:15 | Trem `train/v046-b` = `main` + #1474 + #1476 + #1475 + #1478, `--no-ff`; um conflito só (docs), resolvido movendo a frase do `file_tools` para o item do `garra_status`; local: fmt, clippy (3 crates), agents 707, gateway 1 457, doctor 18, ratchet `max=6901 over700=112` | **PR #1479** |
+| 22:17 | Comentário nas quatro PRs carregadas (não religar auto-merge); auto-merge conferido desligado | |
 
 Depois do trem entrar: empurrar `release/v0.4.6`, abrir a PR em **rascunho**
 com a tabela de dogfood de §6 preenchida no que foi executado (D1 parcial e
