@@ -312,12 +312,12 @@ impl Tool for GarraStatusTool {
 
         // #1416/#1418: as file tools tem raiz NESTA sessao? Bit e origem,
         // nunca caminho — por isso o bloco sai inteiro tambem no turno
-        // restrito, onde `session.working_dir` e retido. O resolvedor e o do
-        // boot e do `/api/diagnostics` (`raizes_das_file_tools`): so le
-        // metadado, nao cria nada, e e o unico que sabe se ha raiz declarada.
+        // restrito, onde `session.working_dir` e retido. As raizes sao as que
+        // o boot resolveu e guardou no `AppState` (#1459): a mesma fonte do
+        // jail e do `/api/diagnostics`, sem I/O nem `warn!` por chamada.
         let file_tools = {
             use crate::bootstrap::FonteDasRaizesDasFileTools as Fonte;
-            let raizes = crate::bootstrap::raizes_das_file_tools(&state.config);
+            let raizes = &state.raizes_das_file_tools;
             // O diretorio da sessao mora DEBAIXO do workspace padrao: o pai
             // canonicalizado e a raiz (o proprio diretorio pode ainda nao
             // existir — ele nasce no primeiro uso, #1449).
@@ -756,6 +756,22 @@ mod tests {
         assert_eq!(ft["ready"], true, "{ft}");
         assert_eq!(ft["source"], "session_working_dir", "{ft}");
         assert!(!texto.contains("projeto-plantado"), "{texto}");
+    }
+
+    /// A fiacao da #1459 aqui tambem: a tool le as raizes que o boot guardou
+    /// no `AppState`, nao resolve por chamada (era `canonicalize` + `warn!`
+    /// a cada `garra_status`).
+    #[test]
+    fn a_tool_nao_resolve_as_raizes_das_file_tools_por_chamada() {
+        let fonte = include_str!("garra_status_tool.rs");
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+        assert!(
+            !producao.contains("raizes_das_file_tools("),
+            "garra_status voltou a resolver as raizes por chamada (#1459)"
+        );
     }
 
     // ─── #1347: o `whatsapp_linked` no relatorio ──────────────────────────

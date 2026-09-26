@@ -145,6 +145,14 @@ pub fn sessao_alcancavel_por_id_do_cliente(s: &garraia_db::SessionSurfaces) -> b
 /// Shared application state accessible from all request handlers.
 pub struct AppState {
     pub config: AppConfig,
+    /// #1459: as raizes das file tools nativas, resolvidas **uma** vez aqui,
+    /// da mesma config e pela mesma funcao que `build_agent_runtime` usa para
+    /// montar o jail. O `/api/diagnostics` (rota auth-free) e o `garra_status`
+    /// leem daqui em vez de resolver por request/chamada — o que custava um
+    /// `canonicalize` por raiz e um `warn!` por raiz que nao resolve, a cada
+    /// pedido de qualquer um. E descreve o jail que o turno de fato usa: o
+    /// jail e fixado no boot, entao o disco de agora nao e a verdade.
+    pub raizes_das_file_tools: crate::bootstrap::RaizesDasFileTools,
     pub channels: tokio::sync::RwLock<ChannelRegistry>,
     pub agents: Arc<AgentRuntime>,
     pub sessions: DashMap<String, SessionState>,
@@ -369,8 +377,12 @@ impl AppState {
         // ADR 0024 (#1329): raizes do MCP `filesystem` por perfil de execucao,
         // resolvidas antes de `config` ser movida para o estado.
         let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&config);
+        // #1459: idem para as file tools nativas — uma vez, antes de `config`
+        // ser movida, e nunca mais por request.
+        let raizes_das_file_tools = crate::bootstrap::raizes_das_file_tools(&config);
         Self {
             config,
+            raizes_das_file_tools,
             channels: tokio::sync::RwLock::new(channels),
             agents,
             sessions: DashMap::new(),
