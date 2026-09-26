@@ -265,7 +265,11 @@ impl FileJail {
 
     /// Raizes efetivas desta chamada: as do operador mais o `working_dir` da
     /// sessao, quando ele existe e resolve.
-    fn effective_roots(&self, session_dir: Option<&str>) -> Vec<PathBuf> {
+    /// As raizes que valem para UMA chamada: as fixas mais o `working_dir` da
+    /// sessao, canonicalizado. Publica porque o confinamento do MCP
+    /// `filesystem` (`mcp::confinamento`, #1482) responde
+    /// `list_allowed_directories` com exatamente esta lista.
+    pub fn effective_roots(&self, session_dir: Option<&str>) -> Vec<PathBuf> {
         let mut roots = self.roots.clone();
         if let Some(wd) = session_dir.map(str::trim).filter(|w| !w.is_empty()) {
             match std::fs::canonicalize(wd) {

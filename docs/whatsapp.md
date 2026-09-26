@@ -309,7 +309,12 @@ camadas, e nenhuma substitui a outra.
   `*/<operacao>`, as dez operacoes somente-leitura do
   `@modelcontextprotocol/server-filesystem` (`read_text_file`,
   `list_directory`, `search_files`, `get_file_info`…) — entao um remetente
-  admitido le e lista o workspace **da propria sessao** (#1448), e nada mais:
+  admitido le e lista o workspace **da propria sessao** (#1448), e nada mais
+  — e isso vale de verdade porque a chamada MCP passa pelo **mesmo jail**
+  das file tools nativas (#1482): `path`/`paths`/`source`/`destination`
+  sao confinados ao diretorio da sessao (mais `agent.file_roots`), e
+  `list_allowed_directories` responde as raizes **da sessao**, nunca a raiz
+  do servidor, que e o pai de todas elas —
   `write_file`, `edit_file`, `create_directory`, `move_file` e qualquer
   operacao fora da lista continuam negadas pelo nome, e nenhum outro servidor
   passa (`servidor/*` libera o servidor inteiro, leitura **e** escrita;
