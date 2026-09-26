@@ -724,6 +724,23 @@ provider sao o que o `/api/diagnostics` diz; sem ele, a linha diz que nao sabe
 em vez de inventar. `--json` para scripts; nenhuma linha carrega numero, LID,
 chave ou URL com credencial.
 
+O Web Console roda o **mesmo motor** (#1420): na pagina **WhatsApp Access**, o
+card **Test WhatsApp** (no topo, logo abaixo do resumo) chama
+`GET /admin/api/whatsapp/doctor?lang=pt|en` (cookie do `/admin`; `viewer` le),
+que colhe os fatos dentro do gateway — o vinculo com a view real da ponte, a
+chave da sessao pela mesma resolucao do boot, a config viva e as linhas do
+proprio `/api/diagnostics` sem dar a volta por HTTP — e devolve `checks` com o
+shape exato do `report.checks` do `--json` da CLI. O resultado e uma linha por
+check (as mesmas ids da CLI) e, em cada linha amarela ou vermelha, uma acao
+segura: `whatsapp.access` rola ate a matriz de acesso da propria pagina;
+`mcp.visibility` abre MCP Servers; `provider.default` abre Providers;
+`execution.profile`, `files.workspace` e `config` abrem Configuration;
+`whatsapp.linked`, `whatsapp.gateway` e `whatsapp.session_key` mostram o
+proximo passo como **uma instrucao de terminal para copiar** — o console
+nunca executa nada no host. O idioma segue o do navegador (`en*` → ingles,
+senao pt-BR). Como na CLI, nada de segredo sai: contagens, origens e nomes,
+nunca chave, numero ou LID.
+
 | Sintoma | O que fazer |
 |---|---|
 | **QR sai embaralhado / quadrado** | O terminal precisa de **pelo menos 60 colunas** e UTF-8. Abaixo disso o GarraIA imprime a string crua em vez de um QR que nao le. |

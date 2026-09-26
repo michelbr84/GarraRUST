@@ -63,6 +63,11 @@ pub use slack::build_slack_channels;
 // Slice 10.e (GAR-479): WhatsApp wiring extracted to `bootstrap::whatsapp`.
 pub use whatsapp::build_whatsapp_channels;
 
+/// #1419/#1420: o motor do `doctor whatsapp` — tipos, tabela (`classificar`),
+/// agregado e exit code, mais a leitura pura da config. A CLI colhe e chama;
+/// o `GET /admin/api/whatsapp/doctor` colhe em processo e chama a MESMA
+/// tabela, entao console e terminal nunca discordam sobre o mesmo fato.
+pub use whatsapp_linked::doctor as whatsapp_linked_doctor;
 /// ADR 0025 (#1388): a Access Policy v2 do canal — `PoliticaDeAcesso`,
 /// `Principal`, `Alcance`, `principal_do_turno`, `teto_do_principal`. E o
 /// MESMO motor que o turno usa; a CLI, a API admin e o Web Console leem e

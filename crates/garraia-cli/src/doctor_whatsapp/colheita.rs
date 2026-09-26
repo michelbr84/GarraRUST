@@ -1,13 +1,22 @@
 //! A colheita do `doctor whatsapp`: disco, config, processo e o
 //! `/api/diagnostics` do gateway vivo — uma vez, antes da tabela, pelas MESMAS
 //! fontes que o `status`, o boot e o console usam.
+//!
+//! A leitura pura da config e do gateway (`doctor::fatos_da_config`); o que
+//! a CLI acrescenta e o I/O que so faz sentido neste processo: o probe TCP
+//! dos daemons locais keyless e a pergunta ao gateway vivo por HTTP.
 
-use garraia_agents::modes::{ModeEngine, ToolGate};
+use std::collections::HashMap;
+
 use garraia_channels::whatsapp_linked::KeyOrigin;
-use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, classify};
+use garraia_channels::whatsapp_linked::health::{BridgeView, DiskFacts, LinkHealth, classify};
 use garraia_config::AppConfig;
+use garraia_gateway::bootstrap::whatsapp_linked_doctor as doctor;
+use garraia_gateway::bootstrap::whatsapp_linked_doctor::{
+    Chave, ConfigFatos, Fatos, Gateway, LinhaViva, Sessao,
+};
 
-use super::*;
+use crate::whatsapp::Context;
 
 /// Colhe os fatos das mesmas fontes que o `status`, o boot e o console usam.
 pub(crate) fn colher(ctx: &Context) -> Fatos {
@@ -63,98 +72,26 @@ pub(crate) fn colher(ctx: &Context) -> Fatos {
     }
 }
 
-/// O recorte da config que a tabela precisa — pelos MESMOS leitores do boot.
+/// O recorte da config que a tabela precisa — pela leitura pura do gateway,
+/// mais o que so a CLI faz: o probe TCP dos daemons locais keyless. O
+/// gateway nao sonda (julga o provider pelo que ele mesmo registrou), entao
+/// `alcancavel` vem `None` de la e e preenchido aqui, por nome.
 fn fatos_da_config(config: &AppConfig) -> ConfigFatos {
-    use garraia_gateway::bootstrap::FonteDasRaizesDasFileTools as Fonte;
-
-    let acesso = crate::whatsapp::acesso::acesso_da_config(config);
-    let perfil = config.execution.perfil();
-    let settings = garraia_gateway::bootstrap::whatsapp_linked_settings(config);
-    let piso_do_dono = settings.modo_padrao_efetivo(perfil);
-    let perfil_txt = perfil.to_string();
-    let raizes = {
-        let r = garraia_gateway::bootstrap::raizes_das_file_tools(config);
-        match r.fonte {
-            Fonte::Declaradas => Raizes::Declaradas(r.jail.roots().len()),
-            Fonte::WorkspacePadrao => Raizes::WorkspacePadrao,
-            Fonte::SomenteSessao => Raizes::SomenteSessao,
-        }
-    };
-
-    // Servidores MCP declarados: a secao `mcp:` do config.yml (que vence) e
-    // o mcp.json do provisionamento. Nomes, nunca args (o `filesystem` leva
-    // caminhos do host).
-    let mut nomes: Vec<String> = config.mcp.keys().cloned().collect();
-    if let Ok(persistido) =
-        garraia_gateway::mcp::persistence::McpPersistenceService::with_default_path().load()
-    {
-        nomes.extend(persistido.mcp_servers.keys().cloned());
-    }
-    nomes.sort();
-    nomes.dedup();
-    let allowed = ModeEngine::new()
-        .get_profile("search")
-        .map(|p| p.tool_policy.allowed.clone())
-        .unwrap_or_default();
-    // As entradas `*/<operacao>` do piso sao as operacoes de leitura do
-    // `@modelcontextprotocol/server-filesystem` (#1384): valem para qualquer
-    // servidor que TENHA essas operacoes, e sem inventario ao vivo so o
-    // `filesystem` e afirmavel. Outro servidor sem `nome/*` nem entrada
-    // exata e, na pratica, escondido — e e isso que o operador precisa ler.
-    let operacoes = allowed
-        .iter()
-        .filter(|e| ToolGate::operacao_em_qualquer_servidor(e).is_some())
-        .count();
-    let mcp = nomes
+    let mut fatos = doctor::fatos_da_config(config);
+    let sondas: HashMap<String, Option<bool>> = crate::doctor::collect_provider_checks(config)
         .into_iter()
-        .map(|nome| {
-            let prefixo = format!("{nome}__");
-            let inteiro = allowed
-                .iter()
-                .any(|e| ToolGate::prefixo_de_servidor(e).as_deref() == Some(prefixo.as_str()));
-            let exatas = allowed.iter().filter(|e| e.starts_with(&prefixo)).count();
-            let nomeadas = if nome == "filesystem" { operacoes } else { 0 };
-            let visibilidade = if inteiro {
-                Visibilidade::Inteiro
-            } else if exatas + nomeadas > 0 {
-                Visibilidade::SoOperacoes(exatas + nomeadas)
-            } else {
-                Visibilidade::Escondido
-            };
-            ServidorMcp { nome, visibilidade }
-        })
-        .collect();
-
-    let provedores = crate::doctor::collect_provider_checks(config)
-        .into_iter()
-        .map(|p| Provedor {
-            nome: p.name,
-            tipo: p.kind,
-            keyless: p.keyless,
-            alcancavel: p
+        .map(|p| {
+            let alcancavel = p
                 .probe
                 .as_ref()
-                .map(|r| matches!(r, crate::doctor::ProbeResult::Reachable)),
+                .map(|r| matches!(r, crate::doctor::ProbeResult::Reachable));
+            (p.name, alcancavel)
         })
         .collect();
-    let provedor_padrao =
-        config.agent.default_provider.clone().filter(|d| {
-            config.llm.contains_key(d) || config.llm.values().any(|e| e.provider == *d)
-        });
-
-    ConfigFatos {
-        canal_ligado: acesso.enabled,
-        autorizados: acesso.autorizados,
-        donos: acesso.donos,
-        perfil: perfil_txt.clone(),
-        origem: config.execution.origem().to_string(),
-        isolado: perfil_txt == "isolated-pod",
-        piso_do_dono,
-        raizes,
-        mcp,
-        provedores,
-        provedor_padrao,
+    for p in &mut fatos.provedores {
+        p.alcancavel = sondas.get(&p.nome).copied().flatten();
     }
+    fatos
 }
 
 /// `GET /api/diagnostics` do gateway local, pelo MESMO guard SSRF do probe

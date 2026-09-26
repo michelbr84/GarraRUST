@@ -1,20 +1,10 @@
 //! A tabela do `doctor whatsapp`: fatos → linhas. Pura, sem I/O, sem relogio
-//! — e por isso testavel linha a linha em `tests.rs`.
+//! — e por isso testavel linha a linha em `tests.rs`, e por isso a MESMA para
+//! a CLI e para o console (#1420): quem colhe muda, quem julga nao.
 
 use garraia_channels::whatsapp_linked::KeyOrigin;
 
 use super::*;
-
-impl Linha {
-    fn nova(id: &'static str, status: Semaforo, detail: String, next_step: Option<String>) -> Self {
-        Self {
-            id,
-            status,
-            detail,
-            next_step,
-        }
-    }
-}
 
 /// O status de uma linha do gateway vivo, no nosso semaforo. Desconhecido e
 /// neutro — o contrato do `/api/diagnostics` e aditivo (#1437).
@@ -28,7 +18,10 @@ fn semaforo_do_gateway(status: &str) -> Semaforo {
 }
 
 /// A tabela: fatos → linhas. Pura, sem I/O, sem relogio.
-pub(crate) fn classificar(f: &Fatos, lang: Lang, bin: &str) -> Vec<Linha> {
+///
+/// `bin` e o nome do executavel que os passos citam (`garraia`/`garra`): a
+/// instrucao tem de nomear o binario que esta na maquina.
+pub fn classificar(f: &Fatos, lang: Lang, bin: &str) -> Vec<Linha> {
     let mut out = Vec::new();
     let vivo = |id: &str| f.gateway.ao_vivo.iter().find(|l| l.id == id);
 
@@ -572,26 +565,4 @@ pub(crate) fn classificar(f: &Fatos, lang: Lang, bin: &str) -> Vec<Linha> {
     out.push(Linha::nova("provider.default", status, detalhe, passo));
 
     out
-}
-
-/// `error` → 69; `warning` so conta sob `--strict` (2); o resto e 0.
-pub(crate) fn exit_code(linhas: &[Linha], strict: bool) -> i32 {
-    if linhas.iter().any(|l| l.status == Semaforo::Error) {
-        EX_UNAVAILABLE
-    } else if strict && linhas.iter().any(|l| l.status == Semaforo::Warning) {
-        EX_CONFIG
-    } else {
-        EX_OK
-    }
-}
-
-/// O agregado, no vocabulario do `/api/diagnostics`.
-pub(crate) fn agregado(linhas: &[Linha]) -> &'static str {
-    if linhas.iter().any(|l| l.status == Semaforo::Error) {
-        "error"
-    } else if linhas.iter().any(|l| l.status == Semaforo::Warning) {
-        "warning"
-    } else {
-        "ok"
-    }
 }

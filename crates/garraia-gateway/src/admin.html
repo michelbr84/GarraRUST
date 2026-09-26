@@ -1989,6 +1989,9 @@ function waAccessView(data) {
   }
   frag.appendChild(head);
 
+  // ── Test WhatsApp (#1420): o MESMO motor do `garraia doctor whatsapp` ──
+  frag.appendChild(waDoctorCard());
+
   // ── Preview / confirm (preenchido por waPreview) ──
   frag.appendChild(el('div', { id: 'wa-access-preview', 'data-testid': 'wa-access-preview', style: 'display:none;' }));
 
@@ -2148,6 +2151,101 @@ async function waLoadAudit() {
     t.appendChild(tb);
     body.appendChild(t);
   } catch (e) { clearEl(body); body.appendChild(el('div', { textContent: 'Failed: ' + e.message })); }
+}
+
+// ─── Test WhatsApp (#1420) ───────────────────────────────────────────
+// O card roda o MESMO motor do `garraia doctor whatsapp`: `GET
+// /admin/api/whatsapp/doctor` devolve `checks` com o shape exato do `--json`
+// da CLI (id, status, detail, next_step). O console NAO executa nada no
+// host: cada linha nao-verde ou navega para a pagina onde se conserta, ou
+// mostra o proximo passo como UMA instrucao copiavel para o terminal.
+function waDoctorLang() {
+  var l = String((typeof navigator !== 'undefined' && navigator.language) || '').toLowerCase();
+  return l.indexOf('en') === 0 ? 'en' : 'pt';
+}
+function waDoctorBadge(status) {
+  var cls = status === 'ok' ? 'badge-success' : status === 'warning' ? 'badge-warning' : status === 'error' ? 'badge-error' : 'badge-neutral';
+  var icon = status === 'ok' ? '✔' : status === 'warning' ? '⚠' : status === 'error' ? '✖' : '○';
+  return el('span', { className: 'badge ' + cls, 'data-testid': 'wa-doctor-status', textContent: icon + ' ' + status });
+}
+function waDoctorCard() {
+  var card = el('div', { className: 'card', 'data-testid': 'wa-doctor' });
+  card.appendChild(el('h3', { textContent: 'Test WhatsApp' }));
+  card.appendChild(el('div', { className: 'wa-hint', textContent: 'Runs the same engine as `garraia doctor whatsapp`: link, session key, gateway and bridge, access policy, execution profile, workspace, MCP visibility and outbound provider. Nothing runs on the host from here: each non-green line opens the page where it is fixed, or shows the terminal step to copy. No secret or session key ever leaves the gateway.' }));
+  var bar = el('div', { className: 'toolbar', style: 'margin:10px 0 0;' });
+  var btn = el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-doctor-run', textContent: 'Run test' });
+  var results = el('div', { 'data-testid': 'wa-doctor-results', style: 'display:none;margin-top:10px;' });
+  btn.addEventListener('click', function () { waDoctorRun(btn, results); });
+  bar.appendChild(btn);
+  card.appendChild(bar);
+  card.appendChild(results);
+  return card;
+}
+async function waDoctorRun(btn, results) {
+  btn.disabled = true;
+  clearEl(results); results.style.display = 'block';
+  results.appendChild(el('div', { textContent: 'Testing…' }));
+  try {
+    var data = await apiGet('/whatsapp/doctor?lang=' + waDoctorLang());
+    waDoctorRender(results, data);
+  } catch (e) {
+    clearEl(results);
+    results.appendChild(el('div', { className: 'wa-alert wa-alert-error', 'data-testid': 'wa-doctor-error', textContent: 'Failed: ' + e.message }));
+  } finally { btn.disabled = false; }
+}
+function waDoctorRender(results, data) {
+  clearEl(results);
+  var summary = el('div', { 'data-testid': 'wa-doctor-summary', 'data-status': data.status || '?', style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;' });
+  summary.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Result:' }));
+  summary.appendChild(waDoctorBadge(data.status || '?'));
+  summary.appendChild(el('span', { className: 'badge badge-neutral', textContent: 'v' + (data.version || '?') + ' · ' + (data.lang || 'pt') }));
+  results.appendChild(summary);
+  var table = el('table', { className: 'wa-table', 'data-testid': 'wa-doctor-table' });
+  var thead = el('thead'); thead.innerHTML = '<tr><th>Status</th><th>Check</th><th>Detail</th><th>Next step</th><th></th></tr>';
+  table.appendChild(thead);
+  var tbody = el('tbody');
+  (data.checks || []).forEach(function (c) {
+    var tr = el('tr', { 'data-testid': 'wa-doctor-row', 'data-id': c.id || '', 'data-status': c.status || '' });
+    var st = el('td'); st.appendChild(waDoctorBadge(c.status)); tr.appendChild(st);
+    tr.appendChild(el('td', { style: 'white-space:nowrap;font-family:var(--mono);font-size:12px;', textContent: c.id || '' }));
+    tr.appendChild(el('td', { 'data-testid': 'wa-doctor-detail', textContent: c.detail || '' }));
+    var stepTd = el('td', { 'data-testid': 'wa-doctor-next-step' });
+    if (c.next_step) stepTd.appendChild(el('code', { style: 'font-family:var(--mono);font-size:11px;word-break:break-word;', textContent: c.next_step }));
+    else stepTd.textContent = '—';
+    tr.appendChild(stepTd);
+    var act = el('td', { style: 'white-space:nowrap;' });
+    var action = c.status === 'ok' ? null : waDoctorAction(c);
+    if (action) act.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-doctor-action', 'data-id': c.id || '', textContent: action.label, onClick: action.run }));
+    tr.appendChild(act);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  results.appendChild(table);
+}
+// A acao segura de cada linha. Navegar e sempre seguro; um passo de terminal
+// e mostrado e copiado — nunca executado pelo console.
+function waDoctorAction(c) {
+  var id = c.id || '';
+  var goTo = function (page, label) { return { label: label, run: function () { navigate(page); } }; };
+  if (id === 'whatsapp.access') return { label: 'Fix access below', run: function () { var m = document.querySelector('[data-testid="wa-access-principals"]'); if (m) m.scrollIntoView({ behavior: 'smooth', block: 'start' }); } };
+  if (id === 'mcp.visibility') return goTo('mcp', 'Open MCP Servers');
+  if (id === 'provider.default') return goTo('providers', 'Open Providers');
+  if (id === 'config' || id === 'execution.profile' || id === 'files.workspace') return goTo('config', 'Open Configuration');
+  if (id === 'whatsapp.linked' || id === 'whatsapp.gateway' || id === 'whatsapp.session_key') {
+    if (!c.next_step) return null;
+    return { label: 'Copy terminal step', run: function () { waDoctorCopy(c.next_step); } };
+  }
+  return null;
+}
+async function waDoctorCopy(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      toast('Copied. Run it in a terminal on the gateway host.', 'success');
+      return;
+    }
+  } catch (e) { /* sem clipboard (contexto inseguro, permissao): cai no prompt */ }
+  window.prompt('Run this in a terminal on the gateway host:', text);
 }
 
 document.querySelectorAll('.nav-item').forEach(item => {

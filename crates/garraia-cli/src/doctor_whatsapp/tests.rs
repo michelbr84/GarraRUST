@@ -1,494 +1,119 @@
+//! O que a CLI ainda prova sozinha depois de o motor ir para o gateway
+//! (#1420): a saida `--json` nao mudou de shape, o idioma detectado aqui vira
+//! o idioma da tabela, e a tabela linha a linha continua testada — la, em
+//! `garraia_gateway::bootstrap::whatsapp_linked_doctor`.
+
 use super::*;
 
-const BIN: &str = "garraia";
-
-fn linha<'a>(linhas: &'a [Linha], id: &str) -> &'a Linha {
-    linhas.iter().find(|l| l.id == id).unwrap_or_else(|| {
-        panic!(
-            "sem a linha {id}: {:?}",
-            linhas.iter().map(|l| l.id).collect::<Vec<_>>()
-        )
-    })
-}
-
-fn config_boa() -> ConfigFatos {
-    ConfigFatos {
-        canal_ligado: true,
-        autorizados: 2,
-        donos: 1,
-        perfil: "standard".into(),
-        origem: "default".into(),
-        isolado: false,
-        piso_do_dono: "search".into(),
-        raizes: Raizes::WorkspacePadrao,
-        mcp: vec![ServidorMcp {
-            nome: "filesystem".into(),
-            visibilidade: Visibilidade::SoOperacoes(10),
-        }],
-        provedores: vec![Provedor {
-            nome: "openrouter".into(),
-            tipo: "openrouter".into(),
-            keyless: false,
-            alcancavel: None,
-        }],
-        provedor_padrao: Some("openrouter".into()),
-    }
-}
-
-fn tudo_bem() -> Fatos {
-    Fatos {
-        sessao: Sessao::Lida {
-            saude: LinkHealth::Linked,
-            chave: Some(Chave {
-                do_cofre: true,
-                legivel: true,
-            }),
-        },
-        bridge_dir: PathBuf::from("/tmp/x/whatsapp/bridge"),
-        config: Some(config_boa()),
-        gateway: Gateway {
-            pid: Some(4242),
-            ouvindo: true,
-            host: "127.0.0.1".into(),
-            porta: 3888,
-            ao_vivo: vec![
-                LinhaViva {
-                    id: "whatsapp.linked".into(),
-                    status: "ok".into(),
-                    detail: "conectado".into(),
-                    next_step: None,
-                },
-                LinhaViva {
-                    id: "provider.default".into(),
-                    status: "ok".into(),
-                    detail: "openrouter".into(),
-                    next_step: None,
-                },
-            ],
-            recusou_credencial: false,
-        },
-    }
-}
-
-/// O caminho feliz e todo verde, sai 0 e nao carrega passo nenhum.
+/// O `report` do `--json` e o contrato de script (#1419): `ok`, `exit_code`
+/// e `report.{status,version,checks}` — e cada `check` com `id`, `status`,
+/// `detail` e `next_step` so quando ha. E o MESMO `checks` que o console
+/// recebe de `GET /admin/api/whatsapp/doctor`.
 #[test]
-fn tudo_bem_e_verde_e_sai_zero() {
-    let linhas = classificar(&tudo_bem(), Lang::Pt, BIN);
-    for id in [
-        "whatsapp.linked",
-        "whatsapp.session_key",
-        "whatsapp.gateway",
-        "whatsapp.access",
-        "execution.profile",
-        "files.workspace",
-        "mcp.visibility",
-        "provider.default",
-    ] {
-        let l = linha(&linhas, id);
-        assert_eq!(l.status, Semaforo::Ok, "{id}: {}", l.detail);
-        assert!(l.next_step.is_none(), "{id} com passo: {:?}", l.next_step);
-    }
-    assert_eq!(exit_code(&linhas, false), 0);
-    assert_eq!(exit_code(&linhas, true), 0);
-    assert_eq!(agregado(&linhas), "ok");
-}
-
-/// Sem vinculo e vermelho — e o passo e o MESMO que o `status` e o
-/// `/api/diagnostics` dao (`LinkHealth::next_step`), nao uma copia.
-#[test]
-fn sem_vinculo_e_error_com_o_passo_de_vincular_e_sai_69() {
-    let mut f = tudo_bem();
-    f.sessao = Sessao::Lida {
-        saude: LinkHealth::NotLinked,
-        chave: None,
-    };
-    let linhas = classificar(&f, Lang::Pt, BIN);
-    let l = linha(&linhas, "whatsapp.linked");
-    assert_eq!(l.status, Semaforo::Error, "{}", l.detail);
-    let esperado = LinkHealth::NotLinked
-        .next_step(&f.bridge_dir, BIN)
-        .expect("NotLinked tem passo");
-    assert_eq!(l.next_step.as_deref(), Some(esperado.as_str()));
-    // Sem sessao nao ha chave a julgar.
-    assert!(linhas.iter().all(|l| l.id != "whatsapp.session_key"));
-    assert_eq!(exit_code(&linhas, false), 69);
-    assert_eq!(agregado(&linhas), "error");
-}
-
-#[test]
-fn ponte_sem_dependencias_e_error_com_o_npm_ci_no_diretorio_da_ponte() {
-    let mut f = tudo_bem();
-    f.sessao = Sessao::Lida {
-        saude: LinkHealth::MissingDependencies,
-        chave: Some(Chave {
-            do_cofre: true,
-            legivel: true,
-        }),
-    };
-    let linhas = classificar(&f, Lang::En, BIN);
-    let l = linha(&linhas, "whatsapp.linked");
-    assert_eq!(l.status, Semaforo::Error);
-    let passo = l.next_step.as_deref().expect("passo");
-    assert!(passo.contains("npm ci"), "{passo}");
-    assert!(passo.contains("whatsapp/bridge"), "{passo}");
-}
-
-/// Chave em `session.key` ao lado do cifrado e aviso, com a exposicao
-/// dita em voz alta; chave que nao abre o blob e vermelho.
-#[test]
-fn chave_em_arquivo_e_warning_e_chave_que_nao_abre_e_error() {
-    let mut f = tudo_bem();
-    f.sessao = Sessao::Lida {
-        saude: LinkHealth::Linked,
-        chave: Some(Chave {
-            do_cofre: false,
-            legivel: true,
-        }),
-    };
-    let l = classificar(&f, Lang::Pt, BIN);
-    let k = linha(&l, "whatsapp.session_key");
-    assert_eq!(k.status, Semaforo::Warning, "{}", k.detail);
-    assert!(k.detail.contains("session.key"), "{}", k.detail);
-    assert!(
-        k.next_step
-            .as_deref()
-            .unwrap_or("")
-            .contains("GARRAIA_VAULT_PASSPHRASE"),
-        "{:?}",
-        k.next_step
-    );
-
-    f.sessao = Sessao::Lida {
-        saude: LinkHealth::Linked,
-        chave: Some(Chave {
-            do_cofre: true,
-            legivel: false,
-        }),
-    };
-    let l = classificar(&f, Lang::Pt, BIN);
-    let k = linha(&l, "whatsapp.session_key");
-    assert_eq!(k.status, Semaforo::Error, "{}", k.detail);
-    assert!(
-        k.next_step.as_deref().unwrap_or("").contains("whatsapp"),
-        "{:?}",
-        k.next_step
-    );
-}
-
-/// Gateway parado: aviso, com o `start`. E o que so ele sabe (a ponte)
-/// nao e inventado — a linha diz que nao sabe.
-#[test]
-fn gateway_parado_e_warning_com_o_start_e_nao_inventa_a_ponte() {
-    let mut f = tudo_bem();
-    f.gateway = Gateway {
-        pid: None,
-        ouvindo: false,
-        host: "127.0.0.1".into(),
-        porta: 3888,
-        ao_vivo: vec![],
-        recusou_credencial: false,
-    };
-    let linhas = classificar(&f, Lang::Pt, BIN);
-    let g = linha(&linhas, "whatsapp.gateway");
-    assert_eq!(g.status, Semaforo::Warning, "{}", g.detail);
-    assert!(
-        g.next_step
-            .as_deref()
-            .unwrap_or("")
-            .contains("garraia start"),
-        "{:?}",
-        g.next_step
-    );
-    let v = linha(&linhas, "whatsapp.linked");
-    assert!(!v.detail.contains("conectad"), "{}", v.detail);
-}
-
-/// Gateway de pe que RECUSOU a credencial da CLI (401): e um "nao sei"
-/// diferente do "nao respondeu" — o passo pede a chave no ambiente da CLI,
-/// nao o log. E nem a ponte nem o provider sao inventados.
-#[test]
-fn gateway_que_recusa_a_credencial_da_cli_e_warning_pedindo_a_chave() {
-    let mut f = tudo_bem();
-    f.gateway.ao_vivo.clear();
-    f.gateway.recusou_credencial = true;
-    let linhas = classificar(&f, Lang::Pt, BIN);
-    let g = linha(&linhas, "whatsapp.gateway");
-    assert_eq!(g.status, Semaforo::Warning, "{}", g.detail);
-    assert!(g.detail.contains("401"), "{}", g.detail);
-    let passo = g.next_step.as_deref().unwrap_or("");
-    assert!(passo.contains("GARRAIA_GATEWAY"), "{passo}");
-    // O provider cai para a config (que aqui e boa), nao para "o gateway disse".
-    let p = linha(&linhas, "provider.default");
-    assert_eq!(p.status, Semaforo::Ok, "{}", p.detail);
-    assert!(!p.detail.contains("segundo o gateway"), "{}", p.detail);
-}
-
-/// Com o gateway de pe, a ponte e o provider sao o que o
-/// `/api/diagnostics` diz — inclusive quando ele diz que caiu.
-#[test]
-fn gateway_de_pe_repassa_o_que_o_diagnostics_diz_da_ponte_e_do_provider() {
-    let mut f = tudo_bem();
-    f.gateway.ao_vivo = vec![
-        LinhaViva {
-            id: "whatsapp.linked".into(),
-            status: "error".into(),
-            detail: "ponte caida".into(),
-            next_step: Some("reinicie o gateway".into()),
-        },
-        LinhaViva {
-            id: "provider.default".into(),
-            status: "error".into(),
-            detail: "none registered".into(),
-            next_step: Some("configure um provider".into()),
-        },
-    ];
-    let linhas = classificar(&f, Lang::Pt, BIN);
-    let g = linha(&linhas, "whatsapp.gateway");
-    assert_eq!(g.status, Semaforo::Error, "{}", g.detail);
-    assert!(g.detail.contains("ponte caida"), "{}", g.detail);
-    assert_eq!(g.next_step.as_deref(), Some("reinicie o gateway"));
-    let p = linha(&linhas, "provider.default");
-    assert_eq!(p.status, Semaforo::Error, "{}", p.detail);
-    assert!(p.detail.contains("none registered"), "{}", p.detail);
-    assert_eq!(exit_code(&linhas, false), 69);
-}
-
-/// Canal ligado com portao vazio: ninguem recebe resposta. Canal
-/// desligado: o gateway nao consome. Os dois sao aviso, com o passo.
-#[test]
-fn portao_vazio_e_canal_desligado_sao_warning_com_passo() {
-    let mut f = tudo_bem();
-    f.config.as_mut().expect("config").autorizados = 0;
-    f.config.as_mut().expect("config").donos = 0;
-    let l = classificar(&f, Lang::Pt, BIN);
-    let a = linha(&l, "whatsapp.access");
-    assert_eq!(a.status, Semaforo::Warning, "{}", a.detail);
-    assert!(
-        a.next_step
-            .as_deref()
-            .unwrap_or("")
-            .contains("whatsapp allow"),
-        "{:?}",
-        a.next_step
-    );
-
-    let mut f = tudo_bem();
-    f.config.as_mut().expect("config").canal_ligado = false;
-    let l = classificar(&f, Lang::En, BIN);
-    let a = linha(&l, "whatsapp.access");
-    assert_eq!(a.status, Semaforo::Warning, "{}", a.detail);
-    assert!(
-        a.next_step.as_deref().unwrap_or("").contains("enabled"),
-        "{:?}",
-        a.next_step
-    );
-}
-
-/// `isolated-pod` e SEMPRE aviso (ADR 0024): o dono ganha `code` com
-/// bash no host do pod, e o passo diz como reverter.
-#[test]
-fn isolated_pod_e_warning_dizendo_o_que_o_dono_ganha_e_como_reverter() {
-    let mut f = tudo_bem();
-    let c = f.config.as_mut().expect("config");
-    c.perfil = "isolated-pod".into();
-    c.origem = "env".into();
-    c.isolado = true;
-    c.piso_do_dono = "code".into();
-    let l = classificar(&f, Lang::Pt, BIN);
-    let e = linha(&l, "execution.profile");
-    assert_eq!(e.status, Semaforo::Warning, "{}", e.detail);
-    for esperado in ["isolated-pod", "env", "code", "search"] {
-        assert!(e.detail.contains(esperado), "{esperado:?} em {}", e.detail);
-    }
-    assert!(
-        e.next_step
-            .as_deref()
-            .unwrap_or("")
-            .contains("execution.profile"),
-        "{:?}",
-        e.next_step
-    );
-}
-
-#[test]
-fn sem_raiz_efetiva_e_warning_e_raiz_declarada_sai_como_contagem() {
-    let mut f = tudo_bem();
-    f.config.as_mut().expect("config").raizes = Raizes::SomenteSessao;
-    let l = classificar(&f, Lang::Pt, BIN);
-    let w = linha(&l, "files.workspace");
-    assert_eq!(w.status, Semaforo::Warning, "{}", w.detail);
-    assert!(w.next_step.is_some());
-
-    f.config.as_mut().expect("config").raizes = Raizes::Declaradas(3);
-    let l = classificar(&f, Lang::Pt, BIN);
-    let w = linha(&l, "files.workspace");
-    assert_eq!(w.status, Semaforo::Ok, "{}", w.detail);
-    assert!(w.detail.contains('3'), "{}", w.detail);
-}
-
-/// MCP declarado que o piso esconde e aviso nomeando o servidor e a
-/// sintaxe (#1384/#1387); nenhum declarado e neutro.
-#[test]
-fn mcp_escondido_no_piso_e_warning_e_nenhum_declarado_e_neutro() {
-    let mut f = tudo_bem();
-    f.config.as_mut().expect("config").mcp.push(ServidorMcp {
-        nome: "github".into(),
-        visibilidade: Visibilidade::Escondido,
-    });
-    let l = classificar(&f, Lang::Pt, BIN);
-    let m = linha(&l, "mcp.visibility");
-    assert_eq!(m.status, Semaforo::Warning, "{}", m.detail);
-    assert!(m.detail.contains("github"), "{}", m.detail);
-    assert!(m.detail.contains("filesystem"), "{}", m.detail);
-    let passo = m.next_step.as_deref().unwrap_or("");
-    assert!(
-        passo.contains("github/*") && passo.contains("*/<operacao>"),
-        "{passo}"
-    );
-
-    f.config.as_mut().expect("config").mcp.clear();
-    let l = classificar(&f, Lang::Pt, BIN);
-    assert_eq!(linha(&l, "mcp.visibility").status, Semaforo::NotConfigured);
-}
-
-/// Sem gateway de pe o provider e julgado pela config: nenhum e
-/// vermelho; um daemon local que nao responde e vermelho; um cloud com
-/// credencial presente e verde.
-#[test]
-fn provider_offline_e_julgado_pela_config() {
-    let mut f = tudo_bem();
-    f.gateway.ao_vivo.clear();
-    f.config.as_mut().expect("config").provedores.clear();
-    f.config.as_mut().expect("config").provedor_padrao = None;
-    let l = classificar(&f, Lang::Pt, BIN);
-    let p = linha(&l, "provider.default");
-    assert_eq!(p.status, Semaforo::Error, "{}", p.detail);
-    assert!(
-        p.next_step
-            .as_deref()
-            .unwrap_or("")
-            .contains("garraia init"),
-        "{:?}",
-        p.next_step
-    );
-
-    let mut f = tudo_bem();
-    f.gateway.ao_vivo.clear();
-    let c = f.config.as_mut().expect("config");
-    c.provedores = vec![Provedor {
-        nome: "ollama".into(),
-        tipo: "ollama".into(),
-        keyless: true,
-        alcancavel: Some(false),
-    }];
-    c.provedor_padrao = Some("ollama".into());
-    let l = classificar(&f, Lang::Pt, BIN);
-    let p = linha(&l, "provider.default");
-    assert_eq!(p.status, Semaforo::Error, "{}", p.detail);
-    assert!(p.detail.contains("ollama"), "{}", p.detail);
-
-    let mut f = tudo_bem();
-    f.gateway.ao_vivo.clear();
-    let l = classificar(&f, Lang::Pt, BIN);
-    assert_eq!(linha(&l, "provider.default").status, Semaforo::Ok);
-}
-
-/// Config que nao carregou: uma linha de aviso propria, e o resto do
-/// relatorio continua (o vinculo e o gateway nao dependem dela).
-#[test]
-fn sem_config_o_relatorio_avisa_e_segue() {
-    let mut f = tudo_bem();
-    f.config = None;
-    let l = classificar(&f, Lang::Pt, BIN);
-    let c = linha(&l, "config");
-    assert_eq!(c.status, Semaforo::Warning, "{}", c.detail);
-    assert!(
-        c.next_step
-            .as_deref()
-            .unwrap_or("")
-            .contains("garraia init"),
-        "{:?}",
-        c.next_step
-    );
-    linha(&l, "whatsapp.linked");
-    linha(&l, "whatsapp.gateway");
-    assert!(l.iter().all(|x| x.id != "whatsapp.access"));
-}
-
-/// `--strict` promove aviso a 2; sem ele, aviso e 0. Vermelho e 69 sempre.
-#[test]
-fn exit_code_segue_o_semaforo() {
-    let ok = vec![Linha {
-        id: "a",
-        status: Semaforo::Ok,
-        detail: String::new(),
-        next_step: None,
-    }];
-    let neutro = vec![Linha {
-        id: "a",
-        status: Semaforo::NotConfigured,
-        detail: String::new(),
-        next_step: None,
-    }];
-    let aviso = vec![Linha {
-        id: "a",
-        status: Semaforo::Warning,
-        detail: String::new(),
-        next_step: None,
-    }];
-    let erro = vec![
+fn o_payload_json_mantem_o_shape_do_report() {
+    let linhas = vec![
         Linha {
-            id: "a",
-            status: Semaforo::Warning,
-            detail: String::new(),
-            next_step: None,
-        },
-        Linha {
-            id: "b",
+            id: "whatsapp.linked",
             status: Semaforo::Error,
-            detail: String::new(),
+            detail: "nenhum WhatsApp pessoal vinculado".into(),
+            next_step: Some("garraia whatsapp link".into()),
+        },
+        Linha {
+            id: "mcp.visibility",
+            status: Semaforo::NotConfigured,
+            detail: "nenhum servidor MCP declarado".into(),
             next_step: None,
         },
     ];
-    assert_eq!(exit_code(&ok, true), 0);
-    assert_eq!(exit_code(&neutro, true), 0);
-    assert_eq!(exit_code(&aviso, false), 0);
-    assert_eq!(exit_code(&aviso, true), 2);
-    assert_eq!(exit_code(&erro, false), 69);
-    assert_eq!(agregado(&neutro), "ok");
-    assert_eq!(agregado(&aviso), "warning");
-    assert_eq!(agregado(&erro), "error");
+    let code = exit_code(&linhas, false);
+    assert_eq!(code, 69);
+    let v = payload_json(&linhas, code);
+
+    let mut topo: Vec<&str> = v
+        .as_object()
+        .expect("objeto")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    topo.sort_unstable();
+    assert_eq!(topo, ["exit_code", "ok", "report"]);
+    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(v["exit_code"], serde_json::json!(69));
+
+    let report = v["report"].as_object().expect("report");
+    let mut chaves: Vec<&str> = report.keys().map(String::as_str).collect();
+    chaves.sort_unstable();
+    assert_eq!(chaves, ["checks", "status", "version"]);
+    assert_eq!(v["report"]["status"], serde_json::json!("error"));
+    assert_eq!(
+        v["report"]["version"],
+        serde_json::json!(env!("CARGO_PKG_VERSION"))
+    );
+
+    let checks = v["report"]["checks"].as_array().expect("checks");
+    assert_eq!(checks.len(), 2);
+    let mut c0: Vec<&str> = checks[0]
+        .as_object()
+        .expect("check")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    c0.sort_unstable();
+    assert_eq!(c0, ["detail", "id", "next_step", "status"]);
+    let mut c1: Vec<&str> = checks[1]
+        .as_object()
+        .expect("check")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    c1.sort_unstable();
+    assert_eq!(c1, ["detail", "id", "status"], "next_step ausente some");
+    assert_eq!(checks[1]["status"], serde_json::json!("not_configured"));
+
+    // Tudo verde: `ok` e verdadeiro e o agregado e `ok`.
+    let verde = vec![Linha {
+        id: "whatsapp.access",
+        status: Semaforo::Ok,
+        detail: "autorizados: 2 · donos: 1".into(),
+        next_step: None,
+    }];
+    let v = payload_json(&verde, exit_code(&verde, true));
+    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(v["exit_code"], serde_json::json!(0));
+    assert_eq!(v["report"]["status"], serde_json::json!("ok"));
 }
 
-/// Nenhuma linha carrega numero de telefone, LID ou chave — so
-/// contagens e origens. O teste alimenta fatos com "cara" de segredo e
-/// varre a saida.
+/// O idioma que a CLI detecta e o idioma em que a tabela fala.
 #[test]
-fn nenhuma_linha_carrega_identidade_nem_segredo() {
-    let f = tudo_bem();
-    let linhas = classificar(&f, Lang::Pt, BIN);
-    let json = serde_json::to_string(&linhas).expect("json");
-    for proibido in ["+55", "@lid", "passphrase=", "session.enc"] {
-        assert!(!json.contains(proibido), "{proibido} em {json}");
+fn o_lang_da_cli_vira_o_lang_da_tabela() {
+    assert_eq!(doctor::Lang::from(Lang::Pt), doctor::Lang::Pt);
+    assert_eq!(doctor::Lang::from(Lang::En), doctor::Lang::En);
+    // E a tabela, chamada com ele, fala a lingua certa.
+    let fatos = doctor::Fatos::default();
+    let pt = classificar(&fatos, Lang::Pt.into(), "garraia");
+    let en = classificar(&fatos, Lang::En.into(), "garraia");
+    let linha = |l: &[Linha]| {
+        l.iter()
+            .find(|l| l.id == "whatsapp.linked")
+            .map(|l| l.detail.clone())
+            .expect("whatsapp.linked")
+    };
+    assert_eq!(linha(&pt), "nenhum WhatsApp pessoal vinculado");
+    assert_eq!(linha(&en), "no personal WhatsApp linked");
+}
+
+/// Os simbolos da tabela humana: unicode quando o locale afirma UTF-8, ASCII
+/// de tres colunas quando nao — e nunca vazio.
+#[test]
+fn simbolo_tem_fallback_ascii() {
+    for s in [
+        Semaforo::Ok,
+        Semaforo::Warning,
+        Semaforo::Error,
+        Semaforo::NotConfigured,
+    ] {
+        assert!(!simbolo(s, true).is_empty());
+        assert!(simbolo(s, false).is_ascii(), "{:?}", simbolo(s, false));
+        assert_eq!(simbolo(s, false).len(), 3);
     }
-    // As contagens, sim.
-    let a = linha(&linhas, "whatsapp.access");
-    assert!(
-        a.detail.contains('2') && a.detail.contains('1'),
-        "{}",
-        a.detail
-    );
-}
-
-/// O JSON fala o vocabulario do `/api/diagnostics`.
-#[test]
-fn o_json_usa_o_vocabulario_do_diagnostics() {
-    assert_eq!(
-        serde_json::to_string(&Semaforo::NotConfigured).expect("json"),
-        "\"not_configured\""
-    );
-    assert_eq!(
-        serde_json::to_string(&Semaforo::Ok).expect("json"),
-        "\"ok\""
-    );
 }

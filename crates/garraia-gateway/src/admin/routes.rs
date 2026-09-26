@@ -146,6 +146,12 @@ pub fn build_admin_router(
             "/api/capabilities",
             get(super::capabilities::admin_capabilities),
         )
+        // #1420: o "Test WhatsApp" do console — o MESMO motor do `garraia
+        // doctor whatsapp`, colhido em processo (Channels/Read; viewer le).
+        .route(
+            "/api/whatsapp/doctor",
+            get(super::whatsapp_doctor::admin_whatsapp_doctor),
+        )
         // ADR 0025 (#1402): a politica de acesso do WhatsApp pessoal, pelo
         // mesmo motor da CLI; leitura com Channels/Read, mutacao com
         // Channels/Write (o layer de CSRF cobre o POST).

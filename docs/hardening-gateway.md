@@ -277,7 +277,10 @@ Arquivo completo comentado, validado com `garra config check`:
    A politica de acesso do WhatsApp pessoal segue o mesmo desenho: `GET|POST
    /admin/api/whatsapp/access` e `GET /admin/api/whatsapp/access/audit` (cookie +
    CSRF; leitura `Channels/Read`, mutacao `Channels/Update`), pelo mesmo motor e
-   com o mesmo audit da CLI (ADR 0025). A API nunca revela identidade.
+   com o mesmo audit da CLI (ADR 0025). A API nunca revela identidade. O
+   `GET /admin/api/whatsapp/doctor` (#1420, `Channels/Read`) roda o motor do
+   `garraia doctor whatsapp` em processo e devolve so contagens, origens e
+   nomes — nunca chave de sessao, chave de API, numero ou LID.
 
    **A #1240 não fechou nada por default.** Sem a chave configurada, todas
    essas rotas respondem exatamente como antes.
