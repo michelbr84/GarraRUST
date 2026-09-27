@@ -84,6 +84,11 @@ pub struct ExecContext {
     /// Quem preenche precisa de um remetente derivado pelo servidor, nunca
     /// um valor que o cliente escolhe.
     pub approval_scope: Option<crate::tools::pending_approval::ApprovalScope>,
+    /// O teto do principal (#1391/#1392): a politica que o modo desta sessao
+    /// nao pode exceder — o nivel `chat|read|full` e o `write on|off` de quem
+    /// fala, compilados em classes. `None` = sem teto (todo canal que nao
+    /// tem principal com politica propria, a CLI inclusive).
+    pub teto: Option<crate::modes::TetoDeCapacidades>,
 }
 
 impl ExecContext {

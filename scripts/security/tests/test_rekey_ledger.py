@@ -188,3 +188,75 @@ def test_md_rewrite_handles_swap_without_collision():
     assert '<a id="alert-149"></a>' in out
     assert '<a id="alert-200"></a>' in out
     assert "alert-67" not in out
+
+
+# ── Statement multi-linha: o alerta cobre um span, o ledger ancora o sink ──
+
+
+def _alert_span(number: int, rule: str, path: str, start: int, end: int) -> dict:
+    return {
+        "number": number,
+        "rule": {"id": rule},
+        "most_recent_instance": {
+            "location": {"path": path, "start_line": start, "end_line": end}
+        },
+    }
+
+
+LOG_RULE = "rust/cleartext-logging"
+LOG_PATH = "crates/garraia-cli/src/whatsapp.rs"
+
+
+def test_multiline_statement_alert_matches_sink_line_inside_its_span():
+    """O caso real do #176 (2026-09-25).
+
+    O `println!` de `garra whatsapp link` virou multi-linha com o rustfmt: o
+    CodeQL reporta o span do statement (1356-1358) e o ledger ancora a linha
+    do SINK, derivada do `sink_snippet` pelo `check-ledger-anchors.py` (1358).
+    O `codeql-reapply-dismissals.sh` ja casa por span; o rekey comparava
+    `start_line` exato e deixava a duplicata aberta como "sem entrada".
+    """
+    mod = _load_module()
+    entries = [_entry(173, LOG_RULE, LOG_PATH, 1358)]
+    alerts = [_alert_span(176, LOG_RULE, LOG_PATH, 1356, 1358)]
+
+    mapping, unmatched, ambiguous, drifted = mod.plan_rekey(entries, alerts)
+
+    assert mapping == {173: 176}
+    assert unmatched == []
+    assert ambiguous == []
+    assert drifted == []
+
+
+def test_sink_line_outside_the_span_is_not_matched():
+    """Span nao e tolerancia: uma linha fora dele e outro statement."""
+    mod = _load_module()
+    entries = [_entry(173, LOG_RULE, LOG_PATH, 1360)]
+    alerts = [_alert_span(176, LOG_RULE, LOG_PATH, 1356, 1358)]
+
+    mapping, unmatched, _ambiguous, _drift = mod.plan_rekey(entries, alerts)
+
+    assert mapping == {}
+    assert [e["alert_number"] for e in unmatched] == [173]
+
+
+def test_entry_already_pointing_at_open_span_alert_is_not_drift():
+    """Depois do rekey, a entrada aponta para #176 e o alerta vivo e o mesmo
+    span: nada a fazer, e nao e drift."""
+    mod = _load_module()
+    entries = [_entry(176, LOG_RULE, LOG_PATH, 1358)]
+    alerts = [_alert_span(176, LOG_RULE, LOG_PATH, 1356, 1358)]
+
+    mapping, unmatched, ambiguous, drifted = mod.plan_rekey(entries, alerts)
+
+    assert mapping == {}
+    assert unmatched == []
+    assert ambiguous == []
+    assert drifted == []
+
+
+def test_orphan_report_uses_the_span_start_line():
+    """`alert_key` continua expondo a linha inicial para o relatorio de orfaos."""
+    mod = _load_module()
+    key = mod.alert_key(_alert_span(176, LOG_RULE, LOG_PATH, 1356, 1358))
+    assert key[0] == LOG_RULE and key[1] == LOG_PATH and key[2] == 1356

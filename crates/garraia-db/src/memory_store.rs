@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::VectorStore;
 use crate::migrations::MEMORY_SCHEMA_V1;
+use crate::retention::{CompactionPreview, MemoryRetentionSnapshot};
 
 const DEFAULT_RECALL_LIMIT: usize = 20;
 const MAX_RECALL_LIMIT: usize = 200;
@@ -262,6 +263,13 @@ pub trait MemoryProvider: Send + Sync {
 
     /// Contagens para os gauges (#957). Ver [`MemoryGauges`].
     async fn gauge_snapshot(&self) -> Result<MemoryGauges>;
+
+    /// Quantas entradas um `compact(before)` apagaria agora — sem apagar
+    /// (#1436). A clausula e a MESMA do `DELETE` (`COMPACT_COUNT_SQL`).
+    async fn compact_preview(&self, before: DateTime<Utc>) -> Result<CompactionPreview>;
+
+    /// Contagens, bytes do banco e a ultima limpeza gravada (#1436).
+    async fn retention_snapshot(&self) -> Result<MemoryRetentionSnapshot>;
 }
 
 /// A condicao de compactacao (#959), escrita **inteira** nas duas sentencas.
@@ -275,7 +283,14 @@ const COMPACT_SELECT_SQL: &str = "SELECT id FROM memory_entries WHERE pinned_at 
      AND (datetime(created_at) < datetime(?1) \
           OR (ttl_expires_at IS NOT NULL AND datetime(ttl_expires_at) <= datetime('now')))";
 
-const COMPACT_DELETE_SQL: &str = "DELETE FROM memory_entries WHERE pinned_at IS NULL \
+pub(crate) const COMPACT_DELETE_SQL: &str = "DELETE FROM memory_entries WHERE pinned_at IS NULL \
+     AND (datetime(created_at) < datetime(?1) \
+          OR (ttl_expires_at IS NOT NULL AND datetime(ttl_expires_at) <= datetime('now')))";
+
+/// A previa da compactacao (#1436): a terceira copia da clausula, cobrada
+/// igual a do `DELETE` por `sql_da_previa_da_memoria_em_sincronia_com_o_delete`
+/// — se divergirem, o console promete um numero e a limpeza apaga outro.
+pub(crate) const COMPACT_COUNT_SQL: &str = "SELECT count(*) FROM memory_entries WHERE pinned_at IS NULL \
      AND (datetime(created_at) < datetime(?1) \
           OR (ttl_expires_at IS NOT NULL AND datetime(ttl_expires_at) <= datetime('now')))";
 
@@ -474,10 +489,14 @@ impl MemoryStore {
         conn.execute_batch(MEMORY_SCHEMA_V1.sql)
             .map_err(|e| Error::Database(format!("memory migration failed: {e}")))?;
 
+        // #1436: a ultima limpeza mora no proprio `memory.db`.
+        conn.execute_batch(crate::retention::RETENTION_STATE_SQL)
+            .map_err(|e| Error::Database(format!("retention state migration failed: {e}")))?;
+
         Ok(())
     }
 
-    fn connection(&self) -> Result<MutexGuard<'_, Connection>> {
+    pub(crate) fn connection(&self) -> Result<MutexGuard<'_, Connection>> {
         self.conn
             .lock()
             .map_err(|_| Error::Database("memory database lock poisoned".into()))
@@ -542,6 +561,13 @@ impl MemoryStore {
             let deleted = conn
                 .execute(COMPACT_DELETE_SQL, params![before.to_rfc3339()])
                 .map_err(|e| Error::Database(format!("failed to compact memory entries: {e}")))?;
+            // #1436: quem apaga anota — worker, CLI e console no mesmo lugar.
+            crate::retention::record_cleanup(
+                &conn,
+                crate::retention::SCOPE_MEMORY,
+                deleted,
+                before,
+            );
             (ids, deleted)
         };
 
@@ -1418,6 +1444,14 @@ impl MemoryProvider for MemoryStore {
 
     async fn delete_entry(&self, id: &str) -> Result<bool> {
         MemoryStore::delete_entry(self, id)
+    }
+
+    async fn compact_preview(&self, before: DateTime<Utc>) -> Result<CompactionPreview> {
+        self.compact_preview_sync(before)
+    }
+
+    async fn retention_snapshot(&self) -> Result<MemoryRetentionSnapshot> {
+        self.retention_snapshot_sync()
     }
 
     async fn gauge_snapshot(&self) -> Result<MemoryGauges> {

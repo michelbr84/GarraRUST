@@ -20,6 +20,9 @@ use super::npx_cache::{self, McpFailureCause};
 use super::tool_bridge::McpTool;
 use crate::tools::Tool;
 
+/// #1438: quedas e reconexoes para o registro de confiabilidade.
+mod observar;
+
 /// Vet an MCP server URL before dialling it.
 ///
 /// `IpScope::AllowPrivate` is deliberate and load-bearing: MCP servers are
@@ -78,6 +81,10 @@ pub struct McpToolInfo {
     pub name: String,
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    /// `annotations.readOnlyHint` do servidor (#1385): leitura declarada.
+    pub read_only_hint: Option<bool>,
+    /// `annotations.destructiveHint` do servidor (#1385).
+    pub destructive_hint: Option<bool>,
 }
 
 /// Cached info about a resource from an MCP server.
@@ -296,6 +303,13 @@ struct StdioFailure {
 /// Manages the lifecycle of MCP server connections.
 pub struct McpManager {
     connections: Arc<RwLock<HashMap<String, McpConnection>>>,
+    /// #1482: o jail das file tools nativas, para as chamadas MCP de
+    /// filesystem passarem pelo MESMO confinamento por sessao
+    /// (`mcp::confinamento`). `None` ate o dono do processo entregar um — o
+    /// gateway o faz no boot; a CLI local (`garraia mcp call`) nao, e ali ha
+    /// um humano no laco. Lock sincrono de proposito: leitura por chamada,
+    /// nunca cruza um `await`.
+    jail_das_file_tools: Arc<std::sync::RwLock<Option<crate::tools::FileJail>>>,
     /// GAR-293: per-server restart state (survives connection removal).
     restart_states: Arc<RwLock<HashMap<String, RestartState>>>,
     /// Servers that failed to connect at boot. They never entered
@@ -318,6 +332,10 @@ pub struct McpManager {
     /// Without this, an exhausted server parked in `pending` logged the same
     /// `error!` on every 30s tick, forever.
     exhausted_reported: Arc<RwLock<HashSet<String>>>,
+    /// #1438: o registro de confiabilidade (quedas e reconexoes por
+    /// servidor). `None` ate o dono do processo entregar um — o gateway
+    /// entrega o do `AgentRuntime` no boot. Ver `manager/observar.rs`.
+    observabilidade: std::sync::RwLock<Option<Arc<crate::observabilidade::Observabilidade>>>,
 }
 
 /// `(name, params, allowed_tools)` for one server needing a (re)connect.
@@ -340,12 +358,34 @@ impl McpManager {
     pub fn new() -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
+            jail_das_file_tools: Arc::new(std::sync::RwLock::new(None)),
             restart_states: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(HashMap::new())),
             inherit_env_warned: Arc::new(RwLock::new(HashSet::new())),
             failures: Arc::new(RwLock::new(HashMap::new())),
             npx_recovered: Arc::new(RwLock::new(HashSet::new())),
             exhausted_reported: Arc::new(RwLock::new(HashSet::new())),
+            observabilidade: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Entrega o jail das file tools para o confinamento das chamadas MCP de
+    /// filesystem (#1482). O gateway chama uma vez no boot, com o MESMO jail
+    /// que `file_read`/`file_write`/`list_dir` recebem; a partir dai toda
+    /// [`McpTool`] deste manager confina `path`/`paths`/`source`/`destination`
+    /// ao diretorio da sessao (mais as raizes declaradas).
+    pub fn set_jail_das_file_tools(&self, jail: crate::tools::FileJail) {
+        match self.jail_das_file_tools.write() {
+            Ok(mut slot) => *slot = Some(jail),
+            Err(envenenado) => *envenenado.into_inner() = Some(jail),
+        }
+    }
+
+    /// O jail entregue por [`Self::set_jail_das_file_tools`], se houver.
+    pub fn jail_das_file_tools(&self) -> Option<crate::tools::FileJail> {
+        match self.jail_das_file_tools.read() {
+            Ok(slot) => slot.clone(),
+            Err(envenenado) => envenenado.into_inner().clone(),
         }
     }
 
@@ -795,6 +835,8 @@ impl McpManager {
                 name: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()),
                 input_schema: serde_json::to_value(&*t.input_schema).unwrap_or_default(),
+                read_only_hint: t.annotations.as_ref().and_then(|a| a.read_only_hint),
+                destructive_hint: t.annotations.as_ref().and_then(|a| a.destructive_hint),
             })
             .collect();
 
@@ -955,6 +997,8 @@ impl McpManager {
                 name: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()),
                 input_schema: serde_json::to_value(&*t.input_schema).unwrap_or_default(),
+                read_only_hint: t.annotations.as_ref().and_then(|a| a.read_only_hint),
+                destructive_hint: t.annotations.as_ref().and_then(|a| a.destructive_hint),
             })
             .collect();
 
@@ -1142,6 +1186,7 @@ impl McpManager {
                     t.description.clone(),
                     t.input_schema.clone(),
                     timeout,
+                    (t.read_only_hint, t.destructive_hint),
                 )) as Box<dyn Tool>
             })
             .collect()
@@ -1528,6 +1573,7 @@ impl McpManager {
             tool_info.description.clone(),
             tool_info.input_schema.clone(),
             Duration::from_secs(timeout_secs),
+            (tool_info.read_only_hint, tool_info.destructive_hint),
         );
 
         // Execute the tool
@@ -1571,6 +1617,9 @@ impl McpManager {
     async fn check_and_reconnect(&self) {
         let (to_reconnect, stable): (Vec<ReconnectTarget>, Vec<String>) = {
             let conns = self.connections.read().await;
+            // #1438: vivo/morto de cada transporte; o registro conta a queda
+            // na transicao, e nao a cada tick de backoff.
+            self.observar_transportes(conns.iter().map(|(n, c)| (n.as_str(), c.is_alive())));
             let dead = conns
                 .iter()
                 .filter(|(_, conn)| !conn.is_alive())
@@ -1723,6 +1772,7 @@ impl McpManager {
                 }
             };
 
+            self.observar_reconexao(&name, result.is_ok());
             match result {
                 Ok(()) => {
                     self.exhausted_reported.write().await.remove(&name);

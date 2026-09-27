@@ -70,7 +70,7 @@ use crate::state::SharedState;
 /// rendering).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum CheckStatus {
+pub(crate) enum CheckStatus {
     /// All good.
     Ok,
     /// Functional but with a caveat (Ollama optional, etc.).
@@ -85,6 +85,21 @@ enum CheckStatus {
     /// Optional subsystem that this install never configured. Not a defect,
     /// and never the same thing as a configured subsystem that fails (#1437).
     NotConfigured,
+}
+
+impl CheckStatus {
+    /// A grafia serializada (`snake_case`), para quem consome o relatorio em
+    /// processo e compara texto — o mesmo que a rota devolve, byte a byte.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CheckStatus::Ok => "ok",
+            CheckStatus::Warning => "warning",
+            CheckStatus::Error => "error",
+            CheckStatus::Skipped => "skipped",
+            CheckStatus::Disabled => "disabled",
+            CheckStatus::NotConfigured => "not_configured",
+        }
+    }
 }
 
 /// The report's aggregate: `error` > `warning` > `ok`.
@@ -110,20 +125,20 @@ fn status_agregado(checks: &[DiagnosticCheck]) -> &'static str {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct DiagnosticCheck {
+pub(crate) struct DiagnosticCheck {
     /// Stable id ("gateway.responds", "secrets.jwt", ...).
-    id: &'static str,
+    pub(crate) id: &'static str,
     /// Human label rendered in the UI.
-    label: &'static str,
-    status: CheckStatus,
+    pub(crate) label: &'static str,
+    pub(crate) status: CheckStatus,
     /// Short evidence string. Never contains secret values.
-    detail: String,
+    pub(crate) detail: String,
     /// Suggested next step when status != Ok. `None` when not applicable.
     ///
     /// `String` e nao `&'static str` desde a #1238: o passo do
     /// `whatsapp.linked` precisa citar o diretorio real da ponte, e um
     /// "rode `npm ci`" sem dizer onde manda a pessoa procurar.
-    next_step: Option<String>,
+    pub(crate) next_step: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,7 +152,7 @@ pub struct DiagnosticsReport {
     /// Wall-clock timestamp at report generation (server's clock, UTC).
     generated_at: String,
     /// Each per-subsystem check.
-    checks: Vec<DiagnosticCheck>,
+    pub(crate) checks: Vec<DiagnosticCheck>,
 }
 
 fn now_iso8601() -> String {
@@ -510,10 +525,14 @@ fn whatsapp_linked_portao_vazio(
     mut check: DiagnosticCheck,
     saude: garraia_channels::whatsapp_linked::health::LinkHealth,
     settings: &crate::bootstrap::WhatsAppLinkedSettings,
-    recusas_lid: u64,
+    rejeicoes: &crate::bootstrap::whatsapp_linked_rejeicoes::Resumo,
     a_quente: bool,
 ) -> DiagnosticCheck {
     use garraia_channels::whatsapp_linked::health::LinkHealth;
+
+    use crate::bootstrap::whatsapp_linked_rejeicoes::Motivo;
+
+    let recusas_lid = rejeicoes.de(Motivo::LidSemNumero);
 
     let bin = garraia_common::executavel::nome();
     if matches!(check.status, CheckStatus::Ok)
@@ -538,6 +557,59 @@ fn whatsapp_linked_portao_vazio(
              boot: um numero no `allow` nao casa com LID (`{bin} whatsapp status` mostra o final)",
             check.detail
         );
+    }
+    // #1422: as demais recusas (politica restrita, bloqueio, canal desligado,
+    // injecao) entram como CONTAGEM por motivo. A rota e auth-free: nenhum
+    // final aqui — os finais e a acao de cada motivo ficam no console.
+    if matches!(check.status, CheckStatus::Ok) && rejeicoes.total > recusas_lid {
+        let por_motivo: Vec<String> = rejeicoes
+            .by_reason
+            .iter()
+            .filter(|(_, n)| **n > 0)
+            .map(|(m, n)| format!("{m}: {n}"))
+            .collect();
+        check.detail = format!(
+            "{} — {} mensagem(ns) recusada(s) desde o boot ({})",
+            check.detail,
+            rejeicoes.total,
+            por_motivo.join(", ")
+        );
+        check.next_step = Some(format!(
+            "a pagina WhatsApp Access do Web Console mostra o final de cada uma e a acao do \
+             motivo; `{bin} whatsapp access` mostra a politica efetiva"
+        ));
+    }
+    // ADR 0025 (#1396): admissao aberta e escolha declarada, mas e a que muda
+    // quem fala com o numero — o diagnostico avisa sempre, com o passo para
+    // fechar. Contagem e nivel, nunca identidade.
+    if matches!(check.status, CheckStatus::Ok)
+        && settings.enabled
+        && settings.access.admission == crate::bootstrap::whatsapp_linked_politica::Admission::Open
+    {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — admissao ABERTA (`access.admission: open`): qualquer numero entra, com o \
+             default do desconhecido ({})",
+            check.detail, settings.access.default
+        );
+        check.next_step = Some(format!(
+            "se nao foi intencional, `{bin} whatsapp access restricted`; `{bin} whatsapp access` \
+             mostra a politica efetiva"
+        ));
+        return check;
+    }
+    if matches!(check.status, CheckStatus::Ok) && !settings.access.avisos.is_empty() {
+        check.status = CheckStatus::Warning;
+        check.detail = format!(
+            "{} — a secao `access` tem {} valor(es) invalido(s), normalizado(s) fail-closed",
+            check.detail,
+            settings.access.avisos.len()
+        );
+        check.next_step = Some(format!(
+            "`{bin} whatsapp access` lista os avisos; corrija `channels.whatsapp_linked.access` \
+             no config.yml"
+        ));
+        return check;
     }
     if matches!(check.status, CheckStatus::Ok) && settings.enabled && settings.autorizados() == 0 {
         check.status = CheckStatus::Warning;
@@ -575,29 +647,47 @@ fn piso_e_donos_do_whatsapp(
     (settings.modo_padrao_efetivo(perfil), settings.owners.len())
 }
 
+/// O que a rota mostra no lugar de um caminho fora do `data_dir` (#1465).
+const FORA_DO_DATA_DIR: &str = "<fora do data_dir>";
+
 /// Um caminho como o console o mostra: relativo a `<data_dir>` quando esta
 /// dentro dele. A rota e auth-free, e as raizes de politica (o workspace
 /// default, `agent.file_roots`) nao precisam expor o caminho absoluto do
-/// host para o operador entender a linha (F-1 da auditoria da #1329). Uma
-/// raiz **fora** do `data_dir` sai como esta — e o que o operador precisa
-/// ver para consertar.
+/// host para o operador entender a linha (F-1 da auditoria da #1329).
+///
+/// Uma raiz **fora** do `data_dir` tambem nao sai (#1465): no caso legado
+/// mais comum ela e o proprio `$HOME` do host, nome de usuario incluido, e a
+/// rota nao pede credencial. Sai so que esta fora. E a mesma regra que a
+/// linha `files.workspace` ja aplica a raiz declarada (I-4 da #1449). O
+/// operador nao precisa reler o caminho pela rota — ele o escreveu no
+/// `mcp.json`/`config.yml`, e o log de boot o anuncia.
 fn exibir_raiz(raiz: &std::path::Path, data_dir: &std::path::Path) -> String {
     match raiz.strip_prefix(data_dir) {
         Ok(rel) if rel.as_os_str().is_empty() => "<data_dir>".to_string(),
         Ok(rel) => format!("<data_dir>/{}", rel.display()),
-        Err(_) => raiz.display().to_string(),
+        Err(_) => FORA_DO_DATA_DIR.to_string(),
     }
 }
 
+/// As raizes numa frase: as de dentro do `data_dir` nomeadas, as de fora so
+/// contadas (`2 fora do data_dir`) — repetir `<fora do data_dir>` N vezes nao
+/// diria mais nada.
 fn lista_de_caminhos(raizes: &[std::path::PathBuf], data_dir: &std::path::Path) -> String {
     if raizes.is_empty() {
         return "(nenhuma)".to_string();
     }
-    raizes
-        .iter()
-        .map(|r| exibir_raiz(r, data_dir))
-        .collect::<Vec<_>>()
-        .join(", ")
+    let mut partes: Vec<String> = Vec::new();
+    let mut fora = 0usize;
+    for raiz in raizes {
+        match exibir_raiz(raiz, data_dir) {
+            exibida if exibida == FORA_DO_DATA_DIR => fora += 1,
+            exibida => partes.push(exibida),
+        }
+    }
+    if fora > 0 {
+        partes.push(format!("{fora} fora do data_dir"));
+    }
+    partes.join(", ")
 }
 
 /// A linha `execution.profile`. `standard` e `ok`; `isolated-pod` e SEMPRE
@@ -643,18 +733,116 @@ fn execution_profile_check(
     }
 }
 
-/// #1272: a linha `tools.bash`. `ok` quando o `bash` esta registrado (num
-/// sandbox docker/podman, ou no host de um `isolated-pod` explicito);
-/// `warning` com o passo acionavel quando ele ficou de fora em `standard`.
-/// O detalhe nunca carrega valor de config (imagem, host, caminho). Pura.
-fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
-    let (status, next_step) = if exposicao.registra_bash() {
-        (CheckStatus::Ok, None)
+/// #1471: a linha `runtime.channels`. Lista o `ChannelRegistry` — so canais
+/// de mensageria (Telegram, Discord, Slack, WhatsApp Cloud, iMessage). O chat
+/// web, a CLI e a API nao entram nele, e o WhatsApp vinculado tem supervisao e
+/// linha proprias (`whatsapp.linked`). Entao "nenhum" e o estado normal de uma
+/// instalacao local que so conversa pelo navegador: neutro, com o passo de
+/// como adicionar um canal — e nao o aviso antigo, que mandava procurar erro
+/// de registro de um canal `web` que nunca existiu neste registry. Pura.
+fn runtime_channels_check(canais: &[String]) -> DiagnosticCheck {
+    let (status, detail, next_step) = if canais.is_empty() {
+        (
+            CheckStatus::NotConfigured,
+            "none (nenhum canal de mensageria configurado; chat web, CLI e API nao entram \
+             aqui, e o WhatsApp vinculado aparece em whatsapp.linked)"
+                .to_string(),
+            Some(
+                "para conversar por um mensageiro, declare um canal em `channels:` no \
+                 config.yml (telegram, discord, slack, whatsapp, imessage) ou rode `garraia \
+                 init`"
+                    .to_string(),
+            ),
+        )
     } else {
+        (CheckStatus::Ok, canais.join(", "), None)
+    };
+    DiagnosticCheck {
+        id: "runtime.channels",
+        label: "Active channels",
+        status,
+        detail,
+        next_step,
+    }
+}
+
+/// #1272: a linha `tools.bash`. `ok` quando o `bash` esta registrado (num
+/// sandbox docker/podman, ou no host de um `isolated-pod` explicito). Quando
+/// ficou de fora, o status depende do **motivo** (#1471): sandbox desligado e
+/// o default documentado do perfil `standard` (ADR 0024) — uma instalacao
+/// exatamente como o projeto manda nao acende amarelo, entao e o estado
+/// neutro `not_configured`, com o passo de como ligar; fora de unix, onde nao
+/// ha sandbox, idem. Sandbox **configurado** e inutilizavel (sem binario, sem
+/// backend, ssh, tool elevada ou fora da allowlist) continua `warning`:
+/// configurado e quebrado nunca e neutro (#1437). O detalhe nunca carrega
+/// valor de config (imagem, host, caminho). Pura.
+/// #1381: a linha `tools.capabilities` — o registro de capacidades sem
+/// portao de sessao. `ok` quando tudo que existe esta visivel (o `bash` nao
+/// configurado ja tem a linha `tools.bash`); `warning` quando algo esta
+/// indisponivel ou fora do ar, nomeando o que e por que. Puro.
+fn tools_capabilities_check(
+    registro: &[crate::capacidades_registro::Capacidade],
+) -> DiagnosticCheck {
+    use crate::capacidades_registro::{Estado, contagens};
+    let c = contagens(registro);
+    let nomeia = |estado: Estado| -> String {
+        registro
+            .iter()
+            .filter(|l| l.state == estado)
+            .map(|l| format!("{} ({})", l.name, l.reason_code))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut partes = vec![format!("{} visivel(is)", c.visible)];
+    if c.unavailable > 0 {
+        partes.push(format!("indisponivel: {}", nomeia(Estado::Unavailable)));
+    }
+    if c.unhealthy > 0 {
+        partes.push(format!("fora do ar: {}", nomeia(Estado::Unhealthy)));
+    }
+    if c.not_configured > 0 {
+        partes.push(format!(
+            "nao configurado: {}",
+            nomeia(Estado::NotConfigured)
+        ));
+    }
+    let (status, next_step) = if c.unavailable > 0 || c.unhealthy > 0 {
+        let bin = garraia_common::executavel::nome();
         (
             CheckStatus::Warning,
-            Some(crate::bootstrap::COMO_LIGAR_O_BASH.to_string()),
+            Some(format!(
+                "cada item traz o motivo; numa conversa, `garra_status` mostra o mesmo registro. \
+                 Servidor MCP fora do ar: `{bin} mcp restart <nome>`; canal desconectado: veja \
+                 `runtime.channels`"
+            )),
         )
+    } else {
+        (CheckStatus::Ok, None)
+    };
+    DiagnosticCheck {
+        id: "tools.capabilities",
+        label: "Capability registry",
+        status,
+        detail: partes.join(" · "),
+        next_step,
+    }
+}
+
+fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
+    use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
+    let (status, next_step) = match exposicao {
+        ExposicaoDoBash::Sandbox { .. } | ExposicaoDoBash::HostDoPod => (CheckStatus::Ok, None),
+        ExposicaoDoBash::Desligado {
+            motivo:
+                MotivoDoBashDesligado::SandboxDesligado | MotivoDoBashDesligado::PlataformaNaoUnix,
+        } => (
+            CheckStatus::NotConfigured,
+            Some(crate::bootstrap::COMO_LIGAR_O_BASH.to_string()),
+        ),
+        ExposicaoDoBash::Desligado { .. } => (
+            CheckStatus::Warning,
+            Some(crate::bootstrap::COMO_LIGAR_O_BASH.to_string()),
+        ),
     };
     DiagnosticCheck {
         id: "tools.bash",
@@ -726,6 +914,85 @@ fn normalizar_lexico(p: &std::path::Path) -> Option<std::path::PathBuf> {
     Some(out)
 }
 
+/// A linha `files.workspace` (#1378): qual e o workspace efetivo das file
+/// tools nativas e **por que** ele e esse.
+///
+/// As tres fontes mapeiam direto para os tres estados que o operador precisa
+/// distinguir, na linha do que a #1445 fez com o resto do relatorio:
+///
+/// - `Declaradas` → `ok`. O operador escolheu, e a escolha vale.
+/// - `WorkspacePadrao` → `ok`. Nada foi declarado e o Garra usa o proprio
+///   workspace. Nao e aviso: e o default seguro, e chamar de aviso ensinaria o
+///   operador a ignorar avisos. Aqui a linha mostra o diretorio **pai** com o
+///   `<sessao>` explicito no fim, porque desde a #1449 a raiz efetiva de uma
+///   chamada e `<data_dir>/workspace/<sessao>` e nao o pai: dizer so o pai
+///   faria o console prometer mais alcance do que o turno tem. O identificador
+///   da sessao nunca sai daqui — a rota e auth-free, e o nome do subdiretorio
+///   e derivado do `session_id`, que pode ser PII.
+/// - `SomenteSessao` → `warning`. E o defeito da #1378 ainda de pe: sessao sem
+///   `working_dir` (toda sessao do WhatsApp recem-vinculada) nao le nem
+///   escreve nada.
+///
+/// As raizes saem relativas a `<data_dir>` quando estao dentro dele — a rota e
+/// auth-free e nao precisa publicar o caminho absoluto do host (F-1 da
+/// auditoria da #1329). Pura: as raizes chegam ja resolvidas.
+fn files_workspace_check(
+    fonte: crate::bootstrap::FonteDasRaizesDasFileTools,
+    raizes: &[std::path::PathBuf],
+    workspace_por_sessao: Option<&std::path::Path>,
+    data_dir: &std::path::Path,
+) -> DiagnosticCheck {
+    use crate::bootstrap::FonteDasRaizesDasFileTools as Fonte;
+    let (status, detail, next_step) = match fonte {
+        // Achado da revisao independente de seguranca (#1449): diferente das
+        // outras fontes desta linha, uma raiz DECLARADA pode estar fora do
+        // `data_dir` (e' o caso comum — o operador aponta para um repositorio
+        // ou projeto em outro lugar do disco), entao `lista_de_caminhos`
+        // cairia no fallback de `exibir_raiz` e publicaria o caminho absoluto
+        // do host (nome de usuario incluido) numa rota auth-free. So a
+        // contagem sai aqui; o operador ja sabe o que declarou em
+        // `agent.file_roots`/`GARRAIA_FILE_ROOTS`, e nao precisa reler pela
+        // rota.
+        Fonte::Declaradas => (
+            CheckStatus::Ok,
+            format!(
+                "{} raiz(es) declarada(s) (fonte: agent.file_roots / GARRAIA_FILE_ROOTS)",
+                raizes.len()
+            ),
+            None,
+        ),
+        Fonte::WorkspacePadrao => (
+            CheckStatus::Ok,
+            format!(
+                "{}/<sessao> (fonte: workspace padrao — nada declarado em agent.file_roots; \
+                 um subdiretorio por sessao)",
+                workspace_por_sessao
+                    .map(|raiz| exibir_raiz(raiz, data_dir))
+                    .unwrap_or_else(|| "(nenhuma)".to_string())
+            ),
+            None,
+        ),
+        Fonte::SomenteSessao => (
+            CheckStatus::Warning,
+            "sem raiz efetiva: o workspace padrao nao resolveu e nada foi declarado. \
+             file_read, file_write e list_dir negam tudo numa sessao sem working_dir"
+                .to_string(),
+            Some(
+                "confira se o <data_dir> existe e e gravavel, ou declare uma raiz em \
+                 agent.file_roots (ou na env GARRAIA_FILE_ROOTS)"
+                    .to_string(),
+            ),
+        ),
+    };
+    DiagnosticCheck {
+        id: "files.workspace",
+        label: "Workspace das file tools",
+        status,
+        detail,
+        next_step,
+    }
+}
+
 const MCP_ROOT_NEXT_STEP: &str = "edite a entrada `filesystem` (em mcp.json, ou em `mcp:` do \
                                   config.yml, que vence o mcp.json; ou \
                                   GARRAIA_DISABLE_MCP_AUTOPROVISION=1 + remova o servidor) para \
@@ -742,10 +1009,12 @@ const MCP_ROOT_NEXT_STEP: &str = "edite a entrada `filesystem` (em mcp.json, ou 
 /// conjunto que o autoprovisionamento escreve; a env `GARRAIA_FILE_ROOTS` e
 /// o `working_dir` da sessao, que alargam o jail das file tools nativas,
 /// NAO entram aqui de proposito (ver `bootstrap::raizes_do_mcp_filesystem`).
-/// A primeira raiz fora vira `warning` nomeando-a, como esta — e a entrada
-/// legada com `$HOME` que instalacoes anteriores a #1329 ainda carregam.
+/// A primeira raiz fora vira `warning` apontando a **posicao** dela na lista
+/// do servidor (`raiz #2`), nunca o caminho (#1465): no caso comum — a
+/// entrada legada com `$HOME` que instalacoes anteriores a #1329 ainda
+/// carregam — o caminho e o nome de usuario do host, e a rota e auth-free.
 /// As raizes permitidas saem relativas a `<data_dir>` quando estao dentro
-/// dele. Puro.
+/// dele, e so contadas quando fora. Puro.
 fn mcp_filesystem_root_check(
     perfil_isolado: bool,
     persistidas: Option<&[std::path::PathBuf]>,
@@ -774,14 +1043,15 @@ fn mcp_filesystem_root_check(
         Some(raizes) => {
             let fora = raizes
                 .iter()
-                .find(|r| !permitidas.iter().any(|p| dentro_de(r, p)));
+                .position(|r| !permitidas.iter().any(|p| dentro_de(r, p)));
             match fora {
-                Some(raiz) => (
+                Some(posicao) => (
                     CheckStatus::Warning,
                     format!(
-                        "{} esta fora das raizes declaradas (agent.file_roots / \
-                         <data_dir>/workspace): {}",
-                        raiz.display(),
+                        "raiz #{} do servidor `filesystem` (de {}) esta fora das raizes \
+                         declaradas (agent.file_roots / <data_dir>/workspace): {}",
+                        posicao + 1,
+                        raizes.len(),
                         lista_de_caminhos(permitidas, data_dir)
                     ),
                     Some(MCP_ROOT_NEXT_STEP.to_string()),
@@ -961,6 +1231,15 @@ fn mcp_filesystem_pinned_check(
 
 /// GET /api/diagnostics — full diagnostic report.
 pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<DiagnosticsReport> {
+    Json(relatorio(&state).await)
+}
+
+/// O relatorio inteiro, em processo — a MESMA funcao por tras do
+/// `GET /api/diagnostics`. Existe para quem ja esta dentro do gateway (#1420:
+/// o `doctor whatsapp` do console) ler o que o proprio processo sabe sem dar
+/// a volta por HTTP — e para o console e a CLI, que le a rota, verem
+/// exatamente as mesmas linhas.
+pub(crate) async fn relatorio(state: &SharedState) -> DiagnosticsReport {
     let mut checks: Vec<DiagnosticCheck> = Vec::new();
 
     // 1. Gateway responds — we are responding right now, so this is OK.
@@ -1022,7 +1301,16 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     // admin API gravou desde entao — sem I/O de disco por request.
     let politica = crate::bootstrap::politica_de_execucao(&state.config);
     let raizes_mcp = crate::bootstrap::raizes_do_mcp_filesystem(&state.config);
+    // O `data_dir` precisa vir CANONICO para a relativizacao funcionar: as
+    // raizes que o `FileJail` devolve ja passaram por `canonicalize`, e o valor
+    // cru da config pode ser relativo ou conter symlink (`/var` -> `/private/var`
+    // no macOS, `$TMPDIR` na suite). Comparar cru contra canonico faz o
+    // `strip_prefix` de `exibir_raiz` errar em silencio, e o fallback imprime o
+    // caminho ABSOLUTO do host numa rota auth-free — o oposto do F-1 da #1329.
+    // Se o diretorio ainda nao existe, `canonicalize` falha e sobra o valor cru;
+    // ali nenhuma raiz resolve, entao nao ha caminho para vazar.
     let data_dir = state.config.resolved_data_dir();
+    let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
     let (piso_whatsapp, donos) = piso_e_donos_do_whatsapp(&state.config, politica.perfil);
     checks.push(execution_profile_check(
         &politica,
@@ -1041,6 +1329,23 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         politica.is_isolated_pod(),
         persistidas.as_deref(),
         raizes_mcp.caminhos(),
+        &data_dir,
+    ));
+    // #1378: o workspace efetivo das file tools NATIVAS, que e outra coisa da
+    // raiz do servidor MCP acima. E o que o boot resolveu e guardou no estado
+    // (#1459) — pela mesma funcao que monta o jail, entao a linha nunca
+    // descreve um jail que o turno nao tem, e a rota auth-free nao resolve
+    // (nem loga) raiz nenhuma por request.
+    let raizes_file_tools = &state.raizes_das_file_tools;
+    checks.push(files_workspace_check(
+        raizes_file_tools.fonte,
+        raizes_file_tools.jail.roots(),
+        // #1449: no workspace padrao o jail nao tem raiz fixa — a raiz da
+        // chamada e o subdiretorio da sessao. O que a linha mostra e o PAI.
+        raizes_file_tools
+            .workspace_por_sessao
+            .as_ref()
+            .map(|w| w.raiz()),
         &data_dir,
     ));
     // #1346: servidores MCP que falharam (inclusive no boot) e a versao do
@@ -1064,6 +1369,53 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         politica.perfil,
         &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
     )));
+
+    // #1381: o registro de capacidades, sem portao de sessao (aqui nao ha
+    // conversa): o que esta indisponivel, fora do ar ou nao configurado.
+    {
+        let inventario = state.agents.tool_inventory();
+        let permite = |_: &str| true;
+        let disponibilidade = |n: &str| state.agents.disponibilidade_de(n);
+        let mcp: Vec<garraia_agents::McpServerStatus> = match &state.mcp_manager_arc {
+            Some(mgr) => mgr.server_statuses().await,
+            None => Vec::new(),
+        };
+        let exposicao = crate::bootstrap::exposicao_do_bash(
+            politica.perfil,
+            &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+        );
+        let bash_desligado = match exposicao {
+            crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((
+                exposicao.descricao(),
+                crate::bootstrap::COMO_LIGAR_O_BASH.to_string(),
+            )),
+            _ => None,
+        };
+        // #1416: sem sessao, o diagnostico so afirma o que a instalacao
+        // garante: com `SomenteSessao` NENHUMA sessao sem projeto tem raiz
+        // (e o operador precisa saber); repositorio e por sessao — nao se
+        // afirma aqui.
+        // Resolvido no boot, nunca por request (guarda `o_handler_nao_resolve_as_raizes_das_file_tools_por_request`).
+        let fonte = state.raizes_das_file_tools.fonte;
+        let contexto = crate::capacidades_registro::ContextoDaSessao {
+            tem_raiz: Some(!matches!(
+                fonte,
+                crate::bootstrap::FonteDasRaizesDasFileTools::SomenteSessao
+            )),
+            tem_repositorio: None,
+        };
+        let registro =
+            crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
+                inventario: &inventario,
+                permite: &permite,
+                disponibilidade: &disponibilidade,
+                mcp: &mcp,
+                bash_desligado,
+                restrito: false,
+                contexto,
+            });
+        checks.push(tools_capabilities_check(&registro));
+    }
 
     // 4. .env presence (best-effort — env vars are loaded by the host shell,
     // but a `.env` file in CWD is the most common dev setup).
@@ -1242,28 +1594,7 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-    checks.push(DiagnosticCheck {
-        id: "runtime.channels",
-        label: "Active channels",
-        status: if channels.is_empty() {
-            CheckStatus::Warning
-        } else {
-            CheckStatus::Ok
-        },
-        detail: if channels.is_empty() {
-            "none".to_string()
-        } else {
-            channels.join(", ")
-        },
-        next_step: if channels.is_empty() {
-            Some(
-                "At least 'web' is expected. Check the bootstrap log for channel registration errors."
-                    .to_string(),
-            )
-        } else {
-            None
-        },
-    });
+    checks.push(runtime_channels_check(&channels));
 
     // 12. Active sessions count.
     checks.push(DiagnosticCheck {
@@ -1305,7 +1636,8 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
         saude_wa,
         // #1345: a config VIVA, a mesma que o turno le para admitir.
         &crate::bootstrap::whatsapp_linked_settings(&state.current_config()),
-        state.whatsapp_linked.recusas_lid(),
+        // #1422: contagens por motivo (nunca finais: a rota e auth-free).
+        &state.whatsapp_linked.rejeicoes(),
         state.has_config_watcher(),
     ));
 
@@ -1324,13 +1656,13 @@ pub async fn diagnostics_handler(State(state): State<SharedState>) -> Json<Diagn
     // `not_configured` sao neutros (#1437) — ver `status_agregado`.
     let status = status_agregado(&checks);
 
-    Json(DiagnosticsReport {
+    DiagnosticsReport {
         status,
         version: env!("CARGO_PKG_VERSION"),
         uptime_secs: state.boot_time.elapsed().as_secs(),
         generated_at: now_iso8601(),
         checks,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -1339,20 +1671,102 @@ mod tests {
 
     const ENDPOINT: &str = "http://127.0.0.1:7860";
 
+    // ─── #1381: tools.capabilities ───────────────────────────────────────
+    #[test]
+    fn tools_capabilities_e_warning_so_com_indisponivel_ou_fora_do_ar() {
+        use crate::capacidades_registro::{Capacidade, Estado};
+        let linha = |name: &str, state: Estado, code: &'static str| Capacidade {
+            name: name.into(),
+            source: "native",
+            server: None,
+            classes: vec![],
+            state,
+            reason_code: code,
+            reason: String::new(),
+            remediation: None,
+        };
+        let so_visiveis = [
+            linha("file_read", Estado::Visible, "ok"),
+            linha("bash", Estado::NotConfigured, "not_configured"),
+        ];
+        let c = tools_capabilities_check(&so_visiveis);
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(c.detail.contains("1 visivel"), "{}", c.detail);
+        assert!(
+            c.detail.contains("nao configurado: bash (not_configured)"),
+            "{}",
+            c.detail
+        );
+        let com_problema = [
+            linha("telegram_send", Estado::Unavailable, "channel_offline"),
+            linha("memoria/*", Estado::Unhealthy, "retrying"),
+        ];
+        let c = tools_capabilities_check(&com_problema);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(
+            c.detail.contains("telegram_send (channel_offline)"),
+            "{}",
+            c.detail
+        );
+        assert!(c.detail.contains("memoria/* (retrying)"), "{}", c.detail);
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("mcp restart"),
+            "{c:?}"
+        );
+    }
+
     // ─── #1272: tools.bash ─────────────────────────────────────────────────
 
+    /// #1471: `agent.sandbox.mode = off` e o DEFAULT documentado do perfil
+    /// `standard` (ADR 0024) — sem sandbox nao ha `bash`. Uma instalacao que
+    /// esta exatamente como o projeto manda nao acende amarelo: e o estado
+    /// neutro, com o passo de como ligar. Fora de unix, idem.
     #[test]
-    fn tools_bash_desligado_e_warning_com_passo() {
+    fn tools_bash_sem_sandbox_e_not_configured_com_passo() {
         use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
-        let c = tools_bash_check(&ExposicaoDoBash::Desligado {
-            motivo: MotivoDoBashDesligado::SandboxDesligado,
-        });
-        assert_eq!(c.id, "tools.bash");
-        assert!(matches!(c.status, CheckStatus::Warning));
-        let passo = c.next_step.expect("desligado precisa de passo");
-        assert!(passo.contains("agent.sandbox"), "{passo}");
-        assert!(passo.contains("execution.profile"), "{passo}");
-        assert!(c.detail.contains("DESLIGADO"), "{}", c.detail);
+        for motivo in [
+            MotivoDoBashDesligado::SandboxDesligado,
+            MotivoDoBashDesligado::PlataformaNaoUnix,
+        ] {
+            let c = tools_bash_check(&ExposicaoDoBash::Desligado { motivo });
+            assert_eq!(c.id, "tools.bash");
+            assert!(
+                matches!(c.status, CheckStatus::NotConfigured),
+                "{motivo:?}: {:?}",
+                c.status
+            );
+            let passo = c.next_step.expect("desligado precisa de passo");
+            assert!(passo.contains("agent.sandbox"), "{passo}");
+            assert!(passo.contains("execution.profile"), "{passo}");
+            assert!(c.detail.contains("DESLIGADO"), "{}", c.detail);
+        }
+    }
+
+    /// Mas sandbox CONFIGURADO e inutilizavel e aviso (#1437: configurado e
+    /// quebrado nunca e neutro): backend sem binario, sem backend, ssh, tool
+    /// elevada ou fora da allowlist.
+    #[test]
+    fn tools_bash_com_sandbox_configurado_mas_inutilizavel_e_warning() {
+        use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado as M};
+        for motivo in [
+            M::BackendIndisponivel,
+            M::SemBackend,
+            M::BackendSsh,
+            M::BashElevado,
+            M::BashForaDaAllowlist,
+            M::ToolSemSandbox,
+        ] {
+            let c = tools_bash_check(&ExposicaoDoBash::Desligado { motivo });
+            assert!(
+                matches!(c.status, CheckStatus::Warning),
+                "{motivo:?}: {:?}",
+                c.status
+            );
+            assert!(c.next_step.is_some(), "{motivo:?}");
+        }
     }
 
     #[test]
@@ -1368,6 +1782,36 @@ mod tests {
             assert!(matches!(c.status, CheckStatus::Ok), "{e:?}");
             assert!(c.next_step.is_none());
         }
+    }
+
+    // ─── #1471: runtime.channels ──────────────────────────────────────────
+
+    /// Nenhum canal de mensageria configurado e o estado normal de quem so
+    /// usa o chat web, a CLI ou a API — nenhum deles entra no
+    /// `ChannelRegistry`, e o WhatsApp vinculado tem linha propria
+    /// (`whatsapp.linked`). Neutro, com o passo de como adicionar um.
+    #[test]
+    fn runtime_channels_sem_canal_e_not_configured_e_com_canal_e_ok() {
+        let c = runtime_channels_check(&[]);
+        assert_eq!(c.id, "runtime.channels");
+        assert!(
+            matches!(c.status, CheckStatus::NotConfigured),
+            "{:?}",
+            c.status
+        );
+        assert!(c.detail.contains("none"), "{}", c.detail);
+        assert!(c.detail.contains("whatsapp.linked"), "{}", c.detail);
+        let passo = c.next_step.expect("sem canal precisa de passo");
+        assert!(passo.contains("channels:"), "{passo}");
+        assert!(passo.contains("garraia init"), "{passo}");
+        // O passo antigo mandava procurar erro de registro de um canal `web`
+        // que nunca entra neste registry.
+        assert!(!passo.contains("'web'"), "{passo}");
+
+        let c = runtime_channels_check(&["telegram".to_string(), "discord".to_string()]);
+        assert!(matches!(c.status, CheckStatus::Ok));
+        assert_eq!(c.detail, "telegram, discord");
+        assert!(c.next_step.is_none());
     }
 
     // ─── #1238: WhatsApp vinculado ────────────────────────────────────────
@@ -1433,6 +1877,7 @@ mod tests {
     #[test]
     fn vinculo_saudavel_com_portao_vazio_e_warning_com_o_allow() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             ..Default::default()
         };
@@ -1450,6 +1895,7 @@ mod tests {
 
         // Com alguem autorizado, segue `Ok` sem passo.
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
             ..Default::default()
@@ -1480,12 +1926,99 @@ mod tests {
         assert!(matches!(c.status, CheckStatus::Ok));
     }
 
+    /// `n` recusas de `@lid` sem numero (#1345), como o runtime as contaria.
+    fn so_lid(n: u64) -> crate::bootstrap::whatsapp_linked_rejeicoes::Resumo {
+        use crate::bootstrap::whatsapp_linked_rejeicoes::{Motivo, Rejeicoes};
+        let mut r = Rejeicoes::default();
+        for _ in 0..n {
+            r.registrar(Motivo::LidSemNumero, "…9999", false, "2026-09-26T00:00:00Z");
+        }
+        r.resumo()
+    }
+
     fn acesso(
         saude: LinkHealth,
         settings: &crate::bootstrap::WhatsAppLinkedSettings,
         recusas_lid: u64,
     ) -> DiagnosticCheck {
-        whatsapp_linked_portao_vazio(wa(saude), saude, settings, recusas_lid, true)
+        whatsapp_linked_portao_vazio(wa(saude), saude, settings, &so_lid(recusas_lid), true)
+    }
+
+    /// #1422: recusas por politica/bloqueio aparecem na linha `whatsapp.linked`
+    /// como CONTAGEM por motivo — a rota e auth-free, entao nunca o final.
+    #[test]
+    fn rejeicoes_por_motivo_entram_como_contagem_sem_final() {
+        use crate::bootstrap::whatsapp_linked_rejeicoes::{Motivo, Rejeicoes};
+        let ligado = crate::bootstrap::WhatsAppLinkedSettings {
+            allow: vec!["5511999998888".to_string()],
+            enabled: true,
+            ..Default::default()
+        };
+        let mut r = Rejeicoes::default();
+        r.registrar(
+            Motivo::Restrita,
+            "5521955554444",
+            false,
+            "2026-09-26T00:00:00Z",
+        );
+        r.registrar(
+            Motivo::Restrita,
+            "5521955554444",
+            false,
+            "2026-09-26T00:00:01Z",
+        );
+        r.registrar(
+            Motivo::Bloqueado,
+            "5511966665555",
+            true,
+            "2026-09-26T00:00:02Z",
+        );
+        let c = whatsapp_linked_portao_vazio(
+            wa(LinkHealth::Connected),
+            LinkHealth::Connected,
+            &ligado,
+            &r.resumo(),
+            true,
+        );
+        assert!(
+            matches!(c.status, CheckStatus::Ok),
+            "recusa nao e defeito: {c:?}"
+        );
+        assert!(
+            c.detail.contains("3 mensagem(ns) recusada(s)"),
+            "a contagem total entra no detalhe: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains("restricted_policy: 2") && c.detail.contains("blocked_user: 1"),
+            "por motivo: {}",
+            c.detail
+        );
+        for vazamento in ["4444", "5555", "…"] {
+            assert!(
+                !c.detail.contains(vazamento),
+                "final vazou na rota auth-free: {}",
+                c.detail
+            );
+        }
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("WhatsApp Access"),
+            "o passo aponta para onde a operadora age: {:?}",
+            c.next_step
+        );
+
+        // Sem rejeicao nenhuma o detalhe nao muda.
+        let c = whatsapp_linked_portao_vazio(
+            wa(LinkHealth::Connected),
+            LinkHealth::Connected,
+            &ligado,
+            &Rejeicoes::default().resumo(),
+            true,
+        );
+        assert!(!c.detail.contains("recusada(s)"), "{}", c.detail);
     }
 
     /// Sem `ConfigWatcher` o `allow` nao recarrega: o passo manda reiniciar
@@ -1493,6 +2026,7 @@ mod tests {
     #[test]
     fn portao_vazio_sem_watcher_manda_reiniciar() {
         let ligado_vazio = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             ..Default::default()
         };
@@ -1500,7 +2034,7 @@ mod tests {
             wa(LinkHealth::Connected),
             LinkHealth::Connected,
             &ligado_vazio,
-            0,
+            &so_lid(0),
             false,
         );
         let passo = c.next_step.as_deref().unwrap_or_default();
@@ -1516,12 +2050,61 @@ mod tests {
         );
     }
 
+    /// ADR 0025 (#1396): `access.admission: open` e uma secao `access` com
+    /// valor invalido sao visiveis no diagnostico, com o passo para agir.
+    #[test]
+    fn admissao_aberta_e_secao_invalida_sao_warning_com_passo() {
+        let mut aberto = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        aberto.access.admission = crate::bootstrap::whatsapp_linked_politica::Admission::Open;
+        let c = acesso(LinkHealth::Connected, &aberto, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("ABERTA"), "{c:?}");
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("access restricted"),
+            "{c:?}"
+        );
+        assert!(
+            !format!("{c:?}").contains("5511900000001"),
+            "identidade no check: {c:?}"
+        );
+
+        let mut invalida = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
+            enabled: true,
+            allow: vec!["5511900000001".into()],
+            ..Default::default()
+        };
+        invalida
+            .access
+            .avisos
+            .push("`access.users.<identidade>`: nivel desconhecido".into());
+        let c = acesso(LinkHealth::Connected, &invalida, 0);
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("invalido"), "{c:?}");
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("whatsapp access"),
+            "{c:?}"
+        );
+    }
+
     /// #1345 (review WHATSAPP-10/14): a ponte do boot segue conectada, a config
     /// viva desligou o canal, e o turno recusa todo mundo. `Ok` "conectado"
     /// ali mentia.
     #[test]
     fn ponte_conectada_com_canal_desligado_na_config_viva_e_warning() {
         let desligado_com_gente = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: false,
             allow: vec!["5511900000001".into()],
             ..Default::default()
@@ -1554,6 +2137,7 @@ mod tests {
     #[test]
     fn recusas_de_lid_sem_numero_aparecem_no_detalhe_como_contagem() {
         let com_um = crate::bootstrap::WhatsAppLinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec!["5511900000001".into()],
             ..Default::default()
@@ -1735,9 +2319,12 @@ mod tests {
             Path::new("/tmp/data"),
         );
         assert!(matches!(c.status, CheckStatus::Warning));
-        for esperado in ["isolated-pod", "env", "code", "2", "/workspace"] {
+        for esperado in ["isolated-pod", "env", "code", "2", "fora do data_dir"] {
             assert!(c.detail.contains(esperado), "{esperado:?} em {}", c.detail);
         }
+        // #1465: a raiz do pod fica FORA do data_dir por definicao, e a rota
+        // e auth-free — o caminho do host nao sai, so que esta fora.
+        assert!(!c.detail.contains("/workspace"), "{}", c.detail);
 
         // F-1: a raiz de politica dentro do `data_dir` sai relativa — a rota
         // e auth-free e o caminho absoluto do host nao acrescenta nada.
@@ -1834,7 +2421,7 @@ mod tests {
     /// em `standard` — fora do jail, `warning`, nomeando a raiz e os dois
     /// caminhos de saida.
     #[test]
-    fn mcp_root_fora_do_jail_em_standard_e_warning_nomeando_a_raiz() {
+    fn mcp_root_fora_do_jail_em_standard_e_warning_apontando_a_posicao_da_raiz() {
         let dir = tempfile::tempdir().expect("tempdir");
         let jail = dir.path().join("workspace");
         std::fs::create_dir_all(&jail).expect("mkdir");
@@ -1848,11 +2435,15 @@ mod tests {
             dir.path(),
         );
         assert!(matches!(c.status, CheckStatus::Warning));
+        // #1465: a rota e auth-free — a raiz ofensora sai pela POSICAO na
+        // lista de raizes do servidor, nunca pelo caminho (que no caso legado
+        // mais comum e o `$HOME` do host, nome de usuario incluido).
         assert!(
-            c.detail.contains(&home.display().to_string()),
-            "o detalhe nomeia a raiz ofensora como esta: {}",
+            !c.detail.contains(&home.display().to_string()),
+            "o caminho do host vazou: {}",
             c.detail
         );
+        assert!(c.detail.contains("raiz #1"), "{}", c.detail);
         // C1/C6/C14: o texto nomeia o que foi comparado — as raizes
         // declaradas — e nao "o jail", que e mais largo (env + working_dir).
         assert!(
@@ -1871,17 +2462,19 @@ mod tests {
         );
         assert!(passo.contains("isolated-pod"), "{passo}");
 
-        // Uma raiz dentro e outra fora: a fora e a que aparece.
+        // Uma raiz dentro e outra fora: a fora e a que e apontada — pela
+        // posicao dela, a segunda.
         let dentro = jail.join("sub");
         std::fs::create_dir_all(&dentro).expect("mkdir");
         let c =
             mcp_filesystem_root_check(false, Some(&[dentro, home.clone()]), &[jail], dir.path());
         assert!(matches!(c.status, CheckStatus::Warning));
         assert!(
-            c.detail.contains(&home.display().to_string()),
+            !c.detail.contains(&home.display().to_string()),
             "{}",
             c.detail
         );
+        assert!(c.detail.contains("raiz #2"), "{}", c.detail);
     }
 
     /// Raiz dentro do jail (igual ou subdiretorio, em qualquer das
@@ -1944,6 +2537,8 @@ mod tests {
         );
         assert!(matches!(c.status, CheckStatus::Ok), "{}", c.detail);
         assert!(c.detail.contains("isolated-pod"), "{}", c.detail);
+        // #1465: `/` esta fora do data_dir e nao sai em claro.
+        assert!(c.detail.contains("fora do data_dir"), "{}", c.detail);
 
         let c = mcp_filesystem_root_check(
             false,
@@ -1998,17 +2593,30 @@ mod tests {
     /// F-1: caminhos de politica saem relativos a `<data_dir>` quando estao
     /// dentro dele; fora dele saem como estao.
     #[test]
-    fn exibir_raiz_relativiza_so_o_que_esta_no_data_dir() {
+    fn exibir_raiz_relativiza_o_data_dir_e_nao_publica_o_que_esta_fora() {
         let data = Path::new("/home/ana/.garraia/data");
         assert_eq!(
             exibir_raiz(&data.join("workspace"), data),
             "<data_dir>/workspace"
         );
         assert_eq!(exibir_raiz(data, data), "<data_dir>");
-        assert_eq!(exibir_raiz(Path::new("/srv/projeto"), data), "/srv/projeto");
+        // #1465: fora do data_dir e caminho do host (nome de usuario incluido)
+        // numa rota auth-free — sai so que esta fora.
+        assert_eq!(
+            exibir_raiz(Path::new("/srv/projeto"), data),
+            "<fora do data_dir>"
+        );
+        assert_eq!(
+            exibir_raiz(Path::new("/home/ana"), data),
+            "<fora do data_dir>"
+        );
         assert_eq!(
             lista_de_caminhos(&[data.join("workspace"), PathBuf::from("/srv/p")], data),
-            "<data_dir>/workspace, /srv/p"
+            "<data_dir>/workspace, 1 fora do data_dir"
+        );
+        assert_eq!(
+            lista_de_caminhos(&[PathBuf::from("/a"), PathBuf::from("/b")], data),
+            "2 fora do data_dir"
         );
         assert_eq!(lista_de_caminhos(&[], data), "(nenhuma)");
     }
@@ -2861,6 +3469,252 @@ mod tests_mcp_1346 {
                 .iter()
                 .any(|c| c.id == "mcp.filesystem_pinned"),
             "linha mcp.filesystem_pinned"
+        );
+    }
+
+    // ─── #1378: a linha `files.workspace` ─────────────────────────────────
+
+    /// Raiz declarada pelo operador: `ok`, e o detalhe diz que a fonte foi a
+    /// declaracao — nao o default.
+    #[test]
+    fn workspace_declarado_e_ok_e_nomeia_a_fonte() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let raiz = dir.path().join("projeto");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::Declaradas,
+            &[raiz],
+            // Raiz declarada nao tem escopo por sessao (#1449).
+            None,
+            dir.path(),
+        );
+        assert_eq!(c.id, "files.workspace");
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(c.detail.contains("agent.file_roots"), "{}", c.detail);
+        assert!(c.next_step.is_none(), "{c:?}");
+    }
+
+    /// Achado da revisao independente de seguranca (#1449): uma raiz
+    /// DECLARADA fora do `data_dir` (o caso comum) nao pode sair como
+    /// caminho absoluto do host nesta rota auth-free — mesmo invariante que
+    /// `data_dir_com_symlink_nao_vaza_caminho_do_host` ja prova para o
+    /// workspace padrao.
+    #[test]
+    fn workspace_declarado_fora_do_data_dir_nao_vaza_caminho_do_host() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let raiz = std::path::PathBuf::from("/home/alguem/projetos/cliente-x");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::Declaradas,
+            &[raiz],
+            None,
+            dir.path(),
+        );
+        assert!(
+            !c.detail.contains("/home/alguem"),
+            "caminho absoluto do host vazou na rota auth-free: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains('1'),
+            "a contagem tem de aparecer: {}",
+            c.detail
+        );
+    }
+
+    /// Workspace padrao: `ok`, com o caminho relativo a `<data_dir>` — a rota
+    /// e auth-free e nao precisa publicar o caminho absoluto do host.
+    ///
+    /// #1449: o jail nao tem raiz fixa nesta fonte (`raizes` chega vazio), e a
+    /// linha descreve `<data_dir>/workspace/<sessao>` — nao o pai sozinho, que
+    /// prometeria mais alcance do que o turno tem.
+    #[test]
+    fn workspace_padrao_e_ok_e_sai_relativo_ao_data_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path().join("workspace");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::WorkspacePadrao,
+            &[],
+            Some(&ws),
+            dir.path(),
+        );
+        assert!(matches!(c.status, CheckStatus::Ok), "{c:?}");
+        assert!(
+            c.detail.contains("<data_dir>/workspace"),
+            "o detalhe tem de sair relativo ao data_dir: {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains("<data_dir>/workspace/<sessao>"),
+            "o detalhe tem de dizer que a raiz efetiva e por sessao (#1449): {}",
+            c.detail
+        );
+        assert!(
+            c.detail.contains("workspace padrao"),
+            "o detalhe tem de dizer POR QUE a raiz e essa (#1378): {}",
+            c.detail
+        );
+    }
+
+    /// Sem raiz efetiva a linha e `warning` com passo acionavel: e o defeito
+    /// da #1378 ainda de pe, e o operador precisa ver isso no console.
+    #[test]
+    fn sem_raiz_efetiva_a_linha_avisa_com_passo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let c = files_workspace_check(
+            crate::bootstrap::FonteDasRaizesDasFileTools::SomenteSessao,
+            &[],
+            None,
+            dir.path(),
+        );
+        assert!(matches!(c.status, CheckStatus::Warning), "{c:?}");
+        assert!(c.detail.contains("file_read"), "{}", c.detail);
+        let passo = c.next_step.expect("a linha tem de dizer o que fazer");
+        assert!(passo.contains("agent.file_roots"), "{passo}");
+    }
+
+    /// **A fiacao.** Sem este teste, apagar o `checks.push` deixaria os tres
+    /// puros acima verdes e o `/api/diagnostics` sem a linha. E ele descreve a
+    /// instalacao limpa da #1378 de ponta a ponta: o boot prepara o workspace,
+    /// e o console reporta esse workspace e a razao dele.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn o_relatorio_de_verdade_inclui_a_linha_do_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        // O passo que o `server.rs` da na subida, antes de montar o runtime.
+        crate::bootstrap::garantir_workspace_padrao(&config).expect("workspace padrao");
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            dir.path(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "files.workspace")
+            .expect("o relatorio precisa carregar a linha `files.workspace` (#1378)");
+        assert!(
+            matches!(linha.status, CheckStatus::Ok),
+            "instalacao limpa com o workspace preparado e `ok`: {linha:?}"
+        );
+        assert!(
+            linha.detail.contains("workspace"),
+            "a linha tem de nomear o workspace efetivo: {}",
+            linha.detail
+        );
+        assert!(
+            linha.detail.contains("workspace padrao"),
+            "a linha tem de dizer de onde veio a decisao: {}",
+            linha.detail
+        );
+    }
+
+    /// **#1459.** As raizes das file tools sao resolvidas UMA vez, no boot, e
+    /// o `/api/diagnostics` descreve o jail que o turno usa — nao o disco do
+    /// momento da request. Antes o handler chamava `raizes_das_file_tools` a
+    /// cada request (rota auth-free): `canonicalize` por raiz e um `warn!`
+    /// por raiz que nao resolve, amplificados por quem quisesse. A prova: o
+    /// workspace some do disco depois do boot e a linha continua a do boot.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_linha_do_workspace_descreve_o_jail_do_boot_nao_o_disco_de_agora() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = garraia_config::AppConfig {
+            data_dir: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        };
+        let workspace =
+            crate::bootstrap::garantir_workspace_padrao(&config).expect("workspace padrao");
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            dir.path(),
+        ));
+        // O disco muda depois do boot; o jail do runtime, nao.
+        std::fs::remove_dir_all(&workspace).expect("apaga o workspace");
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "files.workspace")
+            .expect("linha files.workspace");
+        assert!(
+            matches!(linha.status, CheckStatus::Ok) && linha.detail.contains("workspace padrao"),
+            "a linha tem de descrever o jail do boot (workspace padrao), nao o disco de agora: {linha:?}"
+        );
+    }
+
+    /// A fiacao da #1459: nenhum ponto de producao deste arquivo resolve as
+    /// raizes por conta propria — ele le o que o boot guardou no `AppState`.
+    #[test]
+    fn o_handler_nao_resolve_as_raizes_das_file_tools_por_request() {
+        let fonte = include_str!("diagnostics_handler.rs");
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+        assert!(
+            !producao.contains("raizes_das_file_tools("),
+            "o /api/diagnostics voltou a resolver as raizes por request (#1459): use \
+             `state.raizes_das_file_tools`"
+        );
+    }
+
+    /// **F-1 da #1329, o caso que escapou.** `/api/diagnostics` e auth-free, e
+    /// a linha do workspace promete sair relativa (`<data_dir>/…`).
+    ///
+    /// A relativizacao e um `strip_prefix` do `data_dir` cru da config contra
+    /// raizes que o `FileJail` ja canonicalizou. Quando o `data_dir` passa por
+    /// symlink (ou e relativo), os dois lados deixam de casar, o `strip_prefix`
+    /// falha em silencio e o fallback imprime o caminho ABSOLUTO do host para
+    /// qualquer um que chame a rota.
+    #[tokio::test]
+    #[serial_test::serial]
+    #[cfg(unix)]
+    async fn data_dir_com_symlink_nao_vaza_caminho_do_host() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("data-real");
+        std::fs::create_dir_all(&real).expect("cria o data dir real");
+        let link = dir.path().join("data-link");
+        std::os::unix::fs::symlink(&real, &link).expect("planta o link");
+
+        // O operador configurou o caminho COM o link; o jail vai canonicalizar.
+        let config = garraia_config::AppConfig {
+            data_dir: Some(link),
+            ..Default::default()
+        };
+        crate::bootstrap::garantir_workspace_padrao(&config).expect("workspace padrao");
+        let state: SharedState = std::sync::Arc::new(crate::state::AppState::with_config_dir(
+            config,
+            std::sync::Arc::new(garraia_agents::AgentRuntime::new()),
+            garraia_channels::ChannelRegistry::new(),
+            dir.path(),
+        ));
+
+        let Json(report) = diagnostics_handler(State(state)).await;
+        let linha = report
+            .checks
+            .iter()
+            .find(|c| c.id == "files.workspace")
+            .expect("o relatorio precisa carregar a linha `files.workspace` (#1378)");
+
+        let real_canonico = std::fs::canonicalize(&real).expect("canonicalize do data dir real");
+        assert!(
+            !linha.detail.contains(&real_canonico.display().to_string()),
+            "a rota auth-free vazou o caminho absoluto do host: {}",
+            linha.detail
+        );
+        assert!(
+            linha.detail.contains("<data_dir>"),
+            "a raiz dentro do data dir tem de sair relativa: {}",
+            linha.detail
         );
     }
 }

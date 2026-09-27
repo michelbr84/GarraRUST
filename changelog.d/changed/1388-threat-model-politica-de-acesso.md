@@ -1,0 +1,1 @@
+- `docs/security/threat-model.md` ganha a secao 5.18 (politica de acesso por principal do WhatsApp pessoal, ADR 0025): fronteira, as tres decisoes por turno, tabela de ameacas com a prova de cada uma e o risco residual (#1388).

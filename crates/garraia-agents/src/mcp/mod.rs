@@ -7,4 +7,5 @@ pub use manager::{
     McpManager, McpPromptInfo, McpResourceInfo, McpServerState, McpServerStatus, McpToolInfo,
 };
 pub use npx_cache::McpFailureCause;
+pub mod confinamento;
 pub use tool_bridge::McpTool;

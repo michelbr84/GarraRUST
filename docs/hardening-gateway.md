@@ -128,7 +128,7 @@ vier do **mesmo remetente**, na **mesma sessao** e no **mesmo canal**:
 | Caminho | Quem pode aprovar |
 |---|---|
 | Web Console (`/ws`) e desktop (`/ws/parrot`) | a mesma conexao WebSocket — reconectou (ou retomou a sessao em outra aba), pergunta de novo |
-| `/v1/chat/completions` | o dono da allowlist **com o mesmo** `Authorization` **e a mesma** `X-Session-Id` nos dois requests — sem `X-Session-Id` cada request e uma sessao nova e o "sim" nao retoma; sem dono reivindicado, a pausa e terminal. Vale igual com e sem `"stream": true` |
+| `/v1/chat/completions` | o dono da allowlist **com o mesmo** `Authorization` **e a mesma** `X-Session-Id` nos dois requests — sem `X-Session-Id` cada request e uma sessao nova e o "sim" nao retoma; sem dono reivindicado, a pausa e terminal. Vale igual com e sem `"stream": true`. A `X-Session-Id` so alcanca sessao das superficies locais do operador (`api`, `vscode`, `web`, `parrot`): o id de uma sessao de canal ou do mobile responde `404` e nao e tocado (#1462) |
 | App mobile (`POST /chat`) | o `sub` do JWT |
 | Telegram, Discord, Slack, WhatsApp Cloud, Matrix, IRC, Signal, LINE, Teams, Google Chat, iMessage, WhatsApp pessoal | o id do usuario na plataforma; em grupo, o "sim" de outro membro nao aprova e encerra o pedido |
 | `garraia chat` | o proprio terminal, na mesma sessao |
@@ -259,6 +259,28 @@ Arquivo completo comentado, validado com `garra config check`:
    `/v1/*` do workspace (`rest_v1`) e o `/v1/auth/*` seguem **fora** deste
    eixo — têm autenticação JWT própria, e `/admin/*` tem cookie de
    sessão.
+
+   **Sessão por id — duas leituras, duas credenciais (#1462).** Um id de
+   sessão que o cliente escolhe (`X-Session-Id`, o `{id}` de
+   `/api/sessions/{id}/*`, o `resume` sem token do `/ws`) só alcança sessão
+   das superfícies locais do operador (`api`, `vscode`, `web`, `parrot`);
+   sessão de canal (WhatsApp, Telegram, Discord…) ou do mobile responde o
+   mesmo `404` de id inexistente — na leitura e na escrita, em memória e no
+   `sessions.db` — e `GET /api/sessions` só lista as locais. Quem precisa
+   ler qualquer sessão (o Export do Web Console, por exemplo) usa
+   `GET /admin/api/sessions/{id}/history`, com o cookie de sessão do
+   `/admin` e a permissão `manage_sessions` (`admin` e `operator`; `viewer`
+   recebe 403), que lê sem hidratar e deixa registro na auditoria. A chave
+   de `gateway.api_key` continua sendo a fronteira de rede do `/api/*`, mas
+   não substitui esta regra: é uma chave única compartilhada por toda a
+   LAN, e os ids de canal são adivinháveis por construção.
+   A politica de acesso do WhatsApp pessoal segue o mesmo desenho: `GET|POST
+   /admin/api/whatsapp/access` e `GET /admin/api/whatsapp/access/audit` (cookie +
+   CSRF; leitura `Channels/Read`, mutacao `Channels/Update`), pelo mesmo motor e
+   com o mesmo audit da CLI (ADR 0025). A API nunca revela identidade. O
+   `GET /admin/api/whatsapp/doctor` (#1420, `Channels/Read`) roda o motor do
+   `garraia doctor whatsapp` em processo e devolve so contagens, origens e
+   nomes — nunca chave de sessao, chave de API, numero ou LID.
 
    **A #1240 não fechou nada por default.** Sem a chave configurada, todas
    essas rotas respondem exatamente como antes.

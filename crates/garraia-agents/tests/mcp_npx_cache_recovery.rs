@@ -151,6 +151,18 @@ impl Sandbox {
     }
 }
 
+/// Os testes deste arquivo escrevem um `npx` falso e o executam. Rodando em
+/// paralelo, o `fork` de um teste herda, por um instante, o descritor de
+/// escrita que outro teste ainda tem aberto sobre o SEU `npx` — e o `exec`
+/// deste falha com `Text file busy` (ETXTBSY, os error 26), como aconteceu
+/// no CI da #1489. Um por vez: o custo e desprezivel (cada teste leva
+/// decimos de segundo) e o sintoma some por construcao.
+static UM_POR_VEZ: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn um_por_vez() -> tokio::sync::MutexGuard<'static, ()> {
+    UM_POR_VEZ.lock().await
+}
+
 fn args() -> Vec<String> {
     vec!["-y".into(), format!("{PKG}@2026.8.31"), "/tmp".into()]
 }
@@ -178,6 +190,7 @@ async fn corrupt_npx_entry_is_cleared_once_then_reported() {
     let rec = Recorder::default();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(rec.clone()));
     timeout(async {
+        let _um_por_vez = um_por_vez().await;
         let sb = Sandbox::new();
         Sandbox::corrupt_entry_at(&sb.entry());
         let env = sb.env(&[]);
@@ -267,6 +280,7 @@ async fn corrupt_npx_entry_is_cleared_once_then_reported() {
 #[tokio::test]
 async fn stderr_pointing_outside_the_cache_deletes_nothing() {
     timeout(async {
+        let _um_por_vez = um_por_vez().await;
         let sb = Sandbox::new();
         let victim = sb.root.join("victim").join("_npx").join(HASH);
         Sandbox::corrupt_entry_at(&victim);
@@ -331,6 +345,7 @@ async fn stderr_pointing_outside_the_cache_deletes_nothing() {
 #[tokio::test]
 async fn symlinked_entry_is_never_followed() {
     timeout(async {
+        let _um_por_vez = um_por_vez().await;
         let sb = Sandbox::new();
         let victim = sb.root.join("victim").join("_npx").join(HASH);
         Sandbox::corrupt_entry_at(&victim);
@@ -360,6 +375,7 @@ async fn symlinked_entry_is_never_followed() {
 #[tokio::test]
 async fn non_npx_command_never_clears() {
     timeout(async {
+        let _um_por_vez = um_por_vez().await;
         use std::os::unix::fs::PermissionsExt;
         let sb = Sandbox::new();
         Sandbox::corrupt_entry_at(&sb.entry());
@@ -397,6 +413,7 @@ async fn exhausted_restarts_are_logged_exactly_once() {
     let rec = Recorder::default();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(rec.clone()));
     timeout(async {
+        let _um_por_vez = um_por_vez().await;
         let sb = Sandbox::new();
         let env = sb.env(&[("FAKE_NPX_MODE", "fail")]);
         let m = McpManager::new();
@@ -450,6 +467,7 @@ async fn exhausted_restarts_are_logged_exactly_once() {
 #[tokio::test]
 async fn a_space_in_home_does_not_defeat_the_recovery() {
     timeout(async {
+        let _um_por_vez = um_por_vez().await;
         let sb = Sandbox::with_home("John Smith");
         Sandbox::corrupt_entry_at(&sb.entry());
         let env = sb.env(&[]);

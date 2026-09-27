@@ -46,6 +46,7 @@
 //!
 //! [`turno_restrito`]: garraia_agents::tools::turn_tools::turno_restrito
 
+use std::path::Path;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
@@ -113,6 +114,33 @@ macro_rules! sentido_de_withheld {
 
 /// A frase acima, como constante, para o campo `withheld_means` do relatorio.
 const SENTIDO_DE_WITHHELD: &str = sentido_de_withheld!();
+
+/// O que `file_tools.ready = false` significa, dito DENTRO do relatorio
+/// (#1416, criterio 5 da #1418, #1387): sem raiz efetiva as tres file tools
+/// negam todo caminho com a MESMA frase — e o modelo, sem este bloco,
+/// prometia ler arquivo e depois inventava por que nao dava. So sai quando
+/// nao esta pronto; constante e secret-free, como [`SENTIDO_DE_WITHHELD`].
+/// O que `capabilities` significa, dito DENTRO do relatorio (#1381/#1387):
+/// a lista de funcoes do turno nao e a lista do que existe.
+const SENTIDO_DE_CAPABILITIES: &str = "each entry is a capability of this Garra with its state \
+in THIS conversation: `visible` = you can call it now; `denied` = it exists and works, but this \
+conversation's policy does not allow it (say so; never say it does not exist); `unavailable` = \
+it exists but lacks context or an integration right now (follow `remediation`); `unhealthy` = a \
+known MCP server is down; `not_configured` = this Garra can do it but it was not set up. \
+`reason_code` is machine-readable; `reason` and `remediation` are safe to repeat to the user.";
+
+const SENTIDO_DE_FILE_TOOLS_SEM_RAIZ: &str = "file_read, file_write and list_dir deny every path in this conversation: the session has no working directory and the operator declared no root. Say so instead of promising to read or write files. The operator can select a project for this session, or declare a root in agent.file_roots (or the GARRAIA_FILE_ROOTS env var) and restart.";
+
+/// O que `breaker` significa (#1417), dito DENTRO do relatorio — so quando a
+/// lista nao esta vazia, como `withheld_means`. Constante e secret-free: o
+/// que a lista carrega vem de `garraia_agents::tools::breaker`, texto do
+/// modulo, nunca a saida crua da ferramenta nem caminho.
+const SENTIDO_DE_BREAKER: &str = "each entry is a tool that failed in THIS conversation and \
+is paused: a deterministic failure (no workspace, no repository) or a repeated error (the \
+same error three times, a denied path included) pauses it until the end of the turn; a \
+timeout pauses it for a growing \
+cooldown. `reason_code` is machine-readable and `reason` is safe to repeat. In this turn, do \
+not call a paused tool again: tell the user the reason and continue without it.";
 
 pub struct GarraStatusTool {
     /// Weak for the same reason `TelegramSendTool` is: `AppState` owns the
@@ -191,8 +219,10 @@ impl Tool for GarraStatusTool {
             "Describes the Garra runtime you are running in: version, uptime, active ",
             "provider and model, the tools available in this turn, advertised features, ",
             "each enabled messaging channel with its status (`active` = connected now, ",
-            "`offline` = configured but down), the execution profile, MCP servers, and this ",
-            "session's channel and mode. Some fields can be held back, and the report names ",
+            "`offline` = configured but down), the execution profile, MCP servers, whether ",
+            "the file tools have a root in this session (`file_tools.ready`; when false, ",
+            "`file_tools.means` says what to tell the user), and this session's channel and ",
+            "mode. Some fields can be held back, and the report names ",
             "them in its `withheld` list. ",
             sentido_de_withheld!(),
             " Use it whenever the user asks what you are, what you can do, which channels ",
@@ -300,6 +330,100 @@ impl Tool for GarraStatusTool {
         let working_dir = (!restrito).then_some(ctx.working_dir.as_deref()).flatten();
         let project_id = (!restrito).then_some(ctx.project_id.as_deref()).flatten();
 
+        // #1416/#1418: as file tools tem raiz NESTA sessao? Bit e origem,
+        // nunca caminho — por isso o bloco sai inteiro tambem no turno
+        // restrito, onde `session.working_dir` e retido. As raizes sao as que
+        // o boot resolveu e guardou no `AppState` (#1459): a mesma fonte do
+        // jail e do `/api/diagnostics`, sem I/O nem `warn!` por chamada.
+        let file_tools = {
+            use crate::bootstrap::FonteDasRaizesDasFileTools as Fonte;
+            let raizes = &state.raizes_das_file_tools;
+            // O diretorio da sessao mora DEBAIXO do workspace padrao: o pai
+            // canonicalizado e a raiz (o proprio diretorio pode ainda nao
+            // existir — ele nasce no primeiro uso, #1449).
+            let no_workspace = ctx.working_dir.as_deref().is_some_and(|wd| {
+                raizes.workspace_por_sessao.as_ref().is_some_and(|ws| {
+                    Path::new(wd)
+                        .parent()
+                        .and_then(|pai| std::fs::canonicalize(pai).ok())
+                        .is_some_and(|pai| pai == ws.raiz())
+                })
+            });
+            let (ready, source, roots) = match (ctx.working_dir.is_some(), raizes.fonte) {
+                (true, Fonte::WorkspacePadrao) if no_workspace => (true, "session_workspace", None),
+                (true, _) => (true, "session_working_dir", None),
+                (false, Fonte::Declaradas) => (true, "declared", Some(raizes.jail.roots().len())),
+                (false, _) => (false, "none", None),
+            };
+            serde_json::json!({
+                "ready": ready,
+                "source": source,
+                "roots": roots,
+                "means": (!ready).then_some(SENTIDO_DE_FILE_TOOLS_SEM_RAIZ),
+            })
+        };
+
+        // #1381: o registro de capacidades — a MESMA visao do `/api/diagnostics`
+        // e do console, com o portao deste turno (a lista que o runtime
+        // publicou) e a disponibilidade de cada ferramenta.
+        let capabilities = {
+            let inventario = state.agents.tool_inventory();
+            let liberadas = garraia_agents::tools::turn_tools::ferramentas_do_turno();
+            let permite = |n: &str| liberadas.as_ref().is_none_or(|l| l.iter().any(|x| x == n));
+            let disponibilidade = |n: &str| state.agents.disponibilidade_de(n);
+            let mcp: Vec<garraia_agents::McpServerStatus> = match &state.mcp_manager_arc {
+                Some(mgr) => mgr.server_statuses().await,
+                None => Vec::new(),
+            };
+            let politica = crate::bootstrap::politica_de_execucao(&state.config);
+            let exposicao = crate::bootstrap::exposicao_do_bash(
+                politica.perfil,
+                &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+            );
+            let bash_desligado = match exposicao {
+                crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((
+                    exposicao.descricao(),
+                    crate::bootstrap::COMO_LIGAR_O_BASH.to_string(),
+                )),
+                _ => None,
+            };
+            // #1416: o contexto DESTA sessao — raiz (pela fonte que o boot
+            // resolveu + `working_dir`) e repositorio (idem, ou o CWD do
+            // processo) — para `file_*`/`list_dir`/`repo_search` sairem como
+            // "falta contexto" em vez de "disponivel" quando nao ha onde agir.
+            let contexto = crate::capacidades_registro::contexto_de_arquivos(
+                state.raizes_das_file_tools.fonte,
+                ctx.working_dir.as_deref().map(std::path::Path::new),
+                garraia_agents::tools::repo_search_tool::processo_em_repositorio,
+            );
+            crate::capacidades_registro::registro(&crate::capacidades_registro::Entradas {
+                inventario: &inventario,
+                permite: &permite,
+                disponibilidade: &disponibilidade,
+                mcp: &mcp,
+                bash_desligado,
+                restrito,
+                contexto,
+            })
+        };
+
+        // #1417: as ferramentas em pausa NESTA sessao (o breaker do runtime),
+        // com codigo e motivo. Sai tambem no turno restrito: e texto
+        // constante do modulo do breaker, sem caminho nem saida crua. O
+        // agregado por instalacao fica para o `/api/diagnostics` (#1438).
+        let breaker = state.agents.estado_do_breaker(&ctx.session_id);
+        let breaker_means = (!breaker.is_empty()).then_some(SENTIDO_DE_BREAKER);
+        let breaker: Vec<serde_json::Value> = breaker
+            .into_iter()
+            .map(|aberta| {
+                serde_json::json!({
+                    "tool": aberta.tool,
+                    "reason_code": aberta.codigo,
+                    "reason": aberta.motivo,
+                })
+            })
+            .collect();
+
         let report = serde_json::json!({
             "version": version,
             "uptime_secs": state.boot_time.elapsed().as_secs(),
@@ -312,6 +436,7 @@ impl Tool for GarraStatusTool {
             "execution_profile": execution_profile,
             "mcp_servers": mcp_servers,
             "memory_enabled": state.agents.memory_provider().is_some(),
+            "file_tools": file_tools,
             "session": {
                 "id": mascarar_digitos(&ctx.session_id),
                 "channel": canal_da_sessao,
@@ -323,6 +448,11 @@ impl Tool for GarraStatusTool {
             // #1382: `null` quando nada foi retido — a chave existe sempre
             // para o formato do relatorio nao mudar de turno para turno.
             "withheld_means": (!withheld.is_empty()).then_some(SENTIDO_DE_WITHHELD),
+            "capabilities": capabilities,
+            "capabilities_means": SENTIDO_DE_CAPABILITIES,
+            "breaker": breaker,
+            // #1417: `null` quando nada esta em pausa, como `withheld_means`.
+            "breaker_means": breaker_means,
         });
 
         let text = serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string());
@@ -491,6 +621,72 @@ mod tests {
         }
     }
 
+    /// #1416: a instalacao em que NENHUMA sessao sem projeto tem raiz
+    /// (`SomenteSessao`), montada por cima do estado normal — o que decide e
+    /// a `fonte` que o boot resolveu, e o teste a fixa em vez de depender de
+    /// um `data_dir` impossivel de criar.
+    fn state_somente_sessao() -> Arc<AppState> {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        let mut st = AppState::with_config_dir(
+            config_no(&dir),
+            Arc::new(AgentRuntime::new()),
+            ChannelRegistry::new(),
+            &dir,
+        );
+        st.raizes_das_file_tools = crate::bootstrap::RaizesDasFileTools {
+            jail: garraia_agents::tools::FileJail::sessions_only(),
+            fonte: crate::bootstrap::FonteDasRaizesDasFileTools::SomenteSessao,
+            workspace_por_sessao: None,
+        };
+        Arc::new(st)
+    }
+
+    /// #1416: `file_read` permitida pelo piso mas SEM raiz nenhuma na sessao
+    /// sai como `unavailable`/`no_roots` com o passo `/project` — e nao como
+    /// `visible`, que era o que o modelo lia antes de tentar e falhar. Com
+    /// `working_dir` a mesma sessao a ve `visible`; `file_write`, negada pelo
+    /// piso, continua `denied` (a politica vence a falta de contexto).
+    #[tokio::test]
+    async fn capabilities_diz_falta_de_contexto_quando_a_sessao_nao_tem_raiz() {
+        let st = state_somente_sessao();
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileReadTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileWriteTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        let tool = tool(&st);
+        let (json, _) = relatorio_no_turno(&tool, &ctx(None), false).await;
+        let caps = json["capabilities"].as_array().expect("lista");
+        let de = |nome: &str| {
+            caps.iter()
+                .find(|c| c["name"] == nome)
+                .unwrap_or_else(|| panic!("{nome} ausente: {caps:?}"))
+                .clone()
+        };
+        let fr = de("file_read");
+        assert_eq!(fr["state"], serde_json::json!("unavailable"), "{fr}");
+        assert_eq!(fr["reason_code"], serde_json::json!("no_roots"));
+        assert!(
+            fr["remediation"]
+                .as_str()
+                .is_some_and(|r| r.contains("/project")),
+            "{fr}"
+        );
+        assert_eq!(de("file_write")["state"], serde_json::json!("denied"));
+        assert!(!json.to_string().contains("/tmp/"), "sem caminho: {json}");
+
+        let (json, _) = relatorio_no_turno(&tool, &ctx(Some("/tmp/garra-projeto")), false).await;
+        let caps = json["capabilities"].as_array().expect("lista");
+        let fr = caps
+            .iter()
+            .find(|c| c["name"] == "file_read")
+            .expect("file_read");
+        assert_eq!(fr["state"], serde_json::json!("visible"), "{fr}");
+    }
+
     /// O relatorio traz o que o console ve — e o que o agente nao via.
     #[tokio::test]
     async fn relata_versao_ferramentas_e_diretorio_da_sessao() {
@@ -603,9 +799,14 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "breaker",
+                "breaker_means",
+                "capabilities",
+                "capabilities_means",
                 "channels",
                 "execution_profile",
                 "features",
+                "file_tools",
                 "mcp_servers",
                 "memory_enabled",
                 "model",
@@ -633,6 +834,100 @@ mod tests {
         assert!(json["provider"].is_null());
         assert!(json["model"].is_null());
         assert!(json["session"]["working_dir"].is_null());
+    }
+
+    // ─── #1416/#1418: as file tools tem raiz nesta sessao? ────────────────
+
+    /// Sessao sem `working_dir` numa instalacao sem workspace e sem raiz
+    /// declarada: `file_read`/`file_write`/`list_dir` negam tudo, e o modelo
+    /// precisa saber ANTES de prometer que le arquivo — e o criterio 5 da
+    /// #1418, e a honestidade da #1387. Sem caminho nenhum: so o bit e a
+    /// origem.
+    #[tokio::test]
+    async fn file_tools_sem_raiz_nenhuma_sai_ready_false_com_o_motivo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com(config_no(dir.path()));
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], false, "{ft}");
+        assert_eq!(ft["source"], "none", "{ft}");
+        assert!(ft["roots"].is_null(), "{ft}");
+        let means = ft["means"].as_str().expect("means");
+        assert!(means.contains("deny"), "{means}");
+        assert!(means.contains("agent.file_roots"), "{means}");
+    }
+
+    /// Com o workspace padrao no disco e o diretorio da sessao debaixo dele,
+    /// a origem e o workspace por sessao (#1378/#1449).
+    #[tokio::test]
+    async fn file_tools_no_workspace_padrao_sai_ready_true_com_a_origem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("mkdir");
+        let st = state_com(config_no(dir.path()));
+        let sessao = workspace.join("abc123");
+        let json = relatorio(&tool(&st), &ctx(Some(&sessao.to_string_lossy()))).await;
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], true, "{ft}");
+        assert_eq!(ft["source"], "session_workspace", "{ft}");
+        assert!(ft["means"].is_null(), "so quando nao esta pronto: {ft}");
+    }
+
+    /// Raiz declarada em `agent.file_roots`: pronta mesmo sem `working_dir`,
+    /// e sai a CONTAGEM, nunca o caminho.
+    #[tokio::test]
+    async fn file_tools_com_raiz_declarada_sai_ready_true_com_a_contagem() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let declarada = dir.path().join("projeto");
+        std::fs::create_dir_all(&declarada).expect("mkdir");
+        let mut config = config_no(dir.path());
+        config.agent.file_roots = vec![declarada.to_string_lossy().into_owned()];
+        let st = state_com(config);
+        let (json, texto) = relatorio_no_turno(&tool(&st), &ctx(None), true).await;
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], true, "{ft}");
+        assert_eq!(ft["source"], "declared", "{ft}");
+        assert_eq!(ft["roots"], 1, "{ft}");
+        assert!(
+            !texto.contains("projeto"),
+            "o caminho declarado vazou: {texto}"
+        );
+    }
+
+    /// Um `working_dir` de projeto (fora do workspace padrao) e a terceira
+    /// origem — e no turno restrito o bloco continua inteiro: ele nao tem
+    /// caminho, so o que o modelo precisa para nao mentir.
+    #[tokio::test]
+    async fn file_tools_com_working_dir_de_projeto_sai_no_turno_restrito_sem_caminho() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state_com(config_no(dir.path()));
+        let (json, texto) = relatorio_no_turno(
+            &tool(&st),
+            &ctx(Some("/home/operador/projeto-plantado")),
+            true,
+        )
+        .await;
+        assert!(e_restrito(&json, &texto));
+        let ft = &json["file_tools"];
+        assert_eq!(ft["ready"], true, "{ft}");
+        assert_eq!(ft["source"], "session_working_dir", "{ft}");
+        assert!(!texto.contains("projeto-plantado"), "{texto}");
+    }
+
+    /// A fiacao da #1459 aqui tambem: a tool le as raizes que o boot guardou
+    /// no `AppState`, nao resolve por chamada (era `canonicalize` + `warn!`
+    /// a cada `garra_status`).
+    #[test]
+    fn a_tool_nao_resolve_as_raizes_das_file_tools_por_chamada() {
+        let fonte = include_str!("garra_status_tool.rs");
+        let producao = fonte
+            .split_once("\nmod tests {")
+            .map(|(antes, _)| antes)
+            .expect("o modulo de teste deste arquivo");
+        assert!(
+            !producao.contains("raizes_das_file_tools("),
+            "garra_status voltou a resolver as raizes por chamada (#1459)"
+        );
     }
 
     // ─── #1347: o `whatsapp_linked` no relatorio ──────────────────────────
@@ -1334,5 +1629,102 @@ mod tests {
             .expect("executa");
         assert!(out.is_error);
         assert!(out.content.contains("gateway state is gone"));
+    }
+    /// #1381/#1387: `capabilities` distingue negada, indisponivel e visivel —
+    /// e a ferramenta indisponivel nao aparece em `tools` (a lista chamavel),
+    /// mas aparece aqui, com o motivo. Sem isso o modelo dizia "nao tenho
+    /// Telegram" (registrado e nao configurado) ou "nao tenho escrita"
+    /// (negada pelo piso `search`).
+    #[tokio::test]
+    async fn capabilities_distingue_negada_indisponivel_e_visivel() {
+        let st = state();
+        st.agents
+            .register_tool(Box::new(crate::tools::TelegramSendTool::new(&st)));
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileReadTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        st.agents
+            .register_tool(Box::new(garraia_agents::tools::FileWriteTool::new(
+                garraia_agents::tools::FileJail::sessions_only(),
+            )));
+        let tool = tool(&st);
+        // No turno, o piso `search` libera file_read e nao file_write.
+        let (json, _texto) = relatorio_no_turno(&tool, &ctx(None), false).await;
+        let caps = json["capabilities"].as_array().expect("lista");
+        let de = |nome: &str| {
+            caps.iter()
+                .find(|c| c["name"] == nome)
+                .unwrap_or_else(|| panic!("{nome} ausente: {caps:?}"))
+                .clone()
+        };
+        assert_eq!(de("file_read")["state"], serde_json::json!("visible"));
+        assert_eq!(de("file_write")["state"], serde_json::json!("denied"));
+        assert_eq!(de("file_write")["reason_code"], serde_json::json!("policy"));
+        let tg = de("telegram_send");
+        assert_eq!(tg["state"], serde_json::json!("not_configured"), "{tg}");
+        assert_eq!(tg["reason_code"], serde_json::json!("not_configured"));
+        assert!(
+            tg["remediation"]
+                .as_str()
+                .is_some_and(|r| r.contains("channels"))
+        );
+        let tools: Vec<String> = json["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|t| t.as_str().map(str::to_string))
+            .collect();
+        assert!(!tools.contains(&"telegram_send".to_string()), "{tools:?}");
+        assert!(
+            json["capabilities_means"]
+                .as_str()
+                .is_some_and(|m| m.contains("never say it does not exist")),
+            "{json}"
+        );
+    }
+
+    /// #1417: `breaker` lista as ferramentas em pausa NESTA sessao (falha
+    /// repetida ou deterministica no turno, timeout em cooldown), com codigo
+    /// e motivo — nunca caminho nem saida crua. Vazio, e `breaker_means`
+    /// nulo, quando nada esta aberto; e o que abriu em OUTRA sessao nao
+    /// aparece.
+    #[tokio::test]
+    async fn breaker_lista_as_ferramentas_em_pausa_nesta_sessao() {
+        use garraia_agents::tools::breaker::{Classe, Deterministica};
+        let st = state();
+        let agora = std::time::Instant::now();
+        st.agents.breakers().registrar_falha(
+            "sessao-teste",
+            "repo_search",
+            Classe::Deterministica(Deterministica::SemRepositorio),
+            agora,
+        );
+        st.agents.breakers().registrar_falha(
+            "outra-sessao",
+            "file_read",
+            Classe::Deterministica(Deterministica::SemRaiz),
+            agora,
+        );
+
+        let json = relatorio(&tool(&st), &ctx(None)).await;
+        let breaker = json["breaker"].as_array().expect("lista");
+        assert_eq!(breaker.len(), 1, "{breaker:?}");
+        assert_eq!(breaker[0]["tool"], "repo_search");
+        assert_eq!(breaker[0]["reason_code"], "no_repository");
+        assert!(
+            breaker[0]["reason"].as_str().is_some_and(|r| !r.is_empty()),
+            "{breaker:?}"
+        );
+        assert!(
+            json["breaker_means"]
+                .as_str()
+                .is_some_and(|m| m.contains("do not call")),
+            "{json}"
+        );
+
+        let json = relatorio(&tool(&st), &ctx_na_sessao("sessao-limpa", None)).await;
+        assert_eq!(json["breaker"], serde_json::json!([]));
+        assert!(json["breaker_means"].is_null(), "{json}");
     }
 }

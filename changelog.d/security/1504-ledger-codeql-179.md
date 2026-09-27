@@ -1,0 +1,1 @@
+- Ledger CodeQL (`docs/security/codeql-suppressions.{md,json}`): a entrada do alerta #174 (`rust/path-injection`, `bridge.rs:639`, caminho sob o diretorio da ponte derivado do `data_dir` da config) passa a ser o #179 — o GitHub fechou o #174 como fixed quando o sink mudou de linha e abriu o #179 no mesmo lugar; justificativa preservada e re-conferida no SARIF, sem supressao nova.

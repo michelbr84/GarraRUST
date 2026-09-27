@@ -158,6 +158,27 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                 };
                 let token_ok = token_verified || resume_token.is_none();
 
+                // #1462: sem token verificado, o `session_id` e um valor que
+                // o cliente escolheu — vale a mesma regra do `X-Session-Id`
+                // e do `{id}` de `/api/sessions/{id}/*`: so sessao das
+                // superficies locais do operador. A de um canal esta em
+                // memoria no caso normal (a hidratacao do canal a poe la), e
+                // retoma-la anexava o chat web a conversa de outra pessoa,
+                // com o historico dela indo para o modelo no turno seguinte.
+                // Recusada, a sessao nao e tocada: nem `connected`, nem
+                // `last_active`. O token verificado continua provando dono.
+                let alcancavel_por_id = if token_verified {
+                    true
+                } else {
+                    match state.id_de_sessao_do_cliente_alcanca(&resume_id).await {
+                        Ok(alcanca) => alcanca,
+                        Err(e) => {
+                            warn!(erro = %e, "falhou ao ler o sessions.db para conferir o resume");
+                            false
+                        }
+                    }
+                };
+
                 // Issue #922: a gateway restart (or the TTL sweep) empties the
                 // in-memory map while `sessions.db` still holds the whole
                 // conversation. The client sent `resume`, this lookup missed,
@@ -170,7 +191,12 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                 // own: session ids are UUIDs that show up in logs and client
                 // storage, and adopting one on request alone would let anyone
                 // who learned an id resume someone else's conversation.
-                let resumed = if state.resume_session(&resume_id) {
+                let resumed = if !alcancavel_por_id {
+                    warn!(
+                        "resume sem token numa sessao de outra superficie; tratado como expirado"
+                    );
+                    false
+                } else if state.resume_session(&resume_id) {
                     token_ok
                 } else if token_verified {
                     info!("re-adopting session from store: {}", resume_id);

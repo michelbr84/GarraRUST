@@ -394,7 +394,11 @@ mod tests {
             )
             .await
             .expect_err("sem raiz deve recusar");
-        assert!(err.to_string().ends_with(DENIAL_MESSAGE), "{err}");
+        assert!(
+            err.to_string()
+                .ends_with(crate::tools::file_jail::NO_ROOTS_MESSAGE),
+            "{err}"
+        );
     }
 
     /// A recusa não devolve o caminho pedido, nem a raiz, nem distingue

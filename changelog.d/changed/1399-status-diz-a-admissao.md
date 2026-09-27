@@ -1,0 +1,1 @@
+- `garraia whatsapp status` (e `users`) passam a dizer a admissao (`restrita` ou `ABERTA`, com o default que um desconhecido recebe) e o `--json` ganha `admission` e `default_access`; com a admissao aberta o aviso de "ninguem autorizado" nao sai, porque nao e verdade (#1399).

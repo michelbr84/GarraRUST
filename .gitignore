@@ -126,6 +126,11 @@ venv/
 /dist/
 /release/
 
+# Evidencia do dogfood em container limpo (scripts/dogfood/*.sh, #1426):
+# logs, JSONs dos doctors, resposta do modelo e o .deb testado. Ancorado
+# pela mesma razao acima — `scripts/dogfood/` e codigo-fonte.
+/dogfood/
+
 # Planning / drafts (internal)
 # Por default, conteúdo de plans/ é ignorado para não vazar drafts locais.
 # Planos numerados (0001-*.md, 0002-*.md, ...) e README SÃO commitados

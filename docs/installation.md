@@ -343,7 +343,24 @@ This wizard will (plan 0126):
   @ `:9090`). Endpoints are written into `config.yml`; install
   instructions for both servers are printed for copy-paste (auto-install
   of those Python stacks is deferred — see [voice.md](voice.md)).
-- Configure the Telegram channel as before.
+- Offer a **primary messaging channel** (#1430). The step is a single list,
+  and the first row — **no channel for now** — is the default, so pressing
+  Enter without reading still connects nothing:
+  - **Telegram**, via a bot token from `@BotFather` (the prompt that was
+    already here).
+  - **WhatsApp**, your personal number, by QR. The row says on its face that
+    this is the *linked device* path through an **unofficial** client; picking
+    it hands off to the very same `garraia whatsapp link` flow, with its
+    consent screen (default **no**), the QR and the "who may talk to me?"
+    question unchanged — see [whatsapp.md](whatsapp.md).
+  - **Both**, which runs Telegram now and WhatsApp at the end.
+
+  The WhatsApp hand-off runs **after** `config.yml` is written, because the
+  link writes into the same `channels.whatsapp_linked` section. A link that
+  fails (no Node.js, QR not scanned, you changed your mind) does not fail
+  `garraia init`: the rest of the configuration is already saved and the
+  wizard just tells you to run `garraia whatsapp link` later. Non-interactive
+  runs never reach this step at all.
 - Store API keys and bot tokens in the encrypted vault.
 - Mint `gateway.api_key` when the machine is server-like (root or a RunPod
   pod) or `HOST` is not loopback, and print how to expose the gateway

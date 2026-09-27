@@ -71,6 +71,9 @@ const SOURCES: &[(&str, &str)] = &[
     // varredura de log a cobre como aos demais. `health.rs` nao faz log de
     // QR/blob/session nenhum — a entrada existe para MANTER isso verdade.
     ("health.rs", include_str!("health.rs")),
+    // #1431: os modos do diretorio da conta. So caminho e modo saem dali —
+    // a entrada existe para que continue assim.
+    ("permissions.rs", include_str!("permissions.rs")),
 ];
 
 /// Macros que levam texto para fora do processo.

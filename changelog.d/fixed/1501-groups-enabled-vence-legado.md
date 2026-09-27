@@ -1,0 +1,1 @@
+- WhatsApp pessoal: `access.groups.enabled: false` escrito a mao na config passa a VENCER o `reply_in_groups: true` legado (antes o legado ganhava em silencio e o canal seguia respondendo em grupo, sem teto); a precedencia gera aviso no boot/`config check` e esta na ADR 0025 (#1501).

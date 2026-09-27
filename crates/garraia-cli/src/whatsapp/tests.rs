@@ -5,8 +5,10 @@
 //! processo filho e testado em `garraia-channels` contra a fixture Python; o
 //! smoke da linha de comando esta em `tests/whatsapp_smoke.rs`.
 
+use super::acesso::MensagemDeNumero;
 use super::*;
 use crate::wizard::prompts::Prompter;
+use garraia_gateway::bootstrap::whatsapp_linked_politica::{Admission, Alcance};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -1408,6 +1410,7 @@ fn restore_refuses_to_enable_the_channel_when_the_blob_no_longer_opens() {
 // #1345: quem pode falar com o GarraIA depois do `link`
 // ---------------------------------------------------------------------------
 
+use crate::whatsapp::politica::linhas_da_politica;
 use acesso::{
     Acesso, Autorizado, Gravado, NumeroInvalido, Papel, Promovido, Rebaixado, acesso_da_config,
     autorizar, dica_do_gateway, final4, json_de_usuarios, linha_de_nao_estava, linha_de_promovido,
@@ -1431,6 +1434,12 @@ impl ScriptedPrompter {
     /// Respostas de `confirm`, na ordem em que serao pedidas.
     fn and_confirms(self, answers: &[bool]) -> Self {
         *self.confirms.borrow_mut() = answers.iter().rev().copied().collect();
+        self
+    }
+
+    /// Respostas de `select` (indices), na ordem em que serao pedidas.
+    fn with_selects(self, answers: &[usize]) -> Self {
+        *self.selects.borrow_mut() = answers.iter().rev().copied().collect();
         self
     }
 
@@ -1610,7 +1619,9 @@ fn autorizar_numa_instalacao_nova_cria_a_secao_sem_ligar_o_canal() {
     let loader = ctx.loader.as_ref().expect("loader");
 
     assert_eq!(
-        autorizar(loader, NUMERO, Papel::Autorizado).expect("grava"),
+        autorizar(loader, NUMERO, Papel::Autorizado)
+            .expect("grava")
+            .0,
         Gravado::Novo
     );
     let secao = secao_de(&ctx).expect("secao criada");
@@ -1650,11 +1661,15 @@ fn autorizar_num_upgrade_preserva_tudo_e_nao_duplica() {
     let loader = ctx.loader.as_ref().expect("loader");
 
     assert_eq!(
-        autorizar(loader, NUMERO, Papel::Autorizado).expect("grava"),
+        autorizar(loader, NUMERO, Papel::Autorizado)
+            .expect("grava")
+            .0,
         Gravado::Novo
     );
     assert_eq!(
-        autorizar(loader, "5511900000001", Papel::Autorizado).expect("grava"),
+        autorizar(loader, "5511900000001", Papel::Autorizado)
+            .expect("grava")
+            .0,
         Gravado::JaEstava,
         "o que ja estava, em outra grafia, nao duplica"
     );
@@ -1824,11 +1839,15 @@ fn autorizar_nao_duplica_o_celular_com_e_sem_o_nono_digito() {
     let ctx = ctx_in(&dir, false);
     let loader = ctx.loader.as_ref().expect("loader");
     assert_eq!(
-        autorizar(loader, "5531999998888", Papel::Autorizado).expect("grava"),
+        autorizar(loader, "5531999998888", Papel::Autorizado)
+            .expect("grava")
+            .0,
         Gravado::Novo
     );
     assert_eq!(
-        autorizar(loader, "553199998888", Papel::Autorizado).expect("grava"),
+        autorizar(loader, "553199998888", Papel::Autorizado)
+            .expect("grava")
+            .0,
         Gravado::JaEstava
     );
     assert_eq!(lista(&ctx, "allow"), vec!["5531999998888".to_string()]);
@@ -2027,6 +2046,8 @@ fn users_com_o_canal_desligado_nao_manda_autorizar_ninguem() {
         enabled: false,
         autorizados: 0,
         donos: 0,
+        admissao: Admission::Restricted,
+        default: Alcance::CHAT,
     };
     for lang in [Lang::Pt, Lang::En] {
         let linhas = linhas_de_usuarios(lang, desligado, &[]).join("\n");
@@ -2060,6 +2081,8 @@ fn o_status_e_o_users_dizem_o_acesso_com_as_mesmas_linhas() {
         enabled: true,
         autorizados: 2,
         donos: 1,
+        admissao: Admission::Restricted,
+        default: Alcance::CHAT,
     };
     let compartilhadas = acesso::linhas_de_acesso(Lang::Pt, a);
     let do_status = access_lines(Lang::Pt, true, Some(7), Some(a));
@@ -2070,8 +2093,8 @@ fn o_status_e_o_users_dizem_o_acesso_com_as_mesmas_linhas() {
     }
     assert_eq!(
         compartilhadas.len(),
-        2,
-        "com gente autorizada nao ha aviso: {compartilhadas:?}"
+        3,
+        "canal, contagens e admissao (#1399); com gente autorizada nao ha aviso: {compartilhadas:?}"
     );
 }
 
@@ -2193,7 +2216,8 @@ fn remove_casa_pela_chave_do_portao_e_sai_das_duas_listas() {
         None,
     );
 
-    let (fora, depois) = remover(loader, "5531999998888").expect("remove");
+    let (fora, gravada) = remover(loader, "5531999998888").expect("remove");
+    let depois = acesso_da_config(&gravada);
     assert_eq!((fora.de_allow, fora.de_owners), (1, 1));
     assert!(fora.era_dono());
     assert!(lista(&ctx, "allow").is_empty());
@@ -2216,7 +2240,8 @@ fn remover_numa_config_sem_a_secao_nao_cria_nem_escreve() {
     let loader = ctx.loader.as_ref().expect("loader");
     loader.ensure_dirs().expect("dirs");
 
-    let (fora, depois) = remover(loader, NUMERO).expect("remove");
+    let (fora, gravada) = remover(loader, NUMERO).expect("remove");
+    let depois = acesso_da_config(&gravada);
     assert_eq!(fora.total(), 0);
     assert_eq!(depois.autorizados, 0);
     assert!(secao_de(&ctx).is_none());
@@ -2390,7 +2415,8 @@ fn promover_grava_em_owners_e_e_idempotente() {
         Some(true),
     );
 
-    let (promovido, depois) = promover(loader, NUMERO).expect("promover");
+    let (promovido, gravada) = promover(loader, NUMERO).expect("promover");
+    let depois = acesso_da_config(&gravada);
     assert_eq!(
         promovido,
         Promovido::Novo {
@@ -2427,7 +2453,8 @@ fn promover_quem_nao_estava_autorizado_avisa_que_deu_acesso() {
     let loader = ctx.loader.as_ref().expect("loader");
     grava_config(&ctx, pod(), None, None);
 
-    let (promovido, depois) = promover(loader, NUMERO).expect("promover");
+    let (promovido, gravada) = promover(loader, NUMERO).expect("promover");
+    let depois = acesso_da_config(&gravada);
     assert_eq!(
         promovido,
         Promovido::Novo {
@@ -2458,7 +2485,8 @@ fn rebaixar_preserva_o_acesso_movendo_a_entrada_para_allow() {
         Some(true),
     );
 
-    let (rebaixado, depois) = rebaixar(loader, NUMERO).expect("rebaixar");
+    let (rebaixado, gravada) = rebaixar(loader, NUMERO).expect("rebaixar");
+    let depois = acesso_da_config(&gravada);
     assert_eq!(
         rebaixado,
         Rebaixado::Feito {
@@ -2514,7 +2542,8 @@ fn rebaixar_copia_a_entrada_como_ela_estava_gravada() {
     );
     assert_eq!(lista(&ctx, "owners"), vec![LID.to_string()]);
 
-    let (rebaixado, depois) = rebaixar(loader, LID).expect("rebaixar");
+    let (rebaixado, gravada) = rebaixar(loader, LID).expect("rebaixar");
+    let depois = acesso_da_config(&gravada);
     assert_eq!(
         rebaixado,
         Rebaixado::Feito {
@@ -2540,7 +2569,8 @@ fn rebaixar_quem_ja_estava_em_allow_nao_duplica_a_entrada() {
         None,
     );
 
-    let (rebaixado, depois) = rebaixar(loader, "553199998888").expect("rebaixar");
+    let (rebaixado, gravada) = rebaixar(loader, "553199998888").expect("rebaixar");
+    let depois = acesso_da_config(&gravada);
     assert_eq!(
         rebaixado,
         Rebaixado::Feito {
@@ -2561,7 +2591,8 @@ fn rebaixar_quem_nao_e_dono_nao_escreve_nada() {
     let loader = ctx.loader.as_ref().expect("loader");
     loader.ensure_dirs().expect("dirs");
 
-    let (rebaixado, depois) = rebaixar(loader, NUMERO).expect("rebaixar");
+    let (rebaixado, gravada) = rebaixar(loader, NUMERO).expect("rebaixar");
+    let depois = acesso_da_config(&gravada);
     assert_eq!(rebaixado, Rebaixado::NaoEra);
     assert_eq!(depois.autorizados, 0);
     assert!(secao_de(&ctx).is_none());
@@ -3279,28 +3310,27 @@ fn config_gravada(ctx: &Context) -> garraia_config::AppConfig {
         .expect("load")
 }
 
-/// O resumo final do `link` e o resumo do `users`, com um cabecalho por cima:
-/// o corpo e literalmente [`linhas_de_usuarios`], e nao uma segunda
-/// formatacao do mesmo estado — duas telas com a propria copia divergem na
-/// primeira que ganhar um campo (o defeito que a #1393 ja pagou no `status`).
+/// O resumo final do `link` e o do `access`, com um cabecalho por cima: o
+/// corpo e literalmente [`linhas_da_politica`], e nao uma segunda formatacao
+/// do mesmo estado — duas telas com a propria copia divergem na primeira que
+/// ganhar um campo (o defeito que a #1393 ja pagou no `status`).
 #[test]
-fn o_resumo_final_do_link_repete_as_linhas_do_users() {
+fn o_resumo_final_do_link_repete_as_linhas_do_access() {
     let config = config_com_linked(
         None,
         serde_json::json!({ "allow": [NUMERO, LID], "owners": ["5511977776666"] }),
     );
-    let a = acesso_da_config(&config);
-    let usuarios = listar(&config);
+    let perfil = garraia_config::ExecutionProfile::Standard;
     for lang in [Lang::Pt, Lang::En] {
-        let resumo = resumo_de_acesso(lang, a, &usuarios);
+        let resumo = resumo_de_acesso(lang, &config, perfil);
         assert_eq!(
             resumo[1..],
-            linhas_de_usuarios(lang, a, &usuarios)[..],
-            "o corpo do resumo tem de ser o do `users`"
+            linhas_da_politica(lang, &config, perfil, false)[..],
+            "o corpo do resumo tem de ser o do `access`"
         );
         let cabecalho = &resumo[0];
         assert!(
-            cabecalho.contains("whatsapp users"),
+            cabecalho.contains("whatsapp access"),
             "o cabecalho diz onde rever isto depois: {cabecalho}"
         );
         let texto = resumo.join("\n");
@@ -3310,7 +3340,7 @@ fn o_resumo_final_do_link_repete_as_linhas_do_users() {
             "{texto}"
         );
         assert!(
-            texto.contains("6666") && texto.contains("8888") && texto.contains("8765"),
+            texto.contains("…6666") && texto.contains("…8888") && texto.contains("…8765"),
             "quem esta autorizado aparece: {texto}"
         );
         assert!(
@@ -3319,35 +3349,34 @@ fn o_resumo_final_do_link_repete_as_linhas_do_users() {
         );
     }
     assert_ne!(
-        resumo_de_acesso(Lang::Pt, a, &usuarios)[0],
-        resumo_de_acesso(Lang::En, a, &usuarios)[0]
+        resumo_de_acesso(Lang::Pt, &config, perfil)[0],
+        resumo_de_acesso(Lang::En, &config, perfil)[0]
     );
 }
 
-/// Esta fatia da #1429 so MOSTRA o que o portao ja aplica. Modo de admissao
-/// (restrito/aberto) e nivel de acesso (Chat/Read/Full/Write) dependem da
-/// #1388/#1390/#1392 e nao existem no canal: prometer qualquer um dos dois na
-/// tela seria dizer ao operador que ha um controle que ninguem aplica.
+/// Com a Access Policy v2 no canal (ADR 0025), o resumo final diz a admissao
+/// e o nivel de cada um — o que a fatia anterior da #1429 nao podia
+/// prometer, porque o portao ainda nao aplicava nenhum dos dois.
 #[test]
-fn o_resumo_final_nao_promete_modo_nem_nivel_de_acesso() {
-    let config = config_com_linked(None, serde_json::json!({ "allow": [NUMERO] }));
-    let a = acesso_da_config(&config);
-    let usuarios = listar(&config);
+fn o_resumo_final_mostra_admissao_e_nivel() {
+    let config = config_com_linked(
+        None,
+        serde_json::json!({
+            "allow": [NUMERO],
+            "access": { "admission": "open", "users": { NUMERO: { "level": "read" } } }
+        }),
+    );
     for lang in [Lang::Pt, Lang::En] {
-        let texto = resumo_de_acesso(lang, a, &usuarios)
-            .join("\n")
-            .to_lowercase();
-        for palavra in ["restrit", "restrict", "aberto", "open ", "read/", "/write"] {
-            assert!(
-                !texto.contains(palavra),
-                "a fatia nao inventa politica de acesso ({palavra}):\n{texto}"
-            );
-        }
+        let texto =
+            resumo_de_acesso(lang, &config, garraia_config::ExecutionProfile::Standard).join("\n");
+        assert!(texto.contains("open"), "{texto}");
+        assert!(texto.contains("read"), "{texto}");
+        assert!(texto.contains("…8888"), "{texto}");
     }
 }
 
 /// Fim do wizard com dono: o resumo mostra o dono, as contagens e os quatro
-/// ultimos digitos — e e exatamente o que o `users` diria daquela config.
+/// ultimos digitos — e e exatamente o que o `access` diria daquela config.
 #[test]
 fn pos_link_termina_mostrando_o_dono_e_as_contagens() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3361,13 +3390,14 @@ fn pos_link_termina_mostrando_o_dono_e_as_contagens() {
     let config = config_gravada(&ctx);
     assert_eq!(
         pos.resumo,
-        resumo_de_acesso(Lang::Pt, acesso_da_config(&config), &listar(&config)),
-        "o resumo final e o do `users` sobre a config recem-gravada"
+        resumo_de_acesso(Lang::Pt, &config, config.execution.perfil()),
+        "o resumo final e o do `access` sobre a config recem-gravada"
     );
     let texto = pos.resumo.join("\n");
     assert!(texto.contains("Autorizados: 1 · Donos: 1"), "{texto}");
     assert!(texto.contains("dono"), "o dono aparece: {texto}");
-    assert!(texto.contains("terminado em 8888"), "{texto}");
+    assert!(texto.contains("…8888"), "{texto}");
+    assert!(texto.contains("isolated-pod"), "o perfil aparece: {texto}");
     assert!(
         !texto.contains(NUMERO),
         "nunca a identidade inteira: {texto}"
@@ -3398,16 +3428,16 @@ fn pos_link_mostra_no_resumo_quem_ja_estava_autorizado() {
     let texto = pos.resumo.join("\n");
     assert!(texto.contains("Autorizados: 1 · Donos: 0"), "{texto}");
     assert!(
-        texto.contains("autorizado") && texto.contains("terminado em 0001"),
+        texto.contains("usuario") && texto.contains("…0001"),
         "quem ja estava la aparece: {texto}"
     );
     assert!(!texto.contains("5511900000001"), "{texto}");
 }
 
-/// Portao vazio: o resumo diz "Autorizados: 0" e termina no aviso — que e
-/// palavra por palavra a linha final, entao ela NAO sai duas vezes.
+/// Portao vazio: o resumo diz "Autorizados: 0" e o fecho termina no aviso
+/// com o comando que resolve — uma vez so.
 #[test]
-fn pos_link_com_o_portao_vazio_nao_repete_o_aviso_no_fecho() {
+fn pos_link_com_o_portao_vazio_fecha_com_o_aviso_uma_vez() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ctx = ctx_in(&dir, true);
     grava_config(&ctx, None, Some(serde_json::json!({})), Some(true));
@@ -3417,10 +3447,13 @@ fn pos_link_com_o_portao_vazio_nao_repete_o_aviso_no_fecho() {
     assert_eq!(pos.autorizados, 0);
     let texto = pos.resumo.join("\n");
     assert!(texto.contains("Autorizados: 0 · Donos: 0"), "{texto}");
-    assert!(texto.contains("whatsapp allow <"), "{texto}");
 
     let fecho = closing_lines(Lang::Pt, &pos.resumo, 0, None, false);
-    assert_eq!(fecho, pos.resumo, "o resumo ja E a ultima palavra");
+    assert_eq!(
+        fecho.last(),
+        Some(&acesso::aviso_ninguem_autorizado(Lang::Pt)),
+        "a ultima palavra e o aviso com o comando que resolve"
+    );
     assert_eq!(
         fecho
             .iter()
@@ -3533,6 +3566,8 @@ fn o_status_mostra_contagens_e_avisa_o_portao_vazio_sem_numeros() {
         enabled: true,
         autorizados: 0,
         donos: 0,
+        admissao: Admission::Restricted,
+        default: Alcance::CHAT,
     };
     let linhas = access_lines(Lang::Pt, true, Some(7), Some(vazio)).join("\n");
     assert!(linhas.contains("Autorizados: 0"), "{linhas}");
@@ -3723,4 +3758,46 @@ fn o_link_de_verdade_num_upgrade_preserva_o_allow() {
         secao.settings.get("reply_in_groups"),
         Some(&serde_json::json!(true))
     );
+}
+
+// ADR 0025: `garraia whatsapp access ...`.
+mod politica;
+
+/// #1399: o `status` diz se um numero fora da lista entra, e com o que — nas
+/// duas linguas e no `--json`, com as chaves da secao `access`.
+#[test]
+fn o_status_diz_a_admissao_e_o_default_do_desconhecido() {
+    let restrito = Acesso {
+        enabled: true,
+        autorizados: 2,
+        donos: 1,
+        admissao: Admission::Restricted,
+        default: Alcance::CHAT,
+    };
+    let pt = acesso::linhas_de_acesso(Lang::Pt, restrito).join("\n");
+    assert!(pt.contains("Admissão: restrita"), "{pt}");
+    let en = acesso::linhas_de_acesso(Lang::En, restrito).join("\n");
+    assert!(en.contains("Admission: restricted"), "{en}");
+
+    let aberto = Acesso {
+        admissao: Admission::Open,
+        autorizados: 0,
+        ..restrito
+    };
+    let pt = acesso::linhas_de_acesso(Lang::Pt, aberto).join("\n");
+    assert!(pt.contains("Admissão: ABERTA"), "{pt}");
+    assert!(
+        pt.contains("chat"),
+        "o default do desconhecido aparece: {pt}"
+    );
+    assert!(
+        !pt.contains("Ninguém autorizado") && !pt.contains("ninguem autorizado"),
+        "com a admissao aberta o aviso de portao vazio nao cabe: {pt}"
+    );
+    let doc = acesso::json_de_usuarios(aberto, &[]);
+    assert_eq!(doc["admission"], "open");
+    assert_eq!(doc["default_access"]["level"], "chat");
+    assert_eq!(doc["default_access"]["write"], false);
+    let doc = acesso::json_de_usuarios(restrito, &[]);
+    assert_eq!(doc["admission"], "restricted");
 }

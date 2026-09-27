@@ -221,6 +221,24 @@ impl DeviceReadTool {
 
 #[async_trait]
 impl Tool for DeviceReadTool {
+    /// #1425: sem dispositivo registrado a acao nao tem alvo — fica fora da
+    /// lista do modelo, com o motivo; `device_list` continua, porque e ela
+    /// que explica isso.
+    fn disponibilidade(&self) -> crate::tools::Disponibilidade {
+        if self.config.registry.is_empty() {
+            crate::tools::Disponibilidade::indisponivel(
+                "no_devices",
+                "nenhum dispositivo registrado: adapters de hardware registram dispositivos no boot.",
+                Some(
+                    "Configure um adapter (`docs/hardware-skills.md`) e reinicie; `device_list` mostra o que existe."
+                        .to_string(),
+                ),
+            )
+        } else {
+            crate::tools::Disponibilidade::Disponivel
+        }
+    }
+
     fn name(&self) -> &str {
         "device_read"
     }
@@ -350,6 +368,24 @@ impl DeviceExecuteTool {
 
 #[async_trait]
 impl Tool for DeviceExecuteTool {
+    /// #1425: sem dispositivo registrado a acao nao tem alvo — fica fora da
+    /// lista do modelo, com o motivo; `device_list` continua, porque e ela
+    /// que explica isso.
+    fn disponibilidade(&self) -> crate::tools::Disponibilidade {
+        if self.config.registry.is_empty() {
+            crate::tools::Disponibilidade::indisponivel(
+                "no_devices",
+                "nenhum dispositivo registrado: adapters de hardware registram dispositivos no boot.",
+                Some(
+                    "Configure um adapter (`docs/hardware-skills.md`) e reinicie; `device_list` mostra o que existe."
+                        .to_string(),
+                ),
+            )
+        } else {
+            crate::tools::Disponibilidade::Disponivel
+        }
+    }
+
     fn name(&self) -> &str {
         "device_execute"
     }
@@ -527,6 +563,34 @@ impl Tool for DeviceExecuteTool {
 
 #[cfg(test)]
 mod tests {
+    /// #1425: registry vazio = `device_read`/`device_execute` indisponiveis
+    /// (`no_devices`), `device_list` disponivel — e ela que explica.
+    #[test]
+    fn sem_dispositivo_read_e_execute_sao_indisponiveis_e_list_fica() {
+        use crate::tools::Disponibilidade;
+        let config = std::sync::Arc::new(DeviceToolsConfig::new(std::sync::Arc::new(
+            garraia_hardware::DeviceRegistry::new(),
+        )));
+        let read = DeviceReadTool::new(std::sync::Arc::clone(&config));
+        let exec = DeviceExecuteTool::new(std::sync::Arc::clone(&config));
+        let list = DeviceListTool::new(std::sync::Arc::clone(&config));
+        assert!(list.disponibilidade().e_disponivel());
+        for d in [read.disponibilidade(), exec.disponibilidade()] {
+            match d {
+                Disponibilidade::Indisponivel {
+                    codigo,
+                    motivo,
+                    remediacao,
+                } => {
+                    assert_eq!(codigo, "no_devices");
+                    assert!(motivo.contains("nenhum dispositivo"), "{motivo}");
+                    assert!(remediacao.is_some());
+                }
+                Disponibilidade::Disponivel => panic!("sem dispositivo nao pode estar disponivel"),
+            }
+        }
+    }
+
     use super::*;
     use crate::tools::approval::ToolApproval;
     use garraia_hardware::{Capability, MockDevice, RiskClass};

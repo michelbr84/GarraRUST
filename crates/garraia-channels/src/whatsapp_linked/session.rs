@@ -21,7 +21,9 @@
 //! alternativa era o texto claro do Hermes, e porque exigir passphrase faria o
 //! caminho feliz de `garra whatsapp` pedir um segredo que o usuario ainda nao
 //! tem. `garra whatsapp status` **avisa** quando esta nesse modo — o aviso e
-//! parte do contrato, nao enfeite.
+//! parte do contrato, nao enfeite. Desde a #1431 o `link` tambem pergunta
+//! ANTES de a chave existir, e para isso existe [`SessionKey::plan`]: o que o
+//! `resolve` faria, dito sem criar arquivo nem derivar nada.
 //!
 //! # Formato em disco
 //!
@@ -35,6 +37,10 @@
 //!
 //! O AAD e a string de versao do formato: um arquivo de outra versao nao abre
 //! por acidente, ele falha a autenticacao.
+//!
+//! Os modos acima valem para o que ESTE store cria. O que chega de fora — o
+//! `recusas-lid.json` do gateway, um arquivo restaurado de backup — e
+//! conferido e apertado por [`super::permissions`], que diz o que achou.
 //!
 //! # Escrita atomica
 //!
@@ -232,6 +238,21 @@ touches disk.",
     }
 }
 
+/// O que [`SessionKey::resolve`] faria num diretorio — dito sem fazer.
+///
+/// Ver [`SessionKey::plan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyPlan {
+    /// Ha passphrase: a chave sera derivada dela e nenhuma chave toca o disco.
+    /// `key_file_present` diz se sobrou uma `session.key` de antes — que o
+    /// `resolve` deste modo nao le, e que so abre o que foi cifrado com ela.
+    VaultPassphrase { key_file_present: bool },
+    /// Sem passphrase, e ja ha `session.key`: ela sera reusada.
+    ExistingKeyFile,
+    /// Sem passphrase e sem `session.key`: uma nova nasce no primeiro uso.
+    NewKeyFile,
+}
+
 /// Chave simetrica de 32 B. Zerada no drop.
 pub struct SessionKey {
     bytes: Zeroizing<[u8; KEY_LEN]>,
@@ -252,6 +273,26 @@ impl SessionKey {
         self.origin
     }
 
+    /// O que [`SessionKey::resolve`] faria em `dir` — sem fazer: nao cria o
+    /// diretorio, nao cria `session.key` e nao deriva nada.
+    ///
+    /// # Por que existe (#1431)
+    ///
+    /// `resolve` e cara num braco (PBKDF2 600k) e tem efeito no outro (cria
+    /// `session.key`). O `link` precisa saber qual dos dois vai acontecer
+    /// ANTES de perguntar como proteger a chave: quem escolhe configurar a
+    /// passphrase e sair nao pode deixar para tras uma `session.key` que o
+    /// proprio `link` criou um instante antes — e ninguem precisa pagar a
+    /// derivacao para imprimir uma frase.
+    pub fn plan(dir: &Path, passphrase: Option<&str>) -> KeyPlan {
+        let key_file_present = dir.join(KEY_FILE).is_file();
+        match usable_passphrase(passphrase) {
+            Some(_) => KeyPlan::VaultPassphrase { key_file_present },
+            None if key_file_present => KeyPlan::ExistingKeyFile,
+            None => KeyPlan::NewKeyFile,
+        }
+    }
+
     /// Resolve a chave do diretorio `dir`, criando o que faltar.
     ///
     /// `passphrase` e injetada pelo chamador (a CLI passa
@@ -261,8 +302,8 @@ impl SessionKey {
     pub fn resolve(dir: &Path, passphrase: Option<&str>) -> Result<Self, SessionError> {
         fs_perms::create_secret_dir(dir).map_err(|e| SessionError::io(dir, e))?;
 
-        match passphrase {
-            Some(pass) if !pass.is_empty() => {
+        match usable_passphrase(passphrase) {
+            Some(pass) => {
                 let salt = load_or_create_salt(dir)?;
                 let mut bytes = Zeroizing::new([0u8; KEY_LEN]);
                 // `NonZeroU32::new(...).expect(...)` seria um panic em producao;
@@ -282,7 +323,7 @@ impl SessionKey {
                     origin: KeyOrigin::VaultPassphrase,
                 })
             }
-            _ => {
+            None => {
                 let bytes = load_or_create_key_file(dir)?;
                 Ok(Self {
                     bytes,
@@ -297,6 +338,17 @@ impl SessionKey {
             .map_err(|_| SessionError::Crypto("chave AES invalida".into()))?;
         Ok(LessSafeKey::new(unbound))
     }
+}
+
+/// A passphrase que conta: presente e nao vazia — a mesma regra de
+/// `garraia_security::vault_passphrase_from_env`.
+///
+/// Funcao, e nao um guard repetido, porque [`SessionKey::resolve`] e
+/// [`SessionKey::plan`] tem de decidir IGUAL: um plano que dissesse
+/// "passphrase" para a string vazia enquanto o `resolve` cria `session.key`
+/// seria a CLI prometendo o que o disco desmente.
+fn usable_passphrase(passphrase: Option<&str>) -> Option<&str> {
+    passphrase.filter(|p| !p.is_empty())
 }
 
 /// Representacao em disco do blob cifrado.
@@ -613,6 +665,11 @@ fn load_or_create_salt(dir: &Path) -> Result<Vec<u8>, SessionError> {
     if path.is_file() {
         let salt = std::fs::read(&path).map_err(|e| SessionError::io(&path, e))?;
         if salt.len() == SALT_LEN {
+            // O mesmo cuidado da `session.key`: um salt que chegou frouxo
+            // (backup, `cp`) sai 0600 do primeiro toque. Ele nao e segredo,
+            // mas o layout promete 0600 para todo arquivo do diretorio
+            // (#1431), e uma excecao silenciosa e a que ninguem lembra.
+            let _ = fs_perms::harden_secret_file(&path);
             return Ok(salt);
         }
         return Err(SessionError::Format(format!(
@@ -1092,6 +1149,105 @@ mod tests {
         assert_eq!(mode(store.blob_path()), 0o600, "session.enc");
         assert_eq!(mode(store.archive_path()), 0o600, "session.enc.prev");
         assert_eq!(mode(store.key_path()), 0o600, "session.key");
+    }
+
+    /// O salt nao e segredo, mas o layout promete 0600 para todo arquivo do
+    /// diretorio. Um salt que chegou frouxo (backup, `cp`) sai 0600 do
+    /// primeiro `resolve` — o mesmo cuidado que a `session.key` ja tinha.
+    #[cfg(unix)]
+    #[test]
+    fn a_loose_salt_is_tightened_when_it_is_read() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().join("wa"));
+        SessionKey::resolve(store.dir(), Some("sintetica")).expect("cria o salt");
+        std::fs::set_permissions(store.salt_path(), std::fs::Permissions::from_mode(0o644))
+            .expect("afrouxa");
+
+        SessionKey::resolve(store.dir(), Some("sintetica")).expect("le o salt");
+
+        let modo = std::fs::metadata(store.salt_path())
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(format!("{modo:o}"), "600", "session.salt");
+    }
+
+    /// **O plano nao toca o disco.** E a razao de ele existir: o `link`
+    /// pergunta como proteger a chave ANTES de ela existir, e quem desiste
+    /// para configurar a passphrase nao pode sair com uma `session.key` nova.
+    #[test]
+    fn the_plan_creates_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let conta = dir.path().join("whatsapp").join("default");
+
+        assert_eq!(SessionKey::plan(&conta, None), KeyPlan::NewKeyFile);
+        assert_eq!(
+            SessionKey::plan(&conta, Some("sintetica")),
+            KeyPlan::VaultPassphrase {
+                key_file_present: false
+            }
+        );
+        assert!(!conta.exists(), "planejar nao cria diretorio nem chave");
+    }
+
+    /// O plano diz o que o `resolve` faz, em cada uma das quatro situacoes —
+    /// inclusive a passphrase VAZIA, que conta como ausente nos dois.
+    #[test]
+    fn the_plan_agrees_with_what_resolve_then_does() {
+        let casos: [(Option<&str>, bool, KeyPlan, KeyOrigin); 5] = [
+            (None, false, KeyPlan::NewKeyFile, KeyOrigin::RandomKeyFile),
+            (
+                None,
+                true,
+                KeyPlan::ExistingKeyFile,
+                KeyOrigin::RandomKeyFile,
+            ),
+            (
+                Some(""),
+                false,
+                KeyPlan::NewKeyFile,
+                KeyOrigin::RandomKeyFile,
+            ),
+            (
+                Some("sintetica"),
+                false,
+                KeyPlan::VaultPassphrase {
+                    key_file_present: false,
+                },
+                KeyOrigin::VaultPassphrase,
+            ),
+            (
+                Some("sintetica"),
+                true,
+                KeyPlan::VaultPassphrase {
+                    key_file_present: true,
+                },
+                KeyOrigin::VaultPassphrase,
+            ),
+        ];
+        for (passphrase, com_arquivo, plano, origem) in casos {
+            let dir = tempdir().expect("tempdir");
+            let conta = dir.path().join("wa");
+            if com_arquivo {
+                SessionKey::resolve(&conta, None).expect("cria session.key");
+            }
+
+            assert_eq!(
+                SessionKey::plan(&conta, passphrase),
+                plano,
+                "passphrase {:?}, session.key em disco: {com_arquivo}",
+                passphrase.map(str::len)
+            );
+            let chave = SessionKey::resolve(&conta, passphrase).expect("resolve");
+            assert_eq!(
+                chave.origin(),
+                origem,
+                "o resolve tem de fazer o que o plano disse"
+            );
+        }
     }
 
     #[test]

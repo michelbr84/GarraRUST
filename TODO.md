@@ -5,12 +5,75 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-22 (America/New_York)
+**Atualizado:** 2026-09-26 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Concluído em 2026-09-26 — trem v0.4.6: acesso ao WhatsApp de ponta a ponta, honestidade do runtime e dogfood
+
+Ciclo de 26 issues (P0/P1 quase todo) fechado num único trem de merge (PR #1510,
+branch `train/v046-f`), no padrão 2026-09-20: PRs carregadas por merge commits
+para que o GitHub marque cada uma como merged com um único ciclo de CI.
+
+- **Acesso ao WhatsApp de ponta a ponta.** Access Policy v2 com modos
+  explícitos (#1388), acesso default de desconhecidos pela CLI (#1399), página
+  WhatsApp Access com preview antes de confirmar sobre o motor único (#1402),
+  Test WhatsApp no console com o motor do `garraia doctor whatsapp` (#1420),
+  telefone validado igual na API admin e na CLI (#1403) — PRs #1505/#1511.
+  Matriz por principal ganha web e memória (#1411, PR #1507); audit dos
+  comandos legados de permissão e o wizard oferecendo política logo após o
+  pareamento (#1414/#1429, PR #1506); grupos ligados/desligados a quente valem
+  já e políticas independentes por grupo com prova de concorrência
+  (#1412/#1423, PR #1512); `access.groups.enabled` declarado vence o
+  `reply_in_groups` legado (#1501, PR #1509).
+- **Honestidade do runtime.** Registro de capacidades como fonte única para
+  `garra_status`, `/api/diagnostics` e o modelo (#1381 via PR #1508,
+  exercitado pela #1505); o registro diz quando falta contexto e relata
+  raiz/repositório (#1416, PR #1508); system prompt impede inferir ausência a
+  partir de invisibilidade e `garra_status` diz a verdade sobre raízes
+  (#1387); `unify workspace policy` — um só jail por sessão governa file tools
+  nativas e MCP filesystem (#1383).
+- **Confiabilidade.** Circuit breaker por sessão/ferramenta no único ponto de
+  despacho — falha determinística pausa até o fim do turno, timeout abre
+  cooldown com backoff exponencial 15s→120s, erro genérico só após três
+  iguais (#1417); registro local de confiabilidade de tools/MCP/canais, nada
+  sai da máquina (#1438, fatias do trem); ledger CodeQL renumerado por
+  conteúdo (#1504, PR #1504).
+- **Dogfood como gate.** `docs/releasing.md` §1.5: matriz D1–D10 obrigatória
+  antes de todo tag (#1439); automação Linux de D1/D9
+  (`scripts/dogfood/linux-clean-install.sh`, #1426); fatia de dados da
+  retenção de memória/ledger (`garraia-config::retention` + `garraia-db::
+  retention`, #1436); cofre no link — plano da chave sem efeito colateral e
+  aperto dos modos do diretório da conta (#1431); teste Playwright do
+  WhatsApp Doctor semeando admin serial.
+- **Página dedicada em vez de schema genérico.** #1432 resolvida pela página
+  WhatsApp Access (o mecanismo genérico de schema no Settings Registry volta
+  quando houver segunda superfície que o precise).
+
+### Issues fechadas nesta rodada
+
+#1381, #1383, #1387, #1388, #1399, #1402, #1403, #1411, #1412, #1414, #1416,
+#1417, #1420, #1423, #1426, #1428, #1429, #1431, #1432, #1436, #1438, #1439.
+
+### Ficam abertas — decisão de escopo para o ciclo seguinte
+
+| Issue | Estado |
+| --- | --- |
+| #1433 (página global Agents & Permissions) | Padrão provado pela página WhatsApp Access; generalização depende de decisão de escopo |
+| #1434 (presets de permissão) | Base pronta: modos + Access Policy v2 (#1388) |
+| #1435 (import/export de políticas) | Política v2 já vive em arquivo próprio separado do cofre |
+
+### Fatias adiadas dentro de issues fechadas (backlog nomeado)
+
+| De | O que falta |
+| --- | --- |
+| #1431 | UX do wizard consumindo o plano da chave (`SessionKey::plan`) |
+| #1436 | Página + `PATCH /admin/api/retention` do console (a fatia de dados já delega para os mesmos achados) |
+| #1438 | Endpoint autenticado que expõe o snapshot do registro |
+| #1428 | Cenários comportamentais com modelo real — linha D10 do gate, manual por design |
 
 ## Concluído em 2026-09-22 — release v0.4.5: bash fail-closed, aprovação nos canais, onboarding do WhatsApp
 

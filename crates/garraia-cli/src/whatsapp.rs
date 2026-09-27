@@ -47,8 +47,11 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 
 use crate::wizard::prompts::Prompter;
 
-mod acesso;
+pub(crate) mod acesso;
+/// ADR 0025: `garraia whatsapp access ...` (#1396-#1401, #1413, #1414).
+pub(crate) mod politica;
 pub use acesso::{Pedido, PedidoDePapel, PedidoRemocao};
+pub use politica::ComandoDeAcesso;
 
 /// De quantos em quantos segundos o `connecting` pulsa na tela.
 const CONNECTING_PULSE_SECS: u64 = 5;
@@ -87,6 +90,9 @@ pub enum Action {
     /// `unowner <numero> [--yes]`: tira o papel de dono SEM tirar o acesso;
     /// o ultimo dono exige confirmacao (#1395).
     Unowner(PedidoDePapel),
+    /// `access ...`, `level`, `write`, `block`, `unblock`: a Access Policy v2
+    /// (ADR 0025), pelo motor do gateway.
+    Access(ComandoDeAcesso),
     Cloud,
     Status,
     Logout,
@@ -134,7 +140,7 @@ impl Lang {
 }
 
 /// Escolhe entre as duas versoes de uma frase.
-fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
+pub(crate) fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
     match lang {
         Lang::Pt => pt,
         Lang::En => en,
@@ -148,7 +154,7 @@ fn t(lang: Lang, pt: &'static str, en: &'static str) -> &'static str {
 /// `cargo install`, `install.sh` sem o alias — manda o usuario rodar um
 /// comando que nao existe. A instrucao tem de nomear o binario que esta na
 /// maquina, e um teste varre este arquivo atras do literal antigo.
-fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
+pub(crate) fn tb(lang: Lang, pt: &'static str, en: &'static str) -> String {
     t(lang, pt, en).replace("{bin}", &crate::binario::nome())
 }
 
@@ -254,15 +260,19 @@ impl Context {
     /// inalcancavel hoje. Ele e propagado assim mesmo: `unwrap()` em codigo de
     /// producao e proibido, e o dia em que a CLI aprender a escolher conta e
     /// exatamente o dia em que este erro passa a valer.
-    fn store(&self) -> Result<SessionStore, garraia_channels::whatsapp_linked::SessionError> {
+    pub(crate) fn store(
+        &self,
+    ) -> Result<SessionStore, garraia_channels::whatsapp_linked::SessionError> {
         SessionStore::for_data_dir(&self.data_dir, DEFAULT_ACCOUNT)
     }
 
-    fn bridge_dir(&self) -> PathBuf {
+    pub(crate) fn bridge_dir(&self) -> PathBuf {
         self.data_dir.join("whatsapp").join("bridge")
     }
 
-    fn key(&self) -> Result<SessionKey, garraia_channels::whatsapp_linked::SessionError> {
+    pub(crate) fn key(
+        &self,
+    ) -> Result<SessionKey, garraia_channels::whatsapp_linked::SessionError> {
         SessionKey::resolve(self.store()?.dir(), self.vault_passphrase.as_deref())
     }
 }
@@ -285,6 +295,7 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
         Action::Remove(pedido) => acesso::remove(ctx, prompter, &pedido),
         Action::Owner(pedido) => acesso::owner(ctx, prompter, &pedido),
         Action::Unowner(pedido) => acesso::unowner(ctx, prompter, &pedido),
+        Action::Access(comando) => politica::access(ctx, prompter, &comando),
         Action::Cloud => cloud(ctx, prompter),
     }
 }
@@ -316,8 +327,8 @@ pub fn non_interactive_hint(lang: Lang) -> String {
     ));
     out.push_str(&tb(
         lang,
-        "Também existem: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <número> | {bin} whatsapp remove <número> | {bin} whatsapp owner <número> | {bin} whatsapp unowner <número> | {bin} whatsapp restore | {bin} whatsapp logout",
-        "Also available: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp allow <number> | {bin} whatsapp remove <number> | {bin} whatsapp owner <number> | {bin} whatsapp unowner <number> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Também existem: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp access | {bin} whatsapp allow <número> | {bin} whatsapp level <número> chat|read|full | {bin} whatsapp write <número> on|off | {bin} whatsapp block <número> | {bin} whatsapp remove <número> | {bin} whatsapp owner <número> | {bin} whatsapp unowner <número> | {bin} whatsapp restore | {bin} whatsapp logout",
+        "Also available: {bin} whatsapp status | {bin} whatsapp users | {bin} whatsapp access | {bin} whatsapp allow <number> | {bin} whatsapp level <number> chat|read|full | {bin} whatsapp write <number> on|off | {bin} whatsapp block <number> | {bin} whatsapp remove <number> | {bin} whatsapp owner <number> | {bin} whatsapp unowner <number> | {bin} whatsapp restore | {bin} whatsapp logout",
     ));
     out
 }
@@ -1851,18 +1862,17 @@ fn after_pairing(
     0
 }
 
-/// O fecho do `link`: o resumo de acesso (#1429) e a linha final. Pura, para
-/// o teste.
+/// O fecho do `link`: o resumo da politica (#1429) e a linha final. Pura,
+/// para o teste.
 ///
-/// O wizard nao sai mais so com "pronto": antes da ultima linha ele mostra o
-/// acesso que fica valendo, nas MESMAS linhas do `whatsapp users` (ver
+/// O wizard nao sai mais so com "pronto": antes da ultima linha ele mostra a
+/// politica que fica valendo, nas MESMAS linhas do `whatsapp access` (ver
 /// [`acesso::resumo_de_acesso`]).
 ///
-/// Com o portao vazio o resumo ja **termina** no aviso de "ninguem
-/// autorizado" (ver [`acesso::linhas_de_acesso`]), que e palavra por palavra
-/// o que [`final_line`] diria ali — e o mesmo paragrafo duas vezes seguidas
-/// faz o operador duvidar de qual dos dois e o estado. Entao a linha final so
-/// sai quando acrescenta alguma coisa.
+/// A linha final so sai quando acrescenta alguma coisa: se o resumo ja
+/// terminasse com o mesmo paragrafo (o aviso de "ninguem autorizado", que e
+/// palavra por palavra o que [`final_line`] diz com o portao vazio), repeti-lo
+/// faria o operador duvidar de qual dos dois e o estado.
 fn closing_lines(
     lang: Lang,
     resumo: &[String],

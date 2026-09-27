@@ -237,6 +237,7 @@ and installs `garraia` into `$PREFIX/bin` (on your PATH, no sudo):
 pkg install curl
 curl -fsSL https://garraia.org/install.sh | bash
 garraia doctor    # platform, dirs, config, providers, daemon — sysexits
+garraia doctor whatsapp   # the personal-WhatsApp path end to end: link, key, gateway, access, profile, workspace, MCP, provider
 garraia chat      # cloud provider, or --url http://PC-LAN:8080 for a LAN LLM
 ```
 

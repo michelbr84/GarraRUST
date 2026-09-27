@@ -7,6 +7,9 @@ pub mod execution;
 pub mod loader;
 pub mod model;
 pub mod provider_keys;
+/// #1436: politica de retencao (memoria × ledger de runs), dona das faixas
+/// que o `config check` e o `PATCH /admin/api/retention` cobram.
+pub mod retention;
 pub mod sandbox;
 pub mod watcher;
 

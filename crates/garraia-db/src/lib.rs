@@ -5,6 +5,8 @@ pub mod memory_store;
 pub mod migrations;
 pub mod project_store;
 pub mod recurrence;
+/// #1436: tamanho, previa e ultima limpeza da memoria e do ledger de runs.
+pub mod retention;
 pub mod session_store;
 pub mod sqlite_db;
 pub mod vector_store;
@@ -22,6 +24,7 @@ pub use memory_store::{
     MemoryRole, MemoryStore, NewMemoryEntry, RecallQuery, SessionContext,
 };
 pub use project_store::{DataRetentionRecord, Project, ProjectFile, ProjectTemplate};
+pub use retention::{CompactionPreview, LastCleanup, MemoryRetentionSnapshot, RunLedgerSnapshot};
 pub use session_store::{
     MobileUser, ScheduledTask, SessionStore, SessionSurfaces, StoredMessage, log_recovered_leases,
 };

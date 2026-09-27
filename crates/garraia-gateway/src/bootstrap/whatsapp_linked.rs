@@ -71,6 +71,17 @@ use crate::state::SharedState;
 use super::config::channel_gates;
 use super::execution::politica_de_execucao;
 
+// ADR 0025 §4: Access Policy v2 — principal, nivel, teto.
+/// #1419/#1420: o motor do `doctor whatsapp` — a tabela pura que a CLI e o
+/// card "Test WhatsApp" do Web Console rodam.
+pub mod doctor;
+pub mod numero;
+pub mod politica;
+pub mod rejeicoes;
+pub use politica::{
+    Admission, Alcance, EntradaDeUsuario, PoliticaDeAcesso, principal_do_turno, teto_do_principal,
+};
+
 /// Chave da secao de config. Vem do proprio canal para nao existir um segundo
 /// literal capaz de divergir do que a CLI escreve.
 pub const CONFIG_KEY: &str = garraia_channels::whatsapp_linked::CONFIG_KEY;
@@ -140,6 +151,11 @@ pub struct WhatsAppLinkedRuntime {
     /// (auth-free) mostra para o operador entender por que um numero que ele
     /// autorizou nao recebe resposta.
     recusas_lid: AtomicU64,
+    /// #1422: toda mensagem recusada, por motivo, com o final da identidade
+    /// e o instante — o que o Web Console mostra. Retencao em
+    /// [`rejeicoes`]; envenenado, recupera-se o interior (contagem de apoio,
+    /// nunca motivo de recusa).
+    rejeicoes: std::sync::Mutex<rejeicoes::Rejeicoes>,
 }
 
 impl Default for WhatsAppLinkedRuntime {
@@ -148,6 +164,7 @@ impl Default for WhatsAppLinkedRuntime {
             bridge: AtomicU8::new(view_to_u8(BridgeView::Unknown)),
             cancel: std::sync::Mutex::new(None),
             recusas_lid: AtomicU64::new(0),
+            rejeicoes: std::sync::Mutex::new(rejeicoes::Rejeicoes::default()),
         }
     }
 }
@@ -194,10 +211,44 @@ impl WhatsAppLinkedRuntime {
     }
 
     /// Conta mais uma recusa de `@lid` sem numero; devolve o total novo.
-    pub fn registrar_recusa_lid(&self) -> u64 {
+    /// Tambem entra em [`Self::rejeicoes`] como `unresolved_lid` (#1422).
+    pub fn registrar_recusa_lid(&self, identidade: &str) -> u64 {
+        self.registrar_rejeicao(rejeicoes::Motivo::LidSemNumero, identidade, false);
         self.recusas_lid
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1)
+    }
+
+    /// #1422: conta uma mensagem recusada. So o final da identidade fica
+    /// guardado (ver `rejeicoes::so_final4`). Devolve o total do motivo.
+    pub fn registrar_rejeicao(
+        &self,
+        motivo: rejeicoes::Motivo,
+        identidade: &str,
+        grupo: bool,
+    ) -> u64 {
+        let mut r = self.rejeicoes.lock().unwrap_or_else(|e| e.into_inner());
+        r.registrar(motivo, identidade, grupo, &rejeicoes::agora())
+    }
+
+    /// #1422: o resumo das rejeicoes (contagens por motivo, recentes
+    /// mascaradas, retencao). Snapshot: nao segura o lock.
+    pub fn rejeicoes(&self) -> rejeicoes::Resumo {
+        self.rejeicoes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .resumo()
+    }
+
+    /// #1422: zera contadores e recentes; devolve quantas apagou. O contador
+    /// legado de `@lid` (`recusas_lid`) zera junto, para o `status` da CLI e
+    /// o console contarem a mesma coisa.
+    pub fn zerar_rejeicoes(&self) -> u64 {
+        self.recusas_lid.store(0, Ordering::Relaxed);
+        self.rejeicoes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .zerar(&rejeicoes::agora())
     }
 
     /// Estaciona o cancelamento do supervisor que acabou de subir.
@@ -381,33 +432,91 @@ pub struct LinkedSettings {
     /// (recusa com [`NaoSubiu::ModoPadraoInvalido`]), e no turno, por
     /// [`piso_somente_leitura`] (cai para [`DEFAULT_MODE`]).
     pub default_mode: Option<String>,
+    /// `channels.whatsapp_linked.access` (ADR 0025 §4): quem entra e ate onde
+    /// cada um vai, por principal. Ja traz `allow`/`owners`/`reply_in_groups`
+    /// dentro quando vem de [`settings_from_config`]; um `LinkedSettings`
+    /// montado a mao com `access: Default::default()` continua valendo pelo
+    /// legado, porque [`Self::entrada_de`] consulta as duas fontes.
+    pub access: PoliticaDeAcesso,
 }
 
 impl LinkedSettings {
+    /// A politica de **uma** identidade: `access.users` vence; senao `owners`
+    /// (= dono), senao `allow` (= admitido, sem teto: o piso de modo decide,
+    /// como sempre); senao ninguem. Compara pela [`chave_do_portao`].
+    pub fn entrada_de(&self, remetente: &str) -> Option<EntradaDeUsuario> {
+        let chave = chave_do_portao(remetente);
+        if let Some(entrada) = self.access.users.get(&chave) {
+            return Some(*entrada);
+        }
+        if self.owners.iter().any(|d| chave_do_portao(d) == chave) {
+            return Some(EntradaDeUsuario {
+                alcance: Alcance::COMPLETO,
+                dono: true,
+                bloqueado: false,
+            });
+        }
+        if self.allow.iter().any(|a| chave_do_portao(a) == chave) {
+            return Some(EntradaDeUsuario {
+                alcance: Alcance::COMPLETO,
+                dono: false,
+                bloqueado: false,
+            });
+        }
+        None
+    }
+
+    /// Dono declarado (`owners` ou `role: owner`) e nao bloqueado.
+    pub fn e_dono(&self, remetente: &str) -> bool {
+        self.entrada_de(remetente)
+            .is_some_and(|e| e.dono && !e.bloqueado)
+    }
+
+    /// Responde em grupo? O `reply_in_groups` legado **ou**
+    /// `access.groups.enabled`.
+    pub fn responde_em_grupo(&self) -> bool {
+        // #1501: `access.groups.enabled` declarado vence o legado nos dois
+        // sentidos; sem ele, o `reply_in_groups` continua ligando.
+        if self.access.groups.declarado {
+            self.access.groups.enabled
+        } else {
+            self.reply_in_groups || self.access.groups.enabled
+        }
+    }
+
+    /// As chaves de portao de toda identidade declarada, de qualquer fonte.
+    fn chaves_declaradas(&self) -> std::collections::HashSet<String> {
+        self.allow
+            .iter()
+            .chain(self.owners.iter())
+            .map(|id| chave_do_portao(id))
+            .chain(self.access.users.keys().cloned())
+            .collect()
+    }
+
     /// Quantas identidades distintas este canal admite pela config: `allow`
-    /// uniao `owners`, sem repeticao (#1345).
+    /// uniao `owners` uniao `access.users`, sem repeticao (#1345) e sem as
+    /// bloqueadas.
     ///
     /// E a mesma uniao que [`PortaoDoCanal::from_settings`] monta, entao um
     /// `0` aqui e exatamente "ninguem recebera resposta" — o que o `status`
     /// da CLI, o `/api/diagnostics` e o aviso de boot dizem. Contagem, nunca
     /// identidade: nenhum dos tres consumidores pode listar numeros.
     pub fn autorizados(&self) -> usize {
-        self.allow
-            .iter()
-            .chain(self.owners.iter())
-            .map(|id| chave_do_portao(id))
-            .collect::<std::collections::HashSet<_>>()
-            .len()
+        self.chaves_declaradas()
+            .into_iter()
+            .filter(|chave| self.entrada_de(chave).is_some_and(|e| !e.bloqueado))
+            .count()
     }
 
     /// Quantos donos distintos, pela mesma chave do portao: o mesmo numero
-    /// escrito duas vezes (ou com e sem o nono digito) conta um.
+    /// escrito duas vezes (ou com e sem o nono digito) conta um. Bloqueado
+    /// nao e dono.
     pub fn donos(&self) -> usize {
-        self.owners
-            .iter()
-            .map(|id| chave_do_portao(id))
-            .collect::<std::collections::HashSet<_>>()
-            .len()
+        self.chaves_declaradas()
+            .into_iter()
+            .filter(|chave| self.e_dono(chave))
+            .count()
     }
 
     /// O `default_mode` que vale para um dado perfil de execucao: o valor
@@ -453,11 +562,26 @@ pub fn settings_from_config(config: &AppConfig) -> LinkedSettings {
     let Some(section) = config.channels.get(CONFIG_KEY) else {
         return LinkedSettings::default();
     };
+    settings_da_secao(section)
+}
+
+/// Le a secao ja em maos (a mesma leitura de [`settings_from_config`]): e o
+/// que o caminho de mutacao da politica (ADR 0025) usa para calcular o antes
+/// e o depois sem montar um `AppConfig`.
+pub fn settings_da_secao(section: &garraia_config::ChannelConfig) -> LinkedSettings {
     // Uma secao cuja `type` nao e `whatsapp_linked` nao e este canal. O
     // `ChannelConfig` guarda o tipo separado da chave, entao a checagem existe.
     if section.channel_type != CONFIG_KEY {
         return LinkedSettings::default();
     }
+    let allow = identidades_da_secao(section, "allow");
+    let owners = identidades_da_secao(section, "owners");
+    let reply_in_groups = section
+        .settings
+        .get("reply_in_groups")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let access = PoliticaDeAcesso::da_secao(section, &allow, &owners, reply_in_groups);
     LinkedSettings {
         // `enabled` ausente significa **desligado** neste canal, ao contrario
         // do default do `build_channels` (`unwrap_or(true)`): a secao so
@@ -465,13 +589,10 @@ pub fn settings_from_config(config: &AppConfig) -> LinkedSettings {
         // DEPOIS de a sessao existir. Um `true` implicito ligaria a supervisao
         // numa maquina onde o pareamento foi abortado no meio.
         enabled: section.enabled == Some(true),
-        allow: identidades_da_secao(section, "allow"),
-        owners: identidades_da_secao(section, "owners"),
-        reply_in_groups: section
-            .settings
-            .get("reply_in_groups")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        allow,
+        owners,
+        reply_in_groups,
+        access,
         default_mode: section
             .settings
             .get("default_mode")
@@ -600,31 +721,65 @@ pub enum Admissao {
 pub struct PortaoDoCanal {
     da_config: std::collections::HashSet<String>,
     pareados: std::collections::HashSet<String>,
+    /// `blocked: true` em `access.users` (ADR 0025): vence tudo, inclusive
+    /// `aberto` e um pareamento anterior.
+    bloqueados: std::collections::HashSet<String>,
+    /// `access.admission: open` — **declarado**, nunca um `*` na lista.
+    aberto: bool,
 }
 
 impl PortaoDoCanal {
-    /// O portao que a config descreve. Lista vazia significa **ninguem**.
+    /// O portao que a config descreve. Lista vazia significa **ninguem** —
+    /// salvo `access.admission: open`, que e a unica forma de admitir quem
+    /// nao esta declarado, e ainda assim nao admite bloqueado.
     ///
-    /// `owners` entra como `allow` (ADR 0024): dono e admitido sem precisar
-    /// se listar duas vezes. O que `owners` confere **alem** da admissao nao
-    /// mora aqui — e por turno, em [`perfil_do_turno`].
+    /// `owners` e `access.users` entram como `allow` (ADR 0024/0025): dono e
+    /// admitido sem precisar se listar duas vezes. O que cada um confere
+    /// **alem** da admissao nao mora aqui — e por turno, em
+    /// [`principal_do_turno`] e [`perfil_do_turno`].
     pub fn from_settings(settings: &LinkedSettings) -> Self {
+        let bloqueados: std::collections::HashSet<String> = settings
+            .access
+            .users
+            .iter()
+            .filter(|(_, e)| e.bloqueado)
+            .map(|(chave, _)| chave.clone())
+            .collect();
         Self {
             da_config: settings
                 .allow
                 .iter()
                 .chain(settings.owners.iter())
                 .map(|id| chave_do_portao(id))
+                .chain(settings.access.users.keys().cloned())
+                .filter(|chave| !bloqueados.contains(chave))
                 .collect(),
             pareados: std::collections::HashSet::new(),
+            bloqueados,
+            aberto: settings.access.admission == Admission::Open,
         }
     }
 
-    /// Presenca explicita: nao existe modo, nem dono, nem valor que signifique
-    /// "todos". Compara pela [`chave_do_portao`].
+    /// Presenca explicita, ou admissao aberta declarada; bloqueio vence os
+    /// dois. Compara pela [`chave_do_portao`].
     pub fn libera(&self, remetente: &str) -> bool {
         let chave = chave_do_portao(remetente);
-        self.da_config.contains(&chave) || self.pareados.contains(&chave)
+        if self.bloqueados.contains(&chave) {
+            return false;
+        }
+        self.aberto || self.da_config.contains(&chave) || self.pareados.contains(&chave)
+    }
+
+    /// `blocked: true` na politica para este remetente (#1422: e o que
+    /// distingue "bloqueado" de "fora da allowlist" na contagem de recusas).
+    pub fn bloqueado(&self, remetente: &str) -> bool {
+        self.bloqueados.contains(&chave_do_portao(remetente))
+    }
+
+    /// Este remetente entrou por codigo (e nao pela config)?
+    pub fn pareado(&self, remetente: &str) -> bool {
+        let chave = chave_do_portao(remetente);
+        self.pareados.contains(&chave) && !self.da_config.contains(&chave)
     }
 
     fn parear(&mut self, remetente: &str) {
@@ -681,9 +836,14 @@ pub fn admissao_vigente(boot: &LinkedSettings, viva: &LinkedSettings) -> LinkedS
     if viva.enabled {
         vigente.allow = viva.allow.clone();
         vigente.owners = viva.owners.clone();
+        // ADR 0025: a politica de acesso inteira (`admission`, `default`,
+        // `users`, `groups`) e relida por turno — cada turno ve um snapshot
+        // consistente, e um bloqueio vale na mensagem seguinte.
+        vigente.access = viva.access.clone();
     } else {
         vigente.allow = Vec::new();
         vigente.owners = Vec::new();
+        vigente.access = PoliticaDeAcesso::default();
     }
     vigente
 }
@@ -698,7 +858,10 @@ pub fn admissao_vigente(boot: &LinkedSettings, viva: &LinkedSettings) -> LinkedS
 /// que o boot so liga quando o `config.yml` ja existia. Sem ele a lista do
 /// boot vale o processo inteiro, e o texto manda reiniciar.
 pub fn aviso_portao_vazio(settings: &LinkedSettings, bin: &str, a_quente: bool) -> Option<String> {
-    (settings.autorizados() == 0).then(|| {
+    // `access.admission: open` admite quem nao esta declarado: nao e portao
+    // vazio, e declarado (ADR 0025).
+    let vazio = settings.autorizados() == 0 && settings.access.admission != Admission::Open;
+    vazio.then(|| {
         let depois = if a_quente {
             "vale sem reiniciar".to_string()
         } else {
@@ -755,6 +918,20 @@ pub fn admitir(
         }
     }
     Admissao::Recusado
+}
+
+/// #1422: por que o portao recusou `remetente` — a classificacao que vai para
+/// a contagem de rejeicoes. Bloqueio vence (e o unico motivo que sobrevive a
+/// admissao aberta); depois o LID sem numero (um numero no `allow` nunca casa
+/// com ele); o resto e "fora da politica restrita". Puro.
+pub fn motivo_da_recusa(portao: &PortaoDoCanal, remetente: &str) -> rejeicoes::Motivo {
+    if portao.bloqueado(remetente) {
+        rejeicoes::Motivo::Bloqueado
+    } else if e_lid(remetente) {
+        rejeicoes::Motivo::LidSemNumero
+    } else {
+        rejeicoes::Motivo::Restrita
+    }
 }
 
 /// O que fazer com uma mensagem antes de ela chegar perto do modelo.
@@ -902,11 +1079,9 @@ pub fn perfil_do_turno(
     remetente: &str,
     is_group: bool,
 ) -> PerfilDoTurno {
-    let chave = chave_do_portao(remetente);
-    if perfil.is_isolated_pod()
-        && !is_group
-        && settings.owners.iter().any(|d| chave_do_portao(d) == chave)
-    {
+    // Dono por `owners` ou por `role: owner` em `access.users`, e nao
+    // bloqueado (ADR 0025): a mesma resposta que `principal_do_turno` da.
+    if perfil.is_isolated_pod() && !is_group && settings.e_dono(remetente) {
         PerfilDoTurno::Completo
     } else {
         PerfilDoTurno::Padrao
@@ -1002,7 +1177,7 @@ pub fn motivo_da_liberacao(gate: &ToolGate) -> &'static str {
     } else if gate.whitelist_ligada_mas_vazia() {
         "o perfil liga `whitelist_mode` com `allowed` vazia, o que permite tudo"
     } else if gate.restringe_por_whitelist() {
-        "a `allowed` do perfil declara esses servidores (`servidor/*` ou nome completo)"
+        "a `allowed` do perfil declara essas ferramentas (`servidor/*`, `*/<operacao>` ou nome completo)"
     } else {
         "o perfil nao tem whitelist de ferramenta, entao passa tudo que o `denied` nao nomeia"
     }
@@ -1055,6 +1230,11 @@ fn avisar_drift_de_mcp(
         ExecutionProfile::IsolatedPod => {
             let nome = modo.as_str();
             let gate = ToolGate::for_mode_name(nome);
+            if gate.restringe_por_whitelist() {
+                // Ver `avisar_escolha_do_operador`: whitelist e declaracao,
+                // nao drift.
+                return;
+            }
             let liberadas = mcp_liberadas_pelo_perfil(&gate, &inventario);
             if liberadas.is_empty() {
                 return;
@@ -1082,6 +1262,14 @@ fn avisar_escolha_do_operador(
 ) {
     let nome = modo.as_str();
     let gate = ToolGate::for_mode_name(nome);
+    // #1384: um perfil com whitelist libera exatamente o que a `allowed`
+    // nomeia — no `search` nativo, a leitura do MCP `filesystem`, por
+    // desenho. Isso e declaracao, nao drift: o aviso existe para o perfil
+    // que passa "tudo que o `denied` nao nomeia" (`ask`, `code`), onde a
+    // exposicao de um servidor e efeito colateral e nao escolha nomeada.
+    if gate.restringe_por_whitelist() {
+        return;
+    }
     let liberadas = mcp_liberadas_pelo_perfil(&gate, inventario);
     if liberadas.is_empty() {
         return;
@@ -1106,13 +1294,17 @@ fn avisar_escolha_do_operador(
 /// - `is_group` sem opt-in: ver [`LinkedSettings::reply_in_groups`].
 /// - sem `text`: midia nao vai ao modelo nesta fatia.
 pub fn deve_responder(msg: &InboundMessage, settings: &LinkedSettings) -> bool {
-    if msg.from_me {
-        return false;
-    }
-    if msg.is_group && !settings.reply_in_groups {
-        return false;
-    }
-    msg.text.as_deref().is_some_and(|t| !t.trim().is_empty())
+    merece_turno(msg) && !(msg.is_group && !settings.responde_em_grupo())
+}
+
+/// A parte de [`deve_responder`] que NAO depende da politica: nao e da
+/// propria conta e tem texto. E o que o `deliver` decide sozinho; o filtro de
+/// grupo depende da secao `access`, que muda a quente, e por isso e decidido
+/// no turno com a config VIVA (#1412/#1423) — com os settings do boot, ligar
+/// os grupos a quente nao valia ate o restart, e desliga-los a quente nao
+/// impedia o turno.
+pub fn merece_turno(msg: &InboundMessage) -> bool {
+    !msg.from_me && msg.text.as_deref().is_some_and(|t| !t.trim().is_empty())
 }
 
 /// Os settings que valem para **um turno** (#1345).
@@ -1128,10 +1320,32 @@ pub fn deve_responder(msg: &InboundMessage, settings: &LinkedSettings) -> bool {
 /// direto ao [`supervisionar`] sem escrever a secao no `AppConfig`.
 fn settings_do_turno(state: &SharedState, boot: &LinkedSettings) -> LinkedSettings {
     if state.has_config_watcher() {
-        admissao_vigente(boot, &settings_from_config(&state.current_config()))
+        let vigente = admissao_vigente(boot, &settings_from_config(&state.current_config()));
+        // A politica viva pode ter ficado invalida numa edicao: o aviso sai
+        // UMA vez por mudanca, nao por mensagem.
+        avisar_politica_normalizada(&vigente.access.avisos);
+        vigente
     } else {
         boot.clone()
     }
+}
+
+/// O `warn!` do que [`PoliticaDeAcesso::da_secao`] normalizou (ADR 0025):
+/// um por **mudanca** do conjunto de avisos, e nao por turno — a config viva e
+/// relida a cada mensagem, e repetir o mesmo aviso a cada "oi" e ruido que
+/// esconde o resto do log. Texto sem identidade, por construcao.
+fn avisar_politica_normalizada(avisos: &[String]) {
+    static ULTIMOS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut ultimos) = ULTIMOS.lock() else {
+        return;
+    };
+    if *ultimos == avisos {
+        return;
+    }
+    for aviso in avisos {
+        warn!("whatsapp_linked: politica de acesso normalizada — {aviso}");
+    }
+    *ultimos = avisos.to_vec();
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,7 +1399,7 @@ impl GatewaySink {
     /// `/api/diagnostics`) e no [`ARQUIVO_RECUSAS_LID`] (para o `status` da
     /// CLI). Best-effort: falhar ao gravar nao muda a recusa.
     fn registrar_recusa_lid(state: &SharedState, final4: &str) {
-        let recusas = state.whatsapp_linked.registrar_recusa_lid();
+        let recusas = state.whatsapp_linked.registrar_recusa_lid(final4);
         let Ok(paths) = LinkedPaths::from_config(&state.config) else {
             return;
         };
@@ -1220,40 +1434,69 @@ impl GatewaySink {
         // #1345: a admissao deste turno sai da config VIVA, nao da do boot.
         // Ver `admissao_vigente` e `settings_do_turno`.
         let settings = settings_do_turno(&state, &settings);
-        let admissao = if !settings.enabled {
+        // #1412/#1423: o filtro de grupo com a config VIVA (o `deliver` so
+        // conhece o boot). Grupo desligado nao e recusa de remetente: e
+        // silencio, como sempre foi.
+        if !deve_responder(&msg, &settings) {
+            return;
+        }
+        // #1422: toda recusa e contada por MOTIVO (so o final da identidade),
+        // para o console dizer por que alguem nao recebe resposta.
+        let (admissao, pareado, motivo) = if !settings.enabled {
             // Canal desligado (ou secao sumida) na config viva: ninguem entra,
             // nem por codigo de pareamento. Mesmo silencio do `Recusado`.
-            Admissao::Recusado
+            (Admissao::Recusado, false, rejeicoes::Motivo::CanalDesligado)
         } else {
             // Os dois locks juntos, e soltos antes do `await`: `std::sync::
             // MutexGuard` nao e `Send`.
             let (Ok(mut gate), Ok(mut pair)) = (portao.lock(), pairing.lock()) else {
                 warn!("whatsapp_linked: gate envenenado; recusando por seguranca");
+                state.whatsapp_linked.registrar_rejeicao(
+                    rejeicoes::Motivo::Politica,
+                    &last4,
+                    msg.is_group,
+                );
                 return;
             };
             gate.recarregar(&settings);
-            admitir(&mut gate, &mut pair, &remetente, &bruto)
+            let admissao = admitir(&mut gate, &mut pair, &remetente, &bruto);
+            // O que o portao sabe e que a config nao diz: entrou por codigo.
+            (
+                admissao,
+                gate.pareado(&remetente),
+                motivo_da_recusa(&gate, &remetente),
+            )
         };
 
         match admissao {
             Admissao::Recusado => {
                 // Nao ha resposta: responder confirmaria ao estranho que o
                 // numero roda um bot. Fica o log, com os 4 digitos apenas.
-                if e_lid(&remetente) {
-                    // #1345: remetente so com LID, sem numero. Um numero no
-                    // `allow` nunca casa com ele — o operador precisa saber
-                    // que e ESTE o caso, e nao "o numero esta errado".
-                    Self::registrar_recusa_lid(&state, &last4);
-                    warn!(
-                        lid_last4 = %last4,
-                        "whatsapp_linked: remetente @lid sem numero fora da allowlist, \
-                         mensagem descartada (um numero no `allow` nao casa com LID)"
-                    );
-                } else {
-                    warn!(
-                        phone_last4 = %last4,
-                        "whatsapp_linked: remetente fora da allowlist, mensagem descartada"
-                    );
+                match motivo {
+                    rejeicoes::Motivo::LidSemNumero => {
+                        // #1345: remetente so com LID, sem numero. Um numero
+                        // no `allow` nunca casa com ele — o operador precisa
+                        // saber que e ESTE o caso, e nao "o numero esta
+                        // errado". Conta no runtime E no arquivo do `status`.
+                        Self::registrar_recusa_lid(&state, &last4);
+                        warn!(
+                            lid_last4 = %last4,
+                            "whatsapp_linked: remetente @lid sem numero fora da allowlist, \
+                             mensagem descartada (um numero no `allow` nao casa com LID)"
+                        );
+                    }
+                    outro => {
+                        state
+                            .whatsapp_linked
+                            .registrar_rejeicao(outro, &last4, msg.is_group);
+                        // Etiqueta fixa do motivo, nunca identidade.
+                        let codigo = outro.as_str();
+                        warn!(
+                            phone_last4 = %last4,
+                            motivo = codigo,
+                            "whatsapp_linked: mensagem descartada pelo portao"
+                        );
+                    }
                 }
                 return;
             }
@@ -1271,6 +1514,11 @@ impl GatewaySink {
         }
 
         let Entrada::Entregar { texto } = preparar_entrada(&bruto) else {
+            state.whatsapp_linked.registrar_rejeicao(
+                rejeicoes::Motivo::Injecao,
+                &last4,
+                msg.is_group,
+            );
             warn!(
                 phone_last4 = %last4,
                 "whatsapp_linked: entrada recusada por suspeita de injecao de prompt"
@@ -1290,6 +1538,71 @@ impl GatewaySink {
         // um NOME de modo; quem o aplica e `piso_somente_leitura`, e quem o
         // faz valer contra o inventario vivo e o `ToolGate` do runtime, a
         // cada turno — ferramenta MCP inclusa (ver `mcp_liberadas_pelo_perfil`).
+        // ADR 0025: o PRINCIPAL deste turno, pela config viva. O portao ja
+        // admitiu; isto diz quem e (dono, usuario, pareado, desconhecido,
+        // grupo) e ate onde vai. Um nao-admitido aqui e um call-site que
+        // divergiu do portao — e fica fora, sem resposta, como no portao.
+        let principal = principal_do_turno(
+            &settings,
+            &remetente,
+            msg.chat_jid.as_str(),
+            msg.is_group,
+            pareado,
+        );
+        // Etiqueta fixa (`dono`, `usuario`, ...), nunca identidade.
+        let quem = principal.as_str();
+        if !principal.admitido() {
+            let motivo = if matches!(principal, politica::Principal::Bloqueado) {
+                rejeicoes::Motivo::Bloqueado
+            } else {
+                rejeicoes::Motivo::Politica
+            };
+            state
+                .whatsapp_linked
+                .registrar_rejeicao(motivo, &last4, msg.is_group);
+            warn!(
+                phone_last4 = %last4,
+                principal = quem,
+                "whatsapp_linked: principal nao admitido pela politica de acesso; mensagem descartada"
+            );
+            return;
+        }
+        // #1379/#1424: comando de barra, decidido por PRINCIPAL antes de
+        // qualquer coisa ir ao modelo. `/mode` e do dono (o nivel dos demais
+        // vem da politica de acesso), `/project` e de dono e usuario, `/help`
+        // de todo admitido; o resto registrado e recusado com motivo, e o que
+        // nao e comando segue como texto (como sempre foi).
+        {
+            let registrado = |nome: &str| {
+                state
+                    .command_registry
+                    .read()
+                    .map(|r| r.resolve(&format!("/{nome}")).is_some())
+                    .unwrap_or(false)
+            };
+            use crate::projetos_da_sessao::{DecisaoDeComando, decidir_comando};
+            match decidir_comando(principal, &bruto, registrado) {
+                DecisaoDeComando::NaoEComando => {}
+                DecisaoDeComando::Negado(motivo) => {
+                    info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando recusado");
+                    Self::responder(&outbound, &msg.chat_jid, motivo).await;
+                    return;
+                }
+                DecisaoDeComando::Roteia => {
+                    let sid = session_id(&msg);
+                    state
+                        .hydrate_session_history(&sid, Some(CONFIG_KEY), Some(&remetente))
+                        .await;
+                    let resposta = crate::api::dispatch_slash_command(&state, &sid, bruto.trim())
+                        .map(|r| r.content)
+                        .unwrap_or_else(|| "Comando nao reconhecido.".to_string());
+                    info!(phone_last4 = %last4, principal = quem, "whatsapp_linked: comando roteado");
+                    Self::responder(&outbound, &msg.chat_jid, resposta).await;
+                    return;
+                }
+            }
+        }
+
         let politica = politica_de_execucao(&state.config);
         let perfil_turno = perfil_do_turno(politica.perfil, &settings, &remetente, msg.is_group);
         let modo_do_piso = modo_do_piso(perfil_turno, &settings);
@@ -1297,10 +1610,15 @@ impl GatewaySink {
         // nao a string da config; o fallback e o mesmo de `piso_somente_leitura`.
         let etiqueta = perfil_turno.as_str();
         let piso = modo_padrao(&modo_do_piso).map_or(DEFAULT_MODE, |m| m.as_str());
+        let alcance = principal
+            .alcance()
+            .map_or_else(|| "sem teto".to_string(), |a| a.to_string());
         info!(
             phone_last4 = %last4,
             perfil = etiqueta,
             modo = piso,
+            principal = quem,
+            alcance = %alcance,
             "whatsapp_linked: turno admitido"
         );
 
@@ -1315,17 +1633,17 @@ impl GatewaySink {
         // e do grupo (`session_id` usa o `chat_jid`), e o remetente e quem
         // falou: o "sim" de outro membro nao aprova e ainda encerra o pedido
         // (fail-closed). O escopo entra DEPOIS do piso, que nao o toca.
-        let exec = crate::approval_scope::com_escopo(
-            piso_somente_leitura(
-                state
-                    .exec_context_for_msg(&sid, Some(&remetente), Some(&texto))
-                    .await,
-                &modo_do_piso,
-            ),
-            CONFIG_KEY,
-            &sid,
-            &remetente,
+        let mut exec = piso_somente_leitura(
+            state
+                .exec_context_for_msg(&sid, Some(&remetente), Some(&texto))
+                .await,
+            &modo_do_piso,
         );
+        // ADR 0025 §2: o teto do principal, composto por E com o modo em todo
+        // ponto do runtime. So tira, nunca poe: `write on` nao desliga
+        // sandbox, jail nem confirmacao. O dono nao tem teto.
+        exec.teto = teto_do_principal(&principal);
+        let exec = crate::approval_scope::com_escopo(exec, CONFIG_KEY, &sid, &remetente);
 
         let resposta = state
             .agents
@@ -1366,7 +1684,9 @@ impl GatewaySink {
 
 impl InboundSink for GatewaySink {
     fn deliver(&self, message: InboundMessage) {
-        if !deve_responder(&message, &self.settings) {
+        // So o que nao depende da politica; o filtro de grupo e do turno,
+        // com a config viva (#1412/#1423).
+        if !merece_turno(&message) {
             return;
         }
         let state = Arc::clone(&self.state);
@@ -1553,6 +1873,8 @@ pub fn spawn_whatsapp_linked(state: &SharedState) -> Result<(), NaoSubiu> {
     ) {
         warn!("{aviso}");
     }
+    // ADR 0025: o que a politica de acesso normalizou por estar invalido.
+    avisar_politica_normalizada(&settings.access.avisos);
     // `deve_supervisionar` ja provou que ha `node`; o `else` existe porque o
     // compilador nao sabe disso, e um `unwrap()` em producao e proibido.
     let Some(node) = node else {

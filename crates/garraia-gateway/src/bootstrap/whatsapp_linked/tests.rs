@@ -7,6 +7,11 @@
 //! dependente do `python3` na PATH.
 
 use super::*;
+
+// ADR 0025: Access Policy v2 (principal, nivel, teto).
+mod politica;
+// ADR 0025: mutacao, impacto e auditoria da politica (#1412, #1413, #1414).
+mod politica_mutacao;
 // O par que extrai chamada de log e separa o que pode carregar valor mora em
 // `garraia-channels` (a crate que possui o segredo da sessao) e serve as duas
 // varreduras — esta e a de `whatsapp_linked/source_scan.rs`. Duas copias com
@@ -209,6 +214,7 @@ fn modo_padrao_efetivo_declarado_vence_e_ausente_depende_do_perfil() {
     );
 
     let declarado = LinkedSettings {
+        access: Default::default(),
         default_mode: Some("ask".into()),
         ..LinkedSettings::default()
     };
@@ -291,6 +297,7 @@ fn pairing() -> PairingManager {
 
 fn portao_com(allow: &[&str]) -> PortaoDoCanal {
     PortaoDoCanal::from_settings(&LinkedSettings {
+        access: Default::default(),
         allow: allow.iter().map(|s| s.to_string()).collect(),
         ..LinkedSettings::default()
     })
@@ -448,6 +455,7 @@ fn parear_neste_canal_nao_escreve_na_allowlist_global() {
 #[test]
 fn quem_esta_em_owners_e_admitido_sem_precisar_do_allow() {
     let com_dono = PortaoDoCanal::from_settings(&LinkedSettings {
+        access: Default::default(),
         owners: vec!["5511888880000".into()],
         ..LinkedSettings::default()
     });
@@ -479,6 +487,7 @@ fn perfil_do_turno_exige_isolated_pod_conversa_1_a_1_e_dono_declarado() {
     const DONO: &str = "5511888880000";
     const CONTATO: &str = "5511777770000";
     let settings = LinkedSettings {
+        access: Default::default(),
         allow: vec![CONTATO.into()],
         owners: vec![DONO.into()],
         ..LinkedSettings::default()
@@ -533,6 +542,7 @@ fn perfil_do_turno_exige_isolated_pod_conversa_1_a_1_e_dono_declarado() {
 
     // `owners` vazio em isolated-pod: ninguem e dono, o perfil nao muda nada.
     let sem_dono = LinkedSettings {
+        access: Default::default(),
         allow: vec![DONO.into()],
         ..LinkedSettings::default()
     };
@@ -582,6 +592,7 @@ fn modo_do_piso_do_perfil_padrao_e_o_de_standard_mesmo_no_pod() {
     );
 
     let declarado = LinkedSettings {
+        access: Default::default(),
         default_mode: Some("ask".into()),
         ..LinkedSettings::default()
     };
@@ -789,8 +800,12 @@ fn default_mode_desconhecido_nao_vira_portao_aberto_no_turno() {
 /// Este e o teste que substituiu a recusa `FerramentaMcpRegistrada`. A recusa
 /// nasceu quando `ToolGate::permite` isentava do whitelist qualquer nome com
 /// `__`; a #1288 fechou a isencao, e desde entao ferramenta MCP so passa pelo
-/// whitelist quando `allowed` a declara (`servidor/*` ou nome completo). Se
-/// este teste reprovar, a recusa tem de voltar — e o bug e no portao.
+/// whitelist quando `allowed` a declara (`servidor/*`, `*/<operacao>` ou nome
+/// completo). Desde a #1384 o `search` declara a **leitura** do `filesystem`
+/// (`*/read_file`…), entao a leitura passa e a escrita continua negada por
+/// nome — o piso distingue leitura de escrita pela `allowed`, nao por
+/// inventario. Se este teste reprovar, a recusa tem de voltar — e o bug e no
+/// portao.
 ///
 /// O portao e montado **exatamente** como o `turno` monta o seu:
 /// `piso_somente_leitura` sobre um `ExecContext` sem modo, e depois
@@ -799,7 +814,7 @@ fn default_mode_desconhecido_nao_vira_portao_aberto_no_turno() {
 /// entao a heuristica do roteador nao entra — se um dia o piso virar `auto`,
 /// e este teste que vai dizer.
 #[test]
-fn o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao() {
+fn o_portao_do_turno_so_libera_a_leitura_mcp_declarada_no_perfil_padrao() {
     use garraia_agents::AgentRuntime;
     use garraia_agents::modes::ToolGate;
 
@@ -821,8 +836,10 @@ fn o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao() {
     let exec = piso_somente_leitura(ExecContext::default(), DEFAULT_MODE);
     let gate = ToolGate::para_o_turno(&exec, "oi");
 
-    // Toda ferramenta de origem MCP do inventario VIVO e negada — por nome,
-    // porque nenhuma esta declarada na `allowed` do `search`.
+    // O inventario VIVO nao e entrada da decisao: quem libera e a `allowed`
+    // do `search`, por nome. Ela declara a leitura do `filesystem`
+    // (`*/read_file`, #1384) e nada mais — a escrita nao esta declarada, entao
+    // o portao a nega, mesmo registrada.
     let mcp: Vec<String> = agents
         .tool_inventory()
         .into_iter()
@@ -834,16 +851,13 @@ fn o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao() {
         2,
         "premissa: as duas ferramentas MCP estao registradas"
     );
-    for nome in &mcp {
-        assert!(
-            !gate.permite(nome),
-            "`{nome}` nao esta declarada na `allowed` do `search`, entao o portao a nega"
-        );
-    }
-    assert!(!gate.permite("filesystem__write_file"));
     assert!(
-        !gate.permite("filesystem__read_file"),
-        "leitura MCP tambem: o piso nao distingue leitura de escrita, quem libera e a `allowed`"
+        gate.permite("filesystem__read_file"),
+        "`*/read_file` esta na `allowed` do `search` (#1384), entao a leitura MCP passa"
+    );
+    assert!(
+        !gate.permite("filesystem__write_file"),
+        "`filesystem__write_file` nao esta declarada na `allowed` do `search`, entao o portao a nega"
     );
 
     // E o resto do perfil continua valendo: leitura nativa passa, escrita e
@@ -881,6 +895,7 @@ fn grupo_so_com_opt_in_explicito() {
         "responder sozinho no grupo da familia do operador e incidente, nao recurso"
     );
     let com_grupos = LinkedSettings {
+        access: Default::default(),
         reply_in_groups: true,
         ..LinkedSettings::default()
     };
@@ -911,7 +926,7 @@ fn midia_e_texto_vazio_nao_geram_turno() {
 /// Ate a #1327 havia uma entrada `FerramentaMcpRegistrada`, que recusava a
 /// subida com qualquer servidor MCP registrado. Ela saiu porque o piso `search`
 /// nega ferramenta MCP por nome desde a #1288 (ver
-/// `o_portao_do_turno_nega_ferramenta_mcp_por_nome_no_perfil_padrao`) — e o
+/// `o_portao_do_turno_so_libera_a_leitura_mcp_declarada_no_perfil_padrao`) — e o
 /// inventario de ferramentas deixou de ser entrada desta decisao. A revisao da
 /// #1327 trouxe a entrada que faltava: `default_mode` que nao e modo nativo
 /// virava portao ABERTO em `ToolGate::for_mode_name`, e a recusa por MCP era o
@@ -923,11 +938,13 @@ fn tabela_do_que_impede_a_supervisao() {
     const STANDARD: ExecutionProfile = ExecutionProfile::Standard;
 
     let ligado = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         ..LinkedSettings::default()
     };
     let desligado = LinkedSettings::default();
     let modo_errado = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         default_mode: Some("pesquisa".into()),
         ..LinkedSettings::default()
@@ -948,6 +965,7 @@ fn tabela_do_que_impede_a_supervisao() {
     assert_eq!(
         deve_supervisionar(
             &LinkedSettings {
+                access: Default::default(),
                 default_mode: Some("pesquisa".into()),
                 ..LinkedSettings::default()
             },
@@ -992,6 +1010,7 @@ fn tabela_do_que_impede_a_supervisao() {
     assert_eq!(
         deve_supervisionar(
             &LinkedSettings {
+                access: Default::default(),
                 enabled: true,
                 default_mode: Some("code".into()),
                 ..LinkedSettings::default()
@@ -1016,6 +1035,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
     const POD: ExecutionProfile = ExecutionProfile::IsolatedPod;
 
     let ligado = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         owners: vec!["5511888880000".into()],
         ..LinkedSettings::default()
@@ -1032,6 +1052,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
     );
 
     let declarado = LinkedSettings {
+        access: Default::default(),
         default_mode: Some("ask".into()),
         ..ligado.clone()
     };
@@ -1043,6 +1064,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
 
     for invalido in ["pesquisa", "auto", "meu-modo"] {
         let errado = LinkedSettings {
+            access: Default::default(),
             default_mode: Some(invalido.into()),
             ..ligado.clone()
         };
@@ -1059,6 +1081,7 @@ fn deve_supervisionar_aceita_o_default_do_pod_e_ainda_recusa_valor_invalido() {
     // neste canal); o que impede a subida continua sendo so as tres
     // condicoes de sempre.
     let sem_dono = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         ..LinkedSettings::default()
     };
@@ -1087,11 +1110,13 @@ fn avisar_drift_de_mcp_cobre_os_tres_ramos() {
         vec![Box::new(ToolDeMentira("filesystem__write_file"))],
     );
     let com_dono = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         owners: vec!["5511888880000".into()],
         ..LinkedSettings::default()
     };
     let sem_dono = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         default_mode: Some("code".into()),
         ..LinkedSettings::default()
@@ -1161,9 +1186,11 @@ fn cada_motivo_de_nao_subir_diz_o_que_fazer() {
 /// portao e `ToolGate::for_mode_name(<modo validado>)` — o que
 /// `avisar_drift_de_mcp` monta e o que o turno monta —, e como `default_mode`
 /// so aceita modo nativo, ele e sempre o de um perfil nativo. Dai as duas
-/// metades deste teste: **todo** nativo com whitelist devolve vazio (nenhum
-/// declara `servidor/*`), e um nativo **sem** whitelist (`ask`, `code`) lista
-/// todo servidor registrado, porque nele passa tudo que o `denied` nao nomeia.
+/// metades deste teste: nativo com whitelist devolve vazio — menos o `search`,
+/// que desde a #1384 declara a **leitura** do `filesystem` (`*/read_file`…),
+/// e por isso o aviso ignora perfil com whitelist: e declaracao, nao drift —,
+/// e um nativo **sem** whitelist (`ask`, `code`) lista todo servidor
+/// registrado, porque nele passa tudo que o `denied` nao nomeia.
 ///
 /// A versao anterior deste teste montava `ToolGate::from_profile` de um perfil
 /// customizado com `allowed: ["filesystem/*"]` — um portao que a producao
@@ -1173,7 +1200,7 @@ fn cada_motivo_de_nao_subir_diz_o_que_fazer() {
 /// Devolve **servidores**, deduplicados: e o que o operador reconhece no
 /// `mcp.json`, e nunca carrega argumento nem segredo de ferramenta.
 #[test]
-fn mcp_liberadas_pelo_perfil_e_vazia_nos_nativos_com_whitelist_e_lista_tudo_nos_sem() {
+fn mcp_liberadas_pelo_perfil_so_leitura_no_search_vazia_nos_outros_com_whitelist_e_tudo_nos_sem() {
     use garraia_agents::AgentRuntime;
     use garraia_agents::modes::{AgentMode, ToolGate};
 
@@ -1192,15 +1219,22 @@ fn mcp_liberadas_pelo_perfil_e_vazia_nos_nativos_com_whitelist_e_lista_tudo_nos_
     );
     let inventario = agents.tool_inventory();
 
-    // O piso do canal: nada liberado, nada a avisar.
+    // O piso do canal: so a LEITURA do `filesystem` passa (#1384) — o
+    // servidor aparece na lista porque `read_file` esta no inventario —, e
+    // isso e declaracao da whitelist, nao drift: `avisar_drift_de_mcp` nao
+    // avisa para perfil com whitelist (ver `avisar_escolha_do_operador`).
     let search = ToolGate::for_mode_name(DEFAULT_MODE);
-    assert!(
-        mcp_liberadas_pelo_perfil(&search, &inventario).is_empty(),
-        "o `search` nativo nao declara servidor nenhum"
+    assert_eq!(
+        mcp_liberadas_pelo_perfil(&search, &inventario),
+        vec!["filesystem".to_string()],
+        "o `search` nativo declara so a leitura do filesystem"
     );
+    assert!(search.permite("filesystem__read_file"));
+    assert!(!search.permite("filesystem__write_file"));
+    assert!(!search.permite("github__create_issue"));
 
-    // E nenhum outro nativo com whitelist declara: o aviso so tem o que dizer
-    // quando o operador escolheu um perfil sem whitelist.
+    // Os outros nativos com whitelist nao declaram servidor nenhum; o aviso
+    // so tem o que dizer quando o operador escolheu um perfil sem whitelist.
     let mut com_whitelist = 0;
     let mut sem_whitelist = Vec::new();
     for modo in AgentMode::all_modes() {
@@ -1210,6 +1244,9 @@ fn mcp_liberadas_pelo_perfil_e_vazia_nos_nativos_com_whitelist_e_lista_tudo_nos_
         let gate = ToolGate::for_mode_name(modo.as_str());
         if gate.restringe_por_whitelist() {
             com_whitelist += 1;
+            if modo.as_str() == DEFAULT_MODE {
+                continue; // coberto acima
+            }
             assert!(
                 mcp_liberadas_pelo_perfil(&gate, &inventario).is_empty(),
                 "`{modo}` tem whitelist e nao declara servidor: nada a avisar"
@@ -1663,6 +1700,7 @@ fn fonte_do_canal_nao_tem_a_recusa_por_mcp_nem_deteccao_de_container() {
 #[test]
 fn autorizados_conta_a_uniao_sem_repeticao() {
     let s = LinkedSettings {
+        access: Default::default(),
         allow: vec!["5511900000001".into(), "5511900000002".into()],
         owners: vec!["5511900000002".into(), "5511900000003".into()],
         ..LinkedSettings::default()
@@ -1684,6 +1722,7 @@ fn recarregar_o_portao_mantem_os_pareados() {
     );
 
     portao.recarregar(&LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000002".into()],
         ..LinkedSettings::default()
@@ -1701,6 +1740,7 @@ fn recarregar_o_portao_mantem_os_pareados() {
 #[test]
 fn admissao_vigente_fecha_com_canal_desligado_sem_secao_ou_tipo_errado() {
     let boot = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000001".into()],
         owners: vec!["5511900000001".into()],
@@ -1736,6 +1776,7 @@ fn admissao_vigente_fecha_com_canal_desligado_sem_secao_ou_tipo_errado() {
 #[test]
 fn admissao_vigente_so_troca_enabled_allow_e_owners() {
     let boot = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000001".into()],
         owners: vec!["5511900000001".into()],
@@ -1743,6 +1784,7 @@ fn admissao_vigente_so_troca_enabled_allow_e_owners() {
         default_mode: Some("search".into()),
     };
     let viva = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000002".into()],
         owners: Vec::new(),
@@ -1777,6 +1819,7 @@ fn aviso_de_portao_vazio_cita_o_allow_e_so_existe_quando_vazio() {
     assert!(frio.contains("garraia restart"), "{frio}");
 
     let com_um = LinkedSettings {
+        access: Default::default(),
         owners: vec!["5511900000001".into()],
         ..LinkedSettings::default()
     };
@@ -1824,6 +1867,7 @@ fn celular_brasileiro_casa_com_e_sem_o_nono_digito() {
 
     // A contagem e a mesma do portao: as duas formas contam um.
     let s = LinkedSettings {
+        access: Default::default(),
         allow: vec!["5531999998888".into()],
         owners: vec!["553199998888".into()],
         ..LinkedSettings::default()
@@ -1853,6 +1897,7 @@ fn sair_do_allow_revoga_tambem_o_pareamento() {
         );
     }
     let com_os_dois = LinkedSettings {
+        access: Default::default(),
         enabled: true,
         allow: vec!["5511900000001".into()],
         ..LinkedSettings::default()
@@ -1862,6 +1907,7 @@ fn sair_do_allow_revoga_tambem_o_pareamento() {
     assert!(portao.libera("5511900000001"));
 
     portao.recarregar(&LinkedSettings {
+        access: Default::default(),
         enabled: true,
         ..LinkedSettings::default()
     });
@@ -2282,6 +2328,7 @@ mod ponta_a_ponta {
         let (store, key) = grava_sessao(&state);
 
         let settings = LinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: vec![PEER.to_string()],
             ..LinkedSettings::default()
@@ -2340,6 +2387,7 @@ mod ponta_a_ponta {
         supervisionar(
             &state,
             LinkedSettings {
+                access: Default::default(),
                 enabled: true,
                 ..LinkedSettings::default()
             },
@@ -2368,6 +2416,14 @@ mod ponta_a_ponta {
     // quando os manifestos mudaram. Em arquivo proprio para nao disputar
     // linhas com o resto desta suite.
     mod preparo_da_ponte;
+
+    // #1427: o modelo multi-principal (ADR 0025) provado na fiacao inteira,
+    // com a config viva. Em arquivo proprio pelo mesmo motivo.
+    mod permissoes_multiusuario;
+
+    // #1412 e #1423: politica a quente (grupos, concorrencia, papel) e o grupo
+    // como fronteira propria. Em arquivo proprio pelo mesmo motivo.
+    mod politica_a_quente;
 
     // -----------------------------------------------------------------------
     // O circuito da mensagem (sink + gates)
@@ -2503,6 +2559,7 @@ mod ponta_a_ponta {
         let paths = LinkedPaths::from_config(&state.config).expect("DEFAULT_ACCOUNT e valido");
 
         let settings = LinkedSettings {
+            access: Default::default(),
             enabled: true,
             allow: if liberado {
                 vec![PEER.to_string()]
@@ -3686,6 +3743,94 @@ mod ponta_a_ponta {
         encerra(c).await;
     }
 
+    // -----------------------------------------------------------------------
+    // #1422: rejeicoes contadas por motivo, com o final apenas
+    // -----------------------------------------------------------------------
+
+    /// `PEER` fora do `allow` (admissao restrita): recusado em silencio, e a
+    /// recusa entra em `rejeicoes()` como `restricted_policy`, com `…0000` e
+    /// o instante — nunca o numero. O contador legado de LID nao mexe.
+    #[tokio::test]
+    async fn remetente_fora_da_politica_restrita_e_contado_como_restricted_policy() {
+        let c = sobe_com(Roteiro::empurra("oi"), false).await;
+
+        assert!(
+            ate(|| !recebidas(&c).is_empty()).await,
+            "a mensagem precisa chegar para o teste ter o que provar"
+        );
+        assert!(
+            ate(|| c.state.whatsapp_linked.rejeicoes().total == 1).await,
+            "a recusa tem de ser contada: {:?}",
+            c.state.whatsapp_linked.rejeicoes()
+        );
+        let resumo = c.state.whatsapp_linked.rejeicoes();
+        assert_eq!(resumo.de(rejeicoes::Motivo::Restrita), 1);
+        assert_eq!(resumo.de(rejeicoes::Motivo::LidSemNumero), 0);
+        assert_eq!(c.state.whatsapp_linked.recusas_lid(), 0);
+        assert_eq!(resumo.recent.len(), 1);
+        assert_eq!(resumo.recent[0].identity_last4, "…0000");
+        assert!(!resumo.recent[0].group);
+        assert!(resumo.recent[0].at.ends_with('Z'));
+        let json = serde_json::to_string(&resumo).expect("serializa");
+        assert!(
+            !json.contains(PEER),
+            "o numero inteiro nao pode sair: {json}"
+        );
+        assert!(
+            !ate(|| !turnos(&c.provider).is_empty()).await,
+            "recusado nao chega ao modelo"
+        );
+
+        encerra(c).await;
+    }
+
+    /// A classificacao da recusa e pura e fail-closed: bloqueio vence a
+    /// admissao aberta; LID sem numero e o segundo; o resto e politica
+    /// restrita. E o `zerar` apaga tudo e devolve quantas apagou.
+    #[test]
+    fn motivo_da_recusa_distingue_bloqueado_lid_e_restrito() {
+        use rejeicoes::Motivo;
+        let secao = |access: serde_json::Value| {
+            let mut settings = std::collections::HashMap::new();
+            settings.insert("allow".to_string(), serde_json::json!([PEER]));
+            settings.insert("access".to_string(), access);
+            settings_da_secao(&garraia_config::ChannelConfig {
+                channel_type: CONFIG_KEY.to_string(),
+                enabled: Some(true),
+                settings,
+            })
+        };
+        let restrita = secao(serde_json::json!({
+            "users": { OUTRO: { "blocked": true } }
+        }));
+        let portao = PortaoDoCanal::from_settings(&restrita);
+        assert_eq!(motivo_da_recusa(&portao, OUTRO), Motivo::Bloqueado);
+        assert_eq!(motivo_da_recusa(&portao, LID), Motivo::LidSemNumero);
+        assert_eq!(motivo_da_recusa(&portao, "5531944443333"), Motivo::Restrita);
+        assert!(portao.libera(PEER), "premissa: PEER segue admitido");
+
+        let aberta = secao(serde_json::json!({
+            "admission": "open",
+            "users": { OUTRO: { "blocked": true } }
+        }));
+        let portao = PortaoDoCanal::from_settings(&aberta);
+        assert!(!portao.libera(OUTRO), "bloqueio vence admissao aberta");
+        assert_eq!(motivo_da_recusa(&portao, OUTRO), Motivo::Bloqueado);
+        assert!(
+            portao.libera("5531944443333"),
+            "aberta admite o desconhecido"
+        );
+
+        let runtime = WhatsAppLinkedRuntime::default();
+        runtime.registrar_rejeicao(Motivo::Bloqueado, OUTRO, false);
+        runtime.registrar_recusa_lid(LID);
+        assert_eq!(runtime.recusas_lid(), 1);
+        assert_eq!(runtime.rejeicoes().total, 2);
+        assert_eq!(runtime.zerar_rejeicoes(), 2);
+        assert_eq!(runtime.rejeicoes().total, 0);
+        assert_eq!(runtime.recusas_lid(), 0, "o contador legado zera junto");
+    }
+
     /// #1347 (fatia 3), o relato de ponta a ponta: conectado ao WhatsApp, o
     /// Garra respondia que nao tinha acesso ao WhatsApp. Aqui o modelo e um
     /// stub que faz o que a nota do runtime manda — chama `garra_status` e
@@ -3942,6 +4087,7 @@ mod ponta_a_ponta {
             supervisionar(
                 &state,
                 LinkedSettings {
+                    access: Default::default(),
                     enabled: true,
                     allow: vec![PEER.to_string()],
                     ..LinkedSettings::default()

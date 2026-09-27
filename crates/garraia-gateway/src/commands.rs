@@ -569,6 +569,66 @@ pub fn register_commands(registry: &mut CommandRegistry) {
         },
     )));
 
+    // #1379: /project — o projeto ativo desta sessao, persistido no banco.
+    // Nome e id na resposta, nunca o caminho: quem le pode nao ser o operador.
+    registry.register(Box::new(ClosureCommand::new(
+        "project",
+        "Show, list, select or clear the active project of this session",
+        "/project [list|<name or id>|clear]",
+        Role::User,
+        true,
+        |ctx: &CommandContext| -> CommandResult {
+            let state = ctx
+                .state
+                .as_ref()
+                .unwrap()
+                .downcast_ref::<AppState>()
+                .unwrap();
+            let session_id = session_id_for(ctx, state);
+            let bloqueante = |fut: std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + '_>>| {
+                tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+            };
+            use crate::projetos_da_sessao as proj;
+            let arg = ctx.args.first().map(|s| s.trim()).unwrap_or("");
+            if arg.is_empty() {
+                return Ok(match proj::ativo(state, &session_id) {
+                    Some(p) => format!("📁 Projeto ativo: {}", p.rotulo()),
+                    None => "📁 Nenhum projeto ativo nesta conversa. `/project list` mostra os cadastrados; `/project <nome>` seleciona.".to_string(),
+                });
+            }
+            if arg.eq_ignore_ascii_case("list") {
+                return Ok(bloqueante(Box::pin(async move {
+                    let lista = proj::listar(state).await;
+                    if lista.is_empty() {
+                        "📁 Nenhum projeto cadastrado. O operador cria no console (Projects) ou por `POST /api/projects`.".to_string()
+                    } else {
+                        let itens: Vec<String> = lista.iter().map(|p| format!("• {}", p.rotulo())).collect();
+                        format!("📁 Projetos:\n{}", itens.join("\n"))
+                    }
+                })));
+            }
+            if arg.eq_ignore_ascii_case("clear") {
+                return Ok(bloqueante(Box::pin(async move {
+                    match proj::limpar(state, &session_id).await {
+                        Ok(true) => "📁 Projeto desmarcado: esta conversa volta a nao ter diretorio de trabalho.".to_string(),
+                        Ok(false) => "📁 Nao havia projeto ativo nesta conversa.".to_string(),
+                        Err(e) => format!("⚠️ {e}"),
+                    }
+                })));
+            }
+            let alvo = ctx.args.join(" ");
+            Ok(bloqueante(Box::pin(async move {
+                match proj::selecionar(state, &session_id, &alvo).await {
+                    Ok(proj::Selecao::Selecionado(p)) => format!(
+                        "📁 Projeto ativo: {}. As file tools desta conversa passam a olhar para ele (dentro do que a politica desta conversa permite).",
+                        p.rotulo()
+                    ),
+                    Ok(proj::Selecao::JaEra(p)) => format!("📁 Ja era o projeto ativo: {}", p.rotulo()),
+                    Err(e) => format!("⚠️ {e}"),
+                }
+            })))
+        },
+    )));
     // GAR-223: /mode - Get or set agent mode
     registry.register(Box::new(ClosureCommand::new(
         "mode",

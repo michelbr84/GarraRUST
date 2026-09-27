@@ -1,3 +1,4 @@
+pub mod capacidades;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 
@@ -18,6 +19,8 @@ pub mod memory_noise;
 pub mod memory_reindex;
 pub mod modes;
 pub mod multi_agent;
+/// #1438: observabilidade local de confiabilidade (ferramentas, MCP, canal).
+pub mod observabilidade;
 pub mod ollama;
 pub mod openai;
 pub mod orchestrator;
@@ -84,6 +87,7 @@ pub use turn_events::{TurnEvent, TurnSink, summarize_tool_input, summarize_tool_
 // #1343: o escopo de aprovacao entre turnos, para os canais aderirem.
 pub use tools::pending_approval::ApprovalScope;
 
+pub use capacidades::Capacidade;
 #[cfg(feature = "mcp")]
 pub use mcp::{McpFailureCause, McpServerState, McpServerStatus};
 #[cfg(feature = "mcp")]

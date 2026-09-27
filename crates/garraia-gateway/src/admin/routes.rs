@@ -141,10 +141,44 @@ pub fn build_admin_router(
         .route("/api/tools", get(handlers::admin_list_tools))
         // ── Phase 5: Channels & Sessions ──
         .route("/api/channels", get(handlers::admin_list_channels))
+        // #1381: o registro de capacidades (Tools/Read).
+        .route(
+            "/api/capabilities",
+            get(super::capabilities::admin_capabilities),
+        )
+        // #1420: o "Test WhatsApp" do console — o MESMO motor do `garraia
+        // doctor whatsapp`, colhido em processo (Channels/Read; viewer le).
+        .route(
+            "/api/whatsapp/doctor",
+            get(super::whatsapp_doctor::admin_whatsapp_doctor),
+        )
+        // ADR 0025 (#1402): a politica de acesso do WhatsApp pessoal, pelo
+        // mesmo motor da CLI; leitura com Channels/Read, mutacao com
+        // Channels/Write (o layer de CSRF cobre o POST).
+        .route(
+            "/api/whatsapp/access",
+            get(super::whatsapp_access::admin_whatsapp_access)
+                .post(super::whatsapp_access::admin_whatsapp_access_mutate),
+        )
+        .route(
+            "/api/whatsapp/access/audit",
+            get(super::whatsapp_access::admin_whatsapp_access_audit),
+        )
+        // #1422: o reset das mensagens recusadas (contadores em memoria).
+        .route(
+            "/api/whatsapp/access/rejections/reset",
+            post(super::whatsapp_access::admin_whatsapp_access_rejections_reset),
+        )
         .route("/api/sessions", get(handlers::admin_list_sessions))
         .route(
             "/api/sessions/{id}",
             delete(handlers::admin_disconnect_session),
+        )
+        // #1462: a leitura de qualquer sessao e do operador, com cookie e
+        // `manage_sessions`; a rota de cliente so alcanca as locais.
+        .route(
+            "/api/sessions/{id}/history",
+            get(handlers::admin_session_history),
         )
         // ── Phase 6: Observability ──
         .route("/api/logs", get(handlers::admin_logs))

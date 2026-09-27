@@ -908,9 +908,11 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv, bind_env: &BindDaEnv)
     validate_line(&config.channels, &mut findings, &push_warn);
     validate_whatsapp(&config.channels, &mut findings, &push_warn);
     validate_teams(&config.channels, &mut findings, &push_warn);
-    validate_retention(&config.memory, &mut findings, &push_err, &push_warn);
+    // #1436: as faixas da retencao moram em `crate::retention`, que o
+    // `PATCH /admin/api/retention` tambem usa — uma regra, dois consumidores.
+    findings.extend(crate::retention::memory_findings(&config.memory));
     validate_ingestion(&config.memory, &mut findings, &push_err, &push_warn);
-    validate_runs_retention(&config.runs, &mut findings, &push_err);
+    findings.extend(crate::retention::run_ledger_findings(&config.runs));
 
     // Channels: warn when a channel is enabled but its well-known token
     // env var is not set and no inline credential is present. This helps
@@ -1163,101 +1165,6 @@ fn validate_file_roots(
         }
     }
     findings
-}
-
-/// Politica de retencao da memoria do agente (#956, #959).
-///
-/// A retencao apaga dado do usuario, entao a validacao e mais dura do que o
-/// normal: uma faixa errada aqui nao produz um erro em runtime, produz uma
-/// varredura que apaga o que nao devia — ou que nunca roda e deixa o operador
-/// achando que roda.
-fn validate_retention(
-    memory: &crate::model::MemoryConfig,
-    findings: &mut Vec<Finding>,
-    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
-    push_warn: &impl Fn(&mut Vec<Finding>, &str, String),
-) {
-    use crate::model::{
-        RETENTION_INTERVAL_MAX_HOURS, RETENTION_INTERVAL_MIN_HOURS, RETENTION_MAX_AGE_MAX_DAYS,
-        RETENTION_MAX_AGE_MIN_DAYS,
-    };
-
-    let r = &memory.retention;
-
-    if r.max_age_days < RETENTION_MAX_AGE_MIN_DAYS || r.max_age_days > RETENTION_MAX_AGE_MAX_DAYS {
-        push_err(
-            findings,
-            "memory.retention.max_age_days",
-            format!(
-                "memory.retention.max_age_days ({}) must be in [{RETENTION_MAX_AGE_MIN_DAYS}, {RETENTION_MAX_AGE_MAX_DAYS}] days",
-                r.max_age_days
-            ),
-        );
-    }
-
-    if r.interval_hours < RETENTION_INTERVAL_MIN_HOURS
-        || r.interval_hours > RETENTION_INTERVAL_MAX_HOURS
-    {
-        push_err(
-            findings,
-            "memory.retention.interval_hours",
-            format!(
-                "memory.retention.interval_hours ({}) must be in [{RETENTION_INTERVAL_MIN_HOURS}, {RETENTION_INTERVAL_MAX_HOURS}] hours",
-                r.interval_hours
-            ),
-        );
-    }
-
-    // Politica ligada com a memoria desligada nao apaga nada — mas quem
-    // escreveu a config acha que apaga.
-    if r.enabled && !memory.enabled {
-        push_warn(
-            findings,
-            "memory.retention.enabled",
-            "memory.retention.enabled=true but memory.enabled=false; the retention sweep never runs"
-                .into(),
-        );
-    }
-
-    // Uma varredura mais rara que a propria janela deixa dado vencido vivo por
-    // ate um intervalo inteiro depois do prazo. Nao e erro, e surpresa.
-    if r.enabled && u64::from(r.interval_hours) > u64::from(r.max_age_days) * 24 {
-        push_warn(
-            findings,
-            "memory.retention.interval_hours",
-            format!(
-                "memory.retention.interval_hours ({}) is longer than max_age_days ({} days = {} hours); \
-                 entries can outlive the window by a full interval",
-                r.interval_hours,
-                r.max_age_days,
-                u64::from(r.max_age_days) * 24
-            ),
-        );
-    }
-}
-
-/// Retencao do ledger `agent_runs` (#1227 slice 5).
-///
-/// `0` e o default e quer dizer "nunca apaga" — valido, e sem finding: um
-/// Warning aqui faria o `config check --strict` de toda instalacao default
-/// sair nao-zero. O sinal de ledger crescendo sem teto e o aviso de boot do
-/// gateway. Acima do teto e Error: o numero deixou de ser politica.
-fn validate_runs_retention(
-    runs: &crate::model::RunsConfig,
-    findings: &mut Vec<Finding>,
-    push_err: &impl Fn(&mut Vec<Finding>, &str, String),
-) {
-    use crate::model::RUNS_RETENTION_MAX_DAYS;
-    if runs.retention_days > RUNS_RETENTION_MAX_DAYS {
-        push_err(
-            findings,
-            "runs.retention_days",
-            format!(
-                "runs.retention_days ({}) must be 0 (never delete) or in [1, {RUNS_RETENTION_MAX_DAYS}] days",
-                runs.retention_days
-            ),
-        );
-    }
 }
 
 /// Filtro de ruido na ingestao (#952).

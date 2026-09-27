@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use garraia_common::{Error, Result};
 use rmcp::model::{CallToolRequestParams, CallToolResponse, ContentBlock};
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 
+use super::confinamento::{Confinado, confinar_argumentos};
 use super::manager::McpManager;
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
@@ -38,6 +39,8 @@ pub struct McpTool {
 
     /// Timeout máximo para execução da ferramenta
     timeout: Duration,
+    /// `readOnlyHint`/`destructiveHint` declarados pelo servidor (#1385).
+    anotacoes: (Option<bool>, Option<bool>),
 }
 
 impl McpTool {
@@ -48,8 +51,10 @@ impl McpTool {
         descricao: Option<String>,
         schema_entrada: Value,
         timeout: Duration,
+        anotacoes: (Option<bool>, Option<bool>),
     ) -> Self {
         Self {
+            anotacoes,
             // Use "__" instead of "." — OpenAI/Anthropic APIs reject dots in tool names
             // (pattern: ^[a-zA-Z0-9_-]+$). The MCP call itself uses `nome_original`.
             nome_completo: format!("{nome_servidor}__{nome_original}"),
@@ -78,6 +83,15 @@ impl Tool for McpTool {
     fn input_schema(&self) -> Value {
         self.schema_entrada.clone()
     }
+    /// #1385: operacao de filesystem por nome (em qualquer servidor), senao
+    /// as anotacoes do servidor; sem anotacao, sem classe.
+    fn capacidades(&self) -> &'static [crate::capacidades::Capacidade] {
+        crate::capacidades::capacidades_da_operacao_mcp(
+            &self.nome_original,
+            self.anotacoes.0,
+            self.anotacoes.1,
+        )
+    }
 
     async fn execute(&self, context: &ToolContext, input: Value) -> Result<ToolOutput> {
         // GAR-190: audit log — every MCP tool invocation is recorded.
@@ -101,6 +115,34 @@ impl Tool for McpTool {
                 map.insert("input".to_string(), outro);
                 Some(map)
             }
+        };
+
+        // #1482: as operacoes de filesystem passam pelo MESMO jail das file
+        // tools nativas, com o diretorio DESTA sessao. O portao de nomes ja
+        // decidiu que a operacao roda; aqui decide-se ONDE ela pode tocar.
+        // Fora do jail, a recusa e a frase unica das tools nativas — nao
+        // nomeia caminho nem causa. Sem jail entregue (CLI local), passa.
+        let argumentos = match self.manager.jail_das_file_tools() {
+            Some(jail) => match confinar_argumentos(
+                &self.nome_original,
+                argumentos,
+                &jail,
+                context.working_dir.as_deref(),
+            ) {
+                Ok(Confinado::Passa(a)) => a,
+                Ok(Confinado::Reescrito(mapa)) => Some(mapa),
+                Ok(Confinado::RespondeLocal(texto)) => return Ok(ToolOutput::success(texto)),
+                Err(recusa) => {
+                    warn!(
+                        tool = %self.nome_completo,
+                        session = %context.session_id,
+                        recusa = ?recusa,
+                        "mcp filesystem: caminho fora do jail da sessao (#1482)"
+                    );
+                    return Ok(ToolOutput::error(recusa.message()));
+                }
+            },
+            None => argumentos,
         };
 
         let mut params = CallToolRequestParams::new(self.nome_original.clone());

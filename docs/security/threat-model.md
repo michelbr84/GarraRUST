@@ -1103,6 +1103,118 @@ esperado, não que a plataforma o entrega autenticado.
 
 ---
 
+## 5.17. Sessão por id — leitura de cliente vs. leitura do operador (#1462)
+
+Fechado em 2026-09-26 (opção 3, decisão do dono). Achado da revisão
+independente da PR #1448: `session_id` era uma fronteira furada por mais de
+uma porta. A PR #1468 fechou a **escrita** (`X-Session-Id` em
+`/v1/chat/completions` e `POST /api/sessions/{id}/messages`). Restava a
+**leitura direta**: `GET /api/sessions/{id}/history` devolvia o histórico
+verbatim (`{role, content}`) de qualquer sessão em memória — sem LLM no meio,
+parseável por script, enumerável em loop —, porque o ramo `EmMemoria` de
+`AppState::sessao_da_api` retornava cedo sem olhar a superfície. Uma sessão
+de canal está em memória no caso normal: é a hidratação do canal que a põe
+lá. Com `gateway.api_key` configurada o gate cobre a rota, mas a chave é
+única e compartilhada por toda a LAN, e os ids são adivinháveis por
+construção (`whatsapp-linked-<numero>`, `telegram-<chat>`): é um gap de
+**authz horizontal**, não de autenticação.
+
+**Desenho.** Duas leituras, duas credenciais. A regra do cliente mora num
+lugar só — `sessao_da_api` aplica `sessao_em_memoria_e_local` no ramo em
+memória e `sessao_readotavel_pela_api` no do disco —, e é o que
+`exigir_sessao_da_api` consulta para as três rotas por id:
+
+| Rota | Antes | Depois |
+|---|---|---|
+| `GET /api/sessions/{id}/history` | qualquer sessão em memória; do disco, só a REST | só sessão das superfícies locais (`api`, `vscode`, `web`, `parrot`), em memória ou readotada do disco; canal/mobile → `404` byte-idêntico ao de id inexistente, sem hidratar |
+| `GET /api/sessions` | toda sessão em memória (id + canal) | só as locais — o id de canal carrega telefone/chat id, e nomeá-lo já confirma que a conversa existe |
+| `DELETE /api/sessions/{id}` | desconectava, revogava e gravava `api_logout` em qualquer sessão em memória | só as locais; canal/mobile → `404`, sem tocar a sessão nem a linha |
+| `POST /api/sessions/{id}/messages`, `X-Session-Id` | só as locais (PR #1468) | idem; a checagem extra do handler saiu, a regra é a de `sessao_da_api` |
+| `/ws`, `resume` sem token | qualquer sessão em memória | só as locais; com token válido, o de sempre (o token prova o dono) |
+| `GET /admin/api/sessions/{id}/history` | — | **nova**: qualquer sessão, em memória ou só no `sessions.db`; cookie do `/admin` + `Permission::ManageSessions` (`viewer` → 403, sem cookie → 401); lê **sem hidratar**; cada leitura vai para a auditoria (`read_history` / `session`) |
+| `GET /chat/history` (mobile) | sessão derivada do `sub` do JWT | inalterada — nunca recebe id do cliente |
+
+O Web Console usa a leitura administrativa (listagem e Export) quando o
+navegador está logado no `/admin`; sem login, mostra só as sessões locais e
+diz onde entrar (`data-testid="sessions-admin-hint"`). A leitura do operador
+não hidrata de propósito: `hydrate_session_history(id, Some("api"))`
+reescreveria o `channel_id` da linha e anotaria a superfície REST na sessão
+— exatamente as marcas que `sessao_alcancavel_por_id_do_cliente` lê para
+decidir.
+
+| STRIDE | Ameaça | Mitigação | Residual |
+|---|---|---|---|
+| **I** Information disclosure | `GET /api/sessions/{id}/history` com id de canal lê a transcrição da vítima, sem LLM. | Regra única em `sessao_da_api` (memória e disco); `404` idêntico ao de id inexistente; a sessão não é hidratada nem reetiquetada. | As superfícies locais compartilham sessão por desenho (o VS Code continua o que começou no console) — é o operador dos dois lados. |
+| **I** Information disclosure | `GET /api/sessions` nomeia `whatsapp-linked-<telefone>` e `telegram-<chat>`. | A listagem de cliente filtra pela mesma regra. | O operador logado vê tudo — por definição. |
+| **T** Tampering | `DELETE /api/sessions/{id}` desconecta a sessão de um canal e grava `api_logout` na linha dela. | Mesma regra; a desconexão administrativa continua em `DELETE /admin/api/sessions/{id}` (cookie + CSRF). | — |
+| **S** Spoofing | `resume` sem token no `/ws` com id de canal em memória anexa o chat web à conversa do canal. | Sem token, só sessão local; o token continua sendo a prova de dono para o resto. | Entre sessões locais, o `resume` sem token segue permissivo, como antes (#922). |
+| **E** Elevation of privilege | `viewer` exporta transcrições pela rota administrativa. | `has_permission(role, ManageSessions)`; `viewer` não tem. | Papel custom herda o que declarar. |
+
+Testes: `crates/garraia-gateway/tests/leitura_de_sessao_por_id_do_cliente.rs`
+— 12 cenários sobre o `build_router` real com `sessions.db` real (memória e
+disco para cliente e operador, 401/403 da admin, auditoria, mobile por JWT,
+listagem, `DELETE`, `resume` do `/ws`, varredura do `webchat.html`) —, mais
+`x_session_id_nao_alcanca_sessao_de_canal.rs` (PR #1468) e a tabela unitária
+de `state.rs`.
+
+---
+
+## 5.18. WhatsApp pessoal — política de acesso por principal (ADR 0025, #1388)
+
+Fechado em 2026-09-26 (missão v0.4.6; PRs #1489, #1490, #1493, #1494, #1497,
+#1499, #1503). Quem manda mensagem para o número vinculado é, para o agente,
+um **remetente não autenticado** — a fronteira de confiança é a admissão do
+canal, e depois dela a política decide **até onde** cada um vai. Até a v0.4.5
+só existia a allowlist (`allow`/`owners`); a partir da 0.4.6 a seção
+`channels.whatsapp_linked.access` é a política v2.
+
+**Desenho.** Três decisões, nesta ordem e a cada turno, sempre pela config
+**viva** (`admissao_vigente`: um bloqueio ou uma revogação vale na mensagem
+seguinte, sem restart):
+
+1. **Admissão** (`access.admission`): `restricted` (default — só identidades
+   declaradas em `allow`/`owners`/`access.users`, ou pareadas por código) ou
+   `open` (**declarado**, nunca inferido de lista vazia nem de um `*` na
+   lista; a CLI e o console avisam e exigem confirmação para abrir). Fora da
+   admissão não há turno, não há resposta (responder confirmaria ao estranho
+   que o número roda um bot) e a recusa é **contada por motivo** (#1422:
+   `restricted_policy`, `unresolved_lid`, `blocked_user`, `channel_disabled`,
+   `prompt_injection`), só com o final da identidade.
+2. **Principal** (`principal_do_turno`): bloqueio vence tudo (inclusive
+   admissão aberta e pareamento anterior); depois dono, usuário declarado
+   (`level` `chat|read|full` + `write`), pareado por código (`read`),
+   desconhecido (`access.default`, `chat` por padrão) e **grupo** (política
+   do grupo ou `groups.default`; o dono dentro de um grupo **é o grupo**, e
+   nunca herda o poder do 1:1).
+3. **Teto ∧ piso**: o alcance do principal vira um `TetoDeCapacidades` por
+   classe (#1385) composto com o piso do modo da sessão pelo `ToolGate` do
+   runtime, por nome **e** classe, ferramenta MCP inclusa. `full` não é poder
+   absoluto: só o dono, em 1:1, num processo `isolated-pod` (ADR 0024) recebe
+   o piso do pod; em `standard` todo mundo fica no piso `search` (salvo
+   `default_mode` declarado). `write` liga **só** escrita de arquivo (nativa
+   e MCP) — shell, dispositivo, mensagem e agenda são controles separados.
+
+**Ameaças e mitigação.**
+
+| Ameaça | Mitigação | Prova |
+|---|---|---|
+| Estranho conversa com o Garra | admissão `restricted` por padrão; `open` só declarado e confirmado | `tests/politica.rs`; E2E `desconhecido_e_negado_em_restricted_e_so_conversa_em_open` |
+| Escalada via grupo (dono presente) | grupo é principal próprio, sem herança | E2E `grupo_nao_herda_o_full_do_dono`; ADR 0024 tests |
+| Usuário `read` muta arquivos (nativa ou MCP) | teto por classe nega `filesystem.write` e `mcp.write`; MCP confinado ao jail (#1482) | E2E `usuario_read_le_mas_nao_muda_…` (nativa e MCP com a mesma recusa) |
+| Mudança de política não pega a sessão viva | política relida por turno; bloqueio descarta a mensagem seguinte | E2E (write a quente; `blocked: true` a quente) |
+| Config legada vira brecha | `allow`/`owners` legados ficam sem teto (o piso decide, como sempre); política malformada falha fechado com `avisos` | `PoliticaDeAcesso::da_secao` |
+| Superfícies divergem (CLI × API × console) | um motor: `visao::documento`, `mutacao::aplicar`, `impacto` pelo `ToolGate` real, `auditoria` | `tests/admin_whatsapp_access.rs`, CLI `whatsapp/tests/politica.rs` |
+| Identidade vaza em log/audit/console | `…1234` em toda superfície; guardas de fonte nos testes | `fonte_nao_loga_jid_cru_nem_material_de_sessao` |
+
+**Residual.** `open` + `default` acima de `chat` é escolha do operador (o
+console e a CLI mostram o default real antes de confirmar); `default_mode`
+declarado sobe o piso de todo admitido (avisado no boot); um usuário
+declarado só em `allow` legado não tem teto próprio e fica no piso do modo —
+migrar para `access.users` é o passo, e `garraia whatsapp access` mostra
+quem está assim.
+
+---
+
 ## 6. Mobile apps (`apps/garraia-mobile`)
 
 **Divergência JWT TTL (conhecida)**: o path mobile legacy (`crates/garraia-gateway/src/mobile_auth.rs`, wired via GAR-335) emite JWT com TTL de **30 dias** (`JWT_EXPIRY_SECS = 30 * 24 * 3600`), distinto do access token de 15 min do `garraia-auth` workspace (plans 0011/0012). Coexistência é temporária — consolidação depende de GAR-413 (migrate workspace) + migração dos clientes mobile para `/v1/auth/*`. Enquanto coexistem, a janela de hijack de session mobile é 48× maior que a do fluxo workspace. Risco documentado, mitigação parcial via `flutter_secure_storage` (Keystore/Keychain) + refresh token rotation planejada.
@@ -1146,6 +1258,7 @@ Agregado das matrizes. Prioridade = (likelihood × impact) dado o estado atual d
 - **Rate limit per-user** (plan 0022 F-03).
 - **Metrics endpoint auth** (Bearer + IP ACL + startup fail-closed, plan 0024).
 - **Telemetry hardening**: REDACT_HEADERS + idempotent init + cardinality guard debug assert (plan 0025/0026).
+- **WhatsApp pessoal — política de acesso por principal** (ADR 0025, §5.18): admissão declarada, principal por turno pela config viva, teto por classe ∧ piso do modo, grupo sem herança, recusas contadas por motivo e audit com `…1234`.
 
 ---
 

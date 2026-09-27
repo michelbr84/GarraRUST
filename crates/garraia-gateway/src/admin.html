@@ -546,9 +546,13 @@ tr:hover { background: var(--bg-hover); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
           <span class="nav-label">Channels</span>
         </div>
-        <div class="nav-item" data-page="sessions">
+        <div class="nav-item" data-page="sessions" data-testid="nav-sessions">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
           <span class="nav-label">Sessions</span>
+        </div>
+        <div class="nav-item" data-page="whatsapp_access" data-testid="nav-whatsapp-access">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1.5"/></svg>
+          <span class="nav-label">WhatsApp Access</span>
         </div>
       </div>
       <div class="nav-section">
@@ -747,7 +751,7 @@ var mcpRefreshTimer = null;
 var pages = {
   dashboard: pageDashboard, mcp: pageMcp, providers: pageProviders, secrets: pageSecrets,
   config: pageConfig, memory: pageMemory, tools: pageTools, channels: pageChannels,
-  sessions: pageSessions, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
+  sessions: pageSessions, whatsapp_access: pageWhatsappAccess, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
   templates: pageTemplates, audit: pageAudit, security: pageSecurity, users: pageUsers,
   about: pageAbout, account: pageAccount
 };
@@ -770,7 +774,7 @@ function pageTitle(page) {
   var titles = {
     dashboard:'Dashboard', mcp:'MCP Servers', providers:'Providers', secrets:'Secrets',
     config:'Configuration', memory:'Memory', tools:'Tools', channels:'Channels',
-    sessions:'Sessions', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
+    sessions:'Sessions', whatsapp_access:'WhatsApp Access', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
     templates:'Templates', audit:'Audit Log', security:'Security', users:'Users',
     about:'About', account:'Account'
   };
@@ -1263,6 +1267,53 @@ function showAddChannelForm() {
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────
+// #1415: o painel de capacidades de UMA conversa — o mesmo registro do
+// `garra_status`, com o portao daquela sessao (piso do canal ∧ teto).
+async function showSessionCapabilities(sessionId) {
+  var area = document.getElementById('session-capabilities-panel');
+  if (!area) {
+    area = el('div', { id: 'session-capabilities-panel', 'data-testid': 'session-capabilities-panel' });
+    document.getElementById('content-area').prepend(area);
+  }
+  clearEl(area);
+  area.appendChild(el('div', { className: 'card', textContent: 'Loading capabilities…' }));
+  try {
+    var data = await apiGet('/capabilities?session_id=' + encodeURIComponent(sessionId));
+    clearEl(area);
+    var card = el('div', { className: 'card' });
+    var head = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;' });
+    var sess = data.session || {};
+    var titulo = 'Capabilities of ' + truncate(sessionId, 28);
+    if (sess.principal) titulo += ' · ' + sess.principal + (sess.level ? ' (' + sess.level + (sess.write ? ', write on' : ', write off') + ')' : '');
+    if (sess.effective_mode) titulo += ' · mode ' + sess.effective_mode;
+    head.appendChild(el('h3', { 'data-testid': 'session-capabilities-title', textContent: titulo }));
+    head.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'session-capabilities-close', textContent: 'Close', onClick: function () { clearEl(area); } }));
+    card.appendChild(head);
+    var counts = data.counts || {};
+    card.appendChild(el('div', { className: 'wa-hint', 'data-testid': 'session-capabilities-counts', textContent: 'visible ' + (counts.visible || 0) + ' · denied ' + (counts.denied || 0) + ' · unavailable ' + (counts.unavailable || 0) + ' · unhealthy ' + (counts.unhealthy || 0) + ' · not configured ' + (counts.not_configured || 0) }));
+    var t = el('table', { className: 'wa-table' });
+    t.innerHTML = '<thead><tr><th>Capability</th><th>Source</th><th>State</th><th>Reason</th><th>Remediation</th></tr></thead>';
+    var tb = el('tbody');
+    var cls = { visible: 'badge-success', denied: 'badge-error', unavailable: 'badge-neutral', unhealthy: 'badge-error', not_configured: 'badge-neutral' };
+    (data.capabilities || []).forEach(function (c) {
+      var tr = el('tr', { 'data-testid': 'session-capability-row', 'data-capability': c.name, 'data-state': c.state });
+      tr.appendChild(el('td', null, [el('code', { textContent: c.name })]));
+      tr.appendChild(el('td', { textContent: c.source + (c.server ? ' (' + c.server + ')' : '') }));
+      tr.appendChild(el('td', null, [el('span', { className: 'badge ' + (cls[c.state] || 'badge-neutral'), textContent: c.state })]));
+      tr.appendChild(el('td', { textContent: c.reason || '' }));
+      tr.appendChild(el('td', { textContent: c.remediation || '' }));
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    card.appendChild(t);
+    area.appendChild(card);
+    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    clearEl(area);
+    area.appendChild(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
+  }
+}
+
 async function pageSessions() {
   try {
     var data = await apiGet('/sessions');
@@ -1274,15 +1325,21 @@ async function pageSessions() {
     grid.appendChild(sc);
     frag.appendChild(grid);
     var card = el('div', { className: 'card' });
-    if (sessions.length === 0) { card.appendChild(el('div', { className: 'empty-state', textContent: 'No active sessions.' })); }
+    if (sessions.length === 0) { card.appendChild(el('div', { className: 'empty-state', 'data-testid': 'sessions-empty', textContent: 'No active sessions.' })); }
     else {
-      var tbl = el('table');
-      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Session ID' }), el('th', { textContent: 'Tenant' }), el('th', { textContent: 'User' }), el('th', { textContent: 'Channel' }), el('th', { textContent: 'Status' }), el('th', { textContent: 'History' }), el('th', { textContent: 'Actions' })])]));
+      var tbl = el('table', { 'data-testid': 'sessions-table' });
+      tbl.appendChild(el('thead', null, [el('tr', null, [el('th', { textContent: 'Session ID' }), el('th', { textContent: 'Tenant' }), el('th', { textContent: 'User' }), el('th', { textContent: 'Channel' }), el('th', { textContent: 'Status' }), el('th', { textContent: 'History' }), el('th', { textContent: 'Principal' }), el('th', { textContent: 'Effective mode' }), el('th', { textContent: 'Project' }), el('th', { textContent: 'Actions' })])]));
       var tbody = el('tbody');
       sessions.forEach(s => {
         var actions = el('td');
+        // #1415: o painel de capacidades DESTA conversa (piso do canal + teto do principal).
+        actions.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'session-capabilities', textContent: 'Capabilities', onClick: () => showSessionCapabilities(s.id) }));
         if (can('sessions', 'delete')) actions.appendChild(el('button', { className: 'btn-danger btn-sm', textContent: 'Disconnect', onClick: () => disconnectSession(s.id) }));
-        tbody.appendChild(el('tr', null, [el('td', null, [el('code', { textContent: truncate(s.id, 20) })]), el('td', { textContent: s.tenant_id || '-' }), el('td', { textContent: s.user_id || '-' }), el('td', { textContent: s.channel_id || '-' }), el('td', null, [badgeFor(s.connected, 'Connected', 'Disconnected')]), el('td', { textContent: String(s.history_len || 0) }), actions]));
+        // #1409: principal, nivel e modo efetivo (WhatsApp pessoal); projeto ativo sem caminho.
+        var principal = s.principal ? (s.principal + (s.level ? ' · ' + s.level + (s.write === true ? ' · write on' : (s.write === false ? ' · write off' : '')) : '')) : '—';
+        var modo = s.effective_mode || s.chosen_mode || '—';
+        var projeto = s.project_name ? (s.project_name + (s.has_workspace ? '' : ' (sem workspace)')) : (s.has_workspace ? 'workspace' : '—');
+        tbody.appendChild(el('tr', { 'data-testid': 'session-row', 'data-session-id': s.id }, [el('td', null, [el('code', { textContent: truncate(s.id, 20) })]), el('td', { textContent: s.tenant_id || '-' }), el('td', { textContent: s.user_id || '-' }), el('td', { textContent: s.channel_id || '-' }), el('td', null, [badgeFor(s.connected, 'Connected', 'Disconnected')]), el('td', { textContent: String(s.history_len || 0) }), el('td', { 'data-testid': 'session-principal', textContent: principal }), el('td', { 'data-testid': 'session-effective-mode', textContent: modo }), el('td', { 'data-testid': 'session-project', textContent: projeto }), actions]));
       });
       tbl.appendChild(tbody); card.appendChild(tbl);
     }
@@ -1882,6 +1939,471 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   currentUser = null; csrfToken = ''; permissions = null; showLogin();
 });
 document.getElementById('sidebar-toggle').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
+// ─── WhatsApp Access & Permissions (ADR 0025; #1402–#1408, #1411, #1413) ────
+// Terceiro consumidor do caminho unico: le `GET /admin/api/whatsapp/access`
+// (o mesmo documento de `garraia whatsapp access --json`) e muda por
+// `POST /admin/api/whatsapp/access`. Toda mutacao passa por um PREVIEW
+// (`dry_run: true` → mudancas + impacto por principal) antes de confirmar.
+// Identidades so por `…1234`; a API nunca revela. `data-testid` estaveis:
+// sao o contrato do spec Playwright (plan 0052).
+var waAccessState = { doc: null, pending: null };
+
+function waLevelLabel(level, write) {
+  if (!level) return '—';
+  return level + (level === 'chat' ? '' : (write ? ' · write on' : ' · write off'));
+}
+
+function waPrincipalLabel(p) {
+  var map = { dono: 'Owner', usuario: 'User', pareado: 'Paired (code)', desconhecido: 'Unknown (open)', grupo: 'Group', bloqueado: 'Blocked', estranho: 'Not admitted' };
+  return map[p] || p;
+}
+
+async function pageWhatsappAccess() {
+  try {
+    var data = await apiGet('/whatsapp/access');
+    waAccessState.doc = data;
+    renderContent(waAccessView(data));
+    waLoadAudit();
+  } catch (e) {
+    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
+  }
+}
+
+function waAccessView(data) {
+  var pol = data.policy || {};
+  var frag = document.createDocumentFragment();
+  var canEdit = can('channels', 'update');
+
+  // ── Resumo + admissao ──
+  var head = el('div', { className: 'card', 'data-testid': 'wa-access-summary' });
+  head.appendChild(el('h3', { textContent: 'WhatsApp (linked device) — access policy' }));
+  var meta = el('div', { style: 'display:flex;gap:16px;flex-wrap:wrap;margin:8px 0;' });
+  meta.appendChild(badgeFor(pol.enabled, 'Channel on', 'Channel off'));
+  meta.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'wa-access-profile', textContent: 'profile: ' + (pol.execution_profile || '?') + ' · owner floor: ' + (pol.owner_floor_mode || '?') + ' · default floor: ' + (pol.default_mode || '?') }));
+  meta.appendChild(el('span', { className: 'badge ' + (data.hot_reload ? 'badge-success' : 'badge-neutral'), 'data-testid': 'wa-access-hot-reload', textContent: data.hot_reload ? 'hot reload: next message' : 'hot reload: off (restart applies)' }));
+  var counts = pol.counts || {};
+  meta.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'wa-access-counts', textContent: 'authorized ' + (counts.authorized || 0) + ' · owners ' + (counts.owners || 0) + ' · blocked ' + (counts.blocked || 0) }));
+  head.appendChild(meta);
+
+  var adm = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:10px 0;' });
+  adm.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Admission:' }));
+  var isOpen = pol.admission === 'open';
+  adm.appendChild(el('span', { className: 'badge ' + (isOpen ? 'badge-error' : 'badge-success'), 'data-testid': 'wa-access-admission', textContent: pol.admission || '?' }));
+  if (canEdit) {
+    adm.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-admission-restricted', disabled: !isOpen ? 'disabled' : null, textContent: 'Restricted', onClick: function () { waPreview({ action: 'restricted' }, 'Only declared identities (and code pairing) get in.'); } }));
+    adm.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-admission-open', disabled: isOpen ? 'disabled' : null, textContent: 'Anyone (open)', onClick: function () { waPreview({ action: 'open' }, 'ANYONE who messages this number will talk to GarraIA, with the unknown-sender default below.'); } }));
+  }
+  head.appendChild(adm);
+
+  var def = pol['default'] || {};
+  var defRow = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0;' });
+  defRow.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Unknown-sender default (only with open):' }));
+  defRow.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'wa-access-default', textContent: waLevelLabel(def.level, def.write) }));
+  if (canEdit) {
+    var defLevel = el('select', { 'data-testid': 'wa-access-default-level' });
+    ['chat', 'read'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if (def.level === l) o.selected = true; defLevel.appendChild(o); });
+    var defWrite = el('input', { type: 'checkbox', 'data-testid': 'wa-access-default-write' }); defWrite.checked = !!def.write;
+    defRow.appendChild(defLevel);
+    defRow.appendChild(el('label', {}, [defWrite, ' write']));
+    defRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-default-apply', textContent: 'Apply', onClick: function () { waPreview({ action: 'default', level: defLevel.value, write: defWrite.checked }); } }));
+  }
+  head.appendChild(defRow);
+
+  var grp = pol.groups || {};
+  var grpRow = el('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap;' });
+  grpRow.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Groups:' }));
+  grpRow.appendChild(el('span', { className: 'badge ' + (grp.enabled ? 'badge-success' : 'badge-neutral'), 'data-testid': 'wa-access-groups', textContent: (grp.enabled ? 'on' : 'off') + ' · default ' + waLevelLabel((grp['default'] || {}).level, (grp['default'] || {}).write) + ' · ' + (grp.declared || 0) + ' with own policy' }));
+  if (canEdit) {
+    grpRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-groups-toggle', textContent: grp.enabled ? 'Turn off' : 'Turn on', onClick: function () { waPreview({ action: 'groups', enabled: !grp.enabled }); } }));
+    var gLevel = el('select', { 'data-testid': 'wa-access-groups-default-level' });
+    ['chat', 'read', 'full'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if ((grp['default'] || {}).level === l) o.selected = true; gLevel.appendChild(o); });
+    var gWrite = el('input', { type: 'checkbox', 'data-testid': 'wa-access-groups-default-write' }); gWrite.checked = !!(grp['default'] || {}).write;
+    grpRow.appendChild(gLevel);
+    grpRow.appendChild(el('label', {}, [gWrite, ' write']));
+    grpRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-groups-default-apply', textContent: 'Set default', onClick: function () { waPreview({ action: 'group-default', level: gLevel.value, write: gWrite.checked }); } }));
+    var gJid = el('input', { type: 'text', placeholder: '1203630000@g.us', 'data-testid': 'wa-access-group-jid', style: 'width:200px;' });
+    var gjLevel = el('select', { 'data-testid': 'wa-access-group-level' });
+    ['chat', 'read', 'full'].forEach(function (l) { gjLevel.appendChild(el('option', { value: l, textContent: l })); });
+    grpRow.appendChild(gJid);
+    grpRow.appendChild(gjLevel);
+    grpRow.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-group-add', textContent: 'Set group', onClick: function () { waPreview({ action: 'group', jid: gJid.value, level: gjLevel.value, write: false }); } }));
+  }
+  head.appendChild(grpRow);
+
+  if ((pol.warnings || []).length) {
+    var warn = el('div', { className: 'wa-alert wa-alert-warning', 'data-testid': 'wa-access-warnings' });
+    (pol.warnings || []).forEach(function (w) { warn.appendChild(el('div', { textContent: '! ' + w })); });
+    head.appendChild(warn);
+  }
+  if (canEdit) {
+    var tools = el('div', { className: 'toolbar', style: 'margin-top:10px;' });
+    tools.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-reset', textContent: 'Reset to safe defaults', onClick: function () { waPreview({ action: 'reset' }, 'Restricted admission, chat default, groups off and without policy, every declared level/write removed. Owners and blocks stay.'); } }));
+    head.appendChild(tools);
+  }
+  frag.appendChild(head);
+
+  // ── Test WhatsApp (#1420): o MESMO motor do `garraia doctor whatsapp` ──
+  frag.appendChild(waDoctorCard());
+
+  // ── Preview / confirm (preenchido por waPreview) ──
+  frag.appendChild(el('div', { id: 'wa-access-preview', 'data-testid': 'wa-access-preview', style: 'display:none;' }));
+
+  // ── Adicionar numero (#1403) ──
+  if (canEdit) {
+    var add = el('div', { className: 'card', 'data-testid': 'wa-access-add-card' });
+    add.appendChild(el('h3', { textContent: 'Add phone / identity' }));
+    var addRow = el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;' });
+    var addId = el('input', { type: 'text', placeholder: '+55 11 99999-8888 or 1234@lid', 'data-testid': 'wa-access-add-identity', style: 'width:220px;' });
+    var addLevel = el('select', { 'data-testid': 'wa-access-add-level' });
+    ['chat', 'read', 'full'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if (l === 'read') o.selected = true; addLevel.appendChild(o); });
+    var addWrite = el('input', { type: 'checkbox', 'data-testid': 'wa-access-add-write' });
+    addRow.appendChild(addId); addRow.appendChild(addLevel); addRow.appendChild(el('label', {}, [addWrite, ' write']));
+    addRow.appendChild(el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-access-add', textContent: 'Add', onClick: function () {
+      waPreview({ action: 'level', identity: addId.value, level: addLevel.value }, null, addWrite.checked ? { action: 'write', identity: addId.value, write: true } : null);
+    } }));
+    add.appendChild(addRow);
+    add.appendChild(el('div', { className: 'wa-hint', textContent: 'Level is a ceiling combined with the session mode: it only removes, never adds. "write" is file writing only (native and MCP) — never shell.' }));
+    frag.appendChild(add);
+  }
+
+  // ── Matriz por principal (#1411) ──
+  var card = el('div', { className: 'card' });
+  card.appendChild(el('h3', { textContent: 'Effective capabilities per principal' }));
+  var table = el('table', { className: 'wa-table', 'data-testid': 'wa-access-principals' });
+  var thead = el('thead'); thead.innerHTML = '<tr><th>Principal</th><th>Identity</th><th>Floor</th><th>Level</th><th>Write</th><th>Can</th><th></th></tr>';
+  table.appendChild(thead);
+  var tbody = el('tbody');
+  (pol.principals || []).forEach(function (p) {
+    var tr = el('tr', { 'data-testid': 'wa-access-principal-row', 'data-principal': p.principal, 'data-last4': p.last4 || '' });
+    tr.appendChild(el('td', { textContent: waPrincipalLabel(p.principal) }));
+    tr.appendChild(el('td', { textContent: p.last4 || '—' }));
+    tr.appendChild(el('td', { textContent: p.mode || '—' }));
+    var levelTd = el('td');
+    var editable = canEdit && p.last4 && (p.principal === 'usuario' || p.principal === 'bloqueado') && !(p.last4 || '').startsWith('grupo');
+    if (editable && p.principal === 'usuario') {
+      var sel = el('select', { 'data-testid': 'wa-access-level' });
+      ['chat', 'read', 'full'].forEach(function (l) { var o = el('option', { value: l, textContent: l }); if (p.level === l) o.selected = true; sel.appendChild(o); });
+      sel.addEventListener('change', function () { waPreview({ action: 'level', identity: waIdentityOf(p), level: sel.value }); });
+      levelTd.appendChild(sel);
+    } else {
+      levelTd.textContent = p.level || (p.principal === 'dono' ? 'no ceiling' : '—');
+    }
+    tr.appendChild(levelTd);
+    var writeTd = el('td');
+    if (editable && p.principal === 'usuario' && p.level !== 'chat') {
+      var cb = el('input', { type: 'checkbox', 'data-testid': 'wa-access-write' }); cb.checked = !!p.write;
+      cb.addEventListener('change', function () { waPreview({ action: 'write', identity: waIdentityOf(p), write: cb.checked }); });
+      writeTd.appendChild(cb);
+    } else {
+      writeTd.textContent = p.write === null || p.write === undefined ? '—' : (p.write ? 'on' : 'off');
+    }
+    tr.appendChild(writeTd);
+    var capTd = el('td');
+    (p.capabilities || []).forEach(function (c) { capTd.appendChild(el('span', { className: 'badge badge-neutral', style: 'margin:1px;', textContent: c })); });
+    if (!(p.capabilities || []).length) capTd.textContent = p.admitted === false ? 'not admitted' : 'no tools';
+    tr.appendChild(capTd);
+    var actTd = el('td', { style: 'white-space:nowrap;' });
+    if (editable) {
+      if (p.principal === 'bloqueado') {
+        actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-unblock', textContent: 'Unblock', onClick: function () { waPreview({ action: 'unblock', identity: waIdentityOf(p) }); } }));
+      } else {
+        actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-block', textContent: 'Block', onClick: function () { waPreview({ action: 'block', identity: waIdentityOf(p) }); } }));
+        actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-owner', textContent: 'Make owner', onClick: function () { waPreview({ action: 'owner', identity: waIdentityOf(p) }, 'In isolated-pod the owner gets the `code` floor in 1:1 chats: files, shell, MCP tools.'); } }));
+      }
+      actTd.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-remove', textContent: 'Remove', onClick: function () { waPreview({ action: 'remove', identity: waIdentityOf(p) }); } }));
+    } else if (canEdit && p.principal === 'dono' && p.last4) {
+      actTd.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-unowner', textContent: 'Demote', onClick: function () { waPreview({ action: 'unowner', identity: waIdentityOf(p) }); } }));
+      actTd.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-access-remove', textContent: 'Remove', onClick: function () { waPreview({ action: 'remove', identity: waIdentityOf(p) }); } }));
+    }
+    tr.appendChild(actTd);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  card.appendChild(table);
+  frag.appendChild(card);
+
+  // ── Rejected messages (#1422) ──
+  frag.appendChild(waRejectionsCard(data.rejections || {}, canEdit));
+
+  // ── Audit (#1414) ──
+  var audit = el('div', { className: 'card', 'data-testid': 'wa-access-audit' });
+  audit.appendChild(el('h3', { textContent: 'Access policy audit (latest first)' }));
+  audit.appendChild(el('div', { id: 'wa-access-audit-body', textContent: 'Loading…' }));
+  frag.appendChild(audit);
+  return frag;
+}
+
+// A API so conhece `…1234`; para agir sobre uma linha, o console manda o
+// `last4` como `identity_last4` e o gateway resolve entre as identidades
+// DECLARADAS (unica por construcao, senao 409). A identidade inteira nunca
+// desce ao navegador.
+function waIdentityOf(p) { return { last4: p.last4 }; }
+
+// #1422: o que o portao recusou desde o boot — contagens por motivo e as
+// ultimas N, so com o final (`…1234`). Cada motivo tem UMA acao, a do proprio
+// motivo; o reset e em dois cliques e auditado no gateway.
+var WA_REASON_LABEL = {
+  restricted_policy: 'Restricted policy (not allowed)',
+  unresolved_lid: 'Unresolved LID (no number)',
+  blocked_user: 'Blocked user',
+  channel_disabled: 'Channel disabled',
+  prompt_injection: 'Prompt injection (text refused)',
+  policy_not_admitted: 'Policy did not admit',
+};
+function waRejectionsCard(rej, canEdit) {
+  var card = el('div', { className: 'card', 'data-testid': 'wa-rejections' });
+  var head = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;' });
+  head.appendChild(el('h3', { textContent: 'Rejected messages (since boot)' }));
+  var total = Number(rej.total || 0);
+  head.appendChild(el('span', { className: 'badge ' + (total ? 'badge-warning' : 'badge-neutral'), 'data-testid': 'wa-rejections-total', textContent: total + ' rejected' }));
+  card.appendChild(head);
+  var ret = rej.retention || {};
+  card.appendChild(el('div', { className: 'wa-hint', 'data-testid': 'wa-rejections-retention', textContent: 'Counters since the gateway booted' + (rej.last_reset ? ' (reset at ' + rej.last_reset + ')' : '') + '; last ' + (ret.recent_max || 50) + ' kept in memory; nothing but the last 4 digits is stored. Reset: gateway restart or the button below.' }));
+  var by = rej.by_reason || {};
+  var reasons = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;' });
+  Object.keys(WA_REASON_LABEL).forEach(function (r) {
+    reasons.appendChild(el('span', { className: 'badge ' + (Number(by[r] || 0) ? 'badge-warning' : 'badge-neutral'), 'data-testid': 'wa-rejection-count', 'data-reason': r, textContent: WA_REASON_LABEL[r] + ': ' + Number(by[r] || 0) }));
+  });
+  card.appendChild(reasons);
+  var recent = rej.recent || [];
+  if (!recent.length) {
+    card.appendChild(el('div', { className: 'empty-state', 'data-testid': 'wa-rejections-empty', textContent: 'No rejected message since boot.' }));
+  } else {
+    var t = el('table', { className: 'wa-table' });
+    t.innerHTML = '<thead><tr><th>When (UTC)</th><th>Reason</th><th>Identity</th><th>Where</th><th>Action</th></tr></thead>';
+    var tb = el('tbody');
+    recent.forEach(function (x) {
+      var tr = el('tr', { 'data-testid': 'wa-rejection-row', 'data-reason': x.reason, 'data-last4': x.identity_last4 });
+      tr.appendChild(el('td', { textContent: x.at }));
+      tr.appendChild(el('td', { textContent: WA_REASON_LABEL[x.reason] || x.reason, title: (rej.remediation || {})[x.reason] || '' }));
+      tr.appendChild(el('td', null, [el('code', { textContent: x.identity_last4 })]));
+      tr.appendChild(el('td', { textContent: x.group ? 'group' : '1:1' }));
+      var act = el('td');
+      var btn = waRejectionAction(x, canEdit);
+      if (btn) act.appendChild(btn);
+      tr.appendChild(act);
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    card.appendChild(t);
+  }
+  if (canEdit) {
+    var foot = el('div', { style: 'margin-top:8px;display:flex;gap:8px;align-items:center;' });
+    var resetBtn = el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-rejections-reset', textContent: 'Reset counters', disabled: total === 0 });
+    resetBtn.onclick = function () {
+      clearEl(foot);
+      foot.appendChild(el('span', { className: 'wa-hint', textContent: 'Clear ' + total + ' rejection(s)? This is audited and cannot be undone.' }));
+      foot.appendChild(el('button', { className: 'btn-danger btn-sm', 'data-testid': 'wa-rejections-reset-confirm', textContent: 'Confirm reset', onClick: async function () {
+        try { var d = await apiPost('/whatsapp/access/rejections/reset', {}); toast('Cleared ' + (d.cleared || 0) + ' rejection(s)', 'success'); pageWhatsappAccess(); }
+        catch (e) { toast(e.message, 'error'); }
+      } }));
+      foot.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-rejections-reset-cancel', textContent: 'Cancel', onClick: function () { pageWhatsappAccess(); } }));
+    };
+    foot.appendChild(resetBtn);
+    card.appendChild(foot);
+  }
+  return card;
+}
+// A acao de cada motivo. O gateway so conhece o final: para autorizar e
+// preciso digitar o numero inteiro, entao o botao leva ao formulario com a
+// dica; para desbloquear, leva a linha da pessoa (que a matriz ja mostra).
+function waRejectionAction(x, canEdit) {
+  var label = null, run = null;
+  if (x.reason === 'restricted_policy') {
+    label = 'Allow…';
+    run = function () {
+      var input = document.querySelector('[data-testid="wa-access-add-identity"]');
+      if (!input) { toast('You cannot edit the policy with your role.', 'info'); return; }
+      input.placeholder = 'full number ending in ' + String(x.identity_last4).replace('…', '');
+      input.focus(); input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast('Type the full number (with country code) ending in ' + String(x.identity_last4).replace('…', '') + ' and choose a level.', 'info');
+    };
+  } else if (x.reason === 'blocked_user') {
+    label = 'Go to user';
+    run = function () {
+      var row = document.querySelector('[data-testid="wa-access-principal-row"][data-last4="' + x.identity_last4 + '"]');
+      if (!row) { toast('This identity is no longer in the policy.', 'info'); return; }
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      row.style.outline = '2px solid var(--garra-gold, #ffd400)';
+      setTimeout(function () { row.style.outline = ''; }, 2500);
+    };
+  } else if (x.reason === 'unresolved_lid') {
+    label = 'How to pair';
+    run = function () { toast('Ask the person to send a /pair code, or allow the full <id>@lid from the CLI (garraia whatsapp allow <id>@lid).', 'info'); };
+  } else if (x.reason === 'channel_disabled') {
+    label = 'Channels';
+    run = function () { navigate('channels'); };
+  }
+  if (!label) return null;
+  if (!canEdit && (x.reason === 'restricted_policy' || x.reason === 'blocked_user')) return null;
+  return el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-rejection-action', 'data-action': x.reason, textContent: label, onClick: run });
+}
+
+async function waPreview(req, warning, followUp) {
+  var body = Object.assign({}, req);
+  if (body.identity && typeof body.identity === 'object') { body.identity_last4 = body.identity.last4; delete body.identity; }
+  var panel = document.getElementById('wa-access-preview');
+  if (!panel) return;
+  clearEl(panel); panel.style.display = 'block';
+  panel.appendChild(el('div', { className: 'card', textContent: 'Computing impact…' }));
+  try {
+    var preview = await apiPost('/whatsapp/access', Object.assign({}, body, { dry_run: true }));
+    clearEl(panel);
+    var card = el('div', { className: 'card' });
+    card.appendChild(el('h3', { textContent: 'Preview: ' + body.action }));
+    if (warning) card.appendChild(el('div', { className: 'wa-alert wa-alert-warning', 'data-testid': 'wa-access-preview-warning', textContent: warning }));
+    var changes = el('div', { 'data-testid': 'wa-access-preview-changes' });
+    if (!preview.changed) changes.appendChild(el('div', { textContent: 'Nothing to change: the policy is already like that.' }));
+    (preview.changes || []).forEach(function (c) { changes.appendChild(el('div', { textContent: '• ' + c })); });
+    card.appendChild(changes);
+    var impact = el('div', { 'data-testid': 'wa-access-preview-impact', style: 'margin-top:8px;' });
+    if (!(preview.impact || []).length) impact.appendChild(el('div', { className: 'wa-hint', textContent: 'Impact: no principal gains or loses any tool.' }));
+    (preview.impact || []).forEach(function (d) {
+      var who = d.principal + (d.target ? ' ' + d.target : '');
+      var parts = [];
+      if ((d.gains || []).length) parts.push('gains ' + d.gains.join(', '));
+      if ((d.loses || []).length) parts.push('loses ' + d.loses.join(', '));
+      impact.appendChild(el('div', { textContent: '• ' + who + ': ' + parts.join(' · ') }));
+    });
+    card.appendChild(impact);
+    var btns = el('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:10px;' });
+    btns.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-cancel', textContent: 'Cancel', onClick: function () { clearEl(panel); panel.style.display = 'none'; } }));
+    if (preview.changed) {
+      btns.appendChild(el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-access-confirm', textContent: 'Confirm', onClick: async function () {
+        try {
+          var res = await apiPost('/whatsapp/access', body);
+          if (followUp) { var f = Object.assign({}, followUp); if (f.identity && typeof f.identity === 'object') { f.identity_last4 = f.identity.last4; delete f.identity; } await apiPost('/whatsapp/access', f); }
+          toast(res.written ? 'Policy updated' + (res.hot_reload ? ' (applies on the next message)' : ' (applies after restart)') : 'Nothing changed', 'success');
+          if (res.audit && res.audit.written === false && res.audit.error) toast('Audit not written: ' + res.audit.error, 'error');
+          pageWhatsappAccess();
+        } catch (e) { toast('Failed: ' + e.message, 'error'); }
+      } }));
+    }
+    card.appendChild(btns);
+    panel.appendChild(card);
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) {
+    clearEl(panel);
+    panel.appendChild(el('div', { className: 'card wa-alert wa-alert-error', 'data-testid': 'wa-access-preview-error', textContent: 'Rejected: ' + e.message }));
+  }
+}
+
+async function waLoadAudit() {
+  var body = document.getElementById('wa-access-audit-body');
+  if (!body) return;
+  try {
+    var data = await apiGet('/whatsapp/access/audit?limit=20');
+    clearEl(body);
+    var events = data.events || [];
+    if (!events.length) { body.appendChild(el('div', { className: 'empty-state', textContent: 'No audited change yet.' })); return; }
+    var t = el('table', { className: 'wa-table' });
+    t.innerHTML = '<thead><tr><th>When (UTC)</th><th>Action</th><th>Target</th><th>Source</th><th>Actor</th></tr></thead>';
+    var tb = el('tbody');
+    events.forEach(function (ev) {
+      var tr = el('tr', { 'data-testid': 'wa-access-audit-row' });
+      [ev.ts, ev.action, ev.target || '—', ev.source, ev.actor].forEach(function (v) { tr.appendChild(el('td', { textContent: String(v) })); });
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    body.appendChild(t);
+  } catch (e) { clearEl(body); body.appendChild(el('div', { textContent: 'Failed: ' + e.message })); }
+}
+
+// ─── Test WhatsApp (#1420) ───────────────────────────────────────────
+// O card roda o MESMO motor do `garraia doctor whatsapp`: `GET
+// /admin/api/whatsapp/doctor` devolve `checks` com o shape exato do `--json`
+// da CLI (id, status, detail, next_step). O console NAO executa nada no
+// host: cada linha nao-verde ou navega para a pagina onde se conserta, ou
+// mostra o proximo passo como UMA instrucao copiavel para o terminal.
+function waDoctorLang() {
+  var l = String((typeof navigator !== 'undefined' && navigator.language) || '').toLowerCase();
+  return l.indexOf('en') === 0 ? 'en' : 'pt';
+}
+function waDoctorBadge(status) {
+  var cls = status === 'ok' ? 'badge-success' : status === 'warning' ? 'badge-warning' : status === 'error' ? 'badge-error' : 'badge-neutral';
+  var icon = status === 'ok' ? '✔' : status === 'warning' ? '⚠' : status === 'error' ? '✖' : '○';
+  return el('span', { className: 'badge ' + cls, 'data-testid': 'wa-doctor-status', textContent: icon + ' ' + status });
+}
+function waDoctorCard() {
+  var card = el('div', { className: 'card', 'data-testid': 'wa-doctor' });
+  card.appendChild(el('h3', { textContent: 'Test WhatsApp' }));
+  card.appendChild(el('div', { className: 'wa-hint', textContent: 'Runs the same engine as `garraia doctor whatsapp`: link, session key, gateway and bridge, access policy, execution profile, workspace, MCP visibility and outbound provider. Nothing runs on the host from here: each non-green line opens the page where it is fixed, or shows the terminal step to copy. No secret or session key ever leaves the gateway.' }));
+  var bar = el('div', { className: 'toolbar', style: 'margin:10px 0 0;' });
+  var btn = el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-doctor-run', textContent: 'Run test' });
+  var results = el('div', { 'data-testid': 'wa-doctor-results', style: 'display:none;margin-top:10px;' });
+  btn.addEventListener('click', function () { waDoctorRun(btn, results); });
+  bar.appendChild(btn);
+  card.appendChild(bar);
+  card.appendChild(results);
+  return card;
+}
+async function waDoctorRun(btn, results) {
+  btn.disabled = true;
+  clearEl(results); results.style.display = 'block';
+  results.appendChild(el('div', { textContent: 'Testing…' }));
+  try {
+    var data = await apiGet('/whatsapp/doctor?lang=' + waDoctorLang());
+    waDoctorRender(results, data);
+  } catch (e) {
+    clearEl(results);
+    results.appendChild(el('div', { className: 'wa-alert wa-alert-error', 'data-testid': 'wa-doctor-error', textContent: 'Failed: ' + e.message }));
+  } finally { btn.disabled = false; }
+}
+function waDoctorRender(results, data) {
+  clearEl(results);
+  var summary = el('div', { 'data-testid': 'wa-doctor-summary', 'data-status': data.status || '?', style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;' });
+  summary.appendChild(el('span', { style: 'font-weight:600;', textContent: 'Result:' }));
+  summary.appendChild(waDoctorBadge(data.status || '?'));
+  summary.appendChild(el('span', { className: 'badge badge-neutral', textContent: 'v' + (data.version || '?') + ' · ' + (data.lang || 'pt') }));
+  results.appendChild(summary);
+  var table = el('table', { className: 'wa-table', 'data-testid': 'wa-doctor-table' });
+  var thead = el('thead'); thead.innerHTML = '<tr><th>Status</th><th>Check</th><th>Detail</th><th>Next step</th><th></th></tr>';
+  table.appendChild(thead);
+  var tbody = el('tbody');
+  (data.checks || []).forEach(function (c) {
+    var tr = el('tr', { 'data-testid': 'wa-doctor-row', 'data-id': c.id || '', 'data-status': c.status || '' });
+    var st = el('td'); st.appendChild(waDoctorBadge(c.status)); tr.appendChild(st);
+    tr.appendChild(el('td', { style: 'white-space:nowrap;font-family:var(--mono);font-size:12px;', textContent: c.id || '' }));
+    tr.appendChild(el('td', { 'data-testid': 'wa-doctor-detail', textContent: c.detail || '' }));
+    var stepTd = el('td', { 'data-testid': 'wa-doctor-next-step' });
+    if (c.next_step) stepTd.appendChild(el('code', { style: 'font-family:var(--mono);font-size:11px;word-break:break-word;', textContent: c.next_step }));
+    else stepTd.textContent = '—';
+    tr.appendChild(stepTd);
+    var act = el('td', { style: 'white-space:nowrap;' });
+    var action = c.status === 'ok' ? null : waDoctorAction(c);
+    if (action) act.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-doctor-action', 'data-id': c.id || '', textContent: action.label, onClick: action.run }));
+    tr.appendChild(act);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  results.appendChild(table);
+}
+// A acao segura de cada linha. Navegar e sempre seguro; um passo de terminal
+// e mostrado e copiado — nunca executado pelo console.
+function waDoctorAction(c) {
+  var id = c.id || '';
+  var goTo = function (page, label) { return { label: label, run: function () { navigate(page); } }; };
+  if (id === 'whatsapp.access') return { label: 'Fix access below', run: function () { var m = document.querySelector('[data-testid="wa-access-principals"]'); if (m) m.scrollIntoView({ behavior: 'smooth', block: 'start' }); } };
+  if (id === 'mcp.visibility') return goTo('mcp', 'Open MCP Servers');
+  if (id === 'provider.default') return goTo('providers', 'Open Providers');
+  if (id === 'config' || id === 'execution.profile' || id === 'files.workspace') return goTo('config', 'Open Configuration');
+  if (id === 'whatsapp.linked' || id === 'whatsapp.gateway' || id === 'whatsapp.session_key') {
+    if (!c.next_step) return null;
+    return { label: 'Copy terminal step', run: function () { waDoctorCopy(c.next_step); } };
+  }
+  return null;
+}
+async function waDoctorCopy(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      toast('Copied. Run it in a terminal on the gateway host.', 'success');
+      return;
+    }
+  } catch (e) { /* sem clipboard (contexto inseguro, permissao): cai no prompt */ }
+  window.prompt('Run this in a terminal on the gateway host:', text);
+}
+
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => { var page = item.getAttribute('data-page'); if (page) navigate(page); });
 });

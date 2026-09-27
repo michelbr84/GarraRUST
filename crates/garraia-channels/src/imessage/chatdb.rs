@@ -10,7 +10,13 @@ pub struct IncomingMessage {
     pub text: String,
     pub sender: String,
     pub timestamp: i64,
-    pub group_name: Option<String>,
+    /// O identificador da **sala** de um grupo, tal como `chat.db` o guarda em
+    /// `message.cache_roomnames` (`chat<digitos>`, igual a
+    /// `chat.chat_identifier`/`chat.room_name`): gerado pelo servidor na
+    /// criacao do grupo e estavel. **Nao** e `chat.display_name`, o nome que os
+    /// participantes escolhem e renomeiam — essa coluna nunca e lida. `None`
+    /// numa conversa 1:1. E a `session_key` de todo turno de grupo (#1461).
+    pub room_id: Option<String>,
 }
 
 /// Read-only handle to `~/Library/Messages/chat.db`.
@@ -86,7 +92,7 @@ impl ChatDb {
     /// Poll for new incoming messages since the last poll.
     ///
     /// Returns messages ordered by date ascending, including both DMs and group chats.
-    /// Group chat messages will have `group_name` set.
+    /// Group chat messages will have `room_id` set (`cache_roomnames`).
     /// Messages with attachments but no text get synthesized text like `[Attachment: file.heic]`.
     pub fn poll(&mut self) -> Result<Vec<IncomingMessage>, String> {
         let mut stmt = self
@@ -131,14 +137,14 @@ impl ChatDb {
                         _ => continue, // no text and no attachments — skip
                     };
 
-                    let group_name = cache_roomnames.filter(|r| !r.is_empty());
+                    let room_id = cache_roomnames.filter(|r| !r.is_empty());
 
                     messages.push(IncomingMessage {
                         rowid,
                         text: resolved_text,
                         sender,
                         timestamp: core_data_ns_to_unix(date),
-                        group_name,
+                        room_id,
                     });
                 }
                 Err(e) => {
@@ -271,12 +277,12 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].text, "hello");
         assert_eq!(msgs[0].sender, "+15551234567");
-        assert!(msgs[0].group_name.is_none());
+        assert!(msgs[0].room_id.is_none());
         assert_eq!(msgs[0].rowid, 1);
     }
 
     #[test]
-    fn poll_returns_group_messages_with_group_name() {
+    fn poll_returns_group_messages_with_room_id() {
         let conn = mock_chat_db();
         conn.execute(
             "INSERT INTO handle (ROWID, id) VALUES (1, '+15551234567')",
@@ -294,7 +300,7 @@ mod tests {
         let msgs = db.poll().unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].text, "group msg");
-        assert_eq!(msgs[0].group_name.as_deref(), Some("chat123456"));
+        assert_eq!(msgs[0].room_id.as_deref(), Some("chat123456"));
     }
 
     #[test]

@@ -23,6 +23,68 @@ Como cortar uma release `vX.Y.Z` do GarraIA. Tudo depois do tag é automático.
    ver CLAUDE.md §Convenção de datas). `[Unreleased]` volta vazio.
 5. Abrir PR, aguardar CI verde (6 checks obrigatórios da ruleset: Format Check, Clippy Linting, Test ubuntu e windows, Security Gate, Auth Integration) e mergear.
 
+## 1.5 Gate de dogfood — obrigatório antes do tag (#1439)
+
+O CI prova que o código compila e que os testes passam; **não** prova que uma
+instalação limpa funciona para uma pessoa. A v0.4.4 e a v0.4.5 saíram verdes
+e quebraram no caminho real (WhatsApp numa instalação nova, `NoRoots`,
+status que mentia). Por isso, antes de empurrar o tag, alguém com máquina e
+telefone executa a matriz abaixo **contra o candidato** (o binário da PR de
+release, ou os assets de um `workflow_dispatch` de teste do `release.yml`) e
+registra data, sistema e quem executou. Linha sem data = release não sai.
+
+| # | Cenário | Onde | O que prova | Automatizado? |
+|---|---|---|---|---|
+| D1 | Instalação limpa da CLI (`curl \| sh`), `garraia init` com um provedor, `garraia whatsapp link`, um número autorizado, "oi" → resposta real | Ubuntu 22.04 limpo, com Node 20+ | o caminho que o usuário faz | parcial — **Linux automatizado até "resposta real"** por `scripts/dogfood/linux-clean-install.sh` (`.deb` num `ubuntu:24.04` cru, provedor Ollama local, sessão REST, `restart`, `stop`); o `whatsapp link` e o número autorizado continuam manuais |
+| D2 | Mesmo cenário via `irm \| iex` | Windows 10/11 | paridade dos instaladores (regra 16) | não |
+| D3 | `garraia restart` → nova mensagem responde **sem** QR; `allow` sobrevive | Ubuntu + Windows | persistência da sessão e da política | fixture `serve-echo` + manual |
+| D4 | `garraia update` da release anterior para o candidato; `garraia rollback` | Ubuntu | o contrato dos assets crus (regra 15) e o `.old` | não |
+| D5 | Desktop: MSI instala, papagaio e Chat Bar aparecem, `garraia status` no terminal mostra o sidecar, sair encerra o sidecar | Windows 11 | o bundle e o sidecar | não |
+| D6 | Desktop: `.deb` idem | Ubuntu 22.04 (X11) | idem | não |
+| D7 | Duas identidades autorizadas pedem `list_dir`; nenhuma vê os arquivos da outra | Ubuntu | isolamento do workspace por sessão (#1449) | teste de integração + manual |
+| D8 | `install-endpoints.yml` verde depois de publicar | — | `garraia.org` serve os instaladores (regra 17) | sim (workflow) |
+| D9 | `GET /api/diagnostics` numa instalação limpa sem nenhum aviso espúrio; `garraia doctor` exit 0 | Ubuntu + Windows | honestidade do status (#1437, #1387) | parcial — **Linux automatizado** pelo mesmo script (`doctor --json` exit 0, `doctor whatsapp --json` exit 69 com a linha `whatsapp.linked`, `/api/health` `healthy`); Windows manual |
+| D10 | Perguntas diretas de capacidade ao agente ("Você tem MCP?", "Pode escrever arquivos?", "Por que não lê esta pasta?") numa sessão `standard` e numa `isolated-pod` | Ubuntu + Windows | a resposta do modelo bate com o registro de capacidades — nada de "não tenho MCP" com MCP escondido nem "não tenho filesystem" com workspace só esperando seleção (#1428, #1387) | não — os fundamentos (nota do prompt e registro de capacidades) são cobertos em CI por `nota_garra_status.rs` e pelos testes do registro; a resposta do modelo continua manual |
+
+**D1/D9 Linux — como rodar a automação (#1426).** Numa máquina com
+Docker e Ollama (`ollama pull qwen3.5:0.8b`), a partir do checkout do
+candidato:
+
+```bash
+scripts/dogfood/linux-clean-install.sh --source local        # empacota este checkout com o nfpm da release
+scripts/dogfood/linux-clean-install.sh --run-id <run-id>     # ou o artefato de um workflow_dispatch de teste
+```
+
+O script sobe um `ubuntu:24.04` sem nada de desenvolvimento, instala o
+`.deb` com `apt-get install`, roda os doctors, aponta o provedor para o
+Ollama do host (sem chave paga), sobe o gateway na **3899** (nunca na 3888
+do host), exige uma resposta real do modelo por REST, reinicia e prova que
+a sessão e a config sobreviveram, e encerra com `garraia stop`. A evidência
+inteira (logs, JSONs, resposta do modelo, `.deb` testado) fica em
+`dogfood/linux/<data-hora>/` (gitignored) com um `resumo.txt` PASSOU/FALHOU
+por passo — é esse resumo que vai na tabela da PR de release. Sem
+`--source`/`--run-id`, o default baixa o pacote do **último run verde do
+`release.yml`**, o que testa a release anterior e não o candidato: serve
+para reproduzir um bug de campo, não para o gate.
+
+Regras do gate:
+
+- **Contra o candidato, não contra `main`**: o que se testa é o que vai ser
+  publicado.
+- **Segredos fora da evidência**: transcrições redigidas, telefones só pelos
+  quatro últimos dígitos, nenhuma chave em screenshot.
+- **Falhou, não sai**: uma linha vermelha vira issue com o log e a release
+  espera a correção — nunca "sai e conserta na próxima".
+- A tabela preenchida vai no corpo da PR de release (bump + CHANGELOG), para
+  ficar ao lado do que ela libera.
+
+A automação do que dá para automatizar (D1 com ponte falsa, D3, D7, D9) é a
+issue #1426; a parte Linux de D1/D9 já roda pelo script acima, o resto (D2,
+D4, D5, D6 e o trecho WhatsApp de D1) segue manual e está aqui de propósito
+— um gate que só existe numa issue não gateia nada. O desenho completo, com
+o que o CI cobre e o que só pessoa cobre, está em
+[`plans/0364-release-v0.4.6-preflight.md`](../plans/0364-release-v0.4.6-preflight.md) §6.
+
 ## 2. Tag
 
 ```bash

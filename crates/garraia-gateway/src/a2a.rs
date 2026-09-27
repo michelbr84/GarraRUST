@@ -92,6 +92,8 @@ fn politica_do_agente(ac: &garraia_config::NamedAgentConfig) -> Option<ModeProfi
             // Sem isto o `allowed` seria so uma lista de preferencia: e o
             // `whitelist_mode` que faz o que **nao** esta na lista ser negado.
             whitelist_mode: true,
+            // #1385: sem classe nem `no_tools` — `tools:` do agente e por nome.
+            ..Default::default()
         },
         // Os defaults destes dois sao neutros (ver `impl Default` em
         // `modes.rs`); o que nao pode e herdar os do `Ask`.

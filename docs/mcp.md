@@ -111,6 +111,17 @@ check of `GET /api/diagnostics`. On first boot only the default
 skipped with a `warn!` naming the missing root, and nothing wider is created
 in its place.
 
+**Per-session confinement (#1482).** The autoprovisioned `filesystem` root is
+`<data_dir>/workspace` in `standard`, which is the *parent* of every
+per-session workspace (#1449). So the gateway runs every MCP filesystem call
+through the same `FileJail` as the native file tools: `path`, `paths`,
+`source` and `destination` are resolved and must fall under the calling
+session's directory (plus `agent.file_roots`), `list_allowed_directories`
+answers with the session's effective roots instead of the server's, and a
+path outside gets the same single denial message the native tools use. The
+local CLI (`garraia mcp call`) runs without that jail: there is a human at
+the keyboard.
+
 An existing `mcp.json` is **never rewritten** — the only gate is "file
 absent". Installations provisioned before v0.4.4 therefore keep the old
 `$HOME` root; in `standard` the diagnostic flags it as `Warning` (the

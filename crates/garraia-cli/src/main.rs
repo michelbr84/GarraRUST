@@ -13,6 +13,7 @@ mod config_cmd;
 mod defaults;
 mod desktop;
 mod doctor;
+mod doctor_whatsapp;
 mod glob_cmd;
 mod logs_cmd;
 mod max_power;
@@ -160,12 +161,16 @@ enum Commands {
     /// Diagnose the installation (platform, dirs, config, providers, daemon)
     Doctor {
         /// Emit a machine-readable JSON report instead of human output
-        #[arg(long)]
+        #[arg(long, global = true)]
         json: bool,
 
         /// Treat config warnings as errors (exit 2)
-        #[arg(long)]
+        #[arg(long, global = true)]
         strict: bool,
+
+        /// One area end to end instead of the whole installation
+        #[command(subcommand)]
+        area: Option<DoctorArea>,
     },
 
     /// Run the onboarding wizard
@@ -494,6 +499,67 @@ enum WhatsAppCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Politica de acesso v2 (ADR 0025): quem entra e ate onde cada um vai.
+    ///
+    /// Sem subcomando imprime a politica EFETIVA (admissao, default do
+    /// desconhecido, grupos e cada principal com piso, nivel e o que pode de
+    /// fato, pelo mesmo motor do turno). Identidades so por `...1234`;
+    /// `--reveal` mostra os valores da config, localmente. Exit codes: 0 ok,
+    /// 70 config ilegivel.
+    Access {
+        #[command(subcommand)]
+        cmd: Option<AccessCommands>,
+        /// Saida em JSON (so sem subcomando).
+        #[arg(long)]
+        json: bool,
+        /// Mostra as identidades inteiras (valores da config), nao so `...1234`.
+        #[arg(long)]
+        reveal: bool,
+    },
+    /// Nivel de acesso de um numero: chat | read | full (#1398).
+    ///
+    /// O nivel e um TETO composto com o modo da sessao: so tira, nunca poe.
+    /// `--dry-run` mostra o impacto sem gravar. Exit codes: 0 ok, 65 numero
+    /// ou combinacao invalida (nivel no dono: use `unowner`), 70 config,
+    /// 73 gravou mas o audit falhou.
+    Level {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
+        nivel: String,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Escrita de arquivo (nativa e MCP) de um numero: on | off (#1397).
+    ///
+    /// Mexe SO em escrita de arquivo: nao liga `bash`, nao desliga sandbox,
+    /// jail nem confirmacao. Exit codes como `level` (65 tambem para quem
+    /// nao esta autorizado ou esta em `chat`).
+    Write {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(value_name = "ESTADO", value_parser = ["on", "off"])]
+        estado: String,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Bloqueia um numero: vence `open`, `allow` e pareamento. Vale na
+    /// mensagem seguinte, sem restart.
+    Block {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Desbloqueia um numero (volta ao que a config diz dele).
+    Unblock {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Remove um numero da lista de autorizados (#1394).
     ///
     /// O espelho do `allow`: tira de `channels.whatsapp_linked.allow` e de
@@ -551,6 +617,94 @@ enum WhatsAppCommands {
     },
 }
 
+/// `garraia whatsapp access <subcomando>` (ADR 0025).
+#[derive(Subcommand)]
+enum AccessCommands {
+    /// Admite QUALQUER numero, com o default do desconhecido (pede confirmacao).
+    Open {
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// So quem esta declarado ou pareou por codigo (o default).
+    Restricted {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// O que um desconhecido recebe em `open`: chat | read (nunca full).
+    Default {
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read"])]
+        nivel: String,
+        /// Libera escrita de arquivo (so com `read`).
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Grupos: on | off | default <nivel>.
+    Groups {
+        #[command(subcommand)]
+        cmd: GroupsCommands,
+    },
+    /// Politica de um grupo pelo JID (`<digitos>@g.us`).
+    Group {
+        #[arg(value_name = "JID")]
+        jid: String,
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
+        nivel: String,
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Volta a politica ao seguro; donos e bloqueios ficam (pede confirmacao).
+    Reset {
+        #[arg(long, short = 'y')]
+        yes: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Trilha local de mudancas na politica, mais recente primeiro.
+    Audit {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+}
+
+/// `garraia whatsapp access groups <subcomando>`.
+#[derive(Subcommand)]
+enum GroupsCommands {
+    /// Responder em grupos.
+    On {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Nao responder em grupos.
+    Off {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// O nivel de um grupo sem politica propria.
+    Default {
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
+        nivel: String,
+        #[arg(long)]
+        write: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+/// `chat|read|full` da linha de comando — o `value_parser` ja garantiu o
+/// valor; o fallback e fail-closed por principio.
+fn nivel_de(nome: &str) -> garraia_agents::modes::Nivel {
+    garraia_agents::modes::Nivel::parse(nome).unwrap_or(garraia_agents::modes::Nivel::Chat)
+}
+
 #[derive(Subcommand)]
 enum AdminCommands {
     /// Recupera a senha do painel admin com um codigo de uso unico gerado
@@ -586,6 +740,14 @@ enum RecoveryCommands {
         #[arg(long)]
         new_password: Option<String>,
     },
+}
+
+/// `garraia doctor <area>`: a same-vocabulary report for one path.
+#[derive(Subcommand)]
+enum DoctorArea {
+    /// The personal-WhatsApp path end to end: link, session key, gateway,
+    /// access, execution profile, workspace, MCP visibility, provider (#1419)
+    Whatsapp,
 }
 
 #[derive(Subcommand)]
@@ -1114,7 +1276,34 @@ pub(crate) fn read_pid() -> Option<u32> {
 #[cfg(unix)]
 pub(crate) fn is_process_running(pid: u32) -> bool {
     // Signal 0 checks existence without sending a signal
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    let existe = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+    existe && !e_zumbi(pid)
+}
+
+/// #1426: `kill(pid, 0)` devolve 0 para um zumbi — o processo ja saiu, so
+/// falta o pai colher a saida. Um daemon cujo pai nao colhe filhos (um
+/// container cujo PID 1 e `sleep`, um `docker exec` sem `--init`) encerra
+/// limpo no SIGTERM e mesmo assim o `stop` esperava os 5 s, mandava SIGKILL e
+/// anunciava "survived SIGTERM and SIGKILL" de um processo morto. Um zumbi
+/// nao esta rodando. So o Linux tem `/proc/<pid>/stat`; fora dele fica o
+/// `kill`, que e o que sempre foi.
+#[cfg(target_os = "linux")]
+fn e_zumbi(pid: u32) -> bool {
+    // Formato: `pid (comm) estado ...` — `comm` pode ter espaco e parentese,
+    // por isso o estado e o que vem depois do ULTIMO `)`.
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit(')')
+                .next()
+                .map(|depois| depois.trim_start().starts_with('Z'))
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn e_zumbi(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(windows)]
@@ -1405,6 +1594,22 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
         Commands::WhatsApp { action } => match action {
             // `users` so le a config e imprime, como o `status`.
             Some(WhatsAppCommands::Status | WhatsAppCommands::Users { .. }) => true,
+            // `access` e `access audit` so leem e imprimem; o resto grava.
+            Some(WhatsAppCommands::Access { cmd, .. }) => match cmd {
+                None | Some(AccessCommands::Audit { .. }) => true,
+                Some(
+                    AccessCommands::Open { .. }
+                    | AccessCommands::Restricted { .. }
+                    | AccessCommands::Default { .. }
+                    | AccessCommands::Group { .. }
+                    | AccessCommands::Reset { .. },
+                ) => false,
+                Some(AccessCommands::Groups { cmd }) => match cmd {
+                    GroupsCommands::On { .. }
+                    | GroupsCommands::Off { .. }
+                    | GroupsCommands::Default { .. } => false,
+                },
+            },
             // Sem subcomando e o menu interativo.
             None
             | Some(
@@ -1415,7 +1620,11 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                 | WhatsAppCommands::Allow { .. }
                 | WhatsAppCommands::Remove { .. }
                 | WhatsAppCommands::Owner { .. }
-                | WhatsAppCommands::Unowner { .. },
+                | WhatsAppCommands::Unowner { .. }
+                | WhatsAppCommands::Level { .. }
+                | WhatsAppCommands::Write { .. }
+                | WhatsAppCommands::Block { .. }
+                | WhatsAppCommands::Unblock { .. },
             ) => false,
         },
         Commands::Admin { action } => match action {
@@ -1596,8 +1805,11 @@ fn main() -> Result<()> {
     // (install.sh → doctor → chat), então como o `config check` precisa
     // sobreviver a config ausente/não-parseável e reportar sysexits em vez
     // de estourar no `load()` global.
-    if let Commands::Doctor { json, strict } = cli.command {
-        let code = doctor::run_doctor(json, strict)?;
+    if let Commands::Doctor { json, strict, area } = cli.command {
+        let code = match area {
+            Some(DoctorArea::Whatsapp) => doctor_whatsapp::run(json, strict)?,
+            None => doctor::run_doctor(json, strict)?,
+        };
         if code != 0 {
             std::process::exit(code);
         }
@@ -1750,6 +1962,99 @@ fn main() -> Result<()> {
                 whatsapp::Action::Unowner(whatsapp::PedidoDePapel {
                     numero: numero.clone(),
                     yes: *yes,
+                })
+            }
+            Some(WhatsAppCommands::Access { cmd, json, reveal }) => {
+                use whatsapp::ComandoDeAcesso as C;
+                whatsapp::Action::Access(match cmd {
+                    None => C::Mostrar {
+                        json: *json,
+                        revelar: *reveal,
+                    },
+                    Some(AccessCommands::Open { yes, dry_run }) => C::Abrir {
+                        yes: *yes,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Restricted { dry_run }) => {
+                        C::Restringir { dry_run: *dry_run }
+                    }
+                    Some(AccessCommands::Default {
+                        nivel,
+                        write,
+                        dry_run,
+                    }) => C::Default {
+                        nivel: nivel_de(nivel),
+                        write: *write,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Groups { cmd }) => match cmd {
+                        GroupsCommands::On { dry_run } => C::Grupos {
+                            ligados: true,
+                            dry_run: *dry_run,
+                        },
+                        GroupsCommands::Off { dry_run } => C::Grupos {
+                            ligados: false,
+                            dry_run: *dry_run,
+                        },
+                        GroupsCommands::Default {
+                            nivel,
+                            write,
+                            dry_run,
+                        } => C::GrupoDefault {
+                            nivel: nivel_de(nivel),
+                            write: *write,
+                            dry_run: *dry_run,
+                        },
+                    },
+                    Some(AccessCommands::Group {
+                        jid,
+                        nivel,
+                        write,
+                        dry_run,
+                    }) => C::Grupo {
+                        jid: jid.clone(),
+                        nivel: nivel_de(nivel),
+                        write: *write,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Reset { yes, dry_run }) => C::Reset {
+                        yes: *yes,
+                        dry_run: *dry_run,
+                    },
+                    Some(AccessCommands::Audit { json, limit }) => C::Audit {
+                        json: *json,
+                        limit: *limit,
+                    },
+                })
+            }
+            Some(WhatsAppCommands::Level {
+                numero,
+                nivel,
+                dry_run,
+            }) => whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Nivel {
+                numero: numero.clone(),
+                nivel: nivel_de(nivel),
+                dry_run: *dry_run,
+            }),
+            Some(WhatsAppCommands::Write {
+                numero,
+                estado,
+                dry_run,
+            }) => whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Write {
+                numero: numero.clone(),
+                on: estado == "on",
+                dry_run: *dry_run,
+            }),
+            Some(WhatsAppCommands::Block { numero, dry_run }) => {
+                whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Bloquear {
+                    numero: numero.clone(),
+                    dry_run: *dry_run,
+                })
+            }
+            Some(WhatsAppCommands::Unblock { numero, dry_run }) => {
+                whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Desbloquear {
+                    numero: numero.clone(),
+                    dry_run: *dry_run,
                 })
             }
         };
@@ -3451,5 +3756,42 @@ mod tests {
             );
         }
         assert!(variantes >= 40, "varredura achou so {variantes} variantes");
+    }
+
+    /// #1426 (dogfood em container limpo): o pai do daemon nem sempre colhe
+    /// filhos — um container cujo PID 1 e `sleep`, um `docker exec` sem
+    /// `--init`. Ai o gateway encerra limpo no SIGTERM, vira zumbi, e
+    /// `kill(pid, 0)` continua devolvendo 0: o `stop` esperava 5 s, mandava
+    /// SIGKILL e dizia "survived SIGTERM and SIGKILL" de um processo que ja
+    /// tinha morrido. Um zumbi nao esta rodando.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zumbi_nao_conta_como_processo_rodando() {
+        // SAFETY: o filho so chama `_exit`, que e async-signal-safe; o pai
+        // nao compartilha nada com ele e o colhe com `waitpid` antes de
+        // qualquer assert, para nao deixar zumbi no harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork falhou");
+        if pid == 0 {
+            unsafe { libc::_exit(0) };
+        }
+        // Espera o filho virar zumbi DE FATO (estado `Z` no /proc), sem colher.
+        let stat = format!("/proc/{pid}/stat");
+        let virou_zumbi = (0..200).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::fs::read_to_string(&stat)
+                .ok()
+                .and_then(|s| {
+                    s.rsplit(')')
+                        .next()
+                        .map(|depois| depois.trim_start().starts_with('Z'))
+                })
+                .unwrap_or(false)
+        });
+        let resultado = is_process_running(pid as u32);
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert!(virou_zumbi, "o filho nao virou zumbi em 2 s");
+        assert!(!resultado, "zumbi tratado como processo vivo");
     }
 }

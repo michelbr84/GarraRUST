@@ -28,6 +28,7 @@
 //! | [`state`] | maquina de estados pura | nao (injetado) | nao |
 //! | [`qr`] | desenho do QR | nao | nao |
 //! | [`session`] | blob cifrado, modos de arquivo | nao | disco |
+//! | [`permissions`] | confere e aperta os modos do diretorio da conta (#1431) | nao | disco |
 //! | [`bridge`] | assets, npm, spawn, enquadramento | timeout | processo |
 //! | [`runner`] | casa os quatro acima | sim | sim |
 //!
@@ -55,6 +56,7 @@ pub mod health;
 /// e duas copias delas foi exatamente o defeito que este modulo corrige.
 #[doc(hidden)]
 pub mod log_audit;
+pub mod permissions;
 pub mod protocol;
 pub mod qr;
 pub mod runner;
@@ -66,6 +68,7 @@ pub use bridge::{
     NodeRuntime,
 };
 pub use health::{BridgeView, DiskFacts, LinkHealth, classify};
+pub use permissions::LooseMode;
 pub use protocol::{
     BridgeCommand, BridgeEvent, InboundMessage, Jid, PROTOCOL_VERSION, StartMode,
     UNAUTHORIZED_REASON_CODES, session_is_dead,
@@ -73,7 +76,7 @@ pub use protocol::{
 pub use qr::{Style as QrStyle, render as render_qr};
 pub use runner::{InboundSink, PairOptions, PairOutcome, PairUi, RunError, pair, pair_with, serve};
 pub use session::{
-    DEFAULT_ACCOUNT, KeyOrigin, SessionBlob, SessionError, SessionKey, SessionStore,
+    DEFAULT_ACCOUNT, KeyOrigin, KeyPlan, SessionBlob, SessionError, SessionKey, SessionStore,
 };
 pub use state::{Desired, Effect, Event, Failure, MAX_QR_ATTEMPTS, Machine, Phase, backoff_ms};
 

@@ -280,18 +280,39 @@ impl SessionStore {
     /// presente. Sai no formato do `datetime('now')` do SQLite, que e o que
     /// o ledger grava, e entra por bind — nunca por concatenacao.
     pub fn prune_agent_runs(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<usize> {
-        let corte = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
         let apagados = self
             .conn
-            .execute(
-                "DELETE FROM agent_runs
-                 WHERE status <> 'running'
-                   AND datetime(COALESCE(finished_at, started_at)) < datetime(?1)",
-                rusqlite::params![corte],
-            )
+            .execute(PRUNE_DELETE_SQL, rusqlite::params![corte_do_prune(cutoff)])
             .map_err(|e| Error::Database(e.to_string()))?;
+        // #1436: quem apaga anota — worker e console no mesmo lugar.
+        crate::retention::record_cleanup(
+            &self.conn,
+            crate::retention::SCOPE_RUN_LEDGER,
+            apagados,
+            cutoff,
+        );
         Ok(apagados)
     }
+}
+
+/// A condicao do prune, escrita inteira nas duas sentencas: o `DELETE` e a
+/// contagem da previa do console (#1436). Sem `format!` montando SQL (regra
+/// absoluta 5); o preco e a repeticao, e
+/// `sql_da_previa_do_ledger_em_sincronia_com_o_delete` cobra que a clausula
+/// seja identica — se divergirem, a previa promete um numero e a limpeza
+/// apaga outro.
+pub(crate) const PRUNE_DELETE_SQL: &str = "DELETE FROM agent_runs
+                 WHERE status <> 'running'
+                   AND datetime(COALESCE(finished_at, started_at)) < datetime(?1)";
+
+pub(crate) const PRUNE_COUNT_SQL: &str = "SELECT count(*) FROM agent_runs
+                 WHERE status <> 'running'
+                   AND datetime(COALESCE(finished_at, started_at)) < datetime(?1)";
+
+/// O corte no formato do `datetime('now')` do SQLite, que e o que o ledger
+/// grava. Entra por bind nas duas sentencas.
+pub(crate) fn corte_do_prune(cutoff: chrono::DateTime<chrono::Utc>) -> String {
+    cutoff.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 /// Le um status do ledger de forma **estrita** (`garraia runs list

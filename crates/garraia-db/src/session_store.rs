@@ -123,6 +123,10 @@ impl SessionStore {
         // Ledger de runs de agentes (P1 gap analysis 2026-09-15): idempotente,
         // parte das migrations para existir em qualquer store novo/antigo.
         let _ = self.create_agent_runs_table();
+        // #1436: a ultima limpeza do ledger mora no proprio `sessions.db`.
+        self.conn
+            .execute_batch(crate::retention::RETENTION_STATE_SQL)
+            .map_err(|e| Error::Database(format!("retention state migration failed: {e}")))?;
         // Migration: add tenant_id column to pre-existing sessions tables.
         // Ignore error if the table doesn't exist yet or the column already exists.
         let _ = self.conn.execute_batch(

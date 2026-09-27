@@ -118,17 +118,40 @@ def fetch_open_alerts(repo: str, token: str) -> list[dict]:
     return alerts
 
 
-def alert_key(alert: dict) -> tuple[str, str, int]:
+def alert_span(alert: dict) -> tuple[str, str, int, int]:
+    """`(rule_id, path, start_line, end_line)` do alerta vivo.
+
+    O CodeQL reporta o **span do statement**: num `println!` multi-linha o
+    `start_line` e a abertura e o `end_line` o fechamento. O ledger, por sua
+    vez, ancora a linha do **sink** — derivada do `sink_snippet` pelo
+    `check-ledger-anchors.py` —, que pode ser qualquer linha dentro desse
+    span. Casar `start_line` exato (o que este script fazia ate 2026-09-25)
+    deixava a duplicata do #173 (`whatsapp.rs`, span 1356-1358, sink em 1358)
+    aberta como "sem entrada", enquanto o `codeql-reapply-dismissals.sh` ja
+    aceitava a linha em qualquer ponto do span. Uma regra so, nos dois.
+    """
     loc = alert.get("most_recent_instance", {}).get("location", {})
-    return (
-        alert.get("rule", {}).get("id", ""),
-        loc.get("path", ""),
-        int(loc.get("start_line", 0)),
-    )
+    start = int(loc.get("start_line", 0) or 0)
+    end = int(loc.get("end_line", start) or start)
+    if end < start:
+        end = start
+    return (alert.get("rule", {}).get("id", ""), loc.get("path", ""), start, end)
+
+
+def alert_key(alert: dict) -> tuple[str, str, int]:
+    """`(rule_id, path, start_line)` — a forma que o relatorio imprime."""
+    rule, path, start, _end = alert_span(alert)
+    return (rule, path, start)
 
 
 def entry_key(entry: dict) -> tuple[str, str, int]:
     return (entry["rule_id"], entry["path"], int(entry["line"]))
+
+
+def span_cobre(span: tuple[str, str, int, int], entry: dict) -> bool:
+    """O alerta vivo `span` e o achado que a entrada do ledger descreve?"""
+    rule, path, start, end = span
+    return rule == entry["rule_id"] and path == entry["path"] and start <= int(entry["line"]) <= end
 
 
 def plan_rekey(
@@ -138,11 +161,10 @@ def plan_rekey(
 
     Puro — sem I/O — para ser testável.
     """
-    by_key: dict[tuple, list[int]] = {}
-    for a in open_alerts:
-        by_key.setdefault(alert_key(a), []).append(int(a["number"]))
-
-    open_by_number: dict[int, tuple] = {int(a["number"]): alert_key(a) for a in open_alerts}
+    spans: list[tuple[int, tuple[str, str, int, int]]] = [
+        (int(a["number"]), alert_span(a)) for a in open_alerts
+    ]
+    open_by_number: dict[int, tuple[str, str, int, int]] = dict(spans)
 
     mapping: dict[int, int] = {}
     unmatched: list[dict] = []
@@ -151,14 +173,18 @@ def plan_rekey(
 
     for entry in entries:
         current = int(entry["alert_number"])
-        key = entry_key(entry)
-        candidates = by_key.get(key, [])
+        # Candidatos: alertas abertos da mesma regra e arquivo cujo span
+        # contem a linha do sink que o ledger ancora.
+        candidates = [numero for numero, span in spans if span_cobre(span, entry)]
 
         if current in open_by_number:
             live = open_by_number[current]
-            if live == key:
-                # Ja aponta para um alerta aberto NESTA chave: nada a fazer.
+            if span_cobre(live, entry):
+                # Ja aponta para um alerta aberto que cobre este sink: nada a fazer.
                 continue
+            # A forma de tres campos (rule, path, start_line) e o que o
+            # relatorio e os testes de drift leem.
+            live = (live[0], live[1], live[2])
             # O numero segue aberto, mas o alerta se move para outro
             # (rule_id, path, line). Ate 2026-08-30 este arm so olhava o numero,
             # e a entrada passava calada — foi assim que o #113 ficou tres meses
@@ -266,8 +292,11 @@ def main() -> int:
                   f" -> candidatos {cands}")
         fail("reaudite a mao; o script nao adivinha", 2)
 
-    matched_keys = {entry_key(e) for e in entries}
-    orphan_alerts = [a for a in open_alerts if alert_key(a) not in matched_keys]
+    # Orfao = alerta aberto que nenhuma entrada descreve (mesma regra e
+    # arquivo, sink dentro do span) — a mesma regra de casamento de cima.
+    orphan_alerts = [
+        a for a in open_alerts if not any(span_cobre(alert_span(a), e) for e in entries)
+    ]
 
     if not mapping:
         print("\nnada a reapontar: toda entrada ja aponta para alerta aberto, "

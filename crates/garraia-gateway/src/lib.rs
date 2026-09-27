@@ -10,6 +10,9 @@ pub mod auth_routes;
 pub mod billing;
 pub mod bootstrap;
 pub mod capabilities;
+/// ADR 0025 / #1381: o registro de capacidades do runtime — uma visao so para
+/// `garra_status`, `/api/diagnostics` e o console.
+pub mod capacidades_registro;
 pub mod channel_send;
 pub(crate) mod channels_view;
 pub mod cluster;
@@ -42,6 +45,8 @@ pub mod path_validation;
 pub mod plugins_handler;
 pub mod project_root;
 pub mod projects_handler;
+/// #1379: o projeto ativo por sessao (persistido) e os comandos de barra por principal.
+pub mod projetos_da_sessao;
 pub mod push_channels;
 pub mod rate_limiter;
 pub mod rest_v1;

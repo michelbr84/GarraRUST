@@ -233,6 +233,7 @@ fn sobe(
     supervisionar(
         &state,
         LinkedSettings {
+            access: Default::default(),
             enabled: true,
             ..LinkedSettings::default()
         },

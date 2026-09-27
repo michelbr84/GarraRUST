@@ -38,9 +38,10 @@ end tell"#
 
 /// Send an iMessage to a group chat via Messages.app.
 ///
-/// `group_name` is the `cache_roomnames` value from chat.db (e.g. `chat123456789`).
-pub async fn send_imessage_group(group_name: &str, text: &str) -> Result<(), String> {
-    let escaped_group = applescript_escape(group_name);
+/// `room_id` is the `cache_roomnames` value from chat.db (e.g. `chat123456789`) —
+/// the server-generated room identifier, never the user-editable `display_name`.
+pub async fn send_imessage_group(room_id: &str, text: &str) -> Result<(), String> {
+    let escaped_group = applescript_escape(room_id);
     let escaped_text = applescript_escape(text);
 
     let script = format!(
@@ -50,10 +51,7 @@ pub async fn send_imessage_group(group_name: &str, text: &str) -> Result<(), Str
 end tell"#
     );
 
-    debug!(
-        "imessage: sending to group {group_name} ({} chars)",
-        text.len()
-    );
+    debug!("imessage: sending to room {room_id} ({} chars)", text.len());
     run_osascript(&script).await
 }
 
