@@ -186,13 +186,16 @@ fn parece_intervalo(grupos: &[usize]) -> bool {
     matches!(grupos, [a, b] if a == b && *a >= 5)
 }
 
-/// `grupos` e um numero grande com separador de milhar (`"1 234 567 890"`,
+/// `grupos` (ja **completo** — so chamada depois que a ponte parou de
+/// crescer) e um numero grande com separador de milhar (`"1 234 567 890"`,
 /// `1.234.567,89` sem os pontos)? O primeiro grupo e o resto que sobra da
-/// direita (1 a 3 digitos) e todo grupo depois dele e um bloco cheio de
-/// exatamente 3 digitos — um telefone real nao repete bloco de 3 digitos
-/// mais de uma vez seguida quando o ultimo bloco tambem e de 3
-/// (`"555 123 4567"`, o celular americano, tem o ultimo bloco de 4 e nao
-/// cai aqui).
+/// direita (1 a 3 digitos) e **todo** grupo depois dele e um bloco cheio de
+/// exatamente 3 digitos. Precisa ser avaliada so no final: um celular NANP
+/// com DDI separado (`"+1 555 123 4567"`) tem o **prefixo** `[1,3,3]` igual
+/// ao de um numero de verdade com separador de milhar, e so o ultimo grupo
+/// (`4567`, nao `3` digitos) desfaz a ambiguidade — checar a cada grupo
+/// novo, em vez de no final, apagava todo celular NANP (achado da segunda
+/// rodada da auditoria de seguranca do #1514).
 fn parece_numero_com_milhar(grupos: &[usize]) -> bool {
     matches!(grupos, [primeiro, resto @ ..] if *primeiro <= 3
         && resto.len() >= 2
@@ -207,6 +210,30 @@ fn parece_numero_com_milhar(grupos: &[usize]) -> bool {
 /// ponte ja passou da data.
 fn parece_data(grupos: &[usize]) -> bool {
     matches!(grupos, [4, 2, 2] | [2, 2, 4] | [2, 2, 2])
+}
+
+/// A ponte, gastando ate `grupos_restantes` grupos a mais a partir de `fim`,
+/// alcanca algum grupo de 4+ digitos? Usada para decidir se um trecho que
+/// **agora** parece uma data deve mesmo parar ali: espiar so o proximo
+/// grupo nao bastava — um numero real com DDI separado
+/// (`"55-11-98-76-5432"`) fecha a forma de data (`[2,2,2]`) com o proximo
+/// grupo (`"76"`, 2 digitos) tambem curto, e so o **seguinte** (`"5432"`)
+/// prova que era telefone (achado da segunda rodada da auditoria de
+/// seguranca do #1514).
+fn ponte_alcanca_grupo_grande(bytes: &[u8], fim: usize, grupos_restantes: usize) -> bool {
+    let mut fim = fim;
+    let mut restantes = grupos_restantes;
+    while restantes > 0 {
+        let Some((novo_fim, digitos)) = estender_sobre_ponte(bytes, fim) else {
+            return false;
+        };
+        if digitos >= 4 {
+            return true;
+        }
+        fim = novo_fim;
+        restantes -= 1;
+    }
+    false
 }
 
 /// A partir de `fim` (logo apos um grupo de digitos ja aceito), tenta casar
@@ -292,30 +319,25 @@ pub fn mascarar_numeros_longos(input: &str) -> std::borrow::Cow<'_, str> {
         if !colado_antes && !veio_de_uuid {
             while total_digitos < DIGITOS_DE_IDENTIFICADOR && grupos.len() <= MAX_GRUPOS_ADICIONAIS
             {
-                let proxima_ponte = estender_sobre_ponte(bytes, fim);
                 if parece_data(&grupos) {
-                    // So protege a data se o que vem depois nao completaria
-                    // um telefone plausivel (grupo de 4+ digitos) — senao um
-                    // numero real com essa forma casual (`"5511-98-76-5432"`)
-                    // escaparia inteiro so por parecer data no comeco.
-                    match proxima_ponte {
-                        Some((_, digitos)) if digitos >= 4 => {}
-                        _ => break,
+                    // So protege a data se a ponte, gastando o que resta do
+                    // teto de grupos, nao alcanca um grupo de 4+ digitos —
+                    // senao um numero real com essa forma casual
+                    // (`"55-11-98-76-5432"`) escaparia inteiro so por parecer
+                    // data no comeco. Olhar so o proximo grupo nao bastava: o
+                    // grupo seguinte a "76" ainda e curto, e so o de depois
+                    // (`"5432"`) desfaz a ambiguidade.
+                    let restantes = MAX_GRUPOS_ADICIONAIS.saturating_sub(grupos.len() - 1);
+                    if !ponte_alcanca_grupo_grande(bytes, fim, restantes) {
+                        break;
                     }
                 }
-                let Some((novo_fim, digitos)) = proxima_ponte else {
+                let Some((novo_fim, digitos)) = estender_sobre_ponte(bytes, fim) else {
                     break;
                 };
-                let fim_antes = fim;
                 fim = novo_fim;
                 total_digitos += digitos;
                 grupos.push(digitos);
-                if parece_intervalo(&grupos) || parece_numero_com_milhar(&grupos) {
-                    fim = fim_antes;
-                    total_digitos -= digitos;
-                    grupos.pop();
-                    break;
-                }
             }
         }
         i = fim;
@@ -325,6 +347,8 @@ pub fn mascarar_numeros_longos(input: &str) -> std::borrow::Cow<'_, str> {
             || colado_depois
             || veio_de_uuid
             || !tem_grupo_de_telefone_plausivel(&grupos)
+            || parece_intervalo(&grupos)
+            || parece_numero_com_milhar(&grupos)
         {
             continue;
         }
@@ -489,6 +513,40 @@ mod tests {
             mascarar_numeros_longos("callback 5511-98-76-5432 recebido"),
             "callback \u{2026}5432 recebido"
         );
+    }
+
+    /// #1514, achado da segunda rodada da auditoria de seguranca: espiar so
+    /// o proximo grupo nao bastava para desfazer a ambiguidade com data —
+    /// com DDI separado, o grupo logo apos a forma de data ainda e curto
+    /// (`"76"`), e so o **seguinte** (`"5432"`) prova que era telefone.
+    #[test]
+    fn numero_real_com_ddi_separado_e_prefixo_de_data_nao_escapa() {
+        assert_eq!(
+            mascarar_numeros_longos("callback 55-11-98-76-5432 recebido"),
+            "callback \u{2026}5432 recebido"
+        );
+    }
+
+    /// #1514, regressao achada na segunda rodada da auditoria de seguranca:
+    /// `parece_numero_com_milhar` checado a cada grupo novo (em vez de so no
+    /// final) apagava todo celular NANP com DDI separado, porque o prefixo
+    /// `[1,3,3]` e igual ao de um numero de verdade com separador de milhar
+    /// — so o ultimo grupo (`4567`, 4 digitos, nao 3) desfaz a ambiguidade.
+    #[test]
+    fn celular_nanp_com_ddi_separado_nao_e_confundido_com_numero_de_milhar() {
+        let casos = [
+            "ligue +1 555 123 4567 agora",
+            "ligue +1 (555) 123-4567 agora",
+            "ligue +1-555-123-4567 agora",
+            "ligue 1 555 123 4567 agora",
+        ];
+        for entrada in casos {
+            let saida = mascarar_numeros_longos(entrada);
+            assert!(
+                saida.ends_with("\u{2026}4567 agora"),
+                "{entrada} -> {saida}"
+            );
+        }
     }
 
     /// Guarda contra falso positivo: um id curto colado a letra na frente de
