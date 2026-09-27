@@ -196,6 +196,12 @@ fn parece_intervalo(grupos: &[usize]) -> bool {
 /// (`4567`, nao `3` digitos) desfaz a ambiguidade — checar a cada grupo
 /// novo, em vez de no final, apagava todo celular NANP (achado da segunda
 /// rodada da auditoria de seguranca do #1514).
+///
+/// Limitacao aceita (3a rodada da auditoria, BAIXO): um numero real cujos
+/// **unicos** grupos apos o primeiro sejam todos de exatamente 3 digitos
+/// (`"+34 612 345 678"`, `[2,3,3,3]`) ainda casa esta forma e escapa
+/// inteiro — indistinguivel de `1 234 567 890` sem contexto semantico. Nao
+/// piorou nas rodadas seguintes; documentado em vez de perseguido.
 fn parece_numero_com_milhar(grupos: &[usize]) -> bool {
     matches!(grupos, [primeiro, resto @ ..] if *primeiro <= 3
         && resto.len() >= 2
@@ -220,6 +226,12 @@ fn parece_data(grupos: &[usize]) -> bool {
 /// grupo (`"76"`, 2 digitos) tambem curto, e so o **seguinte** (`"5432"`)
 /// prova que era telefone (achado da segunda rodada da auditoria de
 /// seguranca do #1514).
+///
+/// Efeito colateral aceito (3a rodada da auditoria, BAIXO, so sobre-mascara,
+/// nunca vaza): olhar 2 grupos a frente pode juntar uma data a um numero
+/// curto e depois um grupo de 4+ digitos que nao tem nada a ver com ela
+/// (`"2026-09-27 12 3456"`) — exige essa combinacao especifica de tamanhos
+/// e nao ocorre em timestamp real (que usa `:`, nao espaco, para a hora).
 fn ponte_alcanca_grupo_grande(bytes: &[u8], fim: usize, grupos_restantes: usize) -> bool {
     let mut fim = fim;
     let mut restantes = grupos_restantes;
