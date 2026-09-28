@@ -109,8 +109,8 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # out, `UdpSend`/`UdpReceive`/`TcpListen`/`TcpAccept` in). Migrated in
 # runtime.rs. This bump is ALSO what forces `rust-version = "1.95"` above:
 # wasmtime 48 and its cranelift/pulley/wiggle tree declare rustc 1.95.0.
-wasmtime = "48"
-wasmtime-wasi = { version = "48", features = ["p1"] }
+wasmtime = "49"
+wasmtime-wasi = { version = "49", features = ["p1"] }
 
 # Discord
 # Segue em native_tls_backend, com OpenSSL VENDORED (estático) via o dep
