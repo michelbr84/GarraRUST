@@ -110,6 +110,61 @@ channels:
   depois; nunca segredo nem conteudo de mensagem; retencao configuravel).
 - **Dry-run (#1413):** a mesma engine calcula a matriz efetiva antes e depois; nada e gravado.
 
+### 4bis. Presets nomeados de permissao (#1434)
+
+Quatro nomes para as combinacoes de nivel + `write` que o operador de fato usa. **Um preset nao e um
+campo novo no `config.yml`**: e um apelido para um `Alcance` canonico, gravado pelas MESMAS chaves
+`level` e `write` da §4. Nao ha estado paralelo para ficar desatualizado, e a autoridade continua
+sendo exatamente o que o portao le.
+
+| Preset | `level` / `write` | Classes que o teto libera (§3) | Nega |
+|---|---|---|---|
+| `chat_only` | `chat` / `false` | nenhuma (`no_tools`) | tudo |
+| `read` | `read` / `false` | `filesystem.read`, `network.read`, `device.read`, `memory.read`, `runtime.inspect`, `mcp.read` | `process.execute`, `device.execute`, `message.send`, `memory.write`, `scheduling`, `filesystem.write`, `mcp.write` |
+| `developer` | `full` / `true` | sem restricao propria: piso de modo + perfil de execucao decidem | — (o teto nao acrescenta nada) |
+| `full_pod` | `full` / `true` | identico a `developer` (mesma `Alcance`; sem `bash` fora de `isolated-pod`) | — |
+
+- **`chat_only` e `read` sao seguros para contexto remoto/nao confiavel.** `chat_only` e `no_tools`:
+  nenhuma ferramenta, de nenhuma forma. `read` e a whitelist de `LEITURA` com negacao **explicita**
+  das classes perigosas — negacao vence `allowed` por nome, entao nem um modo mais largo as devolve.
+- **`developer` e `full_pod` respeitam o perfil de execucao por construcao.** Os dois compilam para o
+  MESMO `Alcance::COMPLETO`, e `full` (§3) nao tem restricao propria: quem decide o que existe de
+  fato e o piso de modo (`default_mode`, `search` por padrao mas configuravel pelo operador para
+  `code`) composto com o `execution.profile` (ADR 0024) — em `standard` o runtime nem registra
+  `bash` sem sandbox, mas filesystem write, MCP write, memory write, message send e scheduling
+  continuam vivos fora do sandbox se o piso de modo os liberar; em `isolated-pod` o piso do dono
+  chega a `code`. Nao ha imposicao extra a escrever, e nao pode haver: um preset que "liberasse" mais
+  do que o perfil seria exatamente o bypass que a §3 proibe. A diferenca entre os dois nomes e so a
+  **intencao operacional de quem atribuiu, no instante da atribuicao** — ela NAO fica registrada em
+  lugar nenhum depois disso (nem config, nem audit: `Mutacao::acao()` devolve `"preset"` para as
+  duas); quem le a politica mais tarde so sabe que a identidade tem `full`, nunca qual dos dois
+  nomes foi usado.
+- **Atribuicao por principal.** `garra whatsapp preset <numero> <preset> [--dry-run]` e
+  `POST /admin/api/whatsapp/access {"action":"preset","identity":…,"preset":…}` gravam `level` e
+  `write` juntos, no mesmo `save()`, pelo caminho unico de mutacao da §4 — com a mesma validacao
+  (preset no dono e recusado, como `level`: o dono nao tem teto) e a mesma trilha de audit.
+- **Atribuicao por canal e por default.** O preset tambem nomeia `access.default`,
+  `access.groups.default` e `access.groups.<jid>`: `garra whatsapp access default --preset <nome>`,
+  `... access groups default --preset <nome>`, `... access group <jid> --preset <nome>` e, na API,
+  o campo `preset` no lugar de `level`/`write` nas acoes `default`, `group-default` e `group`. Nao ha
+  acao nem variante de mutacao nova: o preset entrega o `Alcance` que esses comandos ja gravavam, e
+  por isso passa pelas MESMAS guardas — `developer` e `full_pod` sao `full` e continuam **recusados**
+  em `access.default` (exit 65 na CLI, 400 na API), porque o desconhecido nunca recebe `full`; nos
+  dois alvos de grupo os quatro valem. A acao auditada continua sendo a do alvo (`default`,
+  `group-default`, `group`), nao `preset`: o que foi gravado e um alcance, e e isso que a trilha diz.
+  Na CLI, nivel posicional e `--preset` sao mutuamente exclusivos e exatamente um e obrigatorio (o
+  `ArgGroup` recusa os dois juntos e nenhum dos dois antes de qualquer motor).
+- **`custom` continua possivel.** O documento efetivo (`visao`) traz um `preset` **calculado ao vivo**
+  do `level`/`write` autoritativo: o nome quando bate exatamente com um preset, `custom` quando nao
+  bate (por exemplo `read` + `write on`), `null` para quem nao tem teto (o dono). `developer` e
+  `full_pod` aparecem os dois como `full`, porque a leitura nao tem — e nao deveria fingir ter — como
+  distinguir a intencao original.
+- **Evolucao sem concessao silenciosa.** Como o preset nao guarda rotulo, mudar a definicao de um
+  preset no futuro nao reescreve politica ja gravada: quem esta em `read`/`write off` continua
+  exatamente nisso. E o que cada preset libera hoje esta fixado por um teste golden classe a classe
+  (`whatsapp_linked::tests::presets`), entao alargar `chat` ou `read` em `politica_do_nivel` quebra o
+  teste em vez de embarcar calado.
+
 ### 5. Registro de capacidades e honestidade (#1381, #1387, #1425 opcao B)
 
 Uma unica funcao no gateway produz, para (estado, sessao, principal), a lista de capacidades com

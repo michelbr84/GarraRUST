@@ -34,6 +34,15 @@ pub enum Mutacao {
     Nivel { identidade: String, nivel: Nivel },
     /// `access.users.<id>.write` (#1397).
     Write { identidade: String, on: bool },
+    /// `access.users.<id>` por preset nomeado (#1434): grava `level` e
+    /// `write` juntos, atomicamente, a partir de
+    /// [`super::presets::Preset::alcance`]. A autoridade gravada continua
+    /// sendo `level`/`write` — o preset e so o atalho que define os dois de
+    /// uma vez.
+    Preset {
+        identidade: String,
+        preset: super::presets::Preset,
+    },
     /// `access.users.<id>.blocked = true`.
     Bloquear(String),
     /// Tira o `blocked`; entrada que fica vazia some.
@@ -65,6 +74,7 @@ impl Mutacao {
             Self::DefaultDesconhecido(_) => "default",
             Self::Nivel { .. } => "level",
             Self::Write { .. } => "write",
+            Self::Preset { .. } => "preset",
             Self::Bloquear(_) => "block",
             Self::Desbloquear(_) => "unblock",
             Self::Grupos(_) => "groups",
@@ -82,6 +92,7 @@ impl Mutacao {
         match self {
             Self::Nivel { identidade, .. }
             | Self::Write { identidade, .. }
+            | Self::Preset { identidade, .. }
             | Self::Bloquear(identidade)
             | Self::Desbloquear(identidade)
             | Self::Papel { identidade, .. }
@@ -176,6 +187,7 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
     let identidade = match mutacao {
         Mutacao::Nivel { identidade, .. }
         | Mutacao::Write { identidade, .. }
+        | Mutacao::Preset { identidade, .. }
         | Mutacao::Bloquear(identidade)
         | Mutacao::Desbloquear(identidade)
         | Mutacao::Papel { identidade, .. }
@@ -206,7 +218,9 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
                 return Err(MutacaoInvalida::ChatComWrite);
             }
         }
-        Mutacao::Nivel { .. } => {
+        // O preset segue a MESMA regra de `level`/`write`: o dono nao tem
+        // teto, entao atribuir-lhe um preset e invalido (#1434).
+        Mutacao::Nivel { .. } | Mutacao::Preset { .. } => {
             if antes.e_dono(id) {
                 return Err(MutacaoInvalida::EDono);
             }
@@ -263,6 +277,14 @@ pub fn aplicar(secao: &mut ChannelConfig, mutacao: &Mutacao) -> Result<Aplicada,
                 if *nivel == Nivel::Chat {
                     entrada.insert("write".to_string(), json!(false));
                 }
+            }
+            // Os dois campos na MESMA entrada e no mesmo `save()`: nao
+            // existe estado intermediario em que so um deles foi gravado.
+            Mutacao::Preset { preset, .. } => {
+                let entrada = entrada_mut(users_mut(access)?, id)?;
+                let a = preset.alcance();
+                entrada.insert("level".to_string(), json!(a.nivel.as_str()));
+                entrada.insert("write".to_string(), json!(a.write));
             }
             Mutacao::Write { on, .. } => {
                 let entrada = entrada_mut(users_mut(access)?, id)?;

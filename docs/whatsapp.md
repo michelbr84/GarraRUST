@@ -140,11 +140,12 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia whatsapp unowner <numero> [--yes]` | tira o papel de DONO **sem** tirar o acesso; o ultimo dono exige confirmacao | 0 (inclusive quem nao era dono) · 1 cancelado · 64 ultimo dono sem terminal e sem `--yes` · 65 numero invalido · 70 config ilegivel · 73 gravou mas o audit falhou |
 | `garraia whatsapp access [--json] [--reveal]` | a politica efetiva inteira (ADR 0025): admissao, default do desconhecido, grupos e cada principal com piso, nivel e o que pode de fato — pelo MESMO `ToolGate` do turno; identidades so por `…1234`, `--reveal` mostra os valores da config (local) | 0 · 70 config ilegivel |
 | `garraia whatsapp access open [--yes] [--dry-run]` / `access restricted` | troca a admissao; `open` avisa (QUALQUER numero passa a entrar, com o default) e pede confirmacao | 0 · 1 cancelado · 64 `open` sem terminal e sem `--yes` · 70 |
-| `garraia whatsapp access default chat\|read [--write] [--dry-run]` | o que um desconhecido recebe em `open` (`full` e recusado; guardado mesmo em `restricted`) | 0 · 65 combinacao invalida · 70 |
+| `garraia whatsapp access default chat\|read [--write] [--dry-run]`, ou `access default --preset <nome>` | o que um desconhecido recebe em `open` (`full` e recusado, e por isso `--preset developer\|full_pod` tambem; guardado mesmo em `restricted`) | 0 · 65 combinacao invalida · 70 (nivel e `--preset` juntos, ou nenhum dos dois: recusado pelo parser da CLI, exit 2) |
 | `garraia whatsapp level <numero> chat\|read\|full [--dry-run]` | o nivel (teto) de uma identidade; no dono e recusado (use `unowner` antes) | 0 · 65 numero/combinacao invalida · 70 · 73 gravou mas o audit falhou |
 | `garraia whatsapp write <numero> on\|off [--dry-run]` | escrita de arquivo (nativa e MCP) de uma identidade — e SO isso | 0 · 65 (tambem para quem nao esta autorizado ou esta em `chat`) · 70 · 73 |
+| `garraia whatsapp preset <numero> chat_only\|read\|developer\|full_pod [--dry-run]` | atalho nomeado que grava `level` **e** `write` de uma vez (ADR 0025 §4bis): `chat_only` = `chat`/off, `read` = `read`/off, `developer` e `full_pod` = `full`/on — as duas gravam o mesmo teto, e o que muda entre elas e o `execution.profile`, nunca o nome; no dono e recusado, como `level` | 0 · 65 numero invalido, ou preset no dono (use `unowner` antes) · 70 config ilegivel · 73 gravou mas o audit falhou. Nome de preset desconhecido e recusado pelo **parser da CLI** (exit 2), antes de chegar ao motor |
 | `garraia whatsapp block <numero>` / `unblock <numero>` | bloqueia (vence `open`, `allow` e pareamento; vale na mensagem seguinte) / desbloqueia | 0 · 65 · 70 · 73 |
-| `garraia whatsapp access groups on\|off\|default <nivel>` / `access group <jid> <nivel> [--write]` | grupos: liga/desliga, o default e a politica por JID (`<digitos>@g.us`) | 0 · 65 · 70 · 73 |
+| `garraia whatsapp access groups on\|off\|default <nivel>` / `access group <jid> <nivel> [--write]` (`--preset <nome>` no lugar do nivel nos dois) | grupos: liga/desliga, o default e a politica por JID (`<digitos>@g.us`); grupo PODE ser `full`, entao os quatro presets valem | 0 · 65 · 70 · 73 (nivel e `--preset` juntos, ou nenhum dos dois: recusado pelo parser da CLI, exit 2) |
 | `garraia whatsapp access reset [--yes] [--dry-run]` | volta ao seguro: `restricted`, default `chat`, grupos desligados e sem politica, niveis/write removidos; donos e bloqueios ficam; idempotente | 0 · 1 cancelado · 64 sem terminal e sem `--yes` · 70 |
 | `garraia whatsapp access audit [--json] [--limit N]` | a trilha local de mudancas (`<data_dir>/audit/whatsapp-access.jsonl`), mais recente primeiro | 0 · 70 |
 
@@ -698,10 +699,15 @@ channels:
   devolve o mesmo documento de `access --json` (mais `hot_reload`);
   `POST /admin/api/whatsapp/access` com `{ "action": "level", "identity":
   "+55...", "level": "read", "dry_run": true }` (acoes: `open`, `restricted`,
-  `default`, `level`, `write`, `block`, `unblock`, `groups`, `group-default`,
-  `group`, `reset`) aplica pelo mesmo motor e devolve `changed`, `changes`,
-  `impact` (o que cada principal ganha e perde), `audit` e a politica
-  resultante. `identity` passa pela **mesma validacao da CLI** (#1403):
+  `default`, `level`, `write`, `preset`, `block`, `unblock`, `groups`,
+  `group-default`, `group`, `reset`) aplica pelo mesmo motor e devolve
+  `changed`, `changes`, `impact` (o que cada principal ganha e perde),
+  `audit` e a politica
+  resultante. Nas acoes `default`, `group-default` e `group`, o campo
+  `preset` (#1434) vale no lugar de `level`/`write` e ja traz o `write`
+  canonico — com as mesmas guardas, entao `developer`/`full_pod` (que sao
+  `full`) continuam recusados com `400` em `access.default`.
+  `identity` passa pela **mesma validacao da CLI** (#1403):
   `+` e codigo do pais obrigatorios, 6 a 15 digitos, formatos BR/US com
   espacos, hifens e parenteses aceitos, ou `<digitos>@lid`; invalida da
   `400` com `error` e um `error_code` estavel

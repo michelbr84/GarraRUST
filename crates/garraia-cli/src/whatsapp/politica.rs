@@ -11,7 +11,8 @@
 //! identidade inteira, salvo `--reveal`).
 //!
 //! Exit codes (sysexits): 0 ok · 1 cancelado · 64 uso (`open`/`reset` sem
-//! terminal e sem `--yes`) · 65 dado invalido (numero, combinacao de nivel e
+//! terminal e sem `--yes`; nivel e `--preset` juntos, ou nenhum dos dois, nos
+//! comandos que aceitam os dois) · 65 dado invalido (numero, combinacao de nivel e
 //! write, identidade desconhecida) · 70 config ilegivel ou falha ao gravar ·
 //! 73 mudanca gravada mas audit falhou.
 
@@ -21,6 +22,7 @@ use garraia_gateway::bootstrap::whatsapp_linked_politica::impacto::{self, Difere
 use garraia_gateway::bootstrap::whatsapp_linked_politica::mutacao::{
     self, Aplicada, Mutacao, MutacaoInvalida,
 };
+use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
 use garraia_gateway::bootstrap::whatsapp_linked_politica::visao::{
     self, mapa_de_revelacao, nome_do_perfil,
 };
@@ -48,10 +50,14 @@ pub enum ComandoDeAcesso {
     Abrir { yes: bool, dry_run: bool },
     /// `access restricted [--dry-run]` (#1396).
     Restringir { dry_run: bool },
-    /// `access default <chat|read> [--write] [--dry-run]` (#1399).
+    /// `access default <chat|read> [--write] [--dry-run]` (#1399), ou
+    /// `access default --preset <nome> [--dry-run]` (#1434): exatamente um dos
+    /// dois — `preset` vence e ja traz o `write` canonico. O motor recusa
+    /// `developer`/`full_pod` aqui, como recusa `full` (#1390).
     Default {
-        nivel: Nivel,
+        nivel: Option<Nivel>,
         write: bool,
+        preset: Option<Preset>,
         dry_run: bool,
     },
     /// `level <numero> <chat|read|full> [--dry-run]` (#1398).
@@ -66,23 +72,35 @@ pub enum ComandoDeAcesso {
         on: bool,
         dry_run: bool,
     },
+    /// `preset <numero> <chat_only|read|developer|full_pod> [--dry-run]`
+    /// (#1434): grava `level` + `write` de uma vez, pelo alcance canonico do
+    /// preset.
+    Preset {
+        numero: String,
+        preset: Preset,
+        dry_run: bool,
+    },
     /// `block <numero> [--dry-run]`.
     Bloquear { numero: String, dry_run: bool },
     /// `unblock <numero> [--dry-run]`.
     Desbloquear { numero: String, dry_run: bool },
     /// `access groups on|off [--dry-run]` (#1423).
     Grupos { ligados: bool, dry_run: bool },
-    /// `access groups default <chat|read|full> [--write] [--dry-run]`.
+    /// `access groups default <chat|read|full> [--write] [--dry-run]`, ou
+    /// `--preset <nome>` no lugar do nivel (#1434).
     GrupoDefault {
-        nivel: Nivel,
+        nivel: Option<Nivel>,
         write: bool,
+        preset: Option<Preset>,
         dry_run: bool,
     },
-    /// `access group <jid> <chat|read|full> [--write] [--dry-run]`.
+    /// `access group <jid> <chat|read|full> [--write] [--dry-run]`, ou
+    /// `--preset <nome>` no lugar do nivel (#1434).
     Grupo {
         jid: String,
-        nivel: Nivel,
+        nivel: Option<Nivel>,
         write: bool,
+        preset: Option<Preset>,
         dry_run: bool,
     },
     /// `access reset [--yes] [--dry-run]` (#1401).
@@ -704,6 +722,35 @@ fn jid_de_grupo(ctx: &Context, raw: &str) -> Result<String, i32> {
     }
 }
 
+/// O alcance de `access default`, `access groups default` e `access group`:
+/// o preset nomeado (#1434) OU o par `<nivel>` + `--write`, nunca os dois e
+/// nunca nenhum. O `ArgGroup` do clap ja fecha isso na linha de comando (exit
+/// 2, com o uso na tela); este `EX_USAGE` existe para nao haver caminho que
+/// grave politica a partir de um pedido ambiguo.
+fn alcance_de(
+    ctx: &Context,
+    nivel: Option<Nivel>,
+    write: bool,
+    preset: Option<Preset>,
+) -> Result<Alcance, i32> {
+    match (preset, nivel) {
+        // O preset ja traz o `write` canonico: nao ha o que compor.
+        (Some(p), None) => Ok(p.alcance()),
+        (None, Some(nivel)) => Ok(Alcance { nivel, write }),
+        _ => {
+            eprintln!(
+                "{}",
+                t(
+                    ctx.lang,
+                    "informe o nivel OU `--preset <nome>` — exatamente um dos dois",
+                    "give the level OR `--preset <name>` — exactly one of the two",
+                )
+            );
+            Err(EX_USAGE)
+        }
+    }
+}
+
 /// O comando inteiro. Devolve o exit code.
 pub fn access(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -> i32 {
     match executar(ctx, prompter, comando) {
@@ -791,12 +838,10 @@ fn executar(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -
         ComandoDeAcesso::Default {
             nivel,
             write,
+            preset,
             dry_run,
         } => (
-            Mutacao::DefaultDesconhecido(Alcance {
-                nivel: *nivel,
-                write: *write,
-            }),
+            Mutacao::DefaultDesconhecido(alcance_de(ctx, *nivel, *write, *preset)?),
             *dry_run,
         ),
         ComandoDeAcesso::Nivel {
@@ -821,6 +866,17 @@ fn executar(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -
             },
             *dry_run,
         ),
+        ComandoDeAcesso::Preset {
+            numero: raw,
+            preset,
+            dry_run,
+        } => (
+            Mutacao::Preset {
+                identidade: numero(ctx, raw)?,
+                preset: *preset,
+            },
+            *dry_run,
+        ),
         ComandoDeAcesso::Bloquear {
             numero: raw,
             dry_run,
@@ -833,26 +889,22 @@ fn executar(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -
         ComandoDeAcesso::GrupoDefault {
             nivel,
             write,
+            preset,
             dry_run,
         } => (
-            Mutacao::DefaultDeGrupo(Alcance {
-                nivel: *nivel,
-                write: *write,
-            }),
+            Mutacao::DefaultDeGrupo(alcance_de(ctx, *nivel, *write, *preset)?),
             *dry_run,
         ),
         ComandoDeAcesso::Grupo {
             jid,
             nivel,
             write,
+            preset,
             dry_run,
         } => (
             Mutacao::Grupo {
                 jid: jid_de_grupo(ctx, jid)?,
-                alcance: Alcance {
-                    nivel: *nivel,
-                    write: *write,
-                },
+                alcance: alcance_de(ctx, *nivel, *write, *preset)?,
             },
             *dry_run,
         ),

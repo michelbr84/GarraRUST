@@ -13,6 +13,7 @@ use serde_json::{Map, Value, json};
 use super::super::{LinkedSettings, settings_from_config};
 use super::impacto;
 use super::mutacao::mascarar;
+use super::presets::rotulo_efetivo;
 use super::{Alcance, Principal};
 
 /// `standard` | `isolated-pod`, como a config escreve.
@@ -65,6 +66,16 @@ pub fn documento_de(s: &LinkedSettings, perfil: ExecutionProfile, revelar: bool)
             }
             obj.insert("level".into(), level);
             obj.insert("write".into(), write);
+            // #1434: o rotulo do preset, calculado AO VIVO do `level`/`write`
+            // efetivo — nunca de um campo gravado. `null` para quem nao tem
+            // teto (o dono) ou nao e admitido, como `level`/`write`.
+            obj.insert(
+                "preset".into(),
+                match l.efetivo.alcance {
+                    Some(a) => json!(rotulo_efetivo(a)),
+                    None => Value::Null,
+                },
+            );
             obj.insert("mode".into(), json!(l.efetivo.modo));
             obj.insert(
                 "admitted".into(),
@@ -100,10 +111,18 @@ pub fn documento_de(s: &LinkedSettings, perfil: ExecutionProfile, revelar: bool)
         "owner_floor_mode": piso_do_dono,
         "default_mode": s.modo_padrao_efetivo(ExecutionProfile::Standard),
         "admission": s.access.admission.as_str(),
-        "default": { "level": s.access.default.nivel.as_str(), "write": s.access.default.write },
+        "default": {
+            "level": s.access.default.nivel.as_str(),
+            "write": s.access.default.write,
+            "preset": rotulo_efetivo(s.access.default),
+        },
         "groups": {
             "enabled": s.responde_em_grupo(),
-            "default": { "level": s.access.groups.default.nivel.as_str(), "write": s.access.groups.default.write },
+            "default": {
+                "level": s.access.groups.default.nivel.as_str(),
+                "write": s.access.groups.default.write,
+                "preset": rotulo_efetivo(s.access.groups.default),
+            },
             "declared": s.access.groups.por_grupo.len(),
         },
         "counts": { "authorized": s.autorizados(), "owners": s.donos(), "blocked": bloqueados },

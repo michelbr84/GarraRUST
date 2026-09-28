@@ -12,6 +12,8 @@ use super::*;
 mod politica;
 // ADR 0025: mutacao, impacto e auditoria da politica (#1412, #1413, #1414).
 mod politica_mutacao;
+// ADR 0025 §3-4: presets nomeados sobre `Alcance` (#1434).
+mod presets;
 // O par que extrai chamada de log e separa o que pode carregar valor mora em
 // `garraia-channels` (a crate que possui o segredo da sessao) e serve as duas
 // varreduras — esta e a de `whatsapp_linked/source_scan.rs`. Duas copias com

@@ -531,6 +531,34 @@ enum WhatsAppCommands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Preset de permissao de um numero: chat_only | read | developer |
+    /// full_pod (#1434).
+    ///
+    /// Atalho nomeado para uma combinacao de nivel + write: `chat_only` =
+    /// `chat`/`write off` (nenhuma ferramenta), `read` = `read`/`write off`
+    /// (so leitura), `developer` e `full_pod` = `full`/`write on` — as duas
+    /// gravam o MESMO teto (`full` nao tem restricao propria). O que de fato
+    /// fica disponivel e o piso de modo (`whatsapp access default-mode`,
+    /// `search` por padrao) composto com `execution.profile` (ADR 0024): em
+    /// `standard` nao ha `bash` sem sandbox, mas escrita de arquivo, MCP,
+    /// memoria e mensagem continuam fora do sandbox se o piso os liberar; em
+    /// `isolated-pod` o piso do dono chega a `code`. O que vai para o
+    /// `config.yml` continua sendo `level` + `write`: nao ha campo novo, e a
+    /// escolha entre `developer`/`full_pod` nao fica registrada em lugar
+    /// nenhum depois de gravada. Exit codes: 0 ok, 65 numero invalido ou
+    /// preset no dono (use `unowner` antes), 70 config, 73 gravou mas o audit
+    /// falhou. Nome fora desses quatro nao chega a nada disso: a lista e
+    /// fechada na leitura da linha de comando, que recusa com exit 2 antes do
+    /// motor de mutacao.
+    Preset {
+        #[arg(value_name = "NUMERO")]
+        numero: String,
+        #[arg(value_name = "PRESET", value_parser = PRESETS)]
+        preset: String,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Escrita de arquivo (nativa e MCP) de um numero: on | off (#1397).
     ///
     /// Mexe SO em escrita de arquivo: nao liga `bash`, nao desliga sandbox,
@@ -634,12 +662,20 @@ enum AccessCommands {
         dry_run: bool,
     },
     /// O que um desconhecido recebe em `open`: chat | read (nunca full).
+    ///
+    /// Ou, no lugar do nivel, `--preset <nome>` (#1434): `chat_only` e `read`
+    /// valem aqui; `developer` e `full_pod` sao `full` e o motor os recusa
+    /// (exit 65) — desconhecido nunca recebe `full` (#1390).
+    #[command(group(clap::ArgGroup::new("alcance_do_default").required(true).multiple(false)))]
     Default {
-        #[arg(value_name = "NIVEL", value_parser = ["chat", "read"])]
-        nivel: String,
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read"], group = "alcance_do_default")]
+        nivel: Option<String>,
         /// Libera escrita de arquivo (so com `read`).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preset")]
         write: bool,
+        /// Preset nomeado no lugar do nivel: ja traz o `write` canonico.
+        #[arg(long, value_name = "PRESET", value_parser = PRESETS, group = "alcance_do_default")]
+        preset: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
@@ -649,13 +685,20 @@ enum AccessCommands {
         cmd: GroupsCommands,
     },
     /// Politica de um grupo pelo JID (`<digitos>@g.us`).
+    ///
+    /// Ou, no lugar do nivel, `--preset <nome>` (#1434): os quatro valem, como
+    /// em qualquer alvo que aceita `full`.
+    #[command(group(clap::ArgGroup::new("alcance_do_grupo").required(true).multiple(false)))]
     Group {
         #[arg(value_name = "JID")]
         jid: String,
-        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
-        nivel: String,
-        #[arg(long)]
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"], group = "alcance_do_grupo")]
+        nivel: Option<String>,
+        #[arg(long, conflicts_with = "preset")]
         write: bool,
+        /// Preset nomeado no lugar do nivel: ja traz o `write` canonico.
+        #[arg(long, value_name = "PRESET", value_parser = PRESETS, group = "alcance_do_grupo")]
+        preset: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
@@ -689,11 +732,18 @@ enum GroupsCommands {
         dry_run: bool,
     },
     /// O nivel de um grupo sem politica propria.
+    ///
+    /// Ou, no lugar do nivel, `--preset <nome>` (#1434): os quatro valem, como
+    /// em qualquer alvo que aceita `full`.
+    #[command(group(clap::ArgGroup::new("alcance_do_default_de_grupo").required(true).multiple(false)))]
     Default {
-        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"])]
-        nivel: String,
-        #[arg(long)]
+        #[arg(value_name = "NIVEL", value_parser = ["chat", "read", "full"], group = "alcance_do_default_de_grupo")]
+        nivel: Option<String>,
+        #[arg(long, conflicts_with = "preset")]
         write: bool,
+        /// Preset nomeado no lugar do nivel: ja traz o `write` canonico.
+        #[arg(long, value_name = "PRESET", value_parser = PRESETS, group = "alcance_do_default_de_grupo")]
+        preset: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
@@ -703,6 +753,19 @@ enum GroupsCommands {
 /// valor; o fallback e fail-closed por principio.
 fn nivel_de(nome: &str) -> garraia_agents::modes::Nivel {
     garraia_agents::modes::Nivel::parse(nome).unwrap_or(garraia_agents::modes::Nivel::Chat)
+}
+
+/// #1434: os nomes de preset que a CLI aceita, em um so lugar — o
+/// `value_parser` fecha a lista antes de qualquer motor (nome desconhecido e
+/// recusado pelo proprio clap, exit 2).
+const PRESETS: [&str; 4] = ["chat_only", "read", "developer", "full_pod"];
+
+/// #1434: o `value_parser` do clap ja fecha a lista; o fallback existe para
+/// nao haver caminho de producao que entregue um preset adivinhado — e o
+/// fallback e o mais estreito de todos, como `nivel_de` cai em `chat`.
+fn preset_de(nome: &str) -> garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset {
+    use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+    Preset::parse(nome).unwrap_or(Preset::ChatOnly)
 }
 
 #[derive(Subcommand)]
@@ -1622,6 +1685,7 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
                 | WhatsAppCommands::Owner { .. }
                 | WhatsAppCommands::Unowner { .. }
                 | WhatsAppCommands::Level { .. }
+                | WhatsAppCommands::Preset { .. }
                 | WhatsAppCommands::Write { .. }
                 | WhatsAppCommands::Block { .. }
                 | WhatsAppCommands::Unblock { .. },
@@ -1981,10 +2045,12 @@ fn main() -> Result<()> {
                     Some(AccessCommands::Default {
                         nivel,
                         write,
+                        preset,
                         dry_run,
                     }) => C::Default {
-                        nivel: nivel_de(nivel),
+                        nivel: nivel.as_deref().map(nivel_de),
                         write: *write,
+                        preset: preset.as_deref().map(preset_de),
                         dry_run: *dry_run,
                     },
                     Some(AccessCommands::Groups { cmd }) => match cmd {
@@ -1999,10 +2065,12 @@ fn main() -> Result<()> {
                         GroupsCommands::Default {
                             nivel,
                             write,
+                            preset,
                             dry_run,
                         } => C::GrupoDefault {
-                            nivel: nivel_de(nivel),
+                            nivel: nivel.as_deref().map(nivel_de),
                             write: *write,
+                            preset: preset.as_deref().map(preset_de),
                             dry_run: *dry_run,
                         },
                     },
@@ -2010,11 +2078,13 @@ fn main() -> Result<()> {
                         jid,
                         nivel,
                         write,
+                        preset,
                         dry_run,
                     }) => C::Grupo {
                         jid: jid.clone(),
-                        nivel: nivel_de(nivel),
+                        nivel: nivel.as_deref().map(nivel_de),
                         write: *write,
+                        preset: preset.as_deref().map(preset_de),
                         dry_run: *dry_run,
                     },
                     Some(AccessCommands::Reset { yes, dry_run }) => C::Reset {
@@ -2034,6 +2104,15 @@ fn main() -> Result<()> {
             }) => whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Nivel {
                 numero: numero.clone(),
                 nivel: nivel_de(nivel),
+                dry_run: *dry_run,
+            }),
+            Some(WhatsAppCommands::Preset {
+                numero,
+                preset,
+                dry_run,
+            }) => whatsapp::Action::Access(whatsapp::ComandoDeAcesso::Preset {
+                numero: numero.clone(),
+                preset: preset_de(preset),
                 dry_run: *dry_run,
             }),
             Some(WhatsAppCommands::Write {
@@ -3384,6 +3463,146 @@ mod tests {
             ],
             "value-taking flag set drifted; update cli_args::tests::FLAGS too"
         );
+    }
+
+    /// #1434: `whatsapp preset <numero> <preset>` aceita exatamente os quatro
+    /// nomes e recusa o resto no proprio parser — nome desconhecido nunca
+    /// chega ao motor de mutacao.
+    #[test]
+    fn whatsapp_preset_so_aceita_os_quatro_nomes() {
+        use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+        for preset in Preset::ALL {
+            let cli = Cli::try_parse_from([
+                "garra",
+                "whatsapp",
+                "preset",
+                "+5511999998888",
+                preset.nome(),
+            ])
+            .unwrap_or_else(|e| panic!("`{}` deveria parsear: {e}", preset.nome()));
+            match cli.command {
+                Commands::WhatsApp {
+                    action:
+                        Some(WhatsAppCommands::Preset {
+                            numero,
+                            preset: p,
+                            dry_run,
+                        }),
+                } => {
+                    assert_eq!(numero, "+5511999998888");
+                    assert_eq!(preset_de(&p), preset);
+                    assert!(!dry_run);
+                }
+                _ => panic!("`whatsapp preset {}` virou outro comando", preset.nome()),
+            }
+        }
+        for nao in ["full", "chat", "chat-only", "owner", ""] {
+            assert!(
+                Cli::try_parse_from(["garra", "whatsapp", "preset", "+5511999998888", nao])
+                    .is_err(),
+                "`{nao}` nao devia parsear"
+            );
+        }
+        // `--dry-run` existe, como em `level`/`write`.
+        assert!(
+            Cli::try_parse_from([
+                "garra",
+                "whatsapp",
+                "preset",
+                "+5511999998888",
+                "read",
+                "--dry-run",
+            ])
+            .is_ok()
+        );
+    }
+
+    /// #1434: `access default`, `access groups default` e `access group`
+    /// aceitam `<NIVEL>` OU `--preset <NOME>` — exatamente um dos dois, pelo
+    /// `ArgGroup`. A forma posicional de sempre continua igual.
+    #[test]
+    fn preset_e_alternativa_ao_nivel_no_default_e_nos_grupos() {
+        use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+
+        const JID: &str = "120363000000000000@g.us";
+        let posicional: [&[&str]; 3] = [
+            &["garra", "whatsapp", "access", "default", "read"],
+            &["garra", "whatsapp", "access", "groups", "default", "full"],
+            &["garra", "whatsapp", "access", "group", JID, "read"],
+        ];
+        for args in posicional {
+            assert!(
+                Cli::try_parse_from(args).is_ok(),
+                "a forma posicional nao pode ter mudado: {args:?}"
+            );
+        }
+        let por_preset: [&[&str]; 3] = [
+            &["garra", "whatsapp", "access", "default", "--preset", "read"],
+            &[
+                "garra", "whatsapp", "access", "groups", "default", "--preset", "full_pod",
+            ],
+            &[
+                "garra",
+                "whatsapp",
+                "access",
+                "group",
+                JID,
+                "--preset",
+                "developer",
+            ],
+        ];
+        for args in por_preset {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+        }
+        let cli =
+            Cli::try_parse_from(["garra", "whatsapp", "access", "default", "--preset", "read"])
+                .expect("`--preset read` parseia");
+        match cli.command {
+            Commands::WhatsApp {
+                action:
+                    Some(WhatsAppCommands::Access {
+                        cmd:
+                            Some(AccessCommands::Default {
+                                nivel,
+                                write,
+                                preset,
+                                ..
+                            }),
+                        ..
+                    }),
+            } => {
+                assert_eq!(nivel, None);
+                assert!(!write);
+                assert_eq!(preset.as_deref().map(preset_de), Some(Preset::Read));
+            }
+            _ => panic!("`access default --preset read` virou outro comando"),
+        }
+        // Os dois juntos, nenhum dos dois, `--write` com preset e nome
+        // desconhecido: recusados pelo proprio parser (exit 2), antes do motor.
+        let recusados: [&[&str]; 5] = [
+            &[
+                "garra", "whatsapp", "access", "default", "read", "--preset", "read",
+            ],
+            &["garra", "whatsapp", "access", "default"],
+            &[
+                "garra", "whatsapp", "access", "default", "--preset", "read", "--write",
+            ],
+            &[
+                "garra",
+                "whatsapp",
+                "access",
+                "default",
+                "--preset",
+                "chat-only",
+            ],
+            &["garra", "whatsapp", "access", "group", JID],
+        ];
+        for args in recusados {
+            let Err(erro) = Cli::try_parse_from(args) else {
+                panic!("{args:?} devia falhar");
+            };
+            assert_eq!(erro.exit_code(), 2, "{args:?}");
+        }
     }
 
     /// #1301: o REPL interativo (`garra chat`, inclusive via `garra` nu) é a

@@ -148,6 +148,271 @@ fn write_em_desconhecido_e_numero_invalido_dao_65_sem_gravar() {
 }
 
 // ---------------------------------------------------------------------------
+// preset (#1434)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn preset_grava_level_e_write_audita_e_recusa_o_dono() {
+    use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = preparar(
+        &dir,
+        serde_json::json!({ "allow": [NUMERO], "owners": [DONO] }),
+    );
+    let p = ScriptedPrompter::default();
+
+    // Caminho feliz: um preset por principal, gravado como `level` + `write`.
+    let code = acesso_v2::access(
+        &ctx,
+        &p,
+        &ComandoDeAcesso::Preset {
+            numero: "+55 11 99999-8888".to_string(),
+            preset: Preset::Read,
+            dry_run: false,
+        },
+    );
+    assert_eq!(code, 0);
+    assert_eq!(
+        principal(&ctx, NUMERO),
+        Principal::Usuario(Alcance::LEITURA)
+    );
+    let config = ctx
+        .loader
+        .as_ref()
+        .expect("loader")
+        .load_sem_env()
+        .expect("load");
+    let entrada = config.channels["whatsapp_linked"].settings["access"]["users"][NUMERO]
+        .as_object()
+        .expect("entrada");
+    assert_eq!(entrada["level"], serde_json::json!("read"));
+    assert_eq!(entrada["write"], serde_json::json!(false));
+    assert!(
+        !entrada.contains_key("preset"),
+        "o preset nao vira campo no config.yml: {entrada:?}"
+    );
+    let eventos = audit(&ctx);
+    assert_eq!(eventos.len(), 1);
+    assert_eq!(eventos[0].acao, "preset");
+    assert_eq!(eventos[0].origem, "cli");
+    assert_eq!(eventos[0].alvo.as_deref(), Some("…8888"));
+    assert!(
+        !arquivo_de_audit(&ctx).contains(NUMERO),
+        "audit com numero inteiro"
+    );
+
+    // O dono nao tem teto: preset nele e recusado, sem gravar nem auditar.
+    let code = acesso_v2::access(
+        &ctx,
+        &p,
+        &ComandoDeAcesso::Preset {
+            numero: format!("+{DONO}"),
+            preset: Preset::ChatOnly,
+            dry_run: false,
+        },
+    );
+    assert_eq!(code, acesso::EX_DATAERR);
+    assert_eq!(principal(&ctx, DONO), Principal::Dono);
+    assert_eq!(audit(&ctx).len(), 1, "recusa nao audita");
+
+    // Numero invalido tambem para em 65.
+    let code = acesso_v2::access(
+        &ctx,
+        &p,
+        &ComandoDeAcesso::Preset {
+            numero: "abc".to_string(),
+            preset: Preset::Read,
+            dry_run: false,
+        },
+    );
+    assert_eq!(code, acesso::EX_DATAERR);
+}
+
+#[test]
+fn preset_em_dry_run_mostra_o_impacto_sem_gravar() {
+    use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = preparar(&dir, serde_json::json!({ "allow": [NUMERO] }));
+    let p = ScriptedPrompter::default();
+    let code = acesso_v2::access(
+        &ctx,
+        &p,
+        &ComandoDeAcesso::Preset {
+            numero: format!("+{NUMERO}"),
+            preset: Preset::ChatOnly,
+            dry_run: true,
+        },
+    );
+    assert_eq!(code, 0);
+    // Continua o legado sem teto: nada foi gravado, nada foi auditado.
+    assert_eq!(
+        principal(&ctx, NUMERO),
+        Principal::Usuario(Alcance::COMPLETO)
+    );
+    assert!(audit(&ctx).is_empty());
+    // E o impacto veio do motor real, sem identidade inteira.
+    let mutacao = Mutacao::Preset {
+        identidade: NUMERO.to_string(),
+        preset: Preset::ChatOnly,
+    };
+    let ap: Aplicacao = acesso_v2::aplicar(&ctx, &mutacao, true).expect("aplica em seco");
+    assert!(ap.aplicada.mudou);
+    assert!(!ap.gravou);
+    let texto = linhas_de_impacto(Lang::Pt, &ap).join("\n");
+    assert!(texto.contains("perde"), "{texto}");
+    assert!(!texto.contains(NUMERO), "impacto com numero: {texto}");
+}
+
+/// #1434: `access default`, `access groups default` e `access group` aceitam
+/// o preset NO LUGAR do nivel — e o preset passa pelas MESMAS guardas, entao
+/// `developer`/`full_pod` (que sao `full`) continuam recusados no default do
+/// desconhecido, exatamente como `default full` (#1390).
+#[test]
+fn preset_nomeia_o_default_o_default_de_grupo_e_o_grupo() {
+    use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = preparar(&dir, serde_json::json!({ "owners": [DONO] }));
+    let p = ScriptedPrompter::default();
+
+    // `access default --preset read`: o mesmo que `default read`.
+    let code = acesso_v2::access(
+        &ctx,
+        &p,
+        &ComandoDeAcesso::Default {
+            nivel: None,
+            write: false,
+            preset: Some(Preset::Read),
+            dry_run: false,
+        },
+    );
+    assert_eq!(code, 0);
+    assert_eq!(settings_de(&ctx).access.default, Alcance::LEITURA);
+    assert_eq!(audit(&ctx)[0].acao, "default");
+
+    // `developer` e `full_pod` sao `full`: recusados no default, sem gravar.
+    for preset in [Preset::Developer, Preset::FullPod] {
+        let code = acesso_v2::access(
+            &ctx,
+            &p,
+            &ComandoDeAcesso::Default {
+                nivel: None,
+                write: false,
+                preset: Some(preset),
+                dry_run: false,
+            },
+        );
+        assert_eq!(code, acesso::EX_DATAERR, "{}", preset.nome());
+        assert_eq!(
+            settings_de(&ctx).access.default,
+            Alcance::LEITURA,
+            "{} nao pode ter gravado",
+            preset.nome()
+        );
+    }
+    assert_eq!(audit(&ctx).len(), 1, "recusa nao audita");
+
+    // Grupo PODE ter `full`: os quatro valem no default de grupo e no grupo.
+    assert_eq!(
+        acesso_v2::access(
+            &ctx,
+            &p,
+            &ComandoDeAcesso::Grupos {
+                ligados: true,
+                dry_run: false
+            }
+        ),
+        0
+    );
+    for preset in Preset::ALL {
+        let code = acesso_v2::access(
+            &ctx,
+            &p,
+            &ComandoDeAcesso::GrupoDefault {
+                nivel: None,
+                write: false,
+                preset: Some(preset),
+                dry_run: false,
+            },
+        );
+        assert_eq!(code, 0, "{}", preset.nome());
+        assert_eq!(
+            settings_de(&ctx).access.groups.default,
+            preset.alcance(),
+            "{}",
+            preset.nome()
+        );
+    }
+    let code = acesso_v2::access(
+        &ctx,
+        &p,
+        &ComandoDeAcesso::Grupo {
+            jid: GRUPO.to_string(),
+            nivel: None,
+            write: false,
+            preset: Some(Preset::ChatOnly),
+            dry_run: false,
+        },
+    );
+    assert_eq!(code, 0);
+    assert_eq!(
+        principal_do_turno(&settings_de(&ctx), DONO, GRUPO, true, false),
+        Principal::Grupo(Alcance::CHAT)
+    );
+    assert_eq!(audit(&ctx)[0].acao, "group");
+}
+
+/// Nivel e `--preset` juntos (ou nenhum dos dois) e uso, nao dado: `EX_USAGE`
+/// e nada vai para o disco. O `ArgGroup` do clap ja fecha isso na linha de
+/// comando; este teste guarda o caminho programatico.
+#[test]
+fn nivel_e_preset_juntos_ou_nenhum_dos_dois_sao_uso_invalido() {
+    use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = preparar(&dir, serde_json::json!({ "allow": [NUMERO] }));
+    let p = ScriptedPrompter::default();
+    let ambiguos = [
+        ComandoDeAcesso::Default {
+            nivel: Some(Nivel::Read),
+            write: false,
+            preset: Some(Preset::ChatOnly),
+            dry_run: false,
+        },
+        ComandoDeAcesso::Default {
+            nivel: None,
+            write: false,
+            preset: None,
+            dry_run: false,
+        },
+        ComandoDeAcesso::GrupoDefault {
+            nivel: None,
+            write: false,
+            preset: None,
+            dry_run: false,
+        },
+        ComandoDeAcesso::Grupo {
+            jid: GRUPO.to_string(),
+            nivel: Some(Nivel::Read),
+            write: false,
+            preset: Some(Preset::Read),
+            dry_run: false,
+        },
+    ];
+    for comando in &ambiguos {
+        assert_eq!(
+            acesso_v2::access(&ctx, &p, comando),
+            acesso::EX_USAGE,
+            "{comando:?}"
+        );
+    }
+    assert_eq!(settings_de(&ctx).access.default, Alcance::CHAT);
+    assert!(audit(&ctx).is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // --dry-run
 // ---------------------------------------------------------------------------
 
@@ -277,8 +542,9 @@ fn default_full_e_recusado_e_o_default_read_so_vale_em_open() {
         &ctx,
         &p,
         &ComandoDeAcesso::Default {
-            nivel: Nivel::Full,
+            nivel: Some(Nivel::Full),
             write: false,
+            preset: None,
             dry_run: false,
         },
     );
@@ -288,8 +554,9 @@ fn default_full_e_recusado_e_o_default_read_so_vale_em_open() {
         &ctx,
         &p,
         &ComandoDeAcesso::Default {
-            nivel: Nivel::Read,
+            nivel: Some(Nivel::Read),
             write: false,
+            preset: None,
             dry_run: false,
         },
     );
@@ -372,8 +639,9 @@ fn grupos_ligam_desligam_e_recebem_politica_por_jid() {
             &ctx,
             &p,
             &ComandoDeAcesso::GrupoDefault {
-                nivel: Nivel::Chat,
+                nivel: Some(Nivel::Chat),
                 write: false,
+                preset: None,
                 dry_run: false
             }
         ),
@@ -385,8 +653,9 @@ fn grupos_ligam_desligam_e_recebem_politica_por_jid() {
             &p,
             &ComandoDeAcesso::Grupo {
                 jid: GRUPO.to_string(),
-                nivel: Nivel::Read,
+                nivel: Some(Nivel::Read),
                 write: false,
+                preset: None,
                 dry_run: false
             }
         ),
@@ -407,8 +676,9 @@ fn grupos_ligam_desligam_e_recebem_politica_por_jid() {
         &p,
         &ComandoDeAcesso::Grupo {
             jid: "abc".to_string(),
-            nivel: Nivel::Read,
+            nivel: Some(Nivel::Read),
             write: false,
+            preset: None,
             dry_run: false,
         },
     );

@@ -32,14 +32,15 @@ use crate::bootstrap::whatsapp_linked_numero as numero;
 use crate::bootstrap::whatsapp_linked_politica::mutacao::{
     self, Mutacao, MutacaoInvalida, mascarar,
 };
+use crate::bootstrap::whatsapp_linked_politica::presets::{NOMES as NOMES_DE_PRESET, Preset};
 use crate::bootstrap::whatsapp_linked_politica::{Admission, Alcance, auditoria, impacto, visao};
 use crate::bootstrap::{WHATSAPP_LINKED_CONFIG_KEY as CONFIG_KEY, whatsapp_linked_settings};
 
 /// O corpo de `POST /admin/api/whatsapp/access`.
 ///
-/// `action`: `open` | `restricted` | `default` | `level` | `write` | `block`
-/// | `unblock` | `groups` | `group-default` | `group` | `reset` — os mesmos
-/// nomes do audit e da CLI. Os outros campos sao os que a acao usa.
+/// `action`: `open` | `restricted` | `default` | `level` | `write` | `preset`
+/// | `block` | `unblock` | `groups` | `group-default` | `group` | `reset` —
+/// os mesmos nomes do audit e da CLI. Os outros campos sao os que a acao usa.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccessMutationRequest {
     pub action: String,
@@ -61,6 +62,14 @@ pub struct AccessMutationRequest {
     /// `write`: o valor; `default`/`group-default`/`group`: o `write` do alcance.
     #[serde(default)]
     pub write: Option<bool>,
+    /// `chat_only` | `read` | `developer` | `full_pod`: `preset` e, no lugar
+    /// de `level`/`write`, `default`, `group-default` e `group` (#1434). O
+    /// preset grava `level` + `write` juntos; nada de novo fica no config.
+    /// Em `default` ele vale como qualquer alcance — `developer`/`full_pod`
+    /// sao `full` e continuam recusados com 400 (#1390). Vindo junto com
+    /// `level`/`write`, o preset vence (ele ja traz os dois).
+    #[serde(default)]
+    pub preset: Option<String>,
     /// `groups`: ligar ou desligar.
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -75,7 +84,7 @@ pub struct AuditQuery {
     pub limit: Option<usize>,
 }
 
-const ACOES: &str = "open | restricted | default | level | write | block | unblock | groups | group-default | group | reset";
+const ACOES: &str = "open | restricted | default | level | write | preset | block | unblock | groups | group-default | group | reset";
 
 /// Resolve `identity_last4` entre as identidades **declaradas** na politica
 /// (`allow`, `owners`, `access.users`): exatamente uma, ou erro (400 para
@@ -156,7 +165,27 @@ pub fn mutacao_do_pedido(
         Nivel::parse(s)
             .ok_or_else(|| format!("`level` desconhecido: `{s}` (vale chat | read | full)"))
     };
+    // #1434: fail-closed como `level` — ausente, vazio ou desconhecido nao
+    // vira mutacao nenhuma.
+    let preset = || -> Result<Preset, String> {
+        let s = req
+            .preset
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("`preset` e obrigatorio: {NOMES_DE_PRESET}"))?;
+        Preset::parse(s)
+            .ok_or_else(|| format!("`preset` desconhecido: `{s}` (vale {NOMES_DE_PRESET})"))
+    };
+    // #1434: `default`, `group-default` e `group` aceitam `level` + `write`
+    // OU `preset` — o preset vence e ja traz o `write` canonico. Nenhuma
+    // validacao nova: o alcance resultante passa pelas MESMAS guardas de
+    // `mutacao::aplicar` (e por isso `developer`/`full_pod` continuam
+    // recusados em `access.default`, que nunca pode ser `full`).
     let alcance = || -> Result<Alcance, String> {
+        if req.preset.is_some() {
+            return Ok(preset()?.alcance());
+        }
         Ok(Alcance {
             nivel: nivel()?,
             write: req.write.unwrap_or(false),
@@ -220,6 +249,10 @@ pub fn mutacao_do_pedido(
         "write" => Ok(Mutacao::Write {
             identidade: identidade()?,
             on: obrigatorio("write", req.write)?,
+        }),
+        "preset" => Ok(Mutacao::Preset {
+            identidade: identidade()?,
+            preset: preset()?,
         }),
         "block" => Ok(Mutacao::Bloquear(identidade()?)),
         "unblock" => Ok(Mutacao::Desbloquear(identidade()?)),

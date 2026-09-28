@@ -23,6 +23,12 @@ Bem-vindo à wiki pública do **GarraIA** — framework de agentes de IA em Rust
 
 ## Novidades
 
+- **[v0.4.7 — Novidades](Novidades-v0.4.7)** · **[What's New in v0.4.7 (English)](Whats-New-v0.4.7)**
+  — release de correção: o **lote paralelo de ferramentas** deixa de furar o
+  orçamento e de derrubar o turno depois de tudo já ter rodado (#1523) — o bug
+  que a v0.4.6 levou para produção; junto saem os **presets nomeados de
+  permissão** do WhatsApp (#1434) e as famílias `utoipa` 6 e `opentelemetry`
+  0.33 atualizadas em bloco.
 - **[v0.4.6 — Novidades](Novidades-v0.4.6)** · **[What's New in v0.4.6 (English)](Whats-New-v0.4.6)**
   — **Access Policy v2** (ADR 0025): quem fala com o Garra pelo WhatsApp e até
   onde cada um vai, num motor único da CLI, da API admin e da nova página

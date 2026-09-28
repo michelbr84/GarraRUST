@@ -29,9 +29,34 @@ O CI prova que o código compila e que os testes passam; **não** prova que uma
 instalação limpa funciona para uma pessoa. A v0.4.4 e a v0.4.5 saíram verdes
 e quebraram no caminho real (WhatsApp numa instalação nova, `NoRoots`,
 status que mentia). Por isso, antes de empurrar o tag, alguém com máquina e
-telefone executa a matriz abaixo **contra o candidato** (o binário da PR de
-release, ou os assets de um `workflow_dispatch` de teste do `release.yml`) e
-registra data, sistema e quem executou. Linha sem data = release não sai.
+telefone executa a matriz abaixo **contra o candidato** e registra data, sistema
+e quem executou. Linha sem data = release não sai.
+
+**Onde o candidato existe — e onde ele NÃO existe.** Para as linhas Linux, o
+candidato é o pacote construído do checkout da PR de release
+(`scripts/dogfood/linux-clean-install.sh --source local`, abaixo). Para as
+linhas que precisam de *asset publicado* (D2, D4, D5, D6), **não existe
+candidato sem um tag**: o `release.yml` **não tem modo de teste**. Seu
+`workflow_dispatch` aceita um `version`, mas o job `release` usa
+`softprops/action-gh-release` com `draft: false` — ele **cria o tag no commit do
+run e publica a Release de verdade**. Dispará-lo esperando artefato de teste
+publica a release sem querer. (Esta seção afirmava o contrário até 2026-09-28.)
+
+Os dois caminhos reais, e a escolha é do dono:
+
+1. **Prerelease `vX.Y.Z-rcN`** por push de tag — produz assets reais e é marcado
+   prerelease automaticamente, então não vira `latest` e nem o `install.sh` nem
+   o `garra update` o alcançam. Limite conhecido: o `ProductVersion` do WiX é
+   numérico de três partes, então **tag `-rc` faz o job do MSI falhar** — D5 não
+   tem candidato por esse caminho.
+2. **Aceite de risco registrado**, como na v0.4.6 (PR #1522): tagear com a
+   cobertura que existe e rodar as linhas manuais depois, com o compromisso
+   escrito de que uma falha vira a versão seguinte. A decisão vai no corpo da PR
+   de release e no corpo da Release.
+
+**D8 é pós-publicação por desenho**, não pré-requisito do tag: as URLs do
+`garraia.org` resolvem a release `latest`, que só existe depois de publicar. Ele
+é a verificação §4.8, não uma linha do gate que possa travar o tag.
 
 | # | Cenário | Onde | O que prova | Automatizado? |
 |---|---|---|---|---|

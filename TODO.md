@@ -5,12 +5,41 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-27 (America/New_York)
+**Atualizado:** 2026-09-28 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Release v0.4.7 — 2026-09-28 (correção)
+
+A v0.4.6 saiu com um bug que só apareceu em produção: o **lote paralelo de
+ferramentas furava o orçamento de execução e derrubava o turno** depois de tudo
+já ter rodado (#1523). O fix entrou na `main` em 2026-09-28, mas a tag `v0.4.6`
+aponta para o commit **anterior** a ele — quem instalou a v0.4.6 continuava com
+o bug. O runbook proíbe reutilizar tag publicada (`docs/releasing.md` §Rollback),
+então a saída é cortar a versão seguinte.
+
+- **Decisão do dono (2026-09-28):** levar o fix aos usuários numa versão nova
+  próxima, em vez de esperar o escopo planejado. Como Cargo exige semver de três
+  partes, não existe `0.4.6.1` — o número é `v0.4.7`.
+- **Conteúdo da v0.4.7:** o fix do #1523, mais o que já estava verde na `main`
+  desde o corte da v0.4.6 — presets nomeados de permissão (#1434) e as famílias
+  `utoipa` 6 (#1526) e `opentelemetry` 0.33 (#1527) atualizadas em bloco, com
+  grupos novos no `dependabot.yml`.
+- **A v0.4.6 publicada não foi tocada:** tag, Release e os 55 assets seguem
+  exatamente como saíram.
+- **Consequência de roadmap:** o número `v0.4.7` era um milestone com escopo
+  planejado. A #1434 saiu e está fechada; **#1433 e #1435 continuam abertas** e
+  migram para o milestone seguinte — não foram fechadas para zerar contagem.
+
+### Fica aberto, com bloqueio nomeado
+
+| Item | Bloqueio |
+| --- | --- |
+| #1433 (página global Agents & Permissions), #1435 (import/export de políticas) | escopo: território R4 de permissões, exige `security-auditor`; adiadas por decisão do dono |
+| Linhas D2/D4/D5/D6/D10 do dogfood | telefone, máquina Windows e sessão gráfica — só o dono |
 
 ## Fechamento da v0.4.6 — 2026-09-27
 

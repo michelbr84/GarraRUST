@@ -48,6 +48,7 @@ fn pedido(action: &str) -> AccessMutationRequest {
         jid: None,
         level: None,
         write: None,
+        preset: None,
         enabled: None,
         dry_run: false,
     }
@@ -299,6 +300,229 @@ async fn a_api_admin_le_muda_e_audita_pelo_mesmo_motor_da_cli() {
     assert_eq!(eventos[0].ator, "operadora");
     assert_eq!(eventos[0].acao, "level");
     assert_eq!(eventos[0].alvo.as_deref(), Some("…8888"));
+
+    // ── #1434: `action: preset` ──
+    // Sem o campo `preset`: 400 fail-closed, com os nomes validos no texto.
+    let mut req = pedido("preset");
+    req.identity = Some(format!("+{NUMERO}"));
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{doc}");
+    assert!(
+        doc["error"].as_str().unwrap_or("").contains("full_pod"),
+        "diz o que vale: {doc}"
+    );
+    // Preset desconhecido (inclusive um nome de NIVEL, que nao e preset): 400.
+    let mut req = pedido("preset");
+    req.identity = Some(format!("+{NUMERO}"));
+    req.preset = Some("full".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{doc}");
+    // Preset valido: grava `level` + `write`, audita como `preset`.
+    let mut req = pedido("preset");
+    req.identity = Some(format!("+{NUMERO}"));
+    req.preset = Some("developer".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["written"], serde_json::json!(true), "{doc}");
+    let eventos =
+        garraia_gateway::bootstrap::whatsapp_linked_politica::auditoria::ler(&data_dir, 10)
+            .expect("ler");
+    assert_eq!(eventos[0].acao, "preset");
+    assert_eq!(eventos[0].origem, "admin_api");
+    // O `config.yml` guarda `level`/`write`, nunca um campo `preset`.
+    let relido = ConfigLoader::with_dir(dir.path())
+        .load_sem_env()
+        .expect("load");
+    let entrada = relido.channels["whatsapp_linked"].settings["access"]["users"][NUMERO]
+        .as_object()
+        .expect("entrada");
+    assert_eq!(entrada["level"], serde_json::json!("full"));
+    assert_eq!(entrada["write"], serde_json::json!(true));
+    assert!(!entrada.contains_key("preset"), "{entrada:?}");
+    // E o GET le de volta o rotulo, calculado do `level`/`write`.
+    let (status, doc) = corpo(
+        admin_whatsapp_access(State(admin_state.clone()), admin(Role::Viewer))
+            .await
+            .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let usuario = doc["policy"]["principals"]
+        .as_array()
+        .expect("lista")
+        .iter()
+        .find(|p| p["principal"] == serde_json::json!("usuario"))
+        .cloned()
+        .expect("usuario");
+    assert_eq!(
+        usuario["preset"],
+        serde_json::json!("full"),
+        "developer e full_pod aparecem como `full`: {usuario}"
+    );
+    assert_eq!(
+        doc["policy"]["default"]["preset"],
+        serde_json::json!("chat_only"),
+        "{doc}"
+    );
+    // Volta ao estado que o resto do teste espera (`read`, sem escrita).
+    let mut req = pedido("preset");
+    req.identity = Some(format!("+{NUMERO}"));
+    req.preset = Some("read".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+
+    // ── #1434: `preset` no lugar de `level`/`write` em `default`,
+    // `group-default` e `group` — sem acao nova e sem campo obrigatorio novo.
+    const GRUPO: &str = "120363000000000000@g.us";
+    let mut req = pedido("default");
+    req.preset = Some("read".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(
+        doc["policy"]["default"]["preset"],
+        serde_json::json!("read")
+    );
+    let eventos =
+        garraia_gateway::bootstrap::whatsapp_linked_politica::auditoria::ler(&data_dir, 1)
+            .expect("ler");
+    assert_eq!(
+        eventos[0].acao, "default",
+        "a acao auditada e a do alvo, nao `preset`"
+    );
+    // `developer`/`full_pod` sao `full`: recusados no default do desconhecido,
+    // pela MESMA guarda de `level: full` (#1390).
+    for nome in ["developer", "full_pod"] {
+        let mut req = pedido("default");
+        req.preset = Some(nome.to_string());
+        let (status, doc) = corpo(
+            admin_whatsapp_access_mutate(
+                State(admin_state.clone()),
+                HeaderMap::new(),
+                admin(Role::Admin),
+                Json(req),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{nome}: {doc}");
+        assert!(
+            doc["error"].as_str().unwrap_or("").contains("full"),
+            "{nome}: {doc}"
+        );
+    }
+    // Grupo PODE ter `full`: os quatro presets valem nos dois alvos de grupo.
+    let mut req = pedido("group-default");
+    req.preset = Some("chat_only".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut req = pedido("group");
+    req.jid = Some(GRUPO.to_string());
+    req.preset = Some("full_pod".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    // O que foi para o `config.yml` continua sendo `level` + `write`.
+    let relido = ConfigLoader::with_dir(dir.path())
+        .load_sem_env()
+        .expect("load");
+    let grupos = &relido.channels["whatsapp_linked"].settings["access"]["groups"];
+    assert_eq!(grupos["default"]["level"], serde_json::json!("chat"));
+    assert_eq!(grupos["default"]["write"], serde_json::json!(false));
+    // Um grupo PODE ser `full`: `full_pod` vale aqui, ao contrario do default
+    // do desconhecido.
+    assert_eq!(grupos[GRUPO]["level"], serde_json::json!("full"));
+    assert_eq!(grupos[GRUPO]["write"], serde_json::json!(true));
+    assert!(
+        !serde_json::to_string(grupos)
+            .expect("json")
+            .contains("preset"),
+        "{grupos}"
+    );
+    // Volta ao estado que o resto do teste espera (default `chat`).
+    let mut req = pedido("default");
+    req.level = Some("chat".to_string());
+    let (status, doc) = corpo(
+        admin_whatsapp_access_mutate(
+            State(admin_state.clone()),
+            HeaderMap::new(),
+            admin(Role::Admin),
+            Json(req),
+        )
+        .await
+        .into_response(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
 
     // ── POST invalido: 400 com a mensagem acionavel, nada muda ──
     let mut req = pedido("default");

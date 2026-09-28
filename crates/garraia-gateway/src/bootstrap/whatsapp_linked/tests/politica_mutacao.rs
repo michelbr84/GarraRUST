@@ -134,6 +134,287 @@ fn write_off_num_legado_vira_full_sem_escrita() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Mutacao::Preset (#1434)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn preset_grava_level_e_write_juntos_e_nada_alem() {
+    use crate::bootstrap::whatsapp_linked::politica::presets::Preset;
+
+    for preset in Preset::ALL {
+        // Parte de uma combinacao que NENHUM preset cobre (`read` + `write
+        // on`), para que os quatro tenham de fato o que mudar.
+        let mut s = secao(json!({
+            "owners": [DONO],
+            "access": { "users": { USUARIO: { "level": "read", "write": true } } },
+        }));
+        let a = mutacao::aplicar(
+            &mut s,
+            &Mutacao::Preset {
+                identidade: "+55 11 99999-8888".to_string(),
+                preset,
+            },
+        )
+        .expect("aplica");
+        assert!(a.mudou, "{}", preset.nome());
+        // O que foi para o `config.yml` e `level` + `write` — o preset NAO
+        // vira campo novo, entao nao ha rotulo que possa ficar desatualizado.
+        let entrada = s.settings["access"]["users"][USUARIO]
+            .as_object()
+            .expect("entrada");
+        let esperado = preset.alcance();
+        assert_eq!(entrada["level"], json!(esperado.nivel.as_str()));
+        assert_eq!(entrada["write"], json!(esperado.write));
+        let chaves: Vec<&String> = entrada.keys().collect();
+        assert_eq!(chaves, vec!["level", "write"], "{}", preset.nome());
+        // E o portao passa a ver exatamente esse alcance.
+        assert_eq!(
+            principal(&s, USUARIO),
+            Principal::Usuario(esperado),
+            "{}",
+            preset.nome()
+        );
+        assert_eq!(
+            mutacao::Mutacao::Preset {
+                identidade: USUARIO.to_string(),
+                preset,
+            }
+            .acao(),
+            "preset",
+            "o nome no audit"
+        );
+
+        // Idempotente: o mesmo preset de novo nao muda nada.
+        let b = mutacao::aplicar(
+            &mut s,
+            &Mutacao::Preset {
+                identidade: USUARIO.to_string(),
+                preset,
+            },
+        )
+        .expect("aplica");
+        assert!(!b.mudou, "{}", preset.nome());
+        assert_eq!(b.antes, b.depois);
+    }
+}
+
+#[test]
+fn preset_no_dono_e_recusado_como_level_e_write() {
+    use crate::bootstrap::whatsapp_linked::politica::presets::Preset;
+
+    let mut s = legado();
+    let e = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Preset {
+            identidade: DONO.to_string(),
+            preset: Preset::Read,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(e, MutacaoInvalida::EDono), "{e:?}");
+    assert!(e.to_string().contains("unowner"), "{e}");
+    // Recusa nao escreve nada.
+    assert!(
+        !s.settings.contains_key("access"),
+        "{:?}",
+        s.settings.get("access")
+    );
+    // Identidade em branco tambem e recusada antes de qualquer escrita.
+    let e = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Preset {
+            identidade: "   ".to_string(),
+            preset: Preset::ChatOnly,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(e, MutacaoInvalida::IdentidadeVazia), "{e:?}");
+}
+
+#[test]
+fn preset_estreita_e_alarga_pelo_mesmo_diff_de_sempre() {
+    use crate::bootstrap::whatsapp_linked::politica::presets::Preset;
+
+    // De `full_pod` para `chat_only`: o diff e o audit vem do motor que ja
+    // existia, sobre `level`/`write` resolvidos — o preset nao tem trilha
+    // propria.
+    let mut s = legado();
+    mutacao::aplicar(
+        &mut s,
+        &Mutacao::Preset {
+            identidade: USUARIO.to_string(),
+            preset: Preset::FullPod,
+        },
+    )
+    .expect("aplica");
+    let a = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Preset {
+            identidade: USUARIO.to_string(),
+            preset: Preset::ChatOnly,
+        },
+    )
+    .expect("aplica");
+    assert!(a.mudou);
+    assert_eq!(principal(&s, USUARIO), Principal::Usuario(Alcance::CHAT));
+    let texto = a.mudancas.join("\n");
+    assert!(texto.contains("…8888"), "{texto}");
+    assert!(!texto.contains(USUARIO), "diff com numero inteiro: {texto}");
+}
+
+/// #1434, lacuna de cobertura: `Mutacao::Preset` numa identidade BLOQUEADA.
+/// `e_dono` e `dono && !bloqueado`, entao um preset num bloqueado NAO cai em
+/// `EDono` — ele grava. O que nao pode acontecer e o preset (nem o mais
+/// amplo) tirar o `blocked` de dentro da entrada e reabrir o acesso em
+/// silencio: o bloqueio vence, como sempre venceu.
+#[test]
+fn preset_num_bloqueado_nao_desbloqueia() {
+    use crate::bootstrap::whatsapp_linked::politica::presets::Preset;
+
+    for preset in Preset::ALL {
+        let mut s = secao(json!({
+            "access": { "users": { USUARIO: { "blocked": true } } },
+        }));
+        assert_eq!(principal(&s, USUARIO), Principal::Bloqueado, "estado base");
+        mutacao::aplicar(
+            &mut s,
+            &Mutacao::Preset {
+                identidade: USUARIO.to_string(),
+                preset,
+            },
+        )
+        .expect("aplica");
+        let entrada = s.settings["access"]["users"][USUARIO]
+            .as_object()
+            .expect("entrada");
+        // Nao-vacuo: o preset de fato gravou (senao o teste passaria mesmo com
+        // `aplicar` virando no-op para `Preset`).
+        let esperado = preset.alcance();
+        assert_eq!(
+            entrada["level"],
+            json!(esperado.nivel.as_str()),
+            "{} nao gravou: {entrada:?}",
+            preset.nome()
+        );
+        assert_eq!(entrada["write"], json!(esperado.write));
+        assert_eq!(
+            entrada["blocked"],
+            json!(true),
+            "{} apagou o bloqueio: {entrada:?}",
+            preset.nome()
+        );
+        assert_eq!(
+            principal(&s, USUARIO),
+            Principal::Bloqueado,
+            "{} reabriu o acesso de um bloqueado",
+            preset.nome()
+        );
+    }
+}
+
+/// #1434, lacuna de cobertura: o dono declarado por `role: owner` em
+/// `access.users` (e nao pela lista `owners` legada) tem de ser recusado
+/// igual — senao o preset seria a unica acao capaz de por teto num dono.
+#[test]
+fn preset_no_dono_por_role_tambem_e_recusado() {
+    use crate::bootstrap::whatsapp_linked::politica::presets::Preset;
+
+    let mut s = secao(json!({
+        "access": { "users": { DONO: { "role": "owner" } } },
+    }));
+    assert_eq!(principal(&s, DONO), Principal::Dono, "estado base");
+    let e = mutacao::aplicar(
+        &mut s,
+        &Mutacao::Preset {
+            identidade: DONO.to_string(),
+            preset: Preset::ChatOnly,
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(e, MutacaoInvalida::EDono), "{e:?}");
+    assert_eq!(principal(&s, DONO), Principal::Dono, "continua dono");
+    let entrada = s.settings["access"]["users"][DONO]
+        .as_object()
+        .expect("entrada");
+    assert_eq!(entrada["role"], json!("owner"));
+    assert!(!entrada.contains_key("level"), "{entrada:?}");
+    assert!(!entrada.contains_key("write"), "{entrada:?}");
+}
+
+/// #1434: o preset tambem nomeia `access.default`, `access.groups.default` e
+/// `access.groups.<jid>` — e por ser so um [`Alcance`], entra nas mutacoes que
+/// ja existiam, SEM variante nova e SEM validacao nova. A prova e que
+/// `developer`/`full_pod` (que sao `full`) continuam batendo no mesmo
+/// `DefaultFull` de `default full`, porque a guarda olha o alcance e nao como
+/// ele foi construido.
+#[test]
+fn preset_serve_de_alcance_para_o_default_e_para_os_grupos() {
+    use crate::bootstrap::whatsapp_linked::politica::presets::Preset;
+
+    let mut s = legado();
+    // O desconhecido aceita os presets que nao sao `full`.
+    for preset in [Preset::ChatOnly, Preset::Read] {
+        mutacao::aplicar(&mut s, &Mutacao::DefaultDesconhecido(preset.alcance()))
+            .unwrap_or_else(|e| panic!("{} deveria valer: {e}", preset.nome()));
+        assert_eq!(
+            settings_de(&s).access.default,
+            preset.alcance(),
+            "{}",
+            preset.nome()
+        );
+    }
+    // E recusa os dois que sao `full`, com o MESMO erro de `default full`.
+    for preset in [Preset::Developer, Preset::FullPod] {
+        let e =
+            mutacao::aplicar(&mut s, &Mutacao::DefaultDesconhecido(preset.alcance())).unwrap_err();
+        assert!(matches!(e, MutacaoInvalida::DefaultFull), "{e:?}");
+        assert_eq!(
+            settings_de(&s).access.default,
+            Alcance::LEITURA,
+            "{} gravou mesmo recusado",
+            preset.nome()
+        );
+    }
+    // Grupo PODE ser `full`: os quatro valem no default de grupo e no grupo.
+    for preset in Preset::ALL {
+        mutacao::aplicar(&mut s, &Mutacao::DefaultDeGrupo(preset.alcance()))
+            .unwrap_or_else(|e| panic!("{} deveria valer: {e}", preset.nome()));
+        assert_eq!(
+            settings_de(&s).access.groups.default,
+            preset.alcance(),
+            "{}",
+            preset.nome()
+        );
+        mutacao::aplicar(
+            &mut s,
+            &Mutacao::Grupo {
+                jid: GRUPO.to_string(),
+                alcance: preset.alcance(),
+            },
+        )
+        .unwrap_or_else(|e| panic!("{} deveria valer: {e}", preset.nome()));
+        assert_eq!(
+            settings_de(&s).access.groups.por_grupo[GRUPO],
+            preset.alcance(),
+            "{}",
+            preset.nome()
+        );
+    }
+    // Nada de `preset` foi parar no config: a autoridade e level + write.
+    let texto = serde_json::to_string(&s.settings).expect("json");
+    assert!(!texto.contains("preset"), "{texto}");
+    // E a acao auditada continua sendo a do alvo, nao "preset".
+    assert_eq!(
+        Mutacao::DefaultDesconhecido(Preset::Read.alcance()).acao(),
+        "default"
+    );
+    assert_eq!(
+        Mutacao::DefaultDeGrupo(Preset::Read.alcance()).acao(),
+        "group-default"
+    );
+}
+
 #[test]
 fn combinacoes_invalidas_sao_recusadas_com_erro_acionavel() {
     let mut s = legado();

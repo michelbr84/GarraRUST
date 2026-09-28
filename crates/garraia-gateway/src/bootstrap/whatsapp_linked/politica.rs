@@ -55,6 +55,8 @@ pub mod auditoria;
 pub mod impacto;
 /// O caminho unico de mutacao da secao (#1412).
 pub mod mutacao;
+/// Presets nomeados sobre [`Alcance`] (#1434).
+pub mod presets;
 /// O documento da politica efetiva, um so para CLI, API e console (#1400).
 pub mod visao;
 

@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-09-28
+
+Release de correção curta, cortada para levar aos usuários um bug observado em
+produção na v0.4.6: um lote paralelo de ferramentas furava o orçamento de
+execução e derrubava o turno **depois** de tudo já ter rodado (#1523). O
+orçamento só era conferido antes de cada chamada ao modelo, então uma resposta
+com 15 ferramentas rodava inteira contra um teto de 10; no modo `search` — o
+piso do WhatsApp pessoal — o turno morria em `execution budget exceeded` sem o
+modelo ver um único resultado, e o canal respondia "Tente de novo em instantes"
+para um pedido que falharia de novo. Agora o orçamento é conferido **por
+chamada**: a que passaria do teto não executa e volta ao modelo dizendo por quê,
+e com o orçamento esgotado o modelo ganha uma volta final, avisada, para
+responder com o que já coletou.
+
+Junto sai o que já estava verde na `main` desde a v0.4.6: os **presets nomeados
+de permissão** (#1434), que fecham mais uma peça da Access Policy v2 dando nome
+canônico (`chat_only`, `read`, `developer`, `full_pod`) a combinações de
+`level`/`write` pelo mesmo caminho único de mutação — apelido calculado ao vivo,
+não campo novo guardado no `config.yml` —, e a atualização das famílias
+`utoipa` (#1526) e `opentelemetry` (#1527) em bloco, com grupos novos no
+Dependabot para que facades acoplados parem de subir pela metade.
+
+A v0.4.6 publicada **não foi tocada**: sua tag, sua Release e seus 55 assets
+continuam exatamente como saíram (`docs/releasing.md` §Rollback — nunca
+reutilizar tag publicada). Quem está na v0.4.6 recebe a correção por
+`garra update`.
+
+### Added
+- **Presets nomeados de permissao no WhatsApp pessoal (#1434).** `garra whatsapp
+  preset <numero> chat_only|read|developer|full_pod` e a acao `preset` da API admin
+  gravam `level` e `write` de uma vez, pelo mesmo caminho unico de mutacao da Access
+  Policy v2 (ADR 0025 §4bis): um preset e apelido para uma combinacao canonica, nao um
+  campo novo no `config.yml` — nao ha rotulo guardado que possa divergir do que o portao
+  aplica. `chat_only` nao libera ferramenta nenhuma e `read` so leitura, os dois seguros
+  para contexto remoto; `developer` e `full_pod` compilam para o mesmo `full`, que por
+  construcao nao tem teto proprio — quem decide e o modo mais o `execution.profile`
+  (ADR 0024). O mesmo nome serve para o default do desconhecido e para os grupos —
+  `garra whatsapp access default|groups default|group ... --preset <nome>` e o campo
+  `preset` nas acoes `default`, `group-default` e `group` da API —, com as guardas de
+  sempre: `developer` e `full_pod` sao `full` e continuam recusados em `access.default`.
+  O documento de politica efetiva em JSON (`garra whatsapp access --json` e
+  `GET /admin/api/whatsapp/access`) passa a trazer um rotulo `preset` calculado ao vivo
+  do `level`/`write`, com `custom` para o que nenhum preset cobre.
+
+### Changed
+- **`utoipa` 6.0 e `utoipa-swagger-ui` 10.0 sobem juntos (#1526, #1529).** As duas
+  crates trocam o tipo `utoipa::openapi::OpenApi` entre si, entao bumpar so uma
+  quebra a compilacao: a `utoipa-swagger-ui` 9.0.2 declara
+  `SwaggerUi::url(self, url, openapi: OpenApi)` contra a serie 5.x, e com a
+  `utoipa` em 6.0.0 o gateway parava num `E0308: mismatched types` — dois
+  facades incompativeis no mesmo grafo. A `utoipa-swagger-ui` 10.0.0 foi
+  re-lancada justamente para casar com a `utoipa` 6.0, entao o par so anda em
+  conjunto. Nenhuma mudanca de codigo foi necessaria: as breaking changes da
+  `utoipa` 6 (fim do ignore por expressao em `ToSchema`/`IntoParams`,
+  `utoipa-gen` sobre `syn` 3) nao tocam nada que o gateway use. O build offline
+  do Swagger UI segue pela feature `vendored`, agora via
+  `utoipa-swagger-ui-vendored` 0.2. Para nao repetir o bump partido, o
+  `.github/dependabot.yml` ganhou um grupo `utoipa`, no mesmo molde
+  dos grupos `wasmtime` e `opentelemetry`.
+- **Familia opentelemetry sobe para 0.33 numa unica mudanca (#1527, #1528, #1530, #1531).**
+  `opentelemetry`, `opentelemetry_sdk` e `opentelemetry-otlp` vao de 0.32 para 0.33 e
+  `tracing-opentelemetry` de 0.33 para 0.34 no `garraia-telemetry`. O Dependabot abriu
+  uma PR por crate e as quatro ficaram vermelhas: as versoes sao acopladas e uma sozinha
+  deixa duas versoes incompativeis do mesmo facade no grafo. Um grupo `opentelemetry` no
+  `dependabot.yml` passa a casa-las por pattern em qualquer update-type, como ja era feito
+  para o par `wasmtime`/`wasmtime-wasi` desde os PRs #833/#838.
+
+### Fixed
+- **Lote paralelo de ferramentas deixa de furar o orcamento e de derrubar o turno (#1523).**
+  O modelo pode pedir varias ferramentas numa resposta so, e o orcamento so era
+  conferido antes de cada chamada ao modelo: um lote de 15 rodava inteiro contra um
+  teto de 10. No modo `search` (piso do WhatsApp pessoal, 10 chamadas por tarefa) o
+  turno ainda caia em `execution budget exceeded` depois de tudo executado, sem o
+  modelo ver os resultados, e o canal respondia "Tente de novo em instantes" para um
+  pedido que falharia de novo. Agora cada chamada confere o orcamento antes de rodar:
+  a que passaria do teto nao executa e volta ao modelo dizendo por que. Com o
+  orcamento esgotado, o modelo ganha uma volta final, avisada, para responder com o
+  que ja coletou, e nada que ele pedir nela roda.
+
 ## [0.4.6] - 2026-09-27
 
 Release que fecha o acesso ao WhatsApp pessoal de ponta a ponta e faz o runtime
