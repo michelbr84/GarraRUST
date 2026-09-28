@@ -94,7 +94,7 @@ utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
 # em tempo de compilacao: com `vendored` o build.rs nunca chega ao downloader,
 # e a feature `reqwest` (build-dependency que so servia para baixar) sai.
 # O teste `tests/swagger_ui_vendored.rs` prende essa escolha.
-utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
+utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
 thiserror = { workspace = true }
 # Plan 0016 M4: real /v1/groups handlers operate on Postgres via
 # `AppPool::pool_for_handlers`, which returns `&sqlx::PgPool`.
