@@ -807,16 +807,18 @@ fn tools_capabilities_check(
         ));
     }
     let (status, next_step) = if c.unavailable > 0 || c.unhealthy > 0 {
-        let bin = garraia_common::executavel::nome();
+        // Sem `format!`: desde que a remediation passou a apontar a rota HTTP, o
+        // nome do executavel nao entra mais no texto (#1543).
         (
             CheckStatus::Warning,
-            Some(format!(
+            Some(
                 "cada item traz o motivo; numa conversa, `garra_status` mostra o mesmo registro. \
                  Servidor MCP fora do ar: em `retrying` o supervisor reconecta sozinho; em \
                  `failed` os `max_restarts` acabaram e so um restart manual traz de volta — \
                  `POST /admin/api/mcp/<nome>/restart` ou o botao Restart no console (aba MCP \
                  Servers); canal desconectado: veja `runtime.channels`"
-            )),
+                    .to_string(),
+            ),
         )
     } else {
         (CheckStatus::Ok, None)
