@@ -251,10 +251,26 @@ curl -X POST 'http://127.0.0.1:3888/api/tts?fallback=false' \
 
 ### TTS not responding
 
-Check TTS server:
+The stock Chatterbox app (`multilingual_app.py`) is a Gradio app and does
+**not** serve `/health` — a `curl .../health` against a perfectly healthy
+server returns 404. Probe the routes GarraIA itself probes, in order:
+
 ```bash
-curl http://127.0.0.1:7860/health
+curl -sf http://127.0.0.1:7860/ >/dev/null && echo "root ok"
+curl -sf http://127.0.0.1:7860/config >/dev/null && echo "/config ok"
+curl -sf http://127.0.0.1:7860/gradio_api/info >/dev/null && echo "/gradio_api/info ok"
 ```
+
+Any one of the three answering 2xx is enough for `garraia health` to report
+`✅ tts-chatterbox` (#1538). If none answers, nothing is listening on that
+port — check that the Chatterbox process is up and that `voice.tts_endpoint`
+points at it.
+
+For LM Studio (`tts_provider: lmstudio`) the probe is `/v1/models` instead.
+
+When the probe fails, the WARN line names every route it tried and what each
+answered, so "nothing listening" (`connect failed`) and "up but on another
+route" (`HTTP 404`) are distinguishable in the log.
 
 ### Audio quality issues
 
