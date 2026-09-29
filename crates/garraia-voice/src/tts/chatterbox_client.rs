@@ -265,11 +265,7 @@ mod tests {
                         let mut buf = [0u8; 2048];
                         let lidos = socket.read(&mut buf).await.unwrap_or(0);
                         let req = String::from_utf8_lossy(&buf[..lidos]).to_string();
-                        let rota = req
-                            .split_whitespace()
-                            .nth(1)
-                            .unwrap_or("/")
-                            .to_string();
+                        let rota = req.split_whitespace().nth(1).unwrap_or("/").to_string();
                         registro.lock().expect("registro").push(rota.clone());
                         let resposta = if ok.contains(rota.as_str()) {
                             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
@@ -363,7 +359,8 @@ mod tests {
             "/gradio_api/config nao e rota de nenhum Gradio — ver #1538"
         );
         assert_eq!(
-            ChatterboxClient::ROTAS_DE_SAUDE[1], "/config",
+            ChatterboxClient::ROTAS_DE_SAUDE[1],
+            "/config",
             "o config do Gradio fica em /config"
         );
     }
