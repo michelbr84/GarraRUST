@@ -228,7 +228,10 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
                     s.state.as_str()
                 ),
                 Some(
-                    "Veja `mcp.servers` no `/api/diagnostics`; o operador reinicia o servidor pelo console (MCP Servers) ou com `POST /admin/api/mcp/<nome>/restart`."
+                    "Veja `mcp.servers` no `/api/diagnostics`. Em `retrying` o supervisor \
+                     reconecta sozinho; em `failed` os `max_restarts` acabaram e so \
+                     um restart manual traz de volta — botao Restart no console (MCP \
+                     Servers) ou `POST /admin/api/mcp/<nome>/restart`."
                         .to_string(),
                 ),
             )
@@ -320,7 +323,10 @@ pub fn registro(e: &Entradas<'_>) -> Vec<Capacidade> {
                 s.state.as_str()
             ),
             remediation: Some(
-                "Veja `mcp.servers` no `/api/diagnostics`; o operador reinicia o servidor pelo console (MCP Servers) ou com `POST /admin/api/mcp/<nome>/restart`."
+                "Veja `mcp.servers` no `/api/diagnostics`. Em `retrying` o supervisor \
+                     reconecta sozinho; em `failed` os `max_restarts` acabaram e so \
+                     um restart manual traz de volta — botao Restart no console (MCP \
+                     Servers) ou `POST /admin/api/mcp/<nome>/restart`."
                     .to_string(),
             ),
         });

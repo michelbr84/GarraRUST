@@ -5,4 +5,7 @@
   perdia tempo justamente no momento em que um servidor MCP estava fora do ar.
   Os textos agora apontam para o caminho real, `POST /admin/api/mcp/<nome>/restart`
   (o mesmo do botao Restart na aba MCP Servers do console), e um teste varre o
-  fonte do gateway para o comando fantasma nao voltar.
+  fonte do gateway para o comando fantasma nao voltar. O texto agora tambem
+  distingue `retrying` (o supervisor reconecta sozinho) de `failed` (os
+  `max_restarts` acabaram e so o restart manual traz de volta), para ninguem
+  reiniciar a mao um servidor que ja ia voltar.
