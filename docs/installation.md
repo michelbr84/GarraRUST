@@ -455,6 +455,26 @@ garraia start --daemon
 garraia start --with-voice
 ```
 
+### Running under systemd
+
+If you put the gateway in a systemd unit, **restart it through systemd**, not
+through the CLI:
+
+```bash
+systemctl --user restart garraia.service   # user unit
+sudo systemctl restart garraia.service     # system unit
+```
+
+`garraia restart` stops whatever holds the port and starts a *new* process
+outside the unit. Under an active unit that leaves an orphan daemon on the
+port and the unit itself in a restart loop against `Address already in use`.
+Since #1542 the CLI detects this (it reads the port holder's cgroup) and
+refuses with the right command instead of doing it — exit code `78`. To run
+the CLI with its own flags, take the daemon out of the supervisor first
+(`systemctl --user stop garraia.service`, then `garraia start`). The escape
+hatch, if you really want the old behaviour, is
+`GARRAIA_ALLOW_SYSTEMD_RESTART=1` (exactly `1`).
+
 ## Docker Installation
 
 ### Using Docker Compose
