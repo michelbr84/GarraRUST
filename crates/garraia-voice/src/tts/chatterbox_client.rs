@@ -29,27 +29,53 @@ impl ChatterboxClient {
         }
     }
 
+    /// Rotas sondadas pelo `health_check`, na ordem. A primeira que responder
+    /// 2xx decide que o servidor esta de pe.
+    ///
+    /// `/gradio_api/config` NAO esta aqui: era a rota da antiga sonda de
+    /// fallback e nao existe em nenhuma versao do Gradio (#1538) — o app do
+    /// chatterbox serve o config em `/config` (4.x ate 6.x). Com o servidor
+    /// saudavel e a raiz por algum motivo indisponivel, a sonda antiga dava
+    /// 404 e o gateway reportava `❌ tts-chatterbox` deixando o modo voz
+    /// desligado. `/gradio_api/info` fecha a lista porque e a rota do schema
+    /// da API, a mesma familia do caminho de sintese que usamos de verdade.
+    pub const ROTAS_DE_SAUDE: [&'static str; 3] = ["/", "/config", "/gradio_api/info"];
+
     /// Check if the Chatterbox server is reachable.
     ///
-    /// Tries root endpoint first (works on custom Chatterbox builds like multilingual),
-    /// then falls back to `/gradio_api/config` (standard Gradio app).
+    /// Sonda [`Self::ROTAS_DE_SAUDE`] em ordem e para na primeira 2xx. Só
+    /// reporta `false` depois de todas falharem.
     pub async fn health_check(&self) -> Result<bool, VoiceError> {
-        // Try root endpoint first (custom Chatterbox multilingual returns 200 here)
-        let root_url = format!("{}/", self.endpoint);
-        match self.client.get(&root_url).send().await {
-            Ok(resp) if resp.status().is_success() => return Ok(true),
-            _ => {}
-        }
+        // Por que registrar o motivo de cada rota: antes, "nada escutando"
+        // (erro de transporte) e "servidor de pe na rota errada" (404)
+        // saiam com a MESMA linha de WARN sem status nenhum, e era
+        // impossivel distinguir os dois em producao (#1538).
+        let mut motivos: Vec<String> = Vec::with_capacity(Self::ROTAS_DE_SAUDE.len());
 
-        // Fallback: standard Gradio config endpoint
-        let config_url = format!("{}/gradio_api/config", self.endpoint);
-        match self.client.get(&config_url).send().await {
-            Ok(resp) => Ok(resp.status().is_success()),
-            Err(e) => {
-                tracing::warn!("Chatterbox health check failed: {e}");
-                Ok(false)
+        for rota in Self::ROTAS_DE_SAUDE {
+            let url = format!("{}{}", self.endpoint, rota);
+            match self.client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => return Ok(true),
+                Ok(resp) => motivos.push(format!("{rota} -> HTTP {}", resp.status().as_u16())),
+                Err(e) => {
+                    let motivo = if e.is_connect() {
+                        "connect failed".to_string()
+                    } else if e.is_timeout() {
+                        "timeout".to_string()
+                    } else {
+                        "request error".to_string()
+                    };
+                    motivos.push(format!("{rota} -> {motivo}"));
+                }
             }
         }
+
+        tracing::warn!(
+            endpoint = %self.endpoint,
+            probes = %motivos.join("; "),
+            "Chatterbox health check failed on every probe"
+        );
+        Ok(false)
     }
 
     /// Synthesize speech from text using the Chatterbox Multilingual model.
@@ -199,5 +225,146 @@ impl ChatterboxClient {
             "Could not parse audio URL from Chatterbox SSE response: {}",
             &sse_text[..sse_text.len().min(500)]
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Um servidor HTTP minimo que responde 200 apenas nas rotas de `ok` e
+    /// 404 em todas as outras, registrando o que foi pedido.
+    ///
+    /// Escrito a mao sobre `tokio::net` de proposito: `garraia-voice` nao tem
+    /// dev-dependency de servidor, e a sonda so precisa de status line.
+    struct Gradio {
+        endpoint: String,
+        pedidos: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Gradio {
+        async fn com_rotas(ok: &[&'static str]) -> Self {
+            let ok: HashSet<&'static str> = ok.iter().copied().collect();
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let porta = listener.local_addr().expect("addr").port();
+            let pedidos = Arc::new(Mutex::new(Vec::new()));
+            let registro = Arc::clone(&pedidos);
+
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let ok = ok.clone();
+                    let registro = Arc::clone(&registro);
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 2048];
+                        let lidos = socket.read(&mut buf).await.unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..lidos]).to_string();
+                        let rota = req
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("/")
+                            .to_string();
+                        registro.lock().expect("registro").push(rota.clone());
+                        let resposta = if ok.contains(rota.as_str()) {
+                            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                        } else {
+                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        };
+                        let _ = socket.write_all(resposta.as_bytes()).await;
+                        let _ = socket.flush().await;
+                    });
+                }
+            });
+
+            Self {
+                endpoint: format!("http://127.0.0.1:{porta}"),
+                pedidos,
+            }
+        }
+
+        fn rotas_pedidas(&self) -> Vec<String> {
+            self.pedidos.lock().expect("registro").clone()
+        }
+    }
+
+    /// O caso do #1538: o app do chatterbox de pe, servindo o config em
+    /// `/config`, e a raiz indisponivel. A sonda antiga caia em
+    /// `/gradio_api/config` (404 em todo Gradio) e reportava o servidor como
+    /// fora do ar, deixando o modo voz desligado.
+    #[tokio::test]
+    async fn config_de_pe_sem_raiz_e_saudavel() {
+        let gradio = Gradio::com_rotas(&["/config"]).await;
+        let client = ChatterboxClient::new(&gradio.endpoint, "pt");
+
+        assert!(
+            client.health_check().await.expect("health"),
+            "servidor servindo /config tem de ser reportado saudavel"
+        );
+        assert_eq!(
+            gradio.rotas_pedidas(),
+            vec!["/".to_string(), "/config".to_string()],
+            "a cadeia para na primeira 2xx e nunca pede /gradio_api/config"
+        );
+    }
+
+    /// A raiz 200 (o caso comum) decide sozinha: nenhuma rota extra vai para a
+    /// rede.
+    #[tokio::test]
+    async fn raiz_de_pe_encerra_a_cadeia() {
+        let gradio = Gradio::com_rotas(&["/"]).await;
+        let client = ChatterboxClient::new(&gradio.endpoint, "pt");
+
+        assert!(client.health_check().await.expect("health"));
+        assert_eq!(gradio.rotas_pedidas(), vec!["/".to_string()]);
+    }
+
+    /// Sem falso positivo: servidor de pe que responde 404 em TODA a cadeia
+    /// continua sendo reportado como fora do ar.
+    #[tokio::test]
+    async fn tudo_404_nao_e_saudavel() {
+        let gradio = Gradio::com_rotas(&[]).await;
+        let client = ChatterboxClient::new(&gradio.endpoint, "pt");
+
+        assert!(!client.health_check().await.expect("health"));
+        assert_eq!(
+            gradio.rotas_pedidas().len(),
+            ChatterboxClient::ROTAS_DE_SAUDE.len(),
+            "sem 2xx, a cadeia inteira e sondada antes de desistir"
+        );
+    }
+
+    /// Nada escutando tambem e `false` — e sem erro, porque o chamador do boot
+    /// trata `Ok(false)` como "nao alcancavel" e segue.
+    #[tokio::test]
+    async fn nada_escutando_nao_e_saudavel() {
+        // Uma porta que foi aberta e fechada: ninguem escuta nela agora.
+        let porta = {
+            let l = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        let client = ChatterboxClient::new(&format!("http://127.0.0.1:{porta}"), "pt");
+
+        assert!(!client.health_check().await.expect("health"));
+    }
+
+    /// A rota que o #1538 acusou nao pode voltar para a cadeia: ela nao existe
+    /// em nenhuma versao do Gradio (4.x a 6.x), e enquanto estava aqui um
+    /// servidor saudavel aparecia como `❌ tts-chatterbox`.
+    #[test]
+    fn a_cadeia_nao_contem_gradio_api_config() {
+        assert!(
+            !ChatterboxClient::ROTAS_DE_SAUDE.contains(&"/gradio_api/config"),
+            "/gradio_api/config nao e rota de nenhum Gradio — ver #1538"
+        );
+        assert_eq!(
+            ChatterboxClient::ROTAS_DE_SAUDE[1], "/config",
+            "o config do Gradio fica em /config"
+        );
     }
 }
