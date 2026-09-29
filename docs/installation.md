@@ -4,7 +4,7 @@ This guide covers installing GarraIA on various platforms.
 
 ## Prerequisites
 
-- **Rust 1.95+** (if building from source)
+- **Rust 1.96+** (if building from source)
 - **FFmpeg** (for voice mode)
 - **Linux (prebuilt binaries):** glibc ≥ 2.35 — Ubuntu 22.04+, Debian 12+.
   Older distros and musl-based systems (Alpine) must build from source.
@@ -226,7 +226,7 @@ The app itself works on both.
 ### Prerequisites
 
 ```bash
-# Install Rust 1.95+
+# Install Rust 1.96+
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup update stable
 
@@ -470,7 +470,7 @@ docker-compose up -d
 
 ```dockerfile
 # Runtime-only image: build the binary first with `cargo build --release -p garraia`
-# (Rust 1.95+). The repo's own Dockerfile does the multi-stage build for you.
+# (Rust 1.96+). The repo's own Dockerfile does the multi-stage build for you.
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg \

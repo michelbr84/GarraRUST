@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
   <img src="https://img.shields.io/badge/channels-5%20wired-purple" alt="Channels">
   <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
@@ -75,7 +75,7 @@ tone in any language. See [ADR 0012](docs/adr/0012-garra-persona.md).
 ## Quick Start
 
 ```bash
-# Requires Rust 1.95+ (matches the MSRV declared in Cargo.toml)
+# Requires Rust 1.96+ (matches the MSRV declared in Cargo.toml)
 cargo build --release -p garraia
 
 # Interactive setup — pick your LLM provider; optionally store API keys

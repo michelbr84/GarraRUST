@@ -7,7 +7,7 @@
 #   .\scripts\build-installer.ps1 -StageDir "C:\out"   # copia os bundles para la
 #
 # Pre-requisitos:
-#   - Rust 1.95+ (MSRV da workspace) com target x86_64-pc-windows-msvc
+#   - Rust 1.96+ (MSRV da workspace) com target x86_64-pc-windows-msvc
 #   - cargo-tauri instalado: cargo install tauri-cli --version "^2"
 #   - WiX Toolset e NSIS (baixados automaticamente pelo Tauri se ausentes)
 #
