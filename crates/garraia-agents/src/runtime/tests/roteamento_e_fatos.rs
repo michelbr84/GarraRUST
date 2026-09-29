@@ -22,6 +22,47 @@ pub(super) fn erro_de_roteamento_openrouter_nao_e_retryable() {
     )));
 }
 
+/// #1540: duas entradas `llm:` do mesmo tipo (`provider: openai` em bases
+/// distintas) precisam de ids proprios (a chave do perfil) — sem isso o id
+/// era o tipo (`"openai"`), `get_provider` so achava a primeira registrada e
+/// a ordem de registro vinha da iteracao do `HashMap` de config: o default
+/// efetivo era aleatorio a cada boot.
+#[test]
+pub(super) fn perfis_do_mesmo_tipo_sao_enderecaveis_pela_chave() {
+    let rt = AgentRuntime::new();
+    rt.register_provider(Arc::new(
+        crate::openai::OpenAiProvider::new(
+            "k".to_string(),
+            Some("glm53-flash".to_string()),
+            Some("http://127.0.0.1:8080/v1".to_string()),
+        )
+        .with_name("glm53"),
+    ));
+    rt.register_provider(Arc::new(
+        crate::ollama::OllamaProvider::new(
+            Some("hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL".to_string()),
+            Some("http://127.0.0.1:11434".to_string()),
+        )
+        .with_name("ollama-qwen3"),
+    ));
+
+    assert_eq!(rt.get_provider("glm53").unwrap().provider_id(), "glm53");
+    assert_eq!(
+        rt.get_provider("ollama-qwen3").unwrap().provider_id(),
+        "ollama-qwen3"
+    );
+    let ids = rt.provider_ids();
+    assert!(ids.contains(&"glm53".to_string()));
+    assert!(ids.contains(&"ollama-qwen3".to_string()));
+
+    // O default promovido pelo primeiro registro resolve; e o
+    // `agent.default_provider` (chave do perfil, #1180) aponta para a
+    // instancia certa, nao para "a primeira do tipo".
+    assert!(rt.default_provider().is_some());
+    assert!(rt.set_default_provider_id("ollama-qwen3"));
+    assert_eq!(rt.default_provider().unwrap().provider_id(), "ollama-qwen3");
+}
+
 pub(super) fn fato(tipo: &str, key: &str, value: &str, confidence: f32) -> StructuredFact {
     StructuredFact {
         fact_type: tipo.into(),
