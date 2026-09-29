@@ -235,6 +235,31 @@ pub fn resolve_provider_from_model(model: &str) -> Option<String> {
     }
 }
 
+/// #1541 (defeito 2, o que sobrou depois da #1540): o `model` **pode** ser um
+/// id do openrouter?
+///
+/// Quando o prefixo nao e um provider registrado, o roteamento tentava o
+/// openrouter para qualquer coisa que tivesse uma barra — porque o openrouter
+/// de fato proxia `minimax/...`, `yi/...`, `moonshot/...` e outros que nao
+/// estao na tabela de tipos. O problema e o modelo HuggingFace servido pelo
+/// Ollama:
+///
+/// ```text
+/// model = "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL"
+///   -> prefixo "hf.co" nao registrado
+///   -> contains('/') -> openrouter
+///   -> 400 "is not a valid model ID"
+/// ```
+///
+/// Id do openrouter e sempre `vendor/modelo`: **uma** barra (o `:free` e
+/// sufixo do modelo, nao separador). Duas ou mais barras nunca formam um id
+/// valido la, entao mandar para o openrouter e um 400 garantido — cair no
+/// provider default e estritamente melhor. A regra nao tira nenhum id real do
+/// openrouter do caminho.
+fn pode_ser_id_do_openrouter(model: &str) -> bool {
+    model.matches('/').count() == 1
+}
+
 /// #1541 (defeito 3): o pedido que vai para um provider de **fallback**.
 ///
 /// O laco de fallback repassava o `LlmRequest` do primario intacto, `model`
@@ -1795,7 +1820,7 @@ impl AgentRuntime {
                 } else {
                     // Provider not registered — if model uses `org/model` format, try openrouter
                     // (it proxies minimax, yi, moonshot, etc.) before falling to the global default.
-                    if model.contains('/') {
+                    if pode_ser_id_do_openrouter(model) {
                         if let Some(or_provider) = self.get_provider("openrouter") {
                             warn!(
                                 "Provider '{}' not registered; routing '{}' via openrouter",
@@ -2532,7 +2557,7 @@ impl AgentRuntime {
                 } else {
                     // Provider not registered — if model uses `org/model` format, try openrouter
                     // (it proxies minimax, yi, moonshot, etc.) before falling to the global default.
-                    if model.contains('/') {
+                    if pode_ser_id_do_openrouter(model) {
                         if let Some(or_provider) = self.get_provider("openrouter") {
                             warn!(
                                 "Provider '{}' not registered; routing '{}' via openrouter",

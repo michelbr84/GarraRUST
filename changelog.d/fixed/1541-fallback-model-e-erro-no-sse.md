@@ -15,3 +15,11 @@
   escolheu nao falar. O turno agora reporta o desfecho por um canal proprio e o
   stream emite `{"error": {...}}` (convencao que vLLM/llama.cpp/LiteLLM ja usam)
   em vez de mentir `stop`.
+- **Modelo HuggingFace servido pelo Ollama para de ser mandado ao openrouter
+  (#1541, defeito 2 — o que sobrou depois da #1540).** Prefixo nao registrado
+  com barra ia para o openrouter, porque ele de fato proxia `minimax/...`,
+  `yi/...` e outros fora da tabela de tipos. Mas
+  `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL` tem duas barras, e id do
+  openrouter e sempre `vendor/modelo` — mandar assim era 400 garantido. Agora
+  so uma barra qualifica para a tentativa via openrouter; o resto cai no
+  provider default. Nenhum id real do openrouter sai do caminho.
