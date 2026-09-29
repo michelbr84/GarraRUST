@@ -21,6 +21,13 @@ pub struct AnthropicProvider {
     api_key: String,
     model: String,
     base_url: String,
+    /// Chave do perfil `llm.<chave>` que registrou esta instancia (#1554).
+    ///
+    /// `None` = registro anonimo, e `provider_id()` devolve o tipo canonico
+    /// `anthropic`. Sem isso, dois perfis `provider: anthropic` respondem o
+    /// mesmo id e o segundo nunca e alcancavel por `get_provider` — o #1540
+    /// fora dos arms `openai`/`ollama`.
+    name: Option<String>,
 }
 
 impl AnthropicProvider {
@@ -45,11 +52,19 @@ impl AnthropicProvider {
             api_key: api_key.into(),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            name: None,
         }
     }
 
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
+        self
+    }
+
+    /// Da a esta instancia o id da chave do perfil que a configurou (#1554),
+    /// no mesmo padrao de `OpenAIProvider`/`OllamaProvider` (#1540).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -95,7 +110,7 @@ impl AnthropicProvider {
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     fn provider_id(&self) -> &str {
-        "anthropic"
+        self.name.as_deref().unwrap_or("anthropic")
     }
 
     fn configured_model(&self) -> Option<&str> {
@@ -475,6 +490,15 @@ fn from_anthropic_response(response: AnthropicResponse) -> LlmResponse {
 mod tests {
     use super::*;
     use crate::providers::ToolDefinition;
+
+    #[test]
+    fn with_name_da_ao_perfil_um_id_proprio() {
+        // #1554: id pela chave do perfil; sem nome, continua o tipo canonico.
+        let nomeado = AnthropicProvider::new("k", None, None).with_name("claude-opus");
+        assert_eq!(nomeado.provider_id(), "claude-opus");
+        let anonimo = AnthropicProvider::new("k", None, None);
+        assert_eq!(anonimo.provider_id(), "anthropic");
+    }
 
     #[test]
     fn builds_request_with_default_model() {

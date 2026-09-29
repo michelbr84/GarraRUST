@@ -14,6 +14,15 @@ use crate::providers::{
 const DEFAULT_BASE_URL: &str = "http://localhost:8080";
 const DEFAULT_MODEL: &str = "default";
 
+/// Id que um registro anonimo deste provider responde.
+///
+/// Publico de proposito: ele **nao** e igual ao `provider:` que o config usa
+/// para escolher este arm (`llamacpp`), e essa assimetria e justamente o que
+/// quebrava a resolucao por tipo no #1554. Quem precisa traduzir tipo → id
+/// (`bootstrap::resolve_registered_provider_id`) importa esta constante em vez
+/// de repetir o literal, para que renomear aqui nao deixe o alias para tras.
+pub const ID_CANONICO: &str = "llama-cpp";
+
 /// KV cache type for TurboQuant+ compression.
 ///
 /// Reference: <https://github.com/TheTom/turboquant_plus>
@@ -111,6 +120,13 @@ pub struct LlamaCppProvider {
     model: String,
     client: Client,
     config: LlamaCppConfig,
+    /// Chave do perfil `llm.<chave>` que registrou esta instancia (#1554).
+    ///
+    /// `None` = registro anonimo, e `provider_id()` devolve o literal
+    /// historico `llama-cpp`. Este arm era o pior caso do #1554: o literal
+    /// **nao** e igual ao `provider:` do config (`llamacpp`), entao um perfil
+    /// unico ja falhava — nao resolvia pela chave nem pelo fallback por tipo.
+    name: Option<String>,
 }
 
 impl LlamaCppProvider {
@@ -124,7 +140,15 @@ impl LlamaCppProvider {
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             client: Client::new(),
             config: config.unwrap_or_default(),
+            name: None,
         }
+    }
+
+    /// Da a esta instancia o id da chave do perfil que a configurou (#1554),
+    /// no mesmo padrao de `OpenAIProvider`/`OllamaProvider` (#1540).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     /// Build from the `extra` field of an `LlmProviderConfig`.
@@ -373,7 +397,7 @@ impl LlamaCppProvider {
 #[async_trait]
 impl LlmProvider for LlamaCppProvider {
     fn provider_id(&self) -> &str {
-        "llama-cpp"
+        self.name.as_deref().unwrap_or(ID_CANONICO)
     }
 
     fn configured_model(&self) -> Option<&str> {
@@ -561,6 +585,24 @@ struct OpenAiStreamDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_name_da_ao_perfil_um_id_proprio() {
+        // #1554: id pela chave do perfil; sem nome, continua o literal
+        // historico — que, diferente de todo outro provider, NAO e igual ao
+        // `provider:` do config (`llamacpp`). Era essa assimetria que fazia um
+        // perfil unico nao resolver nem pelo fallback por tipo.
+        let nomeado = LlamaCppProvider::new(None, None, None).with_name("meu-llama");
+        assert_eq!(nomeado.provider_id(), "meu-llama");
+        let anonimo = LlamaCppProvider::new(None, None, None);
+        assert_eq!(anonimo.provider_id(), ID_CANONICO);
+        assert_eq!(ID_CANONICO, "llama-cpp");
+        assert_ne!(
+            ID_CANONICO, "llamacpp",
+            "se algum dia os dois coincidirem, o alias de \
+             bootstrap::id_canonico_do_tipo deixou de ser necessario"
+        );
+    }
 
     #[test]
     fn kv_cache_type_round_trip() {
