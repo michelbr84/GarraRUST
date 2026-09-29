@@ -32,8 +32,14 @@ Ou em qualquer host que leia `mcp.json` (Claude Desktop etc.):
 ```
 
 Neste repositório, o [`.mcp.json`](../../.mcp.json) da raiz já registra o
-servidor apontando para o build local (`./target/release/garra`) — toda
-sessão Claude/Hermes aberta no repo ganha `garra_ask` automaticamente.
+servidor apontando para o `garra` **instalado no `PATH`** — toda sessão
+Claude/Hermes aberta no repo ganha `garra_ask` automaticamente, sem
+depender de `cargo build --release` nem do cwd ser a raiz do repo. Esse
+registro traz `GARRAIA_MCP_ENABLE_TOOLS=1`, ou seja, também expõe
+`garra_agent` (o host MCP ali é o próprio dono da máquina, o caso
+"operator opt-in"). Para um host MCP de terceiro, **não** herde essa
+linha — veja a recomendação em
+[hermes-integration.md](../hermes-integration.md#security-policy-checklist).
 
 ### Contrato da ferramenta
 
