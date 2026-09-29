@@ -441,8 +441,31 @@ pub async fn chat_completions(
         "chat.request.started"
     );
 
-    // Get model name
-    let model = body.model.clone().unwrap_or_else(|| "gpt-4".to_string());
+    // #1541: um corpo sem `model` NAO vira o literal `"gpt-4"`.
+    //
+    // O default antigo era enviado ao backend como se o cliente o tivesse
+    // pedido, e um llama-server/Ollama local responde 404
+    // `model 'gpt-4' not found` — a API OpenAI-compat ficava inutilizavel
+    // para quem nao mandava `model`, que e justamente o cliente que quer o
+    // default do servidor. O A2A ja tomou essa decisao (`a2a.rs:254`).
+    //
+    // Duas coisas distintas saem daqui, e e a confusao entre elas que criava
+    // o bug:
+    //
+    // - `modelo_pedido` e o que o cliente pediu. `None` significa "use o seu
+    //   default", e `None` e o que o runtime recebe — quem resolve o model e
+    //   o provider, com o `configured_model` dele;
+    // - `modelo_ecoado` e so rotulo do response/SSE, onde o campo `model` e
+    //   obrigatorio no protocolo. Sem pedido, ecoa o model que de fato vai
+    //   atender, nao um nome inventado.
+    let modelo_pedido = body.model.clone();
+    let model = modelo_pedido.clone().unwrap_or_else(|| {
+        state
+            .agents
+            .default_provider()
+            .and_then(|p| p.configured_model().map(|m| m.to_string()))
+            .unwrap_or_else(|| "default".to_string())
+    });
 
     // GAR-204: Hydrate session history from DB so the server is the source of truth.
     // This is a no-op for brand-new sessions (no-op if no session_store).
@@ -548,6 +571,7 @@ pub async fn chat_completions(
             state,
             session_id.clone(),
             model,
+            modelo_pedido,
             messages,
             continuity_key,
             user_id,
@@ -559,6 +583,7 @@ pub async fn chat_completions(
             state,
             session_id.clone(),
             model,
+            modelo_pedido,
             messages,
             continuity_key,
             user_id,
@@ -584,7 +609,10 @@ pub async fn chat_completions(
 async fn handle_streaming(
     state: SharedState,
     session_id: String,
+    // So rotulo do response/SSE (#1541).
     model: String,
+    // O que o cliente pediu; `None` = "use o default do provider" (#1541).
+    modelo_pedido: Option<String>,
     messages: Vec<ChatMessage>,
     continuity_key: String,
     user_id: Option<String>,
@@ -614,7 +642,6 @@ async fn handle_streaming(
     let session_id_clone = session_id.clone();
     let continuity_key_clone = continuity_key.clone();
     let user_msg_clone = user_message.clone();
-    let model_clone = model.clone();
     let user_id_clone = user_id.clone();
 
     // Spawn task to process streaming and persist the turn when done (GAR-204)
@@ -629,7 +656,7 @@ async fn handle_streaming(
                 Some(continuity_key_clone.as_str()),
                 user_id_clone.as_deref(),
                 None,
-                Some(model_clone.as_str()),
+                modelo_pedido.as_deref(),
                 None,
                 None,
                 // #1343: canal fixo `openai`, nunca o da sessao — uma
@@ -770,7 +797,10 @@ async fn handle_streaming(
 async fn handle_non_streaming(
     state: SharedState,
     session_id: String,
+    // So rotulo do response/SSE (#1541).
     model: String,
+    // O que o cliente pediu; `None` = "use o default do provider" (#1541).
+    modelo_pedido: Option<String>,
     messages: Vec<ChatMessage>,
     continuity_key: String,
     user_id: Option<String>,
@@ -801,7 +831,7 @@ async fn handle_non_streaming(
             Some(continuity_key.as_str()),
             user_id.as_deref(),
             None,
-            Some(model.as_str()),
+            modelo_pedido.as_deref(),
             None,
             None,
             // #1343: ver o ramo streaming.
