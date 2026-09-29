@@ -334,3 +334,133 @@ pub(super) fn sem_objetivo_o_prompt_fica_igual() {
         assert_eq!(com_objetivo(None, Some(vazio)), None);
     }
 }
+
+// ─── #1541 (defeito 3): o fallback usa o modelo DELE ──────────────────
+
+/// Fallback que anota o `model` que recebeu. Sem isso o teste so veria
+/// "respondeu" e nao "respondeu com o modelo certo", que e o defeito.
+pub(super) struct FallbackQueAnotaOModelo {
+    pub(super) visto: std::sync::Mutex<Vec<String>>,
+}
+
+impl FallbackQueAnotaOModelo {
+    pub(super) fn novo() -> Self {
+        Self {
+            visto: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn anota(&self, request: &LlmRequest) {
+        self.visto.lock().unwrap().push(request.model.clone());
+    }
+
+    pub(super) fn modelos_vistos(&self) -> Vec<String> {
+        self.visto.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for FallbackQueAnotaOModelo {
+    fn provider_id(&self) -> &str {
+        "ollama"
+    }
+
+    async fn complete(&self, request: &LlmRequest) -> Result<LlmResponse> {
+        self.anota(request);
+        Ok(LlmResponse {
+            content: vec![ContentBlock::Text {
+                text: RESPOSTA_LOCAL.to_string(),
+            }],
+            model: "qwen3.8:latest".to_string(),
+            stop_reason: None,
+            usage: None,
+        })
+    }
+
+    async fn stream_complete(
+        &self,
+        request: &LlmRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        self.anota(request);
+        Ok(Box::pin(futures::stream::iter(vec![
+            Ok(StreamEvent::TextDelta(RESPOSTA_LOCAL.to_string())),
+            Ok(StreamEvent::MessageStop),
+        ])))
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+fn runtime_com_fallback_que_anota() -> (
+    AgentRuntime,
+    Arc<PrimarioQueFalha>,
+    Arc<FallbackQueAnotaOModelo>,
+) {
+    let runtime = AgentRuntime::new();
+    let primario = Arc::new(PrimarioQueFalha::nova(FalhaSimulada::Transporte));
+    let fallback = Arc::new(FallbackQueAnotaOModelo::novo());
+    runtime.register_provider(primario.clone());
+    runtime.register_provider(fallback.clone());
+    runtime.set_fallback_providers(vec!["ollama".to_string()]);
+    (runtime, primario, fallback)
+}
+
+/// O caso da issue: `gpt-4o` e o nome que **a nuvem** entende. Repassado ao
+/// fallback, o openrouter respondia 400 `is not a valid model ID` e o
+/// usuario via `all providers failed` — com o fallback de pe o tempo todo.
+#[tokio::test]
+pub(super) async fn fallback_nao_herda_o_modelo_do_primario_em_batch() {
+    let (runtime, primario, fallback) = runtime_com_fallback_que_anota();
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let (_resposta, quem) = runtime
+        .complete_reportando_provider(&como_dyn, &pedido_simples())
+        .await
+        .expect("o fallback completa o turno");
+
+    assert_eq!(quem, "ollama");
+    assert_eq!(
+        fallback.modelos_vistos(),
+        vec![String::new()],
+        "modelo vazio = 'provider, use o seu' — nunca o `gpt-4o` do primario"
+    );
+}
+
+/// O mesmo no braco de streaming, que tem laco de fallback proprio.
+#[tokio::test]
+pub(super) async fn fallback_nao_herda_o_modelo_do_primario_em_streaming() {
+    let (runtime, primario, fallback) = runtime_com_fallback_que_anota();
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let mut stream = runtime
+        .stream_complete_with_fallback(&como_dyn, &pedido_simples())
+        .await
+        .expect("o stream do fallback chega");
+    while stream.next().await.is_some() {}
+
+    assert_eq!(fallback.modelos_vistos(), vec![String::new()]);
+}
+
+/// A excecao estreita: quando o `model` **nomeia o proprio fallback**, ele
+/// sobrevive — `openrouter/auto` indo para o openrouter e um endereco
+/// valido, nao herança acidental do primario.
+#[tokio::test]
+pub(super) async fn modelo_que_nomeia_o_fallback_sobrevive() {
+    let (runtime, primario, fallback) = runtime_com_fallback_que_anota();
+    let como_dyn: Arc<dyn LlmProvider> = primario.clone();
+
+    let mut pedido = pedido_simples();
+    pedido.model = "ollama/qwen3.8:latest".to_string();
+
+    runtime
+        .complete_reportando_provider(&como_dyn, &pedido)
+        .await
+        .expect("o fallback completa o turno");
+
+    assert_eq!(
+        fallback.modelos_vistos(),
+        vec!["ollama/qwen3.8:latest".to_string()]
+    );
+}
