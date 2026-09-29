@@ -27,6 +27,7 @@ mod repo_workflow;
 mod runs_cmd;
 #[cfg(unix)]
 mod sigpipe;
+mod systemd_guard;
 mod team;
 mod tracing_setup;
 mod ui;
@@ -2185,6 +2186,9 @@ fn main() -> Result<()> {
         // host ja resolvido acima (flag > env > default, nunca o arquivo).
         preflight_do_bind(&config.gateway, true);
         if is_restart {
+            // #1542: a recusa vem antes do stop — depois de matar o daemon da
+            // unit nao ha como desfazer o orfao.
+            recusar_restart_sob_systemd(config.gateway.port);
             // Don't init tracing here — try_stop_daemon uses println!,
             // and the daemon child will init its own subscriber after fork.
             try_stop_daemon(config.gateway.port);
@@ -2222,6 +2226,45 @@ fn preflight_do_bind(gateway: &garraia_config::GatewayConfig, imprimir_aviso: bo
         }
     }
 }
+
+/// #1542: roda ANTES do `try_stop_daemon` dos dois caminhos de `restart`.
+///
+/// Se o daemon que seria derrubado pertence a uma unit systemd, parar por
+/// fora e subir um processo novo deixa um orfao na porta e a unit em
+/// crash-loop. A CLI recusa e diz o comando certo — nao chama `systemctl`
+/// por ninguem, porque a unit sobe pelo `ExecStart` dela e as flags desta
+/// invocacao (`--host`/`--port`/`--with-voice`) sumiriam em silencio.
+///
+/// Olha o pidfile e quem esta na porta: numa instalacao com unit ativa o
+/// pidfile costuma existir, mas um `restart` depois de um orfao ja ter
+/// tomado a porta nao tem pidfile confiavel.
+///
+/// So existe no Linux: systemd nao roda em outro lugar.
+#[cfg(target_os = "linux")]
+fn recusar_restart_sob_systemd(port: u16) {
+    if systemd_guard::escotilha_ligada() {
+        return;
+    }
+    let mut candidatos: Vec<u32> = read_pid()
+        .into_iter()
+        .filter(|p| is_process_running(*p))
+        .collect();
+    candidatos.extend(find_pids_on_port(port));
+    candidatos.dedup();
+
+    for pid in candidatos {
+        if let Some(unidade) = systemd_guard::unidade_do_processo(pid) {
+            let bin = garraia_common::executavel::nome();
+            eprintln!("{}", systemd_guard::recusa(&unidade, pid, port, &bin));
+            // Mesmo EX_CONFIG da recusa do bind (#1261): a CLI parou antes de
+            // qualquer efeito colateral, e o que precisa mudar e o setup.
+            std::process::exit(EX_CONFIG);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn recusar_restart_sob_systemd(_port: u16) {}
 
 async fn async_main(
     cli: Cli,
@@ -2302,6 +2345,8 @@ async fn async_main(
             config.gateway.port = port;
             // #1261: um `restart` recusado nao pode derrubar o daemon atual.
             preflight_do_bind(&config.gateway, false);
+            // #1542: idem para o daemon que pertence a uma unit systemd.
+            recusar_restart_sob_systemd(port);
             init_tracing(&effective_level);
             // #1247: os achados do boot gate, uma linha por achado.
             boot_gate_cli::logar();
