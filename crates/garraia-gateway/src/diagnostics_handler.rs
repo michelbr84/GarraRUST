@@ -812,8 +812,10 @@ fn tools_capabilities_check(
             CheckStatus::Warning,
             Some(format!(
                 "cada item traz o motivo; numa conversa, `garra_status` mostra o mesmo registro. \
-                 Servidor MCP fora do ar: `{bin} mcp restart <nome>`; canal desconectado: veja \
-                 `runtime.channels`"
+                 Servidor MCP fora do ar: em `retrying` o supervisor reconecta sozinho; em \
+                 `failed` os `max_restarts` acabaram e so um restart manual traz de volta — \
+                 `POST /admin/api/mcp/<nome>/restart` ou o botao Restart no console (aba MCP \
+                 Servers); canal desconectado: veja `runtime.channels`"
             )),
         )
     } else {
@@ -1713,7 +1715,16 @@ mod tests {
             c.next_step
                 .as_deref()
                 .unwrap_or_default()
-                .contains("mcp restart"),
+                .contains("POST /admin/api/mcp/<nome>/restart"),
+            "{c:?}"
+        );
+        // O passo tem de dizer TAMBEM que o supervisor tenta sozinho: sem
+        // isso o operador reinicia a mao um servidor que ja ia voltar.
+        assert!(
+            c.next_step
+                .as_deref()
+                .unwrap_or_default()
+                .contains("max_restarts"),
             "{c:?}"
         );
     }
