@@ -178,6 +178,47 @@ async fn check_http(name: &str, url: &str, timeout_secs: u64) -> HealthStatus {
     }
 }
 
+/// A mesma checagem do [`check_http`], mas sobre uma lista de URLs: para na
+/// primeira que responder OK e só reporta falha depois de todas falharem.
+///
+/// Existe por causa do #1538: o `tts-chatterbox` sondava só a raiz, e num app
+/// Gradio em que a raiz não serve 2xx o operador via `❌` com o servidor de pé.
+/// O erro reportado acumula o que cada rota respondeu, para que "nada
+/// escutando" e "de pé na rota errada" deixem de ser a mesma linha. A ordem
+/// espelha a de `ChatterboxClient::ROTAS_DE_SAUDE` de propósito: as duas
+/// sondas do mesmo serviço não podem discordar.
+async fn check_http_qualquer(name: &str, urls: &[String], timeout_secs: u64) -> HealthStatus {
+    let mut ultima = None;
+    let mut motivos = Vec::with_capacity(urls.len());
+
+    for url in urls {
+        let status = check_http(name, url, timeout_secs).await;
+        if status.ok {
+            return status;
+        }
+        motivos.push(format!(
+            "{url} -> {}",
+            status.error.as_deref().unwrap_or("failed")
+        ));
+        ultima = Some(status);
+    }
+
+    match ultima {
+        Some(status) => HealthStatus {
+            error: Some(motivos.join("; ")),
+            ..status
+        },
+        // Lista vazia: não é estado alcançável pelos call sites, e inventar
+        // um `ok: true` aqui reportaria saúde que ninguém mediu.
+        None => HealthStatus {
+            name: name.to_string(),
+            ok: false,
+            latency_ms: None,
+            error: Some("no health URL to probe".to_string()),
+        },
+    }
+}
+
 /// Run health checks for all known providers and services.
 ///
 /// Checks are run concurrently for speed.
@@ -257,17 +298,28 @@ pub async fn run_all_checks(state: &SharedState) -> Vec<HealthStatus> {
 
         // Check the active TTS provider endpoint
         if state.voice_client.is_some() {
-            let endpoint = state.config.voice.tts_endpoint.clone();
+            // Sem a barra final: as rotas da cadeia já começam com `/`, e um
+            // `http://host//config` não é a mesma rota que `/config`.
+            let endpoint = state
+                .config
+                .voice
+                .tts_endpoint
+                .trim_end_matches('/')
+                .to_string();
             let t = timeout;
             let check_name = format!("tts-{}", provider);
-            // LM Studio uses /v1/models, others use root
-            let health_url = if provider == "lmstudio" {
-                format!("{}/v1/models", endpoint)
-            } else {
-                format!("{}/", endpoint)
+            // LM Studio uses /v1/models; Chatterbox/Gradio precisa da mesma
+            // cadeia de rotas do cliente (#1538); o resto responde na raiz.
+            let health_urls: Vec<String> = match provider.as_str() {
+                "lmstudio" => vec![format!("{}/v1/models", endpoint)],
+                "hibiki" => vec![format!("{}/", endpoint)],
+                _ => garraia_voice::ChatterboxClient::ROTAS_DE_SAUDE
+                    .iter()
+                    .map(|rota| format!("{endpoint}{rota}"))
+                    .collect(),
             };
             handles.push(tokio::spawn(async move {
-                check_http(&check_name, &health_url, t).await
+                check_http_qualquer(&check_name, &health_urls, t).await
             }));
         }
 

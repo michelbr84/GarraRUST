@@ -6,8 +6,10 @@
 //! bind resolvido pelo clap (`HOST` ou `--host`), nunca o arquivo. Voltar a
 //! decidir por `config.gateway.host` do arquivo deixa estes testes vermelhos.
 
+use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use tempfile::tempdir;
@@ -16,12 +18,30 @@ fn garra_bin() -> &'static str {
     env!("CARGO_BIN_EXE_garra")
 }
 
+/// Uma porta efemera que NENHUM outro teste deste binario ja recebeu.
+///
+/// O `unwrap_or_else` de `assert_recusou` prova que a recusa nao escutou, e
+/// para isso ele precisa que a porta esteja livre. So que
+/// `start_com_credencial_de_env_passa_da_recusa` SOBE o gateway na porta que
+/// recebeu e o deixa vivo por 3s — se o kernel devolver a mesma porta efemera
+/// a dois testes rodando em paralelo (ele reusa porta liberada), o outro teste
+/// falha com `Address already in use` sem que nada esteja errado no binario.
+/// O registro process-wide fecha essa corrida: cada teste leva uma porta
+/// distinta, entao ninguem observa o listener de ninguem.
 fn porta_livre() -> u16 {
-    TcpListener::bind("0.0.0.0:0")
-        .expect("porta efemera")
-        .local_addr()
-        .expect("local_addr")
-        .port()
+    static ENTREGUES: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
+
+    for _ in 0..64 {
+        let porta = TcpListener::bind("0.0.0.0:0")
+            .expect("porta efemera")
+            .local_addr()
+            .expect("local_addr")
+            .port();
+        if ENTREGUES.lock().expect("registro de portas").insert(porta) {
+            return porta;
+        }
+    }
+    panic!("o kernel devolveu 64 portas efemeras todas ja entregues a outro teste");
 }
 
 /// Um comando com o ambiente isolado num tempdir e sem nenhuma credencial

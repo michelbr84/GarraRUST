@@ -57,6 +57,9 @@ pub struct OllamaProvider {
     base_url: String,
     model: String,
     client: Client,
+    /// #1540: id opcional por PERFIL (`with_name`), para duas entradas `llm:`
+    /// do tipo `ollama` (hosts/tags distintos) serem enderecaveis pela chave.
+    name: Option<String>,
 }
 
 /// O Ollama explica a recusa no corpo (`{"error":"model 'x' not found"}`), e
@@ -94,11 +97,22 @@ impl OllamaProvider {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             model: model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             client,
+            name: None,
         }
     }
 
     pub fn with_client(mut self, client: Client) -> Self {
         self.client = client;
+        self
+    }
+
+    /// #1540: sobrescreve o id devolvido por `provider_id()` — espelha o
+    /// `with_name` do `OpenAiProvider`. Duas entradas `llm:` do tipo `ollama`
+    /// (hosts/tags distintos) registradas sem isso colidem no id `"ollama"`:
+    /// `get_provider` so acha a primeira e a ordem de registro vem da
+    /// iteracao do `HashMap` de config (vencedor aleatorio por boot).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -498,7 +512,7 @@ fn handle_pull_line(line: &str, on_progress: &mut impl FnMut(&PullProgress)) -> 
 #[async_trait]
 impl LlmProvider for OllamaProvider {
     fn provider_id(&self) -> &str {
-        "ollama"
+        self.name.as_deref().unwrap_or("ollama")
     }
 
     fn configured_model(&self) -> Option<&str> {
@@ -827,6 +841,15 @@ mod tests {
         assert_eq!(n("anthropic/claude-sonnet-4-5"), None);
         assert_eq!(n(""), None);
         assert_eq!(n("   "), None);
+    }
+
+    #[test]
+    fn with_name_da_ao_perfil_um_id_proprio() {
+        // #1540: id pela chave do perfil; sem nome, continua o tipo canonico.
+        let nomeado = super::OllamaProvider::new(None, None).with_name("ollama-qwen3");
+        assert_eq!(nomeado.provider_id(), "ollama-qwen3");
+        let anonimo = super::OllamaProvider::new(None, None);
+        assert_eq!(anonimo.provider_id(), "ollama");
     }
 
     #[tokio::test]

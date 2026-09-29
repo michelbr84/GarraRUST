@@ -550,6 +550,13 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     llm_config.model.clone(),
                     llm_config.base_url.clone(),
                 )
+                // #1540: registra pela CHAVE do perfil, nao pelo tipo — duas
+                // entradas `provider: openai` (llama-server local + Ollama
+                // OpenAI-compat, p. ex.) compartilhavam o id `"openai"`:
+                // `get_provider` so achava a primeira e a ordem de registro
+                // vinha da iteracao do `HashMap` de config, ou seja, o
+                // vencedor (e o default efetivo) era aleatorio a cada boot.
+                .with_name(name.clone())
                 .with_client(llm_client.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured openai provider: {name}");
@@ -593,6 +600,10 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
 
                 let provider =
                     OllamaProvider::new(llm_config.model.clone(), llm_config.base_url.clone())
+                        // #1540: id pela chave do perfil — mesmo racional do
+                        // arm `openai` acima (duas entradas `provider: ollama`
+                        // em hosts distintos nao podem colidir no id).
+                        .with_name(name.clone())
                         .with_client(llm_client.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured ollama provider: {name}");

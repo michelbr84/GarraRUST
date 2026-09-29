@@ -31,7 +31,7 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/michelbr84/GarraRUST"
 description = "A personal AI assistant platform, rewritten in Rust"
-rust-version = "1.95"
+rust-version = "1.96"
 
 [workspace.dependencies]
 # Async runtime
@@ -109,8 +109,17 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # out, `UdpSend`/`UdpReceive`/`TcpListen`/`TcpAccept` in). Migrated in
 # runtime.rs. This bump is ALSO what forces `rust-version = "1.95"` above:
 # wasmtime 48 and its cranelift/pulley/wiggle tree declare rustc 1.95.0.
-wasmtime = "48"
-wasmtime-wasi = { version = "48", features = ["p1"] }
+# 48→49 (PR #1524, 2026-09-29): security bump — 49.0.1 fixes four advisories
+# of the 48.x line (GHSA-m63x-6p34-q65x and GHSA-jqpg-j7w6-42pr, fuel
+# accounting; GHSA-c9gc-w9vx-w86p, host memory exhaustion on outgoing HTTP
+# body write; GHSA-j2g9-4prp-pf6h, panic on out-of-range datetimes in
+# `set-times`/`set-times-at` of the WASI filesystem). No API migration was
+# needed in runtime.rs this time. It DOES raise `rust-version` to "1.96"
+# above: the cranelift 0.136.1 tree declares rustc 1.96.0. Fifth bump in a
+# row with the same shape — the real MSRV floor of this workspace is dictated
+# by the wasmtime tree, not by the remaining deps.
+wasmtime = "49"
+wasmtime-wasi = { version = "49", features = ["p1"] }
 
 # Discord
 # Segue em native_tls_backend, com OpenSSL VENDORED (estático) via o dep

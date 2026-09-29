@@ -22,6 +22,47 @@ pub(super) fn erro_de_roteamento_openrouter_nao_e_retryable() {
     )));
 }
 
+/// #1540: duas entradas `llm:` do mesmo tipo (`provider: openai` em bases
+/// distintas) precisam de ids proprios (a chave do perfil) — sem isso o id
+/// era o tipo (`"openai"`), `get_provider` so achava a primeira registrada e
+/// a ordem de registro vinha da iteracao do `HashMap` de config: o default
+/// efetivo era aleatorio a cada boot.
+#[test]
+pub(super) fn perfis_do_mesmo_tipo_sao_enderecaveis_pela_chave() {
+    let rt = AgentRuntime::new();
+    rt.register_provider(Arc::new(
+        crate::openai::OpenAiProvider::new(
+            "k".to_string(),
+            Some("glm53-flash".to_string()),
+            Some("http://127.0.0.1:8080/v1".to_string()),
+        )
+        .with_name("glm53"),
+    ));
+    rt.register_provider(Arc::new(
+        crate::ollama::OllamaProvider::new(
+            Some("hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL".to_string()),
+            Some("http://127.0.0.1:11434".to_string()),
+        )
+        .with_name("ollama-qwen3"),
+    ));
+
+    assert_eq!(rt.get_provider("glm53").unwrap().provider_id(), "glm53");
+    assert_eq!(
+        rt.get_provider("ollama-qwen3").unwrap().provider_id(),
+        "ollama-qwen3"
+    );
+    let ids = rt.provider_ids();
+    assert!(ids.contains(&"glm53".to_string()));
+    assert!(ids.contains(&"ollama-qwen3".to_string()));
+
+    // O default promovido pelo primeiro registro resolve; e o
+    // `agent.default_provider` (chave do perfil, #1180) aponta para a
+    // instancia certa, nao para "a primeira do tipo".
+    assert!(rt.default_provider().is_some());
+    assert!(rt.set_default_provider_id("ollama-qwen3"));
+    assert_eq!(rt.default_provider().unwrap().provider_id(), "ollama-qwen3");
+}
+
 pub(super) fn fato(tipo: &str, key: &str, value: &str, confidence: f32) -> StructuredFact {
     StructuredFact {
         fact_type: tipo.into(),
@@ -74,4 +115,32 @@ pub(super) fn select_facts_sem_teto_preserva_ordem_de_chegada() {
     assert_eq!(out.len(), 2);
     assert_eq!(out[0].key, "um");
     assert_eq!(out[1].key, "dois");
+}
+
+/// #1541 (defeito 2, o resto depois da #1540): modelo HuggingFace servido
+/// pelo Ollama nao pode ser mandado ao openrouter.
+///
+/// `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL` tem prefixo nao registrado e
+/// uma barra a mais — id do openrouter e sempre `vendor/modelo`. Mandar assim
+/// e 400 garantido; cair no provider default e estritamente melhor.
+#[test]
+pub(super) fn so_uma_barra_pode_ser_id_do_openrouter() {
+    // Ids reais do openrouter continuam passando.
+    for real in [
+        "openrouter/auto",
+        "z-ai/glm-5.3-flash",
+        "meta-llama/llama-3.1-70b-instruct:free",
+        "minimax/minimax-01",
+    ] {
+        assert!(pode_ser_id_do_openrouter(real), "{real} e id de openrouter");
+    }
+
+    // Duas barras nunca formam id do openrouter.
+    assert!(!pode_ser_id_do_openrouter(
+        "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL"
+    ));
+    assert!(!pode_ser_id_do_openrouter("a/b/c"));
+
+    // Sem barra nao entra neste caminho de qualquer forma.
+    assert!(!pode_ser_id_do_openrouter("glm53-flash"));
 }

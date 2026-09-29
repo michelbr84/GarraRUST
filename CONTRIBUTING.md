@@ -14,7 +14,7 @@ Ao participar deste projeto, você concorda em ser respeitoso, inclusivo e const
 
 | Ferramenta | Versão mínima | Instalação |
 |------------|---------------|------------|
-| Rust | 1.95 | `rustup update stable` |
+| Rust | 1.96 | `rustup update stable` |
 | Git | qualquer | [git-scm.com](https://git-scm.com) |
 | FFmpeg | 6.x | `apt install ffmpeg` / `brew install ffmpeg` |
 | Node.js (opcional) | 20+ | Para rodar servidores MCP de teste |
@@ -35,8 +35,8 @@ git remote add upstream https://github.com/michelbr84/GarraRUST.git
 
 ### 2. Fixar a toolchain Rust localmente (recomendado)
 
-O workspace exige Rust 1.95+ (ver a tabela de pré-requisitos e o job "MSRV
-check (1.95)" do CI). Sem isso declarado em algum lugar, `rustup` usa
+O workspace exige Rust 1.96+ (ver a tabela de pré-requisitos e o job "MSRV
+check (1.96)" do CI). Sem isso declarado em algum lugar, `rustup` usa
 qualquer `stable` que já estiver instalada — mesmo abaixo do piso — e o erro
 só aparece depois, no meio de um `cargo check`.
 
@@ -44,7 +44,7 @@ só aparece depois, no meio de um `cargo check`.
 bash scripts/setup-toolchain.sh
 ```
 
-O script instala a 1.95 (se faltar) e roda `rustup override set 1.95` **só
+O script instala a 1.96 (se faltar) e roda `rustup override set 1.96` **só
 para este diretório**. Note que isso não é um `rust-toolchain.toml`
 commitado no repo — essa abordagem foi tentada (issue #1452, PR #1454) e
 quebrou os jobs de CI que fazem cross-compile com targets extras (Android,
