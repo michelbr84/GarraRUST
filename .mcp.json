@@ -1,8 +1,12 @@
 {
   "mcpServers": {
     "garraia": {
-      "command": "./target/release/garra",
-      "args": ["mcp-server"]
+      "command": "garra",
+      "args": ["mcp-server"],
+      "env": {
+        "GARRAIA_MCP_ENABLE_TOOLS": "1",
+        "GARRAIA_MCP_MAX_TIMEOUT_SECS": "600"
+      }
     }
   }
 }
