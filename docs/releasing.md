@@ -32,40 +32,54 @@ status que mentia). Por isso, antes de empurrar o tag, alguém com máquina e
 telefone executa a matriz abaixo **contra o candidato** e registra data, sistema
 e quem executou. Linha sem data = release não sai.
 
-**Onde o candidato existe — e onde ele NÃO existe.** Para as linhas Linux, o
-candidato é o pacote construído do checkout da PR de release
-(`scripts/dogfood/linux-clean-install.sh --source local`, abaixo). Para as
-linhas que precisam de *asset publicado* (D2, D4, D5, D6), **não existe
-candidato sem um tag**: o `release.yml` **não tem modo de teste**. Seu
-`workflow_dispatch` aceita um `version`, mas o job `release` usa
-`softprops/action-gh-release` com `draft: false` — ele **cria o tag no commit do
-run e publica a Release de verdade**. Dispará-lo esperando artefato de teste
+**Onde o candidato existe — e onde ele NÃO existe.** O `release.yml` **não tem
+modo de teste**: seu `workflow_dispatch` aceita um `version`, mas o job `release`
+usa `softprops/action-gh-release` com `draft: false` — ele **cria o tag no commit
+do run e publica a Release de verdade**. Dispará-lo esperando artefato de teste
 publica a release sem querer. (Esta seção afirmava o contrário até 2026-09-28.)
 
-Os dois caminhos reais, e a escolha é do dono:
+Fora dele, cada grupo de linhas tem uma origem de candidato diferente, e três
+delas **não precisam de tag nenhum**:
+
+| Linhas | Candidato, sem publicar nada |
+|---|---|
+| D1, D3a, D9-linux | `scripts/dogfood/linux-clean-install.sh --source local` no checkout do candidato — empacota com o mesmo `packaging/nfpm.yaml` da release e instala num `ubuntu:24.04` cru |
+| **D5, D6** | **`gh workflow run desktop.yml --ref <sha>`** — o `desktop.yml` tem `workflow_dispatch`, `permissions: contents: read` e **nenhum passo de publicação**: ele constrói MSI + NSIS no `windows-latest` e `.deb` + AppImage no `ubuntu-22.04` e sobe os bundles como *artifacts* (`garraia-desktop-windows-pr`, `garraia-desktop-linux-pr`). Baixar o artifact do run e instalar à mão é o candidato de desktop |
+| D2 | precisa de *asset publicado*, mas **aceita um tag pinado**: `install.ps1 -Version <tag>` / `$env:GARRAIA_VERSION` (e `install.sh --version <tag>`) baixam a tag pedida em vez da `latest`. Um prerelease `vX.Y.Z-rcN` serve |
+| **D4** | **não tem candidato pré-tag, por desenho do código.** `crates/garraia-cli/src/update.rs:9` fixa `RELEASES_API` em `.../releases/latest` — sem flag, sem env var, sem override. Testar `garra update` da versão anterior para a nova exige que a nova **seja** a `latest`, isto é, exige a publicação |
+
+Daí duas consequências que valem como regra, não como opinião:
+
+- **D4 e D8 são pós-publicação por desenho**, não pré-requisitos do tag. No D8 as
+  URLs do `garraia.org` resolvem a release `latest`; no D4 é o próprio
+  `update.rs` que só conhece a `latest`. Exigir os dois antes do tag é uma
+  dependência circular — eles são verificação do §4.8, e uma falha ali vira a
+  versão seguinte.
+- **D1b, D3b, D7b, D10** e o trecho WhatsApp do D1 continuam manuais por desenho:
+  precisam de dois telefones reais e de leitura humana da resposta do modelo.
+  Nenhum caminho de build os automatiza.
+
+Para o que sobra, os caminhos reais, e a escolha é do dono:
 
 1. **Prerelease `vX.Y.Z-rcN`** por push de tag — produz assets reais e é marcado
    prerelease automaticamente, então não vira `latest` e nem o `install.sh` nem
-   o `garra update` o alcançam. Limite conhecido: o `ProductVersion` do WiX é
-   numérico de três partes, então **tag `-rc` faz o job do MSI falhar** — D5 não
-   tem candidato por esse caminho.
+   o `garra update` o alcançam. Habilita D2 (via `-Version vX.Y.Z-rcN`). Limite
+   conhecido: o `ProductVersion` do WiX é numérico de três partes, então **tag
+   `-rc` faz o job do MSI falhar** — mas o D5 não depende disso, porque o
+   `desktop.yml` acima entrega o MSI sem tag.
 2. **Aceite de risco registrado**, como na v0.4.6 (PR #1522): tagear com a
    cobertura que existe e rodar as linhas manuais depois, com o compromisso
    escrito de que uma falha vira a versão seguinte. A decisão vai no corpo da PR
    de release e no corpo da Release.
-
-**D8 é pós-publicação por desenho**, não pré-requisito do tag: as URLs do
-`garraia.org` resolvem a release `latest`, que só existe depois de publicar. Ele
-é a verificação §4.8, não uma linha do gate que possa travar o tag.
 
 | # | Cenário | Onde | O que prova | Automatizado? |
 |---|---|---|---|---|
 | D1 | Instalação limpa da CLI (`curl \| sh`), `garraia init` com um provedor, `garraia whatsapp link`, um número autorizado, "oi" → resposta real | Ubuntu 22.04 limpo, com Node 20+ | o caminho que o usuário faz | parcial — **Linux automatizado até "resposta real"** por `scripts/dogfood/linux-clean-install.sh` (`.deb` num `ubuntu:24.04` cru, provedor Ollama local, sessão REST, `restart`, `stop`); o `whatsapp link` e o número autorizado continuam manuais |
 | D2 | Mesmo cenário via `irm \| iex` | Windows 10/11 | paridade dos instaladores (regra 16) | não |
 | D3 | `garraia restart` → nova mensagem responde **sem** QR; `allow` sobrevive | Ubuntu + Windows | persistência da sessão e da política | fixture `serve-echo` + manual |
-| D4 | `garraia update` da release anterior para o candidato; `garraia rollback` | Ubuntu | o contrato dos assets crus (regra 15) e o `.old` | não |
-| D5 | Desktop: MSI instala, papagaio e Chat Bar aparecem, `garraia status` no terminal mostra o sidecar, sair encerra o sidecar | Windows 11 | o bundle e o sidecar | não |
-| D6 | Desktop: `.deb` idem | Ubuntu 22.04 (X11) | idem | não |
+| D4 | `garraia update` da release anterior para o candidato; `garraia rollback` | Ubuntu | o contrato dos assets crus (regra 15) e o `.old` | não — e **pós-publicação por desenho**: `update.rs:9` só conhece `releases/latest` |
+| D5 | Desktop: MSI instala, papagaio e Chat Bar aparecem, `garraia status` no terminal mostra o sidecar, sair encerra o sidecar | Windows 11 | o bundle e o sidecar | manual, mas o **bundle sai sem tag** pelo `desktop.yml` (dispatch → artifact `garraia-desktop-windows-pr`) |
+| D6 | Desktop: `.deb` idem | Ubuntu 22.04 (X11) | idem | manual, mas o **bundle sai sem tag** pelo `desktop.yml` (artifact `garraia-desktop-linux-pr`) |
 | D7 | Duas identidades autorizadas pedem `list_dir`; nenhuma vê os arquivos da outra | Ubuntu | isolamento do workspace por sessão (#1449) | teste de integração + manual |
 | D8 | `install-endpoints.yml` verde depois de publicar | — | `garraia.org` serve os instaladores (regra 17) | sim (workflow) |
 | D9 | `GET /api/diagnostics` numa instalação limpa sem nenhum aviso espúrio; `garraia doctor` exit 0 | Ubuntu + Windows | honestidade do status (#1437, #1387) | parcial — **Linux automatizado** pelo mesmo script (`doctor --json` exit 0, `doctor whatsapp --json` exit 69 com a linha `whatsapp.linked`, `/api/health` `healthy`); Windows manual |
@@ -77,7 +91,7 @@ candidato:
 
 ```bash
 scripts/dogfood/linux-clean-install.sh --source local        # empacota este checkout com o nfpm da release
-scripts/dogfood/linux-clean-install.sh --run-id <run-id>     # ou o artefato de um workflow_dispatch de teste
+scripts/dogfood/linux-clean-install.sh --run-id <run-id>     # ou o .deb de um run já verde do release.yml (testa a release ANTERIOR)
 ```
 
 O script sobe um `ubuntu:24.04` sem nada de desenvolvimento, instala o
