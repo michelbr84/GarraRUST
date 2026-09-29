@@ -812,8 +812,9 @@ fn tools_capabilities_check(
             CheckStatus::Warning,
             Some(format!(
                 "cada item traz o motivo; numa conversa, `garra_status` mostra o mesmo registro. \
-                 Servidor MCP fora do ar: `{bin} mcp restart <nome>`; canal desconectado: veja \
-                 `runtime.channels`"
+                 Servidor MCP fora do ar: `POST /admin/api/mcp/<nome>/restart` (ou o botao \
+                 Restart no console, aba MCP Servers; ou reinicie o `{bin}`); canal \
+                 desconectado: veja `runtime.channels`"
             )),
         )
     } else {
@@ -1713,7 +1714,7 @@ mod tests {
             c.next_step
                 .as_deref()
                 .unwrap_or_default()
-                .contains("mcp restart"),
+                .contains("POST /admin/api/mcp/<nome>/restart"),
             "{c:?}"
         );
     }
