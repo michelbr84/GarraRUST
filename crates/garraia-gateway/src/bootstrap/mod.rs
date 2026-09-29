@@ -238,20 +238,72 @@ pub async fn warn_if_embeddings_unhealthy(runtime: &AgentRuntime) {
 /// Returns `None` (caller warns and keeps the current default) rather than
 /// panicking: a default naming a provider that was skipped for want of an
 /// API key must not take the whole gateway down at boot.
+///
+/// #1554 — desde que os arms registram pela CHAVE do perfil (#1540 para
+/// `openai`/`ollama`, #1554 para `anthropic`/`llamacpp`), o nome pedido pode
+/// vir de tres lugares, e os tres tem de resolver:
+///
+/// 1. **um id registrado** — a chave do perfil, ou o tipo canonico quando o
+///    registro foi anonimo;
+/// 2. **uma chave de perfil cujo registro respondeu pelo tipo** — o caminho do
+///    #1180, com a traducao tipo → id do [`id_canonico_do_tipo`];
+/// 3. **um tipo (ou o id canonico dele) enquanto o registro foi pela chave** —
+///    a compatibilidade que o proprio #1540 quebrou sem perceber: quem tinha
+///    `default_provider: ollama` com `llm.local.provider: ollama` passou a nao
+///    resolver, porque o registro virou `local`. Sem o passo 3 a correcao do
+///    #1554 repetiria o mesmo estrago com `llama-cpp` e `anthropic`.
+///
+/// O passo 3 exige **exatamente um** candidato. Dois perfis do mesmo tipo
+/// tornam o nome genuinamente ambiguo, e escolher um seria reintroduzir o
+/// sorteio por boot que o #1540 existiu para matar: melhor recusar e deixar o
+/// WARN pedir a chave do perfil.
 fn resolve_registered_provider_id(
     runtime: &AgentRuntime,
     config: &AppConfig,
     default_key: &str,
 ) -> Option<String> {
     let registered = runtime.provider_ids();
+
+    // 1. o nome pedido ja e um id registrado.
     if registered.iter().any(|p| p == default_key) {
         return Some(default_key.to_string());
     }
-    let kind = config.llm.get(default_key)?.provider.as_str();
-    registered
-        .iter()
-        .find(|p| p.as_str() == kind)
-        .map(|p| p.to_string())
+
+    // 2. o nome pedido e uma chave de perfil; tenta o tipo por tras dela.
+    if let Some(perfil) = config.llm.get(default_key) {
+        let alvo = id_canonico_do_tipo(perfil.provider.as_str());
+        if let Some(encontrado) = registered.iter().find(|p| p.as_str() == alvo) {
+            return Some(encontrado.to_string());
+        }
+    }
+
+    // 3. o nome pedido e um tipo e o registro foi pela chave do perfil.
+    let procurado = id_canonico_do_tipo(default_key);
+    let mut candidatos = config.llm.iter().filter(|(chave, perfil)| {
+        id_canonico_do_tipo(perfil.provider.as_str()) == procurado
+            && registered.iter().any(|p| p == *chave)
+    });
+    let primeiro = candidatos.next()?;
+    if candidatos.next().is_some() {
+        return None;
+    }
+    Some(primeiro.0.to_string())
+}
+
+/// O id que um registro **anonimo** do tipo `kind` responde.
+///
+/// Para todo arm de `configure_llm_providers` o id anonimo e igual ao proprio
+/// `provider:` do config — `anthropic` registra `anthropic`, `openrouter`
+/// registra `openrouter`. `llamacpp` e a unica excecao: registra `llama-cpp`
+/// (com hifen), e por isso o fallback por tipo do #1540 nunca alcancava um
+/// perfil llamacpp (#1554). O literal historico fica de pe para nao quebrar
+/// quem ja aponta `default_provider: llama-cpp`; o que se conserta e a
+/// traducao.
+fn id_canonico_do_tipo(kind: &str) -> &str {
+    match kind {
+        "llamacpp" => garraia_agents::llama_cpp::ID_CANONICO,
+        outro => outro,
+    }
 }
 
 /// A decisao de raizes das file tools nativas: o jail que as tools recebem e
@@ -504,7 +556,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     llm_config.model.clone(),
                     llm_config.base_url.clone(),
                 )
-                .with_client(llm_client.clone());
+                .with_client(llm_client.clone())
+                .with_name(name.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured anthropic provider: {name}");
             }
@@ -652,7 +705,8 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     llm_config.model.clone(),
                     llm_config.base_url.clone(),
                     None,
-                );
+                )
+                .with_name(name.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured llamacpp provider: {name}");
             }
@@ -3164,6 +3218,205 @@ mod tests {
             Some("openrouter"),
             "o unico provider registrado devia ter permanecido como default"
         );
+    }
+
+    // ─── #1554: o residuo do #1540 fora dos arms openai/ollama ────────────
+    //
+    // O #1540 deu id por perfil a `openai` e `ollama`. `anthropic` e
+    // `llamacpp` ficaram para tras, e o `llamacpp` tinha um agravante: o id
+    // anonimo (`llama-cpp`, com hifen) NAO e igual ao `provider:` do config
+    // (`llamacpp`), entao ele nao resolvia nem pela chave nem pelo fallback
+    // por tipo — um perfil unico ja reproduzia.
+    //
+    // Estes testes pedem os providers ao runtime que `build_agent_runtime`
+    // montou, e nao a `LlamaCppProvider::new` direto, pelo mesmo motivo
+    // registrado no bloco do #1244: o defeito recorrente deste repositorio e
+    // nucleo testado com call site de producao nao exercitado. Tirar o
+    // `.with_name` de qualquer um dos dois arms deixa isto vermelho.
+
+    /// A reproducao literal da #1554: perfil llamacpp unico, alcancavel pela
+    /// chave que o operador escolheu. Antes da correcao o registro respondia
+    /// `llama-cpp` e `get_provider("meu-llama")` devolvia `None`.
+    #[test]
+    fn perfil_llamacpp_e_alcancavel_pela_chave() {
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "meu-llama".to_string(),
+            llm_block("llamacpp", None, Some("http://127.0.0.1:1")),
+        );
+
+        let runtime = build_agent_runtime(&config);
+        assert!(
+            runtime.get_provider("meu-llama").is_some(),
+            "o perfil llamacpp tem de responder pela chave do config; \
+             ids registrados: {:?}",
+            runtime.provider_ids()
+        );
+    }
+
+    /// O sintoma que a issue descreve: `default_provider` apontando para um
+    /// perfil llamacpp era silenciosamente ignorado (so um WARN) e o gateway
+    /// seguia com outro default. Dois providers, para que o default errado
+    /// seja observavel — com um so, `register_provider` promove o primeiro e o
+    /// teste passaria por acidente.
+    #[test]
+    fn default_provider_aponta_para_um_perfil_llamacpp() {
+        // Mesmo laco dos testes do #1180: `config.llm` e um HashMap, entao uma
+        // unica rodada acerta metade das vezes por sorte do hasher.
+        for _ in 0..16 {
+            let mut config = AppConfig::default();
+            config.llm.insert(
+                "openrouter".to_string(),
+                llm_block("openrouter", None, None),
+            );
+            config.llm.insert(
+                "meu-llama".to_string(),
+                llm_block("llamacpp", None, Some("http://127.0.0.1:1")),
+            );
+            config.agent.default_provider = Some("meu-llama".to_string());
+
+            let runtime = build_agent_runtime(&config);
+            assert_eq!(
+                runtime.default_provider_id().as_deref(),
+                Some("meu-llama"),
+                "agent.default_provider apontando para um perfil llamacpp foi ignorado"
+            );
+        }
+    }
+
+    /// A colisao de slot do #1540, agora nos dois tipos que sobraram: dois
+    /// perfis do mesmo tipo tem de ser DUAS instancias alcancaveis, cada uma
+    /// pela sua chave. Sem `with_name` as duas respondem o mesmo id e
+    /// `get_provider` devolve sempre a primeira registrada.
+    #[test]
+    fn dois_perfis_do_mesmo_tipo_nao_disputam_um_slot() {
+        for (tipo, base_url, modelo_a, modelo_b) in [
+            (
+                "llamacpp",
+                Some("http://127.0.0.1:1"),
+                "llama-3-8b",
+                "llama-3-70b",
+            ),
+            ("anthropic", None, "claude-a", "claude-b"),
+        ] {
+            let mut config = AppConfig::default();
+            config.llm.insert(
+                "perfil-a".to_string(),
+                llm_block(tipo, Some(modelo_a), base_url),
+            );
+            config.llm.insert(
+                "perfil-b".to_string(),
+                llm_block(tipo, Some(modelo_b), base_url),
+            );
+
+            let runtime = build_agent_runtime(&config);
+            let a = runtime
+                .get_provider("perfil-a")
+                .unwrap_or_else(|| panic!("{tipo}: perfil-a nao registrado"));
+            let b = runtime
+                .get_provider("perfil-b")
+                .unwrap_or_else(|| panic!("{tipo}: perfil-b nao registrado"));
+
+            // O `model` e o que prova que sao instancias distintas e nao a
+            // mesma devolvida duas vezes.
+            assert_eq!(a.configured_model(), Some(modelo_a), "{tipo}: perfil-a");
+            assert_eq!(b.configured_model(), Some(modelo_b), "{tipo}: perfil-b");
+        }
+    }
+
+    /// Compatibilidade que o #1540 quebrou sem perceber e que o #1554 nao pode
+    /// repetir: quem escreveu o TIPO em `default_provider` enquanto o registro
+    /// passou a ser pela chave do perfil continua resolvendo. Inclui
+    /// `llama-cpp`, o id canonico com hifen que nunca foi o `provider:` do
+    /// config — e exatamente o nome que a issue pediu para nao quebrar.
+    #[test]
+    fn default_provider_pelo_tipo_resolve_o_perfil_registrado_pela_chave() {
+        for (tipo, pedido, base_url) in [
+            ("llamacpp", "llamacpp", Some("http://127.0.0.1:1")),
+            ("llamacpp", "llama-cpp", Some("http://127.0.0.1:1")),
+            ("anthropic", "anthropic", None),
+            ("ollama", "ollama", Some(OLLAMA_PORTA_FECHADA)),
+        ] {
+            // DOIS providers, e o laco de 16: com um so registrado
+            // `register_provider` o promove a default sozinho e o assert
+            // passaria sem resolver nada — foi exatamente como uma versao
+            // anterior deste teste ficou verde com o alias arrancado.
+            for _ in 0..16 {
+                let mut config = AppConfig::default();
+                config
+                    .llm
+                    .insert("apelido".to_string(), llm_block(tipo, None, base_url));
+                config.llm.insert(
+                    "concorrente".to_string(),
+                    llm_block("openrouter", None, None),
+                );
+                config.agent.default_provider = Some(pedido.to_string());
+
+                let runtime = build_agent_runtime(&config);
+                assert_eq!(
+                    runtime.default_provider_id().as_deref(),
+                    Some("apelido"),
+                    "default_provider: {pedido:?} (tipo {tipo}) devia achar o perfil \
+                     registrado pela chave; ids: {:?}",
+                    runtime.provider_ids()
+                );
+            }
+        }
+    }
+
+    /// O limite do passo 3: com DOIS perfis do mesmo tipo, o tipo cru e um
+    /// nome ambiguo. Resolver na sorte seria reintroduzir o sorteio por boot
+    /// que o #1540 matou, entao recusa-se e o WARN pede a chave — o boot segue
+    /// de pe com o default que havia.
+    #[test]
+    fn tipo_ambiguo_com_dois_perfis_nao_e_resolvido_na_sorte() {
+        let mut config = AppConfig::default();
+        config.llm.insert(
+            "llama-a".to_string(),
+            llm_block("llamacpp", Some("m-a"), Some("http://127.0.0.1:1")),
+        );
+        config.llm.insert(
+            "llama-b".to_string(),
+            llm_block("llamacpp", Some("m-b"), Some("http://127.0.0.1:1")),
+        );
+
+        assert_eq!(
+            resolve_registered_provider_id(&build_agent_runtime(&config), &config, "llamacpp"),
+            None,
+            "dois perfis do mesmo tipo tornam o tipo cru ambiguo — tem de recusar"
+        );
+    }
+
+    /// A traducao tipo → id canonico, isolada. `llamacpp` e a unica assimetria
+    /// do `match` de `configure_llm_providers`; todo outro tipo registra um id
+    /// igual a si mesmo, e por isso a funcao e identidade para eles.
+    #[test]
+    fn id_canonico_do_tipo_traduz_so_o_llamacpp() {
+        assert_eq!(id_canonico_do_tipo("llamacpp"), "llama-cpp");
+        for identidade in [
+            "anthropic",
+            "openai",
+            "ollama",
+            "openrouter",
+            "sansa",
+            "deepseek",
+            "mistral",
+            "gemini",
+            "falcon",
+            "jais",
+            "qwen",
+            "yi",
+            "cohere",
+            "minimax",
+            "moonshot",
+            "echo",
+        ] {
+            assert_eq!(
+                id_canonico_do_tipo(identidade),
+                identidade,
+                "{identidade} registra um id igual ao proprio tipo"
+            );
+        }
     }
 
     // ─── #1244 rodada 2: o aviso de raiz perigosa chega ao boot ───────────
