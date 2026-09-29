@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # setup-toolchain.sh — instala e ativa localmente a toolchain minima do
-# workspace (MSRV, hoje 1.95 — ver o job "MSRV check (1.95)" em ci.yml).
+# workspace (MSRV, hoje 1.96 — ver o job "MSRV check (1.96)" em ci.yml).
 #
 # Por que nao um rust-toolchain.toml na raiz: ja foi tentado (issue #1452,
 # PR #1454) e quebrou CI real. O arquivo faz o rustup ganhar precedencia
@@ -12,7 +12,7 @@
 # HOME de quem roda), nunca em um arquivo do repo — CI nao ve nem herda.
 set -euo pipefail
 
-MSRV="1.95"
+MSRV="1.96"
 
 if ! command -v rustup >/dev/null 2>&1; then
   echo "rustup nao encontrado. Instale em https://rustup.rs antes de continuar." >&2

@@ -4,7 +4,7 @@
 
 ### Project overview
 
-GarraIA is a multi-crate Rust workspace (`edition = "2024"`, `rust-version = "1.95"`). The main binary is `garraia-cli` (the binary itself is called `garra`); the HTTP/WS gateway lives in `garraia-gateway`.
+GarraIA is a multi-crate Rust workspace (`edition = "2024"`, `rust-version = "1.96"`). The main binary is `garraia-cli` (the binary itself is called `garra`); the HTTP/WS gateway lives in `garraia-gateway`.
 
 ### Build, lint, and test
 
@@ -27,7 +27,7 @@ packages".
 
 ### Notes
 
-- The workspace uses `edition = "2024"` and declares `rust-version = "1.95"` (bumped from 1.94; the reason is recorded inline in `Cargo.toml` next to the pin). The VM ships with a new enough toolchain.
+- The workspace uses `edition = "2024"` and declares `rust-version = "1.96"` (bumped from 1.95; the reason is recorded inline in `Cargo.toml` next to the pin). The VM ships with a new enough toolchain.
 - No external services (databases, Redis, etc.) are required for building or running tests; SQLite is bundled via `rusqlite` with the `bundled` feature.
 - The gateway integration tests start their own ephemeral HTTP/WS servers on random ports — no manual server startup is needed.
 - The `garraia-gateway` crate depends on many workspace crates; initial compilation can take ~45 s.

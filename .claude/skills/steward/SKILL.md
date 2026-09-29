@@ -110,7 +110,7 @@ O check-run agregado "CodeQL" às vezes fecha como `neutral` enquanto os três
 
 ## 3. Bump do wasmtime: o piso de MSRV vem junto
 
-Já aconteceu **quatro vezes** (1.92, 1.93, 1.94, 1.95). Um PR do Dependabot que
+Já aconteceu **cinco vezes** (1.92, 1.93, 1.94, 1.95, 1.96). Um PR do Dependabot que
 sobe `wasmtime` costuma trazer **dois** bloqueios independentes, e o segundo
 não aparece se você ler só o erro de compilação:
 
