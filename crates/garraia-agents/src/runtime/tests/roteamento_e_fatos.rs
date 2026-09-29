@@ -75,3 +75,31 @@ pub(super) fn select_facts_sem_teto_preserva_ordem_de_chegada() {
     assert_eq!(out[0].key, "um");
     assert_eq!(out[1].key, "dois");
 }
+
+/// #1541 (defeito 2, o resto depois da #1540): modelo HuggingFace servido
+/// pelo Ollama nao pode ser mandado ao openrouter.
+///
+/// `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL` tem prefixo nao registrado e
+/// uma barra a mais — id do openrouter e sempre `vendor/modelo`. Mandar assim
+/// e 400 garantido; cair no provider default e estritamente melhor.
+#[test]
+pub(super) fn so_uma_barra_pode_ser_id_do_openrouter() {
+    // Ids reais do openrouter continuam passando.
+    for real in [
+        "openrouter/auto",
+        "z-ai/glm-5.3-flash",
+        "meta-llama/llama-3.1-70b-instruct:free",
+        "minimax/minimax-01",
+    ] {
+        assert!(pode_ser_id_do_openrouter(real), "{real} e id de openrouter");
+    }
+
+    // Duas barras nunca formam id do openrouter.
+    assert!(!pode_ser_id_do_openrouter(
+        "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL"
+    ));
+    assert!(!pode_ser_id_do_openrouter("a/b/c"));
+
+    // Sem barra nao entra neste caminho de qualquer forma.
+    assert!(!pode_ser_id_do_openrouter("glm53-flash"));
+}

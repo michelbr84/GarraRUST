@@ -235,6 +235,66 @@ pub fn resolve_provider_from_model(model: &str) -> Option<String> {
     }
 }
 
+/// #1541 (defeito 2, o que sobrou depois da #1540): o `model` **pode** ser um
+/// id do openrouter?
+///
+/// Quando o prefixo nao e um provider registrado, o roteamento tentava o
+/// openrouter para qualquer coisa que tivesse uma barra — porque o openrouter
+/// de fato proxia `minimax/...`, `yi/...`, `moonshot/...` e outros que nao
+/// estao na tabela de tipos. O problema e o modelo HuggingFace servido pelo
+/// Ollama:
+///
+/// ```text
+/// model = "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL"
+///   -> prefixo "hf.co" nao registrado
+///   -> contains('/') -> openrouter
+///   -> 400 "is not a valid model ID"
+/// ```
+///
+/// Id do openrouter e sempre `vendor/modelo`: **uma** barra (o `:free` e
+/// sufixo do modelo, nao separador). Duas ou mais barras nunca formam um id
+/// valido la, entao mandar para o openrouter e um 400 garantido — cair no
+/// provider default e estritamente melhor. A regra nao tira nenhum id real do
+/// openrouter do caminho.
+fn pode_ser_id_do_openrouter(model: &str) -> bool {
+    model.matches('/').count() == 1
+}
+
+/// #1541 (defeito 3): o pedido que vai para um provider de **fallback**.
+///
+/// O laco de fallback repassava o `LlmRequest` do primario intacto, `model`
+/// incluso — e `model` e o nome que **aquele** backend entende. Um
+/// `llama-server` local servindo `glm53-flash` caia, o openrouter recebia
+/// `glm53-flash` e respondia 400 `is not a valid model ID`; o resultado que o
+/// usuario via era `all providers failed`, como se o fallback nem existisse.
+///
+/// A regra e a mais estreita que resolve: o `model` so sobrevive quando ele
+/// **nomeia o proprio fallback** (`openrouter/auto` indo para `openrouter`).
+/// Em qualquer outro caso vira string vazia, que desde sempre significa
+/// "provider, use o seu modelo configurado" em todos os adaptadores
+/// (`openai.rs:181`, `ollama.rs:106`, `anthropic.rs:61`, `llama_cpp.rs:186`)
+/// — ou seja, o fallback passa a usar `llm.<perfil>.model`, que e o que a
+/// config do operador ja dizia.
+///
+/// Nao e uma substituicao silenciosa de modelo escolhido pelo usuario: o
+/// primario ja falhou, e a alternativa honesta a "outro modelo no provider de
+/// reserva" e "nenhuma resposta".
+fn requisicao_para_o_fallback(request: &LlmRequest, fallback_id: &str) -> LlmRequest {
+    if request.model.is_empty() {
+        return request.clone();
+    }
+    if resolve_provider_from_model(&request.model).as_deref() == Some(fallback_id) {
+        return request.clone();
+    }
+    warn!(
+        "fallback '{}': modelo '{}' e do primario; usando o modelo configurado do fallback",
+        fallback_id, request.model
+    );
+    let mut pedido = request.clone();
+    pedido.model = String::new();
+    pedido
+}
+
 /// Manages agent sessions, tool execution, and LLM provider routing.
 pub struct AgentRuntime {
     providers: RwLock<Vec<Arc<dyn LlmProvider>>>,
@@ -1760,7 +1820,7 @@ impl AgentRuntime {
                 } else {
                     // Provider not registered — if model uses `org/model` format, try openrouter
                     // (it proxies minimax, yi, moonshot, etc.) before falling to the global default.
-                    if model.contains('/') {
+                    if pode_ser_id_do_openrouter(model) {
                         if let Some(or_provider) = self.get_provider("openrouter") {
                             warn!(
                                 "Provider '{}' not registered; routing '{}' via openrouter",
@@ -2497,7 +2557,7 @@ impl AgentRuntime {
                 } else {
                     // Provider not registered — if model uses `org/model` format, try openrouter
                     // (it proxies minimax, yi, moonshot, etc.) before falling to the global default.
-                    if model.contains('/') {
+                    if pode_ser_id_do_openrouter(model) {
                         if let Some(or_provider) = self.get_provider("openrouter") {
                             warn!(
                                 "Provider '{}' not registered; routing '{}' via openrouter",
@@ -4053,7 +4113,8 @@ impl AgentRuntime {
                 continue;
             }
             info!("provider fallback: trying '{}'", fallback_id);
-            match fallback.complete(request).await {
+            let pedido_do_fallback = requisicao_para_o_fallback(request, fallback_id);
+            match fallback.complete(&pedido_do_fallback).await {
                 Ok(resp) => {
                     cb.record_success().await;
                     return Ok((resp, fallback_id.clone()));
@@ -4112,7 +4173,8 @@ impl AgentRuntime {
                 continue;
             }
             info!("streaming fallback: trying '{}'", fallback_id);
-            match fallback.stream_complete(request).await {
+            let pedido_do_fallback = requisicao_para_o_fallback(request, fallback_id);
+            match fallback.stream_complete(&pedido_do_fallback).await {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
                     warn!("streaming fallback '{}' failed: {}", fallback_id, e);

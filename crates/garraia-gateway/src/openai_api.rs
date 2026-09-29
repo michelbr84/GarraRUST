@@ -221,6 +221,28 @@ pub struct DeltaContent {
     pub content: Option<String>,
 }
 
+/// #1541 (defeito 4): evento de erro no meio do SSE.
+///
+/// O turno em streaming rodava numa task solta e o `Err` dela era descartado.
+/// O cliente recebia o chunk de role, nenhum delta, um `finish_reason: "stop"`
+/// e `[DONE]` — uma **resposta em branco com cara de sucesso**. Quem chamava
+/// via SDK da OpenAI nao tinha como distinguir "o modelo nao disse nada" de "o
+/// backend devolveu 404".
+///
+/// O envelope `{"error": {...}}` no meio do stream e a convencao que
+/// vLLM/llama.cpp/LiteLLM ja emitem, entao os clientes existentes reconhecem.
+#[derive(Debug, Serialize)]
+pub struct StreamErrorEvent {
+    pub error: StreamErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StreamErrorBody {
+    pub message: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
 // ============================================================================
 // Request Handlers
 // ============================================================================
@@ -644,9 +666,18 @@ async fn handle_streaming(
     let user_msg_clone = user_message.clone();
     let user_id_clone = user_id.clone();
 
+    // #1541 (defeito 4): canal de desfecho do turno. O `delta_tx` fecha
+    // exatamente igual num sucesso mudo e numa falha do provider, entao o SSE
+    // sozinho nao consegue distinguir os dois — precisa que a task **diga**.
+    // Enviar depois do `await` garante a ordem: quando o receptor de deltas ve
+    // o canal fechado, o desfecho ou ja esta no oneshot ou chega em seguida.
+    // Se a task entrar em panico, o sender cai e o `recv` devolve `Err` — sem
+    // travar o stream.
+    let (desfecho_tx, desfecho_rx) = tokio::sync::oneshot::channel::<Option<String>>();
+
     // Spawn task to process streaming and persist the turn when done (GAR-204)
     tokio::spawn(async move {
-        if let Ok(response_text) = state_clone
+        let resultado = state_clone
             .agents
             .process_message_streaming_with_agent_config(
                 &session_id_clone,
@@ -672,8 +703,11 @@ async fn handle_streaming(
                     aprovador.as_deref().unwrap_or(""),
                 ),
             )
-            .await
-        {
+            .await;
+
+        let _ = desfecho_tx.send(resultado.as_ref().err().map(|e| e.to_string()));
+
+        if let Ok(response_text) = resultado {
             // GAR-204: Persist the turn to DB after streaming completes
             state_clone
                 .persist_turn(
@@ -708,8 +742,15 @@ async fn handle_streaming(
     // Phase 3 → data: [DONE] sentinel
     // Phase 4 → stream ends
     let stream = stream::unfold(
-        (0u8, Some(delta_rx), chunk_id, created, model),
-        |(phase, mut rx_opt, chunk_id, created, model)| async move {
+        (
+            0u8,
+            Some(delta_rx),
+            chunk_id,
+            created,
+            model,
+            Some(desfecho_rx),
+        ),
+        |(phase, mut rx_opt, chunk_id, created, model, desfecho_opt)| async move {
             match phase {
                 // Phase 0: emit initial chunk establishing role
                 0 => {
@@ -729,7 +770,7 @@ async fn handle_streaming(
                     };
                     let event =
                         Event::default().data(serde_json::to_string(&chunk).unwrap_or_default());
-                    Some((event, (1, rx_opt, chunk_id, created, model)))
+                    Some((event, (1, rx_opt, chunk_id, created, model, desfecho_opt)))
                 }
                 // Phase 1: stream content deltas; on channel close → go to phase 2
                 1 => {
@@ -752,34 +793,64 @@ async fn handle_streaming(
                             };
                             let event = Event::default()
                                 .data(serde_json::to_string(&chunk).unwrap_or_default());
-                            Some((event, (1, Some(rx), chunk_id, created, model)))
+                            Some((event, (1, Some(rx), chunk_id, created, model, desfecho_opt)))
                         }
                         None => {
-                            // Channel closed — emit finish chunk
-                            let chunk = ChatCompletionChunk {
-                                id: chunk_id.clone(),
-                                object: "chat.completion.chunk".to_string(),
-                                created,
-                                model: model.clone(),
-                                choices: vec![ChunkChoice {
-                                    index: 0,
-                                    delta: DeltaContent {
-                                        role: None,
-                                        content: None,
-                                    },
-                                    finish_reason: Some("stop".to_string()),
-                                }],
+                            // Canal fechado. #1541 (defeito 4): fechar sempre
+                            // com `finish_reason: "stop"` era a mentira — o
+                            // turno pode ter terminado em erro do provider.
+                            // Perguntamos a task antes de decidir. Sender caido
+                            // (panico) conta como erro desconhecido, nunca como
+                            // sucesso.
+                            let erro = match desfecho_opt {
+                                Some(rx) => match rx.await {
+                                    Ok(erro) => erro,
+                                    Err(_) => {
+                                        Some("streaming turn ended without a result".to_string())
+                                    }
+                                },
+                                None => None,
                             };
-                            let event = Event::default()
-                                .data(serde_json::to_string(&chunk).unwrap_or_default());
-                            Some((event, (3, None, chunk_id, created, model)))
+
+                            let event = match erro {
+                                Some(mensagem) => {
+                                    warn!("openai streaming turn failed: {mensagem}");
+                                    let erro = StreamErrorEvent {
+                                        error: StreamErrorBody {
+                                            message: mensagem,
+                                            kind: "upstream_error".to_string(),
+                                        },
+                                    };
+                                    Event::default()
+                                        .data(serde_json::to_string(&erro).unwrap_or_default())
+                                }
+                                None => {
+                                    let chunk = ChatCompletionChunk {
+                                        id: chunk_id.clone(),
+                                        object: "chat.completion.chunk".to_string(),
+                                        created,
+                                        model: model.clone(),
+                                        choices: vec![ChunkChoice {
+                                            index: 0,
+                                            delta: DeltaContent {
+                                                role: None,
+                                                content: None,
+                                            },
+                                            finish_reason: Some("stop".to_string()),
+                                        }],
+                                    };
+                                    Event::default()
+                                        .data(serde_json::to_string(&chunk).unwrap_or_default())
+                                }
+                            };
+                            Some((event, (3, None, chunk_id, created, model, None)))
                         }
                     }
                 }
                 // Phase 3: emit [DONE] sentinel
                 3 => {
                     let event = Event::default().data("[DONE]");
-                    Some((event, (4, rx_opt, chunk_id, created, model)))
+                    Some((event, (4, rx_opt, chunk_id, created, model, desfecho_opt)))
                 }
                 // Phase 4+: stream ended
                 _ => None,
