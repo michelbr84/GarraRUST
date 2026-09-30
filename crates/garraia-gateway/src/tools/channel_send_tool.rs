@@ -88,73 +88,85 @@ impl TelegramSendTool {
 
     /// Resolve the chat this send should go to, and whether it was allowed.
     ///
-    /// Split out from `execute` so the decision is testable without a live
-    /// channel: it is the security-relevant half.
+    /// Delegates to [`resolver_alvo_telegram`], shared com o
+    /// `telegram_send_voice`: a decisao de destino e uma so.
     async fn resolve_target(
         &self,
         context: &ToolContext,
         requested: Option<i64>,
         targets: &ProactiveTargets,
     ) -> std::result::Result<i64, String> {
-        match requested {
-            // Explicit recipient: operator-configured allowlist, deny by default.
-            Some(chat_id) => {
-                if targets.allows(chat_id) {
-                    Ok(chat_id)
-                } else if targets.is_empty() {
-                    Err(
-                        "envio para chat_id explícito não está habilitado. O operador precisa \
+        resolver_alvo_telegram(self.state(), context, requested, targets).await
+    }
+}
+
+/// Resolve the chat a proactive Telegram send goes to, and whether it was
+/// allowed. Shared by `telegram_send` e `telegram_send_voice`: a decisao de
+/// destino e uma so. Split out so the decision is testable without a live
+/// channel: it is the security-relevant half.
+pub(crate) async fn resolver_alvo_telegram(
+    state: Option<std::sync::Arc<AppState>>,
+    context: &ToolContext,
+    requested: Option<i64>,
+    targets: &ProactiveTargets,
+) -> std::result::Result<i64, String> {
+    match requested {
+        // Explicit recipient: operator-configured allowlist, deny by default.
+        Some(chat_id) => {
+            if targets.allows(chat_id) {
+                Ok(chat_id)
+            } else if targets.is_empty() {
+                Err(
+                    "envio para chat_id explícito não está habilitado. O operador precisa \
                          listar os chats permitidos em `proactive_chat_ids` na configuração do \
                          canal telegram. Omita `chat_id` para responder no chat desta conversa."
-                            .to_string(),
-                    )
-                } else {
-                    // Deliberately does not echo the requested id back: the
-                    // error reaches the model, and a rejected id is still a
-                    // real person's chat.
-                    Err(
-                        "esse chat_id não está em `proactive_chat_ids`. Omita `chat_id` para \
+                        .to_string(),
+                )
+            } else {
+                // Deliberately does not echo the requested id back: the
+                // error reaches the model, and a rejected id is still a
+                // real person's chat.
+                Err(
+                    "esse chat_id não está em `proactive_chat_ids`. Omita `chat_id` para \
                          responder no chat desta conversa."
-                            .to_string(),
-                    )
-                }
+                        .to_string(),
+                )
             }
-            // Implicit: the chat this session already belongs to.
-            None => {
-                let Some(state) = self.state() else {
-                    return Err("gateway encerrando".to_string());
-                };
-                let Some(mgr) = &state.chat_session_manager else {
-                    return Err(
-                        "sem session store: não há como descobrir o chat desta conversa"
-                            .to_string(),
+        }
+        // Implicit: the chat this session already belongs to.
+        None => {
+            let Some(state) = state else {
+                return Err("gateway encerrando".to_string());
+            };
+            let Some(mgr) = &state.chat_session_manager else {
+                return Err(
+                    "sem session store: não há como descobrir o chat desta conversa".to_string(),
+                );
+            };
+            match mgr
+                .external_key_for(&context.session_id, garraia_db::ChatSource::Telegram)
+                .await
+            {
+                // Security audit finding (LOW): the stored value is not
+                // echoed. It is a chat address, and in an unexpected state
+                // (a key written by another source) it could be someone
+                // else's identifier. The model gains nothing from seeing
+                // it — it cannot fix a malformed database row.
+                Ok(Some(id)) => id.trim().parse::<i64>().map_err(|_| {
+                    tracing::warn!(
+                        session = %context.session_id,
+                        "telegram_send: chat_session_keys tem external_id não numérico"
                     );
-                };
-                match mgr
-                    .external_key_for(&context.session_id, garraia_db::ChatSource::Telegram)
-                    .await
-                {
-                    // Security audit finding (LOW): the stored value is not
-                    // echoed. It is a chat address, and in an unexpected state
-                    // (a key written by another source) it could be someone
-                    // else's identifier. The model gains nothing from seeing
-                    // it — it cannot fix a malformed database row.
-                    Ok(Some(id)) => id.trim().parse::<i64>().map_err(|_| {
-                        tracing::warn!(
-                            session = %context.session_id,
-                            "telegram_send: chat_session_keys tem external_id não numérico"
-                        );
-                        "o chat mapeado para esta sessão está com formato inválido; \
+                    "o chat mapeado para esta sessão está com formato inválido; \
                          contate o operador"
-                            .to_string()
-                    }),
-                    Ok(None) => Err(
-                        "esta conversa não veio do Telegram, então não há chat para responder. \
+                        .to_string()
+                }),
+                Ok(None) => Err(
+                    "esta conversa não veio do Telegram, então não há chat para responder. \
                          Informe `chat_id` (precisa estar em `proactive_chat_ids`)."
-                            .to_string(),
-                    ),
-                    Err(e) => Err(format!("falha ao resolver o chat desta sessão: {e}")),
-                }
+                        .to_string(),
+                ),
+                Err(e) => Err(format!("falha ao resolver o chat desta sessão: {e}")),
             }
         }
     }
