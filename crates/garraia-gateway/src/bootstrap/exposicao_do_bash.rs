@@ -19,7 +19,15 @@
 //!    `GARRAIA_EXECUTION_PROFILE`) e o caso 1 nao se aplica. O `bash` roda no
 //!    host **do pod**, com a denylist do `safety_gate` e o tier arriscado
 //!    intactos — o perfil libera tools, nao desliga protecoes (ADR 0024).
-//! 3. [`ExposicaoDoBash::Desligado`]: todo o resto em `standard`. O `bash`
+//! 3. [`ExposicaoDoBash::HostComAllowlist`]: em `standard`, sem sandbox
+//!    utilizavel, o operador PODE declarar `agent.bash_allowlist` nao-vazia;
+//!    o `bash` e registrado no host em modo allowlist-only (so padrao
+//!    declarado executa). E uma escolha explicita do operador — a lista
+//!    vazia (default) nunca a liga — e o texto continua sendo fronteira fraca
+//!    por si so: a forca vem da sintaxe pobre (prefixo/coringa no fim ou
+//!    exato, composto recusado) somada a denylist e ao tier arriscado, que
+//!    seguem valendo. `run_tests` NUNCA entra por aqui.
+//! 4. [`ExposicaoDoBash::Desligado`]: todo o resto em `standard`. O `bash`
 //!    NAO e registrado. Nao registrar (em vez de registrar e negar) e a menor
 //!    superficie possivel, e como o system prompt e gerado das tools
 //!    registradas, o modelo nunca ouve que tem um shell.
@@ -121,6 +129,14 @@ pub enum ExposicaoDoBash {
     },
     /// Registrada no host do pod (`execution.profile = isolated-pod`).
     HostDoPod,
+    /// Registrada no host porque o operador declarou `agent.bash_allowlist`
+    /// nao-vazia e nenhuma sandbox esta disponivel (#1272, variante
+    /// `HostComAllowlist`). Diferente do `HostDoPod`, aqui a allowlist e
+    /// FRONTEIRA (`BashTool::with_allowlist_only`): so padrao declarado
+    /// roda — comando composto nunca casa, denylist e tier arriscado ficam
+    /// na frente. Vale so para o `bash`: `run_tests` executa codigo do
+    /// repositorio e continua sem casa no host de `standard`.
+    HostComAllowlist,
     /// Nao registrada.
     Desligado {
         /// O primeiro motivo que impediu o caso `Sandbox`.
@@ -131,7 +147,8 @@ pub enum ExposicaoDoBash {
 /// O passo acionavel quando o `bash` esta desligado. Sem valor de config.
 pub const COMO_LIGAR_O_BASH: &str = "para ter bash: agent.sandbox { mode: all, backend: docker } \
      (ou podman) com o binario instalado; ou execution.profile = isolated-pod se este processo \
-     roda mesmo num pod descartavel (#1272)";
+     roda mesmo num pod descartavel; ou agent.bash_allowlist com os padroes confiaveis para um \
+     bash minimo no host em que SO a allowlist executa (#1272)";
 
 /// O passo acionavel para uma tool de [`TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO`]
 /// desligada. Sem valor de config.
@@ -173,6 +190,10 @@ impl ExposicaoDoBash {
                 "{tool} ligado no host do pod (execution.profile = isolated-pod); denylist e \
                  tier arriscado continuam valendo"
             ),
+            Self::HostComAllowlist => format!(
+                "{tool} ligado no host em modo allowlist-only (agent.bash_allowlist declarada); \
+                 so padrao declarado executa; denylist e tier arriscado continuam valendo"
+            ),
             Self::Desligado { motivo } => format!(
                 "{tool} DESLIGADO (sem sandbox docker/podman utilizavel): {}",
                 motivo.descricao()
@@ -188,8 +209,9 @@ pub fn decidir_exposicao_do_bash(
     policy: &SandboxPolicy,
     alvo_unix: bool,
     disponivel: impl Fn(&SandboxBackend) -> bool,
+    allowlist_ativa: bool,
 ) -> ExposicaoDoBash {
-    decidir_exposicao_de(BASH, perfil, policy, alvo_unix, disponivel)
+    decidir_exposicao_de(BASH, perfil, policy, alvo_unix, disponivel, allowlist_ativa)
 }
 
 /// A mesma decisao para qualquer tool de
@@ -204,6 +226,7 @@ pub fn decidir_exposicao_de(
     policy: &SandboxPolicy,
     alvo_unix: bool,
     disponivel: impl Fn(&SandboxBackend) -> bool,
+    allowlist_bash: bool,
 ) -> ExposicaoDoBash {
     let sandbox = if SANDBOXAVEIS.contains(&tool) {
         motivo_sem_sandbox(tool, policy, alvo_unix, &disponivel)
@@ -212,8 +235,17 @@ pub fn decidir_exposicao_de(
     };
     match sandbox {
         Ok(backend) => ExposicaoDoBash::Sandbox { backend },
+        // O sandbox utilizavel sempre vence: se existe, a tool roda dentro
+        // dele, com ou sem allowlist declarada.
         Err(_) if perfil.is_isolated_pod() && !policy.requires_sandbox(tool) => {
             ExposicaoDoBash::HostDoPod
+        }
+        // `isolated-pod` vem antes: o comportamento do pod nao muda com a
+        // allowlist (nela ela segue sendo so dispensa de confirmacao).
+        // Allowlist so abre o host quando a policy NAO exige sandbox para o
+        // bash: sandbox pedido e quebrado continua desligando (fail-closed).
+        Err(_) if tool == BASH && allowlist_bash && !policy.requires_sandbox(tool) => {
+            ExposicaoDoBash::HostComAllowlist
         }
         Err(motivo) => ExposicaoDoBash::Desligado { motivo },
     }
@@ -252,8 +284,19 @@ fn motivo_sem_sandbox(
 
 /// [`decidir_exposicao_do_bash`] com a plataforma real e a sonda real do
 /// binario (`SandboxBackend::is_available`).
-pub fn exposicao_do_bash(perfil: ExecutionProfile, policy: &SandboxPolicy) -> ExposicaoDoBash {
-    exposicao_de(BASH, perfil, policy)
+pub fn exposicao_do_bash(
+    perfil: ExecutionProfile,
+    policy: &SandboxPolicy,
+    allowlist_ativa: bool,
+) -> ExposicaoDoBash {
+    decidir_exposicao_de(
+        BASH,
+        perfil,
+        policy,
+        cfg!(unix),
+        SandboxBackend::is_available,
+        allowlist_ativa,
+    )
 }
 
 /// [`decidir_exposicao_de`] com a plataforma e a sonda reais.
@@ -268,6 +311,7 @@ pub fn exposicao_de(
         policy,
         cfg!(unix),
         SandboxBackend::is_available,
+        false,
     )
 }
 
@@ -320,7 +364,7 @@ mod tests {
 
     #[test]
     fn standard_sem_sandbox_desliga_o_bash() {
-        let e = decidir_exposicao_do_bash(STD, &SandboxPolicy::default(), true, sim);
+        let e = decidir_exposicao_do_bash(STD, &SandboxPolicy::default(), true, sim, false);
         assert_eq!(e, desligado(MotivoDoBashDesligado::SandboxDesligado));
         assert!(!e.registra_bash());
     }
@@ -331,7 +375,7 @@ mod tests {
         p.network_disabled = false;
         p.mount_workdir = false;
         assert_eq!(
-            decidir_exposicao_do_bash(STD, &p, true, sim),
+            decidir_exposicao_do_bash(STD, &p, true, sim, false),
             desligado(MotivoDoBashDesligado::BackendSsh)
         );
     }
@@ -341,7 +385,7 @@ mod tests {
         let mut p = policy(SandboxMode::All, Some(SandboxBackend::Docker));
         p.elevated = vec!["bash".into()];
         assert_eq!(
-            decidir_exposicao_do_bash(STD, &p, true, sim),
+            decidir_exposicao_do_bash(STD, &p, true, sim, false),
             desligado(MotivoDoBashDesligado::BashElevado)
         );
     }
@@ -351,12 +395,12 @@ mod tests {
         let mut p = policy(SandboxMode::Allowlist, Some(SandboxBackend::Docker));
         p.sandboxed_tools = vec!["web_fetch".into()];
         assert_eq!(
-            decidir_exposicao_do_bash(STD, &p, true, sim),
+            decidir_exposicao_do_bash(STD, &p, true, sim, false),
             desligado(MotivoDoBashDesligado::BashForaDaAllowlist)
         );
         p.sandboxed_tools = vec!["bash".into()];
         assert_eq!(
-            decidir_exposicao_do_bash(STD, &p, true, sim),
+            decidir_exposicao_do_bash(STD, &p, true, sim, false),
             ExposicaoDoBash::Sandbox {
                 backend: SandboxBackend::Docker
             }
@@ -367,7 +411,7 @@ mod tests {
     fn standard_sem_backend_desliga() {
         let p = policy(SandboxMode::All, None);
         assert_eq!(
-            decidir_exposicao_do_bash(STD, &p, true, sim),
+            decidir_exposicao_do_bash(STD, &p, true, sim, false),
             desligado(MotivoDoBashDesligado::SemBackend)
         );
     }
@@ -376,7 +420,7 @@ mod tests {
     fn standard_com_binario_ausente_desliga() {
         let p = policy(SandboxMode::All, Some(SandboxBackend::Docker));
         assert_eq!(
-            decidir_exposicao_do_bash(STD, &p, true, nao),
+            decidir_exposicao_do_bash(STD, &p, true, nao, false),
             desligado(MotivoDoBashDesligado::BackendIndisponivel)
         );
     }
@@ -385,7 +429,7 @@ mod tests {
     fn standard_fora_de_unix_desliga() {
         let p = policy(SandboxMode::All, Some(SandboxBackend::Docker));
         assert_eq!(
-            decidir_exposicao_do_bash(STD, &p, false, sim),
+            decidir_exposicao_do_bash(STD, &p, false, sim, false),
             desligado(MotivoDoBashDesligado::PlataformaNaoUnix)
         );
     }
@@ -394,7 +438,7 @@ mod tests {
     fn standard_com_docker_ou_podman_disponivel_sandboxa() {
         for b in [SandboxBackend::Docker, SandboxBackend::Podman] {
             let p = policy(SandboxMode::All, Some(b.clone()));
-            let e = decidir_exposicao_do_bash(STD, &p, true, sim);
+            let e = decidir_exposicao_do_bash(STD, &p, true, sim, false);
             assert_eq!(e, ExposicaoDoBash::Sandbox { backend: b });
             assert!(e.registra_bash());
         }
@@ -402,14 +446,14 @@ mod tests {
 
     #[test]
     fn isolated_pod_sem_sandbox_roda_no_host_do_pod() {
-        let e = decidir_exposicao_do_bash(POD, &SandboxPolicy::default(), true, sim);
+        let e = decidir_exposicao_do_bash(POD, &SandboxPolicy::default(), true, sim, false);
         assert_eq!(e, ExposicaoDoBash::HostDoPod);
         assert!(e.registra_bash());
         // bash fora do sandbox por escolha do operador: host do pod.
         let mut elevado = policy(SandboxMode::All, Some(SandboxBackend::Docker));
         elevado.elevated = vec!["bash".into()];
         assert_eq!(
-            decidir_exposicao_do_bash(POD, &elevado, true, nao),
+            decidir_exposicao_do_bash(POD, &elevado, true, nao, false),
             ExposicaoDoBash::HostDoPod
         );
     }
@@ -422,11 +466,11 @@ mod tests {
     fn isolated_pod_com_sandbox_exigido_e_inutilizavel_nao_diz_host_do_pod() {
         let ssh = policy(SandboxMode::All, Some(SandboxBackend::Ssh("b".into())));
         assert_eq!(
-            decidir_exposicao_do_bash(POD, &ssh, true, sim),
+            decidir_exposicao_do_bash(POD, &ssh, true, sim, false),
             desligado(MotivoDoBashDesligado::BackendSsh)
         );
         assert_eq!(
-            decidir_exposicao_do_bash(POD, &policy(SandboxMode::All, None), true, sim),
+            decidir_exposicao_do_bash(POD, &policy(SandboxMode::All, None), true, sim, false),
             desligado(MotivoDoBashDesligado::SemBackend)
         );
         let e = decidir_exposicao_do_bash(
@@ -434,6 +478,7 @@ mod tests {
             &policy(SandboxMode::All, Some(SandboxBackend::Docker)),
             true,
             nao,
+            false,
         );
         assert_eq!(e, desligado(MotivoDoBashDesligado::BackendIndisponivel));
         assert!(!e.descricao().contains("host do pod"), "{}", e.descricao());
@@ -448,31 +493,32 @@ mod tests {
         assert!(TOOLS_QUE_EXECUTAM_CODIGO_DO_REPO.contains(&RUN_TESTS));
         let docker = policy(SandboxMode::All, Some(SandboxBackend::Docker));
         assert!(
-            !decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim).registra()
+            !decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim, false)
+                .registra()
         );
         assert_eq!(
-            decidir_exposicao_de(RUN_TESTS, STD, &docker, true, sim),
+            decidir_exposicao_de(RUN_TESTS, STD, &docker, true, sim, false),
             ExposicaoDoBash::Sandbox {
                 backend: SandboxBackend::Docker
             }
         );
         // Binario ausente, ou `run_tests` elevado com o bash sandboxado: fora.
-        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &docker, true, nao).registra());
+        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &docker, true, nao, false).registra());
         let mut elevado = docker.clone();
         elevado.elevated = vec![RUN_TESTS.into()];
-        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &elevado, true, sim).registra());
-        assert!(decidir_exposicao_do_bash(STD, &elevado, true, sim).registra());
+        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &elevado, true, sim, false).registra());
+        assert!(decidir_exposicao_do_bash(STD, &elevado, true, sim, false).registra());
         // Allowlist so com bash: bash no container, run_tests fora.
         let mut so_bash = policy(SandboxMode::Allowlist, Some(SandboxBackend::Docker));
         so_bash.sandboxed_tools = vec!["bash".into()];
-        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &so_bash, true, sim).registra());
+        assert!(!decidir_exposicao_de(RUN_TESTS, STD, &so_bash, true, sim, false).registra());
         assert_eq!(
-            decidir_exposicao_de(RUN_TESTS, POD, &SandboxPolicy::default(), true, sim),
+            decidir_exposicao_de(RUN_TESTS, POD, &SandboxPolicy::default(), true, sim, false),
             ExposicaoDoBash::HostDoPod
         );
         // Exigido e impossivel de honrar: desligado tambem no pod.
-        assert!(!decidir_exposicao_de(RUN_TESTS, POD, &docker, true, nao).registra());
-        let d = decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim)
+        assert!(!decidir_exposicao_de(RUN_TESTS, POD, &docker, true, nao, false).registra());
+        let d = decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim, false)
             .descricao_de(RUN_TESTS);
         assert!(d.starts_with("run_tests DESLIGADO"), "{d}");
         assert!(como_ligar(RUN_TESTS).contains("isolated-pod"));
@@ -482,7 +528,7 @@ mod tests {
     fn isolated_pod_com_docker_disponivel_continua_sandboxado() {
         let p = policy(SandboxMode::All, Some(SandboxBackend::Docker));
         assert_eq!(
-            decidir_exposicao_do_bash(POD, &p, true, sim),
+            decidir_exposicao_do_bash(POD, &p, true, sim, false),
             ExposicaoDoBash::Sandbox {
                 backend: SandboxBackend::Docker
             }
@@ -496,7 +542,7 @@ mod tests {
             Some(SandboxBackend::Ssh("host-secreto".into())),
         );
         p.image = "imagem-secreta".into();
-        let e = decidir_exposicao_do_bash(STD, &p, true, sim);
+        let e = decidir_exposicao_do_bash(STD, &p, true, sim, false);
         let texto = format!("{} {COMO_LIGAR_O_BASH}", e.descricao());
         assert!(!texto.contains("host-secreto") && !texto.contains("imagem-secreta"));
         assert!(COMO_LIGAR_O_BASH.contains("agent.sandbox"));
@@ -521,5 +567,81 @@ mod tests {
                 "exposicao_do_bash.rs nao pode olhar `{proibido}`"
             );
         }
+    }
+
+    /// #1272 variante `HostComAllowlist`: com `agent.bash_allowlist`
+    /// declarada e sandbox off, o `bash` entra no host em modo allowlist-only.
+    #[test]
+    fn standard_com_allowlist_declarada_registra_bash_no_host() {
+        let e = decidir_exposicao_do_bash(STD, &SandboxPolicy::default(), true, sim, true);
+        assert_eq!(e, ExposicaoDoBash::HostComAllowlist);
+        assert!(e.registra_bash());
+        let d = e.descricao();
+        assert!(d.contains("allowlist-only"), "{d}");
+        assert!(d.contains("host"), "{d}");
+    }
+
+    /// O sandbox utilizavel vence da allowlist: com os dois ligados, a tool
+    /// roda dentro do container, nunca no host.
+    #[test]
+    fn sandbox_disponivel_vence_da_allowlist() {
+        let p = policy(SandboxMode::All, Some(SandboxBackend::Docker));
+        assert_eq!(
+            decidir_exposicao_do_bash(STD, &p, true, sim, true),
+            ExposicaoDoBash::Sandbox {
+                backend: SandboxBackend::Docker
+            }
+        );
+    }
+
+    /// Sandbox EXIGIDO e inutilizavel nao vira host so porque ha allowlist:
+    /// o operador pediu container, entao segue desligado (fail-closed).
+    #[test]
+    fn sandbox_exigido_e_quebrado_nao_cai_para_allowlist() {
+        let p = policy(SandboxMode::All, Some(SandboxBackend::Docker));
+        assert_eq!(
+            decidir_exposicao_do_bash(STD, &p, true, nao, true),
+            desligado(MotivoDoBashDesligado::BackendIndisponivel)
+        );
+    }
+
+    /// Allowlist vazia (default) nunca liga a variante: comportamento atual
+    /// preservado — `Desligado`.
+    #[test]
+    fn allowlist_vazia_nao_registra_nada() {
+        let e = decidir_exposicao_do_bash(STD, &SandboxPolicy::default(), true, sim, false);
+        assert_eq!(e, desligado(MotivoDoBashDesligado::SandboxDesligado));
+        assert!(!e.registra_bash());
+    }
+
+    /// `run_tests` NUNCA entra pela allowlist: ela executa codigo do
+    /// repositorio (`build.rs`, `conftest.py`) — sem sandbox utilizavel e sem
+    /// `isolated-pod`, fica desligada mesmo com allowlist declarada.
+    #[test]
+    fn run_tests_nao_pega_host_com_allowlist() {
+        assert_eq!(
+            decidir_exposicao_de(RUN_TESTS, STD, &SandboxPolicy::default(), true, sim, true),
+            desligado(MotivoDoBashDesligado::SandboxDesligado)
+        );
+    }
+
+    /// `isolated-pod` sem sandbox exigido segue `HostDoPod` — a allowlist nao
+    /// muda esse desfecho.
+    #[test]
+    fn isolated_pod_mantem_host_do_pod_com_allowlist() {
+        assert_eq!(
+            decidir_exposicao_do_bash(POD, &SandboxPolicy::default(), true, sim, true),
+            ExposicaoDoBash::HostDoPod
+        );
+    }
+
+    /// `COMO_LIGAR_O_BASH` menciona o novo caminho (a allowlist).
+    #[test]
+    fn como_ligar_menciona_allowlist() {
+        assert!(COMO_LIGAR_O_BASH.contains("agent.bash_allowlist"));
+        assert!(
+            COMO_LIGAR_O_BASH.contains("SO a allowlist executa")
+                || COMO_LIGAR_O_BASH.contains("so a allowlist executa")
+        );
     }
 }

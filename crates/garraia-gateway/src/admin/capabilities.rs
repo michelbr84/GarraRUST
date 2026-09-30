@@ -86,6 +86,7 @@ pub async fn admin_capabilities(
     let exposicao = crate::bootstrap::exposicao_do_bash(
         politica.perfil,
         &crate::bootstrap::sandbox_policy_from(&app.config.agent.sandbox),
+        !app.config.agent.bash_allowlist.is_empty(),
     );
     let bash_desligado = match exposicao {
         crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((

@@ -1022,9 +1022,23 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // #1272: o gateway atende canais remotos (identidade nao verificada,
     // threat-model §5.9) e um `/mode code` basta para pedir `bash`. Em
     // `standard` ele so existe dentro de um sandbox docker/podman valido; em
-    // `isolated-pod` explicito roda no host do pod. Senao, nao e registrado.
-    let exposicao = exposicao_do_bash(config.execution.perfil(), &politica_do_bash);
+    // `isolated-pod` explicito roda no host do pod; com `agent.bash_allowlist`
+    // declarada (e sem sandbox utilizavel) roda no host em modo
+    // allowlist-only — so padrao declarado executa. Senao, nao e registrado.
+    let allowlist_ativa = !config.agent.bash_allowlist.is_empty();
+    let exposicao = exposicao_do_bash(
+        config.execution.perfil(),
+        &politica_do_bash,
+        allowlist_ativa,
+    );
+    // A policy segue aplicada sempre (#1225). `HostComAllowlist` so e
+    // escolhida quando a policy NAO exige sandbox para o `bash`, entao o wrap
+    // devolve `None` e o comando roda no host — mas so se casar com a
+    // allowlist (`with_allowlist_only`).
     bash_tool.set_sandbox_policy(politica_do_bash);
+    if let ExposicaoDoBash::HostComAllowlist = &exposicao {
+        bash_tool = bash_tool.with_allowlist_only();
+    }
     // #1225 S2: uma vez por processo — `build_agent_runtime` roda uma vez na
     // subida do gateway (`server.rs`). Fora de `sandbox_policy_from` porque no
     // MCP a policy e reconstruida por chamada.
