@@ -379,6 +379,7 @@ impl Tool for GarraStatusTool {
             let exposicao = crate::bootstrap::exposicao_do_bash(
                 politica.perfil,
                 &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+                !state.config.agent.bash_allowlist.is_empty(),
             );
             let bash_desligado = match exposicao {
                 crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((

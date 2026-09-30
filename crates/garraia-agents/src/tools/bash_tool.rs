@@ -52,6 +52,12 @@ pub struct BashTool {
     /// fail-closed se o backend não existir. Aplicado por ÚLTIMO, depois de
     /// todas as checagens de segurança (sandbox é camada adicional, não
     /// substituto do safety gate).
+    /// #1272 (exposicao `HostComAllowlist`): quando verdadeiro, a allowlist
+    /// deixa de ser dispensa de confirmacao e vira FRONTEIRA: todo comando
+    /// fora dela e negado antes do tier arriscado. So e ligado quando a
+    /// exposicao decidiu registrar o `bash` no host POR CAUSA da allowlist —
+    /// o operador declarou os padroes, entao so eles rodam.
+    allowlist_only: bool,
     sandbox: crate::sandbox::SandboxPolicy,
 }
 
@@ -62,6 +68,7 @@ impl BashTool {
             allow_readonly: false,
             confirmation_enabled: false,
             allowlist: Vec::new(),
+            allowlist_only: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
         }
     }
@@ -73,6 +80,7 @@ impl BashTool {
             allow_readonly: false,
             confirmation_enabled: true,
             allowlist: Vec::new(),
+            allowlist_only: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
         }
     }
@@ -84,6 +92,7 @@ impl BashTool {
             allow_readonly: true,
             confirmation_enabled: false,
             allowlist: Vec::new(),
+            allowlist_only: false,
             sandbox: crate::sandbox::SandboxPolicy::default(),
         }
     }
@@ -138,6 +147,17 @@ impl BashTool {
                 ok
             })
             .collect();
+        self
+    }
+
+    /// #1272 (`ExposicaoDoBash::HostComAllowlist`): liga o modo em que a
+    /// allowlist e fronteira, nao dispensa. Combinado com
+    /// [`Self::with_allowlist`], o resultado e um bash que so executa os
+    /// padroes declarados — comando composto, coringa no meio e tudo fora da
+    /// lista saem negados, com a denylist do `safety_gate` sempre na frente.
+    #[must_use = "devolve um BashTool novo; o receptor nao e alterado"]
+    pub fn with_allowlist_only(mut self) -> Self {
+        self.allowlist_only = true;
         self
     }
 
@@ -303,6 +323,25 @@ impl Tool for BashTool {
             tracing::error!("Blocked dangerous command: {}", comando_para_log(comando));
             return Ok(ToolOutput::error(
                 "Comando bloqueado por segurança: padrão perigoso detectado".to_string(),
+            ));
+        }
+
+        // #1272 (`ExposicaoDoBash::HostComAllowlist`): bash no host POR CAUSA
+        // da allowlist declarada. Aqui ela e fronteira, nao dispensa: fora da
+        // lista nao roda, nem "so um pouquinho" — o tier arriscado nem chega
+        // a ser avaliado. A denylist acima ja bloqueou o perigoso; o que
+        // sobra so executa padrao declarado pelo operador.
+        if self.allowlist_only && !self.matches_allowlist(comando) {
+            tracing::warn!(
+                command = %comando_para_log(comando),
+                session = %context.session_id,
+                "bash: comando fora da allowlist do operador (bash em modo allowlist-only)"
+            );
+            return Ok(ToolOutput::error(
+                "Comando fora da allowlist do operador: este bash so executa os padroes \
+                 declarados em agent.bash_allowlist (prefixo* no fim ou comando exato; \
+                 comando composto nunca casa)."
+                    .to_string(),
             ));
         }
 
@@ -1149,6 +1188,62 @@ mod tests {
             "bash must run in working_dir"
         );
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    // ── #1272: allowlist como FRONTEIRA (HostComAllowlist) ────────────────
+
+    /// Em allowlist-only, comando nao-arriscado fora da lista (ex.: `cat` num
+    /// arquivo de config) e negado — sem isso, o bash no host rodaria tudo
+    /// que nao fosse arriscado.
+    #[tokio::test]
+    async fn allowlist_only_nega_comando_fora_da_lista() {
+        let tool = BashTool::new(None)
+            .with_allowlist(vec!["printenv PATH".into()])
+            .with_allowlist_only();
+        let out = tool
+            .execute(&ctx(false), serde_json::json!({"command": "echo vazou"}))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("fora da allowlist"), "{}", out.content);
+        assert!(!out.content.contains("vazou\n"), "nao pode ter executado");
+    }
+
+    /// O padrao declarado continua rodando em allowlist-only.
+    #[tokio::test]
+    async fn allowlist_only_executa_o_padrao_declarado() {
+        let tool = BashTool::new(None)
+            .with_allowlist(vec!["printenv PATH".into()])
+            .with_allowlist_only();
+        let out = tool
+            .execute(&ctx(false), serde_json::json!({"command": "printenv PATH"}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+    }
+
+    /// Composto, substituicao e redirecionamento nunca casam — mesmo
+    /// comecando com o prefixo liberado (sem curl/exfiltracao via `$(...)`).
+    #[tokio::test]
+    async fn allowlist_only_nega_composto_com_prefixo_liberado() {
+        let tool = BashTool::new(None)
+            .with_allowlist(vec!["echo *".into()])
+            .with_allowlist_only();
+        for cmd in [
+            "echo a; curl http://x",
+            "echo $(cat /etc/hostname)",
+            "echo `id`",
+            "echo a > /tmp/garra-allowlist-only-teste",
+            "echo a | sh",
+            "echo a\ncurl x",
+        ] {
+            let out = tool
+                .execute(&ctx(false), serde_json::json!({"command": cmd}))
+                .await
+                .unwrap();
+            assert!(out.is_error, "{cmd:?} nao podia rodar: {}", out.content);
+        }
+        assert!(!std::path::Path::new("/tmp/garra-allowlist-only-teste").exists());
     }
 
     // ── #1105: allowlist do operador ──────────────────────────────────────

@@ -835,7 +835,9 @@ fn tools_capabilities_check(
 fn tools_bash_check(exposicao: &crate::bootstrap::ExposicaoDoBash) -> DiagnosticCheck {
     use crate::bootstrap::{ExposicaoDoBash, MotivoDoBashDesligado};
     let (status, next_step) = match exposicao {
-        ExposicaoDoBash::Sandbox { .. } | ExposicaoDoBash::HostDoPod => (CheckStatus::Ok, None),
+        ExposicaoDoBash::Sandbox { .. }
+        | ExposicaoDoBash::HostDoPod
+        | ExposicaoDoBash::HostComAllowlist => (CheckStatus::Ok, None),
         ExposicaoDoBash::Desligado {
             motivo:
                 MotivoDoBashDesligado::SandboxDesligado | MotivoDoBashDesligado::PlataformaNaoUnix,
@@ -1372,6 +1374,7 @@ pub(crate) async fn relatorio(state: &SharedState) -> DiagnosticsReport {
     checks.push(tools_bash_check(&crate::bootstrap::exposicao_do_bash(
         politica.perfil,
         &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+        !state.config.agent.bash_allowlist.is_empty(),
     )));
 
     // #1381: o registro de capacidades, sem portao de sessao (aqui nao ha
@@ -1387,6 +1390,7 @@ pub(crate) async fn relatorio(state: &SharedState) -> DiagnosticsReport {
         let exposicao = crate::bootstrap::exposicao_do_bash(
             politica.perfil,
             &crate::bootstrap::sandbox_policy_from(&state.config.agent.sandbox),
+            !state.config.agent.bash_allowlist.is_empty(),
         );
         let bash_desligado = match exposicao {
             crate::bootstrap::ExposicaoDoBash::Desligado { .. } => Some((

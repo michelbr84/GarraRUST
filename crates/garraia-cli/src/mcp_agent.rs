@@ -373,7 +373,8 @@ fn build_tools(
     jail: &FileJail,
 ) -> (Vec<Box<dyn garraia_agents::Tool>>, ExposicaoDoBash) {
     let policy = sandbox_policy_from(&config.agent.sandbox);
-    let exposicao = exposicao_do_bash(config.execution.perfil(), &policy);
+    let allowlist_ativa = !config.agent.bash_allowlist.is_empty();
+    let exposicao = exposicao_do_bash(config.execution.perfil(), &policy, allowlist_ativa);
     let tools = build_tools_com(config, jail, policy, &exposicao);
     (tools, exposicao)
 }
@@ -398,6 +399,11 @@ fn build_tools_com(
         // estar.
         let mut bash = BashTool::new(None).with_allowlist(config.agent.bash_allowlist.clone());
         bash.set_sandbox_policy(policy.clone());
+        // #1272: em `HostComAllowlist` a allowlist e FRONTEIRA — so padrao
+        // declarado executa no host (a policy nao exige sandbox nesse caso).
+        if let ExposicaoDoBash::HostComAllowlist = exposicao {
+            bash = bash.with_allowlist_only();
+        }
         tools.push(Box::new(bash));
     }
     tools.push(Box::new(FileReadTool::new(jail.clone())));
@@ -459,6 +465,11 @@ pub(crate) fn agent_system_prompt(
         ExposicaoDoBash::HostDoPod => "\n## Shell\n\
              O 'bash' roda no host deste pod isolado (execution.profile = \
              isolated-pod); a denylist de comandos perigosos continua valendo.\n"
+            .to_string(),
+        ExposicaoDoBash::HostComAllowlist => "\n## Shell\n\
+             O 'bash' roda no host, mas em modo allowlist-only: SO os comandos \
+             que casam com os padroes declarados pelo operador executam — \
+             comando fora da lista e negado, comando composto nunca casa.\n"
             .to_string(),
     });
     if let Some(dir) = working_dir {
@@ -883,6 +894,7 @@ mod tests {
             &policy,
             true,
             |_| true,
+            false,
         );
         let tools = build_tools_com(&config, &file_jail(&config), policy, &exposicao);
         assert!(tools.iter().any(|t| t.name() == "bash"));
