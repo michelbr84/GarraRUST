@@ -643,6 +643,7 @@ pub async fn run_mcp_server(config: AppConfig) -> Result<()> {
             &garraia_gateway::bootstrap::exposicao_do_bash(
                 config.execution.perfil(),
                 &garraia_gateway::bootstrap::sandbox_policy_from(&config.agent.sandbox),
+                !config.agent.bash_allowlist.is_empty(),
             ),
         );
         // #1225 S2: uma vez por processo, AQUI e nao em `mcp_agent::build_tools`
