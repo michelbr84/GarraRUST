@@ -106,6 +106,75 @@ O check-run agregado "CodeQL" às vezes fecha como `neutral` enquanto os três
 `Analyze (rust|actions|javascript-typescript)` fecham `success`. `neutral` não
 é falha e não bloqueia. Olhe os três individuais.
 
+### 4 testes de `sandbox` quando o `$HOME` da sessão mora em `/tmp`
+
+```
+wrap: Agent("sandbox fail-closed: agent.sandbox.mount_workdir = true e o
+diretorio de trabalho e um ancestral do $HOME do processo; ...")
+```
+
+Falham juntos, sempre estes quatro de `garraia-agents --lib`:
+
+- `sandbox::shell_injection_regression::wrap_command_entrega_o_comando_como_uma_palavra_literal`
+- `sandbox::tests::docker_leva_cap_drop_pids_limit_e_user_do_processo`
+- `sandbox::tests::linha_do_bash_leva_nome_do_container`
+- `sandbox::tests::podman_leva_userns_keep_id_e_nao_user`
+
+**A guarda está certa e o código não tem defeito** — é o fixture que depende do
+`$HOME` da máquina. Os quatro passam `"/tmp"` como `working_dir`, e
+`motivo_de_mount_perigoso` recusa qualquer diretório que seja **ancestral** do
+`$HOME` do processo (`sandbox.rs:189`). Em runner do GitHub e em dev normal o
+`$HOME` é `/home/<user>`, então `/tmp` não é ancestral de nada e os testes
+passam. Em sessão cujo `$HOME` é `/tmp/<algo>` — o caso de container de agente —
+`/tmp` **é** ancestral do `$HOME`, e o fail-closed do #1272 dispara como
+projetado.
+
+Confirme em dois comandos antes de investigar como defeito:
+
+```bash
+echo "$HOME"                                    # está sob /tmp?
+cargo test -p garraia-agents --lib sandbox::    # só estes 4 vermelhos?
+```
+
+Se o `$HOME` está sob `/tmp`, é ambiente. **Não** afrouxe a guarda nem marque os
+testes como `ignore` para ficar verde: isso apagaria a regressão de segurança do
+#1272. Deixar os quatro herméticos (injetar o `home` por `linha`, como
+`fonte_do_mount_com` já permite) é melhoria legítima de teste, mas é mudança em
+código de sandbox — território R4, com `security-auditor` no ciclo.
+
+### `STDERR:` na saída de `git` quando o container embrulha o git
+
+```
+a chamada benigna revelou o git quebrado no argv do diff: ...
+STDERR: Paperclip: GitHub capability_missing; continuing without managed credentials.
+```
+
+Atinge `runtime::tests::repo_search_git_e_recall::git_diff_registrada_nao_reabre_ext_diff_pelo_file_path`.
+
+O teste é a regressão do #1269 e afirma que uma chamada benigna de `diff` **não**
+produz bloco `STDERR:` — é assim que ele evita ficar verde por acidente com o
+git quebrado. O argv continua correto; o que entra na saída da tool é ruído do
+host.
+
+A pegadinha: **reproduzir no seu shell não funciona.** Quando o `git` do `PATH`
+é um wrapper de credencial (sessão de agente resolve `git` para um launcher
+antes de `/usr/bin/git`), ele só escreve o aviso quando **não** consegue falar
+com o broker dele. Seu shell interativo tem o token, então `git diff` fica
+silencioso; o processo de teste gera o filho com o ambiente higienizado, o token
+não vai junto, e aí o aviso aparece. Mesmo comando, dois resultados.
+
+Confirme assim — os dois comandos, não só o primeiro:
+
+```bash
+command -v git                  # /usr/bin/git, ou um launcher antes dele?
+env -u PAPERCLIP_GITHUB_BROKER_TOKEN git diff 2>&1 >/dev/null
+```
+
+Se o segundo imprime `Paperclip: GitHub capability_missing` e o primeiro não
+aponta para `/usr/bin/git`, é ambiente. **Não** relaxe a asserção para "não
+contém STDERR exceto ...": ela perde exatamente o poder de detecção que
+justifica o teste.
+
 ---
 
 ## 3. Bump do wasmtime: o piso de MSRV vem junto
