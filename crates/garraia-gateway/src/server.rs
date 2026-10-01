@@ -824,6 +824,13 @@ impl GatewayServer {
             state
                 .agents
                 .register_tool(Box::new(crate::tools::TelegramSendTool::new(&state)));
+            // Variante de voz (#telegram_send_voice): mesmo destino, mesmo
+            // teto, gating proprio pela tabela de capacidades. A disponibilidade
+            // da tool exige TTS configurado, entao registrar aqui e barato —
+            // quem nao tem voz nunca a ve na lista.
+            state
+                .agents
+                .register_tool(Box::new(crate::tools::TelegramSendVoiceTool::new(&state)));
         }
 
         // Spawn background tasks

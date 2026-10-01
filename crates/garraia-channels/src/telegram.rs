@@ -428,13 +428,42 @@ impl Channel for TelegramChannel {
                 garraia_common::Error::Channel("missing telegram_chat_id in metadata".into())
             })?;
 
-        let text = match &message.content {
-            MessageContent::Text(t) => t.clone(),
+        // `Audio` chega do tool `telegram_send_voice`: o `url` e um CAMINHO
+        // LOCAL para o WAV sintetizado e vai como voice message — o mesmo caminho que
+        // o handler de voice message do bootstrap usa no sentido contrario.
+        // Qualquer outro conteudo continua recusado, como antes.
+        let audio: Option<&String> = match &message.content {
+            MessageContent::Audio { url, .. } => Some(url),
+            MessageContent::Text(_) => None,
             _ => {
                 return Err(garraia_common::Error::Channel(
-                    "only text messages are supported for telegram send".into(),
+                    "only text and audio (voice) messages are supported for telegram send".into(),
                 ));
             }
+        };
+
+        if let Some(url) = audio {
+            // So caminho local: o tool grava o WAV sintetizado e passa o
+            // caminho. URL remota nao e aceita aqui (nada de o modelo fazer o
+            // bot buscar um endereco arbitrario).
+            let path = std::path::Path::new(url);
+            if !path.is_file() {
+                return Err(garraia_common::Error::Channel(
+                    "arquivo de audio nao encontrado".into(),
+                ));
+            }
+            let input_file = teloxide::types::InputFile::file(path);
+            bot.send_voice(ChatId(chat_id), input_file)
+                .await
+                .map_err(|e| {
+                    garraia_common::Error::Channel(format!("telegram send_voice failed: {e}"))
+                })?;
+            return Ok(());
+        }
+
+        let text = match &message.content {
+            MessageContent::Text(t) => t.clone(),
+            _ => unreachable!("audio tratado acima"),
         };
 
         let formatted = to_telegram_markdown(&text);

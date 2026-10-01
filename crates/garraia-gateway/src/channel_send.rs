@@ -118,9 +118,18 @@ impl ProactiveTargets {
 /// The clock is a parameter, not a call to `Instant::now()` inside: the
 /// interesting cases are the window boundary and the reset, and neither is
 /// testable against a real clock.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SendBudget {
     inner: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+    /// Teto por janela. `Default` usa [`MAX_SENDS_PER_WINDOW`]; a voz usa um
+    /// teto menor ([`SendBudget::with_max`]) — notifica com som.
+    max: u32,
+}
+
+impl Default for SendBudget {
+    fn default() -> Self {
+        Self::with_max(MAX_SENDS_PER_WINDOW)
+    }
 }
 
 /// Sends allowed per session per window.
@@ -129,6 +138,14 @@ pub const MAX_SENDS_PER_WINDOW: u32 = 5;
 pub const SEND_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl SendBudget {
+    /// Budget com teto proprio por janela (minimo 1).
+    pub fn with_max(max: u32) -> Self {
+        Self {
+            inner: std::sync::Mutex::default(),
+            max: max.max(1),
+        }
+    }
+
     /// Charge one send against `session`. `Err(used)` when the ceiling is hit.
     ///
     /// Fails **open** if the mutex is poisoned — a panic elsewhere must not
@@ -149,11 +166,11 @@ impl SendBudget {
             *entry = (now, 0);
         }
 
-        if entry.1 >= MAX_SENDS_PER_WINDOW {
+        if entry.1 >= self.max {
             return Err(entry.1);
         }
         entry.1 += 1;
-        Ok(MAX_SENDS_PER_WINDOW - entry.1)
+        Ok(self.max - entry.1)
     }
 }
 
