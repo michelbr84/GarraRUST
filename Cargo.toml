@@ -118,6 +118,21 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # above: the cranelift 0.136.1 tree declares rustc 1.96.0. Fifth bump in a
 # row with the same shape — the real MSRV floor of this workspace is dictated
 # by the wasmtime tree, not by the remaining deps.
+# 49.0.1→49.0.2 (PR #1559, 2026-10-04): security patch — seven advisories of
+# the 49.0.1 line, which turned the scheduled `cargo audit` red on 2026-10-03.
+# wasmtime: RUSTSEC-2026-0325/0326 (GC heap corruption via mis-typed tag
+# imports, and missing rooting for GC values live across `try_call`) and
+# RUSTSEC-2026-0327 (unvalidated component async-lifted callback result count
+# → native stack buffer overflow). wasmtime-wasi: RUSTSEC-2026-0321 (preview-0
+# `poll_oneoff` circumvents fuel), 0322 (host memory exhaustion with no guest
+# stdio), 0323 (`fd_readdir` leaks uninitialized struct padding into guest
+# memory), 0324 (host panic on pre-epoch filesystem timestamps on wasip3).
+# Lockfile-only: the `"49"` requirement above already admitted 49.0.2, so no
+# manifest edit and no runtime.rs migration. FIRST bump in six that does NOT
+# raise the floor — the 49.0.2 tree (cranelift 0.136.2, pulley/wiggle 49.0.2)
+# still declares rustc 1.96.0, so `rust-version` and the `MSRV check (1.96)`
+# job stay put. Do not assume the "bump raises MSRV" pattern always holds;
+# read the published manifests.
 wasmtime = "49"
 wasmtime-wasi = { version = "49", features = ["p1"] }
 
