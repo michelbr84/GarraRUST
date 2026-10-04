@@ -1154,6 +1154,11 @@ jobs:
   # 2026-09-29 (PR #1524): wasmtime 49.0.1 (bump de SEGURANÇA — quatro
   # advisories do 48.x) traz cranelift 0.136.1, que declara rustc 1.96.0 —
   # piso elevado de 1.95 → 1.96. Quinto bump com a mesma forma.
+  # 2026-10-04 (PR #1559): wasmtime 49.0.1 → 49.0.2 (bump de SEGURANÇA — sete
+  # advisories do 49.0.1) é o PRIMEIRO em seis que NÃO eleva o piso: a árvore
+  # do 49.0.2 (cranelift 0.136.2, pulley/wiggle 49.0.2) segue declarando
+  # rustc 1.96.0. O piso e o nome deste job ficam em 1.96. Quebra a série —
+  # não presuma que todo bump do wasmtime sobe o MSRV; leia os manifests.
   # `--locked` garante que o lockfile não é regerado durante o check
   # (qualquer drift falha o build). `garraia-desktop` excluído pelos
   # mesmos motivos do clippy/build (este job não instala GTK/webkit nem
