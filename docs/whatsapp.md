@@ -148,6 +148,8 @@ apaga nada: ele valida e responde `✓ Sessão encontrada e válida`.
 | `garraia whatsapp access groups on\|off\|default <nivel>` / `access group <jid> <nivel> [--write]` (`--preset <nome>` no lugar do nivel nos dois) | grupos: liga/desliga, o default e a politica por JID (`<digitos>@g.us`); grupo PODE ser `full`, entao os quatro presets valem | 0 · 65 · 70 · 73 (nivel e `--preset` juntos, ou nenhum dos dois: recusado pelo parser da CLI, exit 2) |
 | `garraia whatsapp access reset [--yes] [--dry-run]` | volta ao seguro: `restricted`, default `chat`, grupos desligados e sem politica, niveis/write removidos; donos e bloqueios ficam; idempotente | 0 · 1 cancelado · 64 sem terminal e sem `--yes` · 70 |
 | `garraia whatsapp access audit [--json] [--limit N]` | a trilha local de mudancas (`<data_dir>/audit/whatsapp-access.jsonl`), mais recente primeiro | 0 · 70 |
+| `garraia whatsapp access export [--out <arquivo>] [--redact-pii]` | a politica no formato versionado `garraia.access-policy` (v1), **sem segredo**: so estrutura, nunca token, cofre nem sessao. Sem `--out`, vai para o stdout. `--redact-pii` mascara as identidades (`…1234`) e marca o export como nao-importavel | 0 · 70 config ilegivel ou falha ao gravar |
+| `garraia whatsapp access import <arquivo> [--confirm-widening] [--dry-run]` | aplica um export, **substituindo** a politica (admissao, default, niveis, grupos, bloqueios); limpa o legado (`allow`/`owners`/`reply_in_groups`) e preserva `enabled`/`default_mode`/sessao. Valida formato e versao, recusa export redigido, mostra o impacto pelo mesmo motor do `--dry-run`; **alargar exige `--confirm-widening`**. Grava atomico com backup `config.yml.import-bak` | 0 · 64 alarga sem `--confirm-widening` · 65 documento invalido (formato/versao/redigido/valor) · 70 config/arquivo ilegivel · 73 gravou mas o audit falhou |
 
 O `users` nunca imprime a identidade inteira — nem na tela, nem no `--json`,
 cujo documento e `{enabled, authorized, owners, users[{role, kind, last4}]}`.
@@ -731,6 +733,31 @@ channels:
   `…1234`: para agir numa linha manda `identity_last4`, que o gateway
   resolve entre as identidades declaradas (ambiguo = 409). A API tambem
   aceita `owner`, `unowner` e `remove`.
+- **Exportar e importar a politica, sem segredo (#1435).** Para replicar a
+  politica de acesso de uma instalacao do GarraIA para outra sem copiar
+  credencial. O export (`garraia whatsapp access export`, ou
+  `GET /admin/api/whatsapp/access/export`) e um documento versionado
+  `{"format":"garraia.access-policy","version":1,...}` montado **campo a
+  campo por allowlist** da politica (admissao, default, `users`, `groups`) —
+  nunca serializando a secao inteira, entao um token, uma chave de API ou o
+  caminho da sessao que estivessem na config **nao entram por construcao** (o
+  material de sessao mora em disco, e o token da Cloud API vive em outro canal,
+  `whatsapp`). `--redact-pii` (CLI) / `?redact_pii=true` (API) mascara as
+  identidades para `…1234` e marca `pii_redacted: true`; esse export serve so
+  para inspecao e **nao e importavel** (o import o recusa — `…1234` nao
+  reconstroi um numero). O import (`garraia whatsapp access import <arquivo>`,
+  ou `POST /admin/api/whatsapp/access/import` com `{ "document": … }`) valida
+  `format` e `version` (formato desconhecido e versao de um major futuro sao
+  recusados com mensagem clara), **substitui** a politica inteira (limpando o
+  legado, que ja esta representado em `access`; preserva `enabled`,
+  `default_mode`, `audit_max_bytes` e a sessao), calcula o impacto por
+  principal pelo mesmo `impacto::diferencas` do `--dry-run`, e **exige
+  `--confirm-widening` / `confirm_widening: true` quando algum principal GANHA
+  acesso** (estreitar nunca exige). A escrita e atomica (temp + fsync + rename
+  do `ConfigLoader::save`) com backup em `config.yml.import-bak` para rollback;
+  validacao invalida nao toca o disco, e o import e auditado como a acao
+  `import` na mesma trilha (`<data_dir>/audit/whatsapp-access.jsonl`). Leitura
+  (export) com `Channels/Read`; import com `Channels/Update`.
 - **Comandos de barra e projeto (#1379, #1424).** No WhatsApp pessoal uma
   mensagem que comeca com `/` e decidida por principal antes de ir ao
   modelo: `/help` para todo admitido; `/project [list|<nome ou id>|clear]`

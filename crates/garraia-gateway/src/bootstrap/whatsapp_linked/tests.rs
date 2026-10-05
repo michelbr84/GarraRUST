@@ -14,6 +14,8 @@ mod politica;
 mod politica_mutacao;
 // ADR 0025 §3-4: presets nomeados sobre `Alcance` (#1434).
 mod presets;
+// #1435: exportar/importar a politica sem segredo, entre instalacoes.
+mod transferencia;
 // O par que extrai chamada de log e separa o que pode carregar valor mora em
 // `garraia-channels` (a crate que possui o segredo da sessao) e serve as duas
 // varreduras — esta e a de `whatsapp_linked/source_scan.rs`. Duas copias com

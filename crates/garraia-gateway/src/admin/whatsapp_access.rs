@@ -33,7 +33,9 @@ use crate::bootstrap::whatsapp_linked_politica::mutacao::{
     self, Mutacao, MutacaoInvalida, mascarar,
 };
 use crate::bootstrap::whatsapp_linked_politica::presets::{NOMES as NOMES_DE_PRESET, Preset};
-use crate::bootstrap::whatsapp_linked_politica::{Admission, Alcance, auditoria, impacto, visao};
+use crate::bootstrap::whatsapp_linked_politica::{
+    Admission, Alcance, auditoria, impacto, transferencia, visao,
+};
 use crate::bootstrap::{WHATSAPP_LINKED_CONFIG_KEY as CONFIG_KEY, whatsapp_linked_settings};
 
 /// O corpo de `POST /admin/api/whatsapp/access`.
@@ -82,6 +84,28 @@ pub struct AccessMutationRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuditQuery {
     pub limit: Option<usize>,
+}
+
+/// `?redact_pii=true` de `GET /admin/api/whatsapp/access/export` (#1435).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ExportQuery {
+    #[serde(default)]
+    pub redact_pii: bool,
+}
+
+/// O corpo de `POST /admin/api/whatsapp/access/import` (#1435): o documento de
+/// export mais as flags da importacao.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccessImportRequest {
+    /// O documento `garraia.access-policy` (o mesmo que o export devolve).
+    pub document: Value,
+    /// So calcula o impacto; nada e gravado nem auditado.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Autoriza o alargamento (algum principal GANHA capacidade). Sem isto, um
+    /// import que alarga e recusado (409) com o impacto no corpo.
+    #[serde(default)]
+    pub confirm_widening: bool,
 }
 
 const ACOES: &str = "open | restricted | default | level | write | preset | block | unblock | groups | group-default | group | reset";
@@ -534,6 +558,168 @@ pub async fn admin_whatsapp_access_rejections_reset(
         Json(json!({
             "cleared": apagadas,
             "rejections": state.app_state.whatsapp_linked.rejeicoes(),
+        })),
+    )
+}
+
+/// `GET /admin/api/whatsapp/access/export[?redact_pii=true]` — a politica de
+/// acesso **sem segredo**, no formato versionado `garraia.access-policy`
+/// (#1435). Channels/Read (viewer le): nunca inclui token, cofre nem sessao.
+pub async fn admin_whatsapp_access_export(
+    State(state): State<AdminState>,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    Query(query): Query<ExportQuery>,
+) -> impl IntoResponse {
+    if !check_permission(admin.role, Resource::Channels, Action::Read) {
+        return proibido();
+    }
+    let _ = &state;
+    match carregar() {
+        Ok((_, config)) => {
+            let settings = whatsapp_linked_settings(&config);
+            (
+                StatusCode::OK,
+                Json(transferencia::exportar(&settings, query.redact_pii)),
+            )
+        }
+        Err(e) => falha_de_config(e),
+    }
+}
+
+/// `POST /admin/api/whatsapp/access/import` — aplica um documento exportado,
+/// substituindo a politica (#1435). Channels/Update. Valida formato e versao,
+/// recusa export redigido, calcula o impacto (dry-run embutido), exige
+/// `confirm_widening` para alargar e grava atomico (com backup) so quando algo
+/// muda.
+pub async fn admin_whatsapp_access_import(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
+    Json(req): Json<AccessImportRequest>,
+) -> impl IntoResponse {
+    if !check_permission(admin.role, Resource::Channels, Action::Update) {
+        return proibido();
+    }
+    let importada = match transferencia::parse_importacao(&req.document) {
+        Ok(p) => p,
+        Err(e) => return erro_com_codigo(StatusCode::BAD_REQUEST, e.to_string(), e.codigo()),
+    };
+    let (loader, config) = match carregar() {
+        Ok(v) => v,
+        Err(e) => return falha_de_config(e),
+    };
+    let original = config.clone();
+    let mut config = config;
+    let secao = config
+        .channels
+        .entry(CONFIG_KEY.to_string())
+        .or_insert_with(|| ChannelConfig {
+            channel_type: CONFIG_KEY.to_string(),
+            enabled: None,
+            settings: Default::default(),
+        });
+    if let Err(e) = transferencia::aplicar_importada(secao, &importada) {
+        return erro(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
+
+    let perfil = state.app_state.config.execution.perfil();
+    let antes = whatsapp_linked_settings(&original);
+    let depois = whatsapp_linked_settings(&config);
+    let mudou = antes != depois;
+    let diferencas = impacto::diferencas(&antes, &depois, perfil);
+    let alarga = transferencia::ha_alargamento(&diferencas);
+    let impact: Vec<Value> = diferencas
+        .iter()
+        .map(|d| {
+            json!({
+                "principal": d.principal, "target": d.alvo,
+                "gains": d.ganha, "loses": d.perde,
+            })
+        })
+        .collect();
+
+    // Alargar sem autorizacao e recusado — mas so quando de fato grava; o
+    // dry-run sempre devolve o preview, para o operador ver o que confirmar.
+    if alarga && !req.confirm_widening && !req.dry_run {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "this import widens access for some principal; resend with confirm_widening=true",
+                "error_code": "widening_requires_confirmation",
+                "changed": mudou,
+                "widens": true,
+                "impact": impact,
+                "policy_preview": visao::documento(&config, perfil, false),
+            })),
+        );
+    }
+
+    let mut written = false;
+    let mut audit = json!({ "written": false });
+    let mut backup: Option<String> = None;
+    if !req.dry_run && mudou {
+        // Backup para rollback antes da escrita atomica (temp+fsync+rename do
+        // `save`). Best-effort: a falta de backup nao impede o import, mas o
+        // caminho (quando ha) volta no corpo.
+        let origem = loader.config_dir().join("config.yml");
+        let destino = loader.config_dir().join("config.yml.import-bak");
+        if origem.exists() {
+            match std::fs::copy(&origem, &destino) {
+                Ok(_) => backup = Some(destino.display().to_string()),
+                Err(e) => {
+                    tracing::warn!(erro = %e, "admin: nao consegui gravar o backup antes do import da politica");
+                }
+            }
+        }
+        if let Err(e) = loader.ensure_dirs().and_then(|()| loader.save(&config)) {
+            tracing::warn!(erro = %e, "admin: nao consegui gravar o config.yml (import da politica)");
+            return erro(StatusCode::INTERNAL_SERVER_ERROR, "failed to write config");
+        }
+        written = true;
+        let evento = auditoria::Evento::novo(
+            "admin_api",
+            &admin.username,
+            "import",
+            None,
+            &antes,
+            &depois,
+        );
+        audit = match auditoria::registrar(
+            &config.resolved_data_dir(),
+            &evento,
+            teto_do_audit(&config),
+        ) {
+            Ok(_) => json!({ "written": true }),
+            Err(e) => {
+                tracing::warn!(erro = %e, "admin: o import foi gravado, mas o audit da politica nao");
+                json!({ "written": false, "error": e.to_string() })
+            }
+        };
+        let guard = state.store.lock().await;
+        let _ = guard.append_audit(
+            Some(&admin.user_id),
+            Some(&admin.username),
+            "import",
+            "whatsapp_access",
+            None,
+            None,
+            extract_ip(&headers, None).as_deref(),
+            "success",
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "dry_run": req.dry_run,
+            "changed": mudou,
+            "written": written,
+            "widens": alarga,
+            "impact": impact,
+            "backup": backup,
+            "audit": audit,
+            "policy": visao::documento(&config, perfil, false),
+            "hot_reload": state.app_state.has_config_watcher(),
         })),
     )
 }

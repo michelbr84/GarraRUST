@@ -717,6 +717,27 @@ enum AccessCommands {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Exporta a politica (sem segredo) no formato versionado; stdout ou `--out`.
+    Export {
+        /// Grava num arquivo em vez do stdout.
+        #[arg(long, value_name = "ARQUIVO")]
+        out: Option<String>,
+        /// Mascara as identidades (`…1234`); o export fica nao-importavel.
+        #[arg(long)]
+        redact_pii: bool,
+    },
+    /// Importa um export, substituindo a politica; alargar exige confirmacao.
+    Import {
+        /// O arquivo exportado (`garraia.access-policy`).
+        #[arg(value_name = "ARQUIVO")]
+        arquivo: String,
+        /// Autoriza um import que ALARGA o acesso de algum principal.
+        #[arg(long)]
+        confirm_widening: bool,
+        /// So mostra o impacto; nao grava nem audita.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// `garraia whatsapp access groups <subcomando>`.
@@ -1660,13 +1681,17 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
             Some(WhatsAppCommands::Status | WhatsAppCommands::Users { .. }) => true,
             // `access` e `access audit` so leem e imprimem; o resto grava.
             Some(WhatsAppCommands::Access { cmd, .. }) => match cmd {
-                None | Some(AccessCommands::Audit { .. }) => true,
+                // `export` so le a politica e imprime, como `audit`.
+                None | Some(AccessCommands::Audit { .. }) | Some(AccessCommands::Export { .. }) => {
+                    true
+                }
                 Some(
                     AccessCommands::Open { .. }
                     | AccessCommands::Restricted { .. }
                     | AccessCommands::Default { .. }
                     | AccessCommands::Group { .. }
-                    | AccessCommands::Reset { .. },
+                    | AccessCommands::Reset { .. }
+                    | AccessCommands::Import { .. },
                 ) => false,
                 Some(AccessCommands::Groups { cmd }) => match cmd {
                     GroupsCommands::On { .. }
@@ -2095,6 +2120,19 @@ fn main() -> Result<()> {
                     Some(AccessCommands::Audit { json, limit }) => C::Audit {
                         json: *json,
                         limit: *limit,
+                    },
+                    Some(AccessCommands::Export { out, redact_pii }) => C::Export {
+                        out: out.clone(),
+                        redact_pii: *redact_pii,
+                    },
+                    Some(AccessCommands::Import {
+                        arquivo,
+                        confirm_widening,
+                        dry_run,
+                    }) => C::Import {
+                        arquivo: arquivo.clone(),
+                        confirm_widening: *confirm_widening,
+                        dry_run: *dry_run,
                     },
                 })
             }
