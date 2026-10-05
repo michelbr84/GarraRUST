@@ -36,6 +36,7 @@ use garraia_common::ssrf::{IpScope, SsrfCategory, UrlPolicy, vet_url};
 use garraia_config::{
     AppConfig, ConfigCheck, ConfigLoader, provider_key_env, resolve_provider_key_source,
 };
+use garraia_gateway::bootstrap::{ExposicaoDoBash, exposicao_do_bash, sandbox_policy_from};
 use serde::Serialize;
 
 /// Budget de cada probe TCP. Mesmo valor que o boot loop usa para os
@@ -145,7 +146,20 @@ pub(crate) struct TermuxEnv<'a> {
     pub ssl_cert_file: Option<&'a str>,
     /// `true` quando a config tem um caminho que fala TLS com Postgres.
     pub uses_postgres: bool,
+    /// Decisao do `bash` (#1272) tomada da config carregada, pela mesma
+    /// funcao que o gateway e o `mcp-server` usam. `None` quando a config
+    /// nao carregou — ai o item nao aparece (o `[2/4]` ja reporta o erro).
+    pub bash: Option<&'a ExposicaoDoBash>,
 }
+
+/// Passo do item `Tool bash` no Termux (#1560). Android nao tem kernel com
+/// suporte a container, entao docker/podman nunca existem ali: a unica casa
+/// do `bash` num Termux em `standard` e o modo allowlist-only. Sem valor de
+/// config do operador — os padroes sao exemplo fixo.
+pub(crate) const COMO_LIGAR_O_BASH_NO_TERMUX: &str = "no Termux nao existe docker/podman; \
+     declare agent.bash_allowlist com os comandos confiaveis (ex.: [\"git status\", \
+     \"pkg list-installed\", \"ls *\"]) para um bash minimo no host em que SO a allowlist \
+     executa — veja docs/installation.md#android-termux (#1272, #1560)";
 
 /// Caminho do shim termux-exec, relativo a `$PREFIX`.
 const TERMUX_EXEC_LIB: &str = "lib/libtermux-exec.so";
@@ -295,6 +309,21 @@ where
         next_step: (!on_path)
             .then(|| "export PATH=\"$PREFIX/bin:$PATH\" no seu ~/.profile".to_string()),
     });
+
+    // Shell do agente (#1560). Sem docker/podman o runtime nao registra o
+    // `bash` em `standard` — no Termux isso e o estado de TODA instalacao
+    // sem `agent.bash_allowlist`, e o operador so descobria pelo proprio
+    // agente. O item diz o estado e, desligado, a receita do Termux. Fica
+    // informativo como o resto do bloco: nao mexe no exit code.
+    if let Some(exposicao) = env.bash {
+        let ok = exposicao.registra_bash();
+        items.push(TermuxItem {
+            label: "Tool bash",
+            ok,
+            detail: exposicao.descricao(),
+            next_step: (!ok).then(|| COMO_LIGAR_O_BASH_NO_TERMUX.to_string()),
+        });
+    }
 
     TermuxCheck { items }
 }
@@ -471,14 +500,20 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
     let loader = ConfigLoader::new()?;
     let dirs_ok = loader.ensure_dirs().is_ok();
 
-    let (config_check, config_error, providers, gateway) = match loader.load() {
+    let (config_check, config_error, providers, gateway, bash) = match loader.load() {
         Ok(config) => {
             let check = garraia_config::run_check(&loader, &config);
             let providers = collect_provider_checks(&config);
             // #1261: o bind que o `start` usa (env > default), nao as
             // chaves deprecadas do arquivo.
             let gateway = garraia_config::bind::endereco_do_cliente();
-            (Some(check), None, providers, gateway)
+            // #1560: a mesma decisao do gateway e do `mcp-server`.
+            let bash = exposicao_do_bash(
+                config.execution.perfil(),
+                &sandbox_policy_from(&config.agent.sandbox),
+                !config.agent.bash_allowlist.is_empty(),
+            );
+            (Some(check), None, providers, gateway, Some(bash))
         }
         Err(e) => {
             // Mesma truncagem do `config check` (SEC-L-01): o erro nunca
@@ -488,6 +523,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
                 Some(crate::config_cmd::truncate_error(format!("{e}"))),
                 Vec::new(),
                 garraia_config::bind::endereco_do_cliente(),
+                None,
             )
         }
     };
@@ -526,6 +562,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
                     ld_preload: ld_preload_env.as_deref(),
                     ssl_cert_file: ssl_cert_env.as_deref(),
                     uses_postgres,
+                    bash: bash.as_ref(),
                 },
                 |path| path.exists(),
             )
@@ -716,6 +753,7 @@ mod tests {
             ld_preload: None,
             ssl_cert_file: None,
             uses_postgres: false,
+            bash: None,
         }
     }
 
@@ -912,6 +950,69 @@ mod tests {
             .as_deref()
             .expect("receita do loader");
         assert!(step.contains("$PREFIX/bin/garraia"));
+    }
+
+    /// #1560: no Termux nao ha docker/podman, entao sem `agent.bash_allowlist`
+    /// o agente fica sem shell. O doctor diz isso e da a receita do Termux,
+    /// em vez de reportar tudo OK.
+    #[test]
+    fn termux_check_flags_bash_off_with_the_termux_recipe() {
+        use garraia_gateway::bootstrap::MotivoDoBashDesligado;
+        let desligado = ExposicaoDoBash::Desligado {
+            motivo: MotivoDoBashDesligado::SandboxDesligado,
+        };
+        let env = TermuxEnv {
+            bash: Some(&desligado),
+            ..termux_env()
+        };
+        let check = collect_termux_check(&env, |_| true);
+        let bash = item(&check, "Tool bash");
+        assert!(!bash.ok);
+        assert!(bash.detail.contains("DESLIGADO"), "{}", bash.detail);
+        let step = bash.next_step.as_deref().expect("passo do Termux");
+        assert!(step.contains("agent.bash_allowlist"), "{step}");
+        assert!(step.contains("docker/podman"), "{step}");
+    }
+
+    /// Com a allowlist declarada o `bash` existe no host, e o item diz que e
+    /// SEM sandbox — o operador ve o modo degradado que escolheu.
+    #[test]
+    fn termux_check_reports_bash_on_host_allowlist_as_ok_without_sandbox() {
+        let env = TermuxEnv {
+            bash: Some(&ExposicaoDoBash::HostComAllowlist),
+            ..termux_env()
+        };
+        let check = collect_termux_check(&env, |_| true);
+        let bash = item(&check, "Tool bash");
+        assert!(bash.ok);
+        assert!(bash.next_step.is_none());
+        assert!(bash.detail.contains("SEM sandbox"), "{}", bash.detail);
+        assert!(bash.detail.contains("allowlist-only"), "{}", bash.detail);
+    }
+
+    /// Config que nao carregou: o item nao aparece (o `[2/4]` ja e o erro).
+    #[test]
+    fn termux_check_omits_bash_without_a_loaded_config() {
+        let check = collect_termux_check(&termux_env(), |_| true);
+        assert!(check.items.iter().all(|i| i.label != "Tool bash"));
+    }
+
+    /// A decisao do doctor e a do runtime: Termux tipico (`standard`,
+    /// sandbox `off`) com allowlist declarada vira `HostComAllowlist`; sem
+    /// ela, `Desligado`.
+    #[test]
+    fn doctor_bash_decision_follows_the_allowlist_on_a_default_config() {
+        let mut config = AppConfig::default();
+        let decide = |c: &AppConfig| {
+            exposicao_do_bash(
+                c.execution.perfil(),
+                &sandbox_policy_from(&c.agent.sandbox),
+                !c.agent.bash_allowlist.is_empty(),
+            )
+        };
+        assert!(!decide(&config).registra_bash());
+        config.agent.bash_allowlist = vec!["git status".to_string()];
+        assert_eq!(decide(&config), ExposicaoDoBash::HostComAllowlist);
     }
 
     // ─── detect_termux ─────────────────────────────────────────────────────
