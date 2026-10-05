@@ -759,6 +759,61 @@ channels:
   declarado nao entra por estar num grupo ligado (a admissao continua
   `restricted`).
 
+### Confirmacao de elevacao sensivel (#1433)
+
+Uma mutacao da politica que **concede** a algum principal uma classe de
+capacidade mutante que ele nao tinha — escrita de arquivo (`filesystem.write`),
+shell (`process.execute`), envio de mensagem (`message.send`), dispositivo
+(`device.execute`), memoria de escrita (`memory.write`) ou MCP de escrita
+(`mcp.write`) — e uma **elevacao sensivel**. O calculo e o mesmo do preview de
+impacto (`impacto::elevacoes_sensiveis`): o efetivo de antes e depois vem do
+`ToolGate` real, nao de um segundo modelo.
+
+A elevacao exige **confirmacao explicita, enforcada no servidor**: o
+`POST /admin/api/whatsapp/access` recusa com **409
+`elevation_confirmation_required`** (sem gravar nada) a menos que o corpo traga
+`confirm_elevation: true`. Nao e so um dialogo do console — um POST direto, de
+script ou de outra UI, tambem e recusado sem o campo. Mudancas que so TIRAM, ou
+que so mexem em leitura, nao pedem confirmacao. No console, o preview mostra as
+classes sensiveis ganhas e so habilita o botao **Confirm** depois de um aceite
+explicito ("I understand this grants sensitive capabilities"), que entao envia
+`confirm_elevation: true`.
+
+### Agents & Permissions — a visao global no Web Console (#1433)
+
+A pagina **Agents & Permissions** (`/admin` → sidebar) generaliza a pagina
+WhatsApp Access para **um lugar so**: ela le `GET
+/admin/api/permissions/overview` (guarda `Channels/Read`, viewer le) e mostra,
+pelo **mesmo motor de politica** (ADR 0025) e pelo vocabulario do registro de
+capacidades do runtime (#1385), sem nenhuma logica de autorizacao propria:
+
+- o **perfil de execucao** do processo e a legenda das **classes de
+  capacidade**, cada uma marcada como sensivel ou nao;
+- **cada canal suportado** com a sua fonte de politica. Hoje so o
+  `whatsapp_linked` tem motor de politica por principal; os demais aparecem com
+  honestidade (`policy: not supported yet / defaults`) — nao se finge o que nao
+  existe;
+- para o `whatsapp_linked`: a admissao, os defaults (piso do dono, piso padrao,
+  default do desconhecido, grupos), as contagens de override e a **matriz por
+  principal** com as **classes efetivas** (teto do principal ∩ registro),
+  destacando as sensiveis. Identidades so por `…1234` — nunca o numero inteiro,
+  nem segredo.
+
+A pagina **nao edita**: para mudar a politica de um canal ela leva ao botao
+**Manage … access**, que abre a pagina do proprio canal (WhatsApp Access), onde
+mora o caminho unico de `POST /admin/api/whatsapp/access` (preview/confirm, com
+a confirmacao de elevacao sensivel acima). Nao ha logica de autorizacao
+duplicada por pagina.
+
+**Responsivo e acessivel.** A pagina funciona a partir de **360px de largura**:
+a matriz larga rola dentro do proprio container (`overflow-x:auto`), sem rolagem
+horizontal da pagina. As regioes (`role="region"` com `aria-label`), a tabela da
+matriz (`role="table"` + `<th scope="col">`) e os avisos (`role="alert"`) tem
+rotulos ARIA; o aceite de elevacao e um checkbox rotulado associado por `for`.
+Os elementos interativos e estruturais tem `data-testid` estaveis (contrato do
+spec Playwright `tests/playwright/agents-permissions.spec.ts`, plan 0052), que
+cobre render, roles/labels e o viewport de 360px.
+
 ### Confirmacao de ferramenta perigosa ("sim")
 
 Quando uma ferramenta pede confirmacao (o `bash` num comando arriscado com

@@ -146,6 +146,14 @@ pub fn build_admin_router(
             "/api/capabilities",
             get(super::capabilities::admin_capabilities),
         )
+        // #1433: a visao global de agentes e permissoes — principais e suas
+        // capacidades efetivas por canal, pelo mesmo motor da politica
+        // (Channels/Read, a mesma guarda da pagina WhatsApp Access). NAO e o
+        // `/api/permissions` (matriz RBAC do painel).
+        .route(
+            "/api/permissions/overview",
+            get(super::permissions_overview::admin_permissions_overview),
+        )
         // #1420: o "Test WhatsApp" do console — o MESMO motor do `garraia
         // doctor whatsapp`, colhido em processo (Channels/Read; viewer le).
         .route(

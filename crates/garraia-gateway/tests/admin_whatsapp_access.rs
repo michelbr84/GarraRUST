@@ -51,6 +51,7 @@ fn pedido(action: &str) -> AccessMutationRequest {
         preset: None,
         enabled: None,
         dry_run: false,
+        confirm_elevation: false,
     }
 }
 
@@ -337,10 +338,13 @@ async fn a_api_admin_le_muda_e_audita_pelo_mesmo_motor_da_cli() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{doc}");
-    // Preset valido: grava `level` + `write`, audita como `preset`.
+    // Preset valido: grava `level` + `write`, audita como `preset`. `read` →
+    // `full+write` e elevacao sensivel (#1433), entao a confirmacao explicita
+    // e obrigatoria.
     let mut req = pedido("preset");
     req.identity = Some(format!("+{NUMERO}"));
     req.preset = Some("developer".to_string());
+    req.confirm_elevation = true;
     let (status, doc) = corpo(
         admin_whatsapp_access_mutate(
             State(admin_state.clone()),
@@ -600,12 +604,17 @@ async fn a_api_admin_le_muda_e_audita_pelo_mesmo_motor_da_cli() {
     assert_eq!(eventos[1]["action"], serde_json::json!("open"));
     assert!(!doc.to_string().contains(ESTRANHO));
 
+    // Reset remove o teto declarado de …8888 e o devolve ao `allow` legado
+    // (sem teto): isso REELEVA o usuario (read → full), entao a confirmacao de
+    // elevacao sensivel e obrigatoria (#1433).
+    let mut req = pedido("reset");
+    req.confirm_elevation = true;
     let (status, doc) = corpo(
         admin_whatsapp_access_mutate(
             State(admin_state.clone()),
             HeaderMap::new(),
             admin(Role::Admin),
-            Json(pedido("reset")),
+            Json(req),
         )
         .await
         .into_response(),
@@ -652,8 +661,11 @@ async fn a_api_admin_le_muda_e_audita_pelo_mesmo_motor_da_cli() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{doc}");
+    // Promover a dono da o piso do dono (code, neste perfil): elevacao
+    // sensivel, confirmada explicitamente (#1433).
     let mut req = pedido("owner");
     req.identity_last4 = Some("8888".to_string());
+    req.confirm_elevation = true;
     let (status, doc) = corpo(
         admin_whatsapp_access_mutate(
             State(admin_state.clone()),
