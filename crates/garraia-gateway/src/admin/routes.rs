@@ -172,6 +172,17 @@ pub fn build_admin_router(
             "/api/whatsapp/access/audit",
             get(super::whatsapp_access::admin_whatsapp_access_audit),
         )
+        // #1435: exportar/importar a politica sem segredo. Export com
+        // Channels/Read; import com Channels/Update (o layer de CSRF cobre o
+        // POST).
+        .route(
+            "/api/whatsapp/access/export",
+            get(super::whatsapp_access::admin_whatsapp_access_export),
+        )
+        .route(
+            "/api/whatsapp/access/import",
+            post(super::whatsapp_access::admin_whatsapp_access_import),
+        )
         // #1422: o reset das mensagens recusadas (contadores em memoria).
         .route(
             "/api/whatsapp/access/rejections/reset",

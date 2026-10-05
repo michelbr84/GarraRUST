@@ -24,7 +24,7 @@ pub use execution::{
     ExecutionConfig, ExecutionProfile, ExecutionProfileError, PROFILE_ENV as EXECUTION_PROFILE_ENV,
     ProfileSource, perfil_do_env as execution_profile_from_env,
 };
-pub use loader::{ConfigLoader, harden_secret_file};
+pub use loader::{ConfigLoader, harden_secret_file, write_secret_file};
 pub use model::{
     AUTH_ACCESS_TTL_MAX_SECS, AUTH_ACCESS_TTL_MIN_SECS, AUTH_REFRESH_TTL_MAX_SECS,
     AUTH_REFRESH_TTL_MIN_SECS, AUTH_SUPPORTED_JWT_ALGORITHMS, AgentConfig, AppConfig, AuthSection,

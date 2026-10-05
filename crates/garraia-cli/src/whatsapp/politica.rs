@@ -23,6 +23,7 @@ use garraia_gateway::bootstrap::whatsapp_linked_politica::mutacao::{
     self, Aplicada, Mutacao, MutacaoInvalida,
 };
 use garraia_gateway::bootstrap::whatsapp_linked_politica::presets::Preset;
+use garraia_gateway::bootstrap::whatsapp_linked_politica::transferencia;
 use garraia_gateway::bootstrap::whatsapp_linked_politica::visao::{
     self, mapa_de_revelacao, nome_do_perfil,
 };
@@ -107,6 +108,20 @@ pub enum ComandoDeAcesso {
     Reset { yes: bool, dry_run: bool },
     /// `access audit [--json] [--limit N]` (#1414).
     Audit { json: bool, limit: usize },
+    /// `access export [--out <arquivo>] [--redact-pii]` (#1435): a politica
+    /// sem segredo, no formato versionado. Sem `--out`, vai para o stdout.
+    Export {
+        out: Option<String>,
+        redact_pii: bool,
+    },
+    /// `access import <arquivo> [--confirm-widening] [--dry-run]` (#1435):
+    /// aplica um export, substituindo a politica. Alargar exige
+    /// `--confirm-widening`.
+    Import {
+        arquivo: String,
+        confirm_widening: bool,
+        dry_run: bool,
+    },
 }
 
 /// O que [`aplicar`] fez.
@@ -751,6 +766,270 @@ fn alcance_de(
     }
 }
 
+// ---------------------------------------------------------------------------
+// `access export` / `access import` (#1435)
+// ---------------------------------------------------------------------------
+
+/// `garraia whatsapp access export [--out <arquivo>] [--redact-pii]`.
+///
+/// O documento `garraia.access-policy` da politica viva, SEM segredo: so
+/// estrutura (admissao, default, niveis, grupos, bloqueios). Com `--redact-pii`
+/// as identidades viram `…1234` e o export passa a ser nao-importavel. Sem
+/// `--out`, o documento sai no stdout (para `jq`, pipe, redirecionamento).
+pub fn exportar(ctx: &Context, out: Option<&str>, redact_pii: bool) -> Result<i32, i32> {
+    let (_, config) = carregar(ctx)?;
+    let settings = whatsapp_linked_settings(&config);
+    let doc = transferencia::exportar(&settings, redact_pii);
+    let texto = serde_json::to_string_pretty(&doc).map_err(|e| {
+        eprintln!("{e}");
+        EX_SOFTWARE
+    })?;
+    match out {
+        Some(caminho) => {
+            // 0600 e sem seguir symlink: um export cru traz numeros de
+            // telefone completos (#1435).
+            garraia_config::write_secret_file(
+                std::path::Path::new(caminho),
+                format!("{texto}\n").as_bytes(),
+            )
+            .map_err(|e| {
+                eprintln!("{e}");
+                EX_SOFTWARE
+            })?;
+            println!(
+                "{}",
+                tb(
+                    ctx.lang,
+                    "Politica exportada para {file} (sem segredo).",
+                    "Policy exported to {file} (no secrets).",
+                )
+                .replace("{file}", caminho)
+            );
+            if redact_pii {
+                println!(
+                    "{}",
+                    t(
+                        ctx.lang,
+                        "Export redigido (`pii_redacted: true`): as identidades viraram `…1234` e NAO podem ser reimportadas.",
+                        "Redacted export (`pii_redacted: true`): identities became `…1234` and CANNOT be re-imported.",
+                    )
+                );
+            }
+        }
+        None => println!("{texto}"),
+    }
+    Ok(0)
+}
+
+/// As linhas do preview de impacto de um import, do mesmo motor do `--dry-run`.
+fn linhas_de_import(lang: Lang, diferencas: &[Diferenca], mudou: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if !mudou {
+        out.push(
+            t(
+                lang,
+                "Nada a mudar: a politica ja e identica a do documento.",
+                "Nothing to change: the policy already matches the document.",
+            )
+            .to_string(),
+        );
+        return out;
+    }
+    if diferencas.is_empty() {
+        out.push(
+            t(
+                lang,
+                "Impacto: nenhum principal ganha ou perde ferramenta com isso.",
+                "Impact: no principal gains or loses any tool with this.",
+            )
+            .to_string(),
+        );
+        return out;
+    }
+    out.push(t(lang, "Impacto por principal:", "Impact per principal:").to_string());
+    for d in diferencas {
+        let quem = match &d.alvo {
+            Some(a) => format!("{} {a}", d.principal),
+            None => d.principal.to_string(),
+        };
+        let mut partes = Vec::new();
+        if !d.ganha.is_empty() {
+            partes.push(format!(
+                "{} {}",
+                t(lang, "ganha", "gains"),
+                d.ganha.join(", ")
+            ));
+        }
+        if !d.perde.is_empty() {
+            partes.push(format!(
+                "{} {}",
+                t(lang, "perde", "loses"),
+                d.perde.join(", ")
+            ));
+        }
+        out.push(format!("  - {quem}: {}", partes.join(" · ")));
+    }
+    out
+}
+
+/// `garraia whatsapp access import <arquivo> [--confirm-widening] [--dry-run]`.
+///
+/// Le o documento, valida formato/versao, recusa export redigido, calcula o
+/// impacto pelo MESMO motor do `--dry-run`, e substitui a politica inteira.
+/// Alargar (algum principal ganha capacidade) exige `--confirm-widening`.
+/// Grava atomico (com backup `config.yml.import-bak`) e audita como `import`.
+pub fn importar(
+    ctx: &Context,
+    arquivo: &str,
+    confirm_widening: bool,
+    dry_run: bool,
+) -> Result<i32, i32> {
+    let bruto = std::fs::read_to_string(arquivo).map_err(|e| {
+        eprintln!(
+            "{}",
+            match ctx.lang {
+                Lang::Pt => format!("Nao consegui ler `{arquivo}`: {e}"),
+                Lang::En => format!("Could not read `{arquivo}`: {e}"),
+            }
+        );
+        EX_SOFTWARE
+    })?;
+    let doc: serde_json::Value = serde_json::from_str(&bruto).map_err(|e| {
+        eprintln!(
+            "{}",
+            match ctx.lang {
+                Lang::Pt => format!("`{arquivo}` nao e JSON valido: {e}"),
+                Lang::En => format!("`{arquivo}` is not valid JSON: {e}"),
+            }
+        );
+        EX_DATAERR
+    })?;
+    let importada = transferencia::parse_importacao(&doc).map_err(|e| {
+        eprintln!("{e}");
+        EX_DATAERR
+    })?;
+
+    let (loader, config) = carregar(ctx)?;
+    let original = config.clone();
+    let perfil = config.execution.perfil();
+    let mut config = config;
+    let secao = secao_criando_para_import(&mut config).map_err(|e| {
+        eprintln!("{e}");
+        EX_SOFTWARE
+    })?;
+    transferencia::aplicar_importada(secao, &importada).map_err(|e| {
+        eprintln!("{e}");
+        EX_SOFTWARE
+    })?;
+
+    let antes = whatsapp_linked_settings(&original);
+    let depois = whatsapp_linked_settings(&config);
+    let mudou = antes != depois;
+    let diferencas = impacto::diferencas(&antes, &depois, perfil);
+    let alarga = transferencia::ha_alargamento(&diferencas);
+
+    if dry_run {
+        println!(
+            "{}",
+            t(
+                ctx.lang,
+                "Simulacao (--dry-run): nada foi gravado nem auditado.",
+                "Simulation (--dry-run): nothing was written or audited.",
+            )
+        );
+    }
+    for linha in linhas_de_import(ctx.lang, &diferencas, mudou) {
+        println!("{linha}");
+    }
+
+    if alarga && !confirm_widening && !dry_run {
+        eprintln!(
+            "{}",
+            t(
+                ctx.lang,
+                "Este import ALARGA o acesso de algum principal (ver o impacto acima). Reenvie com `--confirm-widening`, ou `--dry-run` para so revisar.",
+                "This import WIDENS access for some principal (see the impact above). Resend with `--confirm-widening`, or `--dry-run` to only review.",
+            )
+        );
+        return Err(EX_USAGE);
+    }
+
+    if dry_run || !mudou {
+        return Ok(0);
+    }
+
+    // Backup antes da escrita atomica, para rollback.
+    let backup = loader.config_dir().join("config.yml.import-bak");
+    let origem = loader.config_dir().join("config.yml");
+    // A config inteira (com todos os segredos) vai para o backup: pelo mesmo
+    // caminho endurecido do `save` (0600, sem seguir symlink), nunca por
+    // `fs::copy`.
+    if origem.exists()
+        && let Err(e) = std::fs::read(&origem)
+            .map_err(|e| garraia_common::Error::Config(e.to_string()))
+            .and_then(|bytes| garraia_config::write_secret_file(&backup, &bytes))
+    {
+        eprintln!(
+            "{}",
+            match ctx.lang {
+                Lang::Pt => format!(
+                    "Aviso: nao consegui gravar o backup `{}`: {e}",
+                    backup.display()
+                ),
+                Lang::En => format!(
+                    "Warning: could not write backup `{}`: {e}",
+                    backup.display()
+                ),
+            }
+        );
+    }
+    if let Err(e) = loader.ensure_dirs().and_then(|()| loader.save(&config)) {
+        eprintln!("{e}");
+        return Err(EX_SOFTWARE);
+    }
+    println!(
+        "{}",
+        tb(
+            ctx.lang,
+            "Politica importada e gravada no config.yml (backup em {file}).",
+            "Policy imported and written to config.yml (backup at {file}).",
+        )
+        .replace("{file}", &backup.display().to_string())
+    );
+    if let Err(erro) =
+        registrar_evento(ctx, "import", None, &antes, &depois, teto_do_audit(&config))
+    {
+        eprintln!("{}", aviso_de_audit_falhou(ctx.lang, &erro));
+        return Ok(EX_CANTCREAT);
+    }
+    if depois.enabled {
+        println!("{}", dica_do_gateway(ctx.lang, true, ctx.gateway_pid));
+    }
+    Ok(0)
+}
+
+/// A secao do canal para escrita no import, com o mesmo check de tipo do
+/// `secao_criando` do `acesso`, mas devolvendo um erro de texto.
+fn secao_criando_para_import(
+    config: &mut AppConfig,
+) -> Result<&mut garraia_config::ChannelConfig, String> {
+    let secao = config
+        .channels
+        .entry(CONFIG_KEY.to_string())
+        .or_insert_with(|| garraia_config::ChannelConfig {
+            channel_type: CONFIG_KEY.to_string(),
+            enabled: None,
+            settings: Default::default(),
+        });
+    if secao.channel_type != CONFIG_KEY {
+        return Err(format!(
+            "`channels.{CONFIG_KEY}` existe com `type: {}` — corrija para `type: {CONFIG_KEY}` no config.yml",
+            secao.channel_type
+        ));
+    }
+    Ok(secao)
+}
+
 /// O comando inteiro. Devolve o exit code.
 pub fn access(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -> i32 {
     match executar(ctx, prompter, comando) {
@@ -820,6 +1099,16 @@ fn executar(ctx: &Context, prompter: &dyn Prompter, comando: &ComandoDeAcesso) -
                 );
             }
             return Ok(0);
+        }
+        ComandoDeAcesso::Export { out, redact_pii } => {
+            return exportar(ctx, out.as_deref(), *redact_pii);
+        }
+        ComandoDeAcesso::Import {
+            arquivo,
+            confirm_widening,
+            dry_run,
+        } => {
+            return importar(ctx, arquivo, *confirm_widening, *dry_run);
         }
         ComandoDeAcesso::Abrir { yes, dry_run } => {
             confirmar(

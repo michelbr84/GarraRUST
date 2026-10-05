@@ -433,6 +433,17 @@ impl ConfigLoader {
 /// O padrao e o mesmo de `whatsapp_linked::session::write_atomic`, que guarda o
 /// blob de sessao, ate no sufixo: sao dois call sites e um padrao, e a
 /// alternativa era duas definicoes de "escrita segura" capazes de divergir.
+/// Grava `bytes` em `path` pelo mesmo caminho endurecido do `save` da
+/// config: temporario com nome aleatorio, `create_new` (nunca segue symlink
+/// nem reaproveita arquivo plantado), `0600` desde o `open` e `rename`
+/// atomico. Para qualquer arquivo FORA do `config.yml` que carregue o mesmo
+/// conteudo sensivel — o backup do import da politica (#1435) copia a config
+/// inteira, com todos os segredos, e um `std::fs::copy` nasceria com o modo do
+/// umask e seguiria symlink no destino.
+pub fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_atomic_secret(path, bytes)
+}
+
 fn write_atomic_secret(path: &Path, bytes: &[u8]) -> Result<()> {
     let nonce = u64::from_ne_bytes(garraia_security::random_bytes::<8>().map_err(|_| {
         Error::Config("RNG do sistema indisponivel para nomear o temporario da config".into())
@@ -1320,6 +1331,32 @@ mod tests {
             b"conteudo da vitima",
             "a escrita nao pode ter atravessado o symlink"
         );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// #1435: `write_secret_file` (o backup do import da politica) nasce
+    /// 0600 e, com um symlink plantado no DESTINO, troca o link pelo arquivo
+    /// em vez de escrever no alvo dele — o `rename` substitui a entrada do
+    /// diretorio, nunca segue.
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_file_nasce_0600_e_nao_segue_symlink_no_destino() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("secret-file");
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let vitima = dir.join("vitima.txt");
+        fs::write(&vitima, b"conteudo da vitima").expect("vitima");
+        let destino = dir.join("config.yml.import-bak");
+        std::os::unix::fs::symlink(&vitima, &destino).expect("symlink");
+
+        super::write_secret_file(&destino, b"segredo").expect("grava");
+
+        assert_eq!(fs::read(&vitima).expect("vitima"), b"conteudo da vitima");
+        let meta = fs::symlink_metadata(&destino).expect("meta");
+        assert!(meta.file_type().is_file(), "o link virou arquivo");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&destino).expect("backup"), b"segredo");
 
         let _ = fs::remove_dir_all(dir);
     }

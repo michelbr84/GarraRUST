@@ -36,6 +36,11 @@ use crate::bootstrap::whatsapp_linked_politica::presets::{NOMES as NOMES_DE_PRES
 use crate::bootstrap::whatsapp_linked_politica::{Admission, Alcance, auditoria, impacto, visao};
 use crate::bootstrap::{WHATSAPP_LINKED_CONFIG_KEY as CONFIG_KEY, whatsapp_linked_settings};
 
+mod transferencia_http;
+pub use transferencia_http::{
+    AccessImportRequest, ExportQuery, admin_whatsapp_access_export, admin_whatsapp_access_import,
+};
+
 /// O corpo de `POST /admin/api/whatsapp/access`.
 ///
 /// `action`: `open` | `restricted` | `default` | `level` | `write` | `preset`
