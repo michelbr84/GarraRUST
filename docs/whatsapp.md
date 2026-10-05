@@ -742,9 +742,12 @@ channels:
   nunca serializando a secao inteira, entao um token, uma chave de API ou o
   caminho da sessao que estivessem na config **nao entram por construcao** (o
   material de sessao mora em disco, e o token da Cloud API vive em outro canal,
-  `whatsapp`). `--redact-pii` (CLI) / `?redact_pii=true` (API) mascara as
-  identidades para `…1234` e marca `pii_redacted: true`; esse export serve so
-  para inspecao e **nao e importavel** (o import o recusa — `…1234` nao
+  `whatsapp`). `--redact-pii` (CLI) mascara as identidades para `…1234` e
+  marca `pii_redacted: true`. **Na API o export e redigido por padrao**, como
+  todo o resto da API admin (que nunca revela identidade): o export cru
+  (`?redact_pii=false`, com numeros completos) exige `Channels/Update` e fica
+  no audit como `export_unredacted`. O export redigido serve so para inspecao
+  e **nao e importavel** (o import o recusa — `…1234` nao
   reconstroi um numero). O import (`garraia whatsapp access import <arquivo>`,
   ou `POST /admin/api/whatsapp/access/import` com `{ "document": … }`) valida
   `format` e `version` (formato desconhecido e versao de um major futuro sao
@@ -754,10 +757,16 @@ channels:
   principal pelo mesmo `impacto::diferencas` do `--dry-run`, e **exige
   `--confirm-widening` / `confirm_widening: true` quando algum principal GANHA
   acesso** (estreitar nunca exige). A escrita e atomica (temp + fsync + rename
-  do `ConfigLoader::save`) com backup em `config.yml.import-bak` para rollback;
+  do `ConfigLoader::save`) com backup em `config.yml.import-bak` para rollback
+  — o backup e a config inteira, com os segredos dos outros canais, entao ele
+  e gravado pelo mesmo caminho endurecido do `save` (`0600` desde a criacao,
+  sem seguir symlink); o arquivo de `--out` do export tambem nasce `0600`.
+  Com `"backup": null` na resposta o backup falhou: faca um snapshot manual
+  antes de reaplicar;
   validacao invalida nao toca o disco, e o import e auditado como a acao
   `import` na mesma trilha (`<data_dir>/audit/whatsapp-access.jsonl`). Leitura
-  (export) com `Channels/Read`; import com `Channels/Update`.
+  redigida (export padrao) com `Channels/Read`; export cru e import com
+  `Channels/Update`.
 - **Comandos de barra e projeto (#1379, #1424).** No WhatsApp pessoal uma
   mensagem que comeca com `/` e decidida por principal antes de ir ao
   modelo: `/help` para todo admitido; `/project [list|<nome ou id>|clear]`

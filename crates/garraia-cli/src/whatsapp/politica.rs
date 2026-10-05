@@ -786,7 +786,13 @@ pub fn exportar(ctx: &Context, out: Option<&str>, redact_pii: bool) -> Result<i3
     })?;
     match out {
         Some(caminho) => {
-            std::fs::write(caminho, format!("{texto}\n")).map_err(|e| {
+            // 0600 e sem seguir symlink: um export cru traz numeros de
+            // telefone completos (#1435).
+            garraia_config::write_secret_file(
+                std::path::Path::new(caminho),
+                format!("{texto}\n").as_bytes(),
+            )
+            .map_err(|e| {
                 eprintln!("{e}");
                 EX_SOFTWARE
             })?;
@@ -955,8 +961,13 @@ pub fn importar(
     // Backup antes da escrita atomica, para rollback.
     let backup = loader.config_dir().join("config.yml.import-bak");
     let origem = loader.config_dir().join("config.yml");
+    // A config inteira (com todos os segredos) vai para o backup: pelo mesmo
+    // caminho endurecido do `save` (0600, sem seguir symlink), nunca por
+    // `fs::copy`.
     if origem.exists()
-        && let Err(e) = std::fs::copy(&origem, &backup)
+        && let Err(e) = std::fs::read(&origem)
+            .map_err(|e| garraia_common::Error::Config(e.to_string()))
+            .and_then(|bytes| garraia_config::write_secret_file(&backup, &bytes))
     {
         eprintln!(
             "{}",

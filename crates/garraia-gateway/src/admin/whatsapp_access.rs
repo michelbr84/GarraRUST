@@ -86,11 +86,28 @@ pub struct AuditQuery {
     pub limit: Option<usize>,
 }
 
-/// `?redact_pii=true` de `GET /admin/api/whatsapp/access/export` (#1435).
-#[derive(Debug, Clone, Default, Deserialize)]
+/// `?redact_pii=` de `GET /admin/api/whatsapp/access/export` (#1435).
+///
+/// Sobre HTTP o default e REDIGIDO: a API admin nunca revela identidade
+/// (`…1234` em tudo), e o export nao pode ser a excecao por omissao. O export
+/// cru (`redact_pii=false`, o unico reimportavel) exige `Channels/Update` — o
+/// mesmo papel que poderia importar — e e auditado.
+#[derive(Debug, Clone, Deserialize)]
 pub struct ExportQuery {
-    #[serde(default)]
+    #[serde(default = "redigir_por_padrao")]
     pub redact_pii: bool,
+}
+
+impl Default for ExportQuery {
+    fn default() -> Self {
+        Self {
+            redact_pii: redigir_por_padrao(),
+        }
+    }
+}
+
+fn redigir_por_padrao() -> bool {
+    true
 }
 
 /// O corpo de `POST /admin/api/whatsapp/access/import` (#1435): o documento de
@@ -562,21 +579,44 @@ pub async fn admin_whatsapp_access_rejections_reset(
     )
 }
 
-/// `GET /admin/api/whatsapp/access/export[?redact_pii=true]` — a politica de
-/// acesso **sem segredo**, no formato versionado `garraia.access-policy`
-/// (#1435). Channels/Read (viewer le): nunca inclui token, cofre nem sessao.
+/// `GET /admin/api/whatsapp/access/export[?redact_pii=false]` — a politica
+/// de acesso **sem segredo**, no formato versionado `garraia.access-policy`
+/// (#1435). Nunca inclui token, cofre nem sessao.
+///
+/// Redigido por padrao (`…1234`, Channels/Read, como o `GET /access`). O
+/// export cru traz identidades completas e e o unico reimportavel: exige
+/// `Channels/Update` e fica no audit, porque e o unico caminho HTTP que
+/// devolve numero de telefone inteiro.
 pub async fn admin_whatsapp_access_export(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     axum::Extension(admin): axum::Extension<AuthenticatedAdmin>,
     Query(query): Query<ExportQuery>,
 ) -> impl IntoResponse {
-    if !check_permission(admin.role, Resource::Channels, Action::Read) {
+    let acao = if query.redact_pii {
+        Action::Read
+    } else {
+        Action::Update
+    };
+    if !check_permission(admin.role, Resource::Channels, acao) {
         return proibido();
     }
-    let _ = &state;
     match carregar() {
         Ok((_, config)) => {
             let settings = whatsapp_linked_settings(&config);
+            if !query.redact_pii {
+                let guard = state.store.lock().await;
+                let _ = guard.append_audit(
+                    Some(&admin.user_id),
+                    Some(&admin.username),
+                    "export_unredacted",
+                    "whatsapp_access",
+                    None,
+                    None,
+                    extract_ip(&headers, None).as_deref(),
+                    "success",
+                );
+            }
             (
                 StatusCode::OK,
                 Json(transferencia::exportar(&settings, query.redact_pii)),
@@ -664,8 +704,14 @@ pub async fn admin_whatsapp_access_import(
         let origem = loader.config_dir().join("config.yml");
         let destino = loader.config_dir().join("config.yml.import-bak");
         if origem.exists() {
-            match std::fs::copy(&origem, &destino) {
-                Ok(_) => backup = Some(destino.display().to_string()),
+            // A config inteira (com os segredos dos outros canais) vai para o
+            // backup: pelo mesmo caminho endurecido do `save` (0600 desde o
+            // `open`, sem seguir symlink), nunca por `fs::copy`.
+            let copia = std::fs::read(&origem)
+                .map_err(|e| garraia_common::Error::Config(e.to_string()))
+                .and_then(|bytes| garraia_config::write_secret_file(&destino, &bytes));
+            match copia {
+                Ok(()) => backup = Some(destino.display().to_string()),
                 Err(e) => {
                     tracing::warn!(erro = %e, "admin: nao consegui gravar o backup antes do import da politica");
                 }
@@ -722,4 +768,21 @@ pub async fn admin_whatsapp_access_import(
             "hot_reload": state.app_state.has_config_watcher(),
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExportQuery;
+
+    /// #1435 (auditoria F1): sem `redact_pii` na query o export HTTP sai
+    /// REDIGIDO — o export cru so com o pedido explicito (e `Channels/Update`).
+    #[test]
+    fn export_http_e_redigido_por_padrao() {
+        let sem: ExportQuery = serde_json::from_str("{}").expect("query vazia");
+        assert!(sem.redact_pii);
+        assert!(ExportQuery::default().redact_pii);
+        let cru: ExportQuery =
+            serde_json::from_str(r#"{"redact_pii":false}"#).expect("query explicita");
+        assert!(!cru.redact_pii);
+    }
 }
