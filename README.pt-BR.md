@@ -22,7 +22,7 @@
   <img src="https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
   <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
-  <img src="https://img.shields.io/badge/channels-5%20wired-purple" alt="Channels">
+  <img src="https://img.shields.io/badge/channels-11%20wired-purple" alt="Channels">
   <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
 </p>
 
@@ -302,7 +302,7 @@ segurança usa checkouts de inspeção pinados por commit (OpenClaw
 | **Auth default do gateway** | Canais deny-by-default (pareamento); API local aberta no loopback, token opt-in | Token exigido out-of-the-box (fail-closed) | Pareamento exigido por default; bind público só avisa |
 | **Bind default** | 127.0.0.1 | loopback | 127.0.0.1 |
 | **Dependências** | 1.061 crates (Cargo.lock) | 66 deps diretas de produção (300 pacotes resolvidos no `npm install -g` da run medida) | 1.265 crates (Cargo.lock) |
-| **Canais** | 5 ligados fim-a-fim (+6 implementados no crate, sem wiring) | 27 plugins bundled | ~40 adapters (6 no build default) |
+| **Canais** | 11 ligados no gateway (5 com teste de integração) + web chat + API OpenAI-compatible | 27 plugins bundled | ~40 adapters (6 no build default) |
 | **Provedores de LLM** | 15 built-in (100+ modelos via OpenRouter) | via plugins | vários, feature-gated |
 | **Agendamento** | Tarefas one-shot persistidas **e** recorrência cron com timezone IANA | Cron/automations completo | Cron + SOP engine |
 | **Suporte MCP** | Stdio + Streamable HTTP | Stdio/SSE/StreamableHttp + modo servidor | Stdio/http/sse, escopo fail-closed por agente |
@@ -353,9 +353,11 @@ cenário — corrigimos a tabela, não o resultado.
 - **VS Code** - via API OpenAI-compatible, integrado ao mesmo histórico de conversas
 - **Claude Code** - via shim Anthropic-compatible `POST /v1/messages` ([ADR 0014](docs/adr/0014-anthropic-messages-shim.md)); `garra agents setup|status|link|rollback|web` provisiona GarraIA, OpenClaw, Hermes e Claude Code com um mesmo provedor+modelo via AgentDeck
 
-Implementados no crate `garraia-channels`, **aguardando wiring no
-gateway** (acompanhe no [ROADMAP](ROADMAP.md)): Google Chat, Microsoft
-Teams, Matrix (com E2EE), LINE, IRC e Signal.
+Também **ligados no gateway no build default**, com cobertura unitária no
+crate mas ainda sem teste de integração do gateway: **Google Chat** e
+**Microsoft Teams** (webhook com JWT RS256), **LINE** (webhook com HMAC),
+**Matrix** (federado, com E2EE), **IRC** e **Signal** (via `signal-cli`) —
+os três últimos abrem conexão no boot, com retry em backoff.
 
 ### Comandos e Aliases (Slash Commands)
 
@@ -1117,6 +1119,14 @@ O GarraIA implementa o protocolo MCP com:
 
 Configure em `config.yml` ou `~/.config/garraia/mcp.json` (compatível com Claude Desktop). Veja `mcp.json.example` para referência de formato sem tokens.
 
+Legenda: **✅** = ligado no gateway e exercitado por teste automatizado.
+**🔹** = ligado no gateway no build default (`garraia-gateway` liga a feature
+do canal incondicionalmente e o bootstrap o instancia), com cobertura
+unitária no crate `garraia-channels` (assinatura do webhook, parsing), mas
+**sem** teste de integração do gateway que suba a rota ponta a ponta. Os dois
+abrem para o usuário; o que difere é o quanto o CI garante que continuem
+abrindo.
+
 | Componente | Status |
 |-----------|--------|
 | Gateway (WebSocket, HTTP, admin console) | ✅ Funcionando |
@@ -1125,12 +1135,12 @@ Configure em `config.yml` ou `~/.config/garraia/mcp.json` (compatível com Claud
 | Slack (Socket Mode, streaming) | ✅ Funcionando |
 | WhatsApp (webhooks) | ✅ Funcionando |
 | iMessage (macOS, grupos) | ✅ Funcionando |
-| Google Chat (Google Workspace) | 🧩 Implementado no crate — wiring no gateway pendente |
-| Microsoft Teams (Bot Framework) | 🧩 Implementado no crate — wiring no gateway pendente |
-| Matrix (federado, E2EE) | 🧩 Implementado no crate — wiring no gateway pendente |
-| LINE (Messaging API) | 🧩 Implementado no crate — wiring no gateway pendente |
-| IRC (multi-canal, multi-rede) | 🧩 Implementado no crate — wiring no gateway pendente |
-| Signal (signal-cli) | 🧩 Implementado no crate — wiring no gateway pendente |
+| Google Chat (Google Workspace) | 🔹 Ligado no gateway (`/webhooks/google-chat`) — sem teste de integração do gateway |
+| Microsoft Teams (Bot Framework) | 🔹 Ligado no gateway (`/webhooks/teams`) — sem teste de integração do gateway |
+| Matrix (federado, E2EE) | 🔹 Ligado no gateway (conexão no boot) — sem teste de integração do gateway |
+| LINE (Messaging API) | 🔹 Ligado no gateway (`/webhooks/line`) — sem teste de integração do gateway |
+| IRC (multi-canal, multi-rede) | 🔹 Ligado no gateway (conexão no boot) — sem teste de integração do gateway |
+| Signal (signal-cli) | 🔹 Ligado no gateway (conexão no boot) — sem teste de integração do gateway |
 | Provedores de LLM (15: Anthropic, OpenAI, Ollama + 12 compatíveis com OpenAI) | ✅ Funcionando |
 | Ferramentas do agente (bash, file_read, file_write, web_fetch, web_search, schedule_heartbeat) | ✅ Funcionando |
 | Cliente MCP (stdio + Streamable HTTP, bridge de ferramentas, admin API) | ✅ Funcionando |
