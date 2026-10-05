@@ -20,7 +20,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/crates-22-green" alt="Crates">
-  <img src="https://img.shields.io/badge/channels-5%20wired-purple" alt="Channels">
+  <img src="https://img.shields.io/badge/channels-11%20wired-purple" alt="Channels">
   <img src="https://img.shields.io/badge/LLM%20providers-15-red" alt="Providers">
 </p>
 
@@ -340,7 +340,7 @@ with per-claim evidence in `results/`:
 
 | | **GarraIA** | **OpenClaw** | **ZeroClaw** |
 |---|---|---|---|
-| Chat channels | 5 wired end-to-end (Telegram, Discord, Slack, WhatsApp, iMessage·macOS) + web chat + OpenAI-compatible API; 6 more implemented in-crate, not yet wired | 27 bundled channel plugins | ~40 adapters (default build bundles 6) |
+| Chat channels | 11 wired in the default build (Telegram, Discord, Slack, WhatsApp, iMessage·macOS, Google Chat, Teams, LINE, Matrix, IRC, Signal) + web chat + OpenAI-compatible API; the first 5 also have gateway integration tests | 27 bundled channel plugins | ~40 adapters (default build bundles 6) |
 | LLM providers | 15 built-in (Anthropic, OpenAI, Ollama native + 12 OpenAI-compatible presets); 100+ models via OpenRouter; any endpoint via `base_url` | plugin providers | multiple, feature-gated |
 | MCP | client: stdio (default build) + Streamable HTTP (`mcp-http` feature); also serves MCP over stdio (`garra mcp-server`, one `garra_ask` tool) | client: stdio/SSE/Streamable HTTP; also serves MCP | client: stdio/http/sse, per-agent fail-closed scoping |
 | Memory | SQLite + local vector search (sqlite-vec) + LLM fact extraction, auto-injected into context | Markdown files + SQLite FTS5/vector | sqlite/postgres/qdrant backends |
@@ -397,10 +397,12 @@ grants, and `garra doctor whatsapp` walks the whole path end to end),
 at the gateway ([ADR 0014](docs/adr/0014-anthropic-messages-shim.md)).
 `garra agents setup|status|link|rollback|web` provisions GarraIA,
 OpenClaw, Hermes and Claude Code with one provider + model via AgentDeck.
-Six more channel
-implementations (Google Chat, Teams, Matrix, LINE, IRC, Signal) exist in
-`garraia-channels` and await gateway wiring — tracked on the
-[roadmap](ROADMAP.md).
+Six more channels ship wired in the
+default build: **Google Chat** and **Teams** (RS256-JWT webhooks),
+**LINE** (HMAC webhook), and **Matrix** (federated, E2EE), **IRC** and
+**Signal** (via `signal-cli`), which connect at boot with backoff retry.
+They carry unit coverage in `garraia-channels` but no gateway integration
+test yet, so the badge counts them as wired, not as CI-guarded.
 
 ### Agent runtime
 
@@ -649,7 +651,7 @@ crates/
 ├── garraia-cli/        # CLI, init wizard, daemon management, self-update
 ├── garraia-gateway/    # WebSocket gateway, HTTP API, web console, REST v1
 ├── garraia-agents/     # LLM providers, tools, MCP client, agent runtime
-├── garraia-channels/   # Telegram, Discord, Slack, WhatsApp, iMessage (+6 pending wiring)
+├── garraia-channels/   # 11 wired: Telegram, Discord, Slack, WhatsApp, iMessage, Google Chat, Teams, LINE, Matrix, IRC, Signal
 ├── garraia-auth/       # Auth v1: Argon2id, JWT HS256, RBAC, RLS-backed identity
 ├── garraia-workspace/  # Postgres 16 + pgvector multi-tenant (37 tables / 33 migrations, 32 under FORCE RLS)
 ├── garraia-security/   # Credential vault, allowlists, pairing, validation
