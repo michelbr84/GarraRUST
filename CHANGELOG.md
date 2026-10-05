@@ -6,6 +6,191 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-10-05
+
+### Adicionado
+
+- **Bash roda no host restrito a `agent.bash_allowlist` (#1272).** Nova exposicao `HostComAllowlist`: quando a config declara padroes de comando (prefixo* no fim ou comando exato), o `BashTool` entra em modo allowlist-only — a allowlist deixa de ser dispensa de confirmacao e vira FRONTEIRA, todo comando fora dela e negado antes do tier arriscado, com a denylist do `safety_gate` sempre na frente.
+- **`docs/voice.md` ganha a secao "Known pitfalls with the stock app" (#1539).**
+  Duas armadilhas de quem sobe o `multilingual_app.py` do Chatterbox pela
+  primeira vez: a sonda de saude que batia na rota errada (bug do gateway,
+  corrigido na #1538 — a secao diz para atualizar, e so descreve o workaround
+  para quem esta preso em 0.4.7 ou anterior) e os prompts de voz default, que
+  sao URLs `https://` passadas cruas ao `librosa.load` e quebram a sintese sem
+  voz enviada. O passo de troubleshooting "TTS not responding" para de mandar
+  consultar `/health`, rota que o Gradio nao serve.
+- **Tool `telegram_send_voice`: a Garra fala por iniciativa propria (#1557).**
+  Sintetiza o texto (ate 1000 caracteres) com o TTS configurado e entrega como
+  voice message no Telegram. O destino e a mesma decisao do `telegram_send`
+  (chat da sessao, ou `chat_id` explicito so se estiver em
+  `proactive_chat_ids`), compartilhada em `resolver_alvo_telegram`. Mapeada para
+  `MessageSend` na tabela de capacidades, com teto proprio de 2 vozes por minuto
+  por sessao. Falha de TTS vira erro explicito, sem fallback silencioso para
+  texto; a tool some da lista quando falta TTS ou o canal esta offline. O
+  adaptador Telegram aceita `MessageContent::Audio` apenas com caminho local.
+
+### Alterado
+
+- **`garraia doctor` mostra o shell do agente no Termux (#1560).** O bloco Termux ganhou o item `Tool bash`, decidido pela mesma funcao do gateway e do `mcp-server`: sem docker/podman (sempre o caso no Android) e sem `agent.bash_allowlist`, o item aparece como aviso com a receita do modo allowlist-only no host (#1272), em vez de o operador so descobrir pelo proprio agente. A descricao do modo `HostComAllowlist` em `doctor`, `/api/diagnostics` e `garra_status` agora diz explicitamente "SEM sandbox". `docs/installation.md` documenta o shell no Termux.
+
+### Corrigido
+
+- **`.mcp.json` da raiz volta a subir o servidor MCP (#1536).** A entrada
+  apontava para `./target/release/garra`, um caminho relativo a um binario que
+  so existe depois de `cargo build --release` e so resolve se o cliente MCP
+  abrir exatamente na raiz do repo — em worktree limpo o servidor nunca subia.
+  Agora usa `garra` do `PATH`, como o `mcp.json.example` sempre usou. No mesmo
+  arquivo faltava `GARRAIA_MCP_ENABLE_TOOLS=1`, sem o qual `tools/list`
+  anuncia apenas `garra_ask` e `garra_agent` nunca chega ao host.
+- **Chatterbox saudavel deixa de ser reportado como fora do ar (#1538).** A
+  sonda de fallback batia em `/gradio_api/config`, rota que nenhuma versao do
+  Gradio serve (4.x a 6.x servem o config em `/config`): com a raiz
+  indisponivel o gateway dizia `❌ tts-chatterbox` e mantinha o modo voz
+  desligado contra um `multilingual_app.py` de pe. A cadeia agora e `/` →
+  `/config` → `/gradio_api/info`, para na primeira 2xx, e e a MESMA nos dois
+  lugares que sondavam separado (`ChatterboxClient::health_check` e o check
+  `tts-chatterbox` do `/api/health`), que antes podiam discordar. O WARN da
+  falha nomeia cada rota e o que ela respondeu, entao "nada escutando"
+  (`connect failed`) e "de pe na rota errada" (`HTTP 404`) deixam de sair com a
+  mesma linha sem status. `docs/voice.md` troca o `curl /health` do
+  troubleshooting — rota que o app stock nao serve — pelas tres rotas reais.
+- **Dois perfis `llm:` do mesmo tipo param de disputar um slot de provider (#1540).**
+  Os arms `openai` e `ollama` do bootstrap registravam todo perfil com o id do
+  **tipo**, entao duas entradas `provider: openai` (um llama-server local e um
+  Ollama OpenAI-compat, p. ex.) colidiam em `"openai"`: `get_provider` so
+  achava a primeira e a ordem de registro vinha da iteracao do `HashMap` de
+  config — o provider efetivo, e o default, eram sorteados a cada boot. Em
+  0.4.6 a mesma config alternava o `/api/health.model` entre dois modelos, e no
+  boot em que o Ollama ganhava toda conversa com tools quebrava. Agora cada
+  perfil e registrado pela **chave** (`with_name`), como os arms de nuvem ja
+  faziam, e `agent.default_provider` / `fallback_providers` / `model=<chave>/...`
+  passam a enderecar a instancia certa. Perfil cuja chave e o proprio tipo
+  (`openrouter`) nao muda; um `agent.default_provider` que nomeia o *tipo* sem
+  existir como chave no mapa `llm:` agora cai num WARN explicito em vez de
+  resolver para um perfil aleatorio.
+- **O fallback de provider usa o modelo DELE, e o SSE para de engolir o erro do
+  provider (#1541, defeitos 3 e 4).** (3) O laco de fallback repassava o
+  `LlmRequest` do primario intacto, `model` incluso — e `model` e o nome que
+  *aquele* backend entende. Um llama-server local servindo `glm53-flash` caia, o
+  openrouter recebia `glm53-flash` e respondia 400 `is not a valid model ID`; o
+  usuario via `all providers failed`, como se o fallback nem existisse. Agora o
+  `model` so sobrevive quando nomeia o proprio fallback (`openrouter/auto` indo
+  para o openrouter); nos demais casos vira string vazia, que desde sempre
+  significa "provider, use o seu modelo configurado" em todos os adaptadores —
+  ou seja, o fallback passa a usar o `llm.<perfil>.model` que a config ja dizia.
+  Vale nos dois lacos, batch e streaming. (4) Em `stream: true` o `Err` do turno
+  era descartado por um `if let Ok(..)`: o canal de deltas fechava sem nenhum
+  delta e o SSE terminava em `finish_reason: "stop"` mais `[DONE]` — uma
+  resposta em branco com cara de sucesso, indistinguivel de um modelo que
+  escolheu nao falar. O turno agora reporta o desfecho por um canal proprio e o
+  stream emite `{"error": {...}}` (convencao que vLLM/llama.cpp/LiteLLM ja usam)
+  em vez de mentir `stop`.
+- **Modelo HuggingFace servido pelo Ollama para de ser mandado ao openrouter
+  (#1541, defeito 2 — o que sobrou depois da #1540).** Prefixo nao registrado
+  com barra ia para o openrouter, porque ele de fato proxia `minimax/...`,
+  `yi/...` e outros fora da tabela de tipos. Mas
+  `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q8_K_XL` tem duas barras, e id do
+  openrouter e sempre `vendor/modelo` — mandar assim era 400 garantido. Agora
+  so uma barra qualifica para a tentativa via openrouter; o resto cai no
+  provider default. Nenhum id real do openrouter sai do caminho.
+- **`POST /v1/chat/completions` sem `model` deixa de mandar `"gpt-4"` ao backend (#1541).**
+  O handler fazia `body.model.unwrap_or_else(|| "gpt-4")` e entregava isso ao
+  runtime como se o cliente tivesse pedido, entao um llama-server ou Ollama
+  local respondia 404 `model 'gpt-4' not found` — a API OpenAI-compat era
+  inutilizavel justamente para o cliente que omite `model` porque quer o
+  default do servidor. Agora o corpo sem `model` chega ao provider como o
+  sentinel vazio que ele ja sabe resolver com o proprio `configured_model`
+  (mesma decisao que o A2A tomou), e o campo `model` do response/SSE ecoa o
+  modelo que de fato atendeu. Os outros tres defeitos da #1541 (prefixo de
+  chave de perfil, model do fallback e erro engolido no SSE) seguem abertos.
+- **`restart` para de criar daemon orfao quando o gateway roda sob systemd (#1542).**
+  `garraia restart` matava o daemon da unit e subia um processo novo por fora
+  dela: o orfao ficava com a porta e a unit entrava em crash-loop contra
+  `Address already in use` — 4606 reinicios em ~8h numa instalacao 0.4.6, com o
+  log parecendo um MCP reconectando sem parar. A CLI agora le o cgroup de quem
+  esta na porta e, se for uma unit systemd, recusa **antes** de parar qualquer
+  coisa (exit 78), nomeando a unit e o `systemctl [--user] restart` certo.
+  Recusa em vez de delegar porque a unit sobe pelo `ExecStart` dela e as flags
+  da invocacao (`--host`/`--port`/`--with-voice`) sumiriam em silencio.
+  Escotilha: `GARRAIA_ALLOW_SYSTEMD_RESTART=1`.
+- **Remediation do MCP deixa de mandar rodar um subcomando que nao existe (#1543).**
+  O registro de capacidades e o check `tools.capabilities` do `/api/diagnostics`
+  diziam `garraia mcp restart <nome>`, mas `garra mcp` so tem `list`, `inspect`,
+  `resources` e `prompts` — o operador tentava o comando, tomava erro de clap e
+  perdia tempo justamente no momento em que um servidor MCP estava fora do ar.
+  Os textos agora apontam para o caminho real, `POST /admin/api/mcp/<nome>/restart`
+  (o mesmo do botao Restart na aba MCP Servers do console), e um teste varre o
+  fonte do gateway para o comando fantasma nao voltar. O texto agora tambem
+  distingue `retrying` (o supervisor reconecta sozinho) de `failed` (os
+  `max_restarts` acabaram e so o restart manual traz de volta), para ninguem
+  reiniciar a mao um servidor que ja ia voltar.
+- **`bind_fail_closed_cli` deixa de flakear por porta compartilhada (#1544).**
+  `porta_livre()` pedia uma porta efemera ao kernel e a liberava na hora; o
+  kernel reusa porta liberada, entao dois dos seis testes que rodam em paralelo
+  podiam receber a mesma. Um deles sobe o gateway de verdade e o deixa vivo por
+  3s, e era esse listener que o outro encontrava ao provar que a recusa nao
+  escutou — `Address already in use` sem nada errado no binario. As portas
+  entregues agora ficam num registro process-wide. So alvo de teste.
+- **Perfis `llamacpp` e `anthropic` voltam a resolver por chave, e o fallback por
+  tipo volta a funcionar (#1554).** O #1540 deu id por perfil aos arms `openai` e
+  `ollama` do bootstrap e deixou `anthropic` e `llamacpp` para tras. O `llamacpp`
+  tinha um agravante proprio: o id que ele registra (`llama-cpp`, com hifen)
+  **nao** e igual ao `provider:` que o config usa para escolher o arm
+  (`llamacpp`), entao um perfil unico ja bastava para quebrar — nao resolvia nem
+  pela chave nem pelo fallback por tipo, e `agent.default_provider` apontando
+  para ele era silenciosamente ignorado (so um WARN no log) enquanto o gateway
+  seguia atendendo por outro provider, com a config aparentemente correta. Com
+  dois perfis do mesmo tipo, os dois arms repetiam a colisao de slot do #1540.
+  Agora `AnthropicProvider` e `LlamaCppProvider` tem `with_name` e os dois arms
+  registram pela chave do perfil, e `resolve_registered_provider_id` conhece a
+  traducao tipo -> id canonico a partir de uma constante publica, em vez de um
+  literal repetido.
+- **`agent.default_provider` que nomeia o *tipo* volta a resolver quando ha um
+  unico perfil daquele tipo (#1554).** Isto e uma mudanca de comportamento em
+  relacao ao #1540, que transformou esse caso num WARN: ao registrar todo perfil
+  pela chave, o #1540 quebrou sem perceber quem tinha `default_provider: ollama`
+  com `llm.local.provider: ollama`, porque o registro passou a ser `local`. A
+  correcao do #1554 teria repetido o estrago com `anthropic` e `llama-cpp`.
+  Agora o nome pedido e procurado em tres lugares: id registrado, chave de
+  perfil e — novo — tipo cujo perfil foi registrado pela chave. O terceiro passo
+  exige **exatamente um** candidato: com dois perfis do mesmo tipo o nome e
+  genuinamente ambiguo e a recusa com WARN continua, porque escolher um seria
+  reintroduzir o sorteio por boot que o #1540 existiu para matar.
+
+### Segurança
+
+- **wasmtime 48.0.2 → 49.0.1 fecha quatro advisories, e o piso de MSRV sobe para
+  1.96 (#1524).** O 49.0.1 corrige `GHSA-m63x-6p34-q65x` e
+  `GHSA-jqpg-j7w6-42pr` (combustivel gasto por callees de `call_ref` e por
+  lifting de record dinamico deixava de ser contabilizado), `GHSA-c9gc-w9vx-w86p`
+  (exaustao de memoria do host na escrita de corpo HTTP de saida) e
+  `GHSA-j2g9-4prp-pf6h` (panico com datetime fora de faixa no
+  `set-times`/`set-times-at` do filesystem WASI). Sem migracao de API no
+  `garraia-plugins/src/runtime.rs` desta vez. A arvore do cranelift 0.136.1
+  declara `rustc 1.96.0`, entao o `rust-version` do workspace e o job
+  `MSRV check` acompanham — quinto bump com essa forma, e o piso real continua
+  ditado pela arvore do wasmtime, nao pelas demais deps.
+- **wasmtime 49.0.1 -> 49.0.2 fecha sete advisories, e o piso de MSRV NAO sobe
+  (#1559).** Tres no `wasmtime` — `RUSTSEC-2026-0325` e `RUSTSEC-2026-0326`
+  (corrupcao da heap do GC: import de tag WebAssembly com tipo errado, e
+  rooting ausente para valores do GC vivos atraves de `try_call`) e
+  `RUSTSEC-2026-0327` (contagem de resultados do callback async-lifted de
+  componente sem validacao, com estouro de buffer na pilha nativa) — e quatro
+  no `wasmtime-wasi`: `RUSTSEC-2026-0321` (o `poll_oneoff` do WASI preview 0
+  burlava a contabilidade de combustivel), `RUSTSEC-2026-0322` (memoria do host
+  alocada em excesso quando o guest nao tem stdio), `RUSTSEC-2026-0323`
+  (`fd_readdir` copiava padding de struct nao inicializado para a memoria do
+  guest) e `RUSTSEC-2026-0324` (guest derrubava o host com timestamp de
+  filesystem anterior a epoch no wasip3). O `Security - cargo audit` agendado
+  ficou vermelho em 2026-10-03 com os sete.
+  Patch de lockfile apenas: o `Cargo.toml` ja pedia `wasmtime = "49"`, entao
+  nao houve mudanca de manifesto nem migracao de API no
+  `garraia-plugins/src/runtime.rs`. E o primeiro bump de `wasmtime` em seis que
+  **nao** eleva o `rust-version` — a arvore do 49.0.2 (cranelift 0.136.2,
+  pulley/wiggle 49.0.2) segue declarando `rustc 1.96.0`, igual a do 49.0.1,
+  entao o job `MSRV check (1.96)` e o piso do workspace ficam como estao.
+
+
 ## [0.4.7] - 2026-09-28
 
 Release de correção curta, cortada para levar aos usuários um bug observado em
