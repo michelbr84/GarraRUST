@@ -2435,7 +2435,21 @@ async function waPreview(req, warning, followUp) {
           var send = Object.assign({}, body);
           if (elevation.length) send.confirm_elevation = true;
           var res = await apiPost('/whatsapp/access', send);
-          if (followUp) { var f = Object.assign({}, followUp); if (f.identity && typeof f.identity === 'object') { f.identity_last4 = f.identity.last4; delete f.identity; } f.confirm_elevation = true; await apiPost('/whatsapp/access', f); }
+          if (followUp) {
+            // #1433: o segundo passo NUNCA herda o aceite do primeiro. Ele
+            // ganha o proprio dry-run; se conceder classe sensivel, abre um
+            // preview proprio com o aceite explicito daquela elevacao, em vez
+            // de mandar `confirm_elevation` as cegas.
+            var f = Object.assign({}, followUp);
+            if (f.identity && typeof f.identity === 'object') { f.identity_last4 = f.identity.last4; delete f.identity; }
+            var fPreview = await apiPost('/whatsapp/access', Object.assign({}, f, { dry_run: true }));
+            if ((fPreview.elevation || []).length) {
+              toast('Step 1 applied; review step 2', 'info');
+              await waPreview(f, 'Step 2 of 2: this step grants sensitive capabilities and needs its own confirmation.');
+              return;
+            }
+            await apiPost('/whatsapp/access', f);
+          }
           toast(res.written ? 'Policy updated' + (res.hot_reload ? ' (applies on the next message)' : ' (applies after restart)') : 'Nothing changed', 'success');
           if (res.audit && res.audit.written === false && res.audit.error) toast('Audit not written: ' + res.audit.error, 'error');
           pageWhatsappAccess();
