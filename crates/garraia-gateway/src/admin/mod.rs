@@ -6,6 +6,7 @@ pub mod mcp;
 pub mod mcp_templates;
 pub mod middleware;
 pub mod observability;
+pub mod permissions_overview;
 pub mod providers;
 pub mod rbac;
 pub mod recovery;

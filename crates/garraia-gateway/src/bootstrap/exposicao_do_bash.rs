@@ -191,8 +191,9 @@ impl ExposicaoDoBash {
                  tier arriscado continuam valendo"
             ),
             Self::HostComAllowlist => format!(
-                "{tool} ligado no host em modo allowlist-only (agent.bash_allowlist declarada); \
-                 so padrao declarado executa; denylist e tier arriscado continuam valendo"
+                "{tool} ligado no host SEM sandbox, em modo allowlist-only (agent.bash_allowlist \
+                 declarada); so padrao declarado executa; denylist e tier arriscado continuam \
+                 valendo"
             ),
             Self::Desligado { motivo } => format!(
                 "{tool} DESLIGADO (sem sandbox docker/podman utilizavel): {}",

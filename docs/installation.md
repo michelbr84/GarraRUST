@@ -190,6 +190,35 @@ foreground of the Termux session that started it. `garraia start -d` works, but
 Android may still reap it; a real "always on" needs the companion app on the
 v1 rung of [ADR 0016](adr/0016-mobile-termux-local-first.md).
 
+**A shell for the agent (`bash`) on Termux.** Android has no kernel support
+for containers, so Docker/Podman never exist there — and in the default
+`standard` profile ([ADR 0024](adr/0024-perfis-de-execucao-isolated-pod.md)) the runtime
+does **not** register the `bash` tool without a docker/podman sandbox. Out of
+the box, then, a Termux install has no shell tool; `garraia doctor` says so in
+its Termux block (`Tool bash`) with the step below. The supported way to get
+one is the **allowlist-only host mode** (#1272): declare the commands you
+trust in `agent.bash_allowlist`, and `bash` is registered on the host where
+**only** those patterns run.
+
+```yaml
+agent:
+  bash_allowlist:
+    - "git status"          # exact match
+    - "git log *"           # prefix match: '*' only at the end
+    - "pkg list-installed"
+    - "ls *"
+```
+
+In this mode the allowlist is a **boundary**, not a confirmation bypass:
+anything outside it is refused; compound commands (`;`, `|`, `&&`, `$(...)`,
+redirections) never match a pattern; the denylist and the risky-command tier
+still apply on top. There is **no sandbox** — `garraia doctor`,
+`/api/diagnostics` (`tools.bash`) and `garra_status` all say
+"SEM sandbox, em modo allowlist-only" so the degraded mode is always visible.
+Keep the list to commands you would let the agent run unattended on the phone.
+An empty list (the default) keeps `bash` off. See
+[execution profiles](execution-profiles.md) for the full policy.
+
 **Static musl builds are deliberately not shipped.** A static musl binary
 breaks DNS on Android: there is no `/etc/resolv.conf`, musl's internal resolver
 never reaches `dnsproxyd`, and `LD_PRELOAD` cannot intercept a static binary.
