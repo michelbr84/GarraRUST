@@ -103,9 +103,13 @@ test.describe('WhatsApp Access page', () => {
     await expect(row.getByTestId('wa-access-level')).toHaveValue('read');
     await expect(row.getByTestId('wa-access-write')).not.toBeChecked();
 
-    // Write on → preview shows what is gained, confirm, row reflects it.
+    // Write on → preview shows what is gained. For a `read` user this grants a
+    // sensitive class (filesystem.write), so an explicit elevation ack is
+    // required before Confirm (#1433, server-enforced via confirm_elevation).
     await row.getByTestId('wa-access-write').check();
     await expect(page.getByTestId('wa-access-preview-impact')).toBeVisible();
+    await expect(page.getByTestId('wa-access-elevation')).toBeVisible();
+    await page.getByTestId('wa-access-elevation-ack').check();
     await page.getByTestId('wa-access-confirm').click();
     await goToAccessPage(page);
     await expect(rowFor(page, LAST4).getByTestId('wa-access-write')).toBeChecked();

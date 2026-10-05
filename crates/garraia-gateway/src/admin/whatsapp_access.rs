@@ -76,6 +76,16 @@ pub struct AccessMutationRequest {
     /// So calcula: nada e gravado nem auditado (#1413).
     #[serde(default)]
     pub dry_run: bool,
+    /// #1433: a confirmacao explicita de uma ELEVACAO sensivel. Quando a
+    /// mutacao real (nao `dry_run`) concederia a algum principal uma classe
+    /// mutante que ele nao tinha (`filesystem.write`, `process.execute`,
+    /// `message.send`, `device.execute`, `memory.write`, `mcp.write`), o
+    /// gateway recusa com 409 `elevation_confirmation_required` a menos que
+    /// este campo seja `true`. E enforcado no servidor, nao so no dialogo do
+    /// console: um POST direto sem passar pela confirmacao tambem e recusado.
+    /// Para mudancas que so tiram, ou que so mexem em leitura, e ignorado.
+    #[serde(default)]
+    pub confirm_elevation: bool,
 }
 
 /// `?limit=N` de `GET /admin/api/whatsapp/access/audit`.
@@ -406,6 +416,39 @@ pub async fn admin_whatsapp_access_mutate(
         })
         .collect();
 
+    // #1433: a elevacao sensivel (classes mutantes recem-concedidas), pelo
+    // mesmo motor do impacto. O `dry_run` so a MOSTRA; a mutacao real a
+    // EXIGE confirmada (409 fail-closed) antes de conceder.
+    let elevacoes = impacto::elevacoes_sensiveis(&antes, &depois, perfil);
+    let elevation: Vec<Value> = elevacoes
+        .iter()
+        .map(|e| {
+            json!({
+                "principal": e.principal, "target": e.alvo, "classes": e.classes,
+            })
+        })
+        .collect();
+    if !req.dry_run && aplicada.mudou && !elevacoes.is_empty() && !req.confirm_elevation {
+        // Nada foi gravado nem auditado: a recusa vem antes de qualquer
+        // escrita. O corpo traz o preview (mudancas, impacto, elevacao) para o
+        // console mostrar e reenviar com `confirm_elevation: true`.
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "this change elevates a principal into a sensitive capability; confirm it explicitly",
+                "error_code": "elevation_confirmation_required",
+                "dry_run": false,
+                "changed": aplicada.mudou,
+                "written": false,
+                "changes": aplicada.mudancas,
+                "impact": impact,
+                "elevation": elevation,
+                "policy": visao::documento(&original, perfil, false),
+                "hot_reload": state.app_state.has_config_watcher(),
+            })),
+        );
+    }
+
     let mut written = false;
     let mut audit = json!({ "written": false });
     if !req.dry_run && aplicada.mudou {
@@ -457,6 +500,7 @@ pub async fn admin_whatsapp_access_mutate(
             "written": written,
             "changes": aplicada.mudancas,
             "impact": impact,
+            "elevation": elevation,
             "audit": audit,
             "policy": visao::documento(&config, perfil, false),
             "hot_reload": state.app_state.has_config_watcher(),
