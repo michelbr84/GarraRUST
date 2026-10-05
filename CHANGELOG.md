@@ -28,6 +28,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   por sessao. Falha de TTS vira erro explicito, sem fallback silencioso para
   texto; a tool some da lista quando falta TTS ou o canal esta offline. O
   adaptador Telegram aceita `MessageContent::Audio` apenas com caminho local.
+- **Web Console: pagina global Agents & Permissions (#1433).** Generaliza a pagina WhatsApp Access para um lugar so: principais e suas capacidades efetivas por canal, pelo mesmo motor de politica (ADR 0025) e pelo vocabulario do registro de capacidades (#1385), sem logica de autorizacao duplicada. Nova rota de leitura `GET /admin/api/permissions/overview` (guarda `Channels/Read`) devolve o perfil de execucao, a legenda das classes (cada uma marcada sensivel ou nao), e cada canal suportado com a sua fonte de politica — hoje so o `whatsapp_linked` tem motor por principal, os demais sao listados com honestidade (`policy: not supported yet / defaults`). Para o `whatsapp_linked`, a matriz por principal traz as classes efetivas (teto do principal interseccao registro) com as sensiveis destacadas; identidades so por `...1234`. A pagina nao edita: leva ao caminho unico da pagina WhatsApp Access. Elevacao sensivel (conceder a um principal uma classe mutante que ele nao tinha) passa a exigir confirmacao explicita ENFORCADA no servidor: `POST /admin/api/whatsapp/access` recusa com 409 `elevation_confirmation_required` sem `confirm_elevation: true`. Responsivo (360px, matriz rola no proprio container) e acessivel (ARIA em regioes, tabela e avisos).
+- **Exportar e importar a politica de acesso do WhatsApp, sem segredo (#1435).**
+  `garraia whatsapp access export [--out <arquivo>] [--redact-pii]` e
+  `GET /admin/api/whatsapp/access/export` produzem um documento versionado
+  `garraia.access-policy` (v1) montado campo a campo por allowlist da politica
+  (admissao, default, niveis, grupos, bloqueios): nunca serializando a secao,
+  entao token, cofre e material de sessao ficam de fora por construcao.
+  `--redact-pii` mascara as identidades para os quatro ultimos digitos e marca
+  o export como nao-importavel; na API o export e redigido por padrao e o
+  export cru (`?redact_pii=false`) exige `Channels/Update` e e auditado.
+  `garraia whatsapp access import <arquivo>
+  [--confirm-widening] [--dry-run]` e `POST /admin/api/whatsapp/access/import`
+  validam formato e versao (formato desconhecido e versao de major futuro sao
+  recusados), recusam export redigido, substituem a politica inteira (limpando
+  o legado e preservando `enabled`/`default_mode`/sessao), mostram o impacto
+  por principal pelo mesmo motor do `--dry-run` e exigem confirmacao explicita
+  para qualquer alargamento. A escrita e atomica com backup
+  `config.yml.import-bak` (0600, sem seguir symlink) para rollback, e o import vai para o audit como a
+  acao `import`.
 
 ### Alterado
 
