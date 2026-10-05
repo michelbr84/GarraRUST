@@ -550,6 +550,10 @@ tr:hover { background: var(--bg-hover); }
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
           <span class="nav-label">Sessions</span>
         </div>
+        <div class="nav-item" data-page="agents_permissions" data-testid="nav-agents-permissions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          <span class="nav-label">Agents &amp; Permissions</span>
+        </div>
         <div class="nav-item" data-page="whatsapp_access" data-testid="nav-whatsapp-access">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1.5"/></svg>
           <span class="nav-label">WhatsApp Access</span>
@@ -751,7 +755,7 @@ var mcpRefreshTimer = null;
 var pages = {
   dashboard: pageDashboard, mcp: pageMcp, providers: pageProviders, secrets: pageSecrets,
   config: pageConfig, memory: pageMemory, tools: pageTools, channels: pageChannels,
-  sessions: pageSessions, whatsapp_access: pageWhatsappAccess, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
+  sessions: pageSessions, agents_permissions: pageAgentsPermissions, whatsapp_access: pageWhatsappAccess, logs: pageLogs, metrics: pageMetrics, alerts: pageAlerts,
   templates: pageTemplates, audit: pageAudit, security: pageSecurity, users: pageUsers,
   about: pageAbout, account: pageAccount
 };
@@ -774,7 +778,7 @@ function pageTitle(page) {
   var titles = {
     dashboard:'Dashboard', mcp:'MCP Servers', providers:'Providers', secrets:'Secrets',
     config:'Configuration', memory:'Memory', tools:'Tools', channels:'Channels',
-    sessions:'Sessions', whatsapp_access:'WhatsApp Access', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
+    sessions:'Sessions', agents_permissions:'Agents & Permissions', whatsapp_access:'WhatsApp Access', logs:'Logs', metrics:'Metrics', alerts:'Alerts',
     templates:'Templates', audit:'Audit Log', security:'Security', users:'Users',
     about:'About', account:'Account'
   };
@@ -1940,6 +1944,145 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 });
 document.getElementById('sidebar-toggle').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
 // ─── WhatsApp Access & Permissions (ADR 0025; #1402–#1408, #1411, #1413) ────
+// ─── Agents & Permissions (#1433) ────────────────────────────────────
+// A visao GLOBAL: principais e suas capacidades efetivas por canal, pelo
+// MESMO motor da politica (`GET /admin/api/permissions/overview`). Esta pagina
+// NAO edita — para o WhatsApp ela aponta para a pagina WhatsApp Access, que e
+// o caminho unico de mutacao (preview/confirm, com a confirmacao de elevacao
+// sensivel enforcada no servidor). Nenhuma logica de autorizacao vive aqui;
+// identidades so por `…1234`. Acessivel (ARIA em tabelas/regioes), responsivo
+// (tabelas rolam a 360px) e com `data-testid` estaveis (plan 0052).
+function apClassLabel(cls) {
+  var map = {
+    'filesystem.read': 'read files', 'filesystem.write': 'write files',
+    'network.read': 'web', 'memory.read': 'memory read', 'memory.write': 'memory write',
+    'process.execute': 'shell', 'device.read': 'device read', 'device.execute': 'device execute',
+    'message.send': 'send message', 'runtime.inspect': 'inspect runtime', 'scheduling': 'scheduling',
+    'mcp.read': 'MCP read', 'mcp.write': 'MCP write'
+  };
+  return map[cls] || cls;
+}
+
+async function pageAgentsPermissions() {
+  try {
+    var data = await apiGet('/permissions/overview');
+    renderContent(apView(data));
+  } catch (e) {
+    renderContent(el('div', { className: 'card', textContent: 'Failed: ' + e.message }));
+  }
+}
+
+function apView(data) {
+  var frag = document.createDocumentFragment();
+  var global = data.global || {};
+  var sensitiveSet = {};
+  (data.capability_classes || []).forEach(function (c) { if (c.sensitive) sensitiveSet[c['class']] = true; });
+
+  // ── Intro + perfil de execucao ──
+  var head = el('div', { className: 'card', 'data-testid': 'ap-summary', role: 'region', 'aria-label': 'Agents and permissions summary' });
+  head.appendChild(el('h3', { textContent: 'Agents & Permissions' }));
+  head.appendChild(el('div', { className: 'wa-hint', textContent: 'Who can talk to GarraIA on each channel, and the capability classes each principal effectively gets — computed by the same policy engine the channel pages use (ceiling of the principal intersected with the runtime capability registry). This page is read-only; edits for a channel open that channel’s own page. Identities are shown only by their last 4 digits.' }));
+  var meta = el('div', { style: 'display:flex;gap:16px;flex-wrap:wrap;margin:8px 0;' });
+  meta.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'ap-execution-profile', textContent: 'execution profile: ' + (global.execution_profile || '?') }));
+  meta.appendChild(el('span', { className: 'badge ' + (data.hot_reload ? 'badge-success' : 'badge-neutral'), 'data-testid': 'ap-hot-reload', textContent: data.hot_reload ? 'hot reload: next message' : 'hot reload: off (restart applies)' }));
+  head.appendChild(meta);
+  frag.appendChild(head);
+
+  // ── Legenda de classes (o que e sensivel) ──
+  var legend = el('div', { className: 'card', 'data-testid': 'ap-classes-legend', role: 'region', 'aria-label': 'Capability classes' });
+  legend.appendChild(el('h3', { textContent: 'Capability classes' }));
+  legend.appendChild(el('div', { className: 'wa-hint', textContent: 'Classes marked sensitive change something outside the conversation. Granting one to a principal that did not have it is an elevation and needs explicit confirmation on the channel’s edit page.' }));
+  var legendRow = el('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;' });
+  (data.capability_classes || []).forEach(function (c) {
+    legendRow.appendChild(el('span', {
+      className: 'badge ' + (c.sensitive ? 'badge-warning' : 'badge-neutral'),
+      'data-testid': 'ap-class', 'data-class': c['class'], 'data-sensitive': c.sensitive ? 'true' : 'false',
+      title: c.sensitive ? 'sensitive' : 'read-only',
+      textContent: apClassLabel(c['class']) + (c.sensitive ? ' ⚠' : '')
+    }));
+  });
+  legend.appendChild(legendRow);
+  frag.appendChild(legend);
+
+  // ── Um card por canal ──
+  (data.channels || []).forEach(function (ch) { frag.appendChild(apChannelCard(ch, sensitiveSet)); });
+  return frag;
+}
+
+function apChannelCard(ch, sensitiveSet) {
+  var card = el('div', { className: 'card', 'data-testid': 'ap-channel', 'data-channel': ch.id, 'data-policy-engine': ch.policy_engine ? 'true' : 'false', role: 'region', 'aria-label': (ch.label || ch.id) + ' permissions' });
+  var head = el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;' });
+  head.appendChild(el('h3', { style: 'margin:0;', textContent: ch.label || ch.id }));
+  head.appendChild(badgeFor(ch.enabled, 'Channel on', 'Channel off'));
+  head.appendChild(el('span', { className: 'badge ' + (ch.policy_engine ? 'badge-info' : 'badge-neutral'), 'data-testid': 'ap-channel-policy', textContent: ch.policy_engine ? 'policy: ' + (ch.policy_source || 'engine') : 'policy: not supported yet / defaults' }));
+  card.appendChild(head);
+
+  if (!ch.policy_engine) {
+    card.appendChild(el('div', { className: 'wa-hint', 'data-testid': 'ap-channel-note', textContent: ch.note || 'No per-principal access policy for this channel yet.' }));
+    return card;
+  }
+
+  // Defaults + overrides (so leitura; edicao e na pagina do canal).
+  var d = ch.defaults || {};
+  var unknown = d.unknown_sender || {};
+  var groups = d.groups || {};
+  var ov = ch.overrides || {};
+  var sum = el('div', { style: 'display:flex;gap:16px;flex-wrap:wrap;margin:8px 0;' });
+  sum.appendChild(el('span', { className: 'badge ' + (ch.admission === 'open' ? 'badge-error' : 'badge-success'), 'data-testid': 'ap-channel-admission', textContent: 'admission: ' + (ch.admission || '?') }));
+  sum.appendChild(el('span', { className: 'badge badge-neutral', textContent: 'owner floor: ' + (d.owner_floor_mode || '?') + ' · default floor: ' + (d.default_mode || '?') }));
+  sum.appendChild(el('span', { className: 'badge badge-neutral', textContent: 'unknown default: ' + waLevelLabel(unknown.level, unknown.write) }));
+  sum.appendChild(el('span', { className: 'badge ' + (groups.enabled ? 'badge-success' : 'badge-neutral'), textContent: 'groups: ' + (groups.enabled ? 'on' : 'off') }));
+  sum.appendChild(el('span', { className: 'badge badge-neutral', 'data-testid': 'ap-channel-counts', textContent: 'authorized ' + (ov.authorized || 0) + ' · owners ' + (ov.owners || 0) + ' · blocked ' + (ov.blocked || 0) }));
+  card.appendChild(sum);
+
+  if ((ch.warnings || []).length) {
+    var warn = el('div', { className: 'wa-alert wa-alert-warning', 'data-testid': 'ap-channel-warnings', role: 'alert' });
+    (ch.warnings || []).forEach(function (w) { warn.appendChild(el('div', { textContent: '! ' + w })); });
+    card.appendChild(warn);
+  }
+
+  // Matriz por principal, com as classes efetivas (sensiveis destacadas).
+  var wrap = el('div', { style: 'overflow-x:auto;' });
+  var table = el('table', { className: 'wa-table', 'data-testid': 'ap-principals', 'data-channel': ch.id, role: 'table', 'aria-label': (ch.label || ch.id) + ' effective capabilities per principal' });
+  var thead = el('thead'); thead.innerHTML = '<tr><th scope="col">Principal</th><th scope="col">Identity</th><th scope="col">Floor</th><th scope="col">Level</th><th scope="col">Write</th><th scope="col">Effective capability classes</th></tr>';
+  table.appendChild(thead);
+  var tbody = el('tbody');
+  (ch.principals || []).forEach(function (p) {
+    var tr = el('tr', { 'data-testid': 'ap-principal-row', 'data-principal': p.principal, 'data-last4': p.last4 || '' });
+    tr.appendChild(el('td', { textContent: waPrincipalLabel(p.principal) }));
+    tr.appendChild(el('td', null, [el('code', { textContent: p.last4 || '—' })]));
+    tr.appendChild(el('td', { textContent: p.mode || '—' }));
+    tr.appendChild(el('td', { textContent: p.level || (p.principal === 'dono' ? 'no ceiling' : '—') }));
+    tr.appendChild(el('td', { textContent: p.write === null || p.write === undefined ? '—' : (p.write ? 'on' : 'off') }));
+    var capTd = el('td');
+    var classes = p.classes || [];
+    if (!classes.length) {
+      capTd.textContent = p.admitted === false ? 'not admitted' : 'no tools';
+    } else {
+      classes.forEach(function (c) {
+        capTd.appendChild(el('span', {
+          className: 'badge ' + (sensitiveSet[c] ? 'badge-warning' : 'badge-neutral'), style: 'margin:1px;',
+          'data-testid': 'ap-principal-class', 'data-class': c, 'data-sensitive': sensitiveSet[c] ? 'true' : 'false',
+          textContent: apClassLabel(c) + (sensitiveSet[c] ? ' ⚠' : '')
+        }));
+      });
+    }
+    tr.appendChild(capTd);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+
+  // Edicao: o caminho unico da pagina do canal — nao se duplica aqui.
+  if (ch.edit_page && can('channels', 'update')) {
+    var foot = el('div', { className: 'toolbar', style: 'margin-top:10px;' });
+    foot.appendChild(el('button', { className: 'btn-primary btn-sm', 'data-testid': 'ap-channel-manage', 'data-channel': ch.id, textContent: 'Manage ' + (ch.label || ch.id) + ' access', onClick: function () { navigate(ch.edit_page); } }));
+    card.appendChild(foot);
+  }
+  return card;
+}
+
 // Terceiro consumidor do caminho unico: le `GET /admin/api/whatsapp/access`
 // (o mesmo documento de `garraia whatsapp access --json`) e muda por
 // `POST /admin/api/whatsapp/access`. Toda mutacao passa por um PREVIEW
@@ -2266,18 +2409,57 @@ async function waPreview(req, warning, followUp) {
       impact.appendChild(el('div', { textContent: '• ' + who + ': ' + parts.join(' · ') }));
     });
     card.appendChild(impact);
+
+    // #1433: elevacao sensivel. O servidor RECUSA a mutacao (409) sem
+    // `confirm_elevation: true`; aqui ela exige um aceite explicito, alem do
+    // Confirm, antes de conceder qualquer classe mutante nova.
+    var elevation = preview.elevation || [];
+    var ack = null;
+    if (elevation.length) {
+      var box = el('div', { className: 'wa-alert wa-alert-warning', 'data-testid': 'wa-access-elevation', role: 'alert' });
+      box.appendChild(el('div', { style: 'font-weight:600;', textContent: 'Sensitive elevation' }));
+      elevation.forEach(function (ev) {
+        var who = waPrincipalLabel(ev.principal) + (ev.target ? ' ' + ev.target : '');
+        box.appendChild(el('div', { 'data-testid': 'wa-access-elevation-item', textContent: '• ' + who + ' gains: ' + (ev.classes || []).map(apClassLabel).join(', ') }));
+      });
+      ack = el('input', { type: 'checkbox', 'data-testid': 'wa-access-elevation-ack', id: 'wa-elev-ack', 'aria-label': 'I understand this grants sensitive capabilities' });
+      box.appendChild(el('label', { style: 'display:flex;gap:6px;align-items:center;margin-top:6px;', 'for': 'wa-elev-ack' }, [ack, 'I understand this grants sensitive capabilities']));
+      card.appendChild(box);
+    }
+
     var btns = el('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:10px;' });
     btns.appendChild(el('button', { className: 'btn-secondary btn-sm', 'data-testid': 'wa-access-cancel', textContent: 'Cancel', onClick: function () { clearEl(panel); panel.style.display = 'none'; } }));
     if (preview.changed) {
-      btns.appendChild(el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-access-confirm', textContent: 'Confirm', onClick: async function () {
+      var confirmBtn = el('button', { className: 'btn-primary btn-sm', 'data-testid': 'wa-access-confirm', textContent: 'Confirm', onClick: async function () {
         try {
-          var res = await apiPost('/whatsapp/access', body);
-          if (followUp) { var f = Object.assign({}, followUp); if (f.identity && typeof f.identity === 'object') { f.identity_last4 = f.identity.last4; delete f.identity; } await apiPost('/whatsapp/access', f); }
+          var send = Object.assign({}, body);
+          if (elevation.length) send.confirm_elevation = true;
+          var res = await apiPost('/whatsapp/access', send);
+          if (followUp) {
+            // #1433: o segundo passo NUNCA herda o aceite do primeiro. Ele
+            // ganha o proprio dry-run; se conceder classe sensivel, abre um
+            // preview proprio com o aceite explicito daquela elevacao, em vez
+            // de mandar `confirm_elevation` as cegas.
+            var f = Object.assign({}, followUp);
+            if (f.identity && typeof f.identity === 'object') { f.identity_last4 = f.identity.last4; delete f.identity; }
+            var fPreview = await apiPost('/whatsapp/access', Object.assign({}, f, { dry_run: true }));
+            if ((fPreview.elevation || []).length) {
+              toast('Step 1 applied; review step 2', 'info');
+              await waPreview(f, 'Step 2 of 2: this step grants sensitive capabilities and needs its own confirmation.');
+              return;
+            }
+            await apiPost('/whatsapp/access', f);
+          }
           toast(res.written ? 'Policy updated' + (res.hot_reload ? ' (applies on the next message)' : ' (applies after restart)') : 'Nothing changed', 'success');
           if (res.audit && res.audit.written === false && res.audit.error) toast('Audit not written: ' + res.audit.error, 'error');
           pageWhatsappAccess();
         } catch (e) { toast('Failed: ' + e.message, 'error'); }
-      } }));
+      } });
+      if (ack) {
+        confirmBtn.disabled = true;
+        ack.addEventListener('change', function () { confirmBtn.disabled = !ack.checked; });
+      }
+      btns.appendChild(confirmBtn);
     }
     card.appendChild(btns);
     panel.appendChild(card);

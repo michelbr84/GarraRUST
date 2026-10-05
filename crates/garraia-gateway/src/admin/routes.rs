@@ -146,6 +146,14 @@ pub fn build_admin_router(
             "/api/capabilities",
             get(super::capabilities::admin_capabilities),
         )
+        // #1433: a visao global de agentes e permissoes — principais e suas
+        // capacidades efetivas por canal, pelo mesmo motor da politica
+        // (Channels/Read, a mesma guarda da pagina WhatsApp Access). NAO e o
+        // `/api/permissions` (matriz RBAC do painel).
+        .route(
+            "/api/permissions/overview",
+            get(super::permissions_overview::admin_permissions_overview),
+        )
         // #1420: o "Test WhatsApp" do console — o MESMO motor do `garraia
         // doctor whatsapp`, colhido em processo (Channels/Read; viewer le).
         .route(
@@ -163,6 +171,17 @@ pub fn build_admin_router(
         .route(
             "/api/whatsapp/access/audit",
             get(super::whatsapp_access::admin_whatsapp_access_audit),
+        )
+        // #1435: exportar/importar a politica sem segredo. Export com
+        // Channels/Read; import com Channels/Update (o layer de CSRF cobre o
+        // POST).
+        .route(
+            "/api/whatsapp/access/export",
+            get(super::whatsapp_access::admin_whatsapp_access_export),
+        )
+        .route(
+            "/api/whatsapp/access/import",
+            post(super::whatsapp_access::admin_whatsapp_access_import),
         )
         // #1422: o reset das mensagens recusadas (contadores em memoria).
         .route(

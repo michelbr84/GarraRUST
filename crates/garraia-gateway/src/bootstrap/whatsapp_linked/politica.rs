@@ -57,6 +57,8 @@ pub mod impacto;
 pub mod mutacao;
 /// Presets nomeados sobre [`Alcance`] (#1434).
 pub mod presets;
+/// Exportar/importar a politica sem segredo, entre instalacoes (#1435).
+pub mod transferencia;
 /// O documento da politica efetiva, um so para CLI, API e console (#1400).
 pub mod visao;
 

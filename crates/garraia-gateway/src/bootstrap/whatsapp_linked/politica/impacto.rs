@@ -63,6 +63,30 @@ impl Capacidades {
         .filter_map(|(ligada, nome)| ligada.then_some(nome))
         .collect()
     }
+
+    /// As classes de capacidade (#1385) que estao ligadas, no vocabulario do
+    /// registro do runtime (`filesystem.read`…). E a mesma coisa que
+    /// [`Self::ligadas`] diz em rotulo humano, mas em classe de maquina — para
+    /// a visao global (#1433) poder falar de classes e marcar o que e
+    /// sensivel sem reimplementar o calculo: o que entra aqui ja foi provado
+    /// pelo `ToolGate` real em [`efetivo`].
+    pub fn classes(&self) -> Vec<Capacidade> {
+        [
+            (self.leitura, Capacidade::FilesystemRead),
+            (self.escrita, Capacidade::FilesystemWrite),
+            (self.web, Capacidade::NetworkRead),
+            (self.memoria_leitura, Capacidade::MemoryRead),
+            (self.memoria_escrita, Capacidade::MemoryWrite),
+            (self.shell, Capacidade::ProcessExecute),
+            (self.dispositivo, Capacidade::DeviceExecute),
+            (self.mensagem, Capacidade::MessageSend),
+            (self.mcp_leitura, Capacidade::McpRead),
+            (self.mcp_escrita, Capacidade::McpWrite),
+        ]
+        .into_iter()
+        .filter_map(|(ligada, classe)| ligada.then_some(classe))
+        .collect()
+    }
 }
 
 /// O que um principal pode, num perfil de execucao.
@@ -251,6 +275,73 @@ pub fn diferencas(
             ganha,
             perde,
         });
+    }
+    out
+}
+
+/// Um principal que **ganha** uma classe sensivel entre duas politicas
+/// (#1433). "Sensivel" e o que [`Capacidade::e_mutante`] diz: tudo que muda
+/// algo fora da conversa (escrita de arquivo, shell, dispositivo, mensagem,
+/// memoria, MCP de escrita) — nunca leitura. E a "widening detection" que o
+/// ADR 0025 §2 ja implica (o teto so tira; abrir e sempre deliberado): aqui
+/// ela vira um fato nomeado, para a mutacao exigir confirmacao explicita
+/// antes de conceder qualquer uma dessas classes a quem nao a tinha.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElevacaoSensivel {
+    pub principal: &'static str,
+    /// `…1234` do alvo, ou `None` (pareado, desconhecido, default de grupo) —
+    /// como em [`LinhaDaMatriz`], sempre mascarado.
+    pub alvo: Option<String>,
+    /// As classes sensiveis recem-ganhas, pelo nome do vocabulario
+    /// (`filesystem.write`…).
+    pub classes: Vec<&'static str>,
+}
+
+/// As elevacoes sensiveis de `antes` para `depois`: por principal, as classes
+/// mutantes que ele passa a ter e nao tinha. Vazio quando nada abre (inclusive
+/// quando a mudanca so TIRA, ou so mexe em leitura). Mesmo motor de
+/// [`matriz`]: o efetivo de cada lado vem do `ToolGate` real, nao de um
+/// segundo modelo.
+pub fn elevacoes_sensiveis(
+    antes: &LinkedSettings,
+    depois: &LinkedSettings,
+    perfil: ExecutionProfile,
+) -> Vec<ElevacaoSensivel> {
+    let a = matriz(antes, perfil);
+    let d = matriz(depois, perfil);
+    let chave = |l: &LinhaDaMatriz| (l.principal, l.alvo.clone());
+    let sensiveis =
+        |linhas: &[LinhaDaMatriz], k: &(&'static str, Option<String>)| -> Vec<Capacidade> {
+            linhas
+                .iter()
+                .find(|l| l.principal == k.0 && l.alvo == k.1)
+                .map(|l| {
+                    l.efetivo
+                        .capacidades
+                        .classes()
+                        .into_iter()
+                        .filter(|c| c.e_mutante())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+    let mut out = Vec::new();
+    for linha in &d {
+        let k = chave(linha);
+        let antes_s = sensiveis(&a, &k);
+        let depois_s = sensiveis(&d, &k);
+        let ganha: Vec<&'static str> = depois_s
+            .iter()
+            .filter(|c| !antes_s.contains(c))
+            .map(|c| c.as_str())
+            .collect();
+        if !ganha.is_empty() {
+            out.push(ElevacaoSensivel {
+                principal: k.0,
+                alvo: k.1,
+                classes: ganha,
+            });
+        }
     }
     out
 }

@@ -53,6 +53,11 @@ function rowFor(page: Page, last4: string) {
 async function confirmPreview(page: Page) {
   await page.getByTestId('wa-access-preview').waitFor({ state: 'visible', timeout: 10_000 });
   await page.getByTestId('wa-access-preview-changes').waitFor({ state: 'visible', timeout: 10_000 });
+  // #1433: a step that grants a sensitive class (e.g. an unblock that gives
+  // back `write`, depending on the mode floor) needs the explicit ack first.
+  if ((await page.getByTestId('wa-access-elevation-ack').count()) > 0) {
+    await page.getByTestId('wa-access-elevation-ack').check();
+  }
   await page.getByTestId('wa-access-confirm').click();
   await page.getByTestId('wa-access-preview').waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
 }
@@ -103,9 +108,19 @@ test.describe('WhatsApp Access page', () => {
     await expect(row.getByTestId('wa-access-level')).toHaveValue('read');
     await expect(row.getByTestId('wa-access-write')).not.toBeChecked();
 
-    // Write on → preview shows what is gained, confirm, row reflects it.
+    // Write on → preview shows what is gained. Whether that is a SENSITIVE
+    // elevation depends on the channel's mode floor: with `default_mode: code`
+    // a `read` user gains filesystem.write; with this gateway's default floor
+    // (no `whatsapp_linked` section) write grants no mutating class. When the
+    // elevation box is there, Confirm stays disabled until the explicit ack
+    // (#1433; the 409 itself is pinned by tests/admin_whatsapp_elevation.rs).
     await row.getByTestId('wa-access-write').check();
     await expect(page.getByTestId('wa-access-preview-impact')).toBeVisible();
+    if ((await page.getByTestId('wa-access-elevation').count()) > 0) {
+      await expect(page.getByTestId('wa-access-confirm')).toBeDisabled();
+      await page.getByTestId('wa-access-elevation-ack').check();
+      await expect(page.getByTestId('wa-access-confirm')).toBeEnabled();
+    }
     await page.getByTestId('wa-access-confirm').click();
     await goToAccessPage(page);
     await expect(rowFor(page, LAST4).getByTestId('wa-access-write')).toBeChecked();
