@@ -25,7 +25,7 @@
 ### Critérios globais de "AAA-ready"
 
 - `cargo check --workspace` e `cargo clippy --workspace -- -D warnings` **verdes**.
-- Cobertura de testes ≥ 70% em crates de domínio (`garraia-agents`, `garraia-db`, `garraia-security`, `garraia-workspace`).
+- Cobertura de testes ≥ 70% em crates de domínio (`garraia-agents`, `garraia-db`, `garraia-security`, `garraia-workspace`). *(Medido 2026-10-05, #1566: `garraia-agents` 86,88%, `garraia-db` 93,23%, `garraia-security` 93,75% — cumprem. `garraia-workspace` **não é mensurável** hoje: está no `--exclude` do job de cobertura por depender de Postgres testcontainer. Workspace agregado: 71,99% de linha. Números por crate, metodologia e causa do antigo `coverage_pct: None` em [`docs/coverage-baseline-2026-10.md`](docs/coverage-baseline-2026-10.md).)*
 - Zero `unwrap()` fora de testes; zero SQL por concatenação; zero secrets em logs.
 - Changelog por release, migrations forward-only, feature flags por tenant/grupo.
 - Runbooks de incidente + backup/restore testados trimestralmente.
