@@ -25,7 +25,7 @@
 ### Critérios globais de "AAA-ready"
 
 - `cargo check --workspace` e `cargo clippy --workspace -- -D warnings` **verdes**.
-- Cobertura de testes ≥ 70% em crates de domínio (`garraia-agents`, `garraia-db`, `garraia-security`, `garraia-workspace`).
+- Cobertura de testes ≥ 70% em crates de domínio (`garraia-agents`, `garraia-db`, `garraia-security`, `garraia-workspace`). *(Medido 2026-10-05, #1566: `garraia-agents` 86,88%, `garraia-db` 93,23%, `garraia-security` 93,75% — cumprem. `garraia-workspace` **não é mensurável** hoje: está no `--exclude` do job de cobertura por depender de Postgres testcontainer. Workspace agregado: 71,99% de linha. Números por crate, metodologia e causa do antigo `coverage_pct: None` em [`docs/coverage-baseline-2026-10.md`](docs/coverage-baseline-2026-10.md).)*
 - Zero `unwrap()` fora de testes; zero SQL por concatenação; zero secrets em logs.
 - Changelog por release, migrations forward-only, feature flags por tenant/grupo.
 - Runbooks de incidente + backup/restore testados trimestralmente.
@@ -1025,14 +1025,25 @@ Módulo dentro de `garraia-workspace`. Schema entregue via migration 006 com **R
 
 ### 4.4 Canais restantes (wiring no gateway)
 
-Os adapters existem em `garraia-channels` (features desligadas por default) mas não são instanciados pelo bootstrap do gateway (`crates/garraia-gateway/src/bootstrap/`):
+**Fechado em 2026-10-05 (#1567).** O wiring está feito: `garraia-gateway`
+liga as 13 features de canal incondicionalmente
+(`crates/garraia-gateway/Cargo.toml:16`) e `server.rs` instancia os seis no
+boot, sem `cfg` nenhum — Google Chat, Teams e LINE por rota de webhook
+(`router.rs:316/324/335`), Matrix, IRC e Signal por conexão no boot com
+retry em backoff. A nota antiga ("features desligadas por default… não são
+instanciados pelo bootstrap") descrevia um estado que o código já não tinha.
 
-- [ ] Google Chat
-- [ ] Microsoft Teams
-- [ ] Matrix
-- [ ] LINE
-- [ ] IRC
-- [ ] Signal
+- [x] Google Chat — `/webhooks/google-chat` (JWT RS256 via JWKS)
+- [x] Microsoft Teams — `/webhooks/teams` (JWT RS256 + guard SSRF no `serviceUrl`)
+- [x] Matrix — conexão no boot (federado, E2EE)
+- [x] LINE — `/webhooks/line` (HMAC `channel_secret`)
+- [x] IRC — conexão no boot (multi-canal, multi-rede)
+- [x] Signal — conexão no boot (daemon `signal-cli` local)
+
+Pendência remanescente, rastreada separadamente: nenhum dos seis tem teste
+de **integração do gateway** que suba a rota ou a conexão ponta a ponta — a
+cobertura hoje é unitária, dentro de `garraia-channels` (verificação de
+assinatura, parsing). Por isso o README os marca 🔹 e não ✅.
 
 ### 4.5 Garra Mobile Local (Termux → nativo)
 

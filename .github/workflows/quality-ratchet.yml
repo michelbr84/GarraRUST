@@ -74,35 +74,78 @@ jobs:
         # The coverage job in ci.yml uploads `coverage-lcov-${{ github.run_id }}`,
         # but ci.yml and quality-ratchet.yml are SEPARATE workflows triggered
         # in parallel by the same PR push. Their `github.run_id` differs, so
-        # we cannot use actions/download-artifact directly. Instead, fetch the
-        # most recent successful coverage run for the same head SHA via gh API.
-        # If unavailable, the parser marks coverage as not_collected_this_run.
+        # we cannot use actions/download-artifact directly; we look the run up
+        # by commit via the gh API instead.
+        #
+        # #1566: looking up ONLY the head SHA made `coverage_pct` null on every
+        # single run, deterministically — not intermittently. This job is
+        # `timeout-minutes: 10` and does ~2-3 min of work; the `coverage` job is
+        # `timeout-minutes: 45` and takes 21-30 min. So when we look, the
+        # ci.yml run for this SHA is still `in_progress` with `conclusion: null`,
+        # the `conclusion == "success"` filter drops it, and we download
+        # nothing. The ratchet always loses that race.
+        #
+        # The invariant from plan 0064 ("ajuste #3": trigger is `pull_request`,
+        # never `workflow_run`) is what makes the race unavoidable, and it
+        # stays. So we fall back to the newest successful ci.yml run on `main`
+        # and report WHERE the number came from, which beats printing `None`
+        # and calling coverage unmeasured. The PR's own number still lands only
+        # on a later re-run of this job — documented in
+        # `docs/coverage-baseline-2026-10.md`, not a bug to rediscover.
+        #
+        # Still best-effort in both branches: no failure here can fail the job.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
-          # Find the most recent successful run of the `coverage` job for HEAD_SHA.
-          # Fall back gracefully if not found.
-          run_id=$(gh run list \
-            --repo "${{ github.repository }}" \
-            --workflow ci.yml \
-            --commit "$HEAD_SHA" \
-            --limit 1 \
-            --json databaseId,conclusion \
-            --jq 'map(select(.conclusion == "success")) | .[0].databaseId // empty' \
-            2>/dev/null || true)
 
-          if [ -n "${run_id:-}" ]; then
-            echo "Found coverage run $run_id for $HEAD_SHA"
-            gh run download "$run_id" \
-              --repo "${{ github.repository }}" \
-              --name "coverage-lcov-$run_id" \
-              --dir . 2>/dev/null || echo "lcov artifact not yet available; coverage will be best-effort skipped"
+          # Newest COMPLETED successful ci.yml run for a given ref/commit.
+          # `--limit 20` because the newest run for a SHA is routinely still
+          # in progress (see above) and older re-runs may have finished.
+          newest_success() {
+            gh run list --repo "$REPO" --workflow ci.yml "$1" "$2" \
+              --limit 20 --json databaseId,status,conclusion \
+              --jq 'map(select(.status == "completed" and .conclusion == "success"))
+                    | .[0].databaseId // empty' 2>/dev/null || true
+          }
+
+          fetch_lcov() {
+            gh run download "$1" --repo "$REPO" \
+              --name "coverage-lcov-$1" --dir . 2>/dev/null
+          }
+
+          source_label=""
+
+          run_id=$(newest_success --commit "$HEAD_SHA")
+          if [ -n "${run_id:-}" ] && fetch_lcov "$run_id"; then
+            source_label="this commit (${HEAD_SHA:0:8}), ci.yml run $run_id"
           else
-            echo "No completed ci.yml run found for $HEAD_SHA; coverage will be best-effort skipped"
+            echo "No finished ci.yml coverage for ${HEAD_SHA:0:8} yet; falling back to main."
+            run_id=$(newest_success --branch main)
+            if [ -n "${run_id:-}" ] && fetch_lcov "$run_id"; then
+              sha=$(gh run view "$run_id" --repo "$REPO" --json headSha \
+                      --jq '.headSha // empty' 2>/dev/null || true)
+              source_label="main (${sha:0:8}), ci.yml run $run_id — NOT this PR"
+            fi
           fi
-          ls -la lcov.info 2>/dev/null || echo "(no lcov.info)"
+
+          if [ -s lcov.info ]; then
+            echo "lcov.info from: $source_label"
+            {
+              echo "## Coverage source"
+              echo ""
+              echo "\`lcov.info\` used by this report came from **$source_label**."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "(no lcov.info) — coverage best-effort skipped"
+            {
+              echo "## Coverage source"
+              echo ""
+              echo "No \`lcov.info\` available; coverage reported as not collected."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Collect metrics (fast mode)
         run: bash scripts/quality/collect-metrics.sh > current-metrics.json
