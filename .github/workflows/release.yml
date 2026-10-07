@@ -485,6 +485,14 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    env:
+      # #1568: createUpdaterArtifacts + pubkey no tauri.conf.json fazem o
+      # bundler exigir a chave privada para assinar os artefactos de updater;
+      # sem ela o `cargo tauri build` falha. O secret vai nos jobs que
+      # constroem o desktop, nao so no `release`. PR de fork nao recebe
+      # secret (regra do GitHub) e falha com o erro claro — aceitavel num
+      # repo pessoal que so recebe PR do proprio account.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -550,6 +558,14 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+    env:
+      # #1568: createUpdaterArtifacts + pubkey no tauri.conf.json fazem o
+      # bundler exigir a chave privada para assinar os artefactos de updater;
+      # sem ela o `cargo tauri build` falha. O secret vai nos jobs que
+      # constroem o desktop, nao so no `release`. PR de fork nao recebe
+      # secret (regra do GitHub) e falha com o erro claro — aceitavel num
+      # repo pessoal que so recebe PR do proprio account.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -601,6 +617,56 @@ jobs:
 
   # Package the Linux binaries into .deb / .rpm / AppImage.
   #
+  # Espelho macOS do build-linux-desktop e do build-windows-installer: o
+  # DMG e o .app nao eram gerados por nenhum job — a #1568 registra o gap e o
+  # ROADMAP ja dizia que o macOS so recebia o binario da CLI. Mesmo script
+  # fonte unidade (scripts/build-desktop-macos.sh), mesmas regras dos irmaos:
+  # best-effort no `needs:` do release, fora do `if:`, sem `continue-on-error`.
+  build-macos-desktop:
+    name: Build macOS Desktop (.dmg)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      # #1568: createUpdaterArtifacts + pubkey no tauri.conf.json fazem o
+      # bundler exigir a chave privada para assinar os artefactos de updater;
+      # sem ela o `cargo tauri build` falha. O secret vai nos jobs que
+      # constroem o desktop, nao so no `release`. PR de fork nao recebe
+      # secret (regra do GitHub) e falha com o erro claro — aceitavel num
+      # repo pessoal que so recebe PR do proprio account.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build .dmg
+        # Fonte única de verdade, como os scripts irmaos: falha alto quando o
+        # bundler não emite o DMG.
+        run: STAGE_DIR="${RUNNER_TEMP}/bundles" ./scripts/build-desktop-macos.sh
+
+      - name: Verify the bundles are non-empty
+        run: |
+          set -euo pipefail
+          dmgs=("${RUNNER_TEMP}"/bundles/*.dmg)
+          if [ ! -s "${dmgs[0]}" ]; then
+            echo "::error ::DMG missing or empty at ${dmgs[0]}"
+            exit 1
+          fi
+          echo "DMG size: $(stat -f%z "${dmgs[0]}") bytes"
+          ls -l "${RUNNER_TEMP}/bundles/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-desktop-macos
+          path: ${{ runner.temp }}/bundles/
+
   # Best-effort by design: in the `release` job's `needs:` but deliberately
   # NOT in its `if:` — the same treatment as build-linux-arm64 and
   # build-windows-installer (sem `continue-on-error`, que o projeto proíbe).
@@ -811,6 +877,7 @@ jobs:
       - build-macos-arm64
       - build-windows-installer
       - build-linux-desktop
+      - build-macos-desktop
       - package-linux
     if: |
       always() &&
@@ -901,6 +968,21 @@ jobs:
               cp "artifacts/garraia-desktop-linux/${pkg}" release/
             else
               echo "::warning ::${pkg} not built; release ships without the Linux desktop app."
+            fi
+          done
+
+          # DMG do desktop macOS (job best-effort build-macos-desktop) —
+          # mesmo tratamento condicional dos irmaos Windows e Linux.
+          # Copia tambem o .app.tar.gz + .sig quando presentes: sao os
+          # artefactos de updater que o latest.json referencia (#1568).
+          if compgen -G "artifacts/garraia-desktop-macos/*.dmg" > /dev/null; then
+            cp artifacts/garraia-desktop-macos/*.dmg release/
+          else
+            echo "::warning ::macOS desktop DMG not built; release ships without the macOS desktop app."
+          fi
+          for pkg in artifacts/garraia-desktop-macos/*.app.tar.gz artifacts/garraia-desktop-macos/*.app.tar.gz.sig; do
+            if [ -f "$pkg" ]; then
+              cp "$pkg" release/
             fi
           done
 
@@ -1042,6 +1124,30 @@ jobs:
           echo "--- per-asset .sha256 files ---"
           ls -1 *.sha256
 
+      - name: Generate latest.json for the Tauri updater
+        # #1568: o `tauri-plugin-updater` do app ja consultava
+        # `releases/latest/download/latest.json`, mas nenhum workflow publicava
+        # o arquivo — o botao de atualizar nunca funcionou. O gerador e
+        # fail-closed: sem nenhum artefacto de updater com `.sig` ele recusa
+        # (exit 1) em vez de publicar um latest.json vazio que quebraria o
+        # updater do usuario final.
+        #
+        # Roda DEPOIS dos checksums (o latest.json nao e asset verificado por
+        # SHA256SUMS: o updater o busca por URL fixa) e ANTES do passo de
+        # notas, para nao esconder a informacao de quem for consertar.
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/latest-json.py \
+            --version "$VERSION" \
+            --repo "$REPO" \
+            --artifacts-dir artifacts \
+            --out release/latest.json
+          echo "--- latest.json ---"
+          cat release/latest.json
+
       - name: Build release notes from CHANGELOG
         # `generate_release_notes: true` sozinho produz so a lista de PRs desde
         # o tag anterior. Util, mas nao e a nota de release: o resumo escrito
@@ -1107,6 +1213,21 @@ jobs:
             release/garraia-desktop-windows-x86_64-setup.exe
             release/garraia-desktop-linux-x86_64.deb
             release/garraia-desktop-linux-x86_64.AppImage
+            # Desktop macOS (#1568): DMG por arquitetura (glob — o job e
+            # best-effort e so uma das duas pode ter sido produzida) e os
+            # artefactos de updater de todas as plataformas. `fail_on_unmatched_
+            # files` e false por default, entao um release sem macOS simplesmente
+            # publica menos assets, sem falhar o passo.
+            release/garraia-desktop-macos-*.dmg
+            release/*.AppImage.tar.gz
+            release/*.AppImage.tar.gz.sig
+            release/*.nsis.zip
+            release/*.nsis.zip.sig
+            release/*.app.tar.gz
+            release/*.app.tar.gz.sig
+            # latest.json do Tauri updater (#1568) — o endpoint que o
+            # `tauri-plugin-updater` do app ja consultava.
+            release/latest.json
             release/install.sh
             release/install.ps1
             release/SHA256SUMS

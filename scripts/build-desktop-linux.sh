@@ -77,6 +77,25 @@ if [ -n "${STAGE_DIR:-}" ]; then
   echo "    Staged: garraia-desktop-linux-$arch.deb"
   cp "${appimages[0]}" "$STAGE_DIR/garraia-desktop-linux-$arch.AppImage"
   echo "    Staged: garraia-desktop-linux-$arch.AppImage"
+
+  # Artefactos de updater (#1568): com `createUpdaterArtifacts: true` o
+  # bundler emite o `.AppImage.tar.gz` + `.sig` ao lado do AppImage. Sem eles
+  # staged, o `latest.json` da release não tem o que assinar e o updater do
+  # app falharia no usuário final. A cópia é condicional: sem a chave de
+  # signing o bundler não emite, e o DMG/AppImage comuns continuam saindo.
+  updater_tar=(target/release/bundle/appimage/*.AppImage.tar.gz)
+  if [ -f "${updater_tar[0]}" ]; then
+    cp "${updater_tar[0]}" "$STAGE_DIR/garraia-desktop-linux-$arch.AppImage.tar.gz"
+    echo "    Staged: garraia-desktop-linux-$arch.AppImage.tar.gz (updater)"
+    if [ -f "${updater_tar[0]}.sig" ]; then
+      cp "${updater_tar[0]}.sig" "$STAGE_DIR/garraia-desktop-linux-$arch.AppImage.tar.gz.sig"
+      echo "    Staged: garraia-desktop-linux-$arch.AppImage.tar.gz.sig (updater)"
+    else
+      echo "    AVISO: ${updater_tar[0]}.sig ausente — latest.json vai recusar (fail-closed)" >&2
+    fi
+  else
+    echo "    AVISO: nenhum .AppImage.tar.gz de updater em bundle/appimage/ — createUpdaterArtifacts ligado?" >&2
+  fi
 fi
 
 echo ""
