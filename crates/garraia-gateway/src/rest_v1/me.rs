@@ -72,6 +72,9 @@
 //! re-confirmation required — caller is already authenticated via JWT.
 //! Hard deletion deferred to future retention worker (Fase 5.3 / LGPD art. 18).
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use argon2::PasswordHasher;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -3447,7 +3450,7 @@ pub async fn patch_my_api_key(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    if updated.is_none() {
+    let Some((id, label, scopes_val, created_at, last_used_at, revoked_at)) = updated else {
         // Disambiguate: revoked (409) vs not-found/cross-user (404).
         let row: Option<(bool,)> =
             sqlx::query_as("SELECT true FROM api_keys WHERE id = $1 AND user_id = $2")
@@ -3466,9 +3469,7 @@ pub async fn patch_my_api_key(
         } else {
             Err(RestError::NotFound)
         };
-    }
-
-    let (id, label, scopes_val, created_at, last_used_at, revoked_at) = updated.unwrap();
+    };
 
     let label_len = label.len();
     audit_workspace_event(

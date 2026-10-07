@@ -16,3 +16,9 @@ cognitive-complexity-threshold = 25
 # Funções de migration (run_stage*_* em migrate_workspace.rs) legitimamente
 # passam de 100 linhas pela natureza atomic-tx de cada stage.
 too-many-lines-threshold = 150
+
+# unwrap/expect em teste e a forma idiomatica de asserir (regra 4 do CLAUDE.md
+# so proibe em producao). Permite o deny de `unwrap_used`/`expect_used` nos
+# modulos de request-path (#1569) sem afetar os `#[cfg(test)]` do mesmo arquivo.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

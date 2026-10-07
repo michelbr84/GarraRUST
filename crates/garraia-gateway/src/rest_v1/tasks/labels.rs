@@ -11,6 +11,9 @@
 //! - `GET /v1/groups/{group_id}/tasks/{task_id}/labels` — list labels assigned to a task
 //! - `DELETE /v1/groups/{group_id}/tasks/{task_id}/labels/{label_id}` — remove label from task
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
