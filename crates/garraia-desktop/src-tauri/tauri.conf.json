@@ -42,12 +42,6 @@
         "language": "pt-BR"
       }
     },
-    "macOS": {
-      "targets": [
-        "app",
-        "dmg"
-      ]
-    },
     "linux": {
       "deb": {
         "provides": [
