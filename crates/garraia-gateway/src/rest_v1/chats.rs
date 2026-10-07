@@ -29,6 +29,9 @@
 //! 36 hex-with-dash characters and no metacharacters — injection-safe by
 //! construction. All user-controlled values use `sqlx::query::bind`.
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -234,15 +237,18 @@ pub async fn create_chat(
     let pool = state.app_pool.pool_for_handlers();
 
     if body.chat_type == "dm" {
+        // validate() already guarantees Some for type='dm'; fail as 400 rather
+        // than panic if that invariant ever regresses.
+        let partner_user_id = body
+            .partner_user_id
+            .ok_or_else(|| RestError::BadRequest("partner_user_id is required for dm".into()))?;
         create_dm_chat(
             pool,
             principal,
             group_id,
             trimmed_name,
             trimmed_topic,
-            // validate() guarantees partner_user_id is Some for type='dm'
-            body.partner_user_id
-                .expect("validate() ensures Some for dm"),
+            partner_user_id,
         )
         .await
     } else {
