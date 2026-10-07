@@ -5,6 +5,8 @@ Precisa de ajuda com o GarraIA? Use o canal certo:
 | Preciso de… | Onde |
 |---|---|
 | Documentação e primeiros passos | [Wiki](https://github.com/michelbr84/GarraRUST/wiki) · [garraia.org/docs](https://garraia.org/docs/introducao) · [`docs/`](docs/) |
+| Política de suporte, versões e depreciação | [`docs/operations/support-policy.md`](docs/operations/support-policy.md) · [`version-support-policy.md`](docs/operations/version-support-policy.md) · [`deprecation-policy.md`](docs/operations/deprecation-policy.md) — **propostas**, aguardam ratificação |
+| SLA | **Sem SLA contratual hoje** (self-host roda na sua infra) — decisão e opções em [`docs/operations/sla-decision-brief.md`](docs/operations/sla-decision-brief.md) |
 | Tirar uma dúvida / trocar ideia | [GitHub Discussions](https://github.com/michelbr84/GarraRUST/discussions) |
 | Conversar com a comunidade | [Discord](https://discord.gg/aEXGq5cS) |
 | Reportar um bug ou pedir uma feature | [Abrir issue](https://github.com/michelbr84/GarraRUST/issues/new/choose) (use os templates) |
