@@ -3367,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "garraia"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3418,7 +3418,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-agents"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3450,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-auth"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3483,7 +3483,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-channels"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3520,7 +3520,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-common"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-config"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "dirs 7.0.0",
  "garraia-common",
@@ -3561,7 +3561,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-db"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3583,7 +3583,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-desktop"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "garraia-config",
  "serde",
@@ -3601,7 +3601,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-desktop-core"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-embeddings"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "serde",
@@ -3625,7 +3625,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-gateway"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3714,7 +3714,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-hardware"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3742,7 +3742,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-learning"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "garraia-common",
  "garraia-skills",
@@ -3756,7 +3756,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-media"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3774,7 +3774,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-plugins"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3793,7 +3793,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-security"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "base64 0.23.1",
  "garraia-common",
@@ -3810,7 +3810,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-skills"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "garraia-common",
  "reqwest 0.12.28",
@@ -3823,7 +3823,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-storage"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -3851,7 +3851,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-telemetry"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -3875,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-voice"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "garraia-workspace"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "anyhow",
  "chrono",
