@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.4.8] - 2026-10-05
+## [0.4.8] - 2026-10-07
 
 ### Adicionado
 
@@ -175,6 +175,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exige **exatamente um** candidato: com dois perfis do mesmo tipo o nome e
   genuinamente ambiguo e a recusa com WARN continua, porque escolher um seria
   reintroduzir o sorteio por boot que o #1540 existiu para matar.
+- **`bash`: aspas agora protegem a prosa do argumento na allowlist (#1579).**
+  A varredura `META_SHELL` olhava a string crua e tratava parenteses, `;`,
+  `|`, `$` etc. **dentro de aspas** como "comando composto" — um `forja-ask`
+  com "(transcreva o conteudo completo)" na mensagem era negado mesmo com o
+  prefixo `forja-ask *` liberado pelo operador. Agora a checagem segue a
+  tokenizacao do shell: aspas simples literalizam tudo; aspas duplas mantem
+  ativos so crase, escape e `$` que abre expansao (o `$` de `"R$ 50"` e
+  literal); aspas nao fechadas continuam negando. Composto real (`;`, `&&`,
+  pipe, `$(...)`, redirecao, newline) segue nunca casando. Fecha a lacuna de
+  usabilidade do modo allowlist-only que esta release estreia (#1272).
+- **A cobertura que o quality ratchet sempre perdia, e o baseline versionado
+  (#1566).** `quality-report.md` trazia `coverage_pct: None` em todo run, e a
+  causa nao era falta de instrumentacao: o job `ratchet` (timeout 10 min, ~3
+  min de trabalho) sempre olha antes do job `coverage` do `ci.yml` (timeout 45
+  min, 21-30 min de execucao) terminar, e o filtro `conclusion == "success"`
+  descartava o run ainda em andamento. A busca passa a varrer os ultimos 20
+  runs por um `completed`+`success` e, quando o SHA da PR ainda nao fechou, cai
+  para o ultimo run verde de `main`, gravando a procedencia do `lcov.info` no
+  step summary (com `NOT this PR` explicito no fallback). Continua
+  best-effort: nenhuma falha ali derruba o job. Novo baseline versionado em
+  `docs/coverage-baseline-2026-10.md` fixa os numeros reais — 71,99% de linha
+  no agregado, por crate, com a politica de exclusao aceita e a meta do
+  ROADMAP reavaliada.
+- **A tabela de canais volta a dizer o que o build default liga (#1567).**
+  README, README.pt-BR e ROADMAP §4.4 diziam que Google Chat, Microsoft Teams,
+  Matrix, LINE, IRC e Signal estavam "implementados no crate, wiring no
+  gateway pendente", e o badge anunciava "5 channels". Os seis estao ligados no
+  build default desde antes disso: `garraia-gateway` liga as features de canal
+  incondicionalmente e o `server.rs` instancia os seis no boot, sem `cfg` —
+  Google Chat, Teams e LINE por rota de webhook, Matrix, IRC e Signal por
+  conexao no boot com retry em backoff. Badge passa a 11, a tabela de status
+  distingue 🔹 (ligado, cobertura unitaria no crate) de ✅ (ligado e coberto por
+  teste de integracao do gateway), e a §4.4 do ROADMAP fica fechada com a
+  pendencia real nomeada: falta teste de integracao do gateway para os seis.
 
 ### Segurança
 
