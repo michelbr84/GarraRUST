@@ -38,7 +38,9 @@ def test_passes_when_coverage_is_above_floor():
 
 
 def test_floor_is_inclusive():
-    """Exactly at the floor passes — the ROADMAP says '>= 70%', not '> 70%'."""
+    """Exactly at the floor passes — the comparison is inclusive, matching
+    the maintainer-approved aggregate guardrail (2026-10-07) and the
+    ROADMAP's '>= 70%' phrasing for domain crates."""
     mod = _load_module()
     code, _ = mod.evaluate(FIXTURE, 70.0)
     assert code == 0

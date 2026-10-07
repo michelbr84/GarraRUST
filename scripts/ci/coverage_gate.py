@@ -25,8 +25,12 @@ yet; see `.github/workflows/quality-ratchet.yml`.
 
 This gate is NOT the AI Quality Ratchet. `compare.py` stays `--mode
 report-only` and its promotion to blocking is still plan 0064 PR-4, pending
-explicit approval. The two are independent: this one enforces a single
-published number from the ROADMAP.
+explicit approval. The two are independent: this one enforces the
+aggregate-workspace coverage floor that the maintainer approved on
+2026-10-07 as an additional guardrail (#1566 criterio 2). That 70% aggregate
+floor is a NEW maintainer decision, not a literal ROADMAP requirement — the
+ROADMAP's >= 70% meta applies to domain crates (garraia-agents, garraia-db,
+garraia-security, garraia-workspace).
 
 Usage:
     python3 scripts/ci/coverage_gate.py lcov.info --floor 70.0
@@ -81,7 +85,9 @@ def evaluate(lcov_path: Path, floor_pct: float, parser=None) -> tuple[int, str]:
             1,
             f"FAIL: coverage {detail} is below the floor of {floor_pct:.2f}%. "
             f"Add tests for the code this PR touches, or change the floor "
-            f"deliberately in ci.yml and in the ROADMAP together.",
+            f"deliberately in ci.yml — it is a maintainer-approved guardrail "
+            f"on aggregate workspace coverage (decision 2026-10-07), "
+            f"independent of the ROADMAP's >= 70% meta for domain crates.",
         )
 
     return (0, f"OK: coverage {detail} meets the floor of {floor_pct:.2f}%.")

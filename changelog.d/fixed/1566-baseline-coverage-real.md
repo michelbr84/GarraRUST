@@ -19,12 +19,15 @@
 - **Piso de cobertura que derruba o build (#1566, criterio 2).** O job
   `Coverage (cargo-llvm-cov)` media, publicava o comentario de PR e seguia —
   observabilidade, nao controle. Agora o `scripts/ci/coverage_gate.py` reprova
-  o job abaixo de `COVERAGE_FLOOR_PCT`, hoje `70.0`. O numero nao foi escolhido
-  no gate: e a meta que o `ROADMAP.md` ja publica em "Criterios globais de
-  AAA-ready", e a medicao de 72,00% deixa ~2 pp de folga. O gate le o
+  o job abaixo de `COVERAGE_FLOOR_PCT`, hoje `70.0`. Proveniencia do numero:
+  70% de cobertura **agregada** do workspace e uma decisao nova do
+  maintainer (2026-10-07), guardrail adicional — **nao** e uma exigencia
+  literal do ROADMAP, cuja meta ">= 70%" vale para crates de dominio
+  (garraia-agents, garraia-db, garraia-security, garraia-workspace). A
+  medicao de 72,00% deixa ~2 pp de folga. O gate le o
   `lcov.info` pelo **mesmo** `parse-llvm-cov.py` que escreve o baseline, para
   que os dois numeros nao possam divergir por existirem dois parsers; compara
-  com `>=`, inclusivo como a meta; e e **fail-closed** — `lcov.info` ausente ou
+  com `>=`, inclusivo; e e **fail-closed** — `lcov.info` ausente ou
   vazio reprova, porque um run nao medido nao e um run aprovado. Fica como
   **ultimo** step do job, depois dos artifacts e do comentario, para que a
   reprovacao nunca esconda a informacao de quem vai consertar. Nao e o AI

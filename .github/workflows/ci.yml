@@ -975,12 +975,17 @@ jobs:
     env:
       # #1566 criterio 2 — o piso de cobertura que FALHA o build.
       #
-      # 70 nao e um numero escolhido aqui: e a meta que o `ROADMAP.md` ja
-      # publica em "Criterios globais de AAA-ready" ("Cobertura de testes
-      # >= 70%"). A medicao de 2026-10-06 deu 71,99% de linha no agregado do
-      # workspace instrumentado (`docs/coverage-baseline-2026-10.md`), ou seja
-      # ~2 pp de folga. Mexer neste piso e mexer na meta: mude os dois juntos,
-      # no mesmo PR, ou nao mude nenhum.
+      # PROVENIENCIA DO70 (registro exigido pelo maintainer antes do merge
+      # da #1581, decisao de 2026-10-07): 70% de cobertura AGREGADA do
+      # workspace e uma DECISAO NOVA do maintainer e um guardrail
+      # ADICIONAL — nao e uma exigencia literal do ROADMAP. O ROADMAP.md
+      # exige ">= 70%" nas CRATES DE DOMINIO (garraia-agents, garraia-db,
+      # garraia-security, garraia-workspace); o agregado do workspace nao
+      # aparece la como meta. A medicao de 2026-10-06 deu 71,99% de linha no
+      # agregado do workspace instrumentado (`docs/coverage-baseline-2026-10.md`),
+      # ou seja ~2 pp de folga sobre o piso. Mexer neste piso e mexer nesse
+      # guardrail: e uma decisao de maintainer sobre o piso agregado,
+      # registrada no PR que mudar — independente da meta do ROADMAP.
       #
       # Isto NAO e o AI Quality Ratchet. O `compare.py` continua
       # `--mode report-only` e sua promocao a bloqueante segue sendo o PR-4 do
@@ -1111,7 +1116,7 @@ jobs:
             echo '<!-- coverage-comment -->'
             echo '## Coverage Report (cargo-llvm-cov)'
             echo
-            echo "_Hard floor: **${COVERAGE_FLOOR_PCT}%** total line coverage (#1566; ROADMAP \`AAA-ready\`). Excluded crates: \`garraia-desktop\`, \`garraia-auth\`, \`garraia-workspace\` (see ci.yml comment)._"
+            echo "_Hard floor: **${COVERAGE_FLOOR_PCT}%** total line coverage — guardrail adicional aprovado pelo maintainer em 2026-10-07 (#1566 criterio 2). NAO e exigencia literal do ROADMAP: a meta >= 70% dele vale para crates de domínio. Excluded crates: \`garraia-desktop\`, \`garraia-auth\`, \`garraia-workspace\` (see ci.yml comment)._"
             echo
             echo '```'
             echo "${total:-TOTAL line not found in coverage-summary.txt}"
