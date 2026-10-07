@@ -250,6 +250,48 @@ does not honor always-on-top/skip-taskbar for regular windows, so the parrot
 and the chat bar behave as normal windows. X11 sessions behave as documented.
 The app itself works on both.
 
+### Garra Desktop on macOS
+
+From `v0.4.9` releases also carry the desktop app (parrot overlay + chat bar)
+for macOS, built best-effort by the Tauri bundler:
+
+- `garraia-desktop-macos-x86_64.dmg` — open the DMG and drag to Applications
+- `garraia-desktop-macos-aarch64.dmg` — Apple Silicon, same install path
+
+Like the Linux and Windows desktop packages, the macOS app bundles the CLI as a
+sidecar; it is a **different distribution from the CLI binaries**
+(`garraia-macos-x86_64`), which install only the terminal command. Pick one:
+
+| You want | Install |
+|---|---|
+| Terminal only | the `garraia-macos-*` binary from the one-liner above |
+| Parrot + chat bar + CLI | `garraia-desktop-macos-*.dmg` |
+
+**Unsigned on macOS.** As with Windows, the desktop app is **not**
+code-signed or notarized (no Apple Developer certificate is configured for this
+project), so Gatekeeper will block the first launch. Right-click the app and
+choose *Open*, or clear the quarantine attribute with
+`xattr -dr com.apple.quarantine /Applications/garraia-desktop.app`. Both the
+CLI and the desktop app behave the same way here; verify against `SHA256SUMS`
+if you want certainty about what you downloaded.
+
+### CLI vs Desktop — what each one supports
+
+The CLI and the Desktop app share the same gateway, channels, providers and
+plugins. The difference is the **shell around them**:
+
+| Capability | CLI (`garraia`) | Desktop (tray app) |
+|---|---|---|
+| Terminal commands, chat, wizard | yes | yes (sidecar) |
+| Gateway on port / API | yes | yes (spawned) |
+| Parrot overlay + chat bar | no | yes |
+| Tray icon / always-on-top window | no | yes (X11 only; see Wayland caveat) |
+| Auto-update via `latest.json` | no (use `install.sh` / `install.ps1`) | yes (Tauri updater, when a signing key is configured) |
+| Package formats | `.deb`/`.rpm`/AppImage (Linux), `.msi`/NSIS (Windows), plain binary (macOS) | `.deb`+AppImage (Linux), MSI+NSIS (Windows), `.dmg` (macOS) |
+
+Both are built best-effort on some platforms, so a given release may ship
+without a desktop package. The CLI one-liner is always the supported path.
+
 ## Build from Source
 
 ### Prerequisites
