@@ -79,7 +79,7 @@ Para empresas que precisam de customização, compliance e suporte dedicado.
 - Desenvolvimento de features customizadas — decisão comercial do maintainer, sem processo registrado.
 
 **Como contratar:**
-Entre em contato em [enterprise@garraia.cloud](mailto:enterprise@garraia.cloud) ou [agende uma demo](https://garraia.cloud/demo).
+Entre em contato em [enterprise@garraia.org](mailto:enterprise@garraia.org) ou [agende uma demo](https://garraia.org/demo).
 
 ---
 
