@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.8] - 2026-10-07
 
+**Seguranca no topo desta release.** Quem esta na 0.4.7 executa bash no host **sem** fronteira de allowlist: a 0.4.8 estreia o modo `HostComAllowlist` (#1272), em que `agent.bash_allowlist` deixa de ser dispensa de confirmacao e vira limite real — todo comando fora dela e negado antes do tier arriscado, com a denylist do `safety_gate` sempre na frente. O `wasmtime` que alimenta esse sandbox sobe de 48.0.2 para 49.0.2 em dois passos (#1524, #1559), fechando **onze advisories** — quatro no salto para 49.0.1 e sete no patch para 49.0.2, este sem elevar o MSRV. A secao Seguranca abaixo detalha advisory por advisory.
+
+Alem da fronteira de bash, esta release consolida a coleta de cobertura que o quality ratchet sempre perdia (#1566), religa os seis canais que o README ja anunciava (#1567), corrige o escape de aspas na allowlist do bash (#1579) e traz o restante das correcoes listadas abaixo.
+
 ### Adicionado
 
 - **Bash roda no host restrito a `agent.bash_allowlist` (#1272).** Nova exposicao `HostComAllowlist`: quando a config declara padroes de comando (prefixo* no fim ou comando exato), o `BashTool` entra em modo allowlist-only — a allowlist deixa de ser dispensa de confirmacao e vira FRONTEIRA, todo comando fora dela e negado antes do tier arriscado, com a denylist do `safety_gate` sempre na frente.
@@ -53,6 +57,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`garraia doctor` mostra o shell do agente no Termux (#1560).** O bloco Termux ganhou o item `Tool bash`, decidido pela mesma funcao do gateway e do `mcp-server`: sem docker/podman (sempre o caso no Android) e sem `agent.bash_allowlist`, o item aparece como aviso com a receita do modo allowlist-only no host (#1272), em vez de o operador so descobrir pelo proprio agente. A descricao do modo `HostComAllowlist` em `doctor`, `/api/diagnostics` e `garra_status` agora diz explicitamente "SEM sandbox". `docs/installation.md` documenta o shell no Termux.
 
 ### Corrigido
+
+- **`.quality/baseline.json` deixa de dizer `coverage_pct: null` (#1566).** O
+  #1573 consertou a corrida que impedia o ratchet de achar o `lcov.info` e
+  fixou os numeros num doc versionado, mas o baseline estruturado — o arquivo
+  que o `compare.py` de fato le — continuava em
+  `{"coverage_pct": null, "status": "not_collected_yet"}`, congelado em
+  2026-09-22 (`af3227c`). Agora traz 72,00% de linha (110.863 / 153.982, 451
+  arquivos), medidos pelo job `Coverage (cargo-llvm-cov)` do run 37538157886
+  em `main` no commit `13e6f1dc`, e gravados pelo `freeze-baseline.py` a
+  partir do `lcov.info` daquele run — nao a mao, o invariante anti-fraude
+  continua valendo. No mesmo passo o ratchet estrito **aperta** o
+  `max_file_lines` de 10.513 para 6.933, o valor real, e corrige o
+  `max_file_path` para `crates/garraia-config/src/check.rs`: o antigo apontava
+  para `garraia-agents/src/runtime.rs`, que ja nao e o maior arquivo do repo.
+  Os contadores `files_over_{700,1500,2500}` ficam nos valores mais apertados
+  (112 / 40 / 16) em vez de serem relaxados para a medicao de hoje
+  (123 / 45 / 18) — o relatorio passa a registrar essas tres como regressao
+  real, o que elas sao. O AI Quality Ratchet segue `report-only`: nenhuma PR
+  e bloqueada por ele.
+- **Piso de cobertura que derruba o build (#1566, criterio 2).** O job
+  `Coverage (cargo-llvm-cov)` media, publicava o comentario de PR e seguia —
+  observabilidade, nao controle. Agora o `scripts/ci/coverage_gate.py` reprova
+  o job abaixo de `COVERAGE_FLOOR_PCT`, hoje `70.0`. Proveniencia do numero:
+  70% de cobertura **agregada** do workspace e uma decisao nova do
+  maintainer (2026-10-07), guardrail adicional — **nao** e uma exigencia
+  literal do ROADMAP, cuja meta ">= 70%" vale para crates de dominio
+  (garraia-agents, garraia-db, garraia-security, garraia-workspace). A
+  medicao de 72,00% deixa ~2 pp de folga. O gate le o
+  `lcov.info` pelo **mesmo** `parse-llvm-cov.py` que escreve o baseline, para
+  que os dois numeros nao possam divergir por existirem dois parsers; compara
+  com `>=`, inclusivo; e e **fail-closed** — `lcov.info` ausente ou
+  vazio reprova, porque um run nao medido nao e um run aprovado. Fica como
+  **ultimo** step do job, depois dos artifacts e do comentario, para que a
+  reprovacao nunca esconda a informacao de quem vai consertar. Nao e o AI
+  Quality Ratchet e nao antecipa o PR-4 do plan 0064: sao controles
+  independentes.
 
 - **`.mcp.json` da raiz volta a subir o servidor MCP (#1536).** A entrada
   apontava para `./target/release/garra`, um caminho relativo a um binario que
