@@ -14,4 +14,19 @@
   Os contadores `files_over_{700,1500,2500}` ficam nos valores mais apertados
   (112 / 40 / 16) em vez de serem relaxados para a medicao de hoje
   (123 / 45 / 18) — o relatorio passa a registrar essas tres como regressao
-  real, o que elas sao. Segue `report-only`: nenhuma PR e bloqueada.
+  real, o que elas sao. O AI Quality Ratchet segue `report-only`: nenhuma PR
+  e bloqueada por ele.
+- **Piso de cobertura que derruba o build (#1566, criterio 2).** O job
+  `Coverage (cargo-llvm-cov)` media, publicava o comentario de PR e seguia —
+  observabilidade, nao controle. Agora o `scripts/ci/coverage_gate.py` reprova
+  o job abaixo de `COVERAGE_FLOOR_PCT`, hoje `70.0`. O numero nao foi escolhido
+  no gate: e a meta que o `ROADMAP.md` ja publica em "Criterios globais de
+  AAA-ready", e a medicao de 72,00% deixa ~2 pp de folga. O gate le o
+  `lcov.info` pelo **mesmo** `parse-llvm-cov.py` que escreve o baseline, para
+  que os dois numeros nao possam divergir por existirem dois parsers; compara
+  com `>=`, inclusivo como a meta; e e **fail-closed** — `lcov.info` ausente ou
+  vazio reprova, porque um run nao medido nao e um run aprovado. Fica como
+  **ultimo** step do job, depois dos artifacts e do comentario, para que a
+  reprovacao nunca esconda a informacao de quem vai consertar. Nao e o AI
+  Quality Ratchet e nao antecipa o PR-4 do plan 0064: sao controles
+  independentes.

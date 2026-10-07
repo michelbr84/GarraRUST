@@ -181,14 +181,43 @@ O `garraia-gateway` sozinho responde por **58% de todas as linhas
 descobertas do workspace**. Qualquer meta agregada que suba vai ser decidida
 lá — e é por isso que a escolha de um threshold de bloqueio não é cosmética.
 
-## Threshold de bloqueio — pendente de decisão do dono
+## Threshold de bloqueio — implementado, pendente de aprovação do dono
 
-O critério 2 da #1566 pede um threshold que **falhe** o build. Isso não é
-feito aqui de propósito: o `CLAUDE.md` reserva a promoção do ratchet a
-bloqueante para o PR-4 "com aprovação explícita", e o baseline de abril
-registra "sem threshold" como decisão consciente do plan sprightly-raven
-§11.3. Ligar um gate que derruba PR é decisão do dono, não de limpeza.
+O critério 2 da #1566 pede um threshold que **falhe** o build. Uma versão
+anterior desta seção dizia que o gate não seria escrito, por ser decisão do
+dono. A decisão continua sendo do dono; o que mudou é que agora **o código
+existe e está ligado**, para que a decisão seja "merge ou não" em vez de
+"escreva isso primeiro".
 
-O que este documento entrega é o que a decisão precisava: o número real
-(71,99%), a distribuição por crate, e o fato de que o piso efetivo hoje é o
-`garraia-gateway` em 58,39%.
+`scripts/ci/coverage_gate.py`, último step do job `Coverage (cargo-llvm-cov)`:
+
+| | |
+|---|---|
+| Piso | `COVERAGE_FLOOR_PCT: "70.0"`, env do job em `ci.yml` |
+| Origem do número | `ROADMAP.md`, "Critérios globais de AAA-ready" — já publicado, não escolhido aqui |
+| Folga hoje | 72,00% medido − 70,0% de piso = **~2 pp** |
+| Fonte do número | `lcov.info`, pelo **mesmo** `scripts/quality/parse-llvm-cov.py` que alimenta o `.quality/baseline.json` — um parser só, gate e baseline não podem divergir |
+| Comparação | `>=`, inclusiva, como a meta ("≥ 70%") |
+| `lcov.info` ausente/vazio | **falha** — fail-closed. Um run não medido não é um run aprovado |
+| Posição no job | **último** step, depois dos artifacts e do comentário de PR: mede, publica, só então reprova |
+
+Três escolhas que merecem registro, porque errá-las esvazia o gate:
+
+1. **Não é o AI Quality Ratchet.** O `compare.py` segue `--mode report-only`
+   e sua promoção a bloqueante continua sendo o PR-4 do plan 0064. O que o
+   `CLAUDE.md` reserva para aprovação explícita é *aquele* controle. Este é
+   independente e enforça um único número já público.
+2. **Piso no agregado, meta nas crates de domínio.** As duas coisas não são a
+   mesma, e a seção acima explica por quê. O piso agregado de 70% é uma
+   leitura *mais estrita* do que o ROADMAP literalmente exige — e hoje é
+   satisfeita. Mexer no piso é mexer na meta: os dois juntos, no mesmo PR.
+3. **Sem pipe para `tee`.** O runner roda `bash -e`, não `pipefail`. Um
+   `python3 … | tee -a "$GITHUB_STEP_SUMMARY"` devolveria o status do `tee`,
+   e o gate reprovaria em silêncio com o job verde. O status é capturado à
+   mão e o step termina em `exit "$gate_status"`.
+
+O risco real do piso de 70 é o `garraia-gateway`: ele responde por 58% de
+todas as linhas descobertas do workspace, então qualquer PR grande sem teste
+ali é o que vai encostar nos ~2 pp de folga primeiro. Isso é o gate
+funcionando, não um falso positivo — mas é a razão de a folga ser a
+informação mais importante desta seção.
