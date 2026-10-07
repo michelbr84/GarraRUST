@@ -48,7 +48,7 @@ Para profissionais e equipes pequenas que querem eliminar a complexidade de infr
 **Limite de uso:** 50.000 mensagens/mês (excesso: R$ 0,001 por mensagem)
 
 **Como assinar:**
-Acesse [garraia.cloud/pricing](https://garraia.cloud/pricing) e crie sua conta.
+Acesse [garraia.org/pricing](https://garraia.org/pricing) e crie sua conta.
 
 ---
 
@@ -67,7 +67,7 @@ Para empresas que precisam de customização, compliance e suporte dedicado.
 - Possibilidade de desenvolvimento de features customizadas
 
 **Como contratar:**
-Entre em contato em [enterprise@garraia.cloud](mailto:enterprise@garraia.cloud) ou [agende uma demo](https://garraia.cloud/demo).
+Entre em contato em [enterprise@garraia.org](mailto:enterprise@garraia.org) ou [agende uma demo](https://garraia.org/demo).
 
 ---
 
@@ -109,4 +109,4 @@ Sim. Não há fidelidade. O cancelamento é efetivo no final do período faturad
 
 **O GarraIA armazena minhas conversas nos planos gerenciados?**
 
-As conversas são armazenadas apenas para o funcionamento da memória do agente. Consulte nossa [Política de Privacidade](https://garraia.cloud/privacy) para detalhes.
+As conversas são armazenadas apenas para o funcionamento da memória do agente. Consulte nossa [Política de Privacidade](https://garraia.org/privacy) para detalhes.
