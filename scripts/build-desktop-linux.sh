@@ -77,6 +77,34 @@ if [ -n "${STAGE_DIR:-}" ]; then
   echo "    Staged: garraia-desktop-linux-$arch.deb"
   cp "${appimages[0]}" "$STAGE_DIR/garraia-desktop-linux-$arch.AppImage"
   echo "    Staged: garraia-desktop-linux-$arch.AppImage"
+
+  # Artefactos de updater (#1568): com `createUpdaterArtifacts: true` o
+  # bundler do Tauri v2 emite a assinatura `.sig` ao lado do proprio bundle —
+  # no Linux o artefacto de updater e o proprio `.AppImage` (versoes antigas
+  # do bundler envolviam num `.AppImage.tar.gz`; as duas formas sao cobertas).
+  # Sem a `.sig` staged, o `latest.json` da release nao tem o que assinar e o
+  # updater do app falharia no usuario final. As copias sao condicionais: sem
+  # a chave de signing o bundler nao emite, e o AppImage comum continua saindo.
+  #
+  # O teste do array vem ANTES de `${arr[0]}`: com `nullglob` um glob sem
+  # match vira array vazio e `${arr[0]}` sob `set -u` derruba o script — bug
+  # que o job build-linux-desktop do CI pegou em #1586.
+  appimage_sig="${appimages[0]}.sig"
+  if [ -f "$appimage_sig" ]; then
+    cp "$appimage_sig" "$STAGE_DIR/garraia-desktop-linux-$arch.AppImage.sig"
+    echo "    Staged: garraia-desktop-linux-$arch.AppImage.sig (updater)"
+  else
+    echo "    AVISO: ${appimage_sig} ausente — latest.json vai omitir linux (fail-closed)" >&2
+  fi
+  updater_tar=(target/release/bundle/appimage/*.AppImage.tar.gz)
+  if [ ${#updater_tar[@]} -gt 0 ] && [ -f "${updater_tar[0]}" ]; then
+    cp "${updater_tar[0]}" "$STAGE_DIR/garraia-desktop-linux-$arch.AppImage.tar.gz"
+    echo "    Staged: garraia-desktop-linux-$arch.AppImage.tar.gz (updater, formato legado)"
+    if [ -f "${updater_tar[0]}.sig" ]; then
+      cp "${updater_tar[0]}.sig" "$STAGE_DIR/garraia-desktop-linux-$arch.AppImage.tar.gz.sig"
+      echo "    Staged: garraia-desktop-linux-$arch.AppImage.tar.gz.sig (updater, formato legado)"
+    fi
+  fi
 fi
 
 echo ""
