@@ -46,10 +46,20 @@ echo "==> [4/4] Localizando bundles..."
 # Falha alto de proposito, como os irmaos: sem .dmg o job ficaria verde com
 # release sem pacote macOS.
 shopt -s nullglob
-dmgs=("crates/garraia-desktop/src-tauri/target/release/bundle/dmg/"*.dmg)
-apps=("crates/garraia-desktop/src-tauri/target/release/bundle/macos/"*.app)
+# Dentro do workspace o `cargo tauri build` escreve em target/ NA RAIZ
+# (src-tauri e membro do workspace — e o que o CI faz); um checkout avulso do
+# crate deixa o bundle em src-tauri/target. Checa os dois caminhos. O bug que
+# o job build-macos-desktop do CI pegou em #1586 era so olhar o segundo.
+bundle_root="target/release/bundle"
+dmgs=("$bundle_root/dmg/"*.dmg)
 if [ ${#dmgs[@]} -eq 0 ]; then
-  echo "ERRO: nenhum .dmg encontrado em target/release/bundle/dmg/ apos o build" >&2
+  bundle_root="crates/garraia-desktop/src-tauri/target/release/bundle"
+  dmgs=("$bundle_root/dmg/"*.dmg)
+fi
+apps=("$bundle_root/macos/"*.app)
+app_tar=("$bundle_root/macos/"*.app.tar.gz)
+if [ ${#dmgs[@]} -eq 0 ]; then
+  echo "ERRO: nenhum .dmg encontrado em $bundle_root/dmg/ apos o build" >&2
   exit 1
 fi
 
@@ -57,16 +67,25 @@ staging="${STAGE_DIR:-}"
 if [ -n "$staging" ]; then
   mkdir -p "$staging"
   cp "${dmgs[@]}" "$staging/"
-  # O .app tambem sobe como artefacto para o passo de updater (o .app.tar.gz
-  # e gerado quando TAURI_SIGNING_PRIVATE_KEY esta presente; sem ele, o DMG
-  # continua sendo o pacote de distribuicao).
+  # O .app tambem sobe como artefacto (util para inspecao/manual install).
   if [ ${#apps[@]} -gt 0 ]; then
     cp -R "${apps[@]}" "$staging/"
+  fi
+  # Artefactos de updater (#1568): o .app.tar.gz + .sig sao o que o
+  # latest.json referencia por darwin-*. Staged com nome estavel por
+  # arquitetura. Condicionais: sem TAURI_SIGNING_PRIVATE_KEY o bundler nao
+  # emite, e o DMG continua sendo o pacote de distribuicao.
+  if [ ${#app_tar[@]} -gt 0 ] && [ -f "${app_tar[0]}.sig" ]; then
+    cp "${app_tar[0]}" "$staging/garraia-desktop-macos-$arch.app.tar.gz"
+    cp "${app_tar[0]}.sig" "$staging/garraia-desktop-macos-$arch.app.tar.gz.sig"
+    echo "    Staged: garraia-desktop-macos-$arch.app.tar.gz + .sig (updater)"
+  else
+    echo "    AVISO: .app.tar.gz de updater ausente em $bundle_root/macos/ — latest.json vai omitir darwin" >&2
   fi
   echo "bundles copiados para $staging:"
   ls -l "$staging"
 else
-  echo "bundles gerados em crates/garraia-desktop/src-tauri/target/release/bundle/:"
+  echo "bundles gerados em $bundle_root/:"
   ls -l "${dmgs[@]}"
 fi
 

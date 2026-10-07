@@ -61,6 +61,13 @@ PADROES = [
     (".app.tar.gz", "darwin"),
     (".nsis.zip", "windows"),
     (".msi.zip", "windows"),
+    # Tauri v2 com `createUpdaterArtifacts: true` assina o proprio bundle no
+    # Linux: o artefacto de updater e o `.AppImage` com `.sig` vizinho (o
+    # `.AppImage.tar.gz` e o formato legado). O prefixo `garraia-desktop-`
+    # e obrigatorio aqui: o job package-linux publica TAMBEM um
+    # `garraia-linux-x86_64.AppImage` (o pacote da CLI) que nao tem `.sig` e
+    # sem o guard o gerador entraria em fail-closed por causa dele.
+    (".AppImage", "linux"),
 ]
 
 
@@ -68,6 +75,11 @@ def _plataforma_do_nome(nome: str) -> str | None:
     """Deriva a chave do updater a partir do nome do artefacto."""
     for padrao, sistema in PADROES:
         if not nome.endswith(padrao):
+            continue
+        # So o app desktop e atualizavel pelo tauri-plugin-updater; o
+        # AppImage da CLI (garraia-linux-*) nao tem `.sig` e nao deve
+        # disputar a chave linux-x86_64 com o artefacto do desktop.
+        if padrao == ".AppImage" and not nome.startswith("garraia-desktop-"):
             continue
         arquitetura = "aarch64" if "aarch64" in nome or "arm64" in nome else "x86_64"
         return f"{sistema}-{arquitetura}"

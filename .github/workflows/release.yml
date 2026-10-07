@@ -986,6 +986,23 @@ jobs:
             fi
           done
 
+          # Artefactos de updater Windows e Linux do desktop (#1568): o
+          # latest.json aponta a URL /releases/download/ para o proprio
+          # .nsis.zip / .AppImage — sem eles em release/ o updater do app
+          # baixaria 404. A `.sig` nao precisa ser asset (o latest.json
+          # embute a assinatura), mas sobe junto para auditoria.
+          for pkg in artifacts/garraia-desktop-windows/*.nsis.zip \
+                      artifacts/garraia-desktop-windows/*.nsis.zip.sig \
+                      artifacts/garraia-desktop-windows/*.msi.zip \
+                      artifacts/garraia-desktop-windows/*.msi.zip.sig \
+                      artifacts/garraia-desktop-linux/*.AppImage.sig \
+                      artifacts/garraia-desktop-linux/*.AppImage.tar.gz \
+                      artifacts/garraia-desktop-linux/*.AppImage.tar.gz.sig; do
+            if [ -f "$pkg" ]; then
+              cp "$pkg" release/
+            fi
+          done
+
           # Linux packages (.deb/.rpm/AppImage) do job best-effort package-linux.
           # x86_64 avisa quando falta (o job deveria tê-los produzido); os
           # pacotes aarch64 pulam em silêncio — a ausência do binário aarch64
