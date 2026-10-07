@@ -170,7 +170,66 @@ impl BashTool {
     /// checagem, o trecho injetado herdaria a confiança que o operador deu ao
     /// prefixo. Recusar aqui devolve o comando ao `is_risky`, que analisa por
     /// segmento e ainda pode pedir confirmação.
+    ///
+    /// #1579: a varredura é **ciente de aspas** ([`Self::tem_meta_ativo`]):
+    /// prosa entre aspas é argumento literal do shell e não vira "comando
+    /// composto" — sem isso, uma mensagem com parênteses ou cifrão citado
+    /// nunca casava com o prefixo liberado pelo operador.
     const META_SHELL: &[char] = &[';', '|', '&', '$', '`', '(', ')', '<', '>', '\n', '\r'];
+
+    /// #1579: existe metacaractere ATIVO neste comando, desconsiderando o que
+    /// as aspas do shell tornam literal? A varredura segue a tokenização do
+    /// shell (o comando roda via `sh -c`): `'...'` literaliza tudo; `"..."`
+    /// literaliza tudo menos crase, escape e `$` que abre alvo de expansão
+    /// (`$VAR`, `${...}`, `$((...))`, `$?`... — o `$` de `"R$ 50"` é literal);
+    /// `\` fora de aspas simples literaliza o próximo caractere. Aspas não
+    /// fechadas contam como ativas: comando ambíguo não casa.
+    fn tem_meta_ativo(cmd: &str) -> bool {
+        enum Zona {
+            Fora,
+            Simples,
+            Duplas,
+        }
+        let mut zona = Zona::Fora;
+        let mut it = cmd.chars().peekable();
+        while let Some(c) = it.next() {
+            match zona {
+                Zona::Fora => match c {
+                    '\\' => {
+                        let _ = it.next();
+                    }
+                    '\'' => zona = Zona::Simples,
+                    '"' => zona = Zona::Duplas,
+                    _ if Self::META_SHELL.contains(&c) => return true,
+                    _ => {}
+                },
+                Zona::Simples => {
+                    if c == '\'' {
+                        zona = Zona::Fora;
+                    }
+                }
+                Zona::Duplas => match c {
+                    '\\' => {
+                        let _ = it.next();
+                    }
+                    '"' => zona = Zona::Fora,
+                    '`' => return true,
+                    // `$` só expande quando abre um alvo: nome de
+                    // variável, `{`, `(` ou parâmetro especial. `"R$ 50"`
+                    // tem `$` literal (seguido de espaço) e passa.
+                    '$' if matches!(
+                        it.peek(),
+                        Some('{' | '(' | '$' | '*' | '@' | '#' | '?' | '!' | '-')
+                    ) || matches!(it.peek(), Some(ch) if ch.is_ascii_alphanumeric() || *ch == '_') =>
+                    {
+                        return true;
+                    }
+                    _ => {}
+                },
+            }
+        }
+        !matches!(zona, Zona::Fora)
+    }
 
     /// #1105: o comando casa com algum padrão da allowlist do operador?
     ///
@@ -178,12 +237,13 @@ impl BashTool {
     /// case-sensitive, e aparar evita que `" ls "` case com `"ls"` por
     /// acidente — ou que `"ls"` case com `"lsof ..."`.
     ///
-    /// Comando composto nunca casa, nem quando o padrão é exato: um `;`
-    /// no meio significa que o que o operador revisou a olho nu não é o
-    /// que vai rodar.
+    /// Composto nunca casa, nem quando o padrão é exato: um `;`
+    /// no meio significa que o que o operador revisou a olho nu não é
+    /// o que vai rodar. O que as aspas tornam literal é argumento, não
+    /// composto (#1579).
     fn matches_allowlist(&self, command: &str) -> bool {
         let cmd = command.trim();
-        if cmd.contains(Self::META_SHELL) {
+        if Self::tem_meta_ativo(cmd) {
             tracing::warn!(
                 command = ?cmd,
                 "bash_allowlist: comando composto nao e coberto pela allowlist; \
@@ -1244,6 +1304,65 @@ mod tests {
             assert!(out.is_error, "{cmd:?} nao podia rodar: {}", out.content);
         }
         assert!(!std::path::Path::new("/tmp/garra-allowlist-only-teste").exists());
+    }
+
+    // ── #1579: aspas protegem a prosa do argumento ──────────────────────────
+
+    /// Prosa entre aspas é argumento literal, não comando composto: o caso
+    /// real foi um `forja-ask` negado porque a mensagem citada continha
+    /// "(transcreva o conteúdo completo)".
+    #[test]
+    fn aspas_protegem_a_prosa_do_argumento() {
+        let tool = BashTool::new(None).with_allowlist(vec!["forja-ask *".into()]);
+        for cmd in [
+            r#"forja-ask --origin michel "leia o arquivo (transcreva o conteúdo completo)""#,
+            r#"forja-ask "isto; aquilo | ok <bem> agora""#,
+            r#"forja-ask "custa R$ 50 — literal""#,
+            r"forja-ask 'tudo literal: $HOME $(id) `id` ; | &'",
+            r"forja-ask argumento\;com\ escapada",
+        ] {
+            assert!(tool.matches_allowlist(cmd), "{cmd:?} devia casar");
+        }
+    }
+
+    /// O que o shell ainda expande continua ativo entre aspas duplas, o
+    /// composto fora delas continua nunca casando e aspas incompletas negam —
+    /// o vermelho do verde acima.
+    #[test]
+    fn meta_ativo_continua_nao_casando() {
+        let tool = BashTool::new(None).with_allowlist(vec!["forja-ask *".into()]);
+        for cmd in [
+            r#"forja-ask "vazou $HOME""#,
+            r#"forja-ask "vazou ${HOME}""#,
+            r#"forja-ask "vazou $(id)""#,
+            r#"forja-ask "vazou `id`""#,
+            r#"forja-ask "aberta"#,
+            r"forja-ask a; curl http://x",
+            r"forja-ask a && curl http://x",
+            r"forja-ask a | sh",
+            r"forja-ask a > /tmp/x",
+            r"forja-ask $(id)",
+        ] {
+            assert!(!tool.matches_allowlist(cmd), "{cmd:?} nao devia casar");
+        }
+    }
+
+    /// End-to-end em allowlist-only: a prosa citada roda de verdade e o que
+    /// ficou entre aspas chega literal na saída (inclusive o `$` de "R$ 50").
+    #[tokio::test]
+    async fn aspas_permitem_prosa_com_parenteses_no_argumento() {
+        let tool = BashTool::new(None)
+            .with_allowlist(vec!["echo *".into()])
+            .with_allowlist_only();
+        let out = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": r#"echo "olá (transcreva o conteúdo); R$ 50 | ok""#}),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("R$ 50"), "{}", out.content);
     }
 
     // ── #1105: allowlist do operador ──────────────────────────────────────
