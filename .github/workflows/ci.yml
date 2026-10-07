@@ -972,6 +972,25 @@ jobs:
     permissions:
       contents: read
       pull-requests: write   # required for gh pr comment
+    env:
+      # #1566 criterio 2 — o piso de cobertura que FALHA o build.
+      #
+      # PROVENIENCIA DO70 (registro exigido pelo maintainer antes do merge
+      # da #1581, decisao de 2026-10-07): 70% de cobertura AGREGADA do
+      # workspace e uma DECISAO NOVA do maintainer e um guardrail
+      # ADICIONAL — nao e uma exigencia literal do ROADMAP. O ROADMAP.md
+      # exige ">= 70%" nas CRATES DE DOMINIO (garraia-agents, garraia-db,
+      # garraia-security, garraia-workspace); o agregado do workspace nao
+      # aparece la como meta. A medicao de 2026-10-06 deu 71,99% de linha no
+      # agregado do workspace instrumentado (`docs/coverage-baseline-2026-10.md`),
+      # ou seja ~2 pp de folga sobre o piso. Mexer neste piso e mexer nesse
+      # guardrail: e uma decisao de maintainer sobre o piso agregado,
+      # registrada no PR que mudar — independente da meta do ROADMAP.
+      #
+      # Isto NAO e o AI Quality Ratchet. O `compare.py` continua
+      # `--mode report-only` e sua promocao a bloqueante segue sendo o PR-4 do
+      # plan 0064, com aprovacao explicita. Sao controles independentes.
+      COVERAGE_FLOOR_PCT: "70.0"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -1097,7 +1116,7 @@ jobs:
             echo '<!-- coverage-comment -->'
             echo '## Coverage Report (cargo-llvm-cov)'
             echo
-            echo '_Soft-gate: no threshold. Excluded crates: `garraia-desktop`, `garraia-auth`, `garraia-workspace` (see ci.yml comment)._'
+            echo "_Hard floor: **${COVERAGE_FLOOR_PCT}%** total line coverage — guardrail adicional aprovado pelo maintainer em 2026-10-07 (#1566 criterio 2). NAO e exigencia literal do ROADMAP: a meta >= 70% dele vale para crates de domínio. Excluded crates: \`garraia-desktop\`, \`garraia-auth\`, \`garraia-workspace\` (see ci.yml comment)._"
             echo
             echo '```'
             echo "${total:-TOTAL line not found in coverage-summary.txt}"
@@ -1108,6 +1127,36 @@ jobs:
           python3 scripts/ci/upsert_pr_comment.py \
             --repo "$REPO" --pr "$PR_NUMBER" \
             --marker '<!-- coverage-comment -->' --body-file pr-comment.md
+
+      # DELIBERADAMENTE o ultimo step do job. Um piso que derruba o job antes
+      # do upload dos artifacts e do comentario de PR esconde justamente a
+      # informacao de que quem for consertar precisa — e o `lcov.info` tambem
+      # alimenta o fallback do quality-ratchet. Entao: mede, publica, e so
+      # depois reprova.
+      #
+      # `if: always()` seria errado aqui: sem os steps anteriores nao existe
+      # `lcov.info`, e o gate fail-closed transformaria qualquer quebra de
+      # build num segundo erro ruidoso em cima do primeiro.
+      - name: Coverage floor gate (#1566)
+        # Sem pipe para `tee`: o runner roda `bash -e`, NAO `pipefail`, e um
+        # `python3 ... | tee` devolveria o status do `tee` — o gate reprovaria
+        # em silencio e o job passaria verde. O status e capturado a mao.
+        run: |
+          set -uo pipefail
+          set +e
+          python3 scripts/ci/coverage_gate.py lcov.info \
+            --floor "$COVERAGE_FLOOR_PCT" > coverage-gate.txt 2>&1
+          gate_status=$?
+          set -e
+          {
+            echo '### Coverage floor gate'
+            echo
+            echo '```'
+            cat coverage-gate.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat coverage-gate.txt
+          exit "$gate_status"
 
   # Build only (no test) for faster feedback on other platforms if needed
   build:
