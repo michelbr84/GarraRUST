@@ -1,3 +1,6 @@
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::pbkdf2;
@@ -10,6 +13,11 @@ use tracing::info;
 use super::rbac::Role;
 
 const PBKDF2_ITERATIONS: u32 = 600_000;
+/// `PBKDF2_ITERATIONS` como `NonZeroU32`, checado em compile-time (sem `expect`).
+const PBKDF2_ITERATIONS_NZ: NonZeroU32 = match NonZeroU32::new(PBKDF2_ITERATIONS) {
+    Some(n) => n,
+    None => panic!("PBKDF2_ITERATIONS must be > 0"),
+};
 const SALT_LEN: usize = 32;
 const SESSION_TOKEN_LEN: usize = 32;
 const CSRF_TOKEN_LEN: usize = 32;
@@ -1659,7 +1667,7 @@ fn hash_password(password: &str) -> Result<(String, String), String> {
 /// Single PBKDF2-HMAC-SHA256 derivation. Shared by password hashing (#1122
 /// keeps one scheme in the admin surface) and by recovery-code verification.
 fn derive_hash(secret: &str, salt: &[u8]) -> Vec<u8> {
-    let iterations = NonZeroU32::new(PBKDF2_ITERATIONS).expect("iterations > 0");
+    let iterations = PBKDF2_ITERATIONS_NZ;
     let mut hash = vec![0u8; 32];
     pbkdf2::derive(
         pbkdf2::PBKDF2_HMAC_SHA256,
@@ -1679,7 +1687,7 @@ fn verify_password_hash(password: &str, stored_hash: &str, stored_salt: &str) ->
         return false;
     };
 
-    let iterations = NonZeroU32::new(PBKDF2_ITERATIONS).expect("iterations > 0");
+    let iterations = PBKDF2_ITERATIONS_NZ;
     pbkdf2::verify(
         pbkdf2::PBKDF2_HMAC_SHA256,
         iterations,

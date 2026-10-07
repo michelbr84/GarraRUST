@@ -25,6 +25,9 @@
 //! broken" → `Unhealthy(status)`. Details never echo the configured URL
 //! verbatim — see [`endpoint_publico`].
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime};
 

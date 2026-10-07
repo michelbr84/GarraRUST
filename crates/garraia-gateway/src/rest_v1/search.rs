@@ -123,6 +123,9 @@
 //! Never use raw `to_tsquery` for user input (operator injection — see migration 004
 //! comment on `body_tsv`).
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use axum::Json;
 use axum::extract::{Query, State};
 use chrono::{DateTime, Utc};

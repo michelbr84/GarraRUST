@@ -48,6 +48,9 @@
 //! Este modulo nunca loga `goal` nem trecho de resultado (CLAUDE.md §6) — ha
 //! teste varrendo o fonte.
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use std::net::{IpAddr, SocketAddr};
 
 use axum::Json;
