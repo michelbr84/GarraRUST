@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.8] - 2026-10-07
 
+**Seguranca no topo desta release.** Quem esta na 0.4.7 executa bash no host **sem** fronteira de allowlist: a 0.4.8 estreia o modo `HostComAllowlist` (#1272), em que `agent.bash_allowlist` deixa de ser dispensa de confirmacao e vira limite real — todo comando fora dela e negado antes do tier arriscado, com a denylist do `safety_gate` sempre na frente. O `wasmtime` que alimenta esse sandbox sobe de 48.0.2 para 49.0.2 em dois passos (#1524, #1559), fechando **onze advisories** — quatro no salto para 49.0.1 e sete no patch para 49.0.2, este sem elevar o MSRV. A secao Seguranca abaixo detalha advisory por advisory.
+
+Alem da fronteira de bash, esta release consolida a coleta de cobertura que o quality ratchet sempre perdia (#1566), religa os seis canais que o README ja anunciava (#1567), corrige o escape de aspas na allowlist do bash (#1579) e traz o restante das correcoes listadas abaixo.
+
 ### Adicionado
 
 - **Bash roda no host restrito a `agent.bash_allowlist` (#1272).** Nova exposicao `HostComAllowlist`: quando a config declara padroes de comando (prefixo* no fim ou comando exato), o `BashTool` entra em modo allowlist-only — a allowlist deixa de ser dispensa de confirmacao e vira FRONTEIRA, todo comando fora dela e negado antes do tier arriscado, com a denylist do `safety_gate` sempre na frente.
