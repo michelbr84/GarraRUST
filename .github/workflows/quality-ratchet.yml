@@ -54,9 +54,12 @@ jobs:
           python-version: "3.x"
 
       # #1228 (slice E): the comment upsert used below has its own tests.
+      # #1566: the suite also covers `scripts/ci/coverage_gate.py`, which is
+      # consumed by the `coverage` job of ci.yml, not by this workflow. This is
+      # the only place `scripts/ci/tests` runs on a PR, so it stays blocking.
       # Separate pytest invocation: every scripts/*/tests suite is a package
       # named `tests`, and collecting two of them in one run breaks.
-      - name: Tests of scripts/ci (comment upsert)
+      - name: Tests of scripts/ci (comment upsert + coverage gate)
         run: |
           python3 -m pip install --quiet pytest
           python3 -m pytest scripts/ci/tests -q
