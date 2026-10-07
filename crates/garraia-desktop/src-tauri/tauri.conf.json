@@ -17,14 +17,19 @@
       "endpoints": [
         "https://github.com/michelbr84/GarraRUST/releases/latest/download/latest.json"
       ],
-      "pubkey": ""
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdENkQ1OTYyNDgyODgzRTcKUldUbmd5aElZbGx0ZlNjMTd1NzFaTDRLWll5Z21QakhIV09FVnVCY1pCSFZIYXFNSXI2VEREWEYK"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/garraia"],
-    "resources": ["resources/config.default.yml"],
+    "createUpdaterArtifacts": true,
+    "externalBin": [
+      "binaries/garraia"
+    ],
+    "resources": [
+      "resources/config.default.yml"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,13 +44,23 @@
     },
     "linux": {
       "deb": {
-        "provides": ["garraia"],
-        "conflicts": ["garraia"],
-        "replaces": ["garraia"]
+        "provides": [
+          "garraia"
+        ],
+        "conflicts": [
+          "garraia"
+        ],
+        "replaces": [
+          "garraia"
+        ]
       },
       "rpm": {
-        "provides": ["garraia"],
-        "conflicts": ["garraia"]
+        "provides": [
+          "garraia"
+        ],
+        "conflicts": [
+          "garraia"
+        ]
       }
     }
   }

@@ -24,6 +24,7 @@ on:
       - 'crates/garraia-cli/**'
       - 'scripts/build-installer.ps1'
       - 'scripts/build-desktop-linux.sh'
+      - 'scripts/build-desktop-macos.sh'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
@@ -113,6 +114,14 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    env:
+      # #1568: createUpdaterArtifacts + pubkey no tauri.conf.json fazem o
+      # bundler exigir a chave privada para assinar os artefactos de updater;
+      # sem ela o `cargo tauri build` falha. O secret vai nos jobs que
+      # constroem o desktop, nao so no `release`. PR de fork nao recebe
+      # secret (regra do GitHub) e falha com o erro claro — aceitavel num
+      # repo pessoal que so recebe PR do proprio account.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -175,6 +184,14 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+    env:
+      # #1568: createUpdaterArtifacts + pubkey no tauri.conf.json fazem o
+      # bundler exigir a chave privada para assinar os artefactos de updater;
+      # sem ela o `cargo tauri build` falha. O secret vai nos jobs que
+      # constroem o desktop, nao so no `release`. PR de fork nao recebe
+      # secret (regra do GitHub) e falha com o erro claro — aceitavel num
+      # repo pessoal que so recebe PR do proprio account.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -213,4 +230,51 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: garraia-desktop-linux-pr
+          path: ${{ runner.temp }}/bundles/
+
+  # O espelho macOS do build-linux-bundles: o DMG nao era verificado em PR
+  # nenhum (o release tambem nao o gerava — #1568). ubuntu-22.04 nao serve
+  # aqui; o runner precisa ser macOS para o bundler emitir .app/.dmg.
+  build-macos-bundles:
+    name: Build macOS .dmg (macos-latest)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      # #1568: createUpdaterArtifacts + pubkey no tauri.conf.json fazem o
+      # bundler exigir a chave privada para assinar os artefactos de updater;
+      # sem ela o `cargo tauri build` falha. O secret vai nos jobs que
+      # constroem o desktop, nao so no `release`. PR de fork nao recebe
+      # secret (regra do GitHub) e falha com o erro claro — aceitavel num
+      # repo pessoal que so recebe PR do proprio account.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build .dmg
+        run: STAGE_DIR="${RUNNER_TEMP}/bundles" ./scripts/build-desktop-macos.sh
+
+      - name: Verify the bundles are non-empty
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=("${RUNNER_TEMP}"/bundles/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ] || [ ! -s "${dmgs[0]}" ]; then
+            echo "::error ::DMG missing or empty under ${RUNNER_TEMP}/bundles"
+            exit 1
+          fi
+          echo "DMG size: $(stat -f%z "${dmgs[0]}") bytes"
+          ls -l "${RUNNER_TEMP}/bundles/"
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: garraia-desktop-macos-pr
           path: ${{ runner.temp }}/bundles/

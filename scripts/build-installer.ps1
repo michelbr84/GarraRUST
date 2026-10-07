@@ -81,6 +81,25 @@ if ($StageDir) {
         Copy-Item $nsis.FullName (Join-Path $StageDir "garraia-desktop-windows-x86_64-setup.exe") -Force
         Write-Host "    Staged: garraia-desktop-windows-x86_64-setup.exe"
     }
+
+    # Artefactos de updater (#1568): com `createUpdaterArtifacts: true` o
+    # bundler emite o `.nsis.zip`/`.msi.zip` + `.sig`. Sem eles staged, o
+    # `latest.json` da release nao tem o que assinar e o updater do app
+    # falharia no usuario final. Condicionais: sem a chave de signing o
+    # bundler nao emite, e os instaladores comuns continuam saindo.
+    $nsisZip = Get-ChildItem "target\release\bundle\nsis\*.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($nsisZip) {
+        Copy-Item $nsisZip.FullName (Join-Path $StageDir "garraia-desktop-windows-x86_64.nsis.zip") -Force
+        Write-Host "    Staged: garraia-desktop-windows-x86_64.nsis.zip (updater)"
+        if (Test-Path "$($nsisZip.FullName).sig") {
+            Copy-Item "$($nsisZip.FullName).sig" (Join-Path $StageDir "garraia-desktop-windows-x86_64.nsis.zip.sig") -Force
+            Write-Host "    Staged: garraia-desktop-windows-x86_64.nsis.zip.sig (updater)"
+        } else {
+            Write-Host "    AVISO: $($nsisZip.Name).sig ausente - latest.json vai recusar (fail-closed)" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "    AVISO: nenhum .nsis.zip de updater em bundle\nsis/ - createUpdaterArtifacts ligado?" -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""
