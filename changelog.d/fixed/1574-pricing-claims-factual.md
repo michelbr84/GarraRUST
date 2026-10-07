@@ -1,6 +1,4 @@
-# 1574/1576 — `docs/src/pricing.md` deixa de afirmar como fatos coisas que não existem
-
-A página de preços anunciava como **existentes** cinco coisas que o repositório não tem: certificação SOC 2, SLA de 99,5%/99,99%, hospedagem gerenciada, backups automáticos e cobrança por cartão. Cliente empresarial que lesse a página compraria algo que não pode ser vendido — e o produto sequer tem os serviços que a página descreve.
+- **1574/1576 — `docs/src/pricing.md` deixa de afirmar como fatos coisas que não existem.** A página de preços anunciava como **existentes** cinco coisas que o repositório não tem: certificação SOC 2, SLA de 99,5%/99,99%, hospedagem gerenciada, backups automáticos e cobrança por cartão. Cliente empresarial que lesse a página compraria algo que não pode ser vendido — e o produto sequer tem os serviços que a página descreve.
 
 - Banner de status no topo: **rascunho interno, não publicado, não vigente**, com o inventário do que não existe e as issues que rastreiam cada lacuna (#1576 para decisão de negócio, #1575 para revisão jurídica, #1565 para conformidade).
 - Plano Pro e Enterprise reescritos: cada item marcado como proposto e, quando não operacional, dizendo isso explicitamente. SLA vira "propsto, não contratual"; conformidade vira "nenhuma certificação, conformidade em aberto".
