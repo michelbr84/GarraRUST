@@ -299,7 +299,7 @@ Trabalho interno ativo (slices, planos, refactors, dependências) é rastreado e
 - **Discord:** [discord.gg/aEXGq5cS](https://discord.gg/aEXGq5cS)
 - **GitHub Issues:** bugs, feature requests e discussões técnicas
 - **GitHub Discussions:** perguntas gerais e ideias
-- **Segurança:** `security@garraia.cloud` (veja [SECURITY.md](SECURITY.md))
+- **Segurança:** `security@garraia.org` (veja [SECURITY.md](SECURITY.md))
 
 ---
 
