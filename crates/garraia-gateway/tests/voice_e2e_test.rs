@@ -215,7 +215,7 @@ impl MockVoicePipeline {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): needs running gateway (same server.run() cascade as auth_test.rs / gateway_integration.rs — exits silently on CI missing Postgres). Deferred to gateway-test-fixture follow-up PR."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn tts_endpoint_returns_error_when_voice_not_enabled() {
     let port = random_port();
     let mut config = test_config(port);
@@ -240,7 +240,7 @@ async fn tts_endpoint_returns_error_when_voice_not_enabled() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): needs running gateway (same server.run() cascade). Deferred."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn voice_status_endpoint_when_disabled() {
     let port = random_port();
     let mut config = test_config(port);

@@ -68,7 +68,7 @@ async fn start_test_gateway(config: AppConfig) -> String {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): tokio::spawn(server.run()) exits silently in CI (missing Postgres since plan 0016 M4). Same cascade as auth_test.rs. Deferred to gateway-test-fixture follow-up PR."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn health_endpoint_returns_ok() {
     let port = random_port();
     let config = test_config(port, "http://localhost:1");
@@ -81,7 +81,7 @@ async fn health_endpoint_returns_ok() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): tokio::spawn(server.run()) exits silently in CI (missing Postgres since plan 0016 M4). Same cascade as auth_test.rs. Deferred."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn ws_connect_receives_welcome_with_session_id() {
     let port = random_port();
     let config = test_config(port, "http://localhost:1");
@@ -100,7 +100,7 @@ async fn ws_connect_receives_welcome_with_session_id() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): tokio::spawn(server.run()) exits silently in CI (missing Postgres since plan 0016 M4). Same cascade as auth_test.rs. Deferred."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn ws_session_resume_returns_resumed_type() {
     let port = random_port();
     let mock_server = MockServer::start().await;
@@ -151,7 +151,7 @@ async fn ws_session_resume_returns_resumed_type() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): tokio::spawn(server.run()) exits silently in CI (missing Postgres since plan 0016 M4). Same cascade as auth_test.rs. Deferred."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn ws_prompt_injection_rejected() {
     let port = random_port();
     let config = test_config(port, "http://localhost:1");
@@ -180,7 +180,7 @@ async fn ws_prompt_injection_rejected() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): tokio::spawn(server.run()) exits silently in CI (missing Postgres since plan 0016 M4). Same cascade as auth_test.rs. Deferred."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn status_endpoint_returns_session_count() {
     let port = random_port();
     let config = test_config(port, "http://localhost:1");

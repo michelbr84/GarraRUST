@@ -1316,6 +1316,66 @@ jobs:
       - name: cargo ndk check
         run: cargo ndk -t arm64-v8a -p 21 -- check --release --package garraia --locked
 
+  # Gateway integration tests that boot the real GatewayServer (#1570 item 5,
+  # fix/ci-triage-2026-04-15). O bootstrap do gateway exige Postgres
+  # (GARRAIA_LOGIN_DATABASE_URL / GARRAIA_SIGNUP_DATABASE_URL) e os secrets
+  # de auth; sem eles `server.run()` sai em silêncio e 10 testes ficaram
+  # `#[ignore]`d. Este job é a fixture: service container de Postgres + env
+  # de teste + `--include-ignored`. Local: exporte as mesmas env vars (aponte
+  # para um Postgres de teste) e rode o mesmo comando.
+  gateway-integration:
+    name: Gateway Integration (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16.8-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: garraia_workspace_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Segredos FICTIONAIS de CI (mesmo padrão do job e2e) — nunca são
+      # segredos reais; só precisam existir para o bootstrap não abortar.
+      GARRAIA_JWT_SECRET: "ci-only-jwt-secret-not-a-real-secret"
+      GARRAIA_REFRESH_HMAC_SECRET: "ci-only-refresh-hmac-not-a-real-secret"
+      GARRAIA_LOGIN_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
+      GARRAIA_SIGNUP_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-gwint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gwint-
+            ${{ runner.os }}-cargo-
+
+      - name: Run gateway bootstrap integration tests (Postgres-backed)
+        # --test-threads=2: cada teste sobe um GatewayServer completo;
+        # paralelismo alto esgota portas/memória do runner sem ganho.
+        run: cargo test -p garraia-gateway --test auth_test --test gateway_integration --test voice_e2e_test -- --include-ignored --test-threads=2
+
   # E2E integration test (GAR-216, GAR-438 / plan 0050 Lote 2)
   e2e:
     name: E2E Tests
