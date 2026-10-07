@@ -33,6 +33,9 @@
 //! commit/rollback) but accepts a bind parameter. All other queries use
 //! `sqlx::query::bind` as normal. (GAR-508)
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use argon2::PasswordHasher;
 use axum::Json;
 use axum::extract::{Path, Query, State};

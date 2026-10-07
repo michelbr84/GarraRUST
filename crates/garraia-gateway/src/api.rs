@@ -1,3 +1,6 @@
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use std::net::SocketAddr;
 
 use axum::{
