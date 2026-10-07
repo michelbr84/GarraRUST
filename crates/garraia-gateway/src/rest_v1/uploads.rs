@@ -25,6 +25,9 @@
 //! requires `Tus-Resumable: 1.0.0` on every request. A mismatch yields
 //! `412 Precondition Failed` with a `Tus-Version: 1.0.0` hint header.
 
+// Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+
 use axum::body::{Body, to_bytes};
 use axum::extract::{Path, State};
 use axum::http::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
