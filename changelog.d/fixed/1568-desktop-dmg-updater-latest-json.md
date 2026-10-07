@@ -1,6 +1,4 @@
-# 1568 — Desktop: DMG no macOS, artefactos de updater assinados e `latest.json` publicado
-
-O desktop nao e vendavel como distribuicao empacotada: nao havia DMG no macOS,
+- **1568 — Desktop: DMG no macOS, artefactos de updater assinados e `latest.json` publicado.** O desktop nao e vendavel como distribuicao empacotada: nao havia DMG no macOS,
 o `tauri-plugin-updater` estava ligado com `pubkey` vazio e nenhum workflow
 publicava `latest.json` — o botao de atualizar nunca funcionou. O item que
 bloqueia o canal distribuidor (assinatura de codigo EV/OV) continua externo e
