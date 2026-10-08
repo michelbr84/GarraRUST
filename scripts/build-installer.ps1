@@ -84,7 +84,7 @@ if ($StageDir) {
 
     # Artefactos de updater (#1568): com `createUpdaterArtifacts: true` o
     # Tauri 2.x emite o `.sig` vizinho do PROPRIO bundle (`.msi` /
-    # `-setup.exe`), sem zip intermediario — o formato `.nsis.zip` e legado
+    # `-setup.exe`), sem zip intermediario -- o formato `.nsis.zip` e legado
     # (v1/v1Compatible) e neste projeto nao e produzido. O `latest-json.py`
     # reconhece os dois formatos; estagiamos os dois para cobrir qualquer
     # mudanca de comportamento do bundler.
