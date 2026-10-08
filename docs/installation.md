@@ -210,9 +210,13 @@ agent:
 ```
 
 In this mode the allowlist is a **boundary**, not a confirmation bypass:
-anything outside it is refused; compound commands (`;`, `|`, `&&`, `$(...)`,
-redirections) never match a pattern; the denylist and the risky-command tier
-still apply on top. There is **no sandbox** — `garraia doctor`,
+anything outside it is refused. A chained command (`;`, `|`, `||`, `&&`) is
+split into segments and **every** segment must match a pattern of its own
+(#1592), so `git log | grep foo` needs both `git log *` and `grep *` declared,
+and `git log | sh` stays refused while `sh` is not on the list. Command
+substitution (`$(...)`, backticks), redirections (`<`, `>`) and a bare `&`
+(background escapes the timeout) never match a pattern at all. The denylist and
+the risky-command tier still apply on top. There is **no sandbox** — `garraia doctor`,
 `/api/diagnostics` (`tools.bash`) and `garra_status` all say
 "SEM sandbox, em modo allowlist-only" so the degraded mode is always visible.
 Keep the list to commands you would let the agent run unattended on the phone.
