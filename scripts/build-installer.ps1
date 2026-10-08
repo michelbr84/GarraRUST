@@ -83,22 +83,28 @@ if ($StageDir) {
     }
 
     # Artefactos de updater (#1568): com `createUpdaterArtifacts: true` o
-    # bundler emite o `.nsis.zip`/`.msi.zip` + `.sig`. Sem eles staged, o
-    # `latest.json` da release nao tem o que assinar e o updater do app
-    # falharia no usuario final. Condicionais: sem a chave de signing o
-    # bundler nao emite, e os instaladores comuns continuam saindo.
+    # Tauri 2.x emite o `.sig` vizinho do PROPRIO bundle (`.msi` /
+    # `-setup.exe`), sem zip intermediario -- o formato `.nsis.zip` e legado
+    # (v1/v1Compatible) e neste projeto nao e produzido. O `latest-json.py`
+    # reconhece os dois formatos; estagiamos os dois para cobrir qualquer
+    # mudanca de comportamento do bundler.
+    foreach ($bundle in @($msi, $nsis)) {
+        if ($bundle -and (Test-Path "$($bundle.FullName).sig")) {
+            $sigAlvo = Join-Path $StageDir "$($bundle.Name).sig"
+            Copy-Item "$($bundle.FullName).sig" $sigAlvo -Force
+            Write-Host "    Staged: $($bundle.Name).sig (updater)"
+        } elseif ($bundle) {
+            Write-Host "    AVISO: $($bundle.Name).sig ausente - latest.json vai recusar esta plataforma (fail-closed)" -ForegroundColor Yellow
+        }
+    }
     $nsisZip = Get-ChildItem "target\release\bundle\nsis\*.nsis.zip" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($nsisZip) {
         Copy-Item $nsisZip.FullName (Join-Path $StageDir "garraia-desktop-windows-x86_64.nsis.zip") -Force
-        Write-Host "    Staged: garraia-desktop-windows-x86_64.nsis.zip (updater)"
+        Write-Host "    Staged: garraia-desktop-windows-x86_64.nsis.zip (updater, formato legado)"
         if (Test-Path "$($nsisZip.FullName).sig") {
             Copy-Item "$($nsisZip.FullName).sig" (Join-Path $StageDir "garraia-desktop-windows-x86_64.nsis.zip.sig") -Force
-            Write-Host "    Staged: garraia-desktop-windows-x86_64.nsis.zip.sig (updater)"
-        } else {
-            Write-Host "    AVISO: $($nsisZip.Name).sig ausente - latest.json vai recusar (fail-closed)" -ForegroundColor Yellow
+            Write-Host "    Staged: garraia-desktop-windows-x86_64.nsis.zip.sig (updater, formato legado)"
         }
-    } else {
-        Write-Host "    AVISO: nenhum .nsis.zip de updater em bundle\nsis/ - createUpdaterArtifacts ligado?" -ForegroundColor Yellow
     }
 }
 

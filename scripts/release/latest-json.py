@@ -61,6 +61,13 @@ PADROES = [
     (".app.tar.gz", "darwin"),
     (".nsis.zip", "windows"),
     (".msi.zip", "windows"),
+    # Tauri 2.x com `createUpdaterArtifacts: true` emite o `.sig` vizinho do
+    # proprio bundle Windows (`.msi` / `-setup.exe`), sem zip intermediario —
+    # e o build-installer.ps1 estagia exatamente esses artefactos (#1568 v2:
+    # a versao anterior so procurava `.nsis.zip`, que este Tauri nao emite,
+    # e o latest.json saia sem a plataforma windows).
+    ("-setup.exe", "windows"),
+    (".msi", "windows"),
     # Tauri v2 com `createUpdaterArtifacts: true` assina o proprio bundle no
     # Linux: o artefacto de updater e o `.AppImage` com `.sig` vizinho (o
     # `.AppImage.tar.gz` e o formato legado). O prefixo `garraia-desktop-`
@@ -79,7 +86,9 @@ def _plataforma_do_nome(nome: str) -> str | None:
         # So o app desktop e atualizavel pelo tauri-plugin-updater; o
         # AppImage da CLI (garraia-linux-*) nao tem `.sig` e nao deve
         # disputar a chave linux-x86_64 com o artefacto do desktop.
-        if padrao == ".AppImage" and not nome.startswith("garraia-desktop-"):
+        if padrao in (".AppImage", "-setup.exe", ".msi") and not nome.startswith(
+            "garraia-desktop-"
+        ):
             continue
         arquitetura = "aarch64" if "aarch64" in nome or "arm64" in nome else "x86_64"
         return f"{sistema}-{arquitetura}"
@@ -138,6 +147,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # O workflow passa `--version` com o tag completo (ex.: "v0.4.8"), mas o
+    # contrato do script e "versao sem v" (a URL e `v{version}` e o campo
+    # `version` do latest.json e semver puro para o updater comparar). Sem
+    # esta normalizacao o release publicava URLs `vv0.4.8` (404) — v0.4.8.
+    versao = args.version.removeprefix("v")
+
     artefactos = _acha_artefactos(args.artifacts_dir)
     if not artefactos:
         print(
@@ -158,7 +173,7 @@ def main() -> int:
             print(f"ERRO: {exc}", file=sys.stderr)
             return 1
         # URL canonica de download da tag no proprio repo.
-        url = f"https://github.com/{args.repo}/releases/download/v{args.version}/{artefato.name}"
+        url = f"https://github.com/{args.repo}/releases/download/v{versao}/{artefato.name}"
         plataformas[chave] = {"signature": assinatura, "url": url}
 
     if not plataformas:
@@ -168,7 +183,7 @@ def main() -> int:
     from datetime import datetime, timezone
 
     doc = {
-        "version": args.version,
+        "version": versao,
         "notes": args.notes,
         "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platforms": plataformas,

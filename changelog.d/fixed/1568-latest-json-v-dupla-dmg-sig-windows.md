@@ -1,0 +1,1 @@
+- fix(release): latest.json sem a tag "v" duplicada (`vv0.4.8`), DMG do macOS entra na release e assinaturas do updater Windows estagiadas — o gerador normaliza a versão, o glob do DMG cobre o nome real do bundler Tauri e o `build-installer.ps1` estagia o `.sig` vizinho do `.msi`/`-setup.exe` que o Tauri 2.x emite (#1568)
