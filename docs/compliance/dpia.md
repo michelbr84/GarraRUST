@@ -233,6 +233,7 @@ Tabelas de metadados não-pessoais **por si só**. `groups.settings_jsonb` pode 
 - **Risco**: alto impacto legal, baixa likelihood.
 - **Mitigação atual**: ADR 0004 §Versionamento explicita que erasure tem flag `--include-origin`; audit_events separado do user pode ser mantido pseudonimizado via tokenização.
 - **Mitigação planejada**: `POST /v1/me:anonymize` endpoint (GAR-400) que substitui PII por tokens sem apagar histórico do grupo.
+  - **Status 2026-10-07: IMPLEMENTADO** como `POST /v1/me/anonymize` (rota com `/`, plan 0343/GAR-884; ver `crates/garraia-gateway/src/rest_v1/me.rs`). Executa em transação: anonimiza o login (`user_identities.provider_sub` via `anonymize_identity`), troca `users.email` por token (`garraia_auth::anon_token`), `display_name` → `Usuário Anônimo`, `status='anonymized'`, revoga sessões ativas, limpa `group_invites` e emite evento de auditoria; 409 em conta já deletada/anonimizada; guarda `FOR UPDATE` contra duplo-anonimização concorrente.
 
 ### 4.5 Secrets em log / debug output (I)
 
@@ -255,23 +256,22 @@ Tabelas de metadados não-pessoais **por si só**. `groups.settings_jsonb` pode 
 ### 5.1 Confirmação de existência + acesso (LGPD art. 18 I, II / GDPR art. 15)
 
 - **Endpoint**: `GET /v1/me` — já existente (plans 0015, 0016).
-- **Export completo**: `GET /v1/me:export` — **pendente** (GAR-400). Deve retornar zip com messages/files/memory/tasks/audit em ≤ 30s para 10k messages.
+- **Export completo**: `GET /v1/me:export` — **IMPLEMENTADO 2026-10-07** (plan 0344/GAR-885; rota com `/`). Exporta JSON estruturado de **conta**: perfil, sessões, chaves de API (somente metadado — hash nunca retorna), eventos de auditoria e memberships de grupo; entrega como anexo `garraia-export-AAAA-MM-DD.json`. **Limitação conhecida**: o escopo é de conta — o zip com messages/files/memory/tasks prometido abaixo ainda **não** é coberto, e o SLA de ≤ 30s para 10k messages **não foi verificado**. Itens seguem abertos.
 - **SLA**: 15 dias corridos (LGPD art. 19) / 1 mês (GDPR art. 12.3).
 
 ### 5.2 Correção (LGPD art. 18 III / GDPR art. 16)
 
-- **Endpoint**: `PATCH /v1/me` — **pendente**.
-- Correção de `display_name` + `email` (com re-verificação).
+- **Endpoint**: `PATCH /v1/me` — **IMPLEMENTADO 2026-10-07** (plan 0110/GAR-599). Correção de `display_name` no `users`. **Pendente**: correção de `email` com re-verificação.
 
 ### 5.3 Anonimização / bloqueio / eliminação (LGPD art. 18 IV, V / GDPR art. 17, 18)
 
-- **Endpoint anonimização**: `POST /v1/me:anonymize` — **pendente** (GAR-400). Substitui PII em audit_events por tokens, preserva histórico agregado do grupo.
-- **Endpoint delete**: `DELETE /v1/me` — **pendente** (GAR-400). Soft-delete com tombstone + hard-delete após 30 dias + purge de files com `--include-origin` (ADR 0004).
+- **Endpoint anonimização**: `POST /v1/me:anonymize` — **IMPLEMENTADO 2026-10-07** (plan 0343/GAR-884; ver status detalhado na §4.4). Anonimiza identificadores da conta e revoga sessões; histórico de grupo preservado.
+- **Endpoint delete**: `DELETE /v1/me` — **IMPLEMENTADO 2026-10-07** (plan 0343/GAR-884). Soft-delete (`users.status='deleted'`) com revogação atômica de todas as sessões + evento de auditoria `account.self_deleted`; 409 idempotente se já deletada. **Pendente de verificação operacional**: purge de hard-delete após 30 dias e purge de files com `--include-origin` (ADR 0004) — o endpoint implementa o soft-delete; o agendamento de purge é operação do deployment.
 - **SLA**: 15 dias (LGPD) / 1 mês (GDPR).
 
 ### 5.4 Portabilidade (LGPD art. 18 V / GDPR art. 20)
 
-- **Endpoint**: mesmo `GET /v1/me:export` (GAR-400). Formato: JSON estruturado + arquivos originais (zip).
+- **Endpoint**: mesmo `GET /v1/me:export` (plan 0344/GAR-885 — **implementado**, escopo de conta; ver §5.1). Formato: JSON estruturado. Arquivos originais (zip) seguem pendentes.
 
 ### 5.5 Informações sobre compartilhamento (LGPD art. 18 VII)
 
@@ -365,7 +365,7 @@ Sem o LIA documentado, a invocação de legítimo interesse é frágil perante a
 
 1. **Contratar review legal** (advogado LGPD/GDPR) para validar este DPIA antes do GA.
 2. **Designar DPO** conforme LGPD art. 41 (pessoa física ou jurídica).
-3. **Implementar GAR-400** (endpoints de export/delete/anonymize) — destrava compliance operacional.
+3. ~~**Implementar GAR-400** (endpoints de export/delete/anonymize)~~ — **CONCLUÍDO 2026-10-07**: `GET /v1/me/export`, `POST /v1/me/anonymize`, `DELETE /v1/me` e `PATCH /v1/me` implementados no gateway (plans 0343/0344/GAR-884/GAR-885 e plan 0110/GAR-599); status detalhado na §5. Restam: escopo de arquivo (messages/files) na exportação, verificação do SLA de 30s e correção de email com re-verificação.
 4. **Publicar TOS + Privacy Policy** em `garraia.org/legal`.
 5. **Executar tabletop exercise** do runbook de incidentes (GAR-409) pelo menos uma vez antes do GA.
 6. **Revisar este DPIA trimestralmente** — próxima: 2026-07-21.
