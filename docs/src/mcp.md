@@ -103,6 +103,33 @@ Se o mesmo servidor estiver definido em ambos os arquivos, a configuração do `
 
 ## Comandos CLI do MCP
 
+### Validar que os servidores sobem (`doctor mcp`)
+
+```bash
+garraia doctor mcp
+```
+
+O health-check de **subida**, não de instalação: para cada servidor stdio
+declarado (no `mcp:` do `config.yml` ou no `mcp.json`) ele spawna o servidor
+pelo mesmo caminho de boot do gateway — mesmo merge, mesma resolução de
+`vault:`, mesma recuperação de cache npx — conta as tools que o handshake
+devolveu e desliga os filhos antes de sair.
+
+| Exit | Significado                                              |
+| ---- | -------------------------------------------------------- |
+| `0`  | todos os servidores stdio declarados subiram com tools    |
+| `2`  | algum servidor não subiu (ou `--strict` com versão solta) |
+| `65` | o arquivo de config existe mas não parseia                |
+
+Servidor com `enabled: false` é decisão do operador e não reprova; entradas
+HTTP ficam marcadas como não-verificadas por este check. `--json` emite o
+mesmo vocabulário do doctor raiz (`ok`, `exit_code`, `report`).
+
+O `garraia doctor` (sem área) mostra um resumo CONFIG — quantos servidores
+declarados e se o `filesystem` está com a versão fixada — sem spawnar nada.
+
+---
+
 ### Listar servidores configurados
 
 ```bash

@@ -13,6 +13,7 @@ mod config_cmd;
 mod defaults;
 mod desktop;
 mod doctor;
+mod doctor_mcp;
 mod doctor_whatsapp;
 mod glob_cmd;
 mod logs_cmd;
@@ -833,6 +834,10 @@ enum DoctorArea {
     /// The personal-WhatsApp path end to end: link, session key, gateway,
     /// access, execution profile, workspace, MCP visibility, provider (#1419)
     Whatsapp,
+    /// MCP server liveness (#1595): spawn each configured stdio server through
+    /// the gateway's own boot path, count the tools the handshake returns,
+    /// and exit nonzero when a server doesn't come up — CI/script-usable.
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -1898,6 +1903,7 @@ fn main() -> Result<()> {
     if let Commands::Doctor { json, strict, area } = cli.command {
         let code = match area {
             Some(DoctorArea::Whatsapp) => doctor_whatsapp::run(json, strict)?,
+            Some(DoctorArea::Mcp) => doctor_mcp::run(json, strict)?,
             None => doctor::run_doctor(json, strict)?,
         };
         if code != 0 {
