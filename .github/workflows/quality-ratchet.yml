@@ -47,7 +47,7 @@ permissions:
 
 jobs:
   ratchet:
-    name: Quality Ratchet (report-only)
+    name: Quality Report (report-only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
