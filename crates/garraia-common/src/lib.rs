@@ -1,3 +1,4 @@
+pub mod contexto_restrito;
 pub mod error;
 pub mod executavel;
 pub mod fs_perms;

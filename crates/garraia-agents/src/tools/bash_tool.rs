@@ -590,14 +590,29 @@ impl Tool for BashTool {
                 if output.status.success() {
                     Ok(ToolOutput::success(combinado))
                 } else {
-                    Ok(ToolOutput::error(format!(
-                        "código de saída {}: {}",
-                        output.status.code().unwrap_or(-1),
-                        combinado
-                    )))
+                    let codigo = output.status.code().unwrap_or(-1);
+                    let mut mensagem = format!("código de saída {}: {}", codigo, combinado);
+                    // #1591: exit 126 em Android/Termux quase sempre é o
+                    // contexto SELinux do launcher vetando exec em /data —
+                    // diagnosticar em vez de devolver o genérico.
+                    if codigo == 126 {
+                        mensagem =
+                            garraia_common::contexto_restrito::enriquece(&mensagem);
+                    }
+                    Ok(ToolOutput::error(mensagem))
                 }
             }
-            Ok(Err(e)) => Ok(ToolOutput::error(format!("falha ao executar comando: {e}"))),
+            Ok(Err(e)) => {
+                // #1591: EACCES no próprio spawn (Command::new) é a outra
+                // face do mesmo contexto restrito — diagnosticar também.
+                let mensagem = format!("falha ao executar comando: {e}");
+                let mensagem = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    garraia_common::contexto_restrito::enriquece(&mensagem)
+                } else {
+                    mensagem
+                };
+                Ok(ToolOutput::error(mensagem))
+            }
             Err(_) => {
                 // Matar o cliente do docker nao mata o container: sem isto ele
                 // seguia rodando, com o workdir montado rw, depois do timeout.

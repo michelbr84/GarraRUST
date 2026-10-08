@@ -1976,7 +1976,14 @@ impl std::fmt::Display for PonteNaoPronta {
             Self::Npm { erro, dir } => {
                 let causa = match erro {
                     bridge::BridgeError::NpmInstall { code, .. } => {
-                        format!("`npm ci` saiu com codigo {code}")
+                        let mut causa = format!("`npm ci` saiu com codigo {code}");
+                        // #1591: no Termux, 126 aqui é o contexto SELinux do
+                        // launcher vetando exec de `npm` (script em $PREFIX)
+                        // — diagnosticar em vez de sugerir só o re-run.
+                        if code == "126" {
+                            causa = garraia_common::contexto_restrito::enriquece(&causa);
+                        }
+                        causa
                     }
                     bridge::BridgeError::NpmTimeout => format!(
                         "`npm ci` passou de {}s sem terminar",
