@@ -203,7 +203,16 @@ pub(crate) fn falha_de_transporte(e: &reqwest::Error) -> bool {
 /// mantido palavra por palavra: o cartao de erro da CLI classifica pela frase
 /// interna do `reqwest`, e nao pelo prefixo do enum.
 pub(crate) fn erro_de_envio(contexto: &str, e: &reqwest::Error) -> Error {
-    let msg = format!("{contexto}: {e}");
+    // #1593: timeout do LLM e o unico erro de envio que o operador consegue
+    // resolver sozinho, trocando a janela — entao o card diz qual chave.
+    // O resto do texto do reqwest e mantido palavra por palavra (#1249): o
+    // cartao da CLI classifica pela frase interna, nao pelo prefixo.
+    let mut msg = format!("{contexto}: {e}");
+    if e.is_timeout() {
+        msg.push_str(
+            " — a resposta do LLM nao chegou dentro da janela de timeout e foi              descartada; aumente timeouts.llm.default_secs (global) ou declare              llm.<provider>.timeout_secs com uma janela maior para este provider",
+        );
+    }
     if falha_de_transporte(e) {
         Error::Transport(msg)
     } else {
@@ -260,6 +269,51 @@ mod tests {
             erro_de_envio("openai request failed", &e),
             Error::Agent(_)
         ));
+    }
+
+    /// #1593: timeout do LLM ganha a orientação da chave na mensagem — o
+    /// único erro de envio que o operador resolve trocando a janela. O
+    /// prefixo da classe e o texto do reqwest continuam intactos (#1249).
+    #[tokio::test]
+    async fn timeout_do_llm_nomeia_as_chaves_que_o_operador_muda() {
+        // Servidor local que aceita e nunca responde: com teto de 50ms a
+        // chamada morre como timeout de verdade, sem rede externa.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Le o cabecalho antes de estagnar: sem isso o hyper falha
+                // em montagem (Canceled) e nao como timeout (#1593).
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+
+        let e = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect_err("o teto de 50ms tem de matar a chamada");
+        assert!(e.is_timeout(), "precondicao: {e}");
+
+        let texto = erro_de_envio("falha na requisição à Anthropic", &e).to_string();
+        assert!(
+            texto.contains("timeouts.llm.default_secs"),
+            "a mensagem nomeia a chave global; veio: {texto}"
+        );
+        assert!(
+            texto.contains("llm.<provider>.timeout_secs"),
+            "a mensagem nomeia a janela por provider; veio: {texto}"
+        );
+        assert!(
+            texto.starts_with("transport error: "),
+            "a classe sobrevive; veio: {texto}"
+        );
     }
 
     #[tokio::test]

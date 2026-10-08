@@ -26,6 +26,32 @@ Para cada provedor, as chaves de API são resolvidas na seguinte ordem de priori
 
 ---
 
+## Timeout por provedor (`timeout_secs`)
+
+Todas as chamadas LLM usam a janela global `timeouts.llm.default_secs` (padrão
+120s). Quando um provedor é mais lento que os outros — um host local
+inferindo sem GPU, por exemplo — declarar `timeout_secs` na entrada dele
+sobrescreve a janela global só para esse provedor:
+
+```yaml
+timeouts:
+  llm:
+    default_secs: 120   # janela global
+
+llm:
+  local:
+    provider: ollama
+    model: qwen3.8:latest
+    timeout_secs: 1800  # este provedor pode demorar meia hora
+```
+
+Sem a chave, o provedor usa a janela global. Quando o timeout dispara, a
+resposta parcial é descartada (não há como retomar uma resposta HTTP
+interrompida) e o erro diz exatamente qual das duas chaves aumentar —
+`timeouts.llm.default_secs` ou `llm.<provedor>.timeout_secs`.
+
+---
+
 # Provedores nativos
 
 ## Anthropic Claude
