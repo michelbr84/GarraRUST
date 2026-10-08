@@ -676,6 +676,19 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv, bind_env: &BindDaEnv)
             "timeouts.mcp.default_secs == 0 disables the MCP timeout".into(),
         );
     }
+    // #1593: a janela propria por provider, o mesmo aviso do valor global.
+    for (name, llm) in &config.llm {
+        if llm.timeout_secs() == Some(0) {
+            push_warn(
+                &mut findings,
+                &format!("llm.{name}.timeout_secs"),
+                format!(
+                    "llm.{name}.timeout_secs == 0 disables the LLM timeout for this \
+                     provider (hung calls will block forever)"
+                ),
+            );
+        }
+    }
 
     // Voice: if enabled, endpoints must look like URLs (trivial check — not full parse).
     // SEC-M-02 (security audit): URLs may contain userinfo credentials
@@ -3156,6 +3169,44 @@ mod tests {
             .expect("an unset default_provider alongside llm entries must warn");
         assert!(matches!(hit.severity, Severity::Warning));
         assert!(hit.message.contains("auto-fallback"));
+    }
+
+    /// #1593: `llm.<nome>.timeout_secs == 0` avisa com o mesmo texto do
+    /// valor global — o operador que declara a janela propria e justamente o
+    /// que estaria arriscando chamada pendurada pra sempre.
+    #[test]
+    fn llm_provider_timeout_secs_zero_warns_like_the_global_one() {
+        let mut cfg = config_with_keyless_openrouter();
+        cfg.llm.get_mut("main").unwrap().api_key = Some("sk-or-test".into());
+        cfg.llm
+            .get_mut("main")
+            .unwrap()
+            .extra
+            .insert("timeout_secs".into(), serde_json::json!(0));
+        cfg.agent.default_provider = Some("main".into());
+
+        let findings = validate(&cfg);
+        let hit = findings
+            .iter()
+            .find(|f| f.field == "llm.main.timeout_secs")
+            .expect("um timeout_secs 0 declarado tem de warnar");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("disables the LLM timeout"));
+
+        // E o vermelho: um valor positivo nao produz achado nenhum.
+        let mut ok = config_with_keyless_openrouter();
+        ok.llm.get_mut("main").unwrap().api_key = Some("sk-or-test".into());
+        ok.llm
+            .get_mut("main")
+            .unwrap()
+            .extra
+            .insert("timeout_secs".into(), serde_json::json!(600));
+        ok.agent.default_provider = Some("main".into());
+        let findings = validate(&ok);
+        assert!(
+            !findings.iter().any(|f| f.field == "llm.main.timeout_secs"),
+            "600 nao pode warnar: {findings:?}"
+        );
     }
 
     /// `validate` e pura: nem `HOST`/`PORT` de um teste vizinho entram aqui
