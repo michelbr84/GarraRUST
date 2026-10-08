@@ -237,24 +237,121 @@ impl BashTool {
     /// case-sensitive, e aparar evita que `" ls "` case com `"ls"` por
     /// acidente — ou que `"ls"` case com `"lsof ..."`.
     ///
-    /// Composto nunca casa, nem quando o padrão é exato: um `;`
-    /// no meio significa que o que o operador revisou a olho nu não é
-    /// o que vai rodar. O que as aspas tornam literal é argumento, não
-    /// composto (#1579).
+    /// #1592: composto **só de sequencia** (`;`, `|`, `&`, `&&`, `||`, quebra
+    /// de linha) é avaliado segmento a segmento — o composto casa quando
+    /// **todo** segmento casa com algum padrão declarado. Um pipe legítimo
+    /// (`git status | head -5` com `git *` e `head *` declarados) passa a
+    /// rodar; um injetado (`git status; curl http://x` só com `git *`) continua
+    /// negado porque o segmento `curl ...` não casa. Substituição (`$(...)`,
+    /// crase), redirecionamento (`<`, `>`), subshell (`(`, `)`) e aspas não
+    /// fechadas continuam **nunca** casando: esses mudam o dado de um único
+    /// comando e não se dividem em comandos revisáveis um a um
+    /// ([`Self::segmentos_de_sequencia`]).
     fn matches_allowlist(&self, command: &str) -> bool {
         let cmd = command.trim();
         if Self::tem_meta_ativo(cmd) {
-            tracing::warn!(
-                command = ?cmd,
-                "bash_allowlist: comando composto nao e coberto pela allowlist; \
-                 vai para o tier arriscado"
-            );
-            return false;
+            return match Self::segmentos_de_sequencia(cmd) {
+                Some(segmentos) => segmentos.iter().all(|s| self.casa_padrao(s)),
+                None => {
+                    tracing::warn!(
+                        command = ?cmd,
+                        "bash_allowlist: composto com meta alem de sequencia \
+                         (substituicao/redirecionamento/subshell) nao e coberto \
+                         pela allowlist; vai para o tier arriscado"
+                    );
+                    false
+                }
+            };
         }
+        self.casa_padrao(cmd)
+    }
+
+    /// #1105/#1592: o comando (ou um segmento de composto) casa com algum
+    /// padrão declarado pelo operador — prefixo `*` no fim ou texto exato.
+    fn casa_padrao(&self, cmd: &str) -> bool {
         self.allowlist.iter().any(|p| match p.strip_suffix('*') {
             Some(prefixo) => cmd.starts_with(prefixo),
             None => cmd == p,
         })
+    }
+
+    /// #1592: segmentos de um comando composto **só de operadores de
+    /// sequencia**.
+    ///
+    /// Divide em `;`, `|`, `&` (sozinho ou nos compostos `&&`/`||`), `\n` e
+    /// `\r` — tudo o que o shell trata como fronteira entre dois comandos — e
+    /// devolve os segmentos não-vazios, já aparados. É esta avaliação
+    /// segmento a segmento que permite ao operador declarar um pipe inteiro
+    /// (`git *` + `head *`) sem abrir espaço para um comando injetado no meio.
+    ///
+    /// Devolve `None` quando existe qualquer outro meta ativo (`$`, crase,
+    /// `(`, `)`, `<`, `>`), ou aspas não fechadas: esses casos não produzem
+    /// comandos revisáveis um a um — `echo $(cat /etc/hostname)` tem UM
+    /// comando com um alvo de expansão, não dois comandos — e continuam
+    /// caindo no "nunca casa" do [`Self::tem_meta_ativo`]. O que as aspas
+    /// tornam literal é argumento e não vira fronteira de segmento (#1579).
+    fn segmentos_de_sequencia(cmd: &str) -> Option<Vec<&str>> {
+        // Estados de aspas: 0 = fora, 1 = simples, 2 = duplas.
+        let (mut simples, mut duplas) = (false, false);
+        let mut segmentos: Vec<&str> = Vec::new();
+        let mut inicio = 0usize;
+        let mut chars = cmd.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if simples {
+                if c == '\'' {
+                    simples = false;
+                }
+                continue;
+            }
+            if duplas {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '"' => {
+                        duplas = false;
+                    }
+                    '`' => return None,
+                    // `$` só expande quando abre um alvo (mesma regra do
+                    // `tem_meta_ativo`): `"R$ 50"` tem `$` literal.
+                    '$' if matches!(
+                        chars.peek(),
+                        Some((_, '{' | '(' | '$' | '*' | '@' | '#' | '?' | '!' | '-'))
+                    ) || matches!(chars.peek(), Some((_, ch)) if ch.is_ascii_alphanumeric() || *ch == '_') =>
+                    {
+                        return None;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '\'' => simples = true,
+                '"' => duplas = true,
+                ';' | '|' | '&' | '\n' | '\r' => {
+                    let seg = cmd[inicio..i].trim();
+                    if !seg.is_empty() {
+                        segmentos.push(seg);
+                    }
+                    inicio = i + c.len_utf8();
+                }
+                // Meta que NÃO é sequencia: não há segmentação segura.
+                '$' | '`' | '(' | ')' | '<' | '>' => return None,
+                _ => {}
+            }
+        }
+        if simples || duplas {
+            // Aspas abertas: comando ambíguo não casa (#1579).
+            return None;
+        }
+        let seg = cmd[inicio..].trim();
+        if !seg.is_empty() {
+            segmentos.push(seg);
+        }
+        Some(segmentos)
     }
 
     /// Sandbox por tool: define a política avaliada a cada execução de `bash`.
@@ -399,8 +496,9 @@ impl Tool for BashTool {
             );
             return Ok(ToolOutput::error(
                 "Comando fora da allowlist do operador: este bash so executa os padroes \
-                 declarados em agent.bash_allowlist (prefixo* no fim ou comando exato; \
-                 comando composto nunca casa)."
+                 declarados em agent.bash_allowlist (prefixo* no fim ou comando exato). \
+                 Compostos de sequencia (|, &&, ||, ;) so passam quando TODOS os \
+                 segmentos casam; substituicao, redirecionamento e subshell nunca casam."
                     .to_string(),
             ));
         }
@@ -1343,8 +1441,11 @@ mod tests {
     }
 
     /// O que o shell ainda expande continua ativo entre aspas duplas, o
-    /// composto fora delas continua nunca casando e aspas incompletas negam —
-    /// o vermelho do verde acima.
+    /// composto com segmento não declarado continua nunca casando, e aspas
+    /// incompletas negam — o vermelho do verde acima. (#1592 mudou a regra
+    /// de composição para "todos os segmentos precisam casar"; cada caso
+    /// abaixo tem um segmento injetado que nenhum padrão declara, então o
+    /// desfecho é o mesmo.)
     #[test]
     fn meta_ativo_continua_nao_casando() {
         let tool = BashTool::new(None).with_allowlist(vec!["forja-ask *".into()]);
@@ -1362,6 +1463,112 @@ mod tests {
         ] {
             assert!(!tool.matches_allowlist(cmd), "{cmd:?} nao devia casar");
         }
+    }
+
+    // ── #1592: composição avalia segmento a segmento ─────────────────────
+
+    /// O caso da issue: um pipe onde o operador declarou TODOS os comandos
+    /// precisa rodar — antes a allowlist era inócua para pipes (ou derrubava
+    /// o legítimo, ou deixava cair no tier arriscado sem avaliar).
+    #[test]
+    fn pipe_com_todos_os_segmentos_declarados_casa() {
+        let tool = BashTool::new(None).with_allowlist(vec![
+            "git *".into(),
+            "head *".into(),
+            "grep *".into(),
+        ]);
+        for cmd in [
+            "git status | head -5",
+            "git log --oneline | head -20",
+            "git status && git log",
+            "git status; git diff",
+            "git status | grep -i main | head -3",
+        ] {
+            assert!(tool.matches_allowlist(cmd), "{cmd:?} devia casar");
+        }
+    }
+
+    /// O vermelho do verde: um segmento injetado que o operador não declarou
+    /// nega o composto inteiro — a confiança do prefixo não vaza para o
+    /// resto do pipe/encadeamento.
+    #[test]
+    fn segmento_nao_declarado_nega_o_composto_inteiro() {
+        let tool = BashTool::new(None).with_allowlist(vec!["git *".into(), "head *".into()]);
+        for cmd in [
+            "git status | sh",
+            "git status; curl http://evil",
+            "git status && rm -rf /",
+            "git status | head -5 | sh",
+            "git status & curl http://evil",
+        ] {
+            assert!(!tool.matches_allowlist(cmd), "{cmd:?} nao devia casar");
+        }
+    }
+
+    /// Metas que não são sequência continuam nunca casando, mesmo quando todos
+    /// os prefixos visíveis estão declarados: substituição, redirecionamento,
+    /// subshell e aspas abertas mudam o dado de um único comando e não se
+    /// dividem em segmentos revisáveis.
+    #[test]
+    fn meta_nao_sequencia_nunca_casa_mesmo_com_prefixos_declarados() {
+        let tool = BashTool::new(None).with_allowlist(vec!["echo *".into(), "cat *".into()]);
+        for cmd in [
+            "echo $(cat /etc/hostname)",
+            "echo `id`",
+            "echo a > /tmp/garra-1592",
+            "echo a < /etc/passwd",
+            "echo (id)",
+            "echo a; echo $(id)",
+            "echo \"aberta",
+        ] {
+            assert!(!tool.matches_allowlist(cmd), "{cmd:?} nao devia casar");
+        }
+    }
+
+    /// Aspas simples/duplas protegem o argumento: `;` e `|` entre aspas não
+    /// viram fronteira de segmento, então o comando continua um só e casa
+    /// pelo padrão normal (#1579 preservado sob a nova regra).
+    #[test]
+    fn aspas_continuam_protegendo_o_argumento_sob_a_nova_regra() {
+        let tool = BashTool::new(None).with_allowlist(vec!["echo *".into()]);
+        for cmd in [
+            r#"echo "isto; aquilo | ok""#,
+            r"echo 'outra; prosa | aqui'",
+            "echo 'prosa; ainda literal'",
+        ] {
+            assert!(tool.matches_allowlist(cmd), "{cmd:?} devia casar");
+        }
+    }
+
+    /// End-to-end em allowlist-only: o pipe declarado executa de verdade e o
+    /// injetado continua negado — a fronteira da #1272 agora entende pipe.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn allowlist_only_executa_pipe_declarado_e_nega_o_injetado() {
+        // `cat` como padrão exato: o segmento de um pipe sem argumento é o
+        // comando nú, e `"cat *"` (prefixo `cat `) não casa com ele.
+        let tool = BashTool::new(None)
+            .with_allowlist(vec!["echo *".into(), "cat".into()])
+            .with_allowlist_only();
+        let ok = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({ "command": "echo x | cat" }),
+            )
+            .await
+            .unwrap();
+        assert!(!ok.is_error, "{}", ok.content);
+
+        let negado = tool
+            .execute(&ctx(false), serde_json::json!({ "command": "echo x | id" }))
+            .await
+            .unwrap();
+        assert!(negado.is_error, "{}", negado.content);
+        assert!(
+            negado.content.contains("fora da allowlist"),
+            "{}",
+            negado.content
+        );
     }
 
     /// End-to-end em allowlist-only: a prosa citada roda de verdade e o que

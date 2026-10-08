@@ -1,0 +1,5 @@
+- **Allowlist do bash host-exec avalia pipes e encadeamentos segmento a segmento (#1592).** `matches_allowlist` recusava qualquer comando com meta ativo, então um pipe legítimo em que o operador havia declarado todos os comandos (`git status | head -5` com `git *` e `head *`) era derrubado — e no modo allowlist-only da #1272 o pipe simplesmente não rodava, tornando a allowlist inócua para a estrutura mais comum do shell.
+
+A nova regra separa os operadores de sequência (`;`, `|`, `&`, `&&`, `||`, quebra de linha) das demais metas: composição só de sequência passa quando **todo** segmento casa com um padrão declarado, então o pipe declarado executa e o segmento injetado (`git status; curl http://evil`) continua negado — a confiança do prefixo não vaza para o resto do encadeamento. Substituição (`$(...)`, crase), redirecionamento (`<`, `>`), subshell e aspas não fechadas continuam nunca casando: esses mudam o dado de um único comando e não se dividem em comandos revisáveis um a um. A proteção de aspas do #1579 está preservada (`;`/`|` entre aspas não viram fronteira de segmento).
+
+Refs #1592
