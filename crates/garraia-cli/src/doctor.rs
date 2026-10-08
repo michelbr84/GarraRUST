@@ -388,6 +388,9 @@ pub(crate) struct DoctorReport {
     pub config_check: Option<ConfigCheck>,
     pub providers: Vec<ProviderCheck>,
     pub daemon: DaemonCheck,
+    /// Resumo CONFIG do plano MCP (#1595) — puro, sem spawn. O health-check
+    /// de subida (que spawna de verdade) é `garraia doctor mcp`.
+    pub mcp: crate::doctor_mcp::ResumoMcp,
     /// Bloco Termux — só presente dentro do Termux (issues #909/#911/#913).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termux_check: Option<TermuxCheck>,
@@ -500,7 +503,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
     let loader = ConfigLoader::new()?;
     let dirs_ok = loader.ensure_dirs().is_ok();
 
-    let (config_check, config_error, providers, gateway, bash) = match loader.load() {
+    let (config_check, config_error, providers, gateway, bash, mcp) = match loader.load() {
         Ok(config) => {
             let check = garraia_config::run_check(&loader, &config);
             let providers = collect_provider_checks(&config);
@@ -513,7 +516,10 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
                 &sandbox_policy_from(&config.agent.sandbox),
                 !config.agent.bash_allowlist.is_empty(),
             );
-            (Some(check), None, providers, gateway, Some(bash))
+            // #1595: resumo CONFIG do plano MCP — puro, sem spawn. A subida
+            // de verdade (spawn + handshake) so no `doctor mcp`.
+            let mcp = crate::doctor_mcp::resumo_config(&loader, &config);
+            (Some(check), None, providers, gateway, Some(bash), mcp)
         }
         Err(e) => {
             // Mesma truncagem do `config check` (SEC-L-01): o erro nunca
@@ -524,6 +530,11 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
                 Vec::new(),
                 garraia_config::bind::endereco_do_cliente(),
                 None,
+                crate::doctor_mcp::ResumoMcp {
+                    servidores: 0,
+                    filesystem_version: "config não carregou".to_string(),
+                    filesystem_version_warning: false,
+                },
             )
         }
     };
@@ -554,6 +565,7 @@ pub fn run_doctor(json: bool, strict: bool) -> Result<i32> {
         config_check,
         providers,
         daemon: check_daemon(&gateway.0, gateway.1),
+        mcp,
         termux_check: termux_detected().then(|| {
             collect_termux_check(
                 &TermuxEnv {
@@ -597,13 +609,13 @@ fn print_human(report: &DoctorReport, strict: bool) {
     println!();
 
     println!(
-        "  [1/4] Diretórios ......... {}",
+        "  [1/5] Diretórios ......... {}",
         ok_or(report.dirs_ok, "FALHA — sem escrita")
     );
 
     match (&report.config_error, &report.config_check) {
         (Some(err), _) => {
-            println!("  [2/4] Configuração ....... ERRO (exit 65)");
+            println!("  [2/5] Configuração ....... ERRO (exit 65)");
             println!("        {err}");
             println!("        dica: o arquivo existe mas não parseia; corrija o YAML/TOML.");
         }
@@ -615,7 +627,7 @@ fn print_human(report: &DoctorReport, strict: bool) {
                 .count();
             let warnings = check.findings.len() - errors;
             println!(
-                "  [2/4] Configuração ....... {}",
+                "  [2/5] Configuração ....... {}",
                 ok_or(errors == 0 && (warnings == 0 || !strict), "PROBLEMAS")
             );
             for finding in &check.findings {
@@ -629,7 +641,7 @@ fn print_human(report: &DoctorReport, strict: bool) {
         (None, None) => unreachable!("load falhou sem erro nem check"),
     }
 
-    println!("  [3/4] Providers ({}) :", report.providers.len());
+    println!("  [3/5] Providers ({}) :", report.providers.len());
     if report.providers.is_empty() {
         println!("        (nenhum — rode `garraia init` ou `garraia config set-model`)");
     }
@@ -680,7 +692,27 @@ fn print_human(report: &DoctorReport, strict: bool) {
     } else {
         "parado — sem pidfile (`garraia start` sobe o daemon)".to_string()
     };
-    println!("  [4/4] Daemon ............. {daemon_status}");
+    println!("  [4/5] Daemon ............. {daemon_status}");
+
+    // #1595: resumo CONFIG do MCP — quantos servidores declarados e se o
+    // `filesystem` tem a versão fixada. Subida de verdade: `doctor mcp`.
+    let mcp_status = if report.mcp.servidores == 0 {
+        "nenhum servidor declarado".to_string()
+    } else {
+        format!(
+            "{} servidor(es) declarado(s), filesystem: {}",
+            report.mcp.servidores, report.mcp.filesystem_version
+        )
+    };
+    let mcp_flag = if report.mcp.filesystem_version_warning && strict {
+        "AVISO"
+    } else {
+        "info"
+    };
+    println!("  [5/5] MCP ................. [{mcp_flag}] {mcp_status}");
+    if report.mcp.servidores > 0 {
+        println!("        subida real: `garraia doctor mcp` (spawn + handshake)");
+    }
 
     if let Some(termux) = &report.termux_check {
         println!();
@@ -1140,6 +1172,11 @@ mod tests {
             config_error: Some("yaml inválido".into()),
             config_check: None,
             providers: vec![],
+            mcp: crate::doctor_mcp::ResumoMcp {
+                servidores: 0,
+                filesystem_version: "n/a".into(),
+                filesystem_version_warning: false,
+            },
             daemon: DaemonCheck {
                 pid_file_present: false,
                 pid: None,
