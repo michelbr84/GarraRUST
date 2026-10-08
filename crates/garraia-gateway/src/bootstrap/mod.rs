@@ -499,6 +499,31 @@ fn lista_de_raizes(raizes: &[PathBuf]) -> String {
         .join(", ")
 }
 
+/// #1593: o cliente HTTP de um provider LLM — janela própria quando
+/// `llm.<nome>.timeout_secs` está declarada, o compartilhado caso contrário.
+///
+/// Puro de propósito: a decisão "qual timeout vale para este provider" fica
+/// testável sem subir runtime nenhum. `Some(x)` constrói um cliente com a
+/// janela própria; o `config check` já avisa quando o valor declarado é 0
+/// (mesmo aviso do valor global).
+pub(crate) fn cliente_do_llm(
+    compartilhado: &reqwest::Client,
+    timeout_secs: Option<u64>,
+) -> reqwest::Client {
+    match timeout_secs {
+        // 0 = sem timeout, a mesma semantica documentada do valor global
+        // (#1593: `Duration::ZERO` seria um sleep ja vencido, nao "sem teto").
+        Some(0) => reqwest::Client::builder()
+            .build()
+            .unwrap_or_else(|_| compartilhado.clone()),
+        Some(segs) => reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(segs))
+            .build()
+            .unwrap_or_else(|_| compartilhado.clone()),
+        None => compartilhado.clone(),
+    }
+}
+
 /// Build a fully-configured `AgentRuntime` from the application config.
 pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     let mut runtime = AgentRuntime::new();
@@ -508,16 +533,33 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
     // early — before the "no API key" warnings that are the *symptom*.
     config::warn_if_vault_locked();
 
-    let llm_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            config.timeouts.llm.default_secs,
-        ))
-        .build()
-        .unwrap_or_default();
+    // #1593: `default_secs == 0` documenta "sem timeout" (o config check
+    // avisa sobre o risco) — e e o que este ramo entrega: sem chamar
+    // `.timeout()`, o reqwest fica com o default dele (sem teto). Antes o 0
+    // virava `Duration::ZERO`, que e um sleep ja vencido: TODA chamada LLM
+    // falhava em ~1ms, o oposto do que a mensagem do check prometia.
+    let llm_client = {
+        let builder = reqwest::Client::builder();
+        let builder = if config.timeouts.llm.default_secs == 0 {
+            builder
+        } else {
+            builder.timeout(std::time::Duration::from_secs(
+                config.timeouts.llm.default_secs,
+            ))
+        };
+        builder.build().unwrap_or_default()
+    };
 
     // --- LLM Providers ---
     for (name, llm_config) in &config.llm {
         let provider_type = llm_config.provider.as_str();
+
+        // #1593: janela de timeout POR PROVIDER. `llm.<nome>.timeout_secs`
+        // sobrescreve a global `timeouts.llm.default_secs` para as chamadas
+        // deste provider — o caso real e o host local lento (build de 20-40
+        // min no Termux) onde os 120s globais descartam a resposta inteira
+        // antes de ela terminar. Ausente = o cliente compartilhado de sempre.
+        let client = cliente_do_llm(&llm_client, llm_config.timeout_secs());
 
         // One table lookup and one precedence walk for every provider, rather
         // than the same three lines duplicated into fifteen match arms. The
@@ -556,7 +598,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     llm_config.model.clone(),
                     llm_config.base_url.clone(),
                 )
-                .with_client(llm_client.clone())
+                .with_client(client.clone())
                 .with_name(name.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured anthropic provider: {name}");
@@ -610,7 +652,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                 // vinha da iteracao do `HashMap` de config, ou seja, o
                 // vencedor (e o default efetivo) era aleatorio a cada boot.
                 .with_name(name.clone())
-                .with_client(llm_client.clone());
+                .with_client(client.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured openai provider: {name}");
             }
@@ -657,7 +699,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                         // arm `openai` acima (duas entradas `provider: ollama`
                         // em hosts distintos nao podem colidir no id).
                         .with_name(name.clone())
-                        .with_client(llm_client.clone());
+                        .with_client(client.clone());
                 runtime.register_provider(Arc::new(provider));
                 info!("configured ollama provider: {name}");
             }
@@ -720,7 +762,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("sansa-auto".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("sansa");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured sansa provider: {name}");
@@ -735,7 +777,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("deepseek-chat".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("deepseek");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured deepseek provider: {name}");
@@ -750,7 +792,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("mistral-large-latest".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("mistral");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured mistral provider: {name}");
@@ -764,7 +806,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("gemini-2.5-flash".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("gemini");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured gemini provider: {name}");
@@ -779,7 +821,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("tiiuae/falcon-180b-chat".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("falcon");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured falcon provider: {name}");
@@ -794,7 +836,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("jais-adapted-70b-chat".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("jais");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured jais provider: {name}");
@@ -808,7 +850,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("qwen-plus".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("qwen");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured qwen provider: {name}");
@@ -823,7 +865,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("yi-large".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("yi");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured yi provider: {name}");
@@ -838,7 +880,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("command-r-plus".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("cohere");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured cohere provider: {name}");
@@ -853,7 +895,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("MiniMax-Text-01".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("minimax");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured minimax provider: {name}");
@@ -868,7 +910,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some("kimi-k2-0711-preview".to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("moonshot");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured moonshot provider: {name}");
@@ -887,7 +929,7 @@ pub fn build_agent_runtime(config: &AppConfig) -> AgentRuntime {
                     .clone()
                     .or_else(|| Some(DEFAULT_CLOUD_MODEL.to_string()));
                 let provider = OpenAiProvider::new(api_key, model, base_url)
-                    .with_client(llm_client.clone())
+                    .with_client(client.clone())
                     .with_name("openrouter");
                 runtime.register_provider(Arc::new(provider));
                 info!("configured openrouter provider: {name}");
@@ -3057,6 +3099,128 @@ mod tests {
         assert!(is_self_hosted_openai_endpoint(Some(
             "https://llm.interno.empresa.com/v1"
         )));
+    }
+
+    // ─── #1593: janela de timeout por provider ────────────────────────────
+
+    /// `None` devolve o cliente compartilhado — o caso de toda config que
+    /// nao declara `llm.<nome>.timeout_secs`, que e a maioria. Provado pelo
+    /// comportamento herdado: a janela de 1s do compartilhado continua
+    /// valendo no cliente devolvido.
+    #[tokio::test]
+    async fn cliente_do_llm_sem_override_hereda_a_janela_compartilhada() {
+        let compartilhado = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let cliente = cliente_do_llm(&compartilhado, None);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let _ = tokio::io::AsyncWriteExt::write_all(
+                    &mut sock,
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+                )
+                .await;
+            }
+        });
+
+        let erro = cliente
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect_err("a janela de 1s do compartilhado tem de valer");
+        assert!(erro.is_timeout(), "herdou teto; veio: {erro}");
+    }
+
+    /// `Some(x)` constrói um cliente NOVO com a janela própria — um timeout
+    /// de 1s mata uma resposta lenta de 3s que o compartilhado de 60s
+    /// deixaria passar. Servidor local que aceita e demora: sem rede externa.
+    #[tokio::test]
+    async fn cliente_do_llm_com_override_mata_na_janela_propria() {
+        let compartilhado = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap();
+        let lento = cliente_do_llm(&compartilhado, Some(1));
+
+        // Um servidor que aceita a conexao e so responde depois de 3s.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Le o cabecalho como um servidor de verdade antes de
+                // estagnar: sem isso o hyper falha em montagem (Canceled)
+                // e nao como timeout.
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let _ = tokio::io::AsyncWriteExt::write_all(
+                    &mut sock,
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+                )
+                .await;
+            }
+        });
+
+        let url = format!("http://{addr}/");
+        let inicio = std::time::Instant::now();
+        let erro = lento.get(&url).send().await.expect_err("1s deve matar");
+        assert!(
+            erro.is_timeout(),
+            "o override de 1s tem de morrer como timeout; veio: {erro}"
+        );
+        assert!(
+            inicio.elapsed() < std::time::Duration::from_secs(3),
+            "a janela propria tem de disparar ANTES da resposta lenta"
+        );
+    }
+
+    /// `Some(0)` = sem timeout, a mesma semantica documentada do valor
+    /// global: sem chamar `.timeout()`, o reqwest fica com o default (sem
+    /// teto). `Duration::ZERO` seria um sleep ja vencido — toda chamada
+    /// falharia em milissegundos, o oposto do que a mensagem do config
+    /// check promete.
+    #[tokio::test]
+    async fn cliente_do_llm_zero_e_sem_teto_nao_falha_imediato() {
+        let compartilhado = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap();
+        let sem_teto = cliente_do_llm(&compartilhado, Some(0));
+
+        // Servidor que responde depois de 200ms: com um teto de ZERO a
+        // chamada ja teria falhado em ~1ms (medido: reqwest mapeia ZERO para
+        // um sleep vencido). Passar aqui prova que 0 nao virou teto.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let _ = tokio::io::AsyncWriteExt::write_all(
+                    &mut sock,
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+                )
+                .await;
+            }
+        });
+
+        let resp = sem_teto
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("sem teto nao pode falhar numa resposta de 200ms");
+        assert!(resp.status().is_success());
     }
 
     #[test]

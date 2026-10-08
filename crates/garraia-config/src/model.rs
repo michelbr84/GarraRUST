@@ -648,6 +648,24 @@ pub struct LlmProviderConfig {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
+impl LlmProviderConfig {
+    /// #1593: janela de timeout própria deste provider, em segundos.
+    ///
+    /// `llm.<nome>.timeout_secs` no YAML — declarada, sobrescreve
+    /// `timeouts.llm.default_secs` para as chamadas deste provider. O caso
+    /// real é um host local lento (build Rust de 20-40 min no Termux, modelo
+    /// grande sem GPU) onde a janela global de 120s descarta a resposta
+    /// inteira antes de ela terminar. Ausente = usa a janela global. O
+    /// `config check` avisa sobre o risco de um valor 0, idêntico ao aviso
+    /// do valor global.
+    ///
+    /// A chave entra pelo `extra` (flatten) — o campo é lido daqui para não
+    /// quebrar os ~20 sites de construtor literal deste tipo.
+    pub fn timeout_secs(&self) -> Option<u64> {
+        self.extra.get("timeout_secs").and_then(|v| v.as_u64())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingProviderConfig {
     pub provider: String,
@@ -1436,6 +1454,37 @@ mod tests {
             .expect("yaml should parse");
         assert_eq!(config.timeouts.llm.default_secs, 90);
         assert_eq!(config.timeouts.embeddings.default_secs, 30);
+    }
+
+    /// #1593: `llm.<nome>.timeout_secs` chega pelo `extra` (flatten) e o
+    /// acessor devolve Some/None conforme declarado — sem a chave, sem
+    /// override; com a chave não-numérica, sem override tambem (o valor
+    /// inutil nao pode virar janela por acidente).
+    #[test]
+    fn llm_timeout_secs_por_provider_via_accessor() {
+        let config: AppConfig = serde_yaml::from_str(
+            "llm:\n  lento:\n    provider: ollama\n    timeout_secs: 600\n  rapido:\n    provider: openai\n",
+        )
+        .expect("yaml should parse");
+        assert_eq!(
+            config.llm.get("lento").and_then(|l| l.timeout_secs()),
+            Some(600)
+        );
+        assert_eq!(
+            config.llm.get("rapido").and_then(|l| l.timeout_secs()),
+            None
+        );
+
+        // Chave presente mas não-numera: accessor devolve None em vez de
+        // estourar — flatten guarda o valor cru, o tipo é conferido aqui.
+        let config: AppConfig = serde_yaml::from_str(
+            "llm:\n  esquisito:\n    provider: ollama\n    timeout_secs: 'dez'\n",
+        )
+        .expect("yaml should parse");
+        assert_eq!(
+            config.llm.get("esquisito").and_then(|l| l.timeout_secs()),
+            None
+        );
     }
 
     #[test]
