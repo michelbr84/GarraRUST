@@ -53,9 +53,10 @@ async fn start_test_gateway(config: AppConfig) -> String {
         let _ = server.run().await;
     });
 
-    // Wait for the server to be ready with retries
+    // Wait for the server to be ready with retries (30 s de teto, saída
+    // antecipada no bind — runner frio de CI leva mais que a janela antiga).
     let mut retries = 0;
-    while retries < 50 {
+    while retries < 300 {
         if TcpListener::bind(format!("127.0.0.1:{port}")).is_err() {
             break; // port is in use = server is up
         }

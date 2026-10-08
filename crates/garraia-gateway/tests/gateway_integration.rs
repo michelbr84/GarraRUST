@@ -56,12 +56,13 @@ async fn start_test_gateway(config: AppConfig) -> String {
         let _ = server.run().await;
     });
 
-    // Wait for the server to be ready
-    for _ in 0..50 {
+    // Wait for the server to be ready (30 s de teto, saída antecipada no
+    // bind — runner frio de CI leva mais que a janela antiga de 2.5 s).
+    for _ in 0..300 {
         if TcpListener::bind(format!("127.0.0.1:{port}")).is_err() {
             break; // port is in use = server is up
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     format!("ws://127.0.0.1:{port}/ws")

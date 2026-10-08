@@ -1350,6 +1350,16 @@ jobs:
       GARRAIA_REFRESH_HMAC_SECRET: "ci-only-refresh-hmac-not-a-real-secret"
       GARRAIA_LOGIN_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
       GARRAIA_SIGNUP_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/garraia_workspace_test"
+      # #1570: sem o MCP autoprovionado. Neste job os testes exercitam o
+      # bootstrap do gateway com Postgres e o gate de auth do /ws — não o MCP.
+      # Com o autoprovionamento ligado, o `run()` provisiona um mcp.json com
+      # um servidor filesystem via `npx -y` e o `build_mcp_tools` aguarda o
+      # connect (timeout de 30 s) ANTES de bindar a porta HTTP; no runner
+      # frio o download do pacote npm atrasa o bind além da janela de
+      # prontidão dos testes e os `ws_accepts_*` falham em ConnectionRefused.
+      # Desligar o autoprovionamento remove a dependência de rede irrelevante
+      # para este job; as asserções dos testes não mudam.
+      GARRAIA_DISABLE_MCP_AUTOPROVISION: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
