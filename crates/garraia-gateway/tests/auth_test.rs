@@ -21,12 +21,15 @@ async fn start_test_gateway_base(config: AppConfig) -> String {
         let _ = server.run().await;
     });
 
-    // Wait for the server to be ready
-    for _ in 0..50 {
+    // Wait for the server to be ready. O bootstrap completo (runtime, pools
+    // de DB) pode levar dezenas de segundos num runner frio de CI; a janela
+    // antiga de 2.5 s dava ConnectionRefused antes do bind. Sai cedo assim
+    // que a porta fica ocupada — o teto de 30 s só cobre o pior caso.
+    for _ in 0..300 {
         if TcpListener::bind(format!("127.0.0.1:{port}")).is_err() {
             break; // port is in use = server is up
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     format!("ws://127.0.0.1:{port}")
@@ -76,7 +79,7 @@ async fn ws_rejects_wrong_api_key() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): server.run() exits silently on startup in CI (missing Postgres since plan 0016 M4). Same root cause as e2e/playwright jobs. Deferred to the gateway-test-fixture follow-up PR."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn ws_accepts_correct_api_key_query_param() {
     let port = random_port();
     let mut config = AppConfig::default();
@@ -94,7 +97,7 @@ async fn ws_accepts_correct_api_key_query_param() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): server.run() exits silently on startup in CI (missing Postgres since plan 0016 M4). Same root cause as e2e/playwright jobs. Deferred to the gateway-test-fixture follow-up PR."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn ws_accepts_correct_api_key_header() {
     let port = random_port();
     let mut config = AppConfig::default();
@@ -122,7 +125,7 @@ async fn ws_accepts_correct_api_key_header() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): server.run() exits silently on startup in CI (missing Postgres since plan 0016 M4). Same root cause as e2e/playwright jobs. Deferred to the gateway-test-fixture follow-up PR."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn ws_allows_access_if_no_api_key_configured() {
     let port = random_port();
     let mut config = AppConfig::default();

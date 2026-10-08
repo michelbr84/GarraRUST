@@ -1,9 +1,18 @@
-name: Quality Ratchet
+name: Quality Report
 
 # AI Quality Ratchet — observation-only on PR-1.
 # Plan: plans/0064-quality-ratchet-pr1.md
 # Mode: ALWAYS exit 0 in PR-1 via `compare.py --mode report-only`. Promotion to
 # `--mode enforce` is PR-4 work, with explicit owner approval.
+#
+# #1570 item 2 (decisão registrada 2026-10-07): o workflow mantém
+# report-only por decisão do plan 0064 — promover a enforce exige aprovação
+# explícita do maintainer (PR-4), que engenharia não pode dar sozinha. O nome
+# foi ajustado de "Quality Ratchet" para "Quality Report" para o nome não
+# prometer bloqueio que o modo atual não faz. O baseline `.quality/baseline.json`
+# foi re-medido (freeze-baseline.py) para os campos de tamanho descreverem o
+# repositório atual; os campos `audit` seguem blocking de fato no job
+# Security Audit do ci.yml.
 #
 # Design invariants (per plan 0064):
 #   - NO `continue-on-error: true` (Michel ajuste #1). Mode is controlled by
@@ -38,7 +47,7 @@ permissions:
 
 jobs:
   ratchet:
-    name: Quality Ratchet (report-only)
+    name: Quality Report (report-only)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

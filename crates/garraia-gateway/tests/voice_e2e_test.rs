@@ -53,9 +53,10 @@ async fn start_test_gateway(config: AppConfig) -> String {
         let _ = server.run().await;
     });
 
-    // Wait for the server to be ready with retries
+    // Wait for the server to be ready with retries (30 s de teto, saída
+    // antecipada no bind — runner frio de CI leva mais que a janela antiga).
     let mut retries = 0;
-    while retries < 50 {
+    while retries < 300 {
         if TcpListener::bind(format!("127.0.0.1:{port}")).is_err() {
             break; // port is in use = server is up
         }
@@ -215,7 +216,7 @@ impl MockVoicePipeline {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): needs running gateway (same server.run() cascade as auth_test.rs / gateway_integration.rs — exits silently on CI missing Postgres). Deferred to gateway-test-fixture follow-up PR."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn tts_endpoint_returns_error_when_voice_not_enabled() {
     let port = random_port();
     let mut config = test_config(port);
@@ -240,7 +241,7 @@ async fn tts_endpoint_returns_error_when_voice_not_enabled() {
 }
 
 #[tokio::test]
-#[ignore = "TODO(fix/ci-triage-2026-04-15): needs running gateway (same server.run() cascade). Deferred."]
+#[ignore = "Postgres ausente no bootstrap do GatewayServer (fix/ci-triage-2026-04-15); roda no CI no job 'Gateway Integration (Postgres)' via --include-ignored. Local: exporte GARRAIA_JWT_SECRET, GARRAIA_REFRESH_HMAC_SECRET, GARRAIA_LOGIN_DATABASE_URL e GARRAIA_SIGNUP_DATABASE_URL para um Postgres de teste e rode com --include-ignored."]
 async fn voice_status_endpoint_when_disabled() {
     let port = random_port();
     let mut config = test_config(port);

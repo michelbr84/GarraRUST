@@ -29,6 +29,14 @@ services:
     volumes:
       # Persist Ollama models
       - ollama_models:/root/.ollama
+    healthcheck:
+      # `ollama list` bate na API local — container "up" com API morta
+      # (imagedata corrompido, porta ocupada) aparece como unhealthy aqui.
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     # Enable GPU support if available (requires NVIDIA Container Toolkit)
     # deploy:
     #   resources:
