@@ -469,7 +469,9 @@ pub(crate) fn agent_system_prompt(
         ExposicaoDoBash::HostComAllowlist => "\n## Shell\n\
              O 'bash' roda no host, mas em modo allowlist-only: SO os comandos \
              que casam com os padroes declarados pelo operador executam — \
-             comando fora da lista e negado, comando composto nunca casa.\n"
+             comando fora da lista e negado. Em encadeamento (; && || |) TODO \
+             segmento tem de estar declarado; substituicao ($(...), crase) e \
+             redirecionamento (< >) nunca casam.\n"
             .to_string(),
     });
     if let Some(dir) = working_dir {

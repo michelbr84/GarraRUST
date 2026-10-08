@@ -112,8 +112,10 @@ impl BashTool {
     /// uma decisão que o operador toma ao não configurar a allowlist, não
     /// uma que um caractere toma por ele.
     ///
-    /// Um padrão de prefixo **nunca** cobre um comando composto (`;`,
-    /// `&&`, `$(...)`, pipe, redireção): ver [`Self::matches_allowlist`].
+    /// Num encadeamento (`;`, `&&`, `||`, pipe) cada segmento é conferido
+    /// contra a lista e **todos** precisam casar; substituição (`$(...)`,
+    /// crase) e redireção (`<`, `>`) nunca casam: ver
+    /// [`Self::matches_allowlist`] (#1592).
     #[must_use = "devolve um BashTool novo; o receptor nao e alterado"]
     pub fn with_allowlist(mut self, patterns: Vec<String>) -> Self {
         self.allowlist = patterns
@@ -153,46 +155,82 @@ impl BashTool {
     /// #1272 (`ExposicaoDoBash::HostComAllowlist`): liga o modo em que a
     /// allowlist e fronteira, nao dispensa. Combinado com
     /// [`Self::with_allowlist`], o resultado e um bash que so executa os
-    /// padroes declarados — comando composto, coringa no meio e tudo fora da
-    /// lista saem negados, com a denylist do `safety_gate` sempre na frente.
+    /// padroes declarados — coringa no meio, substituicao, redirecionamento,
+    /// encadeamento com qualquer segmento de fora e tudo mais fora da lista
+    /// saem negados, com a denylist do `safety_gate` sempre na frente.
     #[must_use = "devolve um BashTool novo; o receptor nao e alterado"]
     pub fn with_allowlist_only(mut self) -> Self {
         self.allowlist_only = true;
         self
     }
 
-    /// #1105: metacaracteres que fazem um comando deixar de ser **um** comando.
+    /// #1105: metacaracteres que fazem um comando deixar de ser **um**
+    /// comando e que a allowlist **não** sabe auditar em pedaços.
     ///
     /// Um padrão de prefixo como `"git *"` casa com o começo de qualquer
     /// string, inclusive `"git status; curl http://exemplo/x"` — e quando a
     /// allowlist aprova, o bloco do tier arriscado é pulado inteiro, então o
     /// `safety_gate` nem chega a analisar o segmento depois do `;`. Sem esta
     /// checagem, o trecho injetado herdaria a confiança que o operador deu ao
-    /// prefixo. Recusar aqui devolve o comando ao `is_risky`, que analisa por
-    /// segmento e ainda pode pedir confirmação.
+    /// prefixo.
     ///
-    /// #1579: a varredura é **ciente de aspas** ([`Self::tem_meta_ativo`]):
+    /// #1592: os separadores de **estrutura** (`;`, `|`, `||`, `&&`) saíram
+    /// desta lista e passaram a ser quebrados em segmentos — ver
+    /// [`Self::segmentos_allowlist`]. O que sobra aqui é o que não tem
+    /// segmento a avaliar: substituição de comando (`$`, crase, `(`, `)`),
+    /// redirecionamento (`<`, `>`) e nova linha. Nenhum deles é um segundo
+    /// comando que se possa conferir contra a lista — `$(...)` esconde o
+    /// comando dentro do argumento e `>` reescreve arquivo sem virar
+    /// comando nenhum.
+    ///
+    /// #1579: a varredura é **ciente de aspas** ([`Self::segmentos_allowlist`]):
     /// prosa entre aspas é argumento literal do shell e não vira "comando
     /// composto" — sem isso, uma mensagem com parênteses ou cifrão citado
     /// nunca casava com o prefixo liberado pelo operador.
-    const META_SHELL: &[char] = &[';', '|', '&', '$', '`', '(', ')', '<', '>', '\n', '\r'];
+    const META_SHELL: &[char] = &['$', '`', '(', ')', '<', '>', '\n', '\r'];
 
-    /// #1579: existe metacaractere ATIVO neste comando, desconsiderando o que
-    /// as aspas do shell tornam literal? A varredura segue a tokenização do
-    /// shell (o comando roda via `sh -c`): `'...'` literaliza tudo; `"..."`
-    /// literaliza tudo menos crase, escape e `$` que abre alvo de expansão
-    /// (`$VAR`, `${...}`, `$((...))`, `$?`... — o `$` de `"R$ 50"` é literal);
-    /// `\` fora de aspas simples literaliza o próximo caractere. Aspas não
-    /// fechadas contam como ativas: comando ambíguo não casa.
-    fn tem_meta_ativo(cmd: &str) -> bool {
+    /// #1592: quebra o comando nos separadores de estrutura (`;`, `|`, `||`,
+    /// `&&`) para que a allowlist confira **cada** segmento, ou devolve
+    /// `None` quando o comando tem composição que não dá para auditar
+    /// segmento a segmento.
+    ///
+    /// Por que quebrar em vez de negar o conjunto: um pipeline não concede
+    /// privilégio nenhum que o operador já não tenha concedido. `a | b` com
+    /// `a` e `b` ambos declarados é a mesma autoridade de duas chamadas de
+    /// tool seguidas, que o modelo já podia fazer. O que a quebra **não**
+    /// relaxa é a conferência: todo segmento tem de casar com a lista por si,
+    /// então `git status | sh` continua negado enquanto `sh` não estiver
+    /// declarado. É a opção (a) da issue — avaliar cada comando do
+    /// encadeamento — e não a (b), que seria só documentar a limitação.
+    ///
+    /// A varredura segue a tokenização do shell (o comando roda via `sh -c`):
+    /// `'...'` literaliza tudo; `"..."` literaliza tudo menos crase, escape e
+    /// `$` que abre alvo de expansão (`$VAR`, `${...}`, `$((...))`, `$?`... —
+    /// o `$` de `"R$ 50"` é literal); `\` fora de aspas simples literaliza o
+    /// próximo caractere. Aspas não fechadas devolvem `None`: comando ambíguo
+    /// não casa.
+    ///
+    /// Dois cuidados que a quebra precisa manter de pé:
+    ///
+    /// - `&` **solto** devolve `None`. `&&` é sequenciamento, mas um `&` só é
+    ///   background: o processo se desprende e escapa do timeout e da
+    ///   supervisão que cercam a execução. Não é um segmento a conferir, é uma
+    ///   fuga.
+    /// - segmento **vazio** devolve `None`. Separador no fim (`ls;`) ou colado
+    ///   (`a || | b`) é decoração sem efeito ou erro de sintaxe do shell;
+    ///   recusar mantém o scanner auditável a olho nu em vez de abrir uma
+    ///   tabela de exceções sobre qual separador pendurado o bash tolera.
+    fn segmentos_allowlist(cmd: &str) -> Option<Vec<&str>> {
         enum Zona {
             Fora,
             Simples,
             Duplas,
         }
         let mut zona = Zona::Fora;
-        let mut it = cmd.chars().peekable();
-        while let Some(c) = it.next() {
+        let mut segmentos = Vec::new();
+        let mut inicio = 0usize;
+        let mut it = cmd.char_indices().peekable();
+        while let Some((i, c)) = it.next() {
             match zona {
                 Zona::Fora => match c {
                     '\\' => {
@@ -200,7 +238,20 @@ impl BashTool {
                     }
                     '\'' => zona = Zona::Simples,
                     '"' => zona = Zona::Duplas,
-                    _ if Self::META_SHELL.contains(&c) => return true,
+                    ';' | '|' | '&' => {
+                        // `||` e `&&` são UM separador, não dois; `&` solto é
+                        // background e nega o comando inteiro.
+                        let duplo = matches!(it.peek(), Some((_, seguinte)) if *seguinte == c);
+                        if c == '&' && !duplo {
+                            return None;
+                        }
+                        segmentos.push(&cmd[inicio..i]);
+                        if duplo {
+                            let _ = it.next();
+                        }
+                        inicio = it.peek().map_or(cmd.len(), |(j, _)| *j);
+                    }
+                    _ if Self::META_SHELL.contains(&c) => return None,
                     _ => {}
                 },
                 Zona::Simples => {
@@ -213,22 +264,31 @@ impl BashTool {
                         let _ = it.next();
                     }
                     '"' => zona = Zona::Fora,
-                    '`' => return true,
+                    '`' => return None,
                     // `$` só expande quando abre um alvo: nome de
                     // variável, `{`, `(` ou parâmetro especial. `"R$ 50"`
                     // tem `$` literal (seguido de espaço) e passa.
                     '$' if matches!(
                         it.peek(),
-                        Some('{' | '(' | '$' | '*' | '@' | '#' | '?' | '!' | '-')
-                    ) || matches!(it.peek(), Some(ch) if ch.is_ascii_alphanumeric() || *ch == '_') =>
+                        Some((_, '{' | '(' | '$' | '*' | '@' | '#' | '?' | '!' | '-'))
+                    ) || matches!(it.peek(), Some((_, ch)) if ch.is_ascii_alphanumeric() || *ch == '_') =>
                     {
-                        return true;
+                        return None;
                     }
                     _ => {}
                 },
             }
         }
-        !matches!(zona, Zona::Fora)
+        // Aspas abertas no fim: comando ambíguo não casa.
+        if !matches!(zona, Zona::Fora) {
+            return None;
+        }
+        segmentos.push(&cmd[inicio..]);
+        // Nenhum segmento vazio — inclusive o do separador pendurado no fim.
+        if segmentos.iter().any(|s| s.trim().is_empty()) {
+            return None;
+        }
+        Some(segmentos)
     }
 
     /// #1105: o comando casa com algum padrão da allowlist do operador?
@@ -237,23 +297,35 @@ impl BashTool {
     /// case-sensitive, e aparar evita que `" ls "` case com `"ls"` por
     /// acidente — ou que `"ls"` case com `"lsof ..."`.
     ///
-    /// Composto nunca casa, nem quando o padrão é exato: um `;`
-    /// no meio significa que o que o operador revisou a olho nu não é
-    /// o que vai rodar. O que as aspas tornam literal é argumento, não
-    /// composto (#1579).
+    /// #1592: encadeamento casa **só** quando todo segmento casa por si.
+    /// `git status | grep x` exige que a lista cubra os dois; basta um
+    /// segmento de fora para o comando inteiro voltar ao tier arriscado. O que
+    /// as aspas tornam literal é argumento, não separador (#1579), e
+    /// substituição/redirecionamento continuam não casando nunca.
     fn matches_allowlist(&self, command: &str) -> bool {
         let cmd = command.trim();
-        if Self::tem_meta_ativo(cmd) {
+        let Some(segmentos) = Self::segmentos_allowlist(cmd) else {
             tracing::warn!(
                 command = ?cmd,
-                "bash_allowlist: comando composto nao e coberto pela allowlist; \
-                 vai para o tier arriscado"
+                "bash_allowlist: substituicao, redirecionamento ou comando ambiguo \
+                 nao e coberto pela allowlist; vai para o tier arriscado"
             );
             return false;
-        }
-        self.allowlist.iter().any(|p| match p.strip_suffix('*') {
-            Some(prefixo) => cmd.starts_with(prefixo),
-            None => cmd == p,
+        };
+        segmentos.iter().all(|segmento| {
+            let segmento = segmento.trim();
+            let casou = self.allowlist.iter().any(|p| match p.strip_suffix('*') {
+                Some(prefixo) => segmento.starts_with(prefixo),
+                None => segmento == p,
+            });
+            if !casou {
+                tracing::warn!(
+                    segment = ?segmento,
+                    "bash_allowlist: segmento do encadeamento fora da allowlist; \
+                     o comando inteiro vai para o tier arriscado"
+                );
+            }
+            casou
         })
     }
 
@@ -399,8 +471,9 @@ impl Tool for BashTool {
             );
             return Ok(ToolOutput::error(
                 "Comando fora da allowlist do operador: este bash so executa os padroes \
-                 declarados em agent.bash_allowlist (prefixo* no fim ou comando exato; \
-                 comando composto nunca casa)."
+                 declarados em agent.bash_allowlist (prefixo* no fim ou comando exato). \
+                 Em encadeamento (; && || |) TODO segmento tem de estar declarado; \
+                 substituicao ($(...), crase) e redirecionamento (< >) nunca casam."
                     .to_string(),
             ));
         }
@@ -1382,6 +1455,123 @@ mod tests {
         assert!(out.content.contains("R$ 50"), "{}", out.content);
     }
 
+    // ── #1592: encadeamento avaliado segmento a segmento ────────────────────
+
+    /// O caso da issue: um pipeline cujos DOIS lados o operador declarou
+    /// casa. Antes de #1592 a allowlist negava o pipeline inteiro por ser
+    /// "composto", então um `git status | grep x` legítimo morria.
+    #[test]
+    fn encadeamento_casa_quando_todo_segmento_esta_declarado() {
+        let tool = BashTool::new(None).with_allowlist(vec![
+            "git *".into(),
+            "grep *".into(),
+            "wc *".into(),
+            "echo *".into(),
+        ]);
+        for cmd in [
+            "git status | grep modificado",
+            "git log | grep foo | wc -l",
+            "git status && echo pronto",
+            "git status || echo falhou",
+            "echo um; echo dois",
+            // Aspas seguem valendo dentro do segmento: o `|` citado é
+            // argumento literal, não separador.
+            r#"git log && echo "a | b""#,
+        ] {
+            assert!(tool.matches_allowlist(cmd), "{cmd:?} devia casar");
+        }
+    }
+
+    /// O vermelho do verde acima: basta UM segmento de fora para o
+    /// encadeamento inteiro voltar ao tier arriscado. É o que impede o
+    /// `git status | sh` de herdar a confiança dada ao `git *`.
+    #[test]
+    fn encadeamento_nega_quando_um_segmento_esta_fora() {
+        let tool = BashTool::new(None).with_allowlist(vec!["git *".into(), "grep *".into()]);
+        for cmd in [
+            "git status | sh",
+            "git status; curl http://exemplo/x",
+            "git status && rm -rf /tmp/x",
+            "curl http://exemplo/x | grep foo",
+            "git status | grep foo | sh",
+        ] {
+            assert!(!tool.matches_allowlist(cmd), "{cmd:?} nao devia casar");
+        }
+    }
+
+    /// A quebra em segmentos não pode virar porta para o que NÃO tem segmento
+    /// a conferir: substituição esconde comando dentro do argumento,
+    /// redirecionamento reescreve arquivo sem ser comando, `&` solto desprende
+    /// o processo da supervisão e separador pendurado/colado é sintaxe
+    /// ambígua. Todos continuam negados mesmo com o prefixo liberado.
+    #[test]
+    fn quebra_em_segmentos_nao_relaxa_substituicao_nem_background() {
+        let tool = BashTool::new(None).with_allowlist(vec!["git *".into(), "echo *".into()]);
+        for cmd in [
+            // Substituição de comando.
+            "echo $(cat /etc/hostname)",
+            "echo `id`",
+            "echo ${HOME}",
+            // Redirecionamento.
+            "echo a > /tmp/x",
+            "echo a >> /tmp/x",
+            "git status < /tmp/x",
+            // `&` solto: background escapa do timeout e da supervisão.
+            "echo a &",
+            "echo a & echo b",
+            // Separador pendurado ou colado.
+            "echo a;",
+            "echo a |",
+            "echo a || | echo b",
+            "| echo a",
+            // Nova linha continua negando.
+            "echo a\ngit status",
+        ] {
+            assert!(!tool.matches_allowlist(cmd), "{cmd:?} nao devia casar");
+        }
+    }
+
+    /// Em `allowlist_only` a quebra tem de valer de ponta a ponta: o pipeline
+    /// declarado roda de verdade e produz a saída, e o que tem um segmento de
+    /// fora é negado sem executar nada.
+    #[tokio::test]
+    async fn allowlist_only_executa_pipeline_declarado_e_nega_o_resto() {
+        let tool = BashTool::new(None)
+            .with_allowlist(vec!["echo *".into(), "wc *".into()])
+            .with_allowlist_only();
+
+        let out = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": "echo garra | wc -c"}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            !out.is_error,
+            "pipeline declarado tinha de rodar: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains('6'),
+            "saida do pipeline: {}",
+            out.content
+        );
+
+        let negado = tool
+            .execute(
+                &ctx(false),
+                serde_json::json!({"command": "echo garra | sha256sum"}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            negado.is_error,
+            "segmento fora da lista tinha de ser negado: {}",
+            negado.content
+        );
+    }
+
     // ── #1105: allowlist do operador ──────────────────────────────────────
 
     /// O caso da issue: um comando do tier arriscado que, sem canal de
@@ -1443,6 +1633,11 @@ mod tests {
     /// inteira que um modelo pendurar depois. Cada um destes casaria por
     /// `starts_with` antes do guarda de metacaractere — e cada um termina
     /// num segundo comando que o operador nunca revisou.
+    ///
+    /// #1592 não afrouxou nenhum destes: a quebra em segmentos confere
+    /// `curl`, `printenv`, `grep segredo` e `rm` contra a lista, e nenhum
+    /// está lá. O par `encadeamento_casa_quando_todo_segmento_esta_declarado`
+    /// mostra o caso em que todos estão.
     #[test]
     fn prefixo_nao_casa_com_comando_composto() {
         let tool = BashTool::new(None).with_allowlist(vec!["hermes send *".into(), "git *".into()]);
