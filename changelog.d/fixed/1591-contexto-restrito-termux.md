@@ -1,0 +1,1 @@
+- fix(agents/gateway): erro de execução (exit 126/EACCES) no Termux ganha diagnóstico do contexto restrito do launcher — a restrição W^X do Android veta `execve` em /data por filhos de processos lançados via `linker64`; o bash tool e o `npm ci` do bootstrap agora explicam a causa e apontam o lançamento pelo shell do Termux (#1591)
