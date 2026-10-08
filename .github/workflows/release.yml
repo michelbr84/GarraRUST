@@ -1230,12 +1230,13 @@ jobs:
             release/garraia-desktop-windows-x86_64-setup.exe
             release/garraia-desktop-linux-x86_64.deb
             release/garraia-desktop-linux-x86_64.AppImage
-            # Desktop macOS (#1568): DMG por arquitetura (glob — o job e
-            # best-effort e so uma das duas pode ter sido produzida) e os
-            # artefactos de updater de todas as plataformas. `fail_on_unmatched_
-            # files` e false por default, entao um release sem macOS simplesmente
-            # publica menos assets, sem falhar o passo.
-            release/garraia-desktop-macos-*.dmg
+            # Desktop macOS (#1568): o DMG chega como `garraia-desktop_<ver>_
+            # <arch>.dmg` (nome do bundler Tauri), NAO `garraia-desktop-macos-*`
+            # — o glob anterior nunca casava e o .dmg ficava de fora da release
+            # (só o .sha256 subia, via `release/*.sha256`). `release/*.dmg` cobre
+            # o nome real; `fail_on_unmatched_files` e false por default, entao
+            # um release sem macOS simplesmente publica menos assets.
+            release/*.dmg
             release/*.AppImage.tar.gz
             release/*.AppImage.tar.gz.sig
             release/*.nsis.zip
