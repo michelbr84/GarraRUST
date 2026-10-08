@@ -524,6 +524,9 @@ impl Tool for BashTool {
             }
         };
 
+        // #1591: o caminho que falhou no spawn entra na mensagem — quem chega
+        // pelo relato do issue reconhece o sintoma (bash/npx ausente de $PREFIX).
+        let exe_do_erro = shell;
         let mut cmd = Command::new(shell);
         cmd.arg(arg).arg(comando);
         // Review da #1272 (SANDBOX-6): o timeout derruba o shell (e o cliente
@@ -596,8 +599,7 @@ impl Tool for BashTool {
                     // contexto SELinux do launcher vetando exec em /data —
                     // diagnosticar em vez de devolver o genérico.
                     if codigo == 126 {
-                        mensagem =
-                            garraia_common::contexto_restrito::enriquece(&mensagem);
+                        mensagem = garraia_common::contexto_restrito::enriquece(&mensagem);
                     }
                     Ok(ToolOutput::error(mensagem))
                 }
@@ -605,7 +607,7 @@ impl Tool for BashTool {
             Ok(Err(e)) => {
                 // #1591: EACCES no próprio spawn (Command::new) é a outra
                 // face do mesmo contexto restrito — diagnosticar também.
-                let mensagem = format!("falha ao executar comando: {e}");
+                let mensagem = format!("falha ao executar `{exe_do_erro}`: {e}");
                 let mensagem = if e.kind() == std::io::ErrorKind::PermissionDenied {
                     garraia_common::contexto_restrito::enriquece(&mensagem)
                 } else {
