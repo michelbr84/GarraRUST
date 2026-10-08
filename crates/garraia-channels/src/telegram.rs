@@ -92,6 +92,96 @@ impl TelegramChannel {
     }
 }
 
+// ── #1594: validação do token com retry e classificação honesta ─────────
+
+/// Por que o `GetMe` falhou — a classe que decide se retry ajuda e qual
+/// mensagem o operador recebe.
+///
+/// O defect da #1594: `connect()` tratava TODO erro como "token inválido",
+/// então uma falha de rede sob Termux/Android (Bionic sem `SSL_CERT_FILE`,
+/// DNS do provedor, sleep do aparelho) mandava o operador trocar um token
+/// que estava certo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GetMeFalha {
+    /// A API do Telegram respondeu e disse Unauthorized/Not Found — o token
+    /// mesmo está errado. Retry não conserta: falha rápido e direto.
+    TokenInvalido,
+    /// Rede/DNS/SSL/IO não completou a chamada — transitório em princípio
+    /// (foi exatamente o sintoma reportado sob Termux). Retry com backoff.
+    Transiente,
+    /// Qualquer outra resposta da API (migração, JSON quebrado de proxy,
+    /// erro de método). Não é o token, mas repetir não muda nada.
+    Outro,
+}
+
+/// #1594: classifica um erro do `getMe` para a política de retry.
+///
+/// `ApiError::InvalidToken` cobre "Unauthorized" e "Not Found" — os dois
+/// textos que o Telegram devolve para token errado (teloxide 0.17). Rede e
+/// IO viram [`GetMeFalha::Transiente`]; tudo o resto, [`GetMeFalha::Outro`].
+pub(crate) fn classifica_get_me(e: &teloxide::RequestError) -> GetMeFalha {
+    match e {
+        teloxide::RequestError::Api(teloxide::ApiError::InvalidToken) => GetMeFalha::TokenInvalido,
+        teloxide::RequestError::Network(_) | teloxide::RequestError::Io(_) => {
+            GetMeFalha::Transiente
+        }
+        _ => GetMeFalha::Outro,
+    }
+}
+
+/// #1594: valida o `GetMe` com retry para falha transitória de rede.
+///
+/// - [`GetMeFalha::TokenInvalido`] e [`GetMeFalha::Outro`] retornam na
+///   primeira tentativa — repetir não muda a resposta da API.
+/// - [`GetMeFalha::Transiente`] re-tenta com backoff exponencial
+///   (`backoff_base_ms * 2^(n-1)`) até esgotar as tentativas; o último erro
+///   é devolvido com a contagem para a mensagem final.
+///
+/// Genérica no retorno e na closure de propósito: a política (quando retry
+/// ajuda, quanto espera) é testável sem um `Bot` real e sem rede.
+pub(crate) async fn valida_get_me<T, F, Fut>(
+    mut tentar: F,
+    tentativas: u32,
+    backoff_base_ms: u64,
+) -> std::result::Result<T, (GetMeFalha, teloxide::RequestError, u32)>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, teloxide::RequestError>>,
+{
+    assert!(tentativas >= 1, "ao menos uma tentativa");
+    let mut ultimo: Option<(GetMeFalha, teloxide::RequestError, u32)> = None;
+    for tentativa in 1..=tentativas {
+        match tentar().await {
+            Ok(valor) => return Ok(valor),
+            Err(e) => {
+                let falha = classifica_get_me(&e);
+                match falha {
+                    // Token errado: a API já respondeu, não há o que esperar.
+                    GetMeFalha::TokenInvalido => return Err((falha, e, tentativa)),
+                    // Transitório: vale re-tentar enquanto há tentativa.
+                    GetMeFalha::Transiente if tentativa < tentativas => {
+                        let espera_ms = backoff_base_ms * 2u64.pow(tentativa - 1);
+                        warn!(
+                            tentativa,
+                            total = tentativas,
+                            classe = ?falha,
+                            espera_ms,
+                            erro = %e,
+                            erro_debug = ?e,
+                            "telegram GetMe falhou com erro transitório de rede; re-tentando"
+                        );
+                        tokio::time::sleep(Duration::from_millis(espera_ms)).await;
+                        ultimo = Some((falha, e, tentativa));
+                    }
+                    // Transitório esgotado, ou classe não-retryable.
+                    _ => return Err((falha, e, tentativa)),
+                }
+            }
+        }
+    }
+    Err(ultimo.expect("tentativas >= 1 garante ao menos um erro registrado"))
+}
+
 /// Extracts chat ID and user info from a message.
 /// Returns None if the message should be ignored (e.g. from a bot or missing sender).
 fn extract_message_info(msg: &teloxide::types::Message) -> Option<(i64, String, String)> {
@@ -127,17 +217,53 @@ impl Channel for TelegramChannel {
     async fn connect(&mut self) -> Result<()> {
         let bot = Bot::new(&self.bot_token);
 
-        // Validate token before starting polling
-        let me = bot.get_me().await;
-        if let Err(e) = me {
-            error!("Telegram token validation failed: {}", e);
-            self.status = ChannelStatus::Disconnected;
-            return Err(garraia_common::Error::Channel(format!(
-                "Telegram token inválido: {}. Verifique o token no arquivo .env",
-                e
-            )));
-        }
-        let bot_info = me.unwrap();
+        // Validate token before starting polling.
+        //
+        // #1594: retry com backoff para falha transitória de rede e
+        // mensagem honesta por classe — "token inválido" só quando a API
+        // do Telegram respondeu Unauthorized/Not Found. Rede/DNS/SSL sob
+        // Termux não manda o operador trocar um token que está certo.
+        const GET_ME_TENTATIVAS: u32 = 3;
+        const GET_ME_BACKOFF_BASE_MS: u64 = 1_000;
+        // O `.await` vive DENTRO da closure: `JsonRequest<GetMe>` só vira
+        // future quando polido via `Requester`, e o tipo concreto não é
+        // nomeável aqui — o async-block resolve sem expor o `Pending`.
+        let bot_info = match valida_get_me(
+            || async { bot.get_me().await },
+            GET_ME_TENTATIVAS,
+            GET_ME_BACKOFF_BASE_MS,
+        )
+        .await
+        {
+            Ok(bot_info) => bot_info,
+            Err((falha, e, tentativas)) => {
+                self.status = ChannelStatus::Disconnected;
+                return Err(match falha {
+                    GetMeFalha::TokenInvalido => {
+                        error!(classe = ?falha, tentativas, erro = %e, "Telegram token validation failed");
+                        garraia_common::Error::Channel(format!(
+                            "Telegram token inválido: {}. Verifique o token no arquivo .env",
+                            e
+                        ))
+                    }
+                    _ => {
+                        error!(
+                            classe = ?falha,
+                            tentativas,
+                            erro = %e,
+                            erro_debug = ?e,
+                            "Telegram GetMe falhou sem ser problema de token"
+                        );
+                        garraia_common::Error::Channel(format!(
+                            "Falha de rede ao validar o bot do Telegram após {} tentativa(s): {}. \
+                             Não é o token — verifique conectividade/DNS/SSL do ambiente (Termux: \
+                             SSL_CERT_FILE, veja o bloco Termux do `garraia doctor`). Detalhe: {:?}",
+                            tentativas, e, e
+                        ))
+                    }
+                });
+            }
+        };
         info!(
             "Telegram bot validated: @{}",
             bot_info.username.as_deref().unwrap_or("unknown")
@@ -499,6 +625,123 @@ mod tests {
         assert_eq!(channel.channel_type(), "telegram");
         assert_eq!(channel.display_name(), "Telegram");
         assert_eq!(channel.status(), ChannelStatus::Disconnected);
+    }
+
+    // ── #1594: classificação e retry do GetMe ────────────────────────────
+
+    /// Um `RequestError` de rede de verdade: conexão recusada em porta
+    /// fechada do loopback — o único que um teste provoca sem rede externa.
+    async fn erro_de_rede() -> teloxide::RequestError {
+        let porta = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efemero");
+            l.local_addr().expect("addr").port()
+        };
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{porta}/"))
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .expect_err("ninguem escuta nessa porta")
+            .into()
+    }
+
+    /// Unauthorized/Not Found é token inválido (teloxide 0.17 mapeia os dois
+    /// para `InvalidToken`); rede e IO são transitórios; o resto é "outro".
+    #[test]
+    fn classifica_get_me_distingue_token_de_rede() {
+        use teloxide::RequestError;
+        let invalido: RequestError = teloxide::ApiError::InvalidToken.into();
+        assert_eq!(classifica_get_me(&invalido), GetMeFalha::TokenInvalido);
+
+        let io: RequestError = std::sync::Arc::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset",
+        ))
+        .into();
+        assert_eq!(classifica_get_me(&io), GetMeFalha::Transiente);
+
+        let migracao = RequestError::MigrateToChatId(teloxide::types::ChatId(1));
+        assert_eq!(classifica_get_me(&migracao), GetMeFalha::Outro);
+    }
+
+    /// O defeito da #1594 em uma frase: rede caída NÃO é "token inválido".
+    /// A classificação da rede de verdade (recusa de conexão) tem de ser
+    /// transitória — é o caso do Termux com SSL/DNS quebrado.
+    #[tokio::test]
+    async fn rede_caída_nao_e_classificada_como_token_invalido() {
+        let e = erro_de_rede().await;
+        assert_eq!(classifica_get_me(&e), GetMeFalha::Transiente);
+    }
+
+    /// Política de retry: transitório re-tenta e pode recuperar; token
+    /// inválido falha na primeira (repetir Unauthorized não muda resposta);
+    /// transitório esgotado devolve a contagem certa.
+    #[tokio::test]
+    async fn retry_do_get_me_segue_a_politica_de_classe() {
+        // Transitório duas vezes, sucesso na terceira: recupera.
+        let mut chamadas = 0u32;
+        let ok = valida_get_me(
+            || {
+                chamadas += 1;
+                let n = chamadas;
+                async move {
+                    if n < 3 {
+                        Err(std::sync::Arc::new(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "timeout",
+                        ))
+                        .into())
+                    } else {
+                        Ok::<_, teloxide::RequestError>("bot-ok")
+                    }
+                }
+            },
+            3,
+            1, // backoff de 1ms: o teste mede política, nao espera real
+        )
+        .await
+        .expect("transitório com tentativa sobrando tem de recuperar");
+        assert_eq!(ok, "bot-ok");
+        assert_eq!(chamadas, 3);
+
+        // Token inválido: uma chamada só, sem sleep.
+        let mut chamadas = 0u32;
+        let erro = valida_get_me(
+            || {
+                chamadas += 1;
+                async { Err::<&str, _>(teloxide::ApiError::InvalidToken.into()) }
+            },
+            3,
+            1,
+        )
+        .await
+        .expect_err("token invalido nao pode recuperar");
+        assert_eq!(erro.0, GetMeFalha::TokenInvalido);
+        assert_eq!(chamadas, 1, "retry de token invalido e desperdicio");
+
+        // Transitório até esgotar: devolve a contagem de tentativas.
+        let mut chamadas = 0u32;
+        let erro = valida_get_me(
+            || {
+                chamadas += 1;
+                async {
+                    Err::<&str, _>(
+                        std::sync::Arc::new(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            "reset",
+                        ))
+                        .into(),
+                    )
+                }
+            },
+            3,
+            1,
+        )
+        .await
+        .expect_err("sem tentativa sobrando nao ha recuperacao");
+        assert_eq!(erro.0, GetMeFalha::Transiente);
+        assert_eq!(erro.2, 3, "a mensagem final leva o total de tentativas");
+        assert_eq!(chamadas, 3);
     }
 
     #[test]
