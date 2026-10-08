@@ -404,7 +404,7 @@ mod tests {
             transport: "stdio".into(),
             status: StatusServidor::NaoSubiu { erro: "x".into() },
         };
-        assert_eq!(exit_code(&[ok.clone()], false, false), 0);
+        assert_eq!(exit_code(std::slice::from_ref(&ok), false, false), 0);
         assert_eq!(exit_code(&[ok, morto], false, false), 2);
     }
 
@@ -415,7 +415,7 @@ mod tests {
             transport: "stdio".into(),
             status: StatusServidor::Ok { tools: 1 },
         };
-        assert_eq!(exit_code(&[ok.clone()], true, false), 0);
+        assert_eq!(exit_code(std::slice::from_ref(&ok), true, false), 0);
         assert_eq!(exit_code(&[ok], true, true), 2);
     }
 
