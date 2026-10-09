@@ -650,6 +650,44 @@ Run health check:
 curl http://127.0.0.1:3888/api/health
 ```
 
+## Uninstall
+
+`garra uninstall` removes the CLI from the machine: the binary itself, the
+`garra` alias, the Termux wrappers (`garra-mcp-server*`) and any `.old`/`.new`
+backups the updater left behind. It always shows the full list of targets and
+asks for confirmation — `--yes` skips the prompt (required when stdin is not a
+terminal, e.g. in scripts).
+
+```bash
+garra uninstall              # install artifacts only; config and data stay
+garra uninstall --yes        # same, no confirmation prompt
+garra uninstall --yes --purge   # also removes config dir, data dir and the legacy ~/.garraia
+```
+
+What `--purge` covers: the config directory (`~/.garraia` or
+`$GARRAIA_CONFIG_DIR`), the resolved `data_dir` from `config.yml`, and a legacy
+`~/.garraia` left in `$HOME` when the config directory lives elsewhere.
+
+What is **never** removed, on purpose:
+
+- The **desktop app** — uninstall it with the platform installer (Add/Remove
+  Programs on Windows, `apt remove` / the `.AppImage` file on Linux).
+- **systemd units** — if the daemon is running under a unit, `garra uninstall`
+  refuses (exit 78) and tells you to `systemctl stop` / `disable` the unit
+  first; removing the binary from under a managed unit leaves it crash-looping.
+- **Ollama** and other providers, project skills, and `~/.garra` (sessions and
+  skills of the Learning Agent) — remove those by hand if you want them gone.
+- On **Windows**, the `PATH` entry in the registry is left alone; edit
+  Environment Variables if you want it gone.
+
+Other flags: `--all-binaries` also scans your `PATH` and the system
+directories for other `garraia`/`garra` binaries (from older manual installs)
+and removes them too.
+
+Exit codes: `0` done (or nothing to do), `1` cancelled at the prompt, `64` no
+terminal and no `--yes`, `70` a removal failed (the item is named on stderr;
+system dirs may need `sudo`), `78` the daemon belongs to a systemd unit.
+
 ## Troubleshooting
 
 ### `curl | sh` fails with HTTP 429

@@ -1,0 +1,1 @@
+- `garra uninstall` remove a CLI da maquina (binario, alias `garra`, wrappers do Termux e backups `.old`/`.new`); `--purge` inclui config, dados e o legado `~/.garraia`; recusa com exit 78 quando o daemon pertence a uma unit systemd e com exit 64 sem terminal e sem `--yes`
