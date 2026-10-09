@@ -16,9 +16,9 @@ pub(crate) const BINARY_NAMES: &[&str] = &["garraia", "garra"];
 /// Onde os pacotes de sistema instalam, mesmo que o PATH deste shell nao os
 /// liste (o do cron e do systemd lista).
 #[cfg(unix)]
-const SYSTEM_BIN_DIRS: &[&str] = &["/usr/local/bin", "/usr/bin"];
+pub(crate) const SYSTEM_BIN_DIRS: &[&str] = &["/usr/local/bin", "/usr/bin"];
 #[cfg(not(unix))]
-const SYSTEM_BIN_DIRS: &[&str] = &[];
+pub(crate) const SYSTEM_BIN_DIRS: &[&str] = &[];
 
 /// Um binario do GarraIA no PATH que nao e o que acabou de ser atualizado.
 #[derive(Debug, Clone, PartialEq, Eq)]

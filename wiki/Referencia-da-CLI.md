@@ -14,6 +14,7 @@ O binário `garraia` (alias `garra`) concentra toda a operação. Fonte: [`crate
 | `garraia runs list` | Lê o ledger de runs de agente (`agent_runs` do `sessions.db`) direto do disco, sem o gateway: `--status running\|done\|error\|cancelled\|interrupted`, `--limit` (padrão 50), `--json` com instantes UTC ISO 8601 — #1227 |
 | `garra doctor` | Diagnóstico da instalação: plataforma, diretórios, config, providers, daemon (`--json`, `--strict` trata warnings como erro) |
 | `garra update` / `rollback` | Auto-atualização com verificação SHA-256 (`--yes`; `--check-binaries` só varre a PATH atrás de outros binários `garraia`/`garra`, sem download) / volta à versão anterior |
+| `garra uninstall` | Desinstala a CLI da máquina: binário, alias `garra`, wrappers do Termux e backups `.old`/`.new` (`--yes` pula o prompt, exigível num pipe; `--purge` inclui config, dados e o legado `~/.garraia`; `--all-binaries` varre a PATH; exit 64 sem terminal e sem `--yes`, 78 se o daemon é de uma unit systemd) |
 | `garra verify` | Pipeline local: fmt, clippy, test, flutter analyze, gitleaks (`--json`, `--skip <step>`; exit 0/2) |
 
 ## Conversar com o agente

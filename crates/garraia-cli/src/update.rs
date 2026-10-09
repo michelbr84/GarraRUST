@@ -109,7 +109,7 @@ async fn fetch_latest_release(client: &reqwest::Client) -> Result<GitHubRelease>
 /// separa de vez. Canonizar aqui fecha isso em todo SO; no Windows o unico
 /// efeito colateral e cosmetico (`\\?\C:\...` nas mensagens), e todas as
 /// operacoes de arquivo abaixo aceitam essa forma.
-fn installed_exe() -> Result<PathBuf> {
+pub(crate) fn installed_exe() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("cannot determine current executable path")?;
     resolve_exe_path(exe)
 }
