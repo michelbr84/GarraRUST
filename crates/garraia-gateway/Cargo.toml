@@ -309,6 +309,18 @@ name = "rest_v1_uploads_delete_worker"
 path = "tests/rest_v1_uploads_delete_worker.rs"
 required-features = ["test-helpers"]
 
+# #1611 — regressao do advisory lock do worker de recorrencia: a sessao que
+# adquire e a que liberta precisam ser a MESMA, senao o unlock e um no-op e o
+# lock vaza. Mesmo gate de feature do resto da suite de integracao, para que
+# `cargo test -p garraia-gateway` (sem --features test-helpers) pule a
+# compilacao limpamente. Auto-testa o proprio detector de holders via
+# `pg_locks`, para que uma refactor futura nao deixe a assercao verde sem
+# provar nada.
+[[test]]
+name = "rest_v1_task_recurrence_worker"
+path = "tests/rest_v1_task_recurrence_worker.rs"
+required-features = ["test-helpers"]
+
 # Plan 0062 — GAR-514 memory API slice 1: GET/POST/DELETE /v1/memory.
 # 12 bundled scenarios (P-series personal scope, G-series group scope,
 # D-series delete + cross-tenant isolation). Feature-gated so plain

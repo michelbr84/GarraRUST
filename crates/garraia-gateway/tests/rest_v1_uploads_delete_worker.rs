@@ -30,7 +30,6 @@ mod common;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
@@ -300,6 +299,31 @@ async fn expire_row(h: &Harness, upload_id: Uuid) {
 
 // ─── Main orchestrator ──────────────────────────────────────────────────
 
+/// Quantas sessoes, em TODO o servidor, seguram hoje o advisory lock do
+/// expiration worker.
+///
+/// E a assercao de regressao do #1611: com o unlock caindo numa conexao
+/// diferente do pool, o lock ficava preso numa sessao que o pool mantem viva,
+/// e esta contagem nunca voltava a zero. Decodificamos o par `(classid,
+/// objid)` do `pg_locks` a partir do mesmo `hashtext(...)` que o worker usa —
+/// o Postgres guarda a chave de 64 bits do `pg_try_advisory_lock(bigint)`
+/// dividida nos dois campos, e o formato de um inteiro (`objsubid = 1`)
+/// distingue do formato de par (`objsubid = 2`).
+async fn advisory_lock_holders(h: &Harness) -> i64 {
+    sqlx::query_scalar(
+        "WITH k AS (SELECT hashtext('tus_uploads_expiration')::bigint AS key) \
+         SELECT count(*)::bigint \
+         FROM pg_locks l, k \
+         WHERE l.locktype = 'advisory' \
+           AND l.objsubid = 1 \
+           AND l.classid = ((k.key >> 32) & 4294967295)::oid \
+           AND l.objid   = (k.key & 4294967295)::oid",
+    )
+    .fetch_one(&h.admin_pool)
+    .await
+    .expect("query pg_locks for the worker advisory lock")
+}
+
 #[tokio::test]
 async fn v1_uploads_delete_worker_streaming_scenarios() {
     if !docker_available() {
@@ -519,6 +543,45 @@ async fn run_worker_scenarios(
         .expect("seed worker owner");
     let gid_str = group_id.to_string();
 
+    // ─── B0. Self-test do detector (#1611) ──────────────────────────
+    // Uma assercao que nunca falha nao prova nada. Antes de confiar no
+    // `advisory_lock_holders`, provamos que ele DETECTA um lock segurado:
+    // adquire numa sessao fixada, espera 1, liberta, espera 0. Sem isto,
+    // uma refactor futura poderia deixar a query devolvendo sempre 0 e as
+    // assercoes B2/B4 continuariam verdes sem provar nada.
+    {
+        let mut probe = h
+            .admin_pool
+            .acquire()
+            .await
+            .expect("B0 acquire probe connection");
+        let got: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext('tus_uploads_expiration'))")
+                .fetch_one(&mut *probe)
+                .await
+                .expect("B0 try_advisory_lock");
+        assert!(got, "B0 probe acquired the worker advisory lock");
+        assert_eq!(
+            advisory_lock_holders(h).await,
+            1,
+            "B0 detector sees exactly one holder while the probe session holds the lock"
+        );
+        let released: bool =
+            sqlx::query_scalar("SELECT pg_advisory_unlock(hashtext('tus_uploads_expiration'))")
+                .fetch_one(&mut *probe)
+                .await
+                .expect("B0 advisory_unlock");
+        assert!(
+            released,
+            "B0 probe released its own lock on the same session"
+        );
+    }
+    assert_eq!(
+        advisory_lock_holders(h).await,
+        0,
+        "B0 detector returns to zero once the probe session releases"
+    );
+
     // ─── B1. Basic sweep — expired row → status='expired' + audit ────
     let b1_upload = create_in_progress_upload(router, &token, &gid_str, 32).await;
     write_placeholder_staging(staging, b1_upload).await;
@@ -579,9 +642,17 @@ async fn run_worker_scenarios(
     assert!(!staging_path.exists(), "B1 staging file removed by worker");
 
     // ─── B2. Idempotent sweep — second tick finds nothing ───────────
-    // Advisory lock release is async via `AdvisoryLockGuard::Drop` →
-    // `tokio::spawn` — give it headroom before acquiring again.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Regressao do #1611: o lock agora e liberado de forma SINCRONA, na
+    // MESMA sessao que o adquiriu, dentro do proprio tick. O `sleep` que
+    // existia aqui — para dar cabimento ao `tokio::spawn` do antigo
+    // `AdvisoryLockGuard`, que fazia o unlock numa conexao qualquer do pool
+    // e vazava o lock numa sessao que o pool mantem viva — foi removido.
+    // Rodar o segundo tick IMEDIATAMENTE, sem margem, e o cenario que vazava.
+    assert_eq!(
+        advisory_lock_holders(h).await,
+        0,
+        "B2 no session still holds the worker advisory lock after tick 1 (#1611)"
+    );
 
     let report2 = run_expiration_tick(h.app_pool.clone(), Some(&staging.staging_dir), 16)
         .await
@@ -596,7 +667,6 @@ async fn run_worker_scenarios(
     let b3_upload = create_in_progress_upload(router, &token, &gid_str, 64).await;
     // NOTE: we deliberately do NOT call write_placeholder_staging here.
     expire_row(h, b3_upload).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let report3 = run_expiration_tick(h.app_pool.clone(), Some(&staging.staging_dir), 16)
         .await
@@ -612,6 +682,17 @@ async fn run_worker_scenarios(
         report3.staging_missing
     );
     assert_eq!(report3.audit_failed, 0, "B3 no audit failures");
+
+    // ─── B4. Three consecutive ticks leave no lock behind (#1611) ───
+    // Cada tick que adquiria e nao libertava deixava UMA sessao do pool
+    // segurando o lock. A contagem ficava 1, depois 2, depois 3 — e nunca
+    // voltava a zero, porque o pool mantem as sessoes vivas. E exatamente
+    // esse acumulo que parava a varredura silenciosamente.
+    assert_eq!(
+        advisory_lock_holders(h).await,
+        0,
+        "B4 no session still holds the worker advisory lock after three ticks (#1611)"
+    );
 }
 
 // ─── Block C — Streaming put_stream e2e via finalize_upload ─────────────

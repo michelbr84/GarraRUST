@@ -13,6 +13,12 @@
 //! replica wins the lock runs the sweep, the others skip the tick.
 //! Failure to acquire the lock is expected and silently skipped.
 //!
+//! O lock e **por sessao**, entao a aquisicao e a liberacao precisam cair na
+//! MESMA conexao: o tick fixa uma `PoolConnection` do acquire ao unlock
+//! (mesmo padrao de [`crate::account_purge_worker`]). Fazer o unlock numa
+//! conexao diferente do pool e um no-op que vaza o lock ate o backend morrer,
+//! e como o pool mantem sessoes vivas, ate o processo morrer — ver #1611.
+//!
 //! ## Bypass-RLS / Cross-Tenant Maintenance
 //!
 //! The worker needs to see rows across all `group_id` values — it runs
@@ -40,6 +46,13 @@ use serde_json::json;
 use sqlx::Row;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+/// `hashtext('tus_uploads_expiration')` mapeia para um i32 estavel que o
+/// Postgres usa como chave do lock. Literal estatico de proposito: o sqlx 0.9
+/// so aceita `&'static str` em `query_scalar` (trait `SqlSafeStr`), e manter
+/// lock e unlock no MESMO literal evita que os dois divergam.
+const LOCK_SQL: &str = "SELECT pg_try_advisory_lock(hashtext('tus_uploads_expiration'))";
+const UNLOCK_SQL: &str = "SELECT pg_advisory_unlock(hashtext('tus_uploads_expiration'))";
 
 /// Configuration envelope for [`spawn_uploads_expiration_worker`].
 #[derive(Debug, Clone)]
@@ -79,24 +92,66 @@ pub async fn run_expiration_tick(
     staging_dir: Option<&std::path::Path>,
     batch_size: i64,
 ) -> Result<TickReport, sqlx::Error> {
+    // Adquire UMA conexao e fixa ela para o tick inteiro. O advisory lock no
+    // Postgres e **por sessao**: so a sessao que chamou `pg_try_advisory_lock`
+    // pode chamar `pg_advisory_unlock` com efeito. Devolver a conexao ao pool
+    // nao encerra a sessao — o sqlx nao reseta estado de sessao na devolucao
+    // (sem `DISCARD ALL` no `sqlx-postgres` 0.9, e o `ping()` do
+    // `test_before_acquire` e so `write_sync`) — entao qualquer unlock feito
+    // em OUTRA conexao do pool e um no-op silencioso que vaza o lock ate o
+    // backend morrer. Ver #1611.
+    let mut conn = pool.pool_for_handlers().acquire().await?;
+
     // Acquire the advisory lock — skip the whole tick when contended.
     // `hashtext('tus_uploads_expiration')` maps to a stable i32 that
     // Postgres uses as the lock key. A missing lock is `false`, not
     // an error.
-    let pg = pool.pool_for_handlers();
-    let got_lock: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext('tus_uploads_expiration'))")
-            .fetch_one(pg)
-            .await?;
+    let got_lock: bool = sqlx::query_scalar(LOCK_SQL).fetch_one(&mut *conn).await?;
 
     if !got_lock {
         debug!("uploads_expiration_worker: lock contended; skipping tick");
+        // Sem lock nesta sessao, devolver a conexao ao pool e inofensivo.
         return Ok(TickReport::default());
     }
 
-    // Guard ensures release even if downstream code panics / errors.
-    let release_guard = AdvisoryLockGuard::new(pool.clone());
+    // A partir daqui esta sessao detem o lock. Todo caminho de saida passa
+    // pela liberacao abaixo — inclusive o `?` interno, que escapa com o erro
+    // ANTES do unlock.
+    let result = locked_tick(&mut conn, pool.as_ref(), staging_dir, batch_size).await;
 
+    // Liberar na MESMA sessao que pegou. `pg_advisory_unlock` devolve
+    // `false` quando o lock nao esta nesta sessao (nunca deveria acontecer);
+    // tratar como falha e fechar a conexao, que mata o backend e solta
+    // qualquer lock esquecido junto com ele.
+    let released: bool = sqlx::query_scalar(UNLOCK_SQL)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap_or(false);
+
+    if !released {
+        warn!(
+            "uploads_expiration_worker: advisory unlock failed; closing the pinned \
+             connection so Postgres releases the lock with the backend"
+        );
+        // Um erro aqui nao muda o desfecho: o que importa e matar a sessao,
+        // e o drop de `conn` fecha o backend tambem se este close falhar.
+        let _ = conn.close().await;
+    }
+
+    result
+}
+
+/// O trabalho do lote, com o lock ja assumido e sobre a conexao fixada.
+///
+/// `conn` executa a varredura na MESMA sessao do lock, para que o lock e o
+/// trabalho andem juntos: se esta sessao morrer no meio, o lock cai junto e a
+/// retomada e feita pelo proximo tick que conseguir o lock.
+async fn locked_tick(
+    conn: &mut sqlx::PgConnection,
+    pool: &AppPool,
+    staging_dir: Option<&std::path::Path>,
+    batch_size: i64,
+) -> Result<TickReport, sqlx::Error> {
     let mut report = TickReport::default();
 
     // Sweep in one call to the `SECURITY DEFINER` function `expire_tus_uploads_sweep`,
@@ -108,7 +163,7 @@ pub async fn run_expiration_tick(
          FROM expire_tus_uploads_sweep(now(), $1)",
     )
     .bind(batch_size as i32)
-    .fetch_all(pg)
+    .fetch_all(&mut *conn)
     .await?;
 
     for row in &rows {
@@ -146,7 +201,7 @@ pub async fn run_expiration_tick(
         // `app.current_group_id` so the RLS policy on audit_events
         // allows the INSERT.
         if let Err(e) = emit_expiration_audit(
-            pool.as_ref(),
+            pool,
             group_id,
             created_by,
             upload_id,
@@ -175,8 +230,6 @@ pub async fn run_expiration_tick(
             "uploads_expiration_worker: tick complete"
         );
     }
-
-    drop(release_guard); // explicit
 
     Ok(report)
 }
@@ -221,35 +274,6 @@ async fn emit_expiration_audit(
 
     tx.commit().await?;
     Ok(())
-}
-
-struct AdvisoryLockGuard {
-    pool: Arc<AppPool>,
-    released: bool,
-}
-
-impl AdvisoryLockGuard {
-    fn new(pool: Arc<AppPool>) -> Self {
-        Self {
-            pool,
-            released: false,
-        }
-    }
-}
-
-impl Drop for AdvisoryLockGuard {
-    fn drop(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('tus_uploads_expiration'))")
-                .execute(pool.pool_for_handlers())
-                .await;
-        });
-    }
 }
 
 /// Spawn the periodic sweep loop. Returns the `JoinHandle` for the
