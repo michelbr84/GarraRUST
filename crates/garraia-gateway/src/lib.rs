@@ -1,4 +1,5 @@
 pub mod a2a;
+pub mod account_purge_worker;
 pub mod admin;
 pub mod agent_router;
 pub mod anthropic_api;

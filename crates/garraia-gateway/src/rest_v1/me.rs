@@ -65,12 +65,40 @@
 //! session.*). No `X-Group-Id` required. Events filtered to
 //! `actor_user_id = caller AND group_id = nil-uuid` (plan 0340 / GAR-881).
 //!
-//! `DELETE /v1/me` — self-service account soft-deletion (plan 0343 / GAR-884).
-//! Sets `users.status = 'deleted'` and revokes all active sessions atomically.
-//! Emits `account.self_deleted` audit event. Returns 204 No Content on success,
-//! 409 Conflict if account is already deleted (idempotent guard). No password
-//! re-confirmation required — caller is already authenticated via JWT.
-//! Hard deletion deferred to future retention worker (Fase 5.3 / LGPD art. 18).
+//! `DELETE /v1/me` — self-service account deletion (plan 0343 / GAR-884).
+//! Sets `users.status = 'deleted'`, revokes all active sessions AND files a
+//! hard-deletion request in `account_deletion_requests` — all in one
+//! transaction. Emits `account.self_deleted` + `account.purge_scheduled`.
+//! Returns 204 No Content, 409 Conflict if already deleted or purged. No
+//! password re-confirmation — the caller is authenticated via JWT.
+//!
+//! # Direitos dos titulares (LGPD arts. 18/20, GDPR arts. 15-20)
+//!
+//! Four endpoints carry the data-subject rights, and the boundary between
+//! them is deliberate:
+//!
+//! | Endpoint | Right | Reaches |
+//! |---|---|---|
+//! | `GET /v1/me/export` | access + portability | account data **and** the subject's content in every group they belong to |
+//! | `PATCH /v1/me` | rectification | `display_name` inline; e-mail as a **recorded request**, never a blind swap |
+//! | `POST /v1/me/anonymize` | anonymisation | identifiers only, irreversible, content stays |
+//! | `DELETE /v1/me` | erasure | tombstone now, content + identifiers erased by the purge worker after the grace period |
+//!
+//! Two invariants hold across all four, and every query in this module is
+//! written to keep them:
+//!
+//! 1. **The tenant boundary.** A request by one subject never reads or writes
+//!    another group's rows. Enforced twice over: FORCE RLS with a fail-closed
+//!    `NULLIF` policy (an unset GUC yields NULL, hence zero rows) *and* an
+//!    explicit `WHERE` on the caller's own id in each statement. Neither is
+//!    relied upon alone.
+//! 2. **Third parties and shared spaces.** One person's request does not
+//!    empty an organisation. Messages other members wrote are not exported
+//!    and not erased; they stay in the shared space. What leaves is the
+//!    subject's own content and their identifiers — see the header of
+//!    migration 034 for the table-by-table statement and
+//!    `docs/legal/data-subject-requests.md` for the operator procedure and
+//!    the known limits.
 
 // Request-path (#1569): panic aqui e controlavel por quem manda a requisicao.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
@@ -90,6 +118,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
+
+use crate::account_purge_worker::DEFAULT_GRACE_PERIOD_DAYS;
 
 use super::RestV1FullState;
 use super::problem::RestError;
@@ -140,7 +170,22 @@ pub async fn get_me(principal: Principal) -> Result<Json<MeResponse>, RestError>
 pub struct PatchMeRequest {
     /// Updated display name. 1–128 characters when provided.
     pub display_name: Option<String>,
+    /// Requested NEW e-mail address (LGPD art. 18, III / GDPR art. 16).
+    ///
+    /// **This does not change the e-mail.** It files a `pending` request in
+    /// `user_email_change_requests`; applying it requires out-of-band proof
+    /// that the subject controls the new mailbox. See
+    /// [`patch_me`] and `docs/legal/data-subject-requests.md`.
+    pub email: Option<String>,
 }
+
+/// Longest address `PATCH /v1/me` accepts — the schema bound of
+/// `user_email_change_requests.requested_email` (migration 034) and the
+/// practical ceiling for an SMTP path.
+const EMAIL_MAX_LEN: usize = 320;
+
+/// Shortest syntactically conceivable address (`a@b`).
+const EMAIL_MIN_LEN: usize = 3;
 
 impl PatchMeRequest {
     fn validate(&self) -> Result<(), &'static str> {
@@ -153,8 +198,63 @@ impl PatchMeRequest {
                 return Err("display_name exceeds 128 character limit");
             }
         }
+        if let Some(email) = &self.email {
+            validate_email_shape(email)?;
+        }
         Ok(())
     }
+}
+
+/// Structural sanity check on a requested e-mail address.
+///
+/// Deliberately shallow: this value is not used to send anything and is not
+/// trusted as an identity. It is a request a human operator later verifies
+/// out of band, so the check only rejects what cannot be an address at all
+/// (no `@`, empty local or domain part, embedded whitespace or control
+/// characters, absurd length). Full deliverability validation belongs to the
+/// verification step, not here — a stricter regex would reject legitimate
+/// intranet addresses and buy nothing, because possession is what actually
+/// gates the change.
+fn validate_email_shape(raw: &str) -> Result<(), &'static str> {
+    let email = raw.trim();
+    if email.len() < EMAIL_MIN_LEN {
+        return Err("email is too short to be an address");
+    }
+    if email.len() > EMAIL_MAX_LEN {
+        return Err("email exceeds the 320 character limit");
+    }
+    // Whitespace and control characters: a header-injection shape, and never
+    // valid in the unquoted addresses this endpoint accepts.
+    if email.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("email must not contain whitespace or control characters");
+    }
+    let mut parts = email.split('@');
+    let local = parts.next().unwrap_or_default();
+    let domain = parts.next().unwrap_or_default();
+    if parts.next().is_some() {
+        return Err("email must contain exactly one '@'");
+    }
+    if local.is_empty() {
+        return Err("email is missing the part before '@'");
+    }
+    if domain.is_empty() {
+        return Err("email is missing the domain after '@'");
+    }
+    Ok(())
+}
+
+/// A pending e-mail-correction request, as surfaced to its own subject.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PendingEmailChange {
+    /// UUID of the request row — the handle the operator applies or rejects.
+    pub request_id: Uuid,
+    /// The address the subject asked to switch to. Returned only to the
+    /// subject themselves (RLS owner-only on the table).
+    pub requested_email: String,
+    /// Always `"pending"` here; terminal states are not surfaced on `PATCH`.
+    pub status: String,
+    /// When the request was filed (UTC).
+    pub requested_at: DateTime<Utc>,
 }
 
 /// Response body for `PATCH /v1/me`.
@@ -163,6 +263,10 @@ pub struct PatchMeResponse {
     /// UUID of the authenticated user.
     pub user_id: Uuid,
     /// Current email address (read-only, returned for client sync).
+    ///
+    /// Unchanged by an `email` field in the request: a correction request is
+    /// recorded, never applied inline. Compare against
+    /// `email_change_pending.requested_email` to show "pending change".
     pub email: String,
     /// Current display name after the update.
     pub display_name: String,
@@ -170,6 +274,10 @@ pub struct PatchMeResponse {
     pub created_at: DateTime<Utc>,
     /// Last update timestamp (UTC).
     pub updated_at: DateTime<Utc>,
+    /// The open e-mail-correction request, when this call filed one.
+    /// Absent when the request body carried no `email`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_change_pending: Option<PendingEmailChange>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -181,14 +289,65 @@ struct UserRow {
     updated_at: DateTime<Utc>,
 }
 
+/// `PATCH /v1/me` — self-service correction of the caller's own profile
+/// (LGPD art. 18, III / GDPR art. 16: right to rectification).
+///
+/// ## `display_name` — applied immediately
+///
+/// Free-form label, not an identity key. Written straight to `users`.
+///
+/// ## `email` — recorded as a request, NEVER applied inline
+///
+/// `users.email` is the login key: `user_identities.provider_sub` carries the
+/// same address for `provider = 'internal'` (migration 001) and
+/// `verify_internal` matches on it. Switching it on the strength of an access
+/// token alone is an account-takeover primitive — a stolen token repoints the
+/// account at the attacker's mailbox and captures every future recovery flow.
+/// So possession of the new mailbox has to be proven, and a blind swap is not
+/// implemented here on purpose.
+///
+/// Proving possession means e-mailing a confirmation link, and **this
+/// repository has no mail infrastructure** (no crate depends on
+/// SMTP/lettre/a provider). Rather than invent one or skip the proof, this
+/// endpoint implements the honest minimum the repo supports: it files a
+/// `pending` row in `user_email_change_requests`, emits
+/// `account.email_change_requested`, and leaves `users.email` untouched. An
+/// operator verifies possession out of band and applies it — the procedure is
+/// in `docs/legal/data-subject-requests.md`. When mail delivery lands, the
+/// verification step slots in ahead of the same `applied` transition without
+/// changing this contract.
+///
+/// At most one request is open per subject (partial unique index); a second
+/// `PATCH` supersedes the first rather than queueing a second for the
+/// operator to disambiguate.
+///
+/// ### No duplicate-address check, on purpose
+///
+/// The handler does **not** tell the caller whether the requested address
+/// already belongs to another account. Answering that turns this endpoint
+/// into an account-enumeration oracle for any address an attacker wants to
+/// test. A collision surfaces to the operator at verification time, where it
+/// costs an attacker nothing to learn and reveals nothing over HTTP.
+///
+/// ## Error matrix
+///
+/// | Condition                                         | Status |
+/// |---------------------------------------------------|--------|
+/// | Missing/invalid JWT                               | 401    |
+/// | Malformed `display_name` or `email` shape         | 400    |
+/// | Requested e-mail equals the current one           | 400    |
+/// | Account deleted / anonymized / purged             | 409    |
+/// | Unknown field in the body                         | 422    |
+/// | Happy path                                        | 200    |
 #[utoipa::path(
     patch,
     path = "/v1/me",
     request_body = PatchMeRequest,
     responses(
-        (status = 200, description = "Profile updated.", body = PatchMeResponse),
+        (status = 200, description = "Profile updated. An `email` in the request is recorded as a pending correction request, not applied.", body = PatchMeResponse),
         (status = 400, description = "Validation error.", body = super::problem::ProblemDetails),
         (status = 401, description = "Missing or invalid JWT.", body = super::problem::ProblemDetails),
+        (status = 409, description = "Account is deleted, anonymized or purged.", body = super::problem::ProblemDetails),
         (status = 422, description = "Unknown field or malformed body.", body = super::problem::ProblemDetails),
     ),
     security(("bearer" = []))
@@ -203,29 +362,164 @@ pub async fn patch_me(
 
     let pool = state.app_pool.pool_for_handlers();
 
-    let row: UserRow = if body.display_name.is_none() {
-        // No-op path: return current user data without issuing an UPDATE.
-        sqlx::query_as(
-            "SELECT id, email, display_name, created_at, updated_at \
+    // Fast path: nothing to change and no request to file — one SELECT, no
+    // transaction. Keeps the pre-existing `{}` no-op contract free.
+    if body.display_name.is_none() && body.email.is_none() {
+        let row: UserRow = sqlx::query_as(
+            "SELECT id, email::text AS email, display_name, created_at, updated_at \
              FROM users WHERE id = $1",
         )
         .bind(principal.user_id)
         .fetch_one(pool)
         .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        return Ok(Json(PatchMeResponse {
+            user_id: row.id,
+            email: row.email,
+            display_name: row.display_name,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            email_change_pending: None,
+        }));
+    }
+
+    let nil_uuid = Uuid::nil();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // Both GUCs: `user_email_change_requests` is under FORCE RLS (owner-only)
+    // and the audit INSERT needs the group context too.
+    sqlx::query("SELECT set_config('app.current_user_id', $1, true)")
+        .bind(principal.user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // FOR UPDATE: serialises against a concurrent anonymize/delete so the
+    // status guard below cannot be read stale.
+    let current: Option<(String, String)> =
+        sqlx::query_as("SELECT status, email::text FROM users WHERE id = $1 FOR UPDATE")
+            .bind(principal.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+    let (status, current_email) = match current {
+        None => {
+            return Err(RestError::Internal(anyhow::anyhow!(
+                "user row not found for authenticated principal"
+            )));
+        }
+        Some(pair) => pair,
+    };
+
+    // A profile under erasure or already anonymised must not be edited: a
+    // rectification has nothing to rectify, and accepting the write would
+    // re-introduce an identifier into a row that was just stripped of them.
+    if matches!(status.as_str(), "deleted" | "anonymized" | "purged") {
+        return Err(RestError::Conflict(format!(
+            "account status '{status}' does not accept profile changes"
+        )));
+    }
+
+    let row: UserRow = if let Some(dn) = body.display_name.as_deref() {
+        sqlx::query_as(
+            "UPDATE users SET display_name = $2, updated_at = now() \
+             WHERE id = $1 \
+             RETURNING id, email::text AS email, display_name, created_at, updated_at",
+        )
+        .bind(principal.user_id)
+        .bind(dn)
+        .fetch_one(&mut *tx)
+        .await
         .map_err(|e| RestError::Internal(e.into()))?
     } else {
         sqlx::query_as(
-            "UPDATE users \
-             SET display_name = COALESCE($2, display_name), updated_at = now() \
-             WHERE id = $1 \
-             RETURNING id, email, display_name, created_at, updated_at",
+            "SELECT id, email::text AS email, display_name, created_at, updated_at \
+             FROM users WHERE id = $1",
         )
         .bind(principal.user_id)
-        .bind(body.display_name.as_deref())
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| RestError::Internal(e.into()))?
     };
+
+    let mut email_change_pending = None;
+
+    if let Some(requested_raw) = body.email.as_deref() {
+        let requested = requested_raw.trim();
+
+        // citext compares case-insensitively, so compare the same way the
+        // database would. "Correcting" to the address already on file is a
+        // no-op the operator should never have to look at.
+        if requested.eq_ignore_ascii_case(current_email.trim()) {
+            return Err(RestError::BadRequest(
+                "requested email is already the address on this account".into(),
+            ));
+        }
+
+        // Supersede any open request. The partial unique index allows exactly
+        // one `pending` row per subject, so this has to run before the INSERT.
+        let superseded = sqlx::query(
+            "UPDATE user_email_change_requests \
+             SET status = 'superseded', resolved_at = now() \
+             WHERE user_id = $1 AND status = 'pending'",
+        )
+        .bind(principal.user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?
+        .rows_affected();
+
+        type RequestRow = (Uuid, String, String, DateTime<Utc>);
+        let (request_id, requested_email, req_status, requested_at): RequestRow = sqlx::query_as(
+            "INSERT INTO user_email_change_requests (user_id, requested_email) \
+             VALUES ($1, $2) \
+             RETURNING id, requested_email::text, status, requested_at",
+        )
+        .bind(principal.user_id)
+        .bind(requested)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+        // Audit metadata carries the LENGTH, never the address: the requested
+        // e-mail is PII and `audit_events` is readable by group admins on the
+        // group-scoped branch of its policy.
+        audit_workspace_event(
+            &mut tx,
+            WorkspaceAuditAction::AccountEmailChangeRequested,
+            principal.user_id,
+            nil_uuid,
+            "user_email_change_requests",
+            request_id.to_string(),
+            json!({
+                "requested_email_len": requested.chars().count(),
+                "superseded": superseded > 0,
+            }),
+        )
+        .await
+        .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+        email_change_pending = Some(PendingEmailChange {
+            request_id,
+            requested_email,
+            status: req_status,
+            requested_at,
+        });
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
 
     Ok(Json(PatchMeResponse {
         user_id: row.id,
@@ -233,6 +527,7 @@ pub async fn patch_me(
         display_name: row.display_name,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        email_change_pending,
     }))
 }
 
@@ -3810,22 +4105,55 @@ pub async fn list_my_audit(
 
 // ─── DELETE /v1/me (plan 0343 / GAR-884) ────────────────────────────────────
 
-/// Self-service account soft-deletion (plan 0343 / GAR-884).
+/// Self-service account deletion (plan 0343 / GAR-884; hard deletion wired
+/// here — LGPD art. 18, VI / GDPR art. 17).
 ///
-/// Sets `users.status = 'deleted'` and revokes all active sessions in a single
-/// atomic transaction. Emits `account.self_deleted` audit event. Returns 204 on
-/// success or 409 if the account is already deleted.
+/// One atomic transaction does three things: flips `users.status` to
+/// `'deleted'` (the tombstone), revokes every active session, and **files a
+/// hard-deletion request** in `account_deletion_requests` with
+/// `purge_after = now() + <grace period>`. Emits both
+/// `account.self_deleted` and `account.purge_scheduled`. Returns 204, or 409
+/// if the account is already deleted or purged.
 ///
-/// No password re-confirmation required — the caller is already authenticated.
-/// Hard deletion is deferred to a future retention worker (Fase 5.3 / LGPD
-/// art. 18 / GDPR art. 17).
+/// Atomicity matters here: if the tombstone committed without the request
+/// row, the account would look deleted forever and never actually be erased —
+/// the exact silent failure the previous "deferred to a future worker" note
+/// left open.
+///
+/// No password re-confirmation — the caller is already authenticated by JWT.
+///
+/// ## The grace period, and why erasure is not immediate
+///
+/// [`DEFAULT_GRACE_PERIOD_DAYS`] days pass before
+/// `account_purge_worker` makes the erasure irreversible. Immediate
+/// irreversible erasure would turn a stolen access token into a weapon:
+/// one request and nothing can be recovered. The delay gives the real
+/// subject a window to reverse the request through support and the operator
+/// a window to apply a legal hold. The date is in the subject's own export
+/// (`deletion_requests[].purge_after`) and the policy is written out in
+/// `docs/legal/data-subject-requests.md`.
+///
+/// The response stays 204 with no body on purpose — adding one would break
+/// the published contract for every existing client. The schedule is
+/// discoverable through the export and the audit trail instead.
+///
+/// ## What the purge erases, and what it deliberately keeps
+///
+/// See the header of migration 034 for the full statement. In short: personal
+/// content and identifiers are destroyed; the `users` row survives as a
+/// tombstone carrying no personal data, because five FKs declared
+/// `NO ACTION` point at it and removing it would delete other members'
+/// shared context (thread roots, chats, invites). Messages the subject wrote
+/// have their body and sender label replaced; messages **other people** wrote
+/// are untouched — one person's erasure request does not empty a shared
+/// conversation.
 #[utoipa::path(
     delete,
     path = "/v1/me",
     tag = "me",
     responses(
-        (status = 204, description = "Account soft-deleted; all sessions revoked"),
-        (status = 409, description = "Account already deleted"),
+        (status = 204, description = "Account soft-deleted, sessions revoked, hard deletion scheduled"),
+        (status = 409, description = "Account already deleted or purged"),
         (status = 401, description = "Missing or invalid JWT"),
         (status = 500, description = "Internal server error"),
     ),
@@ -3871,8 +4199,14 @@ pub async fn delete_me(
             )));
         }
         Some("deleted") => {
-            // Already deleted — idempotency guard: do not re-emit the audit event.
+            // Already deleted — idempotency guard: do not re-emit the audit
+            // event and do not file a second purge request.
             return Err(RestError::Conflict("account is already deleted".into()));
+        }
+        Some("purged") => {
+            // The erasure already ran. Re-filing would schedule a purge for
+            // a tombstone that holds no personal data left to erase.
+            return Err(RestError::Conflict("account is already purged".into()));
         }
         _ => {}
     }
@@ -3894,6 +4228,31 @@ pub async fn delete_me(
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
+    // Queue the hard deletion in the SAME transaction as the tombstone, so
+    // the two can never diverge. `account_deletion_one_open_idx` (migration
+    // 034) makes a duplicate open request impossible; a 23505 here would mean
+    // an open request existed for an account whose status said otherwise, so
+    // it is reported as a conflict rather than a 500.
+    let scheduled: Result<(Uuid, DateTime<Utc>), sqlx::Error> = sqlx::query_as(
+        "INSERT INTO account_deletion_requests (user_id, purge_after) \
+         VALUES ($1, now() + make_interval(days => $2)) \
+         RETURNING id, purge_after",
+    )
+    .bind(principal.user_id)
+    .bind(i32::try_from(DEFAULT_GRACE_PERIOD_DAYS).unwrap_or(30))
+    .fetch_one(&mut *tx)
+    .await;
+
+    let (request_id, _purge_after) = match scheduled {
+        Ok(row) => row,
+        Err(sqlx::Error::Database(ref db_err)) if db_err.code().as_deref() == Some("23505") => {
+            return Err(RestError::Conflict(
+                "a deletion request is already open for this account".into(),
+            ));
+        }
+        Err(e) => return Err(RestError::Internal(e.into())),
+    };
+
     // Emit compliance audit event. No PII in metadata.
     audit_workspace_event(
         &mut tx,
@@ -3903,6 +4262,20 @@ pub async fn delete_me(
         "users",
         principal.user_id.to_string(),
         json!({}),
+    )
+    .await
+    .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
+
+    // Second event, same transaction: the tombstone and the schedule are one
+    // decision and the trail has to show both or neither.
+    audit_workspace_event(
+        &mut tx,
+        WorkspaceAuditAction::AccountPurgeScheduled,
+        principal.user_id,
+        nil_uuid,
+        "account_deletion_requests",
+        request_id.to_string(),
+        json!({ "grace_period_days": DEFAULT_GRACE_PERIOD_DAYS }),
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
@@ -3966,18 +4339,273 @@ pub struct ExportMeGroupMembership {
     pub joined_at: DateTime<Utc>,
 }
 
+// ─── Content sections (direitos dos titulares) ───────────────────────────────
+//
+// Row caps per section. An export is a synchronous request against a live
+// tenant database; an uncapped `SELECT` over a heavy account would hold a
+// connection and build a multi-hundred-megabyte JSON body in memory. The cap
+// is declared to the subject through `truncated_sections` instead of silently
+// trimming — an incomplete export that says so is honest, one that does not
+// is a false compliance claim.
+const EXPORT_MAX_MESSAGES: i64 = 5_000;
+const EXPORT_MAX_MENTIONS: i64 = 5_000;
+const EXPORT_MAX_FILES: i64 = 5_000;
+const EXPORT_MAX_MEMORY: i64 = 5_000;
+const EXPORT_MAX_TASKS: i64 = 5_000;
+/// Cap on the user-scoped audit slice. Was an inline `LIMIT 1000`; named so
+/// `truncated_sections` can report it like every other section.
+const EXPORT_MAX_AUDIT_EVENTS: i64 = 1_000;
+/// Excerpt width for a message the subject did NOT write — identical to what
+/// `GET /v1/me/mentions` already returns, so the export widens no exposure.
+const EXPORT_MENTION_EXCERPT_CHARS: i64 = 200;
+
+/// One message **written by the subject**, with its full body.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeMessage {
+    pub message_id: Uuid,
+    pub chat_id: Uuid,
+    pub group_id: Uuid,
+    /// Chat name, so the export is readable without a second lookup.
+    pub chat_name: String,
+    /// Full body — this is the subject's own authored content.
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+/// One @mention **received** by the subject — data *about* them, written by
+/// somebody else.
+///
+/// Carries a [`EXPORT_MENTION_EXCERPT_CHARS`]-character excerpt, not the full
+/// body: the body belongs to its author. See the `exclusions` section of the
+/// export for the reasoning.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeMentionReceived {
+    pub message_id: Uuid,
+    pub chat_id: Uuid,
+    pub group_id: Uuid,
+    pub sender_user_id: Uuid,
+    pub sender_label: String,
+    pub body_excerpt: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One file uploaded by the subject. Metadata only — see `exclusions`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeFile {
+    pub file_id: Uuid,
+    pub group_id: Uuid,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+/// One memory item the subject created, with its full content.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeMemoryItem {
+    pub memory_item_id: Uuid,
+    /// `user` (personal), `group` or `chat`.
+    pub scope_type: String,
+    /// `None` for personal memory, which has `group_id IS NULL`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<Uuid>,
+    pub kind: String,
+    pub sensitivity: String,
+    /// Full content. Unlike `GET /v1/me/memory`, which returns a preview,
+    /// portability entitles the subject to the whole record they authored.
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+/// One task the subject created and/or is assigned to.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeTask {
+    pub task_id: Uuid,
+    pub list_id: Uuid,
+    pub group_id: Uuid,
+    pub title: String,
+    pub status: String,
+    pub priority: String,
+    /// `true` when the subject created this task.
+    pub authored: bool,
+    /// `true` when the subject is currently an assignee.
+    pub assigned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+/// One e-mail-correction request filed by the subject.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeEmailChangeRequest {
+    pub request_id: Uuid,
+    pub requested_email: String,
+    pub status: String,
+    pub requested_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+/// One account-deletion request filed by the subject.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeDeletionRequest {
+    pub request_id: Uuid,
+    pub status: String,
+    pub requested_at: DateTime<Utc>,
+    /// When the erasure becomes irreversible. Before this moment the subject
+    /// can still ask support to cancel.
+    pub purge_after: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// One machine-readable statement of what this export deliberately omits.
+///
+/// GDPR art. 15(1) makes the *scope* of an access response part of the
+/// response. A reader who cannot tell "absent because none exists" from
+/// "absent because we chose not to include it" cannot act on the export, so
+/// the boundary ships inside the file rather than only in a code comment.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExportMeExclusion {
+    /// What is not here.
+    pub scope: &'static str,
+    /// Why not.
+    pub reason: &'static str,
+}
+
+/// Row shape shared by the personal and the group-scoped memory queries in
+/// [`export_me`], mapped in one place so the two cannot diverge.
+type ExportMemoryRow = (
+    Uuid,
+    String,
+    Option<Uuid>,
+    String,
+    String,
+    String,
+    Option<DateTime<Utc>>,
+    DateTime<Utc>,
+    Option<DateTime<Utc>>,
+);
+
+fn map_memory_row(row: ExportMemoryRow) -> ExportMeMemoryItem {
+    let (
+        memory_item_id,
+        scope_type,
+        group_id,
+        kind,
+        sensitivity,
+        content,
+        ttl_expires_at,
+        created_at,
+        deleted_at,
+    ) = row;
+    ExportMeMemoryItem {
+        memory_item_id,
+        scope_type,
+        group_id,
+        kind,
+        sensitivity,
+        content,
+        ttl_expires_at,
+        created_at,
+        deleted_at,
+    }
+}
+
+/// The exclusion set, stated once so the export, the OpenAPI schema and
+/// `docs/legal/data-subject-requests.md` cannot drift apart.
+fn export_exclusions() -> Vec<ExportMeExclusion> {
+    vec![
+        ExportMeExclusion {
+            scope: "messages written by other people",
+            reason: "A message another member wrote is that member's personal data, even in a \
+                     chat the subject belongs to. Exporting a shared conversation wholesale \
+                     would hand one person a copy of everyone else's content. Messages that \
+                     name the subject appear under `mentions_received` as a 200-character \
+                     excerpt — the same width `GET /v1/me/mentions` already returns.",
+        },
+        ExportMeExclusion {
+            scope: "file contents (bytes)",
+            reason: "Only file metadata is listed. The bytes stay in object storage and are \
+                     fetched one at a time through the existing download endpoint, which keeps \
+                     this response a bounded JSON document instead of an unbounded archive.",
+        },
+        ExportMeExclusion {
+            scope: "group-scoped audit events",
+            reason: "`audit_events` rows carrying a `group_id` are the organisation's security \
+                     log, readable by its admins. Only the subject's user-scoped events are \
+                     exported — the same slice `GET /v1/me/audit` shows.",
+        },
+        ExportMeExclusion {
+            scope: "doc pages, blocks and versions",
+            reason: "Wiki-style pages are organisational knowledge held jointly, and a page \
+                     authored by the subject is routinely edited by others afterwards. Pages \
+                     the subject authored are reachable through `GET /v1/me/doc-pages`; a \
+                     copy of a jointly-edited document is handled as a manual request.",
+        },
+        ExportMeExclusion {
+            scope: "credential material",
+            reason: "Password hashes and raw API keys are never returned by any endpoint. API \
+                     key metadata is exported; the secret is shown once at creation and never \
+                     again.",
+        },
+        ExportMeExclusion {
+            scope: "data about people without a Garra account",
+            reason: "Someone who only talked to a bot on a messaging channel has no account \
+                     here and so cannot authenticate to this endpoint. Their request runs \
+                     through the manual channel in docs/legal/data-subject-requests.md.",
+        },
+    ]
+}
+
 /// Response body for `GET /v1/me/export`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExportMeResponse {
     /// Timestamp when the export was generated (UTC).
     pub exported_at: DateTime<Utc>,
-    /// Schema version for forward-compatibility. Currently `"1"`.
+    /// Schema version for forward-compatibility. `"2"` since the content
+    /// sections (messages, files, memory, tasks) landed; `"1"` was
+    /// account-level only.
     pub schema_version: String,
     pub profile: ExportMeProfile,
     pub sessions: Vec<ExportMeSession>,
     pub api_keys: Vec<ExportMeApiKey>,
     pub audit_events: Vec<ExportMeAuditEvent>,
     pub group_memberships: Vec<ExportMeGroupMembership>,
+    /// Messages the subject wrote, across every group they belong to.
+    pub messages: Vec<ExportMeMessage>,
+    /// @mentions the subject received (excerpt only — see `exclusions`).
+    pub mentions_received: Vec<ExportMeMentionReceived>,
+    /// Files the subject uploaded (metadata only — see `exclusions`).
+    pub files: Vec<ExportMeFile>,
+    /// Memory items the subject created, personal and group-scoped.
+    pub memory_items: Vec<ExportMeMemoryItem>,
+    /// Tasks the subject created and/or is assigned to.
+    pub tasks: Vec<ExportMeTask>,
+    /// E-mail-correction requests the subject filed.
+    pub email_change_requests: Vec<ExportMeEmailChangeRequest>,
+    /// Account-deletion requests the subject filed, with the date the
+    /// erasure becomes irreversible.
+    pub deletion_requests: Vec<ExportMeDeletionRequest>,
+    /// Sections that hit their row cap — the export is INCOMPLETE for these.
+    /// Empty means every section is whole.
+    pub truncated_sections: Vec<String>,
+    /// What this export deliberately does not contain, and why.
+    pub exclusions: Vec<ExportMeExclusion>,
 }
 
 /// `GET /v1/me/export` — LGPD art. 20 / GDPR arts. 15 & 20 personal data export.
@@ -3986,11 +4614,41 @@ pub struct ExportMeResponse {
 /// personal data. The response carries `Content-Disposition: attachment` so
 /// browsers download it as a file. No `X-Group-Id` header required.
 ///
-/// Sections included: `profile`, `sessions`, `api_keys` (metadata only, hash
-/// never returned), `audit_events` (nil-uuid group, cap 1000), `group_memberships`.
-/// Cross-group message/file/memory/task content is deferred to slice 3.
+/// ## What is in it
 ///
-/// Emits `AccountDataExported` audit event with metadata `{ "sections": [...] }`.
+/// Account level: `profile`, `sessions`, `api_keys` (metadata only — the hash
+/// is never selected), `audit_events` (user-scoped slice, cap 1000),
+/// `group_memberships`, `email_change_requests`, `deletion_requests`.
+///
+/// Personal content, gathered across **every group the subject belongs to**:
+/// `messages` they wrote (full body), `mentions_received` (excerpt — the body
+/// belongs to its author), `files` they uploaded (metadata), `memory_items`
+/// they created (full content, personal and group-scoped), and `tasks` they
+/// created or are assigned to.
+///
+/// ## How the tenant boundary is held
+///
+/// The content queries run inside ONE transaction that re-points
+/// `app.current_group_id` per group via `set_config(..., true)`, iterating
+/// only the groups where the subject holds an **active** `group_members` row.
+/// Every table touched is under FORCE RLS with a fail-closed policy
+/// (`NULLIF` on an unset GUC yields NULL, hence zero rows), so a group the
+/// subject does not belong to is never even reachable — and on top of that,
+/// each query also filters on the subject's own `user_id`. Two independent
+/// mechanisms, neither relied on alone.
+///
+/// A single transaction also means one consistent snapshot: the export cannot
+/// show a message from before a concurrent write and a task from after it.
+///
+/// ## What is NOT in it
+///
+/// The response carries its own `exclusions` array — see
+/// [`export_exclusions`] for the list and the reasoning. Sections that hit
+/// their row cap are named in `truncated_sections` rather than silently
+/// trimmed.
+///
+/// Emits `AccountDataExported` audit event with metadata
+/// `{ "sections": [...], "truncated": [...] }`.
 /// Email IS returned (right-to-portability requires the data subject's own email).
 /// `password_hash` and raw API key are NEVER returned.
 #[utoipa::path(
@@ -4109,10 +4767,11 @@ pub async fn export_me(
         "SELECT id, action, resource_type, resource_id, metadata, created_at \
          FROM audit_events \
          WHERE actor_user_id = $1 AND group_id = $2 \
-         ORDER BY created_at DESC, id DESC LIMIT 1000",
+         ORDER BY created_at DESC, id DESC LIMIT $3",
     )
     .bind(principal.user_id)
     .bind(nil_uuid)
+    .bind(EXPORT_MAX_AUDIT_EVENTS)
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
@@ -4157,6 +4816,386 @@ pub async fn export_me(
         )
         .collect();
 
+    // Query 6 — e-mail-correction requests (FORCE RLS owner-only, migration 034)
+    type EmailReqRow = (Uuid, String, String, DateTime<Utc>, Option<DateTime<Utc>>);
+    let email_req_rows: Vec<EmailReqRow> = sqlx::query_as(
+        "SELECT id, requested_email::text, status, requested_at, resolved_at \
+         FROM user_email_change_requests WHERE user_id = $1 \
+         ORDER BY requested_at DESC",
+    )
+    .bind(principal.user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let email_change_requests: Vec<ExportMeEmailChangeRequest> = email_req_rows
+        .into_iter()
+        .map(
+            |(request_id, requested_email, status, requested_at, resolved_at)| {
+                ExportMeEmailChangeRequest {
+                    request_id,
+                    requested_email,
+                    status,
+                    requested_at,
+                    resolved_at,
+                }
+            },
+        )
+        .collect();
+
+    // Query 7 — deletion requests (FORCE RLS owner-only, migration 034).
+    // The subject is entitled to know the date their erasure becomes
+    // irreversible, which is the whole point of the grace period.
+    type DeletionReqRow = (
+        Uuid,
+        String,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+    );
+    let deletion_req_rows: Vec<DeletionReqRow> = sqlx::query_as(
+        "SELECT id, status, requested_at, purge_after, completed_at \
+         FROM account_deletion_requests WHERE user_id = $1 \
+         ORDER BY requested_at DESC",
+    )
+    .bind(principal.user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    let deletion_requests: Vec<ExportMeDeletionRequest> = deletion_req_rows
+        .into_iter()
+        .map(
+            |(request_id, status, requested_at, purge_after, completed_at)| {
+                ExportMeDeletionRequest {
+                    request_id,
+                    status,
+                    requested_at,
+                    purge_after,
+                    completed_at,
+                }
+            },
+        )
+        .collect();
+
+    // Query 8 — personal memory (`scope_type = 'user'`, `group_id IS NULL`).
+    // Runs while the GUC still points at the nil uuid: branch 2 of the dual
+    // policy `memory_items_group_or_self` (migration 007) matches on
+    // `group_id IS NULL AND created_by = app.current_user_id`, so the group
+    // GUC is irrelevant here and must NOT be a real group.
+    let mut memory_items: Vec<ExportMeMemoryItem> = Vec::new();
+    let personal_memory: Vec<ExportMemoryRow> = sqlx::query_as(
+        "SELECT id, scope_type, group_id, kind, sensitivity, content, \
+                ttl_expires_at, created_at, deleted_at \
+         FROM memory_items \
+         WHERE created_by = $1 AND group_id IS NULL \
+         ORDER BY created_at DESC, id DESC \
+         LIMIT $2",
+    )
+    .bind(principal.user_id)
+    .bind(EXPORT_MAX_MEMORY)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| RestError::Internal(e.into()))?;
+
+    memory_items.extend(personal_memory.into_iter().map(map_memory_row));
+
+    // ── Content, group by group ──────────────────────────────────────────
+    //
+    // `set_config(..., true)` is transaction-local, so re-issuing it per
+    // group re-points RLS for the remainder of this transaction. Only groups
+    // with an active membership are visited (that is what `group_memberships`
+    // above already filtered on), and every query additionally pins the
+    // subject's own id — belt and braces, because a bug in either layer
+    // alone must not leak another tenant.
+    let mut messages: Vec<ExportMeMessage> = Vec::new();
+    let mut mentions_received: Vec<ExportMeMentionReceived> = Vec::new();
+    let mut files: Vec<ExportMeFile> = Vec::new();
+    let mut tasks: Vec<ExportMeTask> = Vec::new();
+
+    for membership in &group_memberships {
+        let gid = membership.group_id;
+
+        sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+            .bind(gid.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+        // Messages the subject WROTE. Full body: their own content.
+        let budget = EXPORT_MAX_MESSAGES - messages.len() as i64;
+        if budget > 0 {
+            type MsgRow = (
+                Uuid,
+                Uuid,
+                Uuid,
+                String,
+                String,
+                DateTime<Utc>,
+                Option<DateTime<Utc>>,
+                Option<DateTime<Utc>>,
+            );
+            let rows: Vec<MsgRow> = sqlx::query_as(
+                "SELECT m.id, m.chat_id, m.group_id, c.name, m.body, \
+                        m.created_at, m.edited_at, m.deleted_at \
+                 FROM messages m \
+                 JOIN chats c ON c.id = m.chat_id \
+                 WHERE m.sender_user_id = $1 AND m.group_id = $2 \
+                 ORDER BY m.created_at DESC, m.id DESC \
+                 LIMIT $3",
+            )
+            .bind(principal.user_id)
+            .bind(gid)
+            .bind(budget)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+            messages.extend(rows.into_iter().map(
+                |(
+                    message_id,
+                    chat_id,
+                    group_id,
+                    chat_name,
+                    body,
+                    created_at,
+                    edited_at,
+                    deleted_at,
+                )| ExportMeMessage {
+                    message_id,
+                    chat_id,
+                    group_id,
+                    chat_name,
+                    body,
+                    created_at,
+                    edited_at,
+                    deleted_at,
+                },
+            ));
+        }
+
+        // @mentions the subject RECEIVED — data about them, authored by
+        // someone else, so excerpt only.
+        let budget = EXPORT_MAX_MENTIONS - mentions_received.len() as i64;
+        if budget > 0 {
+            type MentionRow = (Uuid, Uuid, Uuid, Uuid, String, String, DateTime<Utc>);
+            let rows: Vec<MentionRow> = sqlx::query_as(
+                "SELECT mm.message_id, m.chat_id, mm.group_id, \
+                        m.sender_user_id, m.sender_label, \
+                        LEFT(m.body, $4::int) AS body_excerpt, mm.created_at \
+                 FROM message_mentions mm \
+                 JOIN messages m ON mm.message_id = m.id \
+                 WHERE mm.mentioned_user_id = $1 AND mm.group_id = $2 \
+                 ORDER BY mm.created_at DESC, mm.message_id DESC \
+                 LIMIT $3",
+            )
+            .bind(principal.user_id)
+            .bind(gid)
+            .bind(budget)
+            .bind(EXPORT_MENTION_EXCERPT_CHARS)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+            mentions_received.extend(rows.into_iter().map(
+                |(
+                    message_id,
+                    chat_id,
+                    group_id,
+                    sender_user_id,
+                    sender_label,
+                    body_excerpt,
+                    created_at,
+                )| ExportMeMentionReceived {
+                    message_id,
+                    chat_id,
+                    group_id,
+                    sender_user_id,
+                    sender_label,
+                    body_excerpt,
+                    created_at,
+                },
+            ));
+        }
+
+        // Files the subject uploaded. Metadata only — see `exclusions`.
+        let budget = EXPORT_MAX_FILES - files.len() as i64;
+        if budget > 0 {
+            type FileExportRow = (
+                Uuid,
+                Uuid,
+                String,
+                String,
+                i64,
+                Option<Uuid>,
+                DateTime<Utc>,
+                Option<DateTime<Utc>>,
+            );
+            let rows: Vec<FileExportRow> = sqlx::query_as(
+                "SELECT id, group_id, name, mime_type, size_bytes, folder_id, \
+                        created_at, deleted_at \
+                 FROM files \
+                 WHERE created_by = $1 AND group_id = $2 \
+                 ORDER BY created_at DESC, id DESC \
+                 LIMIT $3",
+            )
+            .bind(principal.user_id)
+            .bind(gid)
+            .bind(budget)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+            files.extend(rows.into_iter().map(
+                |(
+                    file_id,
+                    group_id,
+                    name,
+                    mime_type,
+                    size_bytes,
+                    folder_id,
+                    created_at,
+                    deleted_at,
+                )| ExportMeFile {
+                    file_id,
+                    group_id,
+                    name,
+                    mime_type,
+                    size_bytes,
+                    folder_id,
+                    created_at,
+                    deleted_at,
+                },
+            ));
+        }
+
+        // Group-scoped memory the subject created (branch 1 of the dual
+        // policy, which needs the real group GUC set above).
+        let budget = EXPORT_MAX_MEMORY - memory_items.len() as i64;
+        if budget > 0 {
+            let rows: Vec<ExportMemoryRow> = sqlx::query_as(
+                "SELECT id, scope_type, group_id, kind, sensitivity, content, \
+                        ttl_expires_at, created_at, deleted_at \
+                 FROM memory_items \
+                 WHERE created_by = $1 AND group_id = $2 \
+                 ORDER BY created_at DESC, id DESC \
+                 LIMIT $3",
+            )
+            .bind(principal.user_id)
+            .bind(gid)
+            .bind(budget)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+            memory_items.extend(rows.into_iter().map(map_memory_row));
+        }
+
+        // Tasks the subject created OR is assigned to. `authored` /
+        // `assigned` tell the two apart, because a task someone else created
+        // and assigned to the subject is shared work-tracking, not their
+        // authored content.
+        let budget = EXPORT_MAX_TASKS - tasks.len() as i64;
+        if budget > 0 {
+            type TaskExportRow = (
+                Uuid,
+                Uuid,
+                Uuid,
+                String,
+                String,
+                String,
+                bool,
+                bool,
+                Option<DateTime<Utc>>,
+                DateTime<Utc>,
+                Option<DateTime<Utc>>,
+            );
+            let rows: Vec<TaskExportRow> = sqlx::query_as(
+                "SELECT t.id, t.list_id, t.group_id, t.title, t.status, t.priority, \
+                        (t.created_by = $1) AS authored, \
+                        EXISTS ( \
+                            SELECT 1 FROM task_assignees ta \
+                            WHERE ta.task_id = t.id AND ta.user_id = $1 \
+                        ) AS assigned, \
+                        t.due_at, t.created_at, t.deleted_at \
+                 FROM tasks t \
+                 WHERE t.group_id = $2 \
+                   AND (t.created_by = $1 OR EXISTS ( \
+                        SELECT 1 FROM task_assignees ta2 \
+                        WHERE ta2.task_id = t.id AND ta2.user_id = $1 \
+                   )) \
+                 ORDER BY t.created_at DESC, t.id DESC \
+                 LIMIT $3",
+            )
+            .bind(principal.user_id)
+            .bind(gid)
+            .bind(budget)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| RestError::Internal(e.into()))?;
+
+            tasks.extend(rows.into_iter().map(
+                |(
+                    task_id,
+                    list_id,
+                    group_id,
+                    title,
+                    status,
+                    priority,
+                    authored,
+                    assigned,
+                    due_at,
+                    created_at,
+                    deleted_at,
+                )| ExportMeTask {
+                    task_id,
+                    list_id,
+                    group_id,
+                    title,
+                    status,
+                    priority,
+                    authored,
+                    assigned,
+                    due_at,
+                    created_at,
+                    deleted_at,
+                },
+            ));
+        }
+    }
+
+    // Back to the nil uuid: the audit INSERT below is a user-scoped event and
+    // its RLS branch matches `group_id = app.current_group_id`. Leaving the
+    // GUC on the last visited group would file the event under that group.
+    sqlx::query("SELECT set_config('app.current_group_id', $1, true)")
+        .bind(nil_uuid.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| RestError::Internal(e.into()))?;
+
+    // A section that reached its cap is declared, never silently trimmed.
+    let mut truncated_sections: Vec<String> = Vec::new();
+    for (name, len, cap) in [
+        ("messages", messages.len() as i64, EXPORT_MAX_MESSAGES),
+        (
+            "mentions_received",
+            mentions_received.len() as i64,
+            EXPORT_MAX_MENTIONS,
+        ),
+        ("files", files.len() as i64, EXPORT_MAX_FILES),
+        ("memory_items", memory_items.len() as i64, EXPORT_MAX_MEMORY),
+        ("tasks", tasks.len() as i64, EXPORT_MAX_TASKS),
+        (
+            "audit_events",
+            audit_events.len() as i64,
+            EXPORT_MAX_AUDIT_EVENTS,
+        ),
+    ] {
+        if len >= cap {
+            truncated_sections.push(name.to_string());
+        }
+    }
+
     // Emit AccountDataExported audit event. No PII in metadata.
     let sections = [
         "profile",
@@ -4164,6 +5203,13 @@ pub async fn export_me(
         "api_keys",
         "audit_events",
         "group_memberships",
+        "messages",
+        "mentions_received",
+        "files",
+        "memory_items",
+        "tasks",
+        "email_change_requests",
+        "deletion_requests",
     ];
     audit_workspace_event(
         &mut tx,
@@ -4172,7 +5218,7 @@ pub async fn export_me(
         nil_uuid,
         "users",
         principal.user_id.to_string(),
-        json!({ "sections": sections }),
+        json!({ "sections": sections, "truncated": truncated_sections }),
     )
     .await
     .map_err(|e| RestError::Internal(anyhow::anyhow!("{e}")))?;
@@ -4184,12 +5230,21 @@ pub async fn export_me(
     let exported_at = Utc::now();
     let response_body = ExportMeResponse {
         exported_at,
-        schema_version: "1".to_string(),
+        schema_version: "2".to_string(),
         profile,
         sessions,
         api_keys,
         audit_events,
         group_memberships,
+        messages,
+        mentions_received,
+        files,
+        memory_items,
+        tasks,
+        email_change_requests,
+        deletion_requests,
+        truncated_sections,
+        exclusions: export_exclusions(),
     };
 
     let body_bytes =
@@ -4401,6 +5456,7 @@ mod tests {
     fn patch_me_request_validates_name_too_long() {
         let req = PatchMeRequest {
             display_name: Some("x".repeat(129)),
+            email: None,
         };
         assert!(
             req.validate().is_err(),
@@ -4412,13 +5468,17 @@ mod tests {
     fn patch_me_request_validates_empty_name() {
         let req = PatchMeRequest {
             display_name: Some(String::new()),
+            email: None,
         };
         assert!(req.validate().is_err(), "empty name must fail validation");
     }
 
     #[test]
     fn patch_me_request_allows_none() {
-        let req = PatchMeRequest { display_name: None };
+        let req = PatchMeRequest {
+            display_name: None,
+            email: None,
+        };
         assert!(req.validate().is_ok(), "None display_name is valid (no-op)");
     }
 
@@ -6185,6 +7245,15 @@ mod tests {
             api_keys: vec![],
             audit_events: vec![],
             group_memberships: vec![],
+            messages: vec![],
+            mentions_received: vec![],
+            files: vec![],
+            memory_items: vec![],
+            tasks: vec![],
+            email_change_requests: vec![],
+            deletion_requests: vec![],
+            truncated_sections: vec![],
+            exclusions: vec![],
         };
         let v = serde_json::to_value(&resp).unwrap();
         assert!(v.get("exported_at").is_some());

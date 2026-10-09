@@ -494,6 +494,16 @@ name = "rest_v1_message_attachments"
 path = "tests/rest_v1_message_attachments.rs"
 required-features = ["test-helpers"]
 
+# Direitos dos titulares — exportacao completa por titular, correcao de
+# e-mail com estado pendente, apagamento definitivo pelo
+# `account_purge_worker` e a protecao de terceiros em espaco compartilhado.
+# Gated como os vizinhos: usa o `Harness` (pgvector + router de teste), que
+# so existe sob `test-helpers`.
+[[test]]
+name = "rest_v1_me_data_subject"
+path = "tests/rest_v1_me_data_subject.rs"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 # Plan 0024 T4 (GAR-412): metrics_exporter tests and the
 # metrics_auth_integration binary build a `PrometheusRecorder` directly

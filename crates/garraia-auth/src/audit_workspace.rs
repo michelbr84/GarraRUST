@@ -779,6 +779,55 @@ pub enum WorkspaceAuditAction {
     /// Metadata: `{ "name_len": usize }` — structural only, no PII (group
     /// name is user-controlled and may contain identifiable information).
     GroupArchived,
+
+    /// The caller asked for their e-mail to be corrected via `PATCH /v1/me`
+    /// (LGPD art. 18, III / GDPR art. 16).
+    ///
+    /// **This event does NOT mean the e-mail changed.** It records that a
+    /// request row was filed in `user_email_change_requests` with status
+    /// `pending`. Applying it requires out-of-band proof that the subject
+    /// controls the new mailbox — a manual operator step while this repo has
+    /// no mail infrastructure (`docs/legal/data-subject-requests.md`).
+    ///
+    /// `group_id = nil-uuid` (user-scoped, same convention as `PasswordChanged`).
+    /// `resource_type = "user_email_change_requests"`, `resource_id = "{request_id}"`.
+    /// Metadata: `{ "requested_email_len": N, "superseded": bool }` — the
+    /// requested address is PII and is NEVER logged, only its length.
+    AccountEmailChangeRequested,
+
+    /// `DELETE /v1/me` filed a hard-deletion request and the grace period
+    /// started (LGPD art. 18, VI / GDPR art. 17).
+    ///
+    /// Emitted in the same transaction as the soft-delete, so the tombstone
+    /// and the queued purge can never diverge.
+    ///
+    /// `group_id = nil-uuid`. `resource_type = "account_deletion_requests"`,
+    /// `resource_id = "{request_id}"`.
+    /// Metadata: `{ "grace_period_days": N }` — structural only, no PII.
+    AccountPurgeScheduled,
+
+    /// The purge worker finished erasing a subject's personal data
+    /// (`account_purge_worker.rs`).
+    ///
+    /// This row is the **evidence that the erasure happened** and is the
+    /// reason `audit_events` survives the purge it describes — see the
+    /// header of migration 034.
+    ///
+    /// `group_id = nil-uuid`. `resource_type = "users"`, `resource_id = "{user_id}"`.
+    /// Metadata: the structural purge report — row counts per table plus
+    /// blob-removal counters. NEVER the erased content itself.
+    AccountPurged,
+
+    /// A purge attempt failed. Emitted on every failed attempt so a request
+    /// that silently stops making progress is visible in the audit trail
+    /// rather than only in the worker's logs.
+    ///
+    /// `group_id = nil-uuid`. `resource_type = "account_deletion_requests"`,
+    /// `resource_id = "{request_id}"`.
+    /// Metadata: `{ "attempts": N, "terminal": bool }` — counters only. The
+    /// error text stays in `account_deletion_requests.last_error`, out of the
+    /// audit trail, because a database error string can quote row values.
+    AccountPurgeFailed,
 }
 
 impl WorkspaceAuditAction {
@@ -867,6 +916,10 @@ impl WorkspaceAuditAction {
             WorkspaceAuditAction::AccountDataExported => "account.data_exported",
             WorkspaceAuditAction::AccountAnonymized => "account.anonymized",
             WorkspaceAuditAction::GroupArchived => "group.archived",
+            WorkspaceAuditAction::AccountEmailChangeRequested => "account.email_change_requested",
+            WorkspaceAuditAction::AccountPurgeScheduled => "account.purge_scheduled",
+            WorkspaceAuditAction::AccountPurged => "account.purged",
+            WorkspaceAuditAction::AccountPurgeFailed => "account.purge_failed",
         }
     }
 }
@@ -1281,6 +1334,10 @@ mod tests {
             WorkspaceAuditAction::AccountSelfDeleted.as_str(),
             WorkspaceAuditAction::AccountDataExported.as_str(),
             WorkspaceAuditAction::AccountAnonymized.as_str(),
+            WorkspaceAuditAction::AccountEmailChangeRequested.as_str(),
+            WorkspaceAuditAction::AccountPurgeScheduled.as_str(),
+            WorkspaceAuditAction::AccountPurged.as_str(),
+            WorkspaceAuditAction::AccountPurgeFailed.as_str(),
         ];
         let unique: std::collections::HashSet<_> = strings.iter().collect();
         assert_eq!(unique.len(), strings.len(), "duplicate action strings");

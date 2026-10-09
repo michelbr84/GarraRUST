@@ -547,6 +547,20 @@ impl GatewayServer {
                 crate::tasks_recurrence_worker::TaskRecurrenceWorkerConfig::default(),
             );
 
+            // Apagamento definitivo de conta (LGPD art. 18, VI / GDPR art.
+            // 17): executa os pedidos de `DELETE /v1/me` cuja carencia
+            // venceu. Recebe o `ObjectStore` porque o apagamento tem de
+            // alcancar o blob dos arquivos do titular, nao so a linha —
+            // sem backend ligado o pedido fica aberto de proposito em vez
+            // de fechar mentindo. Ver `account_purge_worker`.
+            let purge_handle = crate::account_purge_worker::spawn_account_purge_worker(
+                Arc::clone(&app_pool),
+                state.object_store.clone(),
+                crate::account_purge_worker::AccountPurgeWorkerConfig::default(),
+            );
+            std::mem::forget(purge_handle);
+            info!("account_purge_worker spawned (direitos dos titulares)");
+
             let staging_dir = upload_staging_opt.as_ref().map(|s| s.staging_dir.clone());
             let handle = crate::uploads_worker::spawn_uploads_expiration_worker(
                 app_pool,
