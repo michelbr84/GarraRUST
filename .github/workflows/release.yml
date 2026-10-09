@@ -887,6 +887,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Attestations (P1-5): o step "Attest build provenance" precisa assinar
+      # como o workflow (id-token) e publicar a attestacao no repositorio
+      # (attestations). Sem os dois o `gh attestation verify` nao acha nada.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -1164,6 +1169,24 @@ jobs:
             --out release/latest.json
           echo "--- latest.json ---"
           cat release/latest.json
+
+      - name: Attest build provenance
+        # P1-5 (supply chain): cada asset da release ganha uma attestacao
+        # GitHub assinada pela identidade deste workflow — o `gh attestation
+        # verify <asset> -R michelbr84/GarraRUST` passa a provar que o arquivo
+        # veio daqui, do tag, sem passar pelo SHA256SUMS manual. Complementa,
+        # nao substitui: `garra update` continua no <asset>.sha256 (update.rs),
+        # e o install.sh continua no SHA256SUMS.
+        #
+        # Roda DEPOIS de latest.json e ANTES do Create Release: tudo que vai
+        # virar asset (incluindo SHA256SUMS, latest.json e os instaladores)
+        # esta em release/, e uma attestacao de arquivo que nao subiu seria
+        # papel molhado. Os `.sig` do updater sao material do sigstore proprio
+        # do Tauri (#1568) — attestation e o canal do GitHub para o resto.
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            release/*
 
       - name: Build release notes from CHANGELOG
         # `generate_release_notes: true` sozinho produz so a lista de PRs desde
