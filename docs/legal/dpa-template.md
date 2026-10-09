@@ -8,22 +8,29 @@
 > ser assinado como está. Todo item marcado `[PENDENTE — revisão legal]`
 > precisa de validação de advogado antes de qualquer oferta comercial cloud.
 
-Escopo deste template: qualquer deployment em que o GarraIA processa dados pessoais
-de terceiros. O produto é **self-host por padrão** — nesse modelo o operador
-self-host **é o controlador** e o projeto GarraIA fornece software, sem
-relação de processor (ver `dpia.md` §"Papéis"). Este contrato aplica-se de
+Escopo deste template: qualquer deployment em que o GarraIA processa dados
+pessoais de terceiros. O produto é **self-host por padrão** — nesse modelo o
+operador self-host **é o controlador** e o projeto GarraIA fornece software,
+sem relação de processor (ver `dpia.md` §"Papéis"). Este contrato aplica-se de
 fato quando existir uma **oferta cloud operada pelo projeto** ou quando um
 cliente enterprise exigir contrato de processamento para uso self-host.
 
 ---
 
-## 1. Papéis e definições
+## 1. Papéis e definições — classificação por fluxo
 
-- **Controlador**: entidade que determina as finalidades e os meios do
-  tratamento (no self-host: o operador/empresa do cliente).
-- **Processor**: quem trata dados em nome do controlador. Na oferta cloud
-  operada pelo projeto: o projeto GarraIA. `[PENDENTE — revisão legal:
-  confirmar qual entidade jurídica figura como processor na oferta cloud]`
+Papéis LGPD **não são fixos por organização**: a mesma entidade pode ser
+controladora num fluxo e processor em outro. A classificação correta é
+**por fluxo de tratamento**:
+
+| Fluxo | Controlador | Processor / terceiro | Observação |
+|---|---|---|---|
+| Self-host: mensagens do agente | Operador self-host | LLM/canais que o operador conecta | Projeto GarraIA fornece software; não é processor |
+| Garra Cloud: mensagens de conta cloud | Operador da conta cloud (cliente) | Projeto GarraIA (processor) | `[PENDENTE — revisão legal: confirmar entidade jurídica do processor]` |
+| Garra Cloud: billing/cadastro | Projeto GarraIA | Processador de pagamento | Análise própria, não é este DPA de mensagens `[PENDENTE]` |
+| Site garraia.org (comunidade/distribuição) | Projeto GarraIA | Hosting do site `[PENDENTE: confirmar]` | Fluxos fora do gateway |
+| Desenvolvimento/CI do repositório | Projeto GarraIA | GitHub | Ver §5 — sem acesso presumido a conversas |
+
 - **Dados pessoais**: conforme LGPD art. 5º, I e GDPR art. 4(1).
 
 ## 2. Objeto, duração e natureza do tratamento
@@ -43,39 +50,43 @@ cliente enterprise exigir contrato de processamento para uso self-host.
 - Implementar as medidas técnicas da §6;
 - Auxiliar o controlador no atendimento a direitos dos titulares (§7);
 - Notificar o controlador de incidentes de segurança **sem dilatação
-  injustificada** `[PENDENTE — revisão legal: prazo exato (GDPR art. 33
-  prevê 72h para a autoridade; o prazo de notificação ao controlador deve
-  ser menor e definido)]`;
+  injustificada** — a orientação de prática da ANPD (comunicação em até
+  **3 dias úteis** na regra geral; ver `docs/compliance/incident-response.md`)
+  vale como teto interno de referência para notificar o controlador;
+  `[PENDENTE — revisão legal: fixar prazo contratual exato]`;
 - Ao término: retornar ou destruir dados, conforme instrução do controlador.
 
 ## 4. Categorias de dados e titulares
 
-Fonte: `docs/compliance/dpia.md` §3–4 (tabela de dados pessoais). Categorias
+Fonte: `docs/compliance/dpia.md` §2 (inventário por tabela). Categorias
 principais: conteúdo de mensagens processadas pelo agente; `users.email`;
 `display_name`; `ip_inet`; `user_agent`; sessões; chaves de API (somente
 metadados — o hash nunca sai do servidor); registros de auditoria.
 Titulares: usuários finais do agente, membros de grupos e contatos nos canais
 conectados. `[PENDENTE — revisão legal: conferir exaustividade com o DPIA]`
 
-## 5. Suboperadores
+## 5. Inventário de terceiros por fluxo (suboperadores)
 
 Na oferta self-host, quem o operador conecta é **escolha do operador**; os
 provedores upstream continuam sendo suboperadores do próprio operador, com os
-contratos de cada um aplicando-se diretamente. Na oferta cloud operada pelo
-projeto, os suboperadores do projeto são, hoje, os provedores já integrados e
-configuráveis:
+contratos de cada um aplicando-se diretamente. O inventário abaixo descreve
+os fluxos do projeto — a classificação é **por fluxo**, e "estar integrado"
+não significa acesso a conversas:
 
-| Suboperador | Papel | Política de dados |
-|---|---|---|
-| OpenAI | LLM (rota configurável) | https://openai.com/policies/row-privacy-policy/ |
-| Anthropic | LLM (rota configurável) | https://www.anthropic.com/legal/privacy |
-| OpenRouter | Agregador de LLM (rota default) | https://openrouter.ai/privacy |
+| Terceiro | Fluxo | O que recebe | Retenção do terceiro | Instrumento / região |
+|---|---|---|---|---|
+| GitHub | Desenvolvimento e distribuição do repositório | Código, issues, PRs, artefatos de CI | Conforme GitHub Terms | Termos GitHub; dados de conversa do agente **não** fazem parte deste fluxo |
+| OpenRouter | Rota LLM default (quando configurada) | Conteúdo da mensagem enviada para inferência | Conforme política do OpenRouter **e do provedor final escolhido** | https://openrouter.ai/privacy — inclui o provedor final |
+| Anthropic | Rota LLM (quando configurada) | Conteúdo da mensagem | Conforme política Anthropic | https://www.anthropic.com/legal/privacy |
+| OpenAI | Rota LLM (quando configurada) | Conteúdo da mensagem | Conforme política OpenAI | https://openai.com/policies/row-privacy-policy/ |
+| Ollama (local) | Rota LLM local quando verificada em instalação self-host | Conteúdo da mensagem | Local, sem saída de rede | Fluxo local — sem transferência |
+| Canais (WhatsApp/Meta, Telegram, Discord, Slack) | Entrega de mensagens | Mensagens trafegam pela plataforma do canal | Conforme cada plataforma | Termos de cada plataforma; listar canais efetivamente ativados |
+| Lovable | Hospedagem do site garraia.org | Fluxos do site (navegação) — **confirmar infra efetiva** | `[PENDENTE]` | `[PENDENTE: confirmar se Lovable só publica ou também processa]` |
+| Hospedagem/banco/storage/backups da Garra Cloud | Operação cloud | Dados das contas cloud | `[PENDENTE — a cloud não existe]` | `[PENDENTE: vendors reais da cloud, a preencher quando decididos]` |
+| Pagamentos, e-mail transacional, observabilidade | Cadastro/faturamento/plataforma | Dados de billing, e-mails, telemetria | `[PENDENTE — quando implementados]` | `[PENDENTE: adicionar ao inventário no ato da implementação]` |
 
-`[PENDENTE — revisão legal: lista é dinâmica — o DPA precisa de processo de
-atualização (notificação + direito de objeção), não de lista estática]`.
-Canais de mensageria conectados (Telegram, Discord, Slack, WhatsApp etc.)
-processam mensagens conforme os termos de cada plataforma; o operador cloud
-deve listá-los ao contratar canal. `[PENDENTE — revisão legal]`
+`[PENDENTE — revisão legal: o DPA precisa de processo de atualização
+(notificação + direito de objeção), não desta lista estática]`.
 
 ## 6. Medidas técnicas e organizacionais (verificáveis no repositório)
 
@@ -100,22 +111,25 @@ na revisão):
 
 O processor auxilia o controlador mediante os endpoints acima (art. 20 LGPD /
 arts. 15, 17, 20 GDPR). Exportação implementada em escopo de **conta**
-(perfil, sessões, chaves de API, auditoria, grupos); exportação de arquivo
-completo de mensagens ainda não é coberta pelo endpoint — registrar como
-limitação conhecida. `[PENDENTE — revisão legal + produto: SLA de 30s/10k
-mensagens prometido no DPIA ainda não verificado]`
+(perfil, sessões, chaves de API, auditoria, grupos); a extensão da exportação
+ao arquivo de mensagens foi decidida (2026-10-09) e está em implementação de
+engenharia — registrar como limitação vigente até o código entregar.
+`[PENDENTE — revisão legal + produto: SLA de 30s/10k mensagens prometido no
+DPIA ainda não verificado]`
 
 ## 8. Transferência internacional
 
-`[PENDENTE — revisão legal: base de transferência (cláusulas contratuais
-padrão / adequação) para os suboperadores listados na §5]`
+Transferências ocorrem quando o LLM provider ou canal é estrangeiro (ver §5,
+coluna região). `[PENDENTE — revisão legal: base de transferência (cláusulas
+contratuais padrão / adequação) para cada suboperador listado]`
 
 ## 9. Retorno e destruição
 
 No término: por instrução do controlador, retornar dados em formato comum e/
 ou destruir, com evidência. Na nuvem do projeto: exclusão da conta executa
-soft-delete com tombstone e purge posterior (ver `DELETE /v1/me` no código).
-`[PENDENTE — revisão legal: prazo de purge]`
+soft-delete com tombstone e purge posterior (ver `DELETE /v1/me` no código);
+restauração de backup reaplica exclusões. `[PENDENTE — revisão legal: prazo
+de purge]`
 
 ## 10. Assinatura
 
@@ -125,5 +139,6 @@ soft-delete com tombstone e purge posterior (ver `DELETE /v1/me` no código).
 | Entidade (processor, quando cloud) | |
 | Assinatura / data | |
 
-`[PENDENTE — revisão legal: cláusula de foro, responsabilidade e limite de
-responsabilidade — ver também rascunho de ToS]`
+`[PENDENTE — revisão legal: cláusula de foro (observar alternativa do foro
+do consumidor — ver rascunho de ToS §10), responsabilidade e limite de
+responsabilidade — ver também rascunho de ToS §7]`

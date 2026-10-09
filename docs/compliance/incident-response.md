@@ -1,12 +1,13 @@
 # GarraIA — Incident Response Runbook (ANPD / GDPR 72h)
 
-- **Status:** Draft v1 (2026-04-21) — **pending tabletop exercise antes do GA**
+- **Status:** Draft v2 (2026-10-09) — **pending tabletop exercise antes do GA** (material de exercício na §11; execução com data real pendente)
 - **Owner:** @michelbr84
 - **Issue:** [GAR-409](https://linear.app/chatgpt25/issue/GAR-409)
 - **Plan:** [`plans/0031-compliance-docs-batch.md`](../../plans/0031-compliance-docs-batch.md)
 - **Scope:** incidentes de segurança que impactem dados pessoais em GarraIA (vazamento, exposição indevida, ransomware, indisponibilidade prolongada).
 - **Obrigações legais primárias:**
-  - **LGPD art. 48** — notificação à ANPD "em prazo razoável"; prática = 48-72h conforme Guia ANPD.
+  - **LGPD art. 48** — notificação à ANPD "em prazo razoável". A orientação de prática atual da ANPD para a regra geral é a comunicação em até **3 (três) dias úteis** a partir do conhecimento, com complementos quando a investigação seguir em curso; casos de risco elevado ou dados sensíveis podem antecipar essa janela — a regra é precautória, não um direito de esperar o terceiro dia. Esta é a referência deste runbook desde 2026-10-09 (substitui a menção antiga a "48-72h").
+  - **Operador → controlador (cloud):** quem detecta informa o controlador **sem dilatação injustificada** (ver também `docs/legal/dpa-template.md` §3).
   - **GDPR art. 33** — notificação à autoridade supervisora (DPA) em **72h** a partir do conhecimento.
   - **GDPR art. 34** — comunicação ao titular "sem demora injustificada" quando risco for alto.
 
@@ -49,7 +50,7 @@ Este runbook é um **draft técnico** para self-host e cloud deployments. Cada c
 
 ### 0.4 Exercícios
 
-- Tabletop exercise obrigatório **antes do GA** (acceptance criteria de GAR-409).
+- Tabletop exercise obrigatório **antes do GA** (acceptance criteria de GAR-409). Roteiro de 1h na §11.
 - Re-executar anualmente ou após cada mudança major de arquitetura.
 
 ---
@@ -85,8 +86,8 @@ Criar issue privada em tracker (Linear `GAR-INCIDENT-NNNN` ou label `security-in
 
 | Nível | Critério | SLA de notificação |
 |---|---|---|
-| **P0 — Crítico** | Evidência de exposição de dados pessoais de ≥ 1 usuário confirmada | ANPD em 48h / DPA UE em 72h, titulares em até 72h |
-| **P1 — Alto** | Risco alto de exposição; confirmada exposição sem PII; ransomware; serviço down > 1h | ANPD em 72h se PII afetada; tabletop protocol |
+| **P0 — Crítico** | Evidência de exposição de dados pessoais de ≥ 1 usuário confirmada | ANPD até 3 dias úteis (caso grave: antes) / DPA UE em 72h, titulares sem demora indevida |
+| **P1 — Alto** | Risco alto de exposição; confirmada exposição sem PII; ransomware; serviço down > 1h | ANPD até 3 dias úteis se PII afetada; tabletop protocol |
 | **P2 — Médio** | Degradação de serviço; tentativa de intrusão sem sucesso | Log interno; não requer notificação externa |
 | **P3 — Baixo** | Bug de segurança teórico (baixa likelihood) | Backlog |
 
@@ -135,7 +136,7 @@ Perguntas obrigatórias, **sim a qualquer uma = incidente de dados pessoais**:
 
 ---
 
-## 4. Notificação (T0 → T0+72h)
+## 4. Notificação (T0 → 3 dias úteis ANPD / 72h DPA UE)
 
 ### 4.1 Decisão "Notificar?"
 
@@ -308,7 +309,7 @@ Post-mortem é **blame-free**. Ninguém é "culpado". Se uma pessoa pode causar 
 | Triagem de alerta P0 | 15 min |
 | Triagem de report externo | 1 h |
 | Contenção inicial P0 | 4 h |
-| Notificação ANPD | 72 h (prática 48 h) |
+| Notificação ANPD | Até 3 dias úteis (regra geral; incidente grave: mais cedo — ver §0) |
 | Notificação DPA UE | 72 h |
 | Notificação titulares | 72 h (quando alto risco) |
 | Post-mortem rascunho | 1 semana |
@@ -331,10 +332,10 @@ Para deployments self-host single-operator (família/entidade individual), o flu
 |---|---|---|---|
 | Triagem de alerta P0 | 15 min | 1 h | Sim (legal não estipula) |
 | Contenção inicial P0 | 4 h | 24 h | Sim (legal não estipula) |
-| Notificação ANPD / DPA UE | 72 h | **72 h (sem relaxamento)** | **Sim — obrigação legal** |
-| Notificação titulares | 72 h | **72 h (sem relaxamento)** | **Sim — obrigação legal** |
+| Notificação ANPD / DPA UE | 3 dias úteis / 72 h | **3 dias úteis / 72 h (sem relaxamento)** | **Sim — obrigação legal** |
+| Notificação titulares | Sem demora indevida (alto risco) | **Mesmo prazo (sem relaxamento)** | **Sim — obrigação legal** |
 
-**Importante**: prazos legais (notificação ANPD, notificação titulares, direitos do titular) **não** são negociáveis por solo. SLAs internos de triagem e contenção podem ser relaxados (porque são baselines internos); mas a janela de 72h para autoridades é lei federal/europeia.
+**Importante**: prazos legais (notificação ANPD, notificação titulares, direitos do titular) **não** são negociáveis por solo. SLAs internos de triagem e contenção podem ser relaxados (porque são baselines internos); mas a janela de 3 dias úteis para a ANPD (72h para a DPA UE) é lei federal/europeia.
 
 Operador self-host **deve**:
 - Configurar backups offsite testados trimestralmente.
@@ -363,6 +364,50 @@ Timebox: 2h por exercício. Captar lições em `docs/incidents/exercises/YYYY-MM
 Este runbook responde ao **§Threat inventory** do [`threat-model.md`](../security/threat-model.md). Toda ameaça de severidade "Alta" lá tem um cenário concreto aqui.
 
 Quando threat model for revisado (trimestral ou após ADR novo), este runbook é re-auditado na mesma cadence.
+
+---
+
+## 11. Anexo — tabletop exercise de 1h (pré-GA)
+
+> **Status do exercício:** `[PENDENTE: data de execução e participação do owner a confirmar]` — o exercício **ainda não foi executado**. A execução real (não este material) é pré-requisito de GA comercial; enquanto a data não for marcada, o status acima permanece pendente.
+>
+> Requisitos prévios à execução: revisar a lista de contatos da §0.1 (preenchê-la) e o runbook como um todo, para que o exercício teste um fluxo já operacional e não um documento quebrado.
+
+### 11.1 Regras do exercício
+
+- Todo material distribuído aos participantes deve trazer, em destaque no topo: **EXERCÍCIO SIMULADO — NENHUM INCIDENTE REAL**.
+- Nomes, empresas, emails, documentos, valores e volumes citados no cenário são **fictícios**. Não usar dados reais de clientes, nem emails reais em simulação de comunicação.
+- O exercício simula a decisão e a comunicação; **não** envia notificação real à ANPD, a titulares ou a imprensa.
+- Papéis mínimos: facilitador ( conduz o relógio ), Incident Commander (assume o comando ), anotista (registra decisões e tempos). Em operador solo, a mesma pessoa pode assumir Commander e anotista, mas o facilitador deve ser outra pessoa quando possível.
+- Tempo total: **1 hora**. O facilitador corta discussões que estourarem o bloco — anotar a pendência e seguir.
+
+### 11.2 Cenário base (fictício)
+
+> EXERCÍCIO SIMULADO. A seguir, um cenário fictício para o tabletop de 1h.
+>
+> Numa instância GarraIA Cloud (beta, grupo controlado de clientes), um alerta de monitoramento indica que um backup do banco ficou temporariamente legível por um principal de armazenamento mais permissivo que o normal, durante algumas horas. Não há confirmação de acesso por terceiro. O backup contém mensagens de usuários, hashes de credencial e registros de acesso com IP. A causa da permissão errada ainda é desconhecida.
+
+### 11.3 Roteiro de 60 minutos
+
+| Bloco | Tempo | Objetivo | Perguntas-guia |
+|---|---|---|---|
+| **1. Detecção e classificação** | 0–10 min | Classificar a severidade pelo §2.1 e decidir "é incidente de dados pessoais?" (§2.2) | O sinal chegou por onde? Quem assume o comando agora? P0, P1 ou P2 — e por quê? |
+| **2. Clientes afetados, contenção e evidência** | 10–25 min | Identificar população afetada e agir pelo §3 | Quais clientes e categorias de dados estão no perímetro? Qual contenção cabe aqui (§3.1)? O que NÃO pode ser apagado (§3.2)? Como estimar "N titulares" com o que se sabe hoje? |
+| **3. Impacto, credenciais e recuperação** | 25–40 min | Fechar dano possível e plano de recuperação | Password hashes estavam no backup? Se sim, rotação/forced re-login é automática ou precisa de decisão? Quem valida que o perigo passou? Qual o plano de comunicação interna? |
+| **4. Responsabilidades e comunicações** | 40–50 min | Praticar o §4 de ponta a ponta | Notificamos a ANPD? Em quanto tempo o prazo de 3 dias úteis vence (calcule a data real do cenário)? O operador da instância informa qual cliente/controlador, e em que prazo ("sem dilatação injustificada")? Quem redige e quem aprova o texto (§4.2/§4.4)? Precisa de status page (§5.1)? |
+| **5. Falhas, responsáveis e ações corretivas** | 50–60 min | Encerrar blame-free (§6.2) | O que travou? Que informação faltou no runbook? Que acesso/ferramenta não existia? Quem fica dono de cada ação corretiva, com qual prazo? |
+
+### 11.4 Modelo de relatório do exercício
+
+Arquivo: `docs/incidents/exercises/YYYY-MM-DD.md` (mesma pasta do template da §9). Conteúdo:
+
+1. **Data, duração e participantes** (papéis assumidos).
+2. **Cenário usado** (copiar da §11.2 ou variante, marcando a variação).
+3. **O que foi efetivamente exercitado** — se algum bloco foi cortado por tempo, dizer isso; não registrar como executado o que não foi.
+4. **Decisões tomadas e quanto tempo cada uma levou** — inclusive decisões que dependiam de uma pessoa específica (se só o founder pôde decidir a comunicação, isso é um achado do exercício, não um detalhe).
+5. **Gaps encontrados** — contatos vazios, ferramentas inexistentes, trechos do runbook ambíguos ou errados.
+6. **Ações corretivas** — cada uma com dono e prazo, em tracker.
+7. **Veredito:** o runbook como está sustentaria a resposta real? Sim / não com condições.
 
 ---
 
