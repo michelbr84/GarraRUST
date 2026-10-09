@@ -2249,6 +2249,14 @@ fn main() -> Result<()> {
 /// permite subir.
 const EX_CONFIG: i32 = 78;
 
+/// sysexits `EX_SOFTWARE`: `garra update` e `garra rollback` nao completaram
+/// (rede indisponivel, checksum divergente, backup ausente...). Antes deste
+/// conserto os dois comandos imprimiam a mensagem e saiam com exit 0, o que
+/// escondia a falha de scripts, CI e qualquer automacao chamadora. A mensagem
+/// tambem foi movida do stdout para stderr, para nao misturar com a saida
+/// util dos caminhos de sucesso.
+const EX_UPDATE_FAILED: i32 = 70;
+
 /// Roda a recusa do #1261 antes de qualquer efeito colateral do boot.
 ///
 /// Recusado: a mensagem (que diz como corrigir usando o binario instalado)
@@ -2996,14 +3004,15 @@ async fn async_main(
                 update::run_update(yes).await.map(|_| ())
             };
             if let Err(e) = result {
-                println!("update failed: {}", e);
+                eprintln!("update failed: {e:#}");
+                std::process::exit(EX_UPDATE_FAILED);
             }
         }
         Commands::Rollback => {
             init_tracing(&effective_level);
-            match update::run_rollback() {
-                Ok(()) => {}
-                Err(e) => println!("rollback failed: {}", e),
+            if let Err(e) = update::run_rollback() {
+                eprintln!("rollback failed: {e:#}");
+                std::process::exit(EX_UPDATE_FAILED);
             }
         }
         Commands::Glob { action } => {
