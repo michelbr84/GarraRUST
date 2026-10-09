@@ -215,23 +215,29 @@ entrega.
    versão nova, com todos os assets e seus `.sha256`, e os 5 nomes crus da
    release anterior presentes **byte-idênticos** (superfície do `garra
    update`, regra 15).
-3. `garra update` a partir da versão anterior encontra e instala a nova.
+3. Attestations: `gh attestation verify garraia-linux-x86_64
+   -R michelbr84/GarraRUST --tag vX.Y.Z` — o step `Attest build provenance`
+   do `release.yml` assina cada asset com a identidade do workflow; verificar
+   ao menos o binário principal de cada plataforma. Falhou = a release saiu
+   sem a attestacao (o step roda antes do `Create Release`, entao um run
+   vermelho ali significa release sem assets novos).
+4. `garra update` a partir da versão anterior encontra e instala a nova.
    Este é o teste que prova que os formatos novos continuaram aditivos.
-4. Windows: `irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex`
+5. Windows: `irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex`
    numa máquina real; abrir um terminal **novo** e confirmar `garraia --version`
    (prova que o PATH persistiu no registro, não só na sessão).
-5. Pacotes Linux (quando o `package-linux` passou):
+6. Pacotes Linux (quando o `package-linux` passou):
    `docker run --rm -v $PWD:/pkg ubuntu:22.04 bash -c "apt-get update -q && apt install -y /pkg/garraia-linux-x86_64.deb && garraia --version"`;
    `docker run --rm -v $PWD:/pkg fedora rpm -qip /pkg/garraia-linux-x86_64.rpm`;
    `chmod +x garraia-linux-x86_64.AppImage && ./garraia-linux-x86_64.AppImage --version`.
-6. Deploy da imagem: com tag criado via push, o run `Deploy` dispara sozinho;
+7. Deploy da imagem: com tag criado via push, o run `Deploy` dispara sozinho;
    com release via `workflow_dispatch`, disparar Actions → Deploy com
    `tag=vX.Y.Z` (ver §2). Depois `docker pull ghcr.io/michelbr84/garraia:<tag>`.
-7. Garra Mobile: baixar `garraia-mobile-android.apk`, conferir o `.sha256`, instalar por
+8. Garra Mobile: baixar `garraia-mobile-android.apk`, conferir o `.sha256`, instalar por
    sideload num Android 11+ e rodar a seção 1 e a seção *Runtime* do
    `docs/mobile-qa-checklist.md`. Sem os secrets `ANDROID_KEYSTORE_*` o APK não atualiza
    por cima de uma instalação assinada por outra chave — desinstale antes.
-8. No dia seguinte, o `install-endpoints.yml` agendado deve estar verde —
+9. No dia seguinte, o `install-endpoints.yml` agendado deve estar verde —
    inclusive a sonda `release-cdn/install.ps1`, que ficava vermelha por design
    enquanto nenhuma release publicava o `install.ps1`.
 
