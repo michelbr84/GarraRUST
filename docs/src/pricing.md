@@ -1,126 +1,229 @@
 # Preços e Planos
 
-> **Status: rascunho interno, não publicado, não vigente.**
+> **Status: PLANEJADO — programa beta futuro, não é uma oferta disponível.**
 >
-> Esta página descreve uma **proposta comercial**, não uma oferta ativa. Hoje **não existe**:
-> sistema de cobrança, contas de usuário, hospedagem gerenciada, backups automáticos,
-> contrato de SLA ou certificação SOC 2. O produto é open-source (MIT) e roda
-> localmente sem custo — é o único caminho que existe de fato.
+> O único caminho **vigente** é o self-host comunitário (MIT), gratuito para
+> sempre, sem limite artificial de canais/agentes/provedores. Os planos Cloud
+> abaixo descrevem um **programa beta planejado** para um grupo controlado de
+> clientes: hoje **não existem** sistema de cobrança, contas de cliente cloud,
+> quotas aplicadas por produto, medição de uso nem infraestrutura gerenciada.
 >
-> Os números abaixo são hipóteses de precificação para decisão do maintainer
-> (rastreado em [#1576](https://github.com/michelbr84/GarraRUST/issues/1576)), não
-> preços praticados. Termos contratuais (ToS, DPA, política de privacidade) dependem
-> de revisão jurídica externa ([#1575](https://github.com/michelbr84/GarraRUST/issues/1575)).
-> Nada aqui é promessa de disponibilidade, de conformidade ou de suporte.
-
-O GarraIA é open-source (MIT) e pode ser executado localmente sem nenhum custo. Os planos gerenciados **não existem ainda**; a tabela abaixo é a proposta de como seriam.
+> **Antes de publicar qualquer um destes valores como oferta**, é necessário
+> confirmar: (a) aplicação real das quotas pelo produto, (b) sustentabilidade
+> de custo com uso real, (c) entidade cobradora e meios de pagamento
+> habilitados (ver §Pagamentos) e (d) revisão jurídica dos termos
+> ([#1575](https://github.com/michelbr84/GarraRUST/issues/1575)). As quotas e
+> os preços aqui são **parâmetros iniciais** da proposta
+> ([#1576](https://github.com/michelbr84/GarraRUST/issues/1576)), não pratica
+> corrente.
+>
+> Nada aqui é promessa de disponibilidade, de conformidade, de SLA ou de
+> suporte contratual.
 
 ---
 
-## Planos disponíveis
+## Os três contextos
 
-### Free — Gratuito para sempre
+| Contexto | O que é | Status |
+|---|---|---|
+| **GarraIA Community (self-host)** | Software MIT, instalado na máquina de quem quiser, uso pessoal **e comercial** sem limitação artificial | **Vigente hoje** |
+| **GarraIA Cloud** | Instância gerenciada por nós, com quotas e cobrança — planos abaixo | **Planejado (beta)** |
+| **Distribuição via site/comunidade** | `install.sh`/`install.ps1` e binários de release servidos pelo site e pelo GitHub | Vigente |
 
-Ideal para uso pessoal, experimentação e projetos de código aberto.
+---
 
-**Inclui:**
-- 1 canal de comunicação (Telegram, Discord, Slack, WhatsApp ou iMessage)
-- 1 provedor LLM configurado
-- Memória persistente (SQLite local)
-- Suporte a MCP (stdio)
-- Plugins WASM
-- Atualizações automáticas
+## Community — Self-host (vigente, gratuito, MIT)
 
-**Limitações:**
-- Hospedagem própria (self-hosted)
-- Suporte apenas pela comunidade (GitHub Issues, Discord)
+Para uso pessoal, empresas, revenda embutida em serviços, o que for — o MIT
+não impõe restrição de uso comercial e **não planejamos criar nenhuma via
+preços**.
+
+**Inclui, sem quota:**
+- Canais ilimitados (Telegram, Discord, Slack, WhatsApp, iMessage, conforme
+  capacidade da sua própria infraestrutura e das APIs de cada plataforma)
+- Agentes/configurações ilimitados
+- Provedores LLM ilimitados (BYOK — a chave é sua; no self-host a chave fica
+  na sua máquina, conforme `docs/legal/privacy-policy-draft.md`)
+- Memória persistente, MCP, plugins WASM, atualizações
+
+**Suporte:** apenas comunidade (GitHub Discussions/Issues, Discord conforme
+disponibilidade) — ver `SUPPORT.md`.
 
 **Como começar:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/michelbr84/GarraRUST/main/install.sh | sh
-garraia init
+garra init
 ```
 
 ---
 
-### Pro — R$ 50/mês (ou US$ 10/mês)
+## GarraIA Cloud (PLANEJADO — programa beta)
 
-Para profissionais e equipes pequenas que querem eliminar a complexidade de infraestrutura.
+### Free Beta — programa limitado, não "6 meses grátis por cadastro"
 
-**Tudo do Free, mais (proposto):**
-- Canais ilimitados (Telegram + Discord + Slack + WhatsApp + iMessage simultaneamente)
-- Provedores LLM ilimitados
-- Hospedagem gerenciada na nuvem — **não operacional hoje**; exige infraestrutura e custo de infra ainda não modelados
-- Dashboard web para monitoramento — parcialmente existente no gateway local; versão gerenciada não existe
-- Backups automáticos diários — **não operacional hoje**
-- Acesso prioritário a novos recursos — depende de capacidade de suporte, que não existe
-- Suporte via e-mail — **não operacional hoje**; o canal real hoje é GitHub Issues (best effort)
+- Participação em **grupo controlado** (vagas limitadas), com horizonte de
+  operação de **até 6 meses** para o programa como um todo — isto **não** é
+  "6 meses grátis por assinatura": o beta pode encerrar, mudar de forma ou
+  virar oferta paga antes disso, com aviso prévio.
+- LLM **somente BYOK**: o participante usa a própria chave de provedor.
+- Suporte: apenas comunidade.
+- Quotas: linha "Beta" na tabela abaixo.
 
-**SLA proposto (não contratual):** 99,5% de uptime mensal — **não há infraestrutura de produção multi-cliente que sustente essa promessa, nem acordo que a garanta.** Definir SLA exige decisão do maintainer e rede de clientes que ainda não existe.
+### Pro — R$ 39/mês (proposto)
 
-**Limite de uso proposto:** 50.000 mensagens/mês — sem sistema de medição ou cobrança implementado.
+Para uso diário de uma pessoa ou equipe muito pequena que quer instância
+gerenciada.
 
-**Como assinar:** não existe caminho de assinatura hoje. O produto é distribuído pelo repositório e pelo `install.sh`; quando houver cobrança, esta seção terá o fluxo real.
+### Studio — R$ 149/mês (proposto)
 
----
+Para famílias, times pequenos e operações com mais de um canal e mais de um
+dispositivo.
 
-### Enterprise — Preço sob consulta
+**Uma empresa de porte pequeno pode usar o Pro** enquanto couber nas quotas —
+ter CNPJ não obriga o Studio. O Studio existe para quem precisa das quotas
+superiores, não como categoria fiscal.
 
-Para empresas que precisam de customização, compliance e suporte dedicado.
-
-**Tudo do Pro, mais (proposto):**
-- Contrato SLA personalizado — **não existe contrato nem infraestrutura que o sustente.** Qualquer percentual aqui seria promessa sem lastro.
-- Implantação on-premise ou nuvem privada — o produto já roda localmente (é o modelo atual); implantação assistida não existe como serviço.
-- Integração com IdP corporativo (SSO via SAML 2.0 / OIDC) — **não implementado**; o gateway autentica por API key/token próprio.
-- Conformidade — **não há certificação SOC 2, nem registro/auditoria LGPD concluído.** A análise de prontidão de conformidade (DPIA, LIA, tabletop) está aberta em [#1565](https://github.com/michelbr84/GarraRUST/issues/1565); a política de privacidade e os papéis legais dependem de revisão jurídica ([#1575](https://github.com/michelbr84/GarraRUST/issues/1575)).
-- Multi-tenancy gerenciado — **não implementado**; o gateway opera por principal/sessão, não por tenant de cliente.
-- Treinamento e onboarding para a equipe — não operacional.
-- Suporte dedicado — **não operacional**; não há equipe nem canal contratual.
-- Desenvolvimento de features customizadas — decisão comercial do maintainer, sem processo registrado.
-
-**Como contratar:**
-Entre em contato em [enterprise@garraia.org](mailto:enterprise@garraia.org) ou [agende uma demo](https://garraia.org/demo).
+**Em todos os planos Cloud (inclusive Free Beta), desde o primeiro dia:**
+- Segurança e isolamento entre grupos de clientes
+- Exportação e exclusão dos próprios dados (direitos do titular)
+- Backups operacionais (o que diferencia planos é nível de restauração
+  avançada, não a existência de backup)
 
 ---
 
-## Comparativo de planos (proposto — nenhum dos itens "Sim" existe hoje)
+## Quotas (parâmetros iniciais do programa beta — sujeitos a confirmação no produto)
 
-| Recurso | Free (real) | Pro (proposto) | Enterprise (proposto) |
-|---------|------|-----|------------|
-| Canais | 1 | Ilimitados | Ilimitados |
-| Provedores LLM | 1 | Ilimitados | Ilimitados |
-| Hospedagem | Self-hosted | Gerenciada — **não operacional** | On-premise — o produto já roda local; serviço assistido não existe |
-| Dashboard web | Não | Parcial (gateway local) | — |
-| Backups automáticos | Não | **Não operacional** | — |
-| Mensagens/mês | Ilimitadas (self-hosted) | 50.000 (sem medição/cobrança) | Sob contrato |
-| SLA | — | **Proposto 99,5% — sem infraestrutura nem acordo** | **Proposto — sem contrato** |
-| SSO / SAML | Não | Não | **Não implementado** |
-| Conformidade (SOC 2, LGPD) | — | — | **Nenhuma certificação; conformidade em aberto ([#1565](https://github.com/michelbr84/GarraRUST/issues/1565))** |
-| Suporte | Comunidade (GitHub Issues) | **E-mail — não operacional** | **Slack dedicado — não operacional** |
-| Preço | Gratuito | R$ 50/mês (hipótese) | Sob consulta (hipótese) |
+| Recurso | Free Beta | Pro | Studio |
+|---|---|---|---|
+| Pessoas (membros do grupo) | 1 | 1 | 3 |
+| Canais (conexões ativas) | 1 | 2 | 5 |
+| Agentes (configurações ativas) | 1 | 3 | 10 |
+| Dispositivos (máquinas/nós vinculados) | 1 | 2 | 5 |
+| Armazenamento | 100 MB | 1 GB | 5 GB |
+| LLM | Somente BYOK | BYOK **ou** franquia Garra (ver abaixo) | BYOK **ou** franquia Garra (ver abaixo) |
+| Suporte | Comunidade | Prioritário | Superior |
+
+### Definições das quotas
+
+- **Canal = conta/conexão**, não "plataforma". Dois números de WhatsApp são
+  2 canais; um Telegram + um Discord também são 2.
+- **Agente = configuração ativa**, não processo dedicado permanente. O Cloud
+  não garante processo de agente residente 24/7 por cliente; a definição
+  operacional é de configuração pronta para uso dentro da quota.
+- **Dispositivo = máquina/nós vinculado** ao grupo (ex.: node de hardware).
+  Celulares e navegadores usados **só para abrir o painel** de administração
+  **não** contam como dispositivo.
+
+---
+
+## LLM: BYOK e franquia (proposto)
+
+- **BYOK (padrão):** a chave é do cliente; em qualquer plano o Cloud pode
+  operar apenas com chave própria do cliente.
+- **Franquia Garra (Pro/Studio, opcional):** o projeto custeia um volume
+  limitado de uso. Hipóteses internas de engenharia financeira — **não são
+  créditos comerciais** —: teto interno de custo de LLM de **~R$ 5/mês no
+  Pro** e **~R$ 20/mês no Studio**. Antes de vender, isso precisa virar uma
+  **franquia compreensível** para o cliente: tabela de consumo em unidades
+  claras (ex.: mensagens/equivalente) + consulta de saldo no painel.
+- **Esgotou a franquia:** o cliente escolhe — continuar com **BYOK** ou
+  fazer **recarga pré-paga** explícita. **Não** há cobrança automática
+  pós-pago por excedente.
+- **Cobrança automática por excedente** só existe se o cliente autorizar
+  de forma específica **e** definir um teto de gasto. Limites são aplicados
+  **antes** de novas chamadas (fail-closed), não depois do estouro.
+
+---
+
+## Suporte por plano (proposto)
+
+| Plano | Suporte |
+|---|---|
+| Community (self-host) | Comunitário (GitHub/Discord) |
+| Free Beta | Comunitário |
+| Pro | Prioritário (canal privado para clientes cloud — `[PENDENTE: confirmar operação do canal/caixa antes de anunciar]`) |
+| Studio | Superior (mesmo canal prioritário, precedência maior) |
+
+- Prioridade de Pro/Studio é **comercial** (ordem de atendimento), não SLA.
+- **Incidentes de segurança e pedidos de titulares de dados são atendidos
+  por gravidade, independentemente do plano** — não deixam de fila por ser
+  cliente free.
+- SLA: **sem percentual contratual** em nenhum plano (ver
+  `docs/operations/sla-decision-brief.md`); o Cloud, quando existir, comunica
+  sua disponibilidade de forma clara sem promessa numérica inicial. SLA
+  numérico, se vier, só em contrato enterprise específico.
+- Dados pessoais, credenciais e vulnerabilidades: **nunca** em canal público
+  (`SUPPORT.md` / `SECURITY.md`).
+
+---
+
+## Teste, conversão e inatividade (proposto)
+
+- Quando os planos pagos operarem: **trial de 30 dias**, sem cartão.
+- Passar a pagar exige **aceite explícito** — nada de conversão silenciosa
+  no fim do trial.
+- Suspensão por inatividade (ex.: conta parada por meses): o efeito
+  explicado ao cliente antes da suspensão (o que é retido, o que é apagado,
+  como reativar). `[PENDENTE: decisão de implementação — regra de
+  inatividade, prazo de retenção pós-suspensão e efeito sobre dados ainda
+  não definidos no produto]`
+
+---
+
+## Pagamentos (proposto — pendências antes de anunciar)
+
+- Moeda: **BRL**, cartão nacional + Pix, conforme a disponibilidade real do
+  processador (Stripe, se adotado).
+- `[PENDENTE: confirmar entidade cobradora, habilitação do processador,
+  recorrência do Pix (Pix Automático vs. avulso) antes de anunciar
+  qualquer forma de pagamento]`
+- **Anual** só depois de ~**90 dias de operação medida** — sem plano anual
+  de saída, para não prometer o que a operação ainda não provou.
+
+---
+
+## Nota sobre o modelo financeiro (registro — não é resultado)
+
+Já circulou internamente a conta de breakeven de ~11 pagantes. Ela **só
+bate** com as premissas de ~R$ 200 de custo fixo e ~R$ 18,54 de margem de
+contribuição por pagante; **não** prova cobertura de uma despesa de ~US$
+200/ano (certificado EV/OV do canal desktop, ver
+`docs/business/cost-model-inputs.md`). Antes de concluir qualquer margem
+final é preciso somar impostos, taxa de pagamento, clientes free, suporte e
+backups. **O modelo completo não está neste repositório** — não há número
+final publicável aqui, e nenhum será inventado.
 
 ---
 
 ## Perguntas frequentes
 
-> Estas respostas descrevem o estado **real** do produto hoje, não a proposta de planos acima.
+**O código-fonte continuará open-source?**
 
-**O código-fonte continuará sendo open-source?**
+Sim. MIT, para sempre. Qualquer receita de cloud financia infraestrutura
+gerenciada — nunca restringe o código.
 
-Sim. O GarraIA é e continuará MIT. Qualquer modelo de receita futuro financiaria infraestrutura gerenciada, não restringiria o código — mas **nenhum plano pago existe hoje**, então nada há a financiar.
+**Posso usar comercialmente sem pagar?**
 
-**Posso hospedar eu mesmo?**
+Sim, no self-host. MIT não limita uso comercial e não planejamos criar
+limite artificial de canais/agentes/provedores na edição comunitária.
 
-Sim — é o único modo que existe. O `install.sh` e os pacotes de release instalam o produto localmente, sem custo e sem limites de canal ou provedor. Não há hospedagem gerenciada operacional.
+**Onde ficam minhas conversas?**
 
-**Como é cobrado o excesso de mensagens?**
+Self-host: na sua máquina. Cloud (quando existir): em nossa infraestrutura,
+com retenção e direitos descritos em `docs/legal/privacy-policy-draft.md`
+(rascunho, ainda não publicado como política).
 
-Não é cobrado: **não existe sistema de cobrança, medição por mensagem nem dashboard de uso.** O produto roda localmente e não conta mensagens.
+**Existe SLA?**
 
-**Posso cancelar a qualquer momento?**
+Não como percentual contratual. Self-host roda na sua infra; o Cloud
+comunicará disponibilidade sem promessa numérica inicial
+(`docs/operations/sla-decision-brief.md`, `docs/legal/tos-draft.md` §6).
 
-Não há assinatura para cancelar. O produto é gratuito e self-hosted.
+**Como falar com alguém sobre planos cloud?**
 
-**O GarraIA armazena minhas conversas?**
+`[PENDENTE: canal de contato comercial antes de anunciar os planos]` — por
+enquanto, GitHub Discussions do projeto.
 
-No modo self-hosted (o único existente), as conversas ficam **na sua máquina** — SQLite local, memória do agente, sem envio a servidores do projeto. Não existe plano gerenciado que armazene conversas em infraestrutura nossa, e **a política de privacidade ainda não foi publicada** (em revisão jurídica, [#1575](https://github.com/michelbr84/GarraRUST/issues/1575)).
+Refs: `docs/legal/tos-draft.md`, `docs/legal/privacy-policy-draft.md`,
+`docs/operations/support-policy.md`, `docs/operations/sla-decision-brief.md`,
+`docs/business/cost-model-inputs.md`, issues #1565/#1574/#1575/#1576.
