@@ -222,12 +222,44 @@ GRANT SELECT, INSERT ON account_deletion_requests TO garraia_app;
 -- nao consegue, nem por bug, marcar o proprio pedido como 'completed' sem o
 -- apagamento ter acontecido, nem cancelar o de ninguem.
 
+-- ─── garraia_purge — role dedicada das funcoes de apagamento ──────────────
+--
+-- As quatro funcoes SECURITY DEFINER abaixo destroem um tenant inteiro: com
+-- EXECUTE nelas, quem chama escolhe QUAL usuario apagar. Conceder EXECUTE a
+-- `garraia_app` (o role de qualquer handler de request) transformaria um
+-- SQLi ou um bug comum em destruicao cross-tenant. O trabalho pesado sai do
+-- role da aplicacao: o worker autentica como `garraia_purge`, e o unico
+-- privilegio deste role e EXECUTE nestas quatro funcoes — nenhum SELECT/
+-- INSERT/UPDATE/DELETE em tabela alguma. Um request handler comprometido nao
+-- alcanca a funcao porque nao alcanca o pool.
+--
+-- Postgres concede EXECUTE a PUBLIC por default — inclusive aqui: sem o
+-- REVOKE abaixo, QUALQUER role do banco ja consegue chamar
+-- `purge_account_data(uuid)`. O REVOKE e obrigatorio, nao opcional.
+--
+-- Mesmo padrao de criacao das roles `garraia_login` (008) e
+-- `garraia_signup` (010): NOLOGIN, senha promovida so no provisionamento
+-- (producao: op; testes: harness). Nao e BYPASSRLS de proposito — sem
+-- privilegio de tabela alguma, BYPASSRLS nao daria nada, e a ausencia dele
+-- documenta que este role NAO le dados de tenant.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'garraia_purge') THEN
+        CREATE ROLE garraia_purge NOLOGIN;
+    END IF;
+END
+$$;
+
+COMMENT ON ROLE garraia_purge IS
+    'Worker de apagamento definitivo de conta (account_purge_worker). EXECUTE-only nas quatro funcoes da migration 034; nenhum privilegio de tabela. Conexao via GARRAIA_PURGE_DATABASE_URL e o newtype garraia_auth::PurgePool, que recusa o pool se o role conectado nao for garraia_purge.';
+
 -- ─── claim_account_purge — reivindica lote devido (SECURITY DEFINER) ──────
 --
--- Mesmo motivo da expire_tus_uploads_sweep (migration 032): o worker roda em
--- `garraia_app` sem GUC de tenant, e a policy owner-only desta tabela e
--- fail-closed — consulta direta devolveria zero linhas. A funcao roda com o
--- privilegio do criador, encapsula o bypass e e granted a garraia_app.
+-- Mesmo motivo da expire_tus_uploads_sweep (migration 032): o worker roda
+-- sem GUC de tenant, e a policy owner-only desta tabela e fail-closed —
+-- consulta direta devolveria zero linhas. A funcao roda com o privilegio do
+-- criador e encapsula o bypass; o EXECUTE e exclusivo do role dedicado
+-- `garraia_purge` (ver bloco logo acima), nunca do `garraia_app`.
 --
 -- Reivindica dois conjuntos:
 --   (a) 'pending' com a carencia vencida;
@@ -280,7 +312,8 @@ $$;
 COMMENT ON FUNCTION claim_account_purge(timestamptz, int, interval) IS
     'SECURITY DEFINER: reivindica ate p_limit pedidos de apagamento devidos (carencia vencida) ou travados em in_progress ha mais de p_stale, marca in_progress e devolve o progresso ja feito (db_purged + object_keys pendentes) para o worker retomar sem repetir o trabalho de banco.';
 
-GRANT EXECUTE ON FUNCTION claim_account_purge(timestamptz, int, interval) TO garraia_app;
+REVOKE EXECUTE ON FUNCTION claim_account_purge(timestamptz, int, interval) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION claim_account_purge(timestamptz, int, interval) TO garraia_purge;
 
 -- ─── purge_account_data — o apagamento em si (SECURITY DEFINER) ───────────
 --
@@ -291,8 +324,9 @@ GRANT EXECUTE ON FUNCTION claim_account_purge(timestamptz, int, interval) TO gar
 -- Sobre a regra 12 do CLAUDE.md (`password_hash` nunca pelo pool `garraia_app`):
 -- esta funcao ESCREVE NULL em `user_identities.password_hash` e nunca o LE nem
 -- o devolve. O retorno e so contagem. Nenhum caminho de leitura do hash e
--- criado aqui, e o `garraia_app` continua sem ver a coluna por RLS — ele so
--- pode chamar a funcao, cujo corpo e fixo.
+-- criado aqui, e o `garraia_app` continua sem ver a coluna por RLS — o unico
+-- role que pode chamar esta funcao e o `garraia_purge`, que nao tem privilegio
+-- de tabela algum e so alcanca o corpo fixo da funcao.
 --
 -- Idempotente: todo UPDATE de redacao tem guarda contra o valor-lapide, todo
 -- DELETE e por predicado. Rodar duas vezes devolve contagem zero na segunda.
@@ -430,9 +464,20 @@ BEGIN
       AND body_md <> c_body_tombstone;
     GET DIAGNOSTICS v_n = ROW_COUNT; v_report := v_report || jsonb_build_object('task_comments_redacted', v_n);
 
+    -- Titulo de thread no espaco compartilhado: conteudo escrito pelo
+    -- titular (migration 004: `title text`, nullable). A LINHA fica — o
+    -- root_message_id referencia messages por CASCADE e created_by e NO
+    -- ACTION FK para users, um dos cinco que protegem a lapide, e terceiros
+    -- responderam na thread — mas o titulo autoral sai.
+    UPDATE message_threads
+    SET title = NULL
+    WHERE created_by = p_user_id
+      AND title IS NOT NULL;
+    GET DIAGNOSTICS v_n = ROW_COUNT; v_report := v_report || jsonb_build_object('message_threads_redacted', v_n);
+
     -- ── 5. Rotulos desnormalizados: copia do display_name = PII ───────────
     --
-    -- Sem este passo o nome do titular sobrevive espalhado por sete tabelas
+    -- Sem este passo o nome do titular sobrevive espalhado por onze tabelas
     -- mesmo com `users.display_name` ja anonimizado. `created_by` vira NULL
     -- onde a FK permite (ON DELETE SET NULL ja declara essa intencao no
     -- schema), desligando a linha da pessoa.
@@ -449,6 +494,13 @@ BEGIN
     UPDATE task_labels SET created_by = NULL, created_by_label = c_label_tombstone
         WHERE created_by = p_user_id;
     UPDATE doc_pages  SET created_by = NULL, created_by_label = c_label_tombstone
+        WHERE created_by = p_user_id;
+    -- doc_page_versions.created_by e UUID plain NOT NULL sem FK (migration
+    -- 028: "survives user deletion"): nao ha para onde zerar o id, e o UUID
+    -- sozinho aponta para uma lapide sem dado pessoal — mesma economia do
+    -- passo 6 com audit_events.actor_user_id. O alvo aqui e o rotulo, que e
+    -- copia do display_name e portanto PII.
+    UPDATE doc_page_versions SET created_by_label = c_label_tombstone
         WHERE created_by = p_user_id;
     UPDATE message_attachments SET attached_by = NULL, attached_by_label = c_label_tombstone
         WHERE attached_by = p_user_id;
@@ -509,6 +561,20 @@ BEGIN
 
     v_report := v_report || jsonb_build_object('db_purged', true);
 
+    -- ── 11. Marcar `db_purged` NA LINHA — o ponto de retomada ──────────────
+    --
+    -- O retorno desta funcao vai para o worker, nao para a linha: se o flag
+    -- vivesse so no retorno, uma falha posterior (blob) faria a retomada
+    -- reexecutar a passada de banco — e como as linhas ja foram apagadas, a
+    -- segunda coleta de chaves voltaria VAZIA e o pedido fecharia como
+    -- `completed` com o blob vivo. O flag commita JUNTO com os deletes, na
+    -- mesma transacao desta funcao, e e o que `claim_account_purge` le em
+    -- `purge_report->>'db_purged'` para pular o passo de banco na retomada.
+    UPDATE account_deletion_requests
+    SET purge_report = purge_report || jsonb_build_object('db_purged', true)
+    WHERE user_id = p_user_id
+      AND status = 'in_progress';
+
     RETURN QUERY SELECT v_report, v_keys;
 END;
 $$;
@@ -516,13 +582,15 @@ $$;
 COMMENT ON FUNCTION purge_account_data(uuid) IS
     'SECURITY DEFINER: apagamento definitivo do titular em UMA transacao, cross-tenant (32 tabelas sob FORCE RLS). Destroi conteudo pessoal (mensagem, comentario, memoria, arquivo+versoes), apaga ligacoes e credenciais, substitui identificadores por token nao-identificavel e deixa users como lapide status=purged — a linha de users NAO e removida porque cinco FKs NO ACTION a protegem e remove-la apagaria contexto de terceiros. Devolve contagem por tabela e as object_keys cujos blobs o worker deve remover do ObjectStore. Idempotente.';
 
-GRANT EXECUTE ON FUNCTION purge_account_data(uuid) TO garraia_app;
+REVOKE EXECUTE ON FUNCTION purge_account_data(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION purge_account_data(uuid) TO garraia_purge;
 
 -- ─── finish_account_purge / fail_account_purge — fim da maquina de estados ─
 --
 -- Separadas da purge porque a remocao dos blobs acontece FORA do banco: so o
 -- worker sabe se o ObjectStore aceitou. `garraia_app` nao tem UPDATE nesta
--- tabela (ver grant acima), logo este e o unico caminho para fechar o pedido.
+-- tabela (ver grant acima) nem EXECUTE nestas funcoes (so `garraia_purge`
+-- tem), logo este e o unico caminho para fechar ou condenar o pedido.
 CREATE OR REPLACE FUNCTION finish_account_purge(
     p_request_id uuid,
     p_report     jsonb
@@ -548,7 +616,8 @@ $$;
 COMMENT ON FUNCTION finish_account_purge(uuid, jsonb) IS
     'SECURITY DEFINER: fecha um pedido in_progress como completed e mescla o relatorio final (inclui o resultado da remocao de blobs, que acontece fora do banco). Devolve false se o pedido nao estava in_progress.';
 
-GRANT EXECUTE ON FUNCTION finish_account_purge(uuid, jsonb) TO garraia_app;
+REVOKE EXECUTE ON FUNCTION finish_account_purge(uuid, jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION finish_account_purge(uuid, jsonb) TO garraia_purge;
 
 -- Devolve o pedido para a fila enquanto houver tentativa sobrando; esgotadas,
 -- marca 'failed' para o operador olhar. Falha transitoria de banco ou de
@@ -578,4 +647,5 @@ $$;
 COMMENT ON FUNCTION fail_account_purge(uuid, text, int) IS
     'SECURITY DEFINER: devolve o pedido para pending enquanto houver tentativa sobrando (falha transitoria), ou marca failed quando esgotam. last_error guarda so texto tecnico, nunca conteudo do titular. Devolve o status resultante, ou NULL se o pedido nao estava in_progress.';
 
-GRANT EXECUTE ON FUNCTION fail_account_purge(uuid, text, int) TO garraia_app;
+REVOKE EXECUTE ON FUNCTION fail_account_purge(uuid, text, int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fail_account_purge(uuid, text, int) TO garraia_purge;

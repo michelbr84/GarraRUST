@@ -226,6 +226,65 @@ async fn seed_task(h: &Harness, group_id: Uuid, owner: Uuid, title: &str) -> Uui
     task_id
 }
 
+/// Um thread de mensagem com título, ancorado em `root_message` (migration
+/// 004: `UNIQUE (root_message_id)`). Devolve o `thread_id`. O título é o
+/// dado pessoal aqui — a migration 034 o zera no apagamento.
+async fn seed_thread(
+    h: &Harness,
+    chat_id: Uuid,
+    root_message: Uuid,
+    creator: Uuid,
+    title: &str,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO message_threads (id, chat_id, root_message_id, title, created_by) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(chat_id)
+    .bind(root_message)
+    .bind(title)
+    .bind(creator)
+    .execute(&h.admin_pool)
+    .await
+    .expect("seed message thread");
+    id
+}
+
+/// Uma página de doc + uma versão snapshot criados por `creator` (migrations
+/// 026/028). Devolve o `version_id`. `created_by` da versão é UUID plain
+/// NOT NULL sem FK — sobrevive ao dono; a 034 redige só o label.
+async fn seed_doc_version(h: &Harness, group_id: Uuid, creator: Uuid) -> Uuid {
+    let page_id = Uuid::new_v4();
+    let version_id = Uuid::new_v4();
+    let mut tx = h.admin_pool.begin().await.expect("seed doc version tx");
+    sqlx::query(
+        "INSERT INTO doc_pages (id, group_id, title, created_by, created_by_label) \
+         VALUES ($1, $2, 'Pagina seed', $3, 'Seed Owner')",
+    )
+    .bind(page_id)
+    .bind(group_id)
+    .bind(creator)
+    .execute(&mut *tx)
+    .await
+    .expect("seed doc_pages row");
+    sqlx::query(
+        "INSERT INTO doc_page_versions \
+             (id, page_id, group_id, snapshot_jsonb, created_by, created_by_label) \
+         VALUES ($1, $2, $3, '{}'::jsonb, $4, 'Seed Owner')",
+    )
+    .bind(version_id)
+    .bind(page_id)
+    .bind(group_id)
+    .bind(creator)
+    .execute(&mut *tx)
+    .await
+    .expect("seed doc_page_versions row");
+    tx.commit().await.expect("seed doc version commit");
+    version_id
+}
+
 /// Ações de audit de um titular (fatia de conta, `group_id = nil`).
 async fn audit_actions_for_user(h: &Harness, user_id: Uuid) -> Vec<String> {
     let rows: Vec<(String,)> = sqlx::query_as(
@@ -954,6 +1013,13 @@ async fn purge_nao_toca_dado_de_terceiro() {
     let alice_mem = seed_personal_memory(&h, alice, "MEMORIA-PURGE-ALICE").await;
     let bob_mem = seed_personal_memory(&h, bob, "MEMORIA-PURGE-BOB").await;
 
+    // Um thread com título e uma versão de doc por cada um: os dois caminhos
+    // de redação (não de remoção) da migration 034.
+    let alice_thread = seed_thread(&h, chat, alice_msg, alice, "TITULO-DA-ALICE").await;
+    let bob_thread = seed_thread(&h, chat, bob_msg, bob, "TITULO-DO-BOB").await;
+    let alice_version = seed_doc_version(&h, group, alice).await;
+    let bob_version = seed_doc_version(&h, group, bob).await;
+
     // ── 1. Pedido feito, carencia CORRENDO: o worker nao toca em nada ──
     let resp = h
         .router
@@ -963,9 +1029,14 @@ async fn purge_nao_toca_dado_de_terceiro() {
         .expect("oneshot delete");
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    let report = run_purge_tick(h.app_pool.clone(), Some(store.clone()), &config)
-        .await
-        .expect("tick durante a carencia");
+    let report = run_purge_tick(
+        h.purge_pool.clone(),
+        h.app_pool.clone(),
+        Some(store.clone()),
+        &config,
+    )
+    .await
+    .expect("tick durante a carencia");
     assert_eq!(
         report.claimed, 0,
         "pedido dentro da carencia NAO pode ser executado; veio {report:?}"
@@ -984,9 +1055,14 @@ async fn purge_nao_toca_dado_de_terceiro() {
     // ── 2. Carencia vencida: o worker executa ──────────────────────────
     make_purge_due(&h, alice).await;
 
-    let report = run_purge_tick(h.app_pool.clone(), Some(store.clone()), &config)
-        .await
-        .expect("tick depois da carencia");
+    let report = run_purge_tick(
+        h.purge_pool.clone(),
+        h.app_pool.clone(),
+        Some(store.clone()),
+        &config,
+    )
+    .await
+    .expect("tick depois da carencia");
     assert_eq!(report.claimed, 1, "o pedido devido tem de ser reivindicado");
     assert_eq!(report.purged, 1, "e concluido; veio {report:?}");
     assert_eq!(report.failed, 0, "sem falhas; veio {report:?}");
@@ -1026,6 +1102,32 @@ async fn purge_nao_toca_dado_de_terceiro() {
         .await
         .expect("count alice mem");
     assert_eq!(n, 0, "a memoria da Alice tem de sair");
+
+    // Redação, não remoção: o título do thread da Alice (dado pessoal) cai,
+    // mas a linha fica — o thread é espaço compartilhado do chat.
+    let (titulo,): (Option<String>,) =
+        sqlx::query_as("SELECT title FROM message_threads WHERE id = $1")
+            .bind(alice_thread)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read alice thread");
+    assert_eq!(
+        titulo, None,
+        "o titulo do thread criado pela Alice tem de ser zerado"
+    );
+
+    // Idem para a versão de doc: `created_by` é UUID NOT NULL sem FK e
+    // sobrevive como pseudônimo; o label vira lápide.
+    let (label,): (String,) =
+        sqlx::query_as("SELECT created_by_label FROM doc_page_versions WHERE id = $1")
+            .bind(alice_version)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read alice doc version");
+    assert_eq!(
+        label, "Usuario Removido",
+        "o label da versao de doc da Alice tem de virar lapide"
+    );
 
     // Identificadores: lapide sem dado pessoal.
     let (email, display_name, status): (String, String, String) =
@@ -1118,6 +1220,30 @@ async fn purge_nao_toca_dado_de_terceiro() {
         .expect("count bob mem");
     assert_eq!(n, 1, "a memoria do Bob tem de sobreviver");
 
+    // Redações do apagamento são por `created_by`: nada do Bob pode mudar.
+    let (titulo,): (Option<String>,) =
+        sqlx::query_as("SELECT title FROM message_threads WHERE id = $1")
+            .bind(bob_thread)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read bob thread");
+    assert_eq!(
+        titulo.as_deref(),
+        Some("TITULO-DO-BOB"),
+        "o titulo do thread do Bob nao pode ser tocado pelo pedido da Alice"
+    );
+
+    let (label,): (String,) =
+        sqlx::query_as("SELECT created_by_label FROM doc_page_versions WHERE id = $1")
+            .bind(bob_version)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read bob doc version");
+    assert_eq!(
+        label, "Seed Owner",
+        "o label da versao de doc do Bob nao pode ser tocado"
+    );
+
     let (bob_email,): (String,) = sqlx::query_as("SELECT email::text FROM users WHERE id = $1")
         .bind(bob)
         .fetch_one(&h.admin_pool)
@@ -1140,9 +1266,14 @@ async fn purge_nao_toca_dado_de_terceiro() {
     );
 
     // ── 5. Idempotencia: um segundo tick nao acha mais nada ────────────
-    let report = run_purge_tick(h.app_pool.clone(), Some(store.clone()), &config)
-        .await
-        .expect("tick idempotente");
+    let report = run_purge_tick(
+        h.purge_pool.clone(),
+        h.app_pool.clone(),
+        Some(store.clone()),
+        &config,
+    )
+    .await
+    .expect("tick idempotente");
     assert_eq!(
         report.claimed, 0,
         "pedido concluido nao pode ser reivindicado de novo; veio {report:?}"
@@ -1171,7 +1302,7 @@ async fn purge_sem_object_store_nao_fecha_o_pedido() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     make_purge_due(&h, user).await;
 
-    let report = run_purge_tick(h.app_pool.clone(), None, &config)
+    let report = run_purge_tick(h.purge_pool.clone(), h.app_pool.clone(), None, &config)
         .await
         .expect("tick sem store");
     assert_eq!(report.claimed, 1);
@@ -1219,15 +1350,64 @@ async fn purge_sem_object_store_nao_fecha_o_pedido() {
         "a object_key tem de sobreviver ao DELETE das linhas, senao o blob fica orfao"
     );
 
-    // Limpeza: este pedido fica deliberadamente de volta em `pending` com a
-    // carencia JA vencida, o que e o comportamento de retomada correto — e
-    // tambem o torna elegivel para o tick do proximo cenario. Encerra-o pelo
-    // admin_pool para nao poluir os vizinhos.
-    sqlx::query("UPDATE account_deletion_requests SET status = 'canceled' WHERE user_id = $1")
-        .bind(user)
-        .execute(&h.admin_pool)
+    // ── Retomada end-to-end: o store aparece e o proximo tick conclui ──
+    // O pedido esta `pending` com `db_purged` e as chaves persistidas. O
+    // blob, que sempre existiu so no limbo entre banco e storage, agora e
+    // colocado num store de verdade: o proximo tick tem de retomar pelas
+    // chaves do relatorio (sem reexecutar o passo de banco) e fechar.
+    let tmp = tempfile::tempdir().expect("tempdir da retomada");
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(LocalFs::new(tmp.path()).expect("LocalFs da retomada"));
+    store
+        .put(
+            &key,
+            Bytes::from_static(b"bytes-nostore"),
+            PutOptions::default(),
+        )
         .await
-        .expect("encerrar o pedido de teste");
+        .expect("put blob na retomada");
+
+    let report = run_purge_tick(
+        h.purge_pool.clone(),
+        h.app_pool.clone(),
+        Some(store.clone()),
+        &config,
+    )
+    .await
+    .expect("tick de retomada");
+    assert_eq!(
+        report.claimed, 1,
+        "o pedido voltou para a fila e tem de ser reivindicado de novo; veio {report:?}"
+    );
+    assert_eq!(
+        report.purged, 1,
+        "com store disponivel a retomada tem de concluir o apagamento; veio {report:?}"
+    );
+    assert_eq!(
+        report.blobs_deleted, 1,
+        "o blob pendente tem de sair na retomada; veio {report:?}"
+    );
+    assert!(
+        !store.exists(&key).await.expect("exists key na retomada"),
+        "o blob tem de sumir do store na retomada"
+    );
+
+    let (status,): (String,) =
+        sqlx::query_as("SELECT status FROM account_deletion_requests WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&h.admin_pool)
+            .await
+            .expect("read status pos-retomada");
+    assert_eq!(
+        status, "completed",
+        "a retomada tem de fechar o pedido como completed"
+    );
+
+    let actions = audit_actions_for_user(&h, user).await;
+    assert!(
+        actions.contains(&"account.purged".to_string()),
+        "a retomada concluida tem de emitir o audit de apagamento; veio {actions:?}"
+    );
 }
 
 /// A carencia nao e so configuracao: um pedido com `purge_after` no futuro
@@ -1253,16 +1433,16 @@ async fn carencia_bloqueia_o_worker_ate_vencer() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     for _ in 0..3 {
-        run_purge_tick(h.app_pool.clone(), None, &config)
+        run_purge_tick(h.purge_pool.clone(), h.app_pool.clone(), None, &config)
             .await
             .expect("tick dentro da carencia");
     }
 
     // `attempts` sobe a cada reivindicacao, entao zero prova que ESTE pedido
     // nunca foi tocado. Asserir sobre o contador global do tick seria fragil:
-    // um cenario vizinho pode ter deixado outro pedido devido na fila, e o
-    // advisory lock e liberado numa task assincrona, o que pode fazer um tick
-    // ser pulado em silencio e "passar" sem provar nada.
+    // um cenario vizinho pode ter deixado outro pedido devido na fila, que o
+    // tick desta carencia reivindicaria e concluaria — o report global diria
+    // "1" sem provar nada sobre o pedido deste cenario.
     let (status, attempts): (String, i32) =
         sqlx::query_as("SELECT status, attempts FROM account_deletion_requests WHERE user_id = $1")
             .bind(user)

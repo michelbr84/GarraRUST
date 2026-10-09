@@ -578,6 +578,7 @@ mod tests {
                 "postgres://garraia_signup:pw@localhost/garraia".to_string(),
             ),
             app_database_url: None,
+            purge_database_url: None,
         };
         state.set_auth_config(Arc::new(cfg));
         state

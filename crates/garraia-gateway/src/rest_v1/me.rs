@@ -4347,6 +4347,12 @@ pub struct ExportMeGroupMembership {
 // is declared to the subject through `truncated_sections` instead of silently
 // trimming — an incomplete export that says so is honest, one that does not
 // is a false compliance claim.
+//
+// Each query fetches `cap + 1` rows: the extra row is a sentinel that tells
+// "exactly cap rows, nothing was cut" from "more rows existed and were cut".
+// With `LIMIT cap` alone, an account with exactly 5 000 messages would be
+// declared truncated when nothing was dropped — a false compliance claim in
+// the other direction. `cap_section` drops the sentinel and records the flag.
 const EXPORT_MAX_MESSAGES: i64 = 5_000;
 const EXPORT_MAX_MENTIONS: i64 = 5_000;
 const EXPORT_MAX_FILES: i64 = 5_000;
@@ -4358,6 +4364,19 @@ const EXPORT_MAX_AUDIT_EVENTS: i64 = 1_000;
 /// Excerpt width for a message the subject did NOT write — identical to what
 /// `GET /v1/me/mentions` already returns, so the export widens no exposure.
 const EXPORT_MENTION_EXCERPT_CHARS: i64 = 200;
+
+/// Cuts a fetched section down to its cap and records the truncation.
+///
+/// The section was fetched with `cap + 1` rows (the sentinel), so `len > cap`
+/// is the only honest truncation signal: exactly `cap` rows means nothing was
+/// dropped and the flag stays off. Called from `export_me` before the audit
+/// event and the response body, so the subject never receives the sentinel.
+fn cap_section<T>(rows: &mut Vec<T>, cap: i64, name: &str, truncated_sections: &mut Vec<String>) {
+    if rows.len() as i64 > cap {
+        rows.truncate(cap as usize);
+        truncated_sections.push(name.to_string());
+    }
+}
 
 /// One message **written by the subject**, with its full body.
 #[derive(Debug, Serialize, ToSchema)]
@@ -4771,12 +4790,14 @@ pub async fn export_me(
     )
     .bind(principal.user_id)
     .bind(nil_uuid)
-    .bind(EXPORT_MAX_AUDIT_EVENTS)
+    // cap + 1: the sentinel row tells "exactly the cap, nothing cut" from
+    // "more existed". See the cap constants block above.
+    .bind(EXPORT_MAX_AUDIT_EVENTS + 1)
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
 
-    let audit_events: Vec<ExportMeAuditEvent> = audit_event_rows
+    let mut audit_events: Vec<ExportMeAuditEvent> = audit_event_rows
         .into_iter()
         .map(
             |(id, action, resource_type, resource_id, metadata, created_at)| ExportMeAuditEvent {
@@ -4893,7 +4914,8 @@ pub async fn export_me(
          LIMIT $2",
     )
     .bind(principal.user_id)
-    .bind(EXPORT_MAX_MEMORY)
+    // cap + 1: sentinel row, see the cap constants block above.
+    .bind(EXPORT_MAX_MEMORY + 1)
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| RestError::Internal(e.into()))?;
@@ -4923,7 +4945,8 @@ pub async fn export_me(
             .map_err(|e| RestError::Internal(e.into()))?;
 
         // Messages the subject WROTE. Full body: their own content.
-        let budget = EXPORT_MAX_MESSAGES - messages.len() as i64;
+        // cap + 1: sentinel row, see the cap constants block above.
+        let budget = EXPORT_MAX_MESSAGES + 1 - messages.len() as i64;
         if budget > 0 {
             type MsgRow = (
                 Uuid,
@@ -4976,7 +4999,8 @@ pub async fn export_me(
 
         // @mentions the subject RECEIVED — data about them, authored by
         // someone else, so excerpt only.
-        let budget = EXPORT_MAX_MENTIONS - mentions_received.len() as i64;
+        // cap + 1: sentinel row, see the cap constants block above.
+        let budget = EXPORT_MAX_MENTIONS + 1 - mentions_received.len() as i64;
         if budget > 0 {
             type MentionRow = (Uuid, Uuid, Uuid, Uuid, String, String, DateTime<Utc>);
             let rows: Vec<MentionRow> = sqlx::query_as(
@@ -5019,7 +5043,8 @@ pub async fn export_me(
         }
 
         // Files the subject uploaded. Metadata only — see `exclusions`.
-        let budget = EXPORT_MAX_FILES - files.len() as i64;
+        // cap + 1: sentinel row, see the cap constants block above.
+        let budget = EXPORT_MAX_FILES + 1 - files.len() as i64;
         if budget > 0 {
             type FileExportRow = (
                 Uuid,
@@ -5071,7 +5096,9 @@ pub async fn export_me(
 
         // Group-scoped memory the subject created (branch 1 of the dual
         // policy, which needs the real group GUC set above).
-        let budget = EXPORT_MAX_MEMORY - memory_items.len() as i64;
+        // cap + 1: sentinel row (already spent on the personal slice if that
+        // one filled up), see the cap constants block above.
+        let budget = EXPORT_MAX_MEMORY + 1 - memory_items.len() as i64;
         if budget > 0 {
             let rows: Vec<ExportMemoryRow> = sqlx::query_as(
                 "SELECT id, scope_type, group_id, kind, sensitivity, content, \
@@ -5095,7 +5122,8 @@ pub async fn export_me(
         // `assigned` tell the two apart, because a task someone else created
         // and assigned to the subject is shared work-tracking, not their
         // authored content.
-        let budget = EXPORT_MAX_TASKS - tasks.len() as i64;
+        // cap + 1: sentinel row, see the cap constants block above.
+        let budget = EXPORT_MAX_TASKS + 1 - tasks.len() as i64;
         if budget > 0 {
             type TaskExportRow = (
                 Uuid,
@@ -5174,27 +5202,46 @@ pub async fn export_me(
         .map_err(|e| RestError::Internal(e.into()))?;
 
     // A section that reached its cap is declared, never silently trimmed.
+    // `> cap` (not `>=`): each query fetched one sentinel row past the cap,
+    // so exactly `cap` rows means nothing was cut and the flag must stay
+    // off. The sentinel is dropped here, before serialization.
     let mut truncated_sections: Vec<String> = Vec::new();
-    for (name, len, cap) in [
-        ("messages", messages.len() as i64, EXPORT_MAX_MESSAGES),
-        (
-            "mentions_received",
-            mentions_received.len() as i64,
-            EXPORT_MAX_MENTIONS,
-        ),
-        ("files", files.len() as i64, EXPORT_MAX_FILES),
-        ("memory_items", memory_items.len() as i64, EXPORT_MAX_MEMORY),
-        ("tasks", tasks.len() as i64, EXPORT_MAX_TASKS),
-        (
-            "audit_events",
-            audit_events.len() as i64,
-            EXPORT_MAX_AUDIT_EVENTS,
-        ),
-    ] {
-        if len >= cap {
-            truncated_sections.push(name.to_string());
-        }
-    }
+    cap_section(
+        &mut messages,
+        EXPORT_MAX_MESSAGES,
+        "messages",
+        &mut truncated_sections,
+    );
+    cap_section(
+        &mut mentions_received,
+        EXPORT_MAX_MENTIONS,
+        "mentions_received",
+        &mut truncated_sections,
+    );
+    cap_section(
+        &mut files,
+        EXPORT_MAX_FILES,
+        "files",
+        &mut truncated_sections,
+    );
+    cap_section(
+        &mut memory_items,
+        EXPORT_MAX_MEMORY,
+        "memory_items",
+        &mut truncated_sections,
+    );
+    cap_section(
+        &mut tasks,
+        EXPORT_MAX_TASKS,
+        "tasks",
+        &mut truncated_sections,
+    );
+    cap_section(
+        &mut audit_events,
+        EXPORT_MAX_AUDIT_EVENTS,
+        "audit_events",
+        &mut truncated_sections,
+    );
 
     // Emit AccountDataExported audit event. No PII in metadata.
     let sections = [

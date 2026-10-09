@@ -21,6 +21,17 @@
 //! `pg_try_advisory_lock(hashtext('account_purge'))` — quem pegar o lock roda
 //! o tick, as outras pulam. Nao pegar o lock e o caso esperado, nao erro.
 //!
+//! O advisory lock e **session-scoped**: ele mora na conexao que o pegou.
+//! Por isso o tick inteiro roda sobre UMA conexao fixada do `PurgePool`
+//! (`PoolConnection` adquirida no inicio e devolvida so no fim): pegar o lock
+//! numa conexao e solta-lo noutra (o padrao antigo, via guard com
+//! `tokio::spawn`) falha em silencio — o lock vaza e toda varredura futura
+//! daquele banco e condenada a pular. Se a liberacao falhar, a conexao e
+//! **fechada** em vez de devolvida ao pool: fechar mata o backend e o Postgres
+//! solta o lock junto com ele. (O `uploads_worker` ainda tem o padrao antigo
+//! — ver a issue de acompanhamento; ele nao foi tocado aqui para nao misturar
+//! escopos.)
+//!
 //! ## Bypass-RLS / manutencao cross-tenant
 //!
 //! O titular pode ter dado em vários grupos, e 32 tabelas estao sob FORCE
@@ -36,8 +47,19 @@
 //! | `finish_account_purge`| fecha como `completed` e mescla o relatorio final |
 //! | `fail_account_purge`  | devolve para a fila (falha transitoria) ou marca `failed` |
 //!
+//! Quem tem `EXECUTE` nessas funcoes e **so** o role `garraia_purge`
+//! (migration 034 revoga o PUBLIC e nao granta ao `garraia_app`): pegar o
+//! `DELETE` de um tenant inteiro nao pode estar ao alcance de credencial de
+//! request — qualquer SQLi ou bug com app viraria destruicao cross-tenant.
+//! O worker conecta pelo `PurgePool` (newtype que recusa URL cujo role
+//! conectado nao seja `garraia_purge`); os handlers, nunca.
+//!
 //! O `garraia_app` **nao** tem `UPDATE` em `account_deletion_requests` (grant
-//! da migration 034), logo a maquina de estados so anda por essas funcoes.
+//! da migration 034), logo a maquina de estados so anda por essas funcoes —
+//! e ele tambem nao tem `EXECUTE` nelas, entao nem pelo app pool da para
+//! contorna-las. So `fail_account_purge` pode condenar um pedido, e o texto
+//! persistido em `last_error` passa por [`sanitize_sqlx_error`] para que uma
+//! mensagem de erro de banco (que pode citar valores) nao vaze para a tabela.
 //!
 //! ## Retomada (o blob mora fora do banco)
 //!
@@ -63,7 +85,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use garraia_auth::{AppPool, WorkspaceAuditAction, audit_workspace_event};
+use garraia_auth::{AppPool, PurgePool, WorkspaceAuditAction, audit_workspace_event};
 use garraia_storage::ObjectStore;
 use serde_json::json;
 use sqlx::Row;
@@ -124,29 +146,84 @@ pub struct PurgeTickReport {
     pub audit_failed: u64,
 }
 
-/// Roda uma varredura contra `pool`. Devolve o relatorio do lote.
+/// Roda uma varredura. Devolve o relatorio do lote.
+///
+/// Duas pools, com papéis distintos: `purge_pool` (`garraia_purge`,
+/// EXECUTE-only nas quatro funcoes da migration 034) e `app_pool`
+/// (`garraia_app`, para o INSERT de audit). O app role nao tem EXECUTE nas
+/// funcoes de apagamento — credencial de request nunca alcanca a destruicao
+/// de um tenant.
+///
+/// O advisory lock e session-scoped, entao o tick inteiro roda sobre UMA
+/// conexao fixada do purge pool: o lock e verificado, as quatro funcoes sao
+/// chamadas e o lock e liberado na MESMA sessao. Se a liberacao falhar, a
+/// conexao e fechada (nao devolvida ao pool) — fechar mata o backend e o
+/// Postgres solta o lock junto, em vez de vazar uma sessao que condena toda
+/// varredura futura a pular.
 ///
 /// O chamador nao deve invocar isto concorrentemente do MESMO processo — o
 /// advisory lock protege entre processos, mas dois tickers no mesmo processo
 /// se bloqueariam.
 pub async fn run_purge_tick(
-    pool: Arc<AppPool>,
+    purge_pool: Arc<PurgePool>,
+    app_pool: Arc<AppPool>,
     object_store: Option<Arc<dyn ObjectStore>>,
     config: &AccountPurgeWorkerConfig,
 ) -> Result<PurgeTickReport, sqlx::Error> {
-    let pg = pool.pool_for_handlers();
+    let mut conn = purge_pool.pool().acquire().await?;
 
     let got_lock: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext($1))")
         .bind(PURGE_LOCK_KEY)
-        .fetch_one(pg)
+        .fetch_one(&mut *conn)
         .await?;
 
     if !got_lock {
         debug!("account_purge_worker: lock contended; skipping tick");
+        // Sem lock na sessao, devolver a conexao ao pool e inofensivo.
         return Ok(PurgeTickReport::default());
     }
 
-    let release_guard = AdvisoryLockGuard::new(pool.clone());
+    // A partir daqui a sessao de `conn` detem o lock. Todo caminho de
+    // saida passa pela liberacao abaixo — inclusive o `?` interno, que
+    // escapa com o erro ANTES do unlock, e e cuidado aqui em cima.
+    let result = locked_tick(&mut conn, app_pool.as_ref(), object_store.as_ref(), config).await;
+
+    // Liberar na MESMA sessao que pegou. `pg_advisory_unlock` devolve
+    // `false` quando o lock nao esta na sessao (nunca deveria acontecer);
+    // tratar como falha e fechar a conexao, que mata o backend e solta
+    // qualquer lock esquecido junto com ele.
+    let released: bool = sqlx::query_scalar("SELECT pg_advisory_unlock(hashtext($1))")
+        .bind(PURGE_LOCK_KEY)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap_or(false);
+
+    if !released {
+        warn!(
+            "account_purge_worker: advisory unlock failed; closing the pinned connection \
+             so Postgres releases the lock with the backend"
+        );
+        // Um erro aqui nao muda o desfecho: o que importa e matar a sessao,
+        // e o drop de `conn` fecha o backend tambem se este close falhar.
+        let _ = conn.close().await;
+    }
+
+    result
+}
+
+/// O trabalho do lote, com o lock ja assumido e sobre a conexao fixada.
+///
+/// `conn` (purge role) executa as quatro funcoes de migration 034;
+/// `app_pool` (app role) so emite audit. As funcoes de fechamento sao
+/// chamadas na MESMA sessao do lock para que a maquina de estados e o lock
+/// andem juntos: se esta sessao morrer no meio, o lock cai junto e a
+/// retomada e feita pelo proximo tick que conseguir o lock.
+async fn locked_tick(
+    conn: &mut sqlx::PgConnection,
+    app_pool: &AppPool,
+    object_store: Option<&Arc<dyn ObjectStore>>,
+    config: &AccountPurgeWorkerConfig,
+) -> Result<PurgeTickReport, sqlx::Error> {
     let mut report = PurgeTickReport::default();
 
     // Reivindica o lote devido. `stale_after` entra como interval para a
@@ -157,7 +234,7 @@ pub async fn run_purge_tick(
     )
     .bind(config.batch_size as i32)
     .bind(config.stale_after.as_secs() as f64)
-    .fetch_all(pg)
+    .fetch_all(&mut *conn)
     .await?;
 
     for row in &claimed {
@@ -169,15 +246,7 @@ pub async fn run_purge_tick(
 
         report.claimed += 1;
 
-        match purge_one(
-            pool.as_ref(),
-            object_store.as_ref(),
-            user_id,
-            db_purged,
-            resume_keys,
-        )
-        .await
-        {
+        match purge_one(conn, object_store, user_id, db_purged, resume_keys).await {
             Ok(outcome) => {
                 report.blobs_deleted += outcome.blobs_deleted;
                 report.blobs_failed += outcome.blobs_failed;
@@ -194,7 +263,7 @@ pub async fn run_purge_tick(
                 let closed: bool = sqlx::query_scalar("SELECT finish_account_purge($1, $2)")
                     .bind(request_id)
                     .bind(&final_report)
-                    .fetch_one(pg)
+                    .fetch_one(&mut *conn)
                     .await?;
 
                 if !closed {
@@ -210,7 +279,7 @@ pub async fn run_purge_tick(
                 report.purged += 1;
 
                 if let Err(e) = emit_purge_audit(
-                    pool.as_ref(),
+                    app_pool,
                     WorkspaceAuditAction::AccountPurged,
                     user_id,
                     "users",
@@ -231,13 +300,16 @@ pub async fn run_purge_tick(
                 report.failed += 1;
                 // `fail_account_purge` decide entre devolver para a fila e
                 // condenar o pedido; `last_error` fica na tabela, fora do
-                // audit, porque texto de erro de banco pode citar valores.
+                // audit. O texto vai por `sanitize_sqlx_error`: a mensagem
+                // crua de um erro de Postgres pode citar valores (chave
+                // duplicada mostra a chave, CHECK mostra o valor), e a
+                // tabela nao e lugar para dado pessoal.
                 let new_status: Option<String> =
                     sqlx::query_scalar("SELECT fail_account_purge($1, $2, $3)")
                         .bind(request_id)
-                        .bind(e.to_string())
+                        .bind(sanitize_sqlx_error(&e))
                         .bind(config.max_attempts)
-                        .fetch_one(pg)
+                        .fetch_one(&mut *conn)
                         .await?;
 
                 let terminal = new_status.as_deref() == Some("failed");
@@ -250,7 +322,7 @@ pub async fn run_purge_tick(
                 );
 
                 if let Err(audit_err) = emit_purge_audit(
-                    pool.as_ref(),
+                    app_pool,
                     WorkspaceAuditAction::AccountPurgeFailed,
                     user_id,
                     "account_deletion_requests",
@@ -282,9 +354,41 @@ pub async fn run_purge_tick(
         );
     }
 
-    drop(release_guard); // explicito
-
     Ok(report)
+}
+
+/// Reduz um erro de `sqlx` a uma linha segura para `last_error`.
+///
+/// Erros `Database` do Postgres carregam `message()` com valores dentro
+/// (violacao de unique mostra a chave, violacao de CHECK mostra o valor
+/// rejeitado) — persistir isso em `account_deletion_requests.last_error`
+/// espalharia dado pessoal de um titular em auditavel nao-pessoal. O que
+/// fica e a classe do erro, o SQLSTATE e o nome da constraint, que juntos
+/// apontam a causa sem copiar o dado. As demais variantes (`Configuration`,
+/// `PoolTimedOut`, `Io`…) sao texto de infraestrutura, sem dado de tenant,
+/// e o Display e o bastante — truncado por garantia.
+fn sanitize_sqlx_error(err: &sqlx::Error) -> String {
+    const MAX_LEN: usize = 200;
+
+    let text = match err {
+        sqlx::Error::Database(db_err) => match db_err.constraint() {
+            Some(constraint) => format!("database error (constraint: {constraint})"),
+            None => "database error".to_string(),
+        },
+        other => other.to_string(),
+    };
+
+    if text.len() > MAX_LEN {
+        // Truncar num limite de char (byte) seguro: `truncate` so corta em
+        // fronteira UTF-8, e cortar no meio de um codepoint panicaria.
+        let mut cut = MAX_LEN;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &text[..cut])
+    } else {
+        text
+    }
 }
 
 /// Resultado do apagamento de um titular.
@@ -295,15 +399,18 @@ struct PurgeOutcome {
 }
 
 /// Apaga um titular: a parte de banco (quando ainda falta) e depois os blobs.
+///
+/// A passada de banco roda na MESMA conexao (`conn`) do tick, que detem o
+/// advisory lock: se a sessao morrer durante o `purge_account_data`, o lock
+/// cai com ela e o pedido fica `in_progress` para a retomada do proximo
+/// vencedor do lock — nunca dois workers apagando o mesmo titular.
 async fn purge_one(
-    pool: &AppPool,
+    conn: &mut sqlx::PgConnection,
     object_store: Option<&Arc<dyn ObjectStore>>,
     user_id: Uuid,
     db_purged: bool,
     resume_keys: Vec<String>,
 ) -> Result<PurgeOutcome, sqlx::Error> {
-    let pg = pool.pool_for_handlers();
-
     // Passo de banco. Quando `db_purged` ja esta marcado, uma passada
     // anterior commitou e morreu antes dos blobs: retomamos com as chaves
     // que ela persistiu, sem reexecutar o apagamento.
@@ -312,7 +419,7 @@ async fn purge_one(
     } else {
         let row = sqlx::query("SELECT report, object_keys FROM purge_account_data($1)")
             .bind(user_id)
-            .fetch_one(pg)
+            .fetch_one(&mut *conn)
             .await?;
         let report: serde_json::Value = row.try_get("report")?;
         let keys: Vec<String> = row.try_get("object_keys")?;
@@ -424,41 +531,15 @@ async fn emit_purge_audit(
     Ok(())
 }
 
-/// Libera o advisory lock mesmo se o caminho acima sair por erro.
-struct AdvisoryLockGuard {
-    pool: Arc<AppPool>,
-    released: bool,
-}
-
-impl AdvisoryLockGuard {
-    fn new(pool: Arc<AppPool>) -> Self {
-        Self {
-            pool,
-            released: false,
-        }
-    }
-}
-
-impl Drop for AdvisoryLockGuard {
-    fn drop(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
-                .bind(PURGE_LOCK_KEY)
-                .execute(pool.pool_for_handlers())
-                .await;
-        });
-    }
-}
-
 /// Sobe o loop periodico. Devolve o `JoinHandle` para o chamador manter vivo
 /// pelo tempo de vida do processo (mesma forma do `uploads_worker`).
+///
+/// `purge_pool` (role `garraia_purge`, EXECUTE-only nas funcoes de
+/// apagamento) e `app_pool` (role `garraia_app`, so para o INSERT de audit)
+/// vem separados de proposito: ver o docblock do modulo.
 pub fn spawn_account_purge_worker(
-    pool: Arc<AppPool>,
+    purge_pool: Arc<PurgePool>,
+    app_pool: Arc<AppPool>,
     object_store: Option<Arc<dyn ObjectStore>>,
     config: AccountPurgeWorkerConfig,
 ) -> tokio::task::JoinHandle<()> {
@@ -475,7 +556,14 @@ pub fn spawn_account_purge_worker(
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            match run_purge_tick(pool.clone(), object_store.clone(), &config).await {
+            match run_purge_tick(
+                purge_pool.clone(),
+                app_pool.clone(),
+                object_store.clone(),
+                &config,
+            )
+            .await
+            {
                 Ok(report) => {
                     if report.claimed == 0 {
                         debug!("account_purge_worker: idle tick");

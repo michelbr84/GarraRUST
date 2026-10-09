@@ -240,11 +240,17 @@ aqui, o resumo:
 |---|---|
 | **DELETE** (ligacao ou credencial puramente pessoal) | `message_reactions`, `message_mentions`, `doc_page_mentions`, `task_assignees`, `task_subscriptions`, `chat_members`, `group_members`, `sessions`, `api_keys`, `tus_uploads` |
 | **DELETE** (conteudo pessoal) | `memory_items` (+ `memory_embeddings` por CASCADE), `files` (+ `file_versions`, `message_attachments`, `task_attachments` por CASCADE) **e os blobs no object store** |
-| **Redacao em lugar** (conteudo autoral em espaco compartilhado) | `messages.body`/`sender_label`, `task_comments.body_md`/`author_label` |
-| **Anonimizacao de rotulo** (`*_label` e copia do display_name = PII) | `files`, `folders`, `file_versions`, `tasks`, `task_lists`, `task_labels`, `doc_pages`, `message_attachments`, `task_attachments`, `task_activity` |
+| **Redacao em lugar** (conteudo autoral em espaco compartilhado) | `messages.body`/`sender_label`, `task_comments.body_md`/`author_label`, `message_threads.title` (vira NULL — a thread fica, com as respostas de terceiros) |
+| **Anonimizacao de rotulo** (`*_label` e copia do display_name = PII) | `files`, `folders`, `file_versions`, `tasks`, `task_lists`, `task_labels`, `doc_pages`, `doc_page_versions`, `message_attachments`, `task_attachments`, `task_activity` |
 | **Desidentificacao parcial** | `audit_events`: `actor_label`, `ip`, `user_agent` viram NULL; a linha fica |
 | **Token nao-identificavel** | `users.email`, `users.display_name`, `user_identities.provider_sub`, `group_invites.invited_email`, `user_email_change_requests.requested_email` |
 | **Destruicao de credencial** | `user_identities.password_hash` vira NULL |
+
+Dois tokens substituem o que sai: o corpo redigido vira
+`[conteudo removido a pedido do titular]` e o rotulo vira
+`Usuario Removido` — sempre os mesmos, para o apagamento ser verificavel por
+consulta. `doc_page_versions.created_by` e UUID `NOT NULL` sem FK
+(migration 028) e **fica** (aponta para a lapide); so o rotulo e redigido.
 
 Ao fim, `users.status = 'purged'` e emite `account.purged` com o relatorio
 **estrutural** (contagem por tabela, contadores de blob) — nunca o conteudo
@@ -305,6 +311,51 @@ Pedido em `failed` e **trabalho pendente de conformidade**: ligue o backend de
 storage (ou remova os blobs a mao com as `object_keys` de
 `purge_report->'object_keys'`) e devolva o pedido para a fila com
 `UPDATE account_deletion_requests SET status = 'pending', attempts = 0 WHERE id = '<id>'`.
+
+### Retomada: o pedido nunca fecha com blob vivo
+
+**[CODIGO]** O apagamento e retomavel passo a passo. A migration 034 grava na
+propria linha do pedido, **na mesma transacao dos deletes**, as marcas de
+progresso: `purge_report->'object_keys'` (coletadas antes de apagar) e
+`purge_report->>'db_purged'`. Se o processo cair depois do banco e antes da
+remocao dos blobs, o proximo tick le as marcas, **pula a passada de banco** e
+remove so os blobs pendentes. E o contrario tambem e verdade: sem a marca
+`db_purged` persistida, a retomada reexecutaria os deletes, a segunda coleta
+de chaves voltaria vazia, e o pedido fecharia como `completed` com o blob
+vivo — a mentira exata que o teste de retomada em
+`tests/rest_v1_me_data_subject.rs` impede.
+
+### Como ligar o worker (configuracao do operador)
+
+**[CODIGO]** O worker so nasce quando `GARRAIA_PURGE_DATABASE_URL` esta
+definida. Sem ela o gateway sobe normalmente, `DELETE /v1/me` continua
+enfileirando pedidos e o procedimento manual acima continua valendo — mas
+**ninguem executa o apagamento automatico**, e o operador tem de rodar
+`purge_account_data` a mao depois da carencia.
+
+A URL autentica como o role dedicado `garraia_purge` (migration 034): o role
+tem `EXECUTE` nas quatro funcoes `SECURITY DEFINER` de apagamento e **mais
+nada** — nenhuma privilegio de tabela, nao e `BYPASSRLS`. Reutilizar aqui as
+credenciais de `garraia_app`/`garraia_login`/`garraia_signup` derrubaria a
+separacao que mantem a capacidade de apagacao fora das credenciais da
+aplicacao, e o pool recusa qualquer role que nao seja `garraia_purge`
+(validacao `SELECT current_user`, igual aos demais pools dedicados).
+
+Provisioning (as migrations criam o role `NOLOGIN`; promova como os outros):
+
+```sql
+ALTER ROLE garraia_purge WITH LOGIN PASSWORD '<senha-forte-distinta>';
+```
+
+Depois defina no ambiente do gateway:
+
+```
+GARRAIA_PURGE_DATABASE_URL=postgres://garraia_purge:<senha>@<host>:5432/<banco>
+```
+
+Sem essa variavel o log emite um warn explicito dizendo que o worker nao vai
+nascer — silencio la nao e opcao: um apagamento pedido e nunca executado tem
+de ser visivel.
 
 ## 5. Protecao de terceiros e espacos compartilhados
 
@@ -454,7 +505,8 @@ pedidos concluidos e reexecuta a purga) e trabalho conhecido e nao feito.
 |---|---|
 | `crates/garraia-gateway/src/rest_v1/me.rs` | os quatro endpoints |
 | `crates/garraia-gateway/src/account_purge_worker.rs` | worker do apagamento, carencia, remocao de blob |
-| `crates/garraia-workspace/migrations/034_data_subject_rights.sql` | tabelas de pedido, `users.status = 'purged'`, as quatro funcoes `SECURITY DEFINER` |
+| `crates/garraia-auth/src/purge_pool.rs` | `PurgePool`/`PurgeConfig`: pool dedicado do role `garraia_purge` (EXECUTE-only), validado por `SELECT current_user` |
+| `crates/garraia-workspace/migrations/034_data_subject_rights.sql` | tabelas de pedido, `users.status = 'purged'`, as quatro funcoes `SECURITY DEFINER`, o role `garraia_purge` |
 | `crates/garraia-auth/src/audit_workspace.rs` | `account.email_change_requested`, `account.purge_scheduled`, `account.purged`, `account.purge_failed` |
 | `crates/garraia-gateway/tests/rest_v1_me_data_subject.rs` | testes dos comportamentos novos, incluindo delimitacao cross-tenant |
 | `crates/garraia-gateway/tests/authz_http_matrix.rs` | matriz cross-group dos endpoints |

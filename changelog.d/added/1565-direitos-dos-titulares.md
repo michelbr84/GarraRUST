@@ -29,3 +29,13 @@
   `user_agent` viram NULL): e a unica prova de que o apagamento aconteceu.
   Sem object store ligado o pedido NAO e fechado — declarar `completed` com
   blob vivo seria mentir no audit.
+- **O worker de apagamento roda com credenciais dedicadas e e retomavel.** O
+  role `garraia_purge` (migration 034) tem `EXECUTE` nas quatro funcoes
+  `SECURITY DEFINER` de apagamento e mais nada — nenhuma privilegio de tabela,
+  nao e `BYPASSRLS`; o pool valida `SELECT current_user` igual aos demais
+  dedicados. O worker so nasce se `GARRAIA_PURGE_DATABASE_URL` estiver
+  definida; sem ela o warn no log e explicito e o procedimento manual em
+  `docs/legal/data-subject-requests.md` segue valendo. O progresso (`db_purged`
+  + chaves de blob pendentes) e persistido na propria linha do pedido na mesma
+  transacao dos deletes: uma queda no meio nao reexecuta a passada de banco nem
+  fecha o pedido com blob vivo.
