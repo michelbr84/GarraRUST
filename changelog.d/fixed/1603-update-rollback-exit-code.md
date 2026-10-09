@@ -1,0 +1,1 @@
+- **`garra update` e `garra rollback` deixam de sair com exit 0 na falha (#1603).** Os ramos de erro imprimiam a mensagem no stdout e o processo devolvia sucesso, escondendo a falha de scripts e automacao. A mensagem agora vai para stderr com a cadeia de erro completa e o processo sai com 70 (sysexits `EX_SOFTWARE`), no padrao ja usado por `config check`, `doctor` e `desktop`.
