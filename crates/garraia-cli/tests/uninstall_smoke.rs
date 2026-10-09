@@ -7,7 +7,8 @@
 //! O happy-path de `--all-binaries` deliberadamente nao tem e2e aqui: a
 //! varredura alcancaria `/usr/local/bin` e `/usr/bin` reais e apagaria a
 //! instalacao do contributor. A semantica da varredura e coberta pelos testes
-//! de unidade de `update_scan.rs`.
+//! de unidade de `update_scan.rs`, e o alias que acompanha o binario alheio
+//! pelo `alias_nosso` em `uninstall.rs`.
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -203,6 +203,14 @@ fn monta_plano(
             .unwrap_or_default();
         let system_dirs: Vec<PathBuf> = SYSTEM_BIN_DIRS.iter().map(PathBuf::from).collect();
         for outro in find_other_binaries(&path_dirs, &system_dirs, exe) {
+            // O alias `garra` ao lado do binario alheio e nosso tambem: o
+            // `find_other_binaries` deduplica por canonico, entao o symlink
+            // que aponta para este binario nunca aparece na lista — sem esta
+            // checagem a varredura apaga o binario e deixa o alias pendurado.
+            #[cfg(unix)]
+            if let Some(alias) = alias_nosso(&outro.path) {
+                plano.alvos.push((Alvo::Arquivo(alias), "alias"));
+            }
             plano
                 .alvos
                 .push((Alvo::Arquivo(outro.path), "outro binario"));
@@ -370,4 +378,72 @@ fn remover(alvo: &Alvo, binario: &Path) -> Result<Option<String>> {
 
 fn existe(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok()
+}
+
+/// O alias nosso ao lado de `binario` (outro binario da varredura): no Unix,
+/// o symlink `garra` que canoniza para ele; no Windows, o shim `garra.cmd` do
+/// install.ps1, que e sempre nosso. So o alias — o binario entra no plano por
+/// conta propria.
+#[cfg(unix)]
+fn alias_nosso(binario: &Path) -> Option<PathBuf> {
+    let dir = binario.parent()?;
+    let alias = dir.join("garra");
+    let meta = std::fs::symlink_metadata(&alias).ok()?;
+    if !meta.file_type().is_symlink() {
+        return None;
+    }
+    // Canonico dos dois lados: o binario da varredura pode vir de um diretorio
+    // que e em si symlink (PATH com `/home/u/bin -> ...`).
+    let aponta = std::fs::canonicalize(&alias).ok()? == std::fs::canonicalize(binario).ok()?;
+    aponta.then_some(alias)
+}
+
+/// Variante Windows: o shim `garra.cmd` do install.ps1, que e sempre nosso.
+#[cfg(windows)]
+fn alias_nosso(binario: &Path) -> Option<PathBuf> {
+    let shim = binario.parent()?.join("garra.cmd");
+    existe(&shim).then_some(shim)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regressao do E2E de uninstall em Linux: a varredura `--all-binaries`
+    /// apagava o binario alheio e deixava o alias `garra` do mesmo diretorio
+    /// pendurado apontando para o nada.
+    #[cfg(unix)]
+    #[test]
+    fn alias_nosso_aponta_para_o_binario_e_nao_para_outro_lugar() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let binario = dir.join("garraia");
+        std::fs::write(&binario, b"bin").expect("write");
+        let alias = dir.join("garra");
+        std::os::unix::fs::symlink(&binario, &alias).expect("symlink");
+
+        assert_eq!(alias_nosso(&binario).as_deref(), Some(alias.as_path()));
+
+        // Symlink para outro lugar nao e nosso: fica.
+        let terceiro = dir.join("outra-coisa");
+        std::fs::write(&terceiro, b"x").expect("write");
+        std::fs::remove_file(&alias).expect("rm");
+        std::os::unix::fs::symlink(&terceiro, &alias).expect("symlink");
+        assert_eq!(alias_nosso(&binario), None);
+
+        // Arquivo real no lugar do alias tambem nao e nosso.
+        std::fs::remove_file(&alias).expect("rm");
+        std::fs::write(&alias, b"nao-sou-symlink").expect("write");
+        assert_eq!(alias_nosso(&binario), None);
+    }
+
+    /// O binario sem alias ao lado e so o binario: nada a acrescentar.
+    #[cfg(unix)]
+    #[test]
+    fn alias_nosso_ausente_devolve_nada() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let binario = tmp.path().join("garraia");
+        std::fs::write(&binario, b"bin").expect("write");
+        assert_eq!(alias_nosso(&binario), None);
+    }
 }
