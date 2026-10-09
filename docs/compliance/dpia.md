@@ -1,6 +1,6 @@
 # GarraIA — Data Protection Impact Assessment (DPIA)
 
-- **Status:** Draft v1 (2026-04-21) — **pending external legal review antes do GA**
+- **Status:** Draft v1.1 (2026-10-09) — **pending external legal review antes do GA** (a revisão legal externa segue **pendente**; ver Aviso legal — este DPIA continua sendo o relatório técnico, não registro de revisão jurídica concluída)
 - **Owner:** @michelbr84
 - **Issue:** [GAR-399](https://linear.app/chatgpt25/issue/GAR-399)
 - **Plan:** [`plans/0031-compliance-docs-batch.md`](../../plans/0031-compliance-docs-batch.md)
@@ -93,6 +93,8 @@ Fonte: schema Postgres em `crates/garraia-workspace/migrations/*.sql` + schema S
 | `tool_calls` | JSONB | Metadata | Legítimo interesse | Com body |
 
 **Atenção especial**: mensagens podem conter **dados pessoais sensíveis** (LGPD art. 5 II / GDPR art. 9). O operador **DEVE** documentar em TOS que sensíveis podem emergir em conversas e obter **consentimento específico** (LGPD art. 11 / GDPR art. 9.2.a) quando aplicável.
+
+**Nota de divergência doc-vs-código (2026-10-09)**: a coluna `groups.settings_jsonb.retention_days` (default 730 dias) é a *intenção de design* documentada aqui; a implementação atual não traz essa coluna nas migrations do workspace — os defaults operando hoje são `memory.retention.max_age_days` = 90 dias, limpeza de sessões de 90 dias (`garraia-db` retention) e `runs.retention_days` = 0 (nunca apagar). A política de retenção vigente está registrada em [`../legal/privacy-policy-draft.md`](../legal/privacy-policy-draft.md) §7; a divergência é **pendência de implementação/verificação**, não mudança de base legal.
 
 ### 2.6 `memory_items` + `memory_embeddings`
 
@@ -297,15 +299,20 @@ Tabela consolidada mínima (para expansão pelo DPO):
 
 ---
 
-## 6.1. LIA (Legitimate Interests Assessment) pendente
+## 6.1. LIA (Legitimate Interests Assessment) — rascunho criado, revisão externa pendente
 
-O DPIA invoca "legítimo interesse" (LGPD art. 7 IX / GDPR art. 6.1.f) como base legal para retenção de `ip_inet` + `user_agent` em `sessions` (finalidade antifraude). **Antes do GA**, o operador deve conduzir um LIA formal conforme orientação da EDPB:
+O DPIA invoca "legítimo interesse" (LGPD art. 7 IX / GDPR art. 6.1.f) como base legal para retenção de `ip_inet` + `user_agent` em `sessions` (finalidade antifraude). O LIA formal foi estruturado conforme a orientação da EDPB:
 
 1. **Purpose test** — finalidade é legítima? (antifraude → sim, há interesse legítimo de proteção do serviço contra credential stuffing e session hijack).
 2. **Necessity test** — o tratamento é necessário? (IP + UA são sinais mínimos para detectar fraude; alternativas como fingerprinting de device seriam mais invasivas).
-3. **Balancing test** — o interesse do operador supera o direito à privacidade do titular? (documentar em `docs/compliance/lia-sessions.md` a criar, especialmente em relação a retention de 90 dias).
+3. **Balancing test** — o interesse do operador supera o direito à privacidade do titular? (retention de 90 dias, salvaguardas de acesso e limitações de uso).
 
-Sem o LIA documentado, a invocação de legítimo interesse é frágil perante auditoria ANPD. Este DPIA v1 **marca** mas **não substitui** o LIA.
+**Status em 2026-10-09:**
+
+- Rascunho técnico do LIA criado em [`lia.md`](lia.md), cobrindo os três testes, retention, salvaguardas e reavaliação.
+- Decisão de governança do dono registrada em `lia.md` §6, **condicionada** à análise documentada e à revisão por advogado externo.
+- **Revisão legal externa do LIA: pendente** — o mesmo gate do Aviso legal deste DPIA. Este DPIA continua a **marcar** e a **não substituir** o LIA; a existência do rascunho não equivale a parecer jurídico concluído.
+- Hipótese separada de obrigação legal (registros de acesso, Marco Civil art. 15 — 6 meses) está tratada em `lia.md` §6 como base legal distinta, não como legítimo interesse.
 
 ## 6.2. Contrato de processamento de dados (DPA / Cláusulas de processamento)
 
@@ -363,12 +370,12 @@ Sem o LIA documentado, a invocação de legítimo interesse é frágil perante a
 
 ## 9. Próximos passos
 
-1. **Contratar review legal** (advogado LGPD/GDPR) para validar este DPIA antes do GA.
+1. **Contratar review legal** (advogado LGPD/GDPR) para validar este DPIA antes do GA — **segue pendente** (decisão 2026-10-09: manter este documento como relatório técnico; revisão externa não registrada como concluída).
 2. **Designar DPO** conforme LGPD art. 41 (pessoa física ou jurídica).
-3. ~~**Implementar GAR-400** (endpoints de export/delete/anonymize)~~ — **CONCLUÍDO 2026-10-07**: `GET /v1/me/export`, `POST /v1/me/anonymize`, `DELETE /v1/me` e `PATCH /v1/me` implementados no gateway (plans 0343/0344/GAR-884/GAR-885 e plan 0110/GAR-599); status detalhado na §5. Restam: escopo de arquivo (messages/files) na exportação, verificação do SLA de 30s e correção de email com re-verificação.
-4. **Publicar TOS + Privacy Policy** em `garraia.org/legal`.
-5. **Executar tabletop exercise** do runbook de incidentes (GAR-409) pelo menos uma vez antes do GA.
-6. **Revisar este DPIA trimestralmente** — próxima: 2026-07-21.
+3. ~~**Implementar GAR-400** (endpoints de export/delete/anonymize)~~ — **CONCLUÍDO 2026-10-07**: `GET /v1/me/export`, `POST /v1/me/anonymize`, `DELETE /v1/me` e `PATCH /v1/me` implementados no gateway (plans 0343/0344/GAR-884/GAR-885 e plan 0110/GAR-599); status detalhado na §5. Restam: escopo de arquivo (messages/files) na exportação — **engenharia em progresso em branch separada** (decisão de escopo registrada em 2026-10-09; este DPIA só muda quando o código tiver a feature) —, verificação do SLA de 30s e correção de email com re-verificação.
+4. **Publicar TOS + Privacy Policy** em `garraia.org/legal` — rascunhos em `docs/legal/` (2026-10-09), aguardando identificação do controlador/entidade e publicação.
+5. **Executar tabletop exercise** do runbook de incidentes (GAR-409) pelo menos uma vez antes do GA — roteiro de 1h pronto em `incident-response.md` §11; **execução com data real pendente**.
+6. **Revisar este DPIA trimestralmente** — próxima revisão a marcar na cadence corrente.
 
 ---
 

@@ -19,6 +19,10 @@
 
 Isso **não impede** SLA futuro: entra com oferta cloud operada ou suporte
 contratual (ver `docs/operations/support-policy.md` e a issue de negócio).
+Posição registrada em 2026-10-09 para o beta do Garra Cloud (planejado):
+**lançar sem percentual contratual de uptime**, comunicando disponibilidade
+de forma clara; SLA numérico, se vier, será em contrato enterprise
+específico (ver `docs/src/pricing.md` e `docs/legal/tos-draft.md` §6).
 
 ## Opções para o maintainer (quando quiser definir)
 
