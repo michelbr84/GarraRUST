@@ -177,7 +177,13 @@ impl GatewayServer {
         // below) `.env` provisioned channels but never providers, so an
         // embedder of `Server` got working Telegram and zero LLMs. Idempotent,
         // and it never overwrites an already-set variable.
-        if let Err(e) = dotenvy::dotenv() {
+        //
+        // `from_path` e nao `dotenv()`: o `Finder` do `dotenv()` (e do
+        // `from_filename`) recursa em `directory.parent()` ate achar um
+        // `.env`, injetando variaveis de um diretorio pai na subida do
+        // gateway — mesmo problema corrigido na CLI (main.rs). `from_path` e
+        // `File::open` puro, restrito ao diretorio atual.
+        if let Err(e) = dotenvy::from_path(".env") {
             tracing::debug!("no .env file loaded: {e}");
         }
 

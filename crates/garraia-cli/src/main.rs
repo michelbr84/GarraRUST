@@ -1818,8 +1818,15 @@ fn main() -> Result<()> {
         eprintln!("Aviso de seguranca: {}", hardening.describe());
     }
 
-    // Attempt to load .env file from the current directory, ignoring errors if missing
-    dotenvy::dotenv().ok();
+    // Carrega `.env` APENAS do diretorio atual. Tanto `dotenvy::dotenv()` quanto
+    // `dotenvy::from_filename(".env")` fazem walk-up pelos pais ate achar um
+    // `.env` (o `Finder` de find.rs:33 recursa em `directory.parent()`), e um
+    // arquivo na raiz do repo ou num diretorio pai injeta variaveis
+    // (`GARRAIA_CONFIG_DIR`, `GARRAIA_EXECUTION_PROFILE`, credenciais...) em
+    // todo comando rodado de dentro de uma subpasta — envenenamento silencioso
+    // de ambiente por ascendencia. `from_path` e `File::open` puro, sem busca:
+    // o unico do crate restrito de fato ao CWD.
+    dotenvy::from_path(".env").ok();
 
     // `garra` and `garra --model qwen3.8` both open the chat REPL: argv that
     // carries only flags gets `chat` spliced in before clap sees it. See
