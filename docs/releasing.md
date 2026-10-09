@@ -144,7 +144,7 @@ tag-push — o `deploy.yml` (imagem ghcr) precisa então de dispatch manual com
 
 | Workflow | Publica |
 |---|---|
-| `release.yml` | Binários linux-x86_64/arm64, windows x86_64/arm64, macos-intel/arm64 + os archives correspondentes + pacotes Linux (`.deb`/`.rpm`/AppImage) + `install.sh` + `install.ps1` + os instaladores desktop do Windows + `SHA256SUMS` **e** um `<asset>.sha256` por asset (obrigatório: `garra update` lê o per-asset — `crates/garraia-cli/src/update.rs`) numa GitHub Release com notas geradas |
+| `release.yml` | Binários linux-x86_64/arm64, windows x86_64/arm64, macos-intel/arm64 + os archives correspondentes + pacotes Linux (`.deb`/`.rpm`/AppImage) + `install.sh` + `install.ps1` + os instaladores desktop do Windows + `SHA256SUMS` **e** um `<asset>.sha256` por asset (obrigatório: `garra update` lê o per-asset — `crates/garraia-cli/src/update.rs`) + o `latest.json` do updater desktop + uma **attestation de proveniência** por asset, numa GitHub Release com notas geradas |
 | `deploy.yml` | Imagem `ghcr.io/michelbr84/garraia` multi-arch (amd64+arm64), tags `X.Y.Z`, `X.Y` e sha |
 
 Assets da `release.yml`, em detalhe:
@@ -161,6 +161,8 @@ Assets da `release.yml`, em detalhe:
 | `garraia-desktop-linux-x86_64.deb` / `.AppImage` | job `build-linux-desktop` (bundler do Tauri via `scripts/build-desktop-linux.sh`) | **best-effort**; AppImage ~80-100MB (embute webkit2gtk) |
 | `garraia-mobile-android.apk` | job `build-android-apk` (Flutter, `apps/garraia-mobile`) | **best-effort**; assinado com os secrets `ANDROID_KEYSTORE_*` quando existem, senão com a keystore de debug do runner (o job avisa) |
 | `SHA256SUMS` + um `<asset>.sha256` por asset | step `Generate checksums` | sim |
+| `latest.json` (updater do desktop Tauri) | step `Generate latest.json` (`scripts/release/latest-json.py`, #1568/#1590) | sim — fail-closed: sem nenhum artefato de updater com `.sig` o step recusa |
+| attestation de proveniência por asset (`gh attestation verify`) | step `Attest build provenance` (`actions/attest-build-provenance@v4`) | sim — ver §4.3 |
 
 **Por que os binários crus continuam publicados.** `garra update` resolve o
 asset por nome exato (`update.rs:42-48`) e exige o `<asset>.sha256` irmão
@@ -182,29 +184,34 @@ SHA-256, e uma falha deles não pode bloquear a release (ADR 0015).
 Pré-releases: versões com `alpha`/`beta`/`rc` no nome são marcadas como
 prerelease automaticamente.
 
-## Débito conhecido: auto-updater do desktop Tauri
+## Auto-updater do desktop Tauri (ativo desde a v0.4.8)
 
-`crates/garraia-desktop/src-tauri/tauri.conf.json` declara um endpoint de
-updater apontando para um `latest.json` que **nenhum workflow gera**, com
-`pubkey` vazio. A falha é visível, não silenciosa: `commands.rs:102-112` retorna
-`Err` e `tray.rs:158-166` imprime o erro — quem clicar em "Check for Updates"
-vê uma mensagem de erro, e nada se atualiza sozinho em background. O caminho de
-atualização suportado do produto é o `garra update` da CLI, que não é afetado.
+O updater do app desktop está **ligado e publicado** desde #1568 (PR #1586,
+2026-10-07) e consertado de ponta a ponta pelo #1590 (2026-10-08):
 
-Para reativá-lo, numa PR própria e nesta ordem:
+- `tauri.conf.json` aponta para `releases/latest/download/latest.json` com a
+  `pubkey` do signer preenchida, e `bundle.createUpdaterArtifacts` liga a
+  emissão dos `.tar.gz`/`.zip` de updater com a `.sig` ao lado.
+- O step `Generate latest.json` do `release.yml` monta o arquivo a partir dos
+  `.sig` estagiados (`scripts/release/latest-json.py`) e o publica como
+  asset. O gerador é **fail-closed**: sem nenhum artefato de updater com
+  `.sig`, o step recusa (exit 1) em vez de publicar um `latest.json` vazio.
+- **Plataformas ausentes são omitidas**, não viram entrada vazia: um build
+  best-effort que não saiu contribui menos assinatura, não uma entrada quebra.
 
-1. `cargo tauri signer generate -w ~/.tauri/garraia.key` (local).
-2. Criar os secrets `TAURI_SIGNING_PRIVATE_KEY` e
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` no repositório — **ação manual**, um
-   agente não cria secrets.
-3. Preencher `plugins.updater.pubkey`, ligar `bundle.createUpdaterArtifacts`,
-   exportar os dois secrets como `env:` no job do Tauri e gerar o `latest.json`
-   a partir dos `.sig` assinados.
+Limite da primeira release com o updater (v0.4.8): o tag saiu **antes** do
+#1590, então o `latest.json` publicado cobre só `linux-x86_64` e
+`darwin-aarch64` — sem `windows-x86_64` (os `.nsis.zip`/`.msi.zip` com `.sig`
+não existiam ainda) e sem `darwin-x86_64` (macOS Intel não buildou). Nas
+releases seguintes o Windows entra no `latest.json` sempre que o job
+best-effort do instalador Windows passar.
 
-Não foi feito junto com a revival do MSI de propósito: removê-lo exigiria editar
-`lib.rs:25`, `commands.rs`, `tray.rs` e `capabilities/default.json` num crate que
-o CI nunca havia compilado, empilhando duas mudanças não verificadas na mesma
-entrega.
+O caminho de atualização da **CLI** (`garra update`) é separado e não é
+afetado por nada desta seção — ele segue no `<asset>.sha256` por asset
+(regra 15). Os `.sig` do updater Tauri e as attestations do GitHub são
+canais distintos e ambos verificáveis: `gh attestation verify` para os
+assets crus (§4.3), e o próprio updater do app para os artefatos assinados
+com a chave do Tauri.
 
 ## 4. Verificar
 
@@ -214,7 +221,9 @@ entrega.
 2. `https://github.com/michelbr84/GarraRUST/releases/latest` aponta para a
    versão nova, com todos os assets e seus `.sha256`, e os 5 nomes crus da
    release anterior presentes **byte-idênticos** (superfície do `garra
-   update`, regra 15).
+   update`, regra 15). O `latest.json` do updater desktop (o mesmo que o app
+   consulta) deve listar as plataformas cujos jobs best-effort passaram —
+   plataforma faltando ali = aquele build não saiu nesta release.
 3. Attestations: `gh attestation verify garraia-linux-x86_64
    -R michelbr84/GarraRUST --tag vX.Y.Z` — o step `Attest build provenance`
    do `release.yml` assina cada asset com a identidade do workflow; verificar
