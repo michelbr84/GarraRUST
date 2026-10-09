@@ -152,8 +152,10 @@ Everything in the rest of this section is about the **Cloud API** channel. The
 linked-device channel is documented in [`whatsapp.md`](whatsapp.md) and decided
 in [ADR 0023](adr/0023-whatsapp-dispositivo-vinculado.md). `garra whatsapp`
 pairs the device and stores the encrypted session; the gateway side that
-delivers incoming messages to the agent is a separate slice, so there is no
-`whatsapp_linked` entry to put in `config.yml` yet.
+delivers incoming messages to the agent runs as its own channel, configured
+with a `whatsapp_linked` entry in `config.yml` (`type: whatsapp_linked`,
+plus the access policy of [ADR 0025](adr/0025-classes-de-capacidade-e-politica-de-acesso-v2.md)) —
+the full entry and the `owners`/`allow` lists are in [`whatsapp.md`](whatsapp.md).
 
 ### Setup
 

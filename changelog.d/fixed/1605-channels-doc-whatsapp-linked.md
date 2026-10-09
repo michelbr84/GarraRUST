@@ -1,0 +1,1 @@
+- docs(channels): `channels.md` para de dizer que `whatsapp_linked` nao existe no `config.yml` — o canal de dispositivo vinculado tem canal proprio na `garraia-channels`, validacao no `config check` e entrada documentada (`type: whatsapp_linked`) no `whatsapp.md` com a Access Policy v2 do ADR 0025; o texto antigo apontava para uma ausencia que ja nao existe (#1605)
