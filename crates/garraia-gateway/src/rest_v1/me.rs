@@ -5470,6 +5470,33 @@ pub async fn anonymize_me(
 mod tests {
     use super::*;
 
+    /// Fronteira do teto, lado de la: exatamente `cap` linhas NAO e
+    /// truncamento — o fetch pediu `cap + 1` justamente para `len > cap`
+    /// ser o unico sinal honesto, e declarar corte onde nada foi cortado
+    /// seria mentira simetrica da outra.
+    #[test]
+    fn cap_section_exactly_at_cap_is_not_truncation() {
+        let mut rows: Vec<u8> = vec![0; 4];
+        let mut truncated = Vec::new();
+        cap_section(&mut rows, 4, "messages", &mut truncated);
+        assert_eq!(rows.len(), 4, "rows at the cap must not be cut");
+        assert!(
+            truncated.is_empty(),
+            "exactly-at-cap must not record a truncation"
+        );
+    }
+
+    /// Fronteira do teto, lado de fora: `cap + 1` (a linha-sentinela) e
+    /// truncada e registrada — e a sentinela nunca sobrevive no resultado.
+    #[test]
+    fn cap_section_one_past_cap_truncates_and_records() {
+        let mut rows: Vec<u8> = vec![0; 5];
+        let mut truncated = Vec::new();
+        cap_section(&mut rows, 4, "messages", &mut truncated);
+        assert_eq!(rows.len(), 4, "the sentinel row must be dropped");
+        assert_eq!(truncated, vec!["messages".to_string()]);
+    }
+
     #[test]
     fn me_response_serializes_without_group_when_absent() {
         let body = MeResponse {

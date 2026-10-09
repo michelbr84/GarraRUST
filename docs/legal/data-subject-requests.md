@@ -256,6 +256,12 @@ Ao fim, `users.status = 'purged'` e emite `account.purged` com o relatorio
 **estrutural** (contagem por tabela, contadores de blob) — nunca o conteudo
 apagado.
 
+Uma excecao honesta: num **retomada** (a passada anterior commitou o banco
+e morreu antes dos blobs) o relatorio traz `db: {"resumed": true}` no lugar
+das contagens por tabela — elas viveram na passada que morreu, e gravar
+zeradas seria declarar falso. Os contadores de blob
+(`blobs_deleted`/`blobs_failed`) estao presentes nos dois casos.
+
 ### Por que a linha de `users` sobrevive
 
 **Nao e descuido.** `DELETE FROM users` e estruturalmente impossivel: cinco

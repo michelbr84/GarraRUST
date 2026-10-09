@@ -186,6 +186,13 @@ pub async fn run_purge_tick(
     // A partir daqui a sessao de `conn` detem o lock. Todo caminho de
     // saida passa pela liberacao abaixo — inclusive o `?` interno, que
     // escapa com o erro ANTES do unlock, e e cuidado aqui em cima.
+    //
+    // `locked_tick` nao tem path panicavel hoje (sem `unwrap`/`expect`,
+    // tudo via `?`). Se um aparecer, o unwind devolve `conn` ao pool com
+    // o lock de sessao ainda ativo e a varredura do banco para ate o
+    // backend morrer — `catch_unwind` aqui nao vale o custo enquanto nao
+    // houver panic real; este comentario e o alarme para revisitar se
+    // algum aparecer.
     let result = locked_tick(&mut conn, app_pool.as_ref(), object_store.as_ref(), config).await;
 
     // Liberar na MESMA sessao que pegou. `pg_advisory_unlock` devolve
@@ -291,7 +298,7 @@ async fn locked_tick(
                     report.audit_failed += 1;
                     warn!(
                         request_id = %request_id,
-                        error = %e,
+                        error = %sanitize_sqlx_error(&e),
                         "account_purge_worker: audit insert failed AFTER a successful purge"
                     );
                 }
@@ -317,7 +324,10 @@ async fn locked_tick(
                     request_id = %request_id,
                     attempts = attempts,
                     terminal = terminal,
-                    error = %e,
+                    // O MESMO texto sanitizado que foi persistido em
+                    // `last_error`: log e tabela falam igual, sem a mensagem
+                    // crua de Postgres (que pode citar valores).
+                    error = %sanitize_sqlx_error(&e),
                     "account_purge_worker: purge attempt failed"
                 );
 
@@ -334,7 +344,7 @@ async fn locked_tick(
                     report.audit_failed += 1;
                     warn!(
                         request_id = %request_id,
-                        error = %audit_err,
+                        error = %sanitize_sqlx_error(&audit_err),
                         "account_purge_worker: failure-audit insert failed"
                     );
                 }
@@ -357,16 +367,20 @@ async fn locked_tick(
     Ok(report)
 }
 
-/// Reduz um erro de `sqlx` a uma linha segura para `last_error`.
+/// Reduz um erro de `sqlx` a uma linha segura para `last_error` e log.
 ///
 /// Erros `Database` do Postgres carregam `message()` com valores dentro
 /// (violacao de unique mostra a chave, violacao de CHECK mostra o valor
 /// rejeitado) — persistir isso em `account_deletion_requests.last_error`
 /// espalharia dado pessoal de um titular em auditavel nao-pessoal. O que
 /// fica e a classe do erro, o SQLSTATE e o nome da constraint, que juntos
-/// apontam a causa sem copiar o dado. As demais variantes (`Configuration`,
-/// `PoolTimedOut`, `Io`…) sao texto de infraestrutura, sem dado de tenant,
-/// e o Display e o bastante — truncado por garantia.
+/// apontam a causa sem copiar o dado.
+///
+/// As demais variantes passam pelo Display truncado — mas `Configuration`
+/// carrega texto que ESTE modulo construiu, entao quem monta a mensagem e
+/// responsavel por nao embutir dado de tenant nela: `purge_one` redige o
+/// `StorageError` ([`sanitize_storage_error`]) antes de embutir, e os
+/// demais `Configuration` sao so contagens e UUIDs.
 fn sanitize_sqlx_error(err: &sqlx::Error) -> String {
     const MAX_LEN: usize = 200;
 
@@ -388,6 +402,39 @@ fn sanitize_sqlx_error(err: &sqlx::Error) -> String {
         format!("{}…", &text[..cut])
     } else {
         text
+    }
+}
+
+/// Reduz um [`garraia_storage::StorageError`] a uma linha segura, SEM a
+/// chave do objeto.
+///
+/// O Display de `StorageError` cita a chave em varias variantes
+/// (`object not found: {key}`, `integrity check failed for {key}: …`,
+/// `invalid object key: {0}`), e a chave embute `group_id`/`file_id` —
+/// correlacionar tenant e falha e exatamente o que o docblock do modulo
+/// diz para nao fazer, e `last_error` e auditavel. O que fica e a classe
+/// do erro, que aponta a causa sem copiar o dado. Variantes cujo payload
+/// nao pode conter a chave (nome da operacao, MIME rejeitado, TTLs) sao
+/// preservadas; `Io` traz so a mensagem do OS (o `LocalFs` converte o
+/// `io::Error` cru, sem path), e `Backend` e texto arbitrario do SDK —
+/// esse vaia por completo.
+fn sanitize_storage_error(err: &garraia_storage::StorageError) -> String {
+    use garraia_storage::StorageError as S;
+    match err {
+        S::InvalidKey(_) => "invalid object key".to_string(),
+        S::NotFound { .. } => "object not found".to_string(),
+        S::Io(io_err) => format!("io error: {io_err}"),
+        S::Unsupported(op) => format!("operation not supported: {op}"),
+        S::IntegrityMismatch { .. } => "integrity check failed".to_string(),
+        S::DisallowedMime { content_type } => {
+            format!("content-type not in allow-list: {content_type}")
+        }
+        S::TtlOutOfRange {
+            requested_secs,
+            min_secs,
+            max_secs,
+        } => format!("presigned ttl {requested_secs}s out of range [{min_secs}s, {max_secs}s]"),
+        S::Backend(_) => "backend error".to_string(),
     }
 }
 
@@ -460,15 +507,19 @@ async fn purge_one(
             Err(e) => {
                 blobs_failed += 1;
                 // A chave e derivada de `{group_id}/{file_uuid}/v{N}` e nao
-                // carrega nome de arquivo; ainda assim so o erro vai para o
-                // log, sem a chave, para nao correlacionar tenant e falha.
+                // carrega nome de arquivo — mas o Display de `StorageError`
+                // EMBARCA a chave, e ela embute `group_id`. Log e
+                // `first_error` (que vira `last_error` via
+                // `sanitize_sqlx_error`) recebem so a CLASSE do erro, nunca
+                // a chave: nao correlacionar tenant e falha.
+                let redacted = sanitize_storage_error(&e);
                 warn!(
                     user_id = %user_id,
-                    error = %e,
+                    error = %redacted,
                     "account_purge_worker: ObjectStore delete failed"
                 );
                 if first_error.is_none() {
-                    first_error = Some(e.to_string());
+                    first_error = Some(redacted);
                 }
             }
         }
@@ -570,7 +621,7 @@ pub fn spawn_account_purge_worker(
                     }
                 }
                 Err(e) => {
-                    warn!(error = %e, "account_purge_worker: tick failed");
+                    warn!(error = %sanitize_sqlx_error(&e), "account_purge_worker: tick failed");
                 }
             }
         }
@@ -633,5 +684,45 @@ mod tests {
     #[test]
     fn advisory_lock_key_is_stable() {
         assert_eq!(PURGE_LOCK_KEY, "account_purge");
+    }
+
+    /// O Display de `StorageError` embarca a chave do objeto, e a chave
+    /// embute `group_id` — log e `last_error` nao podem recebe-la. Se uma
+    /// variante nova (ou um bump de `garraia-storage`) passar a citar a
+    /// chave de um jeito nao coberto aqui, este teste e o alarme.
+    #[test]
+    fn storage_error_redaction_drops_key_and_group() {
+        let group = "11111111-1111-1111-1111-111111111111";
+        let key = format!(
+            "groups/{group}/files/22222222-2222-2222-2222-222222222222/v1/33333333-3333-3333-3333-333333333333"
+        );
+        let cases = vec![
+            garraia_storage::StorageError::InvalidKey(key.clone()),
+            garraia_storage::StorageError::NotFound { key: key.clone() },
+            garraia_storage::StorageError::IntegrityMismatch {
+                key: key.clone(),
+                reason: "sha256 mismatch".to_string(),
+            },
+            garraia_storage::StorageError::Backend(format!("s3 delete failed for {key}")),
+        ];
+
+        for err in cases {
+            let redacted = sanitize_storage_error(&err);
+            assert!(
+                !redacted.contains(&key),
+                "object key leaked into log/last_error: {redacted}"
+            );
+            assert!(
+                !redacted.contains(group),
+                "group id leaked into log/last_error: {redacted}"
+            );
+        }
+
+        // Payloads que nao podem conter a chave sao preservados — a linha
+        // continua apontando a causa.
+        let mime = garraia_storage::StorageError::DisallowedMime {
+            content_type: "text/x-executable".to_string(),
+        };
+        assert!(sanitize_storage_error(&mime).contains("text/x-executable"));
     }
 }
