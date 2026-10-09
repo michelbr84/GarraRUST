@@ -32,6 +32,7 @@ mod systemd_guard;
 mod team;
 mod tracing_setup;
 mod ui;
+mod uninstall;
 mod update;
 mod update_scan;
 mod verify;
@@ -227,6 +228,24 @@ enum Commands {
 
     /// Roll back to the previous version
     Rollback,
+
+    /// Uninstall this CLI (binary, alias, Termux wrappers; --purge adds config and data dirs)
+    ///
+    /// Exit codes: 0 done or nothing to do · 1 cancelled at the prompt · 64 no
+    /// terminal and no `--yes` (EX_USAGE) · 70 a removal failed (EX_SOFTWARE) ·
+    /// 78 the daemon belongs to a systemd unit (EX_CONFIG) — removing the
+    /// binary from under a managed unit leaves it crash-looping.
+    Uninstall {
+        /// Skip the confirmation prompt (required when stdin is not a terminal)
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Also remove the config dir, the data dir and the legacy ~/.garraia
+        #[arg(long)]
+        purge: bool,
+        /// Also scan the PATH and system dirs for other garraia/garra binaries
+        #[arg(long)]
+        all_binaries: bool,
+    },
 
     /// Test and debug glob patterns
     Glob {
@@ -1752,6 +1771,7 @@ fn sigpipe_padrao_para(command: &Commands) -> bool {
         | Commands::Init
         | Commands::Update { .. }
         | Commands::Rollback
+        | Commands::Uninstall { .. }
         | Commands::MaxPower { .. }
         | Commands::Verify { .. } => false,
     }
@@ -1995,6 +2015,26 @@ fn main() -> Result<()> {
     // init` — the desktop installer is often the first thing a user runs.
     if let Commands::Desktop { status, no_launch } = cli.command {
         let code = desktop::run(status, no_launch, desktop::locate(), &desktop::RealLauncher);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // `garra uninstall` must run on a machine whose config.yml is broken or
+    // absent — uninstalling because the config broke is a real scenario. Same
+    // early-intercept contract as `desktop`/`verify`: no `load()` above.
+    if let Commands::Uninstall {
+        yes,
+        purge,
+        all_binaries,
+    } = cli.command
+    {
+        let code = uninstall::run(uninstall::Pedido {
+            yes,
+            purge,
+            all_binaries,
+        })?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -3261,6 +3301,12 @@ async fn async_main(
             // must not require a loadable gateway config — the desktop
             // installer is often the first thing a user runs.
             unreachable!("Commands::Desktop is intercepted in main() before async_main");
+        }
+        Commands::Uninstall { .. } => {
+            // Handled in main() before the async runtime starts: uninstalling
+            // because config.yml is broken is a real scenario, so the command
+            // must not pass through the global `load()`.
+            unreachable!("Commands::Uninstall is intercepted in main() before async_main");
         }
     }
 
