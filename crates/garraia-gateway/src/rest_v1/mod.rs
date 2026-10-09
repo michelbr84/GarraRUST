@@ -274,6 +274,14 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                     get(groups::get_member).delete(groups::delete_member),
                 )
                 .route("/v1/invites/{token}/accept", post(invites::accept_invite))
+                // #1565 — as duas operacoes destrutivas ou mutaveis do
+                // perfil compartilham o bucket `members_manage` (20/min,
+                // burst 5): PATCH muda e-mail (flow de confirmacao novo) e
+                // DELETE enfileira o apagamento definitivo da conta com
+                // carencia. GET /v1/me fica ilimitado (leitura barata, o
+                // app abre com ele) — o Axum funde os MethodRouters do
+                // mesmo path por metodos disjuntos.
+                .route("/v1/me", patch(me::patch_me).delete(me::delete_me))
                 .layer(axum::middleware::from_fn_with_state(
                     rate_limit_state.clone(),
                     rate_limit_layer_authenticated,
@@ -334,10 +342,10 @@ pub fn router(app_state: Arc<AppState>) -> Router {
                 // Plan 0331 (GAR-871) — POST/GET /v1/me/api-keys + GET/DELETE /v1/me/api-keys/{id}.
                 // Plan 0335 (GAR-876) — PATCH /v1/me/password (change own password).
                 // Plan 0342 (GAR-884) — DELETE /v1/me (self-service account soft-deletion).
-                .route(
-                    "/v1/me",
-                    get(me::get_me).patch(me::patch_me).delete(me::delete_me),
-                )
+                // #1565 — PATCH e DELETE sao rate-limited e vem via
+                // `rate_limited_routes` (acima), nao aqui; so GET fica
+                // ilimitado.
+                .route("/v1/me", get(me::get_me))
                 .route("/v1/me/mentions", get(me::list_my_mentions))
                 .route("/v1/me/tasks", get(me::list_my_tasks))
                 .route("/v1/me/chats", get(me::list_my_chats))

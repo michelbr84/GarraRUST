@@ -18,13 +18,14 @@
 //! | `GARRAIA_LOGIN_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_login` BYPASSRLS role. |
 //! | `GARRAIA_SIGNUP_DATABASE_URL` | yes | Postgres URL connecting as the `garraia_signup` BYPASSRLS role. |
 //! | `GARRAIA_APP_DATABASE_URL` | **optional** | Postgres URL connecting as the `garraia_app` RLS-enforced role. Used by `/v1/*` handlers outside the auth flow. When absent, `/v1/groups` and future write endpoints fail-soft to 503; `/v1/me` still works. Added in plan 0016 M1. |
+//! | `GARRAIA_PURGE_DATABASE_URL` | **optional** | Postgres URL connecting as the `garraia_purge` EXECUTE-only role (migration 034, #1565). Used exclusively by the `account_purge_worker` to call the four `SECURITY DEFINER` purge functions. When absent, the worker does not spawn and `DELETE /v1/me` still enqueues requests — the manual procedure in `docs/legal/data-subject-requests.md` stays functional. Deliberately a SEPARATE URL from `GARRAIA_APP_DATABASE_URL`: sharing one would collapse the role separation that keeps purge capability out of app credentials. |
 //!
 //! When any **required** var is missing, [`AuthConfig::from_env`] returns
 //! `Ok(None)` (NOT an error) so the gateway boots in fail-soft mode with the
 //! `/v1/auth/*` endpoints disabled. The bootstrap layer logs a warning.
-//! `GARRAIA_APP_DATABASE_URL` is optional and does NOT trigger fail-soft
-//! — its absence only degrades the `/v1/*` handler surface, not the auth
-//! flow.
+//! `GARRAIA_APP_DATABASE_URL` and `GARRAIA_PURGE_DATABASE_URL` are optional
+//! and do NOT trigger fail-soft — their absence only degrades the `/v1/*`
+//! handler surface and the background purge worker, not the auth flow.
 //! Production deployments verify the config at startup via
 //! [`AuthConfig::require_from_env`] which errors instead.
 
@@ -66,6 +67,15 @@ pub struct AuthConfig {
     /// flow and `/v1/me` continue to work. Added in plan 0016 M1
     /// without breaking existing callers.
     pub app_database_url: Option<SecretString>,
+
+    /// Postgres connection URL for the `garraia_purge` EXECUTE-only pool
+    /// (migration 034, #1565). Used exclusively by `PurgePool` /
+    /// `account_purge_worker` to call the four `SECURITY DEFINER` purge
+    /// functions. **Optional** — when absent, the worker does not spawn;
+    /// `DELETE /v1/me` still enqueues and the manual procedure keeps
+    /// working. Must NOT share a URL with `app_database_url`: the whole
+    /// point is that purge capability is absent from app credentials.
+    pub purge_database_url: Option<SecretString>,
 }
 
 impl std::fmt::Debug for AuthConfig {
@@ -78,6 +88,10 @@ impl std::fmt::Debug for AuthConfig {
             .field(
                 "app_database_url",
                 &self.app_database_url.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "purge_database_url",
+                &self.purge_database_url.as_ref().map(|_| "[REDACTED]"),
             )
             .finish()
     }
@@ -114,6 +128,14 @@ impl AuthConfig {
             if !(app_url.starts_with("postgres://") || app_url.starts_with("postgresql://")) {
                 return Err(AuthConfigError::Validation(
                     "GARRAIA_APP_DATABASE_URL must be a postgres:// URL".into(),
+                ));
+            }
+        }
+        if let Some(purge_url) = self.purge_database_url.as_ref() {
+            let purge_url = purge_url.expose_secret();
+            if !(purge_url.starts_with("postgres://") || purge_url.starts_with("postgresql://")) {
+                return Err(AuthConfigError::Validation(
+                    "GARRAIA_PURGE_DATABASE_URL must be a postgres:// URL".into(),
                 ));
             }
         }
@@ -163,12 +185,21 @@ impl AuthConfig {
             .ok()
             .map(SecretString::from);
 
+        // Optional: GARRAIA_PURGE_DATABASE_URL (#1565). Absence only
+        // means the account_purge_worker does not spawn; the manual
+        // procedure in docs/legal/data-subject-requests.md keeps
+        // working. Never shares a URL with GARRAIA_APP_DATABASE_URL.
+        let purge_db = std::env::var("GARRAIA_PURGE_DATABASE_URL")
+            .ok()
+            .map(SecretString::from);
+
         let cfg = AuthConfig {
             jwt_secret: SecretString::from(jwt),
             refresh_hmac_secret: SecretString::from(refresh),
             login_database_url: SecretString::from(login_db),
             signup_database_url: SecretString::from(signup_db),
             app_database_url: app_db,
+            purge_database_url: purge_db,
         };
         cfg.validate_secrets()?;
         Ok(Some(cfg))
@@ -200,12 +231,20 @@ impl AuthConfig {
             .ok()
             .map(SecretString::from);
 
+        // Optional: GARRAIA_PURGE_DATABASE_URL (#1565). Same reasoning
+        // as above — absence skips the purge worker, it does not stop
+        // the gateway. Operators who want automated purges set it.
+        let purge_db = std::env::var("GARRAIA_PURGE_DATABASE_URL")
+            .ok()
+            .map(SecretString::from);
+
         let cfg = AuthConfig {
             jwt_secret: SecretString::from(jwt),
             refresh_hmac_secret: SecretString::from(refresh),
             login_database_url: SecretString::from(login_db),
             signup_database_url: SecretString::from(signup_db),
             app_database_url: app_db,
+            purge_database_url: purge_db,
         };
         cfg.validate_secrets()?;
         Ok(cfg)
@@ -283,6 +322,9 @@ mod tests {
             // Plan 0016 M1: optional. Tests default to None to exercise
             // the "AuthConfig present but AppPool disabled" path.
             app_database_url: None,
+            // #1565: optional. Tests default to None — the purge worker
+            // spawn path is covered in garraia-gateway integration tests.
+            purge_database_url: None,
         }
     }
 
@@ -317,6 +359,35 @@ mod tests {
         assert!(bad.validate_secrets().is_err());
     }
 
+    // ── #1565: optional GARRAIA_PURGE_DATABASE_URL ────────────────────────
+
+    #[test]
+    fn rejects_non_postgres_purge_url() {
+        let mut bad = mk(32);
+        bad.purge_database_url = Some(SecretString::from("mysql://x/y".to_string()));
+        assert!(bad.validate_secrets().is_err());
+    }
+
+    #[test]
+    fn purge_database_url_is_optional_and_redacted() {
+        let mut cfg = mk(32);
+        // Absent by default: the worker simply does not spawn, no fail-soft.
+        assert!(cfg.purge_database_url.is_none());
+        assert!(cfg.validate_secrets().is_ok());
+
+        cfg.purge_database_url = Some(SecretString::from(
+            "postgres://purge:pw@h:5432/db".to_string(),
+        ));
+        assert!(cfg.validate_secrets().is_ok());
+
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("purge:pw"),
+            "Debug must not leak the purge URL: {dbg}"
+        );
+        assert!(dbg.contains("[REDACTED]"));
+    }
+
     // ── Plan 0046 slice 3: env-var fallback tests ─────────────────────────
     //
     // These tests mutate process-global environment state, so they MUST
@@ -338,6 +409,7 @@ mod tests {
         login_db: Option<String>,
         signup_db: Option<String>,
         app_db: Option<String>,
+        purge_db: Option<String>,
     }
 
     impl EnvSnapshot {
@@ -350,6 +422,7 @@ mod tests {
                 login_db: std::env::var("GARRAIA_LOGIN_DATABASE_URL").ok(),
                 signup_db: std::env::var("GARRAIA_SIGNUP_DATABASE_URL").ok(),
                 app_db: std::env::var("GARRAIA_APP_DATABASE_URL").ok(),
+                purge_db: std::env::var("GARRAIA_PURGE_DATABASE_URL").ok(),
             }
         }
 
@@ -372,6 +445,7 @@ mod tests {
                 set_or_clear("GARRAIA_LOGIN_DATABASE_URL", self.login_db);
                 set_or_clear("GARRAIA_SIGNUP_DATABASE_URL", self.signup_db);
                 set_or_clear("GARRAIA_APP_DATABASE_URL", self.app_db);
+                set_or_clear("GARRAIA_PURGE_DATABASE_URL", self.purge_db);
             }
         }
     }
@@ -386,6 +460,7 @@ mod tests {
             std::env::remove_var("GARRAIA_LOGIN_DATABASE_URL");
             std::env::remove_var("GARRAIA_SIGNUP_DATABASE_URL");
             std::env::remove_var("GARRAIA_APP_DATABASE_URL");
+            std::env::remove_var("GARRAIA_PURGE_DATABASE_URL");
         }
     }
 
@@ -505,6 +580,40 @@ mod tests {
             "mixed-case alias must keep precedence over the all-caps vault \
              passphrase so pre-#824 deploys keep signing with the same secret"
         );
+
+        snapshot.restore();
+    }
+
+    // ── #1565: GARRAIA_PURGE_DATABASE_URL loaded when present ─────────────
+
+    #[test]
+    fn from_env_loads_purge_database_url_when_set() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = EnvSnapshot::capture();
+        clear_all_auth_env();
+        // SAFETY: ENV_LOCK held.
+        unsafe {
+            std::env::set_var("GARRAIA_JWT_SECRET", "J".repeat(32));
+            std::env::set_var(
+                "GARRAIA_PURGE_DATABASE_URL",
+                "postgres://garraia_purge:pw@localhost/garraia",
+            );
+        }
+        set_required_except_jwt();
+
+        let cfg = AuthConfig::from_env()
+            .expect("should parse")
+            .expect("should be Some");
+        let purge = cfg
+            .purge_database_url
+            .as_ref()
+            .expect("purge_database_url must be Some when the env var is set");
+        assert_eq!(
+            purge.expose_secret(),
+            "postgres://garraia_purge:pw@localhost/garraia"
+        );
+        // Setting the purge URL must not fail-soft the whole config.
+        assert!(cfg.validate_secrets().is_ok());
 
         snapshot.restore();
     }

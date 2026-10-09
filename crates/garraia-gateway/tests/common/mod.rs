@@ -32,7 +32,8 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::Request;
 use garraia_auth::{
-    AppPool, AppPoolConfig, JwtIssuer, LoginConfig, LoginPool, SignupConfig, SignupPool,
+    AppPool, AppPoolConfig, JwtIssuer, LoginConfig, LoginPool, PurgeConfig, PurgePool,
+    SignupConfig, SignupPool,
 };
 use garraia_config::AppConfig;
 use garraia_gateway::server::build_router_for_test;
@@ -89,6 +90,12 @@ pub struct Harness {
 
     /// Typed `garraia_signup` BYPASSRLS pool.
     pub signup_pool: Arc<SignupPool>,
+
+    /// Typed `garraia_purge` EXECUTE-only pool (migration 034). The
+    /// role holds EXECUTE on the four SECURITY DEFINER purge functions
+    /// and nothing else; `run_purge_tick` needs it exactly like
+    /// production needs `GARRAIA_PURGE_DATABASE_URL`.
+    pub purge_pool: Arc<PurgePool>,
 
     /// Deterministic `JwtIssuer` shared by the router + any test
     /// that needs to mint a bearer token via `issue_access_for_test`.
@@ -204,6 +211,9 @@ impl Harness {
         sqlx::query("ALTER ROLE garraia_signup WITH LOGIN PASSWORD 'signup-pw'")
             .execute(&admin_pool)
             .await?;
+        sqlx::query("ALTER ROLE garraia_purge  WITH LOGIN PASSWORD 'purge-pw'")
+            .execute(&admin_pool)
+            .await?;
 
         // 5. Build the three typed pools via their production
         //    constructors — validates the `SELECT current_user`
@@ -244,6 +254,15 @@ impl Harness {
             .await?,
         );
 
+        let purge_url = admin_url.replace("postgres:postgres@", "garraia_purge:purge-pw@");
+        let purge_pool = Arc::new(
+            PurgePool::from_dedicated_config(&PurgeConfig {
+                database_url: purge_url,
+                max_connections: 16,
+            })
+            .await?,
+        );
+
         // 6. Build a deterministic JWT issuer via the test helper
         //    (plan 0016 M2-T1). The 32-byte minimum is handled by
         //    `new_for_test` itself.
@@ -270,6 +289,7 @@ impl Harness {
             app_pool,
             login_pool,
             signup_pool,
+            purge_pool,
             jwt,
             router,
         })

@@ -415,6 +415,12 @@ impl GatewayServer {
         // Fail-soft: if AuthConfig::from_env returns None (any var missing),
         // the gateway boots without /v1/auth/* enabled and the handlers
         // return 503. This is intentional for dev mode.
+        //
+        // #1565: `purge_pool_opt` is threaded out of this match so the
+        // account_purge_worker spawn site (below, next to the uploads
+        // worker) can require BOTH pools. Built here because the URL
+        // lives in AuthConfig.
+        let mut purge_pool_opt: Option<Arc<garraia_auth::PurgePool>> = None;
         match garraia_config::AuthConfig::from_env() {
             Ok(Some(auth_cfg)) => {
                 use garraia_auth::{
@@ -484,6 +490,52 @@ impl GatewayServer {
                     None
                 };
 
+                // #1565 / migration 034: optional PurgePool construction.
+                // Only attempted when GARRAIA_PURGE_DATABASE_URL is set.
+                // The worker connects as `garraia_purge` (EXECUTE-only on
+                // the four SECURITY DEFINER purge functions); building it
+                // from the app URL would defeat the role separation, so a
+                // separate env var is mandatory. Absence degrades only the
+                // automated purge — DELETE /v1/me still enqueues and the
+                // manual procedure keeps working.
+                purge_pool_opt = if let Some(purge_url) = auth_cfg.purge_database_url.as_ref() {
+                    use garraia_auth::PurgeConfig;
+                    match garraia_auth::PurgePool::from_dedicated_config(&PurgeConfig {
+                        database_url: purge_url.expose_secret().to_string(),
+                        max_connections: 5,
+                    })
+                    .await
+                    {
+                        Ok(p) => {
+                            info!("garraia-auth PurgePool wired (garraia_purge role)");
+                            Some(Arc::new(p))
+                        }
+                        Err(e) => {
+                            // Same redaction path as the AppPool failure
+                            // above: never let a connect error print the
+                            // purge URL (it carries credentials).
+                            let redacted = match e {
+                                garraia_auth::AuthError::Storage(sqlx_err) => {
+                                    garraia_auth::RedactedStorageError::from(sqlx_err).to_string()
+                                }
+                                other => other.to_string(),
+                            };
+                            warn!(
+                                error = %redacted,
+                                "PurgePool connect failed; account_purge_worker will not spawn"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    info!(
+                        "GARRAIA_PURGE_DATABASE_URL not set; account_purge_worker will not spawn \
+                         (DELETE /v1/me still enqueues; manual procedure in \
+                         docs/legal/data-subject-requests.md remains)"
+                    );
+                    None
+                };
+
                 match (login_pool_result, signup_pool_result, jwt_result) {
                     (Ok(login_pool), Ok(signup_pool), Ok(jwt)) => {
                         state.set_auth_components(
@@ -546,6 +598,36 @@ impl GatewayServer {
                 Arc::clone(&app_pool),
                 crate::tasks_recurrence_worker::TaskRecurrenceWorkerConfig::default(),
             );
+
+            // Apagamento definitivo de conta (LGPD art. 18, VI / GDPR art.
+            // 17): executa os pedidos de `DELETE /v1/me` cuja carencia
+            // venceu. Exige AS DUAS pools: `app_pool` para o audit (o
+            // INSERT em audit_events passa pelo role de app sob RLS) e
+            // `purge_pool` (garraia_purge, migration 034) para executar
+            // as quatro funcoes SECURITY DEFINER — o app role nao tem
+            // EXECUTE nelas. Sem a purge pool o worker nao nasce: o
+            // pedido fica na fila e o procedimento manual de
+            // `docs/legal/data-subject-requests.md` continua valendo.
+            // Recebe o `ObjectStore` porque o apagamento tem de alcancar
+            // o blob dos arquivos do titular, nao so a linha — sem backend
+            // ligado o pedido fica aberto de proposito em vez de fechar
+            // mentindo. Ver `account_purge_worker`.
+            if let Some(purge_pool) = purge_pool_opt {
+                let purge_handle = crate::account_purge_worker::spawn_account_purge_worker(
+                    purge_pool,
+                    Arc::clone(&app_pool),
+                    state.object_store.clone(),
+                    crate::account_purge_worker::AccountPurgeWorkerConfig::default(),
+                );
+                std::mem::forget(purge_handle);
+                info!("account_purge_worker spawned (direitos dos titulares)");
+            } else {
+                warn!(
+                    "account_purge_worker skipped: GARRAIA_PURGE_DATABASE_URL unset or \
+                     PurgePool connect failed; DELETE /v1/me still enqueues and the \
+                     manual procedure in docs/legal/data-subject-requests.md applies"
+                );
+            }
 
             let staging_dir = upload_staging_opt.as_ref().map(|s| s.staging_dir.clone());
             let handle = crate::uploads_worker::spawn_uploads_expiration_worker(

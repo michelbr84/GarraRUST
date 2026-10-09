@@ -57,6 +57,12 @@ pub use storage_redacted::RedactedStorageError;
 pub mod app_pool;
 pub use app_pool::{AppPool, AppPoolConfig};
 
+// migration 034 / #1565 — PurgePool (garraia_purge EXECUTE-only pool for
+// the account_purge_worker; the four SECURITY DEFINER purge functions are
+// not reachable with app credentials)
+pub mod purge_pool;
+pub use purge_pool::{PurgeConfig, PurgePool};
+
 // Plan 0335 (GAR-876) — self-service password change
 pub mod password;
 pub use password::{PasswordChangeOutcome, anon_token, anonymize_identity, change_password};

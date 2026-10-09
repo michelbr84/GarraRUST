@@ -142,7 +142,18 @@ Postgres URL for the `garraia_app` RLS-enforced role. When absent, only
 `/v1/groups`-style write endpoints are disabled; the rest of `/v1/auth/*`
 and `/v1/me` continue to work.
 
-### 3.6 `GARRAIA_METRICS_TOKEN` / `GARRAIA_METRICS_ALLOW`
+### 3.6 `GARRAIA_PURGE_DATABASE_URL` *(optional)*
+
+Postgres URL for the `garraia_purge` role (migration 034) — the
+EXECUTE-only credentials the account-purge worker uses to run the four
+`SECURITY DEFINER` deletion functions. When absent the gateway still
+boots and `DELETE /v1/me` still enqueues requests; only the automated
+worker is skipped (explicit warn in the log) and the manual procedure in
+`docs/legal/data-subject-requests.md` applies. Never reuse the
+app/login/signup DSNs here — the separation is what keeps purge
+capability out of request-reachable credentials.
+
+### 3.7 `GARRAIA_METRICS_TOKEN` / `GARRAIA_METRICS_ALLOW`
 
 Bearer token and CIDR allowlist for the `/metrics` endpoint. Loaded
 from `garraia-telemetry::TelemetryConfig::from_env` → wired through
@@ -519,7 +530,7 @@ export GARRAIA_JWT_SECRET=$(openssl rand -hex 32)            # ≥32 bytes
 export GARRAIA_REFRESH_HMAC_SECRET=$(openssl rand -hex 32)   # distinct from the JWT secret
 export GARRAIA_UPLOAD_HMAC_SECRET=$(openssl rand -hex 32)    # tus commit integrity (optional in dev)
 export GARRAIA_VAULT_PASSPHRASE=$(openssl rand -hex 32)      # credential vault
-LOGIN_PW=$(openssl rand -hex 24); SIGNUP_PW=$(openssl rand -hex 24); APP_PW=$(openssl rand -hex 24)
+LOGIN_PW=$(openssl rand -hex 24); SIGNUP_PW=$(openssl rand -hex 24); APP_PW=$(openssl rand -hex 24); PURGE_PW=$(openssl rand -hex 24)
 ```
 
 Hex output is deliberate: it is ≥32 ASCII bytes and safe to embed in a
@@ -552,16 +563,22 @@ DATABASE_URL=postgres://postgres:<superuser-pw>@127.0.0.1:5432/garraia_workspace
 ### 7.4 Promote the NOLOGIN roles
 
 The migrations create `garraia_login` (BYPASSRLS, migration 008),
-`garraia_signup` (BYPASSRLS, migration 010) and `garraia_app`
-(RLS-enforced, migration 007) as NOLOGIN. Promote each with its own
-password from your secret store (ADR 0005 §Production; `pg_hba.conf`
-must use `scram-sha-256`, never `trust`):
+`garraia_signup` (BYPASSRLS, migration 010), `garraia_app`
+(RLS-enforced, migration 007) and `garraia_purge` (EXECUTE-only on the
+four account-purge functions, not BYPASSRLS, migration 034) as NOLOGIN.
+Promote each with its own password from your secret store (ADR 0005
+§Production; `pg_hba.conf` must use `scram-sha-256`, never `trust`):
 
 ```sql
 ALTER ROLE garraia_login  WITH LOGIN PASSWORD '<LOGIN_PW>';
 ALTER ROLE garraia_signup WITH LOGIN PASSWORD '<SIGNUP_PW>';
 ALTER ROLE garraia_app    WITH LOGIN PASSWORD '<APP_PW>';
+ALTER ROLE garraia_purge  WITH LOGIN PASSWORD '<PURGE_PW>';
 ```
+
+The purge role is optional at install time: without
+`GARRAIA_PURGE_DATABASE_URL` (§3.6) the gateway runs and `DELETE /v1/me`
+still enqueues, but no automated purge executes.
 
 ### 7.5 Build the DSNs
 
@@ -573,6 +590,7 @@ superuser URL fails with `WrongRole`; `SET ROLE` is not supported):
 export GARRAIA_LOGIN_DATABASE_URL="postgres://garraia_login:${LOGIN_PW}@127.0.0.1:5432/garraia_workspace"
 export GARRAIA_SIGNUP_DATABASE_URL="postgres://garraia_signup:${SIGNUP_PW}@127.0.0.1:5432/garraia_workspace"
 export GARRAIA_APP_DATABASE_URL="postgres://garraia_app:${APP_PW}@127.0.0.1:5432/garraia_workspace"
+export GARRAIA_PURGE_DATABASE_URL="postgres://garraia_purge:${PURGE_PW}@127.0.0.1:5432/garraia_workspace"   # optional (§3.6)
 ```
 
 ### 7.6 Persist and verify

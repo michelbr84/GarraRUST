@@ -656,6 +656,7 @@ fn com_jwt(state: &mut AppState) {
         login_database_url: SecretString::from("postgres://x@localhost/x".to_string()),
         signup_database_url: SecretString::from("postgres://y@localhost/y".to_string()),
         app_database_url: None,
+        purge_database_url: None,
     }));
 }
 
