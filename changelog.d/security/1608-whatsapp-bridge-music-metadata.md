@@ -1,0 +1,1 @@
+- bump music-metadata de 11.15.0 para 11.16.1 na ponte WhatsApp, fechando os alertas Dependabot #47 (exaustao de memoria no parser EBML) e #48 (loop infinito sincrono em MP4 stsd com sample-entry size 0); dependencia transitiva de @whiskeysockets/baileys, dentro da faixa ^11.12.3 — so o lockfile mudou
