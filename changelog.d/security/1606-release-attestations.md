@@ -1,0 +1,1 @@
+- security(release): cada asset da release ganha attestacao de proveniencia verificavel com `gh attestation verify` (#1606)
