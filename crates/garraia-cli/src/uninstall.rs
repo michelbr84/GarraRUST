@@ -205,9 +205,9 @@ fn monta_plano(
         for outro in find_other_binaries(&path_dirs, &system_dirs, exe) {
             // O alias `garra` ao lado do binario alheio e nosso tambem: o
             // `find_other_binaries` deduplica por canonico, entao o symlink
-            // que aponta para este binario nunca aparece na lista — sem esta
-            // checagem a varredura apaga o binario e deixa o alias pendurado.
-            #[cfg(unix)]
+            // (unix) ou o shim `garra.cmd` (windows) que aponta para este
+            // binario nunca aparece na lista — sem esta checagem a varredura
+            // apaga o binario e deixa o alias pendurado.
             if let Some(alias) = alias_nosso(&outro.path) {
                 plano.alvos.push((Alvo::Arquivo(alias), "alias"));
             }
@@ -405,14 +405,13 @@ fn alias_nosso(binario: &Path) -> Option<PathBuf> {
     existe(&shim).then_some(shim)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     /// Regressao do E2E de uninstall em Linux: a varredura `--all-binaries`
     /// apagava o binario alheio e deixava o alias `garra` do mesmo diretorio
     /// pendurado apontando para o nada.
-    #[cfg(unix)]
     #[test]
     fn alias_nosso_aponta_para_o_binario_e_nao_para_outro_lugar() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -438,7 +437,6 @@ mod tests {
     }
 
     /// O binario sem alias ao lado e so o binario: nada a acrescentar.
-    #[cfg(unix)]
     #[test]
     fn alias_nosso_ausente_devolve_nada() {
         let tmp = tempfile::tempdir().expect("tempdir");

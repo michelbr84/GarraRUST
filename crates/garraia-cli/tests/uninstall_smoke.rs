@@ -119,7 +119,7 @@ fn uninstall_yes_remove_binario_alias_e_wrapper_preserva_config() {
     );
     #[cfg(windows)]
     assert!(
-        !existe(dir.path().join("bin/garra.cmd")),
+        !existe(&dir.path().join("bin/garra.cmd")),
         "o shim deve sair: {stdout}"
     );
     assert!(
