@@ -17,8 +17,28 @@ impl ConfigLoader {
     }
 
     pub fn default_config_dir() -> PathBuf {
-        if let Ok(env_dir) = std::env::var("GARRAIA_CONFIG_DIR") {
-            return PathBuf::from(env_dir);
+        Self::config_dir_from_env(std::env::var("GARRAIA_CONFIG_DIR").ok())
+    }
+
+    /// Resolve o config_dir a partir do valor opcional da env, com a guarda
+    /// de placeholder (#1620): `GARRAIA_CONFIG_DIR` vindo de um `.env` de
+    /// exemplo (`/custom/config/path`) nao pode virar path real — o
+    /// `create_dir_all` da arvore morre em `EACCES (os error 13)` opaco e
+    /// NENHUM comando roda (o `garra config check` tambem quebra, entao a
+    /// deteccao so existir la nao protege a ingestao). Placeholder ou valor
+    /// vazio cai no config_dir padrao com `warn!`; valor nao-placeholder e
+    /// respeitado (configuracao explicita do usuario).
+    fn config_dir_from_env(env_dir: Option<String>) -> PathBuf {
+        if let Some(env_dir) = env_dir.filter(|valor| !valor.trim().is_empty()) {
+            let candidato = PathBuf::from(env_dir.as_str());
+            if crate::check::config_dir_e_placeholder(&candidato) {
+                tracing::warn!(
+                    "GARRAIA_CONFIG_DIR={} parece placeholder de .env.example; usando o config_dir padrao (rode `garra config check`)",
+                    env_dir
+                );
+            } else {
+                return candidato;
+            }
         }
 
         let home_config = dirs::home_dir().map(|h| h.join(".garraia"));
@@ -1370,5 +1390,40 @@ mod tests {
         fs::write(dir.join("config.yml"), "gateway:\n  host: \"127.0.0.1\"\n").expect("seed");
         assert!(ConfigLoader::with_dir(&dir).load().is_ok());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    // #1620: guarda de placeholder na ingestao de GARRAIA_CONFIG_DIR.
+    // Testes puros via config_dir_from_env (sem env global — edition 2024).
+
+    #[test]
+    fn env_com_placeholder_cai_no_config_dir_padrao() {
+        for needle in crate::check::PLACEHOLDER_NEEDLES {
+            let dir = ConfigLoader::config_dir_from_env(Some(needle.to_string()));
+            let resolvido = dir.to_string_lossy();
+            assert!(
+                !resolvido.contains(needle),
+                "placeholder {needle} nao pode sobreviver para o config_dir: {resolvido}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_com_valor_legitimo_e_respeitado() {
+        let dir = ConfigLoader::config_dir_from_env(Some("/data/garra-real".to_owned()));
+        assert_eq!(dir, std::path::PathBuf::from("/data/garra-real"));
+    }
+
+    #[test]
+    fn env_ausente_vazia_ou_espacos_usa_o_default() {
+        for valor in [None, Some(String::new()), Some("   ".to_owned())] {
+            let dir = ConfigLoader::config_dir_from_env(valor);
+            let resolvido = dir.to_string_lossy();
+            for needle in crate::check::PLACEHOLDER_NEEDLES {
+                assert!(
+                    !resolvido.contains(needle),
+                    "default nao pode conter placeholder {needle}: {resolvido}"
+                );
+            }
+        }
     }
 }
