@@ -82,6 +82,15 @@ const SEM_ESCOPO: &[(&str, &str, &str, usize, &str)] = &[
         1,
         "tarefa agendada (heartbeat): nao ha humano no turno para dizer \"sim\"",
     ),
+    (
+        "agente_mcp.rs",
+        "agent_oneshot",
+        "process_message_streaming_with_events",
+        1,
+        "`garra_agent` (#1615), stdio e ponte HTTP: one-shot com historico vazio, quem \
+         chama e um orquestrador ou outro agente, e nao ha humano no turno para dizer \
+         \"sim\". O que segura o agente e o sandbox, o jail e o teto de orcamento",
+    ),
 ];
 
 /// Quem aprova, por arquivo: `(arquivo, canal, remetente)`, como texto do

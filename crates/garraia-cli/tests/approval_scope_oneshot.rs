@@ -43,11 +43,11 @@ const SEM_ESCOPO: &[(&str, &str, &str, usize, &str)] = &[
         "one-shot (`garraia ask`, `garra_ask`): sessao nova por chamada, frequentemente dirigida por script ou agente",
     ),
     (
-        "mcp_agent.rs",
+        "garraia-gateway/agente_mcp.rs",
         "agent_oneshot",
         "process_message_streaming_with_events",
         1,
-        "`garra_agent` do `garraia mcp-server`: quem chama e outro agente, e o bash dele nem pede confirmacao",
+        "`garra_agent` (stdio e ponte HTTP, #1615): quem chama e outro agente, e o bash dele nem pede confirmacao",
     ),
 ];
 
@@ -56,8 +56,11 @@ fn src() -> std::path::PathBuf {
 }
 
 /// O one-shot saiu da CLI em #1612 (vive em `garraia-ask`, para o gateway usar
-/// o mesmo caminho). A varredura cobre as duas raizes; o nome do crate entra no
-/// nome do arquivo, para um `ask.rs` de um lado nao casar com o do outro.
+/// o mesmo caminho). O `garra_agent` saiu em #1615 (vive em
+/// `garraia-gateway/src/agente_mcp.rs`). A varredura cobre as raizes; o nome do
+/// crate entra no nome do arquivo, para um `ask.rs` de um lado nao casar com o
+/// do outro. Do gateway entra SO o `agente_mcp.rs`: o resto do gateway tem
+/// chamadores proprios, fora do escopo desta varredura.
 fn varrer_todas() -> Vec<(String, Fonte)> {
     let mut arquivos = varrer(&src());
     let ask = Path::new(env!("CARGO_MANIFEST_DIR")).join("../garraia-ask/src");
@@ -65,6 +68,13 @@ fn varrer_todas() -> Vec<(String, Fonte)> {
         varrer(&ask)
             .into_iter()
             .map(|(arq, fonte)| (format!("garraia-ask/{arq}"), fonte)),
+    );
+    let gateway = Path::new(env!("CARGO_MANIFEST_DIR")).join("../garraia-gateway/src");
+    arquivos.extend(
+        varrer(&gateway)
+            .into_iter()
+            .filter(|(arq, _)| arq == "agente_mcp.rs")
+            .map(|(arq, fonte)| (format!("garraia-gateway/{arq}"), fonte)),
     );
     arquivos
 }

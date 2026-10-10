@@ -614,7 +614,7 @@ pub async fn run_mcp_server(config: AppConfig) -> Result<()> {
              with file/git/web tools; bash only inside a docker/podman sandbox or on the host \
              of an explicit execution.profile = isolated-pod (#1272)"
         );
-        // #1272: a mesma decisao que `mcp_agent::build_tools` toma por chamada,
+        // #1272: a mesma decisao que `garraia_gateway::agente_mcp` toma por chamada,
         // anunciada UMA vez aqui — com o `warn!` e o passo quando o bash fica
         // de fora.
         garraia_gateway::bootstrap::anuncia_exposicao_do_bash(
@@ -625,7 +625,7 @@ pub async fn run_mcp_server(config: AppConfig) -> Result<()> {
                 !config.agent.bash_allowlist.is_empty(),
             ),
         );
-        // #1225 S2: uma vez por processo, AQUI e nao em `mcp_agent::build_tools`
+        // #1225 S2: uma vez por processo, AQUI e nao em `agente_mcp::build_tools`
         // — aquele roda a cada chamada de `garra_agent`, e `sandbox_policy_from`
         // junto com ele. Gated na tool: sem `garra_agent` nenhuma tool spawna
         // neste processo e o aviso seria ruido sobre nada.
