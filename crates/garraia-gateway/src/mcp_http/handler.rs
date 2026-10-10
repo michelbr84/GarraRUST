@@ -10,15 +10,21 @@
 //! texto, e a superficie anunciada resolvida por uma politica em vez de um
 //! `if` espalhado pelo `call_tool`.
 //!
+//! ## Inferencia: so `garra_ask`, so com `allow_ask` (#1612)
+//!
+//! `garra_ask` chama o LLM a pedido de um orquestrador externo, gastando a chave
+//! de provider do dono. Por isso ela tem interruptor proprio, lista de modelos e
+//! teto de chamadas com sessao propria — ver [`super::politica`]. O resultado e o
+//! mesmo envelope `garra.ask.v1` do servidor stdio, e o nucleo que faz a chamada
+//! e o `garraia-ask`, compartilhado com a CLI.
+//!
 //! ## O que este handler NAO faz
 //!
-//! - **Nao chama o LLM.** `garra_ask` continua sendo do servidor stdio, como a
-//!   spec da #1513 pede ("nao migrar, reutilizar"). Uma ponte que gastasse a
-//!   chave de LLM do dono a pedido de um orquestrador externo e uma decisao
-//!   diferente, e nao e esta.
+//! - **Nao chama o LLM sem `allow_ask`.** Desligado, `garra_ask` nao e anunciada e
+//!   uma chamada direta e recusada antes de qualquer provider ser resolvido.
 //! - **Nao registra tool no `AgentRuntime`.** A direcao aqui e de fora para
 //!   dentro; o caminho de dentro para fora e o `McpManager`, em
-//!   `crate::mcp`.
+//!   `crate::mcp`. O `AgentRuntime` que o `garra_ask` usa so tem o provider.
 //! - **Nao decide autenticacao.** Quem exige o `gateway.api_key` e o
 //!   `api_key_layer` do router, por fora — ver [`super::build_mcp_http_routes`].
 
@@ -34,11 +40,14 @@ use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
 use serde_json::{Value as JsonValue, json};
 
+use garraia_ask::{ARG_TIMEOUT_SECS_DEFAULT, AskOptions, AskOutcome, error_envelope};
+use garraia_config::defaults::{DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER};
+
 use super::ferramentas::{
-    self, ArgsListChats, ArgsReadHistory, ArgsSendMessage, TOOL_LIST_CHATS, TOOL_PAIR_STATUS,
-    TOOL_READ_HISTORY, TOOL_SEND_MESSAGE, TOOL_STATUS,
+    self, ArgsAsk, ArgsListChats, ArgsReadHistory, ArgsSendMessage, TOOL_ASK, TOOL_LIST_CHATS,
+    TOOL_PAIR_STATUS, TOOL_READ_HISTORY, TOOL_SEND_MESSAGE, TOOL_STATUS,
 };
-use super::politica::{PoliticaMcpHttp, SESSAO_DO_TETO};
+use super::politica::{PoliticaMcpHttp, RecusaAsk, SESSAO_DO_TETO, SESSAO_DO_TETO_ASK};
 use crate::channel_send::{SendBudget, with_channel_address};
 use crate::push_channels::PushMounted;
 use crate::state::AppState;
@@ -65,14 +74,23 @@ pub struct ManipuladorMcpHttp {
     push: PushMounted,
     /// Anti-amplificacao dos envios, compartilhado por todas as sessoes.
     orcamento: Arc<SendBudget>,
+    /// Teto de chamadas de `garra_ask` (#1612). Separado do de envio: gastar
+    /// inferencia nao come a cota de mensagens, nem o contrario.
+    orcamento_ask: Arc<SendBudget>,
 }
 
 impl ManipuladorMcpHttp {
-    pub fn novo(state: &Arc<AppState>, push: PushMounted, orcamento: Arc<SendBudget>) -> Self {
+    pub fn novo(
+        state: &Arc<AppState>,
+        push: PushMounted,
+        orcamento: Arc<SendBudget>,
+        orcamento_ask: Arc<SendBudget>,
+    ) -> Self {
         Self {
             state: Arc::downgrade(state),
             push,
             orcamento,
+            orcamento_ask,
         }
     }
 
@@ -106,6 +124,7 @@ impl ManipuladorMcpHttp {
             "mcp_http": {
                 "send_enabled": politica.anuncia_envio(),
                 "allowed_targets": politica.destinos_liberados(),
+                "ask_enabled": politica.anuncia_ask(),
             },
         })
     }
@@ -359,6 +378,78 @@ impl ManipuladorMcpHttp {
         }
     }
 
+    /// `garra_ask` (#1612): politica, teto e so depois o LLM.
+    ///
+    /// A ordem e a do envio: uma recusa de politica nao gasta cota, e o teto e
+    /// cobrado antes de qualquer provider ser montado. O sucesso e o envelope
+    /// `garra.ask.v1` do stdio, inteiro. Prompt e resposta nunca vao para o log:
+    /// so provider, modelo e latencia.
+    async fn ask(
+        &self,
+        state: &Arc<AppState>,
+        politica: &PoliticaMcpHttp,
+        args: &ArgsAsk,
+    ) -> Result<JsonValue, JsonValue> {
+        let modelo = args
+            .model
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(DEFAULT_CLOUD_MODEL)
+            .to_string();
+        let provider = args
+            .provider
+            .clone()
+            .unwrap_or_else(|| DEFAULT_CLOUD_PROVIDER.to_string());
+
+        if let Err(recusa) = politica.decidir_ask(&modelo) {
+            // O modelo pedido nao entra no log: e texto de quem chamou, e o
+            // motivo ja diz tudo o que o operador precisa.
+            tracing::warn!(motivo = recusa.codigo(), "mcp_http: garra_ask recusado");
+            return Err(error_envelope(recusa.codigo(), recusa.explicacao()));
+        }
+
+        if let Err(usados) = self
+            .orcamento_ask
+            .try_consume(SESSAO_DO_TETO_ASK, std::time::Instant::now())
+        {
+            let recusa = RecusaAsk::OrcamentoEsgotado;
+            tracing::warn!(
+                usados,
+                motivo = recusa.codigo(),
+                "mcp_http: garra_ask recusado"
+            );
+            return Err(error_envelope(recusa.codigo(), recusa.explicacao()));
+        }
+
+        let opts = AskOptions {
+            message: args.message.clone(),
+            provider_override: Some(provider.clone()),
+            model_override: Some(modelo.clone()),
+            url_override: None,
+            timeout_secs: args.timeout_secs.unwrap_or(ARG_TIMEOUT_SECS_DEFAULT),
+            system_prompt_override: args.system_prompt.clone(),
+            // Ponte sem terminal: nunca baixa modelo nem pergunta nada.
+            assume_yes: false,
+        };
+        let config = state.current_config();
+        let outcome = garraia_ask::ask_oneshot(&config, opts).await;
+        match &outcome {
+            AskOutcome::Success { latency_ms, .. } => {
+                tracing::info!(
+                    provider = %provider,
+                    modelo = %modelo,
+                    latency_ms = %latency_ms,
+                    "mcp_http: garra_ask concluido"
+                );
+                Ok(outcome.to_envelope())
+            }
+            AskOutcome::Failure(erro) => {
+                tracing::warn!(kind = erro.kind_str(), "mcp_http: garra_ask falhou");
+                Err(outcome.to_envelope())
+            }
+        }
+    }
+
     /// Despacho puro de nome para resultado, para o `call_tool` ficar com uma
     /// forma so: `Ok(valor)` = sucesso, `Err(valor)` = envelope de erro.
     ///
@@ -399,6 +490,11 @@ impl ManipuladorMcpHttp {
                 ferramentas::validar_send_message(&args)
                     .map_err(|e| McpError::invalid_params(e, None))?;
                 Ok(self.send_message(&state, &politica, &args).await)
+            }
+            TOOL_ASK => {
+                let args: ArgsAsk = desserializar(argumentos)?;
+                ferramentas::validar_ask(&args).map_err(|e| McpError::invalid_params(e, None))?;
+                Ok(self.ask(&state, &politica, &args).await)
             }
             outro => Err(McpError::invalid_params(
                 format!("tool desconhecida: '{outro}'"),
@@ -462,7 +558,9 @@ impl ServerHandler for ManipuladorMcpHttp {
              garra_read_history (segredos redigidos), garra_pair_status. Escrita: \
              garra_send_message, que so alcanca destinos que o operador liberou na config — \
              nao ha como aprovar um destino novo por aqui, e ela nem aparece na lista de \
-             tools quando nenhum envio poderia sair."
+             tools quando nenhum envio poderia sair. Inferencia: garra_ask, que gasta a \
+             chave de provider do operador; so aparece quando ele a liberou, e so aceita \
+             os modelos da lista dele."
                 .to_string(),
         );
         info

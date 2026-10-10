@@ -36,11 +36,11 @@ const ESCOPADOS: &[&str] = &["chat.rs"];
 /// motivo)`.
 const SEM_ESCOPO: &[(&str, &str, &str, usize, &str)] = &[
     (
-        "ask.rs",
-        "ask_oneshot",
+        "garraia-ask/ask.rs",
+        "executar",
         "process_message_streaming",
         1,
-        "one-shot (`garraia ask`): sessao nova por chamada, frequentemente dirigida por script ou agente",
+        "one-shot (`garraia ask`, `garra_ask`): sessao nova por chamada, frequentemente dirigida por script ou agente",
     ),
     (
         "mcp_agent.rs",
@@ -55,10 +55,24 @@ fn src() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
+/// O one-shot saiu da CLI em #1612 (vive em `garraia-ask`, para o gateway usar
+/// o mesmo caminho). A varredura cobre as duas raizes; o nome do crate entra no
+/// nome do arquivo, para um `ask.rs` de um lado nao casar com o do outro.
+fn varrer_todas() -> Vec<(String, Fonte)> {
+    let mut arquivos = varrer(&src());
+    let ask = Path::new(env!("CARGO_MANIFEST_DIR")).join("../garraia-ask/src");
+    arquivos.extend(
+        varrer(&ask)
+            .into_iter()
+            .map(|(arq, fonte)| (format!("garraia-ask/{arq}"), fonte)),
+    );
+    arquivos
+}
+
 /// Todo chamador do runtime na CLI esta decidido, chamada a chamada.
 #[test]
 fn todo_chamador_do_runtime_na_cli_esta_decidido() {
-    let arquivos = varrer(&src());
+    let arquivos = varrer_todas();
     assert!(
         arquivos.iter().any(|(a, _)| a == "chat.rs"),
         "a varredura nao achou src/chat.rs; ela quebrou?"
@@ -129,7 +143,7 @@ fn todo_chamador_do_runtime_na_cli_esta_decidido() {
 
 #[test]
 fn caminhos_one_shot_nao_optam_pelo_escopo() {
-    let arquivos = varrer(&src());
+    let arquivos = varrer_todas();
     for (arq, _, _, _, motivo) in SEM_ESCOPO {
         let (_, fonte) = arquivos
             .iter()

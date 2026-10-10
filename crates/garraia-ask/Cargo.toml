@@ -1,0 +1,33 @@
+[package]
+name = "garraia-ask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GarraIA — núcleo one-shot de `garra_ask` (CLI, servidor stdio e ponte MCP HTTP)"
+
+# #1612: o núcleo do `garra ask` mora aqui para o gateway conseguir usá-lo sem
+# depender de `garraia` (a CLI). Dependências mínimas de propósito: agentes
+# (o `AgentRuntime` e os providers), config (o `AppConfig`) e as utilidades de
+# texto e id. Nada de canal, banco ou HTTP servidor.
+[dependencies]
+garraia-agents = { workspace = true }
+garraia-config = { workspace = true }
+anyhow = { workspace = true }
+regex = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+# Só para `test-support` (endpoint HTTP falso); fora dele, não entra no binário.
+wiremock = { version = "0.6", optional = true }
+
+[features]
+# Mesma feature do `garraia-agents`: o `EchoProvider` keyless so existe em
+# build de desenvolvimento/CI. Propagada pela CLI e pelo gateway.
+dev-echo-provider = ["garraia-agents/dev-echo-provider"]
+# Expõe `provider_binding::mock_endpoint` (endpoint HTTP falso) para os testes
+# de roteamento da CLI e do gateway. Ativada só em `[dev-dependencies]`.
+test-support = ["dep:wiremock"]
+
+[dev-dependencies]
+wiremock = "0.6"

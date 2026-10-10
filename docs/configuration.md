@@ -25,6 +25,9 @@ gateway:
     enabled: false
     allow_send: false          # unlocks garra_send_message
     max_history_messages: 50
+    allow_ask: false           # #1612: unlocks garra_ask (spends LLM tokens)
+    ask_allowed_models: []     # empty = only the project default model
+    ask_budget_per_minute: 10  # garra_ask calls per minute, whole bridge
 
 # LLM Providers
 llm:

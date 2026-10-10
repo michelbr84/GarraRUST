@@ -8,6 +8,7 @@
 //! quer ter de provar com um gateway de pe e um bot do Telegram do outro lado.
 
 use garraia_config::AppConfig;
+use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 
 use crate::channel_send::ProactiveTargets;
 
@@ -27,6 +28,14 @@ pub const CANAL_DE_ENVIO: &str = "telegram";
 /// teto nao teria teto. Todo envio por MCP HTTP divide os mesmos 5 por minuto.
 pub const SESSAO_DO_TETO: &str = "mcp-http";
 
+/// A sessao contra a qual o teto de chamadas de `garra_ask` e cobrado (#1612).
+///
+/// Um orcamento **proprio**, separado do de envio: gastar inferencia nao pode
+/// consumir a cota de mensagens do dono, nem o contrario. Mesmo raciocinio de
+/// [`SESSAO_DO_TETO`]: uma so para a ponte inteira, para o chamador nao zerar o
+/// teto abrindo outra sessao.
+pub const SESSAO_DO_TETO_ASK: &str = "mcp-http-ask";
+
 /// A politica viva da ponte, derivada da config a cada chamada.
 ///
 /// Derivada por chamada e nao lida uma vez no boot, pelo mesmo motivo que o
@@ -42,6 +51,11 @@ pub struct PoliticaMcpHttp {
     destinos: ProactiveTargets,
     /// Teto de mensagens por chamada de `garra_read_history`.
     teto_do_historico: usize,
+    /// `gateway.mcp_http.allow_ask` (#1612).
+    ask_liberado: bool,
+    /// `gateway.mcp_http.ask_allowed_models`. Vazio = so o modelo default do
+    /// projeto e aceito (ver [`PoliticaMcpHttp::decidir_ask`]).
+    modelos_de_ask: Vec<String>,
 }
 
 /// Por que um envio nao saiu.
@@ -60,6 +74,53 @@ pub enum Recusa {
     ForaDaAllowlist,
     /// Canal diferente de [`CANAL_DE_ENVIO`].
     CanalNaoSuportado,
+}
+
+/// Por que uma chamada de `garra_ask` nao rodou (#1612).
+///
+/// Mesmo formato de [`Recusa`]: enum com codigo estavel, nunca `String`, e a
+/// explicacao diz o passo que destrava. Nenhuma variante ecoa o modelo pedido.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecusaAsk {
+    /// `gateway.mcp_http.allow_ask` esta em `false` (o default).
+    InterruptorDesligado,
+    /// O modelo pedido nao esta permitido pela politica do operador.
+    ModeloNaoPermitido,
+    /// O teto por minuto de `garra_ask` foi atingido.
+    OrcamentoEsgotado,
+}
+
+impl RecusaAsk {
+    /// O motivo estavel, para o `error.kind` do envelope e para o log.
+    pub fn codigo(self) -> &'static str {
+        match self {
+            Self::InterruptorDesligado => "ask_disabled",
+            Self::ModeloNaoPermitido => "model_not_allowed",
+            Self::OrcamentoEsgotado => "over_budget",
+        }
+    }
+
+    /// A explicacao que o orquestrador le, com o passo que destrava.
+    pub fn explicacao(self) -> &'static str {
+        match self {
+            Self::InterruptorDesligado => {
+                "garra_ask esta desligado neste Garra. O operador precisa por \
+                 `gateway.mcp_http.allow_ask: true` na config e reiniciar. Nao ha como \
+                 aprovar isso pela propria ponte."
+            }
+            Self::ModeloNaoPermitido => {
+                "esse modelo nao e permitido neste Garra. Sem lista na config, so o \
+                 modelo default do projeto e aceito; com lista, so os modelos listados em \
+                 `gateway.mcp_http.ask_allowed_models`. Trocar de modelo nao o libera: so \
+                 o operador pode, na config."
+            }
+            Self::OrcamentoEsgotado => {
+                "limite de chamadas de garra_ask por minuto atingido. Espere a janela \
+                 fechar, ou junte o que falta perguntar numa unica chamada. O teto e \
+                 `gateway.mcp_http.ask_budget_per_minute`."
+            }
+        }
+    }
 }
 
 impl Recusa {
@@ -109,6 +170,8 @@ impl PoliticaMcpHttp {
             envio_liberado: config.gateway.mcp_http.allow_send,
             destinos: ProactiveTargets::from_config(config),
             teto_do_historico: config.gateway.mcp_http.max_history_messages,
+            ask_liberado: config.gateway.mcp_http.allow_ask,
+            modelos_de_ask: config.gateway.mcp_http.ask_allowed_models.clone(),
         }
     }
 
@@ -120,7 +183,17 @@ impl PoliticaMcpHttp {
             envio_liberado,
             destinos,
             teto_do_historico: 50,
+            ask_liberado: false,
+            modelos_de_ask: Vec::new(),
         }
+    }
+
+    /// Liga `garra_ask` com a lista de modelos dada, para os testes.
+    #[cfg(test)]
+    pub(crate) fn com_ask(mut self, modelos: &[&str]) -> Self {
+        self.ask_liberado = true;
+        self.modelos_de_ask = modelos.iter().map(|m| m.to_string()).collect();
+        self
     }
 
     /// `garra_send_message` esta na superficie anunciada?
@@ -174,6 +247,36 @@ impl PoliticaMcpHttp {
     /// saem daqui.
     pub fn destinos_liberados(&self) -> usize {
         self.destinos.len()
+    }
+
+    /// `garra_ask` esta na superficie anunciada? (#1612)
+    ///
+    /// Igual ao envio: so o interruptor decide o anuncio. A lista de modelos
+    /// nao entra aqui, porque o default (sem lista) ja e um modelo aceito.
+    pub fn anuncia_ask(&self) -> bool {
+        self.ask_liberado
+    }
+
+    /// Esta chamada de `garra_ask` pode rodar com este modelo? (#1612)
+    ///
+    /// Fail-closed em ordem: interruptor e depois o modelo. Sem lista, so o
+    /// default do projeto passa; com lista, so o que estiver nela. O modelo
+    /// vem do chamador, e o teto de chamadas e cobrado pelo handler **depois**
+    /// de esta decisao aprovar — o mesmo motivo do envio: uma recusa que gastasse
+    /// cota deixaria um chamador sondando modelos trancar o dono fora.
+    pub fn decidir_ask(&self, modelo: &str) -> Result<(), RecusaAsk> {
+        if !self.ask_liberado {
+            return Err(RecusaAsk::InterruptorDesligado);
+        }
+        let aceito = if self.modelos_de_ask.is_empty() {
+            modelo == DEFAULT_CLOUD_MODEL
+        } else {
+            self.modelos_de_ask.iter().any(|m| m == modelo)
+        };
+        if !aceito {
+            return Err(RecusaAsk::ModeloNaoPermitido);
+        }
+        Ok(())
     }
 }
 
@@ -293,6 +396,116 @@ mod tests {
             assert!(!texto.contains("42"), "{texto}");
             assert!(!texto.is_empty());
         }
+    }
+
+    /// #1612 — o default da instalacao nao anuncia `garra_ask` e nao aceita
+    /// nenhum modelo: o interruptor vem antes da lista.
+    #[test]
+    fn ask_default_recusa_pelo_interruptor() {
+        let p = com_destino(false, &[]);
+        assert!(!p.anuncia_ask());
+        assert_eq!(
+            p.decidir_ask(DEFAULT_CLOUD_MODEL),
+            Err(RecusaAsk::InterruptorDesligado)
+        );
+    }
+
+    /// Ligado sem lista, so o modelo default do projeto passa. Qualquer outro
+    /// modelo — mesmo um barato — e recusado: a lista vazia e o default
+    /// conservador.
+    #[test]
+    fn ask_sem_lista_aceita_so_o_default_do_projeto() {
+        let p = com_destino(false, &[]).com_ask(&[]);
+        assert!(p.anuncia_ask());
+        assert_eq!(p.decidir_ask(DEFAULT_CLOUD_MODEL), Ok(()));
+        assert_eq!(
+            p.decidir_ask("openrouter/auto"),
+            Err(RecusaAsk::ModeloNaoPermitido)
+        );
+        assert_eq!(
+            p.decidir_ask("openrouter/free"),
+            Err(RecusaAsk::ModeloNaoPermitido)
+        );
+    }
+
+    /// A lista **substitui** o default: se o operador listou outro modelo, o
+    /// default do projeto deixa de passar, e so o listado passa.
+    #[test]
+    fn ask_com_lista_substitui_o_default() {
+        let p = com_destino(false, &[]).com_ask(&["openrouter/auto"]);
+        assert_eq!(p.decidir_ask("openrouter/auto"), Ok(()));
+        assert_eq!(
+            p.decidir_ask(DEFAULT_CLOUD_MODEL),
+            Err(RecusaAsk::ModeloNaoPermitido)
+        );
+    }
+
+    /// A recusa de modelo nao depende do canal de envio: `allow_send` nao
+    /// destrava `garra_ask` e `allow_ask` nao destrava envio.
+    #[test]
+    fn ask_e_envio_sao_interruptores_independentes() {
+        let so_envio = com_destino(true, &[42]);
+        assert!(!so_envio.anuncia_ask());
+        assert_eq!(
+            so_envio.decidir_ask(DEFAULT_CLOUD_MODEL),
+            Err(RecusaAsk::InterruptorDesligado)
+        );
+
+        let so_ask = com_destino(false, &[]).com_ask(&[]);
+        assert_eq!(
+            so_ask.decidir_envio(CANAL_DE_ENVIO, 42),
+            Err(Recusa::InterruptorDesligado)
+        );
+    }
+
+    /// Cada recusa de `garra_ask` tem codigo proprio e estavel.
+    #[test]
+    fn cada_recusa_de_ask_tem_codigo_distinto() {
+        let codigos: Vec<&str> = [
+            RecusaAsk::InterruptorDesligado,
+            RecusaAsk::ModeloNaoPermitido,
+            RecusaAsk::OrcamentoEsgotado,
+        ]
+        .iter()
+        .map(|r| r.codigo())
+        .collect();
+        assert_eq!(
+            codigos,
+            vec!["ask_disabled", "model_not_allowed", "over_budget"]
+        );
+    }
+
+    /// A explicacao de ask nunca ecoa um modelo nem um numero de destino.
+    #[test]
+    fn explicacao_de_ask_nao_ecoa_o_modelo_pedido() {
+        for r in [
+            RecusaAsk::InterruptorDesligado,
+            RecusaAsk::ModeloNaoPermitido,
+            RecusaAsk::OrcamentoEsgotado,
+        ] {
+            let texto = r.explicacao();
+            assert!(!texto.is_empty());
+            assert!(!texto.contains("openrouter/auto"), "{texto}");
+        }
+    }
+
+    /// Com `allow_ask` ligado na config, a politica viva le o interruptor e a
+    /// lista (e o default continua desligado).
+    #[test]
+    fn da_config_le_allow_ask_e_a_lista() {
+        let padrao = PoliticaMcpHttp::da_config(&AppConfig::default());
+        assert!(!padrao.anuncia_ask());
+
+        let mut config = AppConfig::default();
+        config.gateway.mcp_http.allow_ask = true;
+        config.gateway.mcp_http.ask_allowed_models = vec!["openrouter/auto".to_string()];
+        let p = PoliticaMcpHttp::da_config(&config);
+        assert!(p.anuncia_ask());
+        assert_eq!(p.decidir_ask("openrouter/auto"), Ok(()));
+        assert_eq!(
+            p.decidir_ask(DEFAULT_CLOUD_MODEL),
+            Err(RecusaAsk::ModeloNaoPermitido)
+        );
     }
 
     /// A politica sai da config de verdade, incluindo o default desligado.

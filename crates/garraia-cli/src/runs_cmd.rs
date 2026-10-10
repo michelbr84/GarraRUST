@@ -166,7 +166,7 @@ fn dica_sem_ledger(bin: &str) -> String {
 /// canaliza-lo para `jq` ou um arquivo. Higienizar de novo so criaria um
 /// segundo comportamento para manter.
 pub(crate) fn run_json(run: &AgentRunRow) -> serde_json::Value {
-    let redigir = |s: &String| crate::ask::sanitize_provider_error(s);
+    let redigir = |s: &String| garraia_ask::sanitize_provider_error(s);
     serde_json::json!({
         "id": run.id,
         "session_id": run.session_id,

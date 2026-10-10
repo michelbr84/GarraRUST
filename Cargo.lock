@@ -3379,6 +3379,7 @@ dependencies = [
  "dirs 7.0.0",
  "dotenvy",
  "garraia-agents",
+ "garraia-ask",
  "garraia-auth",
  "garraia-channels",
  "garraia-common",
@@ -3446,6 +3447,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "garraia-ask"
+version = "0.4.8"
+dependencies = [
+ "anyhow",
+ "garraia-agents",
+ "garraia-config",
+ "regex",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -3642,6 +3657,7 @@ dependencies = [
  "filetime",
  "futures",
  "garraia-agents",
+ "garraia-ask",
  "garraia-auth",
  "garraia-channels",
  "garraia-common",

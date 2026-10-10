@@ -25,8 +25,11 @@ use std::sync::Arc;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, Response, StatusCode};
 use garraia_agents::AgentRuntime;
+use garraia_ask::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
 use garraia_channels::ChannelRegistry;
 use garraia_config::AppConfig;
+use garraia_config::LlmProviderConfig;
+use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 use garraia_gateway::admin::store::AdminStore;
 use garraia_gateway::push_channels::PushChannelStates;
 use garraia_gateway::router::build_router;
@@ -817,4 +820,236 @@ async fn falha_de_entrega_nao_ecoa_o_erro_do_canal() {
         !texto.contains("api.telegram.org"),
         "a resposta ecoou a URL do servico externo: {texto}"
     );
+}
+
+// ── garra_ask (#1612): a ponte chama o LLM so com allow_ask ───────────────────
+
+/// Um router com a config dada. Sem o `ConnectInfo` do `post_mcp`: estes testes
+/// montam o router uma vez e o reusam entre pedidos (o teto de chamadas mora
+/// nele), e quem faz o pedido injeta o par em `pedir_ask`.
+fn router_com(config: AppConfig) -> axum::Router {
+    let state = Arc::new(AppState::new(
+        config,
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    ));
+    let admin_store = Arc::new(Mutex::new(
+        AdminStore::in_memory().expect("in-memory admin store"),
+    ));
+    build_router(
+        state,
+        PushChannelStates::empty(),
+        admin_store,
+        Arc::new(vec![0u8; 32]),
+    )
+}
+
+/// A config da ponte com `garra_ask`, e um `llm.openrouter` apontando para o
+/// endpoint falso. A chave `k-do-dono` e a que o provider deve receber, e nenhuma
+/// outra.
+fn config_com_ask(
+    endereco_falso: &str,
+    allow_ask: bool,
+    modelos: &[&str],
+    orcamento: u32,
+) -> AppConfig {
+    let mut config = config_de(Ligacao::leitura());
+    config.gateway.mcp_http.allow_ask = allow_ask;
+    config.gateway.mcp_http.ask_allowed_models = modelos.iter().map(|m| m.to_string()).collect();
+    config.gateway.mcp_http.ask_budget_per_minute = orcamento;
+    config.llm.insert(
+        "openrouter".to_string(),
+        LlmProviderConfig {
+            provider: "openrouter".to_string(),
+            model: Some(DEFAULT_CLOUD_MODEL.to_string()),
+            api_key: Some("k-do-dono".to_string()),
+            base_url: Some(format!("{endereco_falso}/api/v1")),
+            extra: Default::default(),
+        },
+    );
+    config
+}
+
+/// `garra_ask` como um `tools/call` no router dado. O router nao e consumido: o
+/// teste pode fazer varios pedidos no mesmo, que e o que o teto de chamadas exige.
+async fn pedir_ask(router: &axum::Router, args: Value) -> Value {
+    corpo_json(
+        pedir(
+            router.clone(),
+            Some(BEARER),
+            rpc(
+                3,
+                "tools/call",
+                json!({ "name": "garra_ask", "arguments": args }),
+            ),
+        )
+        .await,
+    )
+    .await
+}
+
+/// O `tools/list` de um router ja montado, depois do `initialize` que um host manda.
+async fn tools_list_de(router: &axum::Router) -> Value {
+    let _ = corpo_json(pedir(router.clone(), Some(BEARER), initialize()).await).await;
+    corpo_json(
+        pedir(
+            router.clone(),
+            Some(BEARER),
+            rpc(2, "tools/list", json!({})),
+        )
+        .await,
+    )
+    .await
+}
+
+/// O erro de `garra_ask` de dentro do envelope `garra.ask.v1`, ou falha de teste.
+fn erro_ask(resposta: &Value) -> Value {
+    assert_eq!(
+        resposta["result"]["isError"], true,
+        "garra_ask deveria ter falhado: {resposta}"
+    );
+    let env = envelope(resposta);
+    assert_eq!(env["schema"], "garra.ask.v1", "{env}");
+    assert_eq!(env["ok"], false, "{env}");
+    env["error"].clone()
+}
+
+/// A tool so aparece com `allow_ask`: o default da instalacao nao anuncia nada.
+#[tokio::test]
+async fn garra_ask_so_e_anunciada_com_allow_ask() {
+    let endereco = MockEndpoint::start().await;
+    let desligada = router_com(config_com_ask(&endereco.uri(), false, &[], 10));
+    let ligada = router_com(config_com_ask(&endereco.uri(), true, &[], 10));
+
+    let nomes_off = nomes_das_tools(&tools_list_de(&desligada).await);
+    assert!(!nomes_off.iter().any(|n| n == "garra_ask"), "{nomes_off:?}");
+
+    let nomes_on = nomes_das_tools(&tools_list_de(&ligada).await);
+    assert!(nomes_on.iter().any(|n| n == "garra_ask"), "{nomes_on:?}");
+}
+
+/// O caminho feliz: sem `model` o pedido vai para o modelo default do projeto,
+/// com a chave do dono, e a resposta sai como o envelope `garra.ask.v1` do stdio.
+#[tokio::test]
+async fn garra_ask_sem_modelo_usa_o_default_do_projeto_e_a_chave_do_dono() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_ask(&endereco.uri(), true, &[], 10));
+
+    let resposta = pedir_ask(&router, json!({ "message": "oi" })).await;
+
+    assert_ne!(resposta["result"]["isError"], true, "{resposta}");
+    let env = envelope(&resposta);
+    assert_eq!(env["schema"], "garra.ask.v1", "{env}");
+    assert_eq!(env["ok"], true, "{env}");
+    assert_eq!(env["answer"], SENTINEL, "{env}");
+    assert_eq!(env["provider"], "openrouter", "{env}");
+    assert_eq!(env["model"], DEFAULT_CLOUD_MODEL, "{env}");
+
+    let credenciais = endereco.credentials().await;
+    assert!(
+        !credenciais.is_empty() && credenciais.iter().all(|c| c == "k-do-dono"),
+        "o provider recebeu {credenciais:?}"
+    );
+}
+
+/// Sem lista, um modelo que nao e o default e recusado **antes** de qualquer
+/// pedido sair: o endpoint do provider nao recebe nada.
+#[tokio::test]
+async fn garra_ask_modelo_fora_da_lista_nao_chega_ao_provider() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_ask(&endereco.uri(), true, &[], 10));
+
+    let resposta = pedir_ask(
+        &router,
+        json!({ "message": "oi", "model": "openrouter/auto" }),
+    )
+    .await;
+
+    let erro = erro_ask(&resposta);
+    assert_eq!(erro["kind"], "model_not_allowed", "{erro}");
+    assert!(
+        endereco.credentials().await.is_empty(),
+        "o modelo recusado chegou ao provider"
+    );
+}
+
+/// Com lista, o modelo listado passa e o que nao esta nela continua recusado.
+#[tokio::test]
+async fn garra_ask_com_lista_aceita_o_modelo_listado() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_ask(
+        &endereco.uri(),
+        true,
+        &["openrouter/auto"],
+        10,
+    ));
+
+    let ok = pedir_ask(
+        &router,
+        json!({ "message": "oi", "model": "openrouter/auto" }),
+    )
+    .await;
+    let env = envelope(&ok);
+    assert_eq!(env["ok"], true, "{env}");
+    assert_eq!(env["model"], "openrouter/auto", "{env}");
+
+    // A lista substituiu o default: o modelo do projeto agora e recusado.
+    let fora = pedir_ask(&router, json!({ "message": "oi" })).await;
+    assert_eq!(erro_ask(&fora)["kind"], "model_not_allowed");
+}
+
+/// Com `allow_ask` desligado a tool nao e anunciada, mas uma chamada direta a ela
+/// e recusada pelo mesmo motivo — e nada chega ao provider.
+#[tokio::test]
+async fn garra_ask_desligada_recusa_mesmo_quando_chamada_direto() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_ask(&endereco.uri(), false, &[], 10));
+
+    let resposta = pedir_ask(&router, json!({ "message": "oi" })).await;
+
+    assert_eq!(erro_ask(&resposta)["kind"], "ask_disabled");
+    assert!(endereco.credentials().await.is_empty());
+}
+
+/// O teto por minuto: a segunda chamada e recusada como `over_budget`, e a
+/// recusa nao gasta inferencia — o provider so viu a primeira.
+#[tokio::test]
+async fn garra_ask_teto_por_minuto_recusa_a_seguinte_sem_gastar() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_ask(&endereco.uri(), true, &[], 1));
+
+    let primeira = pedir_ask(&router, json!({ "message": "oi" })).await;
+    assert_eq!(envelope(&primeira)["ok"], true, "{primeira}");
+    assert_eq!(endereco.credentials().await.len(), 1);
+
+    let segunda = pedir_ask(&router, json!({ "message": "de novo" })).await;
+    assert_eq!(erro_ask(&segunda)["kind"], "over_budget");
+    assert_eq!(
+        endereco.credentials().await.len(),
+        1,
+        "a recusa por teto chegou ao provider"
+    );
+}
+
+/// Os argumentos seguem o contrato do stdio: provider fora do enum e campo
+/// desconhecido sao erro de protocolo, nao chegam ao provider.
+#[tokio::test]
+async fn garra_ask_argumento_invalido_vira_erro_de_protocolo() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_ask(&endereco.uri(), true, &[], 10));
+
+    let provider_estranho = pedir_ask(
+        &router,
+        json!({ "message": "oi", "provider": "minha-entrada-llm" }),
+    )
+    .await;
+    assert!(
+        provider_estranho["error"].is_object(),
+        "{provider_estranho}"
+    );
+
+    let campo_extra = pedir_ask(&router, json!({ "message": "oi", "modelo": "x" })).await;
+    assert!(campo_extra["error"].is_object(), "{campo_extra}");
+
+    assert!(endereco.credentials().await.is_empty());
 }

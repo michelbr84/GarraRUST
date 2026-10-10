@@ -15,6 +15,9 @@ garraia-glob = { workspace = true }
 # As duas ligadas ao mesmo tempo e o caso suportado.
 garraia-channels = { workspace = true, features = ["discord", "telegram", "slack", "whatsapp", "whatsapp-linked", "imessage", "openclaw", "google_chat", "teams", "line", "irc", "signal", "matrix"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
+# #1612: o núcleo one-shot de `garra_ask`, compartilhado com a CLI. O gateway
+# não pode depender de `garraia` (a CLI), por isso o núcleo mora em `garraia-ask`.
+garraia-ask = { workspace = true }
 # ADR 0020 (epic #1124): o registry de dispositivos que alimenta as tools
 # device_list/read/execute. Sem adapter registrado, fica vazio (#1128 liga
 # o boot de adapters via config). As features de transporte (`mqtt`,
@@ -166,7 +169,7 @@ telemetry = ["dep:garraia-telemetry"]
 # `garraia-agents`. Enables the `"echo"` match arm in
 # `bootstrap::build_agent_runtime`. Default OFF — never enabled by a
 # production release binary.
-dev-echo-provider = ["garraia-agents/dev-echo-provider"]
+dev-echo-provider = ["garraia-agents/dev-echo-provider", "garraia-ask/dev-echo-provider"]
 # Plan 0044 (GAR-395 slice 2): enables the S3Compatible ObjectStore
 # backend in bootstrap. Off by default — `LocalFs` is the only backend
 # wired in baseline builds to keep the aws-sdk dependency cost optional.
@@ -526,6 +529,8 @@ metrics-exporter-prometheus = "0.18"
 tempfile = "3"
 serial_test = { workspace = true }
 wiremock = "0.6"
+# #1612: endpoint HTTP falso para o teste ponta a ponta de `garra_ask`.
+garraia-ask = { workspace = true, features = ["test-support"] }
 # Plan 0016 M4 review fix: the sqlx dep was previously listed in
 # BOTH [dependencies] and [dev-dependencies] with identical feature
 # sets. Cargo deduplicates when features match, so there is no

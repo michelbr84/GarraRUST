@@ -7,7 +7,7 @@
 //! servidor, por HTTP —, e sem ela nao havia como apontar o Paperclip (ou
 //! qualquer host MCP que so aceite URL) para este Garra.
 //!
-//! ## As cinco tools
+//! ## As seis tools
 //!
 //! | Tool | O que da | Escrita? |
 //! |---|---|---|
@@ -16,12 +16,16 @@
 //! | `garra_read_history` | ultimas N mensagens, com segredos redigidos | nao |
 //! | `garra_pair_status` | pareamento e allowlist dos canais | nao |
 //! | `garra_send_message` | mandar mensagem num canal real | **sim** |
+//! | `garra_ask` | pergunta ao LLM do Garra (#1612) | gasta inferencia |
 //!
-//! `garra_ask` **nao** entra: ele continua no servidor stdio, como a spec pede.
-//! Uma ponte HTTP que gastasse a chave de LLM do dono a pedido de fora e uma
-//! decisao diferente da que esta issue tomou.
+//! `garra_ask` (#1612) chegou a esta ponte depois de a #1513 deixa-la de fora.
+//! Ela continua existindo no servidor stdio (`garra mcp-server`), com o mesmo
+//! envelope `garra.ask.v1`; as duas superficies compartilham o nucleo em
+//! `garraia-ask`. Aqui ela so aparece com `gateway.mcp_http.allow_ask`, e gasta a
+//! chave de provider do dono — por isso tem politica, lista de modelos e teto de
+//! chamadas proprios, separados dos de envio.
 //!
-//! ## Tres travas, em camadas diferentes, de proposito
+//! ## Quatro travas, em camadas diferentes, de proposito
 //!
 //! 1. **A rota so existe com `gateway.mcp_http.enabled`** (default `false`).
 //!    Desligada, `/mcp` nao e registrada e um pedido cai no 404 do fallback —
@@ -36,6 +40,9 @@
 //!    quando ela nao e satisfeita ([`Montagem::SemCredencial`]).
 //! 3. **Escrita exige um segundo interruptor E a allowlist de destino.** Ver
 //!    [`politica`].
+//! 4. **Inferencia (`garra_ask`) exige `allow_ask`, a lista de modelos e um teto
+//!    proprio por minuto.** Sem a lista, so o modelo default do projeto passa.
+//!    Nenhum dos tres interruptores destrava o outro.
 //!
 //! Alem das tres, `/mcp` herda de graca o que o router ja tem: a guarda
 //! anti-CSRF do [`crate::origin_guard`] (um `POST` de dentro de um navegador
@@ -151,14 +158,28 @@ pub fn build_mcp_http_routes(state: SharedState, push: PushMounted) -> Router {
                 rota = ROTA,
                 envio_liberado = politica.anuncia_envio(),
                 destinos_liberados = politica.destinos_liberados(),
+                ask_liberado = politica.anuncia_ask(),
                 "ponte MCP Streamable HTTP montada (host: so loopback)"
             );
             // Um orcamento para a ponte inteira, criado aqui e nao no
             // `service_factory`: o factory roda por sessao MCP, e um teto por
             // sessao e um teto que o chamador zera abrindo outra sessao.
             let orcamento = Arc::new(SendBudget::default());
+            // #1612: o teto de `garra_ask` e lido no boot, como o de envio e uma
+            // constante. Mudar `ask_budget_per_minute` pede reinicio. `with_max`
+            // ja garante o minimo de 1.
+            let orcamento_ask = Arc::new(SendBudget::with_max(
+                state.config.gateway.mcp_http.ask_budget_per_minute,
+            ));
             let servico = StreamableHttpService::new(
-                move || Ok(ManipuladorMcpHttp::novo(&state, push, orcamento.clone())),
+                move || {
+                    Ok(ManipuladorMcpHttp::novo(
+                        &state,
+                        push,
+                        orcamento.clone(),
+                        orcamento_ask.clone(),
+                    ))
+                },
                 Arc::new(LocalSessionManager::default()),
                 configuracao_do_transporte(),
             );
