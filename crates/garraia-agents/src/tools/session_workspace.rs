@@ -463,6 +463,29 @@ mod tests {
         }
     }
 
+    /// O invariante que fecha os alertas CodeQL #186–#188 (`rust/path-injection`
+    /// em `diretorio_de_verdade`, `garantir_raiz` e `criar_fechado`): nenhum
+    /// byte cru do `session_id` chega ao filesystem — so o digest SHA-256
+    /// formatado, 32 hex minusculos. O charset nao tem como expressar `..`,
+    /// separador ou caminho absoluto, entao o sink e inalcancavel por traversal
+    /// mesmo tratando o `session_id` como nao-confiavel.
+    #[test]
+    fn o_nome_do_subdiretorio_e_sempre_hex_de_32_nunca_escapa_charset() {
+        for id in [
+            "../fora", "..", "a/b", "/abs", "C:\\x", "..\\..", "\0", "séssão",
+        ] {
+            let nome = SessionWorkspace::nome_do_subdiretorio(id)
+                .unwrap_or_else(|| panic!("{id:?} nao deveria ser vazio"));
+            assert_eq!(nome.len(), 32, "{id:?} deveria dar 32 hex, deu {nome:?}");
+            assert!(
+                nome.chars()
+                    .all(|c: char| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+                "{id:?} gerou {nome:?}, fora do charset [0-9a-f]"
+            );
+            assert!(!nome.contains(".."), "{id:?} gerou {nome:?} com `..`");
+        }
+    }
+
     /// Sem identidade de sessao nao ha o que escopar: fail-closed em vez de um
     /// diretorio compartilhado por todo mundo — que e o defeito da #1449.
     #[test]
