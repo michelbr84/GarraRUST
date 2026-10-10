@@ -58,4 +58,3 @@
 # Projeto
 
 - [Benchmarks de Desempenho](./benchmarks.md)
-- [Preços e Planos](./pricing.md)
