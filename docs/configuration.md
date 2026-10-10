@@ -28,6 +28,9 @@ gateway:
     allow_ask: false           # #1612: unlocks garra_ask (spends LLM tokens)
     ask_allowed_models: []     # empty = only the project default model
     ask_budget_per_minute: 10  # garra_ask calls per minute, whole bridge
+    allow_agent: false         # #1615: unlocks garra_agent, which runs tools on this machine
+    agent_budget_per_minute: 2 # garra_agent runs per minute, whole bridge
+    agent_max_seconds: 300     # wall clock for one garra_agent run, 5-600
 
 # LLM Providers
 llm:

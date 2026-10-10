@@ -3,12 +3,12 @@
 //!
 //! Molde: `crates/garraia-cli/src/mcp_server.rs`, que ja implementa
 //! `rmcp::ServerHandler` para o servidor stdio (`garra mcp-server`, tool
-//! `garra_ask`) e diz no proprio cabecalho "Stdio transport only. No HTTP /
-//! Streamable HTTP in this PR". Este arquivo e a continuacao declarada daquele
-//! trabalho, do outro lado do transporte — e por isso repete de proposito as
-//! escolhas dele: despachante puro, envelope JSON inteiro como conteudo de
-//! texto, e a superficie anunciada resolvida por uma politica em vez de um
-//! `if` espalhado pelo `call_tool`.
+//! `garra_ask`). Aquele cabecalho dizia "Stdio transport only. No HTTP /
+//! Streamable HTTP in this PR" — e vale para o stdio ate hoje. Este arquivo e a
+//! continuacao declarada daquele trabalho, do outro lado do transporte — e por
+//! isso repete de proposito as escolhas dele: despachante puro, envelope JSON
+//! inteiro como conteudo de texto, e a superficie anunciada resolvida por uma
+//! politica em vez de um `if` espalhado pelo `call_tool`.
 //!
 //! ## Inferencia: so `garra_ask`, so com `allow_ask` (#1612)
 //!
@@ -18,13 +18,39 @@
 //! mesmo envelope `garra.ask.v1` do servidor stdio, e o nucleo que faz a chamada
 //! e o `garraia-ask`, compartilhado com a CLI.
 //!
+//! ## Delegacao de tarefas: `garra_agent`, so com `allow_agent` (#1615)
+//!
+//! Mudanca de spec: `garra_agent` era so stdio, e a spec do `mcp_http` proibia
+//! HTTP para essa tool. A #1615 a abre por HTTP, com opt-in explicito — o stdio
+//! segue como estava, e o default da instalacao nao anuncia nada.
+//!
+//! O agente roda **como o proprio gateway**, e essa e a fronteira que importa:
+//!
+//! - **Quem pode chamar:** so os orquestradores cuja lista `tools` tem `agent`
+//!   (o dono, pelo `gateway.api_key`, passa). Recusa com `tool_not_allowed`.
+//! - **Quanto pode gastar:** `allow_agent`, depois um teto proprio de execucoes
+//!   por minuto (`agent_budget_per_minute`, sessao `mcp-http-agent`), que nunca
+//!   divide o de envio nem o de `garra_ask`. Estourou: `over_budget`.
+//! - **O que pode tocar:** o sandbox de `garraia-agents` (#1272). Sem sandbox
+//!   valido o `bash` nao existe. As file tools ficam presas as raizes de arquivo
+//!   da config, e o pedido **nao** escolhe diretorio (sem `working_dir`).
+//! - **Tempo:** `agent_max_seconds` (default 300, teto 600) cobre o laco inteiro.
+//! - **Texto:** a entrada e a saida passam por [`super::redacao`]. Prompt,
+//!   resposta e saida de tool nunca vao para o log.
+//!
+//! Ordem fail-closed: interruptor, depois identidade e lista de tools, depois o
+//! modelo, depois o teto, e so entao a execucao. A sessao de trabalho recebe o
+//! nome do orquestrador, entao duas origens nao dividem historico.
+//!
 //! ## O que este handler NAO faz
 //!
 //! - **Nao chama o LLM sem `allow_ask`.** Desligado, `garra_ask` nao e anunciada e
 //!   uma chamada direta e recusada antes de qualquer provider ser resolvido.
-//! - **Nao registra tool no `AgentRuntime`.** A direcao aqui e de fora para
-//!   dentro; o caminho de dentro para fora e o `McpManager`, em
-//!   `crate::mcp`. O `AgentRuntime` que o `garra_ask` usa so tem o provider.
+//! - **Nao registra tool no `AgentRuntime` do `garra_ask`.** A direcao aqui e de
+//!   fora para dentro; o caminho de dentro para fora e o `McpManager`, em
+//!   `crate::mcp`. O `AgentRuntime` do `garra_ask` so tem o provider. O
+//!   `garra_agent` registra as suas tools, no nucleo `crate::agente_mcp`, e so
+//!   existe com `allow_agent` (#1615).
 //! - **Nao decide quem e o dono, so quem e quem.** A credencial vem do header
 //!   `Authorization` e e comparada, aqui, com os orquestradores e com o
 //!   `gateway.api_key` (#1613, ver [`identificar`](super::politica::identificar)).
@@ -58,14 +84,16 @@ use garraia_ask::{ARG_TIMEOUT_SECS_DEFAULT, AskOptions, AskOutcome, error_envelo
 use garraia_config::defaults::{DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER};
 
 use super::ferramentas::{
-    self, ArgsAsk, ArgsListChats, ArgsReadHistory, ArgsSendMessage, TOOL_ASK, TOOL_LIST_CHATS,
-    TOOL_PAIR_STATUS, TOOL_READ_HISTORY, TOOL_SEND_MESSAGE, TOOL_STATUS, e_ferramenta_conhecida,
+    self, ArgsAgent, ArgsAsk, ArgsListChats, ArgsReadHistory, ArgsSendMessage, TOOL_AGENT,
+    TOOL_ASK, TOOL_LIST_CHATS, TOOL_PAIR_STATUS, TOOL_READ_HISTORY, TOOL_SEND_MESSAGE, TOOL_STATUS,
+    e_ferramenta_conhecida,
 };
 use super::politica::{
-    Orquestrador, PoliticaMcpHttp, RecusaAsk, RecusaOrquestrador, SESSAO_DO_TETO,
-    SESSAO_DO_TETO_ASK, identificar,
+    Orquestrador, PoliticaMcpHttp, RecusaAgent, RecusaAsk, RecusaOrquestrador, SESSAO_DO_TETO,
+    SESSAO_DO_TETO_AGENT, SESSAO_DO_TETO_ASK, identificar,
 };
 use super::redacao;
+use crate::agente_mcp::{self, AgentOptions, AgentOutcome, agent_error_envelope};
 use crate::auth_common::extract_bearer;
 use crate::channel_send::{SendBudget, with_channel_address};
 use crate::push_channels::PushMounted;
@@ -96,6 +124,9 @@ pub struct ManipuladorMcpHttp {
     /// Teto de chamadas de `garra_ask` (#1612). Separado do de envio: gastar
     /// inferencia nao come a cota de mensagens, nem o contrario.
     orcamento_ask: Arc<SendBudget>,
+    /// Teto de execucoes de `garra_agent` (#1615). Terceiro orcamento, separado
+    /// dos outros dois: uma execucao gasta inferencia e roda tools.
+    orcamento_agent: Arc<SendBudget>,
 }
 
 impl ManipuladorMcpHttp {
@@ -104,12 +135,14 @@ impl ManipuladorMcpHttp {
         push: PushMounted,
         orcamento: Arc<SendBudget>,
         orcamento_ask: Arc<SendBudget>,
+        orcamento_agent: Arc<SendBudget>,
     ) -> Self {
         Self {
             state: Arc::downgrade(state),
             push,
             orcamento,
             orcamento_ask,
+            orcamento_agent,
         }
     }
 
@@ -168,6 +201,7 @@ impl ManipuladorMcpHttp {
                 "send_enabled": politica.anuncia_envio(),
                 "allowed_targets": politica.destinos_liberados(),
                 "ask_enabled": politica.anuncia_ask(),
+                "agent_enabled": politica.anuncia_agent(),
             },
         })
     }
@@ -508,6 +542,107 @@ impl ManipuladorMcpHttp {
         }
     }
 
+    /// `garra_agent` (#1615): politica, teto e so depois o agente completo.
+    ///
+    /// A ordem e a do `garra_ask`: uma recusa de politica nao gasta cota, e o teto
+    /// e cobrado antes de qualquer provider ser montado. A entrada e a saida passam
+    /// por [`redacao`]: um token colado no pedido nao vai ao modelo, e um token que
+    /// o agente imprimir nao volta ao orquestrador. Nada disso vai para o log:
+    /// prompt, resposta e saida de tool ficam de fora; so provider, modelo, tempo
+    /// e a contagem de tools entram.
+    ///
+    /// O diretorio de trabalho NAO vem do pedido: o `working_dir` do stdio e
+    /// deliberadamente fora da ponte. As file tools usam o jail das raizes de
+    /// arquivo da config, e a sessao de trabalho tem o nome do orquestrador, para
+    /// duas origens nunca compartilharem historico nem id.
+    async fn agent(
+        &self,
+        state: &Arc<AppState>,
+        politica: &PoliticaMcpHttp,
+        quem: &Orquestrador,
+        args: &ArgsAgent,
+    ) -> Result<JsonValue, JsonValue> {
+        let modelo = args
+            .model
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(DEFAULT_CLOUD_MODEL)
+            .to_string();
+        let provider = args
+            .provider
+            .clone()
+            .unwrap_or_else(|| DEFAULT_CLOUD_PROVIDER.to_string());
+
+        if let Err(recusa) = politica.decidir_agent(quem, &modelo) {
+            tracing::warn!(
+                orquestrador = quem.rotulo(),
+                motivo = recusa.codigo(),
+                "mcp_http: garra_agent recusado"
+            );
+            return Err(recusa_do_agente(&provider, &modelo, recusa));
+        }
+
+        if let Err(usados) = self
+            .orcamento_agent
+            .try_consume(SESSAO_DO_TETO_AGENT, std::time::Instant::now())
+        {
+            let recusa = RecusaAgent::OrcamentoEsgotado;
+            tracing::warn!(
+                usados,
+                orquestrador = quem.rotulo(),
+                motivo = recusa.codigo(),
+                "mcp_http: garra_agent recusado"
+            );
+            return Err(recusa_do_agente(&provider, &modelo, recusa));
+        }
+
+        let config = state.current_config();
+        let opts = AgentOptions {
+            message: redacao::redigir(&args.message),
+            provider: provider.clone(),
+            model: modelo.clone(),
+            timeout_secs: args
+                .timeout_secs
+                .unwrap_or_else(|| politica.teto_do_agente_secs()),
+            system_prompt: args.system_prompt.as_deref().map(redacao::redigir),
+            working_dir: None,
+        };
+        // So as raizes da config: o CWD do processo atende a CLI, nao um pedido
+        // de terceiro (ver `FileJail::from_config_roots_plus_cwd`).
+        let jail = garraia_agents::FileJail::from_config_roots(&config.agent.file_roots);
+        let prefixo = format!("mcp-http-{}", quem.rotulo());
+        let outcome = agente_mcp::agent_oneshot(&config, &opts, &jail, &prefixo).await;
+        let envelope = redigir_envelope_do_agente(outcome.to_envelope());
+        match &outcome {
+            AgentOutcome::Success {
+                latency_ms,
+                tool_calls,
+                ..
+            } => {
+                tracing::info!(
+                    orquestrador = quem.rotulo(),
+                    provider = %provider,
+                    modelo = %modelo,
+                    latency_ms = %latency_ms,
+                    ferramentas = tool_calls.len(),
+                    "mcp_http: garra_agent concluido"
+                );
+                Ok(envelope)
+            }
+            AgentOutcome::Failure {
+                error, tool_calls, ..
+            } => {
+                tracing::warn!(
+                    orquestrador = quem.rotulo(),
+                    kind = error.kind_str(),
+                    ferramentas = tool_calls.len(),
+                    "mcp_http: garra_agent falhou"
+                );
+                Err(envelope)
+            }
+        }
+    }
+
     /// Despacho puro de nome para resultado, para o `call_tool` ficar com uma
     /// forma so: `Ok(valor)` = sucesso, `Err(valor)` = envelope de erro.
     ///
@@ -553,6 +688,12 @@ impl ManipuladorMcpHttp {
                 ferramentas::validar_ask(&args).map_err(|e| McpError::invalid_params(e, None))?;
                 Ok(self.ask(state, politica, &args).await)
             }
+            TOOL_AGENT => {
+                let args: ArgsAgent = desserializar(argumentos)?;
+                ferramentas::validar_agent(&args, politica.teto_do_agente_secs())
+                    .map_err(|e| McpError::invalid_params(e, None))?;
+                Ok(self.agent(state, politica, quem, &args).await)
+            }
             outro => Err(McpError::invalid_params(
                 format!("tool desconhecida: '{outro}'"),
                 None,
@@ -568,6 +709,35 @@ fn envelope_de_erro(kind: &str, message: &str) -> JsonValue {
         "ok": false,
         "error": { "kind": kind, "message": message },
     })
+}
+
+/// O envelope `garra.agent.v1` de uma recusa de `garra_agent`, sem execucao.
+fn recusa_do_agente(provider: &str, modelo: &str, recusa: RecusaAgent) -> JsonValue {
+    agent_error_envelope(recusa.codigo(), recusa.explicacao(), provider, modelo, &[])
+}
+
+/// Redige o texto livre de um envelope `garra.agent.v1` (#1615): a resposta, a
+/// mensagem de erro e o resumo de cada tool. O resumo sai do runtime, mas um
+/// `bash` que ecoe um token deixaria esse token no resumo, e ele nao sai daqui.
+fn redigir_envelope_do_agente(mut envelope: JsonValue) -> JsonValue {
+    if let Some(resposta) = envelope.get("answer").and_then(JsonValue::as_str) {
+        let redigida = redacao::redigir(resposta);
+        envelope["answer"] = json!(redigida);
+    }
+    if let Some(mensagem) = envelope["error"]["message"].as_str().map(redacao::redigir) {
+        envelope["error"]["message"] = json!(mensagem);
+    }
+    if let Some(chamadas) = envelope
+        .get_mut("tool_calls")
+        .and_then(JsonValue::as_array_mut)
+    {
+        for chamada in chamadas {
+            if let Some(resumo) = chamada["summary"].as_str().map(redacao::redigir) {
+                chamada["summary"] = json!(resumo);
+            }
+        }
+    }
+    envelope
 }
 
 /// Redige a mensagem de erro de um envelope `garra.ask.v1` (#1613). O provedor
@@ -680,7 +850,9 @@ impl ServerHandler for ManipuladorMcpHttp {
              nao ha como aprovar um destino novo por aqui, e ela nem aparece na lista de \
              tools quando nenhum envio poderia sair. Inferencia: garra_ask, que gasta a \
              chave de provider do operador; so aparece quando ele a liberou, e so aceita \
-             os modelos da lista dele."
+             os modelos da lista dele. Agente: garra_agent, que roda tarefas com \
+             ferramentas no computador do operador; so aparece quando ele a liberou, e \
+             tem teto proprio de execucoes e de tempo."
                 .to_string(),
         );
         info
@@ -750,13 +922,22 @@ impl ServerHandler for ManipuladorMcpHttp {
                 let recusa = RecusaOrquestrador::NaoAutorizado;
                 Ok(Err(envelope_de_erro(recusa.codigo(), recusa.explicacao())))
             }
-            Some(q) => match politica.decidir_ferramenta(q, &request.name) {
-                Ok(()) => {
-                    self.despachar(&state, &politica, q, &request.name, argumentos)
-                        .await
+            Some(q) => {
+                // `garra_agent` decide a propria ordem: o interruptor vem antes da
+                // lista do orquestrador, e isso se resolve dentro de `agent`.
+                let autorizada = if request.name == TOOL_AGENT {
+                    Ok(())
+                } else {
+                    politica.decidir_ferramenta(q, &request.name)
+                };
+                match autorizada {
+                    Ok(()) => {
+                        self.despachar(&state, &politica, q, &request.name, argumentos)
+                            .await
+                    }
+                    Err(recusa) => Ok(Err(envelope_de_erro(recusa.codigo(), recusa.explicacao()))),
                 }
-                Err(recusa) => Ok(Err(envelope_de_erro(recusa.codigo(), recusa.explicacao()))),
-            },
+            }
         };
         let codigo = match &resultado {
             Ok(Ok(_)) => "ok".to_string(),

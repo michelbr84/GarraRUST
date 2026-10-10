@@ -2,6 +2,9 @@ pub mod a2a;
 pub mod account_purge_worker;
 pub mod admin;
 pub mod agent_router;
+/// #1615 — o núcleo do `garra_agent` (agente completo, one-shot), compartilhado
+/// pelo stdio da CLI e pela ponte MCP HTTP. Sem feature: o stdio não tem.
+pub mod agente_mcp;
 pub mod anthropic_api;
 pub mod api;
 pub mod approval_scope;

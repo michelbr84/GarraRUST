@@ -7,7 +7,7 @@
 //! servidor, por HTTP —, e sem ela nao havia como apontar o Paperclip (ou
 //! qualquer host MCP que so aceite URL) para este Garra.
 //!
-//! ## As seis tools
+//! ## As sete tools
 //!
 //! | Tool | O que da | Escrita? |
 //! |---|---|---|
@@ -17,6 +17,7 @@
 //! | `garra_pair_status` | pareamento e allowlist dos canais | nao |
 //! | `garra_send_message` | mandar mensagem num canal real | **sim** |
 //! | `garra_ask` | pergunta ao LLM do Garra (#1612) | gasta inferencia |
+//! | `garra_agent` | tarefa com ferramentas no Garra (#1615) | **sim**, grava e roda comando com sandbox |
 //!
 //! `garra_ask` (#1612) chegou a esta ponte depois de a #1513 deixa-la de fora.
 //! Ela continua existindo no servidor stdio (`garra mcp-server`), com o mesmo
@@ -25,7 +26,15 @@
 //! chave de provider do dono — por isso tem politica, lista de modelos e teto de
 //! chamadas proprios, separados dos de envio.
 //!
-//! ## Quatro travas, em camadas diferentes, de proposito
+//! `garra_agent` (#1615) e a mudanca de spec que esta ponte aceitou: ate la o
+//! agente completo era so stdio. Agora ele tambem chega por HTTP, mas e a
+//! capacidade de maior risco da ponte. Tem `allow_agent` proprio (default off),
+//! teto de execucoes por minuto proprio, teto de tempo, e roda sob o sandbox e o
+//! jail do gateway. O stdio segue igual, com o opt-in `GARRAIA_MCP_ENABLE_TOOLS`.
+//! Ver o cabecalho de [`handler`] e `docs/gateway-mcp-http.md`, "Delegacao de
+//! tarefas".
+//!
+//! ## Cinco travas, em camadas diferentes, de proposito
 //!
 //! 1. **A rota so existe com `gateway.mcp_http.enabled`** (default `false`).
 //!    Desligada, `/mcp` nao e registrada e um pedido cai no 404 do fallback —
@@ -43,6 +52,9 @@
 //! 4. **Inferencia (`garra_ask`) exige `allow_ask`, a lista de modelos e um teto
 //!    proprio por minuto.** Sem a lista, so o modelo default do projeto passa.
 //!    Nenhum dos tres interruptores destrava o outro.
+//! 5. **Execucao de agente (`garra_agent`) exige `allow_agent`, um teto proprio
+//!    por minuto e um teto de tempo (#1615).** Nenhum dos outros interruptores a
+//!    destrava, e ela nao aparece sem a tool estar na lista do orquestrador.
 //!
 //! ## Quem chama (#1613)
 //!
@@ -171,6 +183,7 @@ pub fn build_mcp_http_routes(state: SharedState, push: PushMounted) -> Router {
                 envio_liberado = politica.anuncia_envio(),
                 destinos_liberados = politica.destinos_liberados(),
                 ask_liberado = politica.anuncia_ask(),
+                agent_liberado = politica.anuncia_agent(),
                 "ponte MCP Streamable HTTP montada (host: so loopback)"
             );
             // Um orcamento para a ponte inteira, criado aqui e nao no
@@ -183,6 +196,11 @@ pub fn build_mcp_http_routes(state: SharedState, push: PushMounted) -> Router {
             let orcamento_ask = Arc::new(SendBudget::with_max(
                 state.config.gateway.mcp_http.ask_budget_per_minute,
             ));
+            // #1615: o teto de `garra_agent` e um terceiro orcamento, com a mesma
+            // regra de leitura no boot.
+            let orcamento_agent = Arc::new(SendBudget::with_max(
+                state.config.gateway.mcp_http.agent_budget_per_minute,
+            ));
             let servico = StreamableHttpService::new(
                 move || {
                     Ok(ManipuladorMcpHttp::novo(
@@ -190,6 +208,7 @@ pub fn build_mcp_http_routes(state: SharedState, push: PushMounted) -> Router {
                         push,
                         orcamento.clone(),
                         orcamento_ask.clone(),
+                        orcamento_agent.clone(),
                     ))
                 },
                 Arc::new(LocalSessionManager::default()),

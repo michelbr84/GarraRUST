@@ -21,6 +21,7 @@
 //! recusa passou a ser "canal fora do ar" em vez de "nao autorizado".
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, Response, StatusCode};
@@ -37,6 +38,8 @@ use garraia_gateway::state::AppState;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
 
 const CHAVE: &str = "chave-de-teste-da-ponte-mcp";
 const BEARER: &str = "Bearer chave-de-teste-da-ponte-mcp";
@@ -1500,4 +1503,307 @@ async fn sem_orquestradores_o_dono_segue_como_antes() {
     assert_eq!(listar_como(&router, CHAVE).await.len(), 4);
     let env = envelope(&chamar_como(&router, CHAVE, "garra_status", json!({})).await);
     assert_eq!(env["ok"], true, "{env}");
+}
+
+// ── garra_agent (#1615): delegacao de tarefas com identidade, teto e redacao ──
+
+/// A config da ponte com `garra_agent` e um `llm.openrouter` no endpoint falso.
+/// A chave `k-do-dono` e a unica que o provider pode receber.
+fn config_com_agent(endereco_falso: &str, allow_agent: bool, orcamento: u32) -> AppConfig {
+    let mut config = config_com_ask(endereco_falso, false, &[], 10);
+    config.gateway.mcp_http.allow_agent = allow_agent;
+    config.gateway.mcp_http.agent_budget_per_minute = orcamento;
+    config
+}
+
+/// `garra_agent` como um `tools/call` no router dado.
+async fn pedir_agent(router: &axum::Router, args: Value) -> Value {
+    corpo_json(
+        pedir(
+            router.clone(),
+            Some(BEARER),
+            rpc(
+                3,
+                "tools/call",
+                json!({ "name": "garra_agent", "arguments": args }),
+            ),
+        )
+        .await,
+    )
+    .await
+}
+
+/// O erro de `garra_agent` de dentro do envelope `garra.agent.v1`.
+fn erro_agent(resposta: &Value) -> Value {
+    assert_eq!(
+        resposta["result"]["isError"], true,
+        "garra_agent deveria ter falhado: {resposta}"
+    );
+    let env = envelope(resposta);
+    assert_eq!(env["schema"], "garra.agent.v1", "{env}");
+    assert_eq!(env["ok"], false, "{env}");
+    env["error"].clone()
+}
+
+/// Aponta o `llm.openrouter` da config para o endpoint falso dado.
+fn com_llm_falso(mut config: AppConfig, endereco_falso: &str) -> AppConfig {
+    config.llm.insert(
+        "openrouter".to_string(),
+        LlmProviderConfig {
+            provider: "openrouter".to_string(),
+            model: Some(DEFAULT_CLOUD_MODEL.to_string()),
+            api_key: Some("k-do-dono".to_string()),
+            base_url: Some(format!("{endereco_falso}/api/v1")),
+            extra: Default::default(),
+        },
+    );
+    config
+}
+
+/// Config com `garra_agent` ligada e o provider apontando para `endereco`.
+fn config_agent_para(endereco: &str) -> AppConfig {
+    let mut config = config_de(Ligacao::leitura());
+    config.gateway.mcp_http.allow_agent = true;
+    com_llm_falso(config, endereco)
+}
+
+/// A tool so aparece com `allow_agent`. O default da instalacao continua com as
+/// quatro de leitura: ligar `garra_agent` nao muda nada para quem nao a ligou.
+#[tokio::test]
+async fn garra_agent_so_e_anunciada_com_allow_agent() {
+    let endereco = MockEndpoint::start().await;
+    let desligada = router_com(config_com_agent(&endereco.uri(), false, 2));
+    let ligada = router_com(config_com_agent(&endereco.uri(), true, 2));
+
+    let nomes_off = nomes_das_tools(&tools_list_de(&desligada).await);
+    assert!(
+        !nomes_off.iter().any(|n| n == "garra_agent"),
+        "{nomes_off:?}"
+    );
+    assert_eq!(nomes_off.len(), 4, "{nomes_off:?}");
+
+    let nomes_on = nomes_das_tools(&tools_list_de(&ligada).await);
+    assert!(nomes_on.iter().any(|n| n == "garra_agent"), "{nomes_on:?}");
+}
+
+/// Sem `allow_agent`, uma chamada direta e recusada com `agent_disabled` antes de
+/// qualquer provider ser montado: o endpoint nao recebe nada.
+#[tokio::test]
+async fn garra_agent_desligado_recusa_mesmo_quando_chamado_direto() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_agent(&endereco.uri(), false, 2));
+
+    let erro = erro_agent(&pedir_agent(&router, json!({ "message": "faz x" })).await);
+    assert_eq!(erro["kind"], "agent_disabled", "{erro}");
+    assert!(
+        endereco.credentials().await.is_empty(),
+        "o provider foi chamado"
+    );
+}
+
+/// O caminho feliz: sem `model` vai o modelo default do projeto, com a chave do
+/// dono, e a resposta sai como o envelope `garra.agent.v1`.
+#[tokio::test]
+async fn garra_agent_caminho_feliz_usa_o_default_e_a_chave_do_dono() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_agent(&endereco.uri(), true, 2));
+
+    let resposta = pedir_agent(&router, json!({ "message": "faz x" })).await;
+
+    assert_ne!(resposta["result"]["isError"], true, "{resposta}");
+    let env = envelope(&resposta);
+    assert_eq!(env["schema"], "garra.agent.v1", "{env}");
+    assert_eq!(env["ok"], true, "{env}");
+    assert_eq!(env["answer"], SENTINEL, "{env}");
+    assert_eq!(env["provider"], "openrouter", "{env}");
+    assert_eq!(env["model"], DEFAULT_CLOUD_MODEL, "{env}");
+    assert!(
+        env["session_id"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("mcp-http-dono-")),
+        "{env}"
+    );
+
+    let credenciais = endereco.credentials().await;
+    assert!(
+        !credenciais.is_empty() && credenciais.iter().all(|c| c == "k-do-dono"),
+        "o provider recebeu {credenciais:?}"
+    );
+}
+
+/// O modelo do agente passa pela lista de `garra_ask`: fora dela, recusado antes
+/// do provider.
+#[tokio::test]
+async fn garra_agent_modelo_fora_da_lista_nao_chega_ao_provider() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_agent(&endereco.uri(), true, 2));
+
+    let erro = erro_agent(
+        &pedir_agent(
+            &router,
+            json!({ "message": "faz x", "model": "openrouter/auto" }),
+        )
+        .await,
+    );
+    assert_eq!(erro["kind"], "model_not_allowed", "{erro}");
+    assert!(endereco.credentials().await.is_empty());
+}
+
+/// O teto por minuto: a segunda execucao e recusada como `over_budget`, e a
+/// recusa nao gasta inferencia.
+#[tokio::test]
+async fn garra_agent_teto_por_minuto_recusa_a_seguinte_sem_gastar() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_agent(&endereco.uri(), true, 1));
+
+    let primeira = pedir_agent(&router, json!({ "message": "faz x" })).await;
+    assert_eq!(envelope(&primeira)["ok"], true, "{primeira}");
+
+    let segunda = pedir_agent(&router, json!({ "message": "faz de novo" })).await;
+    assert_eq!(erro_agent(&segunda)["kind"], "over_budget");
+    assert_eq!(
+        endereco.credentials().await.len(),
+        1,
+        "a recusa por teto chegou ao provider"
+    );
+}
+
+/// #1615 — o orcamento de `garra_agent` e PROPRIO: esgotar o de `garra_ask` nao
+/// para o agente, e esgotar o agente nao para o ask.
+#[tokio::test]
+async fn orcamento_de_agent_e_proprio_e_nao_divide_com_ask() {
+    let endereco = MockEndpoint::start().await;
+    let mut config = config_com_ask(&endereco.uri(), true, &[], 1);
+    config.gateway.mcp_http.allow_agent = true;
+    config.gateway.mcp_http.agent_budget_per_minute = 1;
+    let router = router_com(config);
+
+    assert_eq!(
+        envelope(&pedir_ask(&router, json!({ "message": "oi" })).await)["ok"],
+        true
+    );
+    let agente = pedir_agent(&router, json!({ "message": "faz x" })).await;
+    assert_eq!(
+        envelope(&agente)["ok"],
+        true,
+        "o ask nao pode ter gasto a cota do agente: {agente}"
+    );
+
+    assert_eq!(
+        erro_ask(&pedir_ask(&router, json!({ "message": "de novo" })).await)["kind"],
+        "over_budget"
+    );
+    assert_eq!(
+        erro_agent(&pedir_agent(&router, json!({ "message": "de novo" })).await)["kind"],
+        "over_budget"
+    );
+}
+
+/// `working_dir` e `additionalProperties` continuam de fora na ponte: o pedido
+/// nao escolhe diretorio do disco do operador. E erro de protocolo.
+#[tokio::test]
+async fn garra_agent_working_dir_vira_erro_de_protocolo() {
+    let endereco = MockEndpoint::start().await;
+    let router = router_com(config_com_agent(&endereco.uri(), true, 2));
+
+    let resposta = pedir_agent(&router, json!({ "message": "faz x", "working_dir": "/" })).await;
+    assert!(resposta["error"].is_object(), "{resposta}");
+    assert!(endereco.credentials().await.is_empty());
+}
+
+/// `timeout_secs` acima do teto do operador e erro de protocolo, nao corte em
+/// silencio: o provider nao e chamado.
+#[tokio::test]
+async fn garra_agent_timeout_acima_do_teto_do_operador_vira_erro_de_protocolo() {
+    let endereco = MockEndpoint::start().await;
+    let mut config = config_com_agent(&endereco.uri(), true, 2);
+    config.gateway.mcp_http.agent_max_seconds = 60;
+    let router = router_com(config);
+
+    let resposta = pedir_agent(&router, json!({ "message": "faz x", "timeout_secs": 61 })).await;
+    assert!(resposta["error"].is_object(), "{resposta}");
+    assert!(endereco.credentials().await.is_empty());
+}
+
+/// Um provider que nao responde estoura o teto de tempo do operador, e a falha
+/// volta como o envelope `timeout`, sem texto solto.
+#[tokio::test]
+async fn garra_agent_provider_lento_estoura_o_teto_e_vira_timeout() {
+    let lento = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(60))
+                .set_body_string("{}"),
+        )
+        .mount(&lento)
+        .await;
+    let router = router_com(config_agent_para(&lento.uri()));
+
+    let erro =
+        erro_agent(&pedir_agent(&router, json!({ "message": "faz x", "timeout_secs": 5 })).await);
+    assert_eq!(erro["kind"], "timeout", "{erro}");
+}
+
+/// Um provider que responde com uma chave `sk-` no texto: ela nao sai na resposta
+/// ao orquestrador. A mensagem que o orquestrador manda tambem nao chega ao modelo
+/// com o segredo que ele colou.
+struct RespondeComSegredo;
+
+impl Respond for RespondeComSegredo {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let corpo: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let texto = concat!("a chave e ", "sk-", "abcdefgh12345678");
+        if corpo.get("stream").and_then(Value::as_bool) == Some(true) {
+            let chunk = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": texto}, "finish_reason": null}]
+            });
+            let fim = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+            });
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\ndata: {fim}\n\ndata: [DONE]\n\n"));
+        }
+        ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c", "object": "chat.completion", "model": "m",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": texto}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }))
+    }
+}
+
+/// Entrada e saida passam pela redacao: o segredo que o orquestrador colou nao
+/// chega ao provider, e o que o provider devolve nao volta ao orquestrador.
+#[tokio::test]
+async fn garra_agent_entrada_e_saida_saem_redigidas() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(RespondeComSegredo)
+        .mount(&falso)
+        .await;
+    let router = router_com(config_agent_para(&falso.uri()));
+
+    let entrada = concat!("use esta chave ", "sk-", "zyxwvuts98765432 para testar");
+    let resposta = pedir_agent(&router, json!({ "message": entrada })).await;
+    let env = envelope(&resposta);
+    assert_eq!(env["ok"], true, "{env}");
+    let resposta_texto = env["answer"].as_str().unwrap_or_default();
+    assert!(
+        !resposta_texto.contains("abcdefgh12345678"),
+        "{resposta_texto}"
+    );
+    assert!(resposta_texto.contains("[REDACTED]"), "{resposta_texto}");
+
+    let recebidas = falso.received_requests().await.unwrap_or_default();
+    assert!(!recebidas.is_empty(), "o provider nao recebeu nada");
+    for req in &recebidas {
+        let corpo = String::from_utf8_lossy(&req.body);
+        assert!(
+            !corpo.contains("zyxwvuts98765432"),
+            "o segredo da entrada vazou ao modelo"
+        );
+    }
 }

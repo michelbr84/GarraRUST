@@ -598,6 +598,28 @@ pub struct McpHttpConfig {
     #[serde(default = "default_mcp_http_ask_budget_per_minute")]
     pub ask_budget_per_minute: u32,
 
+    /// Destrava a tool `garra_agent` (#1615): o Garra roda o agente COMPLETO a
+    /// pedido de um orquestrador — file read/write presos ao jail, web, git e,
+    /// so com sandbox valido (#1272), `bash`. `false` (default) = a tool **nao
+    /// e anunciada** e uma chamada direta e recusada com `agent_disabled`.
+    /// E a capacidade de maior risco da ponte: por isso fica fora de
+    /// `garra_ask` e tem orcamento proprio.
+    #[serde(default)]
+    pub allow_agent: bool,
+
+    /// Execucoes de `garra_agent` por minuto, na janela da ponte inteira. Orcamento
+    /// PROPRIO (sessao `mcp-http-agent`): nunca divide o de envio nem o de
+    /// `garra_ask`. Default baixo de proposito, porque cada execucao pode rodar
+    /// varias chamadas de LLM e tools.
+    #[serde(default = "default_mcp_http_agent_budget_per_minute")]
+    pub agent_budget_per_minute: u32,
+
+    /// Teto, em segundos, do tempo de uma execucao de `garra_agent`. O relogio
+    /// cobre o laco INTEIRO (cada ida ao LLM e cada tool). O chamador pode pedir
+    /// menos, nunca mais. Faixa [5, 600]; default 300.
+    #[serde(default = "default_mcp_http_agent_max_seconds")]
+    pub agent_max_seconds: u64,
+
     /// Orquestradores externos com identidade propria (#1613). Vazio (default)
     /// = so o dono (`gateway.api_key`) autentica, como antes.
     ///
@@ -657,6 +679,7 @@ pub const FERRAMENTAS_DE_ORQUESTRADOR: &[&str] = &[
     "pair_status",
     "send_message",
     "ask",
+    "agent",
 ];
 
 /// O rotulo reservado do dono nos logs de auditoria. Um orquestrador com este
@@ -783,9 +806,24 @@ impl Default for McpHttpConfig {
             allow_ask: false,
             ask_allowed_models: Vec::new(),
             ask_budget_per_minute: default_mcp_http_ask_budget_per_minute(),
+            allow_agent: false,
+            agent_budget_per_minute: default_mcp_http_agent_budget_per_minute(),
+            agent_max_seconds: default_mcp_http_agent_max_seconds(),
             orchestrators: Vec::new(),
         }
     }
+}
+
+/// Faixa aceita de `gateway.mcp_http.agent_max_seconds` (#1615).
+pub const MCP_HTTP_AGENT_MAX_SECONDS_MIN: u64 = 5;
+pub const MCP_HTTP_AGENT_MAX_SECONDS_MAX: u64 = 600;
+
+fn default_mcp_http_agent_budget_per_minute() -> u32 {
+    2
+}
+
+fn default_mcp_http_agent_max_seconds() -> u64 {
+    300
 }
 
 fn default_mcp_http_history_limit() -> usize {
@@ -1944,6 +1982,32 @@ mod mcp_http_config_tests {
         assert_eq!(mcp.ask_budget_per_minute, 3);
         // `allow_send` nao foi tocado pela chave de ask.
         assert!(!mcp.allow_send);
+    }
+
+    /// #1615 — `garra_agent` nasce desligado, com orcamento baixo e teto de 300s.
+    #[test]
+    fn agent_default_fica_desligado_com_orcamento_e_teto_modestos() {
+        let padrao = McpHttpConfig::default();
+        assert!(!padrao.allow_agent);
+        assert_eq!(padrao.agent_budget_per_minute, 2);
+        assert_eq!(padrao.agent_max_seconds, 300);
+        assert!(!crate::FERRAMENTAS_DE_ORQUESTRADOR.is_empty());
+        assert!(crate::FERRAMENTAS_DE_ORQUESTRADOR.contains(&"agent"));
+    }
+
+    #[test]
+    fn parseia_as_chaves_de_agent() {
+        let config: AppConfig = serde_yaml::from_str(
+            "gateway:\n  mcp_http:\n    enabled: true\n    allow_agent: true\n    \
+             agent_budget_per_minute: 1\n    agent_max_seconds: 120\n",
+        )
+        .expect("yaml should parse");
+        let mcp = &config.gateway.mcp_http;
+        assert!(mcp.allow_agent);
+        assert_eq!(mcp.agent_budget_per_minute, 1);
+        assert_eq!(mcp.agent_max_seconds, 120);
+        // `allow_ask` nao foi tocado pela chave de agent.
+        assert!(!mcp.allow_ask);
     }
 
     /// Secao `mcp_http` ausente (instalacao antiga) => defaults, sem erro.

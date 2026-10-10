@@ -10,7 +10,7 @@
 use garraia_config::AppConfig;
 use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 
-use super::ferramentas::{TOOL_SEND_MESSAGE, tool_por_nome_curto};
+use super::ferramentas::{TOOL_AGENT, TOOL_SEND_MESSAGE, tool_por_nome_curto};
 use crate::auth_common::constant_time_token_eq;
 use crate::channel_send::ProactiveTargets;
 
@@ -37,6 +37,13 @@ pub const SESSAO_DO_TETO: &str = "mcp-http";
 /// [`SESSAO_DO_TETO`]: uma so para a ponte inteira, para o chamador nao zerar o
 /// teto abrindo outra sessao.
 pub const SESSAO_DO_TETO_ASK: &str = "mcp-http-ask";
+
+/// A sessao contra a qual o teto de execucoes de `garra_agent` e cobrado (#1615).
+///
+/// Orcamento **proprio**, em terceiro lugar: nem o de envio nem o de `garra_ask`
+/// dividem com ele. Execucao de agente gasta inferencia E roda tools, entao uma
+/// cota compartilhada deixaria uma coisa comer a outra.
+pub const SESSAO_DO_TETO_AGENT: &str = "mcp-http-agent";
 
 /// Quem fez uma chamada da ponte, pela credencial que ela trouxe (#1613).
 ///
@@ -171,6 +178,10 @@ pub struct PoliticaMcpHttp {
     modelos_de_ask: Vec<String>,
     /// Os orquestradores validos de `gateway.mcp_http.orchestrators` (#1613).
     orquestradores: Vec<Concessao>,
+    /// `gateway.mcp_http.allow_agent` (#1615).
+    agente_liberado: bool,
+    /// `gateway.mcp_http.agent_max_seconds`, ja aparado na faixa da config.
+    teto_do_agente_secs: u64,
 }
 
 /// Por que um envio nao saiu.
@@ -238,6 +249,58 @@ impl RecusaAsk {
     }
 }
 
+/// Por que uma chamada de `garra_agent` nao rodou (#1615).
+///
+/// Mesmo formato das outras recusas: enum com codigo estavel e explicacao com o
+/// passo que destrava. A variante [`Self::Orquestrador`] reaproveita a recusa de
+/// identidade (#1613) sem criar config nova: o que muda e so a tool na lista.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecusaAgent {
+    /// `gateway.mcp_http.allow_agent` esta em `false` (o default).
+    InterruptorDesligado,
+    /// Quem chama nao pode usar a tool, ou nao e ninguem: a recusa do orquestrador.
+    Orquestrador(RecusaOrquestrador),
+    /// O modelo pedido nao esta na mesma lista de `garra_ask`.
+    ModeloNaoPermitido,
+    /// O teto por minuto de `garra_agent` foi atingido.
+    OrcamentoEsgotado,
+}
+
+impl RecusaAgent {
+    /// O motivo estavel, para o `error.kind` do envelope e para o log.
+    pub fn codigo(self) -> &'static str {
+        match self {
+            Self::InterruptorDesligado => "agent_disabled",
+            Self::Orquestrador(recusa) => recusa.codigo(),
+            Self::ModeloNaoPermitido => "model_not_allowed",
+            Self::OrcamentoEsgotado => "over_budget",
+        }
+    }
+
+    /// A explicacao que o orquestrador le, com o passo que destrava.
+    pub fn explicacao(self) -> &'static str {
+        match self {
+            Self::InterruptorDesligado => {
+                "garra_agent esta desligado neste Garra. Ele executa ferramentas no \
+                 computador do operador, por isso e desligado por padrao. O operador \
+                 precisa por `gateway.mcp_http.allow_agent: true` na config e reiniciar. \
+                 Nao ha como aprovar isso pela propria ponte."
+            }
+            Self::Orquestrador(recusa) => recusa.explicacao(),
+            Self::ModeloNaoPermitido => {
+                "esse modelo nao e permitido neste Garra. Vale a mesma lista de garra_ask: \
+                 sem `gateway.mcp_http.ask_allowed_models`, so o modelo default do projeto; \
+                 com lista, so os modelos listados. Trocar de modelo nao o libera: so o \
+                 operador pode, na config."
+            }
+            Self::OrcamentoEsgotado => {
+                "limite de execucoes de garra_agent por minuto atingido. Espere a janela \
+                 fechar. O teto e `gateway.mcp_http.agent_budget_per_minute`."
+            }
+        }
+    }
+}
+
 impl Recusa {
     /// O motivo estavel, para o campo `reason` da resposta e para o log.
     ///
@@ -287,6 +350,11 @@ impl PoliticaMcpHttp {
             teto_do_historico: config.gateway.mcp_http.max_history_messages,
             ask_liberado: config.gateway.mcp_http.allow_ask,
             modelos_de_ask: config.gateway.mcp_http.ask_allowed_models.clone(),
+            agente_liberado: config.gateway.mcp_http.allow_agent,
+            teto_do_agente_secs: config.gateway.mcp_http.agent_max_seconds.clamp(
+                garraia_config::MCP_HTTP_AGENT_MAX_SECONDS_MIN,
+                garraia_config::MCP_HTTP_AGENT_MAX_SECONDS_MAX,
+            ),
             orquestradores: config
                 .gateway
                 .mcp_http
@@ -316,7 +384,17 @@ impl PoliticaMcpHttp {
             ask_liberado: false,
             modelos_de_ask: Vec::new(),
             orquestradores: Vec::new(),
+            agente_liberado: false,
+            teto_do_agente_secs: 300,
         }
+    }
+
+    /// Liga `garra_agent` com o teto de segundos dado, para os testes.
+    #[cfg(test)]
+    pub(crate) fn com_agent(mut self, teto_secs: u64) -> Self {
+        self.agente_liberado = true;
+        self.teto_do_agente_secs = teto_secs;
+        self
     }
 
     /// Liga `garra_ask` com a lista de modelos dada, para os testes.
@@ -415,6 +493,9 @@ impl PoliticaMcpHttp {
         if ferramenta == TOOL_SEND_MESSAGE {
             return self.anuncia_envio_para(quem);
         }
+        if ferramenta == TOOL_AGENT {
+            return self.anuncia_agent();
+        }
         true
     }
 
@@ -503,13 +584,51 @@ impl PoliticaMcpHttp {
         if !self.ask_liberado {
             return Err(RecusaAsk::InterruptorDesligado);
         }
-        let aceito = if self.modelos_de_ask.is_empty() {
+        if !self.modelo_aceito(modelo) {
+            return Err(RecusaAsk::ModeloNaoPermitido);
+        }
+        Ok(())
+    }
+
+    /// O modelo pedido esta na lista da inferencia? Compartilhada por `garra_ask`
+    /// e `garra_agent` (#1615): uma lista so, para o operador nao manter duas.
+    /// Sem lista, so o default do projeto; com lista, ela substitui o default.
+    fn modelo_aceito(&self, modelo: &str) -> bool {
+        if self.modelos_de_ask.is_empty() {
             modelo == DEFAULT_CLOUD_MODEL
         } else {
             self.modelos_de_ask.iter().any(|m| m == modelo)
-        };
-        if !aceito {
-            return Err(RecusaAsk::ModeloNaoPermitido);
+        }
+    }
+
+    /// `garra_agent` esta na superficie anunciada? (#1615)
+    ///
+    /// So o interruptor decide o anuncio; quem chama ainda passa pela lista do
+    /// orquestrador em [`Self::anuncia`].
+    pub fn anuncia_agent(&self) -> bool {
+        self.agente_liberado
+    }
+
+    /// O teto de segundos de uma execucao de `garra_agent`, ja na faixa da config.
+    pub fn teto_do_agente_secs(&self) -> u64 {
+        self.teto_do_agente_secs
+    }
+
+    /// Esta execucao de `garra_agent`, feita por `quem` com este modelo, pode
+    /// rodar? (#1615)
+    ///
+    /// Fail-closed em ordem: interruptor, depois a identidade e a lista de tools
+    /// do orquestrador (#1613, a mesma recusa de qualquer tool), depois o modelo.
+    /// O teto por minuto NAO entra aqui: o handler o cobra depois de esta decisao
+    /// aprovar, pelo mesmo motivo do envio e do `garra_ask`.
+    pub fn decidir_agent(&self, quem: &Orquestrador, modelo: &str) -> Result<(), RecusaAgent> {
+        if !self.agente_liberado {
+            return Err(RecusaAgent::InterruptorDesligado);
+        }
+        self.decidir_ferramenta(quem, TOOL_AGENT)
+            .map_err(RecusaAgent::Orquestrador)?;
+        if !self.modelo_aceito(modelo) {
+            return Err(RecusaAgent::ModeloNaoPermitido);
         }
         Ok(())
     }
@@ -518,7 +637,7 @@ impl PoliticaMcpHttp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp_http::ferramentas::{TOOL_ASK, TOOL_SEND_MESSAGE, TOOL_STATUS};
+    use crate::mcp_http::ferramentas::{TOOL_AGENT, TOOL_ASK, TOOL_SEND_MESSAGE, TOOL_STATUS};
     use garraia_config::OrchestratorMcpHttp;
 
     fn com_destino(envio: bool, ids: &[i64]) -> PoliticaMcpHttp {
@@ -962,5 +1081,177 @@ mod tests {
     fn rotulo_do_dono_e_o_reservado() {
         assert_eq!(Orquestrador::Dono.rotulo(), "dono");
         assert_eq!(orq("badgood").rotulo(), "badgood");
+    }
+
+    /// #1615 — `garra_agent` nasce desligado: nao anuncia e recusa com o
+    /// interruptor, inclusive para o dono.
+    #[test]
+    fn agent_default_recusa_pelo_interruptor() {
+        let p = com_destino(false, &[]);
+        assert!(!p.anuncia_agent());
+        assert_eq!(
+            p.decidir_agent(&Orquestrador::Dono, DEFAULT_CLOUD_MODEL),
+            Err(RecusaAgent::InterruptorDesligado)
+        );
+    }
+
+    /// A ordem e fail-closed: com o interruptor desligado, a lista do orquestrador
+    /// nem chega a ser consultada. Quem e identificado e quem nao e recebe a
+    /// mesma resposta, e nenhuma delas revela a lista.
+    #[test]
+    fn agent_interruptor_vem_antes_da_lista_do_orquestrador() {
+        let p = com_destino(false, &[]).com_orquestrador("badgood", &["status"], &[]);
+        assert_eq!(
+            p.decidir_agent(&orq("badgood"), DEFAULT_CLOUD_MODEL),
+            Err(RecusaAgent::InterruptorDesligado)
+        );
+        assert_eq!(
+            p.decidir_agent(&orq("fantasma"), DEFAULT_CLOUD_MODEL),
+            Err(RecusaAgent::InterruptorDesligado)
+        );
+    }
+
+    /// Com o interruptor ligado, o orquestrador sem `agent` na lista recebe a
+    /// recusa de identidade (#1613) reaproveitada: `tool_not_allowed`.
+    #[test]
+    fn agent_orquestrador_sem_a_tool_e_recusado_com_tool_not_allowed() {
+        let p =
+            com_destino(false, &[])
+                .com_agent(300)
+                .com_orquestrador("badgood", &["status"], &[]);
+        assert_eq!(
+            p.decidir_agent(&orq("badgood"), DEFAULT_CLOUD_MODEL),
+            Err(RecusaAgent::Orquestrador(
+                RecusaOrquestrador::ToolNaoPermitida
+            ))
+        );
+        assert_eq!(
+            RecusaAgent::Orquestrador(RecusaOrquestrador::ToolNaoPermitida).codigo(),
+            "tool_not_allowed"
+        );
+    }
+
+    /// Nome fora da politica e `unauthorized` (a recusa de identidade), e o dono
+    /// passa sem lista propria.
+    #[test]
+    fn agent_passa_com_a_tool_e_desconhecido_nao() {
+        let p = com_destino(false, &[])
+            .com_agent(300)
+            .com_orquestrador("badgood", &["agent"], &[]);
+        assert_eq!(
+            p.decidir_agent(&orq("badgood"), DEFAULT_CLOUD_MODEL),
+            Ok(())
+        );
+        assert_eq!(
+            p.decidir_agent(&orq("fantasma"), DEFAULT_CLOUD_MODEL),
+            Err(RecusaAgent::Orquestrador(RecusaOrquestrador::NaoAutorizado))
+        );
+        assert_eq!(
+            p.decidir_agent(&Orquestrador::Dono, DEFAULT_CLOUD_MODEL),
+            Ok(())
+        );
+    }
+
+    /// O modelo do agente passa pela MESMA lista de `garra_ask`: uma lista so, para
+    /// o operador nao manter duas.
+    #[test]
+    fn agent_modelo_segue_a_lista_do_ask() {
+        let p = com_destino(false, &[])
+            .com_ask(&["openrouter/auto"])
+            .com_agent(300);
+        assert_eq!(
+            p.decidir_agent(&Orquestrador::Dono, "openrouter/auto"),
+            Ok(())
+        );
+        assert_eq!(
+            p.decidir_agent(&Orquestrador::Dono, DEFAULT_CLOUD_MODEL),
+            Err(RecusaAgent::ModeloNaoPermitido)
+        );
+    }
+
+    /// Codigos estaveis e distintos, e nenhuma explicacao ecoa o modelo pedido.
+    #[test]
+    fn recusas_de_agent_tem_codigo_estavel_e_nao_ecoam() {
+        let recusas = [
+            RecusaAgent::InterruptorDesligado,
+            RecusaAgent::Orquestrador(RecusaOrquestrador::ToolNaoPermitida),
+            RecusaAgent::ModeloNaoPermitido,
+            RecusaAgent::OrcamentoEsgotado,
+        ];
+        let codigos: Vec<&str> = recusas.iter().map(|r| r.codigo()).collect();
+        assert_eq!(
+            codigos,
+            vec![
+                "agent_disabled",
+                "tool_not_allowed",
+                "model_not_allowed",
+                "over_budget"
+            ]
+        );
+        for r in recusas {
+            assert!(!r.explicacao().is_empty());
+            assert!(
+                !r.explicacao().contains("openrouter/auto"),
+                "{}",
+                r.explicacao()
+            );
+        }
+    }
+
+    /// A config viva: `allow_agent` e o teto, e o teto cai na faixa [5, 600].
+    #[test]
+    fn da_config_le_allow_agent_e_o_teto_na_faixa() {
+        let padrao = PoliticaMcpHttp::da_config(&AppConfig::default());
+        assert!(!padrao.anuncia_agent());
+        assert_eq!(padrao.teto_do_agente_secs(), 300);
+
+        let mut config = AppConfig::default();
+        config.gateway.mcp_http.allow_agent = true;
+        config.gateway.mcp_http.agent_max_seconds = 9999;
+        let p = PoliticaMcpHttp::da_config(&config);
+        assert!(p.anuncia_agent());
+        assert_eq!(p.teto_do_agente_secs(), 600, "acima do teto cai no teto");
+
+        config.gateway.mcp_http.agent_max_seconds = 0;
+        assert_eq!(
+            PoliticaMcpHttp::da_config(&config).teto_do_agente_secs(),
+            5,
+            "abaixo da faixa sobe ao minimo"
+        );
+    }
+
+    /// `allow_ask` nao destrava `garra_agent` e `allow_agent` nao destrava
+    /// `garra_ask`: tres interruptores, nenhum libera o outro.
+    #[test]
+    fn agent_e_ask_sao_interruptores_independentes() {
+        let so_ask = com_destino(false, &[]).com_ask(&[]);
+        assert!(!so_ask.anuncia_agent());
+        assert_eq!(
+            so_ask.decidir_agent(&Orquestrador::Dono, DEFAULT_CLOUD_MODEL),
+            Err(RecusaAgent::InterruptorDesligado)
+        );
+
+        let so_agent = com_destino(false, &[]).com_agent(300);
+        assert!(!so_agent.anuncia_ask());
+        assert_eq!(
+            so_agent.decidir_ask(DEFAULT_CLOUD_MODEL),
+            Err(RecusaAsk::InterruptorDesligado)
+        );
+    }
+
+    /// `tools/list` por orquestrador: `garra_agent` so aparece para quem a tem
+    /// na lista, e so com o interruptor ligado.
+    #[test]
+    fn anuncia_agent_exige_a_tool_na_lista_do_orquestrador() {
+        let p = com_destino(false, &[])
+            .com_agent(300)
+            .com_orquestrador("com", &["agent"], &[])
+            .com_orquestrador("sem", &["status"], &[]);
+        assert!(p.anuncia(&orq("com"), TOOL_AGENT));
+        assert!(!p.anuncia(&orq("sem"), TOOL_AGENT));
+        assert!(p.anuncia(&Orquestrador::Dono, TOOL_AGENT));
+
+        let desligada = com_destino(false, &[]).com_orquestrador("com", &["agent"], &[]);
+        assert!(!desligada.anuncia(&orq("com"), TOOL_AGENT));
     }
 }

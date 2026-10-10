@@ -1910,7 +1910,7 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
     //
     // O aviso de cobertura (#1225 S2) NAO mora aqui de proposito: no `garra
     // mcp-server` esta funcao roda a cada chamada da tool `garra_agent`
-    // (`mcp_agent::build_tools`), e um aviso por processo nao pode depender
+    // (`agente_mcp::build_tools`), e um aviso por processo nao pode depender
     // de quantas vezes a policy e construida — ver `avisa_cobertura_do_sandbox`.
     let sandbox_ativo = mode != SandboxMode::Off;
 
@@ -1995,7 +1995,7 @@ pub fn sandbox_policy_from(cfg: &garraia_config::SandboxConfig) -> SandboxPolicy
 ///
 /// Separada de [`sandbox_policy_from`] de proposito. A policy e construida
 /// onde o `BashTool` nasce, e no `garra mcp-server` isso acontece **a cada
-/// chamada** da tool `garra_agent` (`mcp_agent::build_tools`, via
+/// chamada** da tool `garra_agent` (`agente_mcp::build_tools`, via
 /// `handle_agent_call`): um `warn!` dentro da conversao sairia por chamada,
 /// em stderr e no `garraia.log`, nao por subida. Quem chama esta funcao e
 /// cada ponto de subida, uma vez: `build_agent_runtime` (gateway),

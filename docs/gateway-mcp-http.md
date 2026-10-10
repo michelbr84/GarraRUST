@@ -12,7 +12,7 @@
 > |---|---|---|---|
 > | `mcp:` section in `config.yml` | Garra **consumes** other servers | stdio / HTTP | [mcp.md](./mcp.md) |
 > | `garra mcp-server` | Garra **is** a server, one LLM tool | stdio | [cli-mcp-server.md](./cli-mcp-server.md) |
-> | **`POST /mcp`** (this page) | Garra **is** a server, six gateway tools | Streamable HTTP | — |
+> | **`POST /mcp`** (this page) | Garra **is** a server, seven gateway tools | Streamable HTTP | — |
 >
 > `garra_ask` is in both server surfaces since #1612. It is **off by default**
 > here and has its own switch, allowlist and budget (§4.3), because it spends
@@ -21,8 +21,8 @@
 
 ## 1. Turning it on
 
-Two keys turn the bridge on and unlock its writes, and three more govern
-`garra_ask`. All are in `config.yml`, and all are off or minimal by default:
+Two keys turn the bridge on and unlock its writes, and two groups of three more
+govern `garra_ask` and `garra_agent`. All are in `config.yml`, and all are off or minimal by default:
 
 ```yaml
 gateway:
@@ -35,6 +35,9 @@ gateway:
     allow_ask: false       # unlocks garra_ask, which spends LLM tokens (see §4.3)
     ask_allowed_models: [] # empty = only the project default model
     ask_budget_per_minute: 10
+    allow_agent: false     # unlocks garra_agent, which runs tools on this machine (see §5)
+    agent_budget_per_minute: 2
+    agent_max_seconds: 300 # wall clock for the whole agent run, 5–600
 ```
 
 `GARRAIA_GATEWAY_API_KEY` works instead of `gateway.api_key`, with the usual
@@ -131,8 +134,9 @@ the LAN.** Reaching it from another machine is an SSH tunnel's job.
 | `garra_pair_status` | channel pairing and allowlist state | no |
 | `garra_send_message` | sends a message on a real channel | **yes** |
 | `garra_ask` | asks the Garra's LLM one question (#1612) | spends LLM tokens |
+| `garra_agent` | runs a task with tools on this machine (#1615, §5) | **yes**, writes files, runs commands with a sandbox |
 
-Every response except `garra_ask` is a `garra.mcp.v1` envelope delivered as MCP
+Every response except `garra_ask` and `garra_agent` is a `garra.mcp.v1` envelope delivered as MCP
 text content — versioned from the first release so the body can grow without
 breaking whoever read the first one. `garra_ask` returns the `garra.ask.v1`
 envelope of the stdio server, unchanged.
@@ -224,11 +228,113 @@ stdio server uses. Neither the prompt nor the answer is written to the gateway
 log. A success logs the provider, the model (already accepted by the allowlist)
 and the latency; a failure logs only its `kind`.
 
-## 5. Where the code lives
+## 5. Delegação de tarefas (`garra_agent`, #1615)
+
+`garra_ask` answers a question. `garra_agent` does a **task**: it runs the
+GarraIA agent with tools — read and write files inside the roots the operator
+allowed, web fetch and search, git diff, and `bash` only when a sandbox is
+configured — and returns the answer with a summary of every tool it used. It is
+what lets an orchestrator hand over work, not just a conversation.
+
+It is also the riskiest tool this bridge exposes, so it is off by default and
+bounded on four sides: who may call it, how often, for how long, and what it can
+touch. It is the **spec change** of #1615: until now the full agent existed only
+on the stdio server (`garra mcp-server`, `GARRAIA_MCP_ENABLE_TOOLS`). That stays
+as it was. The HTTP bridge gets the same agent, behind its own switch.
+
+### 5.1 Example: n8n / BadGood delegating a task
+
+The orchestrator authenticates with its own token, from an environment variable
+the config only names. The config declares what that orchestrator may do:
+
+```yaml
+gateway:
+  api_key: "<sua-credencial-do-dono>"   # the owner's key, not the orchestrator's
+  mcp_http:
+    enabled: true
+    allow_agent: true          # the switch: nothing below works without it
+    agent_budget_per_minute: 2 # executions per minute, the whole bridge
+    agent_max_seconds: 300     # the operator's ceiling for one run
+    ask_allowed_models: []     # the same list garra_ask uses; empty = project default
+    orchestrators:
+      - nome: badgood
+        key_env: BADGOOD_MCP_KEY   # env var holding the token; never in the file
+        tools: [status, agent]     # `agent` is what lets it delegate
+        chats: []
+```
+
+n8n sends the token as `Authorization: Bearer <token>` to `POST /mcp`, then:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "garra_agent",
+    "arguments": {
+      "message": "Leia o relatorio em docs/ e liste os itens pendentes.",
+      "timeout_secs": 120
+    }
+  }
+}
+```
+
+The answer is a `garra.agent.v1` envelope: `ok`, `answer`, `provider`, `model`,
+`latency_ms`, `session_id` and `tool_calls` (name, duration, success and a short
+summary per tool). A refusal is the same envelope with `ok: false` and a stable
+`error.kind`.
+
+`garra_agent` shows up in `tools/list` only for a caller that has it in its
+`tools` list **and** only when `allow_agent` is on. Anyone else does not see it,
+and a direct call from them gets `tool_not_allowed`.
+
+### 5.2 Cost and risk, control by control
+
+| Dimension | Control | Default | What it costs or risks |
+|---|---|---|---|
+| Is it on at all | `gateway.mcp_http.allow_agent` | `false` | Off: the tool is not advertised and a direct call gets `agent_disabled`. Nothing runs. |
+| Who may call it | `orchestrators[].tools` contains `agent` | no one | A listed orchestrator can run the agent in this Garra's name. Keep the list short. |
+| How often | `agent_budget_per_minute`, session `mcp-http-agent` | `2` | Each run is several LLM calls plus tools, so the cost is a multiple of one `garra_ask`. Over the limit: `over_budget`, and the provider is not called. |
+| How long | `agent_max_seconds` (5–600) | `300` | Caps the whole loop, LLM and tools. A caller may ask for less, never more; more is `invalid_params`, not a silent cut. |
+| Which model | `ask_allowed_models` (shared with `garra_ask`) | project default only | A caller that names another model gets `model_not_allowed` before any request leaves. |
+| Files | `agent.file_roots` (the jail) | empty: denies every path | File tools reach only those roots. The request cannot pick a directory (no `working_dir` over HTTP). |
+| Shell | `agent.sandbox` and `execution.profile` (#1272) | no sandbox: no `bash` | With a valid docker/podman sandbox, `bash` runs in a throwaway container. On an explicit `isolated-pod`, on the host, behind the denylist. In `standard` without a sandbox the tool does not exist. |
+| Text in and out | redaction (`mcp_http/redacao.rs`) | always on | The prompt the orchestrator sends and the answer and tool summaries that come back both pass through it. A pasted token is replaced before the model sees it. |
+| Logs | audit line per call | always on | Logs the orchestrator, the tool, the outcome, provider, model and latency. Never the prompt, the answer or tool output. |
+| Sessions | session id `mcp-http-<orchestrator>-<uuid>` | per call | Each run is a fresh session, named after its caller, so two orchestrators never share history. |
+
+### 5.3 Order of the checks
+
+Fail-closed, and each step runs only if the one before let the call through:
+
+1. `allow_agent` (`agent_disabled`).
+2. The caller's identity and its `tools` list (`unauthorized`, `tool_not_allowed`).
+3. The model, against the shared list (`model_not_allowed`).
+4. The per-minute budget (`over_budget`). It is charged only after 1–3 pass, so a
+   refused call costs nothing.
+5. The run itself, under `agent_max_seconds`.
+
+### 5.4 Boundary, stated plainly
+
+The agent runs **as this gateway process**. The orchestrator does not get a shell,
+it gets the agent, and the agent is only as contained as the operator configured
+it: the orchestrator list decides who can ask, the budget and the ceiling decide
+how much, and the sandbox and the jail decide what it can touch. If `bash` is
+available on the host, a permitted orchestrator can make it run commands there.
+That is why `bash` needs a sandbox, and why the default leaves it out.
+
+Not in this version: a per-orchestrator model list, a per-orchestrator budget
+(today the budget is one for the whole bridge, like `garra_ask`), and aliases of
+`llm:` entries (only the four provider kinds are reachable, as with `garra_ask`).
+Those are follow-ups.
+
+## 6. Where the code lives
 
 - `crates/garraia-gateway/src/mcp_http/politica.rs` — the decisions, pure
-- `crates/garraia-gateway/src/mcp_http/ferramentas.rs` — the six descriptors
+- `crates/garraia-gateway/src/mcp_http/ferramentas.rs` — the seven descriptors
 - `crates/garraia-ask/` — the one-shot LLM core shared with `garra ask` and the stdio server
+- `crates/garraia-gateway/src/agente_mcp.rs` — the agent core shared by the stdio server and this bridge (#1615)
 - `crates/garraia-gateway/src/mcp_http/handler.rs` — the `rmcp::ServerHandler`
 - `crates/garraia-gateway/src/mcp_http/mod.rs` — mounting and the transport config
 - `crates/garraia-gateway/tests/mcp_http_contract.rs` — the contract over the

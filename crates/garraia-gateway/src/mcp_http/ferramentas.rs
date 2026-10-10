@@ -21,7 +21,13 @@ use garraia_ask::{
     ARG_MESSAGE_MAX_BYTES, ARG_SYSTEM_PROMPT_MAX_BYTES, ARG_TIMEOUT_SECS_DEFAULT,
     ARG_TIMEOUT_SECS_MAX, ARG_TIMEOUT_SECS_MIN, PROVEDORES_ASK,
 };
+use garraia_config::MCP_HTTP_AGENT_MAX_SECONDS_MAX;
 use garraia_config::defaults::{DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER};
+
+use crate::agente_mcp::{
+    AGENT_MESSAGE_MAX_BYTES, AGENT_SYSTEM_PROMPT_MAX_BYTES, AGENT_TIMEOUT_SECS_DEFAULT,
+    AGENT_TIMEOUT_SECS_MIN,
+};
 use rmcp::model::{Tool, ToolAnnotations};
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
@@ -47,15 +53,19 @@ pub const TOOL_SEND_MESSAGE: &str = "garra_send_message";
 pub const TOOL_PAIR_STATUS: &str = "garra_pair_status";
 /// #1612 — a sexta tool: inferencia sob demanda, anunciada so com `allow_ask`.
 pub const TOOL_ASK: &str = "garra_ask";
+/// #1615 — a setima tool: o agente completo, com tools, anunciado so com
+/// `allow_agent`. E a de maior risco da ponte; ver `agente_mcp` e `politica`.
+pub const TOOL_AGENT: &str = "garra_agent";
 
 /// Todas as tools que a ponte conhece, pelo nome `garra_*`.
-const TODAS_AS_TOOLS: [&str; 6] = [
+const TODAS_AS_TOOLS: [&str; 7] = [
     TOOL_STATUS,
     TOOL_LIST_CHATS,
     TOOL_READ_HISTORY,
     TOOL_PAIR_STATUS,
     TOOL_SEND_MESSAGE,
     TOOL_ASK,
+    TOOL_AGENT,
 ];
 
 /// A tool `garra_*` para o nome curto que o operador escreve em
@@ -69,6 +79,7 @@ pub fn tool_por_nome_curto(curto: &str) -> Option<&'static str> {
         "pair_status" => Some(TOOL_PAIR_STATUS),
         "send_message" => Some(TOOL_SEND_MESSAGE),
         "ask" => Some(TOOL_ASK),
+        "agent" => Some(TOOL_AGENT),
         _ => None,
     }
 }
@@ -277,6 +288,74 @@ fn provedores_anunciados() -> Vec<&'static str> {
         .collect()
 }
 
+/// `garra_agent` (#1615): o agente completo, por HTTP. O schema e o do stdio sem
+/// `working_dir`: um orquestrador remoto nao escolhe um diretorio do disco do
+/// operador. As tools rodam presas as raizes de arquivo da config.
+///
+/// E destrutiva: pode gravar arquivo e, com sandbox, rodar comando. Por isso o
+/// hint diz `destructive: true`, o que o stdio nao precisa dizer (la nao ha
+/// como o host chegar a ele sem o operador ter ligado a env).
+fn tool_agent() -> Tool {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "A tarefa para o agente. Ate 64 KiB. Segredos colados aqui sao \
+                                redigidos antes de chegar ao modelo.",
+                "minLength": 1,
+                "maxLength": AGENT_MESSAGE_MAX_BYTES
+            },
+            "provider": {
+                "type": "string",
+                "enum": provedores_anunciados(),
+                "default": DEFAULT_CLOUD_PROVIDER,
+                "description": format!("Provider de LLM. Padrao '{DEFAULT_CLOUD_PROVIDER}'.")
+            },
+            "model": {
+                "type": "string",
+                "default": DEFAULT_CLOUD_MODEL,
+                "description": "Modelo. Vale a mesma lista de garra_ask: so os modelos que o \
+                                operador liberou; o padrao e o modelo do projeto."
+            },
+            "timeout_secs": {
+                "type": "integer",
+                "default": AGENT_TIMEOUT_SECS_DEFAULT,
+                "minimum": AGENT_TIMEOUT_SECS_MIN,
+                "maximum": MCP_HTTP_AGENT_MAX_SECONDS_MAX,
+                "description": "Tempo maximo do laco inteiro (LLM e tools), em segundos. Nao \
+                                pode passar do teto que o operador configurou."
+            },
+            "system_prompt": {
+                "type": "string",
+                "maxLength": AGENT_SYSTEM_PROMPT_MAX_BYTES,
+                "description": "Substitui o prompt de sistema padrao, se informado."
+            }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+    });
+    Tool::new(
+        TOOL_AGENT,
+        "Executa uma tarefa com o agente completo do GarraIA, que pode usar ferramentas: \
+         ler e gravar arquivos dentro das raizes que o operador liberou, buscar na web e ver \
+         o git. Shell so existe com sandbox configurado no operador. Gasta inferencia e \
+         pode gravar arquivos: use para tarefas que pedem trabalho de verdade, nao para \
+         perguntas. Devolve um envelope `garra.agent.v1` com o resumo de cada ferramenta usada.",
+        objeto(schema),
+    )
+    // Nao e leitura, nao e idempotente, PODE DESTRUIR (grava arquivo, roda comando
+    // quando o sandbox deixa) e alcanca o mundo de fora. As quatro coisas ditas em
+    // voz alta, para o host do outro lado tratar a chamada com cuidado.
+    .with_annotations(ToolAnnotations::from_raw(
+        None,
+        Some(false),
+        Some(true),
+        Some(false),
+        Some(true),
+    ))
+}
+
 fn tool_pair_status() -> Tool {
     Tool::new(
         TOOL_PAIR_STATUS,
@@ -306,6 +385,9 @@ pub fn tools_anunciadas(politica: &PoliticaMcpHttp) -> Vec<Tool> {
     }
     if politica.anuncia_ask() {
         tools.push(tool_ask());
+    }
+    if politica.anuncia_agent() {
+        tools.push(tool_agent());
     }
     tools
 }
@@ -349,6 +431,70 @@ pub struct ArgsAsk {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub system_prompt: Option<String>,
+}
+
+/// Argumentos de `garra_agent` (#1615). Mesmo formato do `garra_ask`, sem
+/// `working_dir`: ver [`tool_agent`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArgsAgent {
+    pub message: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+}
+
+/// Validacao de limites de `garra_agent`. Forma e tamanho apenas, como a de
+/// `garra_ask`; quem decide se a execucao roda e
+/// [`PoliticaMcpHttp::decidir_agent`](super::politica::PoliticaMcpHttp::decidir_agent).
+///
+/// `teto_secs` e o `agent_max_seconds` do operador: `timeout_secs` acima dele e
+/// erro de protocolo, nao e aparado em silencio. Pedir mais do que o operador
+/// liberou e um pedido que o gateway nao vai cumprir, e dizer isso e melhor do
+/// que rodar por menos tempo sem avisar.
+pub fn validar_agent(args: &ArgsAgent, teto_secs: u64) -> Result<(), String> {
+    if args.message.trim().is_empty() {
+        return Err("message must be non-empty".to_string());
+    }
+    if args.message.len() > AGENT_MESSAGE_MAX_BYTES {
+        return Err(format!(
+            "message exceeds 64 KiB cap ({AGENT_MESSAGE_MAX_BYTES} bytes)"
+        ));
+    }
+    if let Some(sp) = args.system_prompt.as_deref()
+        && sp.len() > AGENT_SYSTEM_PROMPT_MAX_BYTES
+    {
+        return Err(format!(
+            "system_prompt exceeds {AGENT_SYSTEM_PROMPT_MAX_BYTES}-byte cap"
+        ));
+    }
+    if let Some(ts) = args.timeout_secs
+        && !(AGENT_TIMEOUT_SECS_MIN..=teto_secs).contains(&ts)
+    {
+        return Err(format!(
+            "timeout_secs fora da faixa [{AGENT_TIMEOUT_SECS_MIN}, {teto_secs}]: este Garra \
+             limita garra_agent a {teto_secs} segundos (gateway.mcp_http.agent_max_seconds)"
+        ));
+    }
+    if let Some(provider) = args.provider.as_deref()
+        && !provedores_anunciados().contains(&provider)
+    {
+        return Err(format!(
+            "provider '{provider}' nao e aceito por garra_agent (aceitos: {})",
+            provedores_anunciados().join(", ")
+        ));
+    }
+    if let Some(model) = args.model.as_deref()
+        && model.trim().is_empty()
+    {
+        return Err("`model` esta vazio".to_string());
+    }
+    Ok(())
 }
 
 /// Validacao de limites de `garra_ask`. Forma e tamanho apenas: quem decide se
@@ -666,5 +812,105 @@ mod tests {
         assert_eq!(tool_por_nome_curto("formata_o_disco"), None);
         assert!(e_ferramenta_conhecida(TOOL_ASK));
         assert!(!e_ferramenta_conhecida("formata_o_disco"));
+    }
+
+    /// #1615 — `garra_agent` so entra na superficie com `allow_agent`. No default
+    /// a superficie e a de antes.
+    #[test]
+    fn garra_agent_so_aparece_com_allow_agent() {
+        let padrao = nomes(false, &[]);
+        assert!(!padrao.iter().any(|n| n == TOOL_AGENT), "{padrao:?}");
+
+        let com = tools_anunciadas(&politica(false, &[]).com_agent(300))
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(com.iter().any(|n| n == TOOL_AGENT), "{com:?}");
+        assert_eq!(com.len(), 5, "{com:?}");
+    }
+
+    /// O schema de `garra_agent` fecha os campos, exige so a mensagem, anuncia o
+    /// teto de 600 e NAO tem `working_dir`: um orquestrador remoto nao escolhe
+    /// diretorio do disco do operador.
+    #[test]
+    fn schema_de_agent_fecha_campos_e_nao_expoe_working_dir() {
+        let t = tools_anunciadas(&politica(false, &[]).com_agent(300))
+            .into_iter()
+            .find(|t| t.name == TOOL_AGENT)
+            .expect("garra_agent anunciada");
+        let schema = JsonValue::Object((*t.input_schema).clone());
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert_eq!(schema["required"], json!(["message"]));
+        assert!(
+            schema["properties"].get("working_dir").is_none(),
+            "{schema}"
+        );
+        assert_eq!(
+            schema["properties"]["timeout_secs"]["maximum"],
+            json!(MCP_HTTP_AGENT_MAX_SECONDS_MAX)
+        );
+        assert_eq!(schema["properties"]["timeout_secs"]["default"], json!(300));
+        assert_eq!(
+            schema["properties"]["model"]["default"],
+            json!(DEFAULT_CLOUD_MODEL)
+        );
+        let anotacoes = t.annotations.as_ref().expect("anotacoes");
+        assert_eq!(anotacoes.destructive_hint, Some(true));
+        assert_eq!(anotacoes.read_only_hint, Some(false));
+    }
+
+    /// Campo a mais no `garra_agent` e recusado, inclusive o `working_dir` que o
+    /// stdio aceita.
+    #[test]
+    fn agent_campo_desconhecido_e_recusado_inclusive_working_dir() {
+        let erro = serde_json::from_value::<ArgsAgent>(json!({
+            "message": "oi",
+            "working_dir": "/"
+        }));
+        assert!(erro.is_err(), "working_dir passou pela ponte HTTP");
+    }
+
+    fn agente(message: &str) -> ArgsAgent {
+        ArgsAgent {
+            message: message.to_string(),
+            provider: None,
+            model: None,
+            timeout_secs: None,
+            system_prompt: None,
+        }
+    }
+
+    #[test]
+    fn validar_agent_aceita_o_pedido_minimo() {
+        assert!(validar_agent(&agente("faz x"), 300).is_ok());
+    }
+
+    #[test]
+    fn validar_agent_recusa_mensagem_vazia_ou_grande_demais() {
+        assert!(validar_agent(&agente("   "), 300).is_err());
+        assert!(validar_agent(&agente(&"a".repeat(AGENT_MESSAGE_MAX_BYTES + 1)), 300).is_err());
+    }
+
+    /// `timeout_secs` acima do teto do operador e erro de protocolo, nao corte
+    /// silencioso. Exatamente no teto passa.
+    #[test]
+    fn validar_agent_recusa_timeout_acima_do_teto_do_operador() {
+        let mut a = agente("faz x");
+        a.timeout_secs = Some(301);
+        let erro = validar_agent(&a, 300).expect_err("acima do teto");
+        assert!(erro.contains("agent_max_seconds"), "{erro}");
+        a.timeout_secs = Some(300);
+        assert!(validar_agent(&a, 300).is_ok());
+        a.timeout_secs = Some(AGENT_TIMEOUT_SECS_MIN - 1);
+        assert!(validar_agent(&a, 300).is_err(), "abaixo do minimo");
+    }
+
+    #[test]
+    fn validar_agent_recusa_provider_fora_do_enum() {
+        let mut a = agente("faz x");
+        a.provider = Some("minha-entrada-llm".to_string());
+        assert!(validar_agent(&a, 300).is_err());
+        a.provider = Some("openai".to_string());
+        assert!(validar_agent(&a, 300).is_ok());
     }
 }
