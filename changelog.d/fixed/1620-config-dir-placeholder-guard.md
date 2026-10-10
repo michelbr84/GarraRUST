@@ -1,0 +1,1 @@
+- O loader valida `GARRAIA_CONFIG_DIR` na ingestão: valor placeholder de `.env.example` (ex.: `/custom/config/path` vindo do `.env` do CWD) ou vazio agora cai no config_dir padrão com aviso, em vez de derrubar qualquer comando com `EACCES (os error 13)` opaco — inclusive o `garra config check` (#1620).

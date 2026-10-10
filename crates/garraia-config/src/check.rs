@@ -2396,6 +2396,22 @@ fn valida_mqtt(
     }
 }
 
+/// Placeholders clasicos de `.env.example`/templating que NUNCA devem virar
+/// config_dir real (originem #303; consumidos aqui e pelo `ConfigLoader`
+/// na ingestao da env — #1620).
+pub(crate) const PLACEHOLDER_NEEDLES: &[&str] =
+    &["/custom/config/path", "/path/to/", "/your-", "change-me"];
+
+/// `true` quando o path contem um placeholder de exemplo. Fonte unica usada
+/// pelo `validate_config_dir` (inspecao) e pelo `ConfigLoader` (ingestao).
+pub(crate) fn config_dir_e_placeholder(dir: &std::path::Path) -> bool {
+    // substring lookup — we deliberately avoid pulling `regex` for four substrings.
+    let display = dir.to_string_lossy();
+    PLACEHOLDER_NEEDLES
+        .iter()
+        .any(|needle| display.contains(needle))
+}
+
 /// Pure validation of the config directory path. Separated from the
 /// loader/env read so it can be unit-tested without touching process state.
 ///
@@ -2415,14 +2431,7 @@ fn validate_config_dir_inner(dir: &std::path::Path, env_explicitly_set: bool) ->
     let mut findings = Vec::new();
     let display = dir.to_string_lossy();
 
-    // CONFIG_DIR_PLACEHOLDER: substring lookup — we deliberately avoid
-    // pulling `regex` for four substrings.
-    const PLACEHOLDER_NEEDLES: &[&str] =
-        &["/custom/config/path", "/path/to/", "/your-", "change-me"];
-    if PLACEHOLDER_NEEDLES
-        .iter()
-        .any(|needle| display.contains(needle))
-    {
+    if config_dir_e_placeholder(dir) {
         findings.push(Finding {
             severity: Severity::Warning,
             field: "config_dir".to_owned(),
