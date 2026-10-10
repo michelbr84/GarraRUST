@@ -94,7 +94,7 @@ Fonte: schema Postgres em `crates/garraia-workspace/migrations/*.sql` + schema S
 
 **Atenção especial**: mensagens podem conter **dados pessoais sensíveis** (LGPD art. 5 II / GDPR art. 9). O operador **DEVE** documentar em TOS que sensíveis podem emergir em conversas e obter **consentimento específico** (LGPD art. 11 / GDPR art. 9.2.a) quando aplicável.
 
-**Nota de divergência doc-vs-código (2026-10-09)**: a coluna `groups.settings_jsonb.retention_days` (default 730 dias) é a *intenção de design* documentada aqui; a implementação atual não traz essa coluna nas migrations do workspace — os defaults operando hoje são `memory.retention.max_age_days` = 90 dias, limpeza de sessões de 90 dias (`garraia-db` retention) e `runs.retention_days` = 0 (nunca apagar). A política de retenção vigente está registrada em [`../legal/privacy-policy-draft.md`](../legal/privacy-policy-draft.md) §7; a divergência é **pendência de implementação/verificação**, não mudança de base legal.
+**Nota de divergência doc-vs-código (2026-10-09)**: a coluna `groups.settings_jsonb.retention_days` (default 730 dias) é a *intenção de design* documentada aqui; a implementação atual não traz essa coluna nas migrations do workspace — os defaults operando hoje são `memory.retention.max_age_days` = 90 dias, limpeza de sessões de 90 dias (`garraia-db` retention) e `runs.retention_days` = 0 (nunca apagar). A política de retenção vigente está registrada em `docs/legal/privacy-policy-draft.md` §7 (documento **privado**, fora do versionamento público desde 2026-10-09); a divergência é **pendência de implementação/verificação**, não mudança de base legal.
 
 ### 2.6 `memory_items` + `memory_embeddings`
 
