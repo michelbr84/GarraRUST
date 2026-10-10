@@ -136,6 +136,10 @@ const CORPO_401: &str = "gateway: invalid or missing api key";
 #[derive(Clone, Default)]
 pub struct ApiKeyGate {
     key: Option<Arc<str>>,
+    /// Tokens dos orquestradores de `gateway.mcp_http.orchestrators` (#1613),
+    /// lidos do ambiente na montagem. Valem **so** na ponte MCP: em qualquer
+    /// outro caminho, um token de orquestrador e um token desconhecido.
+    orquestradores: Vec<Arc<str>>,
 }
 
 impl ApiKeyGate {
@@ -157,7 +161,17 @@ impl ApiKeyGate {
         // que o gate, o `garra config check` e o `/api/settings/effective`
         // nao possam divergir sobre o mesmo `api_key: "  "` (#1241).
         let key = gateway.api_key_normalizada().map(Arc::from);
-        Self { key }
+        let orquestradores = gateway
+            .mcp_http
+            .orquestradores_validos()
+            .into_iter()
+            .filter_map(|o| o.token())
+            .map(Arc::from)
+            .collect();
+        Self {
+            key,
+            orquestradores,
+        }
     }
 
     /// `true` quando há chave — é o que `/api/auth-check` reporta ao console.
@@ -177,6 +191,14 @@ impl ApiKeyGate {
             }
             (Some(_), None) => false,
         }
+    }
+
+    /// `true` quando o token e de um orquestrador configurado (#1613). Quem
+    /// chama decide se isso basta: so a ponte MCP aceita este caminho.
+    pub fn admits_orquestrador(&self, apresentada: &str) -> bool {
+        self.orquestradores
+            .iter()
+            .any(|k| constant_time_token_eq(apresentada.as_bytes(), k.as_bytes()))
     }
 }
 
@@ -199,7 +221,14 @@ pub fn is_gated_path(path: &str) -> bool {
 /// mandar os dois (o SDK da Anthropic põe o seu, um proxy no caminho pode ter
 /// posto o outro), e basta um deles servir.
 fn credencial_admitida(gate: &ApiKeyGate, path: &str, headers: &HeaderMap) -> bool {
-    if gate.admits(extract_bearer(headers)) {
+    let bearer = extract_bearer(headers);
+    if gate.admits(bearer) {
+        return true;
+    }
+    // #1613: na ponte MCP, um token de orquestrador tambem passa daqui. Quem
+    // ele identifica e decidido dentro do handler; aqui so se decide que o
+    // token e de alguem configurado.
+    if e_da_ponte_mcp(path) && bearer.is_some_and(|t| gate.admits_orquestrador(t)) {
         return true;
     }
     ROTAS_ANTHROPIC.contains(&path)
@@ -246,6 +275,50 @@ mod tests {
             api_key: chave.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    /// #1613 — o token de um orquestrador passa na ponte MCP e em nenhum outro
+    /// caminho. O dono continua passando em todos, como antes.
+    #[test]
+    fn token_de_orquestrador_so_passa_na_ponte_mcp() {
+        let gate = ApiKeyGate {
+            key: Some(Arc::from("tok-dono")),
+            orquestradores: vec![Arc::from("tok-badgood")],
+        };
+        let com = |valor: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {valor}").parse().expect("header"),
+            );
+            headers
+        };
+        let badgood = com("tok-badgood");
+        assert!(credencial_admitida(&gate, "/mcp", &badgood));
+        assert!(!credencial_admitida(&gate, "/api/sessions", &badgood));
+        assert!(!credencial_admitida(
+            &gate,
+            "/v1/chat/completions",
+            &badgood
+        ));
+        assert!(!credencial_admitida(&gate, "/a2a/tasks", &badgood));
+        assert!(!gate.admits(Some("tok-badgood")));
+        assert!(credencial_admitida(&gate, "/mcp", &com("tok-dono")));
+        assert!(credencial_admitida(
+            &gate,
+            "/api/sessions",
+            &com("tok-dono")
+        ));
+        assert!(!credencial_admitida(&gate, "/mcp", &com("tok-estranho")));
+    }
+
+    /// Sem orquestradores, o gate e o de antes: o token de ninguem extra passa
+    /// na ponte.
+    #[test]
+    fn sem_orquestradores_a_ponte_so_aceita_o_dono() {
+        let gate = ApiKeyGate::from_config(&config_com(Some("tok-dono")));
+        assert!(!gate.admits_orquestrador("tok-dono"));
+        assert!(!gate.admits_orquestrador(""));
     }
 
     fn router(chave: Option<&str>) -> Router {

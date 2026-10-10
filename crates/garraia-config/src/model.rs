@@ -597,6 +597,181 @@ pub struct McpHttpConfig {
     /// anti-amplificacao com orcamento proprio: nunca divide o de envio.
     #[serde(default = "default_mcp_http_ask_budget_per_minute")]
     pub ask_budget_per_minute: u32,
+
+    /// Orquestradores externos com identidade propria (#1613). Vazio (default)
+    /// = so o dono (`gateway.api_key`) autentica, como antes.
+    ///
+    /// Cada entrada tem um token Bearer proprio, lido do ambiente pelo NOME que
+    /// a entrada declara em `key_env`, e uma politica: as tools que pode
+    /// chamar e os chats para os quais pode enviar. Nenhuma entrada aqui
+    /// destrava o que o operador nao liberou nos interruptores globais.
+    #[serde(default)]
+    pub orchestrators: Vec<OrchestratorMcpHttp>,
+}
+
+/// Um orquestrador externo da ponte MCP (#1613).
+///
+/// Exemplo (YAML, em `gateway.mcp_http.orchestrators`):
+///
+/// ```yaml
+/// - nome: badgood
+///   key_env: BADGOOD_MCP_KEY
+///   tools: [status, list_chats, read_history, send_message]
+///   chats: [-100123456789]
+/// ```
+///
+/// O valor do token **nunca** vai para a config: `key_env` e o nome da variavel
+/// de ambiente que o guarda. Por isso `Debug` derivado nao mostra segredo.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrchestratorMcpHttp {
+    /// Id estavel de auditoria: aparece no log de cada chamada. Unico entre
+    /// as entradas, e nao pode ser `dono` (esse rotulo e o do `gateway.api_key`).
+    #[serde(default)]
+    pub nome: String,
+
+    /// Nome da variavel de ambiente com o token Bearer deste orquestrador.
+    #[serde(default)]
+    pub key_env: String,
+
+    /// Tools que este orquestrador pode chamar, pelo nome curto (sem `garra_`).
+    /// Lista de [`FERRAMENTAS_DE_ORQUESTRADOR`]. Vazia = nenhuma.
+    #[serde(default)]
+    pub tools: Vec<String>,
+
+    /// Destinos de `garra_send_message`. Vale a **interseccao** com
+    /// `channels.<canal>.proactive_chat_ids`: o chat precisa estar nos dois.
+    #[serde(default)]
+    pub chats: Vec<i64>,
+}
+
+/// As tools que um orquestrador pode receber em `tools`, pelo nome curto.
+///
+/// Nomes sem o prefixo `garra_`, porque e o que o operador escreve na config.
+/// O mapa para o nome anunciado na ponte mora em
+/// `garraia_gateway::mcp_http::ferramentas::tool_por_nome_curto`, e um teste la
+/// garante que as duas listas cobrem o mesmo conjunto.
+pub const FERRAMENTAS_DE_ORQUESTRADOR: &[&str] = &[
+    "status",
+    "list_chats",
+    "read_history",
+    "pair_status",
+    "send_message",
+    "ask",
+];
+
+/// O rotulo reservado do dono nos logs de auditoria. Um orquestrador com este
+/// nome se confundiria com ele, entao e recusado.
+const ROTULO_DO_DONO: &str = "dono";
+
+/// `key_env` e um nome de variavel de ambiente: letras, digitos e `_`. Um
+/// token colado ali (com `-`, `.`, `=`) e erro de quem configurou, e a
+/// validacao recusa em vez de tratar o token como nome.
+fn e_nome_de_variavel(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+impl OrchestratorMcpHttp {
+    /// `true` quando a entrada pode autenticar alguem: nome nao vazio e que
+    /// nao seja o rotulo do dono, e `key_env` com forma de nome de variavel.
+    /// Entradas invalidas sao ignoradas (ver [`McpHttpConfig::orquestradores_validos`]).
+    fn e_valido(&self) -> bool {
+        !self.nome.trim().is_empty()
+            && self.nome != ROTULO_DO_DONO
+            && e_nome_de_variavel(self.key_env.trim())
+    }
+
+    /// O token Bearer desta entrada, lido do ambiente agora. `None` quando a
+    /// variavel nao existe ou esta em branco: a entrada entao nao autentica
+    /// ninguem, e a chamada cai na recusa `unauthorized`.
+    pub fn token(&self) -> Option<String> {
+        let nome = self.key_env.trim();
+        if nome.is_empty() {
+            return None;
+        }
+        std::env::var(nome)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+}
+
+impl McpHttpConfig {
+    /// As entradas de `orchestrators` que valem de fato: nome e `key_env`
+    /// validos e nome unico. Um nome repetido invalida **todas** as suas
+    /// ocorrencias — nao da para dizer qual delas e a certa, e o log nao
+    /// poderia atribuir a chamada a um orquestrador so.
+    pub fn orquestradores_validos(&self) -> Vec<&OrchestratorMcpHttp> {
+        self.orchestrators
+            .iter()
+            .filter(|o| {
+                o.e_valido()
+                    && self
+                        .orchestrators
+                        .iter()
+                        .filter(|outro| outro.nome == o.nome)
+                        .count()
+                        == 1
+            })
+            .collect()
+    }
+
+    /// Os problemas da secao `orchestrators`, em pt-BR, cada um com o passo que
+    /// destrava. Nenhuma mensagem ecoa `key_env`: se ele tiver um token dentro,
+    /// o erro nao pode vaza-lo.
+    pub fn problemas_dos_orquestradores(&self) -> Vec<String> {
+        let mut problemas = Vec::new();
+        for (indice, o) in self.orchestrators.iter().enumerate() {
+            let rotulo = if o.nome.trim().is_empty() {
+                format!("entrada #{}", indice + 1)
+            } else {
+                format!("orquestrador `{}`", o.nome)
+            };
+            if o.nome.trim().is_empty() {
+                problemas.push(format!(
+                    "{rotulo}: falta `nome`. Dê a ela um id unico (ex.: `badgood`); \
+                     sem ele a entrada e ignorada."
+                ));
+            } else if o.nome == ROTULO_DO_DONO {
+                problemas.push(format!(
+                    "{rotulo}: `dono` e o rotulo reservado do gateway.api_key. Escolha outro \
+                     nome; a entrada e ignorada."
+                ));
+            }
+            if o.key_env.trim().is_empty() {
+                problemas.push(format!(
+                    "{rotulo}: `key_env` esta vazio. Informe o NOME da variavel de ambiente \
+                     que guarda o token (ex.: `BADGOOD_MCP_KEY`). A entrada e ignorada."
+                ));
+            } else if !e_nome_de_variavel(o.key_env.trim()) {
+                problemas.push(format!(
+                    "{rotulo}: `key_env` deve ser o NOME de uma variavel de ambiente \
+                     (ex.: `BADGOOD_MCP_KEY`), nao o token. Tire o valor da config e exporte-o \
+                     no ambiente. A entrada e ignorada ate la."
+                ));
+            }
+            if self
+                .orchestrators
+                .iter()
+                .filter(|x| x.nome == o.nome)
+                .count()
+                > 1
+            {
+                problemas.push(format!(
+                    "{rotulo} aparece mais de uma vez em `gateway.mcp_http.orchestrators`. \
+                     Cada nome e unico; as entradas repetidas sao ignoradas."
+                ));
+            }
+            for tool in &o.tools {
+                if !FERRAMENTAS_DE_ORQUESTRADOR.contains(&tool.as_str()) {
+                    problemas.push(format!(
+                        "{rotulo}: tool `{tool}` nao existe. Use uma de: {}. A tool e ignorada.",
+                        FERRAMENTAS_DE_ORQUESTRADOR.join(", ")
+                    ));
+                }
+            }
+        }
+        problemas
+    }
 }
 
 impl Default for McpHttpConfig {
@@ -608,6 +783,7 @@ impl Default for McpHttpConfig {
             allow_ask: false,
             ask_allowed_models: Vec::new(),
             ask_budget_per_minute: default_mcp_http_ask_budget_per_minute(),
+            orchestrators: Vec::new(),
         }
     }
 }
@@ -1726,7 +1902,14 @@ hardware:
 mod mcp_http_config_tests {
     //! #1612 — as chaves de `garra_ask` na ponte MCP HTTP. Fail-closed por
     //! padrao: nada novo liga sozinho, e a secao inteira continua opcional.
-    use super::{AppConfig, McpHttpConfig};
+    use super::{AppConfig, McpHttpConfig, OrchestratorMcpHttp};
+
+    fn com_orquestradores(lista: Vec<OrchestratorMcpHttp>) -> McpHttpConfig {
+        McpHttpConfig {
+            orchestrators: lista,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn default_do_struct_e_fail_closed() {
@@ -1785,5 +1968,152 @@ mod mcp_http_config_tests {
         .expect("yaml should parse");
         assert!(config.gateway.mcp_http.allow_send);
         assert!(!config.gateway.mcp_http.allow_ask);
+    }
+
+    /// #1613 — sem `orchestrators`, nao ha orquestrador nenhum: so o dono.
+    #[test]
+    fn orquestradores_default_e_lista_vazia() {
+        assert!(McpHttpConfig::default().orchestrators.is_empty());
+        let config: AppConfig =
+            serde_yaml::from_str("gateway:\n  mcp_http:\n    enabled: true\n").expect("yaml");
+        assert!(config.gateway.mcp_http.orchestrators.is_empty());
+        assert!(config.gateway.mcp_http.orquestradores_validos().is_empty());
+        assert!(
+            config
+                .gateway
+                .mcp_http
+                .problemas_dos_orquestradores()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn parseia_orquestradores_da_forma_documentada() {
+        let config: AppConfig = serde_yaml::from_str(
+            "gateway:\n  mcp_http:\n    orchestrators:\n      - nome: badgood\n        \
+             key_env: BADGOOD_MCP_KEY\n        tools: [status, send_message]\n        \
+             chats: [-100123456789]\n",
+        )
+        .expect("yaml should parse");
+        let o = &config.gateway.mcp_http.orchestrators[0];
+        assert_eq!(o.nome, "badgood");
+        assert_eq!(o.key_env, "BADGOOD_MCP_KEY");
+        assert_eq!(o.tools, vec!["status", "send_message"]);
+        assert_eq!(o.chats, vec![-100123456789]);
+        assert!(
+            config
+                .gateway
+                .mcp_http
+                .problemas_dos_orquestradores()
+                .is_empty()
+        );
+    }
+
+    /// Cada erro de forma sai com o campo e o passo; nenhum ecoa o `key_env`.
+    #[test]
+    fn problemas_dos_orquestradores_dizem_o_passo_e_nao_ecoam_o_token() {
+        let mcp = com_orquestradores(vec![
+            OrchestratorMcpHttp {
+                nome: String::new(),
+                key_env: "BADGOOD_MCP_KEY".into(),
+                ..Default::default()
+            },
+            OrchestratorMcpHttp {
+                nome: "dono".into(),
+                key_env: "X_KEY".into(),
+                ..Default::default()
+            },
+            OrchestratorMcpHttp {
+                nome: "vazio".into(),
+                key_env: String::new(),
+                ..Default::default()
+            },
+            OrchestratorMcpHttp {
+                nome: "token-na-config".into(),
+                key_env: "sk-or-v1-segredo-colado-por-engano".into(),
+                ..Default::default()
+            },
+            OrchestratorMcpHttp {
+                nome: "tools-erradas".into(),
+                key_env: "TOOLS_KEY".into(),
+                tools: vec!["garra_status".into(), "send_message".into()],
+                ..Default::default()
+            },
+        ]);
+        let problemas = mcp.problemas_dos_orquestradores();
+        let juntos = problemas.join("\n");
+        assert!(juntos.contains("falta `nome`"), "{juntos}");
+        assert!(juntos.contains("reservado"), "{juntos}");
+        assert!(juntos.contains("`key_env` esta vazio"), "{juntos}");
+        assert!(juntos.contains("nao o token"), "{juntos}");
+        assert!(
+            juntos.contains("tool `garra_status` nao existe"),
+            "{juntos}"
+        );
+        assert!(
+            !juntos.contains("segredo-colado"),
+            "ecoou o token: {juntos}"
+        );
+        assert!(!juntos.contains("sk-or-v1"), "ecoou o token: {juntos}");
+    }
+
+    /// Nome repetido invalida as duas entradas: nenhuma atribui chamadas.
+    #[test]
+    fn nome_repetido_invalida_todas_as_ocorrencias() {
+        let entrada = |chave: &str| OrchestratorMcpHttp {
+            nome: "badgood".into(),
+            key_env: chave.into(),
+            ..Default::default()
+        };
+        let mcp = com_orquestradores(vec![entrada("A_KEY"), entrada("B_KEY")]);
+        assert!(mcp.orquestradores_validos().is_empty());
+        assert!(
+            mcp.problemas_dos_orquestradores()
+                .iter()
+                .any(|p| p.contains("mais de uma vez"))
+        );
+    }
+
+    /// Entrada valida passa; a invalida sai da lista sem derrubar a outra.
+    #[test]
+    fn validos_filtra_so_as_entradas_que_autenticam() {
+        let mcp = com_orquestradores(vec![
+            OrchestratorMcpHttp {
+                nome: "badgood".into(),
+                key_env: "BADGOOD_MCP_KEY".into(),
+                ..Default::default()
+            },
+            OrchestratorMcpHttp {
+                nome: "sem-chave".into(),
+                key_env: "tok-com-hifen".into(),
+                ..Default::default()
+            },
+        ]);
+        let validos = mcp.orquestradores_validos();
+        assert_eq!(validos.len(), 1);
+        assert_eq!(validos[0].nome, "badgood");
+    }
+
+    /// O token vem do ambiente pelo nome, e nunca da config. Sem a variavel,
+    /// ou com ela em branco, nao ha token.
+    #[test]
+    fn token_vem_do_ambiente_pelo_nome_declarado() {
+        const VAR: &str = "GARRA_TESTE_1613_TOKEN_CONFIG";
+        let o = OrchestratorMcpHttp {
+            nome: "badgood".into(),
+            key_env: VAR.into(),
+            ..Default::default()
+        };
+        // SAFETY: nome de variavel exclusivo deste teste; ninguem mais o le.
+        unsafe { std::env::remove_var(VAR) };
+        assert_eq!(o.token(), None);
+        // SAFETY: idem.
+        unsafe { std::env::set_var(VAR, "   ") };
+        assert_eq!(o.token(), None, "branco nao e token");
+        // SAFETY: idem.
+        unsafe { std::env::set_var(VAR, "  tok-do-badgood  ") };
+        assert_eq!(o.token().as_deref(), Some("tok-do-badgood"));
+        // SAFETY: idem.
+        unsafe { std::env::remove_var(VAR) };
     }
 }

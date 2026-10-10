@@ -661,6 +661,29 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv, bind_env: &BindDaEnv)
         );
     }
 
+    // #1613: a secao `orchestrators` e validada aqui com o passo que destrava
+    // cada problema. Erro e nao Warning, porque uma entrada invalida e ignorada
+    // em silencio pela ponte — o operador acharia que o orquestrador tem a
+    // politica que escreveu. A ausencia da variavel de ambiente e so aviso: o
+    // `check` pode rodar num ambiente que nao e o do gateway.
+    for problema in config.gateway.mcp_http.problemas_dos_orquestradores() {
+        push_err(&mut findings, "gateway.mcp_http.orchestrators", problema);
+    }
+    for orquestrador in config.gateway.mcp_http.orquestradores_validos() {
+        if orquestrador.token().is_none() {
+            push_warn(
+                &mut findings,
+                "gateway.mcp_http.orchestrators",
+                format!(
+                    "orquestrador `{}`: a variavel de ambiente declarada em `key_env` nao esta \
+                     definida neste ambiente. Esse orquestrador nao consegue se autenticar ate \
+                     ela existir.",
+                    orquestrador.nome
+                ),
+            );
+        }
+    }
+
     // Timeouts: 0 means "no timeout" for reqwest/tokio — warn (user probably meant something else).
     if config.timeouts.llm.default_secs == 0 {
         push_warn(

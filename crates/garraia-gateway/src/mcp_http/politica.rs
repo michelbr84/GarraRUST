@@ -10,6 +10,8 @@
 use garraia_config::AppConfig;
 use garraia_config::defaults::DEFAULT_CLOUD_MODEL;
 
+use super::ferramentas::{TOOL_SEND_MESSAGE, tool_por_nome_curto};
+use crate::auth_common::constant_time_token_eq;
 use crate::channel_send::ProactiveTargets;
 
 /// O unico canal que `garra_send_message` alcanca na v1.
@@ -36,6 +38,117 @@ pub const SESSAO_DO_TETO: &str = "mcp-http";
 /// teto abrindo outra sessao.
 pub const SESSAO_DO_TETO_ASK: &str = "mcp-http-ask";
 
+/// Quem fez uma chamada da ponte, pela credencial que ela trouxe (#1613).
+///
+/// `Dono` e o `gateway.api_key`, com a politica de sempre: os interruptores
+/// globais e a allowlist de destino, sem restricao por orquestrador. `Nome` e
+/// uma entrada de `gateway.mcp_http.orchestrators`, que so passa pelo que a
+/// sua propria politica liberou **e** pelas travas globais.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Orquestrador {
+    Dono,
+    Nome(String),
+}
+
+impl Orquestrador {
+    /// O rotulo que vai para o log de auditoria. Nunca o token.
+    pub fn rotulo(&self) -> &str {
+        match self {
+            Self::Dono => "dono",
+            Self::Nome(nome) => nome,
+        }
+    }
+}
+
+/// Descobre quem apresentou `apresentada`, comparando contra cada orquestrador
+/// e, por ultimo, contra o `gateway.api_key` do dono (#1613).
+///
+/// A ordem e a da spec: um token de orquestrador vence. Se ele coincidir com o
+/// do dono, quem chama fica com a politica do orquestrador — a coincidencia
+/// ainda nao e recusada na config (follow-up). Token vazio ou que nao bate com
+/// ninguem da `None`, e a chamada e recusada como `unauthorized` sem dizer
+/// quais orquestradores existem.
+///
+/// Pura: recebe os pares `(nome, token)` ja lidos, para que o teste nao dependa
+/// do ambiente.
+pub fn identificar(
+    orquestradores: Vec<(String, Option<String>)>,
+    dono: Option<&str>,
+    apresentada: &str,
+) -> Option<Orquestrador> {
+    if apresentada.is_empty() {
+        return None;
+    }
+    let bate = |esperada: &str| constant_time_token_eq(apresentada.as_bytes(), esperada.as_bytes());
+    for (nome, token) in orquestradores {
+        if token.as_deref().is_some_and(bate) {
+            return Some(Orquestrador::Nome(nome));
+        }
+    }
+    dono.filter(|d| bate(d)).map(|_| Orquestrador::Dono)
+}
+
+/// A politica de um orquestrador nomeado: o que ele pode chamar e para onde.
+///
+/// Sem o token. A identificacao le o ambiente na hora de cada chamada, e a
+/// politica nunca guarda segredo — um `Debug` dela nao pode vazar nada.
+#[derive(Debug, Clone)]
+struct Concessao {
+    nome: String,
+    /// Nomes `garra_*` das tools liberadas, ja traduzidos de `tools`.
+    ferramentas: Vec<&'static str>,
+    /// Destinos declarados para este orquestrador. Ainda passam pela allowlist
+    /// global: a interseccao e a regra.
+    chats: Vec<i64>,
+}
+
+/// Por que uma chamada foi barrada por causa de quem a fez (#1613).
+///
+/// Separado de [`Recusa`] e de [`RecusaAsk`]: estas sao travas globais, e esta
+/// e a trava de identidade. Mesmo formato, com codigo estavel e explicacao que
+/// diz o passo que destrava.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecusaOrquestrador {
+    /// A credencial nao identifica nenhum orquestrador configurado.
+    NaoAutorizado,
+    /// A tool existe, mas nao esta na lista deste orquestrador.
+    ToolNaoPermitida,
+    /// O chat nao esta na lista deste orquestrador.
+    DestinoNaoPermitido,
+}
+
+impl RecusaOrquestrador {
+    /// O motivo estavel, para o `error.kind` do envelope e para o log.
+    pub fn codigo(self) -> &'static str {
+        match self {
+            Self::NaoAutorizado => "unauthorized",
+            Self::ToolNaoPermitida => "tool_not_allowed",
+            Self::DestinoNaoPermitido => "destination_not_allowed",
+        }
+    }
+
+    /// A explicacao que o orquestrador le. Nenhuma ecoa destino nem nome de
+    /// outro orquestrador.
+    pub fn explicacao(self) -> &'static str {
+        match self {
+            Self::NaoAutorizado => {
+                "a credencial nao identifica nenhum orquestrador deste Garra. Confira o \
+                 token com o operador; ele e configurado em `gateway.mcp_http.orchestrators`."
+            }
+            Self::ToolNaoPermitida => {
+                "esta tool nao esta liberada para este orquestrador. O operador a libera em \
+                 `gateway.mcp_http.orchestrators[].tools`. Nao ha como liberar pela propria \
+                 ponte."
+            }
+            Self::DestinoNaoPermitido => {
+                "este destino nao esta liberado para este orquestrador. O operador o lista \
+                 em `gateway.mcp_http.orchestrators[].chats`. Nao ha como aprovar pela \
+                 propria ponte."
+            }
+        }
+    }
+}
+
 /// A politica viva da ponte, derivada da config a cada chamada.
 ///
 /// Derivada por chamada e nao lida uma vez no boot, pelo mesmo motivo que o
@@ -56,6 +169,8 @@ pub struct PoliticaMcpHttp {
     /// `gateway.mcp_http.ask_allowed_models`. Vazio = so o modelo default do
     /// projeto e aceito (ver [`PoliticaMcpHttp::decidir_ask`]).
     modelos_de_ask: Vec<String>,
+    /// Os orquestradores validos de `gateway.mcp_http.orchestrators` (#1613).
+    orquestradores: Vec<Concessao>,
 }
 
 /// Por que um envio nao saiu.
@@ -172,6 +287,21 @@ impl PoliticaMcpHttp {
             teto_do_historico: config.gateway.mcp_http.max_history_messages,
             ask_liberado: config.gateway.mcp_http.allow_ask,
             modelos_de_ask: config.gateway.mcp_http.ask_allowed_models.clone(),
+            orquestradores: config
+                .gateway
+                .mcp_http
+                .orquestradores_validos()
+                .into_iter()
+                .map(|o| Concessao {
+                    nome: o.nome.clone(),
+                    ferramentas: o
+                        .tools
+                        .iter()
+                        .filter_map(|t| tool_por_nome_curto(t))
+                        .collect(),
+                    chats: o.chats.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -185,6 +315,7 @@ impl PoliticaMcpHttp {
             teto_do_historico: 50,
             ask_liberado: false,
             modelos_de_ask: Vec::new(),
+            orquestradores: Vec::new(),
         }
     }
 
@@ -194,6 +325,110 @@ impl PoliticaMcpHttp {
         self.ask_liberado = true;
         self.modelos_de_ask = modelos.iter().map(|m| m.to_string()).collect();
         self
+    }
+
+    /// Acrescenta um orquestrador nomeado, para os testes.
+    #[cfg(test)]
+    pub(crate) fn com_orquestrador(
+        mut self,
+        nome: &str,
+        ferramentas: &[&str],
+        chats: &[i64],
+    ) -> Self {
+        self.orquestradores.push(Concessao {
+            nome: nome.to_string(),
+            ferramentas: ferramentas
+                .iter()
+                .filter_map(|t| tool_por_nome_curto(t))
+                .collect(),
+            chats: chats.to_vec(),
+        });
+        self
+    }
+
+    /// A concessao de um orquestrador nomeado. `None` para o dono (que nao tem
+    /// concessao: a politica dele e a global) e para um nome desconhecido.
+    fn concessao(&self, quem: &Orquestrador) -> Option<&Concessao> {
+        match quem {
+            Orquestrador::Dono => None,
+            Orquestrador::Nome(nome) => self.orquestradores.iter().find(|c| &c.nome == nome),
+        }
+    }
+
+    /// Esta chamada, feita por `quem`, pode usar esta tool? (#1613)
+    ///
+    /// Dono: sempre (a trava dele e a global de cada tool). Nome desconhecido
+    /// e recusado como `unauthorized`: o handler so chega aqui com um nome que
+    /// ele mesmo identificou, entao isto e cinto e suspensorio.
+    pub fn decidir_ferramenta(
+        &self,
+        quem: &Orquestrador,
+        ferramenta: &str,
+    ) -> Result<(), RecusaOrquestrador> {
+        if *quem == Orquestrador::Dono {
+            return Ok(());
+        }
+        let concessao = self
+            .concessao(quem)
+            .ok_or(RecusaOrquestrador::NaoAutorizado)?;
+        if concessao.ferramentas.contains(&ferramenta) {
+            Ok(())
+        } else {
+            Err(RecusaOrquestrador::ToolNaoPermitida)
+        }
+    }
+
+    /// Este destino esta na lista de `quem`? (#1613)
+    ///
+    /// E a **primeira** trava do envio, e de proposito vem antes da global:
+    /// um orquestrador so ve "nao liberado" para qualquer chat que nao seja
+    /// dele, e nao aprende nada sobre a allowlist do operador. A segunda trava
+    /// (a global) continua valendo depois — a interseccao manda.
+    pub fn decidir_destino_de(
+        &self,
+        quem: &Orquestrador,
+        chat_id: i64,
+    ) -> Result<(), RecusaOrquestrador> {
+        if *quem == Orquestrador::Dono {
+            return Ok(());
+        }
+        let concessao = self
+            .concessao(quem)
+            .ok_or(RecusaOrquestrador::NaoAutorizado)?;
+        if concessao.chats.contains(&chat_id) {
+            Ok(())
+        } else {
+            Err(RecusaOrquestrador::DestinoNaoPermitido)
+        }
+    }
+
+    /// A tool sai na lista de `tools/list` para `quem`? (#1613)
+    ///
+    /// Uma tool que `quem` nao pode chamar nao e anunciada, pelo mesmo motivo
+    /// de a de envio nao ser anunciada quando o envio nao sairia: o modelo do
+    /// outro lado nao planeja em cima de uma capacidade que nao tem. O envio
+    /// exige ainda um destino da sua lista que esteja **tambem** na global.
+    pub fn anuncia(&self, quem: &Orquestrador, ferramenta: &str) -> bool {
+        if self.decidir_ferramenta(quem, ferramenta).is_err() {
+            return false;
+        }
+        if ferramenta == TOOL_SEND_MESSAGE {
+            return self.anuncia_envio_para(quem);
+        }
+        true
+    }
+
+    /// `garra_send_message` tem um destino que `quem` pode usar de fato?
+    fn anuncia_envio_para(&self, quem: &Orquestrador) -> bool {
+        if !self.anuncia_envio() {
+            return false;
+        }
+        match quem {
+            Orquestrador::Dono => true,
+            Orquestrador::Nome(_) => self
+                .concessao(quem)
+                .is_some_and(|c| c.chats.iter().any(|&id| self.destinos.allows(id))),
+        }
     }
 
     /// `garra_send_message` esta na superficie anunciada?
@@ -283,6 +518,8 @@ impl PoliticaMcpHttp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp_http::ferramentas::{TOOL_ASK, TOOL_SEND_MESSAGE, TOOL_STATUS};
+    use garraia_config::OrchestratorMcpHttp;
 
     fn com_destino(envio: bool, ids: &[i64]) -> PoliticaMcpHttp {
         PoliticaMcpHttp::nova(envio, ProactiveTargets::from_ids(ids.iter().copied()))
@@ -518,5 +755,212 @@ mod tests {
             p.decidir_envio(CANAL_DE_ENVIO, 1),
             Err(Recusa::InterruptorDesligado)
         );
+    }
+
+    fn orq(nome: &str) -> Orquestrador {
+        Orquestrador::Nome(nome.to_string())
+    }
+
+    fn pares(nome: &str, token: Option<&str>) -> Vec<(String, Option<String>)> {
+        vec![(nome.to_string(), token.map(str::to_string))]
+    }
+
+    /// #1613 — o token identifica o orquestrador, o do dono identifica o dono,
+    /// e qualquer outro (ou vazio) nao identifica ninguem.
+    #[test]
+    fn identifica_orquestrador_dono_e_desconhecido() {
+        let lista = || {
+            let mut v = pares("badgood", Some("tok-badgood"));
+            v.push(("sem-env".to_string(), None));
+            v
+        };
+        assert_eq!(
+            identificar(lista(), Some("tok-dono"), "tok-badgood"),
+            Some(orq("badgood"))
+        );
+        assert_eq!(
+            identificar(lista(), Some("tok-dono"), "tok-dono"),
+            Some(Orquestrador::Dono)
+        );
+        assert_eq!(identificar(lista(), Some("tok-dono"), "tok-estranho"), None);
+        assert_eq!(identificar(lista(), Some("tok-dono"), ""), None);
+        assert_eq!(identificar(lista(), None, "tok-dono"), None);
+    }
+
+    /// Se o token de um orquestrador coincidir com o do dono, o orquestrador
+    /// vence: e a ordem da spec, e o teste fixa a ordem para nao mudar sem aviso.
+    #[test]
+    fn orquestrador_vence_o_dono_numa_coincidencia() {
+        assert_eq!(
+            identificar(pares("x", Some("igual")), Some("igual"), "igual"),
+            Some(orq("x"))
+        );
+    }
+
+    /// Nome que nao esta na politica nao e o dono: e `NaoAutorizado`.
+    #[test]
+    fn orquestrador_fora_da_politica_e_nao_autorizado() {
+        let p = com_destino(false, &[]).com_orquestrador("badgood", &["status"], &[]);
+        assert_eq!(
+            p.decidir_ferramenta(&orq("fantasma"), TOOL_STATUS),
+            Err(RecusaOrquestrador::NaoAutorizado)
+        );
+        assert_eq!(
+            p.decidir_destino_de(&orq("fantasma"), 1),
+            Err(RecusaOrquestrador::NaoAutorizado)
+        );
+    }
+
+    /// O dono nao tem restricao por orquestrador: a politica dele e a global.
+    #[test]
+    fn dono_nao_e_restringido_pela_politica_de_orquestrador() {
+        let p = com_destino(false, &[]).com_orquestrador("badgood", &["status"], &[42]);
+        assert_eq!(p.decidir_ferramenta(&Orquestrador::Dono, TOOL_ASK), Ok(()));
+        assert_eq!(p.decidir_destino_de(&Orquestrador::Dono, 999), Ok(()));
+    }
+
+    /// A tool so passa se estiver na lista dele. Uma tool liberada a outro
+    /// orquestrador nao vale para este.
+    #[test]
+    fn tool_fora_da_lista_do_orquestrador_e_recusada() {
+        let p = com_destino(false, &[])
+            .com_orquestrador("badgood", &["status", "send_message"], &[])
+            .com_orquestrador("outro", &["ask"], &[]);
+        assert_eq!(p.decidir_ferramenta(&orq("badgood"), TOOL_STATUS), Ok(()));
+        assert_eq!(
+            p.decidir_ferramenta(&orq("badgood"), TOOL_ASK),
+            Err(RecusaOrquestrador::ToolNaoPermitida)
+        );
+        assert_eq!(
+            p.decidir_ferramenta(&orq("outro"), TOOL_STATUS),
+            Err(RecusaOrquestrador::ToolNaoPermitida)
+        );
+    }
+
+    /// A interseccao: o chat precisa estar na lista do orquestrador E na
+    /// global. Estar so numa das duas nao envia.
+    #[test]
+    fn destino_exige_a_interseccao_das_duas_listas() {
+        let p = com_destino(true, &[7]).com_orquestrador("badgood", &["send_message"], &[42]);
+        // Na lista dele e na global: passa nas duas.
+        assert_eq!(p.decidir_destino_de(&orq("badgood"), 42), Ok(()));
+        assert_eq!(
+            p.decidir_envio(CANAL_DE_ENVIO, 42),
+            Err(Recusa::ForaDaAllowlist),
+            "a global nao conhece o 42"
+        );
+        // Na global, mas fora da lista dele: barrado pela primeira trava.
+        assert_eq!(
+            p.decidir_destino_de(&orq("badgood"), 7),
+            Err(RecusaOrquestrador::DestinoNaoPermitido)
+        );
+    }
+
+    /// Com a primeira trava recusando, a resposta nao depende da global: um
+    /// orquestrador nao aprende a allowlist do operador.
+    #[test]
+    fn destino_recusado_pelo_orquestrador_nao_revela_a_global() {
+        let p = com_destino(true, &[7]).com_orquestrador("badgood", &["send_message"], &[42]);
+        assert_eq!(
+            p.decidir_destino_de(&orq("badgood"), 7),
+            p.decidir_destino_de(&orq("badgood"), 999),
+            "um chat da global e um chat estranho devem dar a mesma resposta"
+        );
+    }
+
+    /// `tools/list` por orquestrador: a tool de envio so aparece com tool
+    /// liberada E com um destino em comum com a global.
+    #[test]
+    fn envio_so_e_anunciado_com_tool_e_destino_em_comum() {
+        let sem_interseccao =
+            com_destino(true, &[7]).com_orquestrador("badgood", &["send_message"], &[42]);
+        assert!(!sem_interseccao.anuncia(&orq("badgood"), TOOL_SEND_MESSAGE));
+
+        let com_interseccao =
+            com_destino(true, &[42]).com_orquestrador("badgood", &["send_message"], &[42]);
+        assert!(com_interseccao.anuncia(&orq("badgood"), TOOL_SEND_MESSAGE));
+
+        let sem_a_tool = com_destino(true, &[42]).com_orquestrador("badgood", &["status"], &[42]);
+        assert!(!sem_a_tool.anuncia(&orq("badgood"), TOOL_SEND_MESSAGE));
+        assert!(sem_a_tool.anuncia(&orq("badgood"), TOOL_STATUS));
+    }
+
+    /// Sem entradas na config, o anuncio do dono e o de antes, byte a byte.
+    #[test]
+    fn dono_com_config_sem_orquestradores_mantem_o_anuncio() {
+        let p = com_destino(true, &[42]);
+        assert!(p.anuncia(&Orquestrador::Dono, TOOL_SEND_MESSAGE));
+        assert!(p.anuncia(&Orquestrador::Dono, TOOL_STATUS));
+        assert_eq!(
+            p.anuncia(&Orquestrador::Dono, TOOL_SEND_MESSAGE),
+            p.anuncia_envio()
+        );
+    }
+
+    /// As tools da config viram os nomes `garra_*`; um nome que a ponte nao
+    /// tem nao concede nada, em silencio.
+    #[test]
+    fn da_config_traduz_as_tools_e_ignora_o_que_nao_existe() {
+        let mut config = AppConfig::default();
+        config.gateway.mcp_http.orchestrators = vec![OrchestratorMcpHttp {
+            nome: "badgood".into(),
+            key_env: "BADGOOD_MCP_KEY".into(),
+            tools: vec!["status".into(), "tool_inventada".into()],
+            chats: vec![42],
+        }];
+        let p = PoliticaMcpHttp::da_config(&config);
+        assert_eq!(p.decidir_ferramenta(&orq("badgood"), TOOL_STATUS), Ok(()));
+        assert_eq!(
+            p.decidir_ferramenta(&orq("badgood"), TOOL_ASK),
+            Err(RecusaOrquestrador::ToolNaoPermitida)
+        );
+    }
+
+    /// Entrada com nome repetido nao entra na politica: quem a usasse seria
+    /// atribuido a uma entrada que nao escolheu.
+    #[test]
+    fn da_config_nao_concede_por_entrada_invalida() {
+        let mut config = AppConfig::default();
+        let entrada = || OrchestratorMcpHttp {
+            nome: "badgood".into(),
+            key_env: "BADGOOD_MCP_KEY".into(),
+            tools: vec!["status".into()],
+            chats: vec![],
+        };
+        config.gateway.mcp_http.orchestrators = vec![entrada(), entrada()];
+        let p = PoliticaMcpHttp::da_config(&config);
+        assert_eq!(
+            p.decidir_ferramenta(&orq("badgood"), TOOL_STATUS),
+            Err(RecusaOrquestrador::NaoAutorizado)
+        );
+    }
+
+    /// Codigos estaveis e distintos, e a explicacao nunca ecoa destino.
+    #[test]
+    fn recusas_de_orquestrador_tem_codigo_estavel_e_nao_ecoam() {
+        let recusas = [
+            RecusaOrquestrador::NaoAutorizado,
+            RecusaOrquestrador::ToolNaoPermitida,
+            RecusaOrquestrador::DestinoNaoPermitido,
+        ];
+        let codigos: Vec<&str> = recusas.iter().map(|r| r.codigo()).collect();
+        assert_eq!(
+            codigos,
+            vec![
+                "unauthorized",
+                "tool_not_allowed",
+                "destination_not_allowed"
+            ]
+        );
+        for r in recusas {
+            assert!(!r.explicacao().is_empty());
+            assert!(!r.explicacao().contains("42"), "{}", r.explicacao());
+        }
+    }
+
+    #[test]
+    fn rotulo_do_dono_e_o_reservado() {
+        assert_eq!(Orquestrador::Dono.rotulo(), "dono");
+        assert_eq!(orq("badgood").rotulo(), "badgood");
     }
 }
