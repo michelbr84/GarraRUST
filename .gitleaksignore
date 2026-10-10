@@ -67,3 +67,26 @@ f8374996ecd2fcb7b6acadace7be464bffe4d6d7:crates/garraia-security/src/redaction.r
 # 6b1ab9a continua sendo reportado. Sem rewrite de historico, pela politica
 # deste arquivo. O valor nunca existiu fora do teste.
 6b1ab9a0e8782a03f531e26390b7c9e619736826:crates/garraia-agents/src/tools/bash_tool.rs:curl-auth-header:794
+
+# -----------------------------------------------------------------------
+# False positives — fixtures do MODULO de redacao novo (#1613, PR #1624,
+# commit 9eed6abb, 2026-10-10). `crates/garraia-gateway/src/mcp_http/
+# redacao.rs` existe justamente para detectar e redigir estas formas; os
+# testes `cada_padrao_de_segredo_sai_redigido` e `pem_sem_end_redige_ate_
+# o_fim` (linhas 136, 143, 145 e 150, todas dentro de `#[cfg(test)]`)
+# passam versoes TRUNCADAS delas (ex.: `ghp_ab...6789`) como INPUT para
+# provar que a redacao funciona. Nenhum valor e uma credencial viva.
+# Mesmo argumento do bloco acima (f8374996): o fingerprint prende o sha
+# deste commit, nao esconde ocorrencia nova — literal real em commit
+# futuro volta a falhar o gate.
+9eed6abb899195a53d0516d1fe05cb8483e42590:crates/garraia-gateway/src/mcp_http/redacao.rs:github-pat:136
+9eed6abb899195a53d0516d1fe05cb8483e42590:crates/garraia-gateway/src/mcp_http/redacao.rs:curl-auth-header:143
+9eed6abb899195a53d0516d1fe05cb8483e42590:crates/garraia-gateway/src/mcp_http/redacao.rs:private-key:145
+9eed6abb899195a53d0516d1fe05cb8483e42590:crates/garraia-gateway/src/mcp_http/redacao.rs:github-pat:150
+
+# Mesmo commit, mesmo principio: teste de validacao de config (linha 2033
+# de `crates/garraia-config/src/model.rs`, fixture `nome: "token-na-config"`)
+# declara `key_env: "sk-or-...gano"` para provar que o loader RECUSA valor
+# com forma de segredo em key_env. O teste e a recusacao sao a protecao;
+# o literal truncado e o material de teste dela.
+9eed6abb899195a53d0516d1fe05cb8483e42590:crates/garraia-config/src/model.rs:generic-api-key:2033

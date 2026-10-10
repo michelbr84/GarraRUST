@@ -44,6 +44,17 @@
 //!    proprio por minuto.** Sem a lista, so o modelo default do projeto passa.
 //!    Nenhum dos tres interruptores destrava o outro.
 //!
+//! ## Quem chama (#1613)
+//!
+//! Alem do dono (`gateway.api_key`), a ponte aceita orquestradores externos
+//! declarados em `gateway.mcp_http.orchestrators`, cada um com token proprio
+//! (lido de uma variavel de ambiente), lista de tools e lista de chats. Um
+//! orquestrador **nao e um atalho**: a politica dele se soma as travas acima, e
+//! o envio so sai se a interseccao dos destinos passar. Sem entradas, a ponte
+//! se comporta como antes, byte a byte. A identificacao e a auditoria mora em
+//! [`handler`]; a politica, em [`politica`]; a redacao do texto enviado, em
+//! [`redacao`].
+//!
 //! Alem das tres, `/mcp` herda de graca o que o router ja tem: a guarda
 //! anti-CSRF do [`crate::origin_guard`] (um `POST` de dentro de um navegador
 //! carrega `Origin`, e morre ali; um cliente MCP nao carrega, e passa), o rate
@@ -55,6 +66,7 @@
 pub mod ferramentas;
 pub mod handler;
 pub mod politica;
+pub mod redacao;
 
 use std::sync::Arc;
 

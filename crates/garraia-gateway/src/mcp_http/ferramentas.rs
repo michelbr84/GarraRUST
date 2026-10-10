@@ -48,6 +48,37 @@ pub const TOOL_PAIR_STATUS: &str = "garra_pair_status";
 /// #1612 — a sexta tool: inferencia sob demanda, anunciada so com `allow_ask`.
 pub const TOOL_ASK: &str = "garra_ask";
 
+/// Todas as tools que a ponte conhece, pelo nome `garra_*`.
+const TODAS_AS_TOOLS: [&str; 6] = [
+    TOOL_STATUS,
+    TOOL_LIST_CHATS,
+    TOOL_READ_HISTORY,
+    TOOL_PAIR_STATUS,
+    TOOL_SEND_MESSAGE,
+    TOOL_ASK,
+];
+
+/// A tool `garra_*` para o nome curto que o operador escreve em
+/// `gateway.mcp_http.orchestrators[].tools` (#1613). `None` para um nome que a
+/// ponte nao tem: a entrada nao concede nada por ele.
+pub fn tool_por_nome_curto(curto: &str) -> Option<&'static str> {
+    match curto {
+        "status" => Some(TOOL_STATUS),
+        "list_chats" => Some(TOOL_LIST_CHATS),
+        "read_history" => Some(TOOL_READ_HISTORY),
+        "pair_status" => Some(TOOL_PAIR_STATUS),
+        "send_message" => Some(TOOL_SEND_MESSAGE),
+        "ask" => Some(TOOL_ASK),
+        _ => None,
+    }
+}
+
+/// O nome pedido e uma tool da ponte? Para o log: um nome qualquer vindo de
+/// quem chama nao entra nele como esta.
+pub fn e_ferramenta_conhecida(nome: &str) -> bool {
+    TODAS_AS_TOOLS.contains(&nome)
+}
+
 /// `serde_json::Value::Object` garantido pelos literais abaixo.
 fn objeto(v: JsonValue) -> Arc<JsonMap<String, JsonValue>> {
     match v {
@@ -609,5 +640,31 @@ mod tests {
             limit: None,
         };
         assert!(validar_read_history(&args).is_err());
+    }
+
+    /// #1613 — cada nome que a config aceita traduz para uma tool da ponte, e
+    /// as duas listas sao a mesma: nenhuma tool fica sem nome curto.
+    #[test]
+    fn nomes_curtos_da_config_cobrem_as_tools_da_ponte() {
+        use garraia_config::FERRAMENTAS_DE_ORQUESTRADOR;
+        for curto in FERRAMENTAS_DE_ORQUESTRADOR {
+            assert!(tool_por_nome_curto(curto).is_some(), "{curto} sem tool");
+        }
+        let traduzidos: std::collections::BTreeSet<&str> = FERRAMENTAS_DE_ORQUESTRADOR
+            .iter()
+            .filter_map(|c| tool_por_nome_curto(c))
+            .collect();
+        assert_eq!(traduzidos.len(), TODAS_AS_TOOLS.len(), "{traduzidos:?}");
+        for tool in TODAS_AS_TOOLS {
+            assert!(traduzidos.contains(tool), "{tool} sem nome curto");
+        }
+    }
+
+    #[test]
+    fn nome_com_prefixo_ou_inventado_nao_e_tool() {
+        assert_eq!(tool_por_nome_curto("garra_status"), None);
+        assert_eq!(tool_por_nome_curto("formata_o_disco"), None);
+        assert!(e_ferramenta_conhecida(TOOL_ASK));
+        assert!(!e_ferramenta_conhecida("formata_o_disco"));
     }
 }

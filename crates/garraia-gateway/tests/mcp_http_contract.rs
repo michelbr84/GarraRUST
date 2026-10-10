@@ -1053,3 +1053,451 @@ async fn garra_ask_argumento_invalido_vira_erro_de_protocolo() {
 
     assert!(endereco.credentials().await.is_empty());
 }
+
+// ── #1613: orquestradores externos, cada um com identidade e politica ─────────
+
+/// Um orquestrador de teste. O token vai para uma variavel de ambiente que so
+/// este teste usa, e a config guarda so o nome dela — como em producao.
+fn orquestrador(
+    nome: &str,
+    var: &str,
+    token: &str,
+    tools: &[&str],
+    chats: &[i64],
+) -> garraia_config::OrchestratorMcpHttp {
+    // SAFETY: nome de variavel exclusivo do teste que o chama.
+    unsafe { std::env::set_var(var, token) };
+    garraia_config::OrchestratorMcpHttp {
+        nome: nome.to_string(),
+        key_env: var.to_string(),
+        tools: tools.iter().map(|t| t.to_string()).collect(),
+        chats: chats.to_vec(),
+    }
+}
+
+/// A ponte no ar com `orquestradores`, e a allowlist global de destinos do
+/// canal telegram dada. O `allow_send` segue a ligacao.
+fn config_com_orquestradores(
+    l: Ligacao,
+    orquestradores: Vec<garraia_config::OrchestratorMcpHttp>,
+    destinos_globais: &[i64],
+) -> AppConfig {
+    let mut config = config_de(l);
+    config.gateway.mcp_http.orchestrators = orquestradores;
+    config.channels.insert(
+        "tg".to_string(),
+        garraia_config::ChannelConfig {
+            channel_type: "telegram".to_string(),
+            enabled: Some(true),
+            settings: [("proactive_chat_ids".to_string(), json!(destinos_globais))]
+                .into_iter()
+                .collect(),
+        },
+    );
+    config
+}
+
+/// O router e o `AppState` de uma config pronta (sem passar pela `Ligacao`).
+fn router_e_estado(config: AppConfig) -> (axum::Router, Arc<AppState>) {
+    let state = Arc::new(AppState::new(
+        config,
+        Arc::new(AgentRuntime::new()),
+        ChannelRegistry::new(),
+    ));
+    let admin_store = Arc::new(Mutex::new(
+        AdminStore::in_memory().expect("in-memory admin store"),
+    ));
+    let router = build_router(
+        Arc::clone(&state),
+        PushChannelStates::empty(),
+        admin_store,
+        Arc::new(vec![0u8; 32]),
+    );
+    (router, state)
+}
+
+/// Um `tools/call` com o token dado como `Authorization`.
+async fn chamar_como(router: &axum::Router, token: &str, nome: &str, args: Value) -> Value {
+    let bearer = format!("Bearer {token}");
+    corpo_json(
+        pedir(
+            router.clone(),
+            Some(bearer.as_str()),
+            rpc(3, "tools/call", json!({ "name": nome, "arguments": args })),
+        )
+        .await,
+    )
+    .await
+}
+
+/// Os nomes que o `tools/list` mostra para o token dado.
+async fn listar_como(router: &axum::Router, token: &str) -> Vec<String> {
+    let bearer = format!("Bearer {token}");
+    let _ = corpo_json(pedir(router.clone(), Some(bearer.as_str()), initialize()).await).await;
+    nomes_das_tools(
+        &corpo_json(
+            pedir(
+                router.clone(),
+                Some(bearer.as_str()),
+                rpc(2, "tools/list", json!({})),
+            )
+            .await,
+        )
+        .await,
+    )
+}
+
+/// Um canal que guarda o texto que sairia: a prova de que o payload chega
+/// redigido, e o caminho de envio de verdade (nao a recusa).
+struct CanalQueGuarda(Arc<Mutex<Vec<String>>>);
+
+#[async_trait::async_trait]
+impl garraia_channels::Channel for CanalQueGuarda {
+    fn channel_type(&self) -> &str {
+        "telegram"
+    }
+    fn display_name(&self) -> &str {
+        "Telegram (guarda)"
+    }
+    async fn connect(&mut self) -> garraia_common::Result<()> {
+        Ok(())
+    }
+    async fn disconnect(&mut self) -> garraia_common::Result<()> {
+        Ok(())
+    }
+    async fn send_message(&self, message: &garraia_common::Message) -> garraia_common::Result<()> {
+        if let garraia_common::MessageContent::Text(texto) = &message.content {
+            self.0.lock().await.push(texto.clone());
+        }
+        Ok(())
+    }
+    fn status(&self) -> garraia_channels::ChannelStatus {
+        garraia_channels::ChannelStatus::Connected
+    }
+}
+
+/// O orquestrador ve so as tools da sua lista. O dono continua vendo as de
+/// leitura, como antes.
+#[tokio::test]
+async fn orquestrador_ve_so_as_tools_da_sua_lista() {
+    let config = config_com_orquestradores(
+        Ligacao::leitura(),
+        vec![orquestrador(
+            "badgood-lista",
+            "GARRA_TESTE_1613_LISTA",
+            "tok-lista-badgood",
+            &["status", "list_chats"],
+            &[],
+        )],
+        &[],
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    assert_eq!(
+        listar_como(&router, "tok-lista-badgood").await,
+        vec!["garra_status", "garra_list_chats"]
+    );
+    assert_eq!(listar_como(&router, CHAVE).await.len(), 4);
+}
+
+/// Tool que existe mas nao esta na lista do orquestrador: recusa como
+/// `tool_not_allowed`, com `isError`, e a tool nem roda.
+#[tokio::test]
+async fn tool_fora_da_lista_do_orquestrador_e_recusada() {
+    let config = config_com_orquestradores(
+        Ligacao::leitura(),
+        vec![orquestrador(
+            "badgood-tool",
+            "GARRA_TESTE_1613_TOOL",
+            "tok-tool-badgood",
+            &["status"],
+            &[],
+        )],
+        &[],
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    let resposta = chamar_como(&router, "tok-tool-badgood", "garra_pair_status", json!({})).await;
+    assert_eq!(resposta["result"]["isError"], json!(true), "{resposta}");
+    assert_eq!(
+        envelope(&resposta)["error"]["kind"],
+        "tool_not_allowed",
+        "{resposta}"
+    );
+}
+
+/// Credencial que nao identifica ninguem nao entra na ponte: 401, igual a
+/// chave errada. Um orquestrador cuja variavel nao existe tambem nao entra.
+#[tokio::test]
+async fn token_que_nao_identifica_ninguem_da_401() {
+    let config = config_com_orquestradores(
+        Ligacao::leitura(),
+        vec![
+            orquestrador(
+                "badgood-401",
+                "GARRA_TESTE_1613_401",
+                "tok-401-badgood",
+                &["status"],
+                &[],
+            ),
+            garraia_config::OrchestratorMcpHttp {
+                nome: "sem-variavel".to_string(),
+                key_env: "GARRA_TESTE_1613_NUNCA_DEFINIDA".to_string(),
+                tools: vec!["status".to_string()],
+                chats: vec![],
+            },
+        ],
+        &[],
+    );
+    let (router, _estado) = router_e_estado(config);
+
+    let desconhecida = pedir(
+        router.clone(),
+        Some("Bearer tok-que-ninguem-tem"),
+        initialize(),
+    )
+    .await;
+    assert_eq!(desconhecida.status(), StatusCode::UNAUTHORIZED);
+
+    let sem_variavel = pedir(
+        router,
+        Some("Bearer GARRA_TESTE_1613_NUNCA_DEFINIDA"),
+        initialize(),
+    )
+    .await;
+    assert_eq!(sem_variavel.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Interseccao de destinos: o chat precisa estar na lista do orquestrador
+/// **e** na allowlist global. O que falta em uma das duas nao envia, e a
+/// recusa de quem nao esta na lista dele nao revela a global.
+#[tokio::test]
+async fn destino_precisa_estar_nas_duas_listas() {
+    const OUTRO: i64 = -100_987_654;
+    let mut config = config_com_orquestradores(
+        Ligacao::leitura().com(true, true),
+        vec![orquestrador(
+            "badgood-dest",
+            "GARRA_TESTE_1613_DEST",
+            "tok-dest-badgood",
+            &["send_message"],
+            &[DESTINO],
+        )],
+        &[DESTINO, OUTRO],
+    );
+    config.gateway.mcp_http.allow_send = true;
+    let (router, _estado) = router_e_estado(config);
+
+    let envio = |chat: i64| json!({ "channel": "telegram", "chat_id": chat, "text": "oi" });
+    let nas_duas = envelope(
+        &chamar_como(
+            &router,
+            "tok-dest-badgood",
+            "garra_send_message",
+            envio(DESTINO),
+        )
+        .await,
+    );
+    assert_eq!(
+        nas_duas["error"]["kind"], "channel_offline",
+        "a interseccao passou e o portao abriu: {nas_duas}"
+    );
+
+    let so_na_global = envelope(
+        &chamar_como(
+            &router,
+            "tok-dest-badgood",
+            "garra_send_message",
+            envio(OUTRO),
+        )
+        .await,
+    );
+    assert_eq!(so_na_global["error"]["kind"], "destination_not_allowed");
+
+    let estranho = envelope(
+        &chamar_como(
+            &router,
+            "tok-dest-badgood",
+            "garra_send_message",
+            envio(999_999),
+        )
+        .await,
+    );
+    assert_eq!(estranho["error"]["kind"], "destination_not_allowed");
+    assert_eq!(
+        so_na_global["error"]["message"], estranho["error"]["message"],
+        "a recusa revelou a allowlist global"
+    );
+}
+
+/// O outro lado da interseccao: o chat esta na lista do orquestrador, mas nao
+/// na global. Quem barra e a global, com o motivo de sempre.
+#[tokio::test]
+async fn destino_so_na_lista_do_orquestrador_e_barrado_pela_global() {
+    const SO_DELE: i64 = -100_555_555;
+    let mut config = config_com_orquestradores(
+        Ligacao::leitura().com(true, true),
+        vec![orquestrador(
+            "badgood-global",
+            "GARRA_TESTE_1613_GLOBAL",
+            "tok-global-badgood",
+            &["send_message"],
+            &[DESTINO, SO_DELE],
+        )],
+        &[DESTINO],
+    );
+    config.gateway.mcp_http.allow_send = true;
+    let (router, _estado) = router_e_estado(config);
+
+    let env = envelope(
+        &chamar_como(
+            &router,
+            "tok-global-badgood",
+            "garra_send_message",
+            json!({ "channel": "telegram", "chat_id": SO_DELE, "text": "oi" }),
+        )
+        .await,
+    );
+    assert_eq!(env["error"]["kind"], "target_not_allowed", "{env}");
+}
+
+/// A tool de envio nao e anunciada para um orquestrador sem destino em comum
+/// com a global: anunciar uma capacidade que toda chamada recusa e o erro que
+/// a ponte evita desde a #1513.
+#[tokio::test]
+async fn envio_nao_e_anunciado_sem_destino_em_comum() {
+    let mut config = config_com_orquestradores(
+        Ligacao::leitura().com(true, true),
+        vec![orquestrador(
+            "badgood-anuncio",
+            "GARRA_TESTE_1613_ANUNCIO",
+            "tok-anuncio-badgood",
+            &["send_message", "status"],
+            &[-100_777_777],
+        )],
+        &[DESTINO],
+    );
+    config.gateway.mcp_http.allow_send = true;
+    let (router, _estado) = router_e_estado(config);
+
+    let nomes = listar_como(&router, "tok-anuncio-badgood").await;
+    assert_eq!(nomes, vec!["garra_status"], "{nomes:?}");
+}
+
+/// O texto que sai pelo canal e o redigido; o texto limpo sai identico.
+#[tokio::test]
+async fn payload_de_envio_sai_redigido_e_o_limpo_sai_identico() {
+    let mut config = config_com_orquestradores(
+        Ligacao::leitura().com(true, true),
+        vec![orquestrador(
+            "badgood-redacao",
+            "GARRA_TESTE_1613_REDACAO",
+            "tok-redacao-badgood",
+            &["send_message"],
+            &[DESTINO],
+        )],
+        &[DESTINO],
+    );
+    config.gateway.mcp_http.allow_send = true;
+    let (router, estado) = router_e_estado(config);
+    let guardadas = Arc::new(Mutex::new(Vec::new()));
+    estado
+        .channels
+        .write()
+        .await
+        .register(Box::new(CanalQueGuarda(Arc::clone(&guardadas))));
+
+    let suspeito = "deploy feito com sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789 \
+                    e Bearer abcdefgh12345678";
+    let env = envelope(
+        &chamar_como(
+            &router,
+            "tok-redacao-badgood",
+            "garra_send_message",
+            json!({ "channel": "telegram", "chat_id": DESTINO, "text": suspeito }),
+        )
+        .await,
+    );
+    assert_eq!(env["ok"], true, "{env}");
+
+    let limpo = "reunião às 15h, pauta: revisar o roteiro";
+    let env_limpo = envelope(
+        &chamar_como(
+            &router,
+            "tok-redacao-badgood",
+            "garra_send_message",
+            json!({ "channel": "telegram", "chat_id": DESTINO, "text": limpo }),
+        )
+        .await,
+    );
+    assert_eq!(env_limpo["ok"], true, "{env_limpo}");
+
+    let saidas = guardadas.lock().await.clone();
+    assert_eq!(saidas.len(), 2, "{saidas:?}");
+    assert!(saidas[0].contains("[REDACTED]"), "{}", saidas[0]);
+    assert!(!saidas[0].contains("sk-or-v1-"), "{}", saidas[0]);
+    assert!(!saidas[0].contains("abcdefgh12345678"), "{}", saidas[0]);
+    assert_eq!(saidas[1], limpo);
+}
+
+/// Cada chamada da ponte deixa uma linha de auditoria com o orquestrador e o
+/// resultado, e o token nunca aparece no log. O destino sai pseudonimizado.
+#[tracing_test::traced_test]
+#[tokio::test]
+async fn cada_chamada_e_auditada_com_o_orquestrador_e_sem_o_token() {
+    const TOKEN: &str = "tok-auditoria-segredo-1613";
+    let mut config = config_com_orquestradores(
+        Ligacao::leitura().com(true, true),
+        vec![orquestrador(
+            "badgood-auditoria",
+            "GARRA_TESTE_1613_AUDITORIA",
+            TOKEN,
+            &["status", "send_message"],
+            &[DESTINO],
+        )],
+        &[DESTINO],
+    );
+    config.gateway.mcp_http.allow_send = true;
+    let (router, _estado) = router_e_estado(config);
+
+    chamar_como(&router, TOKEN, "garra_status", json!({})).await;
+    chamar_como(
+        &router,
+        TOKEN,
+        "garra_send_message",
+        json!({ "channel": "telegram", "chat_id": DESTINO, "text": "oi" }),
+    )
+    .await;
+
+    assert!(
+        logs_contain("badgood-auditoria"),
+        "sem o orquestrador no log"
+    );
+    assert!(
+        logs_contain("mcp_http: chamada"),
+        "sem a linha de auditoria"
+    );
+    assert!(logs_contain("channel_offline"), "sem o resultado");
+    assert!(!logs_contain(TOKEN), "o token vazou para o log");
+    logs_assert(|linhas: &[&str]| {
+        let vazou = linhas
+            .iter()
+            .filter(|l| l.contains("garraia_gateway::mcp_http"))
+            .any(|l| l.contains(&DESTINO.to_string()));
+        if vazou {
+            Err("o chat_id entrou no log de auditoria".into())
+        } else {
+            Ok(())
+        }
+    });
+}
+
+/// A config default (sem orquestradores) nao muda a superficie do dono nem o
+/// despacho: o `tools/list` e o `tools/call` seguem os de antes.
+#[tokio::test]
+async fn sem_orquestradores_o_dono_segue_como_antes() {
+    let (router, _estado) = router_e_estado(config_de(Ligacao::leitura()));
+    assert_eq!(listar_como(&router, CHAVE).await.len(), 4);
+    let env = envelope(&chamar_como(&router, CHAVE, "garra_status", json!({})).await);
+    assert_eq!(env["ok"], true, "{env}");
+}

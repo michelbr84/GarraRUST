@@ -25,29 +25,48 @@
 //! - **Nao registra tool no `AgentRuntime`.** A direcao aqui e de fora para
 //!   dentro; o caminho de dentro para fora e o `McpManager`, em
 //!   `crate::mcp`. O `AgentRuntime` que o `garra_ask` usa so tem o provider.
-//! - **Nao decide autenticacao.** Quem exige o `gateway.api_key` e o
-//!   `api_key_layer` do router, por fora — ver [`super::build_mcp_http_routes`].
+//! - **Nao decide quem e o dono, so quem e quem.** A credencial vem do header
+//!   `Authorization` e e comparada, aqui, com os orquestradores e com o
+//!   `gateway.api_key` (#1613, ver [`identificar`](super::politica::identificar)).
+//!   Quem recusa a credencial que nao e de ninguem e o `api_key_layer` do
+//!   router, por fora — ver [`super::build_mcp_http_routes`]. Aqui a recusa
+//!   `unauthorized` existe so como cinto e suspensorio.
+//!
+//! ## Orquestradores (#1613)
+//!
+//! Cada chamada e atribuida a um `Orquestrador` e passa pela politica dele
+//! antes da politica global: a tool precisa estar na lista dele, e o destino
+//! do envio tambem. Nenhuma das duas listas destrava o que a outra nao libera.
+//! Toda chamada gera uma linha de auditoria com o orquestrador, a tool, o
+//! destino pseudonimizado e o resultado — nunca o token nem o texto enviado.
 
 use std::sync::{Arc, Weak};
 
+use axum::http::request::Parts;
 use rmcp::ErrorData as McpError;
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Extensions,
     Implementation, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
     ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
 use serde_json::{Value as JsonValue, json};
+use sha2::{Digest, Sha256};
 
 use garraia_ask::{ARG_TIMEOUT_SECS_DEFAULT, AskOptions, AskOutcome, error_envelope};
 use garraia_config::defaults::{DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER};
 
 use super::ferramentas::{
     self, ArgsAsk, ArgsListChats, ArgsReadHistory, ArgsSendMessage, TOOL_ASK, TOOL_LIST_CHATS,
-    TOOL_PAIR_STATUS, TOOL_READ_HISTORY, TOOL_SEND_MESSAGE, TOOL_STATUS,
+    TOOL_PAIR_STATUS, TOOL_READ_HISTORY, TOOL_SEND_MESSAGE, TOOL_STATUS, e_ferramenta_conhecida,
 };
-use super::politica::{PoliticaMcpHttp, RecusaAsk, SESSAO_DO_TETO, SESSAO_DO_TETO_ASK};
+use super::politica::{
+    Orquestrador, PoliticaMcpHttp, RecusaAsk, RecusaOrquestrador, SESSAO_DO_TETO,
+    SESSAO_DO_TETO_ASK, identificar,
+};
+use super::redacao;
+use crate::auth_common::extract_bearer;
 use crate::channel_send::{SendBudget, with_channel_address};
 use crate::push_channels::PushMounted;
 use crate::state::AppState;
@@ -99,6 +118,30 @@ impl ManipuladorMcpHttp {
         let state = self.state.upgrade()?;
         let politica = PoliticaMcpHttp::da_config(&state.current_config());
         Some((state, politica))
+    }
+
+    /// Quem fez esta chamada, pela credencial do header `Authorization` (#1613).
+    ///
+    /// Le o header da propria request: o rmcp injeta as `Parts` HTTP nas
+    /// extensoes do contexto, e o transporte e stateless, entao a identidade
+    /// e por pedido e nunca fica presa numa sessao. `None` quando nao ha
+    /// header ou quando a credencial nao e de ninguem.
+    fn quem_chama(state: &AppState, extensoes: &Extensions) -> Option<Orquestrador> {
+        let parts = extensoes.get::<Parts>()?;
+        let apresentada = extract_bearer(&parts.headers)?;
+        let config = state.current_config();
+        let orquestradores = config
+            .gateway
+            .mcp_http
+            .orquestradores_validos()
+            .into_iter()
+            .map(|o| (o.nome.clone(), o.token()))
+            .collect();
+        identificar(
+            orquestradores,
+            config.gateway.api_key_normalizada(),
+            apresentada,
+        )
     }
 
     /// `garra_status`.
@@ -279,8 +322,20 @@ impl ManipuladorMcpHttp {
         &self,
         state: &Arc<AppState>,
         politica: &PoliticaMcpHttp,
+        quem: &Orquestrador,
         args: &ArgsSendMessage,
     ) -> Result<JsonValue, JsonValue> {
+        // A primeira trava e a do orquestrador, antes da global: assim ele so
+        // ve "nao liberado" para chat que nao e dele, e nao aprende a allowlist
+        // do operador. A global ainda vale depois — a interseccao manda.
+        if let Err(recusa) = politica.decidir_destino_de(quem, args.chat_id) {
+            tracing::warn!(
+                canal = %args.channel,
+                motivo = recusa.codigo(),
+                "mcp_http: garra_send_message recusado"
+            );
+            return Err(envelope_de_erro(recusa.codigo(), recusa.explicacao()));
+        }
         if let Err(recusa) = politica.decidir_envio(&args.channel, args.chat_id) {
             // `channel` entra no log (e um nome de canal, nao um destino);
             // `chat_id` nao entra nunca.
@@ -316,13 +371,16 @@ impl ManipuladorMcpHttp {
 
         let metadata =
             with_channel_address(&json!({}), &args.channel, Some(&args.chat_id.to_string()));
+        // #1613: o que sai pelo canal e o texto redigido. Um token que o
+        // orquestrador colou no pedido nao chega ao chat de ninguem.
+        let texto = redacao::redigir(&args.text);
         let mensagem = garraia_common::Message {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: garraia_common::SessionId::from_string(SESSAO_DO_TETO),
             channel_id: garraia_common::ChannelId::from_string(&args.channel),
             user_id: garraia_common::UserId::from_string("genesis"),
             direction: garraia_common::MessageDirection::Outgoing,
-            content: garraia_common::MessageContent::Text(args.text.clone()),
+            content: garraia_common::MessageContent::Text(texto),
             timestamp: chrono::Utc::now(),
             metadata,
         };
@@ -445,7 +503,7 @@ impl ManipuladorMcpHttp {
             }
             AskOutcome::Failure(erro) => {
                 tracing::warn!(kind = erro.kind_str(), "mcp_http: garra_ask falhou");
-                Err(outcome.to_envelope())
+                Err(redigir_erro(outcome.to_envelope()))
             }
         }
     }
@@ -459,48 +517,110 @@ impl ManipuladorMcpHttp {
     /// bug do chamador e nao resultado.
     async fn despachar(
         &self,
+        state: &Arc<AppState>,
+        politica: &PoliticaMcpHttp,
+        quem: &Orquestrador,
         nome: &str,
         argumentos: JsonValue,
     ) -> Result<Result<JsonValue, JsonValue>, McpError> {
-        let Some((state, politica)) = self.politica() else {
-            return Err(McpError::internal_error("gateway encerrando", None));
-        };
-
         match nome {
             TOOL_STATUS => {
                 exigir_sem_argumentos(nome, &argumentos)?;
-                Ok(Ok(self.status(&state, &politica).await))
+                Ok(Ok(self.status(state, politica).await))
             }
             TOOL_PAIR_STATUS => {
                 exigir_sem_argumentos(nome, &argumentos)?;
-                Ok(Ok(self.pair_status(&state).await))
+                Ok(Ok(self.pair_status(state).await))
             }
             TOOL_LIST_CHATS => {
                 let args: ArgsListChats = desserializar(argumentos)?;
-                Ok(Ok(self.list_chats(&state, &args)))
+                Ok(Ok(self.list_chats(state, &args)))
             }
             TOOL_READ_HISTORY => {
                 let args: ArgsReadHistory = desserializar(argumentos)?;
                 ferramentas::validar_read_history(&args)
                     .map_err(|e| McpError::invalid_params(e, None))?;
-                Ok(Ok(self.read_history(&state, &politica, &args).await))
+                Ok(Ok(self.read_history(state, politica, &args).await))
             }
             TOOL_SEND_MESSAGE => {
                 let args: ArgsSendMessage = desserializar(argumentos)?;
                 ferramentas::validar_send_message(&args)
                     .map_err(|e| McpError::invalid_params(e, None))?;
-                Ok(self.send_message(&state, &politica, &args).await)
+                Ok(self.send_message(state, politica, quem, &args).await)
             }
             TOOL_ASK => {
                 let args: ArgsAsk = desserializar(argumentos)?;
                 ferramentas::validar_ask(&args).map_err(|e| McpError::invalid_params(e, None))?;
-                Ok(self.ask(&state, &politica, &args).await)
+                Ok(self.ask(state, politica, &args).await)
             }
             outro => Err(McpError::invalid_params(
                 format!("tool desconhecida: '{outro}'"),
                 None,
             )),
         }
+    }
+}
+
+/// Um envelope `garra.mcp.v1` de recusa, com o `kind` e a explicacao dados.
+fn envelope_de_erro(kind: &str, message: &str) -> JsonValue {
+    json!({
+        "schema": SCHEMA,
+        "ok": false,
+        "error": { "kind": kind, "message": message },
+    })
+}
+
+/// Redige a mensagem de erro de um envelope `garra.ask.v1` (#1613). O provedor
+/// pode ecoar um segredo na resposta de erro, e isso nao sai para o cliente.
+fn redigir_erro(mut envelope: JsonValue) -> JsonValue {
+    let redigida = envelope["error"]["message"].as_str().map(redacao::redigir);
+    if let Some(mensagem) = redigida {
+        envelope["error"]["message"] = json!(mensagem);
+    }
+    envelope
+}
+
+/// Pseudonimo de um destino para o log: os 4 primeiros bytes do SHA-256 do id.
+///
+/// E pseudonimo, nao anonimato. Chat ids sao poucos e curtos, entao quem tiver
+/// o log consegue testar candidatos. O que o pseudonimo garante e que o log
+/// nao traz o id de bate-pronto, e que o operador o reconhece aplicando o mesmo
+/// calculo a propria lista.
+fn pseudonimo_do_destino(chat_id: i64) -> String {
+    let digest = Sha256::digest(chat_id.to_string().as_bytes());
+    let hex: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
+    format!("h:{hex}")
+}
+
+/// A linha de auditoria de uma chamada da ponte (#1613).
+///
+/// Uma por chamada: `info` quando deu certo, `warn` quando foi recusada. O
+/// nome de tool vindo de quem chama so entra no log se for uma tool da ponte;
+/// o resto vira `desconhecida`. Nunca entra token nem o texto da mensagem.
+fn auditar(quem: Option<&Orquestrador>, ferramenta: &str, destino: Option<i64>, resultado: &str) {
+    let orquestrador = quem.map_or("desconhecido", Orquestrador::rotulo);
+    let ferramenta = if e_ferramenta_conhecida(ferramenta) {
+        ferramenta
+    } else {
+        "desconhecida"
+    };
+    let destino = destino.map_or_else(|| "-".to_string(), pseudonimo_do_destino);
+    if resultado == "ok" {
+        tracing::info!(
+            orquestrador,
+            tool = ferramenta,
+            destino = %destino,
+            resultado,
+            "mcp_http: chamada"
+        );
+    } else {
+        tracing::warn!(
+            orquestrador,
+            tool = ferramenta,
+            destino = %destino,
+            resultado,
+            "mcp_http: chamada recusada"
+        );
     }
 }
 
@@ -572,7 +692,15 @@ impl ServerHandler for ManipuladorMcpHttp {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         let tools = match self.politica() {
-            Some((_, p)) => ferramentas::tools_anunciadas(&p),
+            // #1613: cada orquestrador ve so as tools que a sua lista libera. Um
+            // orquestrador sem identidade nao ve nenhuma — e sem dizer por que.
+            Some((state, p)) => match Self::quem_chama(&state, &context.extensions) {
+                Some(quem) => ferramentas::tools_anunciadas(&p)
+                    .into_iter()
+                    .filter(|t| p.anuncia(&quem, &t.name))
+                    .collect(),
+                None => Vec::new(),
+            },
             // Gateway indo embora: superficie vazia em vez de erro. Um
             // `tools/list` durante o shutdown nao e falha do chamador.
             None => Vec::new(),
@@ -597,13 +725,49 @@ impl ServerHandler for ManipuladorMcpHttp {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        let Some((state, politica)) = self.politica() else {
+            return Err(McpError::internal_error("gateway encerrando", None));
+        };
+        // Lido antes de `arguments` ser movido: so a tool de envio tem destino.
+        let destino = if request.name == TOOL_SEND_MESSAGE {
+            request
+                .arguments
+                .as_ref()
+                .and_then(|m| m.get("chat_id"))
+                .and_then(JsonValue::as_i64)
+        } else {
+            None
+        };
+        let quem = Self::quem_chama(&state, &context.extensions);
         let argumentos = request
             .arguments
             .map(JsonValue::Object)
             .unwrap_or(JsonValue::Null);
-        let resultado = self.despachar(&request.name, argumentos).await?;
+        let resultado = match quem.as_ref() {
+            None => {
+                let recusa = RecusaOrquestrador::NaoAutorizado;
+                Ok(Err(envelope_de_erro(recusa.codigo(), recusa.explicacao())))
+            }
+            Some(q) => match politica.decidir_ferramenta(q, &request.name) {
+                Ok(()) => {
+                    self.despachar(&state, &politica, q, &request.name, argumentos)
+                        .await
+                }
+                Err(recusa) => Ok(Err(envelope_de_erro(recusa.codigo(), recusa.explicacao()))),
+            },
+        };
+        let codigo = match &resultado {
+            Ok(Ok(_)) => "ok".to_string(),
+            Ok(Err(valor)) => valor["error"]["kind"]
+                .as_str()
+                .unwrap_or("erro")
+                .to_string(),
+            Err(_) => "erro_de_protocolo".to_string(),
+        };
+        auditar(quem.as_ref(), &request.name, destino, &codigo);
+        let resultado = resultado?;
         let (valor, ok) = match resultado {
             Ok(v) => (v, true),
             Err(v) => (v, false),
@@ -620,5 +784,38 @@ impl ServerHandler for ManipuladorMcpHttp {
         } else {
             Ok(CallToolResult::error(conteudo).into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A mensagem de erro do provedor pode ecoar a chave: o envelope que sai
+    /// para o cliente chega sem ela, e o `kind` continua o mesmo.
+    #[test]
+    fn erro_de_ask_redige_a_mensagem_do_provedor() {
+        let envelope = json!({
+            "schema": "garra.ask.v1",
+            "ok": false,
+            "error": {
+                "kind": "provider_error",
+                "message": "401 from sk-or-v1-abcdefghijklmnopqrstuvwxyz0123456789",
+            },
+        });
+        let saida = redigir_erro(envelope);
+        let mensagem = saida["error"]["message"].as_str().unwrap_or_default();
+        assert!(!mensagem.contains("sk-or-v1-"), "{mensagem}");
+        assert_eq!(saida["error"]["kind"], "provider_error");
+    }
+
+    /// O pseudonimo e estavel para o mesmo destino, diferente para outro, e
+    /// nao traz o id de bate-pronto.
+    #[test]
+    fn pseudonimo_do_destino_e_estavel_e_nao_traz_o_id() {
+        let p = pseudonimo_do_destino(-100_123_456);
+        assert!(!p.contains("100123456"), "{p}");
+        assert_eq!(p, pseudonimo_do_destino(-100_123_456));
+        assert_ne!(p, pseudonimo_do_destino(-100_123_457));
     }
 }
