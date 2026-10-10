@@ -12,15 +12,17 @@
 > |---|---|---|---|
 > | `mcp:` section in `config.yml` | Garra **consumes** other servers | stdio / HTTP | [mcp.md](./mcp.md) |
 > | `garra mcp-server` | Garra **is** a server, one LLM tool | stdio | [cli-mcp-server.md](./cli-mcp-server.md) |
-> | **`POST /mcp`** (this page) | Garra **is** a server, five gateway tools | Streamable HTTP | — |
+> | **`POST /mcp`** (this page) | Garra **is** a server, six gateway tools | Streamable HTTP | — |
 >
-> `garra_ask` stays where it is. This bridge deliberately does **not** expose an
-> LLM tool: spending the owner's LLM key on behalf of an external caller is a
-> different decision than exposing the gateway's own state.
+> `garra_ask` is in both server surfaces since #1612. It is **off by default**
+> here and has its own switch, allowlist and budget (§4.3), because it spends
+> the owner's LLM key on behalf of an external caller. The stdio server keeps
+> working as before, and both share the same one-shot core (`garraia-ask`).
 
 ## 1. Turning it on
 
-Two keys, both in `config.yml`, both off by default:
+Two keys turn the bridge on and unlock its writes, and three more govern
+`garra_ask`. All are in `config.yml`, and all are off or minimal by default:
 
 ```yaml
 gateway:
@@ -28,8 +30,11 @@ gateway:
   api_key: "uma-credencial-longa-e-aleatoria"
   mcp_http:
     enabled: true          # mounts POST /mcp
-    allow_send: false      # unlocks garra_send_message (see §4)
+    allow_send: false      # unlocks garra_send_message (see §4.2)
     max_history_messages: 50
+    allow_ask: false       # unlocks garra_ask, which spends LLM tokens (see §4.3)
+    ask_allowed_models: [] # empty = only the project default model
+    ask_budget_per_minute: 10
 ```
 
 `GARRAIA_GATEWAY_API_KEY` works instead of `gateway.api_key`, with the usual
@@ -125,10 +130,12 @@ the LAN.** Reaching it from another machine is an SSH tunnel's job.
 | `garra_read_history` | last N messages of one conversation, secrets redacted | no |
 | `garra_pair_status` | channel pairing and allowlist state | no |
 | `garra_send_message` | sends a message on a real channel | **yes** |
+| `garra_ask` | asks the Garra's LLM one question (#1612) | spends LLM tokens |
 
-Every response is a `garra.mcp.v1` envelope delivered as MCP text content —
-versioned from the first release so the body can grow without breaking whoever
-read the first one.
+Every response except `garra_ask` is a `garra.mcp.v1` envelope delivered as MCP
+text content — versioned from the first release so the body can grow without
+breaking whoever read the first one. `garra_ask` returns the `garra.ask.v1`
+envelope of the stdio server, unchanged.
 
 ### 4.1 Reads
 
@@ -182,10 +189,46 @@ also does not forward the channel's own error text: that string comes from an
 external service in a format the bridge does not control, so the reason goes to
 the gateway log and the caller gets the stable code.
 
+### 4.3 `garra_ask` — inference on demand (#1612)
+
+`garra_ask` calls the LLM of this Garra and returns the answer. It is the one
+tool whose cost is not bounded by the data it touches: every call is a paid
+request on the owner's provider key. It takes **three independent operator
+actions**, and none of them is implied by another:
+
+1. `gateway.mcp_http.allow_ask: true`. Off, the tool is not advertised and a
+   direct call is refused with `ask_disabled`.
+2. `gateway.mcp_http.ask_allowed_models`. **Empty (the default) means only the
+   project default model** (`garraia_config::defaults::DEFAULT_CLOUD_MODEL`) is
+   accepted, so a caller that omits `model` gets the cheap default and nothing
+   else. A non-empty list **replaces** the default: the project model then passes
+   only if it is listed. A caller asking for a model outside the list gets
+   `model_not_allowed` before any request leaves the machine.
+3. `gateway.mcp_http.ask_budget_per_minute` (default 10). One budget for the whole
+   bridge, in a session of its own (`mcp-http-ask`). It never shares a counter
+   with `garra_send_message`, so spending inference cannot use up the messages
+   and the reverse is also true. Like the send budget it is read at boot, and a
+   value below 1 is raised to 1.
+
+The arguments follow the stdio contract: `message` is required (up to 64 KiB),
+`provider` is one of `ollama`, `anthropic`, `openai`, `openrouter` (checked
+against the list, not only the schema), `timeout_secs` is 1–600 (default 60), and
+`system_prompt` is up to 8 KiB. Unknown fields are a protocol error. Config
+`llm:` aliases are **not** reachable through the bridge in this version: the
+provider must be one of the four kinds.
+
+Refusals are `garra.ask.v1` envelopes with a stable `error.kind`: `ask_disabled`,
+`model_not_allowed`, `over_budget`. Provider errors arrive as `provider_error`
+and timeouts as `timeout`, with the secrets scrubbed by the same sanitizer the
+stdio server uses. Neither the prompt nor the answer is written to the gateway
+log. A success logs the provider, the model (already accepted by the allowlist)
+and the latency; a failure logs only its `kind`.
+
 ## 5. Where the code lives
 
 - `crates/garraia-gateway/src/mcp_http/politica.rs` — the decisions, pure
-- `crates/garraia-gateway/src/mcp_http/ferramentas.rs` — the five descriptors
+- `crates/garraia-gateway/src/mcp_http/ferramentas.rs` — the six descriptors
+- `crates/garraia-ask/` — the one-shot LLM core shared with `garra ask` and the stdio server
 - `crates/garraia-gateway/src/mcp_http/handler.rs` — the `rmcp::ServerHandler`
 - `crates/garraia-gateway/src/mcp_http/mod.rs` — mounting and the transport config
 - `crates/garraia-gateway/tests/mcp_http_contract.rs` — the contract over the

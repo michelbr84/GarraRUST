@@ -47,9 +47,8 @@ use rmcp::model::Tool;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
-use crate::ask::{AskError, sanitize_provider_error};
-use crate::chat;
 use crate::mcp_server::{PROVIDER_ENUM, ServerPolicy, resolve_overrides, validate_agent_policy};
+use garraia_ask::{AskError, sanitize_provider_error};
 
 /// 64 KiB cap on `message` — same bound as `garra_ask` (`crate::ask::STDIN_CAP_BYTES`).
 const AGENT_MESSAGE_MAX_BYTES: usize = 64 * 1024;
@@ -566,18 +565,22 @@ async fn agent_oneshot(config: &AppConfig, opts: &AgentOptions, jail: &FileJail)
     let start = Instant::now();
 
     // 1. Resolve provider (same pipeline as `garra_ask`).
-    let (provider_name, model_name, provider) =
-        match chat::select_explicit_provider(config, &opts.provider, Some(&opts.model), None) {
-            Ok(triple) => triple,
-            Err(e) => {
-                return AgentOutcome::Failure {
-                    error: AskError::NoProvider(sanitize_provider_error(&format!("{e:#}"))),
-                    provider: opts.provider.clone(),
-                    model: opts.model.clone(),
-                    tool_calls: Vec::new(),
-                };
-            }
-        };
+    let (provider_name, model_name, provider) = match garraia_ask::select_explicit_provider(
+        config,
+        &opts.provider,
+        Some(&opts.model),
+        None,
+    ) {
+        Ok(triple) => triple,
+        Err(e) => {
+            return AgentOutcome::Failure {
+                error: AskError::NoProvider(sanitize_provider_error(&format!("{e:#}"))),
+                provider: opts.provider.clone(),
+                model: opts.model.clone(),
+                tool_calls: Vec::new(),
+            };
+        }
+    };
 
     // 2. Build the runtime: provider + full tool set.
     //
@@ -1618,7 +1621,7 @@ mod provider_routing_tests {
     //! inteiro do agente, com tools registradas.
 
     use super::*;
-    use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
+    use garraia_ask::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
     use garraia_config::LlmProviderConfig;
 
     #[tokio::test]

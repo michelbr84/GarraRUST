@@ -14,12 +14,13 @@
 //! crate and cannot read a Rust constant at all.
 
 pub(crate) use garraia_config::defaults::{
-    DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_PROVIDER,
+    DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER, DEFAULT_LOCAL_PROVIDER,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use garraia_config::defaults::DEFAULT_LOCAL_MODEL;
 
     /// Issue #1180 — the Desktop is the one surface that *cannot* read the
     /// shared constants: `config.default.yml` is a resource file copied

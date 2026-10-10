@@ -23,7 +23,6 @@ mod mcp_server;
 mod memory_cmd;
 mod migrate;
 mod migrate_workspace;
-mod provider_binding;
 mod repo_workflow;
 mod runs_cmd;
 #[cfg(unix)]

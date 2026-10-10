@@ -1,4 +1,4 @@
-//! De onde saem o endpoint e a credencial de um provider de LLM na CLI.
+//! De onde saem o endpoint e a credencial de um provider de LLM, na CLI e no gateway.
 //!
 //! **Invariante:** a `base_url` e a `api_key` de um provider saem da MESMA
 //! entrada `llm.<nome>` do `config.yml`. Nunca a chave de uma entrada com o
@@ -52,7 +52,7 @@ use garraia_config::provider_keys::provider_key_env;
 use garraia_config::{AppConfig, LlmProviderConfig};
 
 /// Endpoint padrao do OpenRouter, o mesmo do braco `openrouter` do gateway.
-pub(crate) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 /// Endpoint padrao do `OpenAiProvider` sem `base_url`
 /// (`garraia-agents/src/openai.rs`, `DEFAULT_BASE_URL`).
@@ -82,7 +82,7 @@ fn default_endpoint(kind: &str) -> Option<&'static str> {
 /// deixa a chave na env — esse e o caminho de instalacao mais comum). Uma
 /// `base_url` que nao se reconhece como o host padrao — outro host, `http://`,
 /// userinfo, porta — conta como "outro lugar": fail closed.
-pub(crate) fn env_credential_allowed(kind: &str, base_url: Option<&str>) -> bool {
+pub fn env_credential_allowed(kind: &str, base_url: Option<&str>) -> bool {
     match non_empty(base_url) {
         None => true,
         Some(url) => default_endpoint(kind).is_some_and(|default| {
@@ -107,28 +107,28 @@ fn env_credential(kind: &str, env: Env<'_>) -> Option<String> {
 /// OpenAI e o provider de embeddings), e mandar qualquer uma delas para um
 /// host digitado na linha de comando e exatamente o vazamento que este
 /// modulo existe para impedir.
-pub(crate) const AD_HOC_URL_KEY_ENV: &str = "LLM_API_KEY";
+pub const AD_HOC_URL_KEY_ENV: &str = "LLM_API_KEY";
 
 /// Chave usada quando um endpoint OpenAI-compativel local nao exige
 /// autenticacao. O cliente HTTP nao aceita chave vazia.
-pub(crate) const KEYLESS_PLACEHOLDER: &str = "not-needed";
+pub const KEYLESS_PLACEHOLDER: &str = "not-needed";
 
 /// Leitura de variavel de ambiente, injetavel para os testes nao mexerem no
 /// ambiente do processo (que e global e compartilhado entre testes). `Sync`
 /// porque atravessa `.await` no `detect_provider`, que roda dentro do
 /// handler do MCP (futuro `Send`).
-pub(crate) type Env<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
+pub type Env<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
 
 /// A leitura de verdade: variavel ausente ou vazia conta como ausente, como
 /// no `get_api_key` antigo e no `resolve_api_key` do `garraia-config`.
-pub(crate) fn process_env(var: &str) -> Option<String> {
+pub fn process_env(var: &str) -> Option<String> {
     std::env::var(var).ok().filter(|v| !v.is_empty())
 }
 
 /// Tipos de provider que a CLI sabe construir. Uma entrada `llm:` de outro
 /// tipo (os OpenAI-compativeis que so o gateway conhece, como `sansa`) e
 /// recusada com mensagem clara em [`build_provider`] — nunca adivinhada.
-pub(crate) fn is_buildable_kind(kind: &str) -> bool {
+pub fn is_buildable_kind(kind: &str) -> bool {
     matches!(
         kind,
         "ollama" | "llamacpp" | "anthropic" | "openai" | "openrouter"
@@ -147,7 +147,7 @@ fn non_empty(value: Option<&str>) -> Option<String> {
 /// Os campos sao privados para ninguem montar um vinculo misturando fontes;
 /// a unica forma de obter um e por [`bind_entry`] / [`bind_named`].
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ProviderBinding {
+pub struct ProviderBinding {
     /// A chave `llm.<entrada>` de onde vieram endpoint e credencial, ou
     /// `None` quando nenhuma entrada descreve o provider — ai o endpoint e o
     /// padrao do tipo e a credencial so pode vir do ambiente.
@@ -176,31 +176,31 @@ impl ProviderBinding {
     /// De qual entrada o vinculo saiu — usado pelos testes para afirmar que
     /// nenhum caminho vincula a entrada errada.
     #[cfg(test)]
-    pub(crate) fn entry(&self) -> Option<&str> {
+    pub fn entry(&self) -> Option<&str> {
         self.entry.as_deref()
     }
 
-    pub(crate) fn kind(&self) -> &str {
+    pub fn kind(&self) -> &str {
         &self.kind
     }
 
     #[cfg(test)]
-    pub(crate) fn base_url(&self) -> Option<&str> {
+    pub fn base_url(&self) -> Option<&str> {
         self.base_url.as_deref()
     }
 
-    pub(crate) fn has_credential(&self) -> bool {
+    pub fn has_credential(&self) -> bool {
         self.api_key.is_some()
     }
 
-    pub(crate) fn model(&self) -> Option<&str> {
+    pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
     }
 
     /// Credencial exposta so para os testes afirmarem QUAL chave foi
     /// vinculada; o codigo de producao a entrega direto ao construtor.
     #[cfg(test)]
-    pub(crate) fn api_key(&self) -> Option<&str> {
+    pub fn api_key(&self) -> Option<&str> {
         self.api_key.as_deref()
     }
 
@@ -248,7 +248,7 @@ impl ProviderBinding {
 /// tipo apenas quando a entrada nao traz uma E o endpoint da entrada e o host
 /// padrao do tipo ([`env_credential_allowed`]) — nunca para a `base_url`
 /// propria da entrada.
-pub(crate) fn bind_entry(key: &str, cfg: &LlmProviderConfig, env: Env<'_>) -> ProviderBinding {
+pub fn bind_entry(key: &str, cfg: &LlmProviderConfig, env: Env<'_>) -> ProviderBinding {
     let kind = cfg.provider.trim().to_string();
     let base_url = non_empty(cfg.base_url.as_deref());
     let api_key = non_empty(cfg.api_key.as_deref()).or_else(|| {
@@ -279,7 +279,7 @@ pub(crate) fn bind_entry(key: &str, cfg: &LlmProviderConfig, env: Env<'_>) -> Pr
 ///    so do ambiente. Nenhuma chave de config de outra entrada entra aqui.
 ///
 /// `None` quando o nome nao e entrada nem tipo construivel.
-pub(crate) fn bind_named(config: &AppConfig, name: &str, env: Env<'_>) -> Option<ProviderBinding> {
+pub fn bind_named(config: &AppConfig, name: &str, env: Env<'_>) -> Option<ProviderBinding> {
     if let Some(cfg) = config.llm.get(name) {
         let vinculo = bind_entry(name, cfg, env);
         // A regra do passo 3 da autodeteccao, no caminho explicito (achado da
@@ -326,11 +326,7 @@ pub(crate) fn bind_named(config: &AppConfig, name: &str, env: Env<'_>) -> Option
 /// 3. Senao, o host padrao do tipo com a variavel de ambiente do tipo: uma
 ///    entrada de outro tipo com o nome do candidato nao descreve o candidato,
 ///    entao ela nao o apaga — `OPENROUTER_API_KEY` exportada continua valendo.
-pub(crate) fn bind_autodetect(
-    config: &AppConfig,
-    kind: &str,
-    env: Env<'_>,
-) -> Option<ProviderBinding> {
+pub fn bind_autodetect(config: &AppConfig, kind: &str, env: Env<'_>) -> Option<ProviderBinding> {
     let named = bind_named(config, kind, env)?;
     if named.kind == kind {
         return named.has_credential().then_some(named);
@@ -354,7 +350,7 @@ pub(crate) fn bind_autodetect(
 /// * `url_override` e o `--url` da linha de comando e so vale para o
 ///   `llamacpp`, que nao tem credencial: aplicado a um tipo com chave, ele
 ///   mandaria a chave da entrada para um endereco avulso.
-pub(crate) fn build_provider(
+pub fn build_provider(
     binding: &ProviderBinding,
     model: &str,
     provider_id: Option<&str>,
@@ -432,7 +428,7 @@ fn canonical_endpoint(url: &str) -> &str {
 /// 3. o marcador de "sem chave".
 ///
 /// Nunca a `OPENAI_API_KEY` nem a `GARRAIA_EMBEDDING_API_KEY`.
-pub(crate) fn credential_for_ad_hoc_url(config: &AppConfig, url: &str, env: Env<'_>) -> String {
+pub fn credential_for_ad_hoc_url(config: &AppConfig, url: &str, env: Env<'_>) -> String {
     if let Some(key) = env(AD_HOC_URL_KEY_ENV).filter(|v| !v.is_empty()) {
         return key;
     }
@@ -454,14 +450,16 @@ pub(crate) fn credential_for_ad_hoc_url(config: &AppConfig, url: &str, env: Env<
 /// Endpoint HTTP falso para os testes de roteamento: responde como OpenAI,
 /// Anthropic e Ollama (com e sem streaming) e guarda cada pedido recebido,
 /// para o teste afirmar QUEM recebeu o pedido e COM QUAL credencial.
-#[cfg(test)]
-pub(crate) mod mock_endpoint {
+/// Compilado nos testes deste crate e, com `test-support`, nos testes da CLI e
+/// do gateway (que roteiam `garra_ask` por um endpoint falso).
+#[cfg(any(test, feature = "test-support"))]
+pub mod mock_endpoint {
     use wiremock::matchers::{method, path_regex};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     /// Texto que so o endpoint falso devolve. Uma resposta com ele prova que
     /// o pedido chegou aqui, e nao ao host padrao do provider.
-    pub(crate) const SENTINEL: &str = "resposta-do-endpoint-configurado";
+    pub const SENTINEL: &str = "resposta-do-endpoint-configurado";
 
     struct Responder;
 
@@ -553,12 +551,12 @@ pub(crate) mod mock_endpoint {
     }
 
     /// Um endpoint falso em `127.0.0.1:<porta livre>`.
-    pub(crate) struct MockEndpoint {
+    pub struct MockEndpoint {
         server: MockServer,
     }
 
     impl MockEndpoint {
-        pub(crate) async fn start() -> Self {
+        pub async fn start() -> Self {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path_regex(".*"))
@@ -574,12 +572,12 @@ pub(crate) mod mock_endpoint {
         }
 
         /// `http://127.0.0.1:<porta>` — sem barra final.
-        pub(crate) fn uri(&self) -> String {
+        pub fn uri(&self) -> String {
             self.server.uri()
         }
 
         /// Caminhos dos pedidos recebidos, em ordem.
-        pub(crate) async fn paths(&self) -> Vec<String> {
+        pub async fn paths(&self) -> Vec<String> {
             self.server
                 .received_requests()
                 .await
@@ -592,7 +590,7 @@ pub(crate) mod mock_endpoint {
         /// A credencial de cada pedido recebido: o token do
         /// `Authorization: Bearer` ou o `x-api-key` (Anthropic). Pedido sem
         /// nenhum dos dois aparece como string vazia.
-        pub(crate) async fn credentials(&self) -> Vec<String> {
+        pub async fn credentials(&self) -> Vec<String> {
             self.server
                 .received_requests()
                 .await

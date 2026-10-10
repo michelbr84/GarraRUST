@@ -2,114 +2,31 @@
 //!
 //! Separate channel from `garra chat`: parseable, no banner, no ANSI, no
 //! REPL, LLM-only (no tools registered). Designed for Claude Code, CI,
-//! hooks, scripts, and a future MCP wrapper.
+//! hooks, scripts, and the stdio MCP wrapper (`garra_ask`).
 //!
 //! Scope cuts approved 2026-05-11:
 //!   - No `--stream` (JSON one-shot).
 //!   - No `--enable-tools` (LLM-only, no `bash`/`file_*`/`git_diff`).
 //!   - No `--system-prompt-file` (only `--system-prompt <STR>`).
 //!
-//! Reuses GAR-576 helpers via `chat::detect_provider` and
-//! `chat::select_explicit_provider`.
+//! #1612 — o núcleo (resolução de provider explícito, chamada LLM, envelope
+//! `garra.ask.v1`) mora em `garraia-ask`, para a ponte MCP HTTP do gateway usar
+//! o mesmo caminho. Este arquivo fica com o que é da CLI: ler stdin, a
+//! autodetecção de provider (`chat::detect_provider`) e a emissão no terminal.
 
-use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
-use garraia_agents::{AgentRuntime, ChatMessage};
 use garraia_config::AppConfig;
-use regex::Regex;
-use serde_json::json;
 use tokio::io::AsyncReadExt;
+
+pub(crate) use garraia_ask::{AskError, AskOptions, AskOutcome, error_envelope, success_envelope};
 
 use crate::chat;
 
 /// 64 KiB stdin cap. Larger inputs are rejected with `UsageError` rather
 /// than silently truncated.
 const STDIN_CAP_BYTES: usize = 64 * 1024;
-
-/// Truncation threshold for error messages emitted in the JSON envelope.
-/// Limits log spam from verbose provider responses while preserving
-/// enough context to debug.
-const ERROR_MSG_TRUNCATE: usize = 512;
-
-/// GAR-579 — typed errors with stable `kind` strings and sysexits-style
-/// exit codes. `Display` is intentionally PII-safe: the operator can
-/// rely on `message()` never including raw api-key fingerprints (those
-/// are scrubbed by [`sanitize_provider_error`] at the boundary).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AskError {
-    /// Bad CLI usage or empty input. Exit 2.
-    UsageError(String),
-    /// No provider could be resolved (config + flags + env). Exit 69.
-    NoProvider(String),
-    /// Provider returned an error (auth, network, rate limit, etc.).
-    /// Message has already been passed through `sanitize_provider_error`.
-    /// Exit 69.
-    ProviderError(String),
-    /// LLM call exceeded the `--timeout-secs` window. Exit 124.
-    Timeout(u64),
-    /// I/O failure (stdin read, etc.). Exit 74.
-    IoError(String),
-}
-
-impl AskError {
-    pub(crate) fn exit_code(&self) -> i32 {
-        match self {
-            Self::UsageError(_) => 2,
-            Self::NoProvider(_) | Self::ProviderError(_) => 69,
-            Self::Timeout(_) => 124,
-            Self::IoError(_) => 74,
-        }
-    }
-
-    pub(crate) fn kind_str(&self) -> &'static str {
-        match self {
-            Self::UsageError(_) => "usage",
-            Self::NoProvider(_) => "no_provider",
-            Self::ProviderError(_) => "provider_error",
-            Self::Timeout(_) => "timeout",
-            Self::IoError(_) => "io",
-        }
-    }
-
-    pub(crate) fn message(&self) -> String {
-        match self {
-            Self::UsageError(m)
-            | Self::NoProvider(m)
-            | Self::ProviderError(m)
-            | Self::IoError(m) => m.clone(),
-            Self::Timeout(s) => format!("LLM call exceeded {s}s timeout"),
-        }
-    }
-}
-
-static RE_OPENROUTER_KEY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"sk-or-v1-[A-Za-z0-9_\-]+").expect("RE_OPENROUTER_KEY"));
-static RE_GENERIC_SK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"sk-[A-Za-z0-9_\-]{8,}").expect("RE_GENERIC_SK"));
-
-/// GAR-579 — scrub api-key fingerprints from a provider error message
-/// before it gets serialized into the JSON envelope or emitted to stderr.
-///
-/// Truncates to [`ERROR_MSG_TRUNCATE`] bytes to limit log spam from
-/// verbose OpenAI-style error bodies. Order matters: OpenRouter-style
-/// keys are matched FIRST because the generic `sk-…` pattern would
-/// otherwise consume them.
-///
-/// Defense in depth — the real fix for provider-error redaction belongs
-/// in `garraia-security::RedactingWriter` (out of scope for this PR).
-pub(crate) fn sanitize_provider_error(msg: &str) -> String {
-    let truncated: String = if msg.chars().count() > ERROR_MSG_TRUNCATE {
-        let mut s: String = msg.chars().take(ERROR_MSG_TRUNCATE).collect();
-        s.push('…');
-        s
-    } else {
-        msg.to_string()
-    };
-    let s = RE_OPENROUTER_KEY.replace_all(&truncated, "sk-or-v1-[REDACTED]");
-    RE_GENERIC_SK.replace_all(&s, "sk-[REDACTED]").into_owned()
-}
 
 /// GAR-579 — resolve the message from CLI arg or stdin bytes. Pure,
 /// sync, no I/O — `run_ask` reads stdin async beforehand and passes the
@@ -142,35 +59,6 @@ pub(crate) fn resolve_message(
     Ok(s)
 }
 
-/// GAR-579 — JSON envelope schema `garra.ask.v1`, success branch.
-pub(crate) fn success_envelope(
-    answer: &str,
-    provider: &str,
-    model: &str,
-    latency_ms: u128,
-) -> serde_json::Value {
-    json!({
-        "schema": "garra.ask.v1",
-        "ok": true,
-        "answer": answer,
-        "provider": provider,
-        "model": model,
-        "latency_ms": latency_ms,
-    })
-}
-
-/// GAR-579 — JSON envelope schema `garra.ask.v1`, error branch.
-pub(crate) fn error_envelope(kind: &str, message: &str) -> serde_json::Value {
-    json!({
-        "schema": "garra.ask.v1",
-        "ok": false,
-        "error": {
-            "kind": kind,
-            "message": message,
-        }
-    })
-}
-
 /// Emit an error to stdout (if `--json`) or stderr (plain text) and
 /// return the corresponding exit code. Never panics on JSON serialization
 /// — emits a fixed fallback envelope if `serde_json::to_string` fails.
@@ -187,171 +75,24 @@ fn emit_error(err: &AskError, json: bool) -> i32 {
     err.exit_code()
 }
 
-/// GAR-583 — Pure input options for [`ask_oneshot`].
+/// GAR-583 — o `garra ask` / `garra_ask` do stdio, com a autodetecção da CLI.
 ///
-/// `message` is required (the resolved prompt). Other fields mirror the
-/// CLI flags. Used by both `run_ask` (the CLI wrapper) and the MCP
-/// server's `garra_ask` tool handler. No I/O is performed by code that
-/// consumes this struct directly.
-#[derive(Debug, Clone)]
-pub(crate) struct AskOptions {
-    pub message: String,
-    pub provider_override: Option<String>,
-    pub model_override: Option<String>,
-    pub url_override: Option<String>,
-    pub timeout_secs: u64,
-    pub system_prompt_override: Option<String>,
-    /// Pull a missing Ollama model without asking. `ask` is non-interactive
-    /// by contract, so without this a missing model is a clean error plus an
-    /// `ollama pull` hint on stderr — never a blocking prompt.
-    pub assume_yes: bool,
-}
-
-/// GAR-583 — Pure outcome of [`ask_oneshot`].
-///
-/// Distinguishes the success path (carries answer + provider + model +
-/// latency) from the failure path (carries the typed [`AskError`]).
-/// Callers map this to whatever output format they need: `run_ask`
-/// produces JSON on stdout; the MCP server packs it into a
-/// `CallToolResult` text-content envelope.
-#[derive(Debug, Clone)]
-pub(crate) enum AskOutcome {
-    Success {
-        answer: String,
-        provider: String,
-        model: String,
-        latency_ms: u128,
-    },
-    Failure(AskError),
-}
-
-impl AskOutcome {
-    pub(crate) fn is_ok(&self) -> bool {
-        matches!(self, Self::Success { .. })
-    }
-
-    /// Build the `garra.ask.v1` JSON envelope for this outcome.
-    /// Shape matches `success_envelope` / `error_envelope`.
-    pub(crate) fn to_envelope(&self) -> serde_json::Value {
-        match self {
-            Self::Success {
-                answer,
-                provider,
-                model,
-                latency_ms,
-            } => success_envelope(answer, provider, model, *latency_ms),
-            Self::Failure(err) => error_envelope(err.kind_str(), &err.message()),
-        }
-    }
-
-    /// Process exit code for this outcome. Success → 0; Failure →
-    /// typed [`AskError`] code.
-    ///
-    /// Not currently consumed by `run_ask` (which does its own variant
-    /// match for emission), but kept as part of the public crate API for
-    /// future callers and to give MCP integrators a stable mapping —
-    /// the unit tests `ask_outcome_exit_code_mapping_table_driven`
-    /// exercise it directly.
-    #[allow(dead_code)]
-    pub(crate) fn exit_code(&self) -> i32 {
-        match self {
-            Self::Success { .. } => 0,
-            Self::Failure(err) => err.exit_code(),
-        }
-    }
-}
-
-/// GAR-583 — Pure async core of `garra ask`: builds a provider, calls
-/// the LLM with the configured timeout, and returns the structured
-/// outcome.
-///
-/// **Zero I/O outside of HTTP to the provider**. No `println!`,
-/// `eprintln!`, stdin read, or filesystem access. Callers are
-/// responsible for emitting the [`AskOutcome`] in whatever form they
-/// need (CLI JSON line, MCP `CallToolResult`, etc.).
-///
-/// Invariants:
-///   - **NEVER** registers a tool on the `AgentRuntime` (LLM-only,
-///     same audit invariant from GAR-579).
-///   - Provider errors pass through [`sanitize_provider_error`] before
-///     being returned in the [`AskError`].
-///   - Timeout is enforced via `tokio::time::timeout`; the streaming
-///     channel is drained on a background task so the producer never
-///     blocks on a slow consumer.
+/// Com provider explícito, a resolução e a chamada são do núcleo compartilhado
+/// ([`garraia_ask::ask_oneshot`]). Sem ele, a cadeia de autodetecção da CLI
+/// escolhe o provider (pode sondar o Ollama local), e o resto é o mesmo.
 pub(crate) async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutcome {
-    let start = Instant::now();
-
-    // 1. Resolve provider.
-    let (provider_name, model_name, provider) = if let Some(ref p) = opts.provider_override {
-        match chat::select_explicit_provider(
-            config,
-            p.as_str(),
-            opts.model_override.as_deref(),
-            opts.url_override.as_deref(),
-        ) {
-            Ok(triple) => triple,
-            Err(e) => {
-                return AskOutcome::Failure(AskError::NoProvider(sanitize_provider_error(
-                    &format!("{e:#}"),
-                )));
-            }
-        }
-    } else {
-        // detect_provider also handles url_override + autodetect chain
-        // (see chat::detect_provider for the precedence rules — GAR-576).
-        chat::detect_provider(
-            config,
-            opts.url_override.as_deref(),
-            opts.model_override.as_deref(),
-            opts.assume_yes,
-        )
-        .await
-    };
-
-    // 2. Build a minimal AgentRuntime — LLM only. NO tool registration.
-    let mut runtime = AgentRuntime::new();
-    runtime.register_provider(provider);
-
-    let system_prompt = opts.system_prompt_override.unwrap_or_else(|| {
-        "Voce e o GarraIA. Responda de forma concisa, direta e no idioma do usuario.".to_string()
-    });
-    runtime.set_system_prompt(system_prompt);
-    runtime.set_max_tokens(4096);
-
-    // 3. Call LLM with timeout. We use the streaming API (no non-streaming
-    //    variant exists today) and drain deltas in a background task so
-    //    the channel never blocks the producer.
-    let session_id = format!("ask-{}", uuid::Uuid::new_v4());
-    let history: Vec<ChatMessage> = Vec::new();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
-    let drain_handle = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-
-    let call = runtime.process_message_streaming(
-        &session_id,
-        &opts.message,
-        &history,
-        tx,
-        Some(&model_name),
-    );
-    let result = tokio::time::timeout(Duration::from_secs(opts.timeout_secs), call).await;
-
-    // Drop the drain task (channel closure ends it naturally too).
-    drain_handle.abort();
-
-    let latency_ms = start.elapsed().as_millis();
-
-    match result {
-        Ok(Ok(full)) => AskOutcome::Success {
-            answer: full,
-            provider: provider_name,
-            model: model_name,
-            latency_ms,
-        },
-        Ok(Err(e)) => AskOutcome::Failure(AskError::ProviderError(sanitize_provider_error(
-            &format!("{e:#}"),
-        ))),
-        Err(_elapsed) => AskOutcome::Failure(AskError::Timeout(opts.timeout_secs)),
+    if opts.provider_override.is_some() {
+        return garraia_ask::ask_oneshot(config, opts).await;
     }
+    let inicio = Instant::now();
+    let provedor = chat::detect_provider(
+        config,
+        opts.url_override.as_deref(),
+        opts.model_override.as_deref(),
+        opts.assume_yes,
+    )
+    .await;
+    garraia_ask::executar(provedor, inicio, opts).await
 }
 
 /// GAR-579 — entry point invoked by `Commands::Ask` in `main.rs`.
@@ -359,10 +100,6 @@ pub(crate) async fn ask_oneshot(config: &AppConfig, opts: AskOptions) -> AskOutc
 /// Returns an exit code; the caller is responsible for `std::process::exit`.
 /// Does not panic on provider/network errors — every failure path returns
 /// a sanitized error through `emit_error`.
-///
-/// GAR-583 — refactored as a thin wrapper over [`ask_oneshot`]. Stdin
-/// reading + JSON/text emission stay here; the pure LLM-call core moved
-/// into `ask_oneshot` so the MCP server can reuse it without I/O.
 ///
 /// Invariants:
 ///   - **NEVER** registers a tool on the `AgentRuntime` (LLM-only).
@@ -400,7 +137,7 @@ pub async fn run_ask(
         Err(e) => return Ok(emit_error(&e, json)),
     };
 
-    // 2. Call the pure core (GAR-583).
+    // 2. Call the shared core.
     let opts = AskOptions {
         message,
         provider_override,
@@ -440,60 +177,6 @@ mod tests {
     //! GAR-579 — Pure tests. Zero rede, zero env-mutation, zero filesystem.
 
     use super::*;
-
-    // ─── AskError exit codes + kind labels ─────────────────────────────
-
-    #[test]
-    fn ask_error_exit_codes_match_doc() {
-        let cases: &[(AskError, i32)] = &[
-            (AskError::UsageError("x".into()), 2),
-            (AskError::NoProvider("x".into()), 69),
-            (AskError::ProviderError("x".into()), 69),
-            (AskError::Timeout(60), 124),
-            (AskError::IoError("x".into()), 74),
-        ];
-        for (err, expected) in cases {
-            assert_eq!(err.exit_code(), *expected, "exit_code mismatch for {err:?}");
-        }
-    }
-
-    #[test]
-    fn ask_error_kind_str_stable() {
-        assert_eq!(AskError::UsageError("".into()).kind_str(), "usage");
-        assert_eq!(AskError::NoProvider("".into()).kind_str(), "no_provider");
-        assert_eq!(
-            AskError::ProviderError("".into()).kind_str(),
-            "provider_error"
-        );
-        assert_eq!(AskError::Timeout(30).kind_str(), "timeout");
-        assert_eq!(AskError::IoError("".into()).kind_str(), "io");
-    }
-
-    // ─── JSON envelopes ────────────────────────────────────────────────
-
-    #[test]
-    fn json_envelope_success_shape() {
-        let env = success_envelope("hello", "openrouter", "openrouter/free", 123);
-        assert_eq!(env["schema"], "garra.ask.v1");
-        assert_eq!(env["ok"], true);
-        assert_eq!(env["answer"], "hello");
-        assert_eq!(env["provider"], "openrouter");
-        assert_eq!(env["model"], "openrouter/free");
-        assert_eq!(env["latency_ms"], 123);
-        // No error field on success.
-        assert!(env.get("error").is_none());
-    }
-
-    #[test]
-    fn json_envelope_error_shape() {
-        let env = error_envelope("timeout", "exceeded 30s");
-        assert_eq!(env["schema"], "garra.ask.v1");
-        assert_eq!(env["ok"], false);
-        assert_eq!(env["error"]["kind"], "timeout");
-        assert_eq!(env["error"]["message"], "exceeded 30s");
-        // No answer field on error.
-        assert!(env.get("answer").is_none());
-    }
 
     // ─── resolve_message ───────────────────────────────────────────────
 
@@ -537,107 +220,8 @@ mod tests {
         }
     }
 
-    // ─── sanitize_provider_error ───────────────────────────────────────
+    // ─── Auditoria: superfícies legíveis por máquina ───────────────────
 
-    #[test]
-    fn sanitize_redacts_openrouter_key_fingerprint() {
-        let leaked = "401 Unauthorized — key sk-or-v1-abcdefGHIJ12345 invalid";
-        let out = sanitize_provider_error(leaked);
-        assert!(!out.contains("sk-or-v1-abcdefGHIJ12345"));
-        assert!(out.contains("sk-or-v1-[REDACTED]"));
-    }
-
-    #[test]
-    fn sanitize_redacts_openai_style_key_fingerprint() {
-        let leaked = "Incorrect API key provided: sk-projAbCd123xyz_456_more";
-        let out = sanitize_provider_error(leaked);
-        assert!(!out.contains("AbCd123xyz_456_more"));
-        assert!(out.contains("sk-[REDACTED]"));
-    }
-
-    #[test]
-    fn sanitize_truncates_long_messages() {
-        let huge = "x".repeat(2_000);
-        let out = sanitize_provider_error(&huge);
-        // Must be capped to ERROR_MSG_TRUNCATE + ellipsis suffix.
-        assert!(out.chars().count() <= ERROR_MSG_TRUNCATE + 1);
-        assert!(out.ends_with('…'));
-    }
-
-    #[test]
-    fn sanitize_passes_clean_messages_through() {
-        let benign = "Connection refused at localhost:11434";
-        assert_eq!(sanitize_provider_error(benign), benign);
-    }
-
-    // ─── AskOutcome / AskOptions (GAR-583 refactor) ────────────────────
-
-    fn make_success() -> AskOutcome {
-        AskOutcome::Success {
-            answer: "hello".to_string(),
-            provider: "openrouter".to_string(),
-            model: "openrouter/free".to_string(),
-            latency_ms: 1234,
-        }
-    }
-
-    fn make_failure(err: AskError) -> AskOutcome {
-        AskOutcome::Failure(err)
-    }
-
-    #[test]
-    fn ask_outcome_is_ok_distinguishes_variants() {
-        assert!(make_success().is_ok());
-        assert!(!make_failure(AskError::Timeout(30)).is_ok());
-    }
-
-    #[test]
-    fn ask_outcome_to_envelope_success_shape() {
-        let env = make_success().to_envelope();
-        assert_eq!(env["schema"], "garra.ask.v1");
-        assert_eq!(env["ok"], true);
-        assert_eq!(env["answer"], "hello");
-        assert_eq!(env["provider"], "openrouter");
-        assert_eq!(env["model"], "openrouter/free");
-        assert_eq!(env["latency_ms"], 1234);
-        assert!(env.get("error").is_none());
-    }
-
-    #[test]
-    fn ask_outcome_to_envelope_error_shape() {
-        let env = make_failure(AskError::ProviderError("bad".to_string())).to_envelope();
-        assert_eq!(env["schema"], "garra.ask.v1");
-        assert_eq!(env["ok"], false);
-        assert_eq!(env["error"]["kind"], "provider_error");
-        assert_eq!(env["error"]["message"], "bad");
-        assert!(env.get("answer").is_none());
-    }
-
-    #[test]
-    fn ask_outcome_exit_code_mapping_table_driven() {
-        // GAR-583 — `AskOutcome::exit_code` mirrors `AskError::exit_code`
-        // on failure and returns 0 on success.
-        let cases: &[(AskOutcome, i32)] = &[
-            (make_success(), 0),
-            (make_failure(AskError::UsageError("x".into())), 2),
-            (make_failure(AskError::NoProvider("x".into())), 69),
-            (make_failure(AskError::ProviderError("x".into())), 69),
-            (make_failure(AskError::Timeout(60)), 124),
-            (make_failure(AskError::IoError("x".into())), 74),
-        ];
-        for (outcome, expected) in cases {
-            assert_eq!(
-                outcome.exit_code(),
-                *expected,
-                "exit_code mismatch for {outcome:?}"
-            );
-        }
-    }
-
-    // ─── Audit: this module never registers a tool ─────────────────────
-
-    /// Compile-time + read-time guarantee. Scans only the **production**
-    /// portion of the file (everything before `#[cfg(test)]`) for tool-
     /// O indicador de atividade é UX de terminal interativo e não pode vazar
     /// para nenhuma superfície legível por máquina.
     ///
@@ -661,96 +245,6 @@ mod tests {
                      o spinner é exclusivo do REPL interativo"
                 );
             }
-        }
-    }
-
-    /// registration patterns. If a follow-up PR ever tries to slip a
-    /// tool registration into `ask.rs`, this test fails loudly.
-    #[test]
-    fn ask_module_never_registers_a_tool() {
-        let source = include_str!("ask.rs");
-        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
-        let forbidden = [
-            "register_tool",
-            "BashTool",
-            "FileReadTool",
-            "FileWriteTool",
-            "GitDiffTool",
-        ];
-        for needle in forbidden {
-            assert!(
-                !production.contains(needle),
-                "ask.rs production code must not contain `{needle}` (GAR-579 invariant)"
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod provider_routing_tests {
-    //! Rede so de loopback: um endpoint falso em 127.0.0.1 no lugar do
-    //! provider. E o nucleo de `garraia ask -p <provider>` E do `garra_ask`
-    //! do MCP (os dois chamam `ask_oneshot` com `provider_override`).
-
-    use super::*;
-    use crate::provider_binding::mock_endpoint::{MockEndpoint, SENTINEL};
-    use garraia_config::LlmProviderConfig;
-
-    /// O `ask_explicit` do smoke de instalacao limpa: `-p openai` com
-    /// `llm.openai.base_url` apontando para outro endpoint tem de chegar LA,
-    /// com a chave daquela entrada — e o mesmo para os outros provedores e
-    /// para um alias em `llm:`.
-    #[tokio::test]
-    async fn ask_with_explicit_provider_reaches_the_configured_base_url() {
-        for (name, kind, suffix) in [
-            ("openai", "openai", "/v1"),
-            ("openrouter", "openrouter", "/api/v1"),
-            ("anthropic", "anthropic", ""),
-            ("lmstudio", "openai", "/v1"),
-        ] {
-            let mock = MockEndpoint::start().await;
-            let key = format!("k-{name}");
-            let mut config = AppConfig::default();
-            config.llm.insert(
-                name.to_string(),
-                LlmProviderConfig {
-                    provider: kind.to_string(),
-                    model: Some("m".to_string()),
-                    api_key: Some(key.clone()),
-                    base_url: Some(format!("{}{suffix}", mock.uri())),
-                    extra: Default::default(),
-                },
-            );
-            let outcome = ask_oneshot(
-                &config,
-                AskOptions {
-                    message: "oi".to_string(),
-                    provider_override: Some(name.to_string()),
-                    model_override: None,
-                    url_override: None,
-                    timeout_secs: 30,
-                    system_prompt_override: None,
-                    assume_yes: false,
-                },
-            )
-            .await;
-            match outcome {
-                AskOutcome::Success {
-                    answer,
-                    provider,
-                    model,
-                    ..
-                } => {
-                    assert_eq!(answer, SENTINEL, "{name}");
-                    assert_eq!((provider.as_str(), model.as_str()), (name, "m"));
-                }
-                AskOutcome::Failure(e) => panic!("{name}: {e:?}"),
-            }
-            let creds = mock.credentials().await;
-            assert!(
-                !creds.is_empty() && creds.iter().all(|c| *c == key),
-                "{name}: credenciais recebidas {creds:?}"
-            );
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Os descritores das cinco tools e a validacao dos argumentos delas.
+//! Os descritores das seis tools e a validacao dos argumentos delas.
 //!
 //! Puro: nenhuma funcao daqui toca `AppState`, rede ou disco. O que os
 //! descritores anunciam e o que [`super::handler`] de fato aceita tem de ser a
@@ -17,6 +17,11 @@
 
 use std::sync::Arc;
 
+use garraia_ask::{
+    ARG_MESSAGE_MAX_BYTES, ARG_SYSTEM_PROMPT_MAX_BYTES, ARG_TIMEOUT_SECS_DEFAULT,
+    ARG_TIMEOUT_SECS_MAX, ARG_TIMEOUT_SECS_MIN, PROVEDORES_ASK,
+};
+use garraia_config::defaults::{DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER};
 use rmcp::model::{Tool, ToolAnnotations};
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
@@ -40,6 +45,8 @@ pub const TOOL_LIST_CHATS: &str = "garra_list_chats";
 pub const TOOL_READ_HISTORY: &str = "garra_read_history";
 pub const TOOL_SEND_MESSAGE: &str = "garra_send_message";
 pub const TOOL_PAIR_STATUS: &str = "garra_pair_status";
+/// #1612 — a sexta tool: inferencia sob demanda, anunciada so com `allow_ask`.
+pub const TOOL_ASK: &str = "garra_ask";
 
 /// `serde_json::Value::Object` garantido pelos literais abaixo.
 fn objeto(v: JsonValue) -> Arc<JsonMap<String, JsonValue>> {
@@ -171,6 +178,74 @@ fn tool_send_message() -> Tool {
     ))
 }
 
+/// `garra_ask` (#1612): o mesmo schema da tool do stdio, e o mesmo
+/// `garra.ask.v1` de volta. `additionalProperties: false` e `deny_unknown_fields`
+/// valem aqui pelo mesmo motivo do envio.
+fn tool_ask() -> Tool {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "A pergunta ou instrucao para o GarraIA. Ate 64 KiB.",
+                "minLength": 1,
+                "maxLength": ARG_MESSAGE_MAX_BYTES
+            },
+            "provider": {
+                "type": "string",
+                "enum": provedores_anunciados(),
+                "default": DEFAULT_CLOUD_PROVIDER,
+                "description": format!("Provider de LLM. Padrao '{DEFAULT_CLOUD_PROVIDER}'.")
+            },
+            "model": {
+                "type": "string",
+                "default": DEFAULT_CLOUD_MODEL,
+                "description": "Modelo. So os modelos que o operador liberou na config \
+                                sao aceitos; o padrao e o modelo do projeto."
+            },
+            "timeout_secs": {
+                "type": "integer",
+                "default": ARG_TIMEOUT_SECS_DEFAULT,
+                "minimum": ARG_TIMEOUT_SECS_MIN,
+                "maximum": ARG_TIMEOUT_SECS_MAX,
+                "description": "Timeout da chamada ao LLM, em segundos."
+            },
+            "system_prompt": {
+                "type": "string",
+                "maxLength": ARG_SYSTEM_PROMPT_MAX_BYTES,
+                "description": "Substitui o prompt de sistema padrao, se informado."
+            }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+    });
+    Tool::new(
+        TOOL_ASK,
+        "Faz uma pergunta ao GarraIA, que chama o LLM configurado. Sem shell, arquivo ou \
+         git. Gasta a chave de provider do operador: use quando a tarefa precisa de \
+         inferencia de fato. Devolve um envelope `garra.ask.v1`.",
+        objeto(schema),
+    )
+    // Nao e leitura, nao e idempotente (cada chamada gasta inferencia) e alcanca
+    // um provider externo. As mesmas tres coisas ditas em voz alta do envio.
+    .with_annotations(ToolAnnotations::from_raw(
+        None,
+        Some(false),
+        Some(false),
+        Some(false),
+        Some(true),
+    ))
+}
+
+/// Os providers que o schema anuncia. O `echo` so existe em build de
+/// desenvolvimento (feature `dev-echo-provider`), e so aparece la.
+fn provedores_anunciados() -> Vec<&'static str> {
+    PROVEDORES_ASK
+        .into_iter()
+        .chain(cfg!(feature = "dev-echo-provider").then_some("echo"))
+        .collect()
+}
+
 fn tool_pair_status() -> Tool {
     Tool::new(
         TOOL_PAIR_STATUS,
@@ -183,10 +258,11 @@ fn tool_pair_status() -> Tool {
 
 /// A superficie anunciada em `tools/list`.
 ///
-/// Quatro tools sempre; `garra_send_message` entra somente quando a politica
-/// diz que um envio poderia sair (ver
-/// [`PoliticaMcpHttp::anuncia_envio`](super::politica::PoliticaMcpHttp::anuncia_envio)).
-/// Puro de proposito: um teste fixa a superficie sem subir servidor.
+/// Quatro tools de leitura sempre; `garra_send_message` entra somente quando a
+/// politica diz que um envio poderia sair (ver
+/// [`PoliticaMcpHttp::anuncia_envio`](super::politica::PoliticaMcpHttp::anuncia_envio));
+/// `garra_ask` entra somente com `allow_ask` (#1612). Puro de proposito: um
+/// teste fixa a superficie sem subir servidor.
 pub fn tools_anunciadas(politica: &PoliticaMcpHttp) -> Vec<Tool> {
     let mut tools = vec![
         tool_status(),
@@ -196,6 +272,9 @@ pub fn tools_anunciadas(politica: &PoliticaMcpHttp) -> Vec<Tool> {
     ];
     if politica.anuncia_envio() {
         tools.push(tool_send_message());
+    }
+    if politica.anuncia_ask() {
+        tools.push(tool_ask());
     }
     tools
 }
@@ -224,6 +303,48 @@ pub struct ArgsSendMessage {
     pub channel: String,
     pub chat_id: i64,
     pub text: String,
+}
+
+/// Argumentos de `garra_ask` (#1612). Mesmo formato do stdio.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArgsAsk {
+    pub message: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+}
+
+/// Validacao de limites de `garra_ask`. Forma e tamanho apenas: quem decide se
+/// a chamada roda e [`PoliticaMcpHttp::decidir_ask`](super::politica::PoliticaMcpHttp::decidir_ask).
+///
+/// O `provider` e conferido contra o enum anunciado, e nao so pelo schema:
+/// hosts MCP tratam o schema como consultivo, e o stdio ja o aplica aqui.
+pub fn validar_ask(args: &ArgsAsk) -> Result<(), String> {
+    garraia_ask::validar_argumentos(
+        &args.message,
+        args.timeout_secs,
+        args.system_prompt.as_deref(),
+    )?;
+    if let Some(provider) = args.provider.as_deref()
+        && !provedores_anunciados().contains(&provider)
+    {
+        return Err(format!(
+            "provider '{provider}' nao e aceito por garra_ask (aceitos: {})",
+            provedores_anunciados().join(", ")
+        ));
+    }
+    if let Some(model) = args.model.as_deref()
+        && model.trim().is_empty()
+    {
+        return Err("`model` esta vazio".to_string());
+    }
+    Ok(())
 }
 
 /// Validacao de limites de `garra_read_history`. O `Err` e a mensagem que o
@@ -375,6 +496,110 @@ mod tests {
             text: "🦀".repeat(MAX_TEXTO_CHARS),
         };
         assert!(validar_send_message(&args).is_ok());
+    }
+
+    fn com_ask() -> PoliticaMcpHttp {
+        politica(false, &[]).com_ask(&[])
+    }
+
+    /// #1612 — `garra_ask` so entra na superficie com `allow_ask`. No default,
+    /// a superficie continua sendo a de antes.
+    #[test]
+    fn garra_ask_so_aparece_com_allow_ask() {
+        let padrao = nomes(false, &[]);
+        assert!(!padrao.iter().any(|n| n == TOOL_ASK), "{padrao:?}");
+
+        let ligada: Vec<String> = tools_anunciadas(&com_ask())
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(ligada.iter().any(|n| n == TOOL_ASK), "{ligada:?}");
+        assert_eq!(ligada.len(), 5, "{ligada:?}");
+    }
+
+    /// O schema de `garra_ask` fecha os campos e exige so a mensagem — o mesmo
+    /// contrato do stdio, que e o que o orquestrador ja conhece.
+    #[test]
+    fn schema_de_ask_fecha_campos_e_exige_message() {
+        let t = tools_anunciadas(&com_ask())
+            .into_iter()
+            .find(|t| t.name == TOOL_ASK)
+            .expect("garra_ask anunciada");
+        let schema = JsonValue::Object((*t.input_schema).clone());
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert_eq!(schema["required"], json!(["message"]));
+        assert_eq!(
+            schema["properties"]["timeout_secs"]["maximum"],
+            json!(ARG_TIMEOUT_SECS_MAX)
+        );
+        assert_eq!(
+            schema["properties"]["system_prompt"]["maxLength"],
+            json!(ARG_SYSTEM_PROMPT_MAX_BYTES)
+        );
+        assert_eq!(
+            schema["properties"]["model"]["default"],
+            json!(DEFAULT_CLOUD_MODEL)
+        );
+    }
+
+    /// Campo a mais no `garra_ask` e recusado pelo `deny_unknown_fields`.
+    #[test]
+    fn ask_campo_desconhecido_e_recusado() {
+        let erro = serde_json::from_value::<ArgsAsk>(json!({
+            "message": "oi",
+            "modelo": "openrouter/auto"
+        }));
+        assert!(erro.is_err(), "campo extra passou");
+    }
+
+    fn ask(message: &str) -> ArgsAsk {
+        ArgsAsk {
+            message: message.to_string(),
+            provider: None,
+            model: None,
+            timeout_secs: None,
+            system_prompt: None,
+        }
+    }
+
+    #[test]
+    fn validar_ask_aceita_o_pedido_minimo() {
+        assert!(validar_ask(&ask("oi")).is_ok());
+    }
+
+    #[test]
+    fn validar_ask_recusa_mensagem_vazia_ou_grande_demais() {
+        assert!(validar_ask(&ask("   ")).is_err());
+        assert!(validar_ask(&ask(&"a".repeat(ARG_MESSAGE_MAX_BYTES + 1))).is_err());
+    }
+
+    #[test]
+    fn validar_ask_recusa_timeout_fora_da_faixa() {
+        let mut a = ask("oi");
+        a.timeout_secs = Some(0);
+        assert!(validar_ask(&a).is_err());
+        a.timeout_secs = Some(ARG_TIMEOUT_SECS_MAX + 1);
+        assert!(validar_ask(&a).is_err());
+        a.timeout_secs = Some(ARG_TIMEOUT_SECS_MAX);
+        assert!(validar_ask(&a).is_ok());
+    }
+
+    /// O provider e conferido contra o enum, nao so pelo schema — um alias de
+    /// `llm:` ou um nome qualquer nao chega ao provider.
+    #[test]
+    fn validar_ask_recusa_provider_fora_do_enum() {
+        let mut a = ask("oi");
+        a.provider = Some("minha-entrada-llm".to_string());
+        assert!(validar_ask(&a).is_err());
+        a.provider = Some("openai".to_string());
+        assert!(validar_ask(&a).is_ok());
+    }
+
+    #[test]
+    fn validar_ask_recusa_modelo_vazio() {
+        let mut a = ask("oi");
+        a.model = Some("   ".to_string());
+        assert!(validar_ask(&a).is_err());
     }
 
     #[test]

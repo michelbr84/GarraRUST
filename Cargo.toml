@@ -8,6 +8,7 @@ members = [
     "crates/garraia-config",
     "crates/garraia-channels",
     "crates/garraia-agents",
+    "crates/garraia-ask",
     "crates/garraia-auth",
     "crates/garraia-db",
     "crates/garraia-plugins",
@@ -206,6 +207,7 @@ garraia-config = { path = "crates/garraia-config" }
 garraia-gateway = { path = "crates/garraia-gateway" }
 garraia-channels = { path = "crates/garraia-channels" }
 garraia-agents = { path = "crates/garraia-agents" }
+garraia-ask = { path = "crates/garraia-ask" }
 garraia-auth = { path = "crates/garraia-auth" }
 garraia-db = { path = "crates/garraia-db" }
 garraia-plugins = { path = "crates/garraia-plugins" }

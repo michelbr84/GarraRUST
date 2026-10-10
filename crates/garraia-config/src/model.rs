@@ -550,11 +550,13 @@ impl Default for GatewayConfig {
 /// com `allow_send` — a capacidade de falar em nome dele num canal real. O
 /// operador liga isso explicitamente ou nao existe.
 ///
-/// As duas chaves sao independentes por desenho: `enabled` sozinho da uma ponte
+/// As chaves sao independentes por desenho: `enabled` sozinho da uma ponte
 /// **so de leitura**, que e o caso de uso comum (um orquestrador que consulta
 /// estado). Escrever exige a segunda chave *e* a allowlist de destinos por
 /// canal (`channels.<canal>.proactive_chat_ids`) — ver
-/// `garraia_gateway::mcp_http::politica`.
+/// `garraia_gateway::mcp_http::politica`. Gastar inferencia (`garra_ask`,
+/// #1612) exige a terceira, `allow_ask`, com seu proprio orcamento: nenhuma
+/// delas destrava a outra.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpHttpConfig {
     /// Monta `POST /mcp` no router. `false` (default) = a rota nao existe, e
@@ -576,6 +578,25 @@ pub struct McpHttpConfig {
     /// Tambem e o valor usado quando o chamador omite `limit`.
     #[serde(default = "default_mcp_http_history_limit")]
     pub max_history_messages: usize,
+
+    /// Destrava a tool `garra_ask` (#1612): o Garra chama o LLM a pedido de um
+    /// orquestrador externo, gastando a chave de provider do dono. `false`
+    /// (default) = a tool **nao e anunciada** e uma chamada direta e recusada.
+    #[serde(default)]
+    pub allow_ask: bool,
+
+    /// Modelos que `garra_ask` aceita. Vazio (default) = so o modelo default do
+    /// projeto (`garraia_config::defaults::DEFAULT_CLOUD_MODEL`) e aceito.
+    /// Preenchido, a lista **substitui** o default: o modelo do projeto so entra
+    /// se estiver listado. Modelos mais caros entram aqui por escolha explicita
+    /// do operador, nunca por omissao do chamador.
+    #[serde(default)]
+    pub ask_allowed_models: Vec<String>,
+
+    /// Chamadas de `garra_ask` por minuto, na janela da ponte inteira. Teto
+    /// anti-amplificacao com orcamento proprio: nunca divide o de envio.
+    #[serde(default = "default_mcp_http_ask_budget_per_minute")]
+    pub ask_budget_per_minute: u32,
 }
 
 impl Default for McpHttpConfig {
@@ -584,12 +605,19 @@ impl Default for McpHttpConfig {
             enabled: false,
             allow_send: false,
             max_history_messages: default_mcp_http_history_limit(),
+            allow_ask: false,
+            ask_allowed_models: Vec::new(),
+            ask_budget_per_minute: default_mcp_http_ask_budget_per_minute(),
         }
     }
 }
 
 fn default_mcp_http_history_limit() -> usize {
     50
+}
+
+fn default_mcp_http_ask_budget_per_minute() -> u32 {
+    10
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1691,5 +1719,71 @@ hardware:
         let mqtt = config.hardware.mqtt.expect("mqtt");
         assert!(mqtt.password_env.is_none());
         assert!(mqtt.username.is_none());
+    }
+}
+
+#[cfg(test)]
+mod mcp_http_config_tests {
+    //! #1612 — as chaves de `garra_ask` na ponte MCP HTTP. Fail-closed por
+    //! padrao: nada novo liga sozinho, e a secao inteira continua opcional.
+    use super::{AppConfig, McpHttpConfig};
+
+    #[test]
+    fn default_do_struct_e_fail_closed() {
+        let padrao = McpHttpConfig::default();
+        assert!(!padrao.allow_ask);
+        assert!(padrao.ask_allowed_models.is_empty());
+        assert_eq!(padrao.ask_budget_per_minute, 10);
+        // Os campos antigos seguem como eram.
+        assert!(!padrao.enabled);
+        assert!(!padrao.allow_send);
+        assert_eq!(padrao.max_history_messages, 50);
+    }
+
+    #[test]
+    fn parseia_as_chaves_de_ask() {
+        let config: AppConfig = serde_yaml::from_str(
+            "gateway:\n  mcp_http:\n    enabled: true\n    allow_ask: true\n    \
+             ask_allowed_models:\n      - openrouter/auto\n      - z-ai/glm-5.3-flash\n    \
+             ask_budget_per_minute: 3\n",
+        )
+        .expect("yaml should parse");
+        let mcp = &config.gateway.mcp_http;
+        assert!(mcp.enabled);
+        assert!(mcp.allow_ask);
+        assert_eq!(
+            mcp.ask_allowed_models,
+            vec![
+                "openrouter/auto".to_string(),
+                "z-ai/glm-5.3-flash".to_string()
+            ]
+        );
+        assert_eq!(mcp.ask_budget_per_minute, 3);
+        // `allow_send` nao foi tocado pela chave de ask.
+        assert!(!mcp.allow_send);
+    }
+
+    /// Secao `mcp_http` ausente (instalacao antiga) => defaults, sem erro.
+    #[test]
+    fn secao_mcp_http_ausente_usa_defaults() {
+        let config: AppConfig =
+            serde_yaml::from_str("gateway:\n  host: 127.0.0.1\n").expect("yaml should parse");
+        let mcp = &config.gateway.mcp_http;
+        assert!(!mcp.enabled);
+        assert!(!mcp.allow_ask);
+        assert!(mcp.ask_allowed_models.is_empty());
+        assert_eq!(mcp.ask_budget_per_minute, 10);
+    }
+
+    /// Config sem nenhuma chave nova (so as antigas) continua valendo: o
+    /// default de `allow_ask` nao muda por causa da existencia dos campos.
+    #[test]
+    fn chaves_antigas_sem_as_novas_mantem_ask_desligado() {
+        let config: AppConfig = serde_yaml::from_str(
+            "gateway:\n  mcp_http:\n    enabled: true\n    allow_send: true\n",
+        )
+        .expect("yaml should parse");
+        assert!(config.gateway.mcp_http.allow_send);
+        assert!(!config.gateway.mcp_http.allow_ask);
     }
 }

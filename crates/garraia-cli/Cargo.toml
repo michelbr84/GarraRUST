@@ -19,6 +19,8 @@ garraia-gateway = { workspace = true }
 # instalacao — Node so e exigido no momento em que o usuario escolhe a opcao 1.
 garraia-channels = { workspace = true, features = ["whatsapp-linked"] }
 garraia-agents = { workspace = true, features = ["mcp"] }
+# #1612: o núcleo one-shot do `garra ask` / `garra_ask` (stdio) mora aqui.
+garraia-ask = { workspace = true }
 # ADR 0020 (epic #1124): registry vazio que alimenta as device tools do
 # `garra chat` — o CLI é interativo, sempre com canal de confirmação.
 # #1250: feature `skills` — o boot de hardware carrega o catálogo e injeta
@@ -83,6 +85,7 @@ telemetry = ["garraia-gateway/telemetry"]
 dev-echo-provider = [
     "garraia-gateway/dev-echo-provider",
     "garraia-agents/dev-echo-provider",
+    "garraia-ask/dev-echo-provider",
 ]
 # Forwards the Streamable HTTP MCP client transport down the chain.
 # Without this passthrough it was impossible to build the `garra` binary
@@ -98,6 +101,8 @@ tls = ["garraia-gateway/tls"]
 
 [dev-dependencies]
 tempfile = "3"
+# #1612: o endpoint HTTP falso dos testes de roteamento mora em `garraia-ask`.
+garraia-ask = { workspace = true, features = ["test-support"] }
 # #1343 — o teste do `garraia chat` implementa um `LlmProvider` e uma `Tool`
 # de roteiro (traits `#[async_trait]`).
 async-trait = { workspace = true }

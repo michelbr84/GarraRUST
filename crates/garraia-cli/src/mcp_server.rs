@@ -39,15 +39,12 @@ use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
 use crate::ask::{self, AskOptions};
-
-/// 64 KiB cap mirrors `crate::ask::STDIN_CAP_BYTES`.
-const ARG_MESSAGE_MAX_BYTES: usize = 64 * 1024;
-/// Soft cap on `system_prompt` override; keeps the MCP payload bounded.
-const ARG_SYSTEM_PROMPT_MAX_BYTES: usize = 8 * 1024;
-/// Timeout range — matches the `garra ask --timeout-secs` schema.
-const ARG_TIMEOUT_SECS_MIN: u64 = 1;
-const ARG_TIMEOUT_SECS_MAX: u64 = 600;
-const ARG_TIMEOUT_SECS_DEFAULT: u64 = 60;
+// #1612: os limites e a faixa de timeout moram em `garraia-ask`, para a ponte
+// MCP HTTP do gateway aceitar exatamente o mesmo pedido.
+use garraia_ask::{
+    ARG_MESSAGE_MAX_BYTES, ARG_SYSTEM_PROMPT_MAX_BYTES, ARG_TIMEOUT_SECS_DEFAULT,
+    ARG_TIMEOUT_SECS_MAX, ARG_TIMEOUT_SECS_MIN,
+};
 
 /// GAR-587 — Default provider applied when the MCP caller omits `provider`.
 /// Matches the JSON-Schema `default` advertised by `garra_ask_tool`; the
@@ -75,7 +72,7 @@ const MODEL_DEFAULT: &str = crate::defaults::DEFAULT_CLOUD_MODEL;
 /// `garra_ask` JSON schema — which MCP hosts treat as advisory, so it must
 /// be enforced here. Provider aliases defined in the user's `config.yml`
 /// `llm:` section are additionally accepted (see `validate_policy`).
-pub(crate) const PROVIDER_ENUM: [&str; 4] = ["ollama", "anthropic", "openai", "openrouter"];
+pub(crate) const PROVIDER_ENUM: [&str; 4] = garraia_ask::PROVEDORES_ASK;
 
 /// Runtime limits for the MCP tools, resolved once at server startup.
 ///
@@ -331,29 +328,11 @@ pub(crate) fn resolve_overrides(
 /// GAR-583 — Validate `GarraAskArgs` bounds. Returns the same error
 /// shape that the MCP host will see in `CallToolResult` on rejection.
 pub(crate) fn validate_args(args: &GarraAskArgs) -> Result<(), String> {
-    if args.message.trim().is_empty() {
-        return Err("message must be non-empty".to_string());
-    }
-    if args.message.len() > ARG_MESSAGE_MAX_BYTES {
-        return Err(format!(
-            "message exceeds 64 KiB cap ({ARG_MESSAGE_MAX_BYTES} bytes)"
-        ));
-    }
-    if let Some(ts) = args.timeout_secs
-        && !(ARG_TIMEOUT_SECS_MIN..=ARG_TIMEOUT_SECS_MAX).contains(&ts)
-    {
-        return Err(format!(
-            "timeout_secs out of range [{ARG_TIMEOUT_SECS_MIN}, {ARG_TIMEOUT_SECS_MAX}]"
-        ));
-    }
-    if let Some(ref sp) = args.system_prompt
-        && sp.len() > ARG_SYSTEM_PROMPT_MAX_BYTES
-    {
-        return Err(format!(
-            "system_prompt exceeds {ARG_SYSTEM_PROMPT_MAX_BYTES}-byte cap"
-        ));
-    }
-    Ok(())
+    garraia_ask::validar_argumentos(
+        &args.message,
+        args.timeout_secs,
+        args.system_prompt.as_deref(),
+    )
 }
 
 /// GAR-583 — Build the `garra_ask` tool descriptor (advertised in
