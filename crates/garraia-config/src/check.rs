@@ -34,7 +34,9 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::loader::ConfigLoader;
-use crate::model::{AppConfig, McpServerConfig};
+use crate::model::{
+    AppConfig, MCP_HTTP_AGENT_MAX_SECONDS_MAX, MCP_HTTP_AGENT_MAX_SECONDS_MIN, McpServerConfig,
+};
 // #1261: a precedencia do bind (e as constantes que espelham o clap) mora
 // em `crate::bind`, compartilhada com o boot e com os comandos cliente.
 use crate::auth::GATEWAY_API_KEY_ENV;
@@ -681,6 +683,60 @@ fn validate_com_env(config: &AppConfig, env: &PerfilDaEnv, bind_env: &BindDaEnv)
                     orquestrador.nome
                 ),
             );
+        }
+    }
+
+    // #1615: `garra_agent` pela ponte. Os numeros tem faixa e a faixa erra alto
+    // (um teto de 0 segundos ou de 10000 nao e um default esquecido, e erro de
+    // quem escreveu). O orcamento de 0 e so aviso: o gateway ja o eleva a 1.
+    let teto_do_agente = config.gateway.mcp_http.agent_max_seconds;
+    if !(MCP_HTTP_AGENT_MAX_SECONDS_MIN..=MCP_HTTP_AGENT_MAX_SECONDS_MAX).contains(&teto_do_agente)
+    {
+        push_err(
+            &mut findings,
+            "gateway.mcp_http.agent_max_seconds",
+            format!(
+                "gateway.mcp_http.agent_max_seconds = {teto_do_agente} esta fora de \
+                 [{MCP_HTTP_AGENT_MAX_SECONDS_MIN}, {MCP_HTTP_AGENT_MAX_SECONDS_MAX}]. Ajuste \
+                 para um valor nessa faixa (o padrao e 300); fora dela o gateway nao \
+                 sabe qual teto aplicar."
+            ),
+        );
+    }
+    if config.gateway.mcp_http.agent_budget_per_minute == 0 {
+        push_warn(
+            &mut findings,
+            "gateway.mcp_http.agent_budget_per_minute",
+            "gateway.mcp_http.agent_budget_per_minute: 0 — o gateway usa 1 execucao por \
+             minuto. Para zerar `garra_agent`, deixe `allow_agent: false`."
+                .into(),
+        );
+    }
+    if config.gateway.mcp_http.allow_agent && !config.gateway.mcp_http.enabled {
+        push_warn(
+            &mut findings,
+            "gateway.mcp_http.allow_agent",
+            "gateway.mcp_http.allow_agent: true, mas gateway.mcp_http.enabled esta \
+             false: a ponte nao sobe e garra_agent nao chega a ninguem. Fix: ligue \
+             gateway.mcp_http.enabled tambem."
+                .into(),
+        );
+    }
+    if !config.gateway.mcp_http.allow_agent {
+        for orquestrador in config.gateway.mcp_http.orquestradores_validos() {
+            if orquestrador.tools.iter().any(|t| t == "agent") {
+                push_warn(
+                    &mut findings,
+                    "gateway.mcp_http.orchestrators",
+                    format!(
+                        "orquestrador `{}`: `agent` esta em `tools`, mas \
+                         gateway.mcp_http.allow_agent esta desligado. garra_agent nao sera \
+                         anunciada a ninguem. Fix: ponha `allow_agent: true` ou tire `agent` \
+                         da lista.",
+                        orquestrador.nome
+                    ),
+                );
+            }
         }
     }
 
@@ -3319,6 +3375,56 @@ mod tests {
                 .iter()
                 .any(|f| f.field.starts_with("gateway.mcp_http")),
             "default gerou finding da ponte: {findings:?}"
+        );
+    }
+
+    /// #1615: teto do `garra_agent` fora da faixa e erro, com a faixa na mensagem.
+    #[test]
+    fn agent_max_seconds_fora_da_faixa_e_erro() {
+        for valor in [0_u64, 601] {
+            let mut cfg = AppConfig::default();
+            cfg.gateway.mcp_http.agent_max_seconds = valor;
+            let hit = validate(&cfg)
+                .into_iter()
+                .find(|f| f.field == "gateway.mcp_http.agent_max_seconds")
+                .unwrap_or_else(|| panic!("{valor} deveria gerar finding"));
+            assert!(matches!(hit.severity, Severity::Error), "{valor}");
+            assert!(hit.message.contains("[5, 600]"), "msg = {}", hit.message);
+        }
+        let mut cfg = AppConfig::default();
+        cfg.gateway.mcp_http.agent_max_seconds = 600;
+        assert!(
+            !validate(&cfg)
+                .iter()
+                .any(|f| f.field == "gateway.mcp_http.agent_max_seconds"),
+            "600 esta na faixa"
+        );
+    }
+
+    /// #1615: um orquestrador com `agent` na lista, com o interruptor desligado,
+    /// e aviso — a tool nao vai ser anunciada e o operador precisa saber por que.
+    #[test]
+    fn orquestrador_com_agent_sem_allow_agent_e_warning() {
+        let mut cfg = AppConfig::default();
+        cfg.gateway.mcp_http.orchestrators = vec![crate::model::OrchestratorMcpHttp {
+            nome: "badgood".into(),
+            key_env: "BADGOOD_MCP_KEY_DO_CHECK_1615".into(),
+            tools: vec!["agent".into()],
+            chats: vec![],
+        }];
+        let hit = validate(&cfg)
+            .into_iter()
+            .find(|f| f.message.contains("allow_agent"))
+            .expect("agent sem allow_agent deve produzir finding");
+        assert!(matches!(hit.severity, Severity::Warning));
+        assert!(hit.message.contains("badgood"), "msg = {}", hit.message);
+
+        cfg.gateway.mcp_http.allow_agent = true;
+        assert!(
+            !validate(&cfg)
+                .iter()
+                .any(|f| f.message.contains("nao sera anunciada")),
+            "com allow_agent ligado o aviso sai"
         );
     }
 
