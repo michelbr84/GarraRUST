@@ -30,6 +30,13 @@ use sqlx::Row;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+/// `hashtext('task_recurrence_sweep')` mapeia para um i32 estavel que o
+/// Postgres usa como chave do lock. Literal estatico de proposito: o sqlx 0.9
+/// so aceita `&'static str` em `query_scalar` (trait `SqlSafeStr`), e manter
+/// lock e unlock no MESMO literal evita que os dois divergam.
+const LOCK_SQL: &str = "SELECT pg_try_advisory_lock(hashtext('task_recurrence_sweep'))";
+const UNLOCK_SQL: &str = "SELECT pg_advisory_unlock(hashtext('task_recurrence_sweep'))";
+
 /// Configuration envelope for [`spawn_task_recurrence_worker`].
 #[derive(Debug, Clone)]
 pub struct TaskRecurrenceWorkerConfig {
@@ -76,26 +83,69 @@ struct DueRecurrence {
 }
 
 /// Run one sweep. Returns a report of the batch.
+///
+/// O advisory lock no Postgres e **por sessao**, entao a aquisicao e a
+/// liberacao precisam cair na MESMA conexao: este tick fixa uma
+/// `PoolConnection` do acquire ao unlock (mesmo padrao de
+/// [`crate::account_purge_worker`] e [`crate::uploads_worker`]). Fazer o
+/// unlock numa conexao diferente do pool e um no-op que vaza o lock ate o
+/// backend morrer, e como o pool mantem sessoes vivas, ate o processo
+/// morrer — ver #1611.
 pub async fn run_recurrence_tick(
     pool: Arc<AppPool>,
     batch_size: i64,
 ) -> Result<RecurrenceTickReport, sqlx::Error> {
-    let pg = pool.pool_for_handlers();
-    let got_lock: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext('task_recurrence_sweep'))")
-            .fetch_one(pg)
-            .await?;
+    let mut conn = pool.pool_for_handlers().acquire().await?;
+
+    let got_lock: bool = sqlx::query_scalar(LOCK_SQL).fetch_one(&mut *conn).await?;
     if !got_lock {
         debug!("task_recurrence_worker: another replica holds the lock; skipping tick");
+        // Sem lock nesta sessao, devolver a conexao ao pool e inofensivo.
         return Ok(RecurrenceTickReport::default());
     }
-    let _guard = AdvisoryLockGuard::new(Arc::clone(&pool));
 
+    // A partir daqui esta sessao detem o lock. Todo caminho de saida passa
+    // pela liberacao abaixo — inclusive o `?` interno, que escapa com o erro
+    // ANTES do unlock.
+    let result = locked_tick(&mut conn, pool.as_ref(), batch_size).await;
+
+    // Liberar na MESMA sessao que pegou. `false` significa "esta sessao nao
+    // tem o lock", o que nunca deveria acontecer; tratar como falha e fechar
+    // a conexao, que mata o backend e solta qualquer lock esquecido junto.
+    let released: bool = sqlx::query_scalar(UNLOCK_SQL)
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap_or(false);
+
+    if !released {
+        warn!(
+            "task_recurrence_worker: advisory unlock failed; closing the pinned \
+             connection so Postgres releases the lock with the backend"
+        );
+        // Um erro aqui nao muda o desfecho: o que importa e matar a sessao,
+        // e o drop de `conn` fecha o backend tambem se este close falhar.
+        let _ = conn.close().await;
+    }
+
+    result
+}
+
+/// O trabalho do lote, com o lock ja assumido e sobre a conexao fixada.
+async fn locked_tick(
+    conn: &mut sqlx::PgConnection,
+    pool: &AppPool,
+    batch_size: i64,
+) -> Result<RecurrenceTickReport, sqlx::Error> {
     let now = Utc::now();
+    // `p_limit` da funcao (migracao 033) e `int`, e o Postgres nao faz cast
+    // implicito de `bigint` na resolucao de funcao — vincular o `i64` cru faz
+    // a chamada falhar com "function due_task_recurrences(timestamptz, bigint)
+    // does not exist", ou seja, TODA varredura morria antes de varrer. Mesmo
+    // cast do [`crate::uploads_worker`] contra `expire_tus_uploads_sweep`.
     let rows = sqlx::query("SELECT * FROM due_task_recurrences($1, $2)")
         .bind(now)
-        .bind(batch_size)
-        .fetch_all(pg)
+        .bind(batch_size as i32)
+        .fetch_all(&mut *conn)
         .await?;
 
     let mut report = RecurrenceTickReport::default();
@@ -116,12 +166,12 @@ pub async fn run_recurrence_tick(
 
         match next_due(&candidate, now) {
             Ok(Some(next_due_at)) => {
-                spawn_next_occurrence(&pool, &candidate, next_due_at).await?;
+                spawn_next_occurrence(pool, &candidate, next_due_at).await?;
                 report.spawned += 1;
             }
             Ok(None) => {
                 // UNTIL/COUNT exhausted: close the series without spawning.
-                mark_spawned(&pool, candidate.group_id, candidate.id, now).await?;
+                mark_spawned(pool, candidate.group_id, candidate.id, now).await?;
                 report.exhausted += 1;
             }
             Err(e) => {
@@ -132,7 +182,7 @@ pub async fn run_recurrence_tick(
                     rrule = %candidate.rrule,
                     "task_recurrence_worker: unusable recurrence rule: {e}"
                 );
-                mark_spawned(&pool, candidate.group_id, candidate.id, now).await?;
+                mark_spawned(pool, candidate.group_id, candidate.id, now).await?;
                 report.invalid += 1;
             }
         }
@@ -225,35 +275,6 @@ async fn set_tenant(
         .execute(&mut **tx)
         .await?;
     Ok(())
-}
-
-struct AdvisoryLockGuard {
-    pool: Arc<AppPool>,
-    released: bool,
-}
-
-impl AdvisoryLockGuard {
-    fn new(pool: Arc<AppPool>) -> Self {
-        Self {
-            pool,
-            released: false,
-        }
-    }
-}
-
-impl Drop for AdvisoryLockGuard {
-    fn drop(&mut self) {
-        if self.released {
-            return;
-        }
-        self.released = true;
-        let pool = self.pool.clone();
-        tokio::spawn(async move {
-            let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('task_recurrence_sweep'))")
-                .execute(pool.pool_for_handlers())
-                .await;
-        });
-    }
 }
 
 /// Spawn the periodic sweep loop.
