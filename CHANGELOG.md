@@ -6,6 +6,235 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-10-10
+
+### Added
+- **Direitos dos titulares saem do papel: exportacao completa, correcao de
+  e-mail com fluxo seguro e apagamento definitivo rastreavel.** O
+  `GET /v1/me/export` devolvia so dado de conta; agora inclui o conteudo
+  pessoal do titular em todos os grupos dele — mensagens que escreveu (corpo
+  completo), mencoes recebidas (trecho), arquivos enviados, memorias e tarefas
+  — numa unica transacao que reaponta a GUC de tenant por grupo, com RLS
+  fail-closed e filtro pelo id do titular nas duas pontas. O arquivo passa a
+  declarar o que ficou de fora (`exclusions`) e o que bateu no teto
+  (`truncated_sections`), porque exportacao incompleta em silencio e
+  declaracao falsa de conformidade.
+- **`PATCH /v1/me` aceita `email` sem nunca trocar o e-mail as cegas.**
+  `users.email` e a chave de login, entao trocar com base so num token de
+  acesso e primitiva de account takeover. Como o repo nao tem infraestrutura
+  de envio de e-mail, o pedido fica registrado em
+  `user_email_change_requests` com estado `pending` + audit, e a aplicacao e
+  passo manual do operador com verificacao de posse fora de banda
+  (`docs/legal/data-subject-requests.md`). O endpoint tambem nao informa se o
+  endereco pedido ja existe — responder isso viraria oraculo de enumeracao de
+  contas.
+- **`DELETE /v1/me` enfileira o apagamento que antes era "deferido a um worker
+  futuro".** A mesma transacao que marca a lapide e revoga as sessoes grava o
+  pedido em `account_deletion_requests` com carencia de 30 dias; o novo
+  `account_purge_worker` destroi conteudo e identificadores do titular
+  (mensagem, comentario, memoria, arquivo + versoes + blob no object store) e
+  deixa `users` como lapide `status = 'purged'`. A linha de `users` nao e
+  removida porque cinco FKs `NO ACTION` apontam para ela e remove-la apagaria
+  contexto de terceiros — mensagem de outro membro nunca e apagada por pedido
+  de um. `audit_events` sobrevive desidentificado (`actor_label`, `ip` e
+  `user_agent` viram NULL): e a unica prova de que o apagamento aconteceu.
+  Sem object store ligado o pedido NAO e fechado — declarar `completed` com
+  blob vivo seria mentir no audit.
+- **O worker de apagamento roda com credenciais dedicadas e e retomavel.** O
+  role `garraia_purge` (migration 034) tem `EXECUTE` nas quatro funcoes
+  `SECURITY DEFINER` de apagamento e mais nada — nenhuma privilegio de tabela,
+  nao e `BYPASSRLS`; o pool valida `SELECT current_user` igual aos demais
+  dedicados. O worker so nasce se `GARRAIA_PURGE_DATABASE_URL` estiver
+  definida; sem ela o warn no log e explicito e o procedimento manual em
+  `docs/legal/data-subject-requests.md` segue valendo. O progresso (`db_purged`
+  + chaves de blob pendentes) e persistido na propria linha do pedido na mesma
+  transacao dos deletes: uma queda no meio nao reexecuta a passada de banco nem
+  fecha o pedido com blob vivo.
+- **`docs`: guia de contribuição do usuário final (#1577).** Faltava o lado do
+  usuário do `CONTRIBUTING.md`: como rodar o pré-flight (`garra config check`,
+  `garra verify`, `garraia doctor`) antes de abrir issue, qual template usar em
+  cada situação, onde pedir ajuda (Discussions/Discord), por que vulnerabilidade
+  nunca vai em issue pública e o caminho curto para virar contributor de
+  código. Linkado a partir do `SUPPORT.md`. Fecha o item "Community" da
+  operação — os demais itens da #1577 já saíram no #1588 (políticas de
+  suporte, versões, depreciação e nota de decisão de SLA).
+- **`garraia doctor mcp` valida que o MCP server autoprovisionado subiu de fato (#1595).** O doctor confere instalação, mas nunca o plano MCP: uma falha de subida (cache npx corrompido, binário ausente, handshake morto) passava despercebida — o doctor reportava ok enquanto o filesystem estava morto e o agente ficava sem tools.
+
+O novo `doctor mcp` spawna cada servidor stdio declarado pelo MESMO código do boot do gateway (`build_mcp_tools`: mesmo merge de `config.yml`/`mcp.json`, mesma resolução de `vault:`, mesma recuperação de cache npx), conta as tools do handshake e desliga os filhos antes de sair. Exit 0 quando tudo subiu, **exit 2 quando algum servidor não subiu** (útil em CI/scripts), 65 para config que não parseia. Servidor `enabled: false` é decisão do operador e não reprova; entrada HTTP fica marcada como não-verificada por este check.
+
+O doctor raiz ganha um resumo CONFIG do plano MCP (`[5/5]`, puro, sem spawn): quantos servidores declarados e se o `filesystem` está com a versão fixada (#1346) — o health-check de subida continua sendo a área explícita, para o onboarding rápido não virar download de npx.
+
+Refs #1595
+- `garra uninstall` remove a CLI da maquina (binario, alias `garra`, wrappers do Termux e backups `.old`/`.new`); `--purge` inclui config, dados e o legado `~/.garraia`; recusa com exit 78 quando o daemon pertence a uma unit systemd e com exit 64 sem terminal e sem `--yes`
+- **`garra_ask` no servidor MCP HTTP (`POST /mcp`), com política própria (#1612).** O orquestrador externo passa a perguntar ao LLM do Garra pela mesma ponte que já lê o estado e manda mensagens, com o envelope `garra.ask.v1` do servidor stdio. A tool é desligada por padrão: só aparece com `gateway.mcp_http.allow_ask: true`, aceita só o modelo default do projeto enquanto `ask_allowed_models` estiver vazio, e tem orçamento próprio de `ask_budget_per_minute` (padrão 10) que nunca divide o de envio. O núcleo do `garra ask` foi extraído para o crate `garraia-ask`, compartilhado pela CLI e pelo gateway; `garra ask` e o `garra_ask` do stdio seguem iguais. Refs #1612
+- Expõe `garra_send_message`/`garra_ask` a orquestradores externos com identidade
+  própria: `mcp_http.orchestrators[]` (`nome` + `key_env`, valor nunca em config),
+  política por orquestrador (subseto de tools e destinos em interseção com a
+  allowlist global), auditoria atribuível por chamada e `mcp_http/redacao.rs`
+  (redação de padrões de segredo no payload e no erro). Lista vazia (default)
+  mantém o comportamento de antes. Refs #1613
+- **`garra_agent` no servidor MCP HTTP (`POST /mcp`), para delegação de tarefas (#1615).** Um orquestrador externo passa a pedir ao Garra uma tarefa completa — ler e gravar arquivos dentro das raízes liberadas, buscar na web, ver o git e, só com sandbox, rodar comando — e recebe o envelope `garra.agent.v1` com o resumo de cada tool usada. É a mudança de spec da issue: até aqui o agente completo existia só no stdio. A tool é desligada por padrão e só aparece com `gateway.mcp_http.allow_agent: true` e com `agent` na lista `tools` do orquestrador. Tem orçamento próprio de `agent_budget_per_minute` (padrão 2) e teto de tempo `agent_max_seconds` (padrão 300, máximo 600), e não divide cota com envio nem com `garra_ask`. Entrada e saída passam pela redação de segredos, e nenhum prompt, resposta ou saída de tool vai para o log. O núcleo do agente saiu da CLI para `garraia-gateway/src/agente_mcp.rs`, usado pelo stdio e pela ponte, sem mudança no `garra mcp-server`. Refs #1615
+
+### Changed
+- **Decisoes do dono entram nos rascunhos GA de negocio e legal (#1565, #1574, #1575, #1576).**
+  Segunda leva dos documentos de GA, agora com as decisoes registradas — tudo
+  continua marcado como rascunho/proposta e nada vale sem a revisao humana
+  indicada em cada arquivo. `docs/legal/tos-draft.md` ganha os tres contextos
+  (Community MIT self-host vigente, Garra Cloud planejado, distribuicao via
+  site), divisao de responsabilidades BYOK, suspensao com criterios objetivos
+  e proporcionalidade, forum brasileiro preservado e identificacao da entidade
+  como pre-requisito; `docs/legal/privacy-policy-draft.md` ganha a tabela de
+  retencao proposta da cloud (mensagens 90d com opcoes 7/30d, logs 30d,
+  auditoria 90d, backups ≤30d) e registra a divergencia doc-vs-codigo do
+  retention_days de 730 dias; `docs/legal/dpa-template.md` passa a classificar
+  controlador/operador por fluxo com inventario de suboperadores;
+  `docs/compliance/lia.md` nasce (LIA das sessions condicionado a revisao
+  legal externa) e o DPIA o referencia; `docs/compliance/incident-response.md`
+  alinha a notificacao ANPD a orientacao de 3 dias uteis e ganha anexo de
+  tabletop de 1h (execucao pendente); `docs/src/pricing.md` recebe a grades
+  Community/Beta/Pro R$39/Studio R$149 com quotas e regras de franquia LLM;
+  `SUPPORT.md` e `docs/operations/` ganham canais de cloud e de titulares com
+  marcadores PENDENTE e a regra de atendimento por gravidade independente de
+  plano.
+- **Request-path do gateway nega `unwrap()`/`expect()` (#1569, primeira leva).** Dez
+  modulos que recebem input externo (`rest_v1/{me,search,chats,groups,uploads,tasks/labels}`,
+  `api`, `admin/store`, `diagnostics_handler`, `runs_handler`) ganham
+  `#![deny(clippy::unwrap_used, clippy::expect_used)]`, e `clippy.toml` libera os dois
+  em `#[cfg(test)]`. As 4 ocorrencias de producao viraram erro tipado (`400` em vez de
+  panic na criacao de chat DM) ou constante checada em compile-time (iteracoes PBKDF2).
+- **Fixture de Postgres no CI destrava os 10 testes de integração do gateway (#1570).**
+  Job novo `Gateway Integration (Postgres)` no `ci.yml`: service container de
+  `postgres:16.8-alpine` + as env vars que o bootstrap do `GatewayServer`
+  exige (`GARRAIA_JWT_SECRET`, `GARRAIA_REFRESH_HMAC_SECRET`,
+  `GARRAIA_LOGIN_DATABASE_URL`, `GARRAIA_SIGNUP_DATABASE_URL` — segredos
+  fictícios de CI, mesmo padrão do job e2e) + `--include-ignored`. Os 10
+  `#[ignore]` de `auth_test.rs`, `gateway_integration.rs` e `voice_e2e_test.rs`
+  (causa-raiz única: `server.run()` saía em silêncio sem Postgres desde o
+  fix/ci-triage-2026-04-15) agora rodam de verdade no CI; a mensagem de cada
+  `#[ignore]` passa a apontar o job e o comando local. O `#[ignore]` de
+  throughput do `markdown.rs` permanece — é sonda, não dívida. Também neste
+  PR: baseline `.quality/baseline.json` re-medido com
+  `freeze-baseline.py --adopt-current-file-metrics --reason '#1570'` (campos
+  de tamanho passam a descrever o repositório atual; `coverage` 72,0% e
+  `audit` 0 critical/0 high preservados), workflow renomeado de "Quality
+  Ratchet" para "Quality Report" para o nome não prometer bloqueio que o modo
+  report-only (plan 0064) não faz, e healthcheck no serviço `ollama` do
+  compose (`ollama list`) — o `garraia` e os demais serviços já tinham.
+- **Rascunhos GA de documentos legais e operacionais (#1574, #1575, #1576, #1577).**
+  Primeira leva dos documentos que faltavam para vender, todos marcados como
+  rascunho/proposta — nenhum é válido sem a revisão/decisão humana indicada no
+  próprio arquivo. `docs/legal/dpa-template.md` (template de DPA com
+  suboperadores e processo de atualização), `docs/legal/privacy-policy-draft.md`
+  (política de privacidade com os direitos implementados no gateway) e
+  `docs/legal/tos-draft.md` (termos de serviço); `docs/operations/`
+  com `support-policy.md`, `version-support-policy.md`,
+  `deprecation-policy.md` e `sla-decision-brief.md` (decisão default registrada:
+  self-host sem SLA, com opções para o maintainer); `docs/business/cost-model-inputs.md`
+  (insumos BYOK de custo para a precificação, sem decidir preço). O DPIA ganha
+  correção factual: os quatro endpoints de direitos do titular
+  (`GET /v1/me/export`, `PATCH /v1/me`, `POST /v1/me/anonymize`,
+  `DELETE /v1/me`) estão implementados no gateway — a lista de pendências do
+  documento estava desatualizada.
+
+### Removed
+- **Rascunhos legais e precificacao saem do repositorio publico (#1616).**
+  `docs/legal/` (ToS, Privacy, DPA, direitos do titular), `docs/src/pricing.md`
+  e `docs/business/cost-model-inputs.md` deixam de ser versionados apos a
+  auditoria de exposicao de 2026-10-09 ter encontrado documentos marcados
+  "RASCUNHO — NAO PUBLICAR" e o modelo financeiro interno (precos propostos,
+  margens, breakeven) na main. Os arquivos continuam no disco local, agora
+  cobertos pelo .gitignore como privados por padrao; versoes finais revisadas
+  publicam em garraia.org. Historico git e forks existentes nao sao afetados.
+
+### Fixed
+- **1568 — Desktop: DMG no macOS, artefactos de updater assinados e `latest.json` publicado.** O desktop nao e vendavel como distribuicao empacotada: nao havia DMG no macOS,
+o `tauri-plugin-updater` estava ligado com `pubkey` vazio e nenhum workflow
+publicava `latest.json` — o botao de atualizar nunca funcionou. O item que
+bloqueia o canal distribuidor (assinatura de codigo EV/OV) continua externo e
+rastreado na propria issue.
+
+- `tauri.conf.json`: `bundle.createUpdaterArtifacts: true` e `bundle.macOS.targets: ["app", "dmg"]` explicitos — sem eles o bundler nao emite o `.app.tar.gz` nem o DMG que o updater e o macOS precisam.
+- `release.yml`: job `build-macos-desktop` (macos-latest) compila o DMG pelo mesmo `cargo tauri build`, e o job `release` passa a gerar e publicar `latest.json` assinado ao lado dos binarios — o endpoint que o `updater` do app ja consultava.
+- `desktop.yml`: espelho em PR (`build-macos-bundles`) para que mudanca de desktop seja verificada no macOS antes de existir tag, mesma janela de drift que o workflow ja fecha para Windows e Linux.
+- `docs/installation.md`: secao "Garra Desktop on macOS" e tabela consolidada "CLI vs Desktop — what each one supports", com o aviso de Gatekeeper (app nao assinado) espelhando o aviso de SmartScreen ja documentado para o Windows.
+
+Refs #1568
+- fix(release): latest.json sem a tag "v" duplicada (`vv0.4.8`), DMG do macOS entra na release e assinaturas do updater Windows estagiadas — o gerador normaliza a versão, o glob do DMG cobre o nome real do bundler Tauri e o `build-installer.ps1` estagia o `.sig` vizinho do `.msi`/`-setup.exe` que o Tauri 2.x emite (#1568)
+- **Domínio dos caminhos de contato e compra corrigido para `garraia.org` (#1574).** O
+  `docs/src/pricing.md` e o `CONTRIBUTING.md` apontavam para `garraia.cloud`, que
+  **não resolve** (NXDOMAIN): link de compra, demo, política de privacidade e os
+  e-mails `enterprise@` e `security@` estavam num domínio morto. O domínio real do
+  projeto é `garraia.org` — resolve, `/pricing`, `/demo` e `/privacy` respondem 200,
+  e o MX existe (`mailserver.purelymail.com`). O `SECURITY.md` já dizia
+  `security@garraia.org`; o `CONTRIBUTING.md` contradizia. Correção estritamente
+  factual, decidida pelo maintainer em 2026-10-07. Os termos comerciais anunciados na
+  página de preços (SLA, SOC 2, janelas de suporte) **não foram tocados** — publicar
+  ou retratar termos continua sendo decisão comercial, rastreada na #1574.
+- **1574/1576 — `docs/src/pricing.md` deixa de afirmar como fatos coisas que não existem.** A página de preços anunciava como **existentes** cinco coisas que o repositório não tem: certificação SOC 2, SLA de 99,5%/99,99%, hospedagem gerenciada, backups automáticos e cobrança por cartão. Cliente empresarial que lesse a página compraria algo que não pode ser vendido — e o produto sequer tem os serviços que a página descreve.
+
+- Banner de status no topo: **rascunho interno, não publicado, não vigente**, com o inventário do que não existe e as issues que rastreiam cada lacuna (#1576 para decisão de negócio, #1575 para revisão jurídica, #1565 para conformidade).
+- Plano Pro e Enterprise reescritos: cada item marcado como proposto e, quando não operacional, dizendo isso explicitamente. SLA vira "propsto, não contratual"; conformidade vira "nenhuma certificação, conformidade em aberto".
+- Tabela comparativa ganha a coluna de status por célula — nenhum "Sim" sobrevive sem a marca de que não existe.
+- FAQ reescrita sobre o estado real: self-hosted é o único modo, não há cobrança nem dashboard de uso, e a política de privacidade **ainda não foi publicada** (o link antigo apontava para uma página que não existe, num domínio que não resolve).
+
+Nada foi inventado no sentido inverso: os números da proposta continuam lá, rotulados como hipótese para decisão do maintainer. Corrigir afirmação falsa não é tomar decisão comercial.
+
+Refs #1574, #1576, #1575, #1565
+- fix(agents/gateway): erro de execução (exit 126/EACCES) no Termux ganha diagnóstico do contexto restrito do launcher — a restrição W^X do Android veta `execve` em /data por filhos de processos lançados via `linker64`; o bash tool e o `npm ci` do bootstrap agora explicam a causa e apontam o lançamento pelo shell do Termux (#1591)
+- **Allowlist do bash avalia encadeamento segmento a segmento (#1592).** A allowlist
+  do `bash` negava QUALQUER comando com `|`, `&&`, `||` ou `;` — era a opcao
+  fail-closed de #1105, e por isso nunca houve bypass, mas derrubava o pipeline
+  legitimo: com `git *` e `grep *` declarados, um `git status | grep modificado`
+  morria no tier arriscado. Agora os separadores de estrutura sao quebrados em
+  segmentos (varredura ciente de aspas, a mesma de #1579) e a lista confere CADA
+  segmento: o comando casa so quando TODOS casam. `git status | sh` segue negado
+  enquanto `sh` nao estiver declarado, e um pipeline nao concede autoridade que o
+  operador ja nao tenha dado — `a | b` com os dois declarados equivale a duas
+  chamadas de tool seguidas, que o modelo ja podia fazer. O que NAO foi afrouxado:
+  substituicao de comando (`$(...)`, crase), redirecionamento (`<`, `>`), `&` solto
+  (background escapa do timeout e da supervisao), nova linha e separador
+  pendurado/colado continuam negando o comando inteiro, porque nenhum deles e um
+  segundo comando que se possa conferir contra a lista. A denylist do `safety_gate`
+  segue na frente de tudo. Mensagem de negacao e prompt do `HostComAllowlist`
+  atualizados para a regra nova.
+- **Timeout do LLM ganha janela por provider e erro que nomeia a chave certa (#1593).** Um host lento (build Rust de 20-40 min no Termux, modelo grande sem GPU) batia nos 120s de `timeouts.llm.default_secs` e a resposta inteira era descartada — sem como aumentar a janela só para o provider lento, e com um erro que não dizia o que fazer.
+
+Agora `llm.<nome>.timeout_secs` sobrescreve a janela global para aquele provider (ausente = global; `config check` avisa em 0, como no valor global), e o card de erro de timeout nomeia as duas chaves que o operador pode aumentar. A mensagem mantém o prefixo da classe e o texto do reqwest palavra por palavra (#1249).
+
+Correção de semântica junto: `timeouts.llm.default_secs: 0` (e o novo `timeout_secs: 0`) agora significa de fato "sem timeout" — antes virava `Duration::ZERO`, um sleep já vencido que fazia **toda** chamada LLM falhar em milissegundos, o oposto do que a mensagem do `config check` prometia.
+
+Refs #1593
+- **Telegram: falha de rede no GetMe deixa de ser reportada como token inválido, e ganha retry (#1594).** O `connect()` fazia um único `get_me()` e tratava QUALQUER erro como "Telegram token inválido" — sob Termux/Android uma falha de SSL/DNS (Bionic sem `SSL_CERT_FILE`) mandava o operador trocar um token que estava certo, e o canal nem subia.
+
+Agora o erro é classificado: `Unauthorized`/`Not Found` (a API respondeu) continua "token inválido" e falha de primeira; rede/IO é transitória e re-tenta com backoff exponencial (3 tentativas) antes de falhar — e a mensagem final diz que NÃO é o token e aponta o diagnóstico de rede (Termux: `SSL_CERT_FILE`, bloco Termux do `garraia doctor`). Cada tentativa loga classe, contagem e o erro cru para o diagnóstico em ambiente restrito. A política de retry é genérica e testada sem rede: transitório recupera, token inválido não gasta retry, esgotado devolve a contagem certa.
+
+Refs #1594
+- **`garra update` e `garra rollback` deixam de sair com exit 0 na falha (#1603).** Os ramos de erro imprimiam a mensagem no stdout e o processo devolvia sucesso, escondendo a falha de scripts e automacao. A mensagem agora vai para stderr com a cadeia de erro completa e o processo sai com 70 (sysexits `EX_SOFTWARE`), no padrao ja usado por `config check`, `doctor` e `desktop`.
+- fix(cli/gateway): `.env` e lido apenas do diretorio atual, sem walk-up pelos pais — `dotenvy::dotenv()` e `dotenvy::from_filename(".env")` sobem os diretorios pais ate achar um `.env`, e um arquivo na raiz do repo injetava `GARRAIA_CONFIG_DIR`, `GARRAIA_EXECUTION_PROFILE` e credenciais em todo comando `garra` e em todo boot do gateway rodado de dentro de uma subpasta; CLI e gateway agora usam `dotenvy::from_path(".env")`, que e `File::open` puro: o `.env` do proprio diretorio continua valendo, o do pai deixa de valer (#1604)
+- docs(channels): `channels.md` para de dizer que `whatsapp_linked` nao existe no `config.yml` — o canal de dispositivo vinculado tem canal proprio na `garraia-channels`, validacao no `config check` e entrada documentada (`type: whatsapp_linked`) no `whatsapp.md` com a Access Policy v2 do ADR 0025; o texto antigo apontava para uma ausencia que ja nao existe (#1605)
+- **1611 — Workers de uploads e de recorrencia libertam o advisory lock na MESMA sessao que o pegou.** Os dois workers adquiriam `pg_try_advisory_lock` numa conexao do pool e tentavam liberta-lo noutra, via `tokio::spawn` dentro do `Drop` de um guard. Advisory lock no Postgres e **por sessao**: `pg_advisory_unlock` chamado noutra conexao devolve `false` e nao faz nada. Como o sqlx devolve a conexao ao pool sem resetar a sessao (sem `DISCARD ALL`, e o `ping()` do `test_before_acquire` e so um `write_sync`), o lock sobrevivia a todo tick seguinte. Efeito real: a partir do primeiro tick as demais replicas ficam **permanentemente** bloqueadas de varrer, e na vencedora a varredura degrada — o lock e reentrante por sessao, entao um tick posterior que cair na MESMA sessao do pool segue funcionando. Perda silenciosa: nenhum dado, nenhuma violacao de RLS, so a janela contratada de expiracao/recorrencia que deixa de ser cumprida.
+
+- O padrao correto ja existia em `account_purge_worker.rs` (escrito no #1610): adquire UMA `PoolConnection`, fixa ela do acquire ao unlock, e se o unlock devolver `false` fecha a conexao para que o Postgres solte o lock junto com o backend. Os dois workers passam a seguir esse mesmo padrao, com o trabalho extraido para `locked_tick(conn, ...)` sobre a conexao ja fixada — assim, se a sessao morrer no meio do lote, o lock cai junto e a retomada e feita pelo proximo tick que conseguir o lock.
+
+- `uploads_worker.rs` e `tasks_recurrence_worker.rs` sao duas copias do mesmo defeito; corrigir so uma seria tratar sintoma. Literais `LOCK_SQL`/`UNLOCK_SQL` como `const` (o sqlx 0.9 so aceita `&'static str`, e manter lock e unlock no mesmo literal impede que os dois divergam).
+
+- **Defeito independente achado pelo teste de regressao:** `tasks_recurrence_worker` vinculava `batch_size: i64` (`bigint`) contra `due_task_recurrences(timestamptz, int)` (migracao 033). O Postgres nao faz cast implicito de `bigint` na resolucao de funcao, entao **toda varredura morria antes de varrer** com "function due_task_recurrences(timestamp with time zone, bigint) does not exist". Corrigido com `.bind(batch_size as i32)`, o mesmo cast que `uploads_worker` ja fazia.
+
+- `tests/rest_v1_task_recurrence_worker.rs` (novo) e `tests/rest_v1_uploads_delete_worker.rs` (estendido) contam os holders do lock via `pg_locks` e falham se ele nao voltar a zero. Ambos incluem um **auto-teste do detector**: eles primeiro provam que DETECTAM um lock segurado, para que uma refactor futura nao consiga deixar a query devolvendo sempre 0 e deixar as assercoes verdes sem provar nada. Ambos foram verificados contra o codigo antigo: falham com `left: 1, right: 0`.
+
+Refs #1611
+- **Ledger: o `line` das 4 entradas pré-existentes #40, #41, #42 e #115 volta ao span do alerta vivo (738/749/870/2201).** O PR #1619 tinha comitado a linha derivada pelo `check-ledger-anchors.py` a partir do código atual (739/750/871/2205), mas o `codeql-reapply-dismissals.sh --apply` valida o `line` contra o span do alerta registrado no GitHub — e enquanto o CodeQL não reanalisar a main, esses números divergem e o `--apply` aborta fail-closed (exit 2), bloqueando o dismiss dos #181–#188 junto. Contrato dos dois ferramentas: *anchors* deriva do código, *reapply* exige o alerta vivo; o estado correto de uma entrada cujo alerta ainda não foi reanalisado é o span do alerta. O reancoragem automático só entra depois da re-análise (ou via `codeql-rekey-ledger.py`, que é feito pra isso).
+
+Refs #1618
+- O loader valida `GARRAIA_CONFIG_DIR` na ingestão: valor placeholder de `.env.example` (ex.: `/custom/config/path` vindo do `.env` do CWD) ou vazio agora cai no config_dir padrão com aviso, em vez de derrubar qualquer comando com `EACCES (os error 13)` opaco — inclusive o `garra config check` (#1620).
+
+### Security
+- security(release): cada asset da release ganha attestacao de proveniencia verificavel com `gh attestation verify` (#1606)
+- bump music-metadata de 11.15.0 para 11.16.1 na ponte WhatsApp, fechando os alertas Dependabot #47 (exaustao de memoria no parser EBML) e #48 (loop infinito sincrono em MP4 stsd com sample-entry size 0); dependencia transitiva de @whiskeysockets/baileys, dentro da faixa ^11.12.3 — so o lockfile mudou
+- **Ledger do CodeQL recebe os 8 alertas `rust/path-injection` (high) de `uploads.rs` e `session_workspace.rs` (#181–#188).** Auditoria por entrada concluiu falso-positivo nas duas causas-raiz: o caminho do staging nasce de `Path<Uuid>` tipado (extractor do axum rejeita não-UUID com 400 antes do handler) e o workspace de sessão nasce do digest SHA-256 hex de 32 chars do `session_id` — nenhum dos dois charset expressa traversal, e o CodeQL Rust pack não modela as duas transformações como sanitizer. As 8 entradas entram no `.json` e no `.md` com justificativa, disambiguators nos snippets ambíguos (#186/#187) e regressão nova `o_nome_do_subdiretorio_e_sempre_hex_de_32_nunca_escapa_charset`, que assera len/charset para ids adversariais. O checker derivou linhas novas para 4 entradas pré-existentes (#40, #41, #42, #115), mas o `line` de uma entrada espelha o span do **alerta vivo** (é o que o `--apply` valida) — enquanto o CodeQL não reanalisar, código e alerta divergem e o valor derivado derruba o `--apply` fail-closed; as 4 linhas seguem o alerta, e o reancoragem automático só entra após re-análise ou via `codeql-rekey-ledger.py` (corrigido no PR seguinte). Dismissals aplicados via `codeql-reapply-dismissals.sh --apply` após o merge.
+
+Refs #1618
+
 ## [0.4.8] - 2026-10-07
 
 **Seguranca no topo desta release.** Quem esta na 0.4.7 executa bash no host **sem** fronteira de allowlist: a 0.4.8 estreia o modo `HostComAllowlist` (#1272), em que `agent.bash_allowlist` deixa de ser dispensa de confirmacao e vira limite real — todo comando fora dela e negado antes do tier arriscado, com a denylist do `safety_gate` sempre na frente. O `wasmtime` que alimenta esse sandbox sobe de 48.0.2 para 49.0.2 em dois passos (#1524, #1559), fechando **onze advisories** — quatro no salto para 49.0.1 e sete no patch para 49.0.2, este sem elevar o MSRV. A secao Seguranca abaixo detalha advisory por advisory.
