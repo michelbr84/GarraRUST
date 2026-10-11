@@ -21,7 +21,6 @@ use garraia_ask::{
     ARG_MESSAGE_MAX_BYTES, ARG_SYSTEM_PROMPT_MAX_BYTES, ARG_TIMEOUT_SECS_DEFAULT,
     ARG_TIMEOUT_SECS_MAX, ARG_TIMEOUT_SECS_MIN, PROVEDORES_ASK,
 };
-use garraia_config::MCP_HTTP_AGENT_MAX_SECONDS_MAX;
 use garraia_config::defaults::{DEFAULT_CLOUD_MODEL, DEFAULT_CLOUD_PROVIDER};
 
 use crate::agente_mcp::{
@@ -295,7 +294,7 @@ fn provedores_anunciados() -> Vec<&'static str> {
 /// E destrutiva: pode gravar arquivo e, com sandbox, rodar comando. Por isso o
 /// hint diz `destructive: true`, o que o stdio nao precisa dizer (la nao ha
 /// como o host chegar a ele sem o operador ter ligado a env).
-fn tool_agent() -> Tool {
+fn tool_agent(teto_secs: u64) -> Tool {
     let schema = json!({
         "type": "object",
         "properties": {
@@ -320,9 +319,9 @@ fn tool_agent() -> Tool {
             },
             "timeout_secs": {
                 "type": "integer",
-                "default": AGENT_TIMEOUT_SECS_DEFAULT,
+                "default": AGENT_TIMEOUT_SECS_DEFAULT.min(teto_secs),
                 "minimum": AGENT_TIMEOUT_SECS_MIN,
-                "maximum": MCP_HTTP_AGENT_MAX_SECONDS_MAX,
+                "maximum": teto_secs,
                 "description": "Tempo maximo do laco inteiro (LLM e tools), em segundos. Nao \
                                 pode passar do teto que o operador configurou."
             },
@@ -387,7 +386,7 @@ pub fn tools_anunciadas(politica: &PoliticaMcpHttp) -> Vec<Tool> {
         tools.push(tool_ask());
     }
     if politica.anuncia_agent() {
-        tools.push(tool_agent());
+        tools.push(tool_agent(politica.teto_do_agente_secs()));
     }
     tools
 }
@@ -832,6 +831,18 @@ mod tests {
     /// O schema de `garra_agent` fecha os campos, exige so a mensagem, anuncia o
     /// teto de 600 e NAO tem `working_dir`: um orquestrador remoto nao escolhe
     /// diretorio do disco do operador.
+    /// #1626: o schema anuncia o teto do operador, nao o maximo absoluto.
+    #[test]
+    fn schema_de_agent_anuncia_o_teto_do_operador() {
+        let t = tools_anunciadas(&politica(false, &[]).com_agent(120))
+            .into_iter()
+            .find(|t| t.name == TOOL_AGENT)
+            .expect("garra_agent anunciada");
+        let schema = JsonValue::Object((*t.input_schema).clone());
+        assert_eq!(schema["properties"]["timeout_secs"]["maximum"], json!(120));
+        assert_eq!(schema["properties"]["timeout_secs"]["default"], json!(120));
+    }
+
     #[test]
     fn schema_de_agent_fecha_campos_e_nao_expoe_working_dir() {
         let t = tools_anunciadas(&politica(false, &[]).com_agent(300))
@@ -847,7 +858,8 @@ mod tests {
         );
         assert_eq!(
             schema["properties"]["timeout_secs"]["maximum"],
-            json!(MCP_HTTP_AGENT_MAX_SECONDS_MAX)
+            json!(300),
+            "o schema anuncia o teto do operador (#1626)"
         );
         assert_eq!(schema["properties"]["timeout_secs"]["default"], json!(300));
         assert_eq!(
