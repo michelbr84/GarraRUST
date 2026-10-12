@@ -1807,3 +1807,135 @@ async fn garra_agent_entrada_e_saida_saem_redigidas() {
         );
     }
 }
+
+// ── garra_agent + bash (#1626 item 3): execucao de comando de ponta a ponta ──
+
+/// Um provider que, no primeiro turno, pede a tool `bash` com o comando dado e,
+/// no seguinte (quando ja existe uma mensagem `tool` no historico), responde
+/// em texto. Atende os dois formatos: SSE (o laco do agente faz streaming) e JSON.
+struct PedeBash {
+    comando: &'static str,
+}
+
+impl Respond for PedeBash {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let corpo: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let ja_rodou_tool = corpo["messages"]
+            .as_array()
+            .is_some_and(|m| m.iter().any(|x| x["role"] == "tool"));
+        let stream = corpo.get("stream").and_then(Value::as_bool) == Some(true);
+        let args = json!({ "command": self.comando }).to_string();
+        let chamada = json!({
+            "index": 0, "id": "call_bash_1", "type": "function",
+            "function": { "name": "bash", "arguments": args }
+        });
+        if ja_rodou_tool {
+            let texto = "fim";
+            return if stream {
+                let chunk = json!({
+                    "id": "c", "object": "chat.completion.chunk", "model": "m",
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": texto}, "finish_reason": null}]
+                });
+                let fim = json!({
+                    "id": "c", "object": "chat.completion.chunk", "model": "m",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                });
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(format!("data: {chunk}\n\ndata: {fim}\n\ndata: [DONE]\n\n"))
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "c", "object": "chat.completion", "model": "m",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": texto}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                }))
+            };
+        }
+        if stream {
+            let chunk = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [chamada]}, "finish_reason": null}]
+            });
+            let fim = json!({
+                "id": "c", "object": "chat.completion.chunk", "model": "m",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
+            });
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\ndata: {fim}\n\ndata: [DONE]\n\n"));
+        }
+        ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c", "object": "chat.completion", "model": "m",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": null, "tool_calls": [chamada]}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }))
+    }
+}
+
+/// A ponte com `garra_agent` num `isolated-pod` (o unico perfil em que o `bash`
+/// existe sem docker/podman no CI) e o provider apontando para `endereco`.
+fn config_agent_com_bash(endereco: &str) -> AppConfig {
+    let mut config = config_agent_para(endereco);
+    config.execution = garraia_config::ExecutionConfig::new(
+        Some(garraia_config::ExecutionProfile::IsolatedPod),
+        None,
+    );
+    config
+}
+
+/// O `bash` roda de verdade pela ponte inteira (HTTP -> JSON-RPC -> laco do
+/// agente -> BashTool): o resumo de tool carrega `bash` e a saida do comando
+/// volta ao modelo na mensagem `tool` do turno seguinte.
+#[cfg(unix)]
+#[tokio::test]
+async fn garra_agent_bash_executa_o_comando_e_devolve_a_saida_ao_modelo() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeBash {
+            comando: "echo marcador-do-bash-1626",
+        })
+        .mount(&falso)
+        .await;
+    let router = router_com(config_agent_com_bash(&falso.uri()));
+
+    let resposta = pedir_agent(&router, json!({ "message": "rode o echo" })).await;
+    let env = envelope(&resposta);
+    assert_eq!(env["ok"], true, "{env}");
+    assert_eq!(env["answer"], "fim", "{env}");
+    assert_eq!(env["tool_calls"][0]["name"], "bash", "{env}");
+    assert_eq!(env["tool_calls"][0]["success"], true, "{env}");
+
+    let recebidas = falso.received_requests().await.unwrap_or_default();
+    let devolveu_saida = recebidas.iter().any(|req| {
+        let corpo: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+        corpo["messages"].as_array().is_some_and(|m| {
+            m.iter().any(|x| {
+                x["role"] == "tool"
+                    && x["content"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("marcador-do-bash-1626"))
+            })
+        })
+    });
+    assert!(devolveu_saida, "a saida do bash nao voltou ao modelo");
+}
+
+/// A denylist do `BashTool` vale pela ponte: um comando destrutivo pedido pelo
+/// modelo e recusado, o resumo marca a falha, e o modelo recebe a recusa.
+#[cfg(unix)]
+#[tokio::test]
+async fn garra_agent_bash_com_comando_perigoso_e_recusado_pela_denylist() {
+    let falso = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(PedeBash {
+            comando: "rm -rf /",
+        })
+        .mount(&falso)
+        .await;
+    let router = router_com(config_agent_com_bash(&falso.uri()));
+
+    let resposta = pedir_agent(&router, json!({ "message": "apague tudo" })).await;
+    let env = envelope(&resposta);
+    assert_eq!(env["tool_calls"][0]["name"], "bash", "{env}");
+    assert_eq!(env["tool_calls"][0]["success"], false, "{env}");
+}
