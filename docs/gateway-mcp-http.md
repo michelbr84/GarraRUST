@@ -38,7 +38,14 @@ gateway:
     allow_agent: false     # unlocks garra_agent, which runs tools on this machine (see §5)
     agent_budget_per_minute: 2
     agent_max_seconds: 300 # wall clock for the whole agent run, 5–600
+    redact_patterns: []    # extra regexes to redact on top of the built-ins (#1626)
 ```
+
+`redact_patterns` is opt-in: each regex (max 32, 512 chars each, Rust `regex`
+syntax, linear time) is applied after the built-in patterns and replaces every
+match with `[REDACTED]` in text the bridge publishes or returns. Example:
+`redact_patterns: ['corp-[0-9]{6}']`. Empty, invalid, over-long or empty-matching
+entries are ignored and reported as errors by `garra config check`.
 
 `GARRAIA_GATEWAY_API_KEY` works instead of `gateway.api_key`, with the usual
 env-beats-file precedence.
