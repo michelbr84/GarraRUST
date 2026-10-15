@@ -27,6 +27,9 @@
 //!   inversão de controle CLI→Desktop do `garra desktop` (M1 do #1181), e vive
 //!   aqui para a casca poder reusar a mesma lista de caminhos sem uma segunda
 //!   cópia dela.
+//! - [`onboarding`] — maquina de estados do Assistente de Primeiro Uso (#1636):
+//!   as telas do wizard de WhatsApp + persona, puras, mapeando os eventos
+//!   NDJSON do `garra whatsapp link --machine`. Mesmo padrao do [`state`].
 //! - [`supervise`] — primitivos de supervisão de processo (launch / restart /
 //!   kill / morte do filho junto com o pai), extraídos do `gateway.rs` da casca
 //!   Tauri sem a dependência do Tauri.
@@ -42,11 +45,16 @@
 
 pub mod detect;
 pub mod locate;
+pub mod onboarding;
 pub mod state;
 pub mod supervise;
 
 pub use detect::{AgentKind, Confidence, DetectedAgent, Detector, Evidence, Filesystem, RealFs};
 pub use locate::{DESKTOP_BINARY, DesktopApp, EnvDirs, Locator, Platform, Source, install_dirs};
+pub use onboarding::{
+    EstiloPersona, EventoNdjson, FaseQr, Idioma, Modo, Onboarding, OnboardingPersistido,
+    Personalidade, Tela, VERSAO_PERSISTIDA,
+};
 pub use state::{Desired, ModuleId, ModuleState, Modules, Power, PowerEvent};
 pub use supervise::{
     CommandSpawner, ExitStatus, ProcessHandle, ProcessSpec, RestartPolicy, Spawner, SuperviseError,

@@ -200,6 +200,67 @@ Os codigos seguem `sysexits` (64 = `EX_USAGE`, 65 = `EX_DATAERR`,
 **Sem terminal** (pipe, CI, `curl … | sh`, systemd) o comando **nao trava e nao
 falha**: ele imprime as duas opcoes com o comando de cada uma e sai 0.
 
+## Modo maquina (`--machine`)
+
+`garraia whatsapp link --machine` e o `link` para um **consumidor que nao e
+humano** — hoje o app desktop (#1636/#1181), que roda a CLI como sidecar e nao
+tem terminal. Ao contrario do `link` interativo, ele:
+
+- **nao exige terminal** e **nao le stdin** (nada de menu, consentimento ou
+  pergunta de numero — e por isso a recusa "precisa de terminal" nao se aplica
+  a `--machine`);
+- emite **NDJSON** no stdout: uma linha de JSON por evento, cada uma com
+  `schema` (hoje `1`) e `event`. Erros tambem saem como NDJSON. O exit code
+  segue os mesmos `sysexits` do `link` (0 ok, 1 cancelado, 69 sem Node / QR
+  nao lido, 70 erro interno);
+- desenha o QR como **matriz**, nao como glifo: o MESMO motor de QR do Rust
+  (`qr::modules`, a grade que o `render` do terminal ja usava), entao sem risco
+  de polaridade invertida de uma lib JS de terceiros.
+
+`Ctrl+C`/SIGINT encerra limpo e vira `error:cancelled`. O stdout e **so**
+NDJSON — nenhuma linha humana no meio: texto de progresso do runner vira evento
+`log`, e o stderr continua livre (o consumidor nao o le como protocolo).
+
+A politica de acesso (quem pode falar) **nao** e perguntada aqui, e o modo
+maquina **recusa** `--allow`/`--owner` (exit 64 `EX_USAGE`, com um `error` de
+`code: "usage"`): aceitar essas flags so para valida-las, sem aplica-las,
+enganaria quem acha que autorizou alguem. O modo maquina pareia e liga o canal,
+e ele **nasce fail-closed** — admissao `restricted`, **zero** autorizados,
+ninguem fala com o GarraIA ainda. O consumidor aplica a politica **depois** do
+pareamento, com os comandos nao interativos (`whatsapp allow`, `whatsapp
+access`). A ordem que e contrato se mantem: o blob da sessao e gravado ANTES de
+o canal ligar, entao `session_saved` sempre precede `channel_enabled`.
+
+### Eventos
+
+| `event` | Campos | Quando |
+|---|---|---|
+| `status` | `status` | progresso: `detecting_node`, `installing_deps`, `deps_ready`, `starting_bridge`, `waiting_qr`, `connecting`, `authenticated`, `session_saved`, `channel_enabled`, `done` |
+| `qr` | `attempt`, `max_attempts`, `previous_expired`, `width`, `modules` | um QR novo; `modules` e a matriz `width×width` como linhas de `0`/`1` (1 = modulo escuro). O payload cru NUNCA entra — ele e credencial |
+| `error` | `code`, `message` [+ extras] | falha terminal; `code` em snake_case: `usage` (flag invalida, ex.: `--allow` em `--machine`), `missing_node` (leva `min_version`), `qr_expired`, `cancelled`, `session_dead`, `bridge_failed`, `missing_dependencies`, … |
+| `log` | `message` | texto de progresso curto, cosmetico |
+
+O consumidor **tolera** `event` e `status` que nao conhece: acrescentar uma
+fase no futuro nao quebra uma versao antiga do app.
+
+### Exemplo
+
+```jsonl
+{"event":"status","schema":1,"status":"detecting_node"}
+{"event":"status","schema":1,"status":"starting_bridge"}
+{"event":"log","message":"conectando ao WhatsApp…","schema":1}
+{"attempt":1,"event":"qr","max_attempts":5,"modules":["1111111010…","1000001010…"],"previous_expired":false,"schema":1,"width":61}
+{"event":"status","schema":1,"status":"waiting_qr"}
+{"event":"status","schema":1,"status":"authenticated"}
+{"event":"status","schema":1,"status":"session_saved"}
+{"event":"status","schema":1,"status":"channel_enabled"}
+{"event":"status","schema":1,"status":"done"}
+```
+
+As linhas de `modules` vem inteiras — cada uma com `width` caracteres de `0`/
+`1`; o exemplo as encurta. Com o QR expirando cinco vezes sem leitura, a ultima
+linha e `{"event":"error","code":"qr_expired",…}` e o exit e 69.
+
 ## Estados
 
 O pareamento passa por estes estados, e cada um aparece como uma linha curta:

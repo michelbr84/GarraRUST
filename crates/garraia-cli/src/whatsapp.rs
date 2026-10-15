@@ -48,6 +48,8 @@ use garraia_config::{ChannelConfig, ConfigLoader};
 use crate::wizard::prompts::Prompter;
 
 pub(crate) mod acesso;
+/// #1636: modo-maquina do `link` (NDJSON no stdout para o app desktop).
+pub(crate) mod maquina;
 /// ADR 0025: `garraia whatsapp access ...` (#1396-#1401, #1413, #1414).
 pub(crate) mod politica;
 pub use acesso::{Pedido, PedidoDePapel, PedidoRemocao};
@@ -74,6 +76,12 @@ pub enum Action {
     /// `link --allow <numero> [--owner]`: as perguntas pos-QR ja respondidas.
     /// Continua exigindo terminal — o QR se le daqui (#1345).
     LinkCom(Pedido),
+    /// `link --machine`: modo-maquina (#1636). NAO exige terminal, nao le
+    /// stdin, emite NDJSON no stdout (ver [`maquina`]). O `Pedido` so viaja
+    /// junto para o modo-maquina RECUSAR `--allow`/`--owner` (ele nao aplica
+    /// politica de acesso); a politica se aplica depois pelo consumidor com os
+    /// comandos nao interativos (`whatsapp allow`/`access`).
+    LinkMachine(Pedido),
     /// `allow <numero> [--owner] [--yes]`: autoriza sem terminal (#1345).
     Allow(Pedido),
     /// `users [--json]`: quem esta autorizado, so pelos quatro ultimos
@@ -290,6 +298,7 @@ pub fn run(action: Action, ctx: &Context, prompter: &dyn Prompter) -> i32 {
         Action::Menu => menu(ctx, prompter),
         Action::Link => link(ctx, prompter, &Pedido::default()),
         Action::LinkCom(pre) => link(ctx, prompter, &pre),
+        Action::LinkMachine(pre) => link_machine(ctx, &pre),
         Action::Allow(pedido) => acesso::allow(ctx, prompter, &pedido),
         Action::Users { json } => acesso::users(ctx, json),
         Action::Remove(pedido) => acesso::remove(ctx, prompter, &pedido),
@@ -1441,6 +1450,173 @@ fn link_paired(
         Err(e) => {
             eprintln!();
             eprintln!("{e}");
+            EX_UNAVAILABLE
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// link --machine — modo-maquina (#1636)
+// ---------------------------------------------------------------------------
+
+/// Modo-maquina do [`link`]: NAO exige TTY, nao le stdin, emite NDJSON no
+/// stdout (ver [`maquina`]). E o caminho que o app desktop (#1181) consome
+/// como sidecar.
+///
+/// # O que preserva do `link` interativo
+///
+/// A ORDEM que e o contrato (topo do modulo): o blob e gravado pelo runner
+/// ANTES de [`enable_channel`] ligar o canal. O modo-maquina mantem isso —
+/// emite `session_saved`, so entao liga o canal e emite `channel_enabled`.
+///
+/// # O que NAO faz, e por que
+///
+/// Nao roda o [`after_pairing`] interativo: ele pergunta quem pode falar com o
+/// GarraIA, e em modo-maquina nao ha stdin para responder nem stdout livre
+/// para a pergunta (o stdout e so NDJSON). A politica de acesso fica para o
+/// consumidor aplicar depois com os comandos NAO interativos que ja existem
+/// (`whatsapp allow`/`access`, #1345). Ate la o portao fica fail-closed —
+/// canal ligado, ninguem autorizado — exatamente como um `link` interativo em
+/// que o usuario nao autoriza ninguem.
+fn link_machine(ctx: &Context, pre: &Pedido) -> i32 {
+    let mut ui = maquina::JsonUi::new(ctx.lang);
+    link_machine_with(ctx, pre, NodeRuntime::detect, &mut ui)
+}
+
+/// [`link_machine`] com a deteccao do Node e a UI injetadas, para o teste.
+fn link_machine_with(
+    ctx: &Context,
+    pre: &Pedido,
+    detect_node: impl FnOnce() -> Result<NodeRuntime, BridgeError>,
+    ui: &mut maquina::JsonUi,
+) -> i32 {
+    // `--machine` NAO aplica politica de acesso: o `after_pairing` interativo
+    // nao roda (o stdout e so NDJSON). Aceitar `--allow`/`--owner` e so
+    // valida-los sem aplicar enganaria um operador que acha que autorizou
+    // alguem. Recusamos aqui, antes de qualquer coisa: a politica se aplica
+    // DEPOIS do pareamento, com `whatsapp allow`/`access`. Ate la o canal nasce
+    // fail-closed (admissao Restricted, 0 autorizados).
+    if pre.numero.is_some() || pre.owner {
+        let message = tb(
+            ctx.lang,
+            "--machine nao aplica --allow/--owner: autorize depois do pareamento com `{bin} whatsapp allow`.",
+            "--machine does not apply --allow/--owner: authorize after pairing with `{bin} whatsapp allow`.",
+        );
+        ui.emit_error("usage", &message, &[]);
+        return acesso::EX_USAGE;
+    }
+
+    let store = match ctx.store() {
+        Ok(s) => s,
+        Err(e) => {
+            ui.emit_error("internal_error", &e.to_string(), &[]);
+            return EX_SOFTWARE;
+        }
+    };
+    let key = match ctx.key() {
+        Ok(k) => k,
+        Err(e) => {
+            ui.emit_error("internal_error", &e.to_string(), &[]);
+            return EX_SOFTWARE;
+        }
+    };
+
+    ui.emit_status(maquina::fase::DETECTING_NODE);
+    let node = match detect_node() {
+        Ok(n) => n,
+        Err(_) => {
+            // `missing_node` e o unico erro desenhado em detalhe: ele leva a
+            // versao minima, para o consumidor orientar o usuario.
+            ui.emit_missing_node();
+            return EX_UNAVAILABLE;
+        }
+    };
+
+    let bridge_dir = ctx.bridge_dir();
+    let preparo = match bridge::prepare(&bridge_dir, &bridge::EmbeddedAssets) {
+        Ok(p) => p,
+        Err(e) => {
+            ui.emit_error("internal_error", &e.to_string(), &[]);
+            return EX_SOFTWARE;
+        }
+    };
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            ui.emit_error("internal_error", &e.to_string(), &[]);
+            return EX_SOFTWARE;
+        }
+    };
+
+    if preparo.deps == bridge::DepsPlan::Install {
+        ui.emit_status(maquina::fase::INSTALLING_DEPS);
+        if let Err(e) = runtime.block_on(bridge::install_deps(
+            &node.npm,
+            &bridge_dir,
+            &bridge::EmbeddedAssets,
+        )) {
+            ui.emit_error("deps_failed", &e.to_string(), &[]);
+            return EX_UNAVAILABLE;
+        }
+        ui.emit_status(maquina::fase::DEPS_READY);
+    }
+
+    let launcher = NodeLauncher::new(&node.node, &bridge_dir);
+    link_machine_paired(ctx, &store, &key, &launcher, &runtime, ui)
+}
+
+/// A parte do [`link_machine`] depois de Node/deps prontos: sobe o bridge,
+/// pareia e traduz o desfecho em NDJSON + exit code. `launcher` injetavel para
+/// o teste entrar por cima com a ponte falsa, sem Node e sem rede.
+fn link_machine_paired(
+    ctx: &Context,
+    store: &SessionStore,
+    key: &SessionKey,
+    launcher: &dyn BridgeLauncher,
+    runtime: &tokio::runtime::Runtime,
+    ui: &mut maquina::JsonUi,
+) -> i32 {
+    ui.emit_status(maquina::fase::STARTING_BRIDGE);
+
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let outcome = runtime.block_on(async {
+        // Ctrl+C vira um bit no canal: o runner manda `shutdown` ao bridge e
+        // sai limpo, e o desfecho vira `error:cancelled`.
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = cancel_tx.send(true);
+            }
+        });
+        runner::pair(launcher, store, key, ui, cancel_rx).await
+    });
+
+    match outcome {
+        Ok(_) => {
+            // ORDEM (contrato): o blob ja esta em disco (o runner gravou). So
+            // agora a config aprende que o canal existe.
+            ui.emit_status(maquina::fase::SESSION_SAVED);
+            if let Err(e) = enable_channel(ctx) {
+                ui.emit_error("internal_error", &e.to_string(), &[]);
+                return EX_SOFTWARE;
+            }
+            ui.emit_status(maquina::fase::CHANNEL_ENABLED);
+            ui.emit_status(maquina::fase::DONE);
+            0
+        }
+        Err(RunError::SessionDead { reason_code }) => {
+            ui.emit_run_error(&RunError::SessionDead { reason_code });
+            // Mesma postura do `link`: o runner ja apagou a sessao; desligar o
+            // canal e best-effort e nao muda o desfecho.
+            let _ = disable_channel(ctx);
+            EX_UNAVAILABLE
+        }
+        Err(RunError::Cancelled) => {
+            ui.emit_run_error(&RunError::Cancelled);
+            EX_CANCELLED
+        }
+        Err(e) => {
+            ui.emit_run_error(&e);
             EX_UNAVAILABLE
         }
     }
