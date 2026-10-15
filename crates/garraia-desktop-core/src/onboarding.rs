@@ -27,7 +27,8 @@
 //!
 //! - Nenhum estado terminal avanca sozinho: so uma acao move a tela.
 //! - [`FaseQr::Falhou`] nao e beco sem saida — [`Onboarding::tentar_de_novo`]
-//!   volta a aguardar o QR.
+//!   volta a [`FaseQr::Conectando`], de onde um `qr` novo traz a
+//!   [`FaseQr::AguardandoQr`] seguinte.
 //! - `Avancar` so passa da tela do QR quando o pareamento **concluiu**; nao da
 //!   para pular o vinculo.
 
@@ -339,8 +340,9 @@ impl Onboarding {
         }
     }
 
-    /// Depois de [`FaseQr::Falhou`], volta a aguardar o QR. Sem efeito se a
-    /// tela nao for um QR falho.
+    /// Depois de [`FaseQr::Falhou`], volta a [`FaseQr::Conectando`] — o sidecar
+    /// recomeca o pareamento do zero, e um `qr` novo traz a [`FaseQr::AguardandoQr`]
+    /// seguinte. Sem efeito se a tela nao for um QR falho.
     pub fn tentar_de_novo(&mut self) {
         if self.cancelado {
             return;
