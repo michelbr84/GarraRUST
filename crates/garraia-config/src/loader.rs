@@ -131,7 +131,7 @@ impl ConfigLoader {
             // proposito: a mensagem do `from_str` abaixo diz linha e coluna, e
             // esta nao diria.
             let sem_conteudo = contents.trim().is_empty()
-                || serde_yaml::from_str::<serde_yaml::Value>(&contents)
+                || serde_norway::from_str::<serde_norway::Value>(&contents)
                     .map(|v| v.is_null())
                     .unwrap_or(false);
             if sem_conteudo {
@@ -142,7 +142,7 @@ impl ConfigLoader {
                     yaml_path.display()
                 )));
             }
-            serde_yaml::from_str(&contents)
+            serde_norway::from_str(&contents)
                 .map_err(|e| Error::Config(format!("failed to parse YAML config: {e}")))
         } else if toml_path.exists() {
             info!("loading config from {}", toml_path.display());
@@ -192,13 +192,13 @@ impl ConfigLoader {
 
         let (mut config, valor) = if yaml_path.exists() {
             let contents = std::fs::read_to_string(&yaml_path).ok()?;
-            let mut valor: serde_yaml::Value = serde_yaml::from_str(&contents).ok()?;
+            let mut valor: serde_norway::Value = serde_norway::from_str(&contents).ok()?;
             let perfil = valor
                 .get_mut("execution")?
                 .as_mapping_mut()?
                 .remove("profile")?;
             let cru = perfil.as_str()?.to_string();
-            let config: AppConfig = serde_yaml::from_value(valor).ok()?;
+            let config: AppConfig = serde_norway::from_value(valor).ok()?;
             (config, cru)
         } else if toml_path.exists() {
             let contents = std::fs::read_to_string(&toml_path).ok()?;
@@ -357,7 +357,7 @@ impl ConfigLoader {
     pub fn save(&self, config: &AppConfig) -> Result<()> {
         let yaml_path = self.config_dir.join("config.yml");
 
-        let contents = serde_yaml::to_string(config)
+        let contents = serde_norway::to_string(config)
             .map_err(|e| Error::Config(format!("failed to serialize config: {e}")))?;
 
         write_atomic_secret(&yaml_path, contents.as_bytes())?;
@@ -1213,7 +1213,7 @@ mod tests {
 
     /// **Config vazia nao e "sem config".**
     ///
-    /// `serde_yaml` desserializa uma string em branco para `AppConfig::default()`
+    /// `serde_norway` desserializa uma string em branco para `AppConfig::default()`
     /// **com sucesso** — e essa era a forma exata que uma escrita interrompida
     /// deixava o arquivo. O gate de credencial do gateway desaparecia em
     /// silencio, e o `save()` seguinte gravava os defaults por cima do que
@@ -1227,7 +1227,7 @@ mod tests {
         // A premissa que torna o bug possivel — se ela cair, este teste perde o
         // sentido e quem mexer precisa saber disso.
         assert!(
-            serde_yaml::from_str::<crate::model::AppConfig>("   \n").is_ok(),
+            serde_norway::from_str::<crate::model::AppConfig>("   \n").is_ok(),
             "premissa: YAML em branco desserializa com sucesso para os defaults"
         );
 

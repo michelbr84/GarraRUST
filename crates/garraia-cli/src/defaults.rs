@@ -43,8 +43,8 @@ mod tests {
     fn desktop_default_config_matches_the_shared_constants() {
         const YAML: &str =
             include_str!("../../garraia-desktop/src-tauri/resources/config.default.yml");
-        let doc: serde_yaml::Value =
-            serde_yaml::from_str(YAML).expect("config.default.yml must be valid YAML");
+        let doc: serde_norway::Value =
+            serde_norway::from_str(YAML).expect("config.default.yml must be valid YAML");
 
         let llm = doc.get("llm").expect("llm section present");
 

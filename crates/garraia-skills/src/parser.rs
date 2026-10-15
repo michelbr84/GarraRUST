@@ -54,7 +54,7 @@ pub fn parse_skill(content: &str) -> Result<SkillDefinition> {
         String::new()
     };
 
-    let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml_block)
+    let frontmatter: SkillFrontmatter = serde_norway::from_str(yaml_block)
         .map_err(|e| Error::Skill(format!("invalid frontmatter YAML: {e}")))?;
 
     Ok(SkillDefinition {
@@ -133,7 +133,7 @@ This is the skill body with instructions.
     fn missing_name() {
         let content = "---\ndescription: test\n---\nBody here.";
         let result = parse_skill(content);
-        // serde_yaml will error on missing required field
+        // serde_norway will error on missing required field
         assert!(result.is_err());
     }
 

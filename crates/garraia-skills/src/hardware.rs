@@ -362,10 +362,10 @@ mod tests {
 
     #[test]
     fn kind_desserializa_do_frontmatter() {
-        let k: SkillKind = serde_yaml::from_str("hardware-adapter").expect("kebab-case");
+        let k: SkillKind = serde_norway::from_str("hardware-adapter").expect("kebab-case");
         assert_eq!(k, SkillKind::HardwareAdapter);
-        let k: SkillKind = serde_yaml::from_str("hardware-preset").expect("kebab-case");
+        let k: SkillKind = serde_norway::from_str("hardware-preset").expect("kebab-case");
         assert_eq!(k, SkillKind::HardwarePreset);
-        assert!(serde_yaml::from_str::<SkillKind>("hardware_adapter").is_err());
+        assert!(serde_norway::from_str::<SkillKind>("hardware_adapter").is_err());
     }
 }
