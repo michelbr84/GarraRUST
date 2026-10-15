@@ -1,0 +1,30 @@
+{
+  "title": {
+    "message": "GarraIA",
+    "description": "The title in the navbar"
+  },
+  "logo.alt": {
+    "message": "GarraIA",
+    "description": "The alt text of navbar logo"
+  },
+  "item.label.Docs": {
+    "message": "Docs",
+    "description": "Navbar item with label Docs"
+  },
+  "item.label.Changelog": {
+    "message": "Changelog",
+    "description": "Navbar item with label Changelog"
+  },
+  "item.label.Releases": {
+    "message": "Releases",
+    "description": "Navbar item with label Releases"
+  },
+  "item.label.GitHub": {
+    "message": "GitHub",
+    "description": "Navbar item with label GitHub"
+  },
+  "item.label.Site": {
+    "message": "Site",
+    "description": "Navbar item with label Site"
+  }
+}

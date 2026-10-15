@@ -717,9 +717,16 @@ mod tests {
             "{}",
             saida.content
         );
+        // #1258: a procedência é nomeada. #1626: sem o caminho absoluto, que
+        // vazaria o dir por-orquestrador no envelope servido pela ponte.
         assert_eq!(
             saida.content.lines().next().unwrap_or_default(),
-            format!("Repositório: {wd} (working_dir da sessão)")
+            "Repositório: o working_dir da sessão"
+        );
+        assert!(
+            !saida.content.contains(&wd),
+            "o caminho absoluto do working_dir vazou na resposta:\n{}",
+            saida.content
         );
     }
 
@@ -754,11 +761,14 @@ mod tests {
         }
     }
 
-    /// #1258: `working_dir` que não existe falha **nomeando o diretório**, e
-    /// não cai de volta no CWD do processo. Um "No such file or directory" sem
-    /// dizer qual diretório era o diagnóstico impossível que a issue descreve.
+    /// #1258: `working_dir` que não existe falha **nomeando a procedência** (o
+    /// working_dir da sessão), e não cai de volta no CWD do processo — era a
+    /// confusão silenciosa que a issue descreve. #1626: a procedência é nomeada
+    /// sem o caminho absoluto, que vazaria o dir por-orquestrador no envelope
+    /// servido pela ponte (a #1258 segue distinguindo working_dir de CWD, que é
+    /// o que resolve a confusão).
     #[tokio::test]
-    async fn working_dir_inexistente_erra_nomeando_o_diretorio() {
+    async fn working_dir_inexistente_nomeia_a_procedencia_sem_o_caminho() {
         let tool = GitDiffTool::new(Some(15), Some(500));
         let inexistente = "/nao/existe/em/lugar/nenhum-1258";
 
@@ -771,7 +781,17 @@ mod tests {
             .expect("execute");
 
         assert!(saida.is_error, "{}", saida.content);
-        assert!(saida.content.contains(inexistente), "{}", saida.content);
+        // Nomeia o working_dir da sessão (não cai no CWD), mas sem o caminho.
+        assert!(
+            saida.content.contains("working_dir da sessão"),
+            "{}",
+            saida.content
+        );
+        assert!(
+            !saida.content.contains(inexistente),
+            "o caminho absoluto do working_dir vazou:\n{}",
+            saida.content
+        );
     }
 
     #[tokio::test]

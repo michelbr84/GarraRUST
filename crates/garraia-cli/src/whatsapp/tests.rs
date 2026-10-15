@@ -3931,6 +3931,59 @@ fn o_modo_maquina_sem_node_emite_error_missing_node() {
     );
 }
 
+/// O modo-maquina RECUSA `--allow`/`--owner` com `EX_USAGE` e um `error` de
+/// `code: usage` — ele nao aplica politica de acesso, entao aceitar as flags
+/// so para valida-las enganaria quem acha que autorizou alguem.
+#[test]
+fn o_modo_maquina_recusa_allow_e_owner() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctx = ctx_in(&dir, false);
+    ctx.loader
+        .as_ref()
+        .expect("loader")
+        .ensure_dirs()
+        .expect("dirs");
+
+    let casos = [
+        Pedido {
+            numero: Some("+55 11 99999-8888".into()),
+            owner: false,
+            yes: false,
+        },
+        Pedido {
+            numero: None,
+            owner: true,
+            yes: false,
+        },
+    ];
+    for pre in casos {
+        let sink = CaptureSink::new();
+        let mut ui = maquina::JsonUi::with_sink(ctx.lang, Box::new(sink.clone()));
+        // `no_node` nunca e alcancado: a recusa vem antes de detectar Node.
+        let code = link_machine_with(&ctx, &pre, no_node, &mut ui);
+        assert_eq!(
+            code, 64,
+            "--allow/--owner em --machine = EX_USAGE ({pre:?})"
+        );
+
+        let eventos = eventos_ndjson(&sink.text());
+        let erro = eventos
+            .iter()
+            .find(|e| e["event"] == serde_json::json!("error"))
+            .expect("um evento error");
+        assert_eq!(erro["code"], serde_json::json!("usage"));
+        // Recusa ANTES de qualquer progresso: nada de status/qr.
+        assert!(
+            !eventos.iter().any(|e| {
+                e["event"] == serde_json::json!("status") || e["event"] == serde_json::json!("qr")
+            }),
+            "a recusa vem antes de detectar Node"
+        );
+        // E nada foi escrito na config.
+        assert!(secao_de(&ctx).is_none());
+    }
+}
+
 /// Sessao ja valida: o modo-maquina conecta sem pedir QR nenhum (o caminho
 /// idempotente). Primeiro pareia (salva o blob), depois reexecuta com a ponte
 /// `session-ok`.

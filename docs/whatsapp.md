@@ -221,12 +221,15 @@ tem terminal. Ao contrario do `link` interativo, ele:
 NDJSON — nenhuma linha humana no meio: texto de progresso do runner vira evento
 `log`, e o stderr continua livre (o consumidor nao o le como protocolo).
 
-A politica de acesso (quem pode falar) **nao** e perguntada aqui: o modo
-maquina pareia e liga o canal (fail-closed, ninguem autorizado ate la), e o
-consumidor aplica a politica depois com os comandos nao interativos
-(`whatsapp allow`/`access`). A ordem que e contrato se mantem: o blob da sessao
-e gravado ANTES de o canal ligar, entao `session_saved` sempre precede
-`channel_enabled`.
+A politica de acesso (quem pode falar) **nao** e perguntada aqui, e o modo
+maquina **recusa** `--allow`/`--owner` (exit 64 `EX_USAGE`, com um `error` de
+`code: "usage"`): aceitar essas flags so para valida-las, sem aplica-las,
+enganaria quem acha que autorizou alguem. O modo maquina pareia e liga o canal,
+e ele **nasce fail-closed** — admissao `restricted`, **zero** autorizados,
+ninguem fala com o GarraIA ainda. O consumidor aplica a politica **depois** do
+pareamento, com os comandos nao interativos (`whatsapp allow`, `whatsapp
+access`). A ordem que e contrato se mantem: o blob da sessao e gravado ANTES de
+o canal ligar, entao `session_saved` sempre precede `channel_enabled`.
 
 ### Eventos
 
@@ -234,7 +237,7 @@ e gravado ANTES de o canal ligar, entao `session_saved` sempre precede
 |---|---|---|
 | `status` | `status` | progresso: `detecting_node`, `installing_deps`, `deps_ready`, `starting_bridge`, `waiting_qr`, `connecting`, `authenticated`, `session_saved`, `channel_enabled`, `done` |
 | `qr` | `attempt`, `max_attempts`, `previous_expired`, `width`, `modules` | um QR novo; `modules` e a matriz `width×width` como linhas de `0`/`1` (1 = modulo escuro). O payload cru NUNCA entra — ele e credencial |
-| `error` | `code`, `message` [+ extras] | falha terminal; `code` em snake_case: `missing_node` (leva `min_version`), `qr_expired`, `cancelled`, `session_dead`, `bridge_failed`, `missing_dependencies`, … |
+| `error` | `code`, `message` [+ extras] | falha terminal; `code` em snake_case: `usage` (flag invalida, ex.: `--allow` em `--machine`), `missing_node` (leva `min_version`), `qr_expired`, `cancelled`, `session_dead`, `bridge_failed`, `missing_dependencies`, … |
 | `log` | `message` | texto de progresso curto, cosmetico |
 
 O consumidor **tolera** `event` e `status` que nao conhece: acrescentar uma

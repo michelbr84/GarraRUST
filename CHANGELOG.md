@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.4.9] - 2026-10-10
+## [0.4.9] - 2026-10-15
+
+**Duas frentes grandes e uma varredura de seguranca.** A primeira frente sao os **direitos dos titulares de dados**, que saem do papel: `GET /v1/me/export` passa a devolver o conteudo pessoal do titular em todos os grupos dele (mensagens, mencoes, arquivos, memorias e tarefas) e declara o que ficou de fora; `PATCH /v1/me` aceita `email` sem nunca trocar o e-mail as cegas; `DELETE /v1/me` enfileira um apagamento com carencia de 30 dias executado por um worker com credenciais dedicadas (`garraia_purge`, migration 034). A segunda frente e o **gateway como servidor MCP por HTTP com delegacao de tarefas**: `garra_ask` (#1612), orquestradores externos com identidade propria, politica e auditoria por orquestrador (#1613), `garra_agent` (#1615) e a redacao extensivel por regex do operador (#1626, item 4) — tudo desligado por padrao, com orcamento proprio e fail-closed. O item 1 da #1626 (jail e workdir por orquestrador) fica para a 0.4.10.
+
+**Seguranca.** Vinte e quatro advisories RUSTSEC fechados de uma vez no `Cargo.lock` (#1630): `rustls` 0.23.46, `quinn-proto` 0.11.18, `wasmtime`/`wasmtime-wasi` 49.0.3 (inclui o escape do sandbox de filesystem RUSTSEC-2026-0352) e `chacha20` 0.10.2, mais a troca do `serde_yaml` abandonado pelo fork mantido `serde_norway` — mesma API, sem mudanca de comportamento, e nenhuma excecao nova no `deny.toml`. Cada asset da release leva atestacao de proveniencia verificavel com `gh attestation verify` (#1606), e o request-path do gateway passa a negar `unwrap()`/`expect()` (#1569). A secao Security abaixo detalha advisory por advisory.
+
+**Tambem nesta versao.** `garra uninstall` remove a CLI da maquina (`--purge` para levar a config junto); o auto-updater do desktop ganha o `latest.json` correto, o DMG do macOS Apple Silicon e as assinaturas do Windows estagiadas (#1568); dependencias de outubro atualizadas em bloco (`tokio` 1.53.3, `opentelemetry` 0.33.1, Tauri 2.12.2 + plugins, Playwright 1.64, `rust:1.99-slim` na imagem Docker); dois testes que piscavam no CI por corrida entre testes paralelos deixam de piscar; e os rascunhos juridicos e de precificacao sairam do versionamento — conformidade nao e anunciada antes de existir.
+
+**Compatibilidade.** Sem breaking change de config ou de API. MSRV segue 1.96; binarios Linux seguem a baseline glibc >= 2.35 (Ubuntu 22.04+, Debian 12+). Quem usa `serde_yaml` so por tabela (config.yml) nao percebe a troca. O Garra Mobile acompanha a versao (0.4.9+12; a 0.4.8 nao bumpou o APK).
+
+**Como atualizar.** `garra update` (ou `garraia update`) a partir de qualquer 0.4.x; instalacao nova com `curl -fsSL https://github.com/michelbr84/GarraRUST/releases/latest/download/install.sh | sh` ou, no Windows, `irm https://github.com/michelbr84/GarraRUST/releases/latest/download/install.ps1 | iex`. O desktop se atualiza sozinho pelo `latest.json` desta release. Plataformas: CLI para Linux x86_64/aarch64 (binario, `.tar.gz`, `.deb`, `.rpm`, AppImage), macOS Intel e Apple Silicon, Windows x86_64 e ARM64 (`.exe`, `.zip`) e Android/Termux (aarch64); desktop para Windows x86_64 (`.msi`, `-setup.exe`), Linux x86_64 (`.deb`, AppImage) e macOS Apple Silicon (`.dmg`); Garra Mobile `.apk`. Os pacotes alem do trio obrigatorio (linux-x86_64, windows-x86_64, macos-x86_64) sao best-effort: conferir a lista de assets da Release.
+
+**Limites conhecidos.** As linhas manuais do gate de dogfood (D2 Windows, D5/D6 instalacao dos bundles desktop, D10 e o trecho WhatsApp do D1) ficaram para depois do tag, com aceite de risco registrado no PR de release, como na 0.4.6/0.4.7; a parte Linux (D1/D3a/D9) passou 12/12 contra o candidato. Novidades por tema na wiki: [Novidades da v0.4.9](https://github.com/michelbr84/GarraRUST/wiki/Novidades-v0.4.9) / [What's New in v0.4.9](https://github.com/michelbr84/GarraRUST/wiki/Whats-New-v0.4.9).
 
 ### Added
 - **Direitos dos titulares saem do papel: exportacao completa, correcao de
@@ -74,6 +86,20 @@ Refs #1595
   (redação de padrões de segredo no payload e no erro). Lista vazia (default)
   mantém o comportamento de antes. Refs #1613
 - **`garra_agent` no servidor MCP HTTP (`POST /mcp`), para delegação de tarefas (#1615).** Um orquestrador externo passa a pedir ao Garra uma tarefa completa — ler e gravar arquivos dentro das raízes liberadas, buscar na web, ver o git e, só com sandbox, rodar comando — e recebe o envelope `garra.agent.v1` com o resumo de cada tool usada. É a mudança de spec da issue: até aqui o agente completo existia só no stdio. A tool é desligada por padrão e só aparece com `gateway.mcp_http.allow_agent: true` e com `agent` na lista `tools` do orquestrador. Tem orçamento próprio de `agent_budget_per_minute` (padrão 2) e teto de tempo `agent_max_seconds` (padrão 300, máximo 600), e não divide cota com envio nem com `garra_ask`. Entrada e saída passam pela redação de segredos, e nenhum prompt, resposta ou saída de tool vai para o log. O núcleo do agente saiu da CLI para `garraia-gateway/src/agente_mcp.rs`, usado pelo stdio e pela ponte, sem mudança no `garra mcp-server`. Refs #1615
+- **Redacao extensivel da ponte MCP HTTP (#1626, item 4).** Nova chave opt-in
+  `gateway.mcp_http.redact_patterns`: lista de regex do operador (ate 32, 512
+  caracteres cada, sintaxe do crate `regex`, tempo linear) que se somam aos
+  padroes embutidos e viram `[REDACTED]` nas mesmas superficies da redacao
+  embutida: `garra_send_message`, o erro de `garra_ask` e a saida de
+  `garra_agent` (prompt, resposta, erro e resumos de tool).
+  Padrao vazio, que casa o texto vazio, longo demais ou invalido e ignorado e
+  reportado como erro pelo `config check`, sem derrubar os demais. Default vazio:
+  comportamento inalterado.
+- **Teste de contrato do `bash` pela ponte MCP HTTP (#1626, item 3).** Dois testes
+  em `mcp_http_contract.rs` exercitam `garra_agent` de ponta a ponta com um
+  provider falso que pede a tool `bash`: o comando roda e a saida volta ao modelo,
+  e um comando destrutivo e barrado pela denylist do `BashTool`. Sem mudanca de
+  comportamento em producao.
 
 ### Changed
 - **Decisoes do dono entram nos rascunhos GA de negocio e legal (#1565, #1574, #1575, #1576).**
@@ -135,6 +161,7 @@ Refs #1595
   (`GET /v1/me/export`, `PATCH /v1/me`, `POST /v1/me/anonymize`,
   `DELETE /v1/me`) estão implementados no gateway — a lista de pendências do
   documento estava desatualizada.
+- **Dependencias de outubro atualizadas em bloco (#1631, #1632, #1633, #1634).** `tokio` 1.53.3, `serde_json` 1.0.154, `uuid` 1.28.0, `libc` 0.2.190, `zeroize` 1.9.1, `aws-sdk-s3` 1.152.0, a familia `opentelemetry` 0.33.1, o Tauri 2.12.2 com os plugins `global-shortcut` 2.4.1, `shell` 2.5.0, `notification` 2.7.0, `dialog` 2.8.3 e `updater` 2.14.0 (o desktop deixa de arrastar `sigchld`, o `signal-hook` 0.3 e a arvore `windows` 0.61), `@playwright/test` 1.64 nos testes E2E e a imagem base do `Dockerfile` em `rust:1.99-slim`. Substitui os quatro PRs do Dependabot abertos com o mesmo conteudo, que ficavam vermelhos no `cargo-deny` por causa do #1630.
 
 ### Removed
 - **Rascunhos legais e precificacao saem do repositorio publico (#1616).**
@@ -227,6 +254,10 @@ Refs #1611
 
 Refs #1618
 - O loader valida `GARRAIA_CONFIG_DIR` na ingestão: valor placeholder de `.env.example` (ex.: `/custom/config/path` vindo do `.env` do CWD) ou vazio agora cai no config_dir padrão com aviso, em vez de derrubar qualquer comando com `EACCES (os error 13)` opaco — inclusive o `garra config check` (#1620).
+- **Schema de `garra_agent` anuncia o teto do operador (#1626).** `timeout_secs`
+  passa a sair com `maximum` e `default` derivados de `agent_max_seconds`, em vez
+  de 600/300 fixos; antes o schema dizia que um valor valia e a recusa vinha depois.
+- **Dois testes que falhavam por corrida entre testes paralelos deixam de piscar no CI (#1633).** `uninstall_smoke` copiava o binario para um tempdir e o `spawn` recebia `ETXTBSY` quando outro teste do mesmo processo ainda tinha o descritor de escrita da propria copia aberto entre `fork` e `exec` — agora o `spawn` tenta de novo nesse erro e so nele. `hub_inacessivel_registry_fica_vazio` obtinha uma porta "sem nada escutando" com bind + drop, e os hubs falsos dos testes vizinhos podiam herdar a mesma porta efemera no intervalo; o listener agora fica vivo e recusa cada conexao aceita.
 
 ### Security
 - security(release): cada asset da release ganha attestacao de proveniencia verificavel com `gh attestation verify` (#1606)
@@ -234,6 +265,7 @@ Refs #1618
 - **Ledger do CodeQL recebe os 8 alertas `rust/path-injection` (high) de `uploads.rs` e `session_workspace.rs` (#181–#188).** Auditoria por entrada concluiu falso-positivo nas duas causas-raiz: o caminho do staging nasce de `Path<Uuid>` tipado (extractor do axum rejeita não-UUID com 400 antes do handler) e o workspace de sessão nasce do digest SHA-256 hex de 32 chars do `session_id` — nenhum dos dois charset expressa traversal, e o CodeQL Rust pack não modela as duas transformações como sanitizer. As 8 entradas entram no `.json` e no `.md` com justificativa, disambiguators nos snippets ambíguos (#186/#187) e regressão nova `o_nome_do_subdiretorio_e_sempre_hex_de_32_nunca_escapa_charset`, que assera len/charset para ids adversariais. O checker derivou linhas novas para 4 entradas pré-existentes (#40, #41, #42, #115), mas o `line` de uma entrada espelha o span do **alerta vivo** (é o que o `--apply` valida) — enquanto o CodeQL não reanalisar, código e alerta divergem e o valor derivado derruba o `--apply` fail-closed; as 4 linhas seguem o alerta, e o reancoragem automático só entra após re-análise ou via `codeql-rekey-ledger.py` (corrigido no PR seguinte). Dismissals aplicados via `codeql-reapply-dismissals.sh --apply` após o merge.
 
 Refs #1618
+- **Vinte e quatro advisories RUSTSEC fechados de uma vez (seis do `quinn-proto`, quatro do `rustls`, treze da arvore `wasmtime`/`wasmtime-wasi`, um do `unsafe-libyaml`), e o `cargo-deny` volta a passar sem nenhuma excecao nova (#1630).** `rustls` 0.23.45 -> 0.23.46 (RUSTSEC-2026-0346 a -0349: `Debug` de sessao vazando segredo TLS, dado bufferizado apos rejeicao de ECH, descompressao brotli de certificado ate 1 GiB antes da autenticacao e downgrade de key exchange por `ServerHello` nao autenticado); `quinn-proto` 0.11.16 -> 0.11.18 (RUSTSEC-2026-0338 a -0343: panics e exaustao de memoria acionaveis pelo peer remoto); `wasmtime`/`wasmtime-wasi` 49.0.2 -> 49.0.3 (RUSTSEC-2026-0352 no `wasmtime-wasi`, escape do sandbox de filesystem ao renomear symlink com barra final, e RUSTSEC-2026-0353 a -0364 no `wasmtime`: panics do host no component model, limites de handle table e tags desalinhadas — sem subir o MSRV, que segue 1.96); `chacha20` 0.10.0 (yanked) -> 0.10.2. O `serde_yaml` 0.9.34, que arrasta o `unsafe-libyaml` arquivado (RUSTSEC-2024-0449, sem versao corrigida), e trocado pelo fork mantido `serde_norway` 0.9.42 — mesma API, mesmo comportamento, `unsafe-libyaml-norway` por baixo — em `garraia`, `garraia-config`, `garraia-gateway`, `garraia-learning` e `garraia-skills`. Nenhuma entrada foi adicionada ao `ignore` do `deny.toml` nem do `audit.toml`.
 
 ## [0.4.8] - 2026-10-07
 

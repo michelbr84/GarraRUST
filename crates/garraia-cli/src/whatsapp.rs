@@ -77,9 +77,10 @@ pub enum Action {
     /// Continua exigindo terminal — o QR se le daqui (#1345).
     LinkCom(Pedido),
     /// `link --machine`: modo-maquina (#1636). NAO exige terminal, nao le
-    /// stdin, emite NDJSON no stdout (ver [`maquina`]). O `Pedido` carrega o
-    /// `--allow`/`--owner` so para validacao antecipada; a politica de acesso
-    /// e aplicada depois pelo consumidor com os comandos nao interativos.
+    /// stdin, emite NDJSON no stdout (ver [`maquina`]). O `Pedido` so viaja
+    /// junto para o modo-maquina RECUSAR `--allow`/`--owner` (ele nao aplica
+    /// politica de acesso); a politica se aplica depois pelo consumidor com os
+    /// comandos nao interativos (`whatsapp allow`/`access`).
     LinkMachine(Pedido),
     /// `allow <numero> [--owner] [--yes]`: autoriza sem terminal (#1345).
     Allow(Pedido),
@@ -1489,13 +1490,20 @@ fn link_machine_with(
     detect_node: impl FnOnce() -> Result<NodeRuntime, BridgeError>,
     ui: &mut maquina::JsonUi,
 ) -> i32 {
-    // Validacao antecipada do `--allow`/`--owner` (a mesma do `link`): numero
-    // ou flag invalidos falham aqui. Com `pre` vazio — o caso do app desktop —
-    // e um no-op. O erro sai como NDJSON tambem.
-    if let Err(code) = acesso::validar_pre_link(ctx, pre) {
-        let (c, message) = machine_error_de_codigo(code, ctx.lang);
-        ui.emit_error(c, &message, &[]);
-        return code;
+    // `--machine` NAO aplica politica de acesso: o `after_pairing` interativo
+    // nao roda (o stdout e so NDJSON). Aceitar `--allow`/`--owner` e so
+    // valida-los sem aplicar enganaria um operador que acha que autorizou
+    // alguem. Recusamos aqui, antes de qualquer coisa: a politica se aplica
+    // DEPOIS do pareamento, com `whatsapp allow`/`access`. Ate la o canal nasce
+    // fail-closed (admissao Restricted, 0 autorizados).
+    if pre.numero.is_some() || pre.owner {
+        let message = tb(
+            ctx.lang,
+            "--machine nao aplica --allow/--owner: autorize depois do pareamento com `{bin} whatsapp allow`.",
+            "--machine does not apply --allow/--owner: authorize after pairing with `{bin} whatsapp allow`.",
+        );
+        ui.emit_error("usage", &message, &[]);
+        return acesso::EX_USAGE;
     }
 
     let store = match ctx.store() {
@@ -1611,30 +1619,6 @@ fn link_machine_paired(
             ui.emit_run_error(&e);
             EX_UNAVAILABLE
         }
-    }
-}
-
-/// `code` + `message` NDJSON a partir de um exit code de
-/// [`acesso::validar_pre_link`].
-fn machine_error_de_codigo(code: i32, lang: Lang) -> (&'static str, String) {
-    match code {
-        acesso::EX_USAGE => (
-            "invalid_usage",
-            t(
-                lang,
-                "Combinacao de flags invalida.",
-                "Invalid flag combination.",
-            )
-            .to_string(),
-        ),
-        acesso::EX_DATAERR => (
-            "invalid_number",
-            t(lang, "Numero invalido.", "Invalid number.").to_string(),
-        ),
-        _ => (
-            "internal_error",
-            t(lang, "Erro interno.", "Internal error.").to_string(),
-        ),
     }
 }
 

@@ -5,12 +5,101 @@ Status operacional do backlog do GarraIA/GarraRUST. Este arquivo complementa
 foi concluído, o que ficou parcial ou adiado, decisões tomadas e próximos passos
 curtos para a próxima sessão autônoma.
 
-**Atualizado:** 2026-09-28 (America/New_York)
+**Atualizado:** 2026-10-15 (America/New_York)
 
 > O Linear foi descontinuado em 2026-08-18; o planejamento vive no tracker
 > interno. Menções a "Done in Linear", "In Review" ou "issues Linear" nas seções
 > históricas abaixo são registro da época, não estado atual. IDs `GAR-xxx`
 > permanecem como identificadores históricos.
+
+## Release v0.4.9 — 2026-10-15
+
+Primeira release grande depois da correção v0.4.7. Duas frentes — direitos dos
+titulares de dados e delegação de tarefas pelo MCP HTTP — mais uma varredura de
+advisories de dependências e a faixa de correções de confiabilidade.
+
+- **O que entrou.**
+  - **Direitos dos titulares de ponta a ponta no gateway.** `GET /v1/me/export`
+    passa a incluir o conteúdo pessoal do titular em todos os grupos (mensagens,
+    menções, arquivos, memórias, tarefas) numa transação que reaponta a GUC de
+    tenant por grupo e declara `exclusions`/`truncated_sections`; `PATCH /v1/me`
+    registra a troca de e-mail como `pending` (aplicação é passo manual do
+    operador, sem oráculo de enumeração); `DELETE /v1/me` enfileira o apagamento
+    com carência de 30 dias, executado pelo `account_purge_worker` sob o role
+    dedicado `garraia_purge` (migration 034, só `EXECUTE` nas quatro funções
+    `SECURITY DEFINER`, sem `BYPASSRLS`); `POST /v1/me/anonymize` já estava no
+    lugar.
+  - **Gateway MCP HTTP ganha delegação.** `garra_ask` (#1612), orquestradores
+    externos com identidade por env e política por orquestrador (#1613),
+    `garra_agent` (#1615) e redação extensível por regex do operador
+    (`gateway.mcp_http.redact_patterns`, #1635) — tudo desligado por padrão e com
+    orçamento próprio. Os itens 2–4 da #1626 (teto dinâmico do schema de
+    `garra_agent` e teste de contrato do bash pela ponte) entraram junto.
+  - **Segurança.** Varredura de advisories (#1630) e atestação de proveniência por
+    asset (#1606); request-path do gateway negando `unwrap()`/`expect()` (#1569);
+    fixture de Postgres destravando 10 testes de integração no CI (#1570).
+  - **CLI e desktop.** `garra uninstall` remove a CLI da máquina (sem número de
+    issue no CHANGELOG); o desktop ganha DMG no macOS e `latest.json` assinado
+    para o updater do app (#1568).
+  - **Confiabilidade.** Workers de uploads e recorrência voltam a varrer (advisory
+    lock por sessão, #1611); timeout do LLM por provider (#1593); retry de rede no
+    GetMe do Telegram (#1594); allowlist do bash avaliando encadeamento por
+    segmento (#1592); `garraia doctor mcp` validando a subida do servidor MCP
+    (#1595); `garra update`/`rollback` saindo com 70 na falha (#1603); `.env` lido
+    só do diretório atual (#1604); `GARRAIA_CONFIG_DIR` inválida caindo no padrão
+    com aviso (#1620).
+  - **Remoção.** Rascunhos legais e de precificação saem do repositório público
+    após a auditoria de exposição (#1616); versões finais publicam em garraia.org.
+
+- **Decisões.**
+  - **Advisories fechados sem exceção no `deny.toml`:** nenhum `RUSTSEC` foi
+    silenciado por allowlist — todos resolvidos por bump ou troca de crate.
+  - **`serde_yaml` → `serde_norway` 0.9.42** (mesma API) para tirar do grafo o
+    `unsafe-libyaml` arquivado (RUSTSEC-2024-0449).
+  - **PRs do Dependabot substituídos por um PR consolidado** de dependências, em
+    vez de mergear um a um.
+  - **#1635 (redação por regex do operador) entrou antes do tag**, como item 4 da
+    #1626.
+  - **Item 1 da #1626 (jail por orquestrador) fica para a v0.4.10**, por decisão
+    do dono de 2026-10-10.
+
+- **Wiki.** As páginas v0.4.8 e v0.4.9 foram escritas nesta rodada — a v0.4.8
+  tinha sido pulada (`wiki/Novidades-v0.4.9.md` / `wiki/Whats-New-v0.4.9.md`).
+
+### Fica aberto, com bloqueio nomeado
+
+| Item | Bloqueio |
+| --- | --- |
+| #1636 (assistente de primeiro uso no desktop) | P1, próximo ciclo |
+| #1626 item 1 (jail por orquestrador) | R4; adiado para a v0.4.10 por decisão do dono (2026-10-10) |
+| #1575, #1574, #1565 (revisão legal, LIA, tabletop, decisões comerciais) | bloqueio jurídico/humano — não fechável por engenharia |
+
+## Release v0.4.8 — 2026-10-07
+
+Release com segurança no topo, cortada antes da v0.4.9. Destaques do CHANGELOG
+`[0.4.8]`:
+
+- **Modo `HostComAllowlist` do bash no host** (#1272): a `agent.bash_allowlist`
+  vira fronteira real, com a denylist do `safety_gate` sempre na frente; aspas
+  passam a proteger a prosa do argumento (#1579).
+- **`wasmtime` 48.0.2 → 49.0.2 em dois passos, fechando onze advisories** (quatro
+  no 49.0.1, que eleva o MSRV para 1.96; sete no 49.0.2, que não eleva — #1524,
+  #1559).
+- **O Web Console fecha o que a v0.4.7 adiou**: página global Agents &
+  Permissions (#1433) e export/import da política de acesso do WhatsApp (#1435).
+- **Os seis canais que o README já anunciava voltam a contar**, badge em 11
+  (#1567); resolução de provider LLM endereçando o perfil certo, com fallback e
+  SSE corrigidos (#1540, #1541, #1554).
+- **Operação e qualidade**: `restart` recusa daemon órfão sob systemd (#1542);
+  piso de cobertura de 70% que reprova o build, baseline do ratchet re-medido em
+  72,00% (#1566); `telegram_send_voice` (#1557) e sonda de saúde do Chatterbox
+  corrigida (#1538).
+
+- **A wiki da v0.4.8 só foi escrita agora.** A página de novidades foi pulada no
+  momento do release e só saiu nesta rodada, junto com a da v0.4.9
+  (`wiki/Novidades-v0.4.8.md` / `wiki/Whats-New-v0.4.8.md`).
+- **Garra Mobile não teve bump de versão na v0.4.8**: o APK saiu como `0.4.7+11`;
+  na v0.4.9 vai para `0.4.9+12`.
 
 ## Release v0.4.7 — 2026-09-28 (correção)
 
