@@ -149,6 +149,16 @@ quando ha sandbox configurado e inutilizavel — #1471), e o modelo e avisado
 no system prompt de que nao ha shell. `garraia chat` nao muda: la o humano confirma no
 terminal.
 
+Na **ponte MCP HTTP** (o `garra_agent` da #1615), o workspace das file tools do
+agente e escopado **por orquestrador** dentro do mesmo `<data_dir>/workspace`
+dos perfis: cada orquestrador recebe `<data_dir>/workspace/<hash>`, derivado da
+identidade dele por digest, e nunca `agent.file_roots` (essas raizes sao do
+operador, e a ponte atende pedido de terceiro) — #1626 item 1. Em `isolated-pod`
+isso tem um limite conhecido: o pod e a fronteira e todos os orquestradores
+compartilham o filesystem dele, entao o `working_dir` por orquestrador isola o
+`bash` so no sandbox docker/podman, nao no host do pod; isolar `bash` por
+orquestrador no pod exigiria um pod por orquestrador (follow-up).
+
 ## O que o perfil NAO isola
 
 O perfil e uma **declaracao** do operador; ele nao cria a fronteira. Tudo

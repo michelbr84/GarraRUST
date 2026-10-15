@@ -81,12 +81,22 @@ impl RepoDir {
         }
     }
 
-    /// O diretório e a procedência, sem rótulo: `"/x/y (working_dir da
-    /// sessão)"`. Quem formata escolhe o rótulo — texto puro no `git_diff`,
-    /// markdown no `code_review`.
+    /// A procedência do repositório, sem rótulo. Quem formata escolhe o rótulo
+    /// — texto puro no `git_diff`, markdown no `code_review`.
+    ///
+    /// #1626: no caso `Sessao` o caminho absoluto **não** entra na frase. Esta
+    /// resposta vira o `summary`/`answer` do envelope `garra.agent.v1` servido
+    /// ao orquestrador na ponte MCP HTTP, onde o `working_dir` é a subárvore
+    /// por-orquestrador sob `<data_dir>/workspace` — expor o caminho absoluto
+    /// ali vazaria o caminho do host e o hash do próprio chamador (princípio da
+    /// #1465). O que a #1258 exige — dizer **de qual** repositório a resposta
+    /// falou, sem cair silenciosamente no CWD — continua nomeado: é o
+    /// working_dir da sessão. O caso `ProcessoCwd` (sessão SEM working_dir)
+    /// segue nomeando o CWD: ali o caminho é o do próprio gateway, não um
+    /// segredo por-chamador, e nomeá-lo é o que desfaz a confusão da #1258.
     pub fn descricao(&self) -> String {
         match self {
-            Self::Sessao(dir) => format!("{} (working_dir da sessão)", dir.display()),
+            Self::Sessao(_) => "o working_dir da sessão".to_string(),
             Self::ProcessoCwd(Some(cwd)) => format!(
                 "{} (CWD do processo do gateway — a sessão não tem working_dir)",
                 cwd.display()
@@ -186,8 +196,14 @@ mod tests {
         let repo = RepoDir::decidir(Some("/projetos/a"));
         assert_eq!(repo, RepoDir::Sessao(PathBuf::from("/projetos/a")));
         assert_eq!(repo.cwd_do_git(), Some(Path::new("/projetos/a")));
-        assert!(repo.descricao().contains("/projetos/a"));
+        // #1626: a procedência é nomeada, mas o caminho absoluto NÃO sai — a
+        // resposta vira o envelope servido ao orquestrador na ponte.
         assert!(repo.descricao().contains("working_dir da sessão"));
+        assert!(
+            !repo.descricao().contains("/projetos/a"),
+            "o caminho absoluto do working_dir nao pode sair na resposta: {}",
+            repo.descricao()
+        );
     }
 
     /// Sem `working_dir` o git continua herdando o CWD (`cwd_do_git` é `None`),
@@ -223,8 +239,10 @@ mod tests {
     fn com_contexto_prefixa_o_corpo_sem_perder_nada() {
         let repo = RepoDir::Sessao(PathBuf::from("/p/a"));
         let saida = repo.com_contexto("diff --git a/x b/x");
-        assert!(saida.starts_with("Repositório: /p/a (working_dir da sessão)"));
+        assert!(saida.starts_with("Repositório: o working_dir da sessão"));
         assert!(saida.ends_with("diff --git a/x b/x"));
+        // #1626: o caminho absoluto do working_dir não pode entrar na resposta.
+        assert!(!saida.contains("/p/a"), "{saida}");
     }
 
     /// CWD ilegível não pode virar pânico nem string vazia: a frase diz que

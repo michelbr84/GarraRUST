@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GarraIA">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0b0f14"/>
+  <g fill="none" stroke="#ffd400" stroke-width="5" stroke-linecap="round">
+    <path d="M20 16 C 26 26, 26 38, 20 48"/>
+    <path d="M32 14 C 38 25, 38 39, 32 50"/>
+    <path d="M44 16 C 50 26, 50 38, 44 48"/>
+  </g>
+  <circle cx="32" cy="54" r="3" fill="#16d9ff"/>
+</svg>

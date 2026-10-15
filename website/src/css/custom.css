@@ -1,0 +1,45 @@
+/**
+ * Tema do site de documentacao do GarraIA.
+ * Cores derivadas do design system "Garra Glass" (ADR 0009): gold #ffd400
+ * e cyan #16d9ff. No modo claro o gold e escurecido para contraste legivel;
+ * no modo escuro usa o gold vivo da marca.
+ */
+
+:root {
+  --ifm-color-primary: #b07400;
+  --ifm-color-primary-dark: #9e6800;
+  --ifm-color-primary-darker: #956200;
+  --ifm-color-primary-darkest: #7b5100;
+  --ifm-color-primary-light: #c28000;
+  --ifm-color-primary-lighter: #ce8800;
+  --ifm-color-primary-lightest: #f0a300;
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-base: Inter, system-ui, -apple-system, Segoe UI, Roboto,
+    Helvetica, Arial, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', ui-monospace, SFMono-Regular,
+    Menlo, Consolas, monospace;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --garra-accent: #16d9ff;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #ffd400;
+  --ifm-color-primary-dark: #e6bf00;
+  --ifm-color-primary-darker: #d9b400;
+  --ifm-color-primary-darkest: #b39500;
+  --ifm-color-primary-light: #ffd91a;
+  --ifm-color-primary-lighter: #ffdd2e;
+  --ifm-color-primary-lightest: #ffe566;
+  --ifm-background-color: #0b0f14;
+  --ifm-background-surface-color: #121820;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.12);
+}
+
+.navbar__logo {
+  height: 1.75rem;
+}
+
+/* Links de info/foco no cyan da marca, no modo escuro. */
+[data-theme='dark'] .table-of-contents__link--active {
+  color: var(--garra-accent);
+}
